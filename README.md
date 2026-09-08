@@ -3,6 +3,8 @@
 
 # getcash
 
+Live at [getcash.paseo.li](https://getcash.paseo.li).
+
 A prototype funding surface for Polkadot App mobile hosts. It receives an inbound asset, crypto or
 fiat-sourced, on an ephemeral account on Asset Hub, converts it into CASH on the People chain,
 and hands the result to the host. The prototype consists of a static Nuxt 4 single-page app
