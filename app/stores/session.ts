@@ -197,6 +197,8 @@ function stepOf(status: RequestStatus | undefined): FundingStep | null {
 export interface QuotedView {
   send: string;
   symbol: string;
+  /** The provider's total fee in `symbol` units, when the rail quotes one (Meld does). */
+  fee?: string | null;
   /** Live world only: the native (DOT) budget the rail must deliver, 10-dec base units. */
   nativeAmount: bigint | null;
   sourceAsset: string | null;
@@ -892,6 +894,7 @@ export const useSessionStore = defineStore("session", () => {
         quoted.value = {
           send: raw.provider.sourceAmount,
           symbol: raw.context.fiat,
+          fee: raw.provider.totalFee ?? null,
           nativeAmount: null,
           sourceAsset: null,
           sourceChain: null,
@@ -920,6 +923,7 @@ export const useSessionStore = defineStore("session", () => {
       quoted.value = {
         send: raw.provider.sourceAmount,
         symbol: raw.context.fiat,
+        fee: raw.provider.totalFee ?? null,
         nativeAmount: null,
         sourceAsset: null,
         sourceChain: null,

@@ -59,8 +59,9 @@ onUnmounted(() => {
       padding-bottom: env(safe-area-inset-bottom);
     "
   >
+    <!-- The live journey names its rail in the hero, so its toolbar is back-only. -->
     <Toolbar
-      :title="title"
+      :title="readOnly || waiting || unavailable ? title : ''"
       :back="readOnly || (!waiting && !session.claiming)"
       @back="emit('back')"
     />

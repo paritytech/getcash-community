@@ -10,6 +10,7 @@ import type { FundingJourneyStatus } from "../../funding/handoff";
 import { projectFundingProgress, type FundingProgressProjection } from "../../funding/progress";
 import { useSessionStore } from "../../stores/session";
 import { fmtCash } from "../../utils/cash";
+import { fmtFiat } from "../../utils/money";
 import { recoveryNotes, refundedFailure } from "../../utils/recovery";
 import FundingJourneyTimeline from "../funding/progress/FundingJourneyTimeline.vue";
 
@@ -148,14 +149,17 @@ const payingIn = computed(() => {
     return symbol;
   }
 });
-// No Fees row yet: the quote carries no fee breakdown.
+/** Symbol-first for the fiat rails ("€50.55"); crypto keeps its full-precision ticker form. */
+const money = (amount: string, symbol: string) =>
+  session.method === "crypto" ? `${amount} ${symbol}` : fmtFiat(amount, symbol);
 const detailRows = computed(() => {
   const q = session.quoted;
   if (!q) return [];
-  return [
-    { label: "Paying in", value: payingIn.value ?? q.symbol },
-    { label: "Total", value: `${q.send} ${q.symbol}` },
-  ];
+  const rows = [{ label: "Paying in", value: payingIn.value ?? q.symbol }];
+  // Only the fee total is quoted; the drill-in breakdown screen needs the split.
+  if (q.fee) rows.push({ label: "Fees", value: money(q.fee, q.symbol) });
+  rows.push({ label: "Total", value: money(q.send, q.symbol) });
+  return rows;
 });
 
 /** The one ribbon line under the stepper: a failure reason beats a stage hint beats the

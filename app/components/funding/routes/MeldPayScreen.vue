@@ -3,6 +3,7 @@
 // widget. The method is fixed by the route; the region is the buyer's only choice.
 import { computed, onMounted, ref } from "vue";
 import { useSessionStore } from "../../../stores/session";
+import { fmtFiat } from "../../../utils/money";
 import type { FundingRoute } from "../../../funding/selection";
 import CountryCombobox from "../../ui/CountryCombobox.vue";
 
@@ -97,7 +98,7 @@ function useCryptoRoute() {
 // The charged total is the hero; the toolbar already names the method, so no Via row.
 const heroAmount = computed(() => {
   const q = session.quoted;
-  return q ? `${q.send} ${q.symbol}` : null;
+  return q ? fmtFiat(q.send, q.symbol) : null;
 });
 const heroCaption = computed(() =>
   session.method === "bank"
@@ -114,16 +115,21 @@ const selectedCountryName = computed(
 );
 
 const quoteRows = computed(() => {
-  if (!session.quoted) return [];
-  // No Fees row yet: the quote carries no fee breakdown.
-  return [
+  const q = session.quoted;
+  if (!q) return [];
+  const rows = [
     { label: "Provider", value: "Meld" },
     // Names the corridor these terms were priced against. Two Card failures in one testathon
     // session came from two DIFFERENT regions, and nothing on the quote said which one it was.
     { label: "Region", value: selectedCountryName.value },
+  ];
+  // Only the fee total is quoted; the drill-in breakdown screen needs the split.
+  if (q.fee) rows.push({ label: "Fees", value: fmtFiat(q.fee, q.symbol) });
+  rows.push(
     { label: "Arrives", value: "A few minutes" },
     { label: "You’ll receive", value: `${session.amountHuman} CASH` },
-  ];
+  );
+  return rows;
 });
 
 const starting = ref(false);
