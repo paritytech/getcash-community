@@ -137,6 +137,27 @@ onUnmounted(() => {
   if (copiedTimer !== null) clearTimeout(copiedTimer);
 });
 
+/** What the payment is denominated in, as a spelled-out currency where one exists
+ *  ("EUR" → "Euro"); a crypto ticker stays a ticker. */
+const payingIn = computed(() => {
+  const symbol = session.quoted?.symbol;
+  if (!symbol) return null;
+  try {
+    return new Intl.DisplayNames(["en"], { type: "currency" }).of(symbol) ?? symbol;
+  } catch {
+    return symbol;
+  }
+});
+// No Fees row yet: the quote carries no fee breakdown.
+const detailRows = computed(() => {
+  const q = session.quoted;
+  if (!q) return [];
+  return [
+    { label: "Paying in", value: payingIn.value ?? q.symbol },
+    { label: "Total", value: `${q.send} ${q.symbol}` },
+  ];
+});
+
 /** The one ribbon line under the stepper: a failure reason beats a stage hint beats the
  *  package's own payment status. */
 const message = computed(() => {
@@ -175,6 +196,17 @@ const message = computed(() => {
         :completed-steps="session.journeyDone"
         :message="message"
       />
+
+      <dl v-if="detailRows.length" class="flex flex-col gap-4">
+        <div
+          v-for="row in detailRows"
+          :key="row.label"
+          class="flex items-baseline justify-between gap-4"
+        >
+          <dt class="text-paragraph-l text-fg-primary">{{ row.label }}</dt>
+          <dd class="text-heading-m text-fg-primary">{{ row.value }}</dd>
+        </div>
+      </dl>
 
       <!-- The way back to a refunded deposit: the key controlling the address it returns to. -->
       <template v-if="refunded">
