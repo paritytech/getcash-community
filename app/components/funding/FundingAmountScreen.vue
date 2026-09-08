@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { Delete } from "lucide-vue-next";
 import type { FundingSelectorConfig } from "../../funding/config";
 import {
   fundingAmountStatus,
@@ -112,7 +113,7 @@ function enter(key: FundingKey) {
             v-for="option in config.routes"
             :key="option.id"
             type="button"
-            class="funding-route"
+            class="funding-route text-label-l"
             :class="{
               'funding-route-selected': route === option.id,
               'funding-route-unavailable': !isRouteAvailable(option.id),
@@ -125,17 +126,19 @@ function enter(key: FundingKey) {
           >
             <img :src="option.icon" alt="" />
             <span>{{ option.label }}</span>
-            <span v-if="!isRouteAvailable(option.id)" class="funding-route-soon">Soon</span>
+            <span v-if="!isRouteAvailable(option.id)" class="funding-route-soon text-overline"
+              >Soon</span
+            >
           </button>
         </div>
 
-        <p class="funding-limits" :class="{ 'funding-limits-warning': limitWarning }">
+        <p class="funding-limits text-body-m" :class="{ 'funding-limits-warning': limitWarning }">
           {{ limitLabel }}
         </p>
 
         <div ref="amountRow" class="funding-amount" aria-live="polite">
-          <span ref="amountValue">{{ displayAmount }}</span>
-          <span ref="amountAsset">{{ config.asset }}</span>
+          <span ref="amountValue" class="font-accent font-semibold">{{ displayAmount }}</span>
+          <span ref="amountAsset" class="font-accent font-semibold">{{ config.asset }}</span>
         </div>
 
         <div class="funding-presets" aria-label="Suggested amounts">
@@ -143,13 +146,14 @@ function enter(key: FundingKey) {
             v-for="preset in config.amount.presets"
             :key="preset"
             type="button"
+            class="text-label-l"
             @click="emit('change', preset)"
           >
             {{ formatAmount(preset) }} {{ config.asset }}
           </button>
         </div>
 
-        <p v-if="error" class="funding-error" role="alert">{{ error }}</p>
+        <p v-if="error" class="funding-error text-caption" role="alert">{{ error }}</p>
 
         <div class="funding-keypad" aria-label="Amount keypad">
           <template v-for="(row, rowIndex) in keypad" :key="rowIndex">
@@ -157,13 +161,11 @@ function enter(key: FundingKey) {
               v-for="key in row"
               :key="key"
               type="button"
+              class="font-mono text-heading-l font-medium"
               :aria-label="key === 'delete' ? 'Delete digit' : `Enter ${key}`"
               @click="enter(key)"
             >
-              <svg v-if="key === 'delete'" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M9.5 7 5 12l4.5 5H19V7H9.5Z" />
-                <path d="m12 10 4 4m0-4-4 4" />
-              </svg>
+              <Delete v-if="key === 'delete'" class="size-6" aria-hidden="true" />
               <span v-else>{{ key }}</span>
             </button>
           </template>
@@ -171,7 +173,7 @@ function enter(key: FundingKey) {
 
         <button
           type="button"
-          class="funding-primary"
+          class="funding-primary text-label-l font-semibold"
           :disabled="loading || !canContinue"
           @click="emit('continue')"
         >
@@ -203,6 +205,7 @@ function enter(key: FundingKey) {
   flex-direction: column;
   align-items: center;
   padding: 0.25rem 1.5rem 1rem;
+  color: var(--fg-primary);
 }
 
 .funding-routes {
@@ -219,20 +222,21 @@ function enter(key: FundingKey) {
   align-items: center;
   gap: 0.375rem;
   border-radius: 9999px;
-  background: var(--funding-control);
+  background: var(--bg-surface-container);
   padding: 0 0.75rem 0 0.375rem;
-  color: var(--funding-text);
-  font-size: 0.9375rem;
-  line-height: 1.25rem;
-  font-weight: 600;
+  color: var(--fg-primary);
   transition:
     background-color 120ms ease-out,
     color 120ms ease-out;
 }
 
+.funding-route:hover:not(:disabled):not(.funding-route-selected) {
+  background: var(--bg-selection-container-hover);
+}
+
 .funding-route-selected {
-  background: var(--funding-action);
-  color: var(--funding-action-text);
+  background: var(--bg-action-primary);
+  color: var(--fg-primary-inverted);
 }
 
 /* Routes not in this build: dimmed, greyscale, no pointer response. */
@@ -245,12 +249,8 @@ function enter(key: FundingKey) {
 }
 
 .funding-route-soon {
-  font-size: 0.6875rem;
-  line-height: 1rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--funding-text-muted);
+  color: var(--fg-tertiary);
 }
 
 .funding-route img {
@@ -260,9 +260,13 @@ function enter(key: FundingKey) {
 }
 
 .funding-amount {
+  /* Fluid display type: the amount fits itself to the row, which the fixed
+   * 14-step scale cannot express — reported as a gap. Sizes are pinned to the
+   * scale's display stops (56px / 32px); face and weight come from the
+   * font-accent font-semibold classes on the spans, matching text-display-*. */
   --amount-scale: 1;
-  --amount-size: 4rem;
-  --asset-size: 2.25rem;
+  --amount-size: 3.5rem;
+  --asset-size: 2rem;
   display: flex;
   width: 100%;
   min-width: 0;
@@ -276,32 +280,27 @@ function enter(key: FundingKey) {
 /* Both spans keep their natural width; fitAmount() shrinks the scale. Line heights stay fixed. */
 .funding-amount > span {
   flex: none;
-  font-weight: 500;
 }
 
 .funding-amount > span:first-child {
   font-size: calc(var(--amount-size) * var(--amount-scale));
   line-height: 5rem;
-  letter-spacing: -0.04em;
 }
 
 .funding-amount > span:last-child {
   font-size: calc(var(--asset-size) * var(--amount-scale));
   line-height: 3rem;
-  letter-spacing: -0.015em;
 }
 
 .funding-limits {
   min-height: 1rem;
   margin-top: 1.375rem;
-  color: var(--funding-text-muted);
-  font-size: 0.875rem;
-  line-height: 1.25rem;
+  color: var(--fg-secondary);
   text-align: center;
 }
 
 .funding-limits-warning {
-  color: var(--funding-error);
+  color: var(--fg-error);
 }
 
 .funding-presets {
@@ -316,19 +315,19 @@ function enter(key: FundingKey) {
   min-width: 0;
   height: 3.25rem;
   border-radius: 9999px;
-  background: var(--funding-control);
+  background: var(--bg-surface-container);
   padding: 0 0.5rem;
-  font-size: 0.9375rem;
-  line-height: 1.25rem;
-  font-weight: 600;
+  transition: background-color 120ms ease-out;
+}
+
+.funding-presets button:hover {
+  background: var(--bg-selection-container-hover);
 }
 
 .funding-error {
   min-height: 1rem;
   margin-top: 0.5rem;
-  color: var(--funding-error);
-  font-size: 0.75rem;
-  line-height: 1rem;
+  color: var(--fg-error);
   text-align: center;
 }
 
@@ -347,20 +346,17 @@ function enter(key: FundingKey) {
   align-items: center;
   justify-content: center;
   border-radius: 9999px;
-  background: var(--funding-control);
-  font-size: 1.5rem;
-  line-height: 2rem;
-  font-weight: 500;
+  background: var(--bg-surface-container);
+  color: var(--fg-primary);
+  transition: background-color 120ms ease-out;
 }
 
-.funding-keypad svg {
-  width: 1.5rem;
-  height: 1.5rem;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.75;
+.funding-keypad button:hover {
+  background: var(--bg-selection-container-hover);
+}
+
+.funding-keypad button:active {
+  background: var(--bg-selection-container-active);
 }
 
 .funding-primary {
@@ -369,15 +365,18 @@ function enter(key: FundingKey) {
   height: 3.375rem;
   margin-top: 1.25rem;
   border-radius: 9999px;
-  background: var(--funding-action);
-  color: var(--funding-action-text);
-  font-size: 0.9375rem;
-  line-height: 1.25rem;
-  font-weight: 650;
+  background: var(--bg-action-primary);
+  color: var(--fg-primary-inverted);
+  transition: background-color 120ms ease-out;
+}
+
+.funding-primary:hover:not(:disabled) {
+  background: var(--bg-action-primary-hover);
 }
 
 .funding-primary:disabled {
-  opacity: 0.4;
+  background: var(--bg-action-disabled);
+  color: var(--fg-disabled);
 }
 
 @media (max-height: 650px) {
@@ -399,6 +398,7 @@ function enter(key: FundingKey) {
   }
 
   .funding-amount {
+    /* Short-viewport adaptation of the fluid display gap noted above. */
     --amount-size: 3rem;
     --asset-size: 1.75rem;
   }

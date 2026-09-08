@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { ChevronRight } from "lucide-vue-next";
 import { formatFundingHistoryWhen } from "../../funding/history";
 import type { InProgressFundingTopUp, SettledFundingTopUp } from "../../funding/top-ups";
 import FundingProgressRing from "./progress/FundingProgressRing.vue";
@@ -40,29 +41,32 @@ const emit = defineEmits<{ open: [topUp: ProgressCardTopUp] }>();
   >
     <FundingProgressRing :progress="topUp.progress" />
     <span class="funding-top-up-copy">
-      <strong>{{ topUp.amount }} {{ asset }} by {{ topUp.routeLabel }}</strong>
-      <span class="funding-top-up-status">{{ opening ? "Opening…" : status }}</span>
-      <span class="funding-top-up-detail">{{ detail }}</span>
+      <strong class="text-heading-s">{{ topUp.amount }} {{ asset }} by {{ topUp.routeLabel }}</strong>
+      <span class="funding-top-up-status text-caption">{{ opening ? "Opening…" : status }}</span>
+      <span class="funding-top-up-detail text-caption">{{ detail }}</span>
     </span>
-    <span class="funding-top-up-chevron" aria-hidden="true">›</span>
+    <ChevronRight class="size-4 flex-none text-fg-secondary" aria-hidden="true" />
   </button>
 </template>
 
 <style scoped>
 .funding-top-up-card {
+  /* Depth is the container surface plus shadow-1; no group border. */
   display: flex;
   width: 100%;
   align-items: center;
   gap: 0.75rem;
-  border: 1px solid color-mix(in srgb, var(--funding-border) 45%, transparent);
-  border-radius: 1.125rem;
-  background: var(--funding-surface);
+  border-radius: var(--radius-container);
+  background: var(--bg-surface-container);
+  box-shadow: var(--shadow-1);
   padding: 1rem;
+  color: var(--fg-primary);
   text-align: left;
+  transition: box-shadow 150ms ease;
 }
 
-.funding-top-up-card:disabled {
-  cursor: default;
+.funding-top-up-card:hover:not(:disabled) {
+  box-shadow: var(--shadow-2);
 }
 
 .funding-top-up-copy {
@@ -74,9 +78,6 @@ const emit = defineEmits<{ open: [topUp: ProgressCardTopUp] }>();
 
 .funding-top-up-copy strong {
   overflow: hidden;
-  font-size: 0.84375rem;
-  line-height: 1.125rem;
-  font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -84,24 +85,13 @@ const emit = defineEmits<{ open: [topUp: ProgressCardTopUp] }>();
 .funding-top-up-status {
   margin-top: 0.25rem;
   overflow: hidden;
-  color: var(--funding-text-muted);
-  font-size: 0.71875rem;
-  line-height: 1rem;
+  color: var(--fg-secondary);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .funding-top-up-detail {
   margin-top: 0.125rem;
-  color: var(--funding-text-muted);
-  font-size: 0.6875rem;
-  line-height: 0.9375rem;
-}
-
-.funding-top-up-chevron {
-  flex: none;
-  color: var(--funding-text-muted);
-  font-size: 1rem;
-  line-height: 1;
+  color: var(--fg-secondary);
 }
 </style>

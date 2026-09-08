@@ -8,19 +8,6 @@ export interface FundingRouteOption {
   icon: string;
 }
 
-export interface FundingSelectorTheme {
-  background: string;
-  surface: string;
-  control: string;
-  text: string;
-  textMuted: string;
-  action: string;
-  actionText: string;
-  border: string;
-  success: string;
-  error: string;
-}
-
 export interface FundingSelectorConfig {
   provider: string;
   asset: string;
@@ -29,7 +16,6 @@ export interface FundingSelectorConfig {
     presets: readonly string[];
   };
   routes: readonly FundingRouteOption[];
-  theme: FundingSelectorTheme;
 }
 
 export const fundingSelectorConfig = {
@@ -66,16 +52,4 @@ export const fundingSelectorConfig = {
       icon: "/icons/crypto.svg",
     },
   ],
-  theme: {
-    background: "#080808",
-    surface: "#1a1b20",
-    control: "#1f1f1f",
-    text: "#ececec",
-    textMuted: "#999999",
-    action: "#e0e0e0",
-    actionText: "#080808",
-    border: "#525252",
-    success: "#22c55e",
-    error: "#ff3123",
-  },
 } as const satisfies FundingSelectorConfig;
