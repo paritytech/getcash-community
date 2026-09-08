@@ -56,7 +56,7 @@ onUnmounted(() => {
 
 <template>
   <main
-    class="fixed inset-x-0 mx-auto flex w-full max-w-md flex-col overflow-hidden bg-bg"
+    class="fixed inset-x-0 mx-auto flex w-full max-w-md flex-col overflow-hidden bg-surface-main"
     style="
       top: var(--vvt, 0px);
       height: var(--vvh, 100dvh);
@@ -74,14 +74,14 @@ onUnmounted(() => {
     <div class="flex min-h-0 flex-1 flex-col" :class="showingWidget ? '' : 'px-6 pt-6'">
       <div v-if="waiting" class="flex flex-col items-center gap-4 pt-16">
         <span
-          class="inline-block size-8 animate-spin rounded-full border-[3px] border-track border-t-white"
+          class="inline-block size-8 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary"
         />
-        <p class="text-sm text-text-secondary">Opening your top-up…</p>
+        <p class="text-body-m text-fg-secondary">Opening your top-up…</p>
       </div>
 
       <div v-else-if="unavailable" class="flex flex-1 flex-col items-center pt-16 text-center">
-        <h1 class="text-lg font-semibold">Top-up unavailable</h1>
-        <p class="mt-2 text-sm text-text-secondary">
+        <h1 class="text-heading-l text-fg-primary">Top-up unavailable</h1>
+        <p class="mt-2 text-body-m text-fg-secondary">
           This top-up is no longer available. Return to see your latest activity.
         </p>
       </div>
@@ -91,7 +91,7 @@ onUnmounted(() => {
         <button
           v-if="canCancel"
           type="button"
-          class="mx-6 mt-3 mb-4 h-12 shrink-0 rounded-full bg-[#e7333f] text-base leading-6 font-semibold text-white disabled:opacity-50"
+          class="mx-6 mt-3 mb-4 h-12 shrink-0 rounded-medium bg-status-error text-label-l text-fg-primary-inverted transition-colors hover:bg-status-error-hover disabled:opacity-50"
           :disabled="session.cancelling"
           @click="cancelTopUp"
         >

@@ -113,7 +113,7 @@ async function next() {
 
 <template>
   <div class="flex min-h-0 flex-1 flex-col">
-    <h1 class="text-headline font-semibold">
+    <h1 class="text-display-l text-fg-primary">
       Pay with {{ session.method === "bank" ? "bank transfer" : "card" }}
     </h1>
 
@@ -127,21 +127,21 @@ async function next() {
     />
 
     <!-- The quote it produced, or why there isn't one. -->
-    <div class="mt-6 rounded-2xl bg-surface-container p-4">
+    <div class="mt-6 rounded-container bg-surface-container p-4 shadow-1">
       <!-- The chosen method is not routed for this region: offer the other method or the crypto
            route. -->
       <div v-if="session.meldMethodUnavailable" class="flex flex-col gap-3">
-        <p v-if="otherMethodAvailable" class="text-sm text-text-secondary">
+        <p v-if="otherMethodAvailable" class="text-body-m text-fg-secondary">
           {{ methodLabel(session.method === "bank" ? "bank" : "card") }} isn't available in this
           region, but {{ methodLabel(otherMethod).toLowerCase() }} is.
         </p>
-        <p v-else class="text-sm text-text-secondary">
+        <p v-else class="text-body-m text-fg-secondary">
           This region isn't supported for card or bank right now. You can buy with crypto instead.
         </p>
         <button
           v-if="otherMethodAvailable"
           type="button"
-          class="self-start rounded-full bg-action-secondary px-4 py-2 text-sm font-semibold"
+          class="self-start rounded-medium bg-action-secondary px-4 py-2 text-label-m text-fg-primary transition-colors hover:bg-action-secondary-hover"
           @click="useOtherMethod"
         >
           Use {{ methodLabel(otherMethod).toLowerCase() }}
@@ -149,17 +149,17 @@ async function next() {
         <button
           v-else
           type="button"
-          class="self-start rounded-full bg-action-secondary px-4 py-2 text-sm font-semibold"
+          class="self-start rounded-medium bg-action-secondary px-4 py-2 text-label-m text-fg-primary transition-colors hover:bg-action-secondary-hover"
           @click="useCryptoRoute"
         >
           Use crypto instead
         </button>
       </div>
       <div v-else-if="session.quoteError" class="flex flex-col gap-3">
-        <p class="text-sm text-error">Quote failed: {{ session.quoteError }}</p>
+        <p class="text-body-m text-fg-error">Quote failed: {{ session.quoteError }}</p>
         <button
           type="button"
-          class="self-start rounded-full bg-action-secondary px-4 py-2 text-sm font-semibold"
+          class="self-start rounded-medium bg-action-secondary px-4 py-2 text-label-m text-fg-primary transition-colors hover:bg-action-secondary-hover"
           @click="requote"
         >
           Retry quote
@@ -168,7 +168,7 @@ async function next() {
       <div v-else-if="session.loading || !session.quoted" class="flex flex-col gap-3">
         <div v-for="n in 4" :key="n" class="flex h-6 items-center">
           <span
-            class="h-4 animate-pulse rounded bg-action-secondary"
+            class="h-4 animate-pulse rounded-small bg-surface-nested"
             :style="{ width: `${85 - n * 10}%` }"
           />
         </div>
@@ -179,19 +179,19 @@ async function next() {
           :key="row.label"
           class="flex items-baseline justify-between gap-4"
         >
-          <span class="text-sm text-text-secondary">{{ row.label }}</span>
-          <span class="text-base" :class="{ 'font-semibold': row.label === 'You receive' }">{{
+          <span class="text-body-m text-fg-secondary">{{ row.label }}</span>
+          <span class="text-body-l text-fg-primary" :class="{ 'font-semibold': row.label === 'You receive' }">{{
             row.value
           }}</span>
         </div>
       </div>
     </div>
 
-    <p v-if="startError" class="mt-4 text-sm text-error">{{ startError }}</p>
+    <p v-if="startError" class="mt-4 text-body-m text-fg-error">{{ startError }}</p>
 
     <button
       type="button"
-      class="mt-auto mb-6 h-12 w-full rounded-full bg-action-primary text-base leading-6 font-semibold text-text-inverted disabled:bg-action-secondary disabled:text-text-disabled"
+      class="mt-auto mb-6 h-12 w-full rounded-full bg-action-primary text-label-l font-semibold text-fg-primary-inverted transition-colors hover:bg-action-primary-hover disabled:bg-action-disabled disabled:text-fg-disabled"
       :disabled="!canContinue"
       @click="next"
     >
