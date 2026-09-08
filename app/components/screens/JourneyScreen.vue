@@ -169,7 +169,9 @@ const message = computed(() => {
 </script>
 
 <template>
-  <div class="flex min-h-0 flex-1 flex-col overflow-y-auto pb-6">
+  <!-- The scroller carries -mx-4/px-4 so the timeline card's bleed isn't clipped: overflow-y-auto
+       also clips x, and the clip runs at the padding box. -->
+  <div class="-mx-4 flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-6">
     <div class="flex flex-col items-center text-center">
       <span
         class="flex size-14 items-center justify-center rounded-full"
