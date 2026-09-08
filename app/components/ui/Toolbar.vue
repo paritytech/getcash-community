@@ -8,16 +8,16 @@ const emit = defineEmits<{ back: [] }>();
 </script>
 
 <template>
-  <header class="flex h-15 shrink-0 items-center gap-2.5 px-4">
+  <header class="flex h-15 shrink-0 items-center gap-2.5 px-6">
     <div class="flex w-11 shrink-0 items-center">
       <button
         v-if="back"
         type="button"
-        class="flex size-11 items-center justify-center rounded-full bg-action-secondary transition-colors hover:bg-action-secondary-hover"
+        class="flex size-11 items-center justify-center rounded-full bg-surface-container transition-colors hover:bg-selection-container-hover"
         aria-label="Back"
         @click="emit('back')"
       >
-        <ChevronLeft class="size-6 text-fg-primary" aria-hidden="true" />
+        <ChevronLeft class="size-7 text-fg-primary" aria-hidden="true" />
       </button>
     </div>
     <p v-if="title" class="min-w-0 flex-1 truncate text-center text-heading-l text-fg-primary">
