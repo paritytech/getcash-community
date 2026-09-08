@@ -88,12 +88,13 @@ onBeforeUnmount(() => {
   resizeObserver = null;
 });
 const limitLabel = computed(() => {
-  const limit =
-    amountState.value.kind === "above-maximum"
-      ? props.config.amount.maximum
-      : props.config.amount.minimum;
-  const boundary = amountState.value.kind === "above-maximum" ? "Maximum" : "Minimum";
-  return `${boundary} ${formatAmount(limit)} ${props.config.asset}`;
+  const { minimum, maximum } = props.config.amount;
+  const asset = props.config.asset;
+  if (amountState.value.kind === "below-minimum")
+    return `Minimum ${formatAmount(minimum)} ${asset}`;
+  if (amountState.value.kind === "above-maximum")
+    return `Maximum ${formatAmount(maximum)} ${asset}`;
+  return `${formatAmount(minimum)} to ${formatAmount(maximum)} ${asset}`;
 });
 
 function enter(key: FundingKey) {
@@ -129,7 +130,11 @@ function enter(key: FundingKey) {
           </button>
         </div>
 
-        <p class="funding-limits" :class="{ 'funding-limits-warning': limitWarning }">
+        <p
+          class="funding-limits"
+          :class="{ 'funding-limits-warning': limitWarning }"
+          aria-live="polite"
+        >
           {{ limitLabel }}
         </p>
 
@@ -298,10 +303,12 @@ function enter(key: FundingKey) {
   font-size: 0.875rem;
   line-height: 1.25rem;
   text-align: center;
+  transition: color 150ms ease;
 }
 
 .funding-limits-warning {
   color: var(--funding-error);
+  font-weight: 500;
 }
 
 .funding-presets {
