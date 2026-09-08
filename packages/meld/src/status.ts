@@ -19,7 +19,10 @@ const RECEIVING = "transaction_seen";
  * - `unobserved`: the adapter could not tell whether a payment happened.
  */
 const FAILURES: Readonly<Record<string, { message: string; kind: FailureKind }>> = Object.freeze({
-  failed: { message: "The payment did not go through.", kind: "deposit-rejected" },
+  failed: {
+    message: "Top-up didn't go through. No money was taken.",
+    kind: "deposit-rejected",
+  },
   expired: {
     message: "The payment window closed before the payment arrived.",
     kind: "expired",

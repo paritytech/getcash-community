@@ -67,7 +67,7 @@ describe("Meld top-up adapter", () => {
         amountHuman: "40",
         startedAt: 500,
         sourceId: "meld-card",
-        failureReason: "The payment did not go through.",
+        failureReason: "Top-up didn't go through. No money was taken.",
         progress: createFundingProgressSnapshot(meldProgressProvider.createProfile(), {
           failedAt: 700,
         }),
@@ -82,7 +82,7 @@ describe("Meld top-up adapter", () => {
       },
     ];
     expect(projectMeldTopUps(records, {}, 900).map(({ state }) => state)).toEqual([
-      { kind: "failed", at: 700, reason: "The payment did not go through." },
+      { kind: "failed", at: 700, reason: "Top-up didn't go through. No money was taken." },
       { kind: "settled", at: 800, creditedAmount: "100.25" },
     ]);
   });

@@ -2,7 +2,7 @@
 // The finish of a top-up: the timeline from a confirmed deposit to CASH in the balance, shared by
 // every package.
 import { computed, onUnmounted, ref } from "vue";
-import { Check, Plus, X } from "lucide-vue-next";
+import { Plus, X } from "lucide-vue-next";
 import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
 import type { RefundKey } from "@getsome/ephemeral";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
@@ -44,11 +44,17 @@ const finished = computed(() => session.phase === "done");
 const failure = computed(() => (state.value?.phase === "failed" ? state.value.failure : null));
 const failedText = computed(() => session.fundingError ?? failure.value?.message ?? null);
 
-const heroLabel = computed(() => {
-  if (finished.value) return "Added";
-  if (progress.value?.view.kind === "failed") return "Top-up";
-  return "Adding";
+const heroFailed = computed(() => progress.value?.view.kind === "failed" || failure.value !== null);
+
+/** The hero names the rail, and keeps naming it on failure. */
+const railLabel = computed(() => {
+  if (session.method === "card") return "Card";
+  if (session.method === "bank") return "Bank";
+  return "Crypto";
 });
+const heroLabel = computed(() =>
+  finished.value ? `Added via ${railLabel.value}` : `Adding via ${railLabel.value}`,
+);
 
 const creditedAmount = computed(() =>
   session.claimedBase != null ? fmtCash(session.claimedBase) : session.amountHuman,
@@ -131,55 +137,43 @@ onUnmounted(() => {
   if (copiedTimer !== null) clearTimeout(copiedTimer);
 });
 
-const message = computed(() => failedText.value ?? hint.value);
-const messageTone = computed<"muted" | "notice" | "error">(() => {
-  if (failedText.value) return "error";
-  if (session.fundingNotice) return "notice";
-  return "muted";
+/** The one ribbon line under the stepper: a failure reason beats a stage hint beats the
+ *  package's own payment status. */
+const message = computed(() => {
+  if (failedText.value) return failedText.value;
+  if (hint.value) return hint.value;
+  if (props.status && props.status.tone !== "done") return props.status.text;
+  return null;
 });
 </script>
 
 <template>
   <div class="flex min-h-0 flex-1 flex-col overflow-y-auto pb-6">
     <div class="flex flex-col items-center text-center">
-      <span class="flex size-14 items-center justify-center rounded-full bg-surface-container">
-        <Plus class="size-6 text-fg-secondary" aria-hidden="true" />
+      <span
+        class="flex size-14 items-center justify-center rounded-full"
+        :class="heroFailed ? 'journey-hero-failed' : 'bg-surface-container'"
+      >
+        <X v-if="heroFailed" class="size-6 text-fg-error" aria-hidden="true" />
+        <Plus v-else class="size-6 text-fg-secondary" aria-hidden="true" />
       </span>
-      <p class="mt-4 text-body-l text-fg-secondary">{{ heroLabel }}</p>
-      <p class="mt-3 text-display-xl" :class="finished ? 'text-fg-success' : 'text-fg-primary'">
+      <p class="mt-4 text-paragraph-l text-fg-secondary">{{ heroLabel }}</p>
+      <p
+        class="mt-2 text-display-m"
+        :class="finished ? 'text-fg-success' : heroFailed ? 'text-fg-secondary' : 'text-fg-primary'"
+      >
         {{ amountText }}
       </p>
-      <p class="text-body-l text-fg-secondary">To your balance</p>
-      <!-- The package's payment status, e.g. a card confirming or a bank transfer settled. -->
-      <span
-        v-if="status"
-        class="mt-3 inline-flex items-center gap-2 rounded-full bg-surface-container px-3 py-1.5 text-label-s"
-        :class="
-          status.tone === 'failed'
-            ? 'text-fg-error'
-            : status.tone === 'done'
-              ? 'text-fg-success'
-              : 'text-fg-secondary'
-        "
-      >
-        <Check v-if="status.tone === 'done'" class="size-3.5" aria-hidden="true" />
-        <X v-else-if="status.tone === 'failed'" class="size-3.5" aria-hidden="true" />
-        <span
-          v-else
-          class="size-3 animate-spin rounded-full border-2 border-stroke-primary border-t-fg-primary"
-          aria-hidden="true"
-        />
-        {{ status.text }}
-      </span>
+      <p class="text-paragraph-l text-fg-secondary">To your balance</p>
     </div>
 
-    <div class="mt-10 flex flex-col gap-6">
+    <div class="mt-4 flex flex-1 flex-col gap-6">
+      <!-- The stepper leaves once the CASH lands. -->
       <FundingJourneyTimeline
-        v-if="progress"
+        v-if="progress && !finished"
         :progress="progress"
         :completed-steps="session.journeyDone"
         :message="message"
-        :message-tone="messageTone"
       />
 
       <!-- The way back to a refunded deposit: the key controlling the address it returns to. -->
@@ -236,7 +230,7 @@ const messageTone = computed<"muted" | "notice" | "error">(() => {
       <button
         v-if="failure?.recoverable"
         type="button"
-        class="h-12 rounded-full bg-action-primary text-label-l font-semibold text-fg-primary-inverted transition-colors hover:bg-action-primary-hover"
+        class="mt-auto h-12 shrink-0 rounded-full bg-action-primary text-label-l font-semibold text-fg-primary-inverted transition-colors hover:bg-action-primary-hover"
         @click="session.retry()"
       >
         Try again
@@ -244,3 +238,11 @@ const messageTone = computed<"muted" | "notice" | "error">(() => {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* The failed hero circle binds the red-alpha primitive in the design; no semantic
+ * token covers it (reported gap). */
+.journey-hero-failed {
+  background: var(--palette-red-alpha-24);
+}
+</style>

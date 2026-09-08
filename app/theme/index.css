@@ -179,6 +179,14 @@
   letter-spacing: -0.5px;
 }
 
+@utility text-display-m {
+  font-family: var(--font-sans);
+  font-size: var(--scale-font-size-48);
+  line-height: var(--scale-line-height-64);
+  font-weight: var(--tw-font-weight, var(--scale-font-weight-semibold));
+  letter-spacing: -1px;
+}
+
 @utility text-heading-xl {
   font-size: var(--scale-font-size-24);
   line-height: var(--scale-line-height-32);
@@ -203,6 +211,14 @@
   font-weight: var(--tw-font-weight, var(--scale-font-weight-semibold));
 }
 
+/* Paragraph Large: same 16/20 box as label-l but regular weight, for running
+   detail-row text rather than controls. */
+@utility text-paragraph-l {
+  font-size: var(--scale-font-size-16);
+  line-height: var(--scale-line-height-20);
+  font-weight: var(--tw-font-weight, var(--scale-font-weight-regular));
+}
+
 @utility text-label-l {
   font-size: var(--scale-font-size-16);
   line-height: var(--scale-line-height-20);
@@ -219,6 +235,13 @@
   font-size: var(--scale-font-size-12);
   line-height: var(--scale-line-height-18);
   font-weight: var(--tw-font-weight, var(--scale-font-weight-medium));
+}
+
+/* Label Small Emphasized: the stepper's 10px step labels. */
+@utility text-label-xs {
+  font-size: var(--scale-font-size-10);
+  line-height: var(--scale-line-height-14);
+  font-weight: var(--tw-font-weight, var(--scale-font-weight-semibold));
 }
 
 @utility text-body-l {

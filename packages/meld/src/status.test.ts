@@ -43,7 +43,7 @@ describe("getMeldStatus", () => {
   });
 
   it.each([
-    ["failed", "The payment did not go through.", "deposit-rejected"],
+    ["failed", "Top-up didn't go through. No money was taken.", "deposit-rejected"],
     ["expired", "The payment window closed before the payment arrived.", "expired"],
     ["refused", "The payment was declined before it started.", "deposit-rejected"],
     [
