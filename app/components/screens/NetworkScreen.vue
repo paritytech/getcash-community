@@ -48,7 +48,7 @@ function pick(network: NetworkRow) {
 
 <template>
   <div class="flex min-h-0 flex-1 flex-col">
-    <h1 class="text-headline font-semibold">Select network</h1>
+    <h1 class="text-display-l text-fg-primary">Select network</h1>
 
     <ul v-if="state === 'list'" class="mt-6 flex flex-col gap-6">
       <OptionRow
@@ -64,20 +64,20 @@ function pick(network: NetworkRow) {
     <div v-else class="mt-6 flex flex-col gap-4">
       <!-- "Paused" covers every way the swap network can fail to answer. -->
       <template v-if="state === 'paused'">
-        <p class="text-sm leading-5 text-text-secondary">
+        <p class="text-body-m text-fg-secondary">
           Crypto top-ups aren't available right now: the swap network isn't answering. It is usually
           back within the hour.
         </p>
         <button
           type="button"
-          class="self-start rounded-full bg-chip px-4 py-2.5 text-sm font-semibold"
+          class="self-start rounded-medium bg-action-secondary px-4 py-2.5 text-label-m text-fg-primary transition-colors hover:bg-action-secondary-hover"
           @click="offers.relearn()"
         >
           Try again
         </button>
       </template>
       <template v-else>
-        <p class="text-sm leading-5 text-text-secondary">
+        <p class="text-body-m text-fg-secondary">
           No network can do a top-up of {{ session.amountHuman }} CASH.
           <template v-if="smallestCash">
             The smallest crypto top-up right now is about {{ smallestCash }} CASH.
@@ -85,7 +85,7 @@ function pick(network: NetworkRow) {
         </p>
         <button
           type="button"
-          class="self-start rounded-full bg-chip px-4 py-2.5 text-sm font-semibold"
+          class="self-start rounded-medium bg-action-secondary px-4 py-2.5 text-label-m text-fg-primary transition-colors hover:bg-action-secondary-hover"
           @click="emit('changeAmount')"
         >
           Change amount
