@@ -2,7 +2,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { nodePolyfills } from "vite-plugin-node-polyfills";
 
 export default defineNuxtConfig({
-  // Static SPA; there is no server.
+  // Static SPA for bulletin hosting and host webviews; there is no server anywhere.
   ssr: false,
   compatibilityDate: "2026-08-01",
   app: {
@@ -26,15 +26,19 @@ export default defineNuxtConfig({
     },
   },
   modules: ["@pinia/nuxt"],
-  // Component names come from the file name alone; subdirectories do not namespace.
-  components: [{ path: "~/components", pathPrefix: false }],
+  // Component names come from the FILE name alone; subdirectories organize, they do
+  // not namespace (<AmountScreen>, not <ScreensAmountScreen>). Only .vue files are
+  // components: shadcn's index.ts barrels (components/ui/*/index.ts) are import
+  // surfaces, not components, and would otherwise collide with their .vue siblings.
+  components: [{ path: "~/components", pathPrefix: false, extensions: ["vue"] }],
   css: ["~/assets/css/main.css"],
   // Hash routing survives static hosting and host webviews without server rewrites.
   router: { options: { hashMode: true } },
   typescript: {
     tsConfig: {
       compilerOptions: {
-        // lib/ does not compile with this flag; the packages keep it on in their own tsconfig.
+        // lib/ was authored under the old app's compiler settings, which did not have
+        // this flag; the engine packages keep it on via their own tsconfig.
         noUncheckedIndexedAccess: false,
       },
     },
