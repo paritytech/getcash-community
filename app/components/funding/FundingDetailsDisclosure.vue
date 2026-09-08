@@ -18,16 +18,18 @@ const summary = computed(() =>
 <template>
   <FundingDisclosure title="Details">
     <template #summary>
-      <span v-if="summary" class="funding-details-summary">{{ summary }}</span>
+      <span v-if="summary" class="funding-details-summary text-caption">{{ summary }}</span>
     </template>
 
     <dl class="funding-details-list">
       <div v-for="row in rows" :key="row.key" class="funding-details-row">
-        <dt>
+        <dt class="text-body-m">
           <img v-if="row.icon" :src="row.icon" alt="" />
           <span>{{ row.label }}</span>
         </dt>
-        <dd :class="{ 'funding-details-monospace': row.monospace }">{{ row.value }}</dd>
+        <dd :class="row.monospace ? 'font-mono text-code' : 'text-heading-s'">
+          {{ row.value }}
+        </dd>
       </div>
     </dl>
   </FundingDisclosure>
@@ -39,9 +41,7 @@ const summary = computed(() =>
   width: 100%;
   margin-top: 0.25rem;
   overflow: hidden;
-  color: var(--funding-text-muted, var(--color-text-secondary));
-  font-size: 0.75rem;
-  line-height: 1rem;
+  color: var(--fg-secondary);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -65,9 +65,7 @@ const summary = computed(() =>
   min-width: 0;
   align-items: center;
   gap: 0.5rem;
-  color: var(--funding-text-muted, var(--color-text-secondary));
-  font-size: 0.875rem;
-  line-height: 1.125rem;
+  color: var(--fg-secondary);
 }
 
 .funding-details-row dt img {
@@ -79,17 +77,8 @@ const summary = computed(() =>
 
 .funding-details-row dd {
   min-width: 0;
-  color: var(--funding-text, var(--color-text-primary));
-  font-size: 0.875rem;
-  line-height: 1.25rem;
-  font-weight: 600;
+  color: var(--fg-primary);
   text-align: right;
   overflow-wrap: anywhere;
-}
-
-.funding-details-row .funding-details-monospace {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 0.75rem;
-  font-weight: 400;
 }
 </style>

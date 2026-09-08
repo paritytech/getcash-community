@@ -2,6 +2,7 @@
 // The finish of a top-up: the timeline from a confirmed deposit to CASH in the balance, shared by
 // every package.
 import { computed, onUnmounted, ref } from "vue";
+import { Check, Plus, X } from "lucide-vue-next";
 import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
 import type { RefundKey } from "@getsome/ephemeral";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
@@ -142,33 +143,30 @@ const messageTone = computed<"muted" | "notice" | "error">(() => {
   <div class="flex min-h-0 flex-1 flex-col overflow-y-auto pb-6">
     <div class="flex flex-col items-center text-center">
       <span class="flex size-14 items-center justify-center rounded-full bg-surface-container">
-        <img src="/icons/plus.svg" alt="" class="size-6" />
+        <Plus class="size-6 text-fg-secondary" aria-hidden="true" />
       </span>
-      <p class="mt-4 text-base leading-5 text-text-secondary">{{ heroLabel }}</p>
-      <p
-        class="mt-3 text-[56px] leading-[64px] font-semibold"
-        :class="finished ? 'text-[#5dcaa5]' : 'text-text-primary'"
-      >
+      <p class="mt-4 text-body-l text-fg-secondary">{{ heroLabel }}</p>
+      <p class="mt-3 text-display-xl" :class="finished ? 'text-fg-success' : 'text-fg-primary'">
         {{ amountText }}
       </p>
-      <p class="text-base leading-5 text-text-secondary">To your balance</p>
+      <p class="text-body-l text-fg-secondary">To your balance</p>
       <!-- The package's payment status, e.g. a card confirming or a bank transfer settled. -->
       <span
         v-if="status"
-        class="mt-3 inline-flex items-center gap-2 rounded-full bg-surface-container px-3 py-1.5 text-xs font-medium"
+        class="mt-3 inline-flex items-center gap-2 rounded-full bg-surface-container px-3 py-1.5 text-label-s"
         :class="
           status.tone === 'failed'
-            ? 'text-error'
+            ? 'text-fg-error'
             : status.tone === 'done'
-              ? 'text-[#5dcaa5]'
-              : 'text-text-secondary'
+              ? 'text-fg-success'
+              : 'text-fg-secondary'
         "
       >
-        <img v-if="status.tone === 'done'" src="/icons/check.svg" alt="" class="size-3.5" />
-        <img v-else-if="status.tone === 'failed'" src="/icons/x.svg" alt="" class="size-3.5" />
+        <Check v-if="status.tone === 'done'" class="size-3.5" aria-hidden="true" />
+        <X v-else-if="status.tone === 'failed'" class="size-3.5" aria-hidden="true" />
         <span
           v-else
-          class="size-3 animate-spin rounded-full border-2 border-track border-t-white"
+          class="size-3 animate-spin rounded-full border-2 border-stroke-primary border-t-fg-primary"
           aria-hidden="true"
         />
         {{ status.text }}
@@ -186,26 +184,26 @@ const messageTone = computed<"muted" | "notice" | "error">(() => {
 
       <!-- The way back to a refunded deposit: the key controlling the address it returns to. -->
       <template v-if="refunded">
-        <p class="text-sm leading-5 text-text-secondary">{{ refundStatus }}</p>
+        <p class="text-body-m text-fg-secondary">{{ refundStatus }}</p>
         <div v-if="revealed && notes" class="flex flex-col gap-4">
           <dl class="flex flex-col gap-3">
             <div>
-              <dt class="text-sm text-text-secondary">Address on {{ revealed.chain }}</dt>
-              <dd class="font-mono text-sm break-all">{{ revealed.address }}</dd>
+              <dt class="text-body-m text-fg-secondary">Address on {{ revealed.chain }}</dt>
+              <dd class="font-mono text-body-m break-all">{{ revealed.address }}</dd>
             </div>
             <div>
-              <dt class="text-sm text-text-secondary">{{ notes.secretLabel }}</dt>
+              <dt class="text-body-m text-fg-secondary">{{ notes.secretLabel }}</dt>
               <dd>
                 <button
                   type="button"
-                  class="w-full text-left font-mono text-sm break-all"
+                  class="w-full text-left font-mono text-body-m break-all"
                   :aria-pressed="secretShown"
                   @click="secretShown = !secretShown"
                 >
                   <template v-if="secretShown">{{ revealed.secret }}</template>
                   <template v-else>
                     <span aria-hidden="true">••••••••••••••••••••••••</span>
-                    <span class="ml-2 font-sans text-text-secondary">Tap to show</span>
+                    <span class="ml-2 font-sans text-fg-secondary">Tap to show</span>
                   </template>
                 </button>
               </dd>
@@ -213,22 +211,22 @@ const messageTone = computed<"muted" | "notice" | "error">(() => {
           </dl>
           <button
             type="button"
-            class="self-start rounded-full bg-chip px-4 py-2.5 text-sm font-semibold"
+            class="self-start rounded-medium bg-action-secondary px-4 py-2.5 text-label-m text-fg-primary transition-colors hover:bg-action-secondary-hover"
             @click="copySecret"
           >
             {{ copied ? "Copied" : "Copy key" }}
           </button>
-          <p v-if="notes.gasNote" class="text-sm leading-5 text-text-secondary">
+          <p v-if="notes.gasNote" class="text-body-m text-fg-secondary">
             {{ notes.gasNote }}
           </p>
-          <p class="text-sm leading-5 text-error">
+          <p class="text-body-m text-fg-error">
             Anyone with this key controls the funds. Import it into a wallet and move them.
           </p>
         </div>
         <button
           v-else
           type="button"
-          class="h-12 rounded-full bg-action-primary text-base leading-6 font-semibold text-text-inverted"
+          class="h-12 rounded-full bg-action-primary text-label-l font-semibold text-fg-primary-inverted transition-colors hover:bg-action-primary-hover"
           @click="reveal"
         >
           Get your funds back
@@ -238,7 +236,7 @@ const messageTone = computed<"muted" | "notice" | "error">(() => {
       <button
         v-if="failure?.recoverable"
         type="button"
-        class="h-12 rounded-full bg-action-primary text-base leading-6 font-semibold text-text-inverted"
+        class="h-12 rounded-full bg-action-primary text-label-l font-semibold text-fg-primary-inverted transition-colors hover:bg-action-primary-hover"
         @click="session.retry()"
       >
         Try again

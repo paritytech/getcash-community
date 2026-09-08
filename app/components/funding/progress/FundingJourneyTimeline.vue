@@ -77,7 +77,7 @@ const statusDetail = computed(() => {
         :aria-current="stageState(index) === 'current' ? 'step' : undefined"
       >
         <span class="funding-journey-marker" aria-hidden="true" />
-        <span class="funding-journey-label">{{ stage.label }}</span>
+        <span class="funding-journey-label text-overline">{{ stage.label }}</span>
       </li>
     </ol>
 
@@ -87,14 +87,14 @@ const statusDetail = computed(() => {
       class="funding-journey-status"
       aria-live="polite"
     >
-      <strong>{{ statusTitle }}</strong>
-      <span>{{ statusDetail }}</span>
+      <strong class="text-heading-l text-fg-primary">{{ statusTitle }}</strong>
+      <span class="text-caption text-fg-secondary">{{ statusDetail }}</span>
     </div>
     <!-- hidden, not needed for now -->
     <!--
     <p
       v-if="message"
-      class="funding-journey-message"
+      class="funding-journey-message text-caption"
       :class="`funding-journey-message-${messageTone}`"
     >
       {{ message }}
@@ -105,20 +105,17 @@ const statusDetail = computed(() => {
 
 <style scoped>
 .funding-journey {
-  --mint: #5dcaa5;
-  --mint-dim: #2a5a48;
-  --mint-bg: #132a22;
-  --mint-fg: #9fe1cb;
-  --journey-complete: var(--mint-dim);
-  --journey-current: var(--mint);
-  --journey-halo: var(--mint-bg);
-  --journey-upcoming: var(--color-stroke-secondary);
+  /* State is semantic: completed steps are the success surface, the active step is
+   * the strongest stroke step (the scale's step-indicator colour), failure is the
+   * error surface. The old mint accent had no token — reported as a gap. */
+  --journey-complete: var(--bg-status-success);
+  --journey-current: var(--stroke-tertiary);
+  --journey-upcoming: var(--stroke-secondary);
   width: 100%;
 }
 
 .funding-journey-failed {
-  --journey-current: var(--color-error);
-  --journey-halo: var(--color-error-alpha);
+  --journey-current: var(--bg-status-error);
 }
 
 .funding-journey-steps {
@@ -163,7 +160,7 @@ const statusDetail = computed(() => {
   margin-inline: auto;
   border: 2px solid var(--journey-upcoming);
   border-radius: 9999px;
-  background: var(--color-bg);
+  background: var(--bg-surface-main);
 }
 
 .funding-journey-step-complete .funding-journey-marker {
@@ -172,9 +169,10 @@ const statusDetail = computed(() => {
 }
 
 .funding-journey-step-current .funding-journey-marker {
+  /* Activity is a gentle scale pulse; the old tinted halo was a coloured
+   * box-shadow, which the design system rules out. */
   border-color: var(--journey-current);
   background: var(--journey-current);
-  box-shadow: 0 0 0 0.25rem var(--journey-halo);
   animation: funding-journey-pulse 1.8s ease-in-out infinite;
 }
 
@@ -182,23 +180,20 @@ const statusDetail = computed(() => {
   display: block;
   margin-top: 0.75rem;
   padding-inline: 0.125rem;
-  color: var(--color-text-secondary);
-  font-size: 0.625rem;
-  line-height: 0.8125rem;
+  color: var(--fg-secondary);
   overflow-wrap: anywhere;
 }
 
 .funding-journey-step-complete .funding-journey-label {
-  color: var(--mint-dim);
+  color: var(--fg-success);
 }
 
 .funding-journey-step-current .funding-journey-label {
-  color: var(--color-text-secondary);
-  font-weight: 400;
+  color: var(--fg-secondary);
 }
 
 .funding-journey-failed .funding-journey-step-current .funding-journey-label {
-  color: var(--color-error);
+  color: var(--fg-error);
 }
 
 .funding-journey-status {
@@ -210,38 +205,23 @@ const statusDetail = computed(() => {
   text-align: center;
 }
 
-.funding-journey-status strong {
-  font-size: 1.25rem;
-  line-height: 1.75rem;
-  font-weight: 600;
-}
-
-.funding-journey-status span {
-  color: var(--color-text-secondary);
-  font-size: 0.8125rem;
-  line-height: 1.125rem;
-}
-
 .funding-journey-message {
   margin-top: 0.75rem;
-  color: var(--color-text-secondary);
-  font-size: 0.8125rem;
-  line-height: 1.125rem;
+  color: var(--fg-secondary);
   text-align: center;
 }
 
 .funding-journey-message-notice {
-  color: var(--color-progress);
+  color: var(--fg-secondary);
 }
 
 .funding-journey-message-error {
-  color: var(--color-error);
+  color: var(--fg-error);
 }
 
 @keyframes funding-journey-pulse {
   50% {
-    box-shadow: 0 0 0 0.5rem var(--journey-halo);
-    transform: scale(1.08);
+    transform: scale(1.15);
   }
 }
 

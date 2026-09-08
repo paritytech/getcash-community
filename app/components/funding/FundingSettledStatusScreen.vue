@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { Plus } from "lucide-vue-next";
 import type { FundingStatusDetail } from "../../funding/status";
 import type { FundingTopUp } from "../../funding/top-ups";
 import FundingDetailsDisclosure from "./FundingDetailsDisclosure.vue";
@@ -79,13 +80,11 @@ const details = computed<readonly FundingStatusDetail[]>(() => {
   <div class="min-h-0 flex-1 overflow-y-auto pb-6">
     <div class="flex flex-col items-center text-center">
       <span class="flex size-14 items-center justify-center rounded-full bg-surface-container">
-        <img src="/icons/plus.svg" alt="" class="size-6" />
+        <Plus class="size-6 text-fg-secondary" aria-hidden="true" />
       </span>
-      <p class="mt-4 text-base leading-5 text-text-secondary">Added</p>
-      <p class="mt-3 text-[56px] leading-[64px] font-semibold text-success">
-        +{{ creditedAmount }} CASH
-      </p>
-      <p class="text-base leading-5 text-text-secondary">To your balance</p>
+      <p class="mt-4 text-body-l text-fg-secondary">Added</p>
+      <p class="mt-3 text-display-xl text-fg-success">+{{ creditedAmount }} CASH</p>
+      <p class="text-body-l text-fg-secondary">To your balance</p>
     </div>
 
     <div class="mt-6 flex flex-col gap-3">
