@@ -54,7 +54,10 @@ function nodeDetail(node: FundingProgressNodeView): string | null {
           <span class="text-caption">{{ progress.estimateText }}</span>
         </div>
         <FundingProgressBar :progress="progress" :header="false" />
-        <p v-if="message && messageTone === 'error'" class="funding-progress-message text-caption is-error">
+        <p
+          v-if="message && messageTone === 'error'"
+          class="funding-progress-message text-caption is-error"
+        >
           {{ message }}
         </p>
       </div>
@@ -70,7 +73,12 @@ function nodeDetail(node: FundingProgressNodeView): string | null {
       >
         <span class="funding-progress-step-rail" aria-hidden="true">
           <span class="funding-progress-step-marker">
-            <Check v-if="node.state === 'complete'" class="size-2.5" :stroke-width="4" aria-hidden="true" />
+            <Check
+              v-if="node.state === 'complete'"
+              class="size-2.5"
+              :stroke-width="4"
+              aria-hidden="true"
+            />
           </span>
           <span v-if="index < progress.view.nodes.length - 1" class="funding-progress-step-line" />
         </span>
@@ -166,7 +174,7 @@ function nodeDetail(node: FundingProgressNodeView): string | null {
 }
 
 .funding-progress-step-current .funding-progress-step-marker {
-/* Activity is a gentle scale pulse; the old tinted halo was a coloured
+  /* Activity is a gentle scale pulse; the old tinted halo was a coloured
    * box-shadow, which the design system rules out. */
   animation: funding-progress-pulse 1.8s ease-in-out infinite;
 }

@@ -57,31 +57,6 @@ resolveTheme(); // what is actually rendering right now
 control back to the OS. Lisbon, Malta and Tokyo are light-only — never offer them as
 a dark counterpart.
 
-**Project note (getcash):** the source of truth for ALL tokens is the "▲ Design
-Tokens" library as bound in the product Figma file (decision 2026-09-08) — the
-stock bundle yields wherever they disagree. Divergences reconciled so far:
-
-- Typography re-cut to the Figma `Typescale/*` collection: `display-xl` =
-  Display Large (Inter 56/80, −1px), `display-l` = Headline Large (Manrope
-  32/40, −0.5px), `heading-xl` = Headline Small (24/32, added), `heading-l` =
-  Title Large (18/24), `heading-m` = Title Medium (16/24), `heading-s` = Title
-  Small (14/20), `body-m` = Body Medium (14/20), `body-s` = Body Small (12/16),
-  `caption` = Caption (12/18). The `label-*`, `body-l`, `code` and `overline`
-  stops are not yet reconciled — specs live upstream in
-  paritytech/polkadot-app-design-system `source/Typography/`.
-- berlin-night `--stroke-primary` moved to zinc-850 (#23252A): the library
-  distinguishes stroke/primary (zinc-850) from stroke/secondary (zinc-700); the
-  stock bundle flattened both to zinc-700.
-
-The bundle generator (paritytech/polkadot-app-design-system) emits the colors
-but not the type ramp — until it grows a web/Tailwind typography emitter, a
-bundle re-cut reverts these edits; re-apply from this note.
-
-**Project note (getcash):** the product default is **Berlin Night** per the
-"Funding — states and logic" spec. Nothing stored means `data-theme="berlin-night"`
-(applied by the anti-flash script in `nuxt.config.ts` and by `getTheme()`);
-`system` is an explicit opt-in stored as its own value.
-
 Three more exports, none needed for the common case:
 
 - `initTheme()` — the fallback for the flash below, when you cannot edit the HTML.

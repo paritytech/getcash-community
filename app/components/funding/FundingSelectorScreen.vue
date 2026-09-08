@@ -169,7 +169,7 @@ watch(hasPendingContent, (hasContent) => {
   right: 0;
   left: 0;
   width: 100%;
-  max-width: 28rem;
+  max-width: 24.125rem; /* 386px — the design frame's width (the sheet inside the 402 phone) */
   height: var(--vvh, 100dvh);
   margin: 0 auto;
   overflow: hidden;

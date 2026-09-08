@@ -51,7 +51,9 @@ onUnmounted(() => window.removeEventListener("message", onMessage));
       v-else-if="session.meldSubmitted"
       class="flex min-h-0 w-full flex-1 items-center justify-center"
     >
-      <span class="size-8 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary" />
+      <span
+        class="size-8 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary"
+      />
     </div>
     <!-- `*`, not the bare feature name. Bare `payment` means `payment 'src'`, which delegates
          only to this iframe's origin. Meld's widget nests the chosen provider's page in a

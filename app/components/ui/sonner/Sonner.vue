@@ -3,13 +3,13 @@
 // the registry's @radix-icons/vue imports are swapped for lucide-vue-next
 // (the design system allows exactly one icon set), and vue-sonner v2's
 // required stylesheet is imported here so the component is self-contained.
-import type { ToasterProps } from "vue-sonner"
-import { CircleCheck, Info, LoaderCircle, CircleX, TriangleAlert, X } from "lucide-vue-next"
-import { Toaster as Sonner } from "vue-sonner"
-import { cn } from '@/lib/cn'
-import "vue-sonner/style.css"
+import type { ToasterProps } from "vue-sonner";
+import { CircleCheck, Info, LoaderCircle, CircleX, TriangleAlert, X } from "lucide-vue-next";
+import { Toaster as Sonner } from "vue-sonner";
+import { cn } from "@/lib/cn";
+import "vue-sonner/style.css";
 
-const props = defineProps<ToasterProps>()
+const props = defineProps<ToasterProps>();
 </script>
 
 <template>

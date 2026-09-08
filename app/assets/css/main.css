@@ -1,7 +1,7 @@
 /* Polkadot design system: tokens, themes, base layer, type styles. */
 @import "../../theme/index.css";
 
-/* Self-hosted fonts (bulletin apps make no external requests; served from public/fonts).
+/* Self-hosted fonts, served from public/fonts.
  * Inter: SIL OFL 1.1 (https://github.com/rsms/inter).
  * Manrope: SIL OFL 1.1 (https://github.com/sharanda/manrope).
  * Martian Mono: SIL OFL 1.1 (https://github.com/evilmartians/mono). */
@@ -71,12 +71,8 @@
 
 html,
 body {
-  /* The app NEVER scrolls (hard requirement) and the shell is a fixed element sized to the
-   * visual viewport — so the DOCUMENT scroller has no job. Left enabled, iOS drags and
-   * rubber-bands it anyway (the whole app slides under one finger) and the shell has to
-   * chase the offset via --vvt. Kill the scroller instead of chasing it; the keyboard
-   * still works through the visual-viewport variables, and inner lists (open requests)
-   * keep their own scrolling — overscroll-behavior only stops it escaping to the page. */
+  /* The document never scrolls. The shell is a fixed element sized to the visual viewport and
+   * inner lists scroll on their own. */
   height: 100%;
   overflow: hidden;
   overscroll-behavior: none;

@@ -296,7 +296,7 @@ onMounted(async () => {
   left: 0;
   display: flex;
   width: 100%;
-  max-width: 28rem;
+  max-width: 24.125rem; /* 386px — the design frame's width (the sheet inside the 402 phone) */
   height: var(--vvh, 100dvh);
   margin: 0 auto;
   flex-direction: column;

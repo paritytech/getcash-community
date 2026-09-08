@@ -180,9 +180,11 @@ async function next() {
           class="flex items-baseline justify-between gap-4"
         >
           <span class="text-body-m text-fg-secondary">{{ row.label }}</span>
-          <span class="text-body-l text-fg-primary" :class="{ 'font-semibold': row.label === 'You receive' }">{{
-            row.value
-          }}</span>
+          <span
+            class="text-body-l text-fg-primary"
+            :class="{ 'font-semibold': row.label === 'You receive' }"
+            >{{ row.value }}</span
+          >
         </div>
       </div>
     </div>

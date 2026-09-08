@@ -41,7 +41,9 @@ const emit = defineEmits<{ open: [topUp: ProgressCardTopUp] }>();
   >
     <FundingProgressRing :progress="topUp.progress" />
     <span class="funding-top-up-copy">
-      <strong class="text-heading-s">{{ topUp.amount }} {{ asset }} by {{ topUp.routeLabel }}</strong>
+      <strong class="text-heading-s"
+        >{{ topUp.amount }} {{ asset }} by {{ topUp.routeLabel }}</strong
+      >
       <span class="funding-top-up-status text-caption">{{ opening ? "Opening…" : status }}</span>
       <span class="funding-top-up-detail text-caption">{{ detail }}</span>
     </span>

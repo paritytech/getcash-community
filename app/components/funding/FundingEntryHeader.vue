@@ -48,7 +48,7 @@ const emit = defineEmits<{
       aria-label="History"
       @click="emit('history')"
     >
-      <History class="size-6" aria-hidden="true" />
+      <History class="size-7" aria-hidden="true" />
     </button>
     <span v-else-if="back" aria-hidden="true" />
   </header>
@@ -62,7 +62,7 @@ const emit = defineEmits<{
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  padding: 0 1.125rem;
+  padding: 0 1.5rem;
 }
 
 .funding-entry-header-back {

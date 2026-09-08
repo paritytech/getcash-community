@@ -2,7 +2,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { nodePolyfills } from "vite-plugin-node-polyfills";
 
 export default defineNuxtConfig({
-  // Static SPA for bulletin hosting and host webviews; there is no server anywhere.
+  // Static SPA; there is no server.
   ssr: false,
   compatibilityDate: "2026-08-01",
   app: {

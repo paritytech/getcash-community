@@ -159,7 +159,7 @@
     --bg-illustration-light: var(--palette-zinc-900);
     --bg-illustration-light-muted: var(--palette-zinc-600);
 
-    --stroke-primary: var(--palette-zinc-850);
+    --stroke-primary: var(--palette-zinc-700);
     --stroke-secondary: var(--palette-zinc-700);
     --stroke-tertiary: var(--palette-zinc-400);
     --stroke-primary-inverted: var(--palette-zinc-150);
@@ -352,7 +352,7 @@
   --bg-illustration-light: var(--palette-zinc-900);
   --bg-illustration-light-muted: var(--palette-zinc-600);
 
-  --stroke-primary: var(--palette-zinc-850);
+  --stroke-primary: var(--palette-zinc-700);
   --stroke-secondary: var(--palette-zinc-700);
   --stroke-tertiary: var(--palette-zinc-400);
   --stroke-primary-inverted: var(--palette-zinc-150);
