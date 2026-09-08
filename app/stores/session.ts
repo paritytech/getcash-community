@@ -82,6 +82,8 @@ interface ActiveFlowRecord {
   asset: string;
   sourceAmount?: string;
   sourceSymbol?: string;
+  /** The provider's quoted fee (Meld), in `sourceSymbol` units. */
+  sourceFee?: string;
   startedAt: number;
   depositAddress?: string;
   progress?: FundingProgressSnapshot;
@@ -1449,7 +1451,11 @@ export const useSessionStore = defineStore("session", () => {
       // What the buyer pays: the fiat quote for a Meld request, the source-coin figure otherwise.
       const sourceDisplay = isMeldSourceId(world.sourceId)
         ? quoted.value
-          ? { sourceAmount: quoted.value.send, sourceSymbol: quoted.value.symbol }
+          ? {
+              sourceAmount: quoted.value.send,
+              sourceSymbol: quoted.value.symbol,
+              ...(quoted.value.fee != null ? { sourceFee: quoted.value.fee } : {}),
+            }
           : null
         : sourceDisplayForRecord();
       // The deposit window's deadline; the list and the reconcile judge expiry from the record.
@@ -1871,6 +1877,7 @@ export const useSessionStore = defineStore("session", () => {
       quoted.value = {
         send: record.sourceAmount ?? "",
         symbol: record.sourceSymbol ?? record.asset,
+        fee: record.sourceFee ?? null,
         nativeAmount: null,
         sourceAsset: record.asset,
         sourceChain: record.chain,
