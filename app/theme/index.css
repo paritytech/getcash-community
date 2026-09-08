@@ -1,0 +1,241 @@
+/* GENERATED from the design source by polkadot-design-tokens.
+   Do not edit by hand — the next palette re-cut overwrites this file. */
+
+@import "tailwindcss";
+@import "./primitives.css";
+@import "./themes.css";
+@import "./base.css";
+@import "./shadcn.css";
+
+/* Keep `dark:` meaningful under the data-theme model: it tracks the one
+   dark theme, whether chosen explicitly or inherited from the OS. */
+@custom-variant dark {
+  @media (prefers-color-scheme: dark) {
+    &:where(:root:not([data-theme]), :root:not([data-theme]) *) { @slot; }
+  }
+  &:where([data-theme="berlin-night"], [data-theme="berlin-night"] *) { @slot; }
+}
+
+/* `inline` is required: without it Tailwind resolves these at build time
+   and runtime theme switching silently stops working. */
+@theme inline {
+  /* The --color-* / --radius-* / --shadow-* / --tracking-* reset lives in
+     shadcn.css, which is imported first. It has to precede every alias in both
+     files, and @import cannot follow a rule. */
+
+  --color-fg-primary: var(--fg-primary);
+  --color-fg-secondary: var(--fg-secondary);
+  --color-fg-secondary-hover: var(--fg-secondary-hover);
+  --color-fg-tertiary: var(--fg-tertiary);
+  --color-fg-disabled: var(--fg-disabled);
+  --color-fg-link: var(--fg-link);
+  --color-fg-link-hover: var(--fg-link-hover);
+  --color-fg-error: var(--fg-error);
+  --color-fg-warning: var(--fg-warning);
+  --color-fg-success: var(--fg-success);
+  --color-fg-static-white: var(--fg-static-white);
+  --color-fg-primary-inverted: var(--fg-primary-inverted);
+  --color-fg-secondary-inverted: var(--fg-secondary-inverted);
+  --color-fg-secondary-inverted-hover: var(--fg-secondary-inverted-hover);
+  --color-fg-tertiary-inverted: var(--fg-tertiary-inverted);
+
+  --color-accent-blue: var(--bg-accent);
+  --color-surface-main: var(--bg-surface-main);
+  --color-surface-container: var(--bg-surface-container);
+  --color-surface-nested: var(--bg-surface-nested);
+  --color-surface-container-inverted: var(--bg-surface-container-inverted);
+  --color-surface-nested-inverted: var(--bg-surface-nested-inverted);
+  --color-surface-overlay: var(--bg-surface-overlay);
+  --color-action-primary: var(--bg-action-primary);
+  --color-action-secondary: var(--bg-action-secondary);
+  --color-action-tertiary: var(--bg-action-tertiary);
+  --color-action-primary-hover: var(--bg-action-primary-hover);
+  --color-action-secondary-hover: var(--bg-action-secondary-hover);
+  --color-action-tertiary-hover: var(--bg-action-tertiary-hover);
+  --color-action-active: var(--bg-action-active);
+  --color-action-disabled: var(--bg-action-disabled);
+  --color-action-error: var(--bg-action-error);
+  --color-action-primary-inverted: var(--bg-action-primary-inverted);
+  --color-action-secondary-inverted: var(--bg-action-secondary-inverted);
+  --color-action-tertiary-inverted: var(--bg-action-tertiary-inverted);
+  --color-action-primary-inverted-hover: var(--bg-action-primary-inverted-hover);
+  --color-action-secondary-inverted-hover: var(--bg-action-secondary-inverted-hover);
+  --color-action-tertiary-inverted-hover: var(--bg-action-tertiary-inverted-hover);
+  --color-selection-container-hover: var(--bg-selection-container-hover);
+  --color-selection-container-active: var(--bg-selection-container-active);
+  --color-selection-container-hover-inverted: var(--bg-selection-container-hover-inverted);
+  --color-selection-container-active-inverted: var(--bg-selection-container-active-inverted);
+  --color-status-success: var(--bg-status-success);
+  --color-status-success-hover: var(--bg-status-success-hover);
+  --color-status-warning: var(--bg-status-warning);
+  --color-status-warning-hover: var(--bg-status-warning-hover);
+  --color-status-error: var(--bg-status-error);
+  --color-status-error-hover: var(--bg-status-error-hover);
+  --color-illustration-dark: var(--bg-illustration-dark);
+  --color-illustration-dark-muted: var(--bg-illustration-dark-muted);
+  --color-illustration-light: var(--bg-illustration-light);
+  --color-illustration-light-muted: var(--bg-illustration-light-muted);
+
+  --color-stroke-primary: var(--stroke-primary);
+  --color-stroke-secondary: var(--stroke-secondary);
+  --color-stroke-tertiary: var(--stroke-tertiary);
+  --color-stroke-primary-inverted: var(--stroke-primary-inverted);
+  --color-stroke-error: var(--stroke-error);
+  --color-stroke-warning: var(--stroke-warning);
+  --color-stroke-success: var(--stroke-success);
+  --color-stroke-cutout: var(--stroke-cutout);
+
+  --color-focus-ring: var(--focus-ring);
+  --color-focus-error: var(--focus-error);
+
+  --color-avatar-fg-amethyst: var(--avatar-fg-amethyst);
+  --color-avatar-fg-opal: var(--avatar-fg-opal);
+  --color-avatar-fg-turquoise: var(--avatar-fg-turquoise);
+  --color-avatar-fg-onyx: var(--avatar-fg-onyx);
+  --color-avatar-fg-pearl: var(--avatar-fg-pearl);
+  --color-avatar-fg-emerald: var(--avatar-fg-emerald);
+  --color-avatar-fg-topaz: var(--avatar-fg-topaz);
+  --color-avatar-fg-ruby: var(--avatar-fg-ruby);
+  --color-avatar-fg-sapphire: var(--avatar-fg-sapphire);
+  --color-avatar-fg-garnet: var(--avatar-fg-garnet);
+  --color-avatar-bg-amethyst: var(--avatar-bg-amethyst);
+  --color-avatar-bg-opal: var(--avatar-bg-opal);
+  --color-avatar-bg-turquoise: var(--avatar-bg-turquoise);
+  --color-avatar-bg-onyx: var(--avatar-bg-onyx);
+  --color-avatar-bg-pearl: var(--avatar-bg-pearl);
+  --color-avatar-bg-emerald: var(--avatar-bg-emerald);
+  --color-avatar-bg-topaz: var(--avatar-bg-topaz);
+  --color-avatar-bg-ruby: var(--avatar-bg-ruby);
+  --color-avatar-bg-sapphire: var(--avatar-bg-sapphire);
+  --color-avatar-bg-garnet: var(--avatar-bg-garnet);
+
+  --radius-container: var(--scale-radius-medium-increased);  /* 16px — containers, cards, modals, panels */
+  --radius-nested: var(--scale-radius-extra-medium);  /* 12px — nested elements, inputs */
+  --radius-medium: var(--scale-radius-small-increased);  /* 10px — the default button shape */
+  --radius-small: var(--scale-radius-small);  /* 8px — deeply nested elements, small cards, tab tops */
+  --radius-full: var(--scale-radius-full);  /* pills, badges, avatars */
+
+  --shadow-1: 0 4px 24px -4px var(--shadow-soft);  /* cards, panels, sidebars */
+  --shadow-2: 0 8px 32px -4px var(--shadow-medium);  /* dropdowns, popovers */
+  --shadow-3: 0 12px 48px -8px var(--shadow-medium);  /* hover / focus lift */
+
+  --font-sans: var(--scale-font-family-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-accent: var(--scale-font-family-accent), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--scale-font-family-mono), ui-monospace, SFMono-Regular, monospace;
+
+  --font-weight-black: var(--scale-font-weight-black);
+  --font-weight-bold: var(--scale-font-weight-bold);
+  --font-weight-extrabold: var(--scale-font-weight-extrabold);
+  --font-weight-extralight: var(--scale-font-weight-extralight);
+  --font-weight-light: var(--scale-font-weight-light);
+  --font-weight-medium: var(--scale-font-weight-medium);
+  --font-weight-regular: var(--scale-font-weight-regular);
+  --font-weight-semibold: var(--scale-font-weight-semibold);
+  --font-weight-thin: var(--scale-font-weight-thin);
+
+  /* Type is named, not assembled — but the build can no longer be what
+     enforces it. Stock shadcn components are full of `text-sm` and
+     `leading-none`, so --text-* and --leading-* have to survive for them to
+     compile. The line is now a convention with a lint behind it: inside
+     components/ui/ the stock scale is correct; everywhere else the @utility
+     styles below are the only sanctioned way to set type, and check:tokens
+     fails the build on a stock step in app code.
+
+     --tracking-* has no shadcn consumer and stays deleted, in shadcn.css.
+
+     The old leading-<number> trap is unchanged and still needs the lint rule:
+     it falls back onto the spacing scale, so leading-20 means 80px, not 20px. */
+}
+
+/* Named typography styles. `text-<style>` carries size, line-height and
+   weight together; `font-medium` and friends still override the weight, and
+   `font-mono` / `font-accent` still set the face. There is no text-14 and no
+   leading-20 to assemble one by hand from.
+
+   A style with no line-height inherits it, which is what an inline `code`
+   inside a paragraph wants. */
+
+@utility text-display-xl {
+  font-family: var(--font-accent);
+  font-size: var(--scale-font-size-56);
+  line-height: 1;
+  font-weight: var(--tw-font-weight, var(--scale-font-weight-semibold));
+}
+
+@utility text-display-l {
+  font-family: var(--font-accent);
+  font-size: var(--scale-font-size-32);
+  line-height: var(--scale-line-height-40);
+  font-weight: var(--tw-font-weight, var(--scale-font-weight-semibold));
+}
+
+@utility text-heading-l {
+  font-size: var(--scale-font-size-20);
+  line-height: var(--scale-line-height-24);
+  font-weight: var(--tw-font-weight, var(--scale-font-weight-semibold));
+}
+
+@utility text-heading-m {
+  font-size: var(--scale-font-size-16);
+  line-height: var(--scale-line-height-20);
+  font-weight: var(--tw-font-weight, var(--scale-font-weight-semibold));
+}
+
+@utility text-heading-s {
+  font-size: var(--scale-font-size-14);
+  line-height: var(--scale-line-height-20);
+  font-weight: var(--tw-font-weight, var(--scale-font-weight-semibold));
+}
+
+@utility text-label-l {
+  font-size: var(--scale-font-size-16);
+  line-height: var(--scale-line-height-20);
+  font-weight: var(--tw-font-weight, var(--scale-font-weight-medium));
+}
+
+@utility text-label-m {
+  font-size: var(--scale-font-size-14);
+  line-height: var(--scale-line-height-20);
+  font-weight: var(--tw-font-weight, var(--scale-font-weight-medium));
+}
+
+@utility text-label-s {
+  font-size: var(--scale-font-size-12);
+  line-height: var(--scale-line-height-18);
+  font-weight: var(--tw-font-weight, var(--scale-font-weight-medium));
+}
+
+@utility text-body-l {
+  font-size: var(--scale-font-size-16);
+  line-height: var(--scale-line-height-24);
+  font-weight: var(--tw-font-weight, var(--scale-font-weight-regular));
+}
+
+@utility text-body-m {
+  font-size: var(--scale-font-size-14);
+  line-height: var(--scale-line-height-24);
+  font-weight: var(--tw-font-weight, var(--scale-font-weight-regular));
+}
+
+@utility text-body-s {
+  font-size: var(--scale-font-size-12);
+  line-height: var(--scale-line-height-20);
+  font-weight: var(--tw-font-weight, var(--scale-font-weight-regular));
+}
+
+@utility text-caption {
+  font-size: var(--scale-font-size-12);
+  line-height: var(--scale-line-height-18);
+  font-weight: var(--tw-font-weight, var(--scale-font-weight-regular));
+}
+
+@utility text-code {
+  font-size: var(--scale-font-size-12);
+  font-weight: var(--tw-font-weight, var(--scale-font-weight-regular));
+}
+
+@utility text-overline {
+  font-size: var(--scale-font-size-10);
+  line-height: var(--scale-line-height-14);
+  font-weight: var(--tw-font-weight, var(--scale-font-weight-regular));
+}

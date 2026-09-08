@@ -11,6 +11,18 @@ export default defineNuxtConfig({
       meta: [
         { name: "viewport", content: "width=device-width, initial-scale=1, viewport-fit=cover" },
       ],
+      script: [
+        {
+          // Theme anti-flash: set data-theme before the first paint so a stored
+          // choice never flashes the default theme. Must precede every stylesheet;
+          // initTheme() is the fallback for documents we can't edit — never both.
+          // Berlin Night is the product default (Funding — states and logic doc);
+          // "system" is an explicit opt-in, not the fallback.
+          innerHTML:
+            "try{var t=localStorage.getItem('pds-theme');if(t!=='system')document.documentElement.setAttribute('data-theme',t||'berlin-night')}catch(e){document.documentElement.setAttribute('data-theme','berlin-night')}",
+          tagPriority: "critical",
+        },
+      ],
     },
   },
   modules: ["@pinia/nuxt"],
