@@ -1,0 +1,62 @@
+name: PR Preview
+
+# Every PR gets its own on-chain preview at `pr<N>-getcash.paseo`. The PR number is a prefix:
+# bulletin-deploy strips trailing digits from a label. The first push registers the name, paid
+# by the MNEMONIC account; names are never released. Keep that account funded.
+
+on: pull_request
+
+permissions:
+  contents: read
+
+# A re-push cancels the previous preview run; a cancelled registration resumes on the next run.
+concurrency:
+  group: pr-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build + gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/build-site
+        with:
+          faucet-seed: ${{ secrets.VITE_FAUCET_SEED }}
+          meld-base-url: ${{ secrets.VITE_MELD_BASE_URL }}
+          # Fork and Dependabot PRs cannot read repo secrets and skip the deploy job; an
+          # empty URL does not fail their build.
+          require-meld-base-url: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]' }}
+
+  deploy:
+    needs: build
+    name: Preview
+    runs-on: ubuntu-latest
+    # Fork and Dependabot PRs cannot read repo secrets; the deploy is skipped for them.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository
+      && github.actor != 'dependabot[bot]'
+    permissions:
+      contents: read
+      pull-requests: write # the sticky comment below posts the preview URL
+    steps:
+      # The manifest and worker record come from bulletin-deploy.config.ts, which the CLI
+      # finds by walking up from the build directory.
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/deploy-site
+        with:
+          # Full name, with the environment's TLD: the config's domain must equal it.
+          domain: pr${{ github.event.pull_request.number }}-getcash.paseo
+          # Owner of the getcash name and the signer that registers each pr<N>- name.
+          mnemonic: ${{ secrets.MNEMONIC }}
+
+      - name: Comment the preview URL on the PR
+        uses: marocchino/sticky-pull-request-comment@v3
+        with:
+          header: bulletin-deploy
+          message: |
+            **pr${{ github.event.pull_request.number }}-getcash.paseo** · [logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+            https://pr${{ github.event.pull_request.number }}-getcash.paseo.li

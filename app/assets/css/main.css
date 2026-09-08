@@ -1,0 +1,90 @@
+@import "tailwindcss";
+
+/* Self-hosted Inter, served from public/fonts. License: SIL OFL 1.1. */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/fonts/inter-v20-latin-ext.woff2") format("woff2");
+  unicode-range:
+    U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329,
+    U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F,
+    U+A720-A7FF;
+}
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/fonts/inter-v20-latin.woff2") format("woff2");
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* Design tokens: surface, foreground and action colors plus the typescale. Dark-only. */
+@theme {
+  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
+
+  --color-bg: #080808; /* bg/surface/main */
+  --color-surface-nested: #1f1f1f; /* bg/surface/nested: quick-amount chips */
+  --color-surface-container: #1a1b20; /* bg/surface/container: the journey's plate and tabs */
+  --color-stroke-secondary: #525252; /* stroke/secondary */
+  --color-action-primary: #e0e0e0; /* bg/action/primary: the CTA */
+  --color-action-secondary: #262626; /* bg/action/secondary: list avatars, icon plates */
+  --color-card: rgba(255, 255, 255, 0.08); /* white8: cards */
+  --color-chip: rgba(255, 255, 255, 0.12); /* fill12: toolbar glass buttons, chips */
+  --color-fill-disabled: rgba(255, 255, 255, 0.06); /* fill6 */
+  --color-text-primary: #ececec; /* fg/primary */
+  --color-text-inverted: #080808; /* fg/primary-inverted: text on the CTA */
+  --color-text-secondary: #999999; /* fg/secondary */
+  --color-text-tertiary: rgba(255, 255, 255, 0.48);
+  --color-text-disabled: rgba(255, 255, 255, 0.27);
+  --color-success: #22c55e; /* fg/success */
+  --color-success-bg: rgba(34, 197, 94, 0.08);
+  --color-error: #ff3123;
+  --color-error-alpha: rgba(217, 54, 62, 0.24); /* color/alpha/red/redalpha24: failed avatar */
+  --color-progress: #f272b6; /* deposit in-progress pink */
+  --color-progress-bg: rgba(242, 114, 182, 0.08);
+  --color-track: rgba(255, 255, 255, 0.06);
+
+  /* Typescale: headline-large 32/40 -0.5; display-extralarge 64/80 -1;
+   * display-small 36/48 -0.5; title 18/22. Body sizes are Tailwind's own (16/24, 14/20). */
+  --text-headline: 2rem;
+  --text-headline--line-height: 2.5rem;
+  --text-headline--letter-spacing: -0.5px;
+  --text-display: 4rem;
+  --text-display--line-height: 5rem;
+  --text-display--letter-spacing: -1px;
+  --text-display-sm: 2.25rem;
+  --text-display-sm--line-height: 3rem;
+  --text-display-sm--letter-spacing: -0.5px;
+  --text-row: 1.125rem;
+  --text-row--line-height: 1.375rem;
+}
+
+html,
+body {
+  /* The document never scrolls. The shell is a fixed element sized to the visual viewport and
+   * inner lists scroll on their own. */
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  /* Grayscale antialiasing, matching the design's rasterization. */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Rotation used by the progress arc. */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "@getsome/revive",
+  "version": "0.0.0",
+  "private": true,
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./papi": {
+      "types": "./src/papi.ts",
+      "default": "./src/papi.ts"
+    }
+  },
+  "dependencies": {
+    "@getsome/core": "workspace:*",
+    "@polkadot-api/descriptors": "file:../../.papi/descriptors",
+    "polkadot-api": "2.2.2"
+  }
+}

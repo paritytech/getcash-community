@@ -1,0 +1,25 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="Web">
+<g id="Credit &#38; Debit Card">
+<g id="Group 28989689">
+<path id="Rectangle 37022" d="M0 16C0 7.16344 7.16344 0 16 0H48C56.8366 0 64 7.16344 64 16V48C64 56.8366 56.8366 64 48 64H16C7.16344 64 0 56.8366 0 48V16Z" fill="#262626"/>
+<circle id="Ellipse 8855" cx="32" cy="32" r="20" fill="url(#paint0_linear_2344_19881)"/>
+<g id="Ellipse 8854" filter="url(#filter1_f_2344_19881)">
+<circle cx="32" cy="32" r="10" fill="white"/>
+</g>
+<path id="Union" d="M32 21C33.1046 21 34 21.8954 34 23V30H41C42.1046 30 43 30.8954 43 32C43 33.1046 42.1046 34 41 34H34V41C34 42.1046 33.1046 43 32 43C30.8954 43 30 42.1046 30 41V34H23C21.8954 34 21 33.1046 21 32C21 30.8954 21.8954 30 23 30H30V23C30 21.8954 30.8954 21 32 21Z" fill="black" fill-opacity="0.6"/>
+</g>
+</g>
+</g>
+<defs>
+<filter id="filter1_f_2344_19881" x="7.2" y="7.2" width="49.6" height="49.6" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+<feFlood flood-opacity="0" result="BackgroundImageFix"/>
+<feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
+<feGaussianBlur stdDeviation="7.4" result="effect1_foregroundBlur_2344_19881"/>
+</filter>
+<linearGradient id="paint0_linear_2344_19881" x1="16" y1="19.5" x2="46.5" y2="53.5" gradientUnits="userSpaceOnUse">
+<stop stop-color="white"/>
+<stop offset="1" stop-color="#333535"/>
+</linearGradient>
+</defs>
+</svg>

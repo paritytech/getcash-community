@@ -1,0 +1,49 @@
+name: Deploy site
+description: >-
+  Publish the built site and its product manifest to bulletin/DotNS. Runs bulletin-deploy
+  against .output/public from a repo checkout, reads bulletin-deploy.config.ts, and writes
+  the manifest and the app/worker records alongside the content.
+
+inputs:
+  domain:
+    description: Full DotNS name to deploy to, with TLD (e.g. pr21-getcash.paseo).
+    required: true
+  mnemonic:
+    description: Owner of the name and signer of every record written.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # An empty mnemonic is not an error to the CLI: it signs with the public dev phrase.
+    - shell: bash
+      env:
+        MNEMONIC: ${{ inputs.mnemonic }}
+      run: test -n "$MNEMONIC" || { echo "::error::mnemonic input is empty"; exit 1; }
+
+    - uses: actions/download-artifact@v8
+      with:
+        name: site
+        path: .output/public
+
+    - uses: actions/setup-node@v6
+      with:
+        node-version: "22"
+
+    - shell: bash
+      run: npm install -g bulletin-deploy@0.16.1
+
+    # The release-retry wrapper exits 75 on flake-class failures only (a nonce race, a dropped
+    # connection); only those retry.
+    - uses: nick-fields/retry@v4
+      env:
+        MNEMONIC: ${{ inputs.mnemonic }}
+        DEPLOY_DOMAIN: ${{ inputs.domain }} # read by bulletin-deploy.config.ts
+      with:
+        timeout_minutes: 30
+        max_attempts: 3
+        retry_wait_seconds: 30
+        retry_on_exit_code: 75
+        command: >-
+          node "$(npm root -g)/bulletin-deploy/tools/release-retry-wrapper.mjs"
+          bulletin-deploy --env paseo-next-v2 --js-merkle .output/public "$DEPLOY_DOMAIN"

@@ -1,0 +1,18 @@
+{
+  "version": 0,
+  "descriptorPath": ".papi/descriptors",
+  "entries": {
+    "paseo_next_v2": {
+      "wsUrl": "wss://paseo-asset-hub-next-rpc.polkadot.io",
+      "metadata": ".papi/metadata/paseo_next_v2.scale",
+      "genesis": "0x4349b00e54897e21196fd331015fc5be0f14e118beb0375ed2bb1793737bb57a",
+      "codeHash": "0x9b7360a95d661d66458b13683bc6778d6cd0efd3ed780412eebcb7d9340e18b3"
+    },
+    "paseo_people_next": {
+      "wsUrl": "wss://paseo-people-next-system-rpc.polkadot.io",
+      "metadata": ".papi/metadata/paseo_people_next.scale",
+      "genesis": "0x4a2b5b737de1da59e209b0000a876ec2fa20035dc34fd292a848da32d255ad48",
+      "codeHash": "0x97d5e78153b239f6f4ac762f4d4e1d3c56c1c2ae19484ecfa395f0d817ded696"
+    }
+  }
+}

@@ -1,0 +1,46 @@
+name: Deploy
+
+# Merge to main publishes straight to `getcash` on paseo-next-v2; the gates in
+# .github/actions/build-site are the only check. workflow_dispatch redeploys main by hand.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Deploys write on-chain records. They queue and are never cancelled mid-flight.
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build + gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/build-site
+        with:
+          faucet-seed: ${{ secrets.VITE_FAUCET_SEED }}
+          meld-base-url: ${{ secrets.VITE_MELD_BASE_URL }}
+
+  deploy:
+    needs: build
+    name: getcash
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # The manifest and worker record come from bulletin-deploy.config.ts in the checkout.
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/deploy-site
+        with:
+          # The production name, with the environment's TLD; the config's default.
+          domain: getcash.paseo
+          # Owner of the getcash name; the account deploy.sh signs with locally.
+          mnemonic: ${{ secrets.MNEMONIC }}

@@ -1,0 +1,173 @@
+> [!WARNING]
+> The following is a prototype, reference implementation, and proof-of-concept. This open source code is provided for research, experimentation, and developer education only. This code has not been audited, is actively experimental, and may contain bugs, vulnerabilities, or incomplete features. Use at your own risk.
+
+# getcash
+
+A prototype funding surface for Polkadot App mobile hosts. It receives an inbound asset, crypto or
+fiat-sourced, on an ephemeral account on Asset Hub, converts it into CASH on the People chain,
+and hands the result to the host. The prototype consists of a static Nuxt 4 single-page app
+plus a background worker, both published to bulletin/DotNS.
+
+## Architecture
+
+### Two executables
+
+The **surface** (`app/`, `lib/`) is what the user sees. It quotes, shows a deposit address or
+opens the provider's widget, and tracks the request. The **worker** (`worker/`) runs in the
+background inside the host. Once a deposit has landed, the surface hands the job to the
+worker, which swaps on Asset Hub, teleports to the People chain, and claims the CASH through
+the host's top-up call. The worker keeps going after the surface is closed.
+
+The two talk over host storage. `lib/worker-rpc.ts` (surface side) and `worker/src/rpc.js`
+(worker side) implement a polled request/response channel: the surface writes a request under
+a sequence key, the worker claims it, runs the handler, and writes the response. Job records
+live in the same storage, so either side can resume after a restart.
+
+### The ephemeral account
+
+Every request runs through a fresh **ephemeral keypair**. Nothing is stored for it. The
+session asks the `EntropyPort` for a seed under a label made of the source id and the trade
+number, and `@getsome/ephemeral` derives the sr25519 keypair from that seed.
+Inside a host the entropy is deterministic, so the surface, the worker, and a later resume all
+re-derive the same account from the same label. In a plain browser a random seed is persisted
+instead, which is enough for UI work but cannot be recovered across devices.
+
+The rail delivers funds to the ephemeral's address. The worker re-derives the same key to
+spend them. When the claim completes, the next request moves to a new trade number and a new
+account. Rails with a refund leg get a second per-request key on the source chain, derived
+the same way, so a refund never needs a typed address.
+
+### Rails as packages
+
+`@getsome/core` owns the session state machine and defines the ports it needs. The rail port
+(`ChainflipRail` in `packages/core/src/ports.ts`) is the contract a funding source has to
+meet: reverse-quote a target amount, open a deposit channel to the ephemeral, report status,
+probe liquidity, and list its sources. Two packages implement it:
+
+- `@getsome/chainflip` for crypto deposits, over the Chainflip SDK. Sources are BTC, ETH,
+  USDC and the other Chainflip assets.
+- `@getsome/meld` for card and bank sources, over a Meld adapter service. Meld delivers the
+  native token to the ephemeral; from there the flow is identical to a crypto deposit.
+
+The core session does not know which rail it is running. The surface picks one per route.
+
+On the UI side the same idea repeats. `app/funding/` is a shell that resolves a **funding
+route** (crypto, card, bank) to a **route package**: a lazily loaded screen, a top-up adapter
+that projects that rail's records into the shared history, and an optional status line for
+the journey view. A route with no registered package is shown as unavailable. Adding a
+funding source means implementing the rail port and registering a route package; the
+session, the worker, and the history need no change.
+
+### Ports and wirings
+
+Everything the engine touches outside its own code comes in through a small set of ports:
+`ChainPort` (balances, submit, sweep), `StorageAdapter`, `EntropyPort`, and the rail. Three
+packages wire them:
+
+- `@getsome/host` for running inside a Polkadot App host: storage, entropy, and chain
+  access come from the host API.
+- `@getsome/browser` for a plain browser: local storage and a persisted random seed.
+- `@getsome/testing` fakes for the unit tests. The same fakes drive the mock world the app
+  runs when no host is present, so the whole state machine can be exercised at
+  `localhost:3000` without a chain.
+
+## Layout
+
+```
+app/          Nuxt 4 SPA: screens, composables, pinia stores, the funding shell
+lib/          host integration: chain connections, session wiring, faucet, worker RPC
+worker/       the background executable (plain ESM, bundled by esbuild)
+packages/     the engine, one workspace package each (see below)
+tests/        app-level tests; each package keeps its own unit tests next to its source
+public/       static assets copied into the build; public/worker/ receives the worker bundle
+brand/        the product icon used in the bulletin manifest
+.papi/        polkadot-api chain descriptors, regenerated by `pnpm install`
+.github/      build, deploy and PR-preview workflows
+```
+
+### Packages
+
+| Package              | Role                                                             |
+| -------------------- | ---------------------------------------------------------------- |
+| `@getsome/core`      | session state machine, flow store, re-entry logic, port types    |
+| `@getsome/ephemeral` | seed to keypair derivation, handoff secret encoding, refund keys |
+| `@getsome/funding`   | the swap and teleport pipeline the worker runs on Asset Hub      |
+| `@getsome/chainflip` | crypto rail over the Chainflip SDK                               |
+| `@getsome/meld`      | card and bank rail over the Meld adapter                         |
+| `@getsome/people`    | People chain port: CASH balances and the handoff submit          |
+| `@getsome/revive`    | Asset Hub chain port over polkadot-api, batch and sweep building |
+| `@getsome/host`      | port wiring for the Polkadot App host                            |
+| `@getsome/browser`   | port wiring for a plain browser                                  |
+| `@getsome/testing`   | fakes for tests and the mock world                               |
+
+Packages export TypeScript source directly (`exports` points at `src/index.ts`); there is no
+build step for them. They are private to this workspace and are not published to npm.
+
+## Packaging
+
+`pnpm build:worker` bundles `worker/src/index.js` into a single ESM file and copies it to
+`public/worker/index.js`. `pnpm build` then runs `nuxt generate`, which copies `public/` into
+`.output/public`, so the worker bundle ends up inside the site. Run the worker build first;
+`public/worker/` is not tracked.
+
+`bulletin-deploy.config.ts` describes the product for `bulletin-deploy`: a manifest record on
+the base name and one executable record each for the app (`.output/public`) and the worker
+(`.output/public/worker`).
+
+## Develop
+
+Node 22 and pnpm 9.12 (the `packageManager` field pins the exact pnpm version).
+
+```sh
+pnpm install            # also regenerates .papi/ descriptors
+pnpm dev                # localhost:3000, mock world in a plain browser
+pnpm test               # unit tests for the packages and the app
+pnpm typecheck          # app layer (vue-tsc)
+pnpm typecheck:packages # the engine (tsc)
+pnpm format             # prettier
+```
+
+Copy `.env.example` to `.env` and fill in what you need. Nuxt reads `.env`, not `.env.local`.
+
+| Variable               | Purpose                                                                                       |
+| ---------------------- | --------------------------------------------------------------------------------------------- |
+| `VITE_FAUCET_SEED`     | demo faucet account for the mock world; inlined into the client bundle, use a testnet account |
+| `VITE_DEPLOYER_SEED`   | fallback for `MNEMONIC` in `deploy.sh`                                                        |
+| `VITE_MELD_BASE_URL`   | origin of the Meld adapter; unset, the offline fake Meld client runs instead                  |
+| `VITE_MELD_PRODUCT_ID` | product id the adapter expects in the `x-dev-product-id` header                               |
+
+Two tests submit real transactions to the Paseo testnet and are skipped unless enabled:
+`PROD_PROOF=1` runs `tests/prod-proof.test.ts`, `VERIFY_AMOUNTS=1` runs
+`tests/verify-amounts.test.ts`.
+
+### Demo-only paths
+
+Being a prototype, parts of the tree exist to keep a demo moving and are not what a real
+deployment would do. Each is marked `TODO(production)` at its definition:
+
+- the faucet (`lib/faucet.ts`, `app/utils/demo.ts`) and the `estimateSource*` helpers behind
+  the `≈` amounts on the deposit screen
+- `demoFallback` in `app/stores/offers.ts`, which offers every source ungated when Chainflip
+  answers for nothing
+- `DEMO_MAX_CASH` in `app/stores/session.ts`, a 200 CASH cap on a purchase
+- the source-chain stand-in address in `app/components/screens/DepositScreen.vue`, used until
+  the Chainflip channel rail lands
+
+## Deploy
+
+```sh
+./deploy.sh [name.paseo]   # default getcash.paseo
+```
+
+Builds the worker and the site and publishes both with `bulletin-deploy`, which must be
+installed globally. The deploying account comes from `MNEMONIC`, or from `VITE_DEPLOYER_SEED`
+in `.env.local` or `.env`.
+
+CI does the same: a push to `main` deploys `getcash.paseo`, and every pull request gets a
+preview at `pr<N>-getcash.paseo`. Both are signed with the repository's `MNEMONIC` secret and
+build with `VITE_FAUCET_SEED` and `VITE_MELD_BASE_URL` from repository secrets.
+
+## License
+
+Copyright (C) 2026 Parity Technologies. Licensed under the GNU General Public License v3.0 or
+later; see [LICENSE](LICENSE).

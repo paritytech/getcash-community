@@ -1,0 +1,94 @@
+# Install, run the quality gates, build the static site and upload it as an artifact for the
+# deploy-site action. Both deploy paths go through this action. The build is offline:
+# `postinstall` runs `papi` codegen from the committed .papi/metadata/*.scale.
+name: Build site
+description: Install deps, run typecheck + unit tests, build the static site, upload it as an artifact.
+
+inputs:
+  artifact-name:
+    description: Name to upload the built site under; the deploy workflow downloads it by this name.
+    default: site
+  faucet-seed:
+    description: >
+      Optional VITE_FAUCET_SEED, inlined into the bundle at build time. Empty is
+      valid; the build then has no demo faucet.
+    default: ""
+  meld-base-url:
+    description: >
+      VITE_MELD_BASE_URL, the adapter origin the Meld card and bank rail talks to,
+      inlined at build time. An empty value fails the build (see require-meld-base-url).
+    default: ""
+  require-meld-base-url:
+    description: >
+      Whether an empty meld-base-url is a build failure. True for anything that
+      deploys. Pass false only where the value is legitimately unavailable rather
+      than forgotten: a fork or Dependabot PR cannot read repo secrets, and its
+      deploy job is skipped anyway, so failing the build there would gate the PR
+      on a secret it can never have. Such a build simply carries the offline fake
+      Meld client and must never be deployed.
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    # Before setup-node: `cache: pnpm` needs pnpm on PATH. The version comes from the
+    # packageManager field in package.json.
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v6
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: "22"
+        cache: pnpm
+
+    - name: Install dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile
+
+    # Gates, cheapest first.
+    - name: Check formatting
+      shell: bash
+      run: pnpm format:check
+
+    - name: Unit tests
+      shell: bash
+      run: pnpm test
+
+    - name: Typecheck packages
+      shell: bash
+      run: pnpm typecheck:packages
+
+    - name: Typecheck app
+      shell: bash
+      run: pnpm typecheck
+
+    # Before the site build: nuxt generate copies public/ into .output/public, worker bundle
+    # included.
+    - name: Build worker bundle
+      shell: bash
+      run: pnpm build:worker
+
+    - name: Build static site
+      shell: bash
+      env:
+        VITE_FAUCET_SEED: ${{ inputs.faucet-seed }}
+        VITE_MELD_BASE_URL: ${{ inputs.meld-base-url }}
+        REQUIRE_MELD_BASE_URL: ${{ inputs.require-meld-base-url }}
+      run: |
+        if [ -z "$VITE_MELD_BASE_URL" ]; then
+          if [ "$REQUIRE_MELD_BASE_URL" = "true" ]; then
+            echo "::error::VITE_MELD_BASE_URL is empty. Set the repo secret VITE_MELD_BASE_URL to the Meld adapter origin; a deployable build must not fall back to the offline fake Meld client."
+            exit 1
+          fi
+          echo "::warning::VITE_MELD_BASE_URL is empty (secrets unavailable for this build). Building with the offline fake Meld client; this artifact must not be deployed."
+        fi
+        pnpm build
+
+    # upload-artifact@v5 pairs with the download-artifact@v8 in the deploy-site action.
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v5
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: .output/public
+        retention-days: 7
