@@ -253,6 +253,8 @@ export const useSessionStore = defineStore("session", () => {
   const faucetState = ref<"idle" | "funding" | "sent">("idle");
   /** True while cancelTopUp runs. */
   const cancelling = ref(false);
+  /** Set when a cancel was refused because the payment is already on its way; shown to the buyer. */
+  const cancelNotice = ref<string | null>(null);
   /** Whether a deposit has been seen for the request on screen. Restored from the record on
    *  re-open. */
   const fundsSeen = ref(false);
@@ -378,6 +380,7 @@ export const useSessionStore = defineStore("session", () => {
     meldCredited = false;
     meldFundingRequestId = null;
     meldStatusClient = null;
+    cancelNotice.value = null;
     sub?.unsubscribe();
     sub = null;
     mock.value?.session.dispose();
@@ -780,6 +783,7 @@ export const useSessionStore = defineStore("session", () => {
         return s;
       },
       getStatus: (id) => baseClient.getStatus(id),
+      cancel: (id) => baseClient.cancel(id),
     };
     meldStatusClient = meldClient;
     const rail = createMeldRail({
@@ -2136,6 +2140,7 @@ export const useSessionStore = defineStore("session", () => {
     // Declined, not failed: the request still stands.
     if (cancelling.value || claiming.value || resuming.value) return false;
     cancelling.value = true;
+    cancelNotice.value = null;
     try {
       // Last look before anything irreversible: funds on the burner mean a purchase in progress.
       // Refuse, latch it funded, and drive it. Fail open on a dead transport.
@@ -2162,6 +2167,31 @@ export const useSessionStore = defineStore("session", () => {
         } catch (e) {
           console.warn(
             `[coinage] pre-cancel balance check failed (cancelling anyway): ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      }
+      // Withdraw the pay page on the adapter too. A local cancel alone leaves the adapter serving a
+      // payable page for this request, so its link could still be paid against a top-up the buyer
+      // was told was over. If the adapter refuses because a payment is already on its way, respect
+      // it and keep the request: telling the buyer it is cancelled while their money moves is the
+      // one thing not to say. A transport error fails open (a still-served page is the pre-existing
+      // behaviour), so a dead adapter never strands the cancel.
+      if (meldStatusClient !== null && meldFundingRequestId !== null) {
+        try {
+          const outcome = await step(
+            "withdraw the pay page",
+            15_000,
+            meldStatusClient.cancel(meldFundingRequestId),
+          );
+          if (outcome.outcome === "not-cancellable") {
+            cancelNotice.value =
+              "Your payment is already on its way and can no longer be cancelled. It will finish on its own.";
+            console.warn("[meld] cancel refused by the adapter: a payment is already in flight");
+            return false;
+          }
+        } catch (e) {
+          console.warn(
+            `[meld] adapter cancel failed (cancelling locally anyway): ${e instanceof Error ? e.message : String(e)}`,
           );
         }
       }
@@ -2240,6 +2270,7 @@ export const useSessionStore = defineStore("session", () => {
     fundsSeen,
     canSkipDeposit,
     cancelling,
+    cancelNotice,
     mock,
     live,
     refundAddress,

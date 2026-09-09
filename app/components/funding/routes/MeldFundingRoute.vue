@@ -127,6 +127,13 @@ onUnmounted(() => {
         >
           {{ session.cancelling ? "Cancelling…" : "Cancel" }}
         </button>
+        <p
+          v-if="session.cancelNotice"
+          class="mx-6 mb-4 text-center text-sm text-text-secondary"
+          role="status"
+        >
+          {{ session.cancelNotice }}
+        </p>
       </template>
       <MeldPayScreen v-else @switch-route="emit('switchRoute', $event)" />
     </div>
