@@ -236,6 +236,8 @@ export const useSessionStore = defineStore("session", () => {
   const meldStage = ref<"waiting" | "receiving" | "complete" | "failed" | null>(null);
   /** The adapter's reason for a failed Meld payment. Null unless `meldStage === 'failed'`. */
   const meldFailureMessage = ref<string | null>(null);
+  /** True when the failure is a refund (money taken then returned), not a plain decline. */
+  const meldRefunded = ref(false);
   /** The provider widget URL recovered when resuming a Meld request; null unless a resume found a
    *  live one. */
   const meldResumeWidgetUrl = ref<string | null>(null);
@@ -374,6 +376,7 @@ export const useSessionStore = defineStore("session", () => {
     stopMeldPoll();
     meldStage.value = null;
     meldFailureMessage.value = null;
+    meldRefunded.value = false;
     meldResumeWidgetUrl.value = null;
     meldSubmitted.value = false;
     meldHandedOff.value = false;
@@ -2077,9 +2080,11 @@ export const useSessionStore = defineStore("session", () => {
           meldHandedOff.value = true;
         if (meldStage.value === "complete") creditMeldSettlement();
         // Carry the adapter's own reason.
-        if (meldStage.value === "failed")
+        if (meldStage.value === "failed") {
           meldFailureMessage.value =
             depositFailure?.reason?.message ?? "The payment could not be completed.";
+          meldRefunded.value = depositFailure?.reason?.code === "refunded";
+        }
         recordMeldStage();
         pollFailures = 0;
       } catch (e) {
@@ -2259,6 +2264,7 @@ export const useSessionStore = defineStore("session", () => {
     meldCorridor,
     meldStage,
     meldFailureMessage,
+    meldRefunded,
     meldResumeWidgetUrl,
     meldSubmitted,
     meldHandedOff,

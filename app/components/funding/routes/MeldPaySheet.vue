@@ -35,8 +35,23 @@ onUnmounted(() => window.removeEventListener("message", onMessage));
   <div class="flex min-h-0 w-full flex-1 flex-col">
     <!-- The hosted widget until the buyer finishes, then a small loader while the poll
          confirms. -->
+    <!-- A refund is reassuring, not an error: the money came back. Its own calm treatment, before
+         the red failure below, so it never reads as "payment failed, try again". -->
     <div
-      v-if="session.meldStage === 'failed'"
+      v-if="session.meldStage === 'failed' && session.meldRefunded"
+      class="flex min-h-0 w-full flex-1 flex-col items-center justify-center gap-2 text-center"
+    >
+      <img src="/icons/arrow-down.svg" alt="" class="size-8" />
+      <p class="text-base font-semibold text-text-primary">Payment refunded</p>
+      <p class="max-w-[260px] text-sm text-text-secondary">
+        {{
+          session.meldFailureMessage ??
+          "Your payment was refunded. The money has been returned to you."
+        }}
+      </p>
+    </div>
+    <div
+      v-else-if="session.meldStage === 'failed'"
       class="flex min-h-0 w-full flex-1 flex-col items-center justify-center gap-2 text-center"
     >
       <img src="/icons/x.svg" alt="" class="size-8" />

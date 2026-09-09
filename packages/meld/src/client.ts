@@ -65,6 +65,9 @@ export interface MeldStatusResult {
    * `failed`, `expired`, `refused` or `unobserved`.
    */
   readonly status: string;
+  /** The provider's own last status verbatim (e.g. Meld `REFUNDED`), for distinctions the coarse
+   *  `status` drops. Absent until the rail has reported one. */
+  readonly providerStatus?: string;
   /** Where an unfinished purchase can be resumed. Present only while the request is still live. */
   readonly serviceProviderWidgetUrl?: string;
   readonly widgetUrl?: string;
@@ -237,6 +240,7 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike {
     const funding = (data.funding as Record<string, unknown> | undefined) ?? {};
     return {
       status: String(funding.status ?? ""),
+      ...(funding.providerStatus != null ? { providerStatus: String(funding.providerStatus) } : {}),
       // Present only while the purchase is still payable.
       ...(funding.serviceProviderWidgetUrl != null
         ? { serviceProviderWidgetUrl: String(funding.serviceProviderWidgetUrl) }

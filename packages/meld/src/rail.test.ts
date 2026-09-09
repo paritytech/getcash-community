@@ -19,6 +19,7 @@ function fakeClient(over: Partial<MeldClientLike> = {}): MeldClientLike {
       widgetUrl: "https://pay.meld/x",
     }),
     getStatus: async () => ({ status: "session_opened" }),
+    cancel: async () => ({ outcome: "cancelled" as const }),
     ...over,
   };
 }

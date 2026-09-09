@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { MeldClientLike } from "./client";
 import { getMeldStatus } from "./status";
 
-function clientReturning(status: string): MeldClientLike {
+function clientReturning(status: string, providerStatus?: string): MeldClientLike {
   return {
     getQuote: async () => ({ quotes: [] }),
     createSession: async () => ({
@@ -11,7 +11,8 @@ function clientReturning(status: string): MeldClientLike {
       externalSessionId: "ext",
       widgetUrl: "u",
     }),
-    getStatus: async () => ({ status }),
+    getStatus: async () => (providerStatus === undefined ? { status } : { status, providerStatus }),
+    cancel: async () => ({ outcome: "cancelled" as const }),
   };
 }
 
@@ -59,6 +60,21 @@ describe("getMeldStatus", () => {
     expect(result.depositFailure?.reason?.code).toBe(status);
     expect(result.depositFailure?.reason?.message).toBe(message);
     expect(result.depositFailure?.kind).toBe(kind);
+  });
+
+  it("reports a refund distinctly, so the UI can say the money came back", async () => {
+    const result = await getMeldStatus(clientReturning("failed", "REFUNDED"), "funding-1");
+
+    expect(result.status).toBe("failed");
+    expect(result.depositFailure?.reason?.code).toBe("refunded");
+    expect(result.depositFailure?.reason?.message).toMatch(/refunded|returned/i);
+    // `raw` carries the provider status, so a refund is distinguishable downstream.
+    expect(result.raw).toBe("REFUNDED");
+  });
+
+  it("keeps a plain decline as a failure, not a refund", async () => {
+    const result = await getMeldStatus(clientReturning("failed"), "funding-1");
+    expect(result.depositFailure?.reason?.code).toBe("failed");
   });
 
   // The poll reads `raw` to decide the payment has started.

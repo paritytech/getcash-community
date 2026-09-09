@@ -423,6 +423,18 @@ describe("createMeldClient error mapping", () => {
     expect(result.serviceProviderWidgetUrl).toBe("https://pay.test/resume");
     expect(result.expiresAt).toBe(1_800_000_000_000);
   });
+
+  it("carries the provider's own status through, so a refund is distinguishable", async () => {
+    const { impl } = stubFetch(200, {
+      funding: { status: "failed", providerStatus: "REFUNDED" },
+    });
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+
+    const result = await client.getStatus("funding-1");
+
+    expect(result.status).toBe("failed");
+    expect(result.providerStatus).toBe("REFUNDED");
+  });
 });
 
 describe("createMeldClient cancel", () => {

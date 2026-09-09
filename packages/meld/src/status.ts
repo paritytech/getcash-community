@@ -36,16 +36,26 @@ export async function getMeldStatus(
   client: MeldClientLike,
   fundingRequestId: string,
 ): Promise<SwapStatusResult> {
-  const { status } = await client.getStatus(fundingRequestId);
+  const { status, providerStatus } = await client.getStatus(fundingRequestId);
   if (status === SETTLED) return { status: "complete", raw: status };
   if (status === RECEIVING) return { status: "receiving", raw: status };
   const failure = FAILURES[status];
   if (failure !== undefined) {
+    // A refund is its own ending: the money was taken and returned, not merely declined. The
+    // adapter collapses it onto `failed`, so the provider status carries the distinction. Reported
+    // under the `refunded` code so the UI can say "money returned" instead of "payment failed".
+    const refunded = providerStatus?.toUpperCase() === "REFUNDED";
+    const reason = refunded
+      ? {
+          code: "refunded",
+          message: "Your payment was refunded. The money has been returned to you.",
+        }
+      : { code: status, message: failure.message };
     // The kind travels with the message; core's default kind is `deposit-rejected`.
     return {
       status: "failed",
-      depositFailure: { reason: { code: status, message: failure.message }, kind: failure.kind },
-      raw: status,
+      depositFailure: { reason, kind: failure.kind },
+      raw: providerStatus ?? status,
     };
   }
   // `created`, `session_opened`, and any state added later.
