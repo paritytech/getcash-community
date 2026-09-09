@@ -96,7 +96,6 @@ function useCryptoRoute() {
   emit("switchRoute", "crypto");
 }
 
-
 /** The picked region's own name, for the quote's terms. Falls back to the code when the catalog is
  *  the static list and the code is not in it. */
 const selectedCountryName = computed(
@@ -160,7 +159,6 @@ async function next() {
       :model-value="selectedCountry"
       @commit="pickCountry"
     />
-
 
     <!-- The quote it produced, or why there isn't one. -->
     <div class="mt-6 rounded-2xl bg-surface-container p-4">
