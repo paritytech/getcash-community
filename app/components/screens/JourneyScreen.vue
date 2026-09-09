@@ -61,7 +61,7 @@ const creditedAmount = computed(() =>
   session.claimedBase != null ? fmtCash(session.claimedBase) : session.amountHuman,
 );
 const amountText = computed(() =>
-  finished.value ? `+${creditedAmount.value} CASH` : `${session.amountHuman} CASH`,
+  finished.value ? `+${creditedAmount.value} $CASH` : `${session.amountHuman} $CASH`,
 );
 
 const hint = computed(() => {
@@ -73,8 +73,8 @@ const hint = computed(() => {
       // "prompted" is the wait for the worker's verdict, "crediting" the moment it reported the
       // claim.
       return session.claimStage === "crediting"
-        ? "Claimed. Adding the CASH to your balance…"
-        : "Adding the CASH to your balance…";
+        ? "Claimed. Adding the $CASH to your balance…"
+        : "Adding the $CASH to your balance…";
     }
     return s.mint.step === "verifying" ? "Verifying the credit…" : null;
   }

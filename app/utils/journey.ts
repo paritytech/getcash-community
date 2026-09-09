@@ -87,7 +87,7 @@ export function journeyLabels(asset: string | null): StepLabel[] {
       done: asset ? `We received your ${asset}` : "We received your payment",
     },
     { pending: "Processing your payment", done: "Payment processed" },
-    { pending: "Converting to CASH", done: "Converted to CASH" },
+    { pending: "Converting to $CASH", done: "Converted to $CASH" },
     { pending: "Adding to your balance", done: "Added to your balance" },
   ];
 }

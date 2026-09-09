@@ -41,7 +41,7 @@ describe("Meld top-up adapter", () => {
       id: "bank:meld-bank#1",
       route: "bank",
       details: { method: { label: "Bank transfer" } },
-      state: { kind: "finishing", status: "Converting to CASH" },
+      state: { kind: "finishing", status: "Converting to $CASH" },
     });
   });
 
@@ -56,7 +56,7 @@ describe("Meld top-up adapter", () => {
     >;
     expect(projectMeldTopUps(records, statuses, 500)[0]?.state).toEqual({
       kind: "finishing",
-      status: "Converting to CASH",
+      status: "Converting to $CASH",
     });
   });
 

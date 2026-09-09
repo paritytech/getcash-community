@@ -127,7 +127,7 @@ const quoteRows = computed(() => {
   if (q.fee) rows.push({ label: "Fees", value: fmtFiat(q.fee, q.symbol) });
   rows.push(
     { label: "Arrives", value: "A few minutes" },
-    { label: "You’ll receive", value: `${session.amountHuman} CASH` },
+    { label: "You’ll receive", value: `${session.amountHuman} $CASH` },
   );
   return rows;
 });

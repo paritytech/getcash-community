@@ -78,9 +78,9 @@ function pick(network: NetworkRow) {
       </template>
       <template v-else>
         <p class="text-body-m text-fg-secondary">
-          No network can do a top-up of {{ session.amountHuman }} CASH.
+          No network can do a top-up of {{ session.amountHuman }} $CASH.
           <template v-if="smallestCash">
-            The smallest crypto top-up right now is about {{ smallestCash }} CASH.
+            The smallest crypto top-up right now is about {{ smallestCash }} $CASH.
           </template>
         </p>
         <button

@@ -20,7 +20,7 @@ export interface FundingSelectorConfig {
 
 export const fundingSelectorConfig = {
   provider: "getcash.dot",
-  asset: "CASH",
+  asset: "$CASH",
   amount: {
     // 0.01 CASH is the smallest unit the purse can hold.
     decimals: 2,
