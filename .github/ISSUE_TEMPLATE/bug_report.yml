@@ -1,0 +1,80 @@
+name: Bug report
+description: Something in the app behaves incorrectly or crashes.
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a report. This project is a prototype / reference implementation, so
+        rough edges are expected, but a clear repro still helps a lot. Please do not include secrets,
+        seed phrases, or private keys in this issue.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: This is not a security vulnerability (those go to the Polkadot Security Hub, see SECURITY.md).
+          required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you see? Include exact on-screen text or error messages.
+      placeholder: On the Add funds screen, entering 5 showed "Minimum 10 CASH" ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What should have happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps someone else can follow to see the same thing.
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of the app does this touch?
+      options:
+        - Funding / top-up (card, bank, crypto)
+        - Deposit / quote
+        - Worker / settlement (converting to CASH)
+        - History
+        - Wallet / host integration
+        - Build / CI / tooling
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: build
+    attributes:
+      label: Build / environment
+      description: Where you ran it (e.g. the deployed origin, a local build, or a commit SHA).
+      placeholder: "getcash.paseo, or localhost:3000, or commit abc1234"
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device and OS
+      description: Only if it ran on a device or a specific host.
+      placeholder: "iPhone 16, iOS 26.6.1 (or: desktop Chrome 141)"
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs, screenshots, or console output
+      description: Console errors and screenshots help. Redact anything sensitive first.
