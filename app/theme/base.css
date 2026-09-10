@@ -40,30 +40,37 @@ body {
 }
 
 /* One global rule, no per-element focus classes. The ring is translucent, so
-   it reads against every theme without needing a per-theme override. */
-*:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
-  box-shadow: none;
-}
+   it reads against every theme without needing a per-theme override.
+   MUST sit in @layer base: Tailwind's `ring-*` utilities are box-shadow, so an
+   unlayered `box-shadow: none` here would outrank @layer utilities and strip
+   the ring off any component that draws its own (shadcn Button, for one). */
+@layer base {
+  *:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+    box-shadow: none;
+  }
 
-[data-invalid] *:focus-visible,
-[aria-invalid="true"]:focus-visible {
-  outline-color: var(--focus-error);
-}
+  [data-invalid] *:focus-visible,
+  [aria-invalid="true"]:focus-visible {
+    outline-color: var(--focus-error);
+  }
 
-/* shadcn components draw their own focus ring (`focus-visible:ring-[3px]`), and
-   they all carry a data-slot attribute. Without this the outline above and that
-   ring both fire and you get two concentric indicators. Stand down here and let
-   the component's ring do the work; --color-ring points it at --focus-ring, so
-   it is still the theme's colour.
+  /* shadcn components draw their own focus ring (`focus-visible:ring-[3px]`), and
+     they all carry a data-slot attribute. Without this the outline above and that
+     ring both fire and you get two concentric indicators. Stand down here and let
+     the component's ring do the work; --color-ring points it at --focus-ring, so
+     it is still the theme's colour. Same layer as the outline rule above, and it
+     wins on specificity — while the component's ring utility, being layered
+     later, is out of reach of both.
 
-   Note this makes the known focus-ring-contrast gap worse, not better: shadcn
-   applies the ring at `ring-ring/50`, halving a token already measured at
-   1.55-1.78:1 against the page. The fix is a stronger --focus-ring in Figma,
-   not a local override here. */
-[data-slot]:focus-visible {
-  outline: none;
+     Note this makes the known focus-ring-contrast gap worse, not better: shadcn
+     applies the ring at `ring-ring/50`, halving a token already measured at
+     1.55-1.78:1 against the page. The fix is a stronger --focus-ring in Figma,
+     not a local override here. */
+  [data-slot]:focus-visible {
+    outline: none;
+  }
 }
 
 /* Tabular figures keep balances and addresses from shifting as they update. */
