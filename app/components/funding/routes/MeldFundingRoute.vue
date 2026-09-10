@@ -103,7 +103,7 @@ onUnmounted(() => {
         </button>
         <span
           v-else
-          class="mx-4 my-3 inline-block size-6 animate-spin rounded-full border-[3px] border-track border-t-white"
+          class="mx-4 my-3 inline-block size-6 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary"
         />
       </template>
     </Toolbar>
