@@ -84,6 +84,8 @@ interface ActiveFlowRecord {
   sourceSymbol?: string;
   /** The provider's quoted fee (Meld), in `sourceSymbol` units. */
   sourceFee?: string;
+  /** The network-fee share of `sourceFee`, when the rail broke it out. */
+  sourceNetworkFee?: string;
   startedAt: number;
   depositAddress?: string;
   progress?: FundingProgressSnapshot;
@@ -1459,6 +1461,9 @@ export const useSessionStore = defineStore("session", () => {
               sourceAmount: quoted.value.send,
               sourceSymbol: quoted.value.symbol,
               ...(quoted.value.fee != null ? { sourceFee: quoted.value.fee } : {}),
+              ...(quoted.value.networkFee != null
+                ? { sourceNetworkFee: quoted.value.networkFee }
+                : {}),
             }
           : null
         : sourceDisplayForRecord();
@@ -1882,6 +1887,7 @@ export const useSessionStore = defineStore("session", () => {
         send: record.sourceAmount ?? "",
         symbol: record.sourceSymbol ?? record.asset,
         fee: record.sourceFee ?? null,
+        networkFee: record.sourceNetworkFee ?? null,
         nativeAmount: null,
         sourceAsset: record.asset,
         sourceChain: record.chain,

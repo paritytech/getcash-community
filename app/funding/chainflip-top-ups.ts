@@ -92,6 +92,9 @@ export function projectChainflipTopUps(
         startedAt: record.startedAt,
         progress,
         details,
+        ...(record.sourceAmount && record.sourceSymbol
+          ? { quote: { amount: record.sourceAmount, symbol: record.sourceSymbol } }
+          : {}),
         state,
       },
     ];

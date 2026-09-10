@@ -119,8 +119,9 @@ function stageLabel(index: number): string {
   background: var(--fg-success);
 }
 
+/* The line into the in-progress step is half done, half pending. */
 .funding-journey-connector-current {
-  background: var(--bg-illustration-dark);
+  background: linear-gradient(to right, var(--fg-success) 50%, var(--stroke-secondary) 50%);
 }
 
 .funding-journey-connector-failed {

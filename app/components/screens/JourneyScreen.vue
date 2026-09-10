@@ -2,15 +2,17 @@
 // The finish of a top-up: the timeline from a confirmed deposit to CASH in the balance, shared by
 // every package.
 import { computed, onUnmounted, ref } from "vue";
-import { Plus, X } from "lucide-vue-next";
+import { ChevronRight, Plus, RefreshCcw, X } from "lucide-vue-next";
 import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
 import type { RefundKey } from "@getsome/ephemeral";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
 import type { FundingJourneyStatus } from "../../funding/handoff";
 import { projectFundingProgress, type FundingProgressProjection } from "../../funding/progress";
+import type { FundingTopUp } from "../../funding/top-ups";
 import { useSessionStore } from "../../stores/session";
 import { fmtCash } from "../../utils/cash";
 import { fmtFiat } from "../../utils/money";
+import { formatWhenShort } from "../../utils/journey";
 import { recoveryNotes, refundedFailure } from "../../utils/recovery";
 import FundingJourneyTimeline from "../funding/progress/FundingJourneyTimeline.vue";
 
@@ -21,7 +23,12 @@ const props = defineProps<{
   progress?: FundingProgressProjection | null;
   /** The package's own word on its payment, shown above the timeline. */
   status?: FundingJourneyStatus | null;
+  /** The top-up as the list knows it; its stored quote backs the detail rows until the request
+   *  is live in the store. */
+  topUp?: FundingTopUp | null;
 }>();
+// fees asks the host to swap in the fee-breakdown drill-in; close leaves the finished journey.
+const emit = defineEmits<{ fees: []; close: [] }>();
 const session = useSessionStore();
 
 const cadence = computed(
@@ -47,50 +54,21 @@ const failedText = computed(() => session.fundingError ?? failure.value?.message
 
 const heroFailed = computed(() => progress.value?.view.kind === "failed" || failure.value !== null);
 
-/** The hero names the rail, and keeps naming it on failure. */
-const railLabel = computed(() => {
-  if (session.method === "card") return "Card";
-  if (session.method === "bank") return "Bank";
-  return "Crypto";
-});
-const heroLabel = computed(() =>
-  finished.value ? `Added via ${railLabel.value}` : `Adding via ${railLabel.value}`,
-);
-
 const creditedAmount = computed(() =>
   session.claimedBase != null ? fmtCash(session.claimedBase) : session.amountHuman,
 );
-const amountText = computed(() =>
-  finished.value ? `+${creditedAmount.value} $CASH` : `${session.amountHuman} $CASH`,
-);
+const amountText = computed(() => {
+  if (finished.value) return `+${creditedAmount.value} $CASH`;
+  // The store's amount is empty until the request is live; the list's word on it fills in.
+  return `${session.amountHuman || (props.topUp?.amount ?? "")} $CASH`;
+});
 
-const hint = computed(() => {
-  const s = state.value;
-  if (!s) return null;
-  if (session.fundingNotice) return session.fundingNotice;
-  if (s.phase === "working") {
-    if (s.mint.step === "awaiting-consent") {
-      // "prompted" is the wait for the worker's verdict, "crediting" the moment it reported the
-      // claim.
-      return session.claimStage === "crediting"
-        ? "Claimed. Adding the $CASH to your balance…"
-        : "Adding the $CASH to your balance…";
-    }
-    return s.mint.step === "verifying" ? "Verifying the credit…" : null;
-  }
-  if (s.phase === "swapping") {
-    switch (s.swap) {
-      case "receiving":
-        return null;
-      case "swapping":
-        return "Usually takes a few minutes…";
-      case "sending":
-        return "Sending DOT to Asset Hub, usually about 5 minutes…";
-      default:
-        return null;
-    }
-  }
-  return null;
+/** When the CASH landed: the live milestone, else the list's settled timestamp. */
+const settledWhen = computed(() => {
+  if (!finished.value) return null;
+  const at =
+    session.milestones[5] ?? (props.topUp?.state.kind === "settled" ? props.topUp.state.at : null);
+  return at != null ? formatWhenShort(at) : null;
 });
 
 /** Whether the failed swap's deposit is being refunded to this request's own key. */
@@ -138,36 +116,48 @@ onUnmounted(() => {
   if (copiedTimer !== null) clearTimeout(copiedTimer);
 });
 
-/** What the payment is denominated in, as a spelled-out currency where one exists
- *  ("EUR" → "Euro"); a crypto ticker stays a ticker. */
-const payingIn = computed(() => {
-  const symbol = session.quoted?.symbol;
-  if (!symbol) return null;
-  try {
-    return new Intl.DisplayNames(["en"], { type: "currency" }).of(symbol) ?? symbol;
-  } catch {
-    return symbol;
-  }
-});
-/** Symbol-first for the fiat rails ("€50.55"); crypto keeps its full-precision ticker form. */
-const money = (amount: string, symbol: string) =>
-  session.method === "crypto" ? `${amount} ${symbol}` : fmtFiat(amount, symbol);
-const detailRows = computed(() => {
+/** The rows' source: the live quote, else the top-up's stored one. Only the live quote carries
+ *  the split the fee drill-in needs. */
+const quoteView = computed(() => {
   const q = session.quoted;
+  if (q) {
+    return {
+      amount: q.send,
+      symbol: q.symbol,
+      fee: q.fee ?? null,
+      crypto: session.method === "crypto",
+      live: true,
+    };
+  }
+  const stored = props.topUp?.quote;
+  if (!stored) return null;
+  return {
+    amount: stored.amount,
+    symbol: stored.symbol,
+    fee: stored.fee ?? null,
+    crypto: props.topUp?.route === "crypto",
+    live: false,
+  };
+});
+const detailRows = computed(() => {
+  const q = quoteView.value;
   if (!q) return [];
-  const rows = [{ label: "Paying in", value: payingIn.value ?? q.symbol }];
-  // Only the fee total is quoted; the drill-in breakdown screen needs the split.
-  if (q.fee) rows.push({ label: "Fees", value: money(q.fee, q.symbol) });
-  rows.push({ label: "Total", value: money(q.send, q.symbol) });
+  // Symbol-first for the fiat rails ("€50.55"); crypto keeps its full-precision ticker form.
+  const money = (amount: string) =>
+    q.crypto ? `${amount} ${q.symbol}` : fmtFiat(amount, q.symbol);
+  const rows: { label: string; value: string; fees?: boolean }[] = [];
+  // The fee row drills into the breakdown screen when the live quote backs it.
+  if (q.fee) rows.push({ label: "Fees", value: money(q.fee), fees: q.live });
+  rows.push({ label: "Total", value: money(q.amount) });
   return rows;
 });
 
-/** The one ribbon line under the stepper: a failure reason beats a stage hint beats the
- *  package's own payment status. */
+/** The one ribbon line under the stepper. The design keeps the happy path silent: only a failure
+ *  reason or an out-of-band notice earns the ribbon. */
 const message = computed(() => {
   if (failedText.value) return failedText.value;
-  if (hint.value) return hint.value;
-  if (props.status && props.status.tone !== "done") return props.status.text;
+  if (session.fundingNotice) return session.fundingNotice;
+  if (props.status && props.status.tone === "failed") return props.status.text;
   return null;
 });
 </script>
@@ -182,16 +172,16 @@ const message = computed(() => {
         :class="heroFailed ? 'journey-hero-failed' : 'bg-surface-container'"
       >
         <X v-if="heroFailed" class="size-6 text-fg-error" aria-hidden="true" />
-        <Plus v-else class="size-6 text-fg-secondary" aria-hidden="true" />
+        <Plus v-else-if="finished" class="size-6 text-fg-primary" aria-hidden="true" />
+        <RefreshCcw v-else class="size-6 text-fg-primary" aria-hidden="true" />
       </span>
-      <p class="mt-4 text-paragraph-l text-fg-secondary">{{ heroLabel }}</p>
       <p
         class="mt-2 text-display-m"
         :class="finished ? 'text-fg-success' : heroFailed ? 'text-fg-secondary' : 'text-fg-primary'"
       >
         {{ amountText }}
       </p>
-      <p class="text-paragraph-l text-fg-secondary">To your balance</p>
+      <p v-if="settledWhen" class="text-paragraph-l text-fg-secondary">{{ settledWhen }}</p>
     </div>
 
     <div class="mt-4 flex flex-1 flex-col gap-6">
@@ -210,7 +200,17 @@ const message = computed(() => {
           class="flex items-baseline justify-between gap-4"
         >
           <dt class="text-paragraph-l text-fg-primary">{{ row.label }}</dt>
-          <dd class="text-heading-m text-fg-primary">{{ row.value }}</dd>
+          <dd v-if="row.fees">
+            <button
+              type="button"
+              class="flex items-center gap-1 text-heading-m text-fg-primary"
+              @click="emit('fees')"
+            >
+              {{ row.value }}
+              <ChevronRight class="size-4 text-fg-secondary" aria-hidden="true" />
+            </button>
+          </dd>
+          <dd v-else class="text-heading-m text-fg-primary">{{ row.value }}</dd>
         </div>
       </dl>
 
@@ -272,6 +272,15 @@ const message = computed(() => {
         @click="session.retry()"
       >
         Try again
+      </button>
+
+      <button
+        v-if="finished"
+        type="button"
+        class="mt-auto h-12 shrink-0 rounded-full bg-action-tertiary text-label-l font-semibold text-fg-primary transition-colors hover:bg-action-tertiary-hover"
+        @click="emit('close')"
+      >
+        Close
       </button>
     </div>
   </div>
