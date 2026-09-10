@@ -18,6 +18,9 @@ const props = defineProps<{
   history: boolean;
   error?: string | null;
   loading?: boolean;
+  /** Launch-load placeholder: static chrome (amount, keypad) renders inert while the data-driven
+   *  parts (title, route pills, limits, presets, CTA label) show skeleton shapes. */
+  skeleton?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -104,11 +107,24 @@ function enter(key: FundingKey) {
 
 <template>
   <div class="funding-screen">
-    <FundingEntryHeader title="Add funds" :history="history" @history="emit('history')" />
+    <FundingEntryHeader
+      title="Add funds"
+      :history="history"
+      :skeleton="skeleton"
+      @history="emit('history')"
+    />
 
     <div class="funding-scroll">
-      <div class="funding-amount-content">
-        <div class="funding-routes" role="radiogroup" aria-label="Funding route">
+      <div class="funding-amount-content" :class="{ 'funding-amount-skeleton': skeleton }">
+        <div v-if="skeleton" class="funding-routes" aria-hidden="true">
+          <span
+            v-for="option in config.routes"
+            :key="option.id"
+            class="funding-skeleton animate-pulse"
+            style="width: 5.75rem; height: 2.5rem"
+          />
+        </div>
+        <div v-else class="funding-routes" role="radiogroup" aria-label="Funding route">
           <button
             v-for="option in config.routes"
             :key="option.id"
@@ -134,16 +150,34 @@ function enter(key: FundingKey) {
 
         <div ref="amountRow" class="funding-amount" aria-live="polite">
           <span ref="amountValue" class="text-display-xl"
-            >{{ displayAmount }}<span class="funding-caret" aria-hidden="true"
+            >{{ displayAmount }}<span v-if="!skeleton" class="funding-caret" aria-hidden="true"
           /></span>
           <span ref="amountAsset" class="text-display-xl">{{ config.asset }}</span>
         </div>
 
-        <p class="funding-limits text-body-m" :class="{ 'funding-limits-warning': limitWarning }">
+        <span
+          v-if="skeleton"
+          class="funding-skeleton animate-pulse"
+          style="width: 8.125rem; height: 1rem"
+          aria-hidden="true"
+        />
+        <p
+          v-else
+          class="funding-limits text-body-m"
+          :class="{ 'funding-limits-warning': limitWarning }"
+        >
           {{ limitLabel }}
         </p>
 
-        <div class="funding-presets" aria-label="Suggested amounts">
+        <div v-if="skeleton" class="funding-presets" aria-hidden="true">
+          <span
+            v-for="preset in config.amount.presets"
+            :key="preset"
+            class="funding-skeleton animate-pulse"
+            style="height: 3rem"
+          />
+        </div>
+        <div v-else class="funding-presets" aria-label="Suggested amounts">
           <button
             v-for="preset in config.amount.presets"
             :key="preset"
@@ -164,6 +198,7 @@ function enter(key: FundingKey) {
               :key="key"
               type="button"
               class="text-heading-xl"
+              :disabled="skeleton"
               :aria-label="key === 'delete' ? 'Delete digit' : `Enter ${key}`"
               @click="enter(key)"
             >
@@ -176,10 +211,10 @@ function enter(key: FundingKey) {
         <button
           type="button"
           class="funding-primary text-label-l font-semibold"
-          :disabled="loading || !canContinue"
+          :disabled="skeleton || loading || !canContinue"
           @click="emit('continue')"
         >
-          {{ loading ? `Opening ${config.provider}…` : "Continue" }}
+          {{ skeleton ? "" : loading ? `Opening ${config.provider}…` : "Continue" }}
         </button>
       </div>
     </div>
@@ -215,6 +250,17 @@ function enter(key: FundingKey) {
   width: 100%;
   justify-content: center;
   gap: 0.5rem;
+}
+
+.funding-skeleton {
+  border-radius: 9999px;
+  background: var(--bg-action-disabled);
+}
+
+/* The launch skeleton keeps the static chrome but mutes it and drops interaction. */
+.funding-amount-skeleton .funding-keypad button {
+  color: var(--fg-secondary);
+  pointer-events: none;
 }
 
 .funding-route {
