@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Token picker: the assets on the chosen network that clear their floor for this amount. Picking a
+// Token picker: the coins on the chosen network that clear their floor for this amount. Picking a
 // row starts the purchase.
 import { computed } from "vue";
 import { tokenIcon } from "../../utils/icons";
@@ -9,13 +9,15 @@ import { useOffersStore, type TokenRow } from "../../stores/offers";
 const flow = useFlowStore();
 const offers = useOffersStore();
 
-const tokens = computed(() => offers.offeredTokens(flow.srcChain.chain));
+/** The coin's given name; assets without one (the stablecoins) read as their ticker. */
+const COIN_NAMES: Readonly<Record<string, string>> = {
+  BTC: "Bitcoin",
+  ETH: "Ethereum",
+  SOL: "Solana",
+  TRX: "Tron",
+};
 
-/** Row subtitle while the purchase starts or the floors are still being learned. */
-function subtitle(token: TokenRow): string | undefined {
-  if (flow.starting && token.asset === flow.srcAsset) return "Starting…";
-  return token.offer.state === "checking" ? "Checking…" : undefined;
-}
+const tokens = computed(() => offers.offeredTokens(flow.srcChain.chain));
 
 function pick(token: TokenRow) {
   if (flow.starting) return;
@@ -26,19 +28,20 @@ function pick(token: TokenRow) {
 
 <template>
   <div class="flex min-h-0 flex-1 flex-col">
-    <h1 class="text-display-l text-fg-primary">Which token?</h1>
-    <ul class="mt-6 flex flex-col gap-6">
+    <!-- The cards bleed past the 24px content gutter to the design's 16px inset. -->
+    <ul class="-mx-2 flex flex-col gap-2 overflow-y-auto pb-6">
       <OptionRow
         v-for="token in tokens"
         :key="token.sourceId"
         :icon="tokenIcon(token.asset)"
-        :label="token.asset"
-        :subtitle="subtitle(token)"
+        :label="COIN_NAMES[token.asset] ?? token.asset"
+        :subtitle="`${flow.srcChain.label} Network`"
+        :busy="flow.starting && token.asset === flow.srcAsset"
         @select="pick(token)"
       />
     </ul>
     <!-- Only reachable when the amount changed underneath the network pick. -->
-    <p v-if="tokens.length === 0" class="mt-6 text-body-m text-fg-secondary">
+    <p v-if="tokens.length === 0" class="text-body-m text-fg-secondary">
       Nothing on {{ flow.srcChain.label }} can do this amount any more.
     </p>
   </div>

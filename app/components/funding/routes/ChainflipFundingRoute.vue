@@ -40,7 +40,11 @@ const toolbar = computed<{
       trailing: session.canSkipDeposit && !session.claiming && isDemoBuild() ? "skip" : null,
     };
   }
-  return { back: true, trailing: null };
+  return {
+    back: true,
+    title: flow.step === "token" ? "Select coin to pay" : "Select network",
+    trailing: null,
+  };
 });
 
 function onBack() {
