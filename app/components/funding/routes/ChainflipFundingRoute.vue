@@ -32,6 +32,8 @@ const toolbar = computed<{
   trailing: "skip" | null;
 }>(() => {
   if (session.resuming) return { back: false, title: "Crypto", trailing: null };
+  // The confirmation carries only the way back to the deposit.
+  if (flow.confirmingCancel) return { back: true, trailing: null };
   // "journey" here is the deposit stage: the request exists and funds are still to be seen.
   if (flow.screen === "journey") {
     return {
@@ -48,6 +50,10 @@ const toolbar = computed<{
 });
 
 function onBack() {
+  if (flow.confirmingCancel) {
+    flow.confirmingCancel = false;
+    return;
+  }
   if (
     flow.screen === "journey" ||
     flow.step === "network" ||
@@ -58,9 +64,11 @@ function onBack() {
   else flow.back();
 }
 
-/** Performs the cancel. One that went through leaves for the selector; a declined one stays put. */
+/** Performs the cancel. One that went through leaves for the selector; a declined one returns to
+ *  the deposit. */
 async function cancelTopUp() {
   if (await session.cancelTopUp()) emit("back");
+  else flow.confirmingCancel = false;
 }
 
 /**
@@ -119,9 +127,17 @@ onUnmounted(() => {
 
     <div class="flex min-h-0 flex-1 flex-col px-6 pt-6">
       <!-- Resuming renders the deposit screen's skeleton shapes until the request is live. -->
-      <DepositScreen v-if="session.resuming" @cancel="cancelTopUp" />
+      <DepositScreen v-if="session.resuming" @cancel="flow.confirmingCancel = true" />
       <template v-else>
-        <DepositScreen v-if="flow.screen === 'journey'" @cancel="cancelTopUp" />
+        <CancelTopUpScreen
+          v-if="flow.screen === 'journey' && flow.confirmingCancel"
+          @confirm="cancelTopUp"
+          @keep="flow.confirmingCancel = false"
+        />
+        <DepositScreen
+          v-else-if="flow.screen === 'journey'"
+          @cancel="flow.confirmingCancel = true"
+        />
         <NetworkScreen
           v-else-if="flow.step === 'network' || flow.step === 'amount' || flow.step === 'method'"
           @change-amount="emit('back')"

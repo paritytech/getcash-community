@@ -115,6 +115,7 @@ function base(session: Session, flow: Flow) {
   session.fundsSeen = false;
   session.milestones = {};
   flow.step = "amount";
+  flow.confirmingCancel = false;
   // Bitcoin, matching the canned quote.
   flow.srcChainIndex = 0;
   flow.srcAssetIndex = 0;
@@ -203,6 +204,15 @@ export const SCENES: Scene[] = [
     apply: (s, f) => {
       base(s, f);
       s.lastState = awaitingDeposit();
+    },
+  },
+  {
+    // The full-screen confirmation over an open deposit.
+    name: "crypto / deposit: cancel confirm",
+    apply: (s, f) => {
+      base(s, f);
+      s.lastState = awaitingDeposit();
+      f.confirmingCancel = true;
     },
   },
   {
