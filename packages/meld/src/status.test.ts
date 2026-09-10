@@ -50,6 +50,11 @@ describe("getMeldStatus", () => {
     ["expired", "The payment window closed before the payment arrived.", "expired"],
     ["refused", "The payment was declined before it started.", "deposit-rejected"],
     [
+      "declined",
+      "Your bank declined the payment. Check your card details or try another card.",
+      "deposit-rejected",
+    ],
+    [
       "unobserved",
       "We could not confirm this payment. Contact support before trying again.",
       "unknown",

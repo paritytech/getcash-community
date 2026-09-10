@@ -38,6 +38,7 @@ function refundedMessage(sourceAmount?: string, fiat?: string): string {
  * - `failed`: the payment failed.
  * - `expired`: nobody paid inside the window.
  * - `refused`: declined before any payment was possible.
+ * - `declined`: the bank refused the card during payment.
  * - `unobserved`: the adapter could not tell whether a payment happened.
  */
 const FAILURES: Readonly<Record<string, { message: string; kind: FailureKind }>> = Object.freeze({
@@ -50,6 +51,12 @@ const FAILURES: Readonly<Record<string, { message: string; kind: FailureKind }>>
     kind: "expired",
   },
   refused: { message: "The payment was declined before it started.", kind: "deposit-rejected" },
+  // The bank refused the card mid-payment (Meld's DECLINED) — distinct from `refused`, which is
+  // the adapter turning the request away before any payment was possible.
+  declined: {
+    message: "Your bank declined the payment. Check your card details or try another card.",
+    kind: "deposit-rejected",
+  },
   unobserved: {
     message: "We could not confirm this payment. Contact support before trying again.",
     kind: "unknown",

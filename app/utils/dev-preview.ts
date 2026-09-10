@@ -279,8 +279,9 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    // Meld DECLINED (the adapter's `refused`): the bank refused the card. The design labels the
-    // button "Try another card" and routes it to card entry; the action lands later.
+    // Meld DECLINED: the bank refused the card; the message is the `declined` mapping's. The
+    // design labels the button "Try another card" and routes it to card entry; the action lands
+    // later, and the adapter emitting `declined` is unconfirmed (today it flattens to `failed`).
     name: "card / journey: declined",
     apply: (s, f) => {
       cardJourney(s, f);
