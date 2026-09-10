@@ -24,13 +24,14 @@ import { extendTailwindMerge } from "tailwind-merge";
 const twMerge = extendTailwindMerge({
   extend: {
     classGroups: {
-      // The 14 named type styles. Each carries size + line-height + weight, so
+      // The 15 named type styles. Each carries size + line-height + weight, so
       // they belong in font-size: two of them on one element is a conflict.
       "font-size": [
         {
           text: [
             "display-xl",
             "display-l",
+            "heading-xl",
             "heading-l",
             "heading-m",
             "heading-s",
