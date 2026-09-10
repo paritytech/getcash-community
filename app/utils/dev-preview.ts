@@ -299,10 +299,10 @@ export const SCENES: Scene[] = [
   },
   {
     // Meld REFUNDED: terminal, the charge was captured and returned; per Meld it cannot be
-    // retried, only replaced by a fresh top-up. The design labels the button "Add money again"
-    // and starts a new transaction; the action lands later.
-    // FUTURE: the adapter mapping has no `refunded` status yet, so the app cannot reach this.
-    name: "card / journey: refunded (future)",
+    // retried, only replaced by a fresh top-up. The message is what getMeldStatus composes from
+    // the adapter's reported terms. The design labels the button "Add money again" and starts a
+    // new transaction; the action lands later, and the adapter emitting `refunded` is unconfirmed.
+    name: "card / journey: refunded",
     apply: (s, f) => {
       cardJourney(s, f);
       s.fundsSeen = true;
@@ -312,7 +312,7 @@ export const SCENES: Scene[] = [
         failure: {
           kind: "deposit-rejected",
           step: "deposit",
-          message: "Your top-up didn't go through. Your $52.06 has been returned to your card.",
+          message: "Your top-up didn't go through. Your 52.06 USD has been returned to your card.",
           recoverable: true,
         },
       } as PaymentState;

@@ -21,6 +21,18 @@ const DELAYED = new Set(["crypto_failed", "transaction_crypto_failed"]);
 export type MeldStatusView = SwapStatusResult & { delayed?: boolean };
 
 /**
+ * Terminal with the money returned (Meld's REFUNDED: the charge was captured, then sent back to
+ * the card). Unlike `failed`, money moved, so the message says so — with the charged amount when
+ * the adapter reports the request's terms.
+ */
+const REFUNDED = "refunded";
+
+function refundedMessage(sourceAmount?: string, fiat?: string): string {
+  const returned = sourceAmount && fiat ? `Your ${sourceAmount} ${fiat}` : "Your money";
+  return `Your top-up didn't go through. ${returned} has been returned to your card.`;
+}
+
+/**
  * Terminal failures, each with its own message.
  *
  * - `failed`: the payment failed.
@@ -49,11 +61,21 @@ export async function getMeldStatus(
   client: MeldClientLike,
   fundingRequestId: string,
 ): Promise<MeldStatusView> {
-  const { status } = await client.getStatus(fundingRequestId);
+  const { status, sourceAmount, fiat } = await client.getStatus(fundingRequestId);
   if (status === SETTLED) return { status: "complete", raw: status };
   if (status === RECEIVING) return { status: "receiving", raw: status };
   // The payment went through; only the crypto delivery is stuck and retrying.
   if (DELAYED.has(status)) return { status: "receiving", delayed: true, raw: status };
+  if (status === REFUNDED) {
+    return {
+      status: "failed",
+      depositFailure: {
+        reason: { code: status, message: refundedMessage(sourceAmount, fiat) },
+        kind: "deposit-rejected",
+      },
+      raw: status,
+    };
+  }
   const failure = FAILURES[status];
   if (failure !== undefined) {
     // The kind travels with the message; core's default kind is `deposit-rejected`.

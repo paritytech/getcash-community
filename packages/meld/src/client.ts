@@ -62,7 +62,7 @@ export interface MeldSessionResult {
 export interface MeldStatusResult {
   /**
    * The adapter's lifecycle state: `created`, `session_opened`, `transaction_seen`, `settled`,
-   * `failed`, `expired`, `refused` or `unobserved`.
+   * `failed`, `expired`, `refused`, `refunded` or `unobserved`.
    */
   readonly status: string;
   /** Where an unfinished purchase can be resumed. Present only while the request is still live. */
