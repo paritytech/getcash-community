@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { Plus } from "lucide-vue-next";
+import { ArrowDown, Clock, Plus } from "lucide-vue-next";
 import type { FundingStatusDetail } from "../../funding/status";
 import type { FundingTopUp } from "../../funding/top-ups";
 import FundingDetailsDisclosure from "./FundingDetailsDisclosure.vue";
@@ -56,13 +56,13 @@ const details = computed<readonly FundingStatusDetail[]>(() => {
     key: "arrives",
     label: "Arrives",
     value: topUpDetails?.arrivalEstimate ?? "Completed",
-    icon: "/icons/clock.svg",
+    icon: Clock,
   });
   rows.push({
     key: "receive",
     label: "You'll receive",
     value: `${creditedAmount.value} CASH`,
-    icon: "/icons/arrow-down.svg",
+    icon: ArrowDown,
   });
   if (topUpDetails?.depositAddress) {
     rows.push({
