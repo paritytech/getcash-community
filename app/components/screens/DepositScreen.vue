@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed } from "vue";
 import { Check, Copy } from "lucide-vue-next";
 import {
   demoDepositAddress,
@@ -12,7 +12,7 @@ import { shortAddress } from "../../utils/address";
 import { useFlowStore } from "../../stores/flow";
 import { useSessionStore } from "../../stores/session";
 
-// The cancel is performed by the route, which unmounts this screen.
+// Cancel is a request: the route swaps in the full-screen confirmation and performs the cancel.
 const emit = defineEmits<{ cancel: [] }>();
 
 const session = useSessionStore();
@@ -85,25 +85,8 @@ const source = computed(() => {
   return { chain, asset };
 });
 
-// Cancel. The button opens the confirmation sheet and the sheet's red pill performs the cancel.
-// Offered only while nothing has been paid.
-const confirmingCancel = ref(false);
+// Cancel is offered only while nothing has been paid.
 const showCancel = computed(() => session.faucetState === "idle" && !session.fundsSeen);
-function dismissCancelSheet() {
-  // The sheet stays up mid-cancel.
-  if (!session.cancelling) confirmingCancel.value = false;
-}
-function confirmCancel() {
-  if (session.cancelling) return;
-  emit("cancel");
-}
-// Closes the sheet when a declined cancel finishes with this screen still mounted.
-watch(
-  () => session.cancelling,
-  (now, before) => {
-    if (before && !now) confirmingCancel.value = false;
-  },
-);
 
 // The "Copied" pill above the buttons answers either row's copy.
 const { copied, copy: copyToClipboard } = useCopyToClipboard();
@@ -179,13 +162,14 @@ function copy(target: "amount" | "address") {
           Copied
         </span>
       </div>
-      <!-- Cancel opens the confirmation sheet and is offered only while nothing has been paid. -->
+      <!-- Cancel asks the route for the confirmation screen; offered only while nothing has
+           been paid. -->
       <div class="grid grid-cols-2 gap-2">
         <button
           v-if="showCancel"
           type="button"
           class="h-12 rounded-full bg-status-error text-label-l text-fg-static-white transition-colors hover:bg-status-error-hover"
-          @click="confirmingCancel = true"
+          @click="emit('cancel')"
         >
           Cancel
         </button>
@@ -204,31 +188,5 @@ function copy(target: "amount" | "address") {
       </div>
     </div>
 
-    <BottomSheet :open="confirmingCancel" @dismiss="dismissCancelSheet">
-      <div class="flex flex-col gap-2 px-6 py-4 text-center">
-        <p class="text-heading-l text-fg-primary">Cancel this top-up?</p>
-        <p class="text-body-l text-fg-secondary">
-          The deposit address will stop working. Don't cancel if you've already sent your funds.
-        </p>
-      </div>
-      <div class="flex flex-col gap-4 p-4">
-        <button
-          type="button"
-          class="h-12 w-full rounded-medium bg-status-error text-label-l text-fg-static-white transition-colors hover:bg-status-error-hover disabled:opacity-50"
-          :disabled="session.cancelling"
-          @click="confirmCancel"
-        >
-          {{ session.cancelling ? "Cancelling…" : "Cancel" }}
-        </button>
-        <button
-          type="button"
-          class="h-12 w-full rounded-medium bg-action-secondary text-label-l text-fg-primary transition-colors hover:bg-action-secondary-hover disabled:opacity-50"
-          :disabled="session.cancelling"
-          @click="dismissCancelSheet"
-        >
-          Keep it
-        </button>
-      </div>
-    </BottomSheet>
   </section>
 </template>
