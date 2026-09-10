@@ -117,6 +117,9 @@ export function projectFundingProgress(
     estimateText: fundingProgressEstimate(snapshot, now),
     cadenceMs: snapshot.profile.cadenceMs,
     ...(snapshot.detectedAt === undefined ? {} : { detectedAt: snapshot.detectedAt }),
+    ...(snapshot.routeCompletedAt === undefined
+      ? {}
+      : { routeCompletedAt: snapshot.routeCompletedAt }),
     ...(snapshot.failedAt === undefined ? {} : { failedAt: snapshot.failedAt }),
     ...(snapshot.settledAt === undefined ? {} : { settledAt: snapshot.settledAt }),
     stageTimestamps: snapshot.stageTimestamps,

@@ -179,7 +179,6 @@ const messageTone = computed<"muted" | "notice" | "error">(() => {
       <FundingJourneyTimeline
         v-if="progress"
         :progress="progress"
-        :completed-steps="session.journeyDone"
         :message="message"
         :message-tone="messageTone"
       />
