@@ -31,6 +31,13 @@ export const fundingSelectorConfig = {
   },
   routes: [
     {
+      id: "crypto",
+      label: "Crypto",
+      description: "Send from another wallet",
+      estimate: "~3 min",
+      icon: "/icons/crypto.svg",
+    },
+    {
       id: "card",
       label: "Card",
       description: "Arrive in minutes",
@@ -43,13 +50,6 @@ export const fundingSelectorConfig = {
       description: "1-2 business days",
       estimate: "1-2 days",
       icon: "/icons/bank.svg",
-    },
-    {
-      id: "crypto",
-      label: "Crypto",
-      description: "Send from another wallet",
-      estimate: "~3 min",
-      icon: "/icons/crypto.svg",
     },
   ],
 } as const satisfies FundingSelectorConfig;

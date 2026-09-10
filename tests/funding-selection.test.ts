@@ -28,9 +28,9 @@ describe("funding selection configuration", () => {
       presets: ["50", "100", "200"],
     });
     expect(fundingSelectorConfig.routes).toMatchObject([
+      { id: "crypto", description: "Send from another wallet", estimate: "~3 min" },
       { id: "card", description: "Arrive in minutes", estimate: "Instant" },
       { id: "bank", description: "1-2 business days", estimate: "1-2 days" },
-      { id: "crypto", description: "Send from another wallet", estimate: "~3 min" },
     ]);
   });
 });
