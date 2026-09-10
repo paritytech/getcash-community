@@ -29,6 +29,28 @@ const FALLBACK_COUNTRIES = [
 /** The region shown before the buyer picks one; matches the quoter's own default region. */
 const DEFAULT_COUNTRY = "US";
 
+/**
+ * The device's own region, e.g. "BR" for a pt-BR phone.
+ *
+ * Testers landed on the screen already quoting US and did not read the picker as something they had
+ * to change, so a Brazilian card was priced against a US corridor and declined. The device locale is
+ * the closest thing to the buyer's real region available without the geolocation scope: still a
+ * guess, but a guess drawn from the buyer rather than from us. Returns null on anything that is not
+ * a plain alpha-2 region, so the caller keeps DEFAULT_COUNTRY.
+ */
+function localeCountry(): string | null {
+  if (typeof navigator === "undefined") return null;
+  const tag = navigator.language;
+  if (!tag) return null;
+  try {
+    // `maximize()` supplies the region a bare language tag omits ("pt" -> "pt-Latn-BR").
+    const region = new Intl.Locale(tag).maximize().region;
+    return region !== undefined && /^[A-Z]{2}$/.test(region) ? region : null;
+  } catch {
+    return null;
+  }
+}
+
 // The picker's rows: every country the live catalog lists, else the static fallback.
 const countryOptions = computed(() => {
   const live = session.supportedCountries;
@@ -43,7 +65,7 @@ const selectedCountry = computed(() => session.meldCountry ?? DEFAULT_COUNTRY);
 // failure leaves the fallback list in place.
 onMounted(() => {
   if (session.meldCountry === null) {
-    session.setMeldCountry(DEFAULT_COUNTRY);
+    session.setMeldCountry(localeCountry() ?? DEFAULT_COUNTRY);
     requote();
   }
   void session.loadSupportedCountries();
@@ -74,6 +96,14 @@ function useCryptoRoute() {
   emit("switchRoute", "crypto");
 }
 
+/** The picked region's own name, for the quote's terms. Falls back to the code when the catalog is
+ *  the static list and the code is not in it. */
+const selectedCountryName = computed(
+  () =>
+    countryOptions.value.find((o) => o.country === selectedCountry.value)?.name ??
+    selectedCountry.value,
+);
+
 const quoteRows = computed(() => {
   const q = session.quoted;
   if (!q) return [];
@@ -81,6 +111,9 @@ const quoteRows = computed(() => {
     { label: "You pay", value: `${q.send} ${q.symbol}` },
     { label: "You receive", value: `${session.amountHuman} CASH` },
     { label: "Via", value: via.value },
+    // Names the corridor these terms were priced against. Two Card failures in one testathon
+    // session came from two DIFFERENT regions, and nothing on the quote said which one it was.
+    { label: "Region", value: selectedCountryName.value },
     { label: "Est. time", value: "~a few min" },
   ];
 });
@@ -120,7 +153,8 @@ async function next() {
     <!-- Temporary region picker, removed once geolocation lands. -->
     <CountryCombobox
       class="mt-6"
-      label="REGION"
+      label="CARD OR BANK COUNTRY"
+      hint="Where your card or bank account is registered. This sets which providers and payment methods you can use."
       :options="countryOptions"
       :model-value="selectedCountry"
       @commit="pickCountry"
