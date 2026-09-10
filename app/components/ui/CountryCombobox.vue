@@ -11,6 +11,9 @@ const props = defineProps<{
   /** The committed selection, as an ISO 3166-1 alpha-2 code. */
   modelValue: string;
   label?: string;
+  /** One line under the field saying what the choice means and what it changes. Wired to the input
+   *  with `aria-describedby`, so a screen reader reads it with the field rather than after it. */
+  hint?: string;
 }>();
 const emit = defineEmits<{ commit: [country: string] }>();
 
@@ -110,6 +113,7 @@ function onBlur() {
 }
 
 const listboxId = `country-listbox-${Math.random().toString(36).slice(2, 8)}`;
+const hintId = `${listboxId}-hint`;
 const rowId = (i: number) => `${listboxId}-row-${i}`;
 </script>
 
@@ -136,6 +140,7 @@ const rowId = (i: number) => `${listboxId}-row-${i}`;
         :aria-controls="listboxId"
         aria-autocomplete="list"
         :aria-activedescendant="open && active >= 0 ? rowId(active) : undefined"
+        :aria-describedby="hint ? hintId : undefined"
         :value="open ? query : displayText"
         :placeholder="selected ? '' : 'Search countries'"
         class="w-full rounded-nested bg-surface-container py-3 pr-10 text-body-l text-fg-primary placeholder:text-fg-tertiary"
@@ -181,5 +186,8 @@ const rowId = (i: number) => `${listboxId}-row-${i}`;
         </li>
       </ul>
     </div>
+    <!-- Sits OUTSIDE the relative wrapper the list is absolutely positioned in, so an open list
+         covers the rows below the field rather than this line. -->
+    <p v-if="hint" :id="hintId" class="text-sm text-text-secondary">{{ hint }}</p>
   </div>
 </template>
