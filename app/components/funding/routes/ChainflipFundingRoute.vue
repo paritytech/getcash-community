@@ -31,7 +31,7 @@ const toolbar = computed<{
   title?: string;
   trailing: "skip" | null;
 }>(() => {
-  if (session.resuming) return { back: false, trailing: null };
+  if (session.resuming) return { back: false, title: "Crypto", trailing: null };
   // "journey" here is the deposit stage: the request exists and funds are still to be seen.
   if (flow.screen === "journey") {
     return {
@@ -118,12 +118,8 @@ onUnmounted(() => {
     </Toolbar>
 
     <div class="flex min-h-0 flex-1 flex-col px-6 pt-6">
-      <div v-if="session.resuming" class="flex flex-col items-center gap-4 pt-16">
-        <span
-          class="inline-block size-8 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary"
-        />
-        <p class="text-body-m text-fg-secondary">Opening your top-up…</p>
-      </div>
+      <!-- Resuming renders the deposit screen's skeleton shapes until the request is live. -->
+      <DepositScreen v-if="session.resuming" @cancel="cancelTopUp" />
       <template v-else>
         <DepositScreen v-if="flow.screen === 'journey'" @cancel="cancelTopUp" />
         <NetworkScreen

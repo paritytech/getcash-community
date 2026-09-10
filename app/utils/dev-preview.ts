@@ -191,6 +191,14 @@ export const SCENES: Scene[] = [
     },
   },
   {
+    // The deposit screen's skeleton shapes while the request is being opened.
+    name: "crypto / deposit: opening",
+    apply: (s, f) => {
+      base(s, f);
+      s.resuming = true;
+    },
+  },
+  {
     name: "crypto / deposit: waiting",
     apply: (s, f) => {
       base(s, f);

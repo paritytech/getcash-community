@@ -12,7 +12,8 @@ watchEffect(() => {
   if (!el || !props.value) return;
   void QRCode.toCanvas(el, props.value, {
     width: RESOLUTION,
-    margin: 6,
+    // 4 modules ≈ the design's white inset (and the QR spec's own quiet-zone minimum).
+    margin: 4,
     // Canvas pixels, not theme colours: wallet scanners expect a dark-on-light code
     // at maximum contrast in EVERY theme, so the QR is theme-invariant by design
     // (like a logo asset). Pure black/white beats any token here on purpose.
@@ -28,8 +29,8 @@ watchEffect(() => {
 </script>
 
 <template>
-  <!-- Sized by the parent's height, capped at 176px, square by aspect. -->
-  <div class="aspect-square h-full max-h-44 overflow-hidden rounded-container shadow-1">
+  <!-- Sized by the parent's height, capped at the design's 288px, square by aspect. -->
+  <div class="aspect-square h-full max-h-72 overflow-hidden rounded-container shadow-1">
     <canvas ref="canvas" class="block size-full" />
   </div>
 </template>
