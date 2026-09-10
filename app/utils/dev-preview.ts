@@ -11,6 +11,7 @@ import {
   fundingProgressSignalForSharedStep,
 } from "../funding/progress";
 import { createMockCoinageSession } from "~~/lib/coinage";
+import { isDemoBuild } from "./demo";
 import type { useFlowStore } from "../stores/flow";
 import { useOffersStore } from "../stores/offers";
 import { DEPOSIT_EXPIRED_REASON, type useSessionStore } from "../stores/session";
@@ -132,7 +133,10 @@ function selection(session: Session, flow: Flow) {
   base(session, flow);
   session.setAmount("100");
   session.quoted = { ...QUOTED, nativeAmount: 58_694_260_960n };
-  useOffersStore().floors = FLOORS;
+  const offers = useOffersStore();
+  offers.floors = FLOORS;
+  // The paused scene turns the demo fallback off; every other scene gets the build's own setting.
+  offers.demoFallback = isDemoBuild();
   flow.srcChainIndex = 1; // Ethereum
   flow.srcAssetIndex = 0;
 }
@@ -143,6 +147,14 @@ export const SCENES: Scene[] = [
     name: "crypto / network",
     apply: (s, f) => {
       selection(s, f);
+      f.step = "network";
+    },
+  },
+  {
+    name: "crypto / network: loading",
+    apply: (s, f) => {
+      selection(s, f);
+      useOffersStore().floors = null; // still learning: the skeleton rows
       f.step = "network";
     },
   },
@@ -159,12 +171,15 @@ export const SCENES: Scene[] = [
     name: "crypto / network: paused",
     apply: (s, f) => {
       selection(s, f);
-      useOffersStore().floors = new Map(
+      const offers = useOffersStore();
+      offers.floors = new Map(
         [...FLOORS.keys()].map((id) => [
           id,
           { kind: "unavailable", reason: "Quoting is currently unavailable due to maintenance" },
         ]),
       );
+      // The demo build's carry-on fallback would swallow the paused state this scene shows.
+      offers.demoFallback = false;
       f.step = "network";
     },
   },
