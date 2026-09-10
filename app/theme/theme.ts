@@ -8,6 +8,8 @@
  * swaps in Berlin Night).
  */
 
+import type { ThemeMode } from "@parity/product-sdk-host";
+
 export const THEMES = ["berlin-day", "berlin-night", "lisbon", "malta", "tokyo"] as const;
 
 export type Theme = (typeof THEMES)[number];
@@ -32,10 +34,29 @@ function isTheme(value: unknown): value is Theme {
   return typeof value === "string" && (THEMES as readonly string[]).includes(value);
 }
 
+/* Storage is best-effort. A cross-origin iframe with storage partitioned off
+   (Safari's tracking prevention, sandboxed frames) throws SecurityError on
+   property ACCESS, so a `typeof localStorage` check does not catch it. */
+function readStoredChoice(): string | null {
+  try {
+    return localStorage.getItem(STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredChoice(choice: ThemeChoice): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, choice);
+  } catch {
+    // No storage: the choice still applies for this session, it just won't
+    // survive a reload (the anti-flash script falls back to the default).
+  }
+}
+
 /** The stored choice, or the default when nothing valid is stored. */
 export function getTheme(): ThemeChoice {
-  if (typeof localStorage === "undefined") return DEFAULT_THEME;
-  const stored = localStorage.getItem(STORAGE_KEY);
+  const stored = readStoredChoice();
   if (stored === "system") return "system";
   return isTheme(stored) ? stored : DEFAULT_THEME;
 }
@@ -55,7 +76,20 @@ export function setTheme(choice: ThemeChoice): void {
   } else {
     root.setAttribute("data-theme", choice);
   }
-  localStorage.setItem(STORAGE_KEY, choice);
+  writeStoredChoice(choice);
+}
+
+/**
+ * Map the host's theme onto one of ours. A recognised custom name wins
+ * ("Berlin Night" → berlin-night); otherwise the light/dark variant decides,
+ * since the host may ship themes we don't have blocks for.
+ */
+export function themeFromHost(mode: ThemeMode): Theme {
+  if (mode.name.tag === "Custom") {
+    const named = mode.name.value.trim().toLowerCase().replace(/\s+/g, "-");
+    if (isTheme(named)) return named;
+  }
+  return mode.variant === "Dark" ? "berlin-night" : "berlin-day";
 }
 
 /** Call once on mount to reapply the stored choice. */

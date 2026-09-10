@@ -1,5 +1,6 @@
 import tailwindcss from "@tailwindcss/vite";
 import { nodePolyfills } from "vite-plugin-node-polyfills";
+import { DEFAULT_THEME, THEMES } from "./app/theme/theme";
 
 export default defineNuxtConfig({
   // Static SPA; there is no server.
@@ -17,9 +18,13 @@ export default defineNuxtConfig({
           // choice never flashes the default theme. Must precede every stylesheet;
           // initTheme() is the fallback for documents we can't edit — never both.
           // Berlin Night is the product default (Funding — states and logic doc);
-          // "system" is an explicit opt-in, not the fallback.
+          // "system" is an explicit opt-in, not the fallback. A stored value that
+          // matches no theme block (stale key, another app's value) must fall back
+          // too, or the page silently renders the bare :root theme.
           innerHTML:
-            "try{var t=localStorage.getItem('pds-theme');if(t!=='system')document.documentElement.setAttribute('data-theme',t||'berlin-night')}catch(e){document.documentElement.setAttribute('data-theme','berlin-night')}",
+            `try{var v=${JSON.stringify(THEMES)},t=localStorage.getItem('pds-theme');` +
+            `if(t!=='system')document.documentElement.setAttribute('data-theme',v.indexOf(t)>=0?t:'${DEFAULT_THEME}')}` +
+            `catch(e){document.documentElement.setAttribute('data-theme','${DEFAULT_THEME}')}`,
           tagPriority: "critical",
         },
       ],
