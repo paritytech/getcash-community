@@ -2,14 +2,16 @@
 // The Meld package's first screen: region, the quote it produced, and Continue into the provider
 // widget. The method is fixed by the route; the region is the buyer's only choice.
 import { computed, onMounted, ref } from "vue";
+import { ChevronRight } from "lucide-vue-next";
 import { useSessionStore } from "../../../stores/session";
 import { fmtFiat } from "../../../utils/money";
 import type { FundingRoute } from "../../../funding/selection";
 import CountryCombobox from "../../ui/CountryCombobox.vue";
 
 const session = useSessionStore();
-// Asks the shell to swap to the crypto package when this region routes neither card nor bank.
-const emit = defineEmits<{ switchRoute: [route: FundingRoute] }>();
+// switchRoute asks the shell to swap to the crypto package when this region routes neither card
+// nor bank; fees opens the fee-breakdown drill-in.
+const emit = defineEmits<{ switchRoute: [route: FundingRoute]; fees: [] }>();
 
 // The adapter's buyer-facing refusal message, shown under the quote and blocking Continue.
 const startError = ref<string | null>(null);
@@ -117,14 +119,14 @@ const selectedCountryName = computed(
 const quoteRows = computed(() => {
   const q = session.quoted;
   if (!q) return [];
-  const rows = [
+  const rows: { label: string; value: string; fees?: boolean }[] = [
     { label: "Provider", value: "Meld" },
     // Names the corridor these terms were priced against. Two Card failures in one testathon
     // session came from two DIFFERENT regions, and nothing on the quote said which one it was.
     { label: "Region", value: selectedCountryName.value },
   ];
-  // Only the fee total is quoted; the drill-in breakdown screen needs the split.
-  if (q.fee) rows.push({ label: "Fees", value: fmtFiat(q.fee, q.symbol) });
+  // The fee row drills into the breakdown screen.
+  if (q.fee) rows.push({ label: "Fees", value: fmtFiat(q.fee, q.symbol), fees: true });
   rows.push(
     { label: "Arrives", value: "A few minutes" },
     { label: "You’ll receive", value: `${session.amountHuman} $CASH` },
@@ -243,7 +245,16 @@ async function next() {
         class="flex items-baseline justify-between gap-4"
       >
         <span class="text-paragraph-l text-fg-primary">{{ row.label }}</span>
-        <span class="text-heading-m text-fg-primary">{{ row.value }}</span>
+        <button
+          v-if="row.fees"
+          type="button"
+          class="flex items-center gap-1 text-heading-m text-fg-primary"
+          @click="emit('fees')"
+        >
+          {{ row.value }}
+          <ChevronRight class="size-4 text-fg-secondary" aria-hidden="true" />
+        </button>
+        <span v-else class="text-heading-m text-fg-primary">{{ row.value }}</span>
       </div>
     </div>
 

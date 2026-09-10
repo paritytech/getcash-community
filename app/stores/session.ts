@@ -201,6 +201,8 @@ export interface QuotedView {
   symbol: string;
   /** The provider's total fee in `symbol` units, when the rail quotes one (Meld does). */
   fee?: string | null;
+  /** The network-fee share of `fee`, when the rail breaks it out (Meld may). */
+  networkFee?: string | null;
   /** Live world only: the native (DOT) budget the rail must deliver, 10-dec base units. */
   nativeAmount: bigint | null;
   sourceAsset: string | null;
@@ -897,6 +899,7 @@ export const useSessionStore = defineStore("session", () => {
           send: raw.provider.sourceAmount,
           symbol: raw.context.fiat,
           fee: raw.provider.totalFee ?? null,
+          networkFee: raw.provider.networkFee ?? null,
           nativeAmount: null,
           sourceAsset: null,
           sourceChain: null,
@@ -926,6 +929,7 @@ export const useSessionStore = defineStore("session", () => {
         send: raw.provider.sourceAmount,
         symbol: raw.context.fiat,
         fee: raw.provider.totalFee ?? null,
+        networkFee: raw.provider.networkFee ?? null,
         nativeAmount: null,
         sourceAsset: null,
         sourceChain: null,

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Meld route for card and bank: pick the region, see the quote, then pay inside the provider's
 // widget. Hands off to the journey once the payment is approved or fails.
-import { computed, onMounted, onUnmounted } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useMeldHandoff } from "../../../composables/useMeldHandoff";
 import { useStateDirector } from "../../../composables/useStateDirector";
 import { useVisibilityReconcile } from "../../../composables/useVisibilityReconcile";
@@ -11,6 +11,7 @@ import type { FundingPackageEmits } from "../../../funding/handoff";
 import type { FundingSelection } from "../../../funding/selection";
 import { useFlowStore } from "../../../stores/flow";
 import { useSessionStore } from "../../../stores/session";
+import MeldFeeDetailsScreen from "./MeldFeeDetailsScreen.vue";
 import MeldPayScreen from "./MeldPayScreen.vue";
 import MeldPaySheet from "./MeldPaySheet.vue";
 
@@ -31,6 +32,19 @@ const { handedOff } = useMeldHandoff(emit);
 const title = computed(
   () => fundingSelectorConfig.routes.find(({ id }) => id === route)?.label ?? route,
 );
+/** The fee-breakdown drill-in over the pay screen. Back (toolbar or bottom button) returns to it. */
+const showingFees = ref(false);
+// A cleared quote (re-quote, region change) leaves nothing to break down.
+watch(
+  () => session.quoted,
+  (q) => {
+    if (!q) showingFees.value = false;
+  },
+);
+function goBack() {
+  if (showingFees.value) showingFees.value = false;
+  else emit("back");
+}
 /** The widget stage: a request exists and the payment is still to be made. */
 const paying = computed(() => flow.screen === "journey");
 /** Cancel is offered only while nothing can have been paid. */
@@ -79,9 +93,9 @@ onUnmounted(() => {
   >
     <!-- No title while the widget is up; the back control stays. -->
     <Toolbar
-      :title="paying ? '' : title"
+      :title="paying ? '' : showingFees ? 'Fees' : title"
       :back="!session.claiming && !session.resuming"
-      @back="emit('back')"
+      @back="goBack"
     >
       <template
         v-if="
@@ -128,7 +142,12 @@ onUnmounted(() => {
           {{ session.cancelling ? "Cancelling…" : "Cancel" }}
         </button>
       </template>
-      <MeldPayScreen v-else @switch-route="emit('switchRoute', $event)" />
+      <MeldFeeDetailsScreen v-else-if="showingFees" @back="showingFees = false" />
+      <MeldPayScreen
+        v-else
+        @fees="showingFees = true"
+        @switch-route="emit('switchRoute', $event)"
+      />
     </div>
 
     <!-- state-director scene label (dev/demo keys only) -->
