@@ -248,6 +248,77 @@ export const SCENES: Scene[] = [
     },
   },
   {
+    // After "Try again" on a failed payment: the new attempt in flight on the Payment step, amber
+    // like the delayed state, the retry line in the ribbon, no button.
+    // FUTURE: our retry flow does not exist yet, so the app cannot reach this state.
+    name: "card / journey: retrying (future)",
+    apply: (s, f) => {
+      cardJourney(s, f);
+      s.lastState = swapping("receiving");
+      s.meldDelayed = true;
+      s.fundingNotice = "Hang tight, we're retrying your payment";
+    },
+  },
+  {
+    // Meld FAILED: terminal, nothing was charged. The design's inline "Try again" is our own
+    // retry system (re-request the payment); the button is shown here, its action lands later.
+    name: "card / journey: payment failed",
+    apply: (s, f) => {
+      cardJourney(s, f);
+      s.fundsSeen = true;
+      s.lastState = {
+        phase: "failed",
+        sourceId: "meld-card",
+        failure: {
+          kind: "deposit-rejected",
+          step: "deposit",
+          message: "Top-up didn't go through. No money was taken.",
+          recoverable: true,
+        },
+      } as PaymentState;
+    },
+  },
+  {
+    // Meld DECLINED (the adapter's `refused`): the bank refused the card. The design labels the
+    // button "Try another card" and routes it to card entry; the action lands later.
+    name: "card / journey: declined",
+    apply: (s, f) => {
+      cardJourney(s, f);
+      s.fundsSeen = true;
+      s.lastState = {
+        phase: "failed",
+        sourceId: "meld-card",
+        failure: {
+          kind: "deposit-rejected",
+          step: "deposit",
+          message: "Your bank declined the payment. Check your card details or try another card.",
+          recoverable: true,
+        },
+      } as PaymentState;
+    },
+  },
+  {
+    // Meld REFUNDED: terminal, the charge was captured and returned; per Meld it cannot be
+    // retried, only replaced by a fresh top-up. The design labels the button "Add money again"
+    // and starts a new transaction; the action lands later.
+    // FUTURE: the adapter mapping has no `refunded` status yet, so the app cannot reach this.
+    name: "card / journey: refunded (future)",
+    apply: (s, f) => {
+      cardJourney(s, f);
+      s.fundsSeen = true;
+      s.lastState = {
+        phase: "failed",
+        sourceId: "meld-card",
+        failure: {
+          kind: "deposit-rejected",
+          step: "deposit",
+          message: "Your top-up didn't go through. Your $52.06 has been returned to your card.",
+          recoverable: true,
+        },
+      } as PaymentState;
+    },
+  },
+  {
     // The design's card success screen: the credited amount over the fiat Fees and Total.
     name: "card / journey: success",
     apply: (s, f) => {
@@ -416,6 +487,13 @@ function applyProgress(session: Session) {
 
   if (state.phase === "failed" && state.failure.kind === "mint") {
     advance(fundingProgressSignalForSharedStep("done"));
+  } else if (state.phase === "failed" && session.fundsSeen) {
+    // The payment was seen before it failed: the marker lands on Payment, with Started complete.
+    const seen = fundingProgressSignalForPaymentState(
+      chainflipProgressProvider,
+      swapping("receiving"),
+    );
+    if (seen) advance(seen);
   } else if (paymentSignal && paymentSignal.observation.kind !== "failed") {
     advance(paymentSignal);
   }
