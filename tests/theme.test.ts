@@ -6,9 +6,9 @@ describe("themeFromHost", () => {
     expect(themeFromHost({ name: { tag: "Custom", value: "lisbon" }, variant: "Light" })).toBe(
       "lisbon",
     );
-    expect(
-      themeFromHost({ name: { tag: "Custom", value: "Berlin Night" }, variant: "Dark" }),
-    ).toBe("berlin-night");
+    expect(themeFromHost({ name: { tag: "Custom", value: "Berlin Night" }, variant: "Dark" })).toBe(
+      "berlin-night",
+    );
     expect(themeFromHost({ name: { tag: "Custom", value: "  Tokyo " }, variant: "Light" })).toBe(
       "tokyo",
     );

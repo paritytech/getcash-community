@@ -25,7 +25,12 @@ const summary = computed(() =>
       <div v-for="row in rows" :key="row.key" class="funding-details-row">
         <dt class="text-body-m">
           <img v-if="typeof row.icon === 'string'" :src="row.icon" alt="" />
-          <component :is="row.icon" v-else-if="row.icon" class="size-5 shrink-0" aria-hidden="true" />
+          <component
+            :is="row.icon"
+            v-else-if="row.icon"
+            class="size-5 shrink-0"
+            aria-hidden="true"
+          />
           <span>{{ row.label }}</span>
         </dt>
         <dd :class="row.monospace ? 'font-mono text-code' : 'text-heading-s'">
