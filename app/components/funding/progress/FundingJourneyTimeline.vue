@@ -9,9 +9,12 @@ const props = withDefaults(
     completedSteps: number;
     /** The one line under the stepper: the ribbon only shows when there is something to say. */
     message?: string | null;
+    /** Temporarily stuck, not failed: the current step renders amber and keeps spinning. */
+    delayed?: boolean;
   }>(),
   {
     message: null,
+    delayed: false,
   },
 );
 
@@ -29,10 +32,13 @@ const activeIndex = computed(() =>
   settled.value ? -1 : Math.min(completed.value, stages.length - 1),
 );
 
-type StepState = "complete" | "current" | "failed" | "upcoming";
+type StepState = "complete" | "current" | "delayed" | "failed" | "upcoming";
 function stageState(index: number): StepState {
   if (settled.value || index < completed.value) return "complete";
-  if (index === activeIndex.value) return failed.value ? "failed" : "current";
+  if (index === activeIndex.value) {
+    if (failed.value) return "failed";
+    return props.delayed ? "delayed" : "current";
+  }
   return "upcoming";
 }
 
@@ -61,11 +67,13 @@ function stageLabel(index: number): string {
           :key="stage"
           class="funding-journey-step"
           :class="`funding-journey-step-${stageState(index)}`"
-          :aria-current="stageState(index) === 'current' ? 'step' : undefined"
+          :aria-current="
+            stageState(index) === 'current' || stageState(index) === 'delayed' ? 'step' : undefined
+          "
         >
           <span class="funding-journey-marker" aria-hidden="true">
             <LoaderCircle
-              v-if="stageState(index) === 'current'"
+              v-if="stageState(index) === 'current' || stageState(index) === 'delayed'"
               class="funding-journey-spinner size-4"
               :stroke-width="1.5"
             />
@@ -128,6 +136,11 @@ function stageLabel(index: number): string {
   background: var(--bg-status-error);
 }
 
+/* Delayed keeps the process alive in amber: nothing struck, no terminal red. */
+.funding-journey-connector-delayed {
+  background: var(--bg-status-warning);
+}
+
 .funding-journey-step {
   position: relative;
   z-index: 1;
@@ -161,6 +174,11 @@ function stageLabel(index: number): string {
   color: var(--fg-primary);
 }
 
+.funding-journey-step-delayed .funding-journey-marker {
+  background: var(--bg-status-warning);
+  color: var(--fg-primary);
+}
+
 .funding-journey-label {
   position: absolute;
   top: calc(100% + 0.25rem);
@@ -180,6 +198,10 @@ function stageLabel(index: number): string {
 
 .funding-journey-step-failed .funding-journey-label {
   color: var(--fg-error);
+}
+
+.funding-journey-step-delayed .funding-journey-label {
+  color: var(--fg-warning);
 }
 
 /* The ribbon sits behind the card and extends 32px below it; the message is centred in the

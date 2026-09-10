@@ -242,6 +242,9 @@ export const useSessionStore = defineStore("session", () => {
   /** The Meld payment's polled stage: `waiting` while the buyer is on the widget, `receiving` once
    *  the provider approved it, `complete` when settled. */
   const meldStage = ref<"waiting" | "receiving" | "complete" | "failed" | null>(null);
+  /** The Meld payment is temporarily stuck (provider retrying its crypto delivery). Transient:
+   *  set and cleared by the status poll, never terminal on its own. */
+  const meldDelayed = ref(false);
   /** The adapter's reason for a failed Meld payment. Null unless `meldStage === 'failed'`. */
   const meldFailureMessage = ref<string | null>(null);
   /** The provider widget URL recovered when resuming a Meld request; null unless a resume found a
@@ -379,6 +382,7 @@ export const useSessionStore = defineStore("session", () => {
     quoteEpoch += 1;
     stopMeldPoll();
     meldStage.value = null;
+    meldDelayed.value = false;
     meldFailureMessage.value = null;
     meldResumeWidgetUrl.value = null;
     meldSubmitted.value = false;
@@ -2078,7 +2082,8 @@ export const useSessionStore = defineStore("session", () => {
     const tick = async () => {
       if (stopped) return;
       try {
-        const { status: st, depositFailure } = await getMeldStatus(client, ref);
+        const { status: st, depositFailure, delayed } = await getMeldStatus(client, ref);
+        meldDelayed.value = delayed === true;
         // Hold the iframe until the buyer finishes it or a terminal status lands.
         // `transaction_seen`
         // can precede a 3DS/OTP challenge; `receiving` shows only once the widget was left.
@@ -2249,6 +2254,7 @@ export const useSessionStore = defineStore("session", () => {
     supportedCountries,
     meldCorridor,
     meldStage,
+    meldDelayed,
     meldFailureMessage,
     meldResumeWidgetUrl,
     meldSubmitted,

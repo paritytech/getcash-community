@@ -11,6 +11,16 @@ const SETTLED = "settled";
 const RECEIVING = "transaction_seen";
 
 /**
+ * Temporarily stuck, NOT terminal: the provider's crypto delivery failed and is being retried on
+ * their side (Meld's TRANSACTION_CRYPTO_FAILED webhook). The poll keeps going and the journey
+ * shows a delay notice; a payment that stays stuck concludes through one of the terminal states.
+ */
+const DELAYED = new Set(["crypto_failed", "transaction_crypto_failed"]);
+
+/** A Meld status view: core's normalized status plus the transient delay marker. */
+export type MeldStatusView = SwapStatusResult & { delayed?: boolean };
+
+/**
  * Terminal failures, each with its own message.
  *
  * - `failed`: the payment failed.
@@ -38,10 +48,12 @@ const FAILURES: Readonly<Record<string, { message: string; kind: FailureKind }>>
 export async function getMeldStatus(
   client: MeldClientLike,
   fundingRequestId: string,
-): Promise<SwapStatusResult> {
+): Promise<MeldStatusView> {
   const { status } = await client.getStatus(fundingRequestId);
   if (status === SETTLED) return { status: "complete", raw: status };
   if (status === RECEIVING) return { status: "receiving", raw: status };
+  // The payment went through; only the crypto delivery is stuck and retrying.
+  if (DELAYED.has(status)) return { status: "receiving", delayed: true, raw: status };
   const failure = FAILURES[status];
   if (failure !== undefined) {
     // The kind travels with the message; core's default kind is `deposit-rejected`.
