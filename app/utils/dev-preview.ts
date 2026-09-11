@@ -216,22 +216,6 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "crypto / deposit: faucet sent",
-    apply: (s, f) => {
-      base(s, f);
-      s.lastState = awaitingDeposit();
-      s.faucetState = "sent";
-    },
-  },
-  {
-    name: "crypto / deposit: faucet failed",
-    apply: (s, f) => {
-      base(s, f);
-      s.lastState = awaitingDeposit();
-      s.fundingError = "faucet transfer failed on-chain (is the faucet funded on Asset Hub?)";
-    },
-  },
-  {
     // The channel deadline as a ticking countdown row.
     name: "crypto / deposit: expiring",
     apply: (s, f) => {
