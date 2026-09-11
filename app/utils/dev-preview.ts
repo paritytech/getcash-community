@@ -2,7 +2,8 @@
 // write synthetic state into the stores; Ctrl+Shift+R reloads the page.
 
 import type { PaymentState, SourceId } from "@getsome/core";
-import type { SourceFloorResult } from "@getsome/chainflip";
+import { SOURCE_CONFIG_BY_ID, type SourceFloorResult } from "@getsome/chainflip";
+import { SOURCE_CHAINS } from "~~/lib/config";
 import {
   advanceFundingProgressSnapshot,
   chainflipProgressProvider,
@@ -143,41 +144,72 @@ function selection(session: Session, flow: Flow) {
   flow.srcAssetIndex = 0;
 }
 
-/** The refunded USDT-on-Tron failure: a token refund with the gas note. The reveal panel reads
- *  the refund key off the mock world the scene installs. */
-function refundedTron(s: Session, f: Flow) {
-  base(s, f);
-  // The deposit was paid — that is what makes it a refund — so Started reads done and the
-  // failed marker lands on Payment, as the design draws it.
-  s.fundsSeen = true;
-  f.srcChainIndex = 3;
-  f.srcAssetIndex = 1; // USDT on Tron
-  s.quoted = {
-    ...QUOTED,
-    send: "5.02",
-    symbol: "USDT",
-    sourceAsset: "USDT",
-    sourceChain: "Tron",
-  };
-  s.lastState = {
-    phase: "failed",
-    sourceId: "usdt-tron",
-    failure: {
-      kind: "refunded",
-      step: "swap",
-      message: "The deposit didn't go through. It is being returned to your recovery address.",
-      recoverable: false,
-    },
-    refund: { amount: "5020000", txRef: "7f1c9b2e4d6a8c0f1e3b5d7a9c2e4f6081a3c5e7" },
-  } as PaymentState;
-  void createMockCoinageSession({
-    recipient: DEPOSIT.address,
-    amount: 5_000_000n,
-    sourceId: "usdt-tron",
-  }).then((world) => {
-    s.mock = world;
-  });
+/** Decimal string -> base-units string, for the refund amounts below. */
+function toBaseUnits(decimal: string, decimals: number): string {
+  const [whole = "0", frac = ""] = decimal.split(".");
+  const joined = `${whole}${frac.padEnd(decimals, "0").slice(0, decimals)}`;
+  return joined.replace(/^0+(?=\d)/, "");
 }
+
+/** A refunded failure on `sourceId`: the return-funds copy varies per chain and asset, so every
+ *  source gets its own scene. The screen reads the key off the mock world the scene installs. */
+function refunded(sourceId: SourceId, send: string) {
+  const source = SOURCE_CONFIG_BY_ID.get(sourceId);
+  if (!source) throw new Error(`preview: no source config for ${sourceId}`);
+  const chainIndex = SOURCE_CHAINS.findIndex((c) => c.chain === source.chain);
+  const assetIndex = (SOURCE_CHAINS[chainIndex]?.assets as readonly string[] | undefined)?.indexOf(
+    source.asset,
+  );
+  return (s: Session, f: Flow) => {
+    base(s, f);
+    // The deposit was paid — that is what makes it a refund — so Started reads done and the
+    // failed marker lands on Payment, as the design draws it.
+    s.fundsSeen = true;
+    f.srcChainIndex = Math.max(chainIndex, 0);
+    f.srcAssetIndex = Math.max(assetIndex ?? 0, 0);
+    s.quoted = {
+      ...QUOTED,
+      send,
+      symbol: source.asset,
+      sourceAsset: source.asset,
+      sourceChain: source.chain,
+    };
+    s.lastState = {
+      phase: "failed",
+      sourceId,
+      failure: {
+        kind: "refunded",
+        step: "swap",
+        message: "The deposit didn't go through. It is being returned to your recovery address.",
+        recoverable: false,
+      },
+      refund: {
+        amount: toBaseUnits(send, source.decimals),
+        txRef: "7f1c9b2e4d6a8c0f1e3b5d7a9c2e4f6081a3c5e7",
+      },
+    } as PaymentState;
+    void createMockCoinageSession({
+      recipient: DEPOSIT.address,
+      amount: BigInt(toBaseUnits(send, source.decimals)),
+      sourceId,
+    }).then((world) => {
+      s.mock = world;
+    });
+  };
+}
+
+/** Every UI source, with a plausible refund amount in its own precision. */
+const REFUND_PREVIEWS: readonly [SourceId, string][] = [
+  ["usdt-tron", "5.02"],
+  ["trx-tron", "15.4"],
+  ["btc", "0.00004545"],
+  ["eth", "0.0012"],
+  ["usdc-eth", "5.02"],
+  ["usdt-eth", "5.02"],
+  ["sol-solana", "0.025"],
+  ["usdc-solana", "5.02"],
+  ["usdt-solana", "5.02"],
+];
 
 // Scenes start at the first screen a package owns.
 export const SCENES: Scene[] = [
@@ -481,17 +513,21 @@ export const SCENES: Scene[] = [
   },
   {
     name: "crypto / failed: refunded",
-    apply: refundedTron,
+    apply: refunded("usdt-tron", "5.02"),
   },
-  {
-    // The inline reveal opened: address, masked key, copy. Stands in for the design's
-    // return-funds drill-in screens until those are built.
-    name: "crypto / failed: refund key",
-    apply: (s, f) => {
-      refundedTron(s, f);
-      s.revealRefund = true;
-    },
-  },
+  // The return-funds screen opened with the key revealed, once per source: the step copy is
+  // templated on the chain, its native coin, and the asset, so each reads differently.
+  ...REFUND_PREVIEWS.map(([sourceId, send]) => {
+    const source = SOURCE_CONFIG_BY_ID.get(sourceId)!;
+    const apply = refunded(sourceId, send);
+    return {
+      name: `crypto / refund key: ${source.asset} on ${source.chain}`,
+      apply: (s: Session, f: Flow) => {
+        apply(s, f);
+        s.revealRefund = true;
+      },
+    };
+  }),
   {
     name: "crypto / success",
     apply: (s, f) => {
