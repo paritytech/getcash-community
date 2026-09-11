@@ -211,6 +211,20 @@ export interface QuotedView {
   sourceChain: string | null;
 }
 
+/** The Meld quote as the views read it. The buyer pays fiat, so the native budget and source
+ *  coin the crypto rail carries are not part of it. */
+function meldQuotedView(raw: MeldQuoteRaw): QuotedView {
+  return {
+    send: raw.provider.sourceAmount,
+    symbol: raw.context.fiat,
+    fee: raw.provider.totalFee ?? null,
+    networkFee: raw.provider.networkFee ?? null,
+    nativeAmount: null,
+    sourceAsset: null,
+    sourceChain: null,
+  };
+}
+
 export const useSessionStore = defineStore("session", () => {
   // Worlds and subscription (non-reactive internals)
   const mock = shallowRef<MockCoinageWorld | null>(null);
@@ -906,16 +920,7 @@ export const useSessionStore = defineStore("session", () => {
           return;
         }
         mock.value = world;
-        const raw = quote.raw as MeldQuoteRaw;
-        quoted.value = {
-          send: raw.provider.sourceAmount,
-          symbol: raw.context.fiat,
-          fee: raw.provider.totalFee ?? null,
-          networkFee: raw.provider.networkFee ?? null,
-          nativeAmount: null,
-          sourceAsset: null,
-          sourceChain: null,
-        };
+        quoted.value = meldQuotedView(quote.raw as MeldQuoteRaw);
         return;
       }
       // Hosted world: the same rail over the real host seams. The provider delivers DOT to the
@@ -936,16 +941,7 @@ export const useSessionStore = defineStore("session", () => {
         return;
       }
       live.value = world;
-      const raw = quote.raw as MeldQuoteRaw;
-      quoted.value = {
-        send: raw.provider.sourceAmount,
-        symbol: raw.context.fiat,
-        fee: raw.provider.totalFee ?? null,
-        networkFee: raw.provider.networkFee ?? null,
-        nativeAmount: null,
-        sourceAsset: null,
-        sourceChain: null,
-      };
+      quoted.value = meldQuotedView(quote.raw as MeldQuoteRaw);
     } catch (e: unknown) {
       if (epoch !== quoteEpoch) return; // a newer quote owns the state now
       console.error("[meld] quote failed:", e);
