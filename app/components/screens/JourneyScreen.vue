@@ -8,7 +8,7 @@ import { useFundingProgressClock } from "../../composables/useFundingProgressClo
 import type { FundingJourneyStatus } from "../../funding/handoff";
 import { projectFundingProgress, type FundingProgressProjection } from "../../funding/progress";
 import type { FundingTopUp } from "../../funding/top-ups";
-import { useSessionStore } from "../../stores/session";
+import { DEPOSIT_EXPIRED_REASON, useSessionStore } from "../../stores/session";
 import { fmtCash } from "../../utils/cash";
 import { fmtFiat, isMoneyAmount } from "../../utils/money";
 import { formatWhenShort } from "../../utils/journey";
@@ -54,6 +54,18 @@ const finished = computed(() => session.phase === "done");
 const failure = computed(() => (state.value?.phase === "failed" ? state.value.failure : null));
 const failedText = computed(() => session.fundingError ?? failure.value?.message ?? null);
 
+/** The route's own timeline: crypto has no "Approved" leg and shows four steps. */
+const crypto = computed(() => session.method === "crypto" || props.topUp?.route === "crypto");
+const steps = computed<4 | 5>(() => (crypto.value ? 4 : 5));
+
+/** The design names the expired step itself, not "<stage> failed". */
+const failedLabel = computed(() => {
+  const kind = failure.value?.kind;
+  if (kind === "expired" || kind === "stale") return "Expired";
+  if (session.fundingError === DEPOSIT_EXPIRED_REASON) return "Expired";
+  return null;
+});
+
 const heroFailed = computed(() => progress.value?.view.kind === "failed" || failure.value !== null);
 
 const creditedAmount = computed(() =>
@@ -65,11 +77,13 @@ const amountText = computed(() => {
   return `${session.amountHuman || (props.topUp?.amount ?? "")} $CASH`;
 });
 
-/** When the CASH landed: the live milestone, else the list's settled timestamp. */
+/** When the CASH landed: the live milestone (stamped at the route's last step), else the list's
+ *  settled timestamp. */
 const settledWhen = computed(() => {
   if (!finished.value) return null;
   const at =
-    session.milestones[5] ?? (props.topUp?.state.kind === "settled" ? props.topUp.state.at : null);
+    session.milestones[steps.value] ??
+    (props.topUp?.state.kind === "settled" ? props.topUp.state.at : null);
   return at != null ? formatWhenShort(at) : null;
 });
 
@@ -130,7 +144,12 @@ const delayed = computed(() => session.meldDelayed && !finished.value && !heroFa
 const message = computed(() => {
   if (failedText.value) return failedText.value;
   if (session.fundingNotice) return session.fundingNotice;
-  if (delayed.value) return "Taking a little longer than usual";
+  if (delayed.value) {
+    // Each rail waits on something else: the card provider's retry vs chain confirmations.
+    return crypto.value
+      ? "Waiting for network confirmations. This can take a while"
+      : "Taking a little longer than usual";
+  }
   if (props.status) return props.status.text;
   return null;
 });
@@ -164,8 +183,10 @@ const message = computed(() => {
         v-if="progress && !finished"
         :progress="progress"
         :completed-steps="session.journeyDone"
+        :steps="steps"
         :message="message"
         :delayed="delayed"
+        :failed-label="failedLabel"
       />
 
       <DetailRows v-if="detailRows.length" :rows="detailRows" @fees="emit('fees')" />

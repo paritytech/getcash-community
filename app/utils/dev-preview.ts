@@ -256,6 +256,15 @@ export const SCENES: Scene[] = [
     },
   },
   {
+    // The chain is slow to confirm: amber Payment step, its own ribbon line, never terminal.
+    name: "crypto / convert: delayed",
+    apply: (s, f) => {
+      base(s, f);
+      s.lastState = swapping("receiving");
+      s.meldDelayed = true;
+    },
+  },
+  {
     // The design's card journey at the Payment step: Fees and Total quoted in fiat.
     name: "card / journey: payment",
     apply: (s, f) => {
@@ -453,6 +462,9 @@ export const SCENES: Scene[] = [
     name: "crypto / failed: refunded",
     apply: (s, f) => {
       base(s, f);
+      // The deposit was paid — that is what makes it a refund — so Started reads done and the
+      // failed marker lands on Payment, as the design draws it.
+      s.fundsSeen = true;
       f.srcChainIndex = 3;
       f.srcAssetIndex = 1; // USDT on Tron: a token refund, with the gas note
       s.quoted = {
