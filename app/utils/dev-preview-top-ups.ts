@@ -81,6 +81,20 @@ function projection(
   };
 }
 
+/**
+ * A plausible quote for the budget, so every preview card's detail has its Fees and Total rows.
+ * The real records always carry one — `quoteOf` reads it off the persisted request — so a card
+ * without it would be a mock artefact, not a state worth styling.
+ */
+function defaultQuote(route: FundingRoute, amount: string): FundingTopUp["quote"] {
+  const cash = Number(amount.replace(/,/g, ""));
+  if (!Number.isFinite(cash) || cash <= 0) return undefined;
+  // The crypto rail quotes the source coin; the fiat rails quote the charge, fee included.
+  if (route === "crypto") return { amount: (cash * 0.000009).toFixed(8), symbol: "BTC" };
+  const fee = cash * 0.06;
+  return { amount: (cash + fee).toFixed(2), symbol: "EUR", fee: fee.toFixed(2) };
+}
+
 interface PreviewCardOptions {
   amount?: string;
   /** The rail is retrying or late: the status line goes amber. */
@@ -132,7 +146,10 @@ export function previewTopUp(
     route,
     startedAt,
     progress: projection(kind, label, endedAt, detectedAt),
-    ...(options.quote === undefined ? {} : { quote: options.quote }),
+    ...(() => {
+      const quote = options.quote ?? defaultQuote(route, amount);
+      return quote === undefined ? {} : { quote };
+    })(),
     ...(options.delayed === true ? { delayed: true } : {}),
     state,
   };
