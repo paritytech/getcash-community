@@ -31,14 +31,14 @@ const toolbar = computed<{
   title?: string;
   trailing: "skip" | null;
 }>(() => {
-  if (session.resuming) return { back: false, title: "Crypto", trailing: null };
+  if (session.resuming) return { back: false, title: "Add funds via Crypto", trailing: null };
   // The confirmation carries only the way back to the deposit.
   if (flow.confirmingCancel) return { back: true, trailing: null };
   // "journey" here is the deposit stage: the request exists and funds are still to be seen.
   if (flow.screen === "journey") {
     return {
       back: !session.claiming,
-      title: "Crypto",
+      title: "Add funds via Crypto",
       trailing: session.canSkipDeposit && !session.claiming && isDemoBuild() ? "skip" : null,
     };
   }

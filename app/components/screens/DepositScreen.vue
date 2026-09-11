@@ -100,18 +100,25 @@ function copy(target: "amount" | "address") {
   <!-- The deposit is still being opened: the screen's own shapes as placeholders. -->
   <section v-if="!deposit" class="flex min-h-0 flex-1 flex-col" aria-label="Opening your top-up">
     <div class="flex min-h-24 shrink basis-[19rem] justify-center pb-4">
-      <span class="aspect-square h-full max-h-72 animate-pulse rounded-container bg-surface-container" />
+      <span class="deposit-skeleton-qr aspect-square h-full max-h-72 animate-pulse bg-action-disabled" />
     </div>
     <div v-for="n in 2" :key="n" class="flex h-16 shrink-0 items-center justify-between gap-4">
       <span class="flex min-w-0 flex-col gap-1.5">
-        <span class="h-3 w-28 animate-pulse rounded-full bg-action-disabled" />
+        <span class="h-3 w-24 animate-pulse rounded-full bg-action-disabled" />
         <span class="h-4 w-40 animate-pulse rounded-full bg-action-disabled" />
       </span>
       <span class="size-6 shrink-0 animate-pulse rounded-full bg-action-disabled" />
     </div>
+    <div class="mt-2 flex h-6 shrink-0 items-center justify-between gap-4">
+      <span class="flex items-center gap-2">
+        <span class="size-6 shrink-0 animate-pulse rounded-full bg-action-disabled" />
+        <span class="h-3 w-24 animate-pulse rounded-full bg-action-disabled" />
+      </span>
+      <span class="h-3 w-20 shrink-0 animate-pulse rounded-full bg-action-disabled" />
+    </div>
     <div class="mt-auto grid shrink-0 grid-cols-2 gap-2 pt-6 pb-6">
-      <span class="h-12 animate-pulse rounded-full bg-surface-container" />
-      <span class="h-12 animate-pulse rounded-full bg-surface-container" />
+      <span class="h-12 animate-pulse rounded-full bg-action-disabled" />
+      <span class="h-12 animate-pulse rounded-full bg-action-disabled" />
     </div>
   </section>
 
@@ -190,3 +197,10 @@ function copy(target: "amount" | "address") {
 
   </section>
 </template>
+
+<style scoped>
+/* 24px; the radius scale has no semantic step this size. */
+.deposit-skeleton-qr {
+  border-radius: var(--scale-radius-large);
+}
+</style>
