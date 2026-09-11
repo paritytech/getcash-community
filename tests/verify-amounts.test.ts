@@ -1,6 +1,6 @@
-// Live amount check: sizes the deposit as the app does, dry-runs the funding program from a funded
-// account and reads what lands on People. Nothing is submitted. Needs network and is not part of
-// CI:
+// Live amount check: sizes the deposit as the app does, then runs the funding program through the
+// same dry run the worker gates its submit on, from a funded account, and reads what would land on
+// People. Nothing is submitted. Needs network and is not part of CI:
 //   VERIFY_AMOUNTS=1 pnpm vitest run tests/verify-amounts.test.ts
 
 import { describe, it } from "vitest";
@@ -11,6 +11,7 @@ import {
   buildFundingProgram,
   destinationEarmark,
   discoverPool,
+  dryRunFundingProgram,
   estimateFundingProgramFees,
   quoteNativeInMax,
   DEFAULT_SLIPPAGE_PCT,
@@ -24,9 +25,6 @@ const CASH = (n: number) => BigInt(n) * 1_000_000n; // 6 decimals
 const ZERO_32 = `0x${"00".repeat(32)}`;
 const fmtCash = (v: bigint) => (Number(v) / 1e6).toFixed(6);
 const fmtPas = (v: bigint) => (Number(v) / 1e10).toFixed(6);
-const j = (v: unknown) => JSON.stringify(v, (_, x) => (typeof x === "bigint" ? x.toString() : x));
-
-type Event = { type: string; value?: { type?: string; value?: unknown } };
 
 describe.runIf(process.env.VERIFY_AMOUNTS === "1")("live amount check", () => {
   it("ask for 20 / 50 / 100 CASH -> what lands", async () => {
@@ -50,13 +48,6 @@ describe.runIf(process.env.VERIFY_AMOUNTS === "1")("live amount check", () => {
       console.log(`dry-run origin ${from} (free ${fmtPas(holder.value.data.free)} PAS)`);
 
       const pool = await discoverPool(ah, PASEO_UNDERLYING_ASSET_ID);
-      const origin = {
-        type: "V5",
-        value: {
-          parents: 1,
-          interior: { type: "X1", value: { type: "Parachain", value: PASEO_ASSET_HUB_PARA_ID } },
-        },
-      };
       const slippages = [0.5, 1, DEFAULT_SLIPPAGE_PCT];
       for (const n of [20, 50, 100]) {
         const settle = CASH(n);
@@ -91,66 +82,36 @@ describe.runIf(process.env.VERIFY_AMOUNTS === "1")("live amount check", () => {
             feeProbeAddress: from,
             dryRunFrom: from,
           });
-          const call = ah.tx.PolkadotXcm.execute(
-            buildFundingProgram({
-              pool,
-              withdrawNative: deposit - fees.dispatchNative,
-              payFeesNative: fees.payFeesNative,
-              minUnderlyingOut: buyTarget,
-              remoteFeesCash: earmark,
+          const execArgs = buildFundingProgram({
+            pool,
+            withdrawNative: deposit - fees.dispatchNative,
+            payFeesNative: fees.payFeesNative,
+            minUnderlyingOut: buyTarget,
+            remoteFeesCash: earmark,
+            beneficiaryHex: ZERO_32,
+            peopleParaId: PASEO_PEOPLE_PARA_ID,
+            maxWeight: fees.maxWeight,
+          });
+          // The worker's gate: both chains run the program, and it throws on a failure, a trap or
+          // a landing short of the settle amount.
+          const line = `  ${String(slip).padStart(4)}% slippage -> send ${fmtPas(deposit)} PAS (fees ${fmtPas(fees.dispatchNative + fees.payFeesNative)})`;
+          try {
+            const { landed } = await dryRunFundingProgram({
+              api: ah,
+              peopleApi: pe,
+              execArgs,
+              from,
               beneficiaryHex: ZERO_32,
               peopleParaId: PASEO_PEOPLE_PARA_ID,
-              maxWeight: fees.maxWeight,
-            }),
-          );
-          const dr = await ah.apis.DryRunApi.dry_run_call(
-            { type: "system", value: { type: "Signed", value: from } },
-            call.decodedCall,
-            5,
-          );
-          if (!dr.success) {
-            console.log(`  ${slip}%: dry-run unavailable: ${j(dr.value)}`);
-            continue;
-          }
-          const effects = dr.value as {
-            execution_result?: { success?: boolean; value?: unknown };
-            emitted_events?: Event[];
-            forwarded_xcms?: Array<[unknown, unknown[]]>;
-          };
-          if (effects.execution_result?.success === false) {
+              assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
+              mustLand: settle,
+            });
             console.log(
-              `  ${slip}%: funding program would fail: ${j(effects.execution_result.value)}`,
+              `${line} -> LANDS ${fmtCash(landed)} CASH  ok  (over +${fmtCash(landed - settle)})`,
             );
-            continue;
+          } catch (e) {
+            console.log(`${line} -> ${e instanceof Error ? e.message : String(e)}`);
           }
-          // Native the program leaves in Asset Hub's asset trap: the unused PayFees earmark.
-          let trapped = 0n;
-          for (const ev of effects.emitted_events ?? []) {
-            if (ev.type === "PolkadotXcm" && ev.value?.type === "AssetsTrapped") {
-              const assets = (
-                ev.value.value as { assets?: { value?: Array<{ fun?: { value?: bigint } }> } }
-              ).assets?.value;
-              for (const a of assets ?? []) trapped += BigInt(a.fun?.value ?? 0n);
-            }
-          }
-          const fwd = effects.forwarded_xcms?.find(([d]) =>
-            j(d).includes(`"value":${PASEO_PEOPLE_PARA_ID}`),
-          )?.[1]?.[0];
-          let landed = 0n;
-          if (fwd) {
-            const pdr = await pe.apis.DryRunApi.dry_run_xcm(origin, fwd);
-            if (pdr.success)
-              for (const ev of pdr.value.emitted_events as Array<{
-                value?: { type?: string; value?: { amount?: bigint } };
-              }>)
-                if (ev.value?.type === "Deposited") {
-                  const a = BigInt(ev.value.value?.amount ?? 0n);
-                  if (a > landed) landed = a;
-                }
-          }
-          console.log(
-            `  ${String(slip).padStart(4)}% slippage -> send ${fmtPas(deposit)} PAS (fees ${fmtPas(fees.dispatchNative + fees.payFeesNative)}, trapped ${fmtPas(trapped)}) -> LANDS ${fmtCash(landed)} CASH  ${landed >= settle ? "ok" : "SHORT"}  (over +${fmtCash(landed - settle)})`,
-          );
         }
       }
     } finally {

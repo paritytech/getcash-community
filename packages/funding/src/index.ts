@@ -15,6 +15,7 @@ export type { FundingStep, TickState } from "./pipeline";
 export {
   buildFundingProgram,
   destinationEarmark,
+  dryRunFundingProgram,
   estimateDestinationFeeCash,
   estimateFundingProgramFees,
   FUNDING_PROGRAM_MAX_WEIGHT,

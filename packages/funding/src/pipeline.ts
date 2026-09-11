@@ -19,9 +19,11 @@
 // as await-native until the arrival; nothing is bought twice because no native is left behind.
 //
 // FAILURE CONTAINMENT: a tick that throws is retried on the next tick; only the overall timeout
-// and a detected arrival shortfall are terminal. A rejected program rolls back whole and costs its
-// dispatch fee, and the next tick re-prices and retries. Pool reads are lazy: the gating quote only
-// when the decision needs it, the fee pricing only at the submitting step.
+// and a detected arrival shortfall are terminal. Before the program is paid for, both chains run
+// it in a dry run, and one that would fail, trap assets or land short is not submitted. A program
+// rejected at inclusion anyway rolls back whole and costs its dispatch fee, and the next tick
+// re-prices and retries. Pool reads are lazy: the gating quote only when the decision needs it,
+// the fee pricing and the dry run only at the submitting step.
 
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import type { PolkadotClient, PolkadotSigner, TypedApi } from "polkadot-api";
@@ -29,7 +31,9 @@ import { describeDispatchError } from "./dispatch-error";
 import {
   buildFundingProgram,
   destinationEarmark,
+  dryRunFundingProgram,
   estimateFundingProgramFees,
+  type PeopleApi,
 } from "./funding-program";
 
 type AssetHubApi = TypedApi<typeof paseo_next_v2>;
@@ -253,6 +257,8 @@ export const freshTickState = (): TickState => ({
 
 export interface TickOnceInput {
   api: AssetHubApi;
+  /** People's api, for the dry run of the forwarded program before the submit. */
+  peopleApi: PeopleApi;
   /** Pool keys; discovered once and passed in. */
   pool: { native: AssetLocation; underlying: AssetLocation };
   /** The burner, passed as address and signer. */
@@ -261,6 +267,7 @@ export interface TickOnceInput {
   beneficiaryHex: string;
   settleAmount: bigint;
   peopleParaId: number;
+  assetHubParaId: number;
   remoteFeeBuffer: bigint;
   keepNativeForFees: bigint;
   slippagePct: number;
@@ -417,6 +424,23 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
       // The weighed weight, declared as the ceiling.
       maxWeight: fees.maxWeight,
     });
+    // Run the program on both chains before paying for it. A program that would fail, trap assets
+    // or land short of what People still lacks is not submitted; the next tick re-prices and tries
+    // again with nothing spent.
+    await bounded(
+      dryRunFundingProgram({
+        api,
+        peopleApi: input.peopleApi,
+        execArgs,
+        from: address,
+        beneficiaryHex: input.beneficiaryHex,
+        peopleParaId: input.peopleParaId,
+        assetHubParaId: input.assetHubParaId,
+        mustLand: input.settleAmount - balances.underlyingPeople,
+      }),
+      input.tickTimeoutMs,
+      "funding program dry run",
+    );
     const tx = api.tx.PolkadotXcm.execute(execArgs);
     await input.onBeforeSubmit?.("swap");
     // Counted before the broadcast, so a submit whose answer is lost is still counted.

@@ -43,6 +43,14 @@ const KEEP = OVERHEAD;
 const FUND = QUOTED + MAX_IN + KEEP;
 const EARMARK = destinationEarmark(BUY, BUFFER);
 const SIGN_OPTIONS = { at: "0xbest" };
+const ASSET_HUB_PARA = 1500;
+const PEOPLE_PARA = 1004;
+
+/** The burner on People, as the program names it and as People's events show it. */
+const BENEFICIARY = new Uint8Array(32).fill(7);
+const BENEFICIARY_HEX = `0x${"07".repeat(32)}`;
+const BENEFICIARY_SS58 = AccountId(42).dec(BENEFICIARY);
+const FEE_RECEIVER_SS58 = AccountId(42).dec(new Uint8Array(32).fill(9));
 
 const NATIVE_LOC = { parents: 1, interior: { type: "Here" } };
 const UNDERLYING_LOC = {
@@ -108,6 +116,16 @@ function scriptedWorld(
     rejectSubmits?: number;
     /** The pool price at inclusion, when it differs from the price the quotes saw. */
     priceAtSubmitBps?: bigint;
+    /** What People's dry run charges, when it differs from what the execution takes. */
+    remoteFeeAtDryRun?: bigint;
+    /** Asset Hub's dry run rejects the program at InitiateTransfer with this XCM error. */
+    assetHubDryRunError?: string;
+    /** People's dry run fails the forwarded program with this XCM error. */
+    peopleDryRunError?: string;
+    /** Native the Asset Hub dry run reports trapped. */
+    trapOnAssetHub?: bigint;
+    /** Underlying the People dry run reports trapped. */
+    trapOnPeople?: bigint;
   } = {},
 ) {
   const remoteFee = opts.remoteFee ?? 50_000n;
@@ -142,11 +160,117 @@ function scriptedWorld(
       },
     },
   });
+  const trapped = (amount: bigint | undefined) =>
+    amount
+      ? [
+          {
+            type: "PolkadotXcm",
+            value: {
+              type: "AssetsTrapped",
+              value: {
+                assets: { type: "V5", value: [{ fun: { type: "Fungible", value: amount } }] },
+              },
+            },
+          },
+        ]
+      : [];
+  const fungible = (value: bigint) => ({ fun: { type: "Fungible", value } });
+  // The program as a dry run sees it: at the current price, without the debit, and without the
+  // scripted rejection or the price move at inclusion, which only the real submit meets.
+  const dryRunCall = (args: ExecuteArgs) => {
+    const exchange = exchangeOf(args);
+    const give = exchange.give.value[0]!.fun.value;
+    const want = exchange.want[0]!.fun.value;
+    const rejected = (index: number, error: string) => ({
+      success: true,
+      value: {
+        execution_result: { success: false, value: { error: incomplete(index, error) } },
+        emitted_events: [],
+        forwarded_xcms: [],
+      },
+    });
+    if (opts.assetHubDryRunError) return rejected(3, opts.assetHubDryRunError);
+    const out = underlyingFor(give);
+    if (out < want) return rejected(2, "NoDeal");
+    const transfer = instruction(args, "InitiateTransfer") as {
+      remote_fees: { value: { value: Fungible[] } };
+      remote_xcm: Instruction[];
+    };
+    const earmark = transfer.remote_fees.value.value[0]!.fun.value;
+    // What the runtime forwards: the fee teleport, the asset teleport, then the remote program.
+    const forwarded = {
+      type: "V5",
+      value: [
+        { type: "ReceiveTeleportedAsset", value: [fungible(earmark)] },
+        { type: "PayFees", value: { asset: fungible(earmark) } },
+        { type: "ReceiveTeleportedAsset", value: [fungible(out - earmark)] },
+        { type: "ClearOrigin" },
+        ...transfer.remote_xcm,
+        { type: "SetTopic", value: `0x${"00".repeat(32)}` },
+      ],
+    };
+    const toPeople = {
+      type: "V5",
+      value: {
+        parents: 1,
+        interior: { type: "X1", value: { type: "Parachain", value: PEOPLE_PARA } },
+      },
+    };
+    return {
+      success: true,
+      value: {
+        execution_result: { success: true, value: {} },
+        emitted_events: trapped(opts.trapOnAssetHub),
+        forwarded_xcms: [[toPeople, [forwarded]]],
+      },
+    };
+  };
+  // People's side of the dry run: the teleported amounts minus the fee reach the beneficiary.
+  const peopleApi = {
+    apis: {
+      DryRunApi: {
+        dry_run_xcm: async (_origin: unknown, program: { value: Instruction[] }) => {
+          if (opts.peopleDryRunError) {
+            return {
+              success: true,
+              value: {
+                execution_result: {
+                  type: "Incomplete",
+                  value: { used: {}, error: { type: opts.peopleDryRunError } },
+                },
+                emitted_events: [],
+              },
+            };
+          }
+          const teleported = program.value
+            .filter((i) => i.type === "ReceiveTeleportedAsset")
+            .reduce((sum, i) => sum + (i.value as Fungible[])[0]!.fun.value, 0n);
+          const fee = opts.remoteFeeAtDryRun ?? remoteFee;
+          const deposited = (who: string, amount: bigint) => ({
+            type: "Assets",
+            value: { type: "Deposited", value: { who, amount } },
+          });
+          return {
+            success: true,
+            value: {
+              execution_result: { type: "Complete", value: { used: {} } },
+              emitted_events: [
+                deposited(BENEFICIARY_SS58, teleported - fee),
+                deposited(FEE_RECEIVER_SS58, fee),
+                ...trapped(opts.trapOnPeople),
+              ],
+            },
+          };
+        },
+      },
+    },
+  };
   // The program as the runtime runs it. The dispatch fee is charged whatever happens. On success
   // the withdrawn native leaves in full, the exchange fills at the pool rate and the result goes in
   // flight to People minus the destination fee. A rejection rolls the program back and only the
   // dispatch fee is gone. Nothing ever credits an AH underlying account.
   const execute = (args: ExecuteArgs) => ({
+    decodedCall: { type: "PolkadotXcm", value: { type: "execute", value: args } },
     getEstimatedFees: async () => DISPATCH,
     signAndSubmit: async (_signer: unknown, options: unknown) => {
       state.txs.push({ call: "swap", args, options });
@@ -217,8 +341,12 @@ function scriptedWorld(
             ? undefined // the runtime's answer for more than the pool can price
             : underlyingFor(nativeIn),
       },
+      DryRunApi: {
+        dry_run_call: async (_origin: unknown, call: { value: { value: ExecuteArgs } }) =>
+          dryRunCall(call.value.value),
+      },
       // The funding program's fee reads, scripted small; the landing shortfall is driven by
-      // `remoteFee`. No DryRunApi: the estimator prices delivery from the stand-in program.
+      // `remoteFee`.
       XcmPaymentApi: {
         query_xcm_weight: async () => ({
           success: true,
@@ -242,7 +370,12 @@ function scriptedWorld(
     }
     return state.underlyingPeople;
   };
-  return { state, readPeople, client: { getTypedApi: () => api } as unknown as PolkadotClient };
+  return {
+    state,
+    readPeople,
+    peopleApi,
+    client: { getTypedApi: () => api } as unknown as PolkadotClient,
+  };
 }
 
 type World = ReturnType<typeof scriptedWorld>;
@@ -257,12 +390,14 @@ async function drive(world: World, ticks: number, state: TickState = freshTickSt
     const outcome = await tickOnce(
       {
         api: (world.client as unknown as { getTypedApi: () => never }).getTypedApi(),
+        peopleApi: world.peopleApi as never,
         pool: { native: NATIVE_LOC as never, underlying: UNDERLYING_LOC as never },
         address: "5Burner",
         signer: {} as never,
-        beneficiaryHex: `0x${"07".repeat(32)}`,
+        beneficiaryHex: BENEFICIARY_HEX,
         settleAmount: SETTLE,
-        peopleParaId: 1004,
+        peopleParaId: PEOPLE_PARA,
+        assetHubParaId: ASSET_HUB_PARA,
         remoteFeeBuffer: BUFFER,
         keepNativeForFees: KEEP,
         slippagePct: 2,
@@ -363,9 +498,11 @@ describe("tickOnce", () => {
   });
 
   it("fails loudly on a shortfall, and a re-armed state can buy the deficit from a new deposit", async () => {
-    // The destination fee eats past the buffer: People lands short of the target.
+    // The destination fee rose between the dry run and the execution and eats past the buffer:
+    // People lands short of the target.
     const world = scriptedWorld({
       remoteFee: BUFFER * 3n,
+      remoteFeeAtDryRun: BUFFER,
       arrivalAfterReads: 1,
       quoteAfterXcm: true,
     });
@@ -384,7 +521,11 @@ describe("tickOnce", () => {
   });
 
   it("with the xcm latch still held, a new deposit is never converted", async () => {
-    const world = scriptedWorld({ remoteFee: BUFFER * 3n, arrivalAfterReads: 1 });
+    const world = scriptedWorld({
+      remoteFee: BUFFER * 3n,
+      remoteFeeAtDryRun: BUFFER,
+      arrivalAfterReads: 1,
+    });
     world.state.nativeAh = MAX_IN + KEEP;
     const state = freshTickState();
     await drive(world, 1, state);
@@ -440,6 +581,92 @@ describe("tickOnce", () => {
     expect(retry.steps).toEqual(["swap"]);
     expect(state.xcmSubmitted).toBe(true);
     expect(world.state.nativeAh).toBe(0n);
+  });
+});
+
+describe("the dry run before the submit", () => {
+  /** Drives one tick and expects it to stop before the submit with `reason`, nothing spent. */
+  async function refuses(world: World, reason: RegExp, balance = ASK + KEEP) {
+    world.state.nativeAh = balance;
+    const state = freshTickState();
+    await expect(drive(world, 1, state)).rejects.toThrow(reason);
+    expect(world.state.txs).toEqual([]);
+    expect(world.state.nativeAh).toBe(balance); // no dispatch fee paid
+    expect(state).toMatchObject({ attempts: 0, xcmSubmitted: false });
+  }
+
+  it("does not submit a program Asset Hub would reject, and names the failing instruction", async () => {
+    await refuses(
+      scriptedWorld({ assetHubDryRunError: "FeesNotMet" }),
+      /not submitted: Asset Hub rejects the program: InitiateTransfer failed with FeesNotMet/,
+    );
+  });
+
+  it("does not submit a program People would fail", async () => {
+    await refuses(
+      scriptedWorld({ peopleDryRunError: "TooExpensive" }),
+      /not submitted: the forwarded program fails on People with TooExpensive/,
+    );
+  });
+
+  it("does not submit when the destination fee would eat past the target", async () => {
+    // The deposit carries 2% headroom and the dry run shows People taking three times the buffer:
+    // what would land is short of the settle amount, so nothing goes out and no shortfall is ever
+    // created.
+    await refuses(
+      scriptedWorld({ remoteFee: BUFFER * 3n }),
+      /not submitted: only \d+ of 5000000 underlying would reach the beneficiary on People/,
+      MAX_IN + KEEP,
+    );
+  });
+
+  it("does not submit a program that would trap assets on either chain", async () => {
+    await refuses(
+      scriptedWorld({ trapOnAssetHub: 7n }),
+      /not submitted: the program would trap 7 on Asset Hub/,
+    );
+    await refuses(
+      scriptedWorld({ trapOnPeople: 9n }),
+      /not submitted: the program would trap 9 on People/,
+    );
+  });
+
+  it("runs the final program as the burner and hands People what Asset Hub forwards", async () => {
+    const world = scriptedWorld();
+    world.state.nativeAh = ASK + KEEP;
+    const seen: { origin?: unknown; call?: unknown; peopleOrigin?: unknown; program?: unknown } =
+      {};
+    const api = (world.client as unknown as { getTypedApi: () => never }).getTypedApi() as {
+      apis: { DryRunApi: { dry_run_call: (...a: never[]) => Promise<unknown> } };
+    };
+    const dryRun = api.apis.DryRunApi.dry_run_call;
+    api.apis.DryRunApi.dry_run_call = async (...args: never[]) => {
+      // The fee estimate probes first; the last dry run before the submit is the final program.
+      seen.origin = args[0];
+      seen.call = args[1];
+      return dryRun(...args);
+    };
+    const peopleDryRun = world.peopleApi.apis.DryRunApi.dry_run_xcm;
+    world.peopleApi.apis.DryRunApi.dry_run_xcm = async (origin, program) => {
+      seen.peopleOrigin = origin;
+      seen.program = program;
+      return peopleDryRun(origin, program);
+    };
+    const run = await drive(world, 1);
+    expect(run.steps).toEqual(["swap"]);
+    expect(seen.origin).toEqual({ type: "system", value: { type: "Signed", value: "5Burner" } });
+    // The dry-run call is the submitted call.
+    expect((seen.call as { value: { value: unknown } }).value.value).toBe(world.state.txs[0]!.args);
+    expect(seen.peopleOrigin).toEqual({
+      type: "V5",
+      value: {
+        parents: 1,
+        interior: { type: "X1", value: { type: "Parachain", value: ASSET_HUB_PARA } },
+      },
+    });
+    expect((seen.program as { value: Instruction[] }).value[0]!.type).toBe(
+      "ReceiveTeleportedAsset",
+    );
   });
 });
 
@@ -627,8 +854,6 @@ describe("the headroom survives a price move", () => {
 });
 
 describe("estimateDestinationFeeCash", () => {
-  const BENEFICIARY = new Uint8Array(32).fill(7);
-  const beneficiaryHex = `0x${"07".repeat(32)}`;
   const pool = { native: NATIVE_LOC as never, underlying: UNDERLYING_LOC as never };
   // The underlying as People keys it: the pool's local X2 behind Asset Hub's parachain junction.
   const onPeople = {
@@ -672,7 +897,7 @@ describe("estimateDestinationFeeCash", () => {
       peopleApi: peopleApiDryRunning(calls, events),
       pool,
       assetHubParaId: 1500,
-      beneficiaryHex,
+      beneficiaryHex: BENEFICIARY_HEX,
       amount: BUY,
     });
     expect(fee).toBe(43n);
@@ -703,7 +928,7 @@ describe("estimateDestinationFeeCash", () => {
       peopleApi: peopleApiDryRunning(calls, [deposited(AccountId(42).dec(BENEFICIARY), 2n * BUY)]),
       pool: { native: NATIVE_LOC as never, underlying: relayKeyed as never },
       assetHubParaId: 1500,
-      beneficiaryHex,
+      beneficiaryHex: BENEFICIARY_HEX,
       amount: BUY,
     });
     const program = calls.program as { value: Array<{ type: string; value?: unknown }> };
@@ -727,7 +952,7 @@ describe("estimateDestinationFeeCash", () => {
         },
       },
     } as never;
-    const common = { pool, assetHubParaId: 1500, beneficiaryHex, amount: BUY };
+    const common = { pool, assetHubParaId: 1500, beneficiaryHex: BENEFICIARY_HEX, amount: BUY };
     await expect(estimateDestinationFeeCash({ peopleApi: failing, ...common })).rejects.toThrow(
       /fails on People with TooExpensive/,
     );

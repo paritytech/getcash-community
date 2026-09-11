@@ -14,12 +14,17 @@
 //
 // The destination fee allowance is generous by design: the remote RefundSurplus returns what it
 // does not consume and the DepositAsset sweeps it to the burner.
+//
+// Before the program is paid for, both chains run it in a dry run: Asset Hub runs the call as the
+// burner, People runs the program Asset Hub forwards. A program that would fail on either chain,
+// trap assets, or land short of the target is reported instead of submitted.
 
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import { AccountId, type TypedApi } from "polkadot-api";
+import { describeDispatchError } from "./dispatch-error";
 
 type AssetHubApi = TypedApi<typeof paseo_next_v2>;
-type PeopleApi = TypedApi<typeof paseo_people_next>;
+export type PeopleApi = TypedApi<typeof paseo_people_next>;
 type AssetLocation = Parameters<AssetHubApi["query"]["AssetConversion"]["Pools"]["getValue"]>[0][0];
 export type Pool = { native: AssetLocation; underlying: AssetLocation };
 
@@ -156,6 +161,32 @@ function forwardedProgramStandIn(assetId: AssetLocation, amount: bigint, benefic
   };
 }
 
+const signedOrigin = (from: string) => ({
+  type: "system",
+  value: { type: "Signed", value: from },
+});
+
+/** Asset Hub as People sees it: the sender of every forwarded program. */
+const assetHubOrigin = (assetHubParaId: number) => ({
+  type: "V5",
+  value: {
+    parents: 1,
+    interior: { type: "X1", value: { type: "Parachain", value: assetHubParaId } },
+  },
+});
+
+/** The program Asset Hub's dry run forwards to People, or null when nothing goes there. */
+function forwardedToPeople(effects: unknown, peopleParaId: number): unknown | null {
+  const forwarded = (effects as { forwarded_xcms?: Array<[unknown, unknown[]]> }).forwarded_xcms;
+  const toPeople = forwarded?.find(([dest]) => {
+    const loc = (
+      dest as { value?: { parents?: number; interior?: { value?: { value?: number } } } }
+    ).value;
+    return loc?.parents === 1 && loc?.interior?.value?.value === peopleParaId;
+  });
+  return toPeople?.[1]?.[0] ?? null;
+}
+
 /** The real program People will receive, taken from a dry-run of the actual call. Requires an
  *  origin that already holds the native. Returns null when the dry-run cannot produce it. */
 async function realForwardedProgram(
@@ -166,23 +197,116 @@ async function realForwardedProgram(
 ): Promise<unknown | null> {
   try {
     const dr = await api.apis.DryRunApi.dry_run_call(
-      { type: "system", value: { type: "Signed", value: from } } as never,
+      signedOrigin(from) as never,
       api.tx.PolkadotXcm.execute(execArgs).decodedCall as never,
       5,
     );
-    if (!dr.success) return null;
-    const forwarded = (dr.value as { forwarded_xcms?: Array<[unknown, unknown[]]> }).forwarded_xcms;
-    const toPeople = forwarded?.find(([dest]) => {
-      const loc = (
-        dest as { value?: { parents?: number; interior?: { value?: { value?: number } } } }
-      ).value;
-      return loc?.parents === 1 && loc?.interior?.value?.value === peopleParaId;
-    });
-    return toPeople?.[1]?.[0] ?? null;
+    return dr.success ? forwardedToPeople(dr.value, peopleParaId) : null;
   } catch {
     // A runtime without the dry-run API, or one that rejects this call shape.
     return null;
   }
+}
+
+/** The fungible total the PolkadotXcm.AssetsTrapped events of a dry run report. */
+function trappedIn(events: unknown[]): bigint {
+  let total = 0n;
+  for (const ev of events) {
+    const e = ev as { type?: string; value?: { type?: string; value?: { assets?: unknown } } };
+    if (e.type !== "PolkadotXcm" || e.value?.type !== "AssetsTrapped") continue;
+    const assets = (e.value.value?.assets as { value?: unknown })?.value;
+    for (const a of Array.isArray(assets) ? assets : []) {
+      const fun = (a as { fun?: { type?: string; value?: bigint } }).fun;
+      if (fun?.type === "Fungible") total += BigInt(fun.value ?? 0n);
+    }
+  }
+  return total;
+}
+
+type PeopleDryRun = { landed: bigint; trapped: bigint } | { failed: string };
+
+/** What People does with `program` arriving from Asset Hub, without executing it for real: the
+ *  underlying credited to the beneficiary and anything the program would trap. `failed` carries
+ *  the reason when People will not run the program or the program does not complete. */
+async function dryRunOnPeople(args: {
+  peopleApi: PeopleApi;
+  assetHubParaId: number;
+  program: unknown;
+  beneficiaryHex: string;
+}): Promise<PeopleDryRun> {
+  const dr = await args.peopleApi.apis.DryRunApi.dry_run_xcm(
+    assetHubOrigin(args.assetHubParaId) as never,
+    args.program as never,
+  );
+  if (!dr.success) return { failed: "People would not dry-run the forwarded program" };
+  const outcome = dr.value.execution_result;
+  if (outcome.type !== "Complete") {
+    const error = (outcome.value as { error?: { type?: string } }).error?.type ?? outcome.type;
+    return { failed: `the forwarded program fails on People with ${error}` };
+  }
+  const beneficiary = args.beneficiaryHex.toLowerCase();
+  let landed = 0n;
+  for (const ev of dr.value.emitted_events) {
+    if (ev.type !== "Assets" || ev.value.type !== "Deposited") continue;
+    const who = `0x${toHex(AccountId().enc(ev.value.value.who))}`;
+    if (who === beneficiary) landed += ev.value.value.amount;
+  }
+  return { landed, trapped: trappedIn(dr.value.emitted_events) };
+}
+
+/** Runs the funding program on both chains without submitting it: the call on Asset Hub as the
+ *  burner, then the program Asset Hub forwards on People as Asset Hub. Throws with the reason when
+ *  either chain fails the program or would trap assets, or when less than `mustLand` would reach
+ *  the beneficiary. Returns what would land. */
+export async function dryRunFundingProgram(args: {
+  api: AssetHubApi;
+  peopleApi: PeopleApi;
+  execArgs: ExecuteArgs;
+  /** The burner: it signs the call and holds the native. */
+  from: string;
+  beneficiaryHex: string;
+  peopleParaId: number;
+  assetHubParaId: number;
+  /** The least underlying that must reach the beneficiary. */
+  mustLand: bigint;
+}): Promise<{ landed: bigint }> {
+  const dr = await args.api.apis.DryRunApi.dry_run_call(
+    signedOrigin(args.from) as never,
+    args.api.tx.PolkadotXcm.execute(args.execArgs).decodedCall as never,
+    5,
+  );
+  if (!dr.success) {
+    throw new Error(`not submitted: Asset Hub would not dry-run the call (${dr.value.type})`);
+  }
+  const effects = dr.value;
+  if (!effects.execution_result.success) {
+    const reason = describeDispatchError(effects.execution_result.value.error, args.execArgs);
+    throw new Error(`not submitted: Asset Hub rejects the program: ${reason}`);
+  }
+  const trappedOnAssetHub = trappedIn(effects.emitted_events);
+  if (trappedOnAssetHub > 0n) {
+    throw new Error(`not submitted: the program would trap ${trappedOnAssetHub} on Asset Hub`);
+  }
+  const forwarded = forwardedToPeople(effects, args.peopleParaId);
+  if (forwarded === null) {
+    throw new Error("not submitted: Asset Hub forwards nothing to People");
+  }
+  const run = await dryRunOnPeople({
+    peopleApi: args.peopleApi,
+    assetHubParaId: args.assetHubParaId,
+    program: forwarded,
+    beneficiaryHex: args.beneficiaryHex,
+  });
+  if ("failed" in run) throw new Error(`not submitted: ${run.failed}`);
+  if (run.trapped > 0n) {
+    throw new Error(`not submitted: the program would trap ${run.trapped} on People`);
+  }
+  if (run.landed < args.mustLand) {
+    throw new Error(
+      `not submitted: only ${run.landed} of ${args.mustLand} underlying would reach the beneficiary on People`,
+    );
+  }
+  return { landed: run.landed };
 }
 
 export interface FundingProgramFees {
@@ -313,34 +437,18 @@ export async function estimateDestinationFeeCash(args: {
 }): Promise<bigint> {
   const asset = underlyingOnPeople(args.pool, args.assetHubParaId);
   const program = forwardedProgramStandIn(asset, args.amount, args.beneficiaryHex);
-  const origin = {
-    type: "V5",
-    value: {
-      parents: 1,
-      interior: { type: "X1", value: { type: "Parachain", value: args.assetHubParaId } },
-    },
-  };
-  const dr = await args.peopleApi.apis.DryRunApi.dry_run_xcm(origin as never, program as never);
-  if (!dr.success) {
-    throw new Error("destination fee estimate: People would not dry-run the program");
-  }
-  const outcome = dr.value.execution_result;
-  if (outcome.type !== "Complete") {
-    const error = (outcome.value as { error?: { type?: string } }).error?.type ?? outcome.type;
-    throw new Error(`destination fee estimate: the program fails on People with ${error}`);
-  }
-  // The stand-in teleports the amount twice and deposits what is left to the beneficiary.
-  const beneficiary = args.beneficiaryHex.toLowerCase();
-  let received = 0n;
-  for (const ev of dr.value.emitted_events) {
-    if (ev.type !== "Assets" || ev.value.type !== "Deposited") continue;
-    const who = `0x${toHex(AccountId().enc(ev.value.value.who))}`;
-    if (who === beneficiary) received += ev.value.value.amount;
-  }
-  if (received === 0n) {
+  const run = await dryRunOnPeople({
+    peopleApi: args.peopleApi,
+    assetHubParaId: args.assetHubParaId,
+    program,
+    beneficiaryHex: args.beneficiaryHex,
+  });
+  if ("failed" in run) throw new Error(`destination fee estimate: ${run.failed}`);
+  if (run.landed === 0n) {
     throw new Error("destination fee estimate: nothing reached the beneficiary in the dry run");
   }
-  return 2n * args.amount - received;
+  // The stand-in teleports the amount twice and deposits what is left to the beneficiary.
+  return 2n * args.amount - run.landed;
 }
 
 function toHex(bytes: Uint8Array): string {

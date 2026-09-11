@@ -7,12 +7,13 @@ import {
   DEFAULT_SUBMIT_TIMEOUT_MS,
   DEFAULT_TICK_TIMEOUT_MS,
   FundingShortfallError,
+  PASEO_ASSET_HUB_PARA_ID,
   discoverPool,
   freshTickState,
   tickOnce,
 } from "@getsome/funding";
 import { CASH_SETTLEMENT, createPeopleChainPort } from "@getsome/people";
-import { paseo_next_v2 } from "@polkadot-api/descriptors";
+import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import { createClient } from "polkadot-api";
 import { readParams } from "./params.js";
 
@@ -477,12 +478,15 @@ async function tickRecord(record, nowMs) {
       outcome = await tickOnce(
         {
           api,
+          peopleApi: peopleClient.getTypedApi(paseo_people_next),
           pool,
           address: burner.address,
           signer: burner.signer,
           beneficiaryHex: toHex(burner.publicKey),
           settleAmount: asBig(record.settleAmount),
           peopleParaId: record.peopleParaId,
+          // The Asset Hub this worker is built for, the same one CASH_SETTLEMENT points at.
+          assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
           remoteFeeBuffer: asBig(record.remoteFeeBuffer, DEFAULT_REMOTE_FEE_BUFFER),
           keepNativeForFees: asBig(record.keepNativeForFees, DEFAULT_KEEP_NATIVE_FOR_FEES),
           slippagePct: record.slippagePct,
