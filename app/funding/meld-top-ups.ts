@@ -21,6 +21,7 @@ import {
   activeState,
   applyLiveStatus,
   creditedAmount,
+  quoteOf,
   type FundingTopUpRecord,
 } from "./top-up-projection";
 import type { FundingTopUp, FundingTopUpDetails } from "./top-ups";
@@ -99,15 +100,7 @@ export function projectMeldTopUps(
         startedAt: record.startedAt,
         progress,
         details: topUpDetails(record, method),
-        ...(record.sourceAmount && record.sourceSymbol
-          ? {
-              quote: {
-                amount: record.sourceAmount,
-                symbol: record.sourceSymbol,
-                ...(record.sourceFee ? { fee: record.sourceFee } : {}),
-              },
-            }
-          : {}),
+        ...quoteOf(record),
         state: worded,
       },
     ];

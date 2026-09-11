@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from "vue";
+import { computed, onUnmounted, ref } from "vue";
 import { Check, Clock, Copy } from "lucide-vue-next";
 import {
   demoDepositAddress,
@@ -8,26 +8,29 @@ import {
 } from "~~/lib/demo-rates";
 import { SOURCE_CHAINS } from "~~/lib/config";
 import { useCopyToClipboard } from "../../composables/useCopyToClipboard";
+import { shortAddress } from "../../utils/address";
 import { formatRemaining } from "../../utils/countdown";
-import { networkIcon, tokenIcon } from "../../utils/icons";
 import { useFlowStore } from "../../stores/flow";
 import { useSessionStore } from "../../stores/session";
 
-// The cancel is performed by the route, which unmounts this screen.
+// Cancel is a request: the route swaps in the full-screen confirmation and performs the cancel.
 const emit = defineEmits<{ cancel: [] }>();
 
 const session = useSessionStore();
 const flow = useFlowStore();
 
+// While the deposit is still being opened this screen renders its skeleton shapes instead.
 const deposit = computed(() => {
   const s = session.lastState;
   return s?.phase === "awaiting-deposit" ? s.deposit : null;
 });
 
-// Channel countdown to `deposit.expiresAt`; 0 means no countdown. Display only: the session store
-// owns the deadline and fails the top-up when it passes.
+// Channel countdown to `deposit.expiresAt`; null means no deadline to show. Display only: the
+// session store owns the deadline and fails the top-up when it passes. The row has to stay — it is
+// the only warning a buyer gets before the address stops working.
 const now = ref(Date.now());
 const ticker = setInterval(() => (now.value = Date.now()), 1_000);
+onUnmounted(() => clearInterval(ticker));
 const remainingMs = computed(() => {
   const at = deposit.value?.expiresAt ?? 0;
   return at > 0 ? at - now.value : null;
@@ -43,35 +46,48 @@ const address = computed(() => {
   return demoDepositAddress(session.quoted?.sourceChain ?? null) ?? d.address;
 });
 
-/** How much to send, in the source's own currency: the swap network's figure when it priced this
- *  purchase, the estimate marked ≈ otherwise, the bare native figure when no source is chosen. */
-const amount = computed(() => {
+/** How much to send, split so the copy carries the bare number: the swap network's figure when it
+ *  priced this purchase, the estimate marked ≈ otherwise, the bare native figure when no source is
+ *  chosen. */
+const amount = computed<{ value: string; symbol: string; approx: boolean } | null>(() => {
   const d = deposit.value;
-  if (!d) return "";
+  if (!d) return null;
   const q = session.quoted;
   const priced = session.sourcePrice;
   if (priced?.kind === "price" && q?.sourceAsset) {
-    return `${priced.price.formatted} ${q.sourceAsset}`;
+    return { value: priced.price.formatted, symbol: q.sourceAsset, approx: false };
   }
   // TODO(production): the branches below the precise price are demo conveniences; remove them with
   // the faucet and the estimateSource* helpers.
   // Below the floor: the floor quote's rate, scaled linearly to this purchase.
   if (priced?.kind === "minimum") {
-    return `≈ ${priced.minimum.neededFormatted} ${priced.minimum.assetSymbol}`;
+    return {
+      value: priced.minimum.neededFormatted,
+      symbol: priced.minimum.assetSymbol,
+      approx: true,
+    };
   }
   if (q?.send && q.symbol === q.sourceAsset) {
-    return q.send.endsWith(q.symbol) ? q.send : `${q.send} ${q.symbol}`;
+    const bare = q.send.endsWith(q.symbol) ? q.send.slice(0, -q.symbol.length).trim() : q.send;
+    return { value: bare, symbol: q.symbol, approx: false };
   }
   if (session.live && q?.sourceAsset) {
     const estimate = estimateSourceAmount(d.amount, q.sourceAsset);
-    if (estimate) return `≈ ${estimate} ${q.sourceAsset}`;
+    if (estimate) return { value: estimate, symbol: q.sourceAsset, approx: true };
   }
   // The browser world's estimate scales from the CASH amount.
   if (!session.live && q?.sourceAsset && session.amountBase !== null) {
     const estimate = estimateSourceFromCash(session.amountBase, q.sourceAsset);
-    if (estimate) return `≈ ${estimate} ${q.sourceAsset}`;
+    if (estimate) return { value: estimate, symbol: q.sourceAsset, approx: true };
   }
-  return d.formatted.endsWith(d.assetSymbol) ? d.formatted : `${d.formatted} ${d.assetSymbol}`;
+  const bare = d.formatted.endsWith(d.assetSymbol)
+    ? d.formatted.slice(0, -d.assetSymbol.length).trim()
+    : d.formatted;
+  return { value: bare, symbol: d.assetSymbol, approx: false };
+});
+const amountText = computed(() => {
+  const a = amount.value;
+  return a ? `${a.approx ? "≈ " : ""}${a.value} ${a.symbol}` : "";
 });
 
 const source = computed(() => {
@@ -81,144 +97,141 @@ const source = computed(() => {
   return { chain, asset };
 });
 
-// Cancel. The button opens the confirmation sheet and the sheet's red pill performs the cancel.
-// Offered only while nothing has been paid.
-const confirmingCancel = ref(false);
+// Cancel is offered only while nothing has been paid.
 const showCancel = computed(() => session.faucetState === "idle" && !session.fundsSeen);
-function dismissCancelSheet() {
-  // The sheet stays up mid-cancel.
-  if (!session.cancelling) confirmingCancel.value = false;
-}
-function confirmCancel() {
-  if (session.cancelling) return;
-  emit("cancel");
-}
-// Closes the sheet when a declined cancel finishes with this screen still mounted.
-watch(
-  () => session.cancelling,
-  (now, before) => {
-    if (before && !now) confirmingCancel.value = false;
-  },
-);
 
+// The "Copied" pill above the buttons answers either row's copy.
 const { copied, copy: copyToClipboard } = useCopyToClipboard();
-function copy() {
-  if (address.value) void copyToClipboard(address.value);
+function copy(target: "amount" | "address") {
+  const text = target === "amount" ? amount.value?.value : address.value;
+  if (text) void copyToClipboard(text);
 }
-onUnmounted(() => clearInterval(ticker));
 </script>
 
 <template>
-  <section class="flex min-h-0 flex-1 flex-col">
+  <!-- The deposit is still being opened: the screen's own shapes as placeholders. -->
+  <section v-if="!deposit" class="flex min-h-0 flex-1 flex-col" aria-label="Opening your top-up">
+    <div class="flex min-h-24 shrink basis-[19rem] justify-center pb-4">
+      <span
+        class="deposit-skeleton-qr aspect-square h-full max-h-72 animate-pulse bg-action-disabled"
+      />
+    </div>
+    <div v-for="n in 2" :key="n" class="flex h-16 shrink-0 items-center justify-between gap-4">
+      <span class="flex min-w-0 flex-col gap-1.5">
+        <span class="h-3 w-24 animate-pulse rounded-full bg-action-disabled" />
+        <span class="h-4 w-40 animate-pulse rounded-full bg-action-disabled" />
+      </span>
+      <span class="size-6 shrink-0 animate-pulse rounded-full bg-action-disabled" />
+    </div>
+    <div class="mt-2 flex h-6 shrink-0 items-center justify-between gap-4">
+      <span class="flex items-center gap-2">
+        <span class="size-6 shrink-0 animate-pulse rounded-full bg-action-disabled" />
+        <span class="h-3 w-24 animate-pulse rounded-full bg-action-disabled" />
+      </span>
+      <span class="h-3 w-20 shrink-0 animate-pulse rounded-full bg-action-disabled" />
+    </div>
+    <div class="mt-auto grid shrink-0 grid-cols-2 gap-2 pt-6 pb-6">
+      <span class="h-12 animate-pulse rounded-full bg-action-disabled" />
+      <span class="h-12 animate-pulse rounded-full bg-action-disabled" />
+    </div>
+  </section>
+
+  <section v-else class="flex min-h-0 flex-1 flex-col">
     <!-- The one flexible block on the screen. Short webviews shrink the QR to a scannable
-         floor. -->
-    <div v-if="address" class="flex min-h-24 shrink basis-44 justify-center pt-2 pb-1">
+         floor. The basis carries the card's 288px plus this block's own 16px bottom gap. -->
+    <div class="flex min-h-24 shrink basis-[19rem] justify-center pb-4">
       <QrCard :value="address" />
     </div>
 
-    <p class="mt-3 shrink-0 text-center text-body-l text-fg-secondary">Send this exact amount</p>
-    <p class="mt-1 shrink-0 text-center text-display-l text-fg-primary whitespace-nowrap">
-      {{ amount }}
-    </p>
+    <!-- Each row copies its value; the pill above the buttons confirms. -->
+    <button
+      type="button"
+      class="flex h-16 shrink-0 items-center justify-between gap-4 border-b border-stroke-primary text-left"
+      @click="copy('amount')"
+    >
+      <span class="min-w-0">
+        <span class="block text-body-s text-fg-secondary">Send this exact amount</span>
+        <span class="mt-1 block truncate text-paragraph-l text-fg-primary">{{ amountText }}</span>
+      </span>
+      <Copy class="size-6 shrink-0 text-fg-secondary" aria-hidden="true" />
+    </button>
 
     <button
       type="button"
-      class="mt-3 flex shrink-0 items-center justify-between gap-3 rounded-container bg-surface-container py-3 pr-6 pl-4 text-left shadow-1 transition-shadow hover:shadow-2"
-      @click="copy"
+      class="flex h-16 shrink-0 items-center justify-between gap-4 border-b border-stroke-primary text-left"
+      @click="copy('address')"
     >
-      <span class="min-w-0 flex-1">
-        <span class="block text-caption text-fg-secondary">To address</span>
-        <span class="mt-0.5 block max-w-full font-mono text-body-s break-all text-fg-primary">{{
-          address
-        }}</span>
+      <span class="min-w-0">
+        <span class="block text-body-s text-fg-secondary">
+          <!-- The network stands out by weight alone; the design keeps the label's own grey. -->
+          To this address on
+          <span class="font-semibold">{{ source.chain.label }} Network</span>
+        </span>
+        <span class="mt-1 block truncate text-paragraph-l text-fg-primary">
+          {{ shortAddress(address) }}
+        </span>
       </span>
-      <Check v-if="copied" class="size-6 shrink-0 text-fg-success" aria-hidden="true" />
-      <Copy v-else class="size-6 shrink-0 text-fg-secondary" aria-hidden="true" />
+      <Copy class="size-6 shrink-0 text-fg-secondary" aria-hidden="true" />
     </button>
 
-    <dl class="mt-6 flex shrink-0 flex-col gap-4">
-      <div class="flex min-h-6 items-center justify-between gap-4">
-        <dt class="flex min-w-0 items-center gap-2 text-body-l text-fg-secondary">
-          <img :src="networkIcon(source.chain.chain)" alt="" class="size-6 shrink-0 rounded-full" />
-          <span>Network</span>
-        </dt>
-        <dd class="min-w-0 truncate text-heading-m text-fg-primary">
-          {{ source.chain.label }}
-        </dd>
-      </div>
-      <div class="flex min-h-6 items-center justify-between gap-4">
-        <dt class="flex min-w-0 items-center gap-2 text-body-l text-fg-secondary">
-          <img :src="tokenIcon(source.asset)" alt="" class="size-6 shrink-0 rounded-full" />
-          <span>Currency</span>
-        </dt>
-        <dd class="min-w-0 truncate text-heading-m text-fg-primary">{{ source.asset }}</dd>
-      </div>
-      <div v-if="remainingMs !== null" class="flex min-h-6 items-center justify-between gap-4">
-        <dt class="flex min-w-0 items-center gap-2 text-body-l text-fg-secondary">
-          <span
-            class="flex size-6 shrink-0 items-center justify-center rounded-full bg-surface-container"
-          >
-            <Clock class="size-4 text-fg-secondary" aria-hidden="true" />
-          </span>
-          <span>Expires in</span>
-        </dt>
-        <dd class="min-w-0 truncate font-mono text-label-l text-fg-primary">
-          {{ formatRemaining(remainingMs) }}
-        </dd>
-      </div>
-    </dl>
-
-    <!-- Cancel opens the confirmation sheet and is offered only while nothing has been paid. -->
-    <!-- The Danger button keeps the default 10px shape (a destructive action is never a
-         pill), so its row-mate matches rather than mixing shapes in one slot. -->
-    <div class="mt-auto grid shrink-0 grid-cols-2 gap-2 pt-6">
-      <button
-        v-if="showCancel"
-        type="button"
-        class="h-12 rounded-medium bg-status-error text-label-l text-fg-primary-inverted transition-colors hover:bg-status-error-hover"
-        @click="confirmingCancel = true"
-      >
-        Cancel
-      </button>
-      <button
-        type="button"
-        class="flex h-12 items-center justify-center gap-2 rounded-medium bg-action-secondary px-2 text-label-l whitespace-nowrap text-fg-secondary disabled:opacity-100"
-        :class="showCancel ? '' : 'col-span-2'"
-        disabled
-      >
+    <!-- The channel deadline, on the skeleton's own third-row shape. -->
+    <div
+      v-if="remainingMs !== null"
+      class="mt-2 flex h-6 shrink-0 items-center justify-between gap-4"
+    >
+      <span class="flex min-w-0 items-center gap-2 text-body-s text-fg-secondary">
         <span
-          class="size-4 shrink-0 animate-spin rounded-full border-[1.5px] border-fg-secondary border-r-transparent"
-          aria-hidden="true"
-        />
-        <span>Waiting for funds</span>
-      </button>
+          class="flex size-6 shrink-0 items-center justify-center rounded-full bg-surface-container"
+        >
+          <Clock class="size-4 text-fg-secondary" aria-hidden="true" />
+        </span>
+        <span class="truncate">Expires in</span>
+      </span>
+      <span class="shrink-0 font-mono text-body-s text-fg-primary">
+        {{ formatRemaining(remainingMs) }}
+      </span>
     </div>
 
-    <BottomSheet :open="confirmingCancel" @dismiss="dismissCancelSheet">
-      <div class="flex flex-col gap-2 px-6 py-4 text-center">
-        <p class="text-heading-l text-fg-primary">Cancel this top-up?</p>
-        <p class="text-body-l text-fg-secondary">
-          The deposit address will stop working. Don't cancel if you've already sent your funds.
-        </p>
-      </div>
-      <div class="flex flex-col gap-4 p-4">
-        <button
-          type="button"
-          class="h-12 w-full rounded-medium bg-status-error text-label-l text-fg-primary-inverted transition-colors hover:bg-status-error-hover disabled:opacity-50"
-          :disabled="session.cancelling"
-          @click="confirmCancel"
+    <div class="mt-auto flex shrink-0 flex-col pt-6 pb-6">
+      <div v-if="copied" class="flex justify-center pb-3" aria-live="polite">
+        <span
+          class="flex items-center gap-2 rounded-full bg-surface-container px-4 py-2 text-label-m text-fg-primary shadow-1"
         >
-          {{ session.cancelling ? "Cancelling…" : "Cancel" }}
+          <Check class="size-4 text-fg-success" aria-hidden="true" />
+          Copied
+        </span>
+      </div>
+      <!-- Cancel asks the route for the confirmation screen; offered only while nothing has
+           been paid. -->
+      <div class="grid grid-cols-2 gap-2">
+        <button
+          v-if="showCancel"
+          type="button"
+          class="h-12 rounded-full bg-status-error text-label-l text-fg-static-white transition-colors hover:bg-status-error-hover"
+          @click="emit('cancel')"
+        >
+          Cancel
         </button>
         <button
           type="button"
-          class="h-12 w-full rounded-medium bg-action-secondary text-label-l text-fg-primary transition-colors hover:bg-action-secondary-hover disabled:opacity-50"
-          :disabled="session.cancelling"
-          @click="dismissCancelSheet"
+          class="flex h-12 items-center justify-center gap-2 rounded-full bg-action-tertiary px-2 text-label-l whitespace-nowrap text-fg-primary disabled:opacity-100"
+          :class="showCancel ? '' : 'col-span-2'"
+          disabled
         >
-          Keep it
+          <span
+            class="size-4 shrink-0 animate-spin rounded-full border-[1.5px] border-fg-primary border-r-transparent"
+            aria-hidden="true"
+          />
+          <span>Waiting for funds</span>
         </button>
       </div>
-    </BottomSheet>
+    </div>
   </section>
 </template>
+
+<style scoped>
+/* 24px; the radius scale has no semantic step this size. */
+.deposit-skeleton-qr {
+  border-radius: var(--scale-radius-large);
+}
+</style>

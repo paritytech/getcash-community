@@ -23,9 +23,10 @@ let active = true;
 useVisibilityReconcile();
 const { handedOff } = useMeldHandoff(emit);
 
-const title = computed(
-  () => fundingSelectorConfig.routes.find(({ id }) => id === props.topUp.route)?.label ?? "Status",
-);
+const title = computed(() => {
+  const label = fundingSelectorConfig.routes.find(({ id }) => id === props.topUp.route)?.label;
+  return label ? `Add funds via ${label}` : "Status";
+});
 /** Whether the embed is showing: neither still opening nor unavailable. */
 const showingWidget = computed(() => !waiting.value && !unavailable.value);
 const canCancel = computed(
@@ -91,7 +92,7 @@ onUnmounted(() => {
         <button
           v-if="canCancel"
           type="button"
-          class="mx-6 mt-3 mb-4 h-12 shrink-0 rounded-medium bg-status-error text-label-l text-fg-primary-inverted transition-colors hover:bg-status-error-hover disabled:opacity-50"
+          class="mx-6 mt-3 mb-4 h-12 shrink-0 rounded-medium bg-status-error text-label-l text-fg-static-white transition-colors hover:bg-status-error-hover disabled:opacity-50"
           :disabled="session.cancelling"
           @click="cancelTopUp"
         >

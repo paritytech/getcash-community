@@ -46,7 +46,7 @@ import {
   serializeRequestIndex,
   type RequestRef,
 } from "../utils/request-index";
-import { journeyDone } from "../utils/journey";
+import { journeyDone, type JourneySteps } from "../utils/journey";
 import { estimateSourceAmount, estimateSourceFromCash } from "~~/lib/demo-rates";
 import { priceSourceLeg, type SourcePriceResult } from "~~/lib/source-price";
 import { createMockCoinageSession, workerSessionId, type MockCoinageWorld } from "~~/lib/coinage";
@@ -211,6 +211,20 @@ export interface QuotedView {
   sourceChain: string | null;
 }
 
+/** The Meld quote as the views read it. The buyer pays fiat, so the native budget and source
+ *  coin the crypto rail carries are not part of it. */
+function meldQuotedView(raw: MeldQuoteRaw): QuotedView {
+  return {
+    send: raw.provider.sourceAmount,
+    symbol: raw.context.fiat,
+    fee: raw.provider.totalFee ?? null,
+    networkFee: raw.provider.networkFee ?? null,
+    nativeAmount: null,
+    sourceAsset: null,
+    sourceChain: null,
+  };
+}
+
 export const useSessionStore = defineStore("session", () => {
   // Worlds and subscription (non-reactive internals)
   const mock = shallowRef<MockCoinageWorld | null>(null);
@@ -267,6 +281,8 @@ export const useSessionStore = defineStore("session", () => {
   /** Whether a deposit has been seen for the request on screen. Restored from the record on
    *  re-open. */
   const fundsSeen = ref(false);
+  /** Asks the journey to open its refund-key panel unprompted; only the preview deck sets it. */
+  const revealRefund = ref(false);
   /** The claimed amount; a full burner sweep, so it may exceed the typed amount. */
   const claimedBase = ref<bigint | null>(null);
   const foregroundProgress = shallowRef<ForegroundFundingProgress | null>(null);
@@ -304,14 +320,21 @@ export const useSessionStore = defineStore("session", () => {
   /** True while a claim is in flight: the host's sheet is up, or the credit is being verified. */
   const claiming = computed(() => phase.value === "funded" || phase.value === "working");
 
-  /** How many of the journey's five steps are done. */
+  /** The journey's scale for the request on screen: the crypto timeline has no "processed" step.
+   *  The done count below and the milestone keys are both on it, so the screen reads this rather
+   *  than deciding the scale a second time. */
+  const journeySteps = computed<JourneySteps>(() => (method.value === "crypto" ? 4 : 5));
+  /** How many of the journey's steps are done, on the route's own scale (crypto shows four). */
   const journeyDoneCount = computed(() =>
-    journeyDone({
-      phase: phase.value,
-      fundingStep: fundingStep.value,
-      swap: lastState.value?.phase === "swapping" ? lastState.value.swap : null,
-      failure: lastState.value?.phase === "failed" ? lastState.value.failure : null,
-    }),
+    journeyDone(
+      {
+        phase: phase.value,
+        fundingStep: fundingStep.value,
+        swap: lastState.value?.phase === "swapping" ? lastState.value.swap : null,
+        failure: lastState.value?.phase === "failed" ? lastState.value.failure : null,
+      },
+      journeySteps.value,
+    ),
   );
   /** When each journey step landed, in ms since epoch, by step number. Not persisted. */
   const milestones = ref<Record<number, number>>({});
@@ -407,6 +430,7 @@ export const useSessionStore = defineStore("session", () => {
     claimedBase.value = null;
     faucetState.value = "idle";
     fundsSeen.value = false;
+    revealRefund.value = false;
     milestones.value = {};
     foregroundProgress.value = null;
     foregroundRef = null;
@@ -900,16 +924,7 @@ export const useSessionStore = defineStore("session", () => {
           return;
         }
         mock.value = world;
-        const raw = quote.raw as MeldQuoteRaw;
-        quoted.value = {
-          send: raw.provider.sourceAmount,
-          symbol: raw.context.fiat,
-          fee: raw.provider.totalFee ?? null,
-          networkFee: raw.provider.networkFee ?? null,
-          nativeAmount: null,
-          sourceAsset: null,
-          sourceChain: null,
-        };
+        quoted.value = meldQuotedView(quote.raw as MeldQuoteRaw);
         return;
       }
       // Hosted world: the same rail over the real host seams. The provider delivers DOT to the
@@ -930,16 +945,7 @@ export const useSessionStore = defineStore("session", () => {
         return;
       }
       live.value = world;
-      const raw = quote.raw as MeldQuoteRaw;
-      quoted.value = {
-        send: raw.provider.sourceAmount,
-        symbol: raw.context.fiat,
-        fee: raw.provider.totalFee ?? null,
-        networkFee: raw.provider.networkFee ?? null,
-        nativeAmount: null,
-        sourceAsset: null,
-        sourceChain: null,
-      };
+      quoted.value = meldQuotedView(quote.raw as MeldQuoteRaw);
     } catch (e: unknown) {
       if (epoch !== quoteEpoch) return; // a newer quote owns the state now
       console.error("[meld] quote failed:", e);
@@ -2268,6 +2274,7 @@ export const useSessionStore = defineStore("session", () => {
     resuming,
     faucetState,
     fundsSeen,
+    revealRefund,
     canSkipDeposit,
     cancelling,
     mock,
@@ -2295,6 +2302,7 @@ export const useSessionStore = defineStore("session", () => {
     requestStatus,
     claiming,
     journeyDone: journeyDoneCount,
+    journeySteps,
     milestones,
     fundFaucet,
     simulateDeposit,

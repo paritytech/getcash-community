@@ -1,7 +1,10 @@
-// The journey as five steps: started, payment received, payment processed, converted to CASH,
-// added to the balance. Maps the session and pipeline state onto how many are done.
+// The journey as steps: started, payment received, (card only: payment processed), converted to
+// CASH, added to the balance. Maps the session and pipeline state onto how many are done.
 
 import type { FundingStep } from "@getsome/funding";
+
+/** How many steps the route's journey shows: the crypto timeline has no "processed" step. */
+export type JourneySteps = 4 | 5;
 
 export interface JourneyInput {
   phase: string | null;
@@ -13,37 +16,39 @@ export interface JourneyInput {
 }
 
 /**
- * How many steps are done, 1..5; "started" always counts.
+ * How many steps are done, 1..steps; "started" always counts. On the crypto scale the swap rail
+ * only ever starts after the deposit was detected, so its first report already has the payment
+ * step behind it; the card scale keeps "receiving" on the payment step itself.
  */
-export function journeyDone(input: JourneyInput): number {
+export function journeyDone(input: JourneyInput, steps: JourneySteps = 5): number {
   switch (input.phase) {
     case "done":
-      return 5;
+      return steps;
     case "funded":
     case "working":
-      return 4;
+      return steps - 1;
     case "failed":
-      return failedAt(input);
+      return failedAt(input, steps);
     case "swapping":
-      if (input.swap === "receiving") return 1;
+      if (input.swap === "receiving") return steps === 4 ? 2 : 1;
       if (input.swap === "complete") return 3;
       return 2;
     case "awaiting-deposit":
-      return fromPipeline(input.fundingStep);
+      return fromPipeline(input.fundingStep, steps);
     default:
       return 1;
   }
 }
 
 /** What the pool pipeline's last step says is done. */
-function fromPipeline(step: FundingStep | null): number {
+function fromPipeline(step: FundingStep | null, steps: JourneySteps): number {
   switch (step) {
     case "done":
-      return 4;
+      return steps - 1;
     case "swap":
     case "xcm":
     case "await-arrival":
-      return 3;
+      return steps - 2;
     default:
       return 1;
   }
@@ -51,18 +56,20 @@ function fromPipeline(step: FundingStep | null): number {
 
 /** Where a failed request stopped: the pipeline's last step when it ran, else the leg the
  *  failure kind names. */
-function failedAt(input: JourneyInput): number {
-  const pipeline = fromPipeline(input.fundingStep);
+function failedAt(input: JourneyInput, steps: JourneySteps): number {
+  const pipeline = fromPipeline(input.fundingStep, steps);
   if (pipeline > 1) return pipeline;
   switch (input.failure?.kind) {
     case "mint":
     case "under-credit":
-      return 4; // the claim: everything before it landed
+      return steps - 1; // the claim: everything before it landed
     case "egress-failed":
     case "fallback-egress":
     case "refunded":
     case "refund-failed":
-      return 2; // the swap network took the payment but could not deliver
+      // The swap network took the payment but could not deliver: the processed step on the card
+      // scale, the payment step itself on the crypto one (the design strikes "Payment").
+      return steps - 3;
     case "unknown":
       // The fiat rail could not tell whether the buyer paid; hold at what the pipeline witnessed.
       return pipeline;

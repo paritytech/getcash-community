@@ -111,6 +111,15 @@ const heroCaption = computed(() =>
     : "Will be charged from your card",
 );
 
+/**
+ * How long this rail takes to land. This screen serves both Meld methods and, with the Via row
+ * gone, this row is the only timing statement on it: a bank transfer must not inherit the card's
+ * "a few minutes". Matches the selector's own word on the bank route.
+ */
+const arrivesText = computed(() =>
+  session.method === "bank" ? "1-2 business days" : "A few minutes",
+);
+
 /** The picked region's own name, for the quote's terms. Falls back to the code when the catalog is
  *  the static list and the code is not in it. */
 const selectedCountryName = computed(
@@ -133,7 +142,7 @@ const quoteRows = computed(() => {
   if (q.fee)
     rows.push({ label: "Fees", value: fmtFiat(q.fee, q.symbol), fees: isMoneyAmount(q.fee) });
   rows.push(
-    { label: "Arrives", value: "A few minutes" },
+    { label: "Arrives", value: arrivesText.value },
     { label: "You’ll receive", value: `${session.amountHuman} $CASH` },
   );
   return rows;

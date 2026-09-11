@@ -31,19 +31,29 @@ const toolbar = computed<{
   title?: string;
   trailing: "skip" | null;
 }>(() => {
-  if (session.resuming) return { back: false, trailing: null };
+  if (session.resuming) return { back: false, title: "Add funds via Crypto", trailing: null };
+  // The confirmation carries only the way back to the deposit.
+  if (flow.confirmingCancel) return { back: true, trailing: null };
   // "journey" here is the deposit stage: the request exists and funds are still to be seen.
   if (flow.screen === "journey") {
     return {
       back: !session.claiming,
-      title: "Crypto",
+      title: "Add funds via Crypto",
       trailing: session.canSkipDeposit && !session.claiming && isDemoBuild() ? "skip" : null,
     };
   }
-  return { back: true, trailing: null };
+  return {
+    back: true,
+    title: flow.step === "token" ? "Select token" : "Select network",
+    trailing: null,
+  };
 });
 
 function onBack() {
+  if (flow.confirmingCancel) {
+    flow.confirmingCancel = false;
+    return;
+  }
   if (
     flow.screen === "journey" ||
     flow.step === "network" ||
@@ -54,9 +64,11 @@ function onBack() {
   else flow.back();
 }
 
-/** Performs the cancel. One that went through leaves for the selector; a declined one stays put. */
+/** Performs the cancel. One that went through leaves for the selector; a declined one returns to
+ *  the deposit. */
 async function cancelTopUp() {
   if (await session.cancelTopUp()) emit("back");
+  else flow.confirmingCancel = false;
 }
 
 /**
@@ -114,14 +126,18 @@ onUnmounted(() => {
     </Toolbar>
 
     <div class="flex min-h-0 flex-1 flex-col px-6 pt-6">
-      <div v-if="session.resuming" class="flex flex-col items-center gap-4 pt-16">
-        <span
-          class="inline-block size-8 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary"
-        />
-        <p class="text-body-m text-fg-secondary">Opening your top-up…</p>
-      </div>
+      <!-- Resuming renders the deposit screen's skeleton shapes until the request is live. -->
+      <DepositScreen v-if="session.resuming" @cancel="flow.confirmingCancel = true" />
       <template v-else>
-        <DepositScreen v-if="flow.screen === 'journey'" @cancel="cancelTopUp" />
+        <CancelTopUpScreen
+          v-if="flow.screen === 'journey' && flow.confirmingCancel"
+          @confirm="cancelTopUp"
+          @keep="flow.confirmingCancel = false"
+        />
+        <DepositScreen
+          v-else-if="flow.screen === 'journey'"
+          @cancel="flow.confirmingCancel = true"
+        />
         <NetworkScreen
           v-else-if="flow.step === 'network' || flow.step === 'amount' || flow.step === 'method'"
           @change-amount="emit('back')"

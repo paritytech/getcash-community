@@ -30,7 +30,8 @@ const { previewLabel } = useStateDirector();
 const { handedOff } = useMeldHandoff(emit);
 
 const title = computed(
-  () => fundingSelectorConfig.routes.find(({ id }) => id === route)?.label ?? route,
+  () =>
+    `Add funds via ${fundingSelectorConfig.routes.find(({ id }) => id === route)?.label ?? route}`,
 );
 /** The fee-breakdown drill-in over the pay screen. Back (toolbar or bottom button) returns to it. */
 const showingFees = ref(false);
@@ -141,7 +142,7 @@ onUnmounted(() => {
         <button
           v-if="canCancel"
           type="button"
-          class="mx-6 mt-3 mb-4 h-12 shrink-0 rounded-medium bg-status-error text-label-l text-fg-primary-inverted transition-colors hover:bg-status-error-hover disabled:opacity-50"
+          class="mx-6 mt-3 mb-4 h-12 shrink-0 rounded-medium bg-status-error text-label-l text-fg-static-white transition-colors hover:bg-status-error-hover disabled:opacity-50"
           :disabled="session.cancelling"
           @click="cancelTopUp"
         >

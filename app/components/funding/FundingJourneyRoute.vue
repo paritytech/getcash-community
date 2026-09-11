@@ -8,6 +8,7 @@ import { useVisibilityReconcile } from "../../composables/useVisibilityReconcile
 import type { FundingJourneyStatus } from "../../funding/handoff";
 import type { FundingTopUp } from "../../funding/top-ups";
 import { useSessionStore } from "../../stores/session";
+import ReturnFundsScreen from "../screens/ReturnFundsScreen.vue";
 import FundingSettledStatusScreen from "./FundingSettledStatusScreen.vue";
 import MeldFeeDetailsScreen from "./routes/MeldFeeDetailsScreen.vue";
 
@@ -20,7 +21,8 @@ const props = defineProps<{
   open?: ((topUp: FundingTopUp) => Promise<boolean>) | null;
   status?: FundingJourneyStatus | null;
 }>();
-const emit = defineEmits<{ back: [] }>();
+// again bubbles up from an expired journey: the host starts a fresh purchase at the amount screen.
+const emit = defineEmits<{ back: []; again: [] }>();
 
 const session = useSessionStore();
 // A settled top-up is read from the list only: nothing resumed, nothing reset on the way out.
@@ -42,8 +44,27 @@ watch(
     if (!q) showingFees.value = false;
   },
 );
+/** The return-funds drill-in over a refunded journey. Back (toolbar or bottom button) returns. */
+const showingRefund = ref(false);
+// A state that is no longer failed has no refund to walk through.
+watch(
+  () => session.lastState?.phase,
+  (phase) => {
+    if (phase !== "failed") showingRefund.value = false;
+  },
+);
+// The preview deck lands straight on the opened guide.
+watch(
+  () => session.revealRefund,
+  (want) => {
+    if (want) showingRefund.value = true;
+  },
+  { immediate: true },
+);
+
 function goBack() {
-  if (showingFees.value) showingFees.value = false;
+  if (showingRefund.value) showingRefund.value = false;
+  else if (showingFees.value) showingFees.value = false;
   else emit("back");
 }
 
@@ -100,6 +121,7 @@ onUnmounted(() => {
         </p>
       </div>
 
+      <ReturnFundsScreen v-else-if="showingRefund" @back="showingRefund = false" />
       <MeldFeeDetailsScreen v-else-if="showingFees" @back="showingFees = false" />
       <JourneyScreen
         v-else
@@ -107,7 +129,9 @@ onUnmounted(() => {
         :status="status ?? null"
         :top-up="topUp ?? null"
         @fees="showingFees = true"
+        @refund="showingRefund = true"
         @close="emit('back')"
+        @again="emit('again')"
       />
     </div>
 
