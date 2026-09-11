@@ -3,7 +3,7 @@
 // the moment it opens. Once the buyer finishes, a small loader replaces the widget while the poll
 // confirms.
 import { onMounted, onUnmounted } from "vue";
-import { CircleX } from "lucide-vue-next";
+import { ArrowDown, CircleX } from "lucide-vue-next";
 import { useSessionStore } from "../../../stores/session";
 
 defineProps<{ payUrl?: string | null }>();
@@ -42,9 +42,9 @@ onUnmounted(() => window.removeEventListener("message", onMessage));
       v-if="session.meldStage === 'failed' && session.meldRefunded"
       class="flex min-h-0 w-full flex-1 flex-col items-center justify-center gap-2 text-center"
     >
-      <img src="/icons/arrow-down.svg" alt="" class="size-8" />
-      <p class="text-base font-semibold text-text-primary">Payment refunded</p>
-      <p class="max-w-[260px] text-sm text-text-secondary">
+      <ArrowDown class="size-8 text-fg-primary" aria-hidden="true" />
+      <p class="text-label-l font-semibold text-fg-primary">Payment refunded</p>
+      <p class="max-w-[260px] text-body-m text-fg-secondary">
         {{
           session.meldFailureMessage ??
           "Your payment was refunded. The money has been returned to you."
