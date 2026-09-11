@@ -63,6 +63,7 @@ describe.runIf(process.env.VERIFY_AMOUNTS === "1")("live amount check", () => {
         // The deposit's fee allowances, as the app sizes them.
         const sizing = await estimateFundingSizing({
           ahClient: ahC,
+          peopleClient: peC,
           underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
           peopleParaId: PASEO_PEOPLE_PARA_ID,
           settleAmount: settle,

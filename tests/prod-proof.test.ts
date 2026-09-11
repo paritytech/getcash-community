@@ -72,6 +72,7 @@ describe.runIf(process.env.PROD_PROOF === "1")("production proof", () => {
       // Size the deposit as the app does
       const sizing = await estimateFundingSizing({
         ahClient: ahC,
+        peopleClient: peC,
         underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
         peopleParaId: PASEO_PEOPLE_PARA_ID,
         settleAmount: SETTLE,

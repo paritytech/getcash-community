@@ -1,17 +1,20 @@
-// Sizes the two fee allowances the deposit must carry, priced live from the chain with no funds
+// Sizes the two fee allowances the deposit must carry, priced live from both chains with no funds
 // and no stand-in account. keepNativeForFees is the native the deposit carries on top of the pool
-// quote for the program's own costs: dispatch, local execution and delivery. remoteFeeBuffer is
-// the extra underlying to over-buy for the destination's execution fee; an over-buy lands as extra
-// coinage. Every figure is a runtime read against our own message. Any failure returns null and
-// the caller keeps the funding package's static fallbacks.
+// quote for the program's own costs on Asset Hub: dispatch, local execution and delivery.
+// remoteFeeBuffer is the extra underlying to over-buy for the destination's execution fee, read
+// from a dry run of the forwarded program on People. Every figure is a runtime read against our
+// own message. Any failure returns null and the caller keeps the funding package's static
+// fallbacks.
 
-import { paseo_next_v2 } from "@polkadot-api/descriptors";
+import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import type { PolkadotClient } from "polkadot-api";
 import {
   DEFAULT_SLIPPAGE_PCT,
   destinationEarmark,
   discoverPool,
+  estimateDestinationFeeCash,
   estimateFundingProgramFees,
+  PASEO_ASSET_HUB_PARA_ID,
   quoteNativeInMax,
 } from "@getsome/funding";
 
@@ -22,16 +25,12 @@ export interface FundingSizing {
   keepNativeForFees: bigint;
 }
 
-/** The destination fee over-buy: one claim unit, 0.01 at 6 decimals. The destination prices its
- *  execution only on arrival, so it cannot be measured here. The observed charge is tens of base
- *  units, and the surplus is delivered with the settle. */
-const DESTINATION_BUFFER = 10_000n;
-
 /** A throwaway 32-byte beneficiary for the fee reads; it does not affect any fee. */
 const ZERO_32 = `0x${"00".repeat(32)}`;
 
 export async function estimateFundingSizing(args: {
   ahClient: PolkadotClient;
+  peopleClient: PolkadotClient;
   underlyingAssetId: number;
   peopleParaId: number;
   settleAmount: bigint;
@@ -40,11 +39,20 @@ export async function estimateFundingSizing(args: {
 }): Promise<FundingSizing | null> {
   try {
     const api = args.ahClient.getTypedApi(paseo_next_v2);
+    const peopleApi = args.peopleClient.getTypedApi(paseo_people_next);
     const pool = await discoverPool(api, args.underlyingAssetId);
+
+    const destinationFee = await estimateDestinationFeeCash({
+      peopleApi,
+      pool,
+      assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
+      beneficiaryHex: ZERO_32,
+      amount: args.settleAmount,
+    });
 
     // The fee probes carry the amounts a real deposit would, so the measured dispatch fee matches
     // the submitted call's length.
-    const buyTarget = args.settleAmount + DESTINATION_BUFFER;
+    const buyTarget = args.settleAmount + destinationFee;
     const nativeInMax = await quoteNativeInMax(api, pool, buyTarget, DEFAULT_SLIPPAGE_PCT);
 
     const fees = await estimateFundingProgramFees({
@@ -54,12 +62,12 @@ export async function estimateFundingSizing(args: {
       peopleParaId: args.peopleParaId,
       nativeBalance: nativeInMax,
       minUnderlyingOut: buyTarget,
-      remoteFeesCash: destinationEarmark(buyTarget, DESTINATION_BUFFER),
+      remoteFeesCash: destinationEarmark(buyTarget, destinationFee),
       feeProbeAddress: args.probeAddress,
     });
 
     return {
-      remoteFeeBuffer: DESTINATION_BUFFER,
+      remoteFeeBuffer: destinationFee,
       keepNativeForFees: fees.payFeesNative + fees.dispatchNative,
     };
   } catch (e) {

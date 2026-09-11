@@ -2,11 +2,11 @@
 // pool discovery, the quote headroom, the deposit sizing, the dispatch-error decoder, and the
 // manual rail.
 
-import type { PolkadotClient } from "polkadot-api";
+import { AccountId, type PolkadotClient } from "polkadot-api";
 import { describe, expect, it } from "vitest";
 import { describeDispatchError } from "./dispatch-error";
 import { createManualRail } from "./manual-rail";
-import { destinationEarmark } from "./funding-program";
+import { destinationEarmark, estimateDestinationFeeCash } from "./funding-program";
 import {
   decideStep,
   DEFAULT_SLIPPAGE_PCT,
@@ -623,6 +623,120 @@ describe("the headroom survives a price move", () => {
     const retry = await drive(world, 1, state);
     expect(retry.steps).toEqual(["swap"]);
     expect(state.xcmSubmitted).toBe(true);
+  });
+});
+
+describe("estimateDestinationFeeCash", () => {
+  const BENEFICIARY = new Uint8Array(32).fill(7);
+  const beneficiaryHex = `0x${"07".repeat(32)}`;
+  const pool = { native: NATIVE_LOC as never, underlying: UNDERLYING_LOC as never };
+  // The underlying as People keys it: the pool's local X2 behind Asset Hub's parachain junction.
+  const onPeople = {
+    parents: 1,
+    interior: {
+      type: "X3",
+      value: [{ type: "Parachain", value: 1500 }, ...UNDERLYING_LOC.interior.value],
+    },
+  };
+  const deposited = (who: string, amount: bigint) => ({
+    type: "Assets",
+    value: { type: "Deposited", value: { asset_id: onPeople, who, amount } },
+  });
+  const peopleApiDryRunning = (calls: { origin?: unknown; program?: unknown }, events: unknown[]) =>
+    ({
+      apis: {
+        DryRunApi: {
+          dry_run_xcm: async (origin: unknown, program: unknown) => {
+            calls.origin = origin;
+            calls.program = program;
+            return {
+              success: true,
+              value: {
+                execution_result: { type: "Complete", value: { used: {} } },
+                emitted_events: events,
+              },
+            };
+          },
+        },
+      },
+    }) as never;
+
+  it("dry-runs the forwarded program on People as Asset Hub and reads the fee the beneficiary loses", async () => {
+    const calls: { origin?: unknown; program?: unknown } = {};
+    // Two teleports of BUY reach People; 43 goes to the fee receiver, the rest to the beneficiary.
+    const events = [
+      deposited(AccountId(42).dec(BENEFICIARY), 2n * BUY - 43n),
+      deposited(AccountId(42).dec(new Uint8Array(32).fill(9)), 43n),
+    ];
+    const fee = await estimateDestinationFeeCash({
+      peopleApi: peopleApiDryRunning(calls, events),
+      pool,
+      assetHubParaId: 1500,
+      beneficiaryHex,
+      amount: BUY,
+    });
+    expect(fee).toBe(43n);
+    expect(calls.origin).toEqual({
+      type: "V5",
+      value: { parents: 1, interior: { type: "X1", value: { type: "Parachain", value: 1500 } } },
+    });
+    const program = calls.program as { value: Array<{ type: string; value?: unknown }> };
+    expect(program.value.map((i) => i.type)).toEqual([
+      "ReceiveTeleportedAsset",
+      "PayFees",
+      "ReceiveTeleportedAsset",
+      "ClearOrigin",
+      "RefundSurplus",
+      "DepositAsset",
+      "SetTopic",
+    ]);
+    expect((program.value[0]!.value as Array<{ id: unknown }>)[0]!.id).toEqual(onPeople);
+  });
+
+  it("keeps an underlying already keyed from the relay as it is", async () => {
+    const calls: { origin?: unknown; program?: unknown } = {};
+    const relayKeyed = {
+      parents: 1,
+      interior: { type: "X1", value: { type: "Parachain", value: 2000 } },
+    };
+    await estimateDestinationFeeCash({
+      peopleApi: peopleApiDryRunning(calls, [deposited(AccountId(42).dec(BENEFICIARY), 2n * BUY)]),
+      pool: { native: NATIVE_LOC as never, underlying: relayKeyed as never },
+      assetHubParaId: 1500,
+      beneficiaryHex,
+      amount: BUY,
+    });
+    const program = calls.program as { value: Array<{ type: string; value?: unknown }> };
+    expect((program.value[0]!.value as Array<{ id: unknown }>)[0]!.id).toEqual(relayKeyed);
+  });
+
+  it("throws when the program does not complete on People or nothing reaches the beneficiary", async () => {
+    const failing = {
+      apis: {
+        DryRunApi: {
+          dry_run_xcm: async () => ({
+            success: true,
+            value: {
+              execution_result: {
+                type: "Incomplete",
+                value: { used: {}, error: { type: "TooExpensive" } },
+              },
+              emitted_events: [],
+            },
+          }),
+        },
+      },
+    } as never;
+    const common = { pool, assetHubParaId: 1500, beneficiaryHex, amount: BUY };
+    await expect(estimateDestinationFeeCash({ peopleApi: failing, ...common })).rejects.toThrow(
+      /fails on People with TooExpensive/,
+    );
+    const strangerOnly = peopleApiDryRunning({}, [
+      deposited(AccountId(42).dec(new Uint8Array(32).fill(9)), 43n),
+    ]);
+    await expect(
+      estimateDestinationFeeCash({ peopleApi: strangerOnly, ...common }),
+    ).rejects.toThrow(/nothing reached the beneficiary/);
   });
 });
 

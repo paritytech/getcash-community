@@ -1026,7 +1026,7 @@ export const useSessionStore = defineStore("session", () => {
         if (typeof window !== "undefined" && settleForPricing !== null) {
           try {
             const [
-              { connectChain, ASSET_HUB },
+              { connectChain, ASSET_HUB, PEOPLE },
               {
                 sizeNativeBudget,
                 DEFAULT_KEEP_NATIVE_FOR_FEES,
@@ -1041,17 +1041,20 @@ export const useSessionStore = defineStore("session", () => {
               import("~~/lib/funding-fees"),
             ]);
             const client = await connectChain(ASSET_HUB);
-            // Size the deposit from live public reads. Best effort; falls back to the defaults.
+            // Size the deposit from live public reads. Best effort; falls back to the defaults,
+            // and an unreachable People chain leaves the pool quote below untouched.
             const sizing = await step(
               "funding sizing estimate (public read)",
               20_000,
-              estimateFundingSizing({
-                ahClient: client,
-                underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
-                peopleParaId: PASEO_PEOPLE_PARA_ID,
-                settleAmount: settleForPricing,
-                probeAddress: DEV_RECIPIENT,
-              }),
+              (async () =>
+                estimateFundingSizing({
+                  ahClient: client,
+                  peopleClient: await connectChain(PEOPLE),
+                  underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
+                  peopleParaId: PASEO_PEOPLE_PARA_ID,
+                  settleAmount: settleForPricing,
+                  probeAddress: DEV_RECIPIENT,
+                }))(),
             ).catch(() => null);
             const keepNativeForFees = sizing?.keepNativeForFees ?? DEFAULT_KEEP_NATIVE_FOR_FEES;
             const remoteFeeBuffer = sizing?.remoteFeeBuffer ?? DEFAULT_REMOTE_FEE_BUFFER;

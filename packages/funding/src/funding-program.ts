@@ -15,10 +15,11 @@
 // The destination fee allowance is generous by design: the remote RefundSurplus returns what it
 // does not consume and the DepositAsset sweeps it to the burner.
 
-import { paseo_next_v2 } from "@polkadot-api/descriptors";
-import type { TypedApi } from "polkadot-api";
+import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
+import { AccountId, type TypedApi } from "polkadot-api";
 
 type AssetHubApi = TypedApi<typeof paseo_next_v2>;
+type PeopleApi = TypedApi<typeof paseo_people_next>;
 type AssetLocation = Parameters<AssetHubApi["query"]["AssetConversion"]["Pools"]["getValue"]>[0][0];
 export type Pool = { native: AssetLocation; underlying: AssetLocation };
 
@@ -130,10 +131,11 @@ export function buildFundingProgram(args: {
   } as unknown as ExecuteArgs;
 }
 
-/** A stand-in for the program People receives, used to price the delivery fee when no funded
- *  account can dry-run the real one. Mirrors the instruction list the runtime forwards. */
-function forwardedProgramStandIn(pool: Pool, amount: bigint, beneficiaryHex: string) {
-  const c = (v: bigint) => cash(pool, v);
+/** A stand-in for the program People receives, with the underlying keyed as `assetId`. Mirrors
+ *  the instruction list the runtime forwards, which is what its weight and delivery fee depend
+ *  on. */
+function forwardedProgramStandIn(assetId: AssetLocation, amount: bigint, beneficiaryHex: string) {
+  const c = (v: bigint) => ({ id: assetId, fun: { type: "Fungible", value: v } });
   return {
     type: "V5",
     value: [
@@ -257,7 +259,8 @@ export async function estimateFundingProgramFees(args: {
           probe(args.nativeBalance / 4n, 1n),
           args.peopleParaId,
           args.dryRunFrom,
-        )) ?? forwardedProgramStandIn(args.pool, args.minUnderlyingOut, args.beneficiaryHex);
+        )) ??
+    forwardedProgramStandIn(args.pool.underlying, args.minUnderlyingOut, args.beneficiaryHex);
   const df = await args.api.apis.XcmPaymentApi.query_delivery_fees(
     { type: "V5", value: peopleDest(args.peopleParaId) } as never,
     forwarded as never,
@@ -280,6 +283,68 @@ export async function estimateFundingProgramFees(args: {
   ).getEstimatedFees(args.dryRunFrom ?? args.feeProbeAddress);
 
   return { localNative, deliveryNative, payFeesNative, dispatchNative, maxWeight };
+}
+
+/** The underlying as People keys it. An asset local to Asset Hub sits behind Asset Hub's parachain
+ *  junction one hop up; an asset already keyed from the relay or beyond reads the same on both. */
+function underlyingOnPeople(pool: Pool, assetHubParaId: number): AssetLocation {
+  const local = pool.underlying as unknown as { parents: number; interior: { value?: unknown } };
+  if (local.parents !== 0) return pool.underlying;
+  const inner = local.interior.value;
+  const junctions = Array.isArray(inner) ? inner : inner === undefined ? [] : [inner];
+  const all = [{ type: "Parachain", value: assetHubParaId }, ...junctions];
+  const value = all.length === 1 ? all[0] : all;
+  return { parents: 1, interior: { type: `X${all.length}`, value } } as unknown as AssetLocation;
+}
+
+/** The destination's execution fee for the forwarded program, in the underlying. People runs the
+ *  program in a dry run as if Asset Hub had sent it, and the fee is whatever the teleported amount
+ *  loses before it reaches the beneficiary. People cannot price a weight in the underlying
+ *  directly, so this reads the charge its fee logic actually makes. Throws when the dry run does
+ *  not complete. */
+export async function estimateDestinationFeeCash(args: {
+  peopleApi: PeopleApi;
+  pool: Pool;
+  assetHubParaId: number;
+  beneficiaryHex: string;
+  /** Representative underlying amount. The fee does not depend on it, but the deposit must clear
+   *  the asset's minimum balance for the dry run to complete. */
+  amount: bigint;
+}): Promise<bigint> {
+  const asset = underlyingOnPeople(args.pool, args.assetHubParaId);
+  const program = forwardedProgramStandIn(asset, args.amount, args.beneficiaryHex);
+  const origin = {
+    type: "V5",
+    value: {
+      parents: 1,
+      interior: { type: "X1", value: { type: "Parachain", value: args.assetHubParaId } },
+    },
+  };
+  const dr = await args.peopleApi.apis.DryRunApi.dry_run_xcm(origin as never, program as never);
+  if (!dr.success) {
+    throw new Error("destination fee estimate: People would not dry-run the program");
+  }
+  const outcome = dr.value.execution_result;
+  if (outcome.type !== "Complete") {
+    const error = (outcome.value as { error?: { type?: string } }).error?.type ?? outcome.type;
+    throw new Error(`destination fee estimate: the program fails on People with ${error}`);
+  }
+  // The stand-in teleports the amount twice and deposits what is left to the beneficiary.
+  const beneficiary = args.beneficiaryHex.toLowerCase();
+  let received = 0n;
+  for (const ev of dr.value.emitted_events) {
+    if (ev.type !== "Assets" || ev.value.type !== "Deposited") continue;
+    const who = `0x${toHex(AccountId().enc(ev.value.value.who))}`;
+    if (who === beneficiary) received += ev.value.value.amount;
+  }
+  if (received === 0n) {
+    throw new Error("destination fee estimate: nothing reached the beneficiary in the dry run");
+  }
+  return 2n * args.amount - received;
+}
+
+function toHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 /** The fungible amount out of a VersionedAssets delivery-fee result (its single native entry). */

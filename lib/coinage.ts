@@ -754,14 +754,16 @@ export async function createCoinageSession(
         provisionRefundKey(deps, args.sourceId, tradeN, BITCOIN_NETWORK),
       );
 
-  // Size the deposit from live chain reads: the CASH fee buffer for the teleport and the native
-  // the burner keeps for its own extrinsics. The same figures feed the worker hand-off below.
+  // Size the deposit from live chain reads: the CASH over-buy for People's execution fee and the
+  // native the burner keeps for the funding program. The same figures feed the worker hand-off
+  // below.
   const { estimateFundingSizing } = await import("./funding-fees");
   const sizing = await stage(
     "funding sizing estimate",
     20_000,
     estimateFundingSizing({
       ahClient: await connectChain(ASSET_HUB),
+      peopleClient: await connectChain(PEOPLE),
       underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
       peopleParaId: PASEO_PEOPLE_PARA_ID,
       settleAmount: args.amount,
