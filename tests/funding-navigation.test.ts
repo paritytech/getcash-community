@@ -15,9 +15,14 @@ describe("funding shell entry navigation", () => {
     expect(resolveFundingShellScreen("history", false)).toBe("history");
   });
 
-  it("uses the combined selection screen for automatic entry", () => {
+  it("lands automatic entry on the amount screen when nothing is running", () => {
     expect(resolveFundingShellScreen("auto", false)).toBe("amount");
+    // Recently settled content alone is not a running top-up.
     expect(resolveFundingShellScreen("auto", true)).toBe("amount");
+  });
+
+  it("lands automatic entry on the pending screen while a top-up is in progress", () => {
+    expect(resolveFundingShellScreen("auto", true, true)).toBe("pending");
   });
 });
 
