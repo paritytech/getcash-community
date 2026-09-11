@@ -23,9 +23,10 @@ let active = true;
 useVisibilityReconcile();
 const { handedOff } = useMeldHandoff(emit);
 
-const title = computed(
-  () => fundingSelectorConfig.routes.find(({ id }) => id === props.topUp.route)?.label ?? "Status",
-);
+const title = computed(() => {
+  const label = fundingSelectorConfig.routes.find(({ id }) => id === props.topUp.route)?.label;
+  return label ? `Add funds via ${label}` : "Status";
+});
 /** Whether the embed is showing: neither still opening nor unavailable. */
 const showingWidget = computed(() => !waiting.value && !unavailable.value);
 const canCancel = computed(
