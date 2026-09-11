@@ -96,7 +96,7 @@ onUnmounted(() => {
 
     <div class="flex min-h-0 flex-1 flex-col px-6 pt-6">
       <!-- While opening, the deposit screen renders its skeleton shapes (it has no deposit yet). -->
-      <DepositScreen v-if="waiting" @cancel="cancelTopUp" />
+      <DepositScreen v-if="waiting" @cancel="flow.confirmingCancel = true" />
 
       <div v-else-if="unavailable" class="flex flex-1 flex-col items-center pt-16 text-center">
         <h1 class="text-heading-l text-fg-primary">Top-up unavailable</h1>
