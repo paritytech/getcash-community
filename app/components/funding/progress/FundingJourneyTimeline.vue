@@ -67,7 +67,7 @@ const announcement = computed(() => {
   const stage = settled.value
     ? "Top-up complete"
     : failed.value
-      ? `${stages.value[activeIndex.value]!} failed`
+      ? stageLabel(activeIndex.value)
       : `Step ${activeIndex.value + 1} of ${stages.value.length}: ${stages.value[activeIndex.value]!}`;
   return props.message ? `${stage}. ${props.message}` : stage;
 });

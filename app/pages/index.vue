@@ -209,6 +209,14 @@ function leaveJourney() {
   else returnToSelector("pending");
 }
 
+/** "Add funds again" from an expired journey: whatever its origin, a fresh purchase starts at
+ *  the amount screen. */
+function addFundsAgain() {
+  journey.value = null;
+  returnFromTopUp();
+  returnToSelector("amount");
+}
+
 const openTopUpRequest = (topUp: FundingTopUp): Promise<boolean> =>
   adapterByRoute.get(topUp.route)?.open(topUp) ?? Promise.resolve(false);
 
@@ -249,6 +257,7 @@ onMounted(async () => {
     :open="journey.origin === 'top-up' ? openTopUpRequest : null"
     :status="journeyStatus"
     @back="leaveJourney"
+    @again="addFundsAgain"
   />
   <component
     :is="activeTopUpPackage"
