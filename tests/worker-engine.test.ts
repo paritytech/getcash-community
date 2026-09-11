@@ -136,7 +136,7 @@ describe("worker funding engine", () => {
     const again = await engine.startFunding(JSON.stringify({ ...HANDOFF, settleAmount: "990000" }));
     expect(again.settleAmount).toBe(SETTLE.toString());
     // Durable: the record is in product storage, not module memory.
-    expect(storedJob()).toMatchObject({ v: 1, label: HANDOFF.label });
+    expect(storedJob()).toMatchObject({ v: 2, label: HANDOFF.label });
     // Refusals are data; the surface receives them as WorkerCallError("invalid", reason).
     const noSession = await engine.startFunding(JSON.stringify({ ...HANDOFF, sessionId: "" }));
     expect(noSession).toMatchObject({ error: "invalid" });
@@ -232,11 +232,15 @@ describe("worker funding engine", () => {
     // Next wake: the persisted state is what tickOnce receives back.
     mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
       expect(state.fundsSeenAt).toBe(seenAt);
-      state.swapSubmitted = true;
-      return { ...outcome("xcm"), submitted: true };
+      state.attempts = 1;
+      state.xcmSubmitted = true;
+      return { ...outcome("await-arrival"), submitted: true };
     });
     await engine.tickAllFunding();
-    expect(storedJob()).toMatchObject({ phase: "xcm", state: { swapSubmitted: true } });
+    expect(storedJob()).toMatchObject({
+      phase: "await-arrival",
+      state: { attempts: 1, xcmSubmitted: true },
+    });
   });
 
   it("persists the submitting marker before the submit, and the tx after it", async () => {
@@ -314,7 +318,8 @@ describe("worker funding engine", () => {
     const started = await freshEngine();
     await started.startFunding(JSON.stringify(HANDOFF));
     mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
-      state.swapSubmitted = true;
+      state.attempts = 1;
+      state.xcmSubmitted = true;
       state.fundsSeenAt = Date.now();
       return { ...outcome("await-arrival"), submitted: true };
     });
@@ -331,10 +336,14 @@ describe("worker funding engine", () => {
     expect(rearmed).toMatchObject({ phase: "starting", done: false });
     expect(storedJob().lastError).toBeUndefined();
     expect(storedJob().failure).toBeUndefined();
-    expect(storedJob().state).toMatchObject({ swapSubmitted: true, fundsSeenAt: null });
+    expect(storedJob().state).toMatchObject({
+      attempts: 1,
+      xcmSubmitted: true,
+      fundsSeenAt: null,
+    });
 
     mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
-      expect(state.swapSubmitted).toBe(true);
+      expect(state.xcmSubmitted).toBe(true);
       return outcome("await-arrival");
     });
     expect((await engine.tickAllFunding()).ticked).toBe(1);
@@ -346,7 +355,7 @@ describe("worker funding engine", () => {
     await engine.startFunding(JSON.stringify(HANDOFF));
     const funding = await import("@getsome/funding");
     mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
-      state.swapSubmitted = true;
+      state.attempts = 1;
       state.xcmSubmitted = true;
       state.peopleAtXcm = 100n;
       state.fundsSeenAt = Date.now();
@@ -361,7 +370,7 @@ describe("worker funding engine", () => {
 
     await engine.startFunding(JSON.stringify(HANDOFF));
     expect(storedJob().state).toMatchObject({
-      swapSubmitted: false,
+      attempts: 0,
       xcmSubmitted: false,
       peopleAtXcm: "0",
       fundsSeenAt: null,

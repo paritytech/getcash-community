@@ -6,7 +6,6 @@ describe("journeyDone", () => {
     expect(journeyDone({ phase: "awaiting-deposit", fundingStep: null })).toBe(1);
     expect(journeyDone({ phase: "awaiting-deposit", fundingStep: "await-native" })).toBe(1);
     expect(journeyDone({ phase: "awaiting-deposit", fundingStep: "swap" })).toBe(3);
-    expect(journeyDone({ phase: "awaiting-deposit", fundingStep: "xcm" })).toBe(3);
     expect(journeyDone({ phase: "awaiting-deposit", fundingStep: "await-arrival" })).toBe(3);
     expect(journeyDone({ phase: "awaiting-deposit", fundingStep: "done" })).toBe(4);
   });

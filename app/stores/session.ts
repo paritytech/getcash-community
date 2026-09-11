@@ -1652,7 +1652,7 @@ export const useSessionStore = defineStore("session", () => {
     if (job?.done) return "done";
     if (typeof job?.state?.fundsSeenAt !== "number") return null;
     const phase = job.phase;
-    return phase === "swap" || phase === "xcm" || phase === "await-arrival" ? phase : "swap";
+    return phase === "swap" || phase === "await-arrival" ? phase : "swap";
   }
 
   /** The funding step the worker's job has reached for this request, or null when it has no job

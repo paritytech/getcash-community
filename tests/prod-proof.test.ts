@@ -127,7 +127,6 @@ describe.runIf(process.env.PROD_PROOF === "1")("production proof", () => {
               signer: burner.signer,
               beneficiaryHex: toHex(burner.publicKey),
               settleAmount: SETTLE,
-              underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
               peopleParaId: PASEO_PEOPLE_PARA_ID,
               remoteFeeBuffer: sizing.remoteFeeBuffer,
               keepNativeForFees: sizing.keepNativeForFees,

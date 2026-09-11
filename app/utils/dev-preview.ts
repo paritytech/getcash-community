@@ -354,14 +354,6 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "crypto / pipeline: transfer",
-    apply: (s, f) => {
-      base(s, f);
-      s.lastState = awaitingDeposit();
-      s.fundingStep = "xcm";
-    },
-  },
-  {
     name: "crypto / pipeline: arrival wait",
     apply: (s, f) => {
       base(s, f);

@@ -23,7 +23,7 @@ import { readParams } from "./params.js";
 // Records carry the entropy label, never a secret; the burner key is re-derived on every wake.
 
 /** Bump when the record shape changes; readers skip versions they don't know. */
-const RECORD_V = 1;
+const RECORD_V = 2;
 
 /** Storage key for the job map, keyed by session id. */
 const FUNDING_KEY = "getsome.funding.jobs";
@@ -89,9 +89,9 @@ const asBig = (value, fallback = 0n) => {
  *   phase: "starting" | FundingStep | "failed",
  *   failure?: "shortfall" | "timeout" | "expired" | "cancelled",
  *   done, createdAt, armedAt, lastTickAt, lastError?,
- *   state: { swapSubmitted, xcmSubmitted, peopleAtXcm: string, fundsSeenAt: number|null,
- *            workedMs },
- *   submitting?: { call: "swap"|"xcm", at },  // written before a submit
+ *   state: { attempts, xcmSubmitted, peopleAtXcm: string, fundsSeenAt: number|null,
+ *            workedMs },                       // attempts: submits so far
+ *   submitting?: { call: "swap", at },        // written before a submit
  *   txs: [{ call, txHash, block? }],
  *   claim?: { phase: "claiming"|"claimed", amount, at, attempts, error? },
  * }
@@ -143,7 +143,7 @@ function newRecord(input, nowMs) {
 }
 
 const freshRecordState = () => ({
-  swapSubmitted: false,
+  attempts: 0,
   xcmSubmitted: false,
   peopleAtXcm: "0",
   fundsSeenAt: null,
@@ -226,7 +226,7 @@ function rearm(record, nowMs) {
   if (!record.done) record.state.fundsSeenAt = null;
   record.state.workedMs = 0;
   if (failure === "shortfall") {
-    record.state.swapSubmitted = false;
+    record.state.attempts = 0;
     record.state.xcmSubmitted = false;
     record.state.peopleAtXcm = "0";
   }
@@ -315,7 +315,6 @@ const PHASE_PERCENT = {
   starting: 2,
   "await-native": 8,
   swap: 35,
-  xcm: 65,
   "await-arrival": 85,
   done: 100,
   failed: 0,
@@ -468,7 +467,7 @@ async function tickRecord(record, nowMs) {
     // Restore the persisted state into the shape tickOnce mutates. fundsSeenAt must be
     // exactly null when absent.
     const state = freshTickState();
-    state.swapSubmitted = !!record.state.swapSubmitted;
+    state.attempts = record.state.attempts;
     state.xcmSubmitted = !!record.state.xcmSubmitted;
     state.peopleAtXcm = asBig(record.state.peopleAtXcm);
     state.fundsSeenAt = record.state.fundsSeenAt ?? null;
@@ -483,14 +482,13 @@ async function tickRecord(record, nowMs) {
           signer: burner.signer,
           beneficiaryHex: toHex(burner.publicKey),
           settleAmount: asBig(record.settleAmount),
-          underlyingAssetId: record.underlyingAssetId,
           peopleParaId: record.peopleParaId,
           remoteFeeBuffer: asBig(record.remoteFeeBuffer, DEFAULT_REMOTE_FEE_BUFFER),
           keepNativeForFees: asBig(record.keepNativeForFees, DEFAULT_KEEP_NATIVE_FOR_FEES),
           slippagePct: record.slippagePct,
           tickTimeoutMs: DEFAULT_TICK_TIMEOUT_MS,
           submitTimeoutMs: DEFAULT_SUBMIT_TIMEOUT_MS,
-          // Both submits are on Asset Hub; one anchor per tick serves both.
+          // Every submit is on Asset Hub; one anchor per tick serves them all.
           signOptions: await signOptionsFor(ahClient),
           readUnderlyingOnPeople: (ss58) => peoplePort.settlementBalance(ss58, CASH_SETTLEMENT),
           now: Date.now,
@@ -509,7 +507,7 @@ async function tickRecord(record, nowMs) {
     } finally {
       // Write the state back even when the tick threw; tickOnce mutates it as it works.
       record.state = {
-        swapSubmitted: state.swapSubmitted,
+        attempts: state.attempts,
         xcmSubmitted: state.xcmSubmitted,
         peopleAtXcm: state.peopleAtXcm.toString(),
         fundsSeenAt: state.fundsSeenAt,
