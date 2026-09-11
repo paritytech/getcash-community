@@ -104,7 +104,7 @@ function enter(key: FundingKey) {
 
 <template>
   <div class="funding-screen">
-    <FundingEntryHeader title="Add funds" :history="history" @history="emit('history')" />
+    <FundingEntryHeader title="Top up funds" :history="history" @history="emit('history')" />
 
     <div class="funding-scroll">
       <div class="funding-amount-content">
@@ -180,7 +180,7 @@ function enter(key: FundingKey) {
           :disabled="loading || !canContinue"
           @click="emit('continue')"
         >
-          {{ loading ? `Opening ${config.provider}…` : "Continue" }}
+          {{ loading ? `Opening ${config.provider}…` : "Continue to top up" }}
         </button>
       </div>
     </div>

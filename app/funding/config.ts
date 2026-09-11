@@ -41,7 +41,8 @@ export const fundingSelectorConfig = {
     initial: "",
     minimum: "10",
     maximum: "2000",
-    presets: ["50", "100", "200"],
+    // The lowest preset sits on the minimum, so the floor is a tappable amount.
+    presets: ["10", "50", "100"],
   },
   routes: [
     {
