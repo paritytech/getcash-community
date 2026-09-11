@@ -46,6 +46,18 @@ function stageLabel(index: number): string {
   const label = stages[index]!;
   return stageState(index) === "failed" ? `${label} failed` : label;
 }
+
+/** What the hidden live region reads out: the stage the journey is on, and the ribbon's message
+ *  when there is one. Stage changes are otherwise only aria-current swaps, which screen readers
+ *  do not announce. */
+const announcement = computed(() => {
+  const stage = settled.value
+    ? "Top-up complete"
+    : failed.value
+      ? `${stages[activeIndex.value]!} failed`
+      : `Step ${activeIndex.value + 1} of ${stages.length}: ${stages[activeIndex.value]!}`;
+  return props.message ? `${stage}. ${props.message}` : stage;
+});
 </script>
 
 <template>
@@ -84,9 +96,12 @@ function stageLabel(index: number): string {
         </li>
       </ol>
     </div>
-    <div v-if="message" class="funding-journey-ribbon" aria-live="polite">
+    <div v-if="message" class="funding-journey-ribbon">
       <p class="text-body-s text-fg-secondary">{{ message }}</p>
     </div>
+    <!-- Always mounted: a live region inserted together with its first content is skipped by many
+         screen readers, and it must exist before a stage change for the change to be announced. -->
+    <p class="sr-only" role="status" aria-live="polite">{{ announcement }}</p>
   </section>
 </template>
 
