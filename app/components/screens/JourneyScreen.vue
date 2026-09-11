@@ -122,13 +122,14 @@ const detailRows = computed(() => {
 /** Temporarily stuck (the provider is retrying): amber on the stepper, never terminal. */
 const delayed = computed(() => session.meldDelayed && !finished.value && !heroFailed.value);
 
-/** The one ribbon line under the stepper. The design keeps the happy path silent: only a failure
- *  reason, an out-of-band notice, or a transient delay earns the ribbon. */
+/** The one ribbon line under the stepper: a failure reason, an out-of-band notice, a transient
+ *  delay, or the rail's own word on its payment. The last matters most on the bank rail, where
+ *  "Confirming your bank transfer…" can be the state for days. */
 const message = computed(() => {
   if (failedText.value) return failedText.value;
   if (session.fundingNotice) return session.fundingNotice;
   if (delayed.value) return "Taking a little longer than usual";
-  if (props.status && props.status.tone === "failed") return props.status.text;
+  if (props.status) return props.status.text;
   return null;
 });
 </script>
