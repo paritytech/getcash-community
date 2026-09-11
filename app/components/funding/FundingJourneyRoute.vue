@@ -29,8 +29,11 @@ const session = useSessionStore();
 // A settled top-up is read from the list only: nothing resumed, nothing reset on the way out.
 const readOnly = props.topUp?.state.kind === "settled";
 const opening = ref(!readOnly && props.topUp != null && props.open != null);
-const unavailable = ref(false);
-const waiting = computed(() => opening.value && session.lastState === null && !unavailable.value);
+/** The request could not be brought to the foreground — an old top-up whose world is gone. */
+const unresumable = ref(false);
+/** Nothing left to show at all: not resumable, and no stored record to fall back on. */
+const unavailable = computed(() => unresumable.value && props.topUp == null);
+const waiting = computed(() => opening.value && session.lastState === null && !unresumable.value);
 let active = true;
 
 useVisibilityReconcile();
@@ -76,7 +79,7 @@ onMounted(async () => {
     if (opened) session.reset();
     return;
   }
-  unavailable.value = !opened;
+  unresumable.value = !opened;
   opening.value = false;
 });
 
@@ -100,7 +103,7 @@ onUnmounted(() => {
          Back stays available during the claim: leaving lands on the top-ups list, where the
          in-flight top-up remains resumable. -->
     <Toolbar
-      :title="showingFees ? 'Fees' : readOnly || waiting || unavailable ? title : ''"
+      :title="showingFees ? 'Fees' : readOnly || waiting || unresumable ? title : ''"
       :back="readOnly || !waiting"
       @back="goBack"
     />
