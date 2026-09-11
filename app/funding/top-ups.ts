@@ -35,6 +35,14 @@ export type FundingTopUp = Readonly<{
   /** What the buyer pays as the rail quoted it, for the journey's Fees/Total rows when the
    *  request is not (yet) live in the store. */
   quote?: Readonly<{ amount: string; symbol: string; fee?: string }>;
+  /**
+   * The rail is retrying or running late: the list draws the status line amber. Never terminal.
+   *
+   * TODO: no adapter sets this yet — the Meld delay marker lives on the session store and only
+   * reaches the foreground journey. Wire it through the Meld top-up projection so a backgrounded
+   * card shows the same amber the journey does.
+   */
+  delayed?: boolean;
   state: FundingTopUpState;
 }>;
 
@@ -48,6 +56,7 @@ type FundingTopUpBase = Readonly<{
   startedAt: number;
   progress: FundingProgressProjection;
   details?: FundingTopUpDetails;
+  delayed?: boolean;
 }>;
 
 export type InProgressFundingTopUp = FundingTopUpBase &
@@ -64,7 +73,7 @@ export type SettledFundingTopUp = FundingTopUpBase &
 
 export type FailedFundingTopUp = FundingTopUpBase &
   Readonly<{
-    state: { kind: "failed"; status: "Failed" | "Deposit returned"; at: number; reason?: string };
+    state: { kind: "failed"; status: "Payment failed" | "Refunded"; at: number; reason?: string };
   }>;
 
 export type PastFundingTopUp = SettledFundingTopUp | FailedFundingTopUp;
@@ -101,6 +110,7 @@ export function projectFundingTopUps(
       startedAt: topUp.startedAt,
       progress: topUp.progress,
       ...(topUp.details === undefined ? {} : { details: topUp.details }),
+      ...(topUp.delayed === undefined ? {} : { delayed: topUp.delayed }),
     };
 
     switch (topUp.state.kind) {
@@ -138,7 +148,7 @@ export function projectFundingTopUps(
           ...base,
           state: {
             kind: "failed",
-            status: topUp.state.refunded ? "Deposit returned" : "Failed",
+            status: topUp.state.refunded ? "Refunded" : "Payment failed",
             at: topUp.state.at ?? topUp.startedAt,
             ...(topUp.state.reason === undefined ? {} : { reason: topUp.state.reason }),
           },

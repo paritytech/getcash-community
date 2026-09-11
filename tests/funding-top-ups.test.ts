@@ -72,9 +72,9 @@ describe("funding top-up projections", () => {
   it("says a refunded crypto top-up was returned, not that it failed", () => {
     const refunded = { ...topUps[3]!, state: { ...topUps[3]!.state, refunded: true } };
     const sections = projectFundingTopUps([refunded], fundingSelectorConfig);
-    expect(sections.past[0]?.state).toMatchObject({ kind: "failed", status: "Deposit returned" });
+    expect(sections.past[0]?.state).toMatchObject({ kind: "failed", status: "Refunded" });
     expect(projectFundingTopUps([topUps[3]!], fundingSelectorConfig).past[0]?.state).toMatchObject({
-      status: "Failed",
+      status: "Payment failed",
     });
   });
 
@@ -160,7 +160,7 @@ describe("funding top-up projections", () => {
 
     expect(sections.past[0]?.state).toEqual({
       kind: "failed",
-      status: "Failed",
+      status: "Payment failed",
       at: 1_000,
       reason: "Unavailable",
     });

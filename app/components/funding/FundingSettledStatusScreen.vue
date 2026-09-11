@@ -1,95 +1,57 @@
 <script setup lang="ts">
+// A finished top-up's receipt, opened from the list: what landed, when, and what it cost.
 import { computed } from "vue";
-import { ArrowDown, Clock, Plus } from "lucide-vue-next";
-import type { FundingStatusDetail } from "../../funding/status";
+import { Plus } from "lucide-vue-next";
+import { quoteDetailRows, type QuoteView } from "../../funding/quote-rows";
 import type { FundingTopUp } from "../../funding/top-ups";
-import FundingDetailsDisclosure from "./FundingDetailsDisclosure.vue";
-import FundingProgressDisclosure from "./progress/FundingProgressDisclosure.vue";
+import { formatWhenShort } from "../../utils/journey";
+import DetailRows from "../ui/DetailRows.vue";
+import PillButton from "../ui/PillButton.vue";
 
 const props = defineProps<{ topUp: FundingTopUp }>();
+// fees drills into the breakdown; close leaves the receipt.
+const emit = defineEmits<{ fees: []; close: [] }>();
 
-const creditedAmount = computed(() =>
-  props.topUp.state.kind === "settled"
-    ? (props.topUp.state.creditedAmount ?? props.topUp.amount)
-    : props.topUp.amount,
-);
+const settled = computed(() => (props.topUp.state.kind === "settled" ? props.topUp.state : null));
+const creditedAmount = computed(() => settled.value?.creditedAmount ?? props.topUp.amount);
+const when = computed(() => (settled.value === null ? null : formatWhenShort(settled.value.at)));
 
-const details = computed<readonly FundingStatusDetail[]>(() => {
-  const topUpDetails = props.topUp.details;
-  const rows: FundingStatusDetail[] = [];
-  if (topUpDetails?.token) {
-    rows.push({
-      key: "token",
-      label: "Token",
-      value: topUpDetails.token.label,
-      icon: topUpDetails.token.icon,
-    });
-  }
-  if (topUpDetails?.network) {
-    rows.push({
-      key: "network",
-      label: "Network",
-      value: topUpDetails.network.label,
-      icon: topUpDetails.network.icon,
-    });
-  }
-  if (topUpDetails?.method) {
-    rows.push({
-      key: "method",
-      label: "Paid with",
-      value: topUpDetails.method.label,
-      icon: topUpDetails.method.icon,
-    });
-  }
-  if (topUpDetails?.region) {
-    rows.push({ key: "region", label: "Region", value: topUpDetails.region });
-  }
-  if (topUpDetails?.provider) {
-    rows.push({
-      key: "provider",
-      label: "Provider",
-      value: topUpDetails.provider.label,
-      icon: topUpDetails.provider.icon,
-    });
-  }
-  rows.push({
-    key: "arrives",
-    label: "Arrives",
-    value: topUpDetails?.arrivalEstimate ?? "Completed",
-    icon: Clock,
-  });
-  rows.push({
-    key: "receive",
-    label: "You'll receive",
-    value: `${creditedAmount.value} $CASH`,
-    icon: ArrowDown,
-  });
-  if (topUpDetails?.depositAddress) {
-    rows.push({
-      key: "deposit-address",
-      label: "Deposit address",
-      value: topUpDetails.depositAddress,
-      monospace: true,
-    });
-  }
-  return rows;
+/**
+ * The receipt's own quote is always the list's stored one: this screen is only ever reached from
+ * the top-ups list, never from a live request, so the fee row never drills in.
+ */
+const rows = computed(() => {
+  const stored = props.topUp.quote;
+  if (!stored) return [];
+  const view: QuoteView = {
+    amount: stored.amount,
+    symbol: stored.symbol,
+    ...(stored.fee === undefined ? {} : { fee: stored.fee }),
+    crypto: props.topUp.route === "crypto",
+    live: false,
+  };
+  return quoteDetailRows(view);
 });
 </script>
 
 <template>
-  <div class="min-h-0 flex-1 overflow-y-auto pb-6">
-    <div class="flex flex-col items-center text-center">
-      <span class="flex size-14 items-center justify-center rounded-full bg-surface-container">
-        <Plus class="size-6 text-fg-secondary" aria-hidden="true" />
-      </span>
-      <p class="mt-4 text-body-l text-fg-secondary">Added</p>
-      <p class="mt-3 text-display-xl text-fg-success">+{{ creditedAmount }} $CASH</p>
-      <p class="text-body-l text-fg-secondary">To your balance</p>
+  <div class="flex min-h-0 flex-1 flex-col">
+    <div class="min-h-0 flex-1 overflow-y-auto">
+      <div class="flex flex-col items-center gap-2 text-center">
+        <span class="flex size-14 items-center justify-center rounded-full bg-surface-container">
+          <Plus class="size-6 text-fg-primary" aria-hidden="true" />
+        </span>
+        <span>
+          <p class="text-display-m text-fg-success">+{{ creditedAmount }} $CASH</p>
+          <p v-if="when" class="text-paragraph-l text-fg-secondary">{{ when }}</p>
+        </span>
+      </div>
+
+      <DetailRows v-if="rows.length" class="mt-6" :rows="rows" @fees="emit('fees')" />
     </div>
 
-    <div class="mt-6 flex flex-col gap-3">
-      <FundingProgressDisclosure :progress="topUp.progress" />
-      <FundingDetailsDisclosure :rows="details" />
-    </div>
+    <PillButton variant="tertiary" class="mt-6 mb-6 w-full" @click="emit('close')">
+      Close
+    </PillButton>
   </div>
 </template>

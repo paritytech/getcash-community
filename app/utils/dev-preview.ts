@@ -13,6 +13,13 @@ import {
 } from "../funding/progress";
 import { createMockCoinageSession } from "~~/lib/coinage";
 import { isDemoBuild } from "./demo";
+import {
+  previewTopUp,
+  previewTopUpHistory,
+  previewTopUpScene,
+  type PreviewTopUpScene,
+} from "./dev-preview-top-ups";
+import type { FundingTopUp } from "../funding/top-ups";
 import type { useFlowStore } from "../stores/flow";
 import { useOffersStore } from "../stores/offers";
 import { DEPOSIT_EXPIRED_REASON, type useSessionStore } from "../stores/session";
@@ -118,6 +125,8 @@ function base(session: Session, flow: Flow) {
   session.milestones = {};
   flow.step = "amount";
   flow.confirmingCancel = false;
+  // The shell reads the adapters again unless a top-ups scene says otherwise.
+  previewTopUpScene.value = null;
   // Bitcoin, matching the canned quote.
   flow.srcChainIndex = 0;
   flow.srcAssetIndex = 0;
@@ -230,8 +239,82 @@ const REFUND_PREVIEWS: readonly [SourceId, string][] = [
   ["usdt-solana", "5.02"],
 ];
 
+/** A top-ups scene: the shell's landing screen, with the cards it is asked to draw. */
+function topUpList(topUps: readonly FundingTopUp[], extra: Omit<PreviewTopUpScene, "topUps"> = {}) {
+  return (s: Session, f: Flow) => {
+    base(s, f);
+    previewTopUpScene.value = { topUps, ...extra };
+  };
+}
+
 // Scenes start at the first screen a package owns.
 export const SCENES: Scene[] = [
+  {
+    // The shell's landing screen: one crypto top-up still waiting on its transfer.
+    name: "list / top-up: waiting",
+    apply: topUpList([previewTopUp("p1", "crypto", "waiting", "Waiting for your transfer")]),
+  },
+  {
+    name: "list / top-up: converting",
+    apply: topUpList([previewTopUp("p1", "crypto", "active", "Converting to $CASH")]),
+  },
+  {
+    name: "list / top-up: adding",
+    apply: topUpList([previewTopUp("p1", "crypto", "active", "Adding to your balance")]),
+  },
+  {
+    // The amber line: the card rail is retrying, which is never terminal.
+    name: "list / top-up: retrying",
+    apply: topUpList([
+      previewTopUp("p1", "card", "active", "Retrying your payment…", { delayed: true }),
+    ]),
+  },
+  {
+    name: "list / top-up: taking longer",
+    apply: topUpList([
+      previewTopUp("p1", "bank", "active", "Taking a little longer than usual", { delayed: true }),
+    ]),
+  },
+  {
+    // The settled card rides at the end of the running ones.
+    name: "list / top-up: settled",
+    apply: topUpList([
+      previewTopUp("p1", "crypto", "waiting", "Waiting for your transfer"),
+      previewTopUp("p2", "card", "settled", "Added to your balance"),
+    ]),
+  },
+  {
+    // Past the collapse: three cards and the Show more pill.
+    name: "list / top-ups: show more",
+    apply: topUpList([
+      previewTopUp("p1", "bank", "waiting", "Waiting for your transfer"),
+      previewTopUp("p2", "crypto", "active", "Converting to $CASH", { amount: "120" }),
+      previewTopUp("p3", "crypto", "active", "Adding to your balance", { amount: "25" }),
+      previewTopUp("p4", "card", "active", "Retrying your payment…", { delayed: true }),
+      previewTopUp("p5", "crypto", "settled", "Added to your balance", { amount: "80" }),
+    ]),
+  },
+  {
+    // The screen's own shapes while the top-ups are still being read.
+    name: "list / top-ups: loading",
+    apply: topUpList([previewTopUp("p1", "crypto", "waiting", "Waiting for your transfer")], {
+      skeleton: true,
+    }),
+  },
+  {
+    // Behind the clock: finished top-ups, credited and failed.
+    name: "list / history",
+    apply: topUpList(previewTopUpHistory(), { entry: "history" }),
+  },
+  {
+    // Nothing has ever been topped up.
+    name: "list / history: empty",
+    apply: topUpList([], { entry: "history" }),
+  },
+  {
+    name: "list / history: loading",
+    apply: topUpList([], { entry: "history", skeleton: true }),
+  },
   {
     name: "crypto / network",
     apply: (s, f) => {

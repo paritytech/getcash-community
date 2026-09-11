@@ -12,6 +12,7 @@ import {
   type FundingRoute,
   type FundingSelection,
 } from "../../funding/selection";
+import { useStateDirector } from "../../composables/useStateDirector";
 import {
   hasFundingPendingContent,
   type InProgressFundingTopUp,
@@ -19,13 +20,16 @@ import {
   type SettledFundingTopUp,
 } from "../../funding/top-ups";
 
-type OpenableFundingTopUp = InProgressFundingTopUp | SettledFundingTopUp;
+type OpenableFundingTopUp = InProgressFundingTopUp | PastFundingTopUp;
 
 const props = withDefaults(
   defineProps<{
-    /** Launch-load placeholder: renders the amount screen's chrome with skeleton shapes over the
+    /** Launch-load placeholder: renders the entry screen's chrome with skeleton shapes over the
      *  not-yet-loaded data instead of the interactive shell. */
     skeleton?: boolean;
+    /** Which screen the placeholder draws. Pending is for a launch that already knows a top-up
+     *  is running. */
+    skeletonScreen?: "amount" | "pending" | "history";
     config?: FundingSelectorConfig;
     initialSelection?: FundingSelection | null;
     /** Routes this build can run; the rest render dimmed and cannot be picked. Defaults to
@@ -43,6 +47,7 @@ const props = withDefaults(
   }>(),
   {
     skeleton: false,
+    skeletonScreen: "amount",
     config: () => fundingSelectorConfig,
     initialSelection: null,
     availableRoutes: null,
@@ -58,6 +63,10 @@ const props = withDefaults(
   },
 );
 
+// The shell owns the preview deck while no package is open, so the top-ups scenes can be cycled
+// from here.
+const { previewLabel } = useStateDirector();
+
 const emit = defineEmits<{
   change: [];
   continue: [selection: FundingSelection];
@@ -65,7 +74,9 @@ const emit = defineEmits<{
 }>();
 
 const hasPendingContent = computed(() => hasFundingPendingContent(props.topUps, props.latestTopUp));
-const screen = ref(resolveFundingShellScreen(props.initialScreen, hasPendingContent.value));
+const entryScreen = () =>
+  resolveFundingShellScreen(props.initialScreen, hasPendingContent.value, props.topUps.length > 0);
+const screen = ref(entryScreen());
 const historyReturnScreen = ref<FundingHistoryReturnScreen>(props.historyReturn);
 const availableRouteIds = computed<readonly FundingRoute[]>(
   () => props.availableRoutes ?? props.config.routes.map(({ id }) => id),
@@ -119,12 +130,32 @@ function continueToPackage() {
 watch(hasPendingContent, (hasContent) => {
   if (screen.value === "pending" && !hasContent) showAmount();
 });
+
+// A fresh entry request from the host (a journey closing back to the list, a preview scene)
+// re-resolves the screen; the shell does not own where it was sent.
+watch(
+  () => props.initialScreen,
+  () => {
+    screen.value = entryScreen();
+  },
+);
 </script>
 
 <template>
   <section class="funding-selector">
+    <FundingPendingScreen
+      v-if="skeleton && skeletonScreen === 'pending'"
+      skeleton
+      :config="config"
+    />
+    <FundingHistoryScreen
+      v-else-if="skeleton && skeletonScreen === 'history'"
+      skeleton
+      :config="config"
+      @back="closeHistory"
+    />
     <FundingAmountScreen
-      v-if="skeleton"
+      v-else-if="skeleton"
       skeleton
       :config="config"
       amount=""
@@ -163,7 +194,7 @@ watch(hasPendingContent, (hasContent) => {
       :amount="amount"
       :route="route"
       :available-routes="availableRouteIds"
-      :history="topUps.length > 0 || pastTopUps.length > 0"
+      history
       :error="error"
       :loading="loading"
       @change="changeAmount"
@@ -171,6 +202,13 @@ watch(hasPendingContent, (hasContent) => {
       @continue="continueToPackage"
       @history="showHistory"
     />
+
+    <p
+      v-if="previewLabel"
+      class="pointer-events-none absolute inset-x-0 bottom-2 text-center text-caption text-fg-tertiary"
+    >
+      {{ previewLabel }}
+    </p>
   </section>
 </template>
 
