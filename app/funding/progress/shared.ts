@@ -8,13 +8,13 @@ export const sharedCashProgress = {
     {
       key: "cash-conversion",
       nodeLabel: "Converted",
-      activeLabel: "Converting to CASH",
+      activeLabel: "Converting to $CASH",
       nominalMs: 3 * MINUTE,
     },
     {
       key: "cash-teleport",
       nodeLabel: "Teleported",
-      activeLabel: "Teleporting CASH",
+      activeLabel: "Teleporting $CASH",
       nominalMs: 5 * MINUTE,
     },
     {

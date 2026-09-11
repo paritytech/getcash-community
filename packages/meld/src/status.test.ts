@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { MeldClientLike } from "./client";
 import { getMeldStatus } from "./status";
 
-function clientReturning(status: string): MeldClientLike {
+function clientReturning(
+  status: string,
+  terms?: { sourceAmount: string; fiat: string },
+): MeldClientLike {
   return {
     getQuote: async () => ({ quotes: [] }),
     createSession: async () => ({
@@ -11,7 +14,7 @@ function clientReturning(status: string): MeldClientLike {
       externalSessionId: "ext",
       widgetUrl: "u",
     }),
-    getStatus: async () => ({ status }),
+    getStatus: async () => ({ status, ...terms }),
   };
 }
 
@@ -43,9 +46,14 @@ describe("getMeldStatus", () => {
   });
 
   it.each([
-    ["failed", "The payment did not go through.", "deposit-rejected"],
+    ["failed", "Top-up didn't go through. No money was taken.", "deposit-rejected"],
     ["expired", "The payment window closed before the payment arrived.", "expired"],
     ["refused", "The payment was declined before it started.", "deposit-rejected"],
+    [
+      "declined",
+      "Your bank declined the payment. Check your card details or try another card.",
+      "deposit-rejected",
+    ],
     [
       "unobserved",
       "We could not confirm this payment. Contact support before trying again.",
@@ -59,6 +67,30 @@ describe("getMeldStatus", () => {
     expect(result.depositFailure?.reason?.code).toBe(status);
     expect(result.depositFailure?.reason?.message).toBe(message);
     expect(result.depositFailure?.kind).toBe(kind);
+  });
+
+  it("maps refunded to failed and names the returned amount when the terms are reported", async () => {
+    // Money was captured and returned: the message must not claim nothing was taken.
+    const result = await getMeldStatus(
+      clientReturning("refunded", { sourceAmount: "50.10", fiat: "EUR" }),
+      "funding-1",
+    );
+
+    expect(result.status).toBe("failed");
+    expect(result.depositFailure?.reason?.code).toBe("refunded");
+    expect(result.depositFailure?.reason?.message).toBe(
+      "Your top-up didn't go through. Your 50.10 EUR has been returned to your card.",
+    );
+    expect(result.depositFailure?.kind).toBe("deposit-rejected");
+  });
+
+  it("maps refunded without reported terms to the plain returned-money message", async () => {
+    const result = await getMeldStatus(clientReturning("refunded"), "funding-1");
+
+    expect(result.status).toBe("failed");
+    expect(result.depositFailure?.reason?.message).toBe(
+      "Your top-up didn't go through. Your money has been returned to your card.",
+    );
   });
 
   // The poll reads `raw` to decide the payment has started.

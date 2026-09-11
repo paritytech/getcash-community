@@ -5,6 +5,7 @@ import { networkIcon } from "../../utils/icons";
 import { useFlowStore } from "../../stores/flow";
 import { useOffersStore, type NetworkRow } from "../../stores/offers";
 import { useSessionStore } from "../../stores/session";
+import SecondaryButton from "../ui/SecondaryButton.vue";
 
 const emit = defineEmits<{ changeAmount: [] }>();
 
@@ -68,28 +69,18 @@ function pick(network: NetworkRow) {
           Crypto top-ups aren't available right now: the swap network isn't answering. It is usually
           back within the hour.
         </p>
-        <button
-          type="button"
-          class="self-start rounded-medium bg-action-secondary px-4 py-2.5 text-label-m text-fg-primary transition-colors hover:bg-action-secondary-hover"
-          @click="offers.relearn()"
-        >
-          Try again
-        </button>
+        <SecondaryButton class="self-start" @click="offers.relearn()">Try again</SecondaryButton>
       </template>
       <template v-else>
         <p class="text-body-m text-fg-secondary">
-          No network can do a top-up of {{ session.amountHuman }} CASH.
+          No network can do a top-up of {{ session.amountHuman }} $CASH.
           <template v-if="smallestCash">
-            The smallest crypto top-up right now is about {{ smallestCash }} CASH.
+            The smallest crypto top-up right now is about {{ smallestCash }} $CASH.
           </template>
         </p>
-        <button
-          type="button"
-          class="self-start rounded-medium bg-action-secondary px-4 py-2.5 text-label-m text-fg-primary transition-colors hover:bg-action-secondary-hover"
-          @click="emit('changeAmount')"
-        >
+        <SecondaryButton class="self-start" @click="emit('changeAmount')">
           Change amount
-        </button>
+        </SecondaryButton>
       </template>
     </div>
   </div>

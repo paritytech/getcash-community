@@ -20,7 +20,7 @@ export interface FundingSelectorConfig {
 
 export const fundingSelectorConfig = {
   provider: "getcash.dot",
-  asset: "CASH",
+  asset: "$CASH",
   amount: {
     // 0.01 CASH is the smallest unit the purse can hold.
     decimals: 2,
@@ -30,6 +30,13 @@ export const fundingSelectorConfig = {
     presets: ["50", "100", "200"],
   },
   routes: [
+    {
+      id: "crypto",
+      label: "Crypto",
+      description: "Send from another wallet",
+      estimate: "~3 min",
+      icon: "/icons/crypto.svg",
+    },
     {
       id: "card",
       label: "Card",
@@ -43,13 +50,6 @@ export const fundingSelectorConfig = {
       description: "1-2 business days",
       estimate: "1-2 days",
       icon: "/icons/bank.svg",
-    },
-    {
-      id: "crypto",
-      label: "Crypto",
-      description: "Send from another wallet",
-      estimate: "~3 min",
-      icon: "/icons/crypto.svg",
     },
   ],
 } as const satisfies FundingSelectorConfig;

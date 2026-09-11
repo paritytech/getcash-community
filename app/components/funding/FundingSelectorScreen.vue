@@ -23,6 +23,9 @@ type OpenableFundingTopUp = InProgressFundingTopUp | SettledFundingTopUp;
 
 const props = withDefaults(
   defineProps<{
+    /** Launch-load placeholder: renders the amount screen's chrome with skeleton shapes over the
+     *  not-yet-loaded data instead of the interactive shell. */
+    skeleton?: boolean;
     config?: FundingSelectorConfig;
     initialSelection?: FundingSelection | null;
     /** Routes this build can run; the rest render dimmed and cannot be picked. Defaults to
@@ -39,6 +42,7 @@ const props = withDefaults(
     topUpError?: string | null;
   }>(),
   {
+    skeleton: false,
     config: () => fundingSelectorConfig,
     initialSelection: null,
     availableRoutes: null,
@@ -119,8 +123,16 @@ watch(hasPendingContent, (hasContent) => {
 
 <template>
   <section class="funding-selector">
+    <FundingAmountScreen
+      v-if="skeleton"
+      skeleton
+      :config="config"
+      amount=""
+      :route="null"
+      :history="false"
+    />
     <FundingPendingScreen
-      v-if="screen === 'pending'"
+      v-else-if="screen === 'pending'"
       :config="config"
       :top-ups="topUps"
       :latest-top-up="latestTopUp"
