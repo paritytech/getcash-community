@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, useId } from "vue";
+import { ChevronDown } from "lucide-vue-next";
 
 defineProps<{ title: string }>();
 
@@ -20,11 +21,13 @@ const panelId = `funding-disclosure-panel-${id}`;
         :aria-controls="panelId"
         @click="open = !open"
       >
-        <span class="funding-disclosure-heading">
+        <span class="funding-disclosure-heading text-heading-m">
           <span>{{ title }}</span>
-          <span class="funding-disclosure-chevron" :class="{ 'is-open': open }" aria-hidden="true"
-            >⌄</span
-          >
+          <ChevronDown
+            class="funding-disclosure-chevron size-5"
+            :class="{ 'is-open': open }"
+            aria-hidden="true"
+          />
         </span>
         <slot name="summary" />
       </button>
@@ -43,11 +46,11 @@ const panelId = `funding-disclosure-panel-${id}`;
 
 <style scoped>
 .funding-disclosure {
+  /* Depth is the container surface plus shadow-1; no group border. */
   overflow: hidden;
-  border: 1px solid
-    color-mix(in srgb, var(--funding-border, var(--color-stroke-secondary)) 28%, transparent);
-  border-radius: 1rem;
-  background: var(--funding-surface, var(--color-surface-container));
+  border-radius: var(--radius-container);
+  background: var(--bg-surface-container);
+  box-shadow: var(--shadow-1);
 }
 
 .funding-disclosure-trigger {
@@ -56,12 +59,17 @@ const panelId = `funding-disclosure-panel-${id}`;
   min-height: 3rem;
   padding: 0.875rem 1rem;
   flex-direction: column;
-  color: var(--funding-text, var(--color-text-primary));
+  color: var(--fg-primary);
   text-align: left;
+  transition: background-color 150ms ease;
+}
+
+.funding-disclosure-trigger:hover {
+  background: var(--bg-selection-container-hover);
 }
 
 .funding-disclosure-trigger:focus-visible {
-  outline: 2px solid var(--color-progress);
+  outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
 }
 
@@ -71,15 +79,10 @@ const panelId = `funding-disclosure-panel-${id}`;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  font-size: 0.9375rem;
-  line-height: 1.25rem;
-  font-weight: 650;
 }
 
 .funding-disclosure-chevron {
-  color: var(--funding-text-muted, var(--color-text-secondary));
-  font-size: 1.25rem;
-  line-height: 1;
+  color: var(--fg-secondary);
   transform: rotate(0deg);
   transition: transform 180ms ease;
 }
@@ -89,8 +92,7 @@ const panelId = `funding-disclosure-panel-${id}`;
 }
 
 .funding-disclosure-panel {
-  border-top: 1px solid
-    color-mix(in srgb, var(--funding-border, var(--color-stroke-secondary)) 24%, transparent);
+  border-top: 1px solid var(--stroke-primary);
   padding: 1rem;
 }
 

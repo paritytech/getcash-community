@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from "vue";
+import { Check, Clock, Copy } from "lucide-vue-next";
 import {
   demoDepositAddress,
   estimateSourceAmount,
@@ -71,7 +72,6 @@ const amount = computed(() => {
   }
   return d.formatted.endsWith(d.assetSymbol) ? d.formatted : `${d.formatted} ${d.assetSymbol}`;
 });
-const compactAmount = computed(() => amount.value.length > 10);
 
 const source = computed(() => {
   const chainName = session.quoted?.sourceChain ?? flow.srcChain.chain;
@@ -127,80 +127,78 @@ onUnmounted(() => {
       <QrCard :value="address" />
     </div>
 
-    <p class="mt-3 shrink-0 text-center text-base leading-6 text-text-secondary">
-      Send this exact amount
-    </p>
-    <p
-      class="mt-1 shrink-0 text-center leading-[1.15] font-semibold tracking-[-1px] whitespace-nowrap"
-      :class="compactAmount ? 'text-[clamp(2rem,9vw,2.25rem)]' : 'text-[clamp(2.25rem,12vw,3rem)]'"
-    >
+    <p class="mt-3 shrink-0 text-center text-body-l text-fg-secondary">Send this exact amount</p>
+    <p class="mt-1 shrink-0 text-center text-display-l text-fg-primary whitespace-nowrap">
       {{ amount }}
     </p>
 
     <button
       type="button"
-      class="mt-3 flex shrink-0 items-center justify-between gap-3 rounded-2xl bg-surface-container py-3 pr-6 pl-4 text-left"
+      class="mt-3 flex shrink-0 items-center justify-between gap-3 rounded-container bg-surface-container py-3 pr-6 pl-4 text-left shadow-1 transition-shadow hover:shadow-2"
       @click="copy"
     >
       <span class="min-w-0 flex-1">
-        <span class="block text-xs leading-4 text-text-secondary">To address</span>
-        <span class="mt-0.5 block max-w-full text-sm leading-5 break-all text-text-primary">{{
+        <span class="block text-caption text-fg-secondary">To address</span>
+        <span class="mt-0.5 block max-w-full font-mono text-body-s break-all text-fg-primary">{{
           address
         }}</span>
       </span>
-      <img :src="copied ? '/icons/check.svg' : '/icons/copy.svg'" alt="" class="size-6 shrink-0" />
+      <Check v-if="copied" class="size-6 shrink-0 text-fg-success" aria-hidden="true" />
+      <Copy v-else class="size-6 shrink-0 text-fg-secondary" aria-hidden="true" />
     </button>
 
     <dl class="mt-6 flex shrink-0 flex-col gap-4">
       <div class="flex min-h-6 items-center justify-between gap-4">
-        <dt class="flex min-w-0 items-center gap-2 text-base leading-6">
+        <dt class="flex min-w-0 items-center gap-2 text-body-l text-fg-secondary">
           <img :src="networkIcon(source.chain.chain)" alt="" class="size-6 shrink-0 rounded-full" />
           <span>Network</span>
         </dt>
-        <dd class="min-w-0 truncate text-base leading-6 font-semibold">
+        <dd class="min-w-0 truncate text-heading-m text-fg-primary">
           {{ source.chain.label }}
         </dd>
       </div>
       <div class="flex min-h-6 items-center justify-between gap-4">
-        <dt class="flex min-w-0 items-center gap-2 text-base leading-6">
+        <dt class="flex min-w-0 items-center gap-2 text-body-l text-fg-secondary">
           <img :src="tokenIcon(source.asset)" alt="" class="size-6 shrink-0 rounded-full" />
           <span>Currency</span>
         </dt>
-        <dd class="min-w-0 truncate text-base leading-6 font-semibold">{{ source.asset }}</dd>
+        <dd class="min-w-0 truncate text-heading-m text-fg-primary">{{ source.asset }}</dd>
       </div>
       <div v-if="remainingMs !== null" class="flex min-h-6 items-center justify-between gap-4">
-        <dt class="flex min-w-0 items-center gap-2 text-base leading-6">
+        <dt class="flex min-w-0 items-center gap-2 text-body-l text-fg-secondary">
           <span
             class="flex size-6 shrink-0 items-center justify-center rounded-full bg-surface-container"
           >
-            <img src="/icons/clock.svg" alt="" class="size-4" />
+            <Clock class="size-4 text-fg-secondary" aria-hidden="true" />
           </span>
           <span>Expires in</span>
         </dt>
-        <dd class="min-w-0 truncate text-base leading-6 font-semibold tabular-nums">
+        <dd class="min-w-0 truncate font-mono text-label-l text-fg-primary">
           {{ formatRemaining(remainingMs) }}
         </dd>
       </div>
     </dl>
 
     <!-- Cancel opens the confirmation sheet and is offered only while nothing has been paid. -->
+    <!-- The Danger button keeps the default 10px shape (a destructive action is never a
+         pill), so its row-mate matches rather than mixing shapes in one slot. -->
     <div class="mt-auto grid shrink-0 grid-cols-2 gap-2 pt-6">
       <button
         v-if="showCancel"
         type="button"
-        class="h-12 rounded-full bg-[#e7333f] text-base leading-6 font-semibold text-white"
+        class="h-12 rounded-medium bg-status-error text-label-l text-fg-primary-inverted transition-colors hover:bg-status-error-hover"
         @click="confirmingCancel = true"
       >
         Cancel
       </button>
       <button
         type="button"
-        class="flex h-12 items-center justify-center gap-2 rounded-full bg-action-secondary px-2 text-[15px] leading-6 font-semibold whitespace-nowrap text-text-primary disabled:opacity-100"
+        class="flex h-12 items-center justify-center gap-2 rounded-medium bg-action-secondary px-2 text-label-l whitespace-nowrap text-fg-secondary disabled:opacity-100"
         :class="showCancel ? '' : 'col-span-2'"
         disabled
       >
         <span
-          class="size-4 shrink-0 animate-spin rounded-full border-[1.5px] border-text-secondary border-r-transparent"
+          class="size-4 shrink-0 animate-spin rounded-full border-[1.5px] border-fg-secondary border-r-transparent"
           aria-hidden="true"
         />
         <span>Waiting for funds</span>
@@ -209,15 +207,15 @@ onUnmounted(() => {
 
     <BottomSheet :open="confirmingCancel" @dismiss="dismissCancelSheet">
       <div class="flex flex-col gap-2 px-6 py-4 text-center">
-        <p class="text-2xl leading-8 font-semibold">Cancel this top-up?</p>
-        <p class="text-base leading-5">
+        <p class="text-heading-l text-fg-primary">Cancel this top-up?</p>
+        <p class="text-body-l text-fg-secondary">
           The deposit address will stop working. Don't cancel if you've already sent your funds.
         </p>
       </div>
       <div class="flex flex-col gap-4 p-4">
         <button
           type="button"
-          class="h-12 w-full rounded-full bg-error text-base leading-6 font-semibold text-white disabled:opacity-50"
+          class="h-12 w-full rounded-medium bg-status-error text-label-l text-fg-primary-inverted transition-colors hover:bg-status-error-hover disabled:opacity-50"
           :disabled="session.cancelling"
           @click="confirmCancel"
         >
@@ -225,7 +223,7 @@ onUnmounted(() => {
         </button>
         <button
           type="button"
-          class="h-12 w-full rounded-full bg-action-secondary text-base leading-6 font-semibold disabled:opacity-50"
+          class="h-12 w-full rounded-medium bg-action-secondary text-label-l text-fg-primary transition-colors hover:bg-action-secondary-hover disabled:opacity-50"
           :disabled="session.cancelling"
           @click="dismissCancelSheet"
         >

@@ -51,7 +51,7 @@ onUnmounted(() => {
 
 <template>
   <main
-    class="fixed inset-x-0 mx-auto flex w-full max-w-md flex-col overflow-hidden bg-bg"
+    class="fixed inset-x-0 mx-auto flex w-full max-w-md flex-col overflow-hidden bg-surface-main"
     style="
       top: var(--vvt, 0px);
       height: var(--vvh, 100dvh);
@@ -70,14 +70,14 @@ onUnmounted(() => {
 
       <div v-else-if="waiting" class="flex flex-col items-center gap-4 pt-16">
         <span
-          class="inline-block size-8 animate-spin rounded-full border-[3px] border-track border-t-white"
+          class="inline-block size-8 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary"
         />
-        <p class="text-sm text-text-secondary">Opening your top-up…</p>
+        <p class="text-body-m text-fg-secondary">Opening your top-up…</p>
       </div>
 
       <div v-else-if="unavailable" class="flex flex-1 flex-col items-center pt-16 text-center">
-        <h1 class="text-lg font-semibold">Top-up unavailable</h1>
-        <p class="mt-2 text-sm text-text-secondary">
+        <h1 class="text-heading-l text-fg-primary">Top-up unavailable</h1>
+        <p class="mt-2 text-body-m text-fg-secondary">
           This top-up is no longer available. Return to see your latest activity.
         </p>
       </div>
@@ -88,7 +88,7 @@ onUnmounted(() => {
     <!-- state-director scene label (dev/demo keys only) -->
     <span
       v-if="previewLabel"
-      class="fixed bottom-2 left-2 rounded bg-chip px-2 py-1 font-mono text-[10px] text-text-secondary"
+      class="fixed bottom-2 left-2 rounded-small bg-surface-container px-2 py-1 font-mono text-overline text-fg-secondary shadow-1"
     >
       {{ previewLabel }}
     </span>

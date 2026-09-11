@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { ChevronLeft } from "lucide-vue-next";
 import type { FundingSelectorConfig } from "../../funding/config";
 import { formatFundingHistoryWhen } from "../../funding/history";
 import type { InProgressFundingTopUp, PastFundingTopUp } from "../../funding/top-ups";
@@ -25,14 +26,14 @@ const empty = computed(() => props.inProgress.length === 0 && props.past.length 
   <div class="funding-history-screen">
     <header class="funding-history-header">
       <button type="button" aria-label="Back" @click="emit('back')">
-        <img src="/icons/chevron-left.svg" alt="" />
+        <ChevronLeft class="size-6" aria-hidden="true" />
       </button>
-      <h1>History</h1>
+      <h1 class="text-heading-l">History</h1>
     </header>
 
     <div class="funding-history-scroll">
       <section v-if="inProgress.length > 0">
-        <h2>In progress</h2>
+        <h2 class="text-overline">In progress</h2>
         <ul class="funding-history-list">
           <li v-for="topUp in inProgress" :key="topUp.id">
             <button
@@ -43,14 +44,14 @@ const empty = computed(() => props.inProgress.length === 0 && props.past.length 
             >
               <FundingProgressRing :progress="topUp.progress" />
               <span class="funding-history-main">
-                <strong>{{ topUp.amount }} {{ config.asset }}</strong>
-                <span class="funding-history-status">
+                <strong class="text-heading-s">{{ topUp.amount }} {{ config.asset }}</strong>
+                <span class="funding-history-status text-caption">
                   {{ openingTopUpId === topUp.id ? "Opening…" : topUp.progress.view.label }}
                 </span>
               </span>
               <span class="funding-history-value">
-                <strong>{{ topUp.amount }}</strong>
-                <span>{{ formatFundingHistoryWhen(topUp.startedAt) }}</span>
+                <strong class="text-heading-s">{{ topUp.amount }}</strong>
+                <span class="text-caption">{{ formatFundingHistoryWhen(topUp.startedAt) }}</span>
               </span>
             </button>
           </li>
@@ -58,15 +59,15 @@ const empty = computed(() => props.inProgress.length === 0 && props.past.length 
       </section>
 
       <section v-if="past.length > 0" :class="{ 'funding-history-earlier': inProgress.length > 0 }">
-        <h2>Earlier</h2>
+        <h2 class="text-overline">Earlier</h2>
         <ul class="funding-history-list">
           <li v-for="topUp in past" :key="topUp.id">
             <div class="funding-history-row">
               <FundingProgressRing :progress="topUp.progress" />
               <span class="funding-history-main">
-                <strong>{{ topUp.amount }} {{ config.asset }}</strong>
+                <strong class="text-heading-s">{{ topUp.amount }} {{ config.asset }}</strong>
                 <span
-                  class="funding-history-status"
+                  class="funding-history-status text-caption"
                   :class="{ 'funding-history-failed': topUp.state.kind === 'failed' }"
                 >
                   {{ topUp.state.status }}
@@ -74,6 +75,7 @@ const empty = computed(() => props.inProgress.length === 0 && props.past.length 
               </span>
               <span class="funding-history-value">
                 <strong
+                  class="text-heading-s"
                   :class="
                     topUp.state.kind === 'settled'
                       ? 'funding-history-credit'
@@ -82,15 +84,15 @@ const empty = computed(() => props.inProgress.length === 0 && props.past.length 
                 >
                   {{ topUp.state.kind === "settled" ? `+${topUp.state.creditedAmount}` : "-" }}
                 </strong>
-                <span>{{ formatFundingHistoryWhen(topUp.state.at) }}</span>
+                <span class="text-caption">{{ formatFundingHistoryWhen(topUp.state.at) }}</span>
               </span>
             </div>
           </li>
         </ul>
       </section>
 
-      <p v-if="empty" class="funding-history-empty">No top-ups yet.</p>
-      <p v-if="error" class="funding-history-error" role="alert">{{ error }}</p>
+      <p v-if="empty" class="funding-history-empty text-body-m">No top-ups yet.</p>
+      <p v-if="error" class="funding-history-error text-caption" role="alert">{{ error }}</p>
     </div>
   </div>
 </template>
@@ -120,18 +122,17 @@ const empty = computed(() => props.inProgress.length === 0 && props.past.length 
   align-items: center;
   justify-content: center;
   border-radius: 9999px;
-  background: var(--funding-control);
+  background: var(--bg-surface-container);
+  color: var(--fg-primary);
+  transition: background-color 120ms ease-out;
 }
 
-.funding-history-header button img {
-  width: 1.5rem;
-  height: 1.5rem;
+.funding-history-header button:hover {
+  background: var(--bg-selection-container-hover);
 }
 
 .funding-history-header h1 {
-  font-size: 1.125rem;
-  line-height: 1.375rem;
-  font-weight: 650;
+  color: var(--fg-primary);
 }
 
 .funding-history-scroll {
@@ -142,10 +143,7 @@ const empty = computed(() => props.inProgress.length === 0 && props.past.length 
 }
 
 .funding-history-scroll h2 {
-  color: var(--funding-text-muted);
-  font-size: 0.6875rem;
-  line-height: 0.9375rem;
-  letter-spacing: 0.09em;
+  color: var(--fg-tertiary);
   text-transform: uppercase;
 }
 
@@ -158,7 +156,7 @@ const empty = computed(() => props.inProgress.length === 0 && props.past.length 
 }
 
 .funding-history-list li + li {
-  border-top: 1px solid color-mix(in srgb, var(--funding-border) 35%, transparent);
+  border-top: 1px solid var(--stroke-primary);
 }
 
 .funding-history-row {
@@ -170,8 +168,13 @@ const empty = computed(() => props.inProgress.length === 0 && props.past.length 
   text-align: left;
 }
 
-button.funding-history-row:disabled {
-  cursor: default;
+button.funding-history-row {
+  border-radius: var(--radius-small);
+  transition: background-color 120ms ease-out;
+}
+
+button.funding-history-row:hover:not(:disabled) {
+  background: var(--bg-surface-container);
 }
 
 .funding-history-main,
@@ -188,9 +191,7 @@ button.funding-history-row:disabled {
 .funding-history-main strong,
 .funding-history-value strong {
   overflow: hidden;
-  font-size: 0.875rem;
-  line-height: 1.125rem;
-  font-weight: 650;
+  color: var(--fg-primary);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -201,15 +202,13 @@ button.funding-history-row:disabled {
   gap: 0.4375rem;
   margin-top: 0.1875rem;
   overflow: hidden;
-  color: var(--funding-text-muted);
-  font-size: 0.75rem;
-  line-height: 1rem;
+  color: var(--fg-secondary);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .funding-history-failed {
-  color: var(--funding-error);
+  color: var(--fg-error);
 }
 
 .funding-history-value {
@@ -221,32 +220,26 @@ button.funding-history-row:disabled {
 
 .funding-history-value span {
   margin-top: 0.1875rem;
-  color: var(--funding-text-muted);
-  font-size: 0.75rem;
-  line-height: 1rem;
+  color: var(--fg-secondary);
   white-space: nowrap;
 }
 
 .funding-history-credit {
-  color: var(--funding-success);
+  color: var(--fg-success);
 }
 
 .funding-history-muted {
-  color: var(--funding-text-muted);
+  color: var(--fg-secondary);
 }
 
 .funding-history-empty {
   padding-top: 2rem;
-  color: var(--funding-text-muted);
-  font-size: 0.875rem;
-  line-height: 1.25rem;
+  color: var(--fg-secondary);
 }
 
 .funding-history-error {
   padding-top: 0.75rem;
-  color: var(--funding-error);
-  font-size: 0.75rem;
-  line-height: 1rem;
+  color: var(--fg-error);
   text-align: center;
 }
 

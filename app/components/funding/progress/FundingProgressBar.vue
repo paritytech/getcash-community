@@ -25,8 +25,8 @@ const width = computed(() => `${props.progress.view.value * 100}%`);
       :aria-live="live ? 'polite' : undefined"
       aria-atomic="true"
     >
-      <span class="funding-progress-bar-label">{{ progress.view.label }}</span>
-      <span class="funding-progress-bar-estimate">{{ progress.estimateText }}</span>
+      <span class="funding-progress-bar-label text-heading-s">{{ progress.view.label }}</span>
+      <span class="funding-progress-bar-estimate text-caption">{{ progress.estimateText }}</span>
     </div>
     <div
       class="funding-progress-bar-track"
@@ -43,7 +43,8 @@ const width = computed(() => `${props.progress.view.value * 100}%`);
 
 <style scoped>
 .funding-progress-bar {
-  --progress-bar-fill: var(--color-progress);
+  /* In-progress fill: the strongest stroke step, the scale's step-indicator colour. */
+  --progress-bar-fill: var(--stroke-tertiary);
   width: 100%;
 }
 
@@ -58,18 +59,14 @@ const width = computed(() => `${props.progress.view.value * 100}%`);
 .funding-progress-bar-label {
   min-width: 0;
   overflow: hidden;
-  color: var(--funding-text, var(--color-text-primary));
-  font-size: 0.84375rem;
-  line-height: 1.125rem;
+  color: var(--fg-primary);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .funding-progress-bar-estimate {
   flex: none;
-  color: var(--funding-text-muted, var(--color-text-secondary));
-  font-size: 0.71875rem;
-  line-height: 1rem;
+  color: var(--fg-secondary);
   white-space: nowrap;
 }
 
@@ -77,11 +74,7 @@ const width = computed(() => `${props.progress.view.value * 100}%`);
   height: 0.25rem;
   overflow: hidden;
   border-radius: 9999px;
-  background: color-mix(
-    in srgb,
-    var(--funding-border, var(--color-stroke-secondary)) 35%,
-    transparent
-  );
+  background: var(--bg-surface-nested);
 }
 
 .funding-progress-bar-fill {
@@ -93,15 +86,15 @@ const width = computed(() => `${props.progress.view.value * 100}%`);
 }
 
 .funding-progress-bar-waiting {
-  --progress-bar-fill: var(--funding-border, var(--color-stroke-secondary));
+  --progress-bar-fill: var(--stroke-secondary);
 }
 
 .funding-progress-bar-failed {
-  --progress-bar-fill: var(--funding-error, var(--color-error));
+  --progress-bar-fill: var(--bg-status-error);
 }
 
 .funding-progress-bar-settled {
-  --progress-bar-fill: var(--funding-success, var(--color-success));
+  --progress-bar-fill: var(--bg-status-success);
 }
 
 @media (prefers-reduced-motion: reduce) {

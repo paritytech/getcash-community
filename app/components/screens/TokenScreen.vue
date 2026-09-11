@@ -26,7 +26,7 @@ function pick(token: TokenRow) {
 
 <template>
   <div class="flex min-h-0 flex-1 flex-col">
-    <h1 class="text-headline font-semibold">Which token?</h1>
+    <h1 class="text-display-l text-fg-primary">Which token?</h1>
     <ul class="mt-6 flex flex-col gap-6">
       <OptionRow
         v-for="token in tokens"
@@ -38,7 +38,7 @@ function pick(token: TokenRow) {
       />
     </ul>
     <!-- Only reachable when the amount changed underneath the network pick. -->
-    <p v-if="tokens.length === 0" class="mt-6 text-sm leading-5 text-text-secondary">
+    <p v-if="tokens.length === 0" class="mt-6 text-body-m text-fg-secondary">
       Nothing on {{ flow.srcChain.label }} can do this amount any more.
     </p>
   </div>

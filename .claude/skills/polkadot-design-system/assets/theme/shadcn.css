@@ -1,0 +1,145 @@
+/* GENERATED from the design source by polkadot-design-tokens.
+   Do not edit by hand — the next palette re-cut overwrites this file. */
+
+/* shadcn/ui compatibility layer.
+
+   shadcn components are installed byte-identical to upstream and are never
+   hand-edited. They are written against their own colour-role names, one
+   --radius knob, and the stock type and shadow scales. This file is the seam:
+   every shadcn role resolves to a Polkadot semantic token, so a palette re-cut
+   moves the components with it and all five themes keep working.
+
+   Nothing here is a literal. Same rule as themes.css.
+
+   TWO LAYERS, because shadcn uses both. Utilities like `bg-card` read the
+   @theme keys; a few components (sonner, chart) reach for the bare custom
+   property in an inline style instead. Defining --card on :root and pointing
+   --color-card at it covers both, and re-resolves per [data-theme] on its own,
+   because a custom property that references another resolves where it is used.
+
+   IMPORT ORDER MATTERS: this file must come after base.css and before the
+   @theme block in index.css. `--color-*: initial` clears everything declared
+   before it, so it has to sit ahead of every alias in both files — and it
+   carries plain rules, which cannot precede an @import. */
+
+:root {
+  /* Surfaces. shadcn draws card and popover on the same step; the layering
+     model separates them by shadow (shadow-1 vs shadow-2), not by colour. */
+  --background: var(--bg-surface-main);
+  --foreground: var(--fg-primary);
+  --card: var(--bg-surface-container);
+  --card-foreground: var(--fg-primary);
+  --popover: var(--bg-surface-container);
+  --popover-foreground: var(--fg-primary);
+
+  /* Actions. These names are why the fg group gained its prefix in index.css:
+     --primary here is the button SURFACE, where Polkadot's fg-primary is the
+     text colour. Same hex on Berlin Day, divergent on the three tonal themes. */
+  --primary: var(--bg-action-primary);
+  --primary-foreground: var(--fg-primary-inverted);
+  --secondary: var(--bg-action-secondary);
+  --secondary-foreground: var(--fg-primary);
+  --muted: var(--bg-surface-nested);
+  --muted-foreground: var(--fg-secondary);
+
+  /* shadcn's `accent` is the hover/highlight surface for menu and list items,
+     NOT a brand accent. Polkadot's blue accent is bg-accent-blue in index.css. */
+  --accent: var(--bg-selection-container-hover);
+  --accent-foreground: var(--fg-primary);
+
+  --destructive: var(--bg-status-error);
+  --destructive-foreground: var(--fg-primary-inverted);
+  --border: var(--stroke-primary);
+  --input: var(--stroke-primary);
+  --ring: var(--focus-ring);
+
+  /* Sidebar. A nav rail takes no container (SKILL.md §10), so `sidebar` is the
+     page surface rather than a step above it. */
+  --sidebar: var(--bg-surface-main);
+  --sidebar-foreground: var(--fg-primary);
+  --sidebar-primary: var(--bg-action-primary);
+  --sidebar-primary-foreground: var(--fg-primary-inverted);
+  --sidebar-accent: var(--bg-selection-container-hover);
+  --sidebar-accent-foreground: var(--fg-primary);
+  --sidebar-border: var(--stroke-primary);
+  --sidebar-ring: var(--focus-ring);
+
+  /* TODO: needs semantic tokens — no chart palette exists in the design source.
+     Reaching to --palette-* directly, per the gap protocol in
+     references/design-tokens.md §7. Tracked as `no-chart-palette`. These five
+     are a placeholder awaiting design, not a sanctioned ramp. */
+  --chart-1: var(--palette-zinc-950);
+  --chart-2: var(--palette-zinc-700);
+  --chart-3: var(--palette-zinc-500);
+  --chart-4: var(--palette-zinc-300);
+  --chart-5: var(--palette-zinc-150);
+
+  /* Radius. 12px is chosen so all four steps shadcn derives by calc() land
+     exactly on the Polkadot scale — Button's rounded-md is 10px and Card's
+     rounded-xl is 16px, which is what SKILL.md §6 specifies for each. */
+  --radius: var(--scale-radius-extra-medium);
+}
+
+@theme inline {
+  /* Clear Tailwind's stock palette, radii and shadows. Each has a complete
+     replacement below or in index.css, so bg-zinc-950 stops existing and
+     reaching past the semantic layer stays a build error, not a habit.
+
+     --text-* and --leading-* are deliberately NOT cleared: stock components
+     are full of `text-sm` and `leading-none`, and they must compile. App code
+     uses the 14 named type styles in index.css instead — a line held by
+     check:tokens, not by the build. --tracking-* has no shadcn consumer and
+     stays deleted. */
+  --color-*: initial;
+  --radius-*: initial;
+  --shadow-*: initial;
+  --tracking-*: initial;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --radius-sm: calc(var(--radius) - 4px); /*  8px — rounded-small */
+  --radius-md: calc(var(--radius) - 2px); /* 10px — rounded-medium */
+  --radius-lg: var(--radius); /* 12px — rounded-nested */
+  --radius-xl: calc(var(--radius) + 4px); /* 16px — rounded-container */
+
+  --shadow-xs: none; /* buttons and inputs stay flat */
+  --shadow-sm: 0 4px 24px -4px var(--shadow-soft); /* = shadow-1 */
+  --shadow-md: 0 8px 32px -4px var(--shadow-medium); /* = shadow-2 */
+  --shadow-lg: 0 12px 48px -8px var(--shadow-medium); /* = shadow-3 */
+}

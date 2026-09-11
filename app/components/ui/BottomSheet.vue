@@ -9,7 +9,7 @@ defineEmits<{ dismiss: [] }>();
   <div v-if="open" class="fixed inset-0 z-50">
     <button
       type="button"
-      class="absolute inset-0 bg-black/50"
+      class="absolute inset-0 bg-surface-overlay"
       aria-label="Dismiss"
       @click="$emit('dismiss')"
     />
@@ -17,7 +17,7 @@ defineEmits<{ dismiss: [] }>();
       <div
         role="dialog"
         aria-modal="true"
-        class="relative overflow-hidden rounded-4xl bg-surface-container"
+        class="relative overflow-hidden rounded-container bg-surface-container shadow-3"
       >
         <slot />
       </div>
