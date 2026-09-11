@@ -65,7 +65,9 @@ const emit = defineEmits<{
 }>();
 
 const hasPendingContent = computed(() => hasFundingPendingContent(props.topUps, props.latestTopUp));
-const screen = ref(resolveFundingShellScreen(props.initialScreen, hasPendingContent.value));
+const entryScreen = () =>
+  resolveFundingShellScreen(props.initialScreen, hasPendingContent.value, props.topUps.length > 0);
+const screen = ref(entryScreen());
 const historyReturnScreen = ref<FundingHistoryReturnScreen>(props.historyReturn);
 const availableRouteIds = computed<readonly FundingRoute[]>(
   () => props.availableRoutes ?? props.config.routes.map(({ id }) => id),
