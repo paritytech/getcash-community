@@ -2,13 +2,13 @@
 import { computed } from "vue";
 import {
   formatFundingProgressElapsed,
+  journeyTimelineStep,
   type FundingProgressProjection,
 } from "../../../funding/progress";
 
 const props = withDefaults(
   defineProps<{
     progress: FundingProgressProjection;
-    completedSteps: number;
     message?: string | null;
     messageTone?: "muted" | "notice" | "error";
   }>(),
@@ -28,12 +28,9 @@ const stages = [
 
 const settled = computed(() => props.progress.view.kind === "settled");
 const failed = computed(() => props.progress.view.kind === "failed");
-/** Completed dots. A failure before any payment was detected stops on the first dot with nothing
- *  complete. */
-const completed = computed(() => {
-  if (failed.value && props.progress.detectedAt === undefined) return 0;
-  return Math.max(props.completedSteps, 0);
-});
+// The active dot, derived from the progress projection (not a separate step count) so the timeline
+// tracks the same phase the history list shows.
+const completed = computed(() => journeyTimelineStep(props.progress));
 const activeIndex = computed(() =>
   settled.value ? -1 : Math.min(completed.value, stages.length - 1),
 );
