@@ -28,9 +28,7 @@ const props = withDefaults(
 
 const CARD_STAGES = ["Started", "Payment", "Approved", "Conversion", "Added"] as const;
 const CRYPTO_STAGES = ["Started", "Payment", "Conversion", "Added"] as const;
-const stages = computed<readonly string[]>(() =>
-  props.steps === 4 ? CRYPTO_STAGES : CARD_STAGES,
-);
+const stages = computed<readonly string[]>(() => (props.steps === 4 ? CRYPTO_STAGES : CARD_STAGES));
 
 const settled = computed(() => props.progress.view.kind === "settled");
 const failed = computed(() => props.progress.view.kind === "failed");

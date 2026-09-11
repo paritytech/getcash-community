@@ -100,7 +100,9 @@ function copy(target: "amount" | "address") {
   <!-- The deposit is still being opened: the screen's own shapes as placeholders. -->
   <section v-if="!deposit" class="flex min-h-0 flex-1 flex-col" aria-label="Opening your top-up">
     <div class="flex min-h-24 shrink basis-[19rem] justify-center pb-4">
-      <span class="deposit-skeleton-qr aspect-square h-full max-h-72 animate-pulse bg-action-disabled" />
+      <span
+        class="deposit-skeleton-qr aspect-square h-full max-h-72 animate-pulse bg-action-disabled"
+      />
     </div>
     <div v-for="n in 2" :key="n" class="flex h-16 shrink-0 items-center justify-between gap-4">
       <span class="flex min-w-0 flex-col gap-1.5">
@@ -194,7 +196,6 @@ function copy(target: "amount" | "address") {
         </button>
       </div>
     </div>
-
   </section>
 </template>
 
