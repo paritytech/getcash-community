@@ -75,7 +75,13 @@ onUnmounted(() => {
       @back="onBack"
     >
       <template
-        v-if="!waiting && !unavailable && !flow.confirmingCancel && session.canSkipDeposit && isDemoBuild()"
+        v-if="
+          !waiting &&
+          !unavailable &&
+          !flow.confirmingCancel &&
+          session.canSkipDeposit &&
+          isDemoBuild()
+        "
         #trailing
       >
         <button
