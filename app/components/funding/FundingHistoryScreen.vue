@@ -1,251 +1,119 @@
 <script setup lang="ts">
+// Every top-up the shell knows about, on the same cards the top-up screen uses: the running ones
+// first, then what they came to — a credit or a failure.
 import { computed } from "vue";
-import { ChevronLeft } from "lucide-vue-next";
+import { History } from "lucide-vue-next";
 import type { FundingSelectorConfig } from "../../funding/config";
-import { formatFundingHistoryWhen } from "../../funding/history";
 import type { InProgressFundingTopUp, PastFundingTopUp } from "../../funding/top-ups";
-import FundingProgressRing from "./progress/FundingProgressRing.vue";
+import FundingTopUpProgressCard from "./FundingTopUpProgressCard.vue";
 
-const props = defineProps<{
-  config: FundingSelectorConfig;
-  inProgress: readonly InProgressFundingTopUp[];
-  past: readonly PastFundingTopUp[];
-  openingTopUpId?: string | null;
-  error?: string | null;
-}>();
+/** How many card shapes the placeholder lays out; the design draws a screenful. */
+const SKELETON_CARDS = 4;
+
+const props = withDefaults(
+  defineProps<{
+    config: FundingSelectorConfig;
+    inProgress?: readonly InProgressFundingTopUp[];
+    past?: readonly PastFundingTopUp[];
+    openingTopUpId?: string | null;
+    error?: string | null;
+    /** Load placeholder: the list's own shapes, under the real toolbar. */
+    skeleton?: boolean;
+  }>(),
+  {
+    inProgress: () => [],
+    past: () => [],
+    openingTopUpId: null,
+    error: null,
+    skeleton: false,
+  },
+);
 
 const emit = defineEmits<{
   back: [];
-  open: [topUp: InProgressFundingTopUp];
+  open: [topUp: InProgressFundingTopUp | PastFundingTopUp];
 }>();
 
 const empty = computed(() => props.inProgress.length === 0 && props.past.length === 0);
+const busy = computed(() => Boolean(props.openingTopUpId));
 </script>
 
 <template>
-  <div class="funding-history-screen">
-    <header class="funding-history-header">
-      <button type="button" aria-label="Back" @click="emit('back')">
-        <ChevronLeft class="size-6" aria-hidden="true" />
-      </button>
-      <h1 class="text-heading-l">History</h1>
-    </header>
+  <div class="flex h-full min-h-0 flex-col">
+    <!-- The toolbar is real even while the list loads: the way back must never be a placeholder. -->
+    <FundingEntryHeader title="History" back centered @back="emit('back')" />
 
-    <div class="funding-history-scroll">
-      <section v-if="inProgress.length > 0">
-        <h2 class="text-overline">In progress</h2>
-        <ul class="funding-history-list">
-          <li v-for="topUp in inProgress" :key="topUp.id">
-            <button
-              type="button"
-              class="funding-history-row"
-              :disabled="Boolean(openingTopUpId)"
-              @click="emit('open', topUp)"
-            >
-              <FundingProgressRing :progress="topUp.progress" />
-              <span class="funding-history-main">
-                <strong class="text-heading-s">{{ topUp.amount }} {{ config.asset }}</strong>
-                <span class="funding-history-status text-caption">
-                  {{ openingTopUpId === topUp.id ? "Opening…" : topUp.progress.view.label }}
-                </span>
-              </span>
-              <span class="funding-history-value">
-                <strong class="text-heading-s">{{ topUp.amount }}</strong>
-                <span class="text-caption">{{ formatFundingHistoryWhen(topUp.startedAt) }}</span>
-              </span>
-            </button>
-          </li>
-        </ul>
-      </section>
+    <div
+      v-if="skeleton"
+      class="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden px-4 pt-6 pb-6"
+      aria-label="Loading your top-ups"
+    >
+      <span class="funding-history-shape h-4 w-26 animate-pulse bg-action-disabled" />
+      <span
+        v-for="n in SKELETON_CARDS"
+        :key="n"
+        class="funding-history-shape h-[4.75rem] animate-pulse bg-action-disabled"
+      />
+    </div>
 
-      <section v-if="past.length > 0" :class="{ 'funding-history-earlier': inProgress.length > 0 }">
-        <h2 class="text-overline">Earlier</h2>
-        <ul class="funding-history-list">
-          <li v-for="topUp in past" :key="topUp.id">
-            <div class="funding-history-row">
-              <FundingProgressRing :progress="topUp.progress" />
-              <span class="funding-history-main">
-                <strong class="text-heading-s">{{ topUp.amount }} {{ config.asset }}</strong>
-                <span
-                  class="funding-history-status text-caption"
-                  :class="{ 'funding-history-failed': topUp.state.kind === 'failed' }"
-                >
-                  {{ topUp.state.status }}
-                </span>
-              </span>
-              <span class="funding-history-value">
-                <strong
-                  class="text-heading-s"
-                  :class="
-                    topUp.state.kind === 'settled'
-                      ? 'funding-history-credit'
-                      : 'funding-history-muted'
-                  "
-                >
-                  {{ topUp.state.kind === "settled" ? `+${topUp.state.creditedAmount}` : "-" }}
-                </strong>
-                <span class="text-caption">{{ formatFundingHistoryWhen(topUp.state.at) }}</span>
-              </span>
-            </div>
-          </li>
-        </ul>
-      </section>
+    <!-- Nothing has ever been topped up: the clock the list lives behind, and why it is bare. -->
+    <div
+      v-else-if="empty"
+      class="flex min-h-0 flex-1 flex-col items-center justify-center px-4 pb-6 text-center"
+    >
+      <History class="size-7 text-fg-secondary" aria-hidden="true" />
+      <p class="mt-2 max-w-[19.5rem] text-body-m text-fg-secondary">
+        Nothing here yet. Your top-ups will appear as you make them.
+      </p>
+    </div>
 
-      <p v-if="empty" class="funding-history-empty text-body-m">No top-ups yet.</p>
-      <p v-if="error" class="funding-history-error text-caption" role="alert">{{ error }}</p>
+    <div v-else class="flex min-h-0 flex-1 flex-col px-4 pt-6 pb-6">
+      <div class="-mx-4 min-h-0 flex-1 overflow-y-auto px-4">
+        <section v-if="inProgress.length > 0">
+          <h2 class="text-heading-l text-fg-primary">In progress</h2>
+          <ul class="mt-4 flex flex-col gap-2">
+            <li v-for="topUp in inProgress" :key="topUp.id">
+              <FundingTopUpProgressCard
+                :top-up="topUp"
+                :asset="config.asset"
+                :opening="openingTopUpId === topUp.id"
+                :disabled="busy"
+                @open="emit('open', topUp)"
+              />
+            </li>
+          </ul>
+        </section>
+
+        <!-- A finished top-up opens its journey too: what it cost, and for a refunded one the
+             way to the recovery guide. -->
+        <section v-if="past.length > 0" :class="{ 'mt-8': inProgress.length > 0 }">
+          <h2 class="text-heading-l text-fg-primary">Completed</h2>
+          <ul class="mt-4 flex flex-col gap-2">
+            <li v-for="topUp in past" :key="topUp.id">
+              <FundingTopUpProgressCard
+                :top-up="topUp"
+                :asset="config.asset"
+                :opening="openingTopUpId === topUp.id"
+                :disabled="busy"
+                @open="emit('open', topUp)"
+              />
+            </li>
+          </ul>
+        </section>
+
+        <p v-if="error" class="pt-3 text-center text-caption text-fg-error" role="alert">
+          {{ error }}
+        </p>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.funding-history-screen {
-  display: flex;
-  min-height: 0;
-  height: 100%;
-  flex-direction: column;
-}
-
-.funding-history-header {
-  display: flex;
-  min-height: 3.75rem;
+/* 24px; the radius scale has no semantic step this size. */
+.funding-history-shape {
+  display: block;
   flex: none;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0 1.125rem;
-}
-
-.funding-history-header button {
-  display: flex;
-  width: 2.5rem;
-  height: 2.5rem;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  border-radius: 9999px;
-  background: var(--bg-surface-container);
-  color: var(--fg-primary);
-  transition: background-color 120ms ease-out;
-}
-
-.funding-history-header button:hover {
-  background: var(--bg-selection-container-hover);
-}
-
-.funding-history-header h1 {
-  color: var(--fg-primary);
-}
-
-.funding-history-scroll {
-  min-height: 0;
-  flex: 1;
-  overflow-y: auto;
-  padding: 0.25rem 1.125rem 1.25rem;
-}
-
-.funding-history-scroll h2 {
-  color: var(--fg-tertiary);
-  text-transform: uppercase;
-}
-
-.funding-history-earlier {
-  margin-top: 1rem;
-}
-
-.funding-history-list {
-  margin-top: 0.25rem;
-}
-
-.funding-history-list li + li {
-  border-top: 1px solid var(--stroke-primary);
-}
-
-.funding-history-row {
-  display: flex;
-  width: 100%;
-  min-height: 4.25rem;
-  align-items: center;
-  gap: 0.75rem;
-  text-align: left;
-}
-
-button.funding-history-row {
-  border-radius: var(--radius-small);
-  transition: background-color 120ms ease-out;
-}
-
-button.funding-history-row:hover:not(:disabled) {
-  background: var(--bg-surface-container);
-}
-
-.funding-history-main,
-.funding-history-value {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-}
-
-.funding-history-main {
-  flex: 1;
-}
-
-.funding-history-main strong,
-.funding-history-value strong {
-  overflow: hidden;
-  color: var(--fg-primary);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.funding-history-status {
-  display: flex;
-  align-items: center;
-  gap: 0.4375rem;
-  margin-top: 0.1875rem;
-  overflow: hidden;
-  color: var(--fg-secondary);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.funding-history-failed {
-  color: var(--fg-error);
-}
-
-.funding-history-value {
-  max-width: 7rem;
-  flex: none;
-  align-items: flex-end;
-  text-align: right;
-}
-
-.funding-history-value span {
-  margin-top: 0.1875rem;
-  color: var(--fg-secondary);
-  white-space: nowrap;
-}
-
-.funding-history-credit {
-  color: var(--fg-success);
-}
-
-.funding-history-muted {
-  color: var(--fg-secondary);
-}
-
-.funding-history-empty {
-  padding-top: 2rem;
-  color: var(--fg-secondary);
-}
-
-.funding-history-error {
-  padding-top: 0.75rem;
-  color: var(--fg-error);
-  text-align: center;
-}
-
-@media (max-height: 650px) {
-  .funding-history-header {
-    min-height: 3.25rem;
-  }
+  border-radius: var(--scale-radius-large);
 }
 </style>

@@ -1,138 +1,130 @@
 <script setup lang="ts">
+// The shell's landing screen while a top-up is running: the cards, a collapse once the list grows
+// past a screenful, and the way to start another one.
+import { computed, ref } from "vue";
+import { ChevronDown, ChevronUp } from "lucide-vue-next";
 import type { FundingSelectorConfig } from "../../funding/config";
 import type { InProgressFundingTopUp, SettledFundingTopUp } from "../../funding/top-ups";
+import PillButton from "../ui/PillButton.vue";
 import FundingTopUpProgressCard from "./FundingTopUpProgressCard.vue";
 
 type PendingTopUp = InProgressFundingTopUp | SettledFundingTopUp;
 
-defineProps<{
-  config: FundingSelectorConfig;
-  topUps: readonly InProgressFundingTopUp[];
-  latestTopUp?: SettledFundingTopUp | null;
-  openingTopUpId?: string | null;
-  error?: string | null;
-}>();
+/** How many cards the list shows before the collapse. Three is what the design's loading frame
+ *  lays out, and it is the most that clears the New top-up button on a short webview. */
+const COLLAPSED_CARDS = 3;
+
+const props = withDefaults(
+  defineProps<{
+    config: FundingSelectorConfig;
+    topUps?: readonly InProgressFundingTopUp[];
+    latestTopUp?: SettledFundingTopUp | null;
+    openingTopUpId?: string | null;
+    error?: string | null;
+    /** Launch-load placeholder: the screen's own shapes instead of the list. */
+    skeleton?: boolean;
+  }>(),
+  {
+    topUps: () => [],
+    latestTopUp: null,
+    openingTopUpId: null,
+    error: null,
+    skeleton: false,
+  },
+);
 
 const emit = defineEmits<{
   history: [];
   newTopUp: [];
   open: [topUp: PendingTopUp];
 }>();
+
+// The settled card rides at the end of the same list: the design gives it a state on the card,
+// not a section of its own.
+const cards = computed<readonly PendingTopUp[]>(() =>
+  props.latestTopUp === null ? props.topUps : [...props.topUps, props.latestTopUp],
+);
+const expanded = ref(false);
+const collapsible = computed(() => cards.value.length > COLLAPSED_CARDS);
+const visible = computed(() =>
+  collapsible.value && !expanded.value ? cards.value.slice(0, COLLAPSED_CARDS) : cards.value,
+);
+const busy = computed(() => Boolean(props.openingTopUpId));
 </script>
 
 <template>
-  <div class="funding-screen">
-    <FundingEntryHeader title="Top-ups" history @history="emit('history')" />
+  <div class="flex h-full min-h-0 flex-col">
+    <FundingEntryHeader
+      :title="skeleton ? '' : 'Top-up in progress'"
+      history
+      :skeleton="skeleton"
+      @history="emit('history')"
+    />
 
-    <div class="funding-pending-content">
-      <div class="funding-pending-scroll">
-        <section v-if="topUps.length > 0">
-          <h2 class="text-overline">In progress</h2>
-          <ul class="funding-pending-list">
-            <li v-for="topUp in topUps" :key="topUp.id">
-              <FundingTopUpProgressCard
-                :top-up="topUp"
-                :asset="config.asset"
-                :opening="openingTopUpId === topUp.id"
-                :disabled="openingTopUpId !== null && openingTopUpId !== undefined"
-                @open="emit('open', $event)"
-              />
-            </li>
-          </ul>
-        </section>
+    <!-- The screen's own shapes while the top-ups are still being read. -->
+    <div
+      v-if="skeleton"
+      class="flex min-h-0 flex-1 flex-col px-4 pt-4 pb-6"
+      aria-label="Loading your top-ups"
+    >
+      <div class="flex flex-col gap-2">
+        <span
+          v-for="n in COLLAPSED_CARDS"
+          :key="n"
+          class="funding-pending-shape h-[4.75rem] animate-pulse bg-action-disabled"
+        />
+        <span class="funding-pending-shape mx-auto h-8 w-28 animate-pulse bg-action-disabled" />
+      </div>
+      <span class="funding-pending-shape mt-auto h-12 animate-pulse bg-action-disabled" />
+    </div>
 
-        <section v-if="latestTopUp" :class="{ 'funding-pending-latest-spaced': topUps.length > 0 }">
-          <h2 class="text-overline">Your latest top-up</h2>
-          <FundingTopUpProgressCard
-            class="funding-pending-latest-card"
-            :top-up="latestTopUp"
-            :asset="config.asset"
-            :opening="openingTopUpId === latestTopUp.id"
-            :disabled="openingTopUpId !== null && openingTopUpId !== undefined"
-            @open="emit('open', $event)"
-          />
-        </section>
+    <div v-else class="flex min-h-0 flex-1 flex-col px-4 pt-4 pb-6">
+      <div class="-mx-4 min-h-0 flex-1 overflow-y-auto px-4">
+        <ul class="flex flex-col gap-2">
+          <li v-for="topUp in visible" :key="topUp.id">
+            <FundingTopUpProgressCard
+              :top-up="topUp"
+              :asset="config.asset"
+              :opening="openingTopUpId === topUp.id"
+              :disabled="busy"
+              @open="emit('open', topUp)"
+            />
+          </li>
+        </ul>
+
+        <!-- The collapse keeps the button reachable when the list outgrows the screen. -->
+        <div v-if="collapsible" class="mt-2 flex justify-center">
+          <button
+            type="button"
+            class="flex h-8 items-center gap-1 rounded-full bg-surface-container px-3 text-body-m text-fg-primary transition-colors hover:bg-selection-container-hover"
+            @click="expanded = !expanded"
+          >
+            <span>{{ expanded ? "Show less" : "Show more" }}</span>
+            <component
+              :is="expanded ? ChevronUp : ChevronDown"
+              class="size-3 shrink-0"
+              aria-hidden="true"
+            />
+          </button>
+        </div>
       </div>
 
-      <p v-if="error" class="funding-pending-error text-caption" role="alert">{{ error }}</p>
+      <p v-if="error" class="mt-3 text-center text-caption text-fg-error" role="alert">
+        {{ error }}
+      </p>
 
-      <button
-        type="button"
-        class="funding-primary text-label-l font-semibold"
-        :disabled="Boolean(openingTopUpId)"
-        @click="emit('newTopUp')"
-      >
+      <PillButton class="mt-6 w-full" :disabled="busy" @click="emit('newTopUp')">
         New top-up
-      </button>
+      </PillButton>
     </div>
   </div>
 </template>
 
 <style scoped>
-.funding-screen {
-  display: flex;
-  min-height: 0;
-  height: 100%;
-  flex-direction: column;
-}
-
-.funding-pending-content {
-  display: flex;
-  min-height: 0;
-  flex: 1;
-  flex-direction: column;
-  gap: 0.75rem;
-  padding: 0.5rem 1.125rem 0.75rem;
-}
-
-.funding-pending-scroll {
-  min-height: 0;
-  flex: 1;
-  overflow-y: auto;
-}
-
-.funding-pending-list {
-  display: flex;
-  margin-top: 0.375rem;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.funding-pending-scroll h2 {
-  color: var(--fg-tertiary);
-  text-transform: uppercase;
-}
-
-.funding-pending-latest-spaced {
-  margin-top: 1.25rem;
-}
-
-.funding-pending-latest-card {
-  margin-top: 0.375rem;
-}
-
-.funding-pending-error {
-  margin-top: 0.75rem;
-  color: var(--fg-error);
-  text-align: center;
-}
-
-.funding-primary {
-  height: 3.375rem;
+/* 24px; the radius scale has no semantic step this size. */
+.funding-pending-shape {
+  display: block;
   flex: none;
-  margin-top: auto;
-  border-radius: 9999px;
-  background: var(--bg-action-primary);
-  color: var(--fg-primary-inverted);
-  transition: background-color 120ms ease-out;
-}
-
-.funding-primary:hover:not(:disabled) {
-  background: var(--bg-action-primary-hover);
-}
-
-.funding-primary:disabled {
-  background: var(--bg-action-disabled);
-  color: var(--fg-disabled);
+  border-radius: var(--scale-radius-large);
 }
 </style>

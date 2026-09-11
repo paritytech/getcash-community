@@ -19,13 +19,16 @@ import {
   type SettledFundingTopUp,
 } from "../../funding/top-ups";
 
-type OpenableFundingTopUp = InProgressFundingTopUp | SettledFundingTopUp;
+type OpenableFundingTopUp = InProgressFundingTopUp | PastFundingTopUp;
 
 const props = withDefaults(
   defineProps<{
-    /** Launch-load placeholder: renders the amount screen's chrome with skeleton shapes over the
+    /** Launch-load placeholder: renders the entry screen's chrome with skeleton shapes over the
      *  not-yet-loaded data instead of the interactive shell. */
     skeleton?: boolean;
+    /** Which screen the placeholder draws. Pending is for a launch that already knows a top-up
+     *  is running. */
+    skeletonScreen?: "amount" | "pending" | "history";
     config?: FundingSelectorConfig;
     initialSelection?: FundingSelection | null;
     /** Routes this build can run; the rest render dimmed and cannot be picked. Defaults to
@@ -43,6 +46,7 @@ const props = withDefaults(
   }>(),
   {
     skeleton: false,
+    skeletonScreen: "amount",
     config: () => fundingSelectorConfig,
     initialSelection: null,
     availableRoutes: null,
@@ -121,12 +125,32 @@ function continueToPackage() {
 watch(hasPendingContent, (hasContent) => {
   if (screen.value === "pending" && !hasContent) showAmount();
 });
+
+// A fresh entry request from the host (a journey closing back to the list, a preview scene)
+// re-resolves the screen; the shell does not own where it was sent.
+watch(
+  () => props.initialScreen,
+  () => {
+    screen.value = entryScreen();
+  },
+);
 </script>
 
 <template>
   <section class="funding-selector">
+    <FundingPendingScreen
+      v-if="skeleton && skeletonScreen === 'pending'"
+      skeleton
+      :config="config"
+    />
+    <FundingHistoryScreen
+      v-else-if="skeleton && skeletonScreen === 'history'"
+      skeleton
+      :config="config"
+      @back="closeHistory"
+    />
     <FundingAmountScreen
-      v-if="skeleton"
+      v-else-if="skeleton"
       skeleton
       :config="config"
       amount=""
