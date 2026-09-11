@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed } from "vue";
-import { Check, Copy } from "lucide-vue-next";
+import { computed, onUnmounted, ref } from "vue";
+import { Check, Clock, Copy } from "lucide-vue-next";
 import {
   demoDepositAddress,
   estimateSourceAmount,
@@ -9,6 +9,7 @@ import {
 import { SOURCE_CHAINS } from "~~/lib/config";
 import { useCopyToClipboard } from "../../composables/useCopyToClipboard";
 import { shortAddress } from "../../utils/address";
+import { formatRemaining } from "../../utils/countdown";
 import { useFlowStore } from "../../stores/flow";
 import { useSessionStore } from "../../stores/session";
 
@@ -22,6 +23,17 @@ const flow = useFlowStore();
 const deposit = computed(() => {
   const s = session.lastState;
   return s?.phase === "awaiting-deposit" ? s.deposit : null;
+});
+
+// Channel countdown to `deposit.expiresAt`; null means no deadline to show. Display only: the
+// session store owns the deadline and fails the top-up when it passes. The row has to stay — it is
+// the only warning a buyer gets before the address stops working.
+const now = ref(Date.now());
+const ticker = setInterval(() => (now.value = Date.now()), 1_000);
+onUnmounted(() => clearInterval(ticker));
+const remainingMs = computed(() => {
+  const at = deposit.value?.expiresAt ?? 0;
+  return at > 0 ? at - now.value : null;
 });
 
 /** The address the QR and the copy row carry: a source-chain stand-in in the live demo, the real
@@ -161,6 +173,24 @@ function copy(target: "amount" | "address") {
       </span>
       <Copy class="size-6 shrink-0 text-fg-secondary" aria-hidden="true" />
     </button>
+
+    <!-- The channel deadline, on the skeleton's own third-row shape. -->
+    <div
+      v-if="remainingMs !== null"
+      class="mt-2 flex h-6 shrink-0 items-center justify-between gap-4"
+    >
+      <span class="flex min-w-0 items-center gap-2 text-body-s text-fg-secondary">
+        <span
+          class="flex size-6 shrink-0 items-center justify-center rounded-full bg-surface-container"
+        >
+          <Clock class="size-4 text-fg-secondary" aria-hidden="true" />
+        </span>
+        <span class="truncate">Expires in</span>
+      </span>
+      <span class="shrink-0 font-mono text-body-s text-fg-primary">
+        {{ formatRemaining(remainingMs) }}
+      </span>
+    </div>
 
     <div class="mt-auto flex shrink-0 flex-col pt-6 pb-6">
       <div v-if="copied" class="flex justify-center pb-3" aria-live="polite">
