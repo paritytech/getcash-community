@@ -97,13 +97,13 @@ const announcement = computed(() => {
           "
         >
           <span class="funding-journey-marker" aria-hidden="true">
+            <!-- The default stroke (2 in the 24px viewBox) is the design's 1.3px at this size. -->
             <LoaderCircle
               v-if="stageState(index) === 'current' || stageState(index) === 'delayed'"
               class="funding-journey-spinner size-4"
-              :stroke-width="1.5"
             />
-            <X v-else-if="stageState(index) === 'failed'" class="size-4" :stroke-width="1.5" />
-            <Check v-else class="size-4" :stroke-width="1.5" />
+            <X v-else-if="stageState(index) === 'failed'" class="size-4" />
+            <Check v-else class="size-4" />
           </span>
           <span class="funding-journey-label text-label-xs">{{ stageLabel(index) }}</span>
         </li>
@@ -155,9 +155,10 @@ const announcement = computed(() => {
   background: var(--fg-success);
 }
 
-/* The line into the in-progress step is half done, half pending. */
+/* The line into the in-progress step is half done, half pending; the pending half takes the
+ * marker's own colour, so the line reads as leading into it. */
 .funding-journey-connector-current {
-  background: linear-gradient(to right, var(--fg-success) 50%, var(--stroke-secondary) 50%);
+  background: linear-gradient(to right, var(--fg-success) 50%, var(--bg-illustration-dark) 50%);
 }
 
 .funding-journey-connector-failed {
@@ -166,7 +167,7 @@ const announcement = computed(() => {
 
 /* Delayed keeps the process alive in amber: nothing struck, no terminal red. */
 .funding-journey-connector-delayed {
-  background: var(--bg-status-warning);
+  background: linear-gradient(to right, var(--fg-success) 50%, var(--bg-status-warning) 50%);
 }
 
 .funding-journey-step {

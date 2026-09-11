@@ -177,7 +177,7 @@ const message = computed(() => {
       <p v-if="settledWhen" class="text-paragraph-l text-fg-secondary">{{ settledWhen }}</p>
     </div>
 
-    <div class="mt-4 flex flex-1 flex-col gap-6">
+    <div class="mt-6 flex flex-1 flex-col gap-6">
       <!-- The stepper leaves once the CASH lands. -->
       <FundingJourneyTimeline
         v-if="progress && !finished"
