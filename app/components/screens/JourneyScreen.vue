@@ -29,8 +29,9 @@ const props = defineProps<{
    *  is live in the store. */
   topUp?: FundingTopUp | null;
 }>();
-// fees asks the host to swap in the fee-breakdown drill-in; close leaves the finished journey.
-const emit = defineEmits<{ fees: []; close: [] }>();
+// fees asks the host to swap in the fee-breakdown drill-in; close leaves the finished journey;
+// startOver asks it to re-enter this route for a fresh attempt at the same top-up.
+const emit = defineEmits<{ fees: []; close: []; startOver: [] }>();
 const session = useSessionStore();
 
 const cadence = computed(
@@ -121,6 +122,23 @@ const detailRows = computed(() => {
   return rows;
 });
 
+/**
+ * Whether to offer a fresh attempt at a card or bank top-up that ended.
+ *
+ * The failed request itself cannot be re-entered — its pay page is dead and the provider will not
+ * take a second payment against it — so the offer is a new funding request, which is why the
+ * button says "Start over" rather than "Try again".
+ *
+ * Withheld on `unobserved` alone: there the rail could not tell whether the buyer was charged, so
+ * inviting a second payment risks charging them twice.
+ */
+const canStartOver = computed(
+  () =>
+    session.method !== "crypto" &&
+    session.meldStage === "failed" &&
+    session.meldFailureCode !== "unobserved",
+);
+
 /** Temporarily stuck (the provider is retrying): amber on the stepper, never terminal. */
 const delayed = computed(() => session.meldDelayed && !finished.value && !heroFailed.value);
 
@@ -178,8 +196,15 @@ const message = computed(() => {
         :asset="asset"
       />
 
+      <!-- A recoverable failure comes first on either rail: the payment landed and only the credit
+           is outstanding, so re-entering it is the fix. Starting a second payment there would
+           charge the buyer twice. -->
       <PillButton v-if="failure?.recoverable" class="mt-auto" @click="session.retry()">
         Try again
+      </PillButton>
+
+      <PillButton v-else-if="canStartOver" class="mt-auto" @click="emit('startOver')">
+        Start over
       </PillButton>
 
       <PillButton v-if="finished" variant="tertiary" class="mt-auto" @click="emit('close')">

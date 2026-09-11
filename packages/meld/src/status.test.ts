@@ -4,7 +4,7 @@ import { getMeldStatus } from "./status";
 
 function clientReturning(
   status: string,
-  terms?: { sourceAmount: string; fiat: string },
+  extra?: { providerStatus?: string; sourceAmount?: string; fiat?: string },
 ): MeldClientLike {
   return {
     getQuote: async () => ({ quotes: [] }),
@@ -14,7 +14,8 @@ function clientReturning(
       externalSessionId: "ext",
       widgetUrl: "u",
     }),
-    getStatus: async () => ({ status, ...terms }),
+    getStatus: async () => ({ status, ...extra }),
+    cancel: async () => ({ outcome: "cancelled" as const }),
   };
 }
 
@@ -69,10 +70,12 @@ describe("getMeldStatus", () => {
     expect(result.depositFailure?.kind).toBe(kind);
   });
 
-  it("maps refunded to failed and names the returned amount when the terms are reported", async () => {
+  // The adapter has no `refunded` state: its rail maps REFUNDED onto `failed` and sends the
+  // provider's own string alongside. These assert the ending is read from there.
+  it("reads a refund off the provider status and names the returned amount", async () => {
     // Money was captured and returned: the message must not claim nothing was taken.
     const result = await getMeldStatus(
-      clientReturning("refunded", { sourceAmount: "50.10", fiat: "EUR" }),
+      clientReturning("failed", { providerStatus: "REFUNDED", sourceAmount: "50.10", fiat: "EUR" }),
       "funding-1",
     );
 
@@ -82,15 +85,56 @@ describe("getMeldStatus", () => {
       "Your top-up didn't go through. Your 50.10 EUR has been returned to your card.",
     );
     expect(result.depositFailure?.kind).toBe("deposit-rejected");
+    // `raw` carries the provider status, so a refund is distinguishable downstream.
+    expect(result.raw).toBe("REFUNDED");
   });
 
-  it("maps refunded without reported terms to the plain returned-money message", async () => {
-    const result = await getMeldStatus(clientReturning("refunded"), "funding-1");
+  it("falls back to the plain returned-money message when no terms are reported", async () => {
+    const result = await getMeldStatus(
+      clientReturning("failed", { providerStatus: "REFUNDED" }),
+      "funding-1",
+    );
 
-    expect(result.status).toBe("failed");
     expect(result.depositFailure?.reason?.message).toBe(
       "Your top-up didn't go through. Your money has been returned to your card.",
     );
+  });
+
+  it("reads a bank decline off the provider status", async () => {
+    const result = await getMeldStatus(
+      clientReturning("failed", { providerStatus: "DECLINED" }),
+      "funding-1",
+    );
+
+    expect(result.depositFailure?.reason?.code).toBe("declined");
+    expect(result.depositFailure?.reason?.message).toMatch(/bank declined/i);
+  });
+
+  it.each(["CANCELLED", "CANCELED"])("reads a cancel off the provider status (%s)", async (s) => {
+    // No money moved, so it reads as the plain failure does.
+    const result = await getMeldStatus(clientReturning("failed", { providerStatus: s }), "f-1");
+
+    expect(result.depositFailure?.reason?.code).toBe("cancelled");
+    expect(result.depositFailure?.reason?.message).toBe(
+      "Top-up didn't go through. No money was taken.",
+    );
+  });
+
+  it("keeps the coarse wording for a provider ending it does not know", async () => {
+    const result = await getMeldStatus(
+      clientReturning("failed", { providerStatus: "SOME_NEW_ENDING" }),
+      "funding-1",
+    );
+
+    expect(result.depositFailure?.reason?.code).toBe("failed");
+    expect(result.depositFailure?.reason?.message).toBe(
+      "Top-up didn't go through. No money was taken.",
+    );
+  });
+
+  it("keeps a plain decline as a failure, not a refund", async () => {
+    const result = await getMeldStatus(clientReturning("failed"), "funding-1");
+    expect(result.depositFailure?.reason?.code).toBe("failed");
   });
 
   // The poll reads `raw` to decide the payment has started.

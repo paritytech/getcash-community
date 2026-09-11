@@ -63,16 +63,50 @@ const FAILURES: Readonly<Record<string, { message: string; kind: FailureKind }>>
   },
 });
 
+/**
+ * The provider endings the buyer must be told apart, keyed on the provider's own status.
+ *
+ * The adapter's lifecycle has no `refunded` and no `declined`: its rail maps
+ * FAILED / DECLINED / CANCELLED / REFUNDED all onto `failed` and lets the provider's own string
+ * ride along in `providerStatus` (see the adapter's `meld/rail.ts`). So the coarse status says
+ * only that the payment ended, and this says how — which is the difference between "your money
+ * came back", "your bank said no", and "nothing was taken".
+ *
+ * An ending not listed here keeps the coarse status's own wording, so a provider string we have
+ * never seen is never guessed at.
+ */
+function providerEnding(
+  providerStatus: string | undefined,
+  sourceAmount?: string,
+  fiat?: string,
+): { code: string; message: string } | null {
+  switch (providerStatus?.trim().toUpperCase()) {
+    case "REFUNDED":
+      return { code: REFUNDED, message: refundedMessage(sourceAmount, fiat) };
+    case "DECLINED":
+      return { code: "declined", message: FAILURES.declined!.message };
+    // The buyer's own doing, or the provider's window closing on them. No money moved, so it reads
+    // as the plain failure does rather than inventing a sentence for it.
+    case "CANCELLED":
+    case "CANCELED":
+      return { code: "cancelled", message: FAILURES.failed!.message };
+    default:
+      return null;
+  }
+}
+
 /** Fetch and normalize a funding request's status. Early states stay 'waiting'. */
 export async function getMeldStatus(
   client: MeldClientLike,
   fundingRequestId: string,
 ): Promise<MeldStatusView> {
-  const { status, sourceAmount, fiat } = await client.getStatus(fundingRequestId);
+  const { status, providerStatus, sourceAmount, fiat } = await client.getStatus(fundingRequestId);
   if (status === SETTLED) return { status: "complete", raw: status };
   if (status === RECEIVING) return { status: "receiving", raw: status };
   // The payment went through; only the crypto delivery is stuck and retrying.
   if (DELAYED.has(status)) return { status: "receiving", delayed: true, raw: status };
+  // Kept for an adapter whose lifecycle grows the state itself; today the refund arrives as
+  // `failed` with a REFUNDED provider status, handled below.
   if (status === REFUNDED) {
     return {
       status: "failed",
@@ -85,11 +119,15 @@ export async function getMeldStatus(
   }
   const failure = FAILURES[status];
   if (failure !== undefined) {
+    const ending = providerEnding(providerStatus, sourceAmount, fiat);
+    const reason = ending ?? { code: status, message: failure.message };
     // The kind travels with the message; core's default kind is `deposit-rejected`.
     return {
       status: "failed",
-      depositFailure: { reason: { code: status, message: failure.message }, kind: failure.kind },
-      raw: status,
+      depositFailure: { reason, kind: failure.kind },
+      // The provider's string is the more specific of the two, and the store reads `raw` to tell
+      // one ending from another.
+      raw: providerStatus ?? status,
     };
   }
   // `created`, `session_opened`, and any state added later.

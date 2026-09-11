@@ -61,5 +61,8 @@ export function createFakeMeldClient(opts: FakeMeldOptions = {}): MeldClientLike
     async getStatus() {
       return { status };
     },
+    async cancel() {
+      return { outcome: "cancelled" as const };
+    },
   };
 }

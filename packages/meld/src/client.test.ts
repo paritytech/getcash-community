@@ -423,4 +423,64 @@ describe("createMeldClient error mapping", () => {
     expect(result.serviceProviderWidgetUrl).toBe("https://pay.test/resume");
     expect(result.expiresAt).toBe(1_800_000_000_000);
   });
+
+  it("carries the provider's own status through, so a refund is distinguishable", async () => {
+    const { impl } = stubFetch(200, {
+      funding: { status: "failed", providerStatus: "REFUNDED" },
+    });
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+
+    const result = await client.getStatus("funding-1");
+
+    expect(result.status).toBe("failed");
+    expect(result.providerStatus).toBe("REFUNDED");
+  });
+});
+
+describe("createMeldClient cancel", () => {
+  it("withdraws the pay page and returns the cancelled-at stamp", async () => {
+    const { impl, calls } = stubFetch(200, {
+      funding: { id: "funding-1", cancelledAt: 1_700_000_000_500 },
+    });
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+
+    const result = await client.cancel("funding-1");
+
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(String(calls[0]?.url)).toBe("https://adapter.test/funding/funding-1/cancel");
+    expect(result).toEqual({ outcome: "cancelled", cancelledAt: 1_700_000_000_500 });
+  });
+
+  it("reports not-cancellable when a payment is already on its way", async () => {
+    const { impl } = stubFetch(409, {
+      error: {
+        tag: "Other",
+        value: { code: "REQUEST_NOT_CANCELLABLE", message: "A payment is already on its way." },
+      },
+      request_id: "r1",
+    });
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+
+    expect(await client.cancel("funding-1")).toEqual({ outcome: "not-cancellable" });
+  });
+
+  it("reports not-found for an unknown request", async () => {
+    const { impl } = stubFetch(404, {
+      error: { tag: "Other", value: { code: "NOT_FOUND" } },
+      request_id: "r1",
+    });
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+
+    expect(await client.cancel("nope")).toEqual({ outcome: "not-found" });
+  });
+
+  it("rethrows an unexpected adapter error rather than swallowing it", async () => {
+    const { impl } = stubFetch(500, {
+      error: { tag: "Other", value: { code: "BOOM" } },
+      request_id: "r1",
+    });
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+
+    await expect(client.cancel("funding-1")).rejects.toThrow();
+  });
 });

@@ -64,11 +64,12 @@ async function cancelTopUp() {
 }
 
 /**
- * Demo Skip: the mock world fakes the deposit; the hosted demo funds the burner from the faucet.
+ * Demo Skip: play the payment through from the start — the buyer leaving the widget, the provider
+ * seeing the transaction, then settling it — so the timeline runs its whole length. The store
+ * drives the deposit at the end of that, by faucet or by the mock harness.
  */
 function onSkip() {
-  if (session.mock) session.simulateDeposit();
-  else void session.fundFaucet();
+  session.simulateMeldPayment();
 }
 
 onMounted(() => {
@@ -147,6 +148,13 @@ onUnmounted(() => {
         >
           {{ session.cancelling ? "Cancelling…" : "Cancel" }}
         </button>
+        <p
+          v-if="session.cancelNotice"
+          class="mx-6 mb-4 text-center text-body-m text-fg-secondary"
+          role="status"
+        >
+          {{ session.cancelNotice }}
+        </p>
       </template>
       <MeldFeeDetailsScreen v-else-if="showingFees" @back="showingFees = false" />
       <MeldPayScreen
