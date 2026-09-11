@@ -10,7 +10,7 @@ import { projectFundingProgress, type FundingProgressProjection } from "../../fu
 import type { FundingTopUp } from "../../funding/top-ups";
 import { DEPOSIT_EXPIRED_REASON, useSessionStore } from "../../stores/session";
 import { fmtCash } from "../../utils/cash";
-import { fmtFiat, isMoneyAmount } from "../../utils/money";
+import { quoteDetailRows } from "../../funding/quote-rows";
 import { formatWhenShort, type JourneySteps } from "../../utils/journey";
 import { refundedFailure } from "../../utils/recovery";
 import FundingJourneyTimeline from "../funding/progress/FundingJourneyTimeline.vue";
@@ -156,20 +156,12 @@ const quoteView = computed(() => {
     live: false,
   };
 });
-const detailRows = computed(() => {
-  const q = quoteView.value;
-  // The crypto rail doesn't restate the deposit amount here — the deposit screen owns that figure.
-  if (!q || q.crypto) return [];
-  // Symbol-first for the fiat rails ("€50.55").
-  const money = (amount: string) => fmtFiat(amount, q.symbol);
-  const rows: { label: string; value: string; fees?: boolean }[] = [];
-  // The fee row drills into the breakdown screen when the live quote backs it with a fee the
-  // breakdown can actually split; an unparseable one still shows, as plain text.
-  if (q.fee)
-    rows.push({ label: "Fees", value: money(q.fee), fees: q.live && isMoneyAmount(q.fee) });
-  rows.push({ label: "Total", value: money(q.amount) });
-  return rows;
-});
+/** The rows come from the shared helper, so the journey and the settled receipt present the same
+ *  quote identically. The crypto rail doesn't restate the deposit amount here — the deposit screen
+ *  owns that figure — but the settled receipt, which has no deposit screen, still shows it. */
+const detailRows = computed(() =>
+  quoteView.value?.crypto ? [] : quoteDetailRows(quoteView.value),
+);
 
 /**
  * Whether to offer a fresh attempt at a card or bank top-up that ended.
