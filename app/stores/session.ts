@@ -2105,6 +2105,9 @@ export const useSessionStore = defineStore("session", () => {
         recordMeldStage();
         pollFailures = 0;
       } catch (e) {
+        // The delay marker is a live claim about the provider's retry; a poll that cannot confirm
+        // it must not keep asserting it through an outage.
+        meldDelayed.value = false;
         const httpStatus = (e as { status?: number } | null)?.status;
         // A 404 never self-heals: stop. A 401 is an auth problem on this side and retries below
         // with the other transients.
