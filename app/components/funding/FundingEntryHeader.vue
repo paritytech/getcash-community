@@ -33,9 +33,8 @@ const emit = defineEmits<{
       'funding-entry-header-centered': centered,
     }"
   >
-    <span v-if="centered" aria-hidden="true" />
     <button
-      v-else-if="back"
+      v-if="back"
       type="button"
       class="funding-entry-back"
       aria-label="Back"
@@ -43,6 +42,7 @@ const emit = defineEmits<{
     >
       <ChevronLeft class="size-6" aria-hidden="true" />
     </button>
+    <span v-else-if="centered" aria-hidden="true" />
     <SkeletonBlock v-if="skeleton" style="width: 8.125rem; height: 1.5rem" />
     <h1 v-else-if="title" class="text-heading-l">{{ title }}</h1>
     <span v-else aria-hidden="true" />
@@ -56,7 +56,7 @@ const emit = defineEmits<{
     >
       <History class="size-7" aria-hidden="true" />
     </button>
-    <span v-else-if="back" aria-hidden="true" />
+    <span v-else-if="back || centered" aria-hidden="true" />
   </header>
 </template>
 
