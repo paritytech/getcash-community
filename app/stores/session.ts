@@ -267,6 +267,8 @@ export const useSessionStore = defineStore("session", () => {
   /** Whether a deposit has been seen for the request on screen. Restored from the record on
    *  re-open. */
   const fundsSeen = ref(false);
+  /** Asks the journey to open its refund-key panel unprompted; only the preview deck sets it. */
+  const revealRefund = ref(false);
   /** The claimed amount; a full burner sweep, so it may exceed the typed amount. */
   const claimedBase = ref<bigint | null>(null);
   const foregroundProgress = shallowRef<ForegroundFundingProgress | null>(null);
@@ -410,6 +412,7 @@ export const useSessionStore = defineStore("session", () => {
     claimedBase.value = null;
     faucetState.value = "idle";
     fundsSeen.value = false;
+    revealRefund.value = false;
     milestones.value = {};
     foregroundProgress.value = null;
     foregroundRef = null;
@@ -2271,6 +2274,7 @@ export const useSessionStore = defineStore("session", () => {
     resuming,
     faucetState,
     fundsSeen,
+    revealRefund,
     canSkipDeposit,
     cancelling,
     mock,

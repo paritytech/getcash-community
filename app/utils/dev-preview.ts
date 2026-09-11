@@ -113,6 +113,7 @@ function base(session: Session, flow: Flow) {
   session.lastState = null;
   session.foregroundProgress = null;
   session.fundsSeen = false;
+  session.revealRefund = false;
   session.milestones = {};
   flow.step = "amount";
   flow.confirmingCancel = false;
@@ -140,6 +141,42 @@ function selection(session: Session, flow: Flow) {
   offers.demoFallback = isDemoBuild();
   flow.srcChainIndex = 1; // Ethereum
   flow.srcAssetIndex = 0;
+}
+
+/** The refunded USDT-on-Tron failure: a token refund with the gas note. The reveal panel reads
+ *  the refund key off the mock world the scene installs. */
+function refundedTron(s: Session, f: Flow) {
+  base(s, f);
+  // The deposit was paid — that is what makes it a refund — so Started reads done and the
+  // failed marker lands on Payment, as the design draws it.
+  s.fundsSeen = true;
+  f.srcChainIndex = 3;
+  f.srcAssetIndex = 1; // USDT on Tron
+  s.quoted = {
+    ...QUOTED,
+    send: "5.02",
+    symbol: "USDT",
+    sourceAsset: "USDT",
+    sourceChain: "Tron",
+  };
+  s.lastState = {
+    phase: "failed",
+    sourceId: "usdt-tron",
+    failure: {
+      kind: "refunded",
+      step: "swap",
+      message: "The deposit didn't go through. It is being returned to your recovery address.",
+      recoverable: false,
+    },
+    refund: { amount: "5020000", txRef: "7f1c9b2e4d6a8c0f1e3b5d7a9c2e4f6081a3c5e7" },
+  } as PaymentState;
+  void createMockCoinageSession({
+    recipient: DEPOSIT.address,
+    amount: 5_000_000n,
+    sourceId: "usdt-tron",
+  }).then((world) => {
+    s.mock = world;
+  });
 }
 
 // Scenes start at the first screen a package owns.
@@ -444,39 +481,15 @@ export const SCENES: Scene[] = [
   },
   {
     name: "crypto / failed: refunded",
+    apply: refundedTron,
+  },
+  {
+    // The inline reveal opened: address, masked key, copy. Stands in for the design's
+    // return-funds drill-in screens until those are built.
+    name: "crypto / failed: refund key",
     apply: (s, f) => {
-      base(s, f);
-      // The deposit was paid — that is what makes it a refund — so Started reads done and the
-      // failed marker lands on Payment, as the design draws it.
-      s.fundsSeen = true;
-      f.srcChainIndex = 3;
-      f.srcAssetIndex = 1; // USDT on Tron: a token refund, with the gas note
-      s.quoted = {
-        ...QUOTED,
-        send: "5.02",
-        symbol: "USDT",
-        sourceAsset: "USDT",
-        sourceChain: "Tron",
-      };
-      s.lastState = {
-        phase: "failed",
-        sourceId: "usdt-tron",
-        failure: {
-          kind: "refunded",
-          step: "swap",
-          message: "The deposit didn't go through. It is being returned to your recovery address.",
-          recoverable: false,
-        },
-        refund: { amount: "5020000", txRef: "7f1c9b2e4d6a8c0f1e3b5d7a9c2e4f6081a3c5e7" },
-      } as PaymentState;
-      // The panel reads the refund key off the request's world.
-      void createMockCoinageSession({
-        recipient: DEPOSIT.address,
-        amount: 5_000_000n,
-        sourceId: "usdt-tron",
-      }).then((world) => {
-        s.mock = world;
-      });
+      refundedTron(s, f);
+      s.revealRefund = true;
     },
   },
   {
