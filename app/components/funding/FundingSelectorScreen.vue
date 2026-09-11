@@ -189,7 +189,7 @@ watch(
       :amount="amount"
       :route="route"
       :available-routes="availableRouteIds"
-      :history="topUps.length > 0 || pastTopUps.length > 0"
+      history
       :error="error"
       :loading="loading"
       @change="changeAmount"
