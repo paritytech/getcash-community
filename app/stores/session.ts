@@ -46,7 +46,7 @@ import {
   serializeRequestIndex,
   type RequestRef,
 } from "../utils/request-index";
-import { journeyDone } from "../utils/journey";
+import { journeyDone, type JourneySteps } from "../utils/journey";
 import { estimateSourceAmount, estimateSourceFromCash } from "~~/lib/demo-rates";
 import { priceSourceLeg, type SourcePriceResult } from "~~/lib/source-price";
 import { createMockCoinageSession, workerSessionId, type MockCoinageWorld } from "~~/lib/coinage";
@@ -320,6 +320,10 @@ export const useSessionStore = defineStore("session", () => {
   /** True while a claim is in flight: the host's sheet is up, or the credit is being verified. */
   const claiming = computed(() => phase.value === "funded" || phase.value === "working");
 
+  /** The journey's scale for the request on screen: the crypto timeline has no "processed" step.
+   *  The done count below and the milestone keys are both on it, so the screen reads this rather
+   *  than deciding the scale a second time. */
+  const journeySteps = computed<JourneySteps>(() => (method.value === "crypto" ? 4 : 5));
   /** How many of the journey's steps are done, on the route's own scale (crypto shows four). */
   const journeyDoneCount = computed(() =>
     journeyDone(
@@ -329,7 +333,7 @@ export const useSessionStore = defineStore("session", () => {
         swap: lastState.value?.phase === "swapping" ? lastState.value.swap : null,
         failure: lastState.value?.phase === "failed" ? lastState.value.failure : null,
       },
-      method.value === "crypto" ? 4 : 5,
+      journeySteps.value,
     ),
   );
   /** When each journey step landed, in ms since epoch, by step number. Not persisted. */
@@ -2298,6 +2302,7 @@ export const useSessionStore = defineStore("session", () => {
     requestStatus,
     claiming,
     journeyDone: journeyDoneCount,
+    journeySteps,
     milestones,
     fundFaucet,
     simulateDeposit,
