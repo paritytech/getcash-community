@@ -12,9 +12,8 @@ import { DEPOSIT_EXPIRED_REASON, useSessionStore } from "../../stores/session";
 import { fmtCash } from "../../utils/cash";
 import { fmtFiat, isMoneyAmount } from "../../utils/money";
 import { formatWhenShort } from "../../utils/journey";
-import { refundedFailure } from "../../utils/recovery";
+import { refundedFailure, refundStatusTail } from "../../utils/recovery";
 import FundingJourneyTimeline from "../funding/progress/FundingJourneyTimeline.vue";
-import RefundRecovery from "../funding/RefundRecovery.vue";
 import DetailRows from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
 
@@ -29,8 +28,8 @@ const props = defineProps<{
    *  is live in the store. */
   topUp?: FundingTopUp | null;
 }>();
-// fees asks the host to swap in the fee-breakdown drill-in; close leaves the finished journey.
-const emit = defineEmits<{ fees: []; close: [] }>();
+// fees and refund ask the host to swap in their drill-ins; close leaves the finished journey.
+const emit = defineEmits<{ fees: []; refund: []; close: [] }>();
 const session = useSessionStore();
 
 const cadence = computed(
@@ -191,13 +190,17 @@ const message = computed(() => {
 
       <DetailRows v-if="detailRows.length" :rows="detailRows" @fees="emit('fees')" />
 
-      <!-- The way back to a refunded deposit: the key controlling the address it returns to. -->
-      <RefundRecovery
-        v-if="refunded && failure"
-        :failure="failure"
-        :refund="refund"
-        :asset="asset"
-      />
+      <!-- The way back to a refunded deposit drills into the return-funds guide. -->
+      <div v-if="refunded && failure" class="flex flex-col gap-4">
+        <p class="text-body-m text-fg-secondary">
+          {{
+            failure.kind === "refund-failed"
+              ? failure.message
+              : `Your ${asset} ${refundStatusTail(refund)}`
+          }}
+        </p>
+        <PillButton @click="emit('refund')">Return funds</PillButton>
+      </div>
 
       <PillButton v-if="failure?.recoverable" class="mt-auto" @click="session.retry()">
         Try again
