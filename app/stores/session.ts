@@ -249,6 +249,10 @@ export const useSessionStore = defineStore("session", () => {
   const meldFailureMessage = ref<string | null>(null);
   /** True when the failure is a refund (money taken then returned), not a plain decline. */
   const meldRefunded = ref(false);
+  /** The ending's own code (`refunded`, `declined`, `cancelled`, `unobserved`, …) as the rail
+   *  reported it. Null unless `meldStage === 'failed'`. It decides whether a fresh attempt is
+   *  safe to offer: `unobserved` means the rail could not tell whether the buyer was charged. */
+  const meldFailureCode = ref<string | null>(null);
   /** The provider widget URL recovered when resuming a Meld request; null unless a resume found a
    *  live one. */
   const meldResumeWidgetUrl = ref<string | null>(null);
@@ -389,6 +393,7 @@ export const useSessionStore = defineStore("session", () => {
     meldDelayed.value = false;
     meldFailureMessage.value = null;
     meldRefunded.value = false;
+    meldFailureCode.value = null;
     meldResumeWidgetUrl.value = null;
     meldSubmitted.value = false;
     meldHandedOff.value = false;
@@ -2109,7 +2114,8 @@ export const useSessionStore = defineStore("session", () => {
         if (meldStage.value === "failed") {
           meldFailureMessage.value =
             depositFailure?.reason?.message ?? "The payment could not be completed.";
-          meldRefunded.value = depositFailure?.reason?.code === "refunded";
+          meldFailureCode.value = depositFailure?.reason?.code ?? null;
+          meldRefunded.value = meldFailureCode.value === "refunded";
         }
         recordMeldStage();
         pollFailures = 0;
@@ -2295,6 +2301,7 @@ export const useSessionStore = defineStore("session", () => {
     meldDelayed,
     meldFailureMessage,
     meldRefunded,
+    meldFailureCode,
     meldResumeWidgetUrl,
     meldSubmitted,
     meldHandedOff,

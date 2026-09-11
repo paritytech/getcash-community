@@ -115,7 +115,9 @@ describe("getMeldStatus", () => {
     const result = await getMeldStatus(clientReturning("failed", { providerStatus: s }), "f-1");
 
     expect(result.depositFailure?.reason?.code).toBe("cancelled");
-    expect(result.depositFailure?.reason?.message).toBe("Top-up didn't go through. No money was taken.");
+    expect(result.depositFailure?.reason?.message).toBe(
+      "Top-up didn't go through. No money was taken.",
+    );
   });
 
   it("keeps the coarse wording for a provider ending it does not know", async () => {
@@ -125,7 +127,9 @@ describe("getMeldStatus", () => {
     );
 
     expect(result.depositFailure?.reason?.code).toBe("failed");
-    expect(result.depositFailure?.reason?.message).toBe("Top-up didn't go through. No money was taken.");
+    expect(result.depositFailure?.reason?.message).toBe(
+      "Top-up didn't go through. No money was taken.",
+    );
   });
 
   it("keeps a plain decline as a failure, not a refund", async () => {
