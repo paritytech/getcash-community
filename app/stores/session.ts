@@ -304,14 +304,17 @@ export const useSessionStore = defineStore("session", () => {
   /** True while a claim is in flight: the host's sheet is up, or the credit is being verified. */
   const claiming = computed(() => phase.value === "funded" || phase.value === "working");
 
-  /** How many of the journey's five steps are done. */
+  /** How many of the journey's steps are done, on the route's own scale (crypto shows four). */
   const journeyDoneCount = computed(() =>
-    journeyDone({
-      phase: phase.value,
-      fundingStep: fundingStep.value,
-      swap: lastState.value?.phase === "swapping" ? lastState.value.swap : null,
-      failure: lastState.value?.phase === "failed" ? lastState.value.failure : null,
-    }),
+    journeyDone(
+      {
+        phase: phase.value,
+        fundingStep: fundingStep.value,
+        swap: lastState.value?.phase === "swapping" ? lastState.value.swap : null,
+        failure: lastState.value?.phase === "failed" ? lastState.value.failure : null,
+      },
+      method.value === "crypto" ? 4 : 5,
+    ),
   );
   /** When each journey step landed, in ms since epoch, by step number. Not persisted. */
   const milestones = ref<Record<number, number>>({});

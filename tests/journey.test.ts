@@ -49,6 +49,38 @@ describe("journeyDone", () => {
   });
 });
 
+describe("journeyDone on the crypto scale", () => {
+  // The crypto timeline has no "Approved" step: four steps.
+  const done4 = (input: Parameters<typeof journeyDone>[0]) => journeyDone(input, 4);
+
+  it("counts the payment done as soon as the swap reports: it only starts on a seen deposit", () => {
+    expect(done4({ phase: "swapping", fundingStep: null, swap: "receiving" })).toBe(2);
+    expect(done4({ phase: "swapping", fundingStep: null, swap: "swapping" })).toBe(2);
+    expect(done4({ phase: "swapping", fundingStep: null, swap: "complete" })).toBe(3);
+  });
+
+  it("re-bases the claim and the finish", () => {
+    expect(done4({ phase: "funded", fundingStep: "done" })).toBe(3);
+    expect(done4({ phase: "done", fundingStep: "done" })).toBe(4);
+  });
+
+  it("re-bases the manual pipeline", () => {
+    expect(done4({ phase: "awaiting-deposit", fundingStep: "swap" })).toBe(2);
+    expect(done4({ phase: "awaiting-deposit", fundingStep: "done" })).toBe(3);
+    expect(done4({ phase: "awaiting-deposit", fundingStep: null })).toBe(1);
+  });
+
+  it("strikes the payment step for a refunded swap, as the design draws it", () => {
+    // One done (Started), so the failed marker lands on Payment.
+    expect(done4({ phase: "failed", fundingStep: null, failure: { kind: "refunded" } })).toBe(1);
+    expect(done4({ phase: "failed", fundingStep: null, failure: { kind: "egress-failed" } })).toBe(
+      1,
+    );
+    // The claim failed: everything before it landed.
+    expect(done4({ phase: "failed", fundingStep: null, failure: { kind: "mint" } })).toBe(3);
+  });
+});
+
 describe("journeyLabels", () => {
   it("names what arrived when the asset is known", () => {
     expect(journeyLabels("BTC")[1]!.done).toBe("We received your BTC");

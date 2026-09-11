@@ -2,30 +2,46 @@
 import { computed } from "vue";
 import { Check, LoaderCircle, X } from "lucide-vue-next";
 import { journeyTimelineStep, type FundingProgressProjection } from "../../../funding/progress";
+import type { JourneySteps } from "../../../utils/journey";
 
 const props = withDefaults(
   defineProps<{
     progress: FundingProgressProjection;
+    /** The card journey shows five steps; crypto has no "Approved" leg and shows four. */
+    steps?: JourneySteps;
     /** The one line under the stepper: the ribbon only shows when there is something to say. */
     message?: string | null;
     /** Temporarily stuck, not failed: the current step renders amber and keeps spinning. */
     delayed?: boolean;
+    /** Replaces the failed step's "<stage> failed" wording (the design's "Expired"). */
+    failedLabel?: string | null;
   }>(),
   {
+    steps: 5,
     message: null,
     delayed: false,
+    failedLabel: null,
   },
 );
 
-const stages = ["Started", "Payment", "Approved", "Conversion", "Added"] as const;
+const CARD_STAGES = ["Started", "Payment", "Approved", "Conversion", "Added"] as const;
+const CRYPTO_STAGES = ["Started", "Payment", "Conversion", "Added"] as const;
+const stages = computed<readonly string[]>(() =>
+  props.steps === 4 ? CRYPTO_STAGES : CARD_STAGES,
+);
 
 const settled = computed(() => props.progress.view.kind === "settled");
 const failed = computed(() => props.progress.view.kind === "failed");
 /** Completed markers, derived from the progress projection (not a separate step count) so the
- *  timeline tracks the same phase the history list shows. */
-const completed = computed(() => journeyTimelineStep(props.progress));
+ *  timeline tracks the same phase the history list shows. The projection counts on the card's
+ *  five-step scale; the crypto timeline drops the "Approved" leg, so everything past the payment
+ *  shifts down one. */
+const completed = computed(() => {
+  const step = journeyTimelineStep(props.progress);
+  return props.steps === 4 && step > 1 ? step - 1 : step;
+});
 const activeIndex = computed(() =>
-  settled.value ? -1 : Math.min(completed.value, stages.length - 1),
+  settled.value ? -1 : Math.min(completed.value, stages.value.length - 1),
 );
 
 type StepState = "complete" | "current" | "delayed" | "failed" | "upcoming";
@@ -39,8 +55,9 @@ function stageState(index: number): StepState {
 }
 
 function stageLabel(index: number): string {
-  const label = stages[index]!;
-  return stageState(index) === "failed" ? `${label} failed` : label;
+  const label = stages.value[index]!;
+  if (stageState(index) !== "failed") return label;
+  return props.failedLabel ?? `${label} failed`;
 }
 
 /** What the hidden live region reads out: the stage the journey is on, and the ribbon's message
@@ -50,15 +67,15 @@ const announcement = computed(() => {
   const stage = settled.value
     ? "Top-up complete"
     : failed.value
-      ? `${stages[activeIndex.value]!} failed`
-      : `Step ${activeIndex.value + 1} of ${stages.length}: ${stages[activeIndex.value]!}`;
+      ? `${stages.value[activeIndex.value]!} failed`
+      : `Step ${activeIndex.value + 1} of ${stages.value.length}: ${stages.value[activeIndex.value]!}`;
   return props.message ? `${stage}. ${props.message}` : stage;
 });
 </script>
 
 <template>
   <section class="funding-journey" aria-label="Top-up progress">
-    <div class="funding-journey-card">
+    <div class="funding-journey-card" :style="{ '--funding-journey-gaps': stages.length - 1 }">
       <ol class="funding-journey-steps">
         <!-- Connectors run centre to centre behind the markers; each takes the colour of the
              step it leads to. The marker's outer ring is the card surface, masking the line. -->
@@ -67,7 +84,7 @@ const announcement = computed(() => {
           :key="`connector-${index}`"
           class="funding-journey-connector"
           :class="`funding-journey-connector-${stageState(index)}`"
-          :style="{ left: `calc(1rem + ${index - 1} * (100% - 2rem) / 4)` }"
+          :style="{ left: `calc(1rem + ${index - 1} * (100% - 2rem) / ${stages.length - 1})` }"
           aria-hidden="true"
         />
         <li
@@ -129,7 +146,7 @@ const announcement = computed(() => {
 .funding-journey-connector {
   position: absolute;
   top: calc(1rem - 1.5px);
-  width: calc((100% - 2rem) / 4);
+  width: calc((100% - 2rem) / var(--funding-journey-gaps, 4));
   height: 3px;
   background: var(--stroke-secondary);
 }
