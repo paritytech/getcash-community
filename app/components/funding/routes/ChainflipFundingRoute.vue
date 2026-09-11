@@ -44,7 +44,7 @@ const toolbar = computed<{
   }
   return {
     back: true,
-    title: flow.step === "token" ? "Select coin to pay" : "Select network",
+    title: flow.step === "token" ? "Select token" : "Select network",
     trailing: null,
   };
 });

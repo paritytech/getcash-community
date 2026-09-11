@@ -29,13 +29,13 @@ const emit = defineEmits<{ select: [] }>();
 <template>
   <li
     v-if="skeleton"
-    class="h-20 shrink-0 animate-pulse rounded-container bg-surface-container"
+    class="option-card h-20 shrink-0 animate-pulse bg-surface-container"
     aria-hidden="true"
   />
   <li v-else>
     <button
       type="button"
-      class="flex w-full items-center gap-3 rounded-container bg-surface-container p-4 text-left shadow-1 transition-shadow hover:shadow-2 disabled:opacity-50"
+      class="option-card flex w-full items-center gap-3 bg-surface-nested p-4 text-left transition-opacity disabled:opacity-50"
       :disabled="disabled"
       @click="emit('select')"
     >
@@ -57,3 +57,10 @@ const emit = defineEmits<{ select: [] }>();
     </button>
   </li>
 </template>
+
+<style scoped>
+/* 24px; the radius scale has no semantic step this size. */
+.option-card {
+  border-radius: var(--scale-radius-large);
+}
+</style>
