@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ChevronLeft, History } from "lucide-vue-next";
+import SkeletonBlock from "../ui/SkeletonBlock.vue";
 
 withDefaults(
   defineProps<{
@@ -7,11 +8,14 @@ withDefaults(
     back?: boolean;
     centered?: boolean;
     history?: boolean;
+    /** Launch-load placeholder: the title and history control render as inert skeleton shapes. */
+    skeleton?: boolean;
   }>(),
   {
     back: false,
     centered: false,
     history: false,
+    skeleton: false,
   },
 );
 
@@ -39,10 +43,12 @@ const emit = defineEmits<{
     >
       <ChevronLeft class="size-6" aria-hidden="true" />
     </button>
-    <h1 v-if="title" class="text-heading-l">{{ title }}</h1>
+    <SkeletonBlock v-if="skeleton" style="width: 8.125rem; height: 1.5rem" />
+    <h1 v-else-if="title" class="text-heading-l">{{ title }}</h1>
     <span v-else aria-hidden="true" />
+    <span v-if="skeleton" class="funding-entry-history animate-pulse" aria-hidden="true" />
     <button
-      v-if="history"
+      v-else-if="history"
       type="button"
       class="funding-entry-history"
       aria-label="History"

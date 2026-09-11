@@ -3,14 +3,18 @@
 // widget. The method is fixed by the route; the region is the buyer's only choice.
 import { computed, onMounted, ref } from "vue";
 import { useSessionStore } from "../../../stores/session";
+import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import type { FundingRoute } from "../../../funding/selection";
 import CountryCombobox from "../../ui/CountryCombobox.vue";
+import DetailRows from "../../ui/DetailRows.vue";
+import PillButton from "../../ui/PillButton.vue";
+import SecondaryButton from "../../ui/SecondaryButton.vue";
+import SkeletonBlock from "../../ui/SkeletonBlock.vue";
 
 const session = useSessionStore();
-// Asks the shell to swap to the crypto package when this region routes neither card nor bank.
-const emit = defineEmits<{ switchRoute: [route: FundingRoute] }>();
-
-const via = computed(() => (session.method === "bank" ? "Bank transfer" : "Card"));
+// switchRoute asks the shell to swap to the crypto package when this region routes neither card
+// nor bank; fees opens the fee-breakdown drill-in.
+const emit = defineEmits<{ switchRoute: [route: FundingRoute]; fees: [] }>();
 
 // The adapter's buyer-facing refusal message, shown under the quote and blocking Continue.
 const startError = ref<string | null>(null);
@@ -96,6 +100,17 @@ function useCryptoRoute() {
   emit("switchRoute", "crypto");
 }
 
+// The charged total is the hero; the toolbar already names the method, so no Via row.
+const heroAmount = computed(() => {
+  const q = session.quoted;
+  return q ? fmtFiat(q.send, q.symbol) : null;
+});
+const heroCaption = computed(() =>
+  session.method === "bank"
+    ? "Will be charged from your bank account"
+    : "Will be charged from your card",
+);
+
 /** The picked region's own name, for the quote's terms. Falls back to the code when the catalog is
  *  the static list and the code is not in it. */
 const selectedCountryName = computed(
@@ -107,15 +122,21 @@ const selectedCountryName = computed(
 const quoteRows = computed(() => {
   const q = session.quoted;
   if (!q) return [];
-  return [
-    { label: "You pay", value: `${q.send} ${q.symbol}` },
-    { label: "You receive", value: `${session.amountHuman} CASH` },
-    { label: "Via", value: via.value },
+  const rows: { label: string; value: string; fees?: boolean }[] = [
+    { label: "Provider", value: "Meld" },
     // Names the corridor these terms were priced against. Two Card failures in one testathon
     // session came from two DIFFERENT regions, and nothing on the quote said which one it was.
     { label: "Region", value: selectedCountryName.value },
-    { label: "Est. time", value: "~a few min" },
   ];
+  // The fee row drills into the breakdown screen — only when the fee is a number the breakdown
+  // can actually split; an unparseable one still shows, as plain text.
+  if (q.fee)
+    rows.push({ label: "Fees", value: fmtFiat(q.fee, q.symbol), fees: isMoneyAmount(q.fee) });
+  rows.push(
+    { label: "Arrives", value: "A few minutes" },
+    { label: "You’ll receive", value: `${session.amountHuman} $CASH` },
+  );
+  return rows;
 });
 
 const starting = ref(false);
@@ -146,9 +167,20 @@ async function next() {
 
 <template>
   <div class="flex min-h-0 flex-1 flex-col">
-    <h1 class="text-display-l text-fg-primary">
-      Pay with {{ session.method === "bank" ? "bank transfer" : "card" }}
-    </h1>
+    <!-- The hero: the total the card will be charged. The toolbar already names the method. -->
+    <div
+      v-if="!session.meldMethodUnavailable && !session.quoteError"
+      class="flex flex-col items-center text-center"
+    >
+      <template v-if="heroAmount">
+        <p class="text-display-xl text-fg-primary">{{ heroAmount }}</p>
+        <p class="text-paragraph-l text-fg-secondary">{{ heroCaption }}</p>
+      </template>
+      <template v-else>
+        <SkeletonBlock class="h-16 w-44" />
+        <SkeletonBlock class="mt-3 h-5 w-28" />
+      </template>
+    </div>
 
     <!-- Temporary region picker, removed once geolocation lands. -->
     <CountryCombobox
@@ -160,8 +192,11 @@ async function next() {
       @commit="pickCountry"
     />
 
-    <!-- The quote it produced, or why there isn't one. -->
-    <div class="mt-6 rounded-container bg-surface-container p-4 shadow-1">
+    <!-- Why there is no quote. These states have no design; they keep the card treatment. -->
+    <div
+      v-if="session.meldMethodUnavailable || session.quoteError"
+      class="mt-6 rounded-container bg-surface-container p-4 shadow-1"
+    >
       <!-- The chosen method is not routed for this region: offer the other method or the crypto
            route. -->
       <div v-if="session.meldMethodUnavailable" class="flex flex-col gap-3">
@@ -172,66 +207,42 @@ async function next() {
         <p v-else class="text-body-m text-fg-secondary">
           This region isn't supported for card or bank right now. You can buy with crypto instead.
         </p>
-        <button
-          v-if="otherMethodAvailable"
-          type="button"
-          class="self-start rounded-medium bg-action-secondary px-4 py-2 text-label-m text-fg-primary transition-colors hover:bg-action-secondary-hover"
-          @click="useOtherMethod"
+        <SecondaryButton
+          class="self-start"
+          @click="otherMethodAvailable ? useOtherMethod() : useCryptoRoute()"
         >
-          Use {{ methodLabel(otherMethod).toLowerCase() }}
-        </button>
-        <button
-          v-else
-          type="button"
-          class="self-start rounded-medium bg-action-secondary px-4 py-2 text-label-m text-fg-primary transition-colors hover:bg-action-secondary-hover"
-          @click="useCryptoRoute"
-        >
-          Use crypto instead
-        </button>
+          {{
+            otherMethodAvailable
+              ? `Use ${methodLabel(otherMethod).toLowerCase()}`
+              : "Use crypto instead"
+          }}
+        </SecondaryButton>
       </div>
-      <div v-else-if="session.quoteError" class="flex flex-col gap-3">
+      <div v-else class="flex flex-col gap-3">
         <p class="text-body-m text-fg-error">Quote failed: {{ session.quoteError }}</p>
-        <button
-          type="button"
-          class="self-start rounded-medium bg-action-secondary px-4 py-2 text-label-m text-fg-primary transition-colors hover:bg-action-secondary-hover"
-          @click="requote"
-        >
-          Retry quote
-        </button>
-      </div>
-      <div v-else-if="session.loading || !session.quoted" class="flex flex-col gap-3">
-        <div v-for="n in 4" :key="n" class="flex h-6 items-center">
-          <span
-            class="h-4 animate-pulse rounded-small bg-surface-nested"
-            :style="{ width: `${85 - n * 10}%` }"
-          />
-        </div>
-      </div>
-      <div v-else class="flex flex-col gap-4">
-        <div
-          v-for="row in quoteRows"
-          :key="row.label"
-          class="flex items-baseline justify-between gap-4"
-        >
-          <span class="text-body-m text-fg-secondary">{{ row.label }}</span>
-          <span
-            class="text-body-l text-fg-primary"
-            :class="{ 'font-semibold': row.label === 'You receive' }"
-            >{{ row.value }}</span
-          >
-        </div>
+        <SecondaryButton class="self-start" @click="requote">Retry quote</SecondaryButton>
       </div>
     </div>
 
+    <!-- The quote's detail rows, bare on the surface. -->
+    <div v-else-if="session.loading || !session.quoted" class="mt-6 flex flex-col gap-4">
+      <div v-for="n in 3" :key="n" class="flex h-6 items-center justify-between">
+        <SkeletonBlock class="h-4 w-2/5" />
+        <SkeletonBlock class="h-4 w-1/5" />
+      </div>
+    </div>
+    <DetailRows v-else class="mt-6" :rows="quoteRows" @fees="emit('fees')" />
+
     <p v-if="startError" class="mt-4 text-body-m text-fg-error">{{ startError }}</p>
 
-    <button
-      type="button"
-      class="mt-auto mb-6 h-12 w-full rounded-full bg-action-primary text-label-l font-semibold text-fg-primary-inverted transition-colors hover:bg-action-primary-hover disabled:bg-action-disabled disabled:text-fg-disabled"
-      :disabled="!canContinue"
-      @click="next"
-    >
-      {{ starting ? "Starting…" : "Continue to payment" }}
-    </button>
+    <PillButton class="mt-auto mb-6 w-full" :disabled="!canContinue" @click="next">
+      {{
+        starting
+          ? "Starting…"
+          : session.method === "bank"
+            ? "Enter bank details"
+            : "Enter card details"
+      }}
+    </PillButton>
   </div>
 </template>

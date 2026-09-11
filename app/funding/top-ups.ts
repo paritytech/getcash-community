@@ -32,6 +32,9 @@ export type FundingTopUp = Readonly<{
   startedAt: number;
   progress: FundingProgressProjection;
   details?: FundingTopUpDetails;
+  /** What the buyer pays as the rail quoted it, for the journey's Fees/Total rows when the
+   *  request is not (yet) live in the store. */
+  quote?: Readonly<{ amount: string; symbol: string; fee?: string }>;
   state: FundingTopUpState;
 }>;
 

@@ -82,6 +82,10 @@ interface ActiveFlowRecord {
   asset: string;
   sourceAmount?: string;
   sourceSymbol?: string;
+  /** The provider's quoted fee (Meld), in `sourceSymbol` units. */
+  sourceFee?: string;
+  /** The network-fee share of `sourceFee`, when the rail broke it out. */
+  sourceNetworkFee?: string;
   startedAt: number;
   depositAddress?: string;
   progress?: FundingProgressSnapshot;
@@ -197,6 +201,10 @@ function stepOf(status: RequestStatus | undefined): FundingStep | null {
 export interface QuotedView {
   send: string;
   symbol: string;
+  /** The provider's total fee in `symbol` units, when the rail quotes one (Meld does). */
+  fee?: string | null;
+  /** The network-fee share of `fee`, when the rail breaks it out (Meld may). */
+  networkFee?: string | null;
   /** Live world only: the native (DOT) budget the rail must deliver, 10-dec base units. */
   nativeAmount: bigint | null;
   sourceAsset: string | null;
@@ -234,6 +242,9 @@ export const useSessionStore = defineStore("session", () => {
   /** The Meld payment's polled stage: `waiting` while the buyer is on the widget, `receiving` once
    *  the provider approved it, `complete` when settled. */
   const meldStage = ref<"waiting" | "receiving" | "complete" | "failed" | null>(null);
+  /** The Meld payment is temporarily stuck (provider retrying its crypto delivery). Transient:
+   *  set and cleared by the status poll, never terminal on its own. */
+  const meldDelayed = ref(false);
   /** The adapter's reason for a failed Meld payment. Null unless `meldStage === 'failed'`. */
   const meldFailureMessage = ref<string | null>(null);
   /** True when the failure is a refund (money taken then returned), not a plain decline. */
@@ -375,6 +386,7 @@ export const useSessionStore = defineStore("session", () => {
     quoteEpoch += 1;
     stopMeldPoll();
     meldStage.value = null;
+    meldDelayed.value = false;
     meldFailureMessage.value = null;
     meldRefunded.value = false;
     meldResumeWidgetUrl.value = null;
@@ -899,6 +911,8 @@ export const useSessionStore = defineStore("session", () => {
         quoted.value = {
           send: raw.provider.sourceAmount,
           symbol: raw.context.fiat,
+          fee: raw.provider.totalFee ?? null,
+          networkFee: raw.provider.networkFee ?? null,
           nativeAmount: null,
           sourceAsset: null,
           sourceChain: null,
@@ -927,6 +941,8 @@ export const useSessionStore = defineStore("session", () => {
       quoted.value = {
         send: raw.provider.sourceAmount,
         symbol: raw.context.fiat,
+        fee: raw.provider.totalFee ?? null,
+        networkFee: raw.provider.networkFee ?? null,
         nativeAmount: null,
         sourceAsset: null,
         sourceChain: null,
@@ -1452,7 +1468,14 @@ export const useSessionStore = defineStore("session", () => {
       // What the buyer pays: the fiat quote for a Meld request, the source-coin figure otherwise.
       const sourceDisplay = isMeldSourceId(world.sourceId)
         ? quoted.value
-          ? { sourceAmount: quoted.value.send, sourceSymbol: quoted.value.symbol }
+          ? {
+              sourceAmount: quoted.value.send,
+              sourceSymbol: quoted.value.symbol,
+              ...(quoted.value.fee != null ? { sourceFee: quoted.value.fee } : {}),
+              ...(quoted.value.networkFee != null
+                ? { sourceNetworkFee: quoted.value.networkFee }
+                : {}),
+            }
           : null
         : sourceDisplayForRecord();
       // The deposit window's deadline; the list and the reconcile judge expiry from the record.
@@ -1874,6 +1897,8 @@ export const useSessionStore = defineStore("session", () => {
       quoted.value = {
         send: record.sourceAmount ?? "",
         symbol: record.sourceSymbol ?? record.asset,
+        fee: record.sourceFee ?? null,
+        networkFee: record.sourceNetworkFee ?? null,
         nativeAmount: null,
         sourceAsset: record.asset,
         sourceChain: record.chain,
@@ -2064,7 +2089,8 @@ export const useSessionStore = defineStore("session", () => {
     const tick = async () => {
       if (stopped) return;
       try {
-        const { status: st, depositFailure } = await getMeldStatus(client, ref);
+        const { status: st, depositFailure, delayed } = await getMeldStatus(client, ref);
+        meldDelayed.value = delayed === true;
         // Hold the iframe until the buyer finishes it or a terminal status lands.
         // `transaction_seen`
         // can precede a 3DS/OTP challenge; `receiving` shows only once the widget was left.
@@ -2088,6 +2114,9 @@ export const useSessionStore = defineStore("session", () => {
         recordMeldStage();
         pollFailures = 0;
       } catch (e) {
+        // The delay marker is a live claim about the provider's retry; a poll that cannot confirm
+        // it must not keep asserting it through an outage.
+        meldDelayed.value = false;
         const httpStatus = (e as { status?: number } | null)?.status;
         // A 404 never self-heals: stop. A 401 is an auth problem on this side and retries below
         // with the other transients.
@@ -2263,6 +2292,7 @@ export const useSessionStore = defineStore("session", () => {
     supportedCountries,
     meldCorridor,
     meldStage,
+    meldDelayed,
     meldFailureMessage,
     meldRefunded,
     meldResumeWidgetUrl,

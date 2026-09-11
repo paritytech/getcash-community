@@ -2,13 +2,14 @@
 // The journey route: the finish of a top-up from a confirmed deposit to CASH in the balance.
 // Reached
 // from a package's handoff or from a top-up opened from the list.
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useStateDirector } from "../../composables/useStateDirector";
 import { useVisibilityReconcile } from "../../composables/useVisibilityReconcile";
 import type { FundingJourneyStatus } from "../../funding/handoff";
 import type { FundingTopUp } from "../../funding/top-ups";
 import { useSessionStore } from "../../stores/session";
 import FundingSettledStatusScreen from "./FundingSettledStatusScreen.vue";
+import MeldFeeDetailsScreen from "./routes/MeldFeeDetailsScreen.vue";
 
 const props = defineProps<{
   title: string;
@@ -31,6 +32,20 @@ let active = true;
 
 useVisibilityReconcile();
 const { previewLabel } = useStateDirector();
+
+/** The fee-breakdown drill-in over the journey. Back (toolbar or bottom button) returns to it. */
+const showingFees = ref(false);
+// A cleared quote leaves nothing to break down.
+watch(
+  () => session.quoted,
+  (q) => {
+    if (!q) showingFees.value = false;
+  },
+);
+function goBack() {
+  if (showingFees.value) showingFees.value = false;
+  else emit("back");
+}
 
 onMounted(async () => {
   if (!opening.value || !props.topUp || !props.open) return;
@@ -59,10 +74,13 @@ onUnmounted(() => {
       padding-bottom: env(safe-area-inset-bottom);
     "
   >
+    <!-- The live journey's toolbar is back-only; the fee drill-in takes it over while open.
+         Back stays available during the claim: leaving lands on the top-ups list, where the
+         in-flight top-up remains resumable. -->
     <Toolbar
-      :title="title"
-      :back="readOnly || (!waiting && !session.claiming)"
-      @back="emit('back')"
+      :title="showingFees ? 'Fees' : readOnly || waiting || unavailable ? title : ''"
+      :back="readOnly || !waiting"
+      @back="goBack"
     />
 
     <div class="flex min-h-0 flex-1 flex-col px-6 pt-6">
@@ -82,7 +100,15 @@ onUnmounted(() => {
         </p>
       </div>
 
-      <JourneyScreen v-else :progress="topUp?.progress ?? null" :status="status ?? null" />
+      <MeldFeeDetailsScreen v-else-if="showingFees" @back="showingFees = false" />
+      <JourneyScreen
+        v-else
+        :progress="topUp?.progress ?? null"
+        :status="status ?? null"
+        :top-up="topUp ?? null"
+        @fees="showingFees = true"
+        @close="emit('back')"
+      />
     </div>
 
     <!-- state-director scene label (dev/demo keys only) -->
