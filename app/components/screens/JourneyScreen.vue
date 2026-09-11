@@ -12,7 +12,7 @@ import { DEPOSIT_EXPIRED_REASON, useSessionStore } from "../../stores/session";
 import { fmtCash } from "../../utils/cash";
 import { fmtFiat, isMoneyAmount } from "../../utils/money";
 import { formatWhenShort } from "../../utils/journey";
-import { refundedFailure, refundStatusTail } from "../../utils/recovery";
+import { refundedFailure } from "../../utils/recovery";
 import FundingJourneyTimeline from "../funding/progress/FundingJourneyTimeline.vue";
 import DetailRows from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
@@ -28,8 +28,9 @@ const props = defineProps<{
    *  is live in the store. */
   topUp?: FundingTopUp | null;
 }>();
-// fees and refund ask the host to swap in their drill-ins; close leaves the finished journey.
-const emit = defineEmits<{ fees: []; refund: []; close: [] }>();
+// fees and refund ask the host to swap in their drill-ins; close leaves the finished journey;
+// again leaves an expired one for a fresh purchase at the amount screen.
+const emit = defineEmits<{ fees: []; refund: []; close: []; again: [] }>();
 const session = useSessionStore();
 
 const cadence = computed(
@@ -64,6 +65,12 @@ const failedLabel = computed(() => {
   if (session.fundingError === DEPOSIT_EXPIRED_REASON) return "Expired";
   return null;
 });
+/** Nothing was paid on an expired top-up: no quote rows, and the way out is a fresh one. */
+const expired = computed(() => failedLabel.value !== null);
+/** The quote rows leave with the money: nothing was kept on an expired or refunded top-up. */
+const hideRows = computed(
+  () => expired.value || (failure.value !== null && refundedFailure(failure.value.kind)),
+);
 
 const heroFailed = computed(() => progress.value?.view.kind === "failed" || failure.value !== null);
 
@@ -91,7 +98,6 @@ const refunded = computed(
   () =>
     failure.value !== null && refundedFailure(failure.value.kind) && session.refundAddress !== null,
 );
-const refund = computed(() => (state.value?.phase === "failed" ? state.value.refund : undefined));
 const asset = computed(() => {
   const sourceId = state.value?.sourceId;
   return sourceId ? (SOURCE_CONFIG_BY_ID.get(sourceId)?.asset ?? "") : "";
@@ -141,6 +147,13 @@ const delayed = computed(() => session.meldDelayed && !finished.value && !heroFa
  *  delay, or the rail's own word on its payment. The last matters most on the bank rail, where
  *  "Confirming your bank transfer…" can be the state for days. */
 const message = computed(() => {
+  // The stored reason is the terse "Channel expired"; the design spells out what it means.
+  if (expired.value) return "This top-up expired because no funds arrived in time";
+  // Chainflip refunds when the swap cannot execute within the quote's price bounds, so the rate
+  // is the cause by construction; the deposit returns minus the refund transfer's network fees.
+  if (failure.value?.kind === "refunded") {
+    return `The rate moved too far to complete the swap. Your ${asset.value || "crypto"} was sent back, minus network fees.`;
+  }
   if (failedText.value) return failedText.value;
   if (session.fundingNotice) return session.fundingNotice;
   if (delayed.value) {
@@ -188,22 +201,20 @@ const message = computed(() => {
         :failed-label="failedLabel"
       />
 
-      <DetailRows v-if="detailRows.length" :rows="detailRows" @fees="emit('fees')" />
+      <DetailRows v-if="detailRows.length && !hideRows" :rows="detailRows" @fees="emit('fees')" />
 
-      <!-- The way back to a refunded deposit drills into the return-funds guide. -->
-      <div v-if="refunded && failure" class="flex flex-col gap-4">
-        <p class="text-body-m text-fg-secondary">
-          {{
-            failure.kind === "refund-failed"
-              ? failure.message
-              : `Your ${asset} ${refundStatusTail(refund)}`
-          }}
-        </p>
-        <PillButton @click="emit('refund')">Return funds</PillButton>
-      </div>
+      <!-- The way back to a refunded deposit drills into the return-funds guide, which carries
+           the refund's own status line. -->
+      <PillButton v-if="refunded" class="mt-auto" @click="emit('refund')">
+        Return funds
+      </PillButton>
 
       <PillButton v-if="failure?.recoverable" class="mt-auto" @click="session.retry()">
         Try again
+      </PillButton>
+
+      <PillButton v-if="expired" class="mt-auto" @click="emit('again')">
+        Add funds again
       </PillButton>
 
       <PillButton v-if="finished" variant="tertiary" class="mt-auto" @click="emit('close')">
