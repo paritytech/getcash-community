@@ -12,6 +12,7 @@ import {
   type FundingRoute,
   type FundingSelection,
 } from "../../funding/selection";
+import { useStateDirector } from "../../composables/useStateDirector";
 import {
   hasFundingPendingContent,
   type InProgressFundingTopUp,
@@ -61,6 +62,10 @@ const props = withDefaults(
     topUpError: null,
   },
 );
+
+// The shell owns the preview deck while no package is open, so the top-ups scenes can be cycled
+// from here.
+const { previewLabel } = useStateDirector();
 
 const emit = defineEmits<{
   change: [];
@@ -197,6 +202,13 @@ watch(
       @continue="continueToPackage"
       @history="showHistory"
     />
+
+    <p
+      v-if="previewLabel"
+      class="pointer-events-none absolute inset-x-0 bottom-2 text-center text-caption text-fg-tertiary"
+    >
+      {{ previewLabel }}
+    </p>
   </section>
 </template>
 

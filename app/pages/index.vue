@@ -1,5 +1,14 @@
 <script setup lang="ts">
-import { computed, markRaw, onMounted, ref, shallowRef, type Component, type Ref } from "vue";
+import {
+  computed,
+  markRaw,
+  onMounted,
+  ref,
+  shallowRef,
+  watch,
+  type Component,
+  type Ref,
+} from "vue";
 import FundingJourneyRoute from "../components/funding/FundingJourneyRoute.vue";
 import FundingSelectorScreen from "../components/funding/FundingSelectorScreen.vue";
 import { useVisualViewportHeight } from "../composables/useVisualViewportHeight";
@@ -22,6 +31,8 @@ import {
 import type { FundingRoute, FundingSelection } from "../funding/selection";
 import type { FundingTopUpAdapter } from "../funding/top-up-adapter";
 import { projectFundingTopUps, type FundingTopUp } from "../funding/top-ups";
+import { isDemoBuild } from "../utils/demo";
+import { launchPreviewTopUps, previewTopUpScene } from "../utils/dev-preview-top-ups";
 
 useVisualViewportHeight();
 
@@ -69,7 +80,25 @@ for (const [route, routePackage] of Object.entries(getcashRoutePackages)) {
   if (status) statusByRoute.set(route as FundingRoute, status);
 }
 const topUpAdapters = [...adapterByPackage.values()];
-const topUps = computed(() => topUpAdapters.flatMap((adapter) => adapter.topUps.value));
+// A preview scene's canned cards stand in for the adapters' — null in every production build.
+const topUps = computed(
+  () => previewTopUpScene.value?.topUps ?? topUpAdapters.flatMap((adapter) => adapter.topUps.value),
+);
+
+// Launch simulation. `?preview=top-ups` seeds a running top-up before the first render, so the
+// shell takes the same path a returning buyer's would: auto entry, resolved against live content.
+if (isDemoBuild() && typeof window !== "undefined") {
+  const scene = new URLSearchParams(window.location.search).get("preview");
+  if (scene === "top-ups") previewTopUpScene.value = launchPreviewTopUps();
+}
+// A scene sets the entry screen the once; the shell's own navigation owns it from there.
+watch(
+  previewTopUpScene,
+  (scene) => {
+    if (scene !== null) shellEntry.value = scene.entry ?? "pending";
+  },
+  { immediate: true },
+);
 const journeyStatus = computed<FundingJourneyStatus | null>(() =>
   journey.value === null ? null : (statusByRoute.get(journey.value.route)?.value ?? null),
 );
@@ -273,6 +302,12 @@ onMounted(async () => {
     @back="returnToSelector()"
     @handoff="handOffToJourney"
     @switch-route="switchRoute"
+  />
+  <!-- A list loading placeholder, from the preview deck. -->
+  <FundingSelectorScreen
+    v-else-if="previewTopUpScene?.skeleton"
+    skeleton
+    :skeleton-screen="previewTopUpScene.entry === 'history' ? 'history' : 'pending'"
   />
   <FundingSelectorScreen
     v-else-if="topUpsReady"
