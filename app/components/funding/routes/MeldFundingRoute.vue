@@ -47,6 +47,12 @@ function goBack() {
 }
 /** The widget stage: a request exists and the payment is still to be made. */
 const paying = computed(() => flow.screen === "journey");
+// The widget supersedes the drill-in (its template branch wins). Without this, a flow that moves
+// on while the fee screen is up leaves the flag set, and the next Back tap is silently spent
+// clearing it instead of leaving.
+watch(paying, (now) => {
+  if (now) showingFees.value = false;
+});
 /** Cancel is offered only while nothing can have been paid. */
 const canCancel = computed(
   () => paying.value && !session.meldSubmitted && !session.fundsSeen && !session.claiming,
