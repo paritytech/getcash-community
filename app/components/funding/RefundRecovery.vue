@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // The way back to a refunded deposit: the refund's status line, and the key controlling the
 // address the funds return to.
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import type { PaymentFailure, RefundProgress } from "@getsome/core";
 import type { RefundKey } from "@getsome/ephemeral";
 import { useCopyToClipboard } from "../../composables/useCopyToClipboard";
@@ -35,6 +35,16 @@ const notes = computed(() => (revealed.value ? recoveryNotes(revealed.value, pro
 function reveal() {
   revealed.value = session.revealRefundKey();
 }
+// The preview deck lands on the opened panel without a tap; the key still comes off the
+// request's world, which the scene installs asynchronously (hence watching the address too).
+watch(
+  () => [session.revealRefund, session.refundAddress] as const,
+  ([want]) => {
+    if (want && !revealed.value) reveal();
+    else if (!want && revealed.value) revealed.value = null;
+  },
+  { immediate: true },
+);
 const secretShown = ref(false);
 
 const { copied, copy } = useCopyToClipboard();
