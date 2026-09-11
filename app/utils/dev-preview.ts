@@ -131,6 +131,25 @@ function cardJourney(session: Session, flow: Flow) {
   session.quoted = { ...QUOTED_CARD };
 }
 
+/** A rejected card payment on the journey: the rail's terminal states differ only in their copy.
+ *  `fundsSeen` marks the payment as attempted, so the failed marker lands on Payment. */
+function cardRejected(message: string) {
+  return (s: Session, f: Flow) => {
+    cardJourney(s, f);
+    s.fundsSeen = true;
+    s.lastState = {
+      phase: "failed",
+      sourceId: "meld-card",
+      failure: {
+        kind: "deposit-rejected",
+        step: "deposit",
+        message,
+        recoverable: true,
+      },
+    } as PaymentState;
+  };
+}
+
 /** Baseline for the selection scenes: 100 CASH, floors already learned, source set directly. */
 function selection(session: Session, flow: Flow) {
   base(session, flow);
@@ -358,40 +377,16 @@ export const SCENES: Scene[] = [
     // Meld FAILED: terminal, nothing was charged. The design's inline "Try again" is our own
     // retry system (re-request the payment); the button is shown here, its action lands later.
     name: "card / journey: payment failed",
-    apply: (s, f) => {
-      cardJourney(s, f);
-      s.fundsSeen = true;
-      s.lastState = {
-        phase: "failed",
-        sourceId: "meld-card",
-        failure: {
-          kind: "deposit-rejected",
-          step: "deposit",
-          message: "Top-up didn't go through. No money was taken.",
-          recoverable: true,
-        },
-      } as PaymentState;
-    },
+    apply: cardRejected("Top-up didn't go through. No money was taken."),
   },
   {
     // Meld DECLINED: the bank refused the card; the message is the `declined` mapping's. The
     // design labels the button "Try another card" and routes it to card entry; the action lands
     // later, and the adapter emitting `declined` is unconfirmed (today it flattens to `failed`).
     name: "card / journey: declined",
-    apply: (s, f) => {
-      cardJourney(s, f);
-      s.fundsSeen = true;
-      s.lastState = {
-        phase: "failed",
-        sourceId: "meld-card",
-        failure: {
-          kind: "deposit-rejected",
-          step: "deposit",
-          message: "Your bank declined the payment. Check your card details or try another card.",
-          recoverable: true,
-        },
-      } as PaymentState;
-    },
+    apply: cardRejected(
+      "Your bank declined the payment. Check your card details or try another card.",
+    ),
   },
   {
     // Meld REFUNDED: terminal, the charge was captured and returned; per Meld it cannot be
@@ -399,20 +394,9 @@ export const SCENES: Scene[] = [
     // the adapter's reported terms. The design labels the button "Add money again" and starts a
     // new transaction; the action lands later, and the adapter emitting `refunded` is unconfirmed.
     name: "card / journey: refunded",
-    apply: (s, f) => {
-      cardJourney(s, f);
-      s.fundsSeen = true;
-      s.lastState = {
-        phase: "failed",
-        sourceId: "meld-card",
-        failure: {
-          kind: "deposit-rejected",
-          step: "deposit",
-          message: "Your top-up didn't go through. Your 52.06 USD has been returned to your card.",
-          recoverable: true,
-        },
-      } as PaymentState;
-    },
+    apply: cardRejected(
+      "Your top-up didn't go through. Your 52.06 USD has been returned to your card.",
+    ),
   },
   {
     // The design's card success screen: the credited amount over the fiat Fees and Total.
