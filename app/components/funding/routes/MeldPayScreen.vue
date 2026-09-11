@@ -2,11 +2,14 @@
 // The Meld package's first screen: region, the quote it produced, and Continue into the provider
 // widget. The method is fixed by the route; the region is the buyer's only choice.
 import { computed, onMounted, ref } from "vue";
-import { ChevronRight } from "lucide-vue-next";
 import { useSessionStore } from "../../../stores/session";
 import { fmtFiat } from "../../../utils/money";
 import type { FundingRoute } from "../../../funding/selection";
 import CountryCombobox from "../../ui/CountryCombobox.vue";
+import DetailRows from "../../ui/DetailRows.vue";
+import PillButton from "../../ui/PillButton.vue";
+import SecondaryButton from "../../ui/SecondaryButton.vue";
+import SkeletonBlock from "../../ui/SkeletonBlock.vue";
 
 const session = useSessionStore();
 // switchRoute asks the shell to swap to the crypto package when this region routes neither card
@@ -172,8 +175,8 @@ async function next() {
         <p class="text-paragraph-l text-fg-secondary">{{ heroCaption }}</p>
       </template>
       <template v-else>
-        <span class="h-16 w-44 animate-pulse rounded-full bg-action-disabled" />
-        <span class="mt-3 h-5 w-28 animate-pulse rounded-full bg-action-disabled" />
+        <SkeletonBlock class="h-16 w-44" />
+        <SkeletonBlock class="mt-3 h-5 w-28" />
       </template>
     </div>
 
@@ -202,70 +205,35 @@ async function next() {
         <p v-else class="text-body-m text-fg-secondary">
           This region isn't supported for card or bank right now. You can buy with crypto instead.
         </p>
-        <button
-          v-if="otherMethodAvailable"
-          type="button"
-          class="self-start rounded-medium bg-action-secondary px-4 py-2 text-label-m text-fg-primary transition-colors hover:bg-action-secondary-hover"
-          @click="useOtherMethod"
+        <SecondaryButton
+          class="self-start"
+          @click="otherMethodAvailable ? useOtherMethod() : useCryptoRoute()"
         >
-          Use {{ methodLabel(otherMethod).toLowerCase() }}
-        </button>
-        <button
-          v-else
-          type="button"
-          class="self-start rounded-medium bg-action-secondary px-4 py-2 text-label-m text-fg-primary transition-colors hover:bg-action-secondary-hover"
-          @click="useCryptoRoute"
-        >
-          Use crypto instead
-        </button>
+          {{
+            otherMethodAvailable
+              ? `Use ${methodLabel(otherMethod).toLowerCase()}`
+              : "Use crypto instead"
+          }}
+        </SecondaryButton>
       </div>
       <div v-else class="flex flex-col gap-3">
         <p class="text-body-m text-fg-error">Quote failed: {{ session.quoteError }}</p>
-        <button
-          type="button"
-          class="self-start rounded-medium bg-action-secondary px-4 py-2 text-label-m text-fg-primary transition-colors hover:bg-action-secondary-hover"
-          @click="requote"
-        >
-          Retry quote
-        </button>
+        <SecondaryButton class="self-start" @click="requote">Retry quote</SecondaryButton>
       </div>
     </div>
 
     <!-- The quote's detail rows, bare on the surface. -->
     <div v-else-if="session.loading || !session.quoted" class="mt-6 flex flex-col gap-4">
       <div v-for="n in 3" :key="n" class="flex h-6 items-center justify-between">
-        <span class="h-4 w-2/5 animate-pulse rounded-full bg-action-disabled" />
-        <span class="h-4 w-1/5 animate-pulse rounded-full bg-action-disabled" />
+        <SkeletonBlock class="h-4 w-2/5" />
+        <SkeletonBlock class="h-4 w-1/5" />
       </div>
     </div>
-    <div v-else class="mt-6 flex flex-col gap-4">
-      <div
-        v-for="row in quoteRows"
-        :key="row.label"
-        class="flex items-baseline justify-between gap-4"
-      >
-        <span class="text-paragraph-l text-fg-primary">{{ row.label }}</span>
-        <button
-          v-if="row.fees"
-          type="button"
-          class="flex items-center gap-1 text-heading-m text-fg-primary"
-          @click="emit('fees')"
-        >
-          {{ row.value }}
-          <ChevronRight class="size-4 text-fg-secondary" aria-hidden="true" />
-        </button>
-        <span v-else class="text-heading-m text-fg-primary">{{ row.value }}</span>
-      </div>
-    </div>
+    <DetailRows v-else class="mt-6" :rows="quoteRows" @fees="emit('fees')" />
 
     <p v-if="startError" class="mt-4 text-body-m text-fg-error">{{ startError }}</p>
 
-    <button
-      type="button"
-      class="mt-auto mb-6 h-12 w-full rounded-full bg-action-primary text-label-l font-semibold text-fg-primary-inverted transition-colors hover:bg-action-primary-hover disabled:bg-action-disabled disabled:text-fg-disabled"
-      :disabled="!canContinue"
-      @click="next"
-    >
+    <PillButton class="mt-auto mb-6 w-full" :disabled="!canContinue" @click="next">
       {{
         starting
           ? "Starting…"
@@ -273,6 +241,6 @@ async function next() {
             ? "Enter bank details"
             : "Enter card details"
       }}
-    </button>
+    </PillButton>
   </div>
 </template>

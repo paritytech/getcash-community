@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ChevronLeft, History } from "lucide-vue-next";
+import SkeletonBlock from "../ui/SkeletonBlock.vue";
 
 withDefaults(
   defineProps<{
@@ -42,7 +43,7 @@ const emit = defineEmits<{
     >
       <ChevronLeft class="size-6" aria-hidden="true" />
     </button>
-    <span v-if="skeleton" class="funding-entry-skeleton-title animate-pulse" aria-hidden="true" />
+    <SkeletonBlock v-if="skeleton" style="width: 8.125rem; height: 1.5rem" />
     <h1 v-else-if="title" class="text-heading-l">{{ title }}</h1>
     <span v-else aria-hidden="true" />
     <span v-if="skeleton" class="funding-entry-history animate-pulse" aria-hidden="true" />
@@ -123,13 +124,6 @@ const emit = defineEmits<{
 
 .funding-entry-history:hover {
   background: var(--bg-selection-container-hover);
-}
-
-.funding-entry-skeleton-title {
-  width: 8.125rem;
-  height: 1.5rem;
-  border-radius: 9999px;
-  background: var(--bg-action-disabled);
 }
 
 @media (max-height: 650px) {

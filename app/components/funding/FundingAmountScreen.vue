@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Delete } from "lucide-vue-next";
 import type { FundingSelectorConfig } from "../../funding/config";
+import SkeletonBlock from "../ui/SkeletonBlock.vue";
 import {
   fundingAmountStatus,
   reduceFundingAmount,
@@ -117,10 +118,9 @@ function enter(key: FundingKey) {
     <div class="funding-scroll">
       <div class="funding-amount-content" :class="{ 'funding-amount-skeleton': skeleton }">
         <div v-if="skeleton" class="funding-routes" aria-hidden="true">
-          <span
+          <SkeletonBlock
             v-for="option in config.routes"
             :key="option.id"
-            class="funding-skeleton animate-pulse"
             style="width: 5.75rem; height: 2.5rem"
           />
         </div>
@@ -155,12 +155,7 @@ function enter(key: FundingKey) {
           <span ref="amountAsset" class="text-display-xl">{{ config.asset }}</span>
         </div>
 
-        <span
-          v-if="skeleton"
-          class="funding-skeleton animate-pulse"
-          style="width: 8.125rem; height: 1rem"
-          aria-hidden="true"
-        />
+        <SkeletonBlock v-if="skeleton" style="width: 8.125rem; height: 1rem" />
         <p
           v-else
           class="funding-limits text-body-m"
@@ -170,10 +165,9 @@ function enter(key: FundingKey) {
         </p>
 
         <div v-if="skeleton" class="funding-presets" aria-hidden="true">
-          <span
+          <SkeletonBlock
             v-for="preset in config.amount.presets"
             :key="preset"
-            class="funding-skeleton animate-pulse"
             style="height: 3rem"
           />
         </div>
@@ -250,11 +244,6 @@ function enter(key: FundingKey) {
   width: 100%;
   justify-content: center;
   gap: 0.5rem;
-}
-
-.funding-skeleton {
-  border-radius: 9999px;
-  background: var(--bg-action-disabled);
 }
 
 /* The launch skeleton keeps the static chrome but mutes it and drops interaction. */

@@ -3,25 +3,21 @@
 // effective rate. Read-only; both the toolbar and the bottom button return to the pay screen.
 import { computed } from "vue";
 import { useSessionStore } from "../../../stores/session";
-import { fmtFiat } from "../../../utils/money";
+import { fmtFiat, splitFees } from "../../../utils/money";
+import DetailRows from "../../ui/DetailRows.vue";
+import PillButton from "../../ui/PillButton.vue";
 
 const session = useSessionStore();
 const emit = defineEmits<{ back: [] }>();
 
-/** Meld splits out only the network fee; the remainder is the provider's. No service fee is
- *  charged, so that design row is omitted. */
+/** No service fee is charged, so that design row is omitted. */
 const feeRows = computed(() => {
   const q = session.quoted;
-  const total = Number(q?.fee ?? Number.NaN);
-  if (!q || !Number.isFinite(total)) return [];
-  const network = Number(q.networkFee ?? Number.NaN);
-  if (!Number.isFinite(network) || network <= 0 || network > total) {
-    return [{ label: "Provider fee", value: fmtFiat(String(total), q.symbol) }];
-  }
-  return [
-    { label: "Provider fee", value: fmtFiat((total - network).toFixed(2), q.symbol) },
-    { label: "Network fee", value: fmtFiat(String(network), q.symbol) },
-  ];
+  const split = q ? splitFees(q.fee, q.networkFee) : null;
+  if (!q || !split) return [];
+  const rows = [{ label: "Provider fee", value: fmtFiat(split.provider, q.symbol) }];
+  if (split.network) rows.push({ label: "Network fee", value: fmtFiat(split.network, q.symbol) });
+  return rows;
 });
 
 const totalFees = computed(() => {
@@ -42,16 +38,7 @@ const rate = computed(() => {
 
 <template>
   <div class="flex min-h-0 flex-1 flex-col">
-    <div class="flex flex-col gap-2">
-      <div
-        v-for="row in feeRows"
-        :key="row.label"
-        class="flex items-baseline justify-between gap-4"
-      >
-        <span class="text-paragraph-l text-fg-secondary">{{ row.label }}</span>
-        <span class="text-heading-m text-fg-primary">{{ row.value }}</span>
-      </div>
-    </div>
+    <DetailRows class="gap-2" :rows="feeRows" muted />
 
     <hr class="my-4 border-stroke-secondary" />
 
@@ -66,12 +53,8 @@ const rate = computed(() => {
       </div>
     </div>
 
-    <button
-      type="button"
-      class="mt-auto mb-6 h-12 w-full rounded-full bg-action-tertiary text-label-l font-semibold text-fg-primary transition-colors hover:bg-action-tertiary-hover"
-      @click="emit('back')"
-    >
+    <PillButton variant="tertiary" class="mt-auto mb-6 w-full" @click="emit('back')">
       Back
-    </button>
+    </PillButton>
   </div>
 </template>

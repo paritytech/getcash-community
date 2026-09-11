@@ -1,10 +1,9 @@
 <script setup lang="ts">
 // The finish of a top-up: the timeline from a confirmed deposit to CASH in the balance, shared by
 // every package.
-import { computed, onUnmounted, ref } from "vue";
-import { ChevronRight, Plus, RefreshCcw, X } from "lucide-vue-next";
+import { computed } from "vue";
+import { Plus, RefreshCcw, X } from "lucide-vue-next";
 import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
-import type { RefundKey } from "@getsome/ephemeral";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
 import type { FundingJourneyStatus } from "../../funding/handoff";
 import { projectFundingProgress, type FundingProgressProjection } from "../../funding/progress";
@@ -13,8 +12,11 @@ import { useSessionStore } from "../../stores/session";
 import { fmtCash } from "../../utils/cash";
 import { fmtFiat } from "../../utils/money";
 import { formatWhenShort } from "../../utils/journey";
-import { recoveryNotes, refundedFailure } from "../../utils/recovery";
+import { refundedFailure } from "../../utils/recovery";
 import FundingJourneyTimeline from "../funding/progress/FundingJourneyTimeline.vue";
+import RefundRecovery from "../funding/RefundRecovery.vue";
+import DetailRows from "../ui/DetailRows.vue";
+import PillButton from "../ui/PillButton.vue";
 
 const props = defineProps<{
   /**
@@ -81,41 +83,6 @@ const asset = computed(() => {
   const sourceId = state.value?.sourceId;
   return sourceId ? (SOURCE_CONFIG_BY_ID.get(sourceId)?.asset ?? "") : "";
 });
-const short = (a: string) => (a.length > 14 ? `${a.slice(0, 6)}…${a.slice(-5)}` : a);
-const refundStatus = computed(() => {
-  if (failure.value?.kind === "refund-failed") return failure.value.message;
-  if (refund.value?.witnessedAt) return `Your ${asset.value} is back at the address below.`;
-  if (refund.value?.txRef) {
-    return `Your ${asset.value} is on its way back, transaction ${short(refund.value.txRef)}.`;
-  }
-  return `Your ${asset.value} is being returned to the address below.`;
-});
-
-/** The key is read on tap, never on load, and stays masked until tapped again. */
-const revealed = ref<RefundKey | null>(null);
-const notes = computed(() => (revealed.value ? recoveryNotes(revealed.value, asset.value) : null));
-function reveal() {
-  revealed.value = session.revealRefundKey();
-}
-const secretShown = ref(false);
-
-const copied = ref(false);
-let copiedTimer: ReturnType<typeof setTimeout> | null = null;
-async function copySecret() {
-  if (!revealed.value) return;
-  try {
-    await navigator.clipboard.writeText(revealed.value.secret);
-    copied.value = true;
-    if (copiedTimer !== null) clearTimeout(copiedTimer);
-    copiedTimer = setTimeout(() => (copied.value = false), 2000);
-  } catch (e) {
-    console.warn("[recovery] clipboard write failed:", e);
-  }
-}
-onUnmounted(() => {
-  if (copiedTimer !== null) clearTimeout(copiedTimer);
-});
-
 /** The rows' source: the live quote, else the top-up's stored one. Only the live quote carries
  *  the split the fee drill-in needs. */
 const quoteView = computed(() => {
@@ -198,95 +165,23 @@ const message = computed(() => {
         :delayed="delayed"
       />
 
-      <dl v-if="detailRows.length" class="flex flex-col gap-4">
-        <div
-          v-for="row in detailRows"
-          :key="row.label"
-          class="flex items-baseline justify-between gap-4"
-        >
-          <dt class="text-paragraph-l text-fg-primary">{{ row.label }}</dt>
-          <dd v-if="row.fees">
-            <button
-              type="button"
-              class="flex items-center gap-1 text-heading-m text-fg-primary"
-              @click="emit('fees')"
-            >
-              {{ row.value }}
-              <ChevronRight class="size-4 text-fg-secondary" aria-hidden="true" />
-            </button>
-          </dd>
-          <dd v-else class="text-heading-m text-fg-primary">{{ row.value }}</dd>
-        </div>
-      </dl>
+      <DetailRows v-if="detailRows.length" :rows="detailRows" @fees="emit('fees')" />
 
       <!-- The way back to a refunded deposit: the key controlling the address it returns to. -->
-      <template v-if="refunded">
-        <p class="text-body-m text-fg-secondary">{{ refundStatus }}</p>
-        <div v-if="revealed && notes" class="flex flex-col gap-4">
-          <dl class="flex flex-col gap-3">
-            <div>
-              <dt class="text-body-m text-fg-secondary">Address on {{ revealed.chain }}</dt>
-              <dd class="font-mono text-body-m break-all">{{ revealed.address }}</dd>
-            </div>
-            <div>
-              <dt class="text-body-m text-fg-secondary">{{ notes.secretLabel }}</dt>
-              <dd>
-                <button
-                  type="button"
-                  class="w-full text-left font-mono text-body-m break-all"
-                  :aria-pressed="secretShown"
-                  @click="secretShown = !secretShown"
-                >
-                  <template v-if="secretShown">{{ revealed.secret }}</template>
-                  <template v-else>
-                    <span aria-hidden="true">••••••••••••••••••••••••</span>
-                    <span class="ml-2 font-sans text-fg-secondary">Tap to show</span>
-                  </template>
-                </button>
-              </dd>
-            </div>
-          </dl>
-          <button
-            type="button"
-            class="self-start rounded-medium bg-action-secondary px-4 py-2.5 text-label-m text-fg-primary transition-colors hover:bg-action-secondary-hover"
-            @click="copySecret"
-          >
-            {{ copied ? "Copied" : "Copy key" }}
-          </button>
-          <p v-if="notes.gasNote" class="text-body-m text-fg-secondary">
-            {{ notes.gasNote }}
-          </p>
-          <p class="text-body-m text-fg-error">
-            Anyone with this key controls the funds. Import it into a wallet and move them.
-          </p>
-        </div>
-        <button
-          v-else
-          type="button"
-          class="h-12 rounded-full bg-action-primary text-label-l font-semibold text-fg-primary-inverted transition-colors hover:bg-action-primary-hover"
-          @click="reveal"
-        >
-          Get your funds back
-        </button>
-      </template>
+      <RefundRecovery
+        v-if="refunded && failure"
+        :failure="failure"
+        :refund="refund"
+        :asset="asset"
+      />
 
-      <button
-        v-if="failure?.recoverable"
-        type="button"
-        class="mt-auto h-12 shrink-0 rounded-full bg-action-primary text-label-l font-semibold text-fg-primary-inverted transition-colors hover:bg-action-primary-hover"
-        @click="session.retry()"
-      >
+      <PillButton v-if="failure?.recoverable" class="mt-auto" @click="session.retry()">
         Try again
-      </button>
+      </PillButton>
 
-      <button
-        v-if="finished"
-        type="button"
-        class="mt-auto h-12 shrink-0 rounded-full bg-action-tertiary text-label-l font-semibold text-fg-primary transition-colors hover:bg-action-tertiary-hover"
-        @click="emit('close')"
-      >
+      <PillButton v-if="finished" variant="tertiary" class="mt-auto" @click="emit('close')">
         Close
-      </button>
+      </PillButton>
     </div>
   </div>
 </template>

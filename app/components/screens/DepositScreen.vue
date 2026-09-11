@@ -7,6 +7,7 @@ import {
   estimateSourceFromCash,
 } from "~~/lib/demo-rates";
 import { SOURCE_CHAINS } from "~~/lib/config";
+import { useCopyToClipboard } from "../../composables/useCopyToClipboard";
 import { formatRemaining } from "../../utils/countdown";
 import { networkIcon, tokenIcon } from "../../utils/icons";
 import { useFlowStore } from "../../stores/flow";
@@ -100,23 +101,11 @@ watch(
   },
 );
 
-const copied = ref(false);
-let copiedTimer: ReturnType<typeof setTimeout> | null = null;
-async function copy() {
-  if (!address.value) return;
-  try {
-    await navigator.clipboard.writeText(address.value);
-    copied.value = true;
-    if (copiedTimer !== null) clearTimeout(copiedTimer);
-    copiedTimer = setTimeout(() => (copied.value = false), 2000);
-  } catch (e) {
-    console.warn("[deposit] clipboard write failed:", e);
-  }
+const { copied, copy: copyToClipboard } = useCopyToClipboard();
+function copy() {
+  if (address.value) void copyToClipboard(address.value);
 }
-onUnmounted(() => {
-  if (copiedTimer !== null) clearTimeout(copiedTimer);
-  clearInterval(ticker);
-});
+onUnmounted(() => clearInterval(ticker));
 </script>
 
 <template>
