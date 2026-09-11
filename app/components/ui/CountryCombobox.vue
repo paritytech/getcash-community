@@ -188,6 +188,6 @@ const rowId = (i: number) => `${listboxId}-row-${i}`;
     </div>
     <!-- Sits OUTSIDE the relative wrapper the list is absolutely positioned in, so an open list
          covers the rows below the field rather than this line. -->
-    <p v-if="hint" :id="hintId" class="text-sm text-text-secondary">{{ hint }}</p>
+    <p v-if="hint" :id="hintId" class="text-body-m text-fg-secondary">{{ hint }}</p>
   </div>
 </template>

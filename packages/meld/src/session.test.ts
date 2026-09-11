@@ -33,6 +33,7 @@ function capturingClient(
     },
     // The adapter's vocabulary, not Meld's.
     getStatus: async () => ({ status: "session_opened" }),
+    cancel: async () => ({ outcome: "cancelled" as const }),
   };
   return { client, captured: () => captured };
 }
@@ -89,6 +90,7 @@ describe("requestMeldDeposit", () => {
         expiresAt: at,
       }),
       getStatus: async () => ({ status: "session_opened" }),
+      cancel: async () => ({ outcome: "cancelled" as const }),
     };
     const { channel } = await requestMeldDeposit(client, args(meldQuote()));
 

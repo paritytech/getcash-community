@@ -85,15 +85,30 @@ interface Scene {
   apply: (session: Session, flow: Flow) => void;
 }
 
+/** The canned card quote for 50 CASH: the figures the Meld design frames show. */
+const QUOTED_CARD = {
+  send: "52.06",
+  symbol: "USD",
+  fee: "1.56",
+  networkFee: "0.01",
+  nativeAmount: null,
+  sourceAsset: null,
+  sourceChain: null,
+};
+
 /** Baseline for every scene: 5 CASH quoted, journey-clean. */
 function base(session: Session, flow: Flow) {
   session.setAmount("5");
+  // The scenes model the crypto rail; a card/bank run before cycling scenes must not leak its
+  // method into how the canned BTC quote is read.
+  session.method = "crypto";
   session.quoted = { ...QUOTED };
   session.fundingStep = null;
   session.fundingError = null;
   session.fundingNotice = null;
   session.claimStage = null;
   session.resuming = false;
+  session.meldDelayed = false;
   session.lastState = null;
   session.foregroundProgress = null;
   session.fundsSeen = false;
@@ -102,6 +117,34 @@ function base(session: Session, flow: Flow) {
   // Bitcoin, matching the canned quote.
   flow.srcChainIndex = 0;
   flow.srcAssetIndex = 0;
+}
+
+/** Baseline for the card-journey scenes: the Meld quote and method the design frames show. */
+function cardJourney(session: Session, flow: Flow) {
+  base(session, flow);
+  session.setAmount("50");
+  session.method = "card";
+  session.quoted = { ...QUOTED_CARD };
+}
+
+/**
+ * A card payment that ended, exactly as the status poll leaves the store: the stage, the ending's
+ * own code, and a failure that is NOT recoverable — `recoverable` is true only for a mint failure,
+ * never for a payment the provider refused. Scenes that claim otherwise show a "Try again" the
+ * real app never renders.
+ */
+function cardFailed(session: Session, flow: Flow, code: string, message: string) {
+  cardJourney(session, flow);
+  session.fundsSeen = true;
+  session.meldStage = "failed";
+  session.meldFailureCode = code;
+  session.meldFailureMessage = message;
+  session.meldRefunded = code === "refunded";
+  session.lastState = {
+    phase: "failed",
+    sourceId: "meld-card",
+    failure: { kind: "deposit-rejected", step: "deposit", message, recoverable: false },
+  } as PaymentState;
 }
 
 /** Baseline for the selection scenes: 100 CASH, floors already learned, source set directly. */
@@ -117,14 +160,14 @@ function selection(session: Session, flow: Flow) {
 // Scenes start at the first screen a package owns.
 export const SCENES: Scene[] = [
   {
-    name: "network",
+    name: "crypto / network",
     apply: (s, f) => {
       selection(s, f);
       f.step = "network";
     },
   },
   {
-    name: "network: too small",
+    name: "crypto / network: too small",
     apply: (s, f) => {
       selection(s, f);
       s.setAmount("5");
@@ -133,7 +176,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "network: paused",
+    name: "crypto / network: paused",
     apply: (s, f) => {
       selection(s, f);
       useOffersStore().floors = new Map(
@@ -146,21 +189,21 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "token",
+    name: "crypto / token",
     apply: (s, f) => {
       selection(s, f);
       f.step = "token";
     },
   },
   {
-    name: "deposit: waiting",
+    name: "crypto / deposit: waiting",
     apply: (s, f) => {
       base(s, f);
       s.lastState = awaitingDeposit();
     },
   },
   {
-    name: "deposit: faucet sent",
+    name: "crypto / deposit: faucet sent",
     apply: (s, f) => {
       base(s, f);
       s.lastState = awaitingDeposit();
@@ -168,7 +211,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "deposit: faucet failed",
+    name: "crypto / deposit: faucet failed",
     apply: (s, f) => {
       base(s, f);
       s.lastState = awaitingDeposit();
@@ -177,7 +220,7 @@ export const SCENES: Scene[] = [
   },
   {
     // The channel deadline as a ticking countdown row.
-    name: "deposit: expiring",
+    name: "crypto / deposit: expiring",
     apply: (s, f) => {
       base(s, f);
       s.lastState = awaitingDeposit(Date.now() + 4 * 60_000 + 59_000);
@@ -185,7 +228,7 @@ export const SCENES: Scene[] = [
   },
   {
     // The window closed with nothing sent: failed progress and the expiry reason.
-    name: "deposit: expired",
+    name: "crypto / deposit: expired",
     apply: (s, f) => {
       base(s, f);
       s.lastState = awaitingDeposit(Date.now() - 60_000);
@@ -193,28 +236,122 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "convert: receiving",
+    name: "crypto / convert: receiving",
     apply: (s, f) => {
       base(s, f);
       s.lastState = swapping("receiving");
     },
   },
   {
-    name: "convert: swapping",
+    // The design's card journey at the Payment step: Fees and Total quoted in fiat.
+    name: "card / journey: payment",
+    apply: (s, f) => {
+      cardJourney(s, f);
+      s.lastState = swapping("receiving");
+    },
+  },
+  {
+    name: "card / journey: converting",
+    apply: (s, f) => {
+      cardJourney(s, f);
+      s.lastState = swapping("swapping");
+    },
+  },
+  {
+    // The provider's crypto delivery is stuck and retrying (TRANSACTION_CRYPTO_FAILED): amber
+    // current step, delay notice in the ribbon, nothing terminal.
+    name: "card / journey: delayed",
+    apply: (s, f) => {
+      cardJourney(s, f);
+      s.lastState = swapping("receiving");
+      s.meldDelayed = true;
+    },
+  },
+  {
+    // After "Try again" on a failed payment: the new attempt in flight on the Payment step, amber
+    // like the delayed state, the retry line in the ribbon, no button.
+    // FUTURE: our retry flow does not exist yet, so the app cannot reach this state.
+    name: "card / journey: retrying (future)",
+    apply: (s, f) => {
+      cardJourney(s, f);
+      s.lastState = swapping("receiving");
+      s.meldDelayed = true;
+      s.fundingNotice = "Hang tight, we're retrying your payment";
+    },
+  },
+  {
+    // Meld FAILED: terminal, nothing was charged. The design's inline "Try again" is our own
+    // retry system (re-request the payment); the button is shown here, its action lands later.
+    name: "card / journey: payment failed",
+    apply: (s, f) => cardFailed(s, f, "failed", "Top-up didn't go through. No money was taken."),
+  },
+  {
+    // Meld DECLINED: the bank refused the card; the message is the `declined` mapping's. The
+    // design labels the button "Try another card" and routes it to card entry; the action lands
+    // later, and the adapter emitting `declined` is unconfirmed (today it flattens to `failed`).
+    name: "card / journey: declined",
+    apply: (s, f) =>
+      cardFailed(
+        s,
+        f,
+        "declined",
+        "Your bank declined the payment. Check your card details or try another card.",
+      ),
+  },
+  {
+    // Meld REFUNDED: terminal, the charge was captured and returned; per Meld it cannot be
+    // retried, only replaced by a fresh top-up. The message is what getMeldStatus composes from
+    // the adapter's reported terms. The design labels the button "Add money again" and starts a
+    // new transaction; the action lands later, and the adapter emitting `refunded` is unconfirmed.
+    name: "card / journey: refunded",
+    apply: (s, f) =>
+      cardFailed(
+        s,
+        f,
+        "refunded",
+        "Your top-up didn't go through. Your 52.06 USD has been returned to your card.",
+      ),
+  },
+  {
+    // No Start over here: the rail could not tell whether the buyer was charged, and a second
+    // payment would risk charging them twice.
+    name: "card / journey: unconfirmed",
+    apply: (s, f) =>
+      cardFailed(
+        s,
+        f,
+        "unobserved",
+        "We could not confirm this payment. Contact support before trying again.",
+      ),
+  },
+  {
+    // The design's card success screen: the credited amount over the fiat Fees and Total.
+    name: "card / journey: success",
+    apply: (s, f) => {
+      cardJourney(s, f);
+      s.lastState = {
+        phase: "done",
+        sourceId: "meld-card",
+        result: { id: "preview", sourceId: "meld-card" },
+      } as PaymentState;
+    },
+  },
+  {
+    name: "crypto / convert: swapping",
     apply: (s, f) => {
       base(s, f);
       s.lastState = swapping("swapping");
     },
   },
   {
-    name: "convert: sending",
+    name: "crypto / convert: sending",
     apply: (s, f) => {
       base(s, f);
       s.lastState = swapping("sending");
     },
   },
   {
-    name: "pipeline: swap",
+    name: "crypto / pipeline: swap",
     apply: (s, f) => {
       base(s, f);
       s.lastState = awaitingDeposit();
@@ -222,7 +359,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "pipeline: transfer",
+    name: "crypto / pipeline: transfer",
     apply: (s, f) => {
       base(s, f);
       s.lastState = awaitingDeposit();
@@ -230,7 +367,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "pipeline: arrival wait",
+    name: "crypto / pipeline: arrival wait",
     apply: (s, f) => {
       base(s, f);
       s.lastState = awaitingDeposit();
@@ -238,7 +375,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "heal: reconnecting",
+    name: "crypto / heal: reconnecting",
     apply: (s, f) => {
       base(s, f);
       s.lastState = awaitingDeposit();
@@ -247,14 +384,14 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "claim: consent",
+    name: "crypto / claim: consent",
     apply: (s, f) => {
       base(s, f);
       s.lastState = working("awaiting-consent");
     },
   },
   {
-    name: "claim: crediting",
+    name: "crypto / claim: crediting",
     apply: (s, f) => {
       base(s, f);
       s.lastState = working("awaiting-consent");
@@ -262,14 +399,14 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "claim: verifying",
+    name: "crypto / claim: verifying",
     apply: (s, f) => {
       base(s, f);
       s.lastState = working("verifying");
     },
   },
   {
-    name: "failed: recoverable",
+    name: "crypto / failed: recoverable",
     apply: (s, f) => {
       base(s, f);
       s.lastState = {
@@ -285,7 +422,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "failed: refunded",
+    name: "crypto / failed: refunded",
     apply: (s, f) => {
       base(s, f);
       f.srcChainIndex = 3;
@@ -319,7 +456,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "success",
+    name: "crypto / success",
     apply: (s, f) => {
       base(s, f);
       s.lastState = {
@@ -330,7 +467,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "resume spinner",
+    name: "crypto / resume spinner",
     apply: (s, f) => {
       base(s, f);
       s.resuming = true;
@@ -356,6 +493,13 @@ function applyProgress(session: Session) {
 
   if (state.phase === "failed" && state.failure.kind === "mint") {
     advance(fundingProgressSignalForSharedStep("done"));
+  } else if (state.phase === "failed" && session.fundsSeen) {
+    // The payment was seen before it failed: the marker lands on Payment, with Started complete.
+    const seen = fundingProgressSignalForPaymentState(
+      chainflipProgressProvider,
+      swapping("receiving"),
+    );
+    if (seen) advance(seen);
   } else if (paymentSignal && paymentSignal.observation.kind !== "failed") {
     advance(paymentSignal);
   }

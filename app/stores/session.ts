@@ -53,6 +53,7 @@ import { createMockCoinageSession, workerSessionId, type MockCoinageWorld } from
 import type { HostedCoinageWorld } from "~~/lib/coinage-live";
 import { isHosted } from "~~/lib/host-account";
 import { MELD_PAYMENT_STAGE } from "../funding/progress";
+import { isDemoBuild } from "../utils/demo";
 import { isMeldSourceId, meldSourceIdFor } from "../funding/source-ids";
 import { toCashBase } from "../utils/cash";
 import { fundFromFaucet, isFaucetConfigured } from "~~/lib/faucet";
@@ -82,6 +83,10 @@ interface ActiveFlowRecord {
   asset: string;
   sourceAmount?: string;
   sourceSymbol?: string;
+  /** The provider's quoted fee (Meld), in `sourceSymbol` units. */
+  sourceFee?: string;
+  /** The network-fee share of `sourceFee`, when the rail broke it out. */
+  sourceNetworkFee?: string;
   startedAt: number;
   depositAddress?: string;
   progress?: FundingProgressSnapshot;
@@ -197,6 +202,10 @@ function stepOf(status: RequestStatus | undefined): FundingStep | null {
 export interface QuotedView {
   send: string;
   symbol: string;
+  /** The provider's total fee in `symbol` units, when the rail quotes one (Meld does). */
+  fee?: string | null;
+  /** The network-fee share of `fee`, when the rail breaks it out (Meld may). */
+  networkFee?: string | null;
   /** Live world only: the native (DOT) budget the rail must deliver, 10-dec base units. */
   nativeAmount: bigint | null;
   sourceAsset: string | null;
@@ -234,8 +243,17 @@ export const useSessionStore = defineStore("session", () => {
   /** The Meld payment's polled stage: `waiting` while the buyer is on the widget, `receiving` once
    *  the provider approved it, `complete` when settled. */
   const meldStage = ref<"waiting" | "receiving" | "complete" | "failed" | null>(null);
+  /** The Meld payment is temporarily stuck (provider retrying its crypto delivery). Transient:
+   *  set and cleared by the status poll, never terminal on its own. */
+  const meldDelayed = ref(false);
   /** The adapter's reason for a failed Meld payment. Null unless `meldStage === 'failed'`. */
   const meldFailureMessage = ref<string | null>(null);
+  /** True when the failure is a refund (money taken then returned), not a plain decline. */
+  const meldRefunded = ref(false);
+  /** The ending's own code (`refunded`, `declined`, `cancelled`, `unobserved`, …) as the rail
+   *  reported it. Null unless `meldStage === 'failed'`. It decides whether a fresh attempt is
+   *  safe to offer: `unobserved` means the rail could not tell whether the buyer was charged. */
+  const meldFailureCode = ref<string | null>(null);
   /** The provider widget URL recovered when resuming a Meld request; null unless a resume found a
    *  live one. */
   const meldResumeWidgetUrl = ref<string | null>(null);
@@ -253,6 +271,8 @@ export const useSessionStore = defineStore("session", () => {
   const faucetState = ref<"idle" | "funding" | "sent">("idle");
   /** True while cancelTopUp runs. */
   const cancelling = ref(false);
+  /** Set when a cancel was refused because the payment is already on its way; shown to the buyer. */
+  const cancelNotice = ref<string | null>(null);
   /** Whether a deposit has been seen for the request on screen. Restored from the record on
    *  re-open. */
   const fundsSeen = ref(false);
@@ -293,15 +313,28 @@ export const useSessionStore = defineStore("session", () => {
   /** True while a claim is in flight: the host's sheet is up, or the credit is being verified. */
   const claiming = computed(() => phase.value === "funded" || phase.value === "working");
 
+  /**
+   * A floor under the journey's step count, for the demo's Skip alone. Null in every real flow.
+   *
+   * The steps are counted from the session phase and the funding pipeline, which is what a real
+   * payment must keep being counted from — the backend's word, polled, is the only thing that may
+   * move a buyer's top-up along. The demo has no backend to wait for, so Skip raises this floor a
+   * step at a time to walk the same five steps at a watchable pace.
+   */
+  const demoJourneyFloor = ref<number | null>(null);
+
   /** How many of the journey's five steps are done. */
-  const journeyDoneCount = computed(() =>
-    journeyDone({
+  const journeyDoneCount = computed(() => {
+    const real = journeyDone({
       phase: phase.value,
       fundingStep: fundingStep.value,
       swap: lastState.value?.phase === "swapping" ? lastState.value.swap : null,
       failure: lastState.value?.phase === "failed" ? lastState.value.failure : null,
-    }),
-  );
+    });
+    // A floor, never a replacement: the real pipeline overtakes it without the stepper ever
+    // stepping backwards.
+    return Math.max(real, demoJourneyFloor.value ?? 0);
+  });
   /** When each journey step landed, in ms since epoch, by step number. Not persisted. */
   const milestones = ref<Record<number, number>>({});
   watch([journeyDoneCount, lastState], ([done, state], [prevDone, prevState]) => {
@@ -370,14 +403,19 @@ export const useSessionStore = defineStore("session", () => {
   function teardownWorld() {
     quoteEpoch += 1;
     stopMeldPoll();
+    stopSimulatedPayment();
     meldStage.value = null;
+    meldDelayed.value = false;
     meldFailureMessage.value = null;
+    meldRefunded.value = false;
+    meldFailureCode.value = null;
     meldResumeWidgetUrl.value = null;
     meldSubmitted.value = false;
     meldHandedOff.value = false;
     meldCredited = false;
     meldFundingRequestId = null;
     meldStatusClient = null;
+    cancelNotice.value = null;
     sub?.unsubscribe();
     sub = null;
     mock.value?.session.dispose();
@@ -780,6 +818,7 @@ export const useSessionStore = defineStore("session", () => {
         return s;
       },
       getStatus: (id) => baseClient.getStatus(id),
+      cancel: (id) => baseClient.cancel(id),
     };
     meldStatusClient = meldClient;
     const rail = createMeldRail({
@@ -892,6 +931,8 @@ export const useSessionStore = defineStore("session", () => {
         quoted.value = {
           send: raw.provider.sourceAmount,
           symbol: raw.context.fiat,
+          fee: raw.provider.totalFee ?? null,
+          networkFee: raw.provider.networkFee ?? null,
           nativeAmount: null,
           sourceAsset: null,
           sourceChain: null,
@@ -920,6 +961,8 @@ export const useSessionStore = defineStore("session", () => {
       quoted.value = {
         send: raw.provider.sourceAmount,
         symbol: raw.context.fiat,
+        fee: raw.provider.totalFee ?? null,
+        networkFee: raw.provider.networkFee ?? null,
         nativeAmount: null,
         sourceAsset: null,
         sourceChain: null,
@@ -1445,7 +1488,14 @@ export const useSessionStore = defineStore("session", () => {
       // What the buyer pays: the fiat quote for a Meld request, the source-coin figure otherwise.
       const sourceDisplay = isMeldSourceId(world.sourceId)
         ? quoted.value
-          ? { sourceAmount: quoted.value.send, sourceSymbol: quoted.value.symbol }
+          ? {
+              sourceAmount: quoted.value.send,
+              sourceSymbol: quoted.value.symbol,
+              ...(quoted.value.fee != null ? { sourceFee: quoted.value.fee } : {}),
+              ...(quoted.value.networkFee != null
+                ? { sourceNetworkFee: quoted.value.networkFee }
+                : {}),
+            }
           : null
         : sourceDisplayForRecord();
       // The deposit window's deadline; the list and the reconcile judge expiry from the record.
@@ -1867,6 +1917,8 @@ export const useSessionStore = defineStore("session", () => {
       quoted.value = {
         send: record.sourceAmount ?? "",
         symbol: record.sourceSymbol ?? record.asset,
+        fee: record.sourceFee ?? null,
+        networkFee: record.sourceNetworkFee ?? null,
         nativeAmount: null,
         sourceAsset: record.asset,
         sourceChain: record.chain,
@@ -1962,6 +2014,10 @@ export const useSessionStore = defineStore("session", () => {
   }
 
   // Mock world controls (browser demo)
+  /** One beat of the demo's simulated payment: long enough to watch a step land, short enough
+   *  that a demo does not stall on it. */
+  const SIMULATED_PAYMENT_STEP_MS = 2_500;
+
   function simulateDeposit() {
     if (mock.value && amountBase.value !== null)
       mock.value.harness.setSettlementBalance(amountBase.value);
@@ -1994,6 +2050,61 @@ export const useSessionStore = defineStore("session", () => {
   function stopMeldPoll() {
     meldPollStop?.();
     meldPollStop = null;
+  }
+
+  /** Timers driving the demo's simulated payment; cleared with the world they belong to. */
+  let simulatedPaymentTimers: ReturnType<typeof setTimeout>[] = [];
+  function stopSimulatedPayment() {
+    for (const timer of simulatedPaymentTimers) clearTimeout(timer);
+    simulatedPaymentTimers = [];
+    demoJourneyFloor.value = null;
+  }
+
+  /**
+   * Demo Skip: play the whole fiat payment through, from the buyer leaving the widget to the
+   * provider settling, instead of dropping a deposit on the burner mid-journey.
+   *
+   * Skipping straight to the deposit left the timeline starting halfway: the payment steps never
+   * happened, so the journey opened on "Approved" with nothing behind it. Walking the same stages
+   * the poll would write gets the stepper from Started to Added, which is the point of a demo.
+   *
+   * The poll is stopped first. It re-reads the rail on its own cadence and would overwrite these
+   * stages with whatever the (unpaid, or faked) request really says.
+   */
+  function simulateMeldPayment(): void {
+    if (!isDemoBuild() || method.value === "crypto") return;
+    stopSimulatedPayment();
+    stopMeldPoll();
+    let beat = 0;
+    const step = (run: () => void) => {
+      beat += 1;
+      simulatedPaymentTimers.push(setTimeout(run, SIMULATED_PAYMENT_STEP_MS * beat));
+    };
+    // The buyer finishes in the widget: the journey takes over from the iframe. "Started" is
+    // already behind us, so the stepper sits on "Payment".
+    void markMeldSubmitted();
+    demoJourneyFloor.value = 1;
+    // The provider sees the transaction: "Payment" lands.
+    step(() => {
+      meldStage.value = "receiving";
+      meldHandedOff.value = true;
+      recordMeldStage();
+      demoJourneyFloor.value = 2;
+    });
+    // The provider approves it: "Approved" lands.
+    step(() => {
+      meldStage.value = "complete";
+      recordMeldStage();
+      demoJourneyFloor.value = 3;
+    });
+    // The conversion runs, and the deposit that pays for it arrives: the mock world fakes it
+    // through `creditMeldSettlement`, the hosted demo needs the faucet. The real pipeline takes
+    // the journey the rest of the way, and overtakes the floor on its own.
+    step(() => {
+      demoJourneyFloor.value = 4;
+      if (mock.value) creditMeldSettlement();
+      else void fundFaucet();
+    });
   }
 
   /** The Meld payment's stage as progress on the request on screen. `receiving` once the widget
@@ -2057,7 +2168,8 @@ export const useSessionStore = defineStore("session", () => {
     const tick = async () => {
       if (stopped) return;
       try {
-        const { status: st, depositFailure } = await getMeldStatus(client, ref);
+        const { status: st, depositFailure, delayed } = await getMeldStatus(client, ref);
+        meldDelayed.value = delayed === true;
         // Hold the iframe until the buyer finishes it or a terminal status lands.
         // `transaction_seen`
         // can precede a 3DS/OTP challenge; `receiving` shows only once the widget was left.
@@ -2073,12 +2185,18 @@ export const useSessionStore = defineStore("session", () => {
           meldHandedOff.value = true;
         if (meldStage.value === "complete") creditMeldSettlement();
         // Carry the adapter's own reason.
-        if (meldStage.value === "failed")
+        if (meldStage.value === "failed") {
           meldFailureMessage.value =
             depositFailure?.reason?.message ?? "The payment could not be completed.";
+          meldFailureCode.value = depositFailure?.reason?.code ?? null;
+          meldRefunded.value = meldFailureCode.value === "refunded";
+        }
         recordMeldStage();
         pollFailures = 0;
       } catch (e) {
+        // The delay marker is a live claim about the provider's retry; a poll that cannot confirm
+        // it must not keep asserting it through an outage.
+        meldDelayed.value = false;
         const httpStatus = (e as { status?: number } | null)?.status;
         // A 404 never self-heals: stop. A 401 is an auth problem on this side and retries below
         // with the other transients.
@@ -2136,6 +2254,7 @@ export const useSessionStore = defineStore("session", () => {
     // Declined, not failed: the request still stands.
     if (cancelling.value || claiming.value || resuming.value) return false;
     cancelling.value = true;
+    cancelNotice.value = null;
     try {
       // Last look before anything irreversible: funds on the burner mean a purchase in progress.
       // Refuse, latch it funded, and drive it. Fail open on a dead transport.
@@ -2162,6 +2281,31 @@ export const useSessionStore = defineStore("session", () => {
         } catch (e) {
           console.warn(
             `[coinage] pre-cancel balance check failed (cancelling anyway): ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      }
+      // Withdraw the pay page on the adapter too. A local cancel alone leaves the adapter serving a
+      // payable page for this request, so its link could still be paid against a top-up the buyer
+      // was told was over. If the adapter refuses because a payment is already on its way, respect
+      // it and keep the request: telling the buyer it is cancelled while their money moves is the
+      // one thing not to say. A transport error fails open (a still-served page is the pre-existing
+      // behaviour), so a dead adapter never strands the cancel.
+      if (meldStatusClient !== null && meldFundingRequestId !== null) {
+        try {
+          const outcome = await step(
+            "withdraw the pay page",
+            15_000,
+            meldStatusClient.cancel(meldFundingRequestId),
+          );
+          if (outcome.outcome === "not-cancellable") {
+            cancelNotice.value =
+              "Your payment is already on its way and can no longer be cancelled. It will finish on its own.";
+            console.warn("[meld] cancel refused by the adapter: a payment is already in flight");
+            return false;
+          }
+        } catch (e) {
+          console.warn(
+            `[meld] adapter cancel failed (cancelling locally anyway): ${e instanceof Error ? e.message : String(e)}`,
           );
         }
       }
@@ -2228,7 +2372,10 @@ export const useSessionStore = defineStore("session", () => {
     supportedCountries,
     meldCorridor,
     meldStage,
+    meldDelayed,
     meldFailureMessage,
+    meldRefunded,
+    meldFailureCode,
     meldResumeWidgetUrl,
     meldSubmitted,
     meldHandedOff,
@@ -2240,6 +2387,7 @@ export const useSessionStore = defineStore("session", () => {
     fundsSeen,
     canSkipDeposit,
     cancelling,
+    cancelNotice,
     mock,
     live,
     refundAddress,
@@ -2268,6 +2416,7 @@ export const useSessionStore = defineStore("session", () => {
     milestones,
     fundFaucet,
     simulateDeposit,
+    simulateMeldPayment,
     pollMeldStatus,
     markMeldSubmitted,
     approveClaim,

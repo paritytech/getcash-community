@@ -209,6 +209,24 @@ function leaveJourney() {
   else returnToSelector("pending");
 }
 
+/**
+ * "Start over" on a fiat top-up that ended: re-enter its own route's package with the same amount.
+ *
+ * The failed request is left exactly where it is — it happened, and the list keeps it. Mounting
+ * the package quotes again and opens a NEW funding request, which is the only way back into the
+ * provider's widget: the old request's pay page is dead and will not take a second payment.
+ */
+function startOverFromJourney() {
+  const current = journey.value;
+  if (current === null) return;
+  // The amount as the buyer entered it: from the selection that started this, or from the top-up
+  // itself when the journey was opened off the list.
+  const amount = selection.value?.amount ?? activeTopUp.value?.amount ?? "";
+  journey.value = null;
+  returnFromTopUp();
+  void continueToPackage({ amount, route: current.route });
+}
+
 const openTopUpRequest = (topUp: FundingTopUp): Promise<boolean> =>
   adapterByRoute.get(topUp.route)?.open(topUp) ?? Promise.resolve(false);
 
@@ -249,6 +267,7 @@ onMounted(async () => {
     :open="journey.origin === 'top-up' ? openTopUpRequest : null"
     :status="journeyStatus"
     @back="leaveJourney"
+    @start-over="startOverFromJourney"
   />
   <component
     :is="activeTopUpPackage"
@@ -282,41 +301,6 @@ onMounted(async () => {
     @continue="continueToPackage"
     @open-top-up="openTopUp"
   />
-  <section v-else class="funding-shell-loading bg-surface-main text-fg-secondary">
-    <span />
-    <p class="text-body-m">Loading top-ups…</p>
-  </section>
+  <!-- Launch load: the amount screen's chrome with skeletons over the data still being fetched. -->
+  <FundingSelectorScreen v-else skeleton />
 </template>
-
-<style scoped>
-.funding-shell-loading {
-  position: fixed;
-  top: var(--vvt, 0px);
-  right: 0;
-  left: 0;
-  display: flex;
-  width: 100%;
-  max-width: 24.125rem; /* 386px — the design frame's width (the sheet inside the 402 phone) */
-  height: var(--vvh, 100dvh);
-  margin: 0 auto;
-  flex-direction: column;
-  align-items: center;
-  gap: 1rem;
-  padding-top: 5rem;
-}
-
-.funding-shell-loading span {
-  width: 2rem;
-  height: 2rem;
-  animation: funding-spin 0.8s linear infinite;
-  border: 3px solid var(--stroke-primary);
-  border-top-color: var(--fg-primary);
-  border-radius: 9999px;
-}
-
-@keyframes funding-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-</style>

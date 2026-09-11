@@ -62,9 +62,12 @@ export interface MeldSessionResult {
 export interface MeldStatusResult {
   /**
    * The adapter's lifecycle state: `created`, `session_opened`, `transaction_seen`, `settled`,
-   * `failed`, `expired`, `refused` or `unobserved`.
+   * `failed`, `expired`, `refused`, `declined`, `refunded` or `unobserved`.
    */
   readonly status: string;
+  /** The provider's own last status verbatim (e.g. Meld `REFUNDED`), for distinctions the coarse
+   *  `status` drops. Absent until the rail has reported one. */
+  readonly providerStatus?: string;
   /** Where an unfinished purchase can be resumed. Present only while the request is still live. */
   readonly serviceProviderWidgetUrl?: string;
   readonly widgetUrl?: string;
@@ -76,10 +79,20 @@ export interface MeldStatusResult {
   readonly sourceAmount?: string;
 }
 
+/** The outcome of asking the adapter to withdraw a request's pay page. */
+export type MeldCancelResult =
+  | { readonly outcome: "cancelled"; readonly cancelledAt?: number }
+  /** A payment is already on its way, or the request has concluded, so it cannot be cancelled. */
+  | { readonly outcome: "not-cancellable" }
+  /** The adapter does not know this request (unknown id, or it belongs to another caller). */
+  | { readonly outcome: "not-found" };
+
 export interface MeldClientLike {
   getQuote(req: MeldQuoteRequest): Promise<{ quotes: MeldQuoteEntry[] }>;
   createSession(req: MeldSessionRequest): Promise<MeldSessionResult>;
   getStatus(fundingRequestId: string): Promise<MeldStatusResult>;
+  /** Withdraws the pay page for a request. Never a hard failure for the normal refusals. */
+  cancel(fundingRequestId: string): Promise<MeldCancelResult>;
 }
 
 export interface MeldEndpointConfig {
@@ -227,6 +240,7 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike {
     const funding = (data.funding as Record<string, unknown> | undefined) ?? {};
     return {
       status: String(funding.status ?? ""),
+      ...(funding.providerStatus != null ? { providerStatus: String(funding.providerStatus) } : {}),
       // Present only while the purchase is still payable.
       ...(funding.serviceProviderWidgetUrl != null
         ? { serviceProviderWidgetUrl: String(funding.serviceProviderWidgetUrl) }
@@ -415,5 +429,32 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike {
     },
 
     getStatus: getFundingStatus,
+
+    async cancel(fundingRequestId): Promise<MeldCancelResult> {
+      try {
+        const data = await post(
+          `/funding/${encodeURIComponent(fundingRequestId)}/cancel`,
+          {},
+          "The cancel",
+        );
+        const funding = (data.funding as Record<string, unknown> | undefined) ?? {};
+        return {
+          outcome: "cancelled",
+          ...(typeof funding.cancelledAt === "number" ? { cancelledAt: funding.cancelledAt } : {}),
+        };
+      } catch (err) {
+        // A payment already in flight (or a concluded request) is a deliberate refusal, not a
+        // fault: the buyer must not be told it is cancelled while their money is moving.
+        if (
+          err instanceof AdapterRefusal &&
+          err.status === 409 &&
+          err.code === "REQUEST_NOT_CANCELLABLE"
+        )
+          return { outcome: "not-cancellable" };
+        // The adapter has no such request (unknown id, or another caller's). Nothing to withdraw.
+        if (err instanceof AdapterRefusal && err.status === 404) return { outcome: "not-found" };
+        throw err;
+      }
+    },
   };
 }

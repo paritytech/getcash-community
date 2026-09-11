@@ -66,8 +66,11 @@ stock bundle yields wherever they disagree. Divergences reconciled so far:
   32/40, −0.5px), `heading-xl` = Headline Small (24/32, added), `heading-l` =
   Title Large (18/24), `heading-m` = Title Medium (16/24), `heading-s` = Title
   Small (14/20), `body-m` = Body Medium (14/20), `body-s` = Body Small (12/16),
-  `caption` = Caption (12/18). The `label-*`, `body-l`, `code` and `overline`
-  stops are not yet reconciled — specs live upstream in
+  `caption` = Caption (12/18), `display-m` = Display Medium (Inter 48/64,
+  −1px), `paragraph-l` = Paragraph Large (16/20 regular), `label-xs` = Label
+  Small Emphasized (10/14 semibold); Paragraph Small (12/16) shares its box
+  with `body-s`. The `label-s/m/l`, `body-l`, `code` and `overline` stops are
+  not yet reconciled — specs live upstream in
   paritytech/polkadot-app-design-system `source/Typography/`.
 - berlin-night `--stroke-primary` moved to zinc-850 (#23252A): the library
   distinguishes stroke/primary (zinc-850) from stroke/secondary (zinc-700); the
