@@ -282,16 +282,9 @@ onMounted(async () => {
     @continue="continueToPackage"
     @open-top-up="openTopUp"
   />
-  <section
-    v-else
-    class="funding-shell-loading"
-    :style="{
-      background: fundingSelectorConfig.theme.background,
-      color: fundingSelectorConfig.theme.textMuted,
-    }"
-  >
-    <span :style="{ borderTopColor: fundingSelectorConfig.theme.text }" />
-    <p>Loading top-ups…</p>
+  <section v-else class="funding-shell-loading bg-surface-main text-fg-secondary">
+    <span />
+    <p class="text-body-m">Loading top-ups…</p>
   </section>
 </template>
 
@@ -303,21 +296,21 @@ onMounted(async () => {
   left: 0;
   display: flex;
   width: 100%;
-  max-width: 28rem;
+  max-width: 24.125rem; /* 386px — the design frame's width (the sheet inside the 402 phone) */
   height: var(--vvh, 100dvh);
   margin: 0 auto;
   flex-direction: column;
   align-items: center;
   gap: 1rem;
   padding-top: 5rem;
-  font-size: 0.875rem;
 }
 
 .funding-shell-loading span {
   width: 2rem;
   height: 2rem;
   animation: funding-spin 0.8s linear infinite;
-  border: 3px solid rgb(255 255 255 / 12%);
+  border: 3px solid var(--stroke-primary);
+  border-top-color: var(--fg-primary);
   border-radius: 9999px;
 }
 

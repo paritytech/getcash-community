@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { Delete } from "lucide-vue-next";
 import type { FundingSelectorConfig } from "../../funding/config";
 import {
   fundingAmountStatus,
@@ -112,7 +113,7 @@ function enter(key: FundingKey) {
             v-for="option in config.routes"
             :key="option.id"
             type="button"
-            class="funding-route"
+            class="funding-route text-label-l font-semibold"
             :class="{
               'funding-route-selected': route === option.id,
               'funding-route-unavailable': !isRouteAvailable(option.id),
@@ -125,31 +126,36 @@ function enter(key: FundingKey) {
           >
             <img :src="option.icon" alt="" />
             <span>{{ option.label }}</span>
-            <span v-if="!isRouteAvailable(option.id)" class="funding-route-soon">Soon</span>
+            <span v-if="!isRouteAvailable(option.id)" class="funding-route-soon text-overline"
+              >Soon</span
+            >
           </button>
         </div>
 
-        <p class="funding-limits" :class="{ 'funding-limits-warning': limitWarning }">
+        <div ref="amountRow" class="funding-amount" aria-live="polite">
+          <span ref="amountValue" class="text-display-xl"
+            >{{ displayAmount }}<span class="funding-caret" aria-hidden="true"
+          /></span>
+          <span ref="amountAsset" class="text-display-xl">{{ config.asset }}</span>
+        </div>
+
+        <p class="funding-limits text-body-m" :class="{ 'funding-limits-warning': limitWarning }">
           {{ limitLabel }}
         </p>
-
-        <div ref="amountRow" class="funding-amount" aria-live="polite">
-          <span ref="amountValue">{{ displayAmount }}</span>
-          <span ref="amountAsset">{{ config.asset }}</span>
-        </div>
 
         <div class="funding-presets" aria-label="Suggested amounts">
           <button
             v-for="preset in config.amount.presets"
             :key="preset"
             type="button"
+            class="text-label-l"
             @click="emit('change', preset)"
           >
             {{ formatAmount(preset) }} {{ config.asset }}
           </button>
         </div>
 
-        <p v-if="error" class="funding-error" role="alert">{{ error }}</p>
+        <p v-if="error" class="funding-error text-caption" role="alert">{{ error }}</p>
 
         <div class="funding-keypad" aria-label="Amount keypad">
           <template v-for="(row, rowIndex) in keypad" :key="rowIndex">
@@ -157,13 +163,11 @@ function enter(key: FundingKey) {
               v-for="key in row"
               :key="key"
               type="button"
+              class="text-heading-xl"
               :aria-label="key === 'delete' ? 'Delete digit' : `Enter ${key}`"
               @click="enter(key)"
             >
-              <svg v-if="key === 'delete'" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M9.5 7 5 12l4.5 5H19V7H9.5Z" />
-                <path d="m12 10 4 4m0-4-4 4" />
-              </svg>
+              <Delete v-if="key === 'delete'" class="size-6" aria-hidden="true" />
               <span v-else>{{ key }}</span>
             </button>
           </template>
@@ -171,7 +175,7 @@ function enter(key: FundingKey) {
 
         <button
           type="button"
-          class="funding-primary"
+          class="funding-primary text-label-l font-semibold"
           :disabled="loading || !canContinue"
           @click="emit('continue')"
         >
@@ -202,7 +206,8 @@ function enter(key: FundingKey) {
   min-height: 100%;
   flex-direction: column;
   align-items: center;
-  padding: 0.25rem 1.5rem 1rem;
+  padding: 1rem 1rem 1rem;
+  color: var(--fg-primary);
 }
 
 .funding-routes {
@@ -215,24 +220,25 @@ function enter(key: FundingKey) {
 .funding-route {
   display: flex;
   min-width: 0;
-  height: 2.875rem;
+  height: 2.5rem;
   align-items: center;
-  gap: 0.375rem;
+  gap: 0.5rem;
   border-radius: 9999px;
-  background: var(--funding-control);
-  padding: 0 0.75rem 0 0.375rem;
-  color: var(--funding-text);
-  font-size: 0.9375rem;
-  line-height: 1.25rem;
-  font-weight: 600;
+  background: var(--bg-surface-container);
+  padding: 0 0.75rem 0 0.5rem;
+  color: var(--fg-primary);
   transition:
     background-color 120ms ease-out,
     color 120ms ease-out;
 }
 
+.funding-route:hover:not(:disabled):not(.funding-route-selected) {
+  background: var(--bg-selection-container-hover);
+}
+
 .funding-route-selected {
-  background: var(--funding-action);
-  color: var(--funding-action-text);
+  background: var(--bg-surface-container-inverted);
+  color: var(--fg-primary-inverted);
 }
 
 /* Routes not in this build: dimmed, greyscale, no pointer response. */
@@ -245,63 +251,82 @@ function enter(key: FundingKey) {
 }
 
 .funding-route-soon {
-  font-size: 0.6875rem;
-  line-height: 1rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--funding-text-muted);
+  color: var(--fg-tertiary);
 }
 
 .funding-route img {
-  width: 2rem;
-  height: 2rem;
+  width: 1.5rem;
+  height: 1.5rem;
   flex: none;
+  border-radius: 9999px;
 }
 
 .funding-amount {
+  /* Fluid display type: the amount fits itself to the row, which the fixed
+   * type scale cannot express. The spans carry text-display-xl; the only
+   * scoped override is the fluid font-size, which re-states the same 56px
+   * stop times the fit scale. */
   --amount-scale: 1;
-  --amount-size: 4rem;
-  --asset-size: 2.25rem;
+  --amount-size: 3.5rem;
   display: flex;
   width: 100%;
   min-width: 0;
   align-items: baseline;
   justify-content: center;
-  gap: 0.5rem;
-  margin-top: 0.25rem;
+  gap: 1rem;
+  margin-top: 1.5rem;
   white-space: nowrap;
 }
 
 /* Both spans keep their natural width; fitAmount() shrinks the scale. Line heights stay fixed. */
 .funding-amount > span {
   flex: none;
-  font-weight: 500;
-}
-
-.funding-amount > span:first-child {
   font-size: calc(var(--amount-size) * var(--amount-scale));
-  line-height: 5rem;
-  letter-spacing: -0.04em;
+  /* 80/56 as a unitless ratio keeps the same leading at every fluid scale
+     (the token's line-height is a fixed 80px). */
+  line-height: 1.4286;
 }
 
-.funding-amount > span:last-child {
-  font-size: calc(var(--asset-size) * var(--amount-scale));
-  line-height: 3rem;
-  letter-spacing: -0.015em;
+/* Text-cursor caret after the digits: the keypad is live input. Sized in em so
+   it follows the fluid scale; sits inside the digits span so the fit logic
+   measures it. currentColor keeps it on fg-primary. */
+.funding-caret {
+  display: inline-block;
+  width: 0.036em;
+  height: 1em;
+  border-radius: 9999px;
+  background: currentColor;
+  vertical-align: -0.11em;
+  animation: funding-caret-blink 1.1s step-end infinite;
+}
+
+@keyframes funding-caret-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .funding-caret {
+    animation: none;
+  }
 }
 
 .funding-limits {
   min-height: 1rem;
-  margin-top: 1.375rem;
-  color: var(--funding-text-muted);
-  font-size: 0.875rem;
-  line-height: 1.25rem;
+  color: var(--fg-secondary);
   text-align: center;
 }
 
 .funding-limits-warning {
-  color: var(--funding-error);
+  color: var(--fg-error);
 }
 
 .funding-presets {
@@ -309,75 +334,87 @@ function enter(key: FundingKey) {
   width: 100%;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.5rem;
-  margin-top: 1.25rem;
+  margin-top: 1.5rem;
+  padding: 0 0.5rem;
 }
 
 .funding-presets button {
   min-width: 0;
-  height: 3.25rem;
+  height: 3rem;
   border-radius: 9999px;
-  background: var(--funding-control);
-  padding: 0 0.5rem;
-  font-size: 0.9375rem;
-  line-height: 1.25rem;
-  font-weight: 600;
+  background: var(--bg-surface-nested);
+  padding: 0 1rem;
+  overflow: hidden;
+  white-space: nowrap;
+  transition: background-color 120ms ease-out;
 }
 
+.funding-presets button:hover {
+  background: var(--bg-selection-container-hover);
+}
+
+/* The error renders inside the fixed 24px presets→keypad band (8px margin +
+   16px line − 24px pull-back), so showing it never shifts the keypad. */
 .funding-error {
   min-height: 1rem;
   margin-top: 0.5rem;
-  color: var(--funding-error);
-  font-size: 0.75rem;
-  line-height: 1rem;
+  margin-bottom: -1.5rem;
+  color: var(--fg-error);
   text-align: center;
 }
 
+/* The keypad follows the content; the flexible space lives below it, on the
+   Continue button, so the CTA stays anchored to the bottom edge. The
+   margin-bottom keeps a minimum gap to the CTA when the screen is tight and
+   the auto margin collapses. */
 .funding-keypad {
   display: grid;
   width: 100%;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.625rem 0.5rem;
-  margin-top: auto;
-  padding-top: 1rem;
+  gap: 0.5rem;
+  margin-top: 1.5rem;
+  margin-bottom: 1.5rem;
 }
 
 .funding-keypad button {
   display: flex;
-  height: 3.875rem;
+  height: 3.5rem;
   align-items: center;
   justify-content: center;
   border-radius: 9999px;
-  background: var(--funding-control);
-  font-size: 1.5rem;
-  line-height: 2rem;
-  font-weight: 500;
+  background: var(--bg-surface-container);
+  color: var(--fg-primary);
+  transition: background-color 120ms ease-out;
 }
 
-.funding-keypad svg {
-  width: 1.5rem;
-  height: 1.5rem;
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.75;
+.funding-keypad button:hover {
+  background: var(--bg-selection-container-hover);
+}
+
+/* The pressed ring is an inset shadow so pressing never shifts the glyph. */
+.funding-keypad button:active {
+  background: var(--bg-surface-main);
+  box-shadow: inset 0 0 0 1px var(--stroke-primary);
 }
 
 .funding-primary {
   width: 100%;
   flex-shrink: 0;
-  height: 3.375rem;
-  margin-top: 1.25rem;
+  height: 3rem;
+  margin-top: auto;
   border-radius: 9999px;
-  background: var(--funding-action);
-  color: var(--funding-action-text);
-  font-size: 0.9375rem;
-  line-height: 1.25rem;
-  font-weight: 650;
+  background: var(--bg-action-primary);
+  color: var(--fg-primary-inverted);
+  transition: background-color 120ms ease-out;
+}
+
+.funding-primary:hover:not(:disabled) {
+  background: var(--bg-action-primary-hover);
 }
 
 .funding-primary:disabled {
-  opacity: 0.4;
+  background: var(--bg-action-disabled);
+  color: var(--fg-disabled);
 }
 
 @media (max-height: 650px) {
@@ -385,30 +422,10 @@ function enter(key: FundingKey) {
     padding-bottom: 0.75rem;
   }
 
-  .funding-route {
-    height: 2.5rem;
-  }
-
-  .funding-route img {
-    width: 1.75rem;
-    height: 1.75rem;
-  }
-
-  .funding-limits {
-    margin-top: 0.75rem;
-  }
-
   .funding-amount {
+    /* Short-viewport adaptation of the fluid display gap noted above. */
     --amount-size: 3rem;
-    --asset-size: 1.75rem;
-  }
-
-  .funding-amount > span:first-child {
-    line-height: 3.75rem;
-  }
-
-  .funding-amount > span:last-child {
-    line-height: 2.25rem;
+    margin-top: 0.75rem;
   }
 
   .funding-presets {
@@ -421,16 +438,11 @@ function enter(key: FundingKey) {
 
   .funding-keypad {
     gap: 0.375rem 0.5rem;
-    padding-top: 0.625rem;
+    margin-bottom: 0.625rem;
   }
 
   .funding-keypad button {
     height: 2.75rem;
-  }
-
-  .funding-primary {
-    height: 3rem;
-    margin-top: 0.625rem;
   }
 }
 </style>

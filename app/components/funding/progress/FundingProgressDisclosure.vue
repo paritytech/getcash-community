@@ -8,6 +8,7 @@ import {
 } from "../../../funding/progress";
 import FundingDisclosure from "../FundingDisclosure.vue";
 import FundingProgressBar from "./FundingProgressBar.vue";
+import { Check } from "lucide-vue-next";
 
 const props = withDefaults(
   defineProps<{
@@ -49,11 +50,14 @@ function nodeDetail(node: FundingProgressNodeView): string | null {
     <template #summary>
       <div class="funding-progress-summary" aria-live="polite" aria-atomic="true">
         <div class="funding-progress-summary-copy">
-          <strong>{{ progress.view.label }}</strong>
-          <span>{{ progress.estimateText }}</span>
+          <strong class="text-heading-s">{{ progress.view.label }}</strong>
+          <span class="text-caption">{{ progress.estimateText }}</span>
         </div>
         <FundingProgressBar :progress="progress" :header="false" />
-        <p v-if="message && messageTone === 'error'" class="funding-progress-message is-error">
+        <p
+          v-if="message && messageTone === 'error'"
+          class="funding-progress-message text-caption is-error"
+        >
           {{ message }}
         </p>
       </div>
@@ -69,20 +73,25 @@ function nodeDetail(node: FundingProgressNodeView): string | null {
       >
         <span class="funding-progress-step-rail" aria-hidden="true">
           <span class="funding-progress-step-marker">
-            <span v-if="node.state === 'complete'">✓</span>
+            <Check
+              v-if="node.state === 'complete'"
+              class="size-2.5"
+              :stroke-width="4"
+              aria-hidden="true"
+            />
           </span>
           <span v-if="index < progress.view.nodes.length - 1" class="funding-progress-step-line" />
         </span>
         <span class="funding-progress-step-copy">
-          <strong>{{ nodeTitle(node) }}</strong>
-          <span v-if="nodeDetail(node)">{{ nodeDetail(node) }}</span>
+          <strong class="text-heading-s">{{ nodeTitle(node) }}</strong>
+          <span v-if="nodeDetail(node)" class="text-caption">{{ nodeDetail(node) }}</span>
         </span>
       </li>
     </ol>
 
     <p
       v-if="message && messageTone !== 'error'"
-      class="funding-progress-message"
+      class="funding-progress-message text-caption"
       :class="{ 'is-notice': messageTone === 'notice' }"
     >
       {{ message }}
@@ -106,16 +115,11 @@ function nodeDetail(node: FundingProgressNodeView): string | null {
 
 .funding-progress-summary-copy strong {
   min-width: 0;
-  font-size: 0.8125rem;
-  line-height: 1.125rem;
-  font-weight: 550;
 }
 
 .funding-progress-summary-copy span {
   flex: none;
-  color: var(--funding-text-muted, var(--color-text-secondary));
-  font-size: 0.6875rem;
-  line-height: 1rem;
+  color: var(--fg-secondary);
 }
 
 .funding-progress-steps {
@@ -124,7 +128,7 @@ function nodeDetail(node: FundingProgressNodeView): string | null {
 }
 
 .funding-progress-step {
-  --progress-step-color: var(--funding-border, var(--color-stroke-secondary));
+  --progress-step-color: var(--stroke-secondary);
   display: grid;
   min-height: 3.25rem;
   grid-template-columns: 1.25rem minmax(0, 1fr);
@@ -132,15 +136,16 @@ function nodeDetail(node: FundingProgressNodeView): string | null {
 }
 
 .funding-progress-step-complete {
-  --progress-step-color: var(--funding-success, var(--color-success));
+  --progress-step-color: var(--bg-status-success);
 }
 
 .funding-progress-step-current {
-  --progress-step-color: var(--color-progress);
+  /* In-progress accent: the strongest stroke step, the scale's step-indicator colour. */
+  --progress-step-color: var(--stroke-tertiary);
 }
 
 .funding-progress-steps-failed .funding-progress-step-current {
-  --progress-step-color: var(--funding-error, var(--color-error));
+  --progress-step-color: var(--bg-status-error);
 }
 
 .funding-progress-step-rail {
@@ -159,10 +164,8 @@ function nodeDetail(node: FundingProgressNodeView): string | null {
   justify-content: center;
   border: 1.5px solid var(--progress-step-color);
   border-radius: 9999px;
-  background: var(--funding-surface, var(--color-surface-container));
-  color: var(--funding-background, var(--color-bg));
-  font-size: 0.6875rem;
-  font-weight: 800;
+  background: var(--bg-surface-container);
+  color: var(--bg-surface-main);
 }
 
 .funding-progress-step-complete .funding-progress-step-marker,
@@ -171,7 +174,8 @@ function nodeDetail(node: FundingProgressNodeView): string | null {
 }
 
 .funding-progress-step-current .funding-progress-step-marker {
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--progress-step-color) 14%, transparent);
+  /* Activity is a gentle scale pulse; the old tinted halo was a coloured
+   * box-shadow, which the design system rules out. */
   animation: funding-progress-pulse 1.8s ease-in-out infinite;
 }
 
@@ -183,11 +187,7 @@ function nodeDetail(node: FundingProgressNodeView): string | null {
 }
 
 .funding-progress-step-current .funding-progress-step-line {
-  background: color-mix(
-    in srgb,
-    var(--funding-border, var(--color-stroke-secondary)) 50%,
-    transparent
-  );
+  background: var(--stroke-secondary);
 }
 
 .funding-progress-step-copy {
@@ -198,45 +198,38 @@ function nodeDetail(node: FundingProgressNodeView): string | null {
 }
 
 .funding-progress-step-copy strong {
-  color: var(--funding-text-muted, var(--color-text-secondary));
-  font-size: 0.875rem;
-  line-height: 1.125rem;
-  font-weight: 550;
+  color: var(--fg-secondary);
 }
 
 .funding-progress-step-complete .funding-progress-step-copy strong {
-  color: var(--funding-success, var(--color-success));
+  color: var(--fg-success);
 }
 
 .funding-progress-step-current .funding-progress-step-copy strong {
-  color: var(--funding-text, var(--color-text-primary));
+  color: var(--fg-primary);
 }
 
 .funding-progress-step-copy span {
   margin-top: 0.1875rem;
-  color: var(--funding-text-muted, var(--color-text-secondary));
-  font-size: 0.75rem;
-  line-height: 1rem;
+  color: var(--fg-secondary);
 }
 
 .funding-progress-message {
   margin-top: 0.75rem;
-  color: var(--funding-text-muted, var(--color-text-secondary));
-  font-size: 0.8125rem;
-  line-height: 1.125rem;
+  color: var(--fg-secondary);
 }
 
 .funding-progress-message.is-notice {
-  color: var(--color-progress);
+  color: var(--fg-secondary);
 }
 
 .funding-progress-message.is-error {
-  color: var(--funding-error, var(--color-error));
+  color: var(--fg-error);
 }
 
 @keyframes funding-progress-pulse {
   50% {
-    box-shadow: 0 0 0 6px color-mix(in srgb, var(--progress-step-color) 8%, transparent);
+    transform: scale(1.15);
   }
 }
 

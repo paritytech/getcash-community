@@ -3,6 +3,7 @@
 // the moment it opens. Once the buyer finishes, a small loader replaces the widget while the poll
 // confirms.
 import { onMounted, onUnmounted } from "vue";
+import { CircleX } from "lucide-vue-next";
 import { useSessionStore } from "../../../stores/session";
 
 defineProps<{ payUrl?: string | null }>();
@@ -54,10 +55,10 @@ onUnmounted(() => window.removeEventListener("message", onMessage));
       v-else-if="session.meldStage === 'failed'"
       class="flex min-h-0 w-full flex-1 flex-col items-center justify-center gap-2 text-center"
     >
-      <img src="/icons/x.svg" alt="" class="size-8" />
+      <CircleX class="size-8 text-fg-error" aria-hidden="true" />
       <!-- The adapter's own reason: the four failure states are not interchangeable, and
            `unobserved` (the buyer may have been charged) must not read as "try again". -->
-      <p class="max-w-[240px] text-sm font-medium text-error">
+      <p class="max-w-[240px] text-label-m text-fg-error">
         {{ session.meldFailureMessage ?? "Payment could not be completed" }}
       </p>
     </div>
@@ -65,7 +66,9 @@ onUnmounted(() => window.removeEventListener("message", onMessage));
       v-else-if="session.meldSubmitted"
       class="flex min-h-0 w-full flex-1 items-center justify-center"
     >
-      <span class="size-8 animate-spin rounded-full border-[3px] border-track border-t-white" />
+      <span
+        class="size-8 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary"
+      />
     </div>
     <!-- `*`, not the bare feature name. Bare `payment` means `payment 'src'`, which delegates
          only to this iframe's origin. Meld's widget nests the chosen provider's page in a
@@ -74,14 +77,17 @@ onUnmounted(() => window.removeEventListener("message", onMessage));
          Pay / Google Pay and the provider's own PaymentRequest calls need. The provider is
          picked per corridor, so an explicit origin allowlist would have to track Meld's roster
          and would break the moment they route to a new one. -->
+    <!-- No background of our own behind the widget: the provider's page paints itself
+         (light) the moment it loads, and any surface we put there is wrong in half the
+         themes for the frame it shows. -->
     <iframe
       v-else-if="payUrl"
       :src="payUrl"
-      class="min-h-0 w-full flex-1 border-0 bg-white"
+      class="min-h-0 w-full flex-1 border-0"
       title="Secure payment"
       allow="payment *; camera *; clipboard-write *"
     />
-    <p v-else class="flex-1 py-8 text-center text-sm text-text-tertiary">
+    <p v-else class="flex-1 py-8 text-center text-body-m text-fg-tertiary">
       Preparing secure payment…
     </p>
   </div>
