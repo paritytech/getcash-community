@@ -71,7 +71,7 @@ onUnmounted(() => {
   >
     <Toolbar
       :back="!waiting && !session.claiming"
-      :title="flow.confirmingCancel ? undefined : 'Crypto'"
+      :title="flow.confirmingCancel ? undefined : 'Add funds via Crypto'"
       @back="onBack"
     >
       <template
