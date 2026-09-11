@@ -102,13 +102,18 @@ onUnmounted(() => {
          Back stays available during the claim: leaving lands on the top-ups list, where the
          in-flight top-up remains resumable. -->
     <Toolbar
-      :title="showingFees ? 'Fees' : readOnly || waiting || unresumable ? title : ''"
+      :title="showingFees ? 'Fees' : waiting || unresumable ? title : ''"
       :back="readOnly || !waiting"
       @back="goBack"
     />
 
     <div class="flex min-h-0 flex-1 flex-col px-6 pt-6">
-      <FundingSettledStatusScreen v-if="readOnly && topUp" :top-up="topUp" />
+      <FundingSettledStatusScreen
+        v-if="readOnly && topUp"
+        :top-up="topUp"
+        @fees="showingFees = true"
+        @close="emit('back')"
+      />
 
       <div v-else-if="waiting" class="flex flex-col items-center gap-4 pt-16">
         <span
