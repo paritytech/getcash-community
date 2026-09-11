@@ -56,6 +56,6 @@ export function recoveryNotes(
 /** The status line's tail after "Your 50 USDT": how far the refund has come. */
 export function refundStatusTail(refund?: RefundProgress): string {
   if (refund?.witnessedAt) return "is back at your recovery address.";
-  if (refund?.txRef) return `is on its way back, transaction ${shortAddress(refund.txRef)}`;
+  if (refund?.txRef) return `is on its way back, transaction ${shortAddress(refund.txRef)}.`;
   return "is being returned to your recovery address.";
 }
