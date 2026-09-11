@@ -127,7 +127,7 @@ async function openTopUp(topUp: FundingTopUp, target: FundingTopUpReturnTarget) 
   // opens its package's screen.
   if (resolveFundingTopUpDestination(topUp.state) === "journey") {
     activeTopUpId.value = topUp.id;
-    journey.value = { title: "Status", route: topUp.route, origin: "top-up" };
+    journey.value = { title: "Top-up", route: topUp.route, origin: "top-up" };
     return;
   }
 
@@ -186,7 +186,7 @@ function handOffToJourney() {
   const openedTopUp = activeTopUp.value;
   const chosen = selection.value;
   if (activeTopUpPackage.value !== null && openedTopUp !== null) {
-    journey.value = { title: "Status", route: openedTopUp.route, origin: "top-up" };
+    journey.value = { title: "Top-up", route: openedTopUp.route, origin: "top-up" };
   } else if (activePackage.value !== null && chosen !== null) {
     journey.value = { title: routeLabel(chosen.route), route: chosen.route, origin: "package" };
   } else {
