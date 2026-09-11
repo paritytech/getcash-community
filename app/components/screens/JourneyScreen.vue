@@ -10,7 +10,7 @@ import { projectFundingProgress, type FundingProgressProjection } from "../../fu
 import type { FundingTopUp } from "../../funding/top-ups";
 import { useSessionStore } from "../../stores/session";
 import { fmtCash } from "../../utils/cash";
-import { fmtFiat } from "../../utils/money";
+import { fmtFiat, isMoneyAmount } from "../../utils/money";
 import { formatWhenShort } from "../../utils/journey";
 import { refundedFailure } from "../../utils/recovery";
 import FundingJourneyTimeline from "../funding/progress/FundingJourneyTimeline.vue";
@@ -113,8 +113,10 @@ const detailRows = computed(() => {
   const money = (amount: string) =>
     q.crypto ? `${amount} ${q.symbol}` : fmtFiat(amount, q.symbol);
   const rows: { label: string; value: string; fees?: boolean }[] = [];
-  // The fee row drills into the breakdown screen when the live quote backs it.
-  if (q.fee) rows.push({ label: "Fees", value: money(q.fee), fees: q.live });
+  // The fee row drills into the breakdown screen when the live quote backs it with a fee the
+  // breakdown can actually split; an unparseable one still shows, as plain text.
+  if (q.fee)
+    rows.push({ label: "Fees", value: money(q.fee), fees: q.live && isMoneyAmount(q.fee) });
   rows.push({ label: "Total", value: money(q.amount) });
   return rows;
 });

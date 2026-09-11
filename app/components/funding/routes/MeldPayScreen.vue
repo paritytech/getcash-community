@@ -3,7 +3,7 @@
 // widget. The method is fixed by the route; the region is the buyer's only choice.
 import { computed, onMounted, ref } from "vue";
 import { useSessionStore } from "../../../stores/session";
-import { fmtFiat } from "../../../utils/money";
+import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import type { FundingRoute } from "../../../funding/selection";
 import CountryCombobox from "../../ui/CountryCombobox.vue";
 import DetailRows from "../../ui/DetailRows.vue";
@@ -128,8 +128,10 @@ const quoteRows = computed(() => {
     // session came from two DIFFERENT regions, and nothing on the quote said which one it was.
     { label: "Region", value: selectedCountryName.value },
   ];
-  // The fee row drills into the breakdown screen.
-  if (q.fee) rows.push({ label: "Fees", value: fmtFiat(q.fee, q.symbol), fees: true });
+  // The fee row drills into the breakdown screen — only when the fee is a number the breakdown
+  // can actually split; an unparseable one still shows, as plain text.
+  if (q.fee)
+    rows.push({ label: "Fees", value: fmtFiat(q.fee, q.symbol), fees: isMoneyAmount(q.fee) });
   rows.push(
     { label: "Arrives", value: "A few minutes" },
     { label: "You’ll receive", value: `${session.amountHuman} $CASH` },
