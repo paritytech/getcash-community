@@ -49,7 +49,7 @@ describe("recoveryNotes", () => {
 describe("refundStatusTail", () => {
   it("shortens the transaction of a refund on its way", () => {
     expect(refundStatusTail({ txRef: "7f1c9b2e4d6a8c0f1e3b5d7a9c2e4f6081a3c5e7" })).toBe(
-      "is on its way back, transaction 7f1c9b…3c5e7",
+      "is on its way back, transaction 7f1c9b…3c5e7.",
     );
   });
 
