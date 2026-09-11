@@ -22,7 +22,9 @@ export function splitFees(
 
 export function fmtFiat(amount: string, currency: string): string {
   const value = Number(amount);
-  if (Number.isFinite(value)) {
+  // Number("") is 0, and a blank amount printed as a confident "€0.00" misstates a real charge —
+  // blanks take the plain fallback like any other unparseable amount.
+  if (amount.trim() !== "" && Number.isFinite(value)) {
     try {
       return new Intl.NumberFormat("en", { style: "currency", currency }).format(value);
     } catch {
