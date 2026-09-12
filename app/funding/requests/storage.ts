@@ -64,6 +64,79 @@ export function createMemoryKeyedStorage(): KeyedStorage {
   };
 }
 
+/** The mirror's Web Storage: injected for tests, else the window's, else none. `undefined` until
+ *  first resolved. */
+let mirrorStorage: WebStorageLike | null | undefined;
+let mirrorAvailable = true;
+
+/** Makes the mirror live in `backing`; null keeps it off. Re-enables a mirror a throw disabled. */
+export function setMirrorStorage(backing: WebStorageLike | null): void {
+  mirrorStorage = backing;
+  mirrorAvailable = true;
+}
+
+function mirrorBacking(): WebStorageLike | null {
+  if (mirrorStorage !== undefined) return mirrorStorage;
+  // Node defines a `localStorage` getter that warns when read; only a window has a usable one,
+  // and a sandboxed window throws on access.
+  if (typeof window === "undefined") return (mirrorStorage = null);
+  try {
+    mirrorStorage = window.localStorage ?? null;
+  } catch {
+    mirrorStorage = null;
+  }
+  return mirrorStorage;
+}
+
+/** A Web Storage call threw (quota, security error): the mirror is off for the session and the
+ *  key is cleared best-effort so a later boot never reads a torn write. */
+function disableMirror(backing: WebStorageLike): void {
+  mirrorAvailable = false;
+  try {
+    backing.removeItem(MIRROR_KEY);
+  } catch {
+    // Nothing left to do: the backing is unusable.
+  }
+}
+
+/** True while a mirror backing exists and no call to it has thrown this session. */
+export const isMirrorAvailable = (): boolean => mirrorAvailable && mirrorBacking() !== null;
+
+/** The mirror blob, or null when there is none or the read threw. */
+export function readMirrorSync(): string | null {
+  const backing = mirrorBacking();
+  if (backing === null || !mirrorAvailable) return null;
+  try {
+    return backing.getItem(MIRROR_KEY);
+  } catch {
+    disableMirror(backing);
+    return null;
+  }
+}
+
+/** Writes the mirror blob; false when there is no mirror or the write threw. */
+export function writeMirrorSync(value: string): boolean {
+  const backing = mirrorBacking();
+  if (backing === null || !mirrorAvailable) return false;
+  try {
+    backing.setItem(MIRROR_KEY, value);
+    return true;
+  } catch {
+    disableMirror(backing);
+    return false;
+  }
+}
+
+export function clearMirrorSync(): void {
+  const backing = mirrorBacking();
+  if (backing === null) return;
+  try {
+    backing.removeItem(MIRROR_KEY);
+  } catch {
+    mirrorAvailable = false;
+  }
+}
+
 let recordStorage: KeyedStorage | null = null;
 
 /** Makes every record read and write go through `storage`. */

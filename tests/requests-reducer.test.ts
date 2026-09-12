@@ -11,6 +11,7 @@ import {
   type WorkerJobView,
 } from "../app/funding/requests/model";
 import { reduce } from "../app/funding/requests/reducer";
+import { legacyRequestStatus } from "../app/funding/requests/views";
 import type { ActiveFlowRecord } from "../app/stores/session";
 import { requestRefOf, type RequestRef } from "../app/utils/request-index";
 import {
@@ -35,6 +36,12 @@ const DECLINED = "Your bank declined the payment. Check your card details or try
 const declined: SwapStatusResult = {
   status: "failed",
   depositFailure: { reason: { code: "declined", message: DECLINED }, kind: "deposit-rejected" },
+};
+const RETURNED = "The deposit didn't go through. It is being returned to your recovery address.";
+/** A Chainflip refund as `recordFailureReason` reports it through the provider path. */
+const returned: SwapStatusResult = {
+  status: "failed",
+  depositFailure: { reason: { message: RETURNED }, kind: "refunded" },
 };
 
 /** A fixture as the reducer first sees it: migrated at the fixture instant. */
@@ -268,6 +275,31 @@ describe("request reducer: top-up transitions", () => {
     expect(railOnly.failureReason).toBeUndefined();
     expect(railOnly.rail.stage).toBe("failed");
     expect(railOnly.progress.failedAt).toBeUndefined();
+
+    // A refund-like failure marks the record refunded, as core's own failure does, and the list
+    // status carries the marker. The record's rail keeps its own provider.
+    const refunded = reduce(awaiting(), {
+      source: "provider",
+      at: at(1),
+      provider: "chainflip",
+      result: returned,
+    });
+    expect(refunded.status).toEqual({ kind: "failed", at: at(1), recoverable: false });
+    expect(refunded.refunded).toBe(true);
+    expect(refunded.failure).toEqual({
+      kind: "refunded",
+      step: "deposit",
+      message: RETURNED,
+      recoverable: false,
+      refunded: true,
+    });
+    expect(refunded.failureReason).toBe(RETURNED);
+    expect(refunded.rail.provider).toBe("manual");
+    expect(legacyRequestStatus(refunded)).toEqual({
+      kind: "failed",
+      reason: RETURNED,
+      refunded: true,
+    });
   });
 
   it("chain funds at best → deposit-seen provisional; worker fundsSeenAt upgrades to finalized", () => {

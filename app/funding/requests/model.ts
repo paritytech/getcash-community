@@ -185,7 +185,7 @@ export interface RequestRecord {
       finalized?: { burnerNative: string; block?: number; at: number };
     };
     clock?: { at: number };
-    conflict?: { source: "worker" | "chain"; note: string; at: number };
+    conflict?: { source: "worker" | "chain" | "core"; note: string; at: number };
   };
   confirmedAt?: number;
 }
@@ -222,6 +222,21 @@ export const effectiveSourceId = (ref: RequestRef): string => ref.sourceId ?? CR
 
 export const routeOf = (sourceId: string): RequestRecord["route"] =>
   isMeldSourceId(sourceId) ? meldMethodFor(sourceId) : "crypto";
+
+/** The rail a source runs on: Meld for a fiat source, the manual deposit for the crypto rail's
+ *  own source, Chainflip for every other coin. */
+export const railProviderOf = (sourceId: string): RailState["provider"] =>
+  isMeldSourceId(sourceId) ? "meld" : sourceId === CRYPTO_SOURCE_ID ? "manual" : "chainflip";
+
+let clock: () => number = Date.now;
+
+/** Replaces the store's clock; tests pin time through it. */
+export function setRequestsClock(fn: () => number): void {
+  clock = fn;
+}
+
+/** The store's own time: the mirror stamp, the reconcile's clock observations, a flag's stamp. */
+export const requestsNow = (): number => clock();
 
 /** Forward progress: awaiting-deposit 0 < deposit-seen 1 < converting 2 < claiming 3 < settled 4.
  *  A side exit keeps the rank it left, encoded in `failure.step` as the leg the record left: the

@@ -6,13 +6,12 @@ import type { ActiveFlowRecord } from "../../stores/session";
 import { toCashBase } from "../../utils/cash";
 import type { RequestRef } from "../../utils/request-index";
 import { progressProviderForSource, resolveFundingProgressSnapshot } from "../progress";
-import { CRYPTO_SOURCE_ID, isMeldSourceId } from "../source-ids";
 import {
   DEFAULT_DEPOSIT_WINDOW_MS,
   DEPOSIT_EXPIRED_REASON,
   effectiveSourceId,
+  railProviderOf,
   routeOf,
-  type RailState,
   type RequestFailure,
   type RequestRecord,
   type RequestStatus,
@@ -74,7 +73,7 @@ function upgradeLegacyRecord(raw: ActiveFlowRecord, ref: RequestRef, now: number
     },
     status,
     rail: {
-      provider: providerOf(sourceId),
+      provider: railProviderOf(sourceId),
       status: "waiting",
       stage: "waiting",
       updatedAt: raw.startedAt,
@@ -113,6 +112,3 @@ function legacyStatus(
   }
   return { status: { kind: "awaiting-deposit" } };
 }
-
-const providerOf = (sourceId: string): RailState["provider"] =>
-  isMeldSourceId(sourceId) ? "meld" : sourceId === CRYPTO_SOURCE_ID ? "manual" : "chainflip";

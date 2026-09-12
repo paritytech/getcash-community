@@ -56,6 +56,7 @@ import {
   type Harness,
 } from "@getsome/testing";
 import { NETWORK } from "./chainflip-backend";
+import type { WorkerHandoffPayload } from "../app/funding/requests/model";
 
 const NATIVE_DECIMALS = 10;
 const BITCOIN_NETWORK: BitcoinNetwork = NETWORK === "mainnet" ? "mainnet" : "testnet";
@@ -439,6 +440,37 @@ export interface MockCoinageWorld extends RefundKeyHold {
   harness: Harness;
   rail: ChainflipRail;
   storage: StorageAdapter;
+  /** The hand-off a worker would get for this request; the chain fields are blank offline. */
+  handoffPayload(): Promise<WorkerHandoffPayload>;
+}
+
+/**
+ * Builds the worker hand-off once per world. The deposit deadline is read from the session
+ * after its persisted slot is hydrated, exactly when the hand-off is sent; a failed build is
+ * retried by the next call.
+ */
+function handoffPayloadOnce(
+  session: PaymentSession<never>,
+  fields: () => Promise<Omit<WorkerHandoffPayload, "depositExpiresAt">>,
+): () => Promise<WorkerHandoffPayload> {
+  let payload: Promise<WorkerHandoffPayload> | null = null;
+  return () => {
+    if (!payload) {
+      const build = (async () => {
+        const rest = await fields();
+        await session.ready;
+        const state = session.getState();
+        const depositExpiresAt =
+          state.phase === "awaiting-deposit" ? (state.deposit.expiresAt ?? 0) : 0;
+        return { ...rest, depositExpiresAt };
+      })();
+      payload = build;
+      build.catch(() => {
+        if (payload === build) payload = null;
+      });
+    }
+    return payload;
+  };
 }
 
 /** Deterministic 32-byte seed from a label, for mock mode. */
@@ -491,7 +523,22 @@ export async function createMockCoinageSession(
     sourceId: args.sourceId,
   });
   const refund = holdRefundKey(session, storage, args.sourceId, tradeN, refundKey);
-  return { session, handoff, harness, rail, storage, ...refund };
+  // The burner as the live world derives it: the entropy port's seed for the trade's label.
+  const burnerAddress = deriveKeypairWithSecret(
+    await entropy.deriveSeed(tradeEntropyLabel(args.sourceId, tradeN)),
+  ).address;
+  const handoffPayload = handoffPayloadOnce(session, async () => ({
+    label: tradeEntropyLabelString(args.sourceId, tradeN),
+    burnerAddress,
+    settleAmount: args.amount.toString(),
+    underlyingAssetId: 0,
+    peopleParaId: 0,
+    assetHubGenesis: "",
+    peopleGenesis: "",
+    remoteFeeBuffer: "0",
+    keepNativeForFees: "0",
+  }));
+  return { session, handoff, harness, rail, storage, ...refund, handoffPayload };
 }
 
 export interface CoinageWorld extends RefundKeyHold {
@@ -516,6 +563,8 @@ export interface CoinageWorld extends RefundKeyHold {
     /** The worker claimed the CASH into the purse; `amount` is what it took. */
     onClaimed?: (amount: bigint) => void;
   }): Promise<void>;
+  /** The hand-off `runFunding` sends, built once after the persisted slot is hydrated. */
+  handoffPayload(): Promise<WorkerHandoffPayload>;
   /** The burner's native balance on Asset Hub at the best block. */
   readBurnerNativeOnAh(): Promise<bigint>;
   /** The burner's recovery secret (0x hex mini-secret), importable into a wallet as a raw seed. */
@@ -832,6 +881,25 @@ export async function createCoinageSession(
     });
   }
 
+  // The hand-off, shared by the request's record and the worker call.
+  const handoffPayload = handoffPayloadOnce(session, async () => {
+    const { ASSET_HUB_GENESIS, PEOPLE_GENESIS } = await import("./host-chain");
+    return {
+      label: entropyLabelString,
+      // The worker derives its own address from the label and refuses the hand-off if the two
+      // differ.
+      burnerAddress: burnerKey.address,
+      settleAmount: args.amount.toString(),
+      underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
+      peopleParaId: PASEO_PEOPLE_PARA_ID,
+      assetHubGenesis: ASSET_HUB_GENESIS,
+      peopleGenesis: PEOPLE_GENESIS,
+      // The same live estimates that sized the deposit.
+      remoteFeeBuffer: remoteFeeBuffer.toString(),
+      keepNativeForFees: keepNativeForFees.toString(),
+    };
+  });
+
   // Single-flight while running, resettable after failure. The stop signal ends the poll on
   // dispose.
   const stop = { aborted: false };
@@ -841,30 +909,10 @@ export async function createCoinageSession(
       const run = (async () => {
         // The worker drives every submit. This page hands the session over once and then only
         // reads the job back.
-        const { ASSET_HUB_GENESIS, PEOPLE_GENESIS } = await import("./host-chain");
-        // The rail's deposit deadline, read once the persisted slot is hydrated.
-        await session.ready;
-        const state = session.getState();
-        const depositExpiresAt =
-          state.phase === "awaiting-deposit" ? (state.deposit.expiresAt ?? 0) : 0;
         await runFundingViaWorker({
           worker: args.worker,
           sessionId: workerSessionId(args.sourceId, tradeN),
-          handoff: {
-            label: entropyLabelString,
-            // The worker derives its own address from the label and refuses the hand-off if the two
-            // differ.
-            burnerAddress: burnerKey.address,
-            depositExpiresAt,
-            settleAmount: args.amount.toString(),
-            underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
-            peopleParaId: PASEO_PEOPLE_PARA_ID,
-            assetHubGenesis: ASSET_HUB_GENESIS,
-            peopleGenesis: PEOPLE_GENESIS,
-            // The same live estimates that sized the deposit.
-            remoteFeeBuffer: remoteFeeBuffer.toString(),
-            keepNativeForFees: keepNativeForFees.toString(),
-          },
+          handoff: { ...(await handoffPayload()) },
           stop,
           hooks,
         });
@@ -884,6 +932,7 @@ export async function createCoinageSession(
     sourceId: args.sourceId,
     tradeN,
     runFunding,
+    handoffPayload,
     async readBurnerNativeOnAh() {
       const api = await assetHubApi();
       const account = await api.query.System.Account.getValue(burnerKey.address, { at: "best" });

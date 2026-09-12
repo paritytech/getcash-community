@@ -310,9 +310,11 @@ function applyWorker(record: RequestRecord, at: number, job: WorkerJobView | nul
 
 function applyProviderResult(record: RequestRecord, observation: ProviderResult): RequestRecord {
   const { at, result } = observation;
+  // The record's own rail keeps its provider; a poll never rewrites it (a manual-rail record
+  // stays manual under a Chainflip-shaped failure report).
   const rail = mergeRail(
     record.rail,
-    railFromSwapStatus(observation.provider, result, at, observation.delayed),
+    railFromSwapStatus(record.rail.provider, result, at, observation.delayed),
   );
   let next = witnessed({ ...record, rail }, { provider: { status: result.status, at } });
   if (rail.stage !== record.rail.stage || rail.status !== record.rail.status) {
@@ -335,11 +337,15 @@ function applyProviderResult(record: RequestRecord, observation: ProviderResult)
     rankOf(next) === 0 &&
     !atSideExit(next)
   ) {
-    return failed(next, at, {
+    // A refund-like failure marks the record refunded, as core's own failure does.
+    const refundLike = rail.failure.kind === "refunded" || rail.failure.kind === "refund-failed";
+    const refunded = refundLike ? true : next.refunded;
+    return failed(refunded === undefined ? next : { ...next, refunded }, at, {
       kind: rail.failure.kind,
       step: "deposit",
       message: rail.failure.message,
       recoverable: false,
+      ...(refunded === undefined ? {} : { refunded }),
     });
   }
   return next;
