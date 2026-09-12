@@ -13,12 +13,15 @@ export {
 } from "./pipeline";
 export type { FundingStep, TickState } from "./pipeline";
 export {
-  buildSelfFundingTeleport,
-  estimateTeleportFeesCash,
-  reserveForDispatchFee,
-  TELEPORT_MAX_WEIGHT,
-} from "./teleport";
-export type { Pool, TeleportFeesCash } from "./teleport";
+  buildFundingProgram,
+  destinationEarmark,
+  dryRunFundingProgram,
+  estimateDestinationFeeCash,
+  estimateFundingProgramFees,
+  FUNDING_PROGRAM_MAX_WEIGHT,
+} from "./funding-program";
+export type { FundingProgramFees, Pool } from "./funding-program";
+export { describeDispatchError } from "./dispatch-error";
 export { createManualRail } from "./manual-rail";
 export type { ManualRailOptions } from "./manual-rail";
 export { PASEO_ASSET_HUB_PARA_ID, PASEO_PEOPLE_PARA_ID, PASEO_UNDERLYING_ASSET_ID } from "./paseo";

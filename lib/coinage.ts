@@ -506,13 +506,14 @@ export interface CoinageWorld extends RefundKeyHold {
   /** This request's trade number; pass it back as `tradeN` to re-open the request. */
   tradeN: number;
   /**
-   * Runs the pool funding leg in the worker: native deposit on Asset Hub, swap to CASH, move
-   * to People, claim into the purse. Single-flight; resolves when the worker reports the claim.
+   * Runs the pool funding leg in the worker: native deposit on Asset Hub, converted to CASH and
+   * teleported to People in one XCM, claim into the purse. Single-flight; resolves when the
+   * worker reports the claim.
    */
   runFunding(hooks?: {
     onStep?: (step: FundingStep) => void;
     onTransientError?: (error: unknown) => void;
-    onTx?: (info: { call: "swap" | "xcm"; txHash: string; block?: number }) => void;
+    onTx?: (info: { call: "swap"; txHash: string; block?: number }) => void;
     /** The worker claimed the CASH into the purse; `amount` is what it took. */
     onClaimed?: (amount: bigint) => void;
   }): Promise<void>;
@@ -570,7 +571,7 @@ interface WorkerFundingStatus {
   known?: boolean;
   lastError?: string;
   failure?: string;
-  txs?: { call: "swap" | "xcm"; txHash: string; block?: number }[];
+  txs?: { call: "swap"; txHash: string; block?: number }[];
   /** The worker's claim of the landed CASH into the purse. */
   claim?: WorkerClaim | null;
 }
@@ -602,7 +603,7 @@ export async function runFundingViaWorker(input: {
   hooks?: {
     onStep?: (step: FundingStep) => void;
     onTransientError?: (error: unknown) => void;
-    onTx?: (info: { call: "swap" | "xcm"; txHash: string; block?: number }) => void;
+    onTx?: (info: { call: "swap"; txHash: string; block?: number }) => void;
     /** The worker claimed the CASH into the purse: the purchase is complete. */
     onClaimed?: (amount: bigint) => void;
   };
@@ -753,14 +754,16 @@ export async function createCoinageSession(
         provisionRefundKey(deps, args.sourceId, tradeN, BITCOIN_NETWORK),
       );
 
-  // Size the deposit from live chain reads: the CASH fee buffer for the teleport and the native
-  // the burner keeps for its own extrinsics. The same figures feed the worker hand-off below.
+  // Size the deposit from live chain reads: the CASH over-buy for People's execution fee and the
+  // native the burner keeps for the funding program. The same figures feed the worker hand-off
+  // below.
   const { estimateFundingSizing } = await import("./funding-fees");
   const sizing = await stage(
     "funding sizing estimate",
     20_000,
     estimateFundingSizing({
       ahClient: await connectChain(ASSET_HUB),
+      peopleClient: await connectChain(PEOPLE),
       underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
       peopleParaId: PASEO_PEOPLE_PARA_ID,
       settleAmount: args.amount,

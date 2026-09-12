@@ -41,7 +41,6 @@ function fromPipeline(step: FundingStep | null): number {
     case "done":
       return 4;
     case "swap":
-    case "xcm":
     case "await-arrival":
       return 3;
     default:

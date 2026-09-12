@@ -90,7 +90,7 @@ describe("funding progress transitions", () => {
       at: 300,
     });
     const teleport = advanceFundingProgressSnapshot(conversion, {
-      ...fundingProgressSignalForSharedStep("xcm"),
+      ...fundingProgressSignalForSharedStep("await-arrival"),
       at: 400,
     });
     const sameTeleport = advanceFundingProgressSnapshot(teleport, {
