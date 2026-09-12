@@ -82,7 +82,7 @@ function working(step: "awaiting-consent" | "verifying" | "minting"): PaymentSta
 
 interface Scene {
   name: string;
-  apply: (session: Session, flow: Flow) => void;
+  apply: (session: Session, flow: Flow) => void | Promise<void>;
 }
 
 /** The canned card quote for 50 CASH: the figures the Meld design frames show. */
@@ -441,7 +441,7 @@ export const SCENES: Scene[] = [
         refund: { amount: "5020000", txRef: "7f1c9b2e4d6a8c0f1e3b5d7a9c2e4f6081a3c5e7" },
       } as PaymentState;
       // The panel reads the refund key off the request's world.
-      void createMockCoinageSession({
+      return createMockCoinageSession({
         recipient: DEPOSIT.address,
         amount: 5_000_000n,
         sourceId: "usdt-tron",
@@ -509,10 +509,11 @@ function applyProgress(session: Session) {
   session.foregroundProgress = { startedAt, snapshot };
 }
 
-export function directScene(session: Session, flow: Flow, delta: 1 | -1): string {
+/** Applies the next scene; resolves once its async work, if any, has landed. */
+export async function directScene(session: Session, flow: Flow, delta: 1 | -1): Promise<string> {
   index = (index + delta + SCENES.length) % SCENES.length;
   const scene = SCENES[index]!;
-  scene.apply(session, flow);
+  const settled = scene.apply(session, flow);
   applyProgress(session);
   // The journey's timestamps, staggered three minutes apart from a fixed evening.
   const T0 = Date.parse("2025-05-06T17:53:00");
@@ -521,5 +522,6 @@ export function directScene(session: Session, flow: Flow, delta: 1 | -1): string
   session.milestones = times;
   const label = `${index + 1}/${SCENES.length} ${scene.name}`;
   console.info(`[preview] ${label}`);
+  await settled;
   return label;
 }

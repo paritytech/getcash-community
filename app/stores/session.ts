@@ -20,6 +20,13 @@ import {
 } from "../funding/progress";
 import { createSerialRecordMutator } from "../funding/record-mutation";
 import {
+  getRecordStorage,
+  REQUEST_INDEX_KEY,
+  requestKey,
+  WORKER_JOBS_KEY,
+  type KeyedStorage,
+} from "../funding/requests/storage";
+import {
   createFakeMeldClient,
   createMeldClient,
   createMeldRail,
@@ -61,13 +68,6 @@ import { sourceIdFor } from "~~/lib/config";
 /** Stand-in address for the mock world, which never touches a chain. */
 const DEV_RECIPIENT = "13ENScfFZXQ8avXf6cphack516B8YCjdL4MJbodm7VxK8GE9";
 
-/** Storage key for the index of open request numbers. */
-const REQUEST_INDEX_KEY = "getsome:requests";
-/** Storage key for the worker's funding jobs, keyed `${sourceId}:${tradeN}`. */
-const WORKER_JOBS_KEY = "getsome.funding.jobs";
-/** A record's storage key. Source-qualified when the ref carries a source id, bare otherwise. */
-const requestKey = (ref: RequestRef) =>
-  ref.sourceId ? `getsome:request:${ref.sourceId}:${ref.tradeN}` : `getsome:request:${ref.tradeN}`;
 /** A record's ref, or null when it never got a trade number. */
 const recordRef = (record: ActiveFlowRecord): RequestRef | null =>
   record.tradeN === undefined ? null : requestRefOf(record.sourceId, record.tradeN);
@@ -76,7 +76,7 @@ const sameOptionalRef = (a: RequestRef | undefined, b: RequestRef | undefined) =
   a === undefined || b === undefined ? a === b : sameRequestRef(a, b);
 
 /** Persisted per request; enough to re-open it. */
-interface ActiveFlowRecord {
+export interface ActiveFlowRecord {
   amountHuman: string;
   chain: string;
   asset: string;
@@ -1157,32 +1157,8 @@ export const useSessionStore = defineStore("session", () => {
 
   // Resume across reloads. The record lives on the host's app-scoped storage when hosted, and
   // in plain localStorage in standalone browser mode.
-  interface KeyedStorage {
-    read(key: string): Promise<string | null>;
-    write(key: string, value: string): Promise<void>;
-    clear(key: string): Promise<void>;
-  }
-  let recordStorage: KeyedStorage | null = null;
-  async function flowRecordStorage(): Promise<KeyedStorage> {
-    if (recordStorage) return recordStorage;
-    if (isHosted()) {
-      const { getHostLocalStorage } = await import("@parity/product-sdk-host");
-      const host = await getHostLocalStorage();
-      if (!host) throw new Error("host storage unavailable");
-      recordStorage = {
-        // The host SDK reads an absent key as ""; readers take null as "no record".
-        read: async (key) => (await host.readString(key)) || null,
-        write: (key, value) => host.writeString(key, value),
-        clear: (key) => host.clear(key),
-      };
-    } else {
-      recordStorage = {
-        read: async (key) => localStorage.getItem(key),
-        write: async (key, value) => localStorage.setItem(key, value),
-        clear: async (key) => localStorage.removeItem(key),
-      };
-    }
-    return recordStorage;
+  function flowRecordStorage(): Promise<KeyedStorage> {
+    return getRecordStorage();
   }
 
   // Serialized per storage key; a ref maps to its key through `requestKey`.

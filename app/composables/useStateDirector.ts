@@ -15,9 +15,13 @@ export function useStateDirector() {
   function onDemoKeys(e: KeyboardEvent) {
     if (!e.ctrlKey || !e.shiftKey) return;
     if (e.key === "N") {
-      previewLabel.value = directScene(session, flow, 1);
+      void directScene(session, flow, 1).then((label) => {
+        previewLabel.value = label;
+      });
     } else if (e.key === "P") {
-      previewLabel.value = directScene(session, flow, -1);
+      void directScene(session, flow, -1).then((label) => {
+        previewLabel.value = label;
+      });
     } else if (e.key === "R") {
       window.location.reload();
     } else if (e.key === "F") {
