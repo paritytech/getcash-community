@@ -31,7 +31,7 @@ runs:
         node-version: "22"
 
     - shell: bash
-      run: npm install -g bulletin-deploy@0.16.1
+      run: npm install -g bulletin-deploy@0.18.0
 
     # The release-retry wrapper exits 75 on flake-class failures only (a nonce race, a dropped
     # connection); only those retry.
