@@ -4,6 +4,7 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useMeldHandoff } from "../../../composables/useMeldHandoff";
 import { useVisibilityReconcile } from "../../../composables/useVisibilityReconcile";
+import { isDemoBuild } from "../../../utils/demo";
 import { fundingSelectorConfig } from "../../../funding/config";
 import type { FundingPackageEmits } from "../../../funding/handoff";
 import { meldRequestRef } from "../../../funding/meld-top-ups";
@@ -34,6 +35,14 @@ const canCancel = computed(
 
 async function cancelTopUp() {
   if (await session.cancelTopUp()) emit("back");
+}
+
+/**
+ * Demo Skip: the mock world fakes the deposit; the hosted demo funds the burner from the faucet.
+ */
+function onSkip() {
+  if (session.mock) session.simulateDeposit();
+  else void session.fundFaucet();
 }
 
 onMounted(async () => {
@@ -69,7 +78,31 @@ onUnmounted(() => {
       :back="!waiting && !session.claiming"
       :title="showingWidget ? '' : title"
       @back="emit('back')"
-    />
+    >
+      <template
+        v-if="
+          showingWidget &&
+          isDemoBuild() &&
+          !session.claiming &&
+          (session.canSkipDeposit || session.faucetState !== 'idle')
+        "
+        #trailing
+      >
+        <!-- Skip hides once tapped; a spinner takes its place until the deposit is seen. -->
+        <button
+          v-if="session.canSkipDeposit"
+          type="button"
+          class="rounded-medium px-4 py-3 text-label-l font-normal text-fg-primary transition-colors hover:bg-action-tertiary-hover"
+          @click="onSkip"
+        >
+          Skip
+        </button>
+        <span
+          v-else
+          class="mx-4 my-3 inline-block size-6 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary"
+        />
+      </template>
+    </Toolbar>
 
     <div class="flex min-h-0 flex-1 flex-col" :class="showingWidget ? '' : 'px-6 pt-6'">
       <div v-if="waiting" class="flex flex-col items-center gap-4 pt-16">
