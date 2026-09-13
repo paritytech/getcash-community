@@ -638,13 +638,36 @@ export interface WorkerClaim {
 const WORKER_READY_MS = 20_000;
 
 /**
+ * Hands one session to the worker: waits for its heartbeat up to `readyMs`, then sends the
+ * `startFunding` call. Returns without sending when `stop` aborts during the wait; throws when no
+ * worker comes up. A refused or unanswered hand-off throws a WorkerCallError; no job exists either
+ * way.
+ */
+export async function sendHandoff(
+  worker: WorkerLike,
+  sessionId: string,
+  payload: WorkerHandoffPayload,
+  options?: { readyMs?: number; stop?: { aborted: boolean } },
+): Promise<void> {
+  const readyBy = Date.now() + (options?.readyMs ?? WORKER_READY_MS);
+  while (!worker.isAvailable() && Date.now() < readyBy) {
+    if (options?.stop?.aborted) return;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  if (!worker.isAvailable()) {
+    throw new Error("the funding worker is not running on this host; the purchase cannot start");
+  }
+  await worker.call("startFunding", { sessionId, ...payload });
+}
+
+/**
  * Hands the session to the worker once, then polls the job back until the worker reports
  * the CASH claimed into the purse. Each poll round also nudges tickAllFunding.
  */
 export async function runFundingViaWorker(input: {
   worker: WorkerLike;
   sessionId: string;
-  handoff: Record<string, string | number>;
+  handoff: WorkerHandoffPayload;
   stop: { aborted: boolean };
   pollMs?: number;
   readyMs?: number;
@@ -656,18 +679,8 @@ export async function runFundingViaWorker(input: {
     onClaimed?: (amount: bigint) => void;
   };
 }): Promise<void> {
-  const readyBy = Date.now() + (input.readyMs ?? WORKER_READY_MS);
-  while (!input.worker.isAvailable() && Date.now() < readyBy) {
-    if (input.stop.aborted) return;
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-  if (!input.worker.isAvailable()) {
-    throw new Error("the funding worker is not running on this host; the purchase cannot start");
-  }
-  // A refused or unanswered hand-off throws a WorkerCallError; no job exists either way.
-  const handOff = () =>
-    input.worker.call("startFunding", { sessionId: input.sessionId, ...input.handoff });
-  await handOff();
+  const ready = { stop: input.stop, readyMs: input.readyMs ?? WORKER_READY_MS };
+  await sendHandoff(input.worker, input.sessionId, input.handoff, ready);
 
   const pollMs = input.pollMs ?? 6_000;
   let lastStep: string | null = null;
@@ -688,7 +701,7 @@ export async function runFundingViaWorker(input: {
     if (status?.known === false) {
       // The worker's store has no record: re-send the idempotent hand-off. A refusal is final.
       try {
-        await handOff();
+        await sendHandoff(input.worker, input.sessionId, input.handoff, ready);
       } catch (error) {
         if (isRefusal(error)) throw error;
         input.hooks?.onTransientError?.(error);

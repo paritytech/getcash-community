@@ -4,6 +4,7 @@
 
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef } from "vue";
+import type { SourceId } from "@getsome/core";
 import {
   advanceFundingProgressSnapshot,
   createFundingProgressSnapshot,
@@ -40,7 +41,7 @@ import {
 } from "../funding/requests/storage";
 import { legacyRequestStatus } from "../funding/requests/views";
 import { CRYPTO_SOURCE_ID } from "../funding/source-ids";
-import { fmtCash } from "../utils/cash";
+import { fmtCash, toCashBase } from "../utils/cash";
 import {
   parseRequestIndex,
   parseRequestRefKey,
@@ -50,8 +51,9 @@ import {
   serializeRequestIndex,
   type RequestRef,
 } from "../utils/request-index";
-import { workerSessionId } from "~~/lib/coinage";
+import { sendHandoff, workerSessionId } from "~~/lib/coinage";
 import { SOURCE_CHAINS, sourceIdFor } from "~~/lib/config";
+import { isHosted } from "~~/lib/host-account";
 import type { ActiveFlowRecord, RequestStatus as LegacyRequestStatus } from "./session";
 
 export interface RequestEntry {
@@ -60,6 +62,8 @@ export interface RequestEntry {
   persistError?: string;
   /** The last host read's failure; cleared by the next successful read. */
   readError?: string;
+  /** The last hand-off's failure, a send or a build; cleared by the next successful send. */
+  handoffError?: string;
   /** The memory record is ahead of the host store. */
   pendingWrite: boolean;
 }
@@ -174,6 +178,26 @@ const isWorkerDriven = (record: RequestRecord): boolean =>
 /** Rank 0–3, or a side exit the worker's verdict can still move: failed or expired. */
 const followsWorker = (record: RequestRecord): boolean =>
   isWorkerDriven(record) || record.status.kind === "failed" || record.status.kind === "expired";
+
+/** The rail stages at or past the buyer's payment. */
+const PAID_STAGES = new Set<RequestRecord["rail"]["stage"]>([
+  "received",
+  "processing",
+  "delivered",
+]);
+/** The rail reported the deposit, or the buyer finished the provider's widget: the request no
+ *  longer expires, however long the funds take to land. */
+const isPaid = (record: RequestRecord): boolean =>
+  PAID_STAGES.has(record.rail.stage) || record.meldSubmittedAt !== undefined;
+
+/** Why the worker must be handed the request again, or null when it has the job in hand: it has
+ *  no job for it (`unknown`), or it expired the job after the buyer paid (`expired`). */
+function lostHandoff(record: RequestRecord): "unknown" | "expired" | null {
+  const { worker } = record.witnesses;
+  if (worker === undefined || !isWorkerDriven(record)) return null;
+  if (!worker.known) return "unknown";
+  return worker.failure === "expired" && isPaid(record) ? "expired" : null;
+}
 
 /** What this surface reads of a worker's stored job record. */
 type WorkerJob = {
@@ -607,6 +631,19 @@ export const useRequestsStore = defineStore("requests", () => {
     });
   }
 
+  /** Stores the hand-off a legacy record was started without, so no later re-send needs a world.
+   *  Observation-free, like `flag`. */
+  function setHandoff(ref: RequestRef, handoff: WorkerHandoffPayload): Promise<void> {
+    const key = requestRefKey(ref);
+    if (entries.value[key] === undefined) return Promise.resolve();
+    return enqueue(key, async () => {
+      const entry = entries.value[key];
+      if (entry === undefined) return;
+      const { record } = entry;
+      await commit(key, { ...record, rev: record.rev + 1, handoff }, false);
+    });
+  }
+
   /** Deletes the record from the host store, memory and the index: the tombstone reap's only
    *  deletion. */
   function remove(ref: RequestRef): Promise<void> {
@@ -664,6 +701,81 @@ export const useRequestsStore = defineStore("requests", () => {
       );
     }
     await Promise.all(observed);
+  }
+
+  /** The key of the request on screen. Its own world hands it to the worker; the hand-off step
+   *  leaves it alone. */
+  const foreground = ref<RequestKey | null>(null);
+  function setForeground(ref: RequestRef | null): void {
+    foreground.value = ref === null ? null : requestRefKey(ref);
+  }
+
+  /** Reconcile step 6: the worker is handed every open request it lost, off screen only. A job it
+   *  has no record of gets the request's stored hand-off as it is; a job it expired after the
+   *  buyer paid gets it with a fresh deadline, because the worker keeps the hand-off's own; a
+   *  legacy record without a hand-off builds one hosted world to obtain it, stores it and lets the
+   *  world go. Nothing here observes the record: the worker's answer arrives with the next job
+   *  read. A failure is noted on the entry and the next reconcile tries again. */
+  async function handOffLostRequests(now: number): Promise<void> {
+    if (!isHosted()) return;
+    const lost = records.value.flatMap((record) => {
+      const reason = lostHandoff(record);
+      return reason === null || requestRefKey(record.ref) === foreground.value
+        ? []
+        : [{ record, reason }];
+    });
+    if (lost.length === 0) return;
+    const [{ getStorageWorkerManager }, { createHostedCoinageWorld, ensureChainSubmitGrant }] =
+      await Promise.all([import("~~/lib/worker-rpc"), import("~~/lib/coinage-live")]);
+    // The worker submits on the user's behalf; the grant is requested before the first send.
+    await ensureChainSubmitGrant();
+    const worker = getStorageWorkerManager();
+
+    async function obtainHandoff(record: RequestRecord): Promise<WorkerHandoffPayload> {
+      const { ref } = record;
+      const amount = toCashBase(record.amountHuman);
+      if (amount === null) throw new Error(`'${record.amountHuman}' is not a CASH amount`);
+      const world = await createHostedCoinageWorld({
+        amount,
+        tradeN: ref.tradeN,
+        sourceId: effectiveSourceId(ref) as SourceId,
+      });
+      try {
+        const handoff = await world.handoffPayload();
+        await setHandoff(ref, handoff);
+        return handoff;
+      } finally {
+        world.dispose();
+      }
+    }
+    // Worlds are built one at a time; a failed build never blocks the next.
+    let building: Promise<unknown> = Promise.resolve();
+    function buildHandoff(record: RequestRecord): Promise<WorkerHandoffPayload> {
+      const run = () => obtainHandoff(record);
+      const next = building.then(run, run);
+      building = next.catch(() => {});
+      return next;
+    }
+
+    await Promise.all(
+      lost.map(async ({ record, reason }) => {
+        const { ref } = record;
+        const key = requestRefKey(ref);
+        try {
+          const stored = record.handoff ?? (await buildHandoff(record));
+          const payload =
+            reason === "expired"
+              ? { ...stored, depositExpiresAt: now + DEFAULT_DEPOSIT_WINDOW_MS }
+              : stored;
+          await sendHandoff(worker, workerSessionId(effectiveSourceId(ref), ref.tradeN), payload);
+          patchEntry(key, ({ handoffError: _cleared, ...sent }) => sent);
+        } catch (e) {
+          const handoffError = messageOf(e);
+          console.warn(`[requests] hand-off for ${key} failed: ${handoffError}`);
+          patchEntry(key, (current) => ({ ...current, handoffError }));
+        }
+      }),
+    );
   }
 
   // The job poll: one blob read every JOB_POLL_MS while the page is visible and a request is at
@@ -835,6 +947,12 @@ export const useRequestsStore = defineStore("requests", () => {
       console.warn(`[requests] reconcile (${reason}): worker jobs step failed: ${messageOf(e)}`);
     }
 
+    try {
+      await handOffLostRequests(now);
+    } catch (e) {
+      console.warn(`[requests] reconcile (${reason}): hand-off step failed: ${messageOf(e)}`);
+    }
+
     await Promise.all(
       records.value
         .filter((record) => rankOf(record) === 0)
@@ -859,7 +977,10 @@ export const useRequestsStore = defineStore("requests", () => {
     observe,
     advanceProgress,
     flag,
+    setHandoff,
     remove,
+    foreground,
+    setForeground,
     hydrateFromMirror,
     writeMirror,
     reconcile,

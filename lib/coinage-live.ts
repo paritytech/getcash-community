@@ -95,7 +95,7 @@ export async function createHostedCoinageWorld(args: {
 
 // Requests the ChainSubmit permission once before the hand-off. A denial is logged, not fatal.
 let chainSubmitGranted: Promise<void> | null = null;
-function ensureChainSubmitGrant(): Promise<void> {
+export function ensureChainSubmitGrant(): Promise<void> {
   chainSubmitGranted ??= (async () => {
     try {
       const r = await requestPermission({ tag: "ChainSubmit", value: undefined });

@@ -402,6 +402,7 @@ export const useSessionStore = defineStore("session", () => {
     milestones.value = {};
     foregroundProgress.value = null;
     foregroundRef = null;
+    requests.setForeground(null);
     clearDepositExpiry();
     // No reconcile here; reset(), start(), openRequest() and boot reconcile.
   }
@@ -474,156 +475,18 @@ export const useSessionStore = defineStore("session", () => {
       });
   }
 
-  // Requests that are open but not on screen. The worker drives every open request; a
-  // background world only reads the worker's job back and marks the record settled on claim.
-  const background = new Map<string, HostedCoinageWorld>(); // by requestRefKey
   /** What each open request is doing, derived from its record. */
   const requestStatus = computed(() => requests.statuses);
   /** The open requests, newest first. */
   const requestList = computed(() => requests.list);
-  let reconciling: Promise<void> | null = null;
-  let reconcileAgain = false;
-  /**
-   * The request the foreground is adopting. Not on screen yet, but not driven off screen either.
-   */
-  let adopting: RequestRef | null = null;
 
-  /** Requests whose background world is still being built. */
-  const building = new Set<string>(); // by requestRefKey
-  /** What the last reconcile wanted driven. A build checks here before starting a pipeline. */
-  let lastWanted = new Set<string>(); // by requestRefKey
-
-  async function driveInBackground(ref: RequestRef, amount: bigint): Promise<void> {
-    const key = requestRefKey(ref);
-    const { tradeN, sourceId } = ref;
-    if (background.has(key) || building.has(key)) return;
-    building.add(key);
-    try {
-      const { createHostedCoinageWorld } = await import("~~/lib/coinage-live");
-      // Bounded like the foreground build. The source id derives the burner under the id the
-      // request was funded on.
-      const world = await step(
-        `create background session #${tradeN}`,
-        90_000,
-        createHostedCoinageWorld({
-          amount,
-          tradeN,
-          ...(sourceId ? { sourceId: sourceId as SourceId } : {}),
-        }),
-      );
-      // Re-check: the foreground may have adopted this request, or a later reconcile dropped it.
-      if (
-        background.has(key) ||
-        (foregroundRef !== null && sameRequestRef(foregroundRef, ref)) ||
-        (adopting !== null && sameRequestRef(adopting, ref)) ||
-        !lastWanted.has(key)
-      ) {
-        world.dispose();
-        return;
-      }
-      // A slot already at `done` was claimed on screen before the record could say so. Record
-      // the finish instead of driving it.
-      if (world.session.peek()?.phase === "done") {
-        console.info(`[coinage] request #${tradeN}: already claimed, recording the finish`);
-        world.dispose();
-        markSettled(ref, null);
-        return;
-      }
-      background.set(key, world);
-      console.warn(`[coinage] request #${tradeN}: funding in the background`);
-      void world
-        .runFunding({
-          onStep: (s) => {
-            console.warn(`[coinage] request #${tradeN} funding step: ${s}`);
-            // 'await-native' means the deposit has not arrived; everything after it means
-            // money is moving.
-            recordSharedFundingStep(ref, s);
-          },
-          onTransientError: (e) =>
-            console.warn(
-              `[coinage] request #${tradeN} transient: ${e instanceof Error ? e.message : String(e)}`,
-            ),
-          onClaimed: (amount) => {
-            console.warn(
-              `[coinage] request #${tradeN}: the worker claimed ${amount} into the purse`,
-            );
-            markSettled(ref, amount);
-          },
-        })
-        // Resolving means the worker claimed or this world was stopped; only a rejection says
-        // anything about the request.
-        .catch((e: unknown) => {
-          const reason = e instanceof Error ? e.message : String(e);
-          console.warn(`[coinage] request #${tradeN} funding failed: ${reason}`);
-          recordDriverFailure(ref, reason);
-        });
-    } catch (e) {
-      // A background request that cannot be built is not an error the user is looking at.
-      console.warn(
-        `[coinage] request #${tradeN}: background driver failed to start: ${e instanceof Error ? e.message : String(e)}`,
-      );
-    } finally {
-      building.delete(key);
-    }
-  }
-
-  function stopBackground(ref: RequestRef) {
-    stopBackgroundByKey(requestRefKey(ref));
-  }
-  function stopBackgroundByKey(key: string) {
-    const world = background.get(key);
-    if (!world) return;
-    background.delete(key);
-    world.dispose(); // aborts its pipeline; the chain clients are shared and stay up
-  }
-
-  /** Gives every open request except the one on screen a driver. Single-flight: a caller arriving
-   *  mid-run sets a flag and the run repeats with the current records. */
-  function reconcileBackground(): Promise<void> {
-    if (reconciling) {
-      reconcileAgain = true;
-      return reconciling;
-    }
-    reconciling = (async () => {
-      try {
-        if (!isHosted()) return;
-        do {
-          reconcileAgain = false;
-          // The reconcile applies the worker's jobs to the records before any poller is built.
-          await requests.reconcile("refresh");
-          const records = requests.list;
-          const wanted = new Map<string, { ref: RequestRef; amount: bigint }>();
-          for (const record of records) {
-            const amount = toCashBase(record.amountHuman);
-            const ref = recordRef(record);
-            if (ref === null || amount === null) continue;
-            const status = requests.get(ref)?.status.kind;
-            // History: finished, nothing to drive.
-            if (record.settledAt !== undefined || status === "settled") continue;
-            if (status === "failed") continue; // the worker gave up on it; a reopen retries
-            // On screen, or about to be: the foreground world drives it.
-            if (foregroundRef !== null && sameRequestRef(foregroundRef, ref)) continue;
-            if (adopting !== null && sameRequestRef(adopting, ref)) continue;
-            // An unfunded request whose deposit window closed gets no driver; the reconcile's
-            // clock has already expired its record.
-            if (status === "expired") continue;
-            wanted.set(requestRefKey(ref), { ref, amount });
-          }
-          for (const key of [...background.keys()]) {
-            if (!wanted.has(key)) stopBackgroundByKey(key);
-          }
-          lastWanted = new Set(wanted.keys());
-          // Builds run in parallel and outside this lock; `building` stops a repeat reconcile
-          // from starting a second build.
-          for (const { ref, amount } of wanted.values()) void driveInBackground(ref, amount);
-        } while (reconcileAgain);
-        // Single-flighted on its own: the sweep does chain reads outside the reconcile lock.
-        void sweepTombstones();
-      } finally {
-        reconciling = null;
-      }
-    })();
-    return reconciling;
+  /** Brings the records up to date with the host and the worker's jobs; the store's reconcile
+   *  hands the worker any open request it lost. Then sweeps the tombstones. */
+  async function reconcileBackground(): Promise<void> {
+    if (!isHosted()) return;
+    await requests.reconcile("refresh");
+    // Single-flighted on its own: the sweep does chain reads outside the reconcile lock.
+    void sweepTombstones();
   }
 
   /** The hosted world up to hydration, shared by the fresh-quote and resume paths. Returns null
@@ -1085,6 +948,7 @@ export const useSessionStore = defineStore("session", () => {
     fundsSeen.value = false; // a fresh request genuinely awaits its first deposit
     // The request's identity for every record write from here on (null in the mock world).
     foregroundRef = live.value ? requestRefOf(live.value.sourceId, live.value.tradeN) : null;
+    requests.setForeground(foregroundRef);
     const ref = foregroundRef ?? undefined;
     foregroundProgress.value = {
       ...(ref === undefined ? {} : { ref }),
@@ -1111,8 +975,7 @@ export const useSessionStore = defineStore("session", () => {
     quoteError.value = null;
     resuming.value = false;
     method.value = "crypto";
-    // The record survives: its burner may hold funds. The request picks up a background driver
-    // here.
+    // The record survives: its burner may hold funds, and the worker keeps its job.
     void reconcileBackground();
   }
 
@@ -1422,7 +1285,7 @@ export const useSessionStore = defineStore("session", () => {
     });
     console.warn(`[coinage] request #${ref.tradeN} tombstoned (cancelled; deposit window watched)`);
     void cancelWorkerJob(workerSessionId(ref.sourceId, ref.tradeN));
-    void reconcileBackground(); // drops the row and stops any background driver
+    void reconcileBackground(); // drops the row
   }
 
   /** Tells the worker the request is gone. Best effort. */
@@ -1546,14 +1409,11 @@ export const useSessionStore = defineStore("session", () => {
       return candidate !== null && sameRequestRef(candidate, ref);
     });
     if (!record) return false;
-    return enterRequest(record); // stops its background driver as it claims it
+    return enterRequest(record);
   }
 
   async function enterRequest(record: RequestListRow): Promise<boolean> {
-    // Claim it before teardownWorld, whose reconcile would otherwise drive it off screen.
     const ref = recordRef(record);
-    adopting = ref;
-    if (ref !== null) stopBackground(ref);
     resuming.value = true;
     setAmount(record.amountHuman);
     // Restore the pay method from the persisted source id.
@@ -1568,6 +1428,7 @@ export const useSessionStore = defineStore("session", () => {
     try {
       teardownWorld();
       foregroundRef = ref; // after teardown, which clears it
+      requests.setForeground(ref);
       foregroundProgress.value = {
         ...(ref === null ? {} : { ref }),
         startedAt: record.startedAt,
@@ -1674,7 +1535,6 @@ export const useSessionStore = defineStore("session", () => {
       reset();
       return false;
     } finally {
-      adopting = null;
       resuming.value = false;
     }
   }
