@@ -24,9 +24,8 @@ import {
   routeOf,
   TOMBSTONE_GRACE_MS,
   type RequestRecord,
-  type WorkerJobView,
 } from "../funding/requests/model";
-import { getRecordStorage, WORKER_JOBS_KEY, type KeyedStorage } from "../funding/requests/storage";
+import { fundingStepOf } from "../funding/requests/views";
 import {
   createFakeMeldClient,
   createMeldClient,
@@ -454,7 +453,7 @@ export const useSessionStore = defineStore("session", () => {
         onClaimed: (amount) => {
           console.warn(`[coinage] funding: the worker claimed ${amount} into the purse`);
           // The record first, so the list is right whatever core makes of the resume below.
-          markSettled(ref, claimedOf(amount));
+          markSettled(ref, amount);
           // The worker claims in the tick the CASH lands. A resume re-enters probe-first and
           // isSettled answers with the worker's claim.
           world.session.resume().catch((e: unknown) => {
@@ -469,7 +468,9 @@ export const useSessionStore = defineStore("session", () => {
         const reason = e instanceof Error ? e.message : String(e);
         console.error(`[coinage] funding: failed: ${reason}`);
         fundingError.value = reason;
-        recordFundingProgress(ref, { observation: { kind: "failed" } });
+        // The screen shows the failure now; the record waits for the worker's verdict.
+        advanceForegroundProgress(ref, { observation: { kind: "failed" } }, Date.now());
+        recordDriverFailure(ref, reason);
       });
   }
 
@@ -546,7 +547,7 @@ export const useSessionStore = defineStore("session", () => {
             console.warn(
               `[coinage] request #${tradeN}: the worker claimed ${amount} into the purse`,
             );
-            markSettled(ref, claimedOf(amount));
+            markSettled(ref, amount);
           },
         })
         // Resolving means the worker claimed or this world was stopped; only a rejection says
@@ -554,7 +555,7 @@ export const useSessionStore = defineStore("session", () => {
         .catch((e: unknown) => {
           const reason = e instanceof Error ? e.message : String(e);
           console.warn(`[coinage] request #${tradeN} funding failed: ${reason}`);
-          recordFundingProgress(ref, { observation: { kind: "failed" } });
+          recordDriverFailure(ref, reason);
         });
     } catch (e) {
       // A background request that cannot be built is not an error the user is looking at.
@@ -588,10 +589,9 @@ export const useSessionStore = defineStore("session", () => {
         if (!isHosted()) return;
         do {
           reconcileAgain = false;
+          // The reconcile applies the worker's jobs to the records before any poller is built.
           await requests.reconcile("refresh");
           const records = requests.list;
-          // Apply the worker's jobs to the records before any poller is built.
-          const settled = await settleFromWorkerJobs(records);
           const wanted = new Map<string, { ref: RequestRef; amount: bigint }>();
           for (const record of records) {
             const amount = toCashBase(record.amountHuman);
@@ -600,8 +600,7 @@ export const useSessionStore = defineStore("session", () => {
             const status = requests.get(ref)?.status.kind;
             // History: finished, nothing to drive.
             if (record.settledAt !== undefined || status === "settled") continue;
-            if (settled.claimed.has(requestRefKey(ref))) continue; // just marked settled above
-            if (settled.heldBack.has(requestRefKey(ref))) continue; // failed; a reopen retries
+            if (status === "failed") continue; // the worker gave up on it; a reopen retries
             // On screen, or about to be: the foreground world drives it.
             if (foregroundRef !== null && sameRequestRef(foregroundRef, ref)) continue;
             if (adopting !== null && sameRequestRef(adopting, ref)) continue;
@@ -1117,12 +1116,6 @@ export const useSessionStore = defineStore("session", () => {
     void reconcileBackground();
   }
 
-  // The worker's job blob lives beside the records: on the host's app-scoped storage when
-  // hosted, in plain localStorage in standalone browser mode.
-  function flowRecordStorage(): Promise<KeyedStorage> {
-    return getRecordStorage();
-  }
-
   /** The source the request on screen runs under: the live world's, or in the browser the one
    *  the chosen method implies. */
   function foregroundSourceId(): string | undefined {
@@ -1224,6 +1217,24 @@ export const useSessionStore = defineStore("session", () => {
         phase: step,
         done: step === "done",
         fundsSeenAt: step === "await-native" ? null : at,
+        lastTickAt: at,
+        claim: null,
+      },
+    });
+  }
+
+  /** A driver's run rejected: the worker's own sighting of the request, with no verdict. The
+   *  reducer keeps the status; the next read of the job blob carries the worker's verdict. */
+  function recordDriverFailure(ref: RequestRef, reason: string): void {
+    const at = Date.now();
+    void requests.observe(ref, {
+      source: "worker",
+      at,
+      job: {
+        phase: "failed",
+        done: false,
+        lastError: reason,
+        fundsSeenAt: null,
         lastTickAt: at,
         claim: null,
       },
@@ -1485,105 +1496,6 @@ export const useSessionStore = defineStore("session", () => {
     }
   }
 
-  /** What this surface reads of a worker's stored job record. */
-  type WorkerJob = {
-    phase?: string;
-    done?: boolean;
-    failure?: string;
-    lastError?: string;
-    lastTickAt?: number | null;
-    state?: { fundsSeenAt?: number | null };
-    claim?: { phase?: string; amount?: string; at?: number } | null;
-    txs?: WorkerJobView["txs"];
-  };
-
-  /** Failures the worker cannot get past on its own; re-opening the request is the retry. Every
-   *  other failure re-arms. */
-  const HELD_BACK_FAILURES = new Set(["shortfall", "timeout"]);
-
-  /** The amount a claim credited, or null when the worker recorded none. */
-  function claimedOf(amount: bigint | string | undefined): bigint | null {
-    const value = typeof amount === "bigint" ? amount : amount ? BigInt(amount) : 0n;
-    return value === 0n ? null : value;
-  }
-
-  /** Every worker job, keyed by workerSessionId; {} when there are none. */
-  async function readWorkerJobs(): Promise<Record<string, WorkerJob>> {
-    try {
-      const raw = await (await flowRecordStorage()).read(WORKER_JOBS_KEY);
-      return raw === null ? {} : (JSON.parse(raw) as Record<string, WorkerJob>);
-    } catch {
-      return {};
-    }
-  }
-
-  /** The funding step a job has reached, or null when it has not seen funds. A finished funding
-   *  leg is `done`. */
-  function stepOfJob(job: WorkerJob | undefined): FundingStep | null {
-    if (job?.done) return "done";
-    if (typeof job?.state?.fundsSeenAt !== "number") return null;
-    const phase = job.phase;
-    return phase === "swap" || phase === "xcm" || phase === "await-arrival" ? phase : "swap";
-  }
-
-  /** The job as the record's reducer reads it. */
-  function workerJobView(job: WorkerJob): WorkerJobView {
-    const { claim } = job;
-    return {
-      phase: job.phase ?? "",
-      done: job.done === true,
-      ...(job.failure === undefined ? {} : { failure: job.failure }),
-      ...(job.lastError === undefined ? {} : { lastError: job.lastError }),
-      fundsSeenAt: job.state?.fundsSeenAt ?? null,
-      lastTickAt: job.lastTickAt ?? null,
-      claim:
-        claim && (claim.phase === "claiming" || claim.phase === "claimed")
-          ? {
-              phase: claim.phase,
-              ...(claim.amount === undefined ? {} : { amount: claim.amount }),
-              at: claim.at ?? job.lastTickAt ?? Date.now(),
-            }
-          : null,
-      ...(job.txs === undefined ? {} : { txs: job.txs }),
-    };
-  }
-
-  /** The funding step the worker's job has reached for this request, or null when it has no job
-   *  or has not seen funds. */
-  async function workerFundingStep(ref: RequestRef): Promise<FundingStep | null> {
-    const jobs = await readWorkerJobs();
-    // The same key builder the hand-off used.
-    return stepOfJob(jobs[workerSessionId(ref.sourceId, ref.tradeN)]);
-  }
-
-  /**
-   * Brings the open records up to date with the worker's jobs: each record with a job observes
-   * it, so a claimed job settles its request (returned, and not driven) and a job past the
-   * deposit moves it to the step it reached. Idempotent.
-   */
-  async function settleFromWorkerJobs(
-    records: ActiveFlowRecord[],
-  ): Promise<{ claimed: Set<string>; heldBack: Set<string> }> {
-    const claimed = new Set<string>();
-    const heldBack = new Set<string>();
-    const jobs = await readWorkerJobs();
-    const now = Date.now();
-    const observed: Promise<void>[] = [];
-    for (const record of records) {
-      const ref = recordRef(record);
-      if (ref === null || record.settledAt !== undefined) continue;
-      const job = jobs[workerSessionId(ref.sourceId, ref.tradeN)];
-      if (!job) continue;
-      observed.push(requests.observe(ref, { source: "worker", at: now, job: workerJobView(job) }));
-      if (job.claim?.phase === "claimed") claimed.add(requestRefKey(ref));
-      else if (job.phase === "failed" && HELD_BACK_FAILURES.has(job.failure ?? "")) {
-        heldBack.add(requestRefKey(ref));
-      }
-    }
-    await Promise.all(observed);
-    return { claimed, heldBack };
-  }
-
   /** A claim landed: the request becomes history, with the amount the claim swept. */
   function markSettled(
     ref: RequestRef | undefined = foregroundRef ?? undefined,
@@ -1663,10 +1575,10 @@ export const useSessionStore = defineStore("session", () => {
       };
       // The one timestamp the record knows.
       milestones.value = { 1: record.startedAt };
-      // Two witnesses that a deposit arrived: the record and the worker's job. Either is enough.
-      // A worker-only sighting is recorded as the worker's observation.
-      const workerStep =
-        ref === null || record.funded !== undefined ? null : await workerFundingStep(ref);
+      // Two witnesses that a deposit arrived: the record and the worker's job, which the store's
+      // reconcile has already applied to it. Either is enough.
+      const stored = ref === null || record.funded !== undefined ? undefined : requests.get(ref);
+      const workerStep = stored === undefined ? null : fundingStepOf(stored);
       if (ref !== null && workerStep !== null) recordSharedFundingStep(ref, workerStep);
       fundsSeen.value = record.funded !== undefined || workerStep !== null;
       // A buyer who finished the widget resumes onto the conversion screen.

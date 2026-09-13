@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { projectChainflipTopUps } from "../app/funding/chainflip-top-ups";
 import { projectMeldTopUps } from "../app/funding/meld-top-ups";
+import { fundingProgressSignalForSharedStep } from "../app/funding/progress";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
   COALESCE_MS,
@@ -181,8 +182,10 @@ describe("requests store", () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
   });
   afterEach(async () => {
-    // A coalesced write left pending would land in the next test's storage.
-    await useRequestsStore().flush();
+    // A coalesced write left pending would land in the next test's storage, and so would a poll.
+    const requests = useRequestsStore();
+    requests.stopJobPoll();
+    await requests.flush();
     vi.restoreAllMocks();
     setRequestsClock(Date.now);
     setMirrorStorage(null);
@@ -287,9 +290,10 @@ describe("requests store", () => {
     const requests = useRequestsStore();
     await requests.reconcile("boot");
 
-    // Migrated at rev 0, then witnessed by the reconcile's clock: rev 1, its write coalesced.
+    // Migrated at rev 0; the reconcile's worker read (no job) and clock only witness it, which
+    // bumps nothing.
     const inMemory = requests.get(LEGACY_REF);
-    expect(inMemory).toMatchObject({ schema: 2, ref: LEGACY_REF, rev: 1, route: "crypto" });
+    expect(inMemory).toMatchObject({ schema: 2, ref: LEGACY_REF, rev: 0, route: "crypto" });
     expect(inMemory?.status).toEqual({ kind: "awaiting-deposit" });
     // Reading writes nothing back.
     expect(await stored(LEGACY_REF)).toEqual(legacyBareRefRecord);
@@ -303,7 +307,7 @@ describe("requests store", () => {
       schema: 2,
       kind: "top-up",
       ref: LEGACY_REF,
-      rev: 2,
+      rev: 1,
       funded: seenAt,
       status: { kind: "converting", at: seenAt, step: "swap" },
     });
@@ -415,7 +419,8 @@ describe("requests store", () => {
   it("critical transitions are persisted before observe resolves; progress writes are coalesced", async () => {
     await seed([awaitingDepositCryptoRecord]);
     const requests = useRequestsStore();
-    await requests.reconcile("boot"); // its clock witnesses the record: rev 1, write coalesced
+    // A reconcile only witnesses the record: rev 0, nothing written.
+    await requests.reconcile("boot");
     const key = requestKey(AWAITING_REF);
     const before = host.writesTo(key);
 
@@ -423,28 +428,36 @@ describe("requests store", () => {
     await requests.observe(AWAITING_REF, chainFunds(at(1)));
     expect(host.writesTo(key)).toBe(before + 1);
     expect(await stored(AWAITING_REF)).toMatchObject({
-      rev: 2,
+      rev: 1,
       status: { kind: "deposit-seen" },
     });
 
-    // Two witness-only reads inside the window: memory moves at once, the host once, later.
+    // A witness-only read moves memory and nothing else.
     await requests.observe(AWAITING_REF, chainEmpty(at(2)));
-    await requests.observe(AWAITING_REF, chainEmpty(at(3)));
-    expect(requests.get(AWAITING_REF)?.rev).toBe(4);
+    expect(requests.get(AWAITING_REF)).toMatchObject({
+      rev: 1,
+      witnesses: { chain: { best: { burnerNative: "0", at: at(2) } } },
+    });
+    expect(requests.entries[AWAITING_KEY]?.pendingWrite).toBe(false);
+
+    // Two progress writes inside the window: memory moves at once, the host once, later.
+    await requests.advanceProgress(AWAITING_REF, fundingProgressSignalForSharedStep("xcm"), at(2));
+    await requests.advanceProgress(AWAITING_REF, fundingProgressSignalForSharedStep("done"), at(3));
+    expect(requests.get(AWAITING_REF)?.rev).toBe(3);
     expect(requests.entries[AWAITING_KEY]?.pendingWrite).toBe(true);
     expect(host.writesTo(key)).toBe(before + 1);
-    expect(await stored(AWAITING_REF)).toMatchObject({ rev: 2 });
+    expect(await stored(AWAITING_REF)).toMatchObject({ rev: 1 });
     await new Promise((resolve) => setTimeout(resolve, COALESCE_MS + 50));
     expect(host.writesTo(key)).toBe(before + 2);
-    expect(await stored(AWAITING_REF)).toMatchObject({ rev: 4 });
+    expect(await stored(AWAITING_REF)).toMatchObject({ rev: 3 });
     expect(requests.entries[AWAITING_KEY]?.pendingWrite).toBe(false);
 
     // `flush` lands a pending write without waiting for the window.
-    await requests.observe(AWAITING_REF, chainEmpty(at(4)));
+    await requests.advanceProgress(AWAITING_REF, { observation: { kind: "settled" } }, at(4));
     expect(host.writesTo(key)).toBe(before + 2);
     await requests.flush();
     expect(host.writesTo(key)).toBe(before + 3);
-    expect(await stored(AWAITING_REF)).toMatchObject({ rev: 5 });
+    expect(await stored(AWAITING_REF)).toMatchObject({ rev: 4 });
   });
 
   it("a host write rejection keeps memory and retries on the next observation", async () => {
@@ -455,7 +468,7 @@ describe("requests store", () => {
 
     host.rejectWrites.add(key);
     await requests.observe(AWAITING_REF, chainFunds(at(1)));
-    expect(requests.get(AWAITING_REF)).toMatchObject({ rev: 2, status: { kind: "deposit-seen" } });
+    expect(requests.get(AWAITING_REF)).toMatchObject({ rev: 1, status: { kind: "deposit-seen" } });
     expect(requests.entries[AWAITING_KEY]).toMatchObject({
       pendingWrite: true,
       persistError: expect.stringContaining("write failed"),
@@ -469,7 +482,7 @@ describe("requests store", () => {
       pendingWrite: false,
     });
     expect(await stored(AWAITING_REF)).toMatchObject({
-      rev: 3,
+      rev: 2,
       status: { kind: "settled", at: at(2) },
       funded: at(1),
       settledAt: at(2),
@@ -488,10 +501,10 @@ describe("requests store", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     await requests.flush();
 
-    // Witnessed by the reconcile's clock on the way in (rev 1), then flagged (rev 2).
+    // The reconcile on the way in only witnesses the record; the flag is its first change.
     expect(requests.has(AWAITING_REF)).toBe(true);
     expect(requests.get(AWAITING_REF)).toMatchObject({
-      rev: 2,
+      rev: 1,
       status: { kind: "awaiting-deposit" },
       witnesses: {
         conflict: { source: "core", note: "core slot missing on resume", at: FIXTURE_NOW },
@@ -499,7 +512,7 @@ describe("requests store", () => {
     });
     expect(await stored(AWAITING_REF)).toMatchObject({
       schema: 2,
-      rev: 2,
+      rev: 1,
       witnesses: { conflict: { source: "core" } },
     });
     expect(await storedIndex()).toEqual([AWAITING_REF]);

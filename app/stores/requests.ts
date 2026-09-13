@@ -1,23 +1,32 @@
 // The requests store: every request record in one map, moved only by the reducer, mirrored to
-// Web Storage on every change and persisted to the host store beneath. Today's list and statuses
-// are views over it.
+// Web Storage on every change and persisted to the host store beneath. The worker's job blob is
+// read here and nowhere else. Today's list and statuses are views over it.
 
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef } from "vue";
 import {
   advanceFundingProgressSnapshot,
+  createFundingProgressSnapshot,
+  progressProviderForSource,
   type FundingProgressSignal,
   type FundingProgressSnapshot,
 } from "../funding/progress";
 import { migrateRecord } from "../funding/requests/migrate";
 import {
   COALESCE_MS,
+  DEFAULT_DEPOSIT_WINDOW_MS,
+  JOB_POLL_MS,
   MIRROR_SETTLED_LIMIT,
+  effectiveSourceId,
+  railProviderOf,
   rankOf,
   requestsNow,
+  routeOf,
   type Observation,
   type RequestKey,
   type RequestRecord,
+  type WorkerHandoffPayload,
+  type WorkerJobView,
 } from "../funding/requests/model";
 import { reduce } from "../funding/requests/reducer";
 import {
@@ -25,18 +34,24 @@ import {
   readMirrorSync,
   REQUEST_INDEX_KEY,
   requestKey,
+  WORKER_JOBS_KEY,
   writeMirrorSync,
   type KeyedStorage,
 } from "../funding/requests/storage";
 import { legacyRequestStatus } from "../funding/requests/views";
+import { CRYPTO_SOURCE_ID } from "../funding/source-ids";
+import { fmtCash } from "../utils/cash";
 import {
   parseRequestIndex,
   parseRequestRefKey,
   requestRefKey,
+  requestRefOf,
   sameRequestRef,
   serializeRequestIndex,
   type RequestRef,
 } from "../utils/request-index";
+import { workerSessionId } from "~~/lib/coinage";
+import { SOURCE_CHAINS, sourceIdFor } from "~~/lib/config";
 import type { ActiveFlowRecord, RequestStatus as LegacyRequestStatus } from "./session";
 
 export interface RequestEntry {
@@ -74,6 +89,21 @@ function isCritical(previous: RequestRecord, next: RequestRecord): boolean {
     (previous.meldSubmittedAt === undefined && next.meldSubmittedAt !== undefined) ||
     (previous.failure === undefined && next.failure !== undefined)
   );
+}
+
+/** The fields an observation changes without moving the record: per-session facts, never
+ *  written on their own. A persisted witness is stale by definition. */
+const WITNESS_FIELDS: ReadonlySet<string> = new Set(["witnesses", "confirmedAt", "updatedAt"]);
+
+/** True when `next` differs from `current` in the witness fields alone. The reducer keeps every
+ *  field it did not touch as the same object, so a per-field `===` is exact. */
+function witnessOnly(current: RequestRecord, next: RequestRecord): boolean {
+  const fields = new Set([...Object.keys(current), ...Object.keys(next)]);
+  for (const field of fields) {
+    if (WITNESS_FIELDS.has(field)) continue;
+    if (current[field as keyof RequestRecord] !== next[field as keyof RequestRecord]) return false;
+  }
+  return true;
 }
 
 interface Mirror {
@@ -128,6 +158,227 @@ async function inParallel<T>(
     while (next < items.length) await work(items[next++]);
   };
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane));
+}
+
+const MINUTE = 60_000;
+
+/** Rank 0–3 in the design's sense: a request the worker is still moving. */
+const WORKER_DRIVEN_KINDS = new Set<RequestRecord["status"]["kind"]>([
+  "awaiting-deposit",
+  "deposit-seen",
+  "converting",
+  "claiming",
+]);
+const isWorkerDriven = (record: RequestRecord): boolean =>
+  WORKER_DRIVEN_KINDS.has(record.status.kind);
+/** Rank 0–3, or a side exit the worker's verdict can still move: failed or expired. */
+const followsWorker = (record: RequestRecord): boolean =>
+  isWorkerDriven(record) || record.status.kind === "failed" || record.status.kind === "expired";
+
+/** What this surface reads of a worker's stored job record. */
+type WorkerJob = {
+  phase?: string;
+  done?: boolean;
+  failure?: string;
+  lastError?: string;
+  lastTickAt?: number | null;
+  state?: { fundsSeenAt?: number | null };
+  claim?: { phase?: string; amount?: string; at?: number } | null;
+  txs?: WorkerJobView["txs"];
+  // The hand-off the worker keeps, read back when the surface has no record of the job.
+  label?: string;
+  burnerAddress?: string;
+  depositExpiresAt?: number | null;
+  settleAmount?: string;
+  underlyingAssetId?: number;
+  peopleParaId?: number;
+  assetHubGenesis?: string;
+  peopleGenesis?: string;
+  remoteFeeBuffer?: string;
+  keepNativeForFees?: string;
+  createdAt?: number;
+  armedAt?: number;
+};
+
+/** Every worker job, keyed by workerSessionId; {} when there are none. */
+async function readWorkerJobs(): Promise<Record<string, WorkerJob>> {
+  try {
+    const raw = await (await getRecordStorage()).read(WORKER_JOBS_KEY);
+    return raw === null ? {} : (JSON.parse(raw) as Record<string, WorkerJob>);
+  } catch {
+    return {};
+  }
+}
+
+/** The job as the record's reducer reads it. */
+function jobView(job: WorkerJob): WorkerJobView {
+  const { claim } = job;
+  return {
+    phase: job.phase ?? "",
+    done: job.done === true,
+    ...(job.failure === undefined ? {} : { failure: job.failure }),
+    ...(job.lastError === undefined ? {} : { lastError: job.lastError }),
+    fundsSeenAt: job.state?.fundsSeenAt ?? null,
+    lastTickAt: job.lastTickAt ?? null,
+    claim:
+      claim && (claim.phase === "claiming" || claim.phase === "claimed")
+        ? {
+            phase: claim.phase,
+            ...(claim.amount === undefined ? {} : { amount: claim.amount }),
+            at: claim.at ?? job.lastTickAt ?? Date.now(),
+          }
+        : null,
+    ...(job.txs === undefined ? {} : { txs: job.txs }),
+  };
+}
+
+const isString = (value: unknown): value is string => typeof value === "string";
+const isNumber = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value);
+
+/** The ref a worker session id names (`<sourceId>:<tradeN>`), or null for anything else. */
+function refOfSessionId(sessionId: string): RequestRef | null {
+  const separator = sessionId.lastIndexOf(":");
+  if (separator <= 0) return null;
+  const tail = sessionId.slice(separator + 1);
+  if (!/^\d+$/.test(tail)) return null;
+  const tradeN = Number(tail);
+  if (!Number.isSafeInteger(tradeN) || tradeN < 1) return null;
+  return requestRefOf(sessionId.slice(0, separator), tradeN);
+}
+
+/** The rail's deposit deadline on the job, or null when the rail gave none. */
+const railExpiryOf = (job: WorkerJob): number | null =>
+  isNumber(job.depositExpiresAt) && job.depositExpiresAt > 0 ? job.depositExpiresAt : null;
+
+/** Today's `lastQuoteParams` for a source id: the rail and method of a Meld source, the chain and
+ *  coin of a swap source, Asset Hub's own for the crypto rail's, the id itself otherwise. */
+function displaySourceOf(sourceId: string): { chain: string; asset: string } {
+  const route = routeOf(sourceId);
+  if (route !== "crypto") return { chain: "Meld", asset: route === "bank" ? "Bank" : "Card" };
+  if (sourceId === CRYPTO_SOURCE_ID) return { chain: "AssetHub", asset: "DOT" };
+  for (const { chain, assets } of SOURCE_CHAINS) {
+    for (const asset of assets) {
+      if (sourceIdFor(chain, asset) === sourceId) return { chain, asset };
+    }
+  }
+  return { chain: sourceId, asset: sourceId };
+}
+
+/** The snapshot a request starts with when its record is built from the worker's job: today's
+ *  defaults for the source, with no quote to size the ingress from. */
+function initialProgressForSource(sourceId: string, startedAt: number): FundingProgressSnapshot {
+  const route = routeOf(sourceId);
+  const provider = progressProviderForSource(sourceId);
+  // A card confirms within minutes; a bank transfer takes business days.
+  const profile =
+    route === "crypto"
+      ? provider.createProfile()
+      : provider.createProfile({
+          ingressDurationMs: route === "bank" ? 24 * 60 * MINUTE : 5 * MINUTE,
+        });
+  const journeyMs =
+    profile.expectedUserDelayMs +
+    profile.stages.reduce((total, stage) => total + stage.nominalMs, 0);
+  return createFundingProgressSnapshot(profile, {
+    preDetectionEstimateText:
+      route === "crypto"
+        ? "≈10 min after your transfer"
+        : route === "bank"
+          ? "1-2 business days after you pay"
+          : "≈ minutes after you pay",
+    estimatedCompletionAt: startedAt + journeyMs,
+  });
+}
+
+/** The hand-off the worker keeps on its job, when every field is there. */
+function handoffOf(job: WorkerJob): WorkerHandoffPayload | undefined {
+  const {
+    label,
+    burnerAddress,
+    settleAmount,
+    underlyingAssetId,
+    peopleParaId,
+    assetHubGenesis,
+    peopleGenesis,
+    remoteFeeBuffer,
+    keepNativeForFees,
+  } = job;
+  if (
+    !isString(label) ||
+    !isString(burnerAddress) ||
+    !isString(settleAmount) ||
+    !isNumber(underlyingAssetId) ||
+    !isNumber(peopleParaId) ||
+    !isString(assetHubGenesis) ||
+    !isString(peopleGenesis) ||
+    !isString(remoteFeeBuffer) ||
+    !isString(keepNativeForFees)
+  ) {
+    return undefined;
+  }
+  return {
+    label,
+    burnerAddress,
+    depositExpiresAt: railExpiryOf(job) ?? 0,
+    settleAmount,
+    underlyingAssetId,
+    peopleParaId,
+    assetHubGenesis,
+    peopleGenesis,
+    remoteFeeBuffer,
+    keepNativeForFees,
+  };
+}
+
+/** A record for a job the surface has no record of, the "chain knows, cache does not" case; it
+ *  renders with generic labels. Null when the job lacks what a record needs. */
+function recordFromJob(sessionId: string, job: WorkerJob): RequestRecord | null {
+  const ref = refOfSessionId(sessionId);
+  const { settleAmount, createdAt } = job;
+  if (
+    ref === null ||
+    !isString(settleAmount) ||
+    !/^\d+$/.test(settleAmount) ||
+    !isNumber(createdAt)
+  ) {
+    return null;
+  }
+  const sourceId = effectiveSourceId(ref);
+  const startedAt = createdAt;
+  const railExpiry = railExpiryOf(job);
+  // The default window counts from the arming, as the worker's own expiry does.
+  const armedAt = isNumber(job.armedAt) ? job.armedAt : startedAt;
+  const handoff = handoffOf(job);
+  return {
+    schema: 2,
+    kind: "top-up",
+    ref,
+    rev: 0,
+    updatedAt: startedAt,
+    amountHuman: fmtCash(BigInt(settleAmount)),
+    ...displaySourceOf(sourceId),
+    startedAt,
+    ...(isString(job.burnerAddress) ? { depositAddress: job.burnerAddress } : {}),
+    progress: initialProgressForSource(sourceId, startedAt),
+    tradeN: ref.tradeN,
+    sourceId,
+    ...(railExpiry === null ? {} : { depositExpiresAt: railExpiry }),
+    route: routeOf(sourceId),
+    deadline:
+      railExpiry === null
+        ? { depositExpiresAt: armedAt + DEFAULT_DEPOSIT_WINDOW_MS, source: "route" }
+        : { depositExpiresAt: railExpiry, source: "rail" },
+    ...(handoff === undefined ? {} : { handoff }),
+    status: { kind: "awaiting-deposit" },
+    rail: {
+      provider: railProviderOf(sourceId),
+      status: "waiting",
+      stage: "waiting",
+      updatedAt: startedAt,
+    },
+    witnesses: {},
+  };
 }
 
 export const useRequestsStore = defineStore("requests", () => {
@@ -296,7 +547,8 @@ export const useRequestsStore = defineStore("requests", () => {
     });
   }
 
-  /** Moves a record by one observation. A key with no record is left alone. */
+  /** Moves a record by one observation. A key with no record is left alone. A witness-only
+   *  change reaches memory alone: the rev stays, nothing is written. */
   function observe(ref: RequestRef, observation: Observation): Promise<void> {
     const key = requestRefKey(ref);
     if (entries.value[key] === undefined) return Promise.resolve();
@@ -305,6 +557,10 @@ export const useRequestsStore = defineStore("requests", () => {
       if (entry === undefined) return;
       const reduced = reduce(entry.record, observation);
       if (reduced === entry.record) return;
+      if (witnessOnly(entry.record, reduced)) {
+        patchEntry(key, (current) => ({ ...current, record: reduced }));
+        return;
+      }
       const next = { ...reduced, rev: entry.record.rev + 1 };
       await commit(key, next, isCritical(entry.record, next));
     });
@@ -379,10 +635,83 @@ export const useRequestsStore = defineStore("requests", () => {
     return next;
   }
 
+  /** Reconcile step 2, and the poll's tick: one read of the worker's blob; every record the
+   *  worker can still move observes its job (`known: false` without one), and a job with no
+   *  record gets one, created from the job and then observed with it. */
+  async function observeWorkerJobs(now: number): Promise<void> {
+    const jobs = await readWorkerJobs();
+    const known = new Set<string>();
+    const observed: Promise<void>[] = [];
+    for (const record of records.value) {
+      const { ref } = record;
+      const sessionId = workerSessionId(effectiveSourceId(ref), ref.tradeN);
+      known.add(sessionId);
+      if (!followsWorker(record)) continue;
+      const job = jobs[sessionId];
+      observed.push(observe(ref, { source: "worker", at: now, job: job ? jobView(job) : null }));
+    }
+    for (const [sessionId, job] of Object.entries(jobs)) {
+      // A cancelled request whose record is gone must not come back as a pending row.
+      if (!job || known.has(sessionId) || job.failure === "cancelled") continue;
+      const record = recordFromJob(sessionId, job);
+      if (record === null) continue;
+      observed.push(
+        create(record.ref, record)
+          .then(() => observe(record.ref, { source: "worker", at: now, job: jobView(job) }))
+          .catch((e: unknown) => {
+            console.warn(`[requests] record for worker job ${sessionId} failed: ${messageOf(e)}`);
+          }),
+      );
+    }
+    await Promise.all(observed);
+  }
+
+  // The job poll: one blob read every JOB_POLL_MS while the page is visible and a request is at
+  // rank 0–3. Milestone 7 wires the visibility events.
+  let jobPollTimer: ReturnType<typeof setInterval> | null = null;
+  let jobPollTick: Promise<void> | null = null;
+  const anyWorkerDriven = (): boolean => records.value.some(isWorkerDriven);
+  const pageVisible = (): boolean =>
+    typeof document === "undefined" || document.visibilityState !== "hidden";
+
+  function startJobPoll(): void {
+    if (jobPollTimer !== null) return;
+    jobPollTimer = setInterval(() => void pollJobs(), JOB_POLL_MS);
+  }
+  function stopJobPoll(): void {
+    if (jobPollTimer === null) return;
+    clearInterval(jobPollTimer);
+    jobPollTimer = null;
+  }
+  /** One tick. Single-flight: a tick arriving while the previous one runs joins it, one while
+   *  hidden is skipped, and one that finds no request at rank 0–3 stops the poll. */
+  function pollJobs(): Promise<void> {
+    if (jobPollTick !== null) return jobPollTick;
+    if (!anyWorkerDriven()) {
+      stopJobPoll();
+      return Promise.resolve();
+    }
+    if (!pageVisible()) return Promise.resolve();
+    jobPollTick = observeWorkerJobs(requestsNow())
+      .catch((e: unknown) => {
+        console.warn(`[requests] job poll failed: ${messageOf(e)}`);
+      })
+      .finally(() => {
+        jobPollTick = null;
+        if (!anyWorkerDriven()) stopJobPoll();
+      });
+    return jobPollTick;
+  }
+  /** The poll runs while a request is at rank 0–3, and not otherwise. */
+  function syncJobPoll(): void {
+    if (anyWorkerDriven()) startJobPoll();
+    else stopJobPoll();
+  }
+
   let reconciling: Promise<void> | null = null;
   let reconcileAgain = false;
-  /** Brings memory up to date with the host store, then lets the clock expire what it must.
-   *  Single-flight: a caller arriving mid-run makes it run once more. */
+  /** Brings memory up to date with the host store, then with the worker's jobs, then lets the
+   *  clock expire what it must. Single-flight: a caller arriving mid-run makes it run once more. */
   function reconcile(reason: string): Promise<void> {
     if (reconciling) {
       reconcileAgain = true;
@@ -500,11 +829,18 @@ export const useRequestsStore = defineStore("requests", () => {
       }
     }
 
+    try {
+      await observeWorkerJobs(now);
+    } catch (e) {
+      console.warn(`[requests] reconcile (${reason}): worker jobs step failed: ${messageOf(e)}`);
+    }
+
     await Promise.all(
       records.value
         .filter((record) => rankOf(record) === 0)
         .map((record) => observe(record.ref, { source: "clock", at: now })),
     );
+    syncJobPoll();
   }
 
   hydrateFromMirror();
@@ -527,6 +863,8 @@ export const useRequestsStore = defineStore("requests", () => {
     hydrateFromMirror,
     writeMirror,
     reconcile,
+    startJobPoll,
+    stopJobPoll,
     flush,
   };
 });
