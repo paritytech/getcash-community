@@ -341,4 +341,38 @@ describe("requests store: the hand-off step", () => {
       witnesses: { worker: { known: false, at: FIXTURE_NOW } },
     });
   });
+
+  it("waits for the heartbeat once per pass when the worker is down", async () => {
+    vi.useFakeTimers();
+    worker.available = false;
+    const requests = useRequestsStore();
+    await requests.create(AWAITING_REF, {
+      ...migrated(awaitingDepositCryptoRecord),
+      handoff: AWAITING_HANDOFF,
+    });
+    await requests.create(FUNDED_REF, {
+      ...migrated(fundedCryptoRecord),
+      handoff: FUNDED_HANDOFF,
+    });
+
+    const reconciled = requests.reconcile("refresh");
+    await untilHeartbeatWait();
+    // One bound covers both records: the pass is done after a single wait, not one per record.
+    await vi.advanceTimersByTimeAsync(WORKER_READY_MS + 500);
+    const doneAfterOneWait = await Promise.race([
+      reconciled.then(() => true),
+      new Promise<boolean>((resolve) => realSetTimeout(() => resolve(false), 0)),
+    ]);
+    expect(doneAfterOneWait).toBe(true);
+
+    expect(worker.calls).toEqual([]);
+    expect(requests.entries[requestRefKey(AWAITING_REF)]?.handoffError).toBe(NOT_RUNNING);
+    expect(requests.entries[requestRefKey(FUNDED_REF)]?.handoffError).toBe(NOT_RUNNING);
+    const skipped = vi
+      .mocked(console.warn)
+      .mock.calls.filter(([line]) => String(line).startsWith("[requests] worker not running"));
+    expect(skipped).toEqual([
+      ["[requests] worker not running; 2 hand-off(s) wait for the next pass"],
+    ]);
+  });
 });

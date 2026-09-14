@@ -15,7 +15,6 @@ import {
 import { reduce } from "../app/funding/requests/reducer";
 import {
   journeyStepsOf,
-  legacyRequestStatus,
   meldHandedOffOf,
   meldStageOf,
   rowStateOf,
@@ -198,39 +197,7 @@ describe("request views", () => {
     });
   });
 
-  it("legacyRequestStatus and meldStageOf reproduce today's values", () => {
-    expect(legacyRequestStatus(at({ kind: "awaiting-deposit" }))).toBeUndefined();
-    expect(legacyRequestStatus(at(seen("worker")))).toBeUndefined();
-    expect(legacyRequestStatus(at({ kind: "converting", at: AT, step: "xcm" }))).toEqual({
-      kind: "converting",
-      step: "xcm",
-    });
-    expect(legacyRequestStatus(at({ kind: "claiming", at: AT }))).toEqual({
-      kind: "converting",
-      step: "done",
-    });
-    expect(legacyRequestStatus(at({ kind: "settled", at: AT }))).toBeUndefined();
-    expect(
-      legacyRequestStatus(
-        at({ kind: "failed", at: AT, recoverable: true }, { failure: mintFailure }),
-      ),
-    ).toEqual({ kind: "failed", reason: "claim failed" });
-    expect(
-      legacyRequestStatus(
-        at({ kind: "failed", at: AT, recoverable: false }, { failure: refunded, refunded: true }),
-      ),
-    ).toEqual({ kind: "failed", reason: "returned", refunded: true });
-    expect(
-      legacyRequestStatus(
-        at({ kind: "failed", at: AT, recoverable: false }, { failureReason: "persisted reason" }),
-      ),
-    ).toEqual({ kind: "failed", reason: "persisted reason" });
-    expect(legacyRequestStatus(at({ kind: "expired", at: AT }))).toEqual({
-      kind: "failed",
-      reason: DEPOSIT_EXPIRED_REASON,
-    });
-    expect(legacyRequestStatus(at({ kind: "cancelled", at: AT }))).toBeUndefined();
-
+  it("meldStageOf and meldHandedOffOf reproduce today's values", () => {
     // The Meld stage: the buyer's own paid stamp shows the journey, the provider's first sighting
     // alone does not; settled and failed are the provider's.
     const stamped = card();

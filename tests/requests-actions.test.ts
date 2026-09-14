@@ -333,7 +333,7 @@ describe("requests store: foreground, clock and user actions", () => {
     });
     // Cancelled records stay in memory (the sweep reads them) and leave the list.
     expect(requests.entries[requestRefKey(AWAITING_REF)]).toBeDefined();
-    expect(requests.list).toEqual([]);
+    expect(requests.openRecords).toEqual([]);
   });
 
   it("retry is a no-op without a recoverable failure confirmed by the job", async () => {

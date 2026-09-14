@@ -18,6 +18,12 @@ import { resolveFundingTopUpDestination } from "../app/funding/navigation";
 import type { FundingSelection } from "../app/funding/selection";
 import type { FundingTopUp } from "../app/funding/top-ups";
 
+// vitest has no Vue plugin, and this test never renders the status screens the packages bundle.
+vi.mock("../app/components/funding/routes/MeldFundingStatusRoute.vue", () => ({ default: {} }));
+vi.mock("../app/components/funding/routes/ChainflipFundingStatusRoute.vue", () => ({
+  default: {},
+}));
+
 const progress = projectFundingProgress({
   snapshot: createFundingProgressSnapshot(chainflipProgressProvider.createProfile()),
   createdAt: 0,

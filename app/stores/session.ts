@@ -14,8 +14,8 @@ import {
   progressProviderForSource,
   type FundingProgressSnapshot,
 } from "../funding/progress";
+import { depositWindowFor } from "../funding/config";
 import {
-  DEFAULT_DEPOSIT_WINDOW_MS,
   effectiveSourceId,
   railProviderOf,
   routeOf,
@@ -42,7 +42,12 @@ import {
 import { requestRefOf, type RequestRef } from "../utils/request-index";
 import { estimateSourceAmount, estimateSourceFromCash } from "~~/lib/demo-rates";
 import { priceSourceLeg, type SourcePriceResult } from "~~/lib/source-price";
-import { createMockCoinageSession, workerSessionId, type MockCoinageWorld } from "~~/lib/coinage";
+import {
+  createMockCoinageSession,
+  DEFAULT_SOURCE_ID,
+  workerSessionId,
+  type MockCoinageWorld,
+} from "~~/lib/coinage";
 import type { HostedCoinageWorld } from "~~/lib/coinage-live";
 import { isHosted } from "~~/lib/host-account";
 import { isMeldSourceId, meldSourceIdFor } from "../funding/source-ids";
@@ -55,10 +60,6 @@ export { DEPOSIT_EXPIRED_REASON } from "../funding/requests/model";
 
 /** Stand-in address for the mock world, which never touches a chain. */
 const DEV_RECIPIENT = "13ENScfFZXQ8avXf6cphack516B8YCjdL4MJbodm7VxK8GE9";
-
-/** A record's ref, or null when it never got a trade number. */
-const recordRef = (record: ActiveFlowRecord): RequestRef | null =>
-  record.tradeN === undefined ? null : requestRefOf(record.sourceId, record.tradeN);
 
 /** Persisted per request; enough to re-open it. */
 export interface ActiveFlowRecord {
@@ -129,16 +130,6 @@ const ahBlockLink = (block?: number) =>
   block === undefined
     ? ""
     : ` https://polkadot.js.org/apps/?rpc=wss%3A%2F%2Fpaseo-asset-hub-next-rpc.polkadot.io#/explorer/query/${block}`;
-
-/**
- * A request's status as the list shows it. `ready` means the worker reported the CASH claimed
- * into the purse.
- */
-export type RequestStatus =
-  | { kind: "waiting" }
-  | { kind: "converting"; step: FundingStep }
-  | { kind: "ready" }
-  | { kind: "failed"; reason: string; refunded?: boolean };
 
 export interface QuotedView {
   send: string;
@@ -383,9 +374,11 @@ export const useSessionStore = defineStore("session", () => {
   }
 
   /** The hosted world up to hydration, shared by the fresh-quote and resume paths. Returns null
-   *  when a newer quote superseded this one. */
+   *  when a newer quote superseded this one. `staleFlowMs` is the request's deposit window, so
+   *  core's stale guard and the record's deadline agree. */
   async function createLiveWorld(
     epoch: number,
+    staleFlowMs: number,
     tradeN?: number,
     rail?: ChainflipRail,
     sourceId?: SourceId,
@@ -399,8 +392,9 @@ export const useSessionStore = defineStore("session", () => {
       90_000,
       createHostedCoinageWorld({
         amount: amountBase.value as bigint,
-        // Re-opening a request derives its burner; a new one takes the current counter.
+        // A re-opened request's own number; a new one's is the free number the quote reserved.
         ...(tradeN === undefined ? {} : { tradeN }),
+        staleFlowMs,
         // The fiat route injects a Meld rail and its source id; the crypto route leaves both unset.
         ...(rail ? { rail } : {}),
         ...(sourceId ? { sourceId } : {}),
@@ -636,12 +630,20 @@ export const useSessionStore = defineStore("session", () => {
       }
       // Hosted world: the same rail over the real host seams. The provider delivers DOT to the
       // burner and the funding leg swaps it to CASH.
-      const world = await createLiveWorld(epoch, undefined, built.rail, built.sourceId);
+      const { nextHostedTradeNumber } = await import("~~/lib/coinage-live");
+      const tradeN = await step(
+        "trade number",
+        10_000,
+        nextHostedTradeNumber(built.sourceId, (n) => requests.hasTrace(built.sourceId, n)),
+      );
+      const world = await createLiveWorld(
+        epoch,
+        depositWindowFor(method.value),
+        tradeN,
+        built.rail,
+        built.sourceId,
+      );
       if (!world) return;
-      if (world.session.peek() !== null) {
-        console.info("[coinage] clearing a stale flow slot on a reused trade number");
-        await step("clear previous flow", 20_000, world.session.cancel());
-      }
       if (epoch !== quoteEpoch) {
         world.dispose();
         return;
@@ -696,14 +698,14 @@ export const useSessionStore = defineStore("session", () => {
     );
     try {
       if (isHosted()) {
-        const world = await createLiveWorld(epoch);
+        const { nextHostedTradeNumber } = await import("~~/lib/coinage-live");
+        const tradeN = await step(
+          "trade number",
+          10_000,
+          nextHostedTradeNumber(DEFAULT_SOURCE_ID, (n) => requests.hasTrace(DEFAULT_SOURCE_ID, n)),
+        );
+        const world = await createLiveWorld(epoch, depositWindowFor("crypto"), tradeN);
         if (!world) return; // superseded by a newer quote
-        if (world.session.peek() !== null) {
-          // A new request found a slot: its trade number was reused after a failed counter
-          // claim. Clear the stale slot without resuming.
-          console.info("[coinage] clearing a stale flow slot on a reused trade number");
-          await step("clear previous flow", 20_000, world.session.cancel());
-        }
         if (epoch !== quoteEpoch) {
           world.dispose();
           return;
@@ -853,6 +855,8 @@ export const useSessionStore = defineStore("session", () => {
       observePaymentState(state, ref);
     });
     await world.session.start(refundAddress === null ? {} : { refundAddress });
+    // The slot exists, so the number is taken for good: the next request derives a fresh burner.
+    await world.advanceTrade();
     await persistActiveFlow(startedAt);
     driveFunding();
     // This request is now on screen; anything else open goes back to being driven off screen.
@@ -1065,7 +1069,10 @@ export const useSessionStore = defineStore("session", () => {
         deadline:
           depositExpiresAt > 0
             ? { depositExpiresAt, source: "rail" }
-            : { depositExpiresAt: startedAt + DEFAULT_DEPOSIT_WINDOW_MS, source: "route" },
+            : {
+                depositExpiresAt: startedAt + depositWindowFor(routeOf(effectiveSourceId(ref))),
+                source: "route",
+              },
         handoff: await world.handoffPayload(),
         refundAddress: world.refundAddress ?? undefined,
         status: { kind: "awaiting-deposit" },
@@ -1156,16 +1163,26 @@ export const useSessionStore = defineStore("session", () => {
     await reconcileBackground(reason);
   }
 
-  /** Brings an off-screen request to the front: builds its world and resumes its session. */
+  /** Brings an off-screen request to the front from the record in memory, never behind a
+   *  reconcile: builds its world and resumes its session. A record memory lacks is read from the
+   *  host once first. */
   async function openRequest(ref: RequestRef): Promise<boolean> {
-    await openRequests();
-    const record = requests.get(ref);
+    let record = requests.get(ref);
+    if (record === undefined) {
+      await requests.reconcile("refresh");
+      record = requests.get(ref);
+    }
     if (record === undefined || record.status.kind === "cancelled") return false;
-    return enterRequest(record);
+    try {
+      return await enterRequest(record);
+    } finally {
+      // The store catches up behind the open, whatever came of it.
+      void reconcileBackground();
+    }
   }
 
   async function enterRequest(record: RequestRecord): Promise<boolean> {
-    const ref = recordRef(record);
+    const { ref } = record;
     resuming.value = true;
     setAmount(record.amountHuman);
     // Restore the pay method from the persisted source id.
@@ -1182,14 +1199,22 @@ export const useSessionStore = defineStore("session", () => {
       foregroundRef = ref; // after teardown, which clears it
       // On screen from its record at once; the world builds behind it.
       requests.setForeground(ref);
-      const status = ref === null ? "?" : (requests.get(ref)?.status.kind ?? "?");
+      const status = requests.get(ref)?.status.kind ?? "?";
       console.warn(
         `[coinage] reopen request #${record.tradeN}: funded=${record.funded ?? "no"} status=${status} submitted=${record.meldSubmittedAt !== undefined}`,
       );
       const epoch = quoteEpoch;
+      // Core's stale bound is the record's own window: the rail's deadline when it set one, the
+      // route's otherwise.
+      const { deadline } = record;
+      const staleFlowMs =
+        deadline.depositExpiresAt === null
+          ? depositWindowFor(record.route)
+          : deadline.depositExpiresAt - record.startedAt;
       // Re-enter under the record's own trade and source id.
       const world = await createLiveWorld(
         epoch,
+        staleFlowMs,
         record.tradeN,
         undefined,
         record.sourceId as SourceId | undefined,
@@ -1201,7 +1226,7 @@ export const useSessionStore = defineStore("session", () => {
         console.warn(
           `[coinage] reopen request #${record.tradeN}: no flow slot to resume; the record is kept`,
         );
-        if (ref !== null) void requests.flag(ref, "core slot missing on resume");
+        void requests.flag(ref, "core slot missing on resume");
         reset();
         return false;
       }
@@ -1218,7 +1243,7 @@ export const useSessionStore = defineStore("session", () => {
       };
       sub?.unsubscribe();
       sub = world.session.subscribe((state) => {
-        observePaymentState(state, ref ?? undefined);
+        observePaymentState(state, ref);
         // Drop the resume spinner on the first state, before re-entry raises the host's Claim
         // sheet.
         resuming.value = false;
@@ -1255,7 +1280,7 @@ export const useSessionStore = defineStore("session", () => {
       }
       const phase = world.session.getState().phase;
       // An expired, unfunded request gets no driver here either.
-      const expired = ref !== null && requests.get(ref)?.status.kind === "expired";
+      const expired = requests.get(ref)?.status.kind === "expired";
       if (!expired && (phase === "awaiting-deposit" || phase === "swapping")) driveFunding();
       // This request now owns the screen, so it must not also be driven off it.
       void reconcileBackground();

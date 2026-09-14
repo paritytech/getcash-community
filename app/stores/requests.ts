@@ -1,6 +1,6 @@
 // The requests store: every request record in one map, moved only by the reducer, mirrored to
 // Web Storage on every change and persisted to the host store beneath. The worker's job blob is
-// read here and nowhere else. Today's list and statuses are views over it.
+// read here and nowhere else.
 
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef, watch } from "vue";
@@ -12,11 +12,11 @@ import {
   progressProviderForSource,
   type FundingProgressSnapshot,
 } from "../funding/progress";
+import { depositWindowFor } from "../funding/config";
 import { migrateRecord } from "../funding/requests/migrate";
 import {
   CANCEL_CONFIRM_MS,
   COALESCE_MS,
-  DEFAULT_DEPOSIT_WINDOW_MS,
   DEPOSIT_EXPIRED_REASON,
   HIDDEN_RESET_MS,
   JOB_POLL_MS,
@@ -24,7 +24,9 @@ import {
   MIRROR_SETTLED_LIMIT,
   PROBED_RECHECK_MS,
   TOMBSTONE_GRACE_MS,
+  WORKER_READY_MS,
   WORKER_STALE_MS,
+  buyerPaid,
   effectiveSourceId,
   railProviderOf,
   rankOf,
@@ -54,7 +56,6 @@ import {
   fundingStepOf,
   fundsSeenOf,
   journeyStepsOf,
-  legacyRequestStatus,
   meldHandedOffOf,
   meldStageOf,
   milestonesOf,
@@ -74,7 +75,6 @@ import {
 import { sendHandoff, workerSessionId } from "~~/lib/coinage";
 import { SOURCE_CHAINS, sourceIdFor } from "~~/lib/config";
 import { isHosted } from "~~/lib/host-account";
-import type { ActiveFlowRecord, RequestStatus as LegacyRequestStatus } from "./session";
 
 export interface RequestEntry {
   record: RequestRecord;
@@ -87,9 +87,6 @@ export interface RequestEntry {
   /** The memory record is ahead of the host store. */
   pendingWrite: boolean;
 }
-
-/** A list row: today's `ActiveFlowRecord` shape, its progress resolved. */
-export type RequestListRow = ActiveFlowRecord & { progress: FundingProgressSnapshot };
 
 /** What the lifecycle listeners need of `document`; tests pass a fake. */
 export type DocumentLike = {
@@ -117,6 +114,11 @@ const CHAIN_READ_PARALLELISM = 4;
 const MELD_READ_PARALLELISM = 2;
 /** Bound on one chain read in a reconcile: today's `step` bound on the tombstone probe. */
 const PROBE_BOUND_MS = 15_000;
+
+/** The hand-off's own message for a worker that never came up, noted on every entry a pass
+ *  could not send for. */
+const WORKER_NOT_RUNNING =
+  "the funding worker is not running on this host; the purchase cannot start";
 
 /** Today's message for a payment the adapter no longer knows; a 404 never self-heals. */
 const MELD_GONE_MESSAGE =
@@ -223,18 +225,6 @@ const newestFirst = (a: RequestRecord, b: RequestRecord): number =>
 const settledAtOf = (record: RequestRecord): number =>
   record.status.kind === "settled" ? record.status.at : 0;
 
-/** Today's normalisation: the ref is the identity, so the record's own source id is dropped and
- *  the ref's is set when it has one. */
-function listRow(record: RequestRecord): RequestListRow {
-  const { sourceId: _own, ...rest } = record;
-  const { ref } = record;
-  return {
-    ...rest,
-    tradeN: record.tradeN ?? ref.tradeN,
-    ...(ref.sourceId === undefined ? {} : { sourceId: ref.sourceId }),
-  };
-}
-
 function parseMirror(raw: string): Mirror | null {
   let parsed: unknown;
   try {
@@ -276,24 +266,13 @@ const isWorkerDriven = (record: RequestRecord): boolean =>
 const followsWorker = (record: RequestRecord): boolean =>
   isWorkerDriven(record) || record.status.kind === "failed" || record.status.kind === "expired";
 
-/** The rail stages at or past the buyer's payment. */
-const PAID_STAGES = new Set<RequestRecord["rail"]["stage"]>([
-  "received",
-  "processing",
-  "delivered",
-]);
-/** The rail reported the deposit, or the buyer finished the provider's widget: the request no
- *  longer expires, however long the funds take to land. */
-const isPaid = (record: RequestRecord): boolean =>
-  PAID_STAGES.has(record.rail.stage) || record.meldSubmittedAt !== undefined;
-
 /** Why the worker must be handed the request again, or null when it has the job in hand: it has
  *  no job for it (`unknown`), or it expired the job after the buyer paid (`expired`). */
 function lostHandoff(record: RequestRecord): "unknown" | "expired" | null {
   const { worker } = record.witnesses;
   if (worker === undefined || !isWorkerDriven(record)) return null;
   if (!worker.known) return "unknown";
-  return worker.failure === "expired" && isPaid(record) ? "expired" : null;
+  return worker.failure === "expired" && buyerPaid(record) ? "expired" : null;
 }
 
 /** What this surface reads of a worker's stored job record. */
@@ -488,7 +467,7 @@ function recordFromJob(sessionId: string, job: WorkerJob): RequestRecord | null 
     route: routeOf(sourceId),
     deadline:
       railExpiry === null
-        ? { depositExpiresAt: armedAt + DEFAULT_DEPOSIT_WINDOW_MS, source: "route" }
+        ? { depositExpiresAt: armedAt + depositWindowFor(routeOf(sourceId)), source: "route" }
         : { depositExpiresAt: railExpiry, source: "rail" },
     ...(handoff === undefined ? {} : { handoff }),
     status: { kind: "awaiting-deposit" },
@@ -543,7 +522,7 @@ function recordFromFlowSlot(
     },
     deadline:
       railExpiry === null
-        ? { depositExpiresAt: startedAt + DEFAULT_DEPOSIT_WINDOW_MS, source: "route" }
+        ? { depositExpiresAt: startedAt + depositWindowFor(routeOf(sourceId)), source: "route" }
         : { depositExpiresAt: railExpiry, source: "rail" },
     handoff,
     status: { kind: "awaiting-deposit" },
@@ -577,15 +556,6 @@ export const useRequestsStore = defineStore("requests", () => {
   const open = computed(() => records.value.filter((record) => record.status.kind !== "cancelled"));
   /** The open records in list order, newest first. */
   const openRecords = computed(() => [...open.value].sort(newestFirst));
-  const list = computed<RequestListRow[]>(() => openRecords.value.map(listRow));
-  const statuses = computed<Record<RequestKey, LegacyRequestStatus>>(() => {
-    const out: Record<RequestKey, LegacyRequestStatus> = {};
-    for (const record of open.value) {
-      const status = legacyRequestStatus(record);
-      if (status !== undefined) out[requestRefKey(record.ref)] = status;
-    }
-    return out;
-  });
   const freshness = computed<Record<RequestKey, Freshness>>(() => {
     const out: Record<RequestKey, Freshness> = {};
     for (const record of records.value) {
@@ -602,6 +572,12 @@ export const useRequestsStore = defineStore("requests", () => {
   const get = (ref: RequestRef): RequestRecord | undefined =>
     entries.value[requestRefKey(ref)]?.record;
   const has = (ref: RequestRef): boolean => entries.value[requestRefKey(ref)] !== undefined;
+  /** Trade `n` under `sourceId` has left a trace: a record in memory or a job in the worker's
+   *  blob. A number with a trace is never given to a new request. */
+  async function hasTrace(sourceId: string, n: number): Promise<boolean> {
+    if (has(requestRefOf(sourceId, n))) return true;
+    return (await readWorkerJobs())[workerSessionId(sourceId, n)] !== undefined;
+  }
 
   function setEntry(key: RequestKey, entry: RequestEntry): void {
     entries.value = { ...entries.value, [key]: entry };
@@ -1293,7 +1269,7 @@ export const useRequestsStore = defineStore("requests", () => {
         if (record.status.kind !== "cancelled") return;
         const windowEnd =
           (record.deadline.depositExpiresAt ??
-            (record.cancelledAt ?? 0) + DEFAULT_DEPOSIT_WINDOW_MS) + TOMBSTONE_GRACE_MS;
+            (record.cancelledAt ?? 0) + depositWindowFor(record.route)) + TOMBSTONE_GRACE_MS;
         if (windowEnd >= now) return;
         try {
           await remove(ref);
@@ -1348,7 +1324,8 @@ export const useRequestsStore = defineStore("requests", () => {
         const seen = probed[sourceId]?.[String(n)];
         if (
           seen !== undefined &&
-          (now - seen.lastAt < PROBED_RECHECK_MS || now - seen.firstAt >= DEFAULT_DEPOSIT_WINDOW_MS)
+          (now - seen.lastAt < PROBED_RECHECK_MS ||
+            now - seen.firstAt >= depositWindowFor(routeOf(sourceId)))
         ) {
           continue;
         }
@@ -1405,12 +1382,14 @@ export const useRequestsStore = defineStore("requests", () => {
     }
   }
 
-  /** Reconcile step 6: the worker is handed every open request it lost, off screen only. A job it
-   *  has no record of gets the request's stored hand-off as it is; a job it expired after the
-   *  buyer paid gets it with a fresh deadline, because the worker keeps the hand-off's own; a
-   *  legacy record without a hand-off builds one hosted world to obtain it, stores it and lets the
-   *  world go. Nothing here observes the record: the worker's answer arrives with the next job
-   *  read. A failure is noted on the entry and the next reconcile tries again. */
+  /** Reconcile step 6: the worker is handed every open request it lost, off screen only. The
+   *  pass waits for the worker's heartbeat once, up to `WORKER_READY_MS`, and skips every send
+   *  when it never comes. A job it has no record of gets the request's stored hand-off as it is;
+   *  a job it expired after the buyer paid gets it with a fresh deadline, because the worker
+   *  keeps the hand-off's own; a legacy record without a hand-off builds one hosted world to
+   *  obtain it, stores it and lets the world go. Nothing here observes the record: the worker's
+   *  answer arrives with the next job read. A failure is noted on the entry and the next
+   *  reconcile tries again. */
   async function handOffLostRequests(now: number): Promise<void> {
     if (!isHosted()) return;
     const lost = records.value.flatMap((record) => {
@@ -1422,9 +1401,26 @@ export const useRequestsStore = defineStore("requests", () => {
     if (lost.length === 0) return;
     const [{ getStorageWorkerManager }, { createHostedCoinageWorld, ensureChainSubmitGrant }] =
       await Promise.all([import("~~/lib/worker-rpc"), import("~~/lib/coinage-live")]);
+    const worker = getStorageWorkerManager();
+    // One wait per pass, so a worker that is down costs the pass one bound, not one per record.
+    const readyBy = Date.now() + WORKER_READY_MS;
+    while (!worker.isAvailable() && Date.now() < readyBy) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    if (!worker.isAvailable()) {
+      console.warn(
+        `[requests] worker not running; ${lost.length} hand-off(s) wait for the next pass`,
+      );
+      for (const { record } of lost) {
+        patchEntry(requestRefKey(record.ref), (current) => ({
+          ...current,
+          handoffError: WORKER_NOT_RUNNING,
+        }));
+      }
+      return;
+    }
     // The worker submits on the user's behalf; the grant is requested before the first send.
     await ensureChainSubmitGrant();
-    const worker = getStorageWorkerManager();
 
     async function obtainHandoff(record: RequestRecord): Promise<WorkerHandoffPayload> {
       const { ref } = record;
@@ -1460,7 +1456,7 @@ export const useRequestsStore = defineStore("requests", () => {
           const stored = record.handoff ?? (await buildHandoff(record));
           const payload =
             reason === "expired"
-              ? { ...stored, depositExpiresAt: now + DEFAULT_DEPOSIT_WINDOW_MS }
+              ? { ...stored, depositExpiresAt: now + depositWindowFor(record.route) }
               : stored;
           await sendHandoff(worker, workerSessionId(effectiveSourceId(ref), ref.tradeN), payload);
           patchEntry(key, ({ handoffError: _cleared, ...sent }) => sent);
@@ -1763,8 +1759,6 @@ export const useRequestsStore = defineStore("requests", () => {
     entries,
     records,
     openRecords,
-    list,
-    statuses,
     hydrated,
     hostReadDone,
     storage,
@@ -1774,6 +1768,7 @@ export const useRequestsStore = defineStore("requests", () => {
     freshness,
     get,
     has,
+    hasTrace,
     create,
     observe,
     flag,

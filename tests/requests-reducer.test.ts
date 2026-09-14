@@ -11,7 +11,6 @@ import {
   type WorkerJobView,
 } from "../app/funding/requests/model";
 import { reduce } from "../app/funding/requests/reducer";
-import { legacyRequestStatus } from "../app/funding/requests/views";
 import type { ActiveFlowRecord } from "../app/stores/session";
 import { requestRefOf, type RequestRef } from "../app/utils/request-index";
 import {
@@ -236,7 +235,9 @@ describe("request reducer: top-up transitions", () => {
 
     const deadline = submittedCardRecord.startedAt + DAY;
     expect(card().deadline).toEqual({ depositExpiresAt: deadline, source: "route" });
-    const expired = reduce(card(), clock(deadline + 1));
+    // The buyer's paid stamp keeps a submitted card from expiring; an unsubmitted one does.
+    const { meldSubmittedAt: _stamp, ...unsubmitted } = card();
+    const expired = reduce(unsubmitted, clock(deadline + 1));
     expect(expired.status).toEqual({ kind: "expired", at: deadline + 1 });
     const revived = reduce(expired, meld(deadline + 2, { status: "receiving" }));
     expect(revived.status).toEqual({
@@ -278,8 +279,8 @@ describe("request reducer: top-up transitions", () => {
     expect(railOnly.rail.stage).toBe("failed");
     expect(railOnly.progress.failedAt).toBeUndefined();
 
-    // A refund-like failure marks the record refunded, as core's own failure does, and the list
-    // status carries the marker. The record's rail keeps its own provider.
+    // A refund-like failure marks the record refunded, as core's own failure does. The record's
+    // rail keeps its own provider.
     const refunded = reduce(awaiting(), {
       source: "provider",
       at: at(1),
@@ -297,11 +298,6 @@ describe("request reducer: top-up transitions", () => {
     });
     expect(refunded.failureReason).toBe(RETURNED);
     expect(refunded.rail.provider).toBe("manual");
-    expect(legacyRequestStatus(refunded)).toEqual({
-      kind: "failed",
-      reason: RETURNED,
-      refunded: true,
-    });
   });
 
   it("chain funds at best → deposit-seen provisional; worker fundsSeenAt upgrades to finalized", () => {

@@ -51,13 +51,19 @@ function onSkip() {
 
 onMounted(async () => {
   const ref = meldRequestRef(props.topUp.id);
-  const opened = ref === null ? false : await session.openRequest(ref);
-  if (!active) {
-    if (opened && !handedOff()) session.reset();
-    return;
+  let opened = false;
+  try {
+    opened = ref === null ? false : await session.openRequest(ref);
+  } catch (e) {
+    console.warn("[funding] could not open the top-up:", e);
+    opened = false;
+  } finally {
+    if (active) {
+      unavailable.value = !opened;
+      opening.value = false;
+    }
   }
-  unavailable.value = !opened;
-  opening.value = false;
+  if (!active && opened && !handedOff()) session.reset();
 });
 
 onUnmounted(() => {

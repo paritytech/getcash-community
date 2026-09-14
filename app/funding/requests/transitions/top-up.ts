@@ -13,6 +13,7 @@ import {
   CONVERTING_STEP_ORDER,
   DEPOSIT_EXPIRED_REASON,
   PROVISIONAL_REVERT_MS,
+  buyerPaid,
   effectiveSourceId,
   isConvertingStep,
   isTerminal,
@@ -340,7 +341,7 @@ function applyWorker(record: RequestRecord, at: number, job: WorkerJobView | nul
         recoverable: true,
       });
     }
-    if (job.failure === "expired" && rank === 0 && next.rail.stage === "waiting") {
+    if (job.failure === "expired" && rank === 0 && !buyerPaid(next)) {
       return expired(next, at);
     }
     return next;
@@ -457,7 +458,7 @@ function applyChain(record: RequestRecord, observation: ChainObservation): Reque
 
 function applyClock(record: RequestRecord, at: number): RequestRecord {
   const next = witnessed(record, { clock: { at } });
-  const { status, rail, deadline } = next;
+  const { status, deadline } = next;
   const expirable =
     status.kind === "awaiting-deposit" ||
     (status.kind === "deposit-seen" &&
@@ -465,7 +466,7 @@ function applyClock(record: RequestRecord, at: number): RequestRecord {
       status.via === "chain");
   if (
     expirable &&
-    rail.stage === "waiting" &&
+    !buyerPaid(next) &&
     deadline.depositExpiresAt !== null &&
     at > deadline.depositExpiresAt
   ) {

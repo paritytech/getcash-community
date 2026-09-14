@@ -116,7 +116,7 @@ describe("session store: Meld (card / bank) in the mock world", () => {
     store.setMethod("card");
     store.setAmount("100");
     await store.fetchMeldQuote();
-    await store.start("");
+    await store.start();
     // The buyer finished the provider widget (the completion redirect fired).
     await store.markMeldSubmitted();
     expect(requests.meldSubmitted).toBe(true);

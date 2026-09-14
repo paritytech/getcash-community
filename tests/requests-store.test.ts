@@ -9,7 +9,6 @@ import { migrateRecord } from "../app/funding/requests/migrate";
 import { reduce } from "../app/funding/requests/reducer";
 import {
   COALESCE_MS,
-  DEPOSIT_EXPIRED_REASON,
   setRequestsClock,
   type Observation,
   type RequestRecord,
@@ -26,7 +25,7 @@ import {
   type WebStorageLike,
 } from "../app/funding/requests/storage";
 import { useRequestsStore } from "../app/stores/requests";
-import { useSessionStore, type ActiveFlowRecord, type RequestStatus } from "../app/stores/session";
+import { useSessionStore, type ActiveFlowRecord } from "../app/stores/session";
 import {
   parseRequestIndex,
   requestRefKey,
@@ -37,7 +36,6 @@ import {
 import {
   awaitingDepositCryptoRecord,
   cancelledCryptoRecord,
-  failedCryptoRecord,
   FIXTURE_NOW,
   fixtureRecords,
   LEGACY_BARE_REF_KEY,
@@ -225,7 +223,7 @@ describe("requests store", () => {
     await expect(requests.create(AWAITING_REF, record)).rejects.toThrow(/already has a record/);
   });
 
-  it("list and statuses equal the milestone-0 snapshot for the fixtures", async () => {
+  it("open records project like the fixtures", async () => {
     await seed(fixtureRecords);
     const requests = useRequestsStore();
     await requests.reconcile("boot");
@@ -240,21 +238,13 @@ describe("requests store", () => {
           ? reduce(migrated(record), { source: "clock", at: FIXTURE_NOW })
           : migrated(record),
       );
-    const expired = { "#7": { kind: "failed", reason: DEPOSIT_EXPIRED_REASON } } satisfies Record<
-      string,
-      RequestStatus
-    >;
     expect(projectChainflipTopUps(requests.openRecords, FIXTURE_NOW)).toEqual(
       projectChainflipTopUps(open, FIXTURE_NOW),
     );
     expect(projectMeldTopUps(requests.openRecords, FIXTURE_NOW)).toEqual(
       projectMeldTopUps(open, FIXTURE_NOW),
     );
-    expect(requests.statuses).toEqual({
-      ...expired,
-      "dot-assethub#2": { kind: "failed", reason: failedCryptoRecord.failureReason },
-    });
-    expect(requests.list.map((row) => requestRefKey(refOf(row)))).toEqual([
+    expect(requests.openRecords.map((record) => requestRefKey(record.ref))).toEqual([
       "dot-assethub#4",
       "dot-assethub#3",
       "meld-card#2",
@@ -280,7 +270,9 @@ describe("requests store", () => {
     expect(requests.entries[AWAITING_KEY]).toMatchObject({
       readError: expect.stringContaining("read failed"),
     });
-    expect(requests.list.some((row) => requestRefKey(refOf(row)) === AWAITING_KEY)).toBe(true);
+    expect(requests.openRecords.some((record) => requestRefKey(record.ref) === AWAITING_KEY)).toBe(
+      true,
+    );
     expect(await storedIndex()).toEqual(parseRequestIndex(serializeRequestIndex(refs)));
 
     host.rejectReads.delete(requestKey(AWAITING_REF));
@@ -341,13 +333,15 @@ describe("requests store", () => {
       kind: "cancelled",
       at: cancelledCryptoRecord.cancelledAt,
     });
-    expect(requests.list.map((row) => requestRefKey(refOf(row)))).not.toContain(
+    expect(requests.openRecords.map((record) => requestRefKey(record.ref))).not.toContain(
       requestRefKey(cancelled),
     );
     expect(await stored(cancelled)).toEqual(cancelledCryptoRecord);
 
     expect(requests.records).toHaveLength(refs.length);
-    expect(requests.list.filter((row) => row.settledAt !== undefined)).toHaveLength(12);
+    expect(requests.openRecords.filter((record) => record.settledAt !== undefined)).toHaveLength(
+      12,
+    );
     for (const record of settled) expect(await stored(refOf(record))).toEqual(record);
     expect((await storedIndex()).map(requestRefKey).sort()).toEqual(refs.map(requestRefKey).sort());
 
@@ -377,7 +371,7 @@ describe("requests store", () => {
     expect(requests.hostReadDone).toBe(false);
     expect(host.totalWrites()).toBe(0);
     expect(requests.records).toHaveLength(fixtureRecords.length);
-    expect(requests.list.map((row) => requestRefKey(refOf(row)))).toEqual([
+    expect(requests.openRecords.map((record) => requestRefKey(record.ref))).toEqual([
       "dot-assethub#4",
       "dot-assethub#3",
       "meld-card#2",
@@ -523,6 +517,6 @@ describe("requests store", () => {
       witnesses: { conflict: { source: "core" } },
     });
     expect(await storedIndex()).toEqual([AWAITING_REF]);
-    expect(requests.list.map((row) => requestRefKey(refOf(row)))).toEqual([AWAITING_KEY]);
+    expect(requests.openRecords.map((record) => requestRefKey(record.ref))).toEqual([AWAITING_KEY]);
   });
 });

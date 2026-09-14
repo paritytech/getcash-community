@@ -29,6 +29,7 @@ import {
   createCoinageSession,
   DEFAULT_SOURCE_ID,
   hostSafeEntropy,
+  nextFreeTradeNumber,
   readPurseBalance,
   readTradeCounter,
   tradeEntropyLabel,
@@ -95,6 +96,27 @@ export async function readFlowSlot(
   return { address, slot: await createFlowStore(storage, sourceId, address).load() };
 }
 
+/** Trade `n` has left a trace the caller knows of (`extra`: a record or a worker job) or one only
+ *  the host knows of: its core flow slot. */
+export async function hasTradeTrace(
+  sourceId: SourceId,
+  n: number,
+  extra: (n: number) => Promise<boolean>,
+): Promise<boolean> {
+  return (await extra(n)) || (await readFlowSlot(sourceId, n)).slot !== null;
+}
+
+/** The trade number the next request under `sourceId` takes: the host counter, moved past every
+ *  number with a trace. */
+export async function nextHostedTradeNumber(
+  sourceId: SourceId,
+  extra: (n: number) => Promise<boolean>,
+): Promise<number> {
+  return nextFreeTradeNumber(await hostStorageAdapter(), sourceId, (n) =>
+    hasTradeTrace(sourceId, n, extra),
+  );
+}
+
 /** The hand-off for a request whose record was lost, rebuilt from its flow slot with the sizing
  *  defaults the worker itself falls back to. */
 export function lostRequestHandoff(
@@ -135,6 +157,8 @@ export async function createHostedCoinageWorld(args: {
   /** Fiat rail and its source id, when the fiat route drives this run. */
   rail?: ChainflipRail;
   sourceId?: SourceId;
+  /** Core's stale bound for the flow slot (see CoinageSessionArgs.staleFlowMs). */
+  staleFlowMs?: number;
   /** Settle-internal claim progress (see createCoinageHandoff.onProgress). */
   onClaimProgress?: (stage: "prompted" | "crediting", claimed?: bigint) => void;
 }): Promise<HostedCoinageWorld> {
@@ -144,6 +168,7 @@ export async function createHostedCoinageWorld(args: {
     sourceId: args.sourceId ?? DEFAULT_SOURCE_ID,
     ...(args.rail ? { rail: args.rail } : {}),
     ...(args.tradeN === undefined ? {} : { tradeN: args.tradeN }),
+    ...(args.staleFlowMs === undefined ? {} : { staleFlowMs: args.staleFlowMs }),
     hostLocalStorage: storage,
     deriveEntropy,
     // The storage-backed manager stands in for the SDK's getWorkerManager(); one per page.

@@ -265,3 +265,11 @@ export function rankOf(record: Pick<RequestRecord, "status" | "failure">): numbe
 }
 
 export const isTerminal = (status: RequestStatus): boolean => status.kind === "settled";
+
+/** The buyer has paid: the rail reports the deposit at or past `received`, or the buyer finished
+ *  the provider's widget. Such a request never expires, however long the funds take to land. */
+export const buyerPaid = (record: Pick<RequestRecord, "rail" | "meldSubmittedAt">): boolean =>
+  record.rail.stage === "received" ||
+  record.rail.stage === "processing" ||
+  record.rail.stage === "delivered" ||
+  record.meldSubmittedAt !== undefined;

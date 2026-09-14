@@ -3,38 +3,10 @@
 
 import type { PaymentPhase } from "@getsome/core";
 import type { FundingStep } from "@getsome/funding";
-import type { RequestStatus as LegacyRequestStatus } from "../../stores/session";
 import type { FundingProgressProjection } from "../progress";
 import { creditedAmount } from "../top-up-projection";
 import type { FundingTopUpState } from "../top-ups";
-import {
-  CONFIRMED_TTL_MS,
-  DEPOSIT_EXPIRED_REASON,
-  rankOf,
-  type Freshness,
-  type RequestRecord,
-} from "./model";
-
-/** Today's list status. Undefined where the record's legacy fields already carry the state. */
-export function legacyRequestStatus(record: RequestRecord): LegacyRequestStatus | undefined {
-  const { status } = record;
-  switch (status.kind) {
-    case "converting":
-      return { kind: "converting", step: status.step };
-    case "claiming":
-      return { kind: "converting", step: "done" };
-    case "failed":
-      return {
-        kind: "failed",
-        reason: record.failure?.message ?? record.failureReason ?? "",
-        ...(record.refunded === undefined ? {} : { refunded: record.refunded }),
-      };
-    case "expired":
-      return { kind: "failed", reason: DEPOSIT_EXPIRED_REASON };
-    default:
-      return undefined;
-  }
-}
+import { CONFIRMED_TTL_MS, rankOf, type Freshness, type RequestRecord } from "./model";
 
 /** The core phase the record stands in for. */
 export function phaseLike(record: RequestRecord): PaymentPhase {

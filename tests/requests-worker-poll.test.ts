@@ -158,8 +158,9 @@ describe("requests store: the worker poll", () => {
       settledAt: claim.at,
       claimed: claim.amount,
     });
-    expect(requests.statuses[requestRefKey(ref)]).toBeUndefined();
-    expect(requests.list.find((row) => sameRequestRef(refOf(row), ref))?.settledAt).toBe(claim.at);
+    expect(requests.openRecords.find((record) => sameRequestRef(record.ref, ref))?.settledAt).toBe(
+      claim.at,
+    );
   });
 
   it("poll moves a record to converting when the job reports swap", async () => {
@@ -189,10 +190,6 @@ describe("requests store: the worker poll", () => {
       funded: seenAt,
       confirmedAt: now,
       witnesses: { worker: { known: true, phase: "swap", fundsSeenAt: seenAt, at: now } },
-    });
-    expect(requests.statuses[requestRefKey(AWAITING_REF)]).toEqual({
-      kind: "converting",
-      step: "swap",
     });
     // The deposit's first sighting is critical: on the host as soon as the tick lands it.
     expect(await stored(AWAITING_REF)).toMatchObject({
@@ -266,7 +263,7 @@ describe("requests store: the worker poll", () => {
     });
     const index = parseRequestIndex(await host.storage.read(REQUEST_INDEX_KEY));
     expect(index.some((listed) => sameRequestRef(listed, ref))).toBe(true);
-    expect(requests.list.map((row) => requestRefKey(refOf(row)))).toEqual([
+    expect(requests.openRecords.map((record) => requestRefKey(record.ref))).toEqual([
       "dot-assethub#9",
       "dot-assethub#4",
       "dot-assethub#3",
@@ -358,7 +355,6 @@ describe("requests store: the worker poll", () => {
     expect(requests.get(ref)?.rev).toBe(0);
     expect(requests.get(ref)).not.toHaveProperty("confirmedAt");
     expect(requests.entries[requestRefKey(ref)]?.pendingWrite).toBe(false);
-    expect(requests.statuses[requestRefKey(ref)]).toBeUndefined();
     expect(await stored(ref)).toEqual(submittedCardRecord);
     await requests.flush();
     expect(await stored(ref)).toEqual(submittedCardRecord);

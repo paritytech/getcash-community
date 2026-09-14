@@ -390,6 +390,38 @@ export async function readTradeCounter(storage: StorageLike, sourceId: string): 
   return Number.isInteger(n) && n >= 1 ? n : 1;
 }
 
+/** How far past the counter a free trade number is looked for before giving up. */
+const TRADE_NUMBER_SEARCH_LIMIT = 100;
+
+/**
+ * The number the next request takes: the stored counter, moved past every number `hasTrace`
+ * still knows (a record, a core flow slot, a worker job). A moved counter is written back and
+ * warned about: it means an earlier advance was lost.
+ */
+export async function nextFreeTradeNumber(
+  storage: StorageLike,
+  sourceId: string,
+  hasTrace: (n: number) => Promise<boolean>,
+): Promise<number> {
+  const counter = await readTradeCounter(storage, sourceId);
+  let n = counter;
+  while (await hasTrace(n)) {
+    n += 1;
+    if (n - counter >= TRADE_NUMBER_SEARCH_LIMIT) {
+      throw new Error(
+        `no free trade number for ${sourceId} within ${TRADE_NUMBER_SEARCH_LIMIT} of the counter`,
+      );
+    }
+  }
+  if (n !== counter) {
+    await storage.write(tradeCounterKey(sourceId), String(n));
+    console.warn(
+      `[coinage] trade counter for ${sourceId} stood at ${counter} but that number is taken; moved to ${n}`,
+    );
+  }
+  return n;
+}
+
 /** True once the request has a deposit address and has taken its burner. */
 export function isRequestStarted(phase: string): boolean {
   return (
@@ -428,10 +460,16 @@ export interface CoinageSessionArgs {
    */
   nativeBudget?: bigint;
   /**
-   * Which trade's burner to derive. Omit for a new request, which reads the stored counter
-   * and claims it on start. Pass it to re-open an existing request.
+   * Which trade's burner to derive. Omit for a new request, which reads the stored counter;
+   * the caller claims the number with `advanceTrade` once the request has started. Pass it to
+   * re-open an existing request.
    */
   tradeN?: number;
+  /**
+   * Age after which core calls an un-funded flow slot stale on resume: the request's deposit
+   * window, so core and the request record expire together. Omitted, core's own default.
+   */
+  staleFlowMs?: number;
 }
 
 export interface MockCoinageWorld extends RefundKeyHold {
@@ -445,6 +483,8 @@ export interface MockCoinageWorld extends RefundKeyHold {
   tradeN: number;
   /** The hand-off a worker would get for this request; the chain fields are blank offline. */
   handoffPayload(): Promise<WorkerHandoffPayload>;
+  /** The mock world has no counter to move. */
+  advanceTrade(): Promise<void>;
 }
 
 /**
@@ -551,6 +591,7 @@ export async function createMockCoinageSession(
     tradeN,
     ...refund,
     handoffPayload,
+    async advanceTrade() {},
   };
 }
 
@@ -578,6 +619,9 @@ export interface CoinageWorld extends RefundKeyHold {
   }): Promise<void>;
   /** The hand-off `runFunding` sends, built once after the persisted slot is hydrated. */
   handoffPayload(): Promise<WorkerHandoffPayload>;
+  /** Moves the source's trade counter past this request's number, once the request has started
+   *  and its number is taken for good. Idempotent; a failed write leaves it callable again. */
+  advanceTrade(): Promise<void>;
   /** The burner's native balance on Asset Hub at the best block. */
   readBurnerNativeOnAh(): Promise<bigint>;
   /** The burner's recovery secret (0x hex mini-secret), importable into a wallet as a raw seed. */
@@ -807,12 +851,8 @@ export async function createCoinageSession(
   // Host loggers may forward only warn and error.
   console.warn(`[coinage] ephemeral (burner): ${burnerKey.address}`);
 
-  // Best-effort backup of the burner's recovery secret in host storage; setup does not wait on it.
   const burnerMini = entropyToMiniSecret(seed);
   const burnerHex = `0x${Array.from(burnerMini, (b) => b.toString(16).padStart(2, "0")).join("")}`;
-  void deps.storage
-    .write(`coinage:burner:${args.sourceId}:${tradeN}`, burnerHex)
-    .catch((e: unknown) => console.warn("[coinage] burner backup write failed (non-fatal):", e));
 
   // A re-opened request whose deposit has landed gets no refund key.
   const stored = await stage(
@@ -882,10 +922,10 @@ export async function createCoinageSession(
     budget: { amount: budget, asset: { kind: "native" } },
     targetDecimals: NATIVE_DECIMALS, // the manual rail quotes the native budget
     sourceId: args.sourceId,
+    ...(args.staleFlowMs === undefined ? {} : { staleFlowMs: args.staleFlowMs }),
   });
 
-  // Trade rotation: advance the counter once, when this request starts. A failed write is
-  // retried on the next update.
+  // Trade rotation: the caller advances the counter once this request has started.
   let tradeAdvanced = false;
   const advanceTrade = async () => {
     if (tradeAdvanced) return;
@@ -897,15 +937,9 @@ export async function createCoinageSession(
       );
     } catch (e) {
       tradeAdvanced = false;
-      console.warn("[coinage] trade counter advance failed (the burner will be reused):", e);
+      console.warn("[coinage] trade counter advance failed (the next quote searches past it):", e);
     }
   };
-  // Re-opened requests (an explicit tradeN) never advance the counter.
-  if (args.tradeN === undefined) {
-    session.subscribe((s) => {
-      if (isRequestStarted(s.phase)) void advanceTrade();
-    });
-  }
 
   // The hand-off, shared by the request's record and the worker call.
   const handoffPayload = handoffPayloadOnce(session, async () => {
@@ -959,6 +993,7 @@ export async function createCoinageSession(
     tradeN,
     runFunding,
     handoffPayload,
+    advanceTrade,
     async readBurnerNativeOnAh() {
       const api = await assetHubApi();
       const account = await api.query.System.Account.getValue(burnerKey.address, { at: "best" });

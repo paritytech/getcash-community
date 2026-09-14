@@ -53,13 +53,19 @@ function goBack() {
 
 onMounted(async () => {
   if (!opening.value || !props.topUp || !props.open) return;
-  const opened = await props.open(props.topUp);
-  if (!active) {
-    if (opened) session.reset();
-    return;
+  let opened = false;
+  try {
+    opened = await props.open(props.topUp);
+  } catch (e) {
+    console.warn("[funding] could not open the top-up:", e);
+    opened = false;
+  } finally {
+    if (active) {
+      unavailable.value = !opened;
+      opening.value = false;
+    }
   }
-  unavailable.value = !opened;
-  opening.value = false;
+  if (!active && opened) session.reset();
 });
 
 onUnmounted(() => {
