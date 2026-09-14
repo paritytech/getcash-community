@@ -6,6 +6,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { projectChainflipTopUps } from "../app/funding/chainflip-top-ups";
 import { projectMeldTopUps } from "../app/funding/meld-top-ups";
 import { migrateRecord } from "../app/funding/requests/migrate";
+import { reduce } from "../app/funding/requests/reducer";
 import {
   COALESCE_MS,
   DEPOSIT_EXPIRED_REASON,
@@ -232,16 +233,22 @@ describe("requests store", () => {
     // Today's list never held the cancelled record (`openRequests` dropped it), and today's
     // reconcile marked the legacy request failed once its window had closed: the milestone-0
     // snapshot projected the raw fixtures, before either.
-    const open = fixtureRecords.filter((record) => record.cancelledAt === undefined);
+    const open = fixtureRecords
+      .filter((record) => record.cancelledAt === undefined)
+      .map((record) =>
+        record === legacyBareRefRecord
+          ? reduce(migrated(record), { source: "clock", at: FIXTURE_NOW })
+          : migrated(record),
+      );
     const expired = { "#7": { kind: "failed", reason: DEPOSIT_EXPIRED_REASON } } satisfies Record<
       string,
       RequestStatus
     >;
-    expect(projectChainflipTopUps(requests.list, requests.statuses, FIXTURE_NOW)).toEqual(
-      projectChainflipTopUps(open, expired, FIXTURE_NOW),
+    expect(projectChainflipTopUps(requests.openRecords, FIXTURE_NOW)).toEqual(
+      projectChainflipTopUps(open, FIXTURE_NOW),
     );
-    expect(projectMeldTopUps(requests.list, requests.statuses, FIXTURE_NOW)).toEqual(
-      projectMeldTopUps(open, {}, FIXTURE_NOW),
+    expect(projectMeldTopUps(requests.openRecords, FIXTURE_NOW)).toEqual(
+      projectMeldTopUps(open, FIXTURE_NOW),
     );
     expect(requests.statuses).toEqual({
       ...expired,

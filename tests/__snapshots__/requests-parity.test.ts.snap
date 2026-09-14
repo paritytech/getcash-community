@@ -2412,8 +2412,9 @@ exports[`request list projection > projects the fixture records exactly as today
       "route": "crypto",
       "startedAt": 1746547200000,
       "state": {
-        "kind": "awaiting-transfer",
-        "status": "Waiting for your transfer",
+        "at": 1746547800000,
+        "kind": "failed",
+        "reason": "Cancelled",
       },
     },
     {
@@ -2567,7 +2568,7 @@ exports[`request list projection > projects the fixture records exactly as today
       "route": "card",
       "startedAt": 1746552000000,
       "state": {
-        "kind": "finishing",
+        "kind": "awaiting-transfer",
         "status": "Confirming your payment",
       },
     },
@@ -2988,8 +2989,9 @@ exports[`request list projection > projects the fixture records with live status
       "route": "crypto",
       "startedAt": 1746547200000,
       "state": {
-        "kind": "awaiting-transfer",
-        "status": "Waiting for your transfer",
+        "at": 1746547800000,
+        "kind": "failed",
+        "reason": "Cancelled",
       },
     },
     {
@@ -3095,6 +3097,7 @@ exports[`request list projection > projects the fixture records with live status
         "detectedAt": 1746552120000,
         "estimateText": "Ready by 18:06",
         "stageTimestamps": {
+          "cash-conversion": 1746554400000,
           "cash-teleport": 1746554400000,
           "meld-payment": 1746552120000,
         },

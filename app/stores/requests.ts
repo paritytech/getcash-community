@@ -575,7 +575,9 @@ export const useRequestsStore = defineStore("requests", () => {
 
   const records = computed(() => Object.values(entries.value).map((entry) => entry.record));
   const open = computed(() => records.value.filter((record) => record.status.kind !== "cancelled"));
-  const list = computed<RequestListRow[]>(() => [...open.value].sort(newestFirst).map(listRow));
+  /** The open records in list order, newest first. */
+  const openRecords = computed(() => [...open.value].sort(newestFirst));
+  const list = computed<RequestListRow[]>(() => openRecords.value.map(listRow));
   const statuses = computed<Record<RequestKey, LegacyRequestStatus>>(() => {
     const out: Record<RequestKey, LegacyRequestStatus> = {};
     for (const record of open.value) {
@@ -1760,6 +1762,7 @@ export const useRequestsStore = defineStore("requests", () => {
   return {
     entries,
     records,
+    openRecords,
     list,
     statuses,
     hydrated,

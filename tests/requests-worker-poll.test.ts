@@ -277,7 +277,7 @@ describe("requests store: the worker poll", () => {
     ]);
 
     // The list renders it with generic labels: the source id's own chain and coin, no quote.
-    const row = projectChainflipTopUps(requests.list, requests.statuses, FIXTURE_NOW).find(
+    const row = projectChainflipTopUps(requests.openRecords, FIXTURE_NOW).find(
       (topUp) => topUp.id === "crypto:dot-assethub#9",
     );
     expect(row).toMatchObject({

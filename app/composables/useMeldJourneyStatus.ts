@@ -3,15 +3,17 @@
 
 import { computed } from "vue";
 import type { FundingJourneyStatus } from "../funding/handoff";
+import { useRequestsStore } from "../stores/requests";
 import { useSessionStore } from "../stores/session";
 
 export function useMeldJourneyStatus() {
   const session = useSessionStore();
+  const requests = useRequestsStore();
   return computed<FundingJourneyStatus | null>(() => {
-    if (session.method === "crypto" || session.phase === "done") return null;
+    if (session.method === "crypto" || requests.phase === "done") return null;
     const rail = session.method === "bank" ? "bank transfer" : "card payment";
     const Rail = rail.charAt(0).toUpperCase() + rail.slice(1);
-    switch (session.meldStage) {
+    switch (requests.meldStage) {
       case "receiving":
         return { text: `Confirming your ${rail}…`, tone: "pending" };
       case "complete":
