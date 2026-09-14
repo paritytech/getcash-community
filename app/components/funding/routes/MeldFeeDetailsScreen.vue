@@ -11,14 +11,24 @@ import PillButton from "../../ui/PillButton.vue";
 const session = useSessionStore();
 const emit = defineEmits<{ back: [] }>();
 
-/** No service fee is charged, so that design row is omitted. */
+/**
+ * The fee's components, when the quote actually breaks it into some.
+ *
+ * A quote with no usable network fee has nothing to split: `splitFees` hands the whole total back
+ * as the provider's share, and a lone "Provider fee" row would restate the "Total fees" row right
+ * below it — the same number twice, with a rule between them implying a sum. Return no components
+ * in that case and let the total stand alone.
+ *
+ * No service fee is charged, so that design row is omitted.
+ */
 const feeRows = computed(() => {
   const q = session.quoted;
   const split = q ? splitFees(q.fee, q.networkFee) : null;
-  if (!q || !split) return [];
-  const rows = [{ label: "Provider fee", value: fmtFiat(split.provider, q.symbol) }];
-  if (split.network) rows.push({ label: "Network fee", value: fmtFiat(split.network, q.symbol) });
-  return rows;
+  if (!q || !split?.network) return [];
+  return [
+    { label: "Provider fee", value: fmtFiat(split.provider, q.symbol) },
+    { label: "Network fee", value: fmtFiat(split.network, q.symbol) },
+  ];
 });
 
 /** The sum of the split, carried in its own rule-bracketed row. */
@@ -46,11 +56,12 @@ const rate = computed(() => {
 
 <template>
   <div class="flex min-h-0 flex-1 flex-col">
-    <!-- The split, its total, then the charge. Rules bracket the total so it reads as the sum of
-         the rows above rather than as another row. -->
-    <DetailRows class="gap-2" :rows="feeRows" muted />
-
-    <hr class="my-2 border-stroke-secondary" />
+    <!-- The split, its total, then the charge. The rule above the total is what makes it read as
+         a sum, so it only appears when there are components above it to sum. -->
+    <template v-if="feeRows.length">
+      <DetailRows class="gap-2" :rows="feeRows" muted />
+      <hr class="my-2 border-stroke-secondary" />
+    </template>
 
     <DetailRows class="gap-2" :rows="totalRows" muted />
 
