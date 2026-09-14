@@ -29,9 +29,12 @@ useVisibilityReconcile();
 const { previewLabel } = useStateDirector();
 const { handedOff } = useMeldHandoff(emit);
 
-const title = computed(
-  () => fundingSelectorConfig.routes.find(({ id }) => id === route)?.label ?? route,
-);
+// "Add funds via card" / "Add funds via bank": the toolbar names the whole action, since the
+// screen below it no longer spells out the provider or the method.
+const title = computed(() => {
+  const label = fundingSelectorConfig.routes.find(({ id }) => id === route)?.label ?? route;
+  return `Add funds via ${label.toLowerCase()}`;
+});
 /** The fee-breakdown drill-in over the pay screen. Back (toolbar or bottom button) returns to it. */
 const showingFees = ref(false);
 // A cleared quote (re-quote, region change) leaves nothing to break down.
