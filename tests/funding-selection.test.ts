@@ -25,7 +25,7 @@ describe("funding selection configuration", () => {
       initial: "",
       minimum: "10",
       maximum: "2000",
-      presets: ["50", "100", "200"],
+      presets: ["10", "50", "100"],
     });
     expect(fundingSelectorConfig.routes).toMatchObject([
       { id: "crypto", description: "Send from another wallet", estimate: "~3 min" },
