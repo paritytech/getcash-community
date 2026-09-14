@@ -3,7 +3,7 @@
 // read here and nowhere else. Today's list and statuses are views over it.
 
 import { defineStore } from "pinia";
-import { computed, ref, shallowRef } from "vue";
+import { computed, ref, shallowRef, watch } from "vue";
 import type { SourceId } from "@getsome/core";
 import {
   advanceFundingProgressSnapshot,
@@ -14,6 +14,7 @@ import {
 } from "../funding/progress";
 import { migrateRecord } from "../funding/requests/migrate";
 import {
+  CANCEL_CONFIRM_MS,
   COALESCE_MS,
   DEFAULT_DEPOSIT_WINDOW_MS,
   JOB_POLL_MS,
@@ -590,7 +591,7 @@ export const useRequestsStore = defineStore("requests", () => {
     });
   }
 
-  // Interim path for the core and provider progress signals until milestones 5 and 6 route them
+  // Interim path for the provider progress signals until milestone 6 routes the provider signals
   // as observations.
   function advanceProgress(
     ref: RequestRef,
@@ -706,8 +707,133 @@ export const useRequestsStore = defineStore("requests", () => {
   /** The key of the request on screen. Its own world hands it to the worker; the hand-off step
    *  leaves it alone. */
   const foreground = ref<RequestKey | null>(null);
+  const foregroundEntry = computed<RequestEntry | null>(() =>
+    foreground.value === null ? null : (entries.value[foreground.value] ?? null),
+  );
+  const foregroundRecord = computed<RequestRecord | null>(
+    () => foregroundEntry.value?.record ?? null,
+  );
   function setForeground(ref: RequestRef | null): void {
     foreground.value = ref === null ? null : requestRefKey(ref);
+  }
+
+  // The foreground clock: while the request on screen awaits its deposit, one clock observation a
+  // second lets the reducer expire it at its deadline. Witness-only ticks cost nothing.
+  let foregroundClock: ReturnType<typeof setInterval> | null = null;
+  function startForegroundClock(): void {
+    if (foregroundClock !== null) return;
+    foregroundClock = setInterval(() => {
+      const record = foregroundRecord.value;
+      if (record !== null) void observe(record.ref, { source: "clock", at: requestsNow() });
+    }, 1_000);
+  }
+  function stopForegroundClock(): void {
+    if (foregroundClock === null) return;
+    clearInterval(foregroundClock);
+    foregroundClock = null;
+  }
+  watch(
+    () => foregroundRecord.value?.status.kind === "awaiting-deposit",
+    (awaiting) => {
+      if (awaiting) startForegroundClock();
+      else stopForegroundClock();
+    },
+    { immediate: true },
+  );
+
+  /** The request on screen is gone: the clock stops and no key is foreground. */
+  function leave(): void {
+    stopForegroundClock();
+    setForeground(null);
+  }
+
+  /** `work` settled within the cancel's bound, or why not. */
+  type Bounded<T> = { ok: true; value: T } | { ok: false; reason: string };
+  function withinCancelBound<T>(label: string, work: Promise<T>): Promise<Bounded<T>> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expiry = new Promise<Bounded<T>>((resolve) => {
+      timer = setTimeout(
+        () => resolve({ ok: false, reason: `${label} did not answer in time` }),
+        CANCEL_CONFIRM_MS,
+      );
+    });
+    const outcome = work.then(
+      (value): Bounded<T> => ({ ok: true, value }),
+      (e: unknown): Bounded<T> => ({ ok: false, reason: `${label} failed: ${messageOf(e)}` }),
+    );
+    return Promise.race([outcome, expiry]).finally(() => clearTimeout(timer));
+  }
+
+  /** The job's own money observation: it saw funds, or it is past waiting for them. */
+  const jobHasFunds = (job: WorkerJobView): boolean =>
+    job.fundsSeenAt !== null ||
+    (job.phase !== "starting" && job.phase !== "await-native" && job.phase !== "failed");
+
+  /** The last look before a cancel: the burner and the worker's job, each read within
+   *  `CANCEL_CONFIRM_MS`. Funds in either refuse the cancel and reach the record as the read that
+   *  found them; a read that did not answer leaves the cancel unconfirmed. */
+  async function cancel(
+    ref: RequestRef,
+    opts: { readBurner: () => Promise<bigint> },
+  ): Promise<"ok" | "refused" | "unconfirmed"> {
+    const at = requestsNow();
+    const [burner, jobs] = await Promise.all([
+      withinCancelBound("the burner read", opts.readBurner()),
+      withinCancelBound("the worker job read", readWorkerJobs()),
+    ]);
+    if (burner.ok && burner.value > 0n) {
+      await observe(ref, {
+        source: "chain",
+        at,
+        burnerNative: burner.value.toString(),
+        finality: "best",
+        via: "pre-cancel",
+      });
+      return "refused";
+    }
+    const job = jobs.ok
+      ? jobs.value[workerSessionId(effectiveSourceId(ref), ref.tradeN)]
+      : undefined;
+    if (job) {
+      const view = jobView(job);
+      if (jobHasFunds(view)) {
+        await observe(ref, { source: "worker", at, job: view });
+        return "refused";
+      }
+    }
+    for (const read of [burner, jobs]) {
+      if (!read.ok) {
+        console.warn(`[requests] cancel unconfirmed: ${read.reason}`);
+        return "unconfirmed";
+      }
+    }
+    return "ok";
+  }
+
+  /** A user retry: only a recoverably failed record whose failure the worker's job, or core's
+   *  own failed witness, confirms is moved back into the pipeline. */
+  async function retry(ref: RequestRef): Promise<boolean> {
+    const record = get(ref);
+    if (record === undefined || record.status.kind !== "failed" || !record.status.recoverable) {
+      return false;
+    }
+    const jobs = await readWorkerJobs();
+    const job = jobs[workerSessionId(effectiveSourceId(ref), ref.tradeN)];
+    const confirmedByJob =
+      job !== undefined &&
+      job.phase === "failed" &&
+      (job.failure === "shortfall" || job.failure === "timeout");
+    if (!confirmedByJob && record.witnesses.core?.phase !== "failed") {
+      console.warn("[requests] retry ignored: the failure is not confirmed as recoverable");
+      return false;
+    }
+    await observe(ref, { source: "user", at: requestsNow(), event: "retry" });
+    return true;
+  }
+
+  /** The buyer finished the provider's widget; the stamp is on the host before this resolves. */
+  function markMeldSubmitted(ref: RequestRef): Promise<void> {
+    return observe(ref, { source: "user", at: requestsNow(), event: "meld-submitted" });
   }
 
   /** Reconcile step 6: the worker is handed every open request it lost, off screen only. A job it
@@ -980,7 +1106,15 @@ export const useRequestsStore = defineStore("requests", () => {
     setHandoff,
     remove,
     foreground,
+    foregroundEntry,
+    foregroundRecord,
     setForeground,
+    leave,
+    cancel,
+    retry,
+    markMeldSubmitted,
+    startForegroundClock,
+    stopForegroundClock,
     hydrateFromMirror,
     writeMirror,
     reconcile,

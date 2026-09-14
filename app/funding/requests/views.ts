@@ -76,11 +76,14 @@ export function fundingStepOf(record: RequestRecord): FundingStep | null {
   }
 }
 
-/** Today's latch: a worker step past `await-native`, or the faucet's transfer. */
+/** Today's latch: a worker step past `await-native`, the faucet's transfer, or the burner read a
+ *  cancel refused on. */
 export const fundsSeenOf = (record: RequestRecord): boolean =>
   rankOf(record) >= 2 ||
   (record.status.kind === "deposit-seen" &&
-    (record.status.via === "worker" || record.status.via === "faucet"));
+    (record.status.via === "worker" ||
+      record.status.via === "faucet" ||
+      record.status.via === "pre-cancel"));
 
 export function swapOf(record: RequestRecord): SwapProgress | null {
   if (phaseLike(record) !== "swapping" || record.rail.status === "failed") return null;

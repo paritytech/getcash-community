@@ -2,30 +2,37 @@
 // orchestration, the hand-off to the worker, claim progress, and recovery.
 
 import { defineStore } from "pinia";
-import { computed, ref, shallowRef, watch } from "vue";
+import { computed, ref, shallowRef } from "vue";
 import type { ChainflipRail, PaymentState, SourceId } from "@getsome/core";
 import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
 import type { RefundKey } from "@getsome/ephemeral";
-import { refundedFailure } from "../utils/recovery";
 import type { FundingStep } from "@getsome/funding";
 import {
   advanceFundingProgressSnapshot,
   createFundingProgressSnapshot,
   fundingProgressSignalForPaymentState,
-  fundingProgressSignalForSharedStep,
   progressProviderForSource,
   type FundingProgressSignal,
   type FundingProgressSnapshot,
 } from "../funding/progress";
 import {
   DEFAULT_DEPOSIT_WINDOW_MS,
+  DEPOSIT_EXPIRED_REASON,
   effectiveSourceId,
   railProviderOf,
+  rankOf,
   routeOf,
   TOMBSTONE_GRACE_MS,
   type RequestRecord,
 } from "../funding/requests/model";
-import { fundingStepOf } from "../funding/requests/views";
+import {
+  claimingOf,
+  fundingStepOf,
+  fundsSeenOf,
+  journeyInput,
+  milestonesOf,
+  phaseLike,
+} from "../funding/requests/views";
 import {
   createFakeMeldClient,
   createMeldClient,
@@ -45,12 +52,7 @@ import {
   type SupportedCorridor,
   type SupportedCountry,
 } from "~~/lib/supported";
-import {
-  requestRefKey,
-  requestRefOf,
-  sameRequestRef,
-  type RequestRef,
-} from "../utils/request-index";
+import { requestRefOf, sameRequestRef, type RequestRef } from "../utils/request-index";
 import { journeyDone } from "../utils/journey";
 import { estimateSourceAmount, estimateSourceFromCash } from "~~/lib/demo-rates";
 import { priceSourceLeg, type SourcePriceResult } from "~~/lib/source-price";
@@ -64,15 +66,14 @@ import { fundFromFaucet, isFaucetConfigured } from "~~/lib/faucet";
 import { sourceIdFor } from "~~/lib/config";
 import { useRequestsStore, type RequestListRow } from "./requests";
 
+export { DEPOSIT_EXPIRED_REASON } from "../funding/requests/model";
+
 /** Stand-in address for the mock world, which never touches a chain. */
 const DEV_RECIPIENT = "13ENScfFZXQ8avXf6cphack516B8YCjdL4MJbodm7VxK8GE9";
 
 /** A record's ref, or null when it never got a trade number. */
 const recordRef = (record: ActiveFlowRecord): RequestRef | null =>
   record.tradeN === undefined ? null : requestRefOf(record.sourceId, record.tradeN);
-/** Equality over optional refs; two absent refs are equal. */
-const sameOptionalRef = (a: RequestRef | undefined, b: RequestRef | undefined) =>
-  a === undefined || b === undefined ? a === b : sameRequestRef(a, b);
 
 /** Persisted per request; enough to re-open it. */
 export interface ActiveFlowRecord {
@@ -119,26 +120,6 @@ export interface ActiveFlowRecord {
   sourceId?: string;
 }
 
-interface ForegroundFundingProgress {
-  ref?: RequestRef;
-  startedAt: number;
-  snapshot: FundingProgressSnapshot;
-}
-
-/**
- * When the record's deposit window closes; falls back to the default window from the start time.
- */
-const expiryOf = (record: ActiveFlowRecord) =>
-  record.depositExpiresAt ?? record.startedAt + DEFAULT_DEPOSIT_WINDOW_MS;
-
-/** True when the deposit window closed before any deposit was seen. Funded and settled
- *  records never expire. */
-const isExpiredRecord = (record: ActiveFlowRecord, now: number) =>
-  record.funded === undefined && record.settledAt === undefined && now > expiryOf(record);
-
-/** Failure reason for a request whose deposit window lapsed. */
-export const DEPOSIT_EXPIRED_REASON = "Channel expired";
-
 /** Awaits `work` with a timeout, logging the stage label before and after. */
 async function step<T>(label: string, ms: number, work: Promise<T>): Promise<T> {
   console.warn(`[coinage] step: ${label}...`);
@@ -174,20 +155,6 @@ export type RequestStatus =
   | { kind: "ready" }
   | { kind: "failed"; reason: string; refunded?: boolean };
 
-/** The funding step a status implies; null when the status says nothing about the funding leg. */
-function stepOf(status: RequestStatus | undefined): FundingStep | null {
-  switch (status?.kind) {
-    case "waiting":
-      return "await-native";
-    case "converting":
-      return status.step;
-    case "ready":
-      return "done";
-    default:
-      return null;
-  }
-}
-
 export interface QuotedView {
   send: string;
   symbol: string;
@@ -210,11 +177,17 @@ export const useSessionStore = defineStore("session", () => {
   const requests = useRequestsStore();
 
   // Reactive projection
+  /** Core's last state for the request on screen, as it arrived. */
   const lastState = shallowRef<PaymentState | null>(null);
-  const fundingStep = ref<FundingStep | null>(null);
-  const fundingError = ref<string | null>(null);
   const fundingNotice = ref<string | null>(null);
-  const claimStage = ref<"prompted" | "crediting" | null>(null);
+  /** A failure the record cannot carry: a hand-off the worker refused, or a faucet transfer that
+   *  failed, write nothing to the record, yet the screen shows them. Only the refused hand-off
+   *  also marks the progress failed. Cleared when a drive starts and with the world. */
+  const fundingErrorOverride = ref<{
+    message: string;
+    at: number;
+    source: "handoff" | "faucet";
+  } | null>(null);
   const amountHuman = ref("");
   const amountBase = ref<bigint | null>(null);
   /** Pay method: crypto (Chainflip/manual) or a Meld fiat rail (card / bank). */
@@ -256,12 +229,6 @@ export const useSessionStore = defineStore("session", () => {
   const faucetState = ref<"idle" | "funding" | "sent">("idle");
   /** True while cancelTopUp runs. */
   const cancelling = ref(false);
-  /** Whether a deposit has been seen for the request on screen. Restored from the record on
-   *  re-open. */
-  const fundsSeen = ref(false);
-  /** The claimed amount; a full burner sweep, so it may exceed the typed amount. */
-  const claimedBase = ref<bigint | null>(null);
-  const foregroundProgress = shallowRef<ForegroundFundingProgress | null>(null);
 
   // Monotonic guard for async quote work. Every fetchQuote and reset bumps it; a resolution
   // with a stale token disposes what it built.
@@ -274,15 +241,70 @@ export const useSessionStore = defineStore("session", () => {
   let meldPollStop: (() => void) | null = null;
   // The country the current Meld quote was priced in.
   let meldRegionCountry: string | null = null;
-  /** The ref of the request on screen; set on start or re-open, cleared with the world. Null in
-   *  the mock world. */
+  /** The ref of the request on screen; set on start or re-open, cleared with the world. */
   let foregroundRef: RequestRef | null = null;
 
   function session() {
     return mock.value?.session ?? live.value?.session ?? null;
   }
 
-  const phase = computed(() => lastState.value?.phase ?? null);
+  // What the screens read of the request on screen, all derived from its record.
+  const foregroundRecord = computed(() => requests.foregroundRecord);
+  const phase = computed(() => (foregroundRecord.value ? phaseLike(foregroundRecord.value) : null));
+  /** Whether a deposit has been seen for the request on screen. */
+  const fundsSeen = computed(() =>
+    foregroundRecord.value ? fundsSeenOf(foregroundRecord.value) : false,
+  );
+  const fundingStep = computed(() =>
+    foregroundRecord.value ? fundingStepOf(foregroundRecord.value) : null,
+  );
+  const fundingError = computed(
+    () =>
+      fundingErrorOverride.value?.message ??
+      foregroundRecord.value?.failure?.message ??
+      (foregroundRecord.value?.status.kind === "expired" ? DEPOSIT_EXPIRED_REASON : null),
+  );
+  const claimStage = computed<"prompted" | "crediting" | null>(() => {
+    const record = foregroundRecord.value;
+    if (record?.status.kind !== "claiming") return null;
+    return record.claimed !== undefined ? "crediting" : "prompted";
+  });
+  /** The claimed amount; a full burner sweep, so it may exceed the typed amount. */
+  const claimedBase = computed(() => {
+    const claimed = foregroundRecord.value?.claimed;
+    return claimed === undefined ? null : BigInt(claimed);
+  });
+  /** When each journey step landed, in ms since epoch, by step number. */
+  const milestones = computed<Record<number, number>>(() =>
+    foregroundRecord.value ? milestonesOf(foregroundRecord.value) : {},
+  );
+  /** The record's progress; a hand-off the worker refused shows as failed on screen while the
+   *  record, still awaiting its deposit, waits for the worker's verdict. */
+  const foregroundProgress = computed(() => {
+    const record = foregroundRecord.value;
+    if (!record) return null;
+    const override = fundingErrorOverride.value;
+    const snapshot =
+      override !== null && override.source === "handoff" && rankOf(record) === 0
+        ? advanceFundingProgressSnapshot(record.progress, {
+            observation: { kind: "failed" },
+            at: override.at,
+          })
+        : record.progress;
+    return { ref: record.ref, startedAt: record.startedAt, snapshot };
+  });
+  /** How many of the journey's five steps are done. */
+  const journeyDoneCount = computed(() =>
+    journeyDone(
+      foregroundRecord.value
+        ? journeyInput(foregroundRecord.value)
+        : { phase: null, fundingStep: null, swap: null, failure: null },
+    ),
+  );
+  /** True while a claim is in flight: the host's sheet is up, or the credit is being verified. */
+  const claiming = computed(() =>
+    foregroundRecord.value ? claimingOf(foregroundRecord.value) : false,
+  );
   /** Whether the deposit can be skipped: one is still awaited and the faucet has not paid. */
   const canSkipDeposit = computed(
     () => phase.value === "awaiting-deposit" && !fundsSeen.value && faucetState.value === "idle",
@@ -293,27 +315,16 @@ export const useSessionStore = defineStore("session", () => {
   function revealRefundKey(): RefundKey | null {
     return (mock.value ?? live.value)?.revealRefundKey() ?? null;
   }
-  /** True while a claim is in flight: the host's sheet is up, or the credit is being verified. */
-  const claiming = computed(() => phase.value === "funded" || phase.value === "working");
 
-  /** How many of the journey's five steps are done. */
-  const journeyDoneCount = computed(() =>
-    journeyDone({
-      phase: phase.value,
-      fundingStep: fundingStep.value,
-      swap: lastState.value?.phase === "swapping" ? lastState.value.swap : null,
-      failure: lastState.value?.phase === "failed" ? lastState.value.failure : null,
-    }),
-  );
-  /** When each journey step landed, in ms since epoch, by step number. Not persisted. */
-  const milestones = ref<Record<number, number>>({});
-  watch([journeyDoneCount, lastState], ([done, state], [prevDone, prevState]) => {
-    // The first state after a start or re-open is a catch-up; it stamps nothing.
-    if (state === null || prevState === null || done === prevDone) return;
-    const next = { ...milestones.value };
-    for (let n = prevDone + 1; n <= done; n++) next[n] ??= Date.now();
-    milestones.value = next;
-  });
+  /** The trade number the next mock request takes: one past the highest this source has a record
+   *  for, so a browser session's requests never share a key. */
+  function nextMockTradeN(sourceId: string): number {
+    let highest = 0;
+    for (const { ref } of requests.records) {
+      if (effectiveSourceId(ref) === sourceId) highest = Math.max(highest, ref.tradeN);
+    }
+    return highest + 1;
+  }
 
   /**
    * TODO: remove this cap once the deposit is real money. Any replacement must clear the swap
@@ -389,21 +400,14 @@ export const useSessionStore = defineStore("session", () => {
     live.value?.dispose(); // tears down the session (chain clients are shared, stay up)
     live.value = null;
     lastState.value = null;
-    fundingStep.value = null;
-    fundingError.value = null;
     fundingNotice.value = null;
+    fundingErrorOverride.value = null;
     quoted.value = null;
     // Cleared with the epoch bump: a `pending` set by the outgoing quote is never resolved.
     sourcePrice.value = null;
-    claimStage.value = null;
-    claimedBase.value = null;
     faucetState.value = "idle";
-    fundsSeen.value = false;
-    milestones.value = {};
-    foregroundProgress.value = null;
     foregroundRef = null;
-    requests.setForeground(null);
-    clearDepositExpiry();
+    requests.leave();
     // No reconcile here; reset(), start(), openRequest() and boot reconcile.
   }
 
@@ -421,7 +425,7 @@ export const useSessionStore = defineStore("session", () => {
     const world = live.value;
     if (!world) return;
     const ref = foregroundRef ?? requestRefOf(world.sourceId, world.tradeN);
-    fundingError.value = null;
+    fundingErrorOverride.value = null;
     fundingNotice.value = null;
     // Warn level with message strings: a host logger may forward only warn and error.
     console.warn("[coinage] funding: handing off to the worker (fund the burner to begin)");
@@ -429,16 +433,6 @@ export const useSessionStore = defineStore("session", () => {
       .runFunding({
         onStep: (s) => {
           console.warn(`[coinage] funding step: ${s}`);
-          // await-native after funds are known is a stale read.
-          if (s === "await-native" && fundsSeen.value) return;
-          fundingStep.value = s;
-          // Any step past await-native means a deposit landed. Latch and persist it.
-          if (s !== "await-native") fundsSeen.value = true;
-          // A deposit after the window closed is still driven; clear the expiry reason.
-          if (s !== "await-native" && fundingError.value === DEPOSIT_EXPIRED_REASON) {
-            fundingError.value = null;
-          }
-          // The list shows the on-screen request alongside the others, from its record.
           recordSharedFundingStep(ref, s);
         },
         onTransientError: (e) => {
@@ -468,9 +462,8 @@ export const useSessionStore = defineStore("session", () => {
         // Shortfall, a refused hand-off, no worker: the session keeps waiting; say why.
         const reason = e instanceof Error ? e.message : String(e);
         console.error(`[coinage] funding: failed: ${reason}`);
-        fundingError.value = reason;
         // The screen shows the failure now; the record waits for the worker's verdict.
-        advanceForegroundProgress(ref, { observation: { kind: "failed" } }, Date.now());
+        fundingErrorOverride.value = { message: reason, at: Date.now(), source: "handoff" };
         recordDriverFailure(ref, reason);
       });
   }
@@ -512,8 +505,12 @@ export const useSessionStore = defineStore("session", () => {
         ...(rail ? { rail } : {}),
         ...(sourceId ? { sourceId } : {}),
         onClaimProgress: (stage, claimed) => {
-          claimStage.value = stage;
-          if (claimed !== undefined) claimedBase.value = claimed;
+          if (foregroundRef === null) return;
+          void requests.observe(foregroundRef, {
+            source: "core",
+            at: Date.now(),
+            claim: { stage, ...(claimed === undefined ? {} : { claimed: claimed.toString() }) },
+          });
         },
       }),
     );
@@ -716,6 +713,7 @@ export const useSessionStore = defineStore("session", () => {
           sourceId: built.sourceId,
           rail: built.rail,
           nativeBudget,
+          tradeN: nextMockTradeN(built.sourceId),
         });
         await world.session.ready;
         const quote = await world.session.quote();
@@ -834,6 +832,7 @@ export const useSessionStore = defineStore("session", () => {
           recipient: DEV_RECIPIENT,
           amount: amountBase.value,
           sourceId,
+          tradeN: nextMockTradeN(sourceId),
         });
         await world.session.ready;
         const quote = await world.session.quote();
@@ -944,17 +943,11 @@ export const useSessionStore = defineStore("session", () => {
     // leg gets none.
     const { refundAddress } = world;
     const startedAt = Date.now();
-    milestones.value = { 1: startedAt };
-    fundsSeen.value = false; // a fresh request genuinely awaits its first deposit
-    // The request's identity for every record write from here on (null in the mock world).
-    foregroundRef = live.value ? requestRefOf(live.value.sourceId, live.value.tradeN) : null;
+    // The request's identity for every record write from here on.
+    foregroundRef = requestRefOf(world.sourceId, world.tradeN);
+    // On screen as soon as its record enters memory, before the host write completes.
     requests.setForeground(foregroundRef);
-    const ref = foregroundRef ?? undefined;
-    foregroundProgress.value = {
-      ...(ref === undefined ? {} : { ref }),
-      startedAt,
-      snapshot: initialProgress(startedAt),
-    };
+    const ref = foregroundRef;
     sub?.unsubscribe();
     sub = world.session.subscribe((state) => {
       observePaymentState(state, ref);
@@ -1047,31 +1040,9 @@ export const useSessionStore = defineStore("session", () => {
     });
   }
 
-  function advanceForegroundProgress(
-    ref: RequestRef | undefined,
-    signal: FundingProgressSignal,
-    at: number,
-  ): void {
-    const current = foregroundProgress.value;
-    if (!current || !sameOptionalRef(current.ref, ref)) return;
-    const snapshot = advanceFundingProgressSnapshot(current.snapshot, { ...signal, at });
-    if (snapshot !== current.snapshot) foregroundProgress.value = { ...current, snapshot };
-  }
-
-  function recordFundingProgress(
-    ref: RequestRef,
-    signal: FundingProgressSignal,
-    at = Date.now(),
-    markFunded = false,
-  ): void {
-    advanceForegroundProgress(ref, signal, at);
-    void requests.advanceProgress(ref, signal, at, markFunded);
-  }
-
   /** A funding step the worker reached, recorded as the worker's own sighting of the request. */
   function recordSharedFundingStep(ref: RequestRef, step: FundingStep): void {
     const at = Date.now();
-    advanceForegroundProgress(ref, fundingProgressSignalForSharedStep(step), at);
     // `await-native` reports no deposit; every later step means the worker has one in hand.
     void requests.observe(ref, {
       source: "worker",
@@ -1104,55 +1075,11 @@ export const useSessionStore = defineStore("session", () => {
     });
   }
 
-  // Deposit window (foreground). Core stamps `deposit.expiresAt` on every rail (0 = none). When
-  // it passes with no deposit seen, the top-up fails with the expiry reason.
-  let depositExpiryTimer: ReturnType<typeof setTimeout> | null = null;
-  function clearDepositExpiry() {
-    if (depositExpiryTimer !== null) clearTimeout(depositExpiryTimer);
-    depositExpiryTimer = null;
-  }
-  function expireDeposit(ref: RequestRef | undefined) {
-    depositExpiryTimer = null;
-    if (fundsSeen.value) return; // a deposit landed in time: the window no longer matters
-    fundingError.value = DEPOSIT_EXPIRED_REASON;
-    const now = Date.now();
-    advanceForegroundProgress(ref, { observation: { kind: "failed" } }, now);
-    // The record's deadline is this timer's instant: the clock observation expires it.
-    if (ref !== undefined) void requests.observe(ref, { source: "clock", at: now });
-  }
-  function armDepositExpiry(state: PaymentState, ref: RequestRef | undefined) {
-    clearDepositExpiry();
-    if (state.phase !== "awaiting-deposit" || fundsSeen.value) return;
-    const at = state.deposit.expiresAt ?? 0;
-    if (at <= 0) return;
-    const delay = at - Date.now();
-    if (delay <= 0) {
-      expireDeposit(ref); // re-opened after the window closed: fail it on arrival
-      return;
-    }
-    depositExpiryTimer = setTimeout(() => expireDeposit(ref), Math.min(delay, 2_147_483_647));
-  }
-
+  /** Core's state reaches the record as core's own observation; a key with no record yet (the
+   *  first state of a start) is dropped, and the record is created from `lastState`. */
   function observePaymentState(state: PaymentState, ref: RequestRef | undefined): void {
     lastState.value = state;
-    armDepositExpiry(state, ref);
-    const provider = progressProviderForSource(state.sourceId ?? ref?.sourceId);
-    if (ref !== undefined && state.phase === "failed" && refundedFailure(state.failure.kind)) {
-      recordFailureReason(ref, state.failure.message, true);
-    }
-    const signal = fundingProgressSignalForPaymentState(provider, state);
-    if (!signal) return;
-    if (signal.observation.kind === "settled") {
-      const settledAt = Date.now();
-      advanceForegroundProgress(ref, signal, settledAt);
-      if (ref !== undefined) markSettled(ref, claimedBase.value, settledAt);
-      return;
-    }
-    if (ref === undefined) {
-      advanceForegroundProgress(ref, signal, Date.now());
-      return;
-    }
-    recordFundingProgress(ref, signal);
+    if (ref !== undefined) void requests.observe(ref, { source: "core", at: Date.now(), state });
   }
 
   function sourceDisplayForRecord(): { sourceAmount: string; sourceSymbol: string } | null {
@@ -1186,19 +1113,25 @@ export const useSessionStore = defineStore("session", () => {
 
   async function persistActiveFlow(startedAt: number) {
     if (!lastQuoteParams) return;
-    const world = live.value;
-    if (!world) return; // mock world: nothing to re-open
+    const world = mock.value ?? live.value;
+    if (!world) return;
     const tradeN = world.tradeN;
-    const ref = foregroundRef ?? requestRefOf(world.sourceId, tradeN);
+    const ref = requestRefOf(world.sourceId, tradeN);
     try {
       const state = lastState.value;
-      const current = foregroundProgress.value;
+      // Core's first state arrived before the record existed; the snapshot starts where it
+      // would have moved it.
+      const opening =
+        state === null
+          ? null
+          : fundingProgressSignalForPaymentState(progressProviderForSource(world.sourceId), state);
       const progress =
-        current?.ref !== undefined &&
-        sameRequestRef(current.ref, ref) &&
-        current.startedAt === startedAt
-          ? current.snapshot
-          : initialProgress(startedAt);
+        opening === null
+          ? initialProgress(startedAt)
+          : advanceFundingProgressSnapshot(initialProgress(startedAt), {
+              ...opening,
+              at: startedAt,
+            });
       // What the buyer pays: the fiat quote for a Meld request, the source-coin figure otherwise.
       const sourceDisplay = isMeldSourceId(world.sourceId)
         ? quoted.value
@@ -1366,7 +1299,6 @@ export const useSessionStore = defineStore("session", () => {
     settledAt = Date.now(),
   ) {
     if (ref === undefined) return;
-    advanceForegroundProgress(ref, { observation: { kind: "settled" } }, settledAt);
     void requests
       .observe(ref, {
         source: "worker",
@@ -1428,33 +1360,12 @@ export const useSessionStore = defineStore("session", () => {
     try {
       teardownWorld();
       foregroundRef = ref; // after teardown, which clears it
-      requests.setForeground(ref);
-      foregroundProgress.value = {
-        ...(ref === null ? {} : { ref }),
-        startedAt: record.startedAt,
-        snapshot: record.progress,
-      };
-      // The one timestamp the record knows.
-      milestones.value = { 1: record.startedAt };
-      // Two witnesses that a deposit arrived: the record and the worker's job, which the store's
-      // reconcile has already applied to it. Either is enough.
-      const stored = ref === null || record.funded !== undefined ? undefined : requests.get(ref);
-      const workerStep = stored === undefined ? null : fundingStepOf(stored);
-      if (ref !== null && workerStep !== null) recordSharedFundingStep(ref, workerStep);
-      fundsSeen.value = record.funded !== undefined || workerStep !== null;
       // A buyer who finished the widget resumes onto the conversion screen.
       meldSubmitted.value = record.meldSubmittedAt !== undefined;
+      const status = ref === null ? "?" : (requests.get(ref)?.status.kind ?? "?");
       console.warn(
-        `[coinage] reopen request #${record.tradeN}: funded=${record.funded ?? "no"} worker=${workerStep ?? "no"} submitted=${record.meldSubmittedAt !== undefined}`,
+        `[coinage] reopen request #${record.tradeN}: funded=${record.funded ?? "no"} status=${status} submitted=${record.meldSubmittedAt !== undefined}`,
       );
-      // Core restores this request at `awaiting-deposit` whatever it is doing. Seed the step from
-      // what a driver observed, or from the record's `funded` flag.
-      if (ref !== null) {
-        fundingStep.value =
-          stepOf(requestStatus.value[requestRefKey(ref)]) ??
-          workerStep ??
-          (fundsSeen.value ? "swap" : null);
-      }
       const epoch = quoteEpoch;
       // Re-enter under the record's own trade and source id.
       const world = await createLiveWorld(
@@ -1475,6 +1386,7 @@ export const useSessionStore = defineStore("session", () => {
         return false;
       }
       live.value = world;
+      requests.setForeground(ref);
       // Display context for the journey; no re-quote on this path.
       quoted.value = {
         send: record.sourceAmount ?? "",
@@ -1524,7 +1436,7 @@ export const useSessionStore = defineStore("session", () => {
       }
       const phase = world.session.getState().phase;
       // An expired, unfunded request gets no driver here either.
-      const expired = phase === "awaiting-deposit" && isExpiredRecord(record, Date.now());
+      const expired = ref !== null && requests.get(ref)?.status.kind === "expired";
       if (!expired && (phase === "awaiting-deposit" || phase === "swapping")) driveFunding();
       // This request now owns the screen, so it must not also be driven off it.
       void reconcileBackground();
@@ -1558,18 +1470,22 @@ export const useSessionStore = defineStore("session", () => {
       const faucetRef = requestRefOf(live.value.sourceId, tradeN);
       await fundFromFaucet({ address: s.deposit.address, amount: s.deposit.amount });
       faucetState.value = "sent";
-      // The transfer is in a block; the deposit exists on the burner. Latch and persist it through
-      // the progress path.
-      fundsSeen.value = true;
-      recordSharedFundingStep(faucetRef, "swap");
-      // The journey's received/processed beats complete now; this rail has no swap leg to report.
-      if (fundingStep.value === null || fundingStep.value === "await-native") {
-        fundingStep.value = "swap";
-      }
+      // The transfer is in a block: the chain's own sighting of the deposit.
+      await requests.observe(faucetRef, {
+        source: "chain",
+        at: Date.now(),
+        burnerNative: s.deposit.amount.toString(),
+        finality: "finalized",
+        via: "faucet",
+      });
       driveFunding(); // joins the running leg, or restarts one that had failed
     } catch (e: unknown) {
       faucetState.value = "idle";
-      fundingError.value = e instanceof Error ? e.message : String(e);
+      fundingErrorOverride.value = {
+        message: e instanceof Error ? e.message : String(e),
+        at: Date.now(),
+        source: "faucet",
+      };
     }
   }
 
@@ -1590,13 +1506,7 @@ export const useSessionStore = defineStore("session", () => {
       meldStage.value = "receiving";
     meldHandedOff.value = true;
     // Persisted before returning; a re-open reads this stamp to keep the paid widget hidden.
-    if (foregroundRef !== null) {
-      await requests.observe(foregroundRef, {
-        source: "user",
-        at: Date.now(),
-        event: "meld-submitted",
-      });
-    }
+    if (foregroundRef !== null) await requests.markMeldSubmitted(foregroundRef);
   }
 
   /** Credits the settled Meld payment into the coinage leg, once. A no-op in the host world. */
@@ -1616,10 +1526,9 @@ export const useSessionStore = defineStore("session", () => {
    *  reason. Idempotent per stage. */
   function recordMeldStage(): void {
     const ref = foregroundRef ?? undefined;
-    const record = (signal: FundingProgressSignal) =>
-      ref === undefined
-        ? advanceForegroundProgress(ref, signal, Date.now())
-        : recordFundingProgress(ref, signal);
+    const record = (signal: FundingProgressSignal) => {
+      if (ref !== undefined) void requests.advanceProgress(ref, signal, Date.now());
+    };
     switch (meldStage.value) {
       case "receiving":
         record({
@@ -1632,7 +1541,6 @@ export const useSessionStore = defineStore("session", () => {
         return;
       case "failed": {
         const reason = meldFailureMessage.value ?? "The payment could not be completed.";
-        fundingError.value = reason;
         record({ observation: { kind: "failed" } });
         if (ref !== undefined) recordFailureReason(ref, reason);
         return;
@@ -1737,13 +1645,20 @@ export const useSessionStore = defineStore("session", () => {
   function approveClaim() {
     mock.value?.handoff.confirmConsent();
   }
+  /** Re-drives a recoverably failed request once the store confirms the failure; a request with
+   *  no record retries core alone. */
   function retry() {
     const s = session();
     if (!s) return;
-    void s
-      .retry()
-      .then(() => console.info(`[coinage] retry() resolved, phase now ${s.getState().phase}`))
-      .catch((e: unknown) => console.error("[coinage] retry() threw:", e));
+    const confirmed =
+      foregroundRef === null ? Promise.resolve(true) : requests.retry(foregroundRef);
+    void confirmed.then((ok) => {
+      if (!ok) return;
+      return s
+        .retry()
+        .then(() => console.info(`[coinage] retry() resolved, phase now ${s.getState().phase}`))
+        .catch((e: unknown) => console.error("[coinage] retry() threw:", e));
+    });
   }
 
   /** Abandons the on-screen top-up. Core's cancel() clears the flow slot, the record leaves the
@@ -1753,36 +1668,22 @@ export const useSessionStore = defineStore("session", () => {
     if (cancelling.value || claiming.value || resuming.value) return false;
     cancelling.value = true;
     try {
-      // Last look before anything irreversible: funds on the burner mean a purchase in progress.
-      // Refuse, latch it funded, and drive it. Fail open on a dead transport.
-      if (live.value) {
-        try {
-          const held = await step(
-            "pre-cancel balance check",
-            8_000,
-            live.value.readBurnerNativeOnAh(),
-          );
-          if (held > 0n) {
-            console.warn(`[coinage] cancel refused: the burner already holds ${held} planck`);
-            fundsSeen.value = true;
-            // Latch the record as funded: the chain's own sighting of the deposit.
-            const heldRef = foregroundRef ?? requestRefOf(live.value.sourceId, live.value.tradeN);
-            const now = Date.now();
-            advanceForegroundProgress(heldRef, { observation: { kind: "hold" } }, now);
-            void requests.observe(heldRef, {
-              source: "chain",
-              at: now,
-              burnerNative: held.toString(),
-              finality: "best",
-              via: "pre-cancel",
-            });
-            driveFunding();
-            return false;
-          }
-        } catch (e) {
-          console.warn(
-            `[coinage] pre-cancel balance check failed (cancelling anyway): ${e instanceof Error ? e.message : String(e)}`,
-          );
+      // Last look before anything irreversible: funds on the burner or in the worker's hands mean
+      // a purchase in progress. Refuse (the store latched it funded) and drive it. A read that
+      // cannot confirm the burner is empty declines the cancel.
+      const world = live.value;
+      if (world && foregroundRef !== null) {
+        const verdict = await requests.cancel(foregroundRef, {
+          readBurner: () => world.readBurnerNativeOnAh(),
+        });
+        if (verdict === "refused") {
+          console.warn("[coinage] cancel refused: the burner already holds funds");
+          driveFunding();
+          return false;
+        }
+        if (verdict === "unconfirmed") {
+          console.warn("[coinage] cancel declined: could not confirm the burner is empty");
+          return false;
         }
       }
       const s = session();
@@ -1801,7 +1702,7 @@ export const useSessionStore = defineStore("session", () => {
           `[coinage] cancel: core cancel failed (continuing): ${e instanceof Error ? e.message : String(e)}`,
         );
       }
-      if (ref !== null && live.value) {
+      if (ref !== null) {
         try {
           await tombstoneActiveFlow(ref, depositExpiresAt);
         } catch (e) {
@@ -1834,6 +1735,7 @@ export const useSessionStore = defineStore("session", () => {
     phase,
     fundingStep,
     fundingError,
+    fundingErrorOverride,
     fundingNotice,
     claimStage,
     claimedBase,

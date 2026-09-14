@@ -48,7 +48,7 @@ export type RequestKey = string;
 export type Kind = "top-up";
 /** The pipeline's steps between the deposit and the claim, derived from `FundingStep`. */
 export type ConvertingStep = Exclude<FundingStep, "await-native" | "done">;
-export type DepositSeenVia = "worker" | "chain" | "rail" | "core" | "faucet";
+export type DepositSeenVia = "worker" | "chain" | "rail" | "core" | "faucet" | "pre-cancel";
 
 /** The converting steps in pipeline order. The `satisfies` fails to compile when `FundingStep`
  *  gains or loses a step, so the order can never drift from the type. */

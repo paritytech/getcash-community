@@ -440,6 +440,9 @@ export interface MockCoinageWorld extends RefundKeyHold {
   harness: Harness;
   rail: ChainflipRail;
   storage: StorageAdapter;
+  sourceId: SourceId;
+  /** This request's trade number, which keys its record. */
+  tradeN: number;
   /** The hand-off a worker would get for this request; the chain fields are blank offline. */
   handoffPayload(): Promise<WorkerHandoffPayload>;
 }
@@ -538,7 +541,17 @@ export async function createMockCoinageSession(
     remoteFeeBuffer: "0",
     keepNativeForFees: "0",
   }));
-  return { session, handoff, harness, rail, storage, ...refund, handoffPayload };
+  return {
+    session,
+    handoff,
+    harness,
+    rail,
+    storage,
+    sourceId: args.sourceId,
+    tradeN,
+    ...refund,
+    handoffPayload,
+  };
 }
 
 export interface CoinageWorld extends RefundKeyHold {

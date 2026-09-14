@@ -1,5 +1,6 @@
 // The request records' storage seam: one keyed string store, read through `getRecordStorage`.
-// The host's app-scoped storage when hosted, Web Storage in the plain browser, memory for tests.
+// The host's app-scoped storage when hosted; memory in the plain browser (development only, it
+// persists nothing) and in tests. The Web Storage mirror exists only in the host too.
 
 import type { HostLocalStorage } from "@parity/product-sdk-host";
 import { isHosted } from "~~/lib/host-account";
@@ -64,8 +65,8 @@ export function createMemoryKeyedStorage(): KeyedStorage {
   };
 }
 
-/** The mirror's Web Storage: injected for tests, else the window's, else none. `undefined` until
- *  first resolved. */
+/** The mirror's Web Storage: injected for tests, else the window's when hosted, else none.
+ *  `undefined` until first resolved. */
 let mirrorStorage: WebStorageLike | null | undefined;
 let mirrorAvailable = true;
 
@@ -79,7 +80,7 @@ function mirrorBacking(): WebStorageLike | null {
   if (mirrorStorage !== undefined) return mirrorStorage;
   // Node defines a `localStorage` getter that warns when read; only a window has a usable one,
   // and a sandboxed window throws on access.
-  if (typeof window === "undefined") return (mirrorStorage = null);
+  if (typeof window === "undefined" || !isHosted()) return (mirrorStorage = null);
   try {
     mirrorStorage = window.localStorage ?? null;
   } catch {
@@ -144,8 +145,8 @@ export function setRecordStorage(storage: KeyedStorage): void {
   recordStorage = storage;
 }
 
-/** The record storage: the injected one, else the host's when hosted, else Web Storage. Resolved
- *  once and kept. */
+/** The record storage: the injected one, else the host's when hosted, else memory. Resolved once
+ *  and kept. */
 export async function getRecordStorage(): Promise<KeyedStorage> {
   if (recordStorage) return recordStorage;
   if (isHosted()) {
@@ -154,7 +155,7 @@ export async function getRecordStorage(): Promise<KeyedStorage> {
     if (!host) throw new Error("host storage unavailable");
     recordStorage = createHostKeyedStorage(host);
   } else {
-    recordStorage = createWebKeyedStorage(localStorage);
+    recordStorage = createMemoryKeyedStorage();
   }
   return recordStorage;
 }

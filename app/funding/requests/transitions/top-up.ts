@@ -121,7 +121,10 @@ const atSideExit = (record: RequestRecord): boolean =>
   record.status.kind === "cancelled";
 
 /** A positive money observation: moves a rank-0 record (or a side exit left from rank 0) to
- *  deposit-seen, and firms up a provisional sighting. Never touches a record past rank 1. */
+ *  deposit-seen, and firms up a provisional sighting. Never touches a record past rank 1. Only
+ *  money on the burner itself (the worker, the faucet, a chain read) starts the conversion stage;
+ *  a sighting on the provider's side holds, and the branch's own route observation carries the
+ *  stage. */
 function moneySeen(
   record: RequestRecord,
   at: number,
@@ -139,7 +142,8 @@ function moneySeen(
     status: { kind: "deposit-seen", at, assurance, via },
     funded: earliest(record.funded, at),
   };
-  return advanced(seen, fundingProgressSignalForSharedStep("swap"), at);
+  const onBurner = via === "worker" || via === "faucet" || via === "chain";
+  return advanced(seen, onBurner ? fundingProgressSignalForSharedStep("swap") : HOLD, at);
 }
 
 function failed(record: RequestRecord, at: number, failure: RequestFailure): RequestRecord {
@@ -389,7 +393,7 @@ function applyChain(record: RequestRecord, observation: ChainObservation): Reque
       });
     }
     const assurance: Assurance = finality === "finalized" ? "finalized" : "provisional";
-    return moneySeen(next, at, assurance, via === "faucet" ? "faucet" : "chain");
+    return moneySeen(next, at, assurance, via === "probe" ? "chain" : via);
   }
   // A zero read is never a money observation; a finalized one can only unwind a chain-provisional
   // sighting that nothing else has confirmed within the revert window.
