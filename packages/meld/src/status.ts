@@ -119,7 +119,8 @@ export async function getMeldStatus(
   }
   const failure = FAILURES[status];
   if (failure !== undefined) {
-    const ending = providerEnding(providerStatus, sourceAmount, fiat);
+    // Only `failed` collapses a provider ending; the adapter's own endings keep their wording.
+    const ending = status === "failed" ? providerEnding(providerStatus, sourceAmount, fiat) : null;
     const reason = ending ?? { code: status, message: failure.message };
     // The kind travels with the message; core's default kind is `deposit-rejected`.
     return {

@@ -2205,6 +2205,8 @@ export const useSessionStore = defineStore("session", () => {
           // This message, not the adapter's generic retry line.
           meldFailureMessage.value =
             "We can no longer find this payment. Do not pay again. Contact support with your reference.";
+          // The rail can no longer be asked, so a fresh attempt must not be offered.
+          meldFailureCode.value = "unobserved";
           meldStage.value = "failed";
           recordMeldStage();
           stopMeldPoll();

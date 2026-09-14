@@ -219,9 +219,10 @@ function leaveJourney() {
 function startOverFromJourney() {
   const current = journey.value;
   if (current === null) return;
-  // The amount as the buyer entered it: from the selection that started this, or from the top-up
-  // itself when the journey was opened off the list.
-  const amount = selection.value?.amount ?? activeTopUp.value?.amount ?? "";
+  // By origin: `selection` outlives the screen that set it, so preferring it would restart a
+  // top-up opened off the list at whatever was typed last.
+  const amount =
+    (current.origin === "top-up" ? activeTopUp.value?.amount : selection.value?.amount) ?? "";
   journey.value = null;
   returnFromTopUp();
   void continueToPackage({ amount, route: current.route });

@@ -132,6 +132,23 @@ describe("getMeldStatus", () => {
     );
   });
 
+  it.each([
+    ["unobserved", "We could not confirm this payment. Contact support before trying again."],
+    ["expired", "The payment window closed before the payment arrived."],
+    ["refused", "The payment was declined before it started."],
+  ])(
+    "leaves the adapter's own ending %s alone, whatever the provider last said",
+    async (status, message) => {
+      const result = await getMeldStatus(
+        clientReturning(status, { providerStatus: "DECLINED" }),
+        "funding-1",
+      );
+
+      expect(result.depositFailure?.reason?.code).toBe(status);
+      expect(result.depositFailure?.reason?.message).toBe(message);
+    },
+  );
+
   it("keeps a plain decline as a failure, not a refund", async () => {
     const result = await getMeldStatus(clientReturning("failed"), "funding-1");
     expect(result.depositFailure?.reason?.code).toBe("failed");
