@@ -5,7 +5,13 @@ import type { PaymentPhase, SwapProgress } from "@getsome/core";
 import type { FundingStep } from "@getsome/funding";
 import type { RequestStatus as LegacyRequestStatus } from "../../stores/session";
 import type { JourneyInput } from "../../utils/journey";
-import { DEPOSIT_EXPIRED_REASON, rankOf, type RequestRecord } from "./model";
+import {
+  CONFIRMED_TTL_MS,
+  DEPOSIT_EXPIRED_REASON,
+  rankOf,
+  type Freshness,
+  type RequestRecord,
+} from "./model";
 
 /** Today's list status. Undefined where the record's legacy fields already carry the state. */
 export function legacyRequestStatus(record: RequestRecord): LegacyRequestStatus | undefined {
@@ -128,3 +134,22 @@ export function milestonesOf(record: RequestRecord): Record<number, number> {
 }
 
 export const claimingOf = (record: RequestRecord): boolean => record.status.kind === "claiming";
+
+/** Confirmed by a read since `epoch` that has not aged past the TTL (a settled record's never
+ *  does); otherwise reconciling while a pass runs, else the cache as it was left. */
+export function freshnessOf(
+  record: RequestRecord,
+  tick: number,
+  epoch: number,
+  reconciling: boolean,
+): Freshness {
+  const { confirmedAt } = record;
+  if (
+    confirmedAt !== undefined &&
+    confirmedAt >= epoch &&
+    (record.status.kind === "settled" || tick - confirmedAt < CONFIRMED_TTL_MS)
+  ) {
+    return "confirmed";
+  }
+  return reconciling ? "reconciling" : "cached";
+}

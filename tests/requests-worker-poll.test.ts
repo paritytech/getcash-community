@@ -300,8 +300,8 @@ describe("requests store: the worker poll", () => {
     const requests = useRequestsStore();
     await requests.reconcile("boot");
     await requests.flush();
-    // Once the coalesced writes have landed, the interval is the only timer.
-    expect(vi.getTimerCount()).toBe(1);
+    // Once the coalesced writes have landed, the job poll and the second hand are the only timers.
+    expect(vi.getTimerCount()).toBe(2);
     const readsAtBoot = host.blobReads();
 
     // The worker claims the request before the next tick.

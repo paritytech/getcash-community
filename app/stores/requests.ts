@@ -16,6 +16,7 @@ import {
   CANCEL_CONFIRM_MS,
   COALESCE_MS,
   DEFAULT_DEPOSIT_WINDOW_MS,
+  HIDDEN_RESET_MS,
   JOB_POLL_MS,
   MELD_POLL_MS,
   MIRROR_SETTLED_LIMIT,
@@ -27,6 +28,7 @@ import {
   rankOf,
   requestsNow,
   routeOf,
+  type Freshness,
   type Observation,
   type RequestKey,
   type RequestRecord,
@@ -44,7 +46,7 @@ import {
   writeMirrorSync,
   type KeyedStorage,
 } from "../funding/requests/storage";
-import { legacyRequestStatus } from "../funding/requests/views";
+import { freshnessOf, legacyRequestStatus } from "../funding/requests/views";
 import { CRYPTO_SOURCE_ID } from "../funding/source-ids";
 import { fmtCash, toCashBase } from "../utils/cash";
 import {
@@ -75,6 +77,24 @@ export interface RequestEntry {
 
 /** A list row: today's `ActiveFlowRecord` shape, its progress resolved. */
 export type RequestListRow = ActiveFlowRecord & { progress: FundingProgressSnapshot };
+
+/** What the lifecycle listeners need of `document`; tests pass a fake. */
+export type DocumentLike = {
+  visibilityState: string;
+  addEventListener(type: "visibilitychange", listener: () => void): void;
+  removeEventListener(type: "visibilitychange", listener: () => void): void;
+};
+/** What the lifecycle listeners need of `window`; tests pass a fake. */
+export type WindowLike = {
+  addEventListener(
+    type: "pagehide" | "pageshow",
+    listener: (event: { persisted?: boolean }) => void,
+  ): void;
+  removeEventListener(
+    type: "pagehide" | "pageshow",
+    listener: (event: { persisted?: boolean }) => void,
+  ): void;
+};
 
 /** How many records a reconcile reads at once. */
 const READ_PARALLELISM = 4;
@@ -528,9 +548,17 @@ export const useRequestsStore = defineStore("requests", () => {
   const entries = shallowRef<Readonly<Record<RequestKey, RequestEntry>>>({});
   /** A mirror with today's schema was read into memory. */
   const hydrated = ref(false);
-  /** The first reconcile has finished, whatever it found. */
+  /** A reconcile has read the host's records, whatever it found. */
   const hostReadDone = ref(false);
   const storage = ref<"ok" | "unavailable">("ok");
+  /** Reads before this instant no longer count as confirmation; reset on return from a long
+   *  background stint. */
+  const sessionEpoch = ref(requestsNow());
+  /** A reconcile pass is running. */
+  const reconcilingNow = ref(false);
+  /** The store's second hand, advanced while the page is visible and an unfinished record
+   *  exists; a settled record's freshness does not depend on time. */
+  const tick = ref(requestsNow());
 
   const records = computed(() => Object.values(entries.value).map((entry) => entry.record));
   const open = computed(() => records.value.filter((record) => record.status.kind !== "cancelled"));
@@ -540,6 +568,18 @@ export const useRequestsStore = defineStore("requests", () => {
     for (const record of open.value) {
       const status = legacyRequestStatus(record);
       if (status !== undefined) out[requestRefKey(record.ref)] = status;
+    }
+    return out;
+  });
+  const freshness = computed<Record<RequestKey, Freshness>>(() => {
+    const out: Record<RequestKey, Freshness> = {};
+    for (const record of records.value) {
+      out[requestRefKey(record.ref)] = freshnessOf(
+        record,
+        tick.value,
+        sessionEpoch.value,
+        reconcilingNow.value,
+      );
     }
     return out;
   });
@@ -613,6 +653,7 @@ export const useRequestsStore = defineStore("requests", () => {
     }
     entries.value = next;
     hydrated.value = true;
+    syncTick();
   }
 
   /** Writes the entry's record to the host store. False when the write failed: the entry then
@@ -682,6 +723,7 @@ export const useRequestsStore = defineStore("requests", () => {
     if (entries.value[key] !== undefined) throw new Error(`request ${key} already has a record`);
     setEntry(key, { record, pendingWrite: true });
     writeMirror();
+    syncTick();
     await enqueue(key, async () => {
       if (!(await writeHost(key))) {
         throw new Error(entries.value[key]?.persistError ?? "record write failed");
@@ -746,6 +788,7 @@ export const useRequestsStore = defineStore("requests", () => {
       await store.clear(requestKey(ref));
       dropEntry(key);
       writeMirror();
+      syncTick();
       await mutateIndex((current) => current.filter((r) => !sameRequestRef(r, ref)));
     });
   }
@@ -988,7 +1031,7 @@ export const useRequestsStore = defineStore("requests", () => {
     }
   }
 
-  let meldPoll: { key: RequestKey; stop(): void } | null = null;
+  let meldPoll: { key: RequestKey; stop(): void; pause(): void; resume(): void } | null = null;
 
   /** Polls the provider's status for the Meld request on screen every `MELD_POLL_MS`, one poll
    *  at a time, until its rail is delivered or failed, the payment is gone, or the record is
@@ -999,13 +1042,28 @@ export const useRequestsStore = defineStore("requests", () => {
     if (meldPoll?.key === key) return;
     stopMeldPoll();
     let stopped = false;
+    let paused = false;
+    let inFlight = false;
     let failures = 0;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    const clearTimer = (): void => {
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
+    };
     meldPoll = {
       key,
       stop() {
         stopped = true;
-        if (timer !== null) clearTimeout(timer);
+        clearTimer();
+      },
+      pause() {
+        paused = true;
+        clearTimer();
+      },
+      resume() {
+        if (!paused) return;
+        paused = false;
+        void tick();
       },
     };
     // The record may still be on its way to the store when the first tick runs; only a record
@@ -1017,11 +1075,14 @@ export const useRequestsStore = defineStore("requests", () => {
       seen = true;
       return record.rail.stage === "delivered" || record.rail.stage === "failed";
     };
+    // One read at a time: a resume while a read is in flight leaves the scheduling to it.
     const tick = async (): Promise<void> => {
-      if (stopped) return;
+      if (stopped || paused || inFlight) return;
+      inFlight = true;
       const outcome = await observeMeldStatus(ref, client, fundingRequestId, failures);
+      inFlight = false;
       failures = outcome === "ok" ? 0 : failures + 1;
-      if (stopped) return;
+      if (stopped || paused) return;
       if (outcome === "gone" || finished()) {
         stopMeldPoll();
         return;
@@ -1305,7 +1366,7 @@ export const useRequestsStore = defineStore("requests", () => {
   }
 
   // The job poll: one blob read every JOB_POLL_MS while the page is visible and a request is at
-  // rank 0–3. Milestone 7 wires the visibility events.
+  // rank 0–3.
   let jobPollTimer: ReturnType<typeof setInterval> | null = null;
   let jobPollTick: Promise<void> | null = null;
   const anyWorkerDriven = (): boolean => records.value.some(isWorkerDriven);
@@ -1347,6 +1408,86 @@ export const useRequestsStore = defineStore("requests", () => {
     else stopJobPoll();
   }
 
+  // The second hand behind `freshness`: it runs while the page is visible and an unfinished
+  // record exists.
+  const anyUnfinished = (): boolean =>
+    records.value.some((record) => record.status.kind !== "settled");
+  let tickTimer: ReturnType<typeof setInterval> | null = null;
+  function syncTick(): void {
+    if (pageVisible() && anyUnfinished()) {
+      if (tickTimer !== null) return;
+      tick.value = requestsNow();
+      tickTimer = setInterval(() => {
+        tick.value = requestsNow();
+      }, 1_000);
+    } else if (tickTimer !== null) {
+      clearInterval(tickTimer);
+      tickTimer = null;
+    }
+  }
+  // The last open record can finish between the sync points, as when the poll settles it.
+  watch(anyUnfinished, () => syncTick());
+
+  /** Hidden: the job poll, the provider poll and the second hand stop. The foreground clock keeps
+   *  running so the deposit still expires on time. */
+  function pausePolls(): void {
+    stopJobPoll();
+    meldPoll?.pause();
+    if (tickTimer !== null) {
+      clearInterval(tickTimer);
+      tickTimer = null;
+    }
+  }
+  /** Visible again: whatever paused starts where it left off, the provider poll with a read now. */
+  function resumePolls(): void {
+    syncJobPoll();
+    syncTick();
+    meldPoll?.resume();
+  }
+
+  /** Back from a background stint long enough that nothing read before it can be trusted: every
+   *  row is cached until this pass confirms it. The chain clients are dropped too; the first
+   *  world built after a long stint failed on stale ones, and the clients re-dial on use. */
+  function returnFromBackground(): void {
+    sessionEpoch.value = requestsNow();
+    void reconcile("visible");
+    if (isHosted()) void import("~~/lib/host-chain").then((chains) => chains.evictChains());
+    resumePolls();
+  }
+
+  /** Follows the webview's lifecycle: pending writes land when the page hides, the polls pause,
+   *  and a return after `HIDDEN_RESET_MS` reconciles. Returns the function that detaches. */
+  function attachLifecycle(targets: { document: DocumentLike; window: WindowLike }): () => void {
+    let hiddenAt: number | null = null;
+    const onVisibilityChange = (): void => {
+      if (targets.document.visibilityState === "hidden") {
+        hiddenAt = requestsNow();
+        void flush();
+        pausePolls();
+        return;
+      }
+      const away = hiddenAt === null ? 0 : requestsNow() - hiddenAt;
+      hiddenAt = null;
+      if (away > HIDDEN_RESET_MS) returnFromBackground();
+      else resumePolls();
+    };
+    const onPageHide = (): void => {
+      void flush();
+    };
+    // A bfcache restore is a background stint of unknown length.
+    const onPageShow = (event: { persisted?: boolean }): void => {
+      if (event.persisted === true) returnFromBackground();
+    };
+    targets.document.addEventListener("visibilitychange", onVisibilityChange);
+    targets.window.addEventListener("pagehide", onPageHide);
+    targets.window.addEventListener("pageshow", onPageShow);
+    return () => {
+      targets.document.removeEventListener("visibilitychange", onVisibilityChange);
+      targets.window.removeEventListener("pagehide", onPageHide);
+      targets.window.removeEventListener("pageshow", onPageShow);
+    };
+  }
+
   let reconciling: Promise<void> | null = null;
   let reconcileAgain = false;
   /** Brings memory up to date with the host store, then with the worker's jobs, then lets the
@@ -1357,6 +1498,7 @@ export const useRequestsStore = defineStore("requests", () => {
       reconcileAgain = true;
       return reconciling;
     }
+    reconcilingNow.value = true;
     reconciling = (async () => {
       try {
         await reconcileOnce(reason);
@@ -1366,6 +1508,8 @@ export const useRequestsStore = defineStore("requests", () => {
         }
       } finally {
         reconciling = null;
+        reconcilingNow.value = false;
+        // A pass that failed before the host step still lets the list paint.
         hostReadDone.value = true;
       }
     })();
@@ -1457,6 +1601,7 @@ export const useRequestsStore = defineStore("requests", () => {
     }
     await inParallel([...refs.values()], READ_PARALLELISM, readOne);
     if (changed) writeMirror();
+    hostReadDone.value = true;
 
     if (indexed !== null) {
       const listed = new Set(indexed.map(requestRefKey));
@@ -1503,9 +1648,8 @@ export const useRequestsStore = defineStore("requests", () => {
       console.warn(`[requests] reconcile (${reason}): hand-off step failed: ${messageOf(e)}`);
     }
     syncJobPoll();
+    syncTick();
   }
-
-  hydrateFromMirror();
 
   return {
     entries,
@@ -1515,6 +1659,10 @@ export const useRequestsStore = defineStore("requests", () => {
     hydrated,
     hostReadDone,
     storage,
+    sessionEpoch,
+    reconcilingNow,
+    tick,
+    freshness,
     get,
     has,
     create,
@@ -1539,6 +1687,9 @@ export const useRequestsStore = defineStore("requests", () => {
     reconcile,
     startJobPoll,
     stopJobPoll,
+    pausePolls,
+    resumePolls,
+    attachLifecycle,
     flush,
   };
 });

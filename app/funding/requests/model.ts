@@ -46,6 +46,9 @@ export const DEPOSIT_EXPIRED_REASON = "Channel expired";
 
 export type RequestKey = string;
 export type Kind = "top-up";
+/** How much a row's status can be trusted right now: confirmed by a read in this session and
+ *  still within its TTL, waiting on a running reconcile, or the cache as it was left. */
+export type Freshness = "confirmed" | "reconciling" | "cached";
 /** The pipeline's steps between the deposit and the claim, derived from `FundingStep`. */
 export type ConvertingStep = Exclude<FundingStep, "await-native" | "done">;
 export type DepositSeenVia = "worker" | "chain" | "rail" | "core" | "faucet" | "pre-cancel";

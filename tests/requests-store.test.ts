@@ -364,6 +364,7 @@ describe("requests store", () => {
       }),
     );
     const requests = useRequestsStore();
+    requests.hydrateFromMirror();
 
     expect(requests.hydrated).toBe(true);
     expect(requests.hostReadDone).toBe(false);
