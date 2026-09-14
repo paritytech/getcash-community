@@ -136,10 +136,10 @@ const quoteView = computed(() => {
 });
 const detailRows = computed(() => {
   const q = quoteView.value;
-  if (!q) return [];
-  // Symbol-first for the fiat rails ("€50.55"); crypto keeps its full-precision ticker form.
-  const money = (amount: string) =>
-    q.crypto ? `${amount} ${q.symbol}` : fmtFiat(amount, q.symbol);
+  // The crypto rail doesn't restate the deposit amount here — the deposit screen owns that figure.
+  if (!q || q.crypto) return [];
+  // Symbol-first for the fiat rails ("€50.55").
+  const money = (amount: string) => fmtFiat(amount, q.symbol);
   const rows: { label: string; value: string; fees?: boolean }[] = [];
   // The fee row drills into the breakdown screen when the live quote backs it with a fee the
   // breakdown can actually split; an unparseable one still shows, as plain text.

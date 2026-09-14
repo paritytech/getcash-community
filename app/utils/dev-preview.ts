@@ -304,7 +304,6 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    // The channel deadline as a ticking countdown row.
     name: "crypto / deposit: expiring",
     apply: (s, f) => {
       base(s, f);

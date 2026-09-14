@@ -170,7 +170,7 @@ const { copied: keyCopied, copy: copyKey } = useCopyToClipboard();
             </div>
           </div>
           <p class="text-center text-body-s text-fg-error">
-            Anyone with this key controls the funds. You can find it again in this transaction
+            Anyone with this key controls the funds.
           </p>
         </div>
       </li>
