@@ -7,6 +7,7 @@ import { useStateDirector } from "../../composables/useStateDirector";
 import { useVisibilityReconcile } from "../../composables/useVisibilityReconcile";
 import type { FundingJourneyStatus } from "../../funding/handoff";
 import type { FundingTopUp } from "../../funding/top-ups";
+import { useRequestsStore } from "../../stores/requests";
 import { useSessionStore } from "../../stores/session";
 import FundingSettledStatusScreen from "./FundingSettledStatusScreen.vue";
 import MeldFeeDetailsScreen from "./routes/MeldFeeDetailsScreen.vue";
@@ -23,11 +24,14 @@ const props = defineProps<{
 const emit = defineEmits<{ back: [] }>();
 
 const session = useSessionStore();
+const requests = useRequestsStore();
 // A settled top-up is read from the list only: nothing resumed, nothing reset on the way out.
 const readOnly = props.topUp?.state.kind === "settled";
 const opening = ref(!readOnly && props.topUp != null && props.open != null);
 const unavailable = ref(false);
-const waiting = computed(() => opening.value && session.lastState === null && !unavailable.value);
+const waiting = computed(
+  () => opening.value && requests.foregroundRecord === null && !unavailable.value,
+);
 let active = true;
 
 useVisibilityReconcile();

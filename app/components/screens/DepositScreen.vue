@@ -11,17 +11,20 @@ import { useCopyToClipboard } from "../../composables/useCopyToClipboard";
 import { formatRemaining } from "../../utils/countdown";
 import { networkIcon, tokenIcon } from "../../utils/icons";
 import { useFlowStore } from "../../stores/flow";
+import { useRequestsStore } from "../../stores/requests";
 import { useSessionStore } from "../../stores/session";
 
 // The cancel is performed by the route, which unmounts this screen.
 const emit = defineEmits<{ cancel: [] }>();
 
 const session = useSessionStore();
+const requests = useRequestsStore();
 const flow = useFlowStore();
 
+// The record keeps the amount as a decimal string; the estimate takes the bigint core gave it.
 const deposit = computed(() => {
-  const s = session.lastState;
-  return s?.phase === "awaiting-deposit" ? s.deposit : null;
+  const d = requests.foregroundRecord?.deposit;
+  return requests.phase === "awaiting-deposit" && d ? { ...d, amount: BigInt(d.amount) } : null;
 });
 
 // Channel countdown to `deposit.expiresAt`; 0 means no countdown. Display only: the session store
@@ -84,7 +87,7 @@ const source = computed(() => {
 // Cancel. The button opens the confirmation sheet and the sheet's red pill performs the cancel.
 // Offered only while nothing has been paid.
 const confirmingCancel = ref(false);
-const showCancel = computed(() => session.faucetState === "idle" && !session.fundsSeen);
+const showCancel = computed(() => session.faucetState === "idle" && !requests.fundsSeen);
 function dismissCancelSheet() {
   // The sheet stays up mid-cancel.
   if (!session.cancelling) confirmingCancel.value = false;
@@ -205,7 +208,7 @@ onUnmounted(() => clearInterval(ticker));
         <button
           type="button"
           class="h-12 w-full rounded-medium bg-status-error text-label-l text-fg-primary-inverted transition-colors hover:bg-status-error-hover disabled:opacity-50"
-          :disabled="session.cancelling"
+          :disabled="session.cancelling || !session.cancelReady"
           @click="confirmCancel"
         >
           {{ session.cancelling ? "Cancelling…" : "Cancel" }}
@@ -213,7 +216,7 @@ onUnmounted(() => clearInterval(ticker));
         <button
           type="button"
           class="h-12 w-full rounded-medium bg-action-secondary text-label-l text-fg-primary transition-colors hover:bg-action-secondary-hover disabled:opacity-50"
-          :disabled="session.cancelling"
+          :disabled="session.cancelling || !session.cancelReady"
           @click="dismissCancelSheet"
         >
           Keep it

@@ -9,6 +9,7 @@ import { fundingSelectorConfig } from "../../../funding/config";
 import type { FundingPackageEmits } from "../../../funding/handoff";
 import { meldRequestRef } from "../../../funding/meld-top-ups";
 import type { FundingTopUp } from "../../../funding/top-ups";
+import { useRequestsStore } from "../../../stores/requests";
 import { useSessionStore } from "../../../stores/session";
 import MeldPaySheet from "./MeldPaySheet.vue";
 
@@ -16,9 +17,12 @@ const props = defineProps<{ topUp: FundingTopUp }>();
 const emit = defineEmits<FundingPackageEmits>();
 
 const session = useSessionStore();
+const requests = useRequestsStore();
 const opening = ref(true);
 const unavailable = ref(false);
-const waiting = computed(() => opening.value && session.lastState === null && !unavailable.value);
+const waiting = computed(
+  () => opening.value && requests.foregroundRecord === null && !unavailable.value,
+);
 let active = true;
 
 useVisibilityReconcile();
@@ -30,7 +34,7 @@ const title = computed(
 /** Whether the embed is showing: neither still opening nor unavailable. */
 const showingWidget = computed(() => !waiting.value && !unavailable.value);
 const canCancel = computed(
-  () => showingWidget.value && !session.meldSubmitted && !session.fundsSeen,
+  () => showingWidget.value && !requests.meldSubmitted && !requests.fundsSeen,
 );
 
 async function cancelTopUp() {
@@ -75,7 +79,7 @@ onUnmounted(() => {
   >
     <!-- The title and page padding are dropped while the widget is up. -->
     <Toolbar
-      :back="!waiting && !session.claiming"
+      :back="!waiting && !requests.claiming"
       :title="showingWidget ? '' : title"
       @back="emit('back')"
     >
@@ -83,7 +87,7 @@ onUnmounted(() => {
         v-if="
           showingWidget &&
           isDemoBuild() &&
-          !session.claiming &&
+          !requests.claiming &&
           (session.canSkipDeposit || session.faucetState !== 'idle')
         "
         #trailing
@@ -125,7 +129,7 @@ onUnmounted(() => {
           v-if="canCancel"
           type="button"
           class="mx-6 mt-3 mb-4 h-12 shrink-0 rounded-medium bg-status-error text-label-l text-fg-primary-inverted transition-colors hover:bg-status-error-hover disabled:opacity-50"
-          :disabled="session.cancelling"
+          :disabled="session.cancelling || !session.cancelReady"
           @click="cancelTopUp"
         >
           {{ session.cancelling ? "Cancelling…" : "Cancel" }}
