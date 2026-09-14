@@ -33,6 +33,15 @@ describe("funding selection configuration", () => {
       { id: "bank", description: "1-2 business days", estimate: "1-2 days" },
     ]);
   });
+
+  it("pre-selects a route the selector can actually offer", () => {
+    expect(fundingSelectorConfig.defaultRoute).toBe("crypto");
+    // A default naming a route that is not configured would leave the pills unpicked with no
+    // sign that a default was ever meant.
+    expect(fundingSelectorConfig.routes.map(({ id }) => id)).toContain(
+      fundingSelectorConfig.defaultRoute,
+    );
+  });
 });
 
 describe("funding amount", () => {
