@@ -38,10 +38,16 @@
     "@polkadot-api/descriptors": "file:.papi/descriptors",
     "@polkadot-labs/hdkd-helpers": "^0.0.27",
     "buffer": "^6.0.3",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-vue-next": "^1.0.0",
     "nuxt": "^4.4.2",
     "pinia": "^3.0.3",
     "polkadot-api": "2.2.2",
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "reka-ui": "^2.10.4",
+    "tailwind-merge": "^3.6.0",
+    "vue-sonner": "^2.0.9"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.4",

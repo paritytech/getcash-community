@@ -92,7 +92,7 @@ onUnmounted(() => {
 <template>
   <!-- Toolbar and screen fill the visible viewport; the app never scrolls. -->
   <main
-    class="fixed inset-x-0 mx-auto flex w-full max-w-md flex-col overflow-hidden bg-bg"
+    class="fixed inset-x-0 mx-auto flex w-full max-w-md flex-col overflow-hidden bg-surface-main"
     style="
       top: var(--vvt, 0px);
       height: var(--vvh, 100dvh);
@@ -105,7 +105,7 @@ onUnmounted(() => {
         <button
           v-if="toolbar.trailing === 'skip'"
           type="button"
-          class="px-4 py-3 text-base leading-6 font-semibold text-text-primary"
+          class="rounded-medium px-4 py-3 text-label-l font-normal text-fg-primary transition-colors hover:bg-action-tertiary-hover"
           @click="onDepositSkip"
         >
           Skip
@@ -116,9 +116,9 @@ onUnmounted(() => {
     <div class="flex min-h-0 flex-1 flex-col px-6 pt-6">
       <div v-if="session.resuming" class="flex flex-col items-center gap-4 pt-16">
         <span
-          class="inline-block size-8 animate-spin rounded-full border-[3px] border-track border-t-white"
+          class="inline-block size-8 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary"
         />
-        <p class="text-sm text-text-secondary">Opening your top-up…</p>
+        <p class="text-body-m text-fg-secondary">Opening your top-up…</p>
       </div>
       <template v-else>
         <DepositScreen v-if="flow.screen === 'journey'" @cancel="cancelTopUp" />
@@ -133,7 +133,7 @@ onUnmounted(() => {
     <!-- state-director scene label (dev/demo keys only) -->
     <span
       v-if="previewLabel"
-      class="fixed bottom-2 left-2 rounded bg-chip px-2 py-1 font-mono text-[10px] text-text-secondary"
+      class="fixed bottom-2 left-2 rounded-small bg-surface-container px-2 py-1 font-mono text-overline text-fg-secondary shadow-1"
     >
       {{ previewLabel }}
     </span>

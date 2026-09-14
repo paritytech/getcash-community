@@ -1,15 +1,21 @@
 <script setup lang="ts">
+import { ChevronLeft, History } from "lucide-vue-next";
+import SkeletonBlock from "../ui/SkeletonBlock.vue";
+
 withDefaults(
   defineProps<{
     title: string;
     back?: boolean;
     centered?: boolean;
     history?: boolean;
+    /** Launch-load placeholder: the title and history control render as inert skeleton shapes. */
+    skeleton?: boolean;
   }>(),
   {
     back: false,
     centered: false,
     history: false,
+    skeleton: false,
   },
 );
 
@@ -35,18 +41,20 @@ const emit = defineEmits<{
       aria-label="Back"
       @click="emit('back')"
     >
-      <img src="/icons/chevron-left.svg" alt="" />
+      <ChevronLeft class="size-6" aria-hidden="true" />
     </button>
-    <h1 v-if="title">{{ title }}</h1>
+    <SkeletonBlock v-if="skeleton" style="width: 8.125rem; height: 1.5rem" />
+    <h1 v-else-if="title" class="text-heading-l">{{ title }}</h1>
     <span v-else aria-hidden="true" />
+    <span v-if="skeleton" class="funding-entry-history animate-pulse" aria-hidden="true" />
     <button
-      v-if="history"
+      v-else-if="history"
       type="button"
       class="funding-entry-history"
       aria-label="History"
       @click="emit('history')"
     >
-      <img src="/icons/clock.svg" alt="" />
+      <History class="size-7" aria-hidden="true" />
     </button>
     <span v-else-if="back" aria-hidden="true" />
   </header>
@@ -60,7 +68,7 @@ const emit = defineEmits<{
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  padding: 0 1.125rem;
+  padding: 0 1.5rem;
 }
 
 .funding-entry-header-back {
@@ -80,9 +88,7 @@ const emit = defineEmits<{
 .funding-entry-header h1 {
   min-width: 0;
   overflow: hidden;
-  font-size: 1.125rem;
-  line-height: 1.375rem;
-  font-weight: 650;
+  color: var(--fg-primary);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -94,12 +100,13 @@ const emit = defineEmits<{
   align-items: center;
   justify-content: center;
   border-radius: 9999px;
-  background: var(--funding-control);
+  background: var(--bg-surface-container);
+  color: var(--fg-primary);
+  transition: background-color 120ms ease-out;
 }
 
-.funding-entry-back img {
-  width: 1.5rem;
-  height: 1.5rem;
+.funding-entry-back:hover {
+  background: var(--bg-selection-container-hover);
 }
 
 .funding-entry-history {
@@ -110,13 +117,13 @@ const emit = defineEmits<{
   align-items: center;
   justify-content: center;
   border-radius: 9999px;
-  background: var(--funding-control);
-  color: var(--funding-text);
+  background: var(--bg-surface-container);
+  color: var(--fg-primary);
+  transition: background-color 120ms ease-out;
 }
 
-.funding-entry-history img {
-  width: 1.5rem;
-  height: 1.5rem;
+.funding-entry-history:hover {
+  background: var(--bg-selection-container-hover);
 }
 
 @media (max-height: 650px) {

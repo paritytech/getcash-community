@@ -2,6 +2,7 @@
 // A filtering country picker: a text input plus a filtered list of flag/name rows. Typing filters;
 // selecting commits. `commit` fires only on a chosen country, never on filter text.
 import { computed, nextTick, ref, watch } from "vue";
+import { ChevronDown } from "lucide-vue-next";
 import { flagEmoji } from "~~/lib/supported";
 
 const props = defineProps<{
@@ -118,13 +119,13 @@ const rowId = (i: number) => `${listboxId}-row-${i}`;
 
 <template>
   <div class="flex flex-col gap-2">
-    <span v-if="label" class="text-xs tracking-widest text-text-secondary">{{ label }}</span>
+    <span v-if="label" class="text-overline text-fg-tertiary">{{ label }}</span>
     <div class="relative">
       <!-- The selected country's flag, drawn over the field's left padding. Hidden while the list is
            open. -->
       <span
         v-if="showFlag"
-        class="pointer-events-none absolute top-1/2 left-4 -translate-y-1/2 text-base leading-none"
+        class="pointer-events-none absolute top-1/2 left-4 -translate-y-1/2 text-body-l"
         aria-hidden="true"
         >{{ flagEmoji(modelValue) }}</span
       >
@@ -142,7 +143,7 @@ const rowId = (i: number) => `${listboxId}-row-${i}`;
         :aria-describedby="hint ? hintId : undefined"
         :value="open ? query : displayText"
         :placeholder="selected ? '' : 'Search countries'"
-        class="w-full rounded-2xl bg-surface-container py-3 pr-10 text-base text-text-primary outline-none placeholder:text-text-tertiary"
+        class="w-full rounded-nested bg-surface-container py-3 pr-10 text-body-l text-fg-primary placeholder:text-fg-tertiary"
         :class="showFlag ? 'pl-11' : 'pl-4'"
         @focus="openList"
         @input="onInput"
@@ -153,24 +154,18 @@ const rowId = (i: number) => `${listboxId}-row-${i}`;
         @keydown.esc.prevent="close"
         @keydown.tab="close"
       />
-      <svg
-        class="pointer-events-none absolute top-1/2 right-4 h-3 w-3 -translate-y-1/2 text-text-primary"
-        viewBox="0 0 12 8"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      >
-        <path d="M1 1.5 6 6.5 11 1.5" />
-      </svg>
+      <!-- The chevron the native select would have drawn (appearance-none removed it). -->
+      <ChevronDown
+        class="pointer-events-none absolute top-1/2 right-4 size-4 -translate-y-1/2 text-fg-secondary"
+        aria-hidden="true"
+      />
 
       <ul
         v-if="open"
         :id="listboxId"
         ref="listEl"
         role="listbox"
-        class="absolute top-full right-0 left-0 z-10 mt-1 max-h-64 overflow-y-auto rounded-2xl bg-surface-container py-1 shadow-lg"
+        class="absolute top-full right-0 left-0 z-10 mt-1 max-h-64 overflow-y-auto rounded-nested bg-surface-container py-1 shadow-2"
       >
         <li
           v-for="(o, i) in filtered"
@@ -179,14 +174,14 @@ const rowId = (i: number) => `${listboxId}-row-${i}`;
           role="option"
           :aria-selected="o.country === modelValue"
           :data-active="i === active"
-          class="cursor-pointer px-4 py-2.5 text-base text-text-primary data-[active=true]:bg-action-secondary"
+          class="cursor-pointer px-4 py-2.5 text-body-l text-fg-primary data-[active=true]:bg-selection-container-hover"
           @mousedown.prevent="choose(o.country)"
           @mousemove="active = i"
         >
           <span class="mr-2">{{ flagEmoji(o.country) }}</span
           >{{ o.name }}
         </li>
-        <li v-if="filtered.length === 0" class="px-4 py-2.5 text-sm text-text-secondary">
+        <li v-if="filtered.length === 0" class="px-4 py-2.5 text-body-m text-fg-secondary">
           No country matches “{{ query }}”
         </li>
       </ul>

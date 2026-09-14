@@ -282,48 +282,6 @@ onMounted(async () => {
     @continue="continueToPackage"
     @open-top-up="openTopUp"
   />
-  <section
-    v-else
-    class="funding-shell-loading"
-    :style="{
-      background: fundingSelectorConfig.theme.background,
-      color: fundingSelectorConfig.theme.textMuted,
-    }"
-  >
-    <span :style="{ borderTopColor: fundingSelectorConfig.theme.text }" />
-    <p>Loading top-ups…</p>
-  </section>
+  <!-- Launch load: the amount screen's chrome with skeletons over the data still being fetched. -->
+  <FundingSelectorScreen v-else skeleton />
 </template>
-
-<style scoped>
-.funding-shell-loading {
-  position: fixed;
-  top: var(--vvt, 0px);
-  right: 0;
-  left: 0;
-  display: flex;
-  width: 100%;
-  max-width: 28rem;
-  height: var(--vvh, 100dvh);
-  margin: 0 auto;
-  flex-direction: column;
-  align-items: center;
-  gap: 1rem;
-  padding-top: 5rem;
-  font-size: 0.875rem;
-}
-
-.funding-shell-loading span {
-  width: 2rem;
-  height: 2rem;
-  animation: funding-spin 0.8s linear infinite;
-  border: 3px solid rgb(255 255 255 / 12%);
-  border-radius: 9999px;
-}
-
-@keyframes funding-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-</style>

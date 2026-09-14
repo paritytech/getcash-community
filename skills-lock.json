@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "polkadot-design-system": {
+      "source": "paritytech/product-skills",
+      "sourceType": "github",
+      "skillPath": "polkadot-design-system/SKILL.md",
+      "computedHash": "2c8d2dacad78dd4288a53b848686e3c346fe2c025b7738cc9a632b563294a55d"
+    }
+  }
+}
