@@ -232,10 +232,10 @@ function base(session: Session, flow: Flow) {
   // method into how the canned BTC quote is read.
   session.method = "crypto";
   session.quoted = { ...QUOTED };
-  session.fundingNotice = null;
   session.resuming = false;
-  session.fundingErrorOverride = null;
   session.lastState = null;
+  useRequestsStore().fundingNotice = null;
+  useRequestsStore().setTransientError(null);
   useRequestsStore().leave();
   flow.step = "amount";
   // Bitcoin, matching the canned quote.
@@ -385,11 +385,11 @@ export const SCENES: Scene[] = [
       base(s, f);
       const r = await previewRequest(s, { sourceId: "btc", index: i });
       await core(s, r, 0, awaitingDeposit());
-      s.fundingErrorOverride = {
+      useRequestsStore().setTransientError({
         message: "faucet transfer failed on-chain (is the faucet funded on Asset Hub?)",
         at: Date.now(),
         source: "faucet",
-      };
+      });
     },
   },
   {
@@ -454,7 +454,7 @@ export const SCENES: Scene[] = [
     apply: async (s, f, i) => {
       const r = await cardPayment(s, f, i);
       await r.observe(meldDelayed(r, 1));
-      s.fundingNotice = "Hang tight, we're retrying your payment";
+      useRequestsStore().fundingNotice = "Hang tight, we're retrying your payment";
     },
   },
   {
@@ -539,7 +539,7 @@ export const SCENES: Scene[] = [
     name: "crypto / heal: reconnecting",
     apply: async (s, f, i) => {
       await pipeline(s, f, i, "swap");
-      s.fundingNotice = "connection lost, reconnecting…";
+      useRequestsStore().fundingNotice = "connection lost, reconnecting…";
     },
   },
   {

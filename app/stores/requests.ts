@@ -7,6 +7,7 @@ import { computed, ref, shallowRef, watch } from "vue";
 import type { FlowState, SourceId } from "@getsome/core";
 import { createMeldClient, getMeldStatus, type MeldClientLike } from "@getsome/meld";
 import {
+  advanceFundingProgressSnapshot,
   createFundingProgressSnapshot,
   progressProviderForSource,
   type FundingProgressSnapshot,
@@ -16,6 +17,7 @@ import {
   CANCEL_CONFIRM_MS,
   COALESCE_MS,
   DEFAULT_DEPOSIT_WINDOW_MS,
+  DEPOSIT_EXPIRED_REASON,
   HIDDEN_RESET_MS,
   JOB_POLL_MS,
   MELD_POLL_MS,
@@ -46,7 +48,18 @@ import {
   writeMirrorSync,
   type KeyedStorage,
 } from "../funding/requests/storage";
-import { freshnessOf, legacyRequestStatus } from "../funding/requests/views";
+import {
+  claimingOf,
+  freshnessOf,
+  fundingStepOf,
+  fundsSeenOf,
+  journeyStepsOf,
+  legacyRequestStatus,
+  meldHandedOffOf,
+  meldStageOf,
+  milestonesOf,
+  phaseLike,
+} from "../funding/requests/views";
 import { CRYPTO_SOURCE_ID } from "../funding/source-ids";
 import { fmtCash, toCashBase } from "../utils/cash";
 import {
@@ -853,6 +866,97 @@ export const useRequestsStore = defineStore("requests", () => {
     foreground.value = ref === null ? null : requestRefKey(ref);
   }
 
+  /** A failure the record cannot carry: a hand-off the worker refused, or a faucet transfer that
+   *  failed, write nothing to the record, yet the screen shows them. Only the refused hand-off
+   *  also marks the progress failed. Cleared when a drive starts and when the foreground leaves. */
+  const transientError = ref<{
+    message: string;
+    at: number;
+    source: "handoff" | "faucet";
+  } | null>(null);
+  function setTransientError(
+    value: { message: string; at: number; source: "handoff" | "faucet" } | null,
+  ): void {
+    transientError.value = value;
+  }
+  /** A line about the request on screen the record does not carry (a reconnect, a retry). */
+  const fundingNotice = ref<string | null>(null);
+
+  // What the screens read of the request on screen, all derived from its record.
+  const phase = computed(() => (foregroundRecord.value ? phaseLike(foregroundRecord.value) : null));
+  /** Whether a deposit has been seen for the request on screen. */
+  const fundsSeen = computed(() =>
+    foregroundRecord.value ? fundsSeenOf(foregroundRecord.value) : false,
+  );
+  const fundingStep = computed(() =>
+    foregroundRecord.value ? fundingStepOf(foregroundRecord.value) : null,
+  );
+  const fundingError = computed(
+    () =>
+      transientError.value?.message ??
+      foregroundRecord.value?.failure?.message ??
+      (foregroundRecord.value?.status.kind === "expired" ? DEPOSIT_EXPIRED_REASON : null),
+  );
+  const claimStage = computed<"prompted" | "crediting" | null>(() => {
+    const record = foregroundRecord.value;
+    if (record?.status.kind !== "claiming") return null;
+    return record.claimed !== undefined ? "crediting" : "prompted";
+  });
+  /** The claimed amount; a full burner sweep, so it may exceed the typed amount. */
+  const claimedBase = computed(() => {
+    const claimed = foregroundRecord.value?.claimed;
+    return claimed === undefined ? null : BigInt(claimed);
+  });
+  /** When each journey step landed, in ms since epoch, by step number. */
+  const milestones = computed<Record<number, number>>(() =>
+    foregroundRecord.value ? milestonesOf(foregroundRecord.value) : {},
+  );
+  /** How many of the journey's five steps are done. */
+  const journeyDone = computed(() =>
+    foregroundRecord.value ? journeyStepsOf(foregroundRecord.value) : 1,
+  );
+  /** True while a claim is in flight: the host's sheet is up, or the credit is being verified. */
+  const claiming = computed(() =>
+    foregroundRecord.value ? claimingOf(foregroundRecord.value) : false,
+  );
+  /** The record's progress; a hand-off the worker refused shows as failed on screen while the
+   *  record, still awaiting its deposit, waits for the worker's verdict. */
+  const foregroundProgress = computed(() => {
+    const record = foregroundRecord.value;
+    if (!record) return null;
+    const failure = transientError.value;
+    const snapshot =
+      failure !== null && failure.source === "handoff" && rankOf(record) === 0
+        ? advanceFundingProgressSnapshot(record.progress, {
+            observation: { kind: "failed" },
+            at: failure.at,
+          })
+        : record.progress;
+    return { ref: record.ref, startedAt: record.startedAt, snapshot };
+  });
+
+  // The Meld poll's views, read from the record on screen.
+  /** The Meld payment's stage: `waiting` while the buyer is on the widget, `receiving` once the
+   *  buyer left it, `complete` when settled. */
+  const meldStage = computed(() =>
+    foregroundRecord.value ? meldStageOf(foregroundRecord.value) : null,
+  );
+  /** The Meld payment is temporarily stuck (provider retrying its crypto delivery). Transient:
+   *  the record's rail says so, never terminal on its own. */
+  const meldDelayed = computed(() => foregroundRecord.value?.rail.delayed === true);
+  /** The adapter's reason for a failed Meld payment. Null unless `meldStage === 'failed'`. */
+  const meldFailureMessage = computed<string | null>(() => {
+    const record = foregroundRecord.value;
+    return record?.rail.stage === "failed" ? (record.rail.failure?.message ?? null) : null;
+  });
+  /** True once the buyer finished in the widget. */
+  const meldSubmitted = computed(() => foregroundRecord.value?.meldSubmittedAt !== undefined);
+  /** True once the buyer submitted or the payment completed and the journey took over from the
+   *  widget. */
+  const meldHandedOff = computed(() =>
+    foregroundRecord.value ? meldHandedOffOf(foregroundRecord.value) : false,
+  );
+
   // The foreground clock: while the request on screen awaits its deposit, one clock observation a
   // second lets the reducer expire it at its deadline. Witness-only ticks cost nothing.
   let foregroundClock: ReturnType<typeof setInterval> | null = null;
@@ -877,12 +981,14 @@ export const useRequestsStore = defineStore("requests", () => {
     { immediate: true },
   );
 
-  /** The request on screen is gone: the clock and the provider poll stop, and no key is
-   *  foreground. */
+  /** The request on screen is gone: the clock and the provider poll stop, no key is foreground,
+   *  and what the screen showed beside the record goes with it. */
   function leave(): void {
     stopForegroundClock();
     stopMeldPoll();
     setForeground(null);
+    transientError.value = null;
+    fundingNotice.value = null;
   }
 
   /** `work` settled within `ms`, or why not: its failure, or the bound. */
@@ -1674,6 +1780,24 @@ export const useRequestsStore = defineStore("requests", () => {
     foregroundEntry,
     foregroundRecord,
     setForeground,
+    transientError,
+    setTransientError,
+    fundingNotice,
+    phase,
+    fundsSeen,
+    fundingStep,
+    fundingError,
+    claimStage,
+    claimedBase,
+    milestones,
+    journeyDone,
+    claiming,
+    foregroundProgress,
+    meldStage,
+    meldDelayed,
+    meldFailureMessage,
+    meldSubmitted,
+    meldHandedOff,
     leave,
     cancel,
     retry,

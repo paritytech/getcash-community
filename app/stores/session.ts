@@ -16,23 +16,11 @@ import {
 } from "../funding/progress";
 import {
   DEFAULT_DEPOSIT_WINDOW_MS,
-  DEPOSIT_EXPIRED_REASON,
   effectiveSourceId,
   railProviderOf,
-  rankOf,
   routeOf,
   type RequestRecord,
 } from "../funding/requests/model";
-import {
-  claimingOf,
-  fundingStepOf,
-  fundsSeenOf,
-  journeyInput,
-  meldHandedOffOf,
-  meldStageOf,
-  milestonesOf,
-  phaseLike,
-} from "../funding/requests/views";
 import {
   createFakeMeldClient,
   createMeldClient,
@@ -52,7 +40,6 @@ import {
   type SupportedCountry,
 } from "~~/lib/supported";
 import { requestRefOf, sameRequestRef, type RequestRef } from "../utils/request-index";
-import { journeyDone } from "../utils/journey";
 import { estimateSourceAmount, estimateSourceFromCash } from "~~/lib/demo-rates";
 import { priceSourceLeg, type SourcePriceResult } from "~~/lib/source-price";
 import { createMockCoinageSession, workerSessionId, type MockCoinageWorld } from "~~/lib/coinage";
@@ -177,15 +164,7 @@ export const useSessionStore = defineStore("session", () => {
   // Reactive projection
   /** Core's last state for the request on screen, as it arrived. */
   const lastState = shallowRef<PaymentState | null>(null);
-  const fundingNotice = ref<string | null>(null);
-  /** A failure the record cannot carry: a hand-off the worker refused, or a faucet transfer that
-   *  failed, write nothing to the record, yet the screen shows them. Only the refused hand-off
-   *  also marks the progress failed. Cleared when a drive starts and with the world. */
-  const fundingErrorOverride = ref<{
-    message: string;
-    at: number;
-    source: "handoff" | "faucet";
-  } | null>(null);
+  const fundingNotice = computed(() => requests.fundingNotice);
   const amountHuman = ref("");
   const amountBase = ref<bigint | null>(null);
   /** Pay method: crypto (Chainflip/manual) or a Meld fiat rail (card / bank). */
@@ -232,93 +211,34 @@ export const useSessionStore = defineStore("session", () => {
     return mock.value?.session ?? live.value?.session ?? null;
   }
 
-  // What the screens read of the request on screen, all derived from its record.
-  const foregroundRecord = computed(() => requests.foregroundRecord);
-  const phase = computed(() => (foregroundRecord.value ? phaseLike(foregroundRecord.value) : null));
-
-  // The Meld poll's views, read from the record on screen.
-  /** The Meld payment's stage: `waiting` while the buyer is on the widget, `receiving` once the
-   *  buyer left it, `complete` when settled. */
-  const meldStage = computed(() =>
-    foregroundRecord.value ? meldStageOf(foregroundRecord.value) : null,
-  );
-  /** The Meld payment is temporarily stuck (provider retrying its crypto delivery). Transient:
-   *  the record's rail says so, never terminal on its own. */
-  const meldDelayed = computed(() => foregroundRecord.value?.rail.delayed === true);
-  /** The adapter's reason for a failed Meld payment. Null unless `meldStage === 'failed'`. */
-  const meldFailureMessage = computed<string | null>(() => {
-    const record = foregroundRecord.value;
-    return record?.rail.stage === "failed" ? (record.rail.failure?.message ?? null) : null;
-  });
-  /** True once the buyer finished in the widget. */
-  const meldSubmitted = computed(() => foregroundRecord.value?.meldSubmittedAt !== undefined);
-  /** True once the buyer submitted or the payment completed and the journey took over from the
-   *  widget. */
-  const meldHandedOff = computed(() =>
-    foregroundRecord.value ? meldHandedOffOf(foregroundRecord.value) : false,
-  );
+  // What the screens read of the request on screen: the requests store's views, under the names
+  // the components still read here.
+  const phase = computed(() => requests.phase);
+  const meldStage = computed(() => requests.meldStage);
+  const meldDelayed = computed(() => requests.meldDelayed);
+  const meldFailureMessage = computed(() => requests.meldFailureMessage);
+  const meldSubmitted = computed(() => requests.meldSubmitted);
+  const meldHandedOff = computed(() => requests.meldHandedOff);
   // Mock world: the settled payment lands on the coinage leg once, as the poll did directly.
   watch(meldStage, (stage) => {
     if (stage === "complete") creditMeldSettlement();
   });
-  /** Whether a deposit has been seen for the request on screen. */
-  const fundsSeen = computed(() =>
-    foregroundRecord.value ? fundsSeenOf(foregroundRecord.value) : false,
-  );
-  const fundingStep = computed(() =>
-    foregroundRecord.value ? fundingStepOf(foregroundRecord.value) : null,
-  );
-  const fundingError = computed(
-    () =>
-      fundingErrorOverride.value?.message ??
-      foregroundRecord.value?.failure?.message ??
-      (foregroundRecord.value?.status.kind === "expired" ? DEPOSIT_EXPIRED_REASON : null),
-  );
-  const claimStage = computed<"prompted" | "crediting" | null>(() => {
-    const record = foregroundRecord.value;
-    if (record?.status.kind !== "claiming") return null;
-    return record.claimed !== undefined ? "crediting" : "prompted";
-  });
-  /** The claimed amount; a full burner sweep, so it may exceed the typed amount. */
-  const claimedBase = computed(() => {
-    const claimed = foregroundRecord.value?.claimed;
-    return claimed === undefined ? null : BigInt(claimed);
-  });
-  /** When each journey step landed, in ms since epoch, by step number. */
-  const milestones = computed<Record<number, number>>(() =>
-    foregroundRecord.value ? milestonesOf(foregroundRecord.value) : {},
-  );
-  /** The record's progress; a hand-off the worker refused shows as failed on screen while the
-   *  record, still awaiting its deposit, waits for the worker's verdict. */
-  const foregroundProgress = computed(() => {
-    const record = foregroundRecord.value;
-    if (!record) return null;
-    const override = fundingErrorOverride.value;
-    const snapshot =
-      override !== null && override.source === "handoff" && rankOf(record) === 0
-        ? advanceFundingProgressSnapshot(record.progress, {
-            observation: { kind: "failed" },
-            at: override.at,
-          })
-        : record.progress;
-    return { ref: record.ref, startedAt: record.startedAt, snapshot };
-  });
-  /** How many of the journey's five steps are done. */
-  const journeyDoneCount = computed(() =>
-    journeyDone(
-      foregroundRecord.value
-        ? journeyInput(foregroundRecord.value)
-        : { phase: null, fundingStep: null, swap: null, failure: null },
-    ),
-  );
-  /** True while a claim is in flight: the host's sheet is up, or the credit is being verified. */
-  const claiming = computed(() =>
-    foregroundRecord.value ? claimingOf(foregroundRecord.value) : false,
-  );
+  const fundsSeen = computed(() => requests.fundsSeen);
+  const fundingStep = computed(() => requests.fundingStep);
+  const fundingError = computed(() => requests.fundingError);
+  const claimStage = computed(() => requests.claimStage);
+  const claimedBase = computed(() => requests.claimedBase);
+  const milestones = computed(() => requests.milestones);
+  const foregroundProgress = computed(() => requests.foregroundProgress);
+  const journeyDoneCount = computed(() => requests.journeyDone);
+  const claiming = computed(() => requests.claiming);
   /** Whether the deposit can be skipped: one is still awaited and the faucet has not paid. */
   const canSkipDeposit = computed(
-    () => phase.value === "awaiting-deposit" && !fundsSeen.value && faucetState.value === "idle",
+    () =>
+      requests.phase === "awaiting-deposit" && !requests.fundsSeen && faucetState.value === "idle",
   );
+  /** The on-screen request has its live session, so a cancel can clear the slot it holds. */
+  const cancelReady = computed(() => live.value !== null || mock.value !== null);
   /** Where a failed swap refunds the request on screen; null on the manual rail. */
   const refundAddress = computed(() => (mock.value ?? live.value)?.refundAddress ?? null);
   /** Reads the refund key from the world on demand. */
@@ -404,8 +324,6 @@ export const useSessionStore = defineStore("session", () => {
     live.value?.dispose(); // tears down the session (chain clients are shared, stay up)
     live.value = null;
     lastState.value = null;
-    fundingNotice.value = null;
-    fundingErrorOverride.value = null;
     quoted.value = null;
     // Cleared with the epoch bump: a `pending` set by the outgoing quote is never resolved.
     sourcePrice.value = null;
@@ -429,8 +347,8 @@ export const useSessionStore = defineStore("session", () => {
     const world = live.value;
     if (!world) return;
     const ref = foregroundRef ?? requestRefOf(world.sourceId, world.tradeN);
-    fundingErrorOverride.value = null;
-    fundingNotice.value = null;
+    requests.setTransientError(null);
+    requests.fundingNotice = null;
     // Warn level with message strings: a host logger may forward only warn and error.
     console.warn("[coinage] funding: handing off to the worker (fund the burner to begin)");
     void world
@@ -467,7 +385,7 @@ export const useSessionStore = defineStore("session", () => {
         const reason = e instanceof Error ? e.message : String(e);
         console.error(`[coinage] funding: failed: ${reason}`);
         // The screen shows the failure now; the record waits for the worker's verdict.
-        fundingErrorOverride.value = { message: reason, at: Date.now(), source: "handoff" };
+        requests.setTransientError({ message: reason, at: Date.now(), source: "handoff" });
         recordDriverFailure(ref, reason);
       });
   }
@@ -1284,6 +1202,8 @@ export const useSessionStore = defineStore("session", () => {
     try {
       teardownWorld();
       foregroundRef = ref; // after teardown, which clears it
+      // On screen from its record at once; the world builds behind it.
+      requests.setForeground(ref);
       const status = ref === null ? "?" : (requests.get(ref)?.status.kind ?? "?");
       console.warn(
         `[coinage] reopen request #${record.tradeN}: funded=${record.funded ?? "no"} status=${status} submitted=${record.meldSubmittedAt !== undefined}`,
@@ -1308,7 +1228,6 @@ export const useSessionStore = defineStore("session", () => {
         return false;
       }
       live.value = world;
-      requests.setForeground(ref);
       // Display context for the journey; no re-quote on this path.
       quoted.value = {
         send: record.sourceAmount ?? "",
@@ -1403,11 +1322,11 @@ export const useSessionStore = defineStore("session", () => {
       driveFunding(); // joins the running leg, or restarts one that had failed
     } catch (e: unknown) {
       faucetState.value = "idle";
-      fundingErrorOverride.value = {
+      requests.setTransientError({
         message: e instanceof Error ? e.message : String(e),
         at: Date.now(),
         source: "faucet",
-      };
+      });
     }
   }
 
@@ -1470,7 +1389,7 @@ export const useSessionStore = defineStore("session", () => {
    *  list, and the world comes down. Funds are never touched. */
   async function cancelTopUp(): Promise<boolean> {
     // Declined, not failed: the request still stands.
-    if (cancelling.value || claiming.value || resuming.value) return false;
+    if (cancelling.value || claiming.value || resuming.value || !cancelReady.value) return false;
     cancelling.value = true;
     try {
       // Last look before anything irreversible: funds on the burner or in the worker's hands mean
@@ -1540,7 +1459,6 @@ export const useSessionStore = defineStore("session", () => {
     phase,
     fundingStep,
     fundingError,
-    fundingErrorOverride,
     fundingNotice,
     claimStage,
     claimedBase,
@@ -1567,6 +1485,7 @@ export const useSessionStore = defineStore("session", () => {
     faucetState,
     fundsSeen,
     canSkipDeposit,
+    cancelReady,
     cancelling,
     mock,
     live,

@@ -110,9 +110,11 @@ describe("request reducer: top-up transitions", () => {
     const record = reduce(awaiting(), workerSwap(at(1)));
     expect(record.status).toEqual({ kind: "converting", at: at(2), step: "swap" });
     expect(record.funded).toBe(at(1));
+    // The sighting completes the payment leg; the swap report starts the conversion stage.
     expect(record.progress.confirmedStageKey).toBe("cash-conversion");
-    expect(record.progress.stageTimestamps["cash-conversion"]).toBe(at(1));
+    expect(record.progress.stageTimestamps["cash-conversion"]).toBe(at(2));
     expect(record.progress.detectedAt).toBe(at(1));
+    expect(record.progress.routeCompletedAt).toBe(at(1));
     expect(record.witnesses.worker).toEqual({
       known: true,
       phase: "swap",
@@ -351,7 +353,13 @@ describe("request reducer: top-up transitions", () => {
       expect(revived.failure, name).toBeUndefined();
       expect(revived.refunded, name).toBeUndefined();
       expect(revived.progress.failedAt, name).toBeUndefined();
-      expect(revived.progress.confirmedStageKey, name).toBe("cash-conversion");
+      // The sighting completes the payment leg and no more; a record funded before its exit (the
+      // failed fixture) keeps the leg it had already recorded.
+      const { profile } = revived.progress;
+      expect(revived.progress.routeCompletedAt, name).toBe(start.progress.routeCompletedAt ?? time);
+      expect(revived.progress.confirmedStageKey, name).toBe(
+        start.progress.confirmedStageKey ?? profile.stages[profile.routeStageCount - 1]!.key,
+      );
     }
     // The failed fixture had already seen its deposit; the earliest sighting stands.
     const [, failedStart] = cases[2]!;

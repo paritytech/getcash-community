@@ -39,6 +39,10 @@ type ClearedField = "cancelledAt" | "failureReason" | "refunded" | "failure";
 const FAILED: FundingProgressSignal = { observation: { kind: "failed" } };
 const SETTLED: FundingProgressSignal = { observation: { kind: "settled" } };
 const HOLD: FundingProgressSignal = { observation: { kind: "hold" } };
+const ROUTE_COMPLETE: FundingProgressSignal = {
+  observation: { kind: "route-complete" },
+  routeStatus: "complete",
+};
 const EXPIRED_FAILURE: RequestFailure = {
   kind: "expired",
   step: "deposit",
@@ -121,10 +125,10 @@ const atSideExit = (record: RequestRecord): boolean =>
   record.status.kind === "cancelled";
 
 /** A positive money observation: moves a rank-0 record (or a side exit left from rank 0) to
- *  deposit-seen, and firms up a provisional sighting. Never touches a record past rank 1. Only
- *  money on the burner itself (the worker, the faucet, a chain read) starts the conversion stage;
- *  a sighting on the provider's side holds, and the branch's own route observation carries the
- *  stage. */
+ *  deposit-seen, and firms up a provisional sighting. Never touches a record past rank 1. Money
+ *  on the burner itself (the worker, the faucet, a chain read, the pre-cancel read) completes the
+ *  payment leg; the conversion stage waits for the worker's swap report. A sighting on the
+ *  provider's side holds, and the branch's own route observation carries the stage. */
 function moneySeen(
   record: RequestRecord,
   at: number,
@@ -142,8 +146,8 @@ function moneySeen(
     status: { kind: "deposit-seen", at, assurance, via },
     funded: earliest(record.funded, at),
   };
-  const onBurner = via === "worker" || via === "faucet" || via === "chain";
-  return advanced(seen, onBurner ? fundingProgressSignalForSharedStep("swap") : HOLD, at);
+  const onBurner = via !== "core" && via !== "rail";
+  return advanced(seen, onBurner ? ROUTE_COMPLETE : HOLD, at);
 }
 
 function failed(record: RequestRecord, at: number, failure: RequestFailure): RequestRecord {
@@ -164,14 +168,44 @@ function settled(record: RequestRecord, at: number): RequestRecord {
   return advanced({ ...record, status: { kind: "settled", at }, settledAt: at }, SETTLED, at);
 }
 
+/** The conversion started no later than the step that follows it: a record whose first worker
+ *  report is already past the swap still gets the stage stamped, at that report's instant. */
+function conversionStarted(record: RequestRecord, at: number): RequestRecord {
+  return record.progress.stageTimestamps["cash-conversion"] === undefined
+    ? advanced(record, fundingProgressSignalForSharedStep("swap"), at)
+    : record;
+}
+
 function claiming(record: RequestRecord, at: number): RequestRecord {
   const status: RequestStatus = { kind: "claiming", at };
-  return advanced({ ...record, status }, fundingProgressSignalForSharedStep("done"), at);
+  return advanced(
+    conversionStarted({ ...record, status }, at),
+    fundingProgressSignalForSharedStep("done"),
+    at,
+  );
 }
 
 function converting(record: RequestRecord, at: number, step: ConvertingStep): RequestRecord {
   const status: RequestStatus = { kind: "converting", at, step };
-  return advanced({ ...record, status }, fundingProgressSignalForSharedStep(step), at);
+  return advanced(
+    conversionStarted({ ...record, status }, at),
+    fundingProgressSignalForSharedStep(step),
+    at,
+  );
+}
+
+function sameDeposit(
+  current: RequestRecord["deposit"],
+  opened: NonNullable<RequestRecord["deposit"]>,
+): boolean {
+  return (
+    current !== undefined &&
+    current.address === opened.address &&
+    current.amount === opened.amount &&
+    current.formatted === opened.formatted &&
+    current.assetSymbol === opened.assetSymbol &&
+    current.expiresAt === opened.expiresAt
+  );
 }
 
 function applyCoreState(record: RequestRecord, at: number, state: PaymentState): RequestRecord {
@@ -179,17 +213,27 @@ function applyCoreState(record: RequestRecord, at: number, state: PaymentState):
   switch (state.phase) {
     case "awaiting-deposit": {
       const { deposit } = state;
+      const opened: RequestRecord["deposit"] = {
+        address: deposit.address,
+        amount: deposit.amount.toString(),
+        formatted: deposit.formatted,
+        assetSymbol: deposit.assetSymbol,
+        expiresAt: deposit.expiresAt,
+      };
+      const depositExpiresAt = deposit.expiresAt > 0 ? deposit.expiresAt : record.depositExpiresAt;
+      // Core repeats this state on every reopen; the same deposit is the witness alone.
+      if (
+        sameDeposit(record.deposit, opened) &&
+        record.depositAddress === deposit.address &&
+        record.depositExpiresAt === depositExpiresAt
+      ) {
+        return next;
+      }
       return {
         ...next,
-        deposit: {
-          address: deposit.address,
-          amount: deposit.amount.toString(),
-          formatted: deposit.formatted,
-          assetSymbol: deposit.assetSymbol,
-          expiresAt: deposit.expiresAt,
-        },
+        deposit: opened,
         depositAddress: deposit.address,
-        ...(deposit.expiresAt > 0 ? { depositExpiresAt: deposit.expiresAt } : {}),
+        ...(depositExpiresAt === undefined ? {} : { depositExpiresAt }),
       };
     }
     case "swapping": {

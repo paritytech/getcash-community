@@ -1,21 +1,25 @@
-// The views reproduce the session store's inputs: what `journeyDone` and the adapters read today.
+// The views are the one table every screen reads a record through: the journey's step count,
+// the list row's state, and the values the session store exposed before them.
 
 import { describe, expect, it } from "vitest";
+import { projectFundingProgress } from "../app/funding/progress";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
   DEPOSIT_EXPIRED_REASON,
+  type Observation,
   type RailState,
   type RequestFailure,
   type RequestRecord,
   type RequestStatus,
 } from "../app/funding/requests/model";
+import { reduce } from "../app/funding/requests/reducer";
 import {
-  journeyInput,
+  journeyStepsOf,
   legacyRequestStatus,
   meldHandedOffOf,
   meldStageOf,
+  rowStateOf,
 } from "../app/funding/requests/views";
-import { journeyDone, type JourneyInput } from "../app/utils/journey";
 import { requestRefOf } from "../app/utils/request-index";
 import { awaitingDepositCryptoRecord, FIXTURE_NOW, submittedCardRecord } from "./fixtures/requests";
 
@@ -77,122 +81,121 @@ const refunded: RequestFailure = {
 };
 
 describe("request views", () => {
-  it("journeyInput matches today's inputs for each status", () => {
-    const idle = { fundingStep: null, swap: null, failure: null } as const;
-    const cases: [string, RequestRecord, JourneyInput, number][] = [
+  it("journeyStepsOf counts the five markers from the record", () => {
+    const cases: [string, RequestRecord, number][] = [
+      ["awaiting-deposit", at({ kind: "awaiting-deposit" }), 1],
+      // A sighting on the provider's side is a payment received; money on the address, or the
+      // rail's delivery, is a payment approved.
       [
-        "awaiting-deposit",
-        at({ kind: "awaiting-deposit" }),
-        { phase: "awaiting-deposit", ...idle },
-        1,
-      ],
-      // The worker's job and the faucet set today's step; other sightings set none.
-      [
-        "deposit-seen via worker",
-        at(seen("worker")),
-        { phase: "awaiting-deposit", ...idle, fundingStep: "swap" },
-        3,
-      ],
-      [
-        "deposit-seen via faucet",
-        at(seen("faucet")),
-        { phase: "awaiting-deposit", ...idle, fundingStep: "swap" },
-        3,
-      ],
-      ["deposit-seen via chain", at(seen("chain")), { phase: "awaiting-deposit", ...idle }, 1],
-      [
-        "deposit-seen via core on the manual rail",
-        at(seen("core")),
-        { phase: "awaiting-deposit", ...idle },
-        1,
-      ],
-      // A rail's own sighting is core's swapping phase, with the rail's status as the swap.
-      [
-        "Chainflip receiving",
-        at(seen("core"), { rail: rail("chainflip", "received", "receiving") }),
-        { phase: "swapping", ...idle, swap: "receiving" },
-        1,
-      ],
-      [
-        "Chainflip swapping",
-        at(seen("rail"), { rail: rail("chainflip", "processing", "swapping") }),
-        { phase: "swapping", ...idle, swap: "swapping" },
+        "deposit-seen via rail, rail received",
+        { ...card(), status: seen("rail"), rail: rail("meld", "received", "receiving") },
         2,
       ],
       [
-        "Chainflip complete",
+        "deposit-seen via core, rail processing",
+        at(seen("core"), { rail: rail("chainflip", "processing", "swapping") }),
+        2,
+      ],
+      ["deposit-seen via chain", at(seen("chain")), 3],
+      ["deposit-seen via faucet", at(seen("faucet")), 3],
+      ["deposit-seen via worker", at(seen("worker")), 3],
+      [
+        "deposit-seen via rail, rail delivered",
         at(seen("rail"), { rail: rail("chainflip", "delivered", "complete") }),
-        { phase: "swapping", ...idle, swap: "complete" },
         3,
       ],
-      [
-        "Meld receiving",
-        { ...card(), status: seen("rail"), rail: rail("meld", "received", "receiving") },
-        { phase: "swapping", ...idle, swap: "receiving" },
-        1,
-      ],
-      [
-        "converting swap",
-        at({ kind: "converting", at: AT, step: "swap" }),
-        { phase: "awaiting-deposit", ...idle, fundingStep: "swap" },
-        3,
-      ],
-      [
-        "converting await-arrival",
-        at({ kind: "converting", at: AT, step: "await-arrival" }),
-        { phase: "awaiting-deposit", ...idle, fundingStep: "await-arrival" },
-        3,
-      ],
-      [
-        "claiming",
-        at({ kind: "claiming", at: AT }),
-        { phase: "working", ...idle, fundingStep: "done" },
-        4,
-      ],
-      [
-        "settled",
-        at({ kind: "settled", at: AT }),
-        { phase: "done", ...idle, fundingStep: "done" },
-        5,
-      ],
-      // A side exit reports the leg it kept the rank of.
+      ["converting", at({ kind: "converting", at: AT, step: "swap" }), 3],
+      ["claiming", at({ kind: "claiming", at: AT }), 4],
+      ["settled", at({ kind: "settled", at: AT }), 5],
+      // A side exit reports the leg it left; from the deposit, the kind says whether the network
+      // took the payment.
       [
         "failed at the claim",
         at({ kind: "failed", at: AT, recoverable: true }, { failure: mintFailure }),
-        { phase: "failed", ...idle, fundingStep: "done", failure: { kind: "mint" } },
         4,
       ],
       [
         "failed at the swap",
         at({ kind: "failed", at: AT, recoverable: true }, { failure: shortfall }),
-        { phase: "failed", ...idle, fundingStep: "swap", failure: { kind: "mint" } },
         3,
       ],
       [
-        "failed at the deposit",
-        at({ kind: "failed", at: AT, recoverable: false }, { failure: rejected }),
-        { phase: "failed", ...idle, failure: { kind: "deposit-rejected" } },
-        1,
-      ],
-      [
-        "failed and refunded",
+        "failed at the deposit, refunded",
         at({ kind: "failed", at: AT, recoverable: false }, { failure: refunded, refunded: true }),
-        { phase: "failed", ...idle, failure: { kind: "refunded" } },
         2,
       ],
       [
-        "expired",
-        at({ kind: "expired", at: AT }, { failureReason: DEPOSIT_EXPIRED_REASON }),
-        { phase: "failed", ...idle },
+        "failed at the deposit, rejected",
+        at({ kind: "failed", at: AT, recoverable: false }, { failure: rejected }),
         1,
       ],
-      ["cancelled", at({ kind: "cancelled", at: AT }), { phase: "idle", ...idle }, 1],
+      ["expired", at({ kind: "expired", at: AT }, { failureReason: DEPOSIT_EXPIRED_REASON }), 1],
+      ["cancelled", at({ kind: "cancelled", at: AT }), 1],
     ];
-    for (const [name, record, storeInput, done] of cases) {
-      expect(journeyInput(record), name).toEqual(storeInput);
-      expect(journeyDone(storeInput), name).toBe(done);
-      expect(journeyDone(journeyInput(record)), name).toBe(done);
+    for (const [name, record, steps] of cases) {
+      expect(journeyStepsOf(record), name).toBe(steps);
     }
+  });
+
+  it("rowStateOf uses the same words as the journey", () => {
+    const now = AT + 60_000;
+    const projection = (record: RequestRecord) =>
+      projectFundingProgress({ snapshot: record.progress, createdAt: record.startedAt, now });
+    const chainFunds: Observation = {
+      source: "chain",
+      at: AT,
+      burnerNative: "250000000000",
+      finality: "finalized",
+      via: "probe",
+    };
+    const workerSwap: Observation = {
+      source: "worker",
+      at: AT + 30_000,
+      job: { phase: "swap", done: false, fundsSeenAt: AT, lastTickAt: AT + 30_000, claim: null },
+    };
+
+    // The chain saw the deposit: the payment leg is complete on the row and in the ribbon alike.
+    const funded = reduce(crypto(), chainFunds);
+    expect(funded.status.kind).toBe("deposit-seen");
+    const fundedProjection = projection(funded);
+    const { profile } = funded.progress;
+    expect(fundedProjection.view.label).toBe(profile.routeCompletedLabel);
+    expect(fundedProjection.view.label).toBe("Payment received");
+    expect(rowStateOf(funded, fundedProjection)).toEqual({
+      kind: "finishing",
+      status: profile.routeCompletedLabel,
+    });
+
+    // The worker reports the swap: both now say the conversion is running.
+    const converting = reduce(funded, workerSwap);
+    expect(converting.status.kind).toBe("converting");
+    const convertingProjection = projection(converting);
+    const conversion = profile.stages.find((stage) => stage.key === "cash-conversion")!;
+    expect(convertingProjection.view.label).toBe(conversion.activeLabel);
+    expect(convertingProjection.view.label).toBe("Converting to $CASH");
+    expect(rowStateOf(converting, convertingProjection)).toEqual({
+      kind: "finishing",
+      status: conversion.activeLabel,
+    });
+
+    const settled: RequestRecord = {
+      ...crypto(),
+      status: { kind: "settled", at: AT },
+      settledAt: AT,
+      claimed: "25250000",
+    };
+    expect(rowStateOf(settled, projection(settled))).toEqual({
+      kind: "settled",
+      at: AT,
+      creditedAmount: "25.25",
+    });
+
+    const failed = at({ kind: "failed", at: AT, recoverable: true }, { failure: shortfall });
+    expect(rowStateOf(failed, projection(failed))).toEqual({
+      kind: "failed",
+      at: AT,
+      reason: shortfall.message,
+    });
   });
 
   it("legacyRequestStatus and meldStageOf reproduce today's values", () => {

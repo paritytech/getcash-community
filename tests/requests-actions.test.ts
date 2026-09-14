@@ -204,7 +204,7 @@ describe("requests store: foreground, clock and user actions", () => {
       milestones: { 1: startedAt, 2: at(2), 4: at(2) },
       progress: {
         confirmedStageKey: "cash-conversion",
-        latestRouteStatus: "waiting",
+        latestRouteStatus: "complete",
         detectedAt: at(2),
         stageTimestamps: { "cash-conversion": at(2) },
         settledAt: undefined,
@@ -221,7 +221,7 @@ describe("requests store: foreground, clock and user actions", () => {
       milestones: { 1: startedAt, 2: at(2), 4: at(2) },
       progress: {
         confirmedStageKey: "cash-top-up",
-        latestRouteStatus: "waiting",
+        latestRouteStatus: "complete",
         detectedAt: at(2),
         stageTimestamps: { "cash-conversion": at(2), "cash-top-up": at(3) },
         settledAt: undefined,
@@ -239,7 +239,7 @@ describe("requests store: foreground, clock and user actions", () => {
       milestones: { 1: startedAt, 2: at(2), 4: at(2), 5: at(4) },
       progress: {
         confirmedStageKey: "cash-top-up",
-        latestRouteStatus: "waiting",
+        latestRouteStatus: "complete",
         detectedAt: at(2),
         stageTimestamps: { "cash-conversion": at(2), "cash-top-up": at(3) },
         settledAt: at(4),
@@ -415,16 +415,7 @@ describe("requests store: foreground, clock and user actions", () => {
     for (const match of source.matchAll(/\b(?:session|s)\.([a-zA-Z]+) = /g)) {
       written.add(match[1]!);
     }
-    const allowed = new Set([
-      "quoted",
-      "method",
-      "mock",
-      "faucetState",
-      "resuming",
-      "fundingNotice",
-      "fundingErrorOverride",
-      "lastState",
-    ]);
+    const allowed = new Set(["quoted", "method", "mock", "faucetState", "resuming", "lastState"]);
     expect([...written].filter((name) => !allowed.has(name))).toEqual([]);
   });
 });
