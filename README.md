@@ -17,8 +17,9 @@ opens the provider's widget, and tracks the request. The **worker** (`worker/`) 
 background inside the host. Once a deposit has landed, the surface hands the job to the
 worker, which swaps on Asset Hub, teleports to the People chain, and claims the CASH through
 the host's top-up call. The top-up is registered under the ephemeral account's public key and
-driven by the host from there; the worker follows its status until the claim is final. The
-worker keeps going after the surface is closed.
+driven by the host from there; the worker follows its status until the claim is final, and
+registers a further top-up for whatever a short claim left on the account. The worker keeps
+going after the surface is closed.
 
 The two talk over host storage. `lib/worker-rpc.ts` (surface side) and `worker/src/rpc.js`
 (worker side) implement a polled request/response channel: the surface writes a request under
