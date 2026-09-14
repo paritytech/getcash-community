@@ -181,7 +181,6 @@ const message = computed(() => {
       <FundingJourneyTimeline
         v-if="progress && !finished"
         :progress="progress"
-        :completed-steps="session.journeyDone"
         :message="message"
         :delayed="delayed"
       />

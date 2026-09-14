@@ -18,7 +18,7 @@ export function progressProviderForSource(sourceId?: string): FundingProgressPro
 export { chainflipProgressProvider, observeChainflipProgress } from "./chainflip";
 export { MELD_PAYMENT_STAGE, meldProgressProvider, observeMeldProgress } from "./meld";
 export { fundingProgress, fundingProgressFloors, CAP, DETECT, PRECAP } from "./model";
-export { formatFundingProgressElapsed } from "./presentation";
+export { formatFundingProgressElapsed, journeyTimelineStep } from "./presentation";
 export { fundingProgressEstimate, projectFundingProgress } from "./projection";
 export {
   composeFundingProgressProfile,
