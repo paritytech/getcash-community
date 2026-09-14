@@ -9,16 +9,16 @@ const emit = defineEmits<{ select: [] }>();
   <li>
     <button
       type="button"
-      class="flex w-full items-center gap-3 text-left disabled:cursor-default disabled:opacity-40"
+      class="-mx-3 flex w-full items-center gap-3 rounded-nested px-3 py-1.5 text-left transition-colors enabled:hover:bg-surface-container disabled:opacity-50"
       :disabled="disabled"
       @click="emit('select')"
     >
-      <span class="size-12 shrink-0 overflow-clip rounded-2xl">
+      <span class="size-12 shrink-0 overflow-clip rounded-container">
         <img :src="icon" alt="" class="size-full" />
       </span>
       <span class="flex min-w-0 flex-1 flex-col">
-        <span class="text-base leading-6 font-semibold text-text-primary">{{ label }}</span>
-        <span v-if="subtitle" class="truncate text-sm leading-5 text-text-secondary">
+        <span class="text-heading-m text-fg-primary">{{ label }}</span>
+        <span v-if="subtitle" class="truncate text-body-m text-fg-secondary">
           {{ subtitle }}
         </span>
       </span>

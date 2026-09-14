@@ -33,7 +33,7 @@ describe("Chainflip top-up adapter", () => {
         stageTimestamps: { "cash-conversion": 350 },
         view: { kind: "active", activeStageKey: "cash-conversion" },
       },
-      state: { kind: "finishing", status: "Converting to CASH" },
+      state: { kind: "finishing", status: "Converting to $CASH" },
     });
   });
 

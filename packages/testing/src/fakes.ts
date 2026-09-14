@@ -27,8 +27,6 @@ export interface HarnessOptions {
   settlementUnsupported?: boolean;
   /** Start with the action already complete (models a prior successful attempt). */
   startComplete?: boolean;
-  /** A successful submit marks the action complete (the happy path). Default true. */
-  landOnSubmit?: boolean;
   /** This many submits throw before any succeed. */
   failSubmits?: number;
   /** When a submit throws, did the tx still "land" on chain first? */
@@ -66,7 +64,6 @@ export function createFakeHarness(opts: HarnessOptions = {}): Harness {
     settlementBalance: opts.settlementBalance ?? null,
     settlementUnsupported: opts.settlementUnsupported ?? false,
     complete: opts.startComplete ?? false,
-    landOnSubmit: opts.landOnSubmit ?? true,
     failSubmits: opts.failSubmits ?? 0,
     failButLand: opts.failButLand ?? false,
     resultId: opts.resultId ?? 42,
@@ -147,7 +144,7 @@ export function createFakeHarness(opts: HarnessOptions = {}): Harness {
         if (state.failButLand) state.complete = true; // landed, THEN the RPC errored
         throw new Error("rpc timeout");
       }
-      if (state.landOnSubmit) state.complete = true;
+      state.complete = true;
       return { ok: true, txRef: "0xtx" };
     },
     async sweep(

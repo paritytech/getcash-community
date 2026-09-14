@@ -53,7 +53,9 @@ const offset = computed(() => circumference.value * (1 - props.progress.view.val
 
 <style scoped>
 .funding-progress-ring {
-  --progress-ring-fill: var(--color-progress);
+  /* In-progress fill: the strongest stroke step, the scale's step-indicator
+   * colour (the old pink accent had no token — reported as a gap). */
+  --progress-ring-fill: var(--stroke-tertiary);
   display: block;
   flex: none;
   overflow: visible;
@@ -64,7 +66,7 @@ const offset = computed(() => circumference.value * (1 - props.progress.view.val
 }
 
 .funding-progress-ring-track {
-  stroke: color-mix(in srgb, var(--funding-border, var(--color-stroke-secondary)) 45%, transparent);
+  stroke: var(--stroke-primary);
 }
 
 .funding-progress-ring-fill {
@@ -74,15 +76,15 @@ const offset = computed(() => circumference.value * (1 - props.progress.view.val
 }
 
 .funding-progress-ring-waiting {
-  --progress-ring-fill: var(--funding-border, var(--color-stroke-secondary));
+  --progress-ring-fill: var(--stroke-secondary);
 }
 
 .funding-progress-ring-failed {
-  --progress-ring-fill: var(--funding-error, var(--color-error));
+  --progress-ring-fill: var(--bg-status-error);
 }
 
 .funding-progress-ring-settled {
-  --progress-ring-fill: var(--funding-success, var(--color-success));
+  --progress-ring-fill: var(--bg-status-success);
 }
 
 .funding-progress-ring-tick {

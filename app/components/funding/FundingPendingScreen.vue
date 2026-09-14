@@ -27,7 +27,7 @@ const emit = defineEmits<{
     <div class="funding-pending-content">
       <div class="funding-pending-scroll">
         <section v-if="topUps.length > 0">
-          <h2>In progress</h2>
+          <h2 class="text-overline">In progress</h2>
           <ul class="funding-pending-list">
             <li v-for="topUp in topUps" :key="topUp.id">
               <FundingTopUpProgressCard
@@ -42,7 +42,7 @@ const emit = defineEmits<{
         </section>
 
         <section v-if="latestTopUp" :class="{ 'funding-pending-latest-spaced': topUps.length > 0 }">
-          <h2>Your latest top-up</h2>
+          <h2 class="text-overline">Your latest top-up</h2>
           <FundingTopUpProgressCard
             class="funding-pending-latest-card"
             :top-up="latestTopUp"
@@ -54,11 +54,11 @@ const emit = defineEmits<{
         </section>
       </div>
 
-      <p v-if="error" class="funding-pending-error" role="alert">{{ error }}</p>
+      <p v-if="error" class="funding-pending-error text-caption" role="alert">{{ error }}</p>
 
       <button
         type="button"
-        class="funding-primary"
+        class="funding-primary text-label-l font-semibold"
         :disabled="Boolean(openingTopUpId)"
         @click="emit('newTopUp')"
       >
@@ -99,10 +99,7 @@ const emit = defineEmits<{
 }
 
 .funding-pending-scroll h2 {
-  color: var(--funding-text-muted);
-  font-size: 0.6875rem;
-  line-height: 0.9375rem;
-  letter-spacing: 0.09em;
+  color: var(--fg-tertiary);
   text-transform: uppercase;
 }
 
@@ -116,9 +113,7 @@ const emit = defineEmits<{
 
 .funding-pending-error {
   margin-top: 0.75rem;
-  color: var(--funding-error);
-  font-size: 0.75rem;
-  line-height: 1rem;
+  color: var(--fg-error);
   text-align: center;
 }
 
@@ -127,14 +122,17 @@ const emit = defineEmits<{
   flex: none;
   margin-top: auto;
   border-radius: 9999px;
-  background: var(--funding-action);
-  color: var(--funding-action-text);
-  font-size: 0.9375rem;
-  line-height: 1.25rem;
-  font-weight: 650;
+  background: var(--bg-action-primary);
+  color: var(--fg-primary-inverted);
+  transition: background-color 120ms ease-out;
+}
+
+.funding-primary:hover:not(:disabled) {
+  background: var(--bg-action-primary-hover);
 }
 
 .funding-primary:disabled {
-  opacity: 0.4;
+  background: var(--bg-action-disabled);
+  color: var(--fg-disabled);
 }
 </style>

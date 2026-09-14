@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Meld route for card and bank: pick the region, see the quote, then pay inside the provider's
 // widget. Hands off to the journey once the payment is approved or fails.
-import { computed, onMounted, onUnmounted } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useMeldHandoff } from "../../../composables/useMeldHandoff";
 import { useStateDirector } from "../../../composables/useStateDirector";
 import { useVisibilityReconcile } from "../../../composables/useVisibilityReconcile";
@@ -11,6 +11,7 @@ import type { FundingPackageEmits } from "../../../funding/handoff";
 import type { FundingSelection } from "../../../funding/selection";
 import { useFlowStore } from "../../../stores/flow";
 import { useSessionStore } from "../../../stores/session";
+import MeldFeeDetailsScreen from "./MeldFeeDetailsScreen.vue";
 import MeldPayScreen from "./MeldPayScreen.vue";
 import MeldPaySheet from "./MeldPaySheet.vue";
 
@@ -31,8 +32,27 @@ const { handedOff } = useMeldHandoff(emit);
 const title = computed(
   () => fundingSelectorConfig.routes.find(({ id }) => id === route)?.label ?? route,
 );
+/** The fee-breakdown drill-in over the pay screen. Back (toolbar or bottom button) returns to it. */
+const showingFees = ref(false);
+// A cleared quote (re-quote, region change) leaves nothing to break down.
+watch(
+  () => session.quoted,
+  (q) => {
+    if (!q) showingFees.value = false;
+  },
+);
+function goBack() {
+  if (showingFees.value) showingFees.value = false;
+  else emit("back");
+}
 /** The widget stage: a request exists and the payment is still to be made. */
 const paying = computed(() => flow.screen === "journey");
+// The widget supersedes the drill-in (its template branch wins). Without this, a flow that moves
+// on while the fee screen is up leaves the flag set, and the next Back tap is silently spent
+// clearing it instead of leaving.
+watch(paying, (now) => {
+  if (now) showingFees.value = false;
+});
 /** Cancel is offered only while nothing can have been paid. */
 const canCancel = computed(
   () => paying.value && !session.meldSubmitted && !session.fundsSeen && !session.claiming,
@@ -69,7 +89,7 @@ onUnmounted(() => {
 
 <template>
   <main
-    class="fixed inset-x-0 mx-auto flex w-full max-w-md flex-col overflow-hidden bg-bg"
+    class="fixed inset-x-0 mx-auto flex w-full max-w-md flex-col overflow-hidden bg-surface-main"
     style="
       top: var(--vvt, 0px);
       height: var(--vvh, 100dvh);
@@ -79,9 +99,9 @@ onUnmounted(() => {
   >
     <!-- No title while the widget is up; the back control stays. -->
     <Toolbar
-      :title="paying ? '' : title"
+      :title="paying ? '' : showingFees ? 'Fees' : title"
       :back="!session.claiming && !session.resuming"
-      @back="emit('back')"
+      @back="goBack"
     >
       <template
         v-if="
@@ -96,14 +116,14 @@ onUnmounted(() => {
         <button
           v-if="session.canSkipDeposit"
           type="button"
-          class="px-4 py-3 text-base leading-6 font-semibold text-text-primary"
+          class="rounded-medium px-4 py-3 text-label-l font-normal text-fg-primary transition-colors hover:bg-action-tertiary-hover"
           @click="onSkip"
         >
           Skip
         </button>
         <span
           v-else
-          class="mx-4 my-3 inline-block size-6 animate-spin rounded-full border-[3px] border-track border-t-white"
+          class="mx-4 my-3 inline-block size-6 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary"
         />
       </template>
     </Toolbar>
@@ -112,29 +132,34 @@ onUnmounted(() => {
     <div class="flex min-h-0 flex-1 flex-col" :class="paying ? '' : 'px-6 pt-6'">
       <div v-if="session.resuming" class="flex flex-col items-center gap-4 pt-16">
         <span
-          class="inline-block size-8 animate-spin rounded-full border-[3px] border-track border-t-white"
+          class="inline-block size-8 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary"
         />
-        <p class="text-sm text-text-secondary">Opening your top-up…</p>
+        <p class="text-body-m text-fg-secondary">Opening your top-up…</p>
       </div>
       <template v-else-if="paying">
         <MeldPaySheet :pay-url="session.meldPayUrl" />
         <button
           v-if="canCancel"
           type="button"
-          class="mx-6 mt-3 mb-4 h-12 shrink-0 rounded-full bg-[#e7333f] text-base leading-6 font-semibold text-white disabled:opacity-50"
+          class="mx-6 mt-3 mb-4 h-12 shrink-0 rounded-medium bg-status-error text-label-l text-fg-primary-inverted transition-colors hover:bg-status-error-hover disabled:opacity-50"
           :disabled="session.cancelling"
           @click="cancelTopUp"
         >
           {{ session.cancelling ? "Cancelling…" : "Cancel" }}
         </button>
       </template>
-      <MeldPayScreen v-else @switch-route="emit('switchRoute', $event)" />
+      <MeldFeeDetailsScreen v-else-if="showingFees" @back="showingFees = false" />
+      <MeldPayScreen
+        v-else
+        @fees="showingFees = true"
+        @switch-route="emit('switchRoute', $event)"
+      />
     </div>
 
     <!-- state-director scene label (dev/demo keys only) -->
     <span
       v-if="previewLabel"
-      class="fixed bottom-2 left-2 rounded bg-chip px-2 py-1 font-mono text-[10px] text-text-secondary"
+      class="fixed bottom-2 left-2 rounded-small bg-surface-container px-2 py-1 font-mono text-overline text-fg-secondary shadow-1"
     >
       {{ previewLabel }}
     </span>

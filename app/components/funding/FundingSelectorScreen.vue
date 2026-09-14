@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch, type CSSProperties } from "vue";
+import { computed, ref, watch } from "vue";
 import { fundingSelectorConfig, type FundingSelectorConfig } from "../../funding/config";
 import {
   resolveFundingShellScreen,
@@ -23,6 +23,9 @@ type OpenableFundingTopUp = InProgressFundingTopUp | SettledFundingTopUp;
 
 const props = withDefaults(
   defineProps<{
+    /** Launch-load placeholder: renders the amount screen's chrome with skeleton shapes over the
+     *  not-yet-loaded data instead of the interactive shell. */
+    skeleton?: boolean;
     config?: FundingSelectorConfig;
     initialSelection?: FundingSelection | null;
     /** Routes this build can run; the rest render dimmed and cannot be picked. Defaults to
@@ -39,6 +42,7 @@ const props = withDefaults(
     topUpError?: string | null;
   }>(),
   {
+    skeleton: false,
     config: () => fundingSelectorConfig,
     initialSelection: null,
     availableRoutes: null,
@@ -73,19 +77,6 @@ const initialRoute = props.initialSelection?.route ?? null;
 const route = ref<FundingRoute | null>(
   initialRoute !== null && isRouteAvailable(initialRoute) ? initialRoute : null,
 );
-
-const themeStyle = computed<CSSProperties>(() => ({
-  "--funding-background": props.config.theme.background,
-  "--funding-surface": props.config.theme.surface,
-  "--funding-control": props.config.theme.control,
-  "--funding-text": props.config.theme.text,
-  "--funding-text-muted": props.config.theme.textMuted,
-  "--funding-action": props.config.theme.action,
-  "--funding-action-text": props.config.theme.actionText,
-  "--funding-border": props.config.theme.border,
-  "--funding-success": props.config.theme.success,
-  "--funding-error": props.config.theme.error,
-}));
 
 function changeAmount(next: string) {
   amount.value = next;
@@ -131,9 +122,17 @@ watch(hasPendingContent, (hasContent) => {
 </script>
 
 <template>
-  <section class="funding-selector" :style="themeStyle">
+  <section class="funding-selector">
+    <FundingAmountScreen
+      v-if="skeleton"
+      skeleton
+      :config="config"
+      amount=""
+      :route="null"
+      :history="false"
+    />
     <FundingPendingScreen
-      v-if="screen === 'pending'"
+      v-else-if="screen === 'pending'"
       :config="config"
       :top-ups="topUps"
       :latest-top-up="latestTopUp"
@@ -182,18 +181,13 @@ watch(hasPendingContent, (hasContent) => {
   right: 0;
   left: 0;
   width: 100%;
-  max-width: 28rem;
+  max-width: 24.125rem; /* 386px — the design frame's width (the sheet inside the 402 phone) */
   height: var(--vvh, 100dvh);
   margin: 0 auto;
   overflow: hidden;
-  background: var(--funding-background);
-  color: var(--funding-text);
+  background: var(--bg-surface-main);
+  color: var(--fg-primary);
   padding-top: env(safe-area-inset-top);
   padding-bottom: env(safe-area-inset-bottom);
-}
-
-.funding-selector :deep(button:focus-visible) {
-  outline: 2px solid var(--funding-action);
-  outline-offset: 2px;
 }
 </style>

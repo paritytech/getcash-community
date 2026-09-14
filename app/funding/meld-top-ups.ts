@@ -99,6 +99,15 @@ export function projectMeldTopUps(
         startedAt: record.startedAt,
         progress,
         details: topUpDetails(record, method),
+        ...(record.sourceAmount && record.sourceSymbol
+          ? {
+              quote: {
+                amount: record.sourceAmount,
+                symbol: record.sourceSymbol,
+                ...(record.sourceFee ? { fee: record.sourceFee } : {}),
+              },
+            }
+          : {}),
         state: worded,
       },
     ];

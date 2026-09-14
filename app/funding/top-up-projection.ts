@@ -24,6 +24,10 @@ export interface FundingTopUpRecord {
   /** What the buyer pays, as the rail quoted it: fiat for Meld, the source coin for crypto. */
   sourceAmount?: string;
   sourceSymbol?: string;
+  /** The provider's quoted fee (Meld), in `sourceSymbol` units. */
+  sourceFee?: string;
+  /** The network-fee share of `sourceFee`, when the rail broke it out. */
+  sourceNetworkFee?: string;
   /** The Meld rail's buyer country. */
   meldCountry?: string;
   funded?: number;
