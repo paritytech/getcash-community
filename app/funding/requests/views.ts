@@ -65,28 +65,26 @@ export const fundsSeenOf = (record: RequestRecord): boolean =>
       record.status.via === "faucet" ||
       record.status.via === "pre-cancel"));
 
-/** How many of the journey's five markers (Started, Payment, Approved, Conversion, Added) are
- *  complete, 1..5. The payment leg is the route's own; the money leg is the same for every route,
- *  so a deposit seen by any witness reads the same everywhere. */
+/** How many of the journey's five markers are complete, 1..5. Started: the request exists, so a
+ *  record awaiting its deposit, expired or cancelled counts one. Payment: the deposit was seen
+ *  provisionally by any witness (the provider's report, a chain read at a best block). Approved:
+ *  the deposit is on the burner at finality (the worker, the faucet, a finalized chain read), or
+ *  the swap is under way. Conversion: the swap is done and the CASH is teleporting, or the claim
+ *  is under way. Added: the request settled. A side exit reports the leg it left; from the
+ *  deposit, the kind says whether the network took the payment. */
 export function journeyStepsOf(record: RequestRecord): number {
-  const { status, rail, failure } = record;
+  const { status, failure } = record;
   switch (status.kind) {
     case "awaiting-deposit":
     case "expired":
     case "cancelled":
       return 1;
     case "deposit-seen":
-      // Money on the address, or the rail delivered it: the payment is approved. A sighting on
-      // the provider's side is a payment received and no more.
-      return status.via === "worker" ||
-        status.via === "faucet" ||
-        status.via === "chain" ||
-        status.via === "pre-cancel" ||
-        rail.stage === "delivered"
-        ? 3
-        : 2;
+      // "Approved" waits for finality on the burner: a rail's delivery on its own is a payment
+      // received and no more.
+      return status.assurance === "finalized" ? 3 : 2;
     case "converting":
-      return 3;
+      return status.step === "swap" ? 3 : 4;
     case "claiming":
       return 4;
     case "settled":

@@ -309,6 +309,7 @@ function workerWitness(job: WorkerJobView, at: number): Witnesses["worker"] {
     at,
     ...(job.failure === undefined ? {} : { failure: job.failure }),
     ...(job.claim === null ? {} : { claimPhase: job.claim.phase }),
+    ...(job.claim?.status === undefined ? {} : { claimStatus: job.claim.status }),
     ...(job.txs === undefined ? {} : { txs: job.txs }),
   };
 }
@@ -324,7 +325,7 @@ function applyWorker(record: RequestRecord, at: number, job: WorkerJobView | nul
   if (job.fundsSeenAt !== null) next = moneySeen(next, job.fundsSeenAt, "finalized", "worker");
   const rank = rankOf(next);
   if (job.claim?.phase === "claimed") {
-    const claimed = claimedAmount(job.claim.amount);
+    const claimed = claimedAmount(job.claim.amount ?? job.claim.credited);
     if (next.status.kind === "settled") {
       return claimed !== undefined && next.claimed === undefined ? { ...next, claimed } : next;
     }
@@ -332,6 +333,16 @@ function applyWorker(record: RequestRecord, at: number, job: WorkerJobView | nul
   }
   if (job.phase === "failed") {
     if (atSideExit(next)) return next;
+    if (job.failure === "claim" && rank >= 1) {
+      // The host would not settle the claim: the conversion is done, so the exit keeps the
+      // claim's rank whatever the record had reached.
+      return failed(next, at, {
+        kind: "mint",
+        step: "mint",
+        message: job.lastError ?? "the claim failed",
+        recoverable: true,
+      });
+    }
     if ((job.failure === "shortfall" || job.failure === "timeout") && rank >= 1) {
       // The worker has the deposit in hand, so the exit keeps at least the conversion's rank.
       return failed(next, at, {

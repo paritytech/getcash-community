@@ -39,12 +39,11 @@ const at = (status: RequestStatus, extra: Extra = {}): RequestRecord => ({
   status,
   ...extra,
 });
-const seen = (via: Extract<RequestStatus, { kind: "deposit-seen" }>["via"]): RequestStatus => ({
-  kind: "deposit-seen",
-  at: AT,
-  assurance: "provisional",
-  via,
-});
+type DepositSeen = Extract<RequestStatus, { kind: "deposit-seen" }>;
+const seen = (
+  via: DepositSeen["via"],
+  assurance: DepositSeen["assurance"] = "provisional",
+): RequestStatus => ({ kind: "deposit-seen", at: AT, assurance, via });
 const rail = (
   provider: RailState["provider"],
   stage: RailState["stage"],
@@ -83,27 +82,29 @@ describe("request views", () => {
   it("journeyStepsOf counts the five markers from the record", () => {
     const cases: [string, RequestRecord, number][] = [
       ["awaiting-deposit", at({ kind: "awaiting-deposit" }), 1],
-      // A sighting on the provider's side is a payment received; money on the address, or the
-      // rail's delivery, is a payment approved.
+      // A provisional sighting by any witness is a payment received; "Approved" waits for the
+      // deposit on the burner at finality, whatever the rail reports of its delivery.
       [
-        "deposit-seen via rail, rail received",
+        "deposit-seen provisional via rail",
         { ...card(), status: seen("rail"), rail: rail("meld", "received", "receiving") },
         2,
       ],
+      ["deposit-seen provisional via chain", at(seen("chain")), 2],
+      ["deposit-seen finalized via worker", at(seen("worker", "finalized")), 3],
+      ["deposit-seen finalized via faucet", at(seen("faucet", "finalized")), 3],
       [
-        "deposit-seen via core, rail processing",
-        at(seen("core"), { rail: rail("chainflip", "processing", "swapping") }),
+        "deposit-seen provisional via rail, rail delivered",
+        at(seen("rail"), { rail: rail("chainflip", "delivered", "complete") }),
         2,
       ],
-      ["deposit-seen via chain", at(seen("chain")), 3],
-      ["deposit-seen via faucet", at(seen("faucet")), 3],
-      ["deposit-seen via worker", at(seen("worker")), 3],
+      // The swap is the conversion; past it the CASH is on its way to the balance.
+      ["converting at the swap", at({ kind: "converting", at: AT, step: "swap" }), 3],
+      ["converting at the xcm", at({ kind: "converting", at: AT, step: "xcm" }), 4],
       [
-        "deposit-seen via rail, rail delivered",
-        at(seen("rail"), { rail: rail("chainflip", "delivered", "complete") }),
-        3,
+        "converting, awaiting arrival",
+        at({ kind: "converting", at: AT, step: "await-arrival" }),
+        4,
       ],
-      ["converting", at({ kind: "converting", at: AT, step: "swap" }), 3],
       ["claiming", at({ kind: "claiming", at: AT }), 4],
       ["settled", at({ kind: "settled", at: AT }), 5],
       // A side exit reports the leg it left; from the deposit, the kind says whether the network

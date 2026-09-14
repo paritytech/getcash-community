@@ -501,6 +501,102 @@ describe("request reducer: top-up transitions", () => {
     });
   });
 
+  it("worker claim failure → failed(recoverable) at the mint step; user retry → claiming", () => {
+    const CLAIM_SHORT = "the host settled the claim short";
+    const claiming = reduce(
+      converting(),
+      worker(at(3), job({ phase: "done", done: true, fundsSeenAt: at(1), lastTickAt: at(3) })),
+    );
+    expect(claiming.status).toEqual({ kind: "claiming", at: at(3) });
+
+    const failed = reduce(
+      claiming,
+      worker(
+        at(5),
+        job({
+          phase: "failed",
+          failure: "claim",
+          lastError: CLAIM_SHORT,
+          done: true,
+          fundsSeenAt: at(1),
+          lastTickAt: at(5),
+        }),
+      ),
+    );
+    expect(failed.status).toEqual({ kind: "failed", at: at(5), recoverable: true });
+    expect(failed.failure).toEqual({
+      kind: "mint",
+      step: "mint",
+      message: CLAIM_SHORT,
+      recoverable: true,
+    });
+    expect(failed.failureReason).toBe(CLAIM_SHORT);
+    expect(failed.progress.failedAt).toBe(at(5));
+    expect(failed.witnesses.worker).toMatchObject({
+      known: true,
+      phase: "failed",
+      failure: "claim",
+    });
+
+    const retried = reduce(failed, { source: "user", at: at(6), event: "retry" });
+    expect(retried.status).toEqual({ kind: "claiming", at: at(6) });
+    expect(retried.failure).toBeUndefined();
+    expect(retried.failureReason).toBeUndefined();
+    expect(retried.progress.failedAt).toBeUndefined();
+  });
+
+  it("worker sizing and registering phases leave the record claiming and record the phase", () => {
+    const registering = reduce(
+      converting(),
+      worker(
+        at(3),
+        job({
+          phase: "done",
+          done: true,
+          fundsSeenAt: at(1),
+          lastTickAt: at(3),
+          claim: { phase: "registering", credited: "0", at: at(3) },
+        }),
+      ),
+    );
+    expect(registering.status).toEqual({ kind: "claiming", at: at(3) });
+    expect(registering.claimed).toBeUndefined();
+    expect(registering.settledAt).toBeUndefined();
+    expect(registering.witnesses.worker).toMatchObject({
+      known: true,
+      claimPhase: "registering",
+    });
+    expect(registering.witnesses.worker).not.toHaveProperty("claimStatus");
+
+    const claimed = reduce(
+      registering,
+      worker(
+        at(4),
+        job({
+          phase: "done",
+          done: true,
+          fundsSeenAt: at(1),
+          lastTickAt: at(4),
+          claim: {
+            phase: "claimed",
+            amount: "20250000",
+            credited: "20250000",
+            at: at(4),
+            status: "settled",
+          },
+        }),
+      ),
+    );
+    expect(claimed.status).toEqual({ kind: "settled", at: at(4) });
+    expect(claimed.settledAt).toBe(at(4));
+    expect(claimed.claimed).toBe("20250000");
+    expect(claimed.witnesses.worker).toMatchObject({
+      known: true,
+      claimPhase: "claimed",
+      claimStatus: "settled",
+    });
+  });
+
   it("unchanged observation returns the same object reference", () => {
     const busy = converting();
     expect(reduce(busy, cancel(at(3)))).toBe(busy);

@@ -52,6 +52,8 @@ export type Freshness = "confirmed" | "reconciling" | "cached";
 /** The pipeline's steps between the deposit and the claim, derived from `FundingStep`. */
 export type ConvertingStep = Exclude<FundingStep, "await-native" | "done">;
 export type DepositSeenVia = "worker" | "chain" | "rail" | "core" | "faucet" | "pre-cancel";
+/** The worker's claim as it moves: sized, registered with the host, claiming, claimed. */
+export type WorkerClaimPhase = "sizing" | "registering" | "claiming" | "claimed";
 
 /** The converting steps in pipeline order. The `satisfies` fails to compile when `FundingStep`
  *  gains or loses a step, so the order can never drift from the type. */
@@ -118,7 +120,15 @@ export interface WorkerJobView {
   lastError?: string;
   fundsSeenAt: number | null;
   lastTickAt: number | null;
-  claim: { phase: "claiming" | "claimed"; amount?: string; at: number } | null;
+  claim: {
+    phase: WorkerClaimPhase;
+    amount?: string;
+    /** CASH the host minted so far. */
+    credited?: string;
+    /** The host's last word on the top-up. */
+    status?: string;
+    at: number;
+  } | null;
   /** As the worker records them on either branch. */
   txs?: { call: "swap" | "xcm"; txHash: string; block?: number }[];
 }
@@ -174,7 +184,8 @@ export interface RequestRecord {
           known: true;
           phase: string;
           done: boolean;
-          claimPhase?: "claiming" | "claimed";
+          claimPhase?: WorkerClaimPhase;
+          claimStatus?: string;
           fundsSeenAt: number | null;
           lastTickAt: number | null;
           failure?: string;

@@ -269,7 +269,12 @@ export interface WorkerJobRecord {
     workedMs: number;
   };
   txs: { call: "swap" | "xcm"; txHash: string; block?: number }[];
-  claim?: { phase: "claiming" | "claimed"; amount: string; at: number; attempts: number };
+  claim?: {
+    phase: "sizing" | "registering" | "claiming" | "claimed";
+    amount: string;
+    at: number;
+    attempts: number;
+  };
 }
 
 const SWAP_TX_HASH = `0x${"11".repeat(32)}`;

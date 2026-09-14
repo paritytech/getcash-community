@@ -283,7 +283,13 @@ type WorkerJob = {
   lastError?: string;
   lastTickAt?: number | null;
   state?: { fundsSeenAt?: number | null };
-  claim?: { phase?: string; amount?: string; at?: number } | null;
+  claim?: {
+    phase?: string;
+    amount?: string;
+    credited?: string;
+    status?: string;
+    at?: number;
+  } | null;
   txs?: WorkerJobView["txs"];
   // The hand-off the worker keeps, read back when the surface has no record of the job.
   label?: string;
@@ -321,10 +327,16 @@ function jobView(job: WorkerJob): WorkerJobView {
     fundsSeenAt: job.state?.fundsSeenAt ?? null,
     lastTickAt: job.lastTickAt ?? null,
     claim:
-      claim && (claim.phase === "claiming" || claim.phase === "claimed")
+      claim &&
+      (claim.phase === "sizing" ||
+        claim.phase === "registering" ||
+        claim.phase === "claiming" ||
+        claim.phase === "claimed")
         ? {
             phase: claim.phase,
             ...(claim.amount === undefined ? {} : { amount: claim.amount }),
+            ...(claim.credited === undefined ? {} : { credited: claim.credited }),
+            ...(claim.status === undefined ? {} : { status: claim.status }),
             at: claim.at ?? job.lastTickAt ?? Date.now(),
           }
         : null,
@@ -1044,7 +1056,7 @@ export const useRequestsStore = defineStore("requests", () => {
     const confirmedByJob =
       job !== undefined &&
       job.phase === "failed" &&
-      (job.failure === "shortfall" || job.failure === "timeout");
+      (job.failure === "shortfall" || job.failure === "timeout" || job.failure === "claim");
     if (!confirmedByJob && record.witnesses.core?.phase !== "failed") {
       console.warn("[requests] retry ignored: the failure is not confirmed as recoverable");
       return false;
