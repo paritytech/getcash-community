@@ -5,6 +5,7 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import { SOURCE_CHAINS, sourceIdFor } from "~~/lib/config";
 import { useOffersStore } from "./offers";
+import { useRequestsStore } from "./requests";
 import { useSessionStore } from "./session";
 
 const JOURNEY_PHASES = new Set([
@@ -22,6 +23,7 @@ export type Step = "amount" | "method" | "network" | "token";
 
 export const useFlowStore = defineStore("flow", () => {
   const session = useSessionStore();
+  const requests = useRequestsStore();
   const offers = useOffersStore();
 
   const step = ref<Step>("amount");
@@ -37,7 +39,7 @@ export const useFlowStore = defineStore("flow", () => {
 
   // "journey" while a request exists or a cancel is in flight; "entry" otherwise.
   const screen = computed<"entry" | "journey">(() =>
-    (session.phase !== null && JOURNEY_PHASES.has(session.phase)) || session.cancelling
+    (requests.phase !== null && JOURNEY_PHASES.has(requests.phase)) || session.cancelling
       ? "journey"
       : "entry",
   );

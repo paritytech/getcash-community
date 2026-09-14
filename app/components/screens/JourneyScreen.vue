@@ -3,11 +3,14 @@
 // every package.
 import { computed } from "vue";
 import { Plus, RefreshCcw, X } from "lucide-vue-next";
+import type { SourceId } from "@getsome/core";
 import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
 import type { FundingJourneyStatus } from "../../funding/handoff";
 import { projectFundingProgress, type FundingProgressProjection } from "../../funding/progress";
+import { effectiveSourceId } from "../../funding/requests/model";
 import type { FundingTopUp } from "../../funding/top-ups";
+import { useRequestsStore } from "../../stores/requests";
 import { useSessionStore } from "../../stores/session";
 import { fmtCash } from "../../utils/cash";
 import { fmtFiat, isMoneyAmount } from "../../utils/money";
@@ -32,13 +35,15 @@ const props = defineProps<{
 // fees asks the host to swap in the fee-breakdown drill-in; close leaves the finished journey.
 const emit = defineEmits<{ fees: []; close: [] }>();
 const session = useSessionStore();
+const requests = useRequestsStore();
 
 const cadence = computed(
-  () => session.foregroundProgress?.snapshot.profile.cadenceMs ?? props.progress?.cadenceMs ?? null,
+  () =>
+    requests.foregroundProgress?.snapshot.profile.cadenceMs ?? props.progress?.cadenceMs ?? null,
 );
 const now = useFundingProgressClock(cadence);
 const progress = computed(() => {
-  const foreground = session.foregroundProgress;
+  const foreground = requests.foregroundProgress;
   if (foreground) {
     return projectFundingProgress({
       snapshot: foreground.snapshot,
@@ -49,15 +54,16 @@ const progress = computed(() => {
   return props.progress ?? null;
 });
 
-const state = computed(() => session.lastState);
-const finished = computed(() => session.phase === "done");
-const failure = computed(() => (state.value?.phase === "failed" ? state.value.failure : null));
-const failedText = computed(() => session.fundingError ?? failure.value?.message ?? null);
+const finished = computed(() => requests.phase === "done");
+const failure = computed(() =>
+  requests.phase === "failed" ? (requests.foregroundRecord?.failure ?? null) : null,
+);
+const failedText = computed(() => requests.fundingError ?? failure.value?.message ?? null);
 
 const heroFailed = computed(() => progress.value?.view.kind === "failed" || failure.value !== null);
 
 const creditedAmount = computed(() =>
-  session.claimedBase != null ? fmtCash(session.claimedBase) : session.amountHuman,
+  requests.claimedBase != null ? fmtCash(requests.claimedBase) : session.amountHuman,
 );
 const amountText = computed(() => {
   if (finished.value) return `+${creditedAmount.value} $CASH`;
@@ -69,7 +75,7 @@ const amountText = computed(() => {
 const settledWhen = computed(() => {
   if (!finished.value) return null;
   const at =
-    session.milestones[5] ?? (props.topUp?.state.kind === "settled" ? props.topUp.state.at : null);
+    requests.milestones[5] ?? (props.topUp?.state.kind === "settled" ? props.topUp.state.at : null);
   return at != null ? formatWhenShort(at) : null;
 });
 
@@ -78,10 +84,13 @@ const refunded = computed(
   () =>
     failure.value !== null && refundedFailure(failure.value.kind) && session.refundAddress !== null,
 );
-const refund = computed(() => (state.value?.phase === "failed" ? state.value.refund : undefined));
+const refund = computed(() =>
+  requests.phase === "failed" ? requests.foregroundRecord?.failure?.refund : undefined,
+);
 const asset = computed(() => {
-  const sourceId = state.value?.sourceId;
-  return sourceId ? (SOURCE_CONFIG_BY_ID.get(sourceId)?.asset ?? "") : "";
+  const record = requests.foregroundRecord;
+  if (!record) return "";
+  return SOURCE_CONFIG_BY_ID.get(effectiveSourceId(record.ref) as SourceId)?.asset ?? "";
 });
 /** The rows' source: the live quote, else the top-up's stored one. Only the live quote carries
  *  the split the fee drill-in needs. */
@@ -122,14 +131,14 @@ const detailRows = computed(() => {
 });
 
 /** Temporarily stuck (the provider is retrying): amber on the stepper, never terminal. */
-const delayed = computed(() => session.meldDelayed && !finished.value && !heroFailed.value);
+const delayed = computed(() => requests.meldDelayed && !finished.value && !heroFailed.value);
 
 /** The one ribbon line under the stepper: a failure reason, an out-of-band notice, a transient
  *  delay, or the rail's own word on its payment. The last matters most on the bank rail, where
  *  "Confirming your bank transfer…" can be the state for days. */
 const message = computed(() => {
   if (failedText.value) return failedText.value;
-  if (session.fundingNotice) return session.fundingNotice;
+  if (requests.fundingNotice) return requests.fundingNotice;
   if (delayed.value) return "Taking a little longer than usual";
   if (props.status) return props.status.text;
   return null;
@@ -163,6 +172,7 @@ const message = computed(() => {
       <FundingJourneyTimeline
         v-if="progress && !finished"
         :progress="progress"
+        :completed-steps="requests.journeyDone"
         :message="message"
         :delayed="delayed"
       />

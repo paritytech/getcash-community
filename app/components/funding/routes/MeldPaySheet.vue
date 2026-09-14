@@ -4,11 +4,13 @@
 // confirms.
 import { onMounted, onUnmounted } from "vue";
 import { CircleX } from "lucide-vue-next";
+import { useRequestsStore } from "../../../stores/requests";
 import { useSessionStore } from "../../../stores/session";
 
 defineProps<{ payUrl?: string | null }>();
 
 const session = useSessionStore();
+const requests = useRequestsStore();
 
 // The return page posts `meld:paid` from the adapter origin; only that origin is trusted.
 const ADAPTER_ORIGIN = (() => {
@@ -37,18 +39,18 @@ onUnmounted(() => window.removeEventListener("message", onMessage));
     <!-- The hosted widget until the buyer finishes, then a small loader while the poll
          confirms. -->
     <div
-      v-if="session.meldStage === 'failed'"
+      v-if="requests.meldStage === 'failed'"
       class="flex min-h-0 w-full flex-1 flex-col items-center justify-center gap-2 text-center"
     >
       <CircleX class="size-8 text-fg-error" aria-hidden="true" />
       <!-- The adapter's own reason: the four failure states are not interchangeable, and
            `unobserved` (the buyer may have been charged) must not read as "try again". -->
       <p class="max-w-[240px] text-label-m text-fg-error">
-        {{ session.meldFailureMessage ?? "Payment could not be completed" }}
+        {{ requests.meldFailureMessage ?? "Payment could not be completed" }}
       </p>
     </div>
     <div
-      v-else-if="session.meldSubmitted"
+      v-else-if="requests.meldSubmitted"
       class="flex min-h-0 w-full flex-1 items-center justify-center"
     >
       <span
