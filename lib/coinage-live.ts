@@ -8,20 +8,34 @@ import {
   requestPermission,
 } from "@parity/product-sdk-host";
 import { getStorageWorkerManager } from "./worker-rpc";
-import type { ChainflipRail, SourceId } from "@getsome/core";
+import { createFlowStore, type ChainflipRail, type FlowState, type SourceId } from "@getsome/core";
 import { deriveKeypair } from "@getsome/ephemeral";
-import type { FundingStep } from "@getsome/funding";
-import { createHostEntropyPort } from "@getsome/host";
+import {
+  DEFAULT_KEEP_NATIVE_FOR_FEES,
+  DEFAULT_REMOTE_FEE_BUFFER,
+  PASEO_PEOPLE_PARA_ID,
+  PASEO_UNDERLYING_ASSET_ID,
+  type FundingStep,
+} from "@getsome/funding";
+import {
+  createHostEntropyPort,
+  createHostStorageAdapter,
+  type HostLocalStorageLike,
+} from "@getsome/host";
 import { CASH_DECIMALS } from "@getsome/people";
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
+import type { WorkerHandoffPayload } from "../app/funding/requests/model";
 import {
   createCoinageSession,
   DEFAULT_SOURCE_ID,
   hostSafeEntropy,
   readPurseBalance,
+  readTradeCounter,
   tradeEntropyLabel,
+  tradeEntropyLabelString,
   type CoinageWorld,
 } from "./coinage";
+import { ASSET_HUB_GENESIS, PEOPLE_GENESIS } from "./host-chain";
 
 export interface HostedCoinageWorld extends CoinageWorld {
   /** Current host purse balance (CASH base units). */
@@ -39,18 +53,68 @@ async function hostManagers() {
 
 export { DEFAULT_SOURCE_ID };
 
+/** A trade's burner address, derived from the host's entropy root without building a session. */
+export async function burnerAddressFor(sourceId: string, tradeN: number): Promise<string> {
+  const entropy = createHostEntropyPort(hostSafeEntropy(deriveEntropy));
+  const seed = await entropy.deriveSeed(tradeEntropyLabel(sourceId, tradeN));
+  return deriveKeypair(seed).address;
+}
+
 /** A trade's burner address and its native balance on Asset Hub, without building a session. */
 export async function probeTradeBurner(
   sourceId: string,
   tradeN: number,
 ): Promise<{ address: string; free: bigint }> {
-  const entropy = createHostEntropyPort(hostSafeEntropy(deriveEntropy));
-  const seed = await entropy.deriveSeed(tradeEntropyLabel(sourceId, tradeN));
-  const address = deriveKeypair(seed).address;
+  const address = await burnerAddressFor(sourceId, tradeN);
   const { connectChain, ASSET_HUB } = await import("./host-chain");
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
   const account = await api.query.System.Account.getValue(address, { at: "best" });
   return { address, free: account?.data?.free ?? 0n };
+}
+
+/** Core's storage over the host store, under the prefix `createCoinageSession` writes with. */
+async function hostStorageAdapter() {
+  const { storage } = await hostManagers();
+  return createHostStorageAdapter(storage as HostLocalStorageLike);
+}
+
+/** The source's trade counter in the host store: the number the next request takes. */
+export async function readHostedTradeCounter(sourceId: string): Promise<number> {
+  return readTradeCounter(await hostStorageAdapter(), sourceId);
+}
+
+/** A trade's core flow slot, which core keys by the burner address it pays into. */
+export async function readFlowSlot(
+  sourceId: SourceId,
+  tradeN: number,
+): Promise<{ address: string; slot: FlowState | null }> {
+  const [address, storage] = await Promise.all([
+    burnerAddressFor(sourceId, tradeN),
+    hostStorageAdapter(),
+  ]);
+  return { address, slot: await createFlowStore(storage, sourceId, address).load() };
+}
+
+/** The hand-off for a request whose record was lost, rebuilt from its flow slot with the sizing
+ *  defaults the worker itself falls back to. */
+export function lostRequestHandoff(
+  sourceId: string,
+  tradeN: number,
+  address: string,
+  slot: FlowState,
+): WorkerHandoffPayload {
+  return {
+    label: tradeEntropyLabelString(sourceId, tradeN),
+    burnerAddress: address,
+    depositExpiresAt: slot.depositExpiresAt ?? 0,
+    settleAmount: slot.handoffAmount ?? "0",
+    underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
+    peopleParaId: PASEO_PEOPLE_PARA_ID,
+    assetHubGenesis: ASSET_HUB_GENESIS,
+    peopleGenesis: PEOPLE_GENESIS,
+    remoteFeeBuffer: DEFAULT_REMOTE_FEE_BUFFER.toString(),
+    keepNativeForFees: DEFAULT_KEEP_NATIVE_FOR_FEES.toString(),
+  };
 }
 
 /** Human CASH amount to 6-decimal base units. */

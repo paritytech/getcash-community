@@ -2,7 +2,7 @@
 // orchestration, the hand-off to the worker, claim progress, and recovery.
 
 import { defineStore } from "pinia";
-import { computed, ref, shallowRef } from "vue";
+import { computed, ref, shallowRef, watch } from "vue";
 import type { ChainflipRail, PaymentState, SourceId } from "@getsome/core";
 import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
 import type { RefundKey } from "@getsome/ephemeral";
@@ -12,7 +12,6 @@ import {
   createFundingProgressSnapshot,
   fundingProgressSignalForPaymentState,
   progressProviderForSource,
-  type FundingProgressSignal,
   type FundingProgressSnapshot,
 } from "../funding/progress";
 import {
@@ -22,7 +21,6 @@ import {
   railProviderOf,
   rankOf,
   routeOf,
-  TOMBSTONE_GRACE_MS,
   type RequestRecord,
 } from "../funding/requests/model";
 import {
@@ -30,6 +28,8 @@ import {
   fundingStepOf,
   fundsSeenOf,
   journeyInput,
+  meldHandedOffOf,
+  meldStageOf,
   milestonesOf,
   phaseLike,
 } from "../funding/requests/views";
@@ -37,7 +37,6 @@ import {
   createFakeMeldClient,
   createMeldClient,
   createMeldRail,
-  getMeldStatus,
   NATIVE_DECIMALS,
   pickBestQuote,
   type MeldClientLike,
@@ -59,7 +58,6 @@ import { priceSourceLeg, type SourcePriceResult } from "~~/lib/source-price";
 import { createMockCoinageSession, workerSessionId, type MockCoinageWorld } from "~~/lib/coinage";
 import type { HostedCoinageWorld } from "~~/lib/coinage-live";
 import { isHosted } from "~~/lib/host-account";
-import { MELD_PAYMENT_STAGE } from "../funding/progress";
 import { isMeldSourceId, meldSourceIdFor } from "../funding/source-ids";
 import { toCashBase } from "../utils/cash";
 import { fundFromFaucet, isFaucetConfigured } from "~~/lib/faucet";
@@ -204,22 +202,9 @@ export const useSessionStore = defineStore("session", () => {
   /** The selected country's corridor: its resolved fiat and the methods it routes. Null when
    *  discovery is unreachable. */
   const meldCorridor = shallowRef<SupportedCorridor | null>(null);
-  /** The Meld payment's polled stage: `waiting` while the buyer is on the widget, `receiving` once
-   *  the provider approved it, `complete` when settled. */
-  const meldStage = ref<"waiting" | "receiving" | "complete" | "failed" | null>(null);
-  /** The Meld payment is temporarily stuck (provider retrying its crypto delivery). Transient:
-   *  set and cleared by the status poll, never terminal on its own. */
-  const meldDelayed = ref(false);
-  /** The adapter's reason for a failed Meld payment. Null unless `meldStage === 'failed'`. */
-  const meldFailureMessage = ref<string | null>(null);
   /** The provider widget URL recovered when resuming a Meld request; null unless a resume found a
    *  live one. */
   const meldResumeWidgetUrl = ref<string | null>(null);
-  /** True once the buyer finished in the widget, before the status poll has confirmed anything. */
-  const meldSubmitted = ref(false);
-  /** Latched true once the payment reached `receiving` or `complete` and the journey took over
-   *  from the widget. */
-  const meldHandedOff = ref(false);
   /** Latched once the settled payment has been credited to the coinage leg. */
   let meldCredited = false;
   /** The swap network's price for the selected source; `pending` while asking. */
@@ -238,7 +223,6 @@ export const useSessionStore = defineStore("session", () => {
   let meldStatusClient: MeldClientLike | null = null;
   // The adapter's funding-request id, which its status route answers on.
   let meldFundingRequestId: string | null = null;
-  let meldPollStop: (() => void) | null = null;
   // The country the current Meld quote was priced in.
   let meldRegionCountry: string | null = null;
   /** The ref of the request on screen; set on start or re-open, cleared with the world. */
@@ -251,6 +235,32 @@ export const useSessionStore = defineStore("session", () => {
   // What the screens read of the request on screen, all derived from its record.
   const foregroundRecord = computed(() => requests.foregroundRecord);
   const phase = computed(() => (foregroundRecord.value ? phaseLike(foregroundRecord.value) : null));
+
+  // The Meld poll's views, read from the record on screen.
+  /** The Meld payment's stage: `waiting` while the buyer is on the widget, `receiving` once the
+   *  buyer left it, `complete` when settled. */
+  const meldStage = computed(() =>
+    foregroundRecord.value ? meldStageOf(foregroundRecord.value) : null,
+  );
+  /** The Meld payment is temporarily stuck (provider retrying its crypto delivery). Transient:
+   *  the record's rail says so, never terminal on its own. */
+  const meldDelayed = computed(() => foregroundRecord.value?.rail.delayed === true);
+  /** The adapter's reason for a failed Meld payment. Null unless `meldStage === 'failed'`. */
+  const meldFailureMessage = computed<string | null>(() => {
+    const record = foregroundRecord.value;
+    return record?.rail.stage === "failed" ? (record.rail.failure?.message ?? null) : null;
+  });
+  /** True once the buyer finished in the widget. */
+  const meldSubmitted = computed(() => foregroundRecord.value?.meldSubmittedAt !== undefined);
+  /** True once the buyer submitted or the payment completed and the journey took over from the
+   *  widget. */
+  const meldHandedOff = computed(() =>
+    foregroundRecord.value ? meldHandedOffOf(foregroundRecord.value) : false,
+  );
+  // Mock world: the settled payment lands on the coinage leg once, as the poll did directly.
+  watch(meldStage, (stage) => {
+    if (stage === "complete") creditMeldSettlement();
+  });
   /** Whether a deposit has been seen for the request on screen. */
   const fundsSeen = computed(() =>
     foregroundRecord.value ? fundsSeenOf(foregroundRecord.value) : false,
@@ -383,13 +393,7 @@ export const useSessionStore = defineStore("session", () => {
 
   function teardownWorld() {
     quoteEpoch += 1;
-    stopMeldPoll();
-    meldStage.value = null;
-    meldDelayed.value = false;
-    meldFailureMessage.value = null;
     meldResumeWidgetUrl.value = null;
-    meldSubmitted.value = false;
-    meldHandedOff.value = false;
     meldCredited = false;
     meldFundingRequestId = null;
     meldStatusClient = null;
@@ -473,13 +477,11 @@ export const useSessionStore = defineStore("session", () => {
   /** The open requests, newest first. */
   const requestList = computed(() => requests.list);
 
-  /** Brings the records up to date with the host and the worker's jobs; the store's reconcile
-   *  hands the worker any open request it lost. Then sweeps the tombstones. */
-  async function reconcileBackground(): Promise<void> {
+  /** Brings the records up to date with the host, the worker's jobs, the chain and the provider;
+   *  the store's reconcile hands the worker any open request it lost. */
+  async function reconcileBackground(reason: "boot" | "refresh" = "refresh"): Promise<void> {
     if (!isHosted()) return;
-    await requests.reconcile("refresh");
-    // Single-flighted on its own: the sweep does chain reads outside the reconcile lock.
-    void sweepTombstones();
+    await requests.reconcile(reason);
   }
 
   /** The hosted world up to hydration, shared by the fresh-quote and resume paths. Returns null
@@ -1019,27 +1021,6 @@ export const useSessionStore = defineStore("session", () => {
     });
   }
 
-  /** Keep the reason a request failed on its record, where it survives a restart: the rail
-   *  reports the failure, and the reducer fails a request still waiting for its deposit. */
-  function recordFailureReason(
-    ref: RequestRef | undefined,
-    reason: string,
-    refunded = false,
-  ): void {
-    if (ref === undefined) return;
-    const record = requests.get(ref);
-    if (!record) return;
-    void requests.observe(ref, {
-      source: "provider",
-      provider: record.rail.provider === "meld" ? "meld" : "chainflip",
-      at: Date.now(),
-      result: {
-        status: "failed",
-        depositFailure: { reason: { message: reason }, kind: refunded ? "refunded" : "unknown" },
-      },
-    });
-  }
-
   /** A funding step the worker reached, recorded as the worker's own sighting of the request. */
   function recordSharedFundingStep(ref: RequestRef, step: FundingStep): void {
     const at = Date.now();
@@ -1234,64 +1215,6 @@ export const useSessionStore = defineStore("session", () => {
     }
   }
 
-  /** Single-flight for the sweep: overlapping reconciles must not probe the same records. */
-  let sweepingTombstones = false;
-  /** The tombstone sweep: one bounded burner read per cancelled record. Funds found: resurrect as
-   *  a funded open request. Confirmed empty after window plus grace: delete. Unreadable: keep and
-   *  retry next reconcile. */
-  async function sweepTombstones(): Promise<void> {
-    if (sweepingTombstones || !isHosted()) return;
-    sweepingTombstones = true;
-    try {
-      await requests.reconcile("refresh");
-      const tombstoned = requests.records.filter((r) => r.status.kind === "cancelled");
-      if (tombstoned.length === 0) return;
-      // Burner labels are keyed on the ref's source id, never on the display source.
-      const { probeTradeBurner } = await import("~~/lib/coinage-live");
-      for (const record of tombstoned) {
-        const { ref } = record;
-        const tradeN = ref.tradeN;
-        try {
-          const { address, free } = await step(
-            `tombstone probe #${tradeN}`,
-            15_000,
-            probeTradeBurner(effectiveSourceId(ref), tradeN),
-          );
-          if (free > 0n) {
-            // The reducer revives it as a funded open request.
-            await requests.observe(ref, {
-              source: "chain",
-              at: Date.now(),
-              burnerNative: free.toString(),
-              finality: "best",
-              via: "probe",
-            });
-            console.warn(
-              `[coinage] request #${tradeN} resurrected: ${free} planck on ${address} after the cancel`,
-            );
-            void reconcileBackground(); // the row returns as a funded request and gets driven
-            continue;
-          }
-          const windowEnd =
-            (record.deadline.depositExpiresAt ??
-              (record.cancelledAt ?? 0) + DEFAULT_DEPOSIT_WINDOW_MS) + TOMBSTONE_GRACE_MS;
-          if (Date.now() > windowEnd) {
-            await requests.remove(ref);
-            console.warn(
-              `[coinage] request #${tradeN} reaped: window closed, burner confirmed empty`,
-            );
-          }
-        } catch (e) {
-          console.warn(
-            `[coinage] tombstone probe #${tradeN} failed (kept): ${e instanceof Error ? e.message : String(e)}`,
-          );
-        }
-      }
-    } finally {
-      sweepingTombstones = false;
-    }
-  }
-
   /** A claim landed: the request becomes history, with the amount the claim swept. */
   function markSettled(
     ref: RequestRef | undefined = foregroundRef ?? undefined,
@@ -1327,11 +1250,12 @@ export const useSessionStore = defineStore("session", () => {
   function openRequests(): Promise<RequestListRow[]> {
     return readAllRequests();
   }
-  /** Boot: gets every open request converting again and puts nothing on screen. */
-  async function resumeOpenRequests(): Promise<void> {
+  /** Gets every open request converting again and puts nothing on screen; the boot passes
+   *  `"boot"`, a route mounting again is a refresh. */
+  async function resumeOpenRequests(reason: "boot" | "refresh" = "refresh"): Promise<void> {
     if (!isHosted()) return; // mock flows persist nothing; there is nothing to pick up
     // reconcileBackground applies the worker's jobs; a purchase claimed off screen reaches history.
-    await reconcileBackground();
+    await reconcileBackground(reason);
   }
 
   /** Brings an off-screen request to the front: builds its world and resumes its session. */
@@ -1360,8 +1284,6 @@ export const useSessionStore = defineStore("session", () => {
     try {
       teardownWorld();
       foregroundRef = ref; // after teardown, which clears it
-      // A buyer who finished the widget resumes onto the conversion screen.
-      meldSubmitted.value = record.meldSubmittedAt !== undefined;
       const status = ref === null ? "?" : (requests.get(ref)?.status.kind ?? "?");
       console.warn(
         `[coinage] reopen request #${record.tradeN}: funded=${record.funded ?? "no"} status=${status} submitted=${record.meldSubmittedAt !== undefined}`,
@@ -1495,18 +1417,12 @@ export const useSessionStore = defineStore("session", () => {
       mock.value.harness.setSettlementBalance(amountBase.value);
   }
 
-  /** The buyer finished in the widget: swaps the widget for the pay screen's loader while the poll
-   *  confirms the status. */
+  /** The buyer finished in the widget: the stamp hands the screen over to the journey now, not on
+   *  `transaction_seen`, which can precede a 3DS/OTP challenge that still needs the iframe.
+   *  Persisted before returning; a re-open reads it to keep the paid widget hidden. */
   async function markMeldSubmitted(): Promise<void> {
-    if (meldSubmitted.value) return;
-    meldSubmitted.value = true;
-    // Hand over to the journey now, not on `transaction_seen`, which can precede a 3DS/OTP
-    // challenge that still needs the iframe. A terminal stage is left as-is.
-    if (meldStage.value !== "complete" && meldStage.value !== "failed")
-      meldStage.value = "receiving";
-    meldHandedOff.value = true;
-    // Persisted before returning; a re-open reads this stamp to keep the paid widget hidden.
-    if (foregroundRef !== null) await requests.markMeldSubmitted(foregroundRef);
+    if (foregroundRef === null || meldSubmitted.value) return;
+    await requests.markMeldSubmitted(foregroundRef);
   }
 
   /** Credits the settled Meld payment into the coinage leg, once. A no-op in the host world. */
@@ -1514,40 +1430,6 @@ export const useSessionStore = defineStore("session", () => {
     if (meldCredited) return;
     meldCredited = true;
     simulateDeposit();
-  }
-
-  function stopMeldPoll() {
-    meldPollStop?.();
-    meldPollStop = null;
-  }
-
-  /** The Meld payment's stage as progress on the request on screen. `receiving` once the widget
-   *  was left; `complete` ends the rail's leg; `failed` fails the top-up with the provider's
-   *  reason. Idempotent per stage. */
-  function recordMeldStage(): void {
-    const ref = foregroundRef ?? undefined;
-    const record = (signal: FundingProgressSignal) => {
-      if (ref !== undefined) void requests.advanceProgress(ref, signal, Date.now());
-    };
-    switch (meldStage.value) {
-      case "receiving":
-        record({
-          observation: { kind: "stage", stageKey: MELD_PAYMENT_STAGE },
-          routeStatus: "receiving",
-        });
-        return;
-      case "complete":
-        record({ observation: { kind: "route-complete" }, routeStatus: "complete" });
-        return;
-      case "failed": {
-        const reason = meldFailureMessage.value ?? "The payment could not be completed.";
-        record({ observation: { kind: "failed" } });
-        if (ref !== undefined) recordFailureReason(ref, reason);
-        return;
-      }
-      default:
-        return;
-    }
   }
 
   /** The provider's hosted pay page for the request on screen, or null. */
@@ -1559,88 +1441,11 @@ export const useSessionStore = defineStore("session", () => {
     return fromRail ?? meldResumeWidgetUrl.value;
   });
 
-  /** Polls the Meld payment's status into `meldStage` until a terminal stage. Idempotent; a no-op
-   *  until a session ref exists. */
+  /** Starts the store's poll of the Meld payment's status for the request on screen. Idempotent;
+   *  a no-op until the request has a ref, a client and a funding-request id. */
   function pollMeldStatus(): void {
-    if (meldPollStop || meldStage.value === "complete") return;
-    const client = meldStatusClient;
-    const ref = meldFundingRequestId;
-    if (!client || !ref) return;
-    meldStage.value = meldStage.value ?? "waiting";
-    let stopped = false;
-    let pollFailures = 0;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    meldPollStop = () => {
-      stopped = true;
-      if (timer) clearTimeout(timer);
-    };
-    const tick = async () => {
-      if (stopped) return;
-      try {
-        const { status: st, depositFailure, delayed } = await getMeldStatus(client, ref);
-        meldDelayed.value = delayed === true;
-        // Hold the iframe until the buyer finishes it or a terminal status lands.
-        // `transaction_seen`
-        // can precede a 3DS/OTP challenge; `receiving` shows only once the widget was left.
-        meldStage.value =
-          st === "complete"
-            ? "complete"
-            : st === "failed"
-              ? "failed"
-              : meldSubmitted.value
-                ? "receiving"
-                : "waiting";
-        if (meldStage.value === "receiving" || meldStage.value === "complete")
-          meldHandedOff.value = true;
-        if (meldStage.value === "complete") creditMeldSettlement();
-        // Carry the adapter's own reason.
-        if (meldStage.value === "failed")
-          meldFailureMessage.value =
-            depositFailure?.reason?.message ?? "The payment could not be completed.";
-        recordMeldStage();
-        pollFailures = 0;
-      } catch (e) {
-        // The delay marker is a live claim about the provider's retry; a poll that cannot confirm
-        // it must not keep asserting it through an outage.
-        meldDelayed.value = false;
-        const httpStatus = (e as { status?: number } | null)?.status;
-        // A 404 never self-heals: stop. A 401 is an auth problem on this side and retries below
-        // with the other transients.
-        if (httpStatus === 404) {
-          console.error(`[meld] status poll got a terminal 404 for ${ref}, stopping:`, e);
-          // This message, not the adapter's generic retry line.
-          meldFailureMessage.value =
-            "We can no longer find this payment. Do not pay again. Contact support with your reference.";
-          meldStage.value = "failed";
-          recordMeldStage();
-          stopMeldPoll();
-          return;
-        }
-        if (httpStatus === 401) {
-          console.error(
-            `[meld] status poll unauthorized for ${ref}; check VITE_MELD_PRODUCT_ID / adapter auth. Retrying; the payment is NOT being declared failed:`,
-            e,
-          );
-        }
-        pollFailures += 1;
-        // Repeated failures are logged; the poll keeps retrying.
-        if (pollFailures >= 5) {
-          console.error(
-            `[meld] status poll has failed ${String(pollFailures)} times for ${ref}:`,
-            e,
-          );
-        } else {
-          console.warn("[meld] status poll failed (will retry):", e);
-        }
-      }
-      if (stopped) return;
-      if (meldStage.value === "complete" || meldStage.value === "failed") {
-        stopMeldPoll();
-        return;
-      }
-      timer = setTimeout(() => void tick(), 3_000);
-    };
-    void tick();
+    if (foregroundRef === null || !meldStatusClient || !meldFundingRequestId) return;
+    requests.startMeldPoll(foregroundRef, meldStatusClient, meldFundingRequestId);
   }
   function approveClaim() {
     mock.value?.handoff.confirmConsent();

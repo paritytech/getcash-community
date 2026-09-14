@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { projectChainflipTopUps } from "../app/funding/chainflip-top-ups";
 import { projectMeldTopUps } from "../app/funding/meld-top-ups";
-import { fundingProgressSignalForSharedStep } from "../app/funding/progress";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
   COALESCE_MS,
@@ -440,9 +439,9 @@ describe("requests store", () => {
     });
     expect(requests.entries[AWAITING_KEY]?.pendingWrite).toBe(false);
 
-    // Two progress writes inside the window: memory moves at once, the host once, later.
-    await requests.advanceProgress(AWAITING_REF, fundingProgressSignalForSharedStep("xcm"), at(2));
-    await requests.advanceProgress(AWAITING_REF, fundingProgressSignalForSharedStep("done"), at(3));
+    // Two non-critical writes inside the window: memory moves at once, the host once, later.
+    await requests.flag(AWAITING_REF, "first note");
+    await requests.flag(AWAITING_REF, "second note");
     expect(requests.get(AWAITING_REF)?.rev).toBe(3);
     expect(requests.entries[AWAITING_KEY]?.pendingWrite).toBe(true);
     expect(host.writesTo(key)).toBe(before + 1);
@@ -453,7 +452,7 @@ describe("requests store", () => {
     expect(requests.entries[AWAITING_KEY]?.pendingWrite).toBe(false);
 
     // `flush` lands a pending write without waiting for the window.
-    await requests.advanceProgress(AWAITING_REF, { observation: { kind: "settled" } }, at(4));
+    await requests.flag(AWAITING_REF, "third note");
     expect(host.writesTo(key)).toBe(before + 2);
     await requests.flush();
     expect(host.writesTo(key)).toBe(before + 3);

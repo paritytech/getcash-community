@@ -584,7 +584,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldDelayed": false,
     "meldFailureMessage": null,
     "meldHandedOff": false,
-    "meldStage": null,
+    "meldStage": "waiting",
     "meldSubmitted": false,
     "milestones": {
       "1": 1746554100000,
@@ -653,8 +653,8 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "journeyDone": 3,
     "meldDelayed": false,
     "meldFailureMessage": null,
-    "meldHandedOff": false,
-    "meldStage": null,
+    "meldHandedOff": true,
+    "meldStage": "complete",
     "meldSubmitted": false,
     "milestones": {
       "1": 1746554100000,
@@ -723,7 +723,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldDelayed": true,
     "meldFailureMessage": null,
     "meldHandedOff": false,
-    "meldStage": null,
+    "meldStage": "waiting",
     "meldSubmitted": false,
     "milestones": {
       "1": 1746554100000,
@@ -791,7 +791,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldDelayed": true,
     "meldFailureMessage": null,
     "meldHandedOff": false,
-    "meldStage": null,
+    "meldStage": "waiting",
     "meldSubmitted": false,
     "milestones": {
       "1": 1746554100000,
@@ -860,7 +860,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldDelayed": false,
     "meldFailureMessage": null,
     "meldHandedOff": false,
-    "meldStage": null,
+    "meldStage": "waiting",
     "meldSubmitted": false,
     "milestones": {
       "1": 1746554100000,
@@ -929,7 +929,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldDelayed": false,
     "meldFailureMessage": null,
     "meldHandedOff": false,
-    "meldStage": null,
+    "meldStage": "waiting",
     "meldSubmitted": false,
     "milestones": {
       "1": 1746554100000,
@@ -998,7 +998,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldDelayed": false,
     "meldFailureMessage": null,
     "meldHandedOff": false,
-    "meldStage": null,
+    "meldStage": "waiting",
     "meldSubmitted": false,
     "milestones": {
       "1": 1746554100000,
@@ -1013,8 +1013,8 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "foregroundSnapshot": {
       "confirmedStageKey": "cash-top-up",
       "detectedAt": 1746554272000,
-      "estimatedCompletionAt": 1746555112000,
-      "latestRouteStatus": "receiving",
+      "estimatedCompletionAt": 1746554813000,
+      "latestRouteStatus": "complete",
       "preDetectionEstimateText": "≈ minutes after you pay",
       "profile": {
         "cadenceMs": 5000,
@@ -1053,8 +1053,9 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
         "version": 1,
         "waitingLabel": "Waiting for your payment",
       },
+      "routeCompletedAt": 1746554273000,
       "schemaVersion": 1,
-      "settledAt": 1746554273000,
+      "settledAt": 1746554274000,
       "stageTimestamps": {
         "meld-payment": 1746554272000,
       },
@@ -1066,13 +1067,13 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "journeyDone": 5,
     "meldDelayed": false,
     "meldFailureMessage": null,
-    "meldHandedOff": false,
-    "meldStage": null,
+    "meldHandedOff": true,
+    "meldStage": "complete",
     "meldSubmitted": false,
     "milestones": {
       "1": 1746554100000,
       "2": 1746554272000,
-      "5": 1746554273000,
+      "5": 1746554274000,
     },
     "phase": "done",
     "scene": "18/31 card / journey: success",

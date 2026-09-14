@@ -204,6 +204,17 @@ async function core(session: Session, request: PreviewRequest, step: number, sta
   session.lastState = state;
 }
 
+/** The Meld poll's report that the provider's crypto delivery is stuck and retrying. */
+function meldDelayed(request: PreviewRequest, step: number): Observation {
+  return {
+    source: "provider",
+    provider: "meld",
+    at: request.at(step),
+    result: { status: "receiving" },
+    delayed: true,
+  };
+}
+
 /** The worker's job at a step of the pipeline, its deposit in hand. */
 function worker(request: PreviewRequest, step: number, phase: string, done = false): Observation {
   const at = request.at(step);
@@ -223,7 +234,6 @@ function base(session: Session, flow: Flow) {
   session.quoted = { ...QUOTED };
   session.fundingNotice = null;
   session.resuming = false;
-  session.meldDelayed = false;
   session.fundingErrorOverride = null;
   session.lastState = null;
   useRequestsStore().leave();
@@ -432,8 +442,8 @@ export const SCENES: Scene[] = [
     // current step, delay notice in the ribbon, nothing terminal.
     name: "card / journey: delayed",
     apply: async (s, f, i) => {
-      await cardPayment(s, f, i);
-      s.meldDelayed = true;
+      const r = await cardPayment(s, f, i);
+      await r.observe(meldDelayed(r, 1));
     },
   },
   {
@@ -442,8 +452,8 @@ export const SCENES: Scene[] = [
     // FUTURE: our retry flow does not exist yet, so the app cannot reach this state.
     name: "card / journey: retrying (future)",
     apply: async (s, f, i) => {
-      await cardPayment(s, f, i);
-      s.meldDelayed = true;
+      const r = await cardPayment(s, f, i);
+      await r.observe(meldDelayed(r, 1));
       s.fundingNotice = "Hang tight, we're retrying your payment";
     },
   },
@@ -482,7 +492,9 @@ export const SCENES: Scene[] = [
     name: "card / journey: success",
     apply: async (s, f, i) => {
       const r = await cardPayment(s, f, i);
-      await core(s, r, 1, {
+      // The provider delivered the payment before the leg settled.
+      await core(s, r, 1, swapping("complete", "meld-card"));
+      await core(s, r, 2, {
         phase: "done",
         sourceId: "meld-card",
         result: { id: "preview", sourceId: "meld-card" },

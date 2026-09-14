@@ -135,7 +135,7 @@ export function useMeldTopUpAdapter(): FundingTopUpAdapter {
     topUps: computed(() =>
       projectMeldTopUps(session.requestList, session.requestStatus, now.value),
     ),
-    refresh: () => session.resumeOpenRequests(),
+    refresh: () => session.resumeOpenRequests("boot"),
     open: (topUp) => {
       const ref = meldRequestRef(topUp.id);
       return ref === null ? Promise.resolve(false) : session.openRequest(ref);

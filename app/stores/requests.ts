@@ -4,12 +4,11 @@
 
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef, watch } from "vue";
-import type { SourceId } from "@getsome/core";
+import type { FlowState, SourceId } from "@getsome/core";
+import { createMeldClient, getMeldStatus, type MeldClientLike } from "@getsome/meld";
 import {
-  advanceFundingProgressSnapshot,
   createFundingProgressSnapshot,
   progressProviderForSource,
-  type FundingProgressSignal,
   type FundingProgressSnapshot,
 } from "../funding/progress";
 import { migrateRecord } from "../funding/requests/migrate";
@@ -18,7 +17,11 @@ import {
   COALESCE_MS,
   DEFAULT_DEPOSIT_WINDOW_MS,
   JOB_POLL_MS,
+  MELD_POLL_MS,
   MIRROR_SETTLED_LIMIT,
+  PROBED_RECHECK_MS,
+  TOMBSTONE_GRACE_MS,
+  WORKER_STALE_MS,
   effectiveSourceId,
   railProviderOf,
   rankOf,
@@ -33,6 +36,7 @@ import {
 import { reduce } from "../funding/requests/reducer";
 import {
   getRecordStorage,
+  PROBED_KEY,
   readMirrorSync,
   REQUEST_INDEX_KEY,
   requestKey,
@@ -74,6 +78,65 @@ export type RequestListRow = ActiveFlowRecord & { progress: FundingProgressSnaps
 
 /** How many records a reconcile reads at once. */
 const READ_PARALLELISM = 4;
+/** How many burners a reconcile reads at once. */
+const CHAIN_READ_PARALLELISM = 4;
+/** How many provider statuses a reconcile reads at once. */
+const MELD_READ_PARALLELISM = 2;
+/** Bound on one chain read in a reconcile: today's `step` bound on the tombstone probe. */
+const PROBE_BOUND_MS = 15_000;
+
+/** Today's message for a payment the adapter no longer knows; a 404 never self-heals. */
+const MELD_GONE_MESSAGE =
+  "We can no longer find this payment. Do not pay again. Contact support with your reference.";
+
+// The client the background Meld reads go through: the adapter named by `VITE_MELD_BASE_URL`,
+// built once; null when this build has no adapter, and the reads are skipped.
+let defaultMeldStatusClient: MeldClientLike | null | undefined;
+function defaultMeldStatusClientFactory(): MeldClientLike | null {
+  if (defaultMeldStatusClient === undefined) {
+    const baseUrl = import.meta.env.VITE_MELD_BASE_URL as string | undefined;
+    defaultMeldStatusClient = baseUrl
+      ? createMeldClient({
+          baseUrl,
+          productId: (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
+        })
+      : null;
+  }
+  return defaultMeldStatusClient;
+}
+let meldStatusClientFactory: () => MeldClientLike | null = defaultMeldStatusClientFactory;
+
+/** Makes the background Meld reads go through the client `factory` returns; tests inject a fake. */
+export function setMeldStatusClientFactory(factory: () => MeldClientLike | null): void {
+  meldStatusClientFactory = factory;
+}
+
+/** What `getsome:probed` holds per source and trade number: when its empty burner was first and
+ *  last read, and whether the read found funds nothing else knew of. */
+interface ProbedNumber {
+  firstAt: number;
+  lastAt: number;
+  funded?: true;
+}
+type ProbedBySource = Record<string, Record<string, ProbedNumber>>;
+
+/** The stored shape is `{ schema: 1, [sourceId]: { [tradeN]: ProbedNumber } }`; anything else
+ *  reads as nothing probed. */
+function parseProbed(raw: string | null): ProbedBySource {
+  if (raw === null) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  if (typeof parsed !== "object" || parsed === null) return {};
+  const { schema, ...sources } = parsed as { schema?: unknown } & ProbedBySource;
+  return schema === 1 ? sources : {};
+}
+
+const serializeProbed = (sources: ProbedBySource): string =>
+  JSON.stringify({ schema: 1, ...sources });
 
 /** The status kinds whose arrival is written to the host before `observe` resolves. */
 const CRITICAL_KINDS = new Set<RequestRecord["status"]["kind"]>([
@@ -406,6 +469,61 @@ function recordFromJob(sessionId: string, job: WorkerJob): RequestRecord | null 
   };
 }
 
+/** A flow slot that can size a record: core wrote the settle amount into it at the start. */
+const hasHandoffAmount = (slot: FlowState | null): slot is FlowState & { handoffAmount: string } =>
+  slot !== null && slot.handoffAmount !== undefined;
+
+/** A record for a funded burner the surface lost every trace of, from the core flow slot that
+ *  started it: the only thing left that knows the amount. Generic labels, like a job's record. */
+function recordFromFlowSlot(
+  ref: RequestRef,
+  address: string,
+  slot: FlowState & { handoffAmount: string },
+  handoff: WorkerHandoffPayload,
+  now: number,
+): RequestRecord {
+  const sourceId = effectiveSourceId(ref);
+  const startedAt = slot.createdAt;
+  const depositAddress = slot.depositAddress ?? address;
+  const railExpiry = slot.depositExpiresAt ? slot.depositExpiresAt : null;
+  return {
+    schema: 2,
+    kind: "top-up",
+    ref,
+    rev: 0,
+    updatedAt: now,
+    amountHuman: fmtCash(BigInt(slot.handoffAmount)),
+    ...displaySourceOf(sourceId),
+    startedAt,
+    depositAddress,
+    progress: initialProgressForSource(sourceId, startedAt),
+    tradeN: ref.tradeN,
+    sourceId,
+    ...(railExpiry === null ? {} : { depositExpiresAt: railExpiry }),
+    route: routeOf(sourceId),
+    deposit: {
+      address: depositAddress,
+      amount: slot.depositAmount ?? "0",
+      formatted: slot.depositFormatted ?? "",
+      assetSymbol: slot.depositAssetSymbol ?? "",
+      expiresAt: railExpiry ?? 0,
+    },
+    deadline:
+      railExpiry === null
+        ? { depositExpiresAt: startedAt + DEFAULT_DEPOSIT_WINDOW_MS, source: "route" }
+        : { depositExpiresAt: railExpiry, source: "rail" },
+    handoff,
+    status: { kind: "awaiting-deposit" },
+    rail: {
+      provider: railProviderOf(sourceId),
+      status: "waiting",
+      stage: "waiting",
+      updatedAt: startedAt,
+    },
+    witnesses: {},
+  };
+}
+
 export const useRequestsStore = defineStore("requests", () => {
   const entries = shallowRef<Readonly<Record<RequestKey, RequestEntry>>>({});
   /** A mirror with today's schema was read into memory. */
@@ -591,33 +709,6 @@ export const useRequestsStore = defineStore("requests", () => {
     });
   }
 
-  // Interim path for the provider progress signals until milestone 6 routes the provider signals
-  // as observations.
-  function advanceProgress(
-    ref: RequestRef,
-    signal: FundingProgressSignal,
-    at: number,
-    markFunded = false,
-  ): Promise<void> {
-    const key = requestRefKey(ref);
-    if (entries.value[key] === undefined) return Promise.resolve();
-    return enqueue(key, async () => {
-      const entry = entries.value[key];
-      if (entry === undefined) return;
-      const { record } = entry;
-      const progress = advanceFundingProgressSnapshot(record.progress, { ...signal, at });
-      const funded = markFunded && record.funded === undefined ? at : record.funded;
-      if (progress === record.progress && funded === record.funded) return;
-      const next = {
-        ...record,
-        rev: record.rev + 1,
-        progress,
-        ...(funded === undefined ? {} : { funded }),
-      };
-      await commit(key, next, false);
-    });
-  }
-
   /** Notes on the record something no observation carries: the core slot it expects is gone. */
   function flag(ref: RequestRef, note: string): Promise<void> {
     const key = requestRefKey(ref);
@@ -675,8 +766,9 @@ export const useRequestsStore = defineStore("requests", () => {
 
   /** Reconcile step 2, and the poll's tick: one read of the worker's blob; every record the
    *  worker can still move observes its job (`known: false` without one), and a job with no
-   *  record gets one, created from the job and then observed with it. */
-  async function observeWorkerJobs(now: number): Promise<void> {
+   *  record gets one, created from the job and then observed with it. Returns the jobs read, so
+   *  the chain step works from the same blob. */
+  async function observeWorkerJobs(now: number): Promise<Record<string, WorkerJob>> {
     const jobs = await readWorkerJobs();
     const known = new Set<string>();
     const observed: Promise<void>[] = [];
@@ -702,6 +794,7 @@ export const useRequestsStore = defineStore("requests", () => {
       );
     }
     await Promise.all(observed);
+    return jobs;
   }
 
   /** The key of the request on screen. Its own world hands it to the worker; the hand-off step
@@ -741,23 +834,25 @@ export const useRequestsStore = defineStore("requests", () => {
     { immediate: true },
   );
 
-  /** The request on screen is gone: the clock stops and no key is foreground. */
+  /** The request on screen is gone: the clock and the provider poll stop, and no key is
+   *  foreground. */
   function leave(): void {
     stopForegroundClock();
+    stopMeldPoll();
     setForeground(null);
   }
 
-  /** `work` settled within the cancel's bound, or why not. */
+  /** `work` settled within `ms`, or why not: its failure, or the bound. */
   type Bounded<T> = { ok: true; value: T } | { ok: false; reason: string };
-  function withinCancelBound<T>(label: string, work: Promise<T>): Promise<Bounded<T>> {
+  function bounded<T>(label: string, ms: number, work: () => Promise<T>): Promise<Bounded<T>> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const expiry = new Promise<Bounded<T>>((resolve) => {
       timer = setTimeout(
         () => resolve({ ok: false, reason: `${label} did not answer in time` }),
-        CANCEL_CONFIRM_MS,
+        ms,
       );
     });
-    const outcome = work.then(
+    const outcome = new Promise<T>((resolve) => resolve(work())).then(
       (value): Bounded<T> => ({ ok: true, value }),
       (e: unknown): Bounded<T> => ({ ok: false, reason: `${label} failed: ${messageOf(e)}` }),
     );
@@ -778,8 +873,8 @@ export const useRequestsStore = defineStore("requests", () => {
   ): Promise<"ok" | "refused" | "unconfirmed"> {
     const at = requestsNow();
     const [burner, jobs] = await Promise.all([
-      withinCancelBound("the burner read", opts.readBurner()),
-      withinCancelBound("the worker job read", readWorkerJobs()),
+      bounded("the burner read", CANCEL_CONFIRM_MS, opts.readBurner),
+      bounded("the worker job read", CANCEL_CONFIRM_MS, readWorkerJobs),
     ]);
     if (burner.ok && burner.value > 0n) {
       await observe(ref, {
@@ -834,6 +929,311 @@ export const useRequestsStore = defineStore("requests", () => {
   /** The buyer finished the provider's widget; the stamp is on the host before this resolves. */
   function markMeldSubmitted(ref: RequestRef): Promise<void> {
     return observe(ref, { source: "user", at: requestsNow(), event: "meld-submitted" });
+  }
+
+  /** One read of the provider's status for `ref`, applied as the provider's observation: the
+   *  result, `gone` on a 404 (terminal, with today's message), `unreachable` on any other error,
+   *  logged against the `failures` the caller has counted so far. */
+  async function observeMeldStatus(
+    ref: RequestRef,
+    client: MeldClientLike,
+    fundingRequestId: string,
+    failures = 0,
+  ): Promise<"ok" | "gone" | "unreachable"> {
+    const at = requestsNow();
+    try {
+      const result = await getMeldStatus(client, fundingRequestId);
+      await observe(ref, {
+        source: "provider",
+        provider: "meld",
+        at,
+        result,
+        delayed: result.delayed === true,
+      });
+      return "ok";
+    } catch (e) {
+      const httpStatus = (e as { status?: number } | null)?.status;
+      if (httpStatus === 404) {
+        console.error(
+          `[meld] status poll got a terminal 404 for ${fundingRequestId}, stopping:`,
+          e,
+        );
+        await observe(ref, {
+          source: "provider",
+          provider: "meld",
+          at,
+          gone: true,
+          message: MELD_GONE_MESSAGE,
+        });
+        return "gone";
+      }
+      // A 401 is an auth problem on this side and retries with the other transients.
+      if (httpStatus === 401) {
+        console.error(
+          `[meld] status poll unauthorized for ${fundingRequestId}; check VITE_MELD_PRODUCT_ID / adapter auth. Retrying; the payment is NOT being declared failed:`,
+          e,
+        );
+      }
+      const failed = failures + 1;
+      if (failed >= 5) {
+        console.error(
+          `[meld] status poll has failed ${String(failed)} times for ${fundingRequestId}:`,
+          e,
+        );
+      } else {
+        console.warn("[meld] status poll failed (will retry):", e);
+      }
+      await observe(ref, { source: "provider", provider: "meld", at, unreachable: true });
+      return "unreachable";
+    }
+  }
+
+  let meldPoll: { key: RequestKey; stop(): void } | null = null;
+
+  /** Polls the provider's status for the Meld request on screen every `MELD_POLL_MS`, one poll
+   *  at a time, until its rail is delivered or failed, the payment is gone, or the record is
+   *  removed. Starting it again for the same request is a no-op; for another request it replaces
+   *  the running poll. */
+  function startMeldPoll(ref: RequestRef, client: MeldClientLike, fundingRequestId: string): void {
+    const key = requestRefKey(ref);
+    if (meldPoll?.key === key) return;
+    stopMeldPoll();
+    let stopped = false;
+    let failures = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    meldPoll = {
+      key,
+      stop() {
+        stopped = true;
+        if (timer !== null) clearTimeout(timer);
+      },
+    };
+    // The record may still be on its way to the store when the first tick runs; only a record
+    // that was seen and has since gone ends the poll.
+    let seen = false;
+    const finished = (): boolean => {
+      const record = entries.value[key]?.record;
+      if (record === undefined) return seen;
+      seen = true;
+      return record.rail.stage === "delivered" || record.rail.stage === "failed";
+    };
+    const tick = async (): Promise<void> => {
+      if (stopped) return;
+      const outcome = await observeMeldStatus(ref, client, fundingRequestId, failures);
+      failures = outcome === "ok" ? 0 : failures + 1;
+      if (stopped) return;
+      if (outcome === "gone" || finished()) {
+        stopMeldPoll();
+        return;
+      }
+      timer = setTimeout(() => void tick(), MELD_POLL_MS);
+    };
+    void tick();
+  }
+  function stopMeldPoll(): void {
+    meldPoll?.stop();
+    meldPoll = null;
+  }
+
+  /** Reconcile's provider step, hosted only: one status read for every Meld request off screen
+   *  that the provider can still move, at rank 0–1. Skipped when this build has no adapter. */
+  async function readBackgroundMeldStatuses(): Promise<void> {
+    if (!isHosted()) return;
+    const client = meldStatusClientFactory();
+    if (client === null) return;
+    const pending = records.value.flatMap((record) => {
+      const { meldFundingRequestId: fundingRequestId, ref } = record;
+      return fundingRequestId === undefined ||
+        record.rail.provider !== "meld" ||
+        rankOf(record) > 1 ||
+        requestRefKey(ref) === foreground.value
+        ? []
+        : [{ ref, fundingRequestId }];
+    });
+    await inParallel(pending, MELD_READ_PARALLELISM, async ({ ref, fundingRequestId }) => {
+      await observeMeldStatus(ref, client, fundingRequestId);
+    });
+  }
+
+  /** A burner's balance as the chain's own sighting of the request. */
+  const chainReading = (free: bigint, at: number): Observation => ({
+    source: "chain",
+    at,
+    burnerNative: free.toString(),
+    finality: "best",
+    via: "probe",
+  });
+
+  /** Reconcile step 4, hosted only: the chain is asked about every burner nothing else is
+   *  watching, each read bounded, a failed read changing nothing. (a) A cancelled or expired
+   *  request: funds resurrect it; a cancelled one confirmed empty past its window and grace is
+   *  removed (today's reap rule). (b) A waiting request whose worker is unknown, stale or not
+   *  running. (c) The gap sweep: every trade number under the source's counter with neither a
+   *  record nor a job is read once and noted under `getsome:probed`, re-read at most once a day
+   *  while its deposit window is open; funds with a core flow slot become a record that the
+   *  hand-off step sends on this pass. (a) and (c) run on boot and return only, (b) every time. */
+  async function readChain(
+    reason: string,
+    now: number,
+    jobs: Record<string, WorkerJob>,
+  ): Promise<void> {
+    if (!isHosted()) return;
+    const [
+      { probeTradeBurner, readHostedTradeCounter, readFlowSlot, lostRequestHandoff },
+      { getStorageWorkerManager },
+    ] = await Promise.all([import("~~/lib/coinage-live"), import("~~/lib/worker-rpc")]);
+    const onReturn = reason === "boot" || reason === "visible";
+    const workerAlive = getStorageWorkerManager().isAvailable();
+
+    /** The worker's job for `ref` as this pass read it: the fact the hand-off step acts on for a
+     *  record the worker step did not follow. */
+    function observeJob(ref: RequestRef): Promise<void> {
+      const job = jobs[workerSessionId(effectiveSourceId(ref), ref.tradeN)];
+      return observe(ref, { source: "worker", at: now, job: job ? jobView(job) : null });
+    }
+
+    /** One bounded burner read, applied as the chain's observation; null when it failed. */
+    async function probe(ref: RequestRef): Promise<{ address: string; free: bigint } | null> {
+      const sourceId = effectiveSourceId(ref);
+      const read = await bounded(`burner read for ${sourceId}#${ref.tradeN}`, PROBE_BOUND_MS, () =>
+        probeTradeBurner(sourceId, ref.tradeN),
+      );
+      if (!read.ok) {
+        console.warn(`[requests] ${read.reason} (kept)`);
+        return null;
+      }
+      await observe(ref, chainReading(read.value.free, now));
+      return read.value;
+    }
+
+    if (onReturn) {
+      const tombstoned = records.value.filter(
+        (record) => record.status.kind === "cancelled" || record.status.kind === "expired",
+      );
+      await inParallel(tombstoned, CHAIN_READ_PARALLELISM, async (record) => {
+        const { ref } = record;
+        const read = await probe(ref);
+        if (read === null) return;
+        if (read.free > 0n) {
+          console.warn(
+            `[requests] request #${ref.tradeN} resurrected: ${read.free} planck on ${read.address}`,
+          );
+          if (record.status.kind === "cancelled") await observeJob(ref);
+          return;
+        }
+        if (record.status.kind !== "cancelled") return;
+        const windowEnd =
+          (record.deadline.depositExpiresAt ??
+            (record.cancelledAt ?? 0) + DEFAULT_DEPOSIT_WINDOW_MS) + TOMBSTONE_GRACE_MS;
+        if (windowEnd >= now) return;
+        try {
+          await remove(ref);
+          console.warn(
+            `[requests] request #${ref.tradeN} reaped: window closed, burner confirmed empty`,
+          );
+        } catch (e) {
+          console.warn(`[requests] request #${ref.tradeN} reap failed (kept): ${messageOf(e)}`);
+        }
+      });
+    }
+
+    const unwatched = records.value.filter((record) => {
+      if (record.status.kind !== "awaiting-deposit") return false;
+      const { worker } = record.witnesses;
+      return (
+        !workerAlive ||
+        worker === undefined ||
+        !worker.known ||
+        worker.lastTickAt === null ||
+        now - worker.lastTickAt > WORKER_STALE_MS
+      );
+    });
+    await inParallel(unwatched, CHAIN_READ_PARALLELISM, async (record) => {
+      await probe(record.ref);
+    });
+
+    if (!onReturn) return;
+    const store = await getRecordStorage();
+    const probed = parseProbed(await store.read(PROBED_KEY));
+    let probedChanged = false;
+    function noteProbed(sourceId: string, n: number, entry: ProbedNumber): void {
+      probed[sourceId] = { ...probed[sourceId], [String(n)]: entry };
+      probedChanged = true;
+    }
+    const highestBySource = new Map<string, number>();
+    for (const { ref } of records.value) {
+      const sourceId = effectiveSourceId(ref);
+      highestBySource.set(sourceId, Math.max(highestBySource.get(sourceId) ?? 0, ref.tradeN));
+    }
+    const gaps: { sourceId: string; n: number }[] = [];
+    for (const [sourceId, highest] of highestBySource) {
+      const counter = await bounded(`trade counter read for ${sourceId}`, PROBE_BOUND_MS, () =>
+        readHostedTradeCounter(sourceId),
+      );
+      if (!counter.ok) {
+        console.warn(`[requests] ${counter.reason}; gap sweep skipped`);
+        continue;
+      }
+      for (let n = highest + 1; n < counter.value; n++) {
+        if (jobs[workerSessionId(sourceId, n)]) continue;
+        const seen = probed[sourceId]?.[String(n)];
+        if (
+          seen !== undefined &&
+          (now - seen.lastAt < PROBED_RECHECK_MS || now - seen.firstAt >= DEFAULT_DEPOSIT_WINDOW_MS)
+        ) {
+          continue;
+        }
+        gaps.push({ sourceId, n });
+      }
+    }
+    await inParallel(gaps, CHAIN_READ_PARALLELISM, async ({ sourceId, n }) => {
+      const read = await bounded(`burner read for ${sourceId}#${n}`, PROBE_BOUND_MS, () =>
+        probeTradeBurner(sourceId, n),
+      );
+      if (!read.ok) {
+        console.warn(`[requests] ${read.reason}`);
+        return;
+      }
+      const firstAt = probed[sourceId]?.[String(n)]?.firstAt ?? now;
+      if (read.value.free === 0n) {
+        noteProbed(sourceId, n, { firstAt, lastAt: now });
+        return;
+      }
+      const flow = await bounded(`flow slot read for ${sourceId}#${n}`, PROBE_BOUND_MS, () =>
+        readFlowSlot(sourceId as SourceId, n),
+      );
+      if (!flow.ok) {
+        console.warn(`[requests] ${flow.reason}`);
+        return;
+      }
+      const { address, slot } = flow.value;
+      if (!hasHandoffAmount(slot)) {
+        // Funds with no record, no job and no slot: only storage loss gets here, and a truthful
+        // row needs an amount the app does not have.
+        console.warn(
+          `[requests] ${read.value.free} planck on ${address} (${sourceId}#${n}) with no record, job or flow slot; nothing created`,
+        );
+        noteProbed(sourceId, n, { firstAt, lastAt: now, funded: true });
+        return;
+      }
+      const ref = requestRefOf(sourceId, n);
+      const handoff = lostRequestHandoff(sourceId, n, address, slot);
+      try {
+        await create(ref, recordFromFlowSlot(ref, address, slot, handoff, now));
+      } catch (e) {
+        console.warn(`[requests] record for lost request ${sourceId}#${n} failed: ${messageOf(e)}`);
+        return;
+      }
+      await observeJob(ref);
+      await observe(ref, chainReading(read.value.free, now));
+    });
+    if (probedChanged) {
+      try {
+        await store.write(PROBED_KEY, serializeProbed(probed));
+      } catch (e) {
+        console.warn(`[requests] probed numbers write failed: ${messageOf(e)}`);
+      }
+    }
   }
 
   /** Reconcile step 6: the worker is handed every open request it lost, off screen only. A job it
@@ -931,6 +1331,7 @@ export const useRequestsStore = defineStore("requests", () => {
     }
     if (!pageVisible()) return Promise.resolve();
     jobPollTick = observeWorkerJobs(requestsNow())
+      .then(() => undefined)
       .catch((e: unknown) => {
         console.warn(`[requests] job poll failed: ${messageOf(e)}`);
       })
@@ -949,7 +1350,8 @@ export const useRequestsStore = defineStore("requests", () => {
   let reconciling: Promise<void> | null = null;
   let reconcileAgain = false;
   /** Brings memory up to date with the host store, then with the worker's jobs, then lets the
-   *  clock expire what it must. Single-flight: a caller arriving mid-run makes it run once more. */
+   *  clock expire what it must. Single-flight: a caller arriving mid-run makes it run once more,
+   *  as a refresh, to catch what landed mid-pass without repeating the boot-only reads. */
   function reconcile(reason: string): Promise<void> {
     if (reconciling) {
       reconcileAgain = true;
@@ -957,10 +1359,11 @@ export const useRequestsStore = defineStore("requests", () => {
     }
     reconciling = (async () => {
       try {
-        do {
+        await reconcileOnce(reason);
+        while (reconcileAgain) {
           reconcileAgain = false;
-          await reconcileOnce(reason);
-        } while (reconcileAgain);
+          await reconcileOnce("refresh");
+        }
       } finally {
         reconciling = null;
         hostReadDone.value = true;
@@ -1067,10 +1470,31 @@ export const useRequestsStore = defineStore("requests", () => {
       }
     }
 
+    let jobs: Record<string, WorkerJob> = {};
     try {
-      await observeWorkerJobs(now);
+      jobs = await observeWorkerJobs(now);
     } catch (e) {
       console.warn(`[requests] reconcile (${reason}): worker jobs step failed: ${messageOf(e)}`);
+    }
+
+    // The clock before the reads and the drivers: a record it expires here gets its chain read in
+    // this pass and is not handed off.
+    await Promise.all(
+      records.value
+        .filter((record) => rankOf(record) === 0)
+        .map((record) => observe(record.ref, { source: "clock", at: now })),
+    );
+
+    try {
+      await readChain(reason, now, jobs);
+    } catch (e) {
+      console.warn(`[requests] reconcile (${reason}): chain step failed: ${messageOf(e)}`);
+    }
+
+    try {
+      await readBackgroundMeldStatuses();
+    } catch (e) {
+      console.warn(`[requests] reconcile (${reason}): provider step failed: ${messageOf(e)}`);
     }
 
     try {
@@ -1078,12 +1502,6 @@ export const useRequestsStore = defineStore("requests", () => {
     } catch (e) {
       console.warn(`[requests] reconcile (${reason}): hand-off step failed: ${messageOf(e)}`);
     }
-
-    await Promise.all(
-      records.value
-        .filter((record) => rankOf(record) === 0)
-        .map((record) => observe(record.ref, { source: "clock", at: now })),
-    );
     syncJobPoll();
   }
 
@@ -1101,7 +1519,6 @@ export const useRequestsStore = defineStore("requests", () => {
     has,
     create,
     observe,
-    advanceProgress,
     flag,
     setHandoff,
     remove,
@@ -1113,6 +1530,8 @@ export const useRequestsStore = defineStore("requests", () => {
     cancel,
     retry,
     markMeldSubmitted,
+    startMeldPoll,
+    stopMeldPoll,
     startForegroundClock,
     stopForegroundClock,
     hydrateFromMirror,

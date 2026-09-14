@@ -422,7 +422,6 @@ describe("requests store: foreground, clock and user actions", () => {
       "faucetState",
       "resuming",
       "fundingNotice",
-      "meldDelayed",
       "fundingErrorOverride",
       "lastState",
     ]);
