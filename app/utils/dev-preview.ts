@@ -198,10 +198,9 @@ async function previewRequest(
   };
 }
 
-/** Core's state as the request's own observation; the deposit screen still reads the raw echo. */
-async function core(session: Session, request: PreviewRequest, step: number, state: PaymentState) {
+/** Core's state as the request's own observation. */
+async function core(request: PreviewRequest, step: number, state: PaymentState) {
   await request.observe({ source: "core", at: request.at(step), state });
-  session.lastState = state;
 }
 
 /** The Meld poll's report that the provider's crypto delivery is stuck and retrying. */
@@ -233,7 +232,6 @@ function base(session: Session, flow: Flow) {
   session.method = "crypto";
   session.quoted = { ...QUOTED };
   session.resuming = false;
-  session.lastState = null;
   useRequestsStore().fundingNotice = null;
   useRequestsStore().setTransientError(null);
   useRequestsStore().leave();
@@ -265,7 +263,7 @@ function selection(session: Session, flow: Flow) {
 async function cardPayment(s: Session, f: Flow, index: number): Promise<PreviewRequest> {
   cardJourney(s, f);
   const r = await previewRequest(s, { sourceId: "meld-card", index });
-  await core(s, r, 0, swapping("receiving", "meld-card"));
+  await core(r, 0, swapping("receiving", "meld-card"));
   return r;
 }
 
@@ -287,7 +285,7 @@ async function claimConsent(s: Session, f: Flow, index: number): Promise<Preview
   base(s, f);
   const r = await previewRequest(s, { sourceId: "btc", index });
   await r.observe(worker(r, 0, "done", true));
-  await core(s, r, 1, working("awaiting-consent"));
+  await core(r, 1, working("awaiting-consent"));
   return r;
 }
 
@@ -367,7 +365,7 @@ export const SCENES: Scene[] = [
     apply: async (s, f, i) => {
       base(s, f);
       const r = await previewRequest(s, { sourceId: "btc", index: i });
-      await core(s, r, 0, awaitingDeposit());
+      await core(r, 0, awaitingDeposit());
     },
   },
   {
@@ -375,7 +373,7 @@ export const SCENES: Scene[] = [
     apply: async (s, f, i) => {
       base(s, f);
       const r = await previewRequest(s, { sourceId: "btc", index: i });
-      await core(s, r, 0, awaitingDeposit());
+      await core(r, 0, awaitingDeposit());
       s.faucetState = "sent";
     },
   },
@@ -384,7 +382,7 @@ export const SCENES: Scene[] = [
     apply: async (s, f, i) => {
       base(s, f);
       const r = await previewRequest(s, { sourceId: "btc", index: i });
-      await core(s, r, 0, awaitingDeposit());
+      await core(r, 0, awaitingDeposit());
       useRequestsStore().setTransientError({
         message: "faucet transfer failed on-chain (is the faucet funded on Asset Hub?)",
         at: Date.now(),
@@ -399,7 +397,7 @@ export const SCENES: Scene[] = [
       base(s, f);
       const expiresAt = Date.now() + 4 * 60_000 + 59_000;
       const r = await previewRequest(s, { sourceId: "btc", index: i, deposit: { expiresAt } });
-      await core(s, r, 0, awaitingDeposit(expiresAt));
+      await core(r, 0, awaitingDeposit(expiresAt));
     },
   },
   {
@@ -409,7 +407,7 @@ export const SCENES: Scene[] = [
       base(s, f);
       const expiresAt = Date.now() - 60_000;
       const r = await previewRequest(s, { sourceId: "btc", index: i, deposit: { expiresAt } });
-      await core(s, r, 0, awaitingDeposit(expiresAt));
+      await core(r, 0, awaitingDeposit(expiresAt));
       await r.observe({ source: "clock", at: Date.now() });
     },
   },
@@ -418,7 +416,7 @@ export const SCENES: Scene[] = [
     apply: async (s, f, i) => {
       base(s, f);
       const r = await previewRequest(s, { sourceId: "btc", index: i });
-      await core(s, r, 0, swapping("receiving"));
+      await core(r, 0, swapping("receiving"));
     },
   },
   {
@@ -433,7 +431,7 @@ export const SCENES: Scene[] = [
     apply: async (s, f, i) => {
       // The provider delivered the DOT and the worker started the swap.
       const r = await cardPayment(s, f, i);
-      await core(s, r, 1, swapping("complete", "meld-card"));
+      await core(r, 1, swapping("complete", "meld-card"));
       await r.observe(worker(r, 2, "swap"));
     },
   },
@@ -463,7 +461,7 @@ export const SCENES: Scene[] = [
     name: "card / journey: payment failed",
     apply: async (s, f, i) => {
       const r = await cardPayment(s, f, i);
-      await core(s, r, 1, CARD_PAYMENT_FAILED);
+      await core(r, 1, CARD_PAYMENT_FAILED);
     },
   },
   {
@@ -473,7 +471,7 @@ export const SCENES: Scene[] = [
     name: "card / journey: declined",
     apply: async (s, f, i) => {
       const r = await cardPayment(s, f, i);
-      await core(s, r, 1, CARD_DECLINED);
+      await core(r, 1, CARD_DECLINED);
     },
   },
   {
@@ -484,7 +482,7 @@ export const SCENES: Scene[] = [
     name: "card / journey: refunded",
     apply: async (s, f, i) => {
       const r = await cardPayment(s, f, i);
-      await core(s, r, 1, CARD_REFUNDED);
+      await core(r, 1, CARD_REFUNDED);
     },
   },
   {
@@ -493,8 +491,8 @@ export const SCENES: Scene[] = [
     apply: async (s, f, i) => {
       const r = await cardPayment(s, f, i);
       // The provider delivered the payment before the leg settled.
-      await core(s, r, 1, swapping("complete", "meld-card"));
-      await core(s, r, 2, {
+      await core(r, 1, swapping("complete", "meld-card"));
+      await core(r, 2, {
         phase: "done",
         sourceId: "meld-card",
         result: { id: "preview", sourceId: "meld-card" },
@@ -506,7 +504,7 @@ export const SCENES: Scene[] = [
     apply: async (s, f, i) => {
       base(s, f);
       const r = await previewRequest(s, { sourceId: "btc", index: i });
-      await core(s, r, 0, swapping("swapping"));
+      await core(r, 0, swapping("swapping"));
     },
   },
   {
@@ -514,7 +512,7 @@ export const SCENES: Scene[] = [
     apply: async (s, f, i) => {
       base(s, f);
       const r = await previewRequest(s, { sourceId: "btc", index: i });
-      await core(s, r, 0, swapping("sending"));
+      await core(r, 0, swapping("sending"));
     },
   },
   {
@@ -565,14 +563,14 @@ export const SCENES: Scene[] = [
       base(s, f);
       const r = await previewRequest(s, { sourceId: "btc", index: i });
       await r.observe(worker(r, 0, "done", true));
-      await core(s, r, 1, working("verifying"));
+      await core(r, 1, working("verifying"));
     },
   },
   {
     name: "crypto / failed: recoverable",
     apply: async (s, f, i) => {
       const r = await claimConsent(s, f, i);
-      await core(s, r, 2, {
+      await core(r, 2, {
         phase: "failed",
         sourceId: "btc",
         failure: {
@@ -598,7 +596,7 @@ export const SCENES: Scene[] = [
         sourceChain: "Tron",
       };
       const r = await previewRequest(s, { sourceId: "usdt-tron", index: i });
-      await core(s, r, 0, {
+      await core(r, 0, {
         phase: "failed",
         sourceId: "usdt-tron",
         failure: {
@@ -623,8 +621,8 @@ export const SCENES: Scene[] = [
     apply: async (s, f, i) => {
       base(s, f);
       const r = await previewRequest(s, { sourceId: "btc", index: i });
-      await core(s, r, 0, swapping("receiving"));
-      await core(s, r, 1, {
+      await core(r, 0, swapping("receiving"));
+      await core(r, 1, {
         phase: "done",
         sourceId: "btc",
         result: { id: "preview", sourceId: "btc" },

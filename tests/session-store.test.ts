@@ -4,6 +4,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import type { FakeRail } from "@getsome/testing";
+import { useRequestsStore } from "../app/stores/requests";
 import { useSessionStore } from "../app/stores/session";
 import { refundStorageKey } from "../lib/coinage";
 
@@ -28,11 +29,12 @@ describe("session store: mock-world quote", () => {
     { timeout: 30_000 },
     async () => {
       const store = useSessionStore();
+      const requests = useRequestsStore();
       store.setAmount("1");
       await store.fetchQuote("Bitcoin", "BTC");
       await store.start();
-      expect(store.phase).toBe("awaiting-deposit");
-      expect(store.foregroundProgress?.snapshot).toMatchObject({
+      expect(requests.phase).toBe("awaiting-deposit");
+      expect(requests.foregroundProgress?.snapshot).toMatchObject({
         latestRouteStatus: "waiting",
         stageTimestamps: {},
       });
@@ -50,14 +52,14 @@ describe("session store: mock-world quote", () => {
         const until = Date.now() + ms;
         while (!pred() && Date.now() < until) await new Promise((r) => setTimeout(r, 25));
       };
-      await waitFor(() => store.phase === "working", 15_000);
+      await waitFor(() => requests.phase === "working", 15_000);
       // The deposit landed: the refund key is forgotten, in memory and in storage.
       expect(store.revealRefundKey()).toBeNull();
       expect(await world.storage.read(slot)).toBeNull();
       store.approveClaim();
-      await waitFor(() => store.phase === "done", 10_000);
-      expect(store.phase).toBe("done");
-      expect(store.foregroundProgress?.snapshot).toMatchObject({
+      await waitFor(() => requests.phase === "done", 10_000);
+      expect(requests.phase).toBe("done");
+      expect(requests.foregroundProgress?.snapshot).toMatchObject({
         confirmedStageKey: "cash-top-up",
         settledAt: expect.any(Number),
       });
@@ -95,27 +97,29 @@ describe("session store: Meld (card / bank) in the mock world", () => {
 
   it("start() reaches awaiting-deposit with the provider's pay page and the Meld progress profile", async () => {
     const store = useSessionStore();
+    const requests = useRequestsStore();
     store.setMethod("card");
     store.setAmount("100");
     await store.fetchMeldQuote();
     await store.start();
-    expect(store.phase).toBe("awaiting-deposit");
+    expect(requests.phase).toBe("awaiting-deposit");
     expect(store.meldPayUrl).toMatch(/^https:\/\//);
-    expect(store.foregroundProgress?.snapshot.profile.id).toBe("meld");
-    expect(store.foregroundProgress?.snapshot.preDetectionEstimateText).toBe(
+    expect(requests.foregroundProgress?.snapshot.profile.id).toBe("meld");
+    expect(requests.foregroundProgress?.snapshot.preDetectionEstimateText).toBe(
       "≈ minutes after you pay",
     );
   });
 
   it("hides the pay widget once the buyer has submitted, so a re-open cannot re-charge", async () => {
     const store = useSessionStore();
+    const requests = useRequestsStore();
     store.setMethod("card");
     store.setAmount("100");
     await store.fetchMeldQuote();
     await store.start("");
     // The buyer finished the provider widget (the completion redirect fired).
     await store.markMeldSubmitted();
-    expect(store.meldSubmitted).toBe(true);
+    expect(requests.meldSubmitted).toBe(true);
     // meldPayUrl null keeps the widget from rendering again.
     expect(store.meldPayUrl).toBeNull();
   });

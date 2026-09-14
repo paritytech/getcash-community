@@ -141,40 +141,39 @@ describe("requests store: foreground, clock and user actions", () => {
       const ref = requestRefOf("btc", 1);
       expect(requests.foregroundRecord?.ref).toEqual(ref);
       expect(requests.get(ref)?.status.kind).toBe("awaiting-deposit");
-      expect(session.phase).toBe("awaiting-deposit");
-      expect(session.fundsSeen).toBe(false);
+      expect(requests.phase).toBe("awaiting-deposit");
+      expect(requests.fundsSeen).toBe(false);
 
       session.simulateDeposit();
       await waitFor(() => requests.get(ref)?.status.kind === "claiming", 15_000);
       expect(requests.get(ref)?.status.kind).toBe("claiming");
-      expect(session.phase).toBe("working");
-      expect(session.claiming).toBe(true);
+      expect(requests.phase).toBe("working");
+      expect(requests.claiming).toBe(true);
 
       session.approveClaim();
       await waitFor(() => requests.get(ref)?.status.kind === "settled", 10_000);
       expect(requests.get(ref)?.status.kind).toBe("settled");
-      expect(session.phase).toBe("done");
-      expect(session.journeyDone).toBe(5);
-      expect(session.foregroundProgress?.snapshot.confirmedStageKey).toBe("cash-top-up");
+      expect(requests.phase).toBe("done");
+      expect(requests.journeyDone).toBe(5);
+      expect(requests.foregroundProgress?.snapshot.confirmedStageKey).toBe("cash-top-up");
     },
   );
 
   it("computed views match the milestone-1 table for a core-driven sequence", async () => {
     setRequestsClock(() => FIXTURE_NOW);
     const requests = useRequestsStore();
-    const session = useSessionStore();
     const record = migrated(awaitingDepositCryptoRecord);
     const { startedAt } = record;
     await requests.create(AWAITING_REF, record);
     requests.setForeground(AWAITING_REF);
     const views = () => ({
-      phase: session.phase,
-      fundsSeen: session.fundsSeen,
-      fundingStep: session.fundingStep,
-      claiming: session.claiming,
-      journeyDone: session.journeyDone,
-      milestones: session.milestones,
-      progress: progressOf(session.foregroundProgress?.snapshot),
+      phase: requests.phase,
+      fundsSeen: requests.fundsSeen,
+      fundingStep: requests.fundingStep,
+      claiming: requests.claiming,
+      journeyDone: requests.journeyDone,
+      milestones: requests.milestones,
+      progress: progressOf(requests.foregroundProgress?.snapshot),
     });
 
     await requests.observe(AWAITING_REF, coreAwaitingDeposit(at(1)));
@@ -227,7 +226,7 @@ describe("requests store: foreground, clock and user actions", () => {
         settledAt: undefined,
       },
     });
-    expect(session.claimStage).toBe("prompted");
+    expect(requests.claimStage).toBe("prompted");
 
     await requests.observe(AWAITING_REF, coreDone(at(4)));
     expect(views()).toEqual({
@@ -245,8 +244,8 @@ describe("requests store: foreground, clock and user actions", () => {
         settledAt: at(4),
       },
     });
-    expect(session.claimStage).toBeNull();
-    expect(session.fundingError).toBeNull();
+    expect(requests.claimStage).toBeNull();
+    expect(requests.fundingError).toBeNull();
   });
 
   it("cancel refuses on funds in the burner read", async () => {
@@ -269,7 +268,7 @@ describe("requests store: foreground, clock and user actions", () => {
       witnesses: { chain: { best: { burnerNative: "250000000", at: FIXTURE_NOW } } },
     });
     // The refused cancel latches the deposit as seen, which hides the cancel button.
-    expect(session.fundsSeen).toBe(true);
+    expect(requests.fundsSeen).toBe(true);
     expect(session.canSkipDeposit).toBe(false);
   });
 
@@ -386,13 +385,12 @@ describe("requests store: foreground, clock and user actions", () => {
     const now = FIXTURE_NOW + 2 * DAY;
     setRequestsClock(() => now);
     const requests = useRequestsStore();
-    const session = useSessionStore();
     await requests.create(AWAITING_REF, migrated(awaitingDepositCryptoRecord));
     expect(requests.get(AWAITING_REF)?.status).toEqual({ kind: "awaiting-deposit" });
 
     requests.setForeground(AWAITING_REF);
-    expect(session.phase).toBe("awaiting-deposit");
-    expect(session.fundingError).toBeNull();
+    expect(requests.phase).toBe("awaiting-deposit");
+    expect(requests.fundingError).toBeNull();
 
     await vi.advanceTimersByTimeAsync(1_000);
     expect(requests.get(AWAITING_REF)).toMatchObject({
@@ -401,9 +399,9 @@ describe("requests store: foreground, clock and user actions", () => {
       failureReason: DEPOSIT_EXPIRED_REASON,
       witnesses: { clock: { at: now } },
     });
-    expect(session.phase).toBe("failed");
-    expect(session.fundingError).toBe(DEPOSIT_EXPIRED_REASON);
-    expect(session.foregroundProgress?.snapshot.failedAt).toBe(now);
+    expect(requests.phase).toBe("failed");
+    expect(requests.fundingError).toBe(DEPOSIT_EXPIRED_REASON);
+    expect(requests.foregroundProgress?.snapshot.failedAt).toBe(now);
   });
 
   it("preview deck writes no session refs", () => {
@@ -415,7 +413,7 @@ describe("requests store: foreground, clock and user actions", () => {
     for (const match of source.matchAll(/\b(?:session|s)\.([a-zA-Z]+) = /g)) {
       written.add(match[1]!);
     }
-    const allowed = new Set(["quoted", "method", "mock", "faucetState", "resuming", "lastState"]);
+    const allowed = new Set(["quoted", "method", "mock", "faucetState", "resuming"]);
     expect([...written].filter((name) => !allowed.has(name))).toEqual([]);
   });
 });

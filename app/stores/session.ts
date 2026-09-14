@@ -39,7 +39,7 @@ import {
   type SupportedCorridor,
   type SupportedCountry,
 } from "~~/lib/supported";
-import { requestRefOf, sameRequestRef, type RequestRef } from "../utils/request-index";
+import { requestRefOf, type RequestRef } from "../utils/request-index";
 import { estimateSourceAmount, estimateSourceFromCash } from "~~/lib/demo-rates";
 import { priceSourceLeg, type SourcePriceResult } from "~~/lib/source-price";
 import { createMockCoinageSession, workerSessionId, type MockCoinageWorld } from "~~/lib/coinage";
@@ -49,7 +49,7 @@ import { isMeldSourceId, meldSourceIdFor } from "../funding/source-ids";
 import { toCashBase } from "../utils/cash";
 import { fundFromFaucet, isFaucetConfigured } from "~~/lib/faucet";
 import { sourceIdFor } from "~~/lib/config";
-import { useRequestsStore, type RequestListRow } from "./requests";
+import { useRequestsStore } from "./requests";
 
 export { DEPOSIT_EXPIRED_REASON } from "../funding/requests/model";
 
@@ -164,7 +164,6 @@ export const useSessionStore = defineStore("session", () => {
   // Reactive projection
   /** Core's last state for the request on screen, as it arrived. */
   const lastState = shallowRef<PaymentState | null>(null);
-  const fundingNotice = computed(() => requests.fundingNotice);
   const amountHuman = ref("");
   const amountBase = ref<bigint | null>(null);
   /** Pay method: crypto (Chainflip/manual) or a Meld fiat rail (card / bank). */
@@ -211,27 +210,13 @@ export const useSessionStore = defineStore("session", () => {
     return mock.value?.session ?? live.value?.session ?? null;
   }
 
-  // What the screens read of the request on screen: the requests store's views, under the names
-  // the components still read here.
-  const phase = computed(() => requests.phase);
-  const meldStage = computed(() => requests.meldStage);
-  const meldDelayed = computed(() => requests.meldDelayed);
-  const meldFailureMessage = computed(() => requests.meldFailureMessage);
-  const meldSubmitted = computed(() => requests.meldSubmitted);
-  const meldHandedOff = computed(() => requests.meldHandedOff);
   // Mock world: the settled payment lands on the coinage leg once, as the poll did directly.
-  watch(meldStage, (stage) => {
-    if (stage === "complete") creditMeldSettlement();
-  });
-  const fundsSeen = computed(() => requests.fundsSeen);
-  const fundingStep = computed(() => requests.fundingStep);
-  const fundingError = computed(() => requests.fundingError);
-  const claimStage = computed(() => requests.claimStage);
-  const claimedBase = computed(() => requests.claimedBase);
-  const milestones = computed(() => requests.milestones);
-  const foregroundProgress = computed(() => requests.foregroundProgress);
-  const journeyDoneCount = computed(() => requests.journeyDone);
-  const claiming = computed(() => requests.claiming);
+  watch(
+    () => requests.meldStage,
+    (stage) => {
+      if (stage === "complete") creditMeldSettlement();
+    },
+  );
   /** Whether the deposit can be skipped: one is still awaited and the faucet has not paid. */
   const canSkipDeposit = computed(
     () =>
@@ -389,11 +374,6 @@ export const useSessionStore = defineStore("session", () => {
         recordDriverFailure(ref, reason);
       });
   }
-
-  /** What each open request is doing, derived from its record. */
-  const requestStatus = computed(() => requests.statuses);
-  /** The open requests, newest first. */
-  const requestList = computed(() => requests.list);
 
   /** Brings the records up to date with the host, the worker's jobs, the chain and the provider;
    *  the store's reconcile hands the worker any open request it lost. */
@@ -1136,7 +1116,7 @@ export const useSessionStore = defineStore("session", () => {
   /** A claim landed: the request becomes history, with the amount the claim swept. */
   function markSettled(
     ref: RequestRef | undefined = foregroundRef ?? undefined,
-    claimed = claimedBase.value,
+    claimed = requests.claimedBase,
     settledAt = Date.now(),
   ) {
     if (ref === undefined) return;
@@ -1159,13 +1139,13 @@ export const useSessionStore = defineStore("session", () => {
   }
 
   /** Every open request's record, newest first, once the store has caught up with the host. */
-  async function readAllRequests(): Promise<RequestListRow[]> {
+  async function readAllRequests(): Promise<RequestRecord[]> {
     await requests.reconcile("refresh");
-    return requests.list;
+    return requests.openRecords;
   }
 
   /** The records the app acts on. Tombstoned requests are excluded; only the sweep reads them. */
-  function openRequests(): Promise<RequestListRow[]> {
+  function openRequests(): Promise<RequestRecord[]> {
     return readAllRequests();
   }
   /** Gets every open request converting again and puts nothing on screen; the boot passes
@@ -1178,15 +1158,13 @@ export const useSessionStore = defineStore("session", () => {
 
   /** Brings an off-screen request to the front: builds its world and resumes its session. */
   async function openRequest(ref: RequestRef): Promise<boolean> {
-    const record = (await openRequests()).find((r) => {
-      const candidate = recordRef(r);
-      return candidate !== null && sameRequestRef(candidate, ref);
-    });
-    if (!record) return false;
+    await openRequests();
+    const record = requests.get(ref);
+    if (record === undefined || record.status.kind === "cancelled") return false;
     return enterRequest(record);
   }
 
-  async function enterRequest(record: RequestListRow): Promise<boolean> {
+  async function enterRequest(record: RequestRecord): Promise<boolean> {
     const ref = recordRef(record);
     resuming.value = true;
     setAmount(record.amountHuman);
@@ -1340,7 +1318,7 @@ export const useSessionStore = defineStore("session", () => {
    *  `transaction_seen`, which can precede a 3DS/OTP challenge that still needs the iframe.
    *  Persisted before returning; a re-open reads it to keep the paid widget hidden. */
   async function markMeldSubmitted(): Promise<void> {
-    if (foregroundRef === null || meldSubmitted.value) return;
+    if (foregroundRef === null || requests.meldSubmitted) return;
     await requests.markMeldSubmitted(foregroundRef);
   }
 
@@ -1354,7 +1332,7 @@ export const useSessionStore = defineStore("session", () => {
   /** The provider's hosted pay page for the request on screen, or null. */
   const meldPayUrl = computed<string | null>(() => {
     // Hidden once the buyer finished the widget.
-    if (meldSubmitted.value) return null;
+    if (requests.meldSubmitted) return null;
     const state = lastState.value;
     const fromRail = state?.phase === "awaiting-deposit" ? state.deposit.payUrl : undefined;
     return fromRail ?? meldResumeWidgetUrl.value;
@@ -1389,7 +1367,7 @@ export const useSessionStore = defineStore("session", () => {
    *  list, and the world comes down. Funds are never touched. */
   async function cancelTopUp(): Promise<boolean> {
     // Declined, not failed: the request still stands.
-    if (cancelling.value || claiming.value || resuming.value || !cancelReady.value) return false;
+    if (cancelling.value || requests.claiming || resuming.value || !cancelReady.value) return false;
     cancelling.value = true;
     try {
       // Last look before anything irreversible: funds on the burner or in the worker's hands mean
@@ -1455,14 +1433,6 @@ export const useSessionStore = defineStore("session", () => {
 
   return {
     // state
-    lastState,
-    phase,
-    fundingStep,
-    fundingError,
-    fundingNotice,
-    claimStage,
-    claimedBase,
-    foregroundProgress,
     amountHuman,
     amountBase,
     method,
@@ -1472,18 +1442,12 @@ export const useSessionStore = defineStore("session", () => {
     meldMethodUnavailable,
     supportedCountries,
     meldCorridor,
-    meldStage,
-    meldDelayed,
-    meldFailureMessage,
     meldResumeWidgetUrl,
-    meldSubmitted,
-    meldHandedOff,
     meldPayUrl,
     sourcePrice,
     loading,
     resuming,
     faucetState,
-    fundsSeen,
     canSkipDeposit,
     cancelReady,
     cancelling,
@@ -1508,11 +1472,6 @@ export const useSessionStore = defineStore("session", () => {
     resumeOpenRequests,
     openRequests,
     openRequest,
-    requestList,
-    requestStatus,
-    claiming,
-    journeyDone: journeyDoneCount,
-    milestones,
     fundFaucet,
     simulateDeposit,
     pollMeldStatus,

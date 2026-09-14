@@ -2,6 +2,8 @@
 // and what the journey and deposit screens see per preview scene. Milestones 2, 5 and 8 must
 // reproduce these snapshots; nothing edits them except where a milestone says so.
 
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { nextTick } from "vue";
@@ -11,6 +13,7 @@ import { migrateRecord } from "../app/funding/requests/migrate";
 import type { Observation, WorkerJobView } from "../app/funding/requests/model";
 import { reduce } from "../app/funding/requests/reducer";
 import { useFlowStore } from "../app/stores/flow";
+import { useRequestsStore } from "../app/stores/requests";
 import { useSessionStore } from "../app/stores/session";
 import { directScene, SCENES } from "../app/utils/dev-preview";
 import { requestRefKey, requestRefOf } from "../app/utils/request-index";
@@ -84,6 +87,7 @@ describe("preview scenes", () => {
   it("foreground views per preview scene match the snapshot", async () => {
     setActivePinia(createPinia());
     const session = useSessionStore();
+    const requests = useRequestsStore();
     const flow = useFlowStore();
     const views = [];
     for (let n = 0; n < SCENES.length; n++) {
@@ -91,23 +95,69 @@ describe("preview scenes", () => {
       await nextTick();
       views.push({
         scene,
-        phase: session.phase,
-        fundsSeen: session.fundsSeen,
-        fundingStep: session.fundingStep,
-        fundingError: session.fundingError,
-        fundingNotice: session.fundingNotice,
-        claimStage: session.claimStage,
-        claimedBase: session.claimedBase,
-        journeyDone: session.journeyDone,
-        milestones: { ...session.milestones },
-        meldStage: session.meldStage,
-        meldDelayed: session.meldDelayed,
-        meldFailureMessage: session.meldFailureMessage,
-        meldSubmitted: session.meldSubmitted,
-        meldHandedOff: session.meldHandedOff,
-        foregroundSnapshot: session.foregroundProgress?.snapshot,
+        phase: requests.phase,
+        fundsSeen: requests.fundsSeen,
+        fundingStep: requests.fundingStep,
+        fundingError: requests.fundingError,
+        fundingNotice: requests.fundingNotice,
+        claimStage: requests.claimStage,
+        claimedBase: requests.claimedBase,
+        journeyDone: requests.journeyDone,
+        milestones: { ...requests.milestones },
+        meldStage: requests.meldStage,
+        meldDelayed: requests.meldDelayed,
+        meldFailureMessage: requests.meldFailureMessage,
+        meldSubmitted: requests.meldSubmitted,
+        meldHandedOff: requests.meldHandedOff,
+        foregroundSnapshot: requests.foregroundProgress?.snapshot,
       });
     }
     expect(views).toMatchSnapshot();
+  });
+});
+
+/** The request status views the session store exposed before the requests store owned them. */
+const REQUEST_VIEWS = [
+  "phase",
+  "fundingStep",
+  "fundingError",
+  "fundingNotice",
+  "claimStage",
+  "claimedBase",
+  "foregroundProgress",
+  "meldStage",
+  "meldDelayed",
+  "meldFailureMessage",
+  "meldSubmitted",
+  "meldHandedOff",
+  "fundsSeen",
+  "claiming",
+  "journeyDone",
+  "milestones",
+  "requestList",
+  "requestStatus",
+];
+
+/** Every `.ts` and `.vue` file under `path`, or the file itself. */
+function sourceFiles(path: string): string[] {
+  if (!statSync(path).isDirectory()) return /\.(ts|vue)$/.test(path) ? [path] : [];
+  return readdirSync(path).flatMap((entry) => sourceFiles(`${path}/${entry}`));
+}
+
+describe("session store", () => {
+  it("no longer exports request status views", () => {
+    setActivePinia(createPinia());
+    const session = useSessionStore();
+    for (const name of REQUEST_VIEWS) expect(name in session, name).toBe(false);
+
+    const readers = [
+      "app/components",
+      "app/composables",
+      "app/pages",
+      "app/funding",
+      "app/stores/flow.ts",
+    ].flatMap((root) => sourceFiles(fileURLToPath(new URL(`../${root}`, import.meta.url))));
+    const pattern = new RegExp(`\\bsession\\.(${REQUEST_VIEWS.join("|")})\\b`);
+    expect(readers.filter((file) => pattern.test(readFileSync(file, "utf8")))).toEqual([]);
   });
 });

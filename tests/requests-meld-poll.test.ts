@@ -1,5 +1,5 @@
 // The provider's leg through the store: the foreground Meld poll moves the record on screen and
-// the session store's Meld views read it back with today's values; a reconcile reads every other
+// the requests store's Meld views read it back with today's values; a reconcile reads every other
 // Meld request once.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,7 +14,7 @@ import {
   setRecordStorage,
 } from "../app/funding/requests/storage";
 import { setMeldStatusClientFactory, useRequestsStore } from "../app/stores/requests";
-import { useSessionStore, type ActiveFlowRecord } from "../app/stores/session";
+import type { ActiveFlowRecord } from "../app/stores/session";
 import { requestRefOf, type RequestRef } from "../app/utils/request-index";
 import {
   awaitingDepositCryptoRecord,
@@ -127,7 +127,6 @@ describe("requests store: the Meld poll", () => {
   it("foreground poll maps adapter statuses to meldStage as today", async () => {
     vi.useFakeTimers();
     const requests = useRequestsStore();
-    const session = useSessionStore();
     const client = fakeMeldClient("session_opened");
     await requests.create(CARD_REF, migrated(unsubmittedCard));
     requests.setForeground(CARD_REF);
@@ -135,33 +134,33 @@ describe("requests store: the Meld poll", () => {
     requests.startMeldPoll(CARD_REF, client, "mfr");
     await settled();
     expect(client.reads).toEqual({ mfr: 1 });
-    expect(session.meldStage).toBe("waiting");
-    expect(session.meldHandedOff).toBe(false);
+    expect(requests.meldStage).toBe("waiting");
+    expect(requests.meldHandedOff).toBe(false);
 
     // The provider saw the transaction, but a 3DS challenge may still need the widget: the stage
     // holds at waiting until the buyer submits.
     client.status = "transaction_seen";
     await nextPoll();
-    expect(session.meldStage).toBe("waiting");
-    expect(session.meldDelayed).toBe(false);
+    expect(requests.meldStage).toBe("waiting");
+    expect(requests.meldDelayed).toBe(false);
     expect(requests.get(CARD_REF)?.rail.stage).toBe("received");
 
     await requests.markMeldSubmitted(CARD_REF);
-    expect(session.meldStage).toBe("receiving");
-    expect(session.meldHandedOff).toBe(true);
-    expect(session.meldSubmitted).toBe(true);
+    expect(requests.meldStage).toBe("receiving");
+    expect(requests.meldHandedOff).toBe(true);
+    expect(requests.meldSubmitted).toBe(true);
 
     // The provider's crypto delivery is stuck and retrying: a delay, nothing terminal.
     client.status = "crypto_failed";
     await nextPoll();
     await nextTick();
-    expect(session.meldStage).toBe("receiving");
-    expect(session.meldDelayed).toBe(true);
+    expect(requests.meldStage).toBe("receiving");
+    expect(requests.meldDelayed).toBe(true);
 
     client.status = "settled";
     await nextPoll();
-    expect(session.meldStage).toBe("complete");
-    expect(session.meldHandedOff).toBe(true);
+    expect(requests.meldStage).toBe("complete");
+    expect(requests.meldHandedOff).toBe(true);
     expect(requests.get(CARD_REF)?.rail.stage).toBe("delivered");
     // Delivered ends the poll.
     const readsBefore = client.reads.mfr;
@@ -179,8 +178,8 @@ describe("requests store: the Meld poll", () => {
     requests.setForeground(DECLINED_REF);
     requests.startMeldPoll(DECLINED_REF, declined, "mfr-declined");
     await settled();
-    expect(session.meldStage).toBe("failed");
-    expect(session.meldFailureMessage).toBe(
+    expect(requests.meldStage).toBe("failed");
+    expect(requests.meldFailureMessage).toBe(
       "Your bank declined the payment. Check your card details or try another card.",
     );
     expect(requests.get(DECLINED_REF)?.status.kind).toBe("failed");
@@ -192,7 +191,6 @@ describe("requests store: the Meld poll", () => {
   it("a 404 stops the poll with the do-not-pay-again message", async () => {
     vi.useFakeTimers();
     const requests = useRequestsStore();
-    const session = useSessionStore();
     const client = fakeMeldClient("session_opened");
     client.failure = Object.assign(new Error("not found"), { status: 404 });
     await requests.create(CARD_REF, migrated(unsubmittedCard));
@@ -201,8 +199,8 @@ describe("requests store: the Meld poll", () => {
     requests.startMeldPoll(CARD_REF, client, "mfr");
     await settled();
 
-    expect(session.meldStage).toBe("failed");
-    expect(session.meldFailureMessage).toBe(
+    expect(requests.meldStage).toBe("failed");
+    expect(requests.meldFailureMessage).toBe(
       "We can no longer find this payment. Do not pay again. Contact support with your reference.",
     );
     expect(requests.get(CARD_REF)).toMatchObject({

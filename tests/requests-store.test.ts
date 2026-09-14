@@ -503,7 +503,7 @@ describe("requests store", () => {
     const session = useSessionStore();
 
     expect(await session.openRequest(AWAITING_REF)).toBe(false);
-    expect(session.phase).toBeNull();
+    expect(requests.phase).toBeNull();
     // The conflict note is queued behind the resume; let it land and reach the host.
     await new Promise((resolve) => setTimeout(resolve, 0));
     await requests.flush();
@@ -523,6 +523,6 @@ describe("requests store", () => {
       witnesses: { conflict: { source: "core" } },
     });
     expect(await storedIndex()).toEqual([AWAITING_REF]);
-    expect(session.requestList.map((row) => requestRefKey(refOf(row)))).toEqual([AWAITING_KEY]);
+    expect(requests.list.map((row) => requestRefKey(refOf(row)))).toEqual([AWAITING_KEY]);
   });
 });

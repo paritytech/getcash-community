@@ -1,7 +1,7 @@
 // Pure projections of a request record onto the values the session store exposes today, so the
 // screens and the list adapters read the same things from the new record.
 
-import type { PaymentPhase, SwapProgress } from "@getsome/core";
+import type { PaymentPhase } from "@getsome/core";
 import type { FundingStep } from "@getsome/funding";
 import type { RequestStatus as LegacyRequestStatus } from "../../stores/session";
 import type { FundingProgressProjection } from "../progress";
@@ -92,11 +92,6 @@ export const fundsSeenOf = (record: RequestRecord): boolean =>
     (record.status.via === "worker" ||
       record.status.via === "faucet" ||
       record.status.via === "pre-cancel"));
-
-export function swapOf(record: RequestRecord): SwapProgress | null {
-  if (phaseLike(record) !== "swapping" || record.rail.status === "failed") return null;
-  return record.rail.status;
-}
 
 /** How many of the journey's five markers (Started, Payment, Approved, Conversion, Added) are
  *  complete, 1..5. The payment leg is the route's own; the money leg is the same for every route,
