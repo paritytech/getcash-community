@@ -84,8 +84,11 @@ interface ActiveFlowRecord {
   sourceSymbol?: string;
   /** The provider's quoted fee (Meld), in `sourceSymbol` units. */
   sourceFee?: string;
-  /** The network-fee share of `sourceFee`, when the rail broke it out. */
+  /** The components of `sourceFee`, as the rail reported them. Persisted so a resumed request's
+   *  breakdown reads the same as the one quoted at the start. */
+  sourceTransactionFee?: string;
   sourceNetworkFee?: string;
+  sourcePartnerFee?: string;
   startedAt: number;
   depositAddress?: string;
   progress?: FundingProgressSnapshot;
@@ -201,10 +204,14 @@ function stepOf(status: RequestStatus | undefined): FundingStep | null {
 export interface QuotedView {
   send: string;
   symbol: string;
-  /** The provider's total fee in `symbol` units, when the rail quotes one (Meld does). */
+  /** The total fee in `symbol` units, when the rail quotes one (Meld does). */
   fee?: string | null;
-  /** The network-fee share of `fee`, when the rail breaks it out (Meld may). */
+  /** The components of `fee`, each as the rail reported it. Meld sends these as separate fields,
+   *  so they are carried through rather than derived from `fee`; any of them can be absent from a
+   *  given quote, and the breakdown simply omits what it was not given. */
+  transactionFee?: string | null;
   networkFee?: string | null;
+  partnerFee?: string | null;
   /** Live world only: the native (DOT) budget the rail must deliver, 10-dec base units. */
   nativeAmount: bigint | null;
   sourceAsset: string | null;
@@ -905,7 +912,9 @@ export const useSessionStore = defineStore("session", () => {
           send: raw.provider.sourceAmount,
           symbol: raw.context.fiat,
           fee: raw.provider.totalFee ?? null,
+          transactionFee: raw.provider.transactionFee ?? null,
           networkFee: raw.provider.networkFee ?? null,
+          partnerFee: raw.provider.partnerFee ?? null,
           nativeAmount: null,
           sourceAsset: null,
           sourceChain: null,
@@ -935,7 +944,9 @@ export const useSessionStore = defineStore("session", () => {
         send: raw.provider.sourceAmount,
         symbol: raw.context.fiat,
         fee: raw.provider.totalFee ?? null,
+        transactionFee: raw.provider.transactionFee ?? null,
         networkFee: raw.provider.networkFee ?? null,
+        partnerFee: raw.provider.partnerFee ?? null,
         nativeAmount: null,
         sourceAsset: null,
         sourceChain: null,
@@ -1465,8 +1476,14 @@ export const useSessionStore = defineStore("session", () => {
               sourceAmount: quoted.value.send,
               sourceSymbol: quoted.value.symbol,
               ...(quoted.value.fee != null ? { sourceFee: quoted.value.fee } : {}),
+              ...(quoted.value.transactionFee != null
+                ? { sourceTransactionFee: quoted.value.transactionFee }
+                : {}),
               ...(quoted.value.networkFee != null
                 ? { sourceNetworkFee: quoted.value.networkFee }
+                : {}),
+              ...(quoted.value.partnerFee != null
+                ? { sourcePartnerFee: quoted.value.partnerFee }
                 : {}),
             }
           : null
@@ -1891,7 +1908,9 @@ export const useSessionStore = defineStore("session", () => {
         send: record.sourceAmount ?? "",
         symbol: record.sourceSymbol ?? record.asset,
         fee: record.sourceFee ?? null,
+        transactionFee: record.sourceTransactionFee ?? null,
         networkFee: record.sourceNetworkFee ?? null,
+        partnerFee: record.sourcePartnerFee ?? null,
         nativeAmount: null,
         sourceAsset: record.asset,
         sourceChain: record.chain,

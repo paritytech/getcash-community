@@ -4,7 +4,7 @@
 // return to the pay screen.
 import { computed } from "vue";
 import { useSessionStore } from "../../../stores/session";
-import { fmtFiat, splitFees } from "../../../utils/money";
+import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import DetailRows from "../../ui/DetailRows.vue";
 import PillButton from "../../ui/PillButton.vue";
 
@@ -12,23 +12,24 @@ const session = useSessionStore();
 const emit = defineEmits<{ back: [] }>();
 
 /**
- * The fee's components, when the quote actually breaks it into some.
+ * The fee's components, exactly as the quote reported them.
  *
- * A quote with no usable network fee has nothing to split: `splitFees` hands the whole total back
- * as the provider's share, and a lone "Provider fee" row would restate the "Total fees" row right
- * below it — the same number twice, with a rule between them implying a sum. Return no components
- * in that case and let the total stand alone.
- *
- * No service fee is charged, so that design row is omitted.
+ * Meld sends each component as its own field, so they are read rather than derived: a quote that
+ * names no network fee shows no network row, and nothing is inferred by subtracting one component
+ * from the total. A quote carrying no components at all leaves the total to stand on its own.
  */
 const feeRows = computed(() => {
   const q = session.quoted;
-  const split = q ? splitFees(q.fee, q.networkFee) : null;
-  if (!q || !split?.network) return [];
+  if (!q) return [];
   return [
-    { label: "Provider fee", value: fmtFiat(split.provider, q.symbol) },
-    { label: "Network fee", value: fmtFiat(split.network, q.symbol) },
-  ];
+    { label: "Provider fee", amount: q.transactionFee },
+    { label: "Network fee", amount: q.networkFee },
+    { label: "Service fee", amount: q.partnerFee },
+  ].flatMap(({ label, amount }) =>
+    isMoneyAmount(amount) && Number(amount) > 0
+      ? [{ label, value: fmtFiat(amount, q.symbol) }]
+      : [],
+  );
 });
 
 /** The sum of the split, carried in its own rule-bracketed row. */

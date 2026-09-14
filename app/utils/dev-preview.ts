@@ -90,7 +90,10 @@ const QUOTED_CARD = {
   send: "52.06",
   symbol: "USD",
   fee: "1.56",
-  networkFee: "0.01",
+  // The shape real card quotes come back in: a provider fee and our flat cut, no network fee.
+  transactionFee: "1.06",
+  networkFee: null,
+  partnerFee: "0.50",
   nativeAmount: null,
   sourceAsset: null,
   sourceChain: null,

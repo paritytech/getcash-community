@@ -121,6 +121,59 @@ const concludedFunding = {
   // Terminal: the adapter answers 200 but withholds the pay page.
   body: { funding: { status: "settled" } },
 };
+describe("createMeldClient quote mapping", () => {
+  const QUOTE_REQ = {
+    country: "GB",
+    sourceCurrencyCode: "GBP",
+    destinationCurrencyCode: "DOT_ASSETHUB",
+    sourceAmount: "50.00",
+    paymentMethodType: "CREDIT_DEBIT_CARD",
+  };
+
+  it("keeps every fee component the quote line carries", async () => {
+    // A real GB card line: the fee splits into the provider's own fee and our cut, and no network
+    // fee is quoted. The breakdown can only show what survives this mapping, so dropping a
+    // component here silently mis-attributes it — `partnerFee` folded into the provider's fee is
+    // exactly the bug that shipped.
+    const { impl } = stubFetch(200, {
+      quotes: [
+        {
+          serviceProvider: "TRANSAK",
+          sourceAmount: "50",
+          destinationAmount: "62.1658228",
+          totalFee: "3.25",
+          transactionFee: "2.75",
+          networkFee: null,
+          partnerFee: "0.5",
+          customerScore: "90.43",
+        },
+      ],
+    });
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+    const { quotes } = await client.getQuote(QUOTE_REQ);
+    expect(quotes[0]).toMatchObject({
+      serviceProvider: "TRANSAK",
+      totalFee: "3.25",
+      transactionFee: "2.75",
+      partnerFee: "0.5",
+    });
+    // A null component is absent, not the string "null": the breakdown keys its rows off presence.
+    expect(quotes[0]).not.toHaveProperty("networkFee");
+  });
+
+  it("omits components the quote line does not carry at all", async () => {
+    const { impl } = stubFetch(200, {
+      quotes: [
+        { serviceProvider: "KOYWE", sourceAmount: "50", destinationAmount: "60", totalFee: "3" },
+      ],
+    });
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+    const { quotes } = await client.getQuote(QUOTE_REQ);
+    expect(quotes[0]).not.toHaveProperty("transactionFee");
+    expect(quotes[0]).not.toHaveProperty("partnerFee");
+  });
+});
+
 describe("createMeldClient error mapping", () => {
   it("carries the adapter's own code through the `Other` catch-all", async () => {
     const { impl } = stubFetch(400, {

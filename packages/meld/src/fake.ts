@@ -17,6 +17,9 @@ export interface FakeMeldOptions {
   status?: string;
 }
 
+/** The flat partner fee real card quotes carry, in fiat units. */
+const PARTNER_FEE = 0.5;
+
 export function createFakeMeldClient(opts: FakeMeldOptions = {}): MeldClientLike {
   const rate = opts.usdPerToken ?? 7;
   const feePct = opts.feePct ?? 3;
@@ -40,7 +43,10 @@ export function createFakeMeldClient(opts: FakeMeldOptions = {}): MeldClientLike
           sourceAmount: fiat.toFixed(2),
           destinationAmount: out.toFixed(8),
           totalFee: fee.toFixed(2),
-          networkFee: "0.01",
+          // Mirrors the shape real card quotes come back in: the provider's fee and our flat cut
+          // sum to the total, and no network fee is quoted.
+          transactionFee: Math.max(fee - PARTNER_FEE, 0).toFixed(2),
+          partnerFee: PARTNER_FEE.toFixed(2),
           customerScore: 100 - i,
         };
       });

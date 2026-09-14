@@ -1,27 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fmtFiat, isMoneyAmount, splitFees } from "../app/utils/money";
-
-describe("splitFees", () => {
-  it("breaks a total into its provider and network shares", () => {
-    expect(splitFees("3.42", "0.09")).toEqual({ provider: "3.33", network: "0.09" });
-  });
-
-  it("reports no split when the quote carries no usable network fee", () => {
-    // The Fees screen keys its component rows off `network`: a null one means there is nothing to
-    // break down, so it shows the total alone rather than restating it as a lone provider row.
-    expect(splitFees("3.42", null)).toEqual({ provider: "3.42", network: null });
-    expect(splitFees("3.42", undefined)).toEqual({ provider: "3.42", network: null });
-    expect(splitFees("3.42", "0")).toEqual({ provider: "3.42", network: null });
-    expect(splitFees("3.42", "")).toEqual({ provider: "3.42", network: null });
-    // A network fee larger than the total is the provider contradicting itself; trust the total.
-    expect(splitFees("3.42", "9.99")).toEqual({ provider: "3.42", network: null });
-  });
-
-  it("reports nothing at all when the total is not a number it can split", () => {
-    expect(splitFees(null, "0.09")).toBeNull();
-    expect(splitFees("about three quid", "0.09")).toBeNull();
-  });
-});
+import { fmtFiat, isMoneyAmount } from "../app/utils/money";
 
 describe("fmtFiat", () => {
   it("formats a fiat amount symbol-first", () => {
