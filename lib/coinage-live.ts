@@ -73,6 +73,24 @@ export async function probeTradeBurner(
   return { address, free: account?.data?.free ?? 0n };
 }
 
+/** Follows a trade's burner balance on Asset Hub at each best block until the returned function
+ *  is called: every emission reaches `onValue`, a failed subscription `onError`. */
+export async function watchTradeBurner(
+  sourceId: string,
+  tradeN: number,
+  onValue: (free: bigint, address: string) => void,
+  onError: (e: unknown) => void,
+): Promise<() => void> {
+  const address = await burnerAddressFor(sourceId, tradeN);
+  const { connectChain, ASSET_HUB } = await import("./host-chain");
+  const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
+  const subscription = api.query.System.Account.watchValue(address, { at: "best" }).subscribe({
+    next: ({ value: account }) => onValue(account?.data?.free ?? 0n, address),
+    error: onError,
+  });
+  return () => subscription.unsubscribe();
+}
+
 /** Core's storage over the host store, under the prefix `createCoinageSession` writes with. */
 async function hostStorageAdapter() {
   const { storage } = await hostManagers();

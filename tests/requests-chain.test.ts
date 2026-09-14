@@ -3,6 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import { nextTick } from "vue";
 import type { FlowState } from "@getsome/core";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
@@ -48,6 +49,13 @@ const { chain, worker, manager, lostRequestHandoff } = vi.hoisted(() => {
     burners: new Map<string, { address: string; free: bigint } | Error>(),
     /** Every burner read, in order. */
     probes: [] as string[],
+    /** Every burner subscription, in order; the test pushes balances through `onValue`. */
+    watchers: [] as {
+      key: string;
+      onValue: (free: bigint, address: string) => void;
+      onError: (e: unknown) => void;
+      unsubscribed: boolean;
+    }[],
     counters: new Map<string, number>(),
     slots: new Map<string, FlowState>(),
     address: addressOf,
@@ -88,6 +96,18 @@ vi.mock("../lib/coinage-live", () => ({
     const answer = chain.burners.get(key);
     if (answer instanceof Error) throw answer;
     return answer ?? { address: chain.address(key), free: 0n };
+  },
+  watchTradeBurner: async (
+    sourceId: string,
+    tradeN: number,
+    onValue: (free: bigint, address: string) => void,
+    onError: (e: unknown) => void,
+  ) => {
+    const watcher = { key: `${sourceId}:${tradeN}`, onValue, onError, unsubscribed: false };
+    chain.watchers.push(watcher);
+    return () => {
+      watcher.unsubscribed = true;
+    };
   },
   burnerAddressFor: async (sourceId: string, tradeN: number) =>
     chain.address(`${sourceId}:${tradeN}`),
@@ -151,6 +171,13 @@ async function storedIndex(): Promise<RequestRef[]> {
   return parseRequestIndex(await host.read(REQUEST_INDEX_KEY));
 }
 
+/** Lets the deposit watch's subscribe, or an observation it made, run to its end: both are
+ *  promise chains behind the store's synchronous calls. */
+const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+/** The subscriptions so far, as key and whether each is still live. */
+const watchers = () => chain.watchers.map(({ key, unsubscribed }) => ({ key, unsubscribed }));
+
 describe("requests store: the chain step", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -160,6 +187,7 @@ describe("requests store: the chain step", () => {
     setRequestsClock(() => FIXTURE_NOW);
     chain.burners.clear();
     chain.probes.length = 0;
+    chain.watchers.length = 0;
     chain.counters.clear();
     chain.slots.clear();
     worker.available = true;
@@ -331,5 +359,102 @@ describe("requests store: the chain step", () => {
     chain.counters.set("dot-assethub", 9);
     await requests.reconcile("refresh");
     expect(chain.probes).toEqual([]);
+  });
+
+  it("the deposit watch subscribes to the burner at a best block and ends once the deposit is seen", async () => {
+    const requests = useRequestsStore();
+    await requests.create(AWAITING_REF, {
+      ...migrated(awaitingDepositCryptoRecord),
+      handoff: AWAITING_HANDOFF,
+    });
+    requests.setForeground(AWAITING_REF);
+    await nextTick();
+    await settled();
+    expect(watchers()).toEqual([{ key: "dot-assethub:3", unsubscribed: false }]);
+    const watcher = chain.watchers[0]!;
+
+    // An empty burner: the record only witnessed the reading, and the watch goes on.
+    watcher.onValue(0n, "burner-3");
+    await settled();
+    expect(requests.get(AWAITING_REF)).toMatchObject({
+      rev: 0,
+      status: { kind: "awaiting-deposit" },
+      witnesses: { chain: { best: { burnerNative: "0", at: FIXTURE_NOW } } },
+    });
+    expect(watcher.unsubscribed).toBe(false);
+
+    // The coins show: the app is the early witness, provisionally, the journey moves on and the
+    // watch ends; the worker's finalized sighting follows on its own.
+    watcher.onValue(5_000_000_000n, "burner-3");
+    await settled();
+    expect(requests.get(AWAITING_REF)).toMatchObject({
+      rev: 1,
+      status: { kind: "deposit-seen", at: FIXTURE_NOW, assurance: "provisional", via: "chain" },
+      funded: FIXTURE_NOW,
+      progress: { routeCompletedAt: FIXTURE_NOW },
+      witnesses: { chain: { best: { burnerNative: "5000000000", at: FIXTURE_NOW } } },
+    });
+    expect(watcher.unsubscribed).toBe(true);
+
+    // A late emission after the stop changes nothing, and nothing re-subscribes.
+    watcher.onValue(7_000_000_000n, "burner-3");
+    await settled();
+    expect(requests.get(AWAITING_REF)).toMatchObject({
+      rev: 1,
+      witnesses: { chain: { best: { burnerNative: "5000000000", at: FIXTURE_NOW } } },
+    });
+    expect(watchers()).toEqual([{ key: "dot-assethub:3", unsubscribed: true }]);
+    expect(chain.probes).toEqual([]);
+  });
+
+  it("the deposit watch pauses while hidden and stops when the request leaves the screen", async () => {
+    const requests = useRequestsStore();
+    await requests.create(AWAITING_REF, {
+      ...migrated(awaitingDepositCryptoRecord),
+      handoff: AWAITING_HANDOFF,
+    });
+    requests.setForeground(AWAITING_REF);
+    await nextTick();
+    await settled();
+    expect(watchers()).toEqual([{ key: "dot-assethub:3", unsubscribed: false }]);
+
+    // Hidden: the subscription is let go. Visible again: a new one.
+    requests.pausePolls();
+    expect(watchers()).toEqual([{ key: "dot-assethub:3", unsubscribed: true }]);
+    requests.resumePolls();
+    await settled();
+    expect(watchers()).toEqual([
+      { key: "dot-assethub:3", unsubscribed: true },
+      { key: "dot-assethub:3", unsubscribed: false },
+    ]);
+
+    // The request leaves the screen: the subscription ends and no other takes its place.
+    requests.leave();
+    await nextTick();
+    await settled();
+    expect(watchers()).toEqual([
+      { key: "dot-assethub:3", unsubscribed: true },
+      { key: "dot-assethub:3", unsubscribed: true },
+    ]);
+    expect(console.warn).not.toHaveBeenCalled();
+
+    // Back on screen, the chain client fails the subscription: one warning, the watch let go
+    // until the next sync.
+    requests.setForeground(AWAITING_REF);
+    await nextTick();
+    await settled();
+    expect(chain.watchers).toHaveLength(3);
+    chain.watchers[2]!.onError(new Error("asset hub unreachable"));
+    expect(chain.watchers[2]!.unsubscribed).toBe(true);
+    expect(console.warn).toHaveBeenCalledTimes(1);
+    expect(console.warn).toHaveBeenCalledWith(
+      "[requests] deposit watch for dot-assethub#3 failed: asset hub unreachable",
+    );
+    await settled();
+    expect(chain.watchers).toHaveLength(3);
+    expect(requests.get(AWAITING_REF)).toMatchObject({
+      rev: 0,
+      status: { kind: "awaiting-deposit" },
+    });
   });
 });

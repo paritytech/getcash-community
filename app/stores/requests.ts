@@ -962,19 +962,83 @@ export const useRequestsStore = defineStore("requests", () => {
     clearInterval(foregroundClock);
     foregroundClock = null;
   }
+  // The deposit watch: while the request on screen awaits its deposit, the app follows its burner
+  // at each best block, so a direct deposit has an early witness in the app as a provider's
+  // payment does, and the worker's finalized sighting confirms it. Hosted only; it ends the
+  // moment coins show, and a failed subscription is let go until the next sync re-subscribes.
+  let depositWatch: {
+    key: RequestKey;
+    unsubscribe: (() => void) | null;
+    stopped: boolean;
+  } | null = null;
+  const foregroundAwaiting = (): boolean =>
+    foregroundRecord.value?.status.kind === "awaiting-deposit";
+  function startDepositWatch(): void {
+    const record = foregroundRecord.value;
+    if (record === null || record.status.kind !== "awaiting-deposit") return;
+    const { ref } = record;
+    const key = requestRefKey(ref);
+    if (depositWatch !== null) {
+      if (depositWatch.key === key) return;
+      stopDepositWatch();
+    }
+    // Claimed before the subscription lands, so a second start while it is pending is a no-op.
+    const watching = { key, unsubscribe: null as (() => void) | null, stopped: false };
+    depositWatch = watching;
+    const sourceId = effectiveSourceId(ref);
+    const failed = (e: unknown): void => {
+      if (watching.stopped) return;
+      console.warn(
+        `[requests] deposit watch for ${sourceId}#${ref.tradeN} failed: ${messageOf(e)}`,
+      );
+      stopDepositWatch();
+    };
+    void import("~~/lib/coinage-live")
+      .then(({ watchTradeBurner }) =>
+        watchTradeBurner(
+          sourceId,
+          ref.tradeN,
+          (free) => {
+            if (watching.stopped) return;
+            void observe(ref, chainReading(free, requestsNow()));
+            if (free > 0n) stopDepositWatch();
+          },
+          failed,
+        ),
+      )
+      .then((unsubscribe) => {
+        if (watching.stopped) unsubscribe();
+        else watching.unsubscribe = unsubscribe;
+      }, failed);
+  }
+  function stopDepositWatch(): void {
+    if (depositWatch === null) return;
+    const watching = depositWatch;
+    depositWatch = null;
+    watching.stopped = true;
+    watching.unsubscribe?.();
+  }
+  /** The watch follows the request on screen while it awaits its deposit, hosted, and not
+   *  otherwise. */
+  function syncDepositWatch(): void {
+    if (isHosted() && foregroundAwaiting()) startDepositWatch();
+    else stopDepositWatch();
+  }
   watch(
-    () => foregroundRecord.value?.status.kind === "awaiting-deposit",
-    (awaiting) => {
-      if (awaiting) startForegroundClock();
+    () => (foregroundAwaiting() ? foreground.value : null),
+    (awaitingKey) => {
+      if (awaitingKey !== null) startForegroundClock();
       else stopForegroundClock();
+      syncDepositWatch();
     },
     { immediate: true },
   );
 
-  /** The request on screen is gone: the clock and the provider poll stop, no key is foreground,
-   *  and what the screen showed beside the record goes with it. */
+  /** The request on screen is gone: the clock, the deposit watch and the provider poll stop, no
+   *  key is foreground, and what the screen showed beside the record goes with it. */
   function leave(): void {
     stopForegroundClock();
+    stopDepositWatch();
     stopMeldPoll();
     setForeground(null);
     transientError.value = null;
@@ -1544,10 +1608,11 @@ export const useRequestsStore = defineStore("requests", () => {
   // The last open record can finish between the sync points, as when the poll settles it.
   watch(anyUnfinished, () => syncTick());
 
-  /** Hidden: the job poll, the provider poll and the second hand stop. The foreground clock keeps
-   *  running so the deposit still expires on time. */
+  /** Hidden: the job poll, the deposit watch, the provider poll and the second hand stop. The
+   *  foreground clock keeps running so the deposit still expires on time. */
   function pausePolls(): void {
     stopJobPoll();
+    stopDepositWatch();
     meldPoll?.pause();
     if (tickTimer !== null) {
       clearInterval(tickTimer);
@@ -1557,6 +1622,7 @@ export const useRequestsStore = defineStore("requests", () => {
   /** Visible again: whatever paused starts where it left off, the provider poll with a read now. */
   function resumePolls(): void {
     syncJobPoll();
+    syncDepositWatch();
     syncTick();
     meldPoll?.resume();
   }
@@ -1816,6 +1882,8 @@ export const useRequestsStore = defineStore("requests", () => {
     stopMeldPoll,
     startForegroundClock,
     stopForegroundClock,
+    startDepositWatch,
+    stopDepositWatch,
     hydrateFromMirror,
     writeMirror,
     reconcile,
