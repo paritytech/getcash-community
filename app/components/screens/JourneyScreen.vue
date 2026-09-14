@@ -11,11 +11,11 @@ import type { FundingTopUp } from "../../funding/top-ups";
 import { useSessionStore } from "../../stores/session";
 import { fmtCash } from "../../utils/cash";
 import { fmtFiat, isMoneyAmount } from "../../utils/money";
-import { formatWhenShort } from "../../utils/journey";
+import { formatWhenShort, shortRef } from "../../utils/journey";
 import { refundedFailure } from "../../utils/recovery";
 import FundingJourneyTimeline from "../funding/progress/FundingJourneyTimeline.vue";
 import RefundRecovery from "../funding/RefundRecovery.vue";
-import DetailRows from "../ui/DetailRows.vue";
+import DetailRows, { type DetailRow } from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
 
 const props = defineProps<{
@@ -92,6 +92,7 @@ const quoteView = computed(() => {
       amount: q.send,
       symbol: q.symbol,
       fee: q.fee ?? null,
+      provider: q.provider ?? null,
       crypto: session.method === "crypto",
       live: true,
     };
@@ -102,6 +103,8 @@ const quoteView = computed(() => {
     amount: stored.amount,
     symbol: stored.symbol,
     fee: stored.fee ?? null,
+    // The list's stored quote does not carry the provider; the live one fills it in.
+    provider: null,
     crypto: props.topUp?.route === "crypto",
     live: false,
   };
@@ -114,19 +117,29 @@ const quoteView = computed(() => {
  * offered only when the live quote backs it with a fee the breakdown can itemize — a stored quote
  * or an unparseable fee leaves the row as plain text.
  */
-const detailRows = computed(() => {
+const detailRows = computed<DetailRow[]>(() => {
   const q = quoteView.value;
   if (!q) return [];
   // Symbol-first for the fiat rails ("€50.55"); crypto keeps its full-precision ticker form.
   const money = (amount: string) =>
     q.crypto ? `${amount} ${q.symbol}` : fmtFiat(amount, q.symbol);
-  return [
+  const rows: DetailRow[] = [
     {
       label: q.fee ? "You paid inc. fees" : "You paid",
       value: money(q.amount),
       fees: !!q.fee && q.live && isMoneyAmount(q.fee),
     },
   ];
+  // Who to chase and what to quote them. Only on a failure: on a journey that is working or done
+  // these are two rows of reference nobody needs, but a declined payment is the moment a buyer
+  // has something to ask about.
+  if (heroFailed.value) {
+    if (q.provider) rows.push({ label: "Provider", value: q.provider });
+    const reference = session.meldFundingRequestId;
+    if (reference)
+      rows.push({ label: "Transaction ID", value: shortRef(reference), copy: reference });
+  }
+  return rows;
 });
 
 /** Temporarily stuck (the provider is retrying): amber on the stepper, never terminal. */

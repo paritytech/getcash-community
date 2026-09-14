@@ -118,3 +118,16 @@ export function formatWhenShort(ms: number, locale?: string, now = Date.now()): 
   const date = new Intl.DateTimeFormat(locale, { month: "long", day: "numeric" }).format(moment);
   return `${date} at ${time}`;
 }
+
+/**
+ * A long reference shown as its ends: "a1f9c3d2-7b44-4e10-9f21-00ab9e4c2e11" -> "a1f9-4c2e".
+ *
+ * Separators are dropped before slicing, so the abbreviation reads the same whether or not the id
+ * is hyphenated. Anything already short enough to show in full is returned untouched — shortening
+ * a reference that fits would only make it harder to compare by eye. The full text goes on the
+ * clipboard, which is what the reader actually quotes to support.
+ */
+export function shortRef(reference: string): string {
+  const bare = reference.replace(/-/g, "");
+  return bare.length <= 9 ? reference : `${bare.slice(0, 4)}-${bare.slice(-4)}`;
+}
