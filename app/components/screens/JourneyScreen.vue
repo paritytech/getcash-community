@@ -106,19 +106,27 @@ const quoteView = computed(() => {
     live: false,
   };
 });
+/**
+ * What the buyer paid, as one row.
+ *
+ * A separate Fees row restated part of the number sitting right beside it; the total already
+ * contains the fee, so the label says so and the chevron carries the split. The drill-in is
+ * offered only when the live quote backs it with a fee the breakdown can itemize — a stored quote
+ * or an unparseable fee leaves the row as plain text.
+ */
 const detailRows = computed(() => {
   const q = quoteView.value;
   if (!q) return [];
   // Symbol-first for the fiat rails ("€50.55"); crypto keeps its full-precision ticker form.
   const money = (amount: string) =>
     q.crypto ? `${amount} ${q.symbol}` : fmtFiat(amount, q.symbol);
-  const rows: { label: string; value: string; fees?: boolean }[] = [];
-  // The fee row drills into the breakdown screen when the live quote backs it with a fee the
-  // breakdown can actually split; an unparseable one still shows, as plain text.
-  if (q.fee)
-    rows.push({ label: "Fees", value: money(q.fee), fees: q.live && isMoneyAmount(q.fee) });
-  rows.push({ label: "Total", value: money(q.amount) });
-  return rows;
+  return [
+    {
+      label: q.fee ? "You paid inc. fees" : "You paid",
+      value: money(q.amount),
+      fees: !!q.fee && q.live && isMoneyAmount(q.fee),
+    },
+  ];
 });
 
 /** Temporarily stuck (the provider is retrying): amber on the stepper, never terminal. */
