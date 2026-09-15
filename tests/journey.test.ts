@@ -49,6 +49,40 @@ describe("journeyDone", () => {
   });
 });
 
+describe("journeyDone on the crypto scale", () => {
+  // The crypto timeline runs three steps: Started, Conversion, Added. Both payment legs are gone —
+  // the deposit screen owns the payment, so the journey opens with it already behind.
+  const done3 = (input: Parameters<typeof journeyDone>[0]) => journeyDone(input, 3);
+
+  it("sits on the conversion for the whole swap", () => {
+    expect(done3({ phase: "swapping", fundingStep: null, swap: "receiving" })).toBe(1);
+    expect(done3({ phase: "swapping", fundingStep: null, swap: "swapping" })).toBe(1);
+    expect(done3({ phase: "swapping", fundingStep: null, swap: "sending" })).toBe(1);
+  });
+
+  it("moves onto the credit once the swap is done, and finishes with it", () => {
+    expect(done3({ phase: "swapping", fundingStep: null, swap: "complete" })).toBe(2);
+    expect(done3({ phase: "funded", fundingStep: "done" })).toBe(2);
+    expect(done3({ phase: "working", fundingStep: "done" })).toBe(2);
+    expect(done3({ phase: "done", fundingStep: "done" })).toBe(3);
+  });
+
+  it("re-bases the manual pipeline", () => {
+    expect(done3({ phase: "awaiting-deposit", fundingStep: "swap" })).toBe(1);
+    expect(done3({ phase: "awaiting-deposit", fundingStep: "done" })).toBe(2);
+    expect(done3({ phase: "awaiting-deposit", fundingStep: null })).toBe(1);
+  });
+
+  it("strikes the conversion for a swap that took the payment but could not deliver", () => {
+    expect(done3({ phase: "failed", fundingStep: null, failure: { kind: "refunded" } })).toBe(1);
+    expect(done3({ phase: "failed", fundingStep: null, failure: { kind: "egress-failed" } })).toBe(
+      1,
+    );
+    // The claim failed: the conversion landed, so the marker lands on "Added".
+    expect(done3({ phase: "failed", fundingStep: null, failure: { kind: "mint" } })).toBe(2);
+  });
+});
+
 describe("journeyLabels", () => {
   it("names what arrived when the asset is known", () => {
     expect(journeyLabels("BTC")[1]!.done).toBe("We received your BTC");

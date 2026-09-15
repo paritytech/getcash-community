@@ -113,6 +113,16 @@ const heroCaption = computed(() =>
     ? "Will be charged to the bank account inc. fees"
     : "Will be charged to the card inc. fees",
 );
+
+/**
+ * How long this rail takes to land. This screen serves both Meld methods and, with the Via row
+ * gone, this row is the only timing statement on it: a bank transfer must not inherit the card's
+ * "a few minutes". Matches the selector's own word on the bank route.
+ */
+const arrivesText = computed(() =>
+  session.method === "bank" ? "1-2 business days" : "A few minutes",
+);
+
 /** The caption drills in only when the fee is a number the breakdown can actually split. */
 const canOpenFees = computed(() => {
   const q = session.quoted;
@@ -126,7 +136,7 @@ const quoteRows = computed(() => {
   // than terms, and the picker above already names the region.
   return [
     { label: "You’ll receive", value: `${session.amountHuman} $CASH` },
-    { label: "Arrives", value: "A few minutes" },
+    { label: "Arrives", value: arrivesText.value },
   ];
 });
 

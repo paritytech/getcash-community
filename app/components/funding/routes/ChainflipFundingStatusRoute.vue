@@ -8,12 +8,14 @@ import { useVisibilityReconcile } from "../../../composables/useVisibilityReconc
 import { chainflipRequestRef } from "../../../funding/chainflip-top-ups";
 import type { FundingPackageEmits } from "../../../funding/handoff";
 import type { FundingTopUp } from "../../../funding/top-ups";
+import { useFlowStore } from "../../../stores/flow";
 import { useSessionStore } from "../../../stores/session";
 
 const props = defineProps<{ topUp: FundingTopUp }>();
 const emit = defineEmits<FundingPackageEmits>();
 
 const session = useSessionStore();
+const flow = useFlowStore();
 const opening = ref(true);
 const unavailable = ref(false);
 const waiting = computed(() => opening.value && session.lastState === null && !unavailable.value);
@@ -22,8 +24,15 @@ let active = true;
 useVisibilityReconcile();
 const { handedOff } = useChainflipHandoff(emit);
 
+/** A cancel that went through leaves for the list; a declined one returns to the deposit. */
 async function cancelTopUp() {
   if (await session.cancelTopUp()) emit("back");
+  else flow.confirmingCancel = false;
+}
+
+function onBack() {
+  if (flow.confirmingCancel) flow.confirmingCancel = false;
+  else emit("back");
 }
 
 function onDepositSkip() {
@@ -44,6 +53,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   active = false;
+  flow.confirmingCancel = false;
   // After a handoff the journey owns the request and resets it on its way out.
   if (!handedOff()) session.reset();
 });
@@ -59,9 +69,19 @@ onUnmounted(() => {
       padding-bottom: env(safe-area-inset-bottom);
     "
   >
-    <Toolbar :back="!waiting && !session.claiming" title="Crypto" @back="emit('back')">
+    <Toolbar
+      :back="!waiting && !session.claiming"
+      :title="flow.confirmingCancel ? undefined : 'Add funds via Crypto'"
+      @back="onBack"
+    >
       <template
-        v-if="!waiting && !unavailable && session.canSkipDeposit && isDemoBuild()"
+        v-if="
+          !waiting &&
+          !unavailable &&
+          !flow.confirmingCancel &&
+          session.canSkipDeposit &&
+          isDemoBuild()
+        "
         #trailing
       >
         <button
@@ -75,12 +95,8 @@ onUnmounted(() => {
     </Toolbar>
 
     <div class="flex min-h-0 flex-1 flex-col px-6 pt-6">
-      <div v-if="waiting" class="flex flex-col items-center gap-4 pt-16">
-        <span
-          class="inline-block size-8 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary"
-        />
-        <p class="text-body-m text-fg-secondary">Opening your top-up…</p>
-      </div>
+      <!-- While opening, the deposit screen renders its skeleton shapes (it has no deposit yet). -->
+      <DepositScreen v-if="waiting" @cancel="flow.confirmingCancel = true" />
 
       <div v-else-if="unavailable" class="flex flex-1 flex-col items-center pt-16 text-center">
         <h1 class="text-heading-l text-fg-primary">Top-up unavailable</h1>
@@ -89,7 +105,12 @@ onUnmounted(() => {
         </p>
       </div>
 
-      <DepositScreen v-else @cancel="cancelTopUp" />
+      <CancelTopUpScreen
+        v-else-if="flow.confirmingCancel"
+        @confirm="cancelTopUp"
+        @keep="flow.confirmingCancel = false"
+      />
+      <DepositScreen v-else @cancel="flow.confirmingCancel = true" />
     </div>
   </main>
 </template>

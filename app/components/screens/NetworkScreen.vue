@@ -1,5 +1,6 @@
 <script setup lang="ts">
-// Network picker. Lists only networks with a token that can pay for this amount.
+// Network picker. Lists only networks with a token that can pay for this amount; skeleton rows
+// stand in while the floors are still being learned.
 import { computed } from "vue";
 import { networkIcon } from "../../utils/icons";
 import { useFlowStore } from "../../stores/flow";
@@ -29,15 +30,16 @@ const smallestCash = computed<string | null>(() => {
   return smallest === null ? null : ((smallest + 999_999n) / 1_000_000n).toString();
 });
 
-/** "list" while any network is offered; otherwise "paused" or "too-small". */
-const state = computed<"list" | "paused" | "too-small">(() => {
+/** "loading" until the floors are learned, "list" while any network is offered; otherwise
+ *  "paused" or "too-small". */
+const state = computed<"loading" | "list" | "paused" | "too-small">(() => {
+  if (offers.floors === null) return "loading";
   if (offers.offeredNetworks.length > 0) return "list";
   return offers.paused ? "paused" : "too-small";
 });
 
-/** Row subtitle while the purchase starts or the floors are still being learned. */
+/** Row subtitle while the floors are still being answered for this network. */
 function subtitle(network: NetworkRow): string | undefined {
-  if (flow.starting && network.chain === flow.srcChain.chain) return "Starting…";
   return network.checking ? "Checking…" : undefined;
 }
 
@@ -49,20 +51,24 @@ function pick(network: NetworkRow) {
 
 <template>
   <div class="flex min-h-0 flex-1 flex-col">
-    <h1 class="text-display-l text-fg-primary">Select network</h1>
+    <!-- The cards bleed past the 24px content gutter to the design's 16px inset. -->
+    <ul v-if="state === 'loading'" class="-mx-2 flex flex-col gap-2" aria-label="Loading networks">
+      <OptionRow v-for="n in 5" :key="n" skeleton />
+    </ul>
 
-    <ul v-if="state === 'list'" class="mt-6 flex flex-col gap-6">
+    <ul v-else-if="state === 'list'" class="-mx-2 flex flex-col gap-2 overflow-y-auto pb-6">
       <OptionRow
         v-for="network in offers.offeredNetworks"
         :key="network.chain"
         :icon="networkIcon(network.chain)"
         :label="network.label"
         :subtitle="subtitle(network)"
+        :busy="flow.starting && network.chain === flow.srcChain.chain"
         @select="pick(network)"
       />
     </ul>
 
-    <div v-else class="mt-6 flex flex-col gap-4">
+    <div v-else class="flex flex-col gap-4">
       <!-- "Paused" covers every way the swap network can fail to answer. -->
       <template v-if="state === 'paused'">
         <p class="text-body-m text-fg-secondary">
