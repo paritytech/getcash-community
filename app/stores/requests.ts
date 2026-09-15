@@ -1070,13 +1070,17 @@ export const useRequestsStore = defineStore("requests", () => {
     job.fundsSeenAt !== null ||
     (job.phase !== "starting" && job.phase !== "await-native" && job.phase !== "failed");
 
-  /** The last look before a cancel: the burner and the worker's job, each read within
-   *  `CANCEL_CONFIRM_MS`. Funds in either refuse the cancel and reach the record as the read that
-   *  found them; a read that did not answer leaves the cancel unconfirmed. */
+  /** The last look before a cancel. A record past its deposit (anyone saw it: the provider's
+   *  report counts) refuses at once, with nothing read. Otherwise the burner and the worker's job
+   *  are each read within `CANCEL_CONFIRM_MS`: funds in either refuse the cancel and reach the
+   *  record as the read that found them; a read that did not answer leaves the cancel
+   *  unconfirmed. */
   async function cancel(
     ref: RequestRef,
     opts: { readBurner: () => Promise<bigint> },
   ): Promise<"ok" | "refused" | "unconfirmed"> {
+    const record = get(ref);
+    if (record !== undefined && rankOf(record) >= 1) return "refused";
     const at = requestsNow();
     const [burner, jobs] = await Promise.all([
       bounded("the burner read", CANCEL_CONFIRM_MS, opts.readBurner),
@@ -1112,14 +1116,19 @@ export const useRequestsStore = defineStore("requests", () => {
   }
 
   /** A user retry: only a recoverably failed record whose failure the worker's job, or core's
-   *  own failed witness, confirms is moved back into the pipeline. */
+   *  own failed witness, confirms is moved back into the pipeline. A failure the job confirms
+   *  first has the stored hand-off re-sent, hosted: the deposit is in, and the worker re-arms a
+   *  failed job on a re-sent hand-off; left alone, its next read would fail the record again. A
+   *  hand-off that could not be sent is noted on the entry and the record stays failed. The job
+   *  poll runs again once the record moves. */
   async function retry(ref: RequestRef): Promise<boolean> {
     const record = get(ref);
     if (record === undefined || record.status.kind !== "failed" || !record.status.recoverable) {
       return false;
     }
+    const sessionId = workerSessionId(effectiveSourceId(ref), ref.tradeN);
     const jobs = await readWorkerJobs();
-    const job = jobs[workerSessionId(effectiveSourceId(ref), ref.tradeN)];
+    const job = jobs[sessionId];
     const confirmedByJob =
       job !== undefined &&
       job.phase === "failed" &&
@@ -1128,7 +1137,22 @@ export const useRequestsStore = defineStore("requests", () => {
       console.warn("[requests] retry ignored: the failure is not confirmed as recoverable");
       return false;
     }
+    if (confirmedByJob && isHosted()) {
+      const key = requestRefKey(ref);
+      try {
+        if (record.handoff === undefined) throw new Error("the record has no stored hand-off");
+        const { getStorageWorkerManager } = await import("~~/lib/worker-rpc");
+        await sendHandoff(getStorageWorkerManager(), sessionId, record.handoff);
+        patchEntry(key, ({ handoffError: _cleared, ...sent }) => sent);
+      } catch (e) {
+        const handoffError = messageOf(e);
+        console.warn(`[requests] retry for ${key} could not re-arm the worker: ${handoffError}`);
+        patchEntry(key, (current) => ({ ...current, handoffError }));
+        return false;
+      }
+    }
     await observe(ref, { source: "user", at: requestsNow(), event: "retry" });
+    syncJobPoll();
     return true;
   }
 
@@ -1638,11 +1662,17 @@ export const useRequestsStore = defineStore("requests", () => {
 
   /** Back from a background stint long enough that nothing read before it can be trusted: every
    *  row is cached until this pass confirms it. The chain clients are dropped too; the first
-   *  world built after a long stint failed on stale ones, and the clients re-dial on use. */
-  function returnFromBackground(): void {
+   *  world built after a long stint failed on stale ones, and the clients re-dial on use. The
+   *  polls resume only once the clients are gone, so the deposit watch subscribes on a fresh
+   *  one rather than one about to be destroyed. */
+  async function returnFromBackground(): Promise<void> {
     sessionEpoch.value = requestsNow();
+    stopDepositWatch();
     void reconcile("visible");
-    if (isHosted()) void import("~~/lib/host-chain").then((chains) => chains.evictChains());
+    if (isHosted()) {
+      const { evictChains } = await import("~~/lib/host-chain");
+      evictChains();
+    }
     resumePolls();
   }
 
@@ -1659,7 +1689,7 @@ export const useRequestsStore = defineStore("requests", () => {
       }
       const away = hiddenAt === null ? 0 : requestsNow() - hiddenAt;
       hiddenAt = null;
-      if (away > HIDDEN_RESET_MS) returnFromBackground();
+      if (away > HIDDEN_RESET_MS) void returnFromBackground();
       else resumePolls();
     };
     const onPageHide = (): void => {
@@ -1667,7 +1697,7 @@ export const useRequestsStore = defineStore("requests", () => {
     };
     // A bfcache restore is a background stint of unknown length.
     const onPageShow = (event: { persisted?: boolean }): void => {
-      if (event.persisted === true) returnFromBackground();
+      if (event.persisted === true) void returnFromBackground();
     };
     targets.document.addEventListener("visibilitychange", onVisibilityChange);
     targets.window.addEventListener("pagehide", onPageHide);

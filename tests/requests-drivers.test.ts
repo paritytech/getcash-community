@@ -6,8 +6,10 @@ import { createPinia, setActivePinia } from "pinia";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
   DEFAULT_DEPOSIT_WINDOW_MS,
+  JOB_POLL_MS,
   setRequestsClock,
   WORKER_READY_MS,
+  type Observation,
   type RequestRecord,
   type WorkerHandoffPayload,
 } from "../app/funding/requests/model";
@@ -192,6 +194,33 @@ const realSetTimeout = setTimeout;
 async function untilHeartbeatWait(): Promise<void> {
   while (worker.checks === 0) await new Promise((resolve) => realSetTimeout(resolve, 0));
 }
+/** Yields to the real event loop until `predicate` holds, bounded; a poll tick's blob read and
+ *  observation are promise chains the fake clock does not cover. */
+async function until(predicate: () => boolean): Promise<void> {
+  for (let turns = 0; turns < 200 && !predicate(); turns++) {
+    await new Promise((resolve) => realSetTimeout(resolve, 0));
+  }
+}
+
+/** The worker's job as the reducer reads it, mid-swap or failed on a shortfall. */
+const workerSwap = (time: number, fundsSeenAt: number): Observation => ({
+  source: "worker",
+  at: time,
+  job: { phase: "swap", done: false, fundsSeenAt, lastTickAt: time, claim: null },
+});
+const workerFailed = (time: number, fundsSeenAt: number): Observation => ({
+  source: "worker",
+  at: time,
+  job: {
+    phase: "failed",
+    done: false,
+    failure: "shortfall",
+    lastError: "shortfall: the deposit is below the swap minimum",
+    fundsSeenAt,
+    lastTickAt: time,
+    claim: null,
+  },
+});
 
 describe("requests store: the hand-off step", () => {
   beforeEach(() => {
@@ -315,6 +344,82 @@ describe("requests store: the hand-off step", () => {
       rev: 1,
       handoff: LEGACY_HANDOFF,
     });
+  });
+
+  it("retry re-sends the stored hand-off and restarts the job poll", async () => {
+    vi.useFakeTimers();
+    const requests = useRequestsStore();
+    await requests.create(AWAITING_REF, {
+      ...migrated(awaitingDepositCryptoRecord),
+      handoff: AWAITING_HANDOFF,
+    });
+    // The worker saw the deposit, then failed the swap on a shortfall; its blob says the same.
+    const seenAt = FIXTURE_NOW - 2 * MINUTE;
+    const failedAt = FIXTURE_NOW - MINUTE;
+    const FAILED_JOB: WorkerJobRecord = {
+      ...AWAITING_JOB,
+      phase: "failed",
+      failure: "shortfall",
+      lastError: "shortfall: the deposit is below the swap minimum",
+      lastTickAt: failedAt,
+      state: { ...AWAITING_JOB.state, fundsSeenAt: seenAt },
+    };
+    await requests.observe(AWAITING_REF, workerSwap(seenAt, seenAt));
+    await requests.observe(AWAITING_REF, workerFailed(failedAt, seenAt));
+    expect(requests.get(AWAITING_REF)?.status).toEqual({
+      kind: "failed",
+      at: failedAt,
+      recoverable: true,
+    });
+    await writeJobs({ "dot-assethub:3": FAILED_JOB });
+    requests.stopJobPoll();
+
+    // The stored hand-off goes to the worker as it is, and the record is back in the conversion.
+    expect(await requests.retry(AWAITING_REF)).toBe(true);
+    expect(worker.calls).toEqual([startFunding("dot-assethub:3", AWAITING_HANDOFF)]);
+    expect(requests.get(AWAITING_REF)).toMatchObject({
+      status: { kind: "converting", at: FIXTURE_NOW, step: "swap" },
+    });
+    expect(requests.get(AWAITING_REF)?.failure).toBeUndefined();
+    expect(requests.entries[requestRefKey(AWAITING_REF)]).not.toHaveProperty("handoffError");
+    // The poll runs again: the worker's re-armed job reaches the record on the next tick.
+    await writeJobs({
+      "dot-assethub:3": {
+        ...AWAITING_JOB,
+        phase: "swap",
+        lastTickAt: FIXTURE_NOW,
+        state: { ...AWAITING_JOB.state, fundsSeenAt: seenAt },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(JOB_POLL_MS);
+    await until(() => {
+      const witness = requests.get(AWAITING_REF)?.witnesses.worker;
+      return witness?.known === true && witness.phase === "swap";
+    });
+    expect(requests.get(AWAITING_REF)?.witnesses.worker).toMatchObject({
+      known: true,
+      phase: "swap",
+      lastTickAt: FIXTURE_NOW,
+    });
+
+    // The worker is down: the retry gives up after WORKER_READY_MS, sends nothing, and the
+    // record stays failed with the entry noting why.
+    requests.stopJobPoll();
+    await requests.observe(AWAITING_REF, workerFailed(FIXTURE_NOW, seenAt));
+    expect(requests.get(AWAITING_REF)?.status.kind).toBe("failed");
+    await writeJobs({ "dot-assethub:3": FAILED_JOB });
+    worker.available = false;
+    worker.checks = 0;
+    const retried = requests.retry(AWAITING_REF);
+    await untilHeartbeatWait();
+    await vi.advanceTimersByTimeAsync(WORKER_READY_MS + 500);
+    expect(await retried).toBe(false);
+    expect(worker.calls).toEqual([startFunding("dot-assethub:3", AWAITING_HANDOFF)]);
+    expect(requests.get(AWAITING_REF)?.status.kind).toBe("failed");
+    expect(requests.entries[requestRefKey(AWAITING_REF)]?.handoffError).toBe(NOT_RUNNING);
+    expect(console.warn).toHaveBeenCalledWith(
+      `[requests] retry for dot-assethub#3 could not re-arm the worker: ${NOT_RUNNING}`,
+    );
   });
 
   it("waits for the heartbeat and gives up after WORKER_READY_MS", async () => {

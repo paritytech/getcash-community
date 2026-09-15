@@ -7,6 +7,7 @@ import { nextTick } from "vue";
 import type { FlowState } from "@getsome/core";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
+  HIDDEN_RESET_MS,
   setRequestsClock,
   TOMBSTONE_GRACE_MS,
   WORKER_STALE_MS,
@@ -23,7 +24,7 @@ import {
   WORKER_JOBS_KEY,
   type KeyedStorage,
 } from "../app/funding/requests/storage";
-import { useRequestsStore } from "../app/stores/requests";
+import { useRequestsStore, type DocumentLike, type WindowLike } from "../app/stores/requests";
 import type { ActiveFlowRecord } from "../app/stores/session";
 import {
   parseRequestIndex,
@@ -31,6 +32,7 @@ import {
   requestRefOf,
   type RequestRef,
 } from "../app/utils/request-index";
+import { evictChains } from "../lib/host-chain";
 import {
   awaitingDepositCryptoRecord,
   cancelledCryptoRecord,
@@ -39,10 +41,10 @@ import {
   type WorkerJobRecord,
 } from "./fixtures/requests";
 
-// The chain step runs hosted only. Outside the Polkadot App the chain and the worker are
-// stand-ins: burners answer from a table keyed `<sourceId>:<tradeN>`, the manager records its
-// calls.
-const { chain, worker, manager, lostRequestHandoff } = vi.hoisted(() => {
+// The chain step runs hosted only. Outside the Polkadot App the chain, the worker and the chain
+// clients are stand-ins: burners answer from a table keyed `<sourceId>:<tradeN>`, the manager
+// records its calls, and an eviction only logs itself beside the subscriptions.
+const { chain, worker, manager, lostRequestHandoff, log } = vi.hoisted(() => {
   const addressOf = (key: string) => `burner-${key}`;
   const chain = {
     /** What a burner read answers: a balance, or the error it throws. Absent means empty. */
@@ -60,6 +62,8 @@ const { chain, worker, manager, lostRequestHandoff } = vi.hoisted(() => {
     slots: new Map<string, FlowState>(),
     address: addressOf,
   };
+  /** Burner subscriptions and chain-client evictions, in the order they happened. */
+  const log: ("subscribe" | "evict")[] = [];
   const worker = { available: true, calls: [] as { api: string; payload: unknown }[] };
   const manager = {
     isAvailable: () => worker.available,
@@ -85,7 +89,7 @@ const { chain, worker, manager, lostRequestHandoff } = vi.hoisted(() => {
     remoteFeeBuffer: "500000000",
     keepNativeForFees: "100000000",
   });
-  return { chain, worker, manager, lostRequestHandoff };
+  return { chain, worker, manager, lostRequestHandoff, log };
 });
 vi.mock("../lib/host-account", () => ({ isHosted: () => true }));
 vi.mock("../lib/worker-rpc", () => ({ getStorageWorkerManager: () => manager }));
@@ -105,6 +109,7 @@ vi.mock("../lib/coinage-live", () => ({
   ) => {
     const watcher = { key: `${sourceId}:${tradeN}`, onValue, onError, unsubscribed: false };
     chain.watchers.push(watcher);
+    log.push("subscribe");
     return () => {
       watcher.unsubscribed = true;
     };
@@ -121,6 +126,11 @@ vi.mock("../lib/coinage-live", () => ({
   createHostedCoinageWorld: async () => {
     throw new Error("no world is built here");
   },
+}));
+vi.mock("../lib/host-chain", () => ({
+  evictChains: vi.fn(() => {
+    log.push("evict");
+  }),
 }));
 
 const MINUTE = 60_000;
@@ -178,6 +188,63 @@ const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
 /** The subscriptions so far, as key and whether each is still live. */
 const watchers = () => chain.watchers.map(({ key, unsubscribed }) => ({ key, unsubscribed }));
 
+const realSetTimeout = setTimeout;
+/** Yields to the real event loop until `predicate` holds, bounded: the return path reaches the
+ *  eviction and the new subscription through dynamic imports. */
+async function until(predicate: () => boolean): Promise<void> {
+  for (let turns = 0; turns < 200 && !predicate(); turns++) {
+    await new Promise((resolve) => realSetTimeout(resolve, 0));
+  }
+}
+
+type VisibilityListener = () => void;
+type PageListener = (event: { persisted?: boolean }) => void;
+
+/** A `document` whose visibility the test sets and whose events it fires. */
+function fakeDocument(): DocumentLike & { dispatch(type: "visibilitychange"): void } {
+  const listeners = new Map<string, VisibilityListener[]>();
+  return {
+    visibilityState: "visible",
+    addEventListener(type, listener) {
+      listeners.set(type, [...(listeners.get(type) ?? []), listener]);
+    },
+    removeEventListener(type, listener) {
+      listeners.set(
+        type,
+        (listeners.get(type) ?? []).filter((l) => l !== listener),
+      );
+    },
+    dispatch(type) {
+      for (const listener of [...(listeners.get(type) ?? [])]) listener();
+    },
+  };
+}
+
+/** A `window` that only records its listeners; no page transition fires here. */
+function fakeWindow(): WindowLike {
+  const listeners = new Map<string, PageListener[]>();
+  return {
+    addEventListener(type, listener) {
+      listeners.set(type, [...(listeners.get(type) ?? []), listener]);
+    },
+    removeEventListener(type, listener) {
+      listeners.set(
+        type,
+        (listeners.get(type) ?? []).filter((l) => l !== listener),
+      );
+    },
+  };
+}
+
+function hide(doc: ReturnType<typeof fakeDocument>): void {
+  doc.visibilityState = "hidden";
+  doc.dispatch("visibilitychange");
+}
+function show(doc: ReturnType<typeof fakeDocument>): void {
+  doc.visibilityState = "visible";
+  doc.dispatch("visibilitychange");
+}
+
 describe("requests store: the chain step", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -192,6 +259,8 @@ describe("requests store: the chain step", () => {
     chain.slots.clear();
     worker.available = true;
     worker.calls.length = 0;
+    log.length = 0;
+    vi.mocked(evictChains).mockClear();
     vi.spyOn(console, "warn").mockImplementation(() => {});
   });
   afterEach(async () => {
@@ -456,5 +525,37 @@ describe("requests store: the chain step", () => {
       rev: 0,
       status: { kind: "awaiting-deposit" },
     });
+  });
+
+  it("return from background re-subscribes the deposit watch after the chain clients are evicted", async () => {
+    let now = FIXTURE_NOW;
+    setRequestsClock(() => now);
+    const requests = useRequestsStore();
+    await requests.create(AWAITING_REF, {
+      ...migrated(awaitingDepositCryptoRecord),
+      handoff: AWAITING_HANDOFF,
+    });
+    requests.setForeground(AWAITING_REF);
+    await nextTick();
+    await settled();
+    expect(watchers()).toEqual([{ key: "dot-assethub:3", unsubscribed: false }]);
+    const doc = fakeDocument();
+    const detach = requests.attachLifecycle({ document: doc, window: fakeWindow() });
+
+    // A real background stint: the old clients go before the watch subscribes again, so the new
+    // subscription lands on a fresh client.
+    hide(doc);
+    now += HIDDEN_RESET_MS + 1_000;
+    show(doc);
+    await until(() => chain.watchers.length === 2);
+    await until(() => !requests.reconcilingNow);
+
+    expect(watchers()).toEqual([
+      { key: "dot-assethub:3", unsubscribed: true },
+      { key: "dot-assethub:3", unsubscribed: false },
+    ]);
+    expect(evictChains).toHaveBeenCalledTimes(1);
+    expect(log).toEqual(["subscribe", "evict", "subscribe"]);
+    detach();
   });
 });

@@ -81,6 +81,13 @@ const workerDone = (time: number, fundsSeenAt: number): Observation => ({
   at: time,
   job: { phase: "done", done: true, fundsSeenAt, lastTickAt: time, claim: null },
 });
+/** The rail's report that the buyer paid, before any coin reached the burner. */
+const providerReceiving = (time: number): Observation => ({
+  source: "provider",
+  at: time,
+  provider: "chainflip",
+  result: { status: "receiving" },
+});
 const workerFailed = (time: number, fundsSeenAt: number): Observation => ({
   source: "worker",
   at: time,
@@ -270,6 +277,48 @@ describe("requests store: foreground, clock and user actions", () => {
     // The refused cancel latches the deposit as seen, which hides the cancel button.
     expect(requests.fundsSeen).toBe(true);
     expect(session.canSkipDeposit).toBe(false);
+  });
+
+  it("cancel refuses a payment the provider has seen without reading the burner", async () => {
+    setRequestsClock(() => FIXTURE_NOW);
+    const requests = useRequestsStore();
+    await requests.create(AWAITING_REF, migrated(awaitingDepositCryptoRecord));
+    await requests.observe(AWAITING_REF, providerReceiving(at(1)));
+    const seen = requests.get(AWAITING_REF);
+    expect(seen?.status).toEqual({
+      kind: "deposit-seen",
+      at: at(1),
+      assurance: "provisional",
+      via: "rail",
+    });
+
+    // The burner is still empty; the provider's word alone refuses the cancel, unread.
+    const readBurner = vi.fn(async () => 0n);
+    expect(await requests.cancel(AWAITING_REF, { readBurner })).toBe("refused");
+    expect(readBurner).not.toHaveBeenCalled();
+    expect(requests.get(AWAITING_REF)).toBe(seen);
+  });
+
+  it("cancelTopUp leaves a provider-seen request alone", async () => {
+    const session = useSessionStore();
+    const requests = useRequestsStore();
+    session.setAmount("1");
+    await session.fetchQuote("Bitcoin", "BTC");
+    await session.start();
+    const ref = requestRefOf("btc", 1);
+    expect(requests.get(ref)?.status.kind).toBe("awaiting-deposit");
+
+    await requests.observe(ref, providerReceiving(Date.now()));
+    expect(requests.get(ref)?.status).toMatchObject({ kind: "deposit-seen", via: "rail" });
+
+    // The reducer refuses the tombstone: the record, the world and the row all stay.
+    expect(await session.cancelTopUp()).toBe(false);
+    expect(requests.get(ref)?.status.kind).toBe("deposit-seen");
+    expect(session.mock).not.toBeNull();
+    expect(requests.openRecords.map((record) => record.ref)).toEqual([ref]);
+    expect(console.warn).toHaveBeenCalledWith(
+      "[coinage] cancel refused: request #1 is past its deposit",
+    );
   });
 
   it("cancel returns unconfirmed when the reads time out", async () => {

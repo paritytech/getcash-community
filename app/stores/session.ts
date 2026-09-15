@@ -1096,19 +1096,25 @@ export const useSessionStore = defineStore("session", () => {
     }
   }
 
-  /** Cancel tombstones the record; the sweep deletes it later. Awaited: the tombstone is durable
-   *  before the world comes down. */
-  async function tombstoneActiveFlow(ref: RequestRef, depositExpiresAt: number): Promise<void> {
-    if (!requests.has(ref)) return;
+  /** Cancel tombstones the record through the reducer; the sweep deletes it later. Awaited: the
+   *  tombstone is durable before the world comes down. False when the reducer refused: the record
+   *  is past its deposit and stays active, and the worker keeps its job. */
+  async function tombstoneActiveFlow(ref: RequestRef, depositExpiresAt: number): Promise<boolean> {
+    if (!requests.has(ref)) return true;
     await requests.observe(ref, {
       source: "user",
       at: Date.now(),
       event: "cancelled",
       depositExpiresAt,
     });
+    if (requests.get(ref)?.status.kind !== "cancelled") {
+      console.warn(`[coinage] cancel refused: request #${ref.tradeN} is past its deposit`);
+      return false;
+    }
     console.warn(`[coinage] request #${ref.tradeN} tombstoned (cancelled; deposit window watched)`);
     void cancelWorkerJob(workerSessionId(ref.sourceId, ref.tradeN));
     void reconcileBackground(); // drops the row
+    return true;
   }
 
   /** Tells the worker the request is gone. Best effort. */
@@ -1401,8 +1407,9 @@ export const useSessionStore = defineStore("session", () => {
     });
   }
 
-  /** Abandons the on-screen top-up. Core's cancel() clears the flow slot, the record leaves the
-   *  list, and the world comes down. Funds are never touched. */
+  /** Abandons the on-screen top-up. The record is tombstoned first; only then does core's
+   *  cancel() clear the flow slot and the world come down. A record the reducer refuses to cancel
+   *  keeps its slot and its world. Funds are never touched. */
   async function cancelTopUp(): Promise<boolean> {
     // Declined, not failed: the request still stands.
     if (cancelling.value || requests.claiming || resuming.value || !cancelReady.value) return false;
@@ -1433,6 +1440,21 @@ export const useSessionStore = defineStore("session", () => {
       const state = lastState.value;
       const depositExpiresAt =
         state?.phase === "awaiting-deposit" ? (state.deposit.expiresAt ?? 0) : 0;
+      if (ref !== null) {
+        try {
+          if (!(await tombstoneActiveFlow(ref, depositExpiresAt))) {
+            // The record is past its deposit: a purchase in progress, driven as the refused
+            // read is.
+            driveFunding();
+            return false;
+          }
+        } catch (e) {
+          // An unwritable tombstone leaves the record active.
+          console.warn(
+            `[coinage] tombstone write failed (record left as-is): ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      }
       try {
         // While the world is still up: cancel() needs the session to clear its slot.
         if (s) await step("cancel top-up", 20_000, s.cancel());
@@ -1441,16 +1463,6 @@ export const useSessionStore = defineStore("session", () => {
         console.warn(
           `[coinage] cancel: core cancel failed (continuing): ${e instanceof Error ? e.message : String(e)}`,
         );
-      }
-      if (ref !== null) {
-        try {
-          await tombstoneActiveFlow(ref, depositExpiresAt);
-        } catch (e) {
-          // An unwritable tombstone leaves the record active.
-          console.warn(
-            `[coinage] tombstone write failed (record left as-is): ${e instanceof Error ? e.message : String(e)}`,
-          );
-        }
       }
       teardownWorld();
       console.warn(
