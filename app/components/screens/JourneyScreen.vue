@@ -11,7 +11,7 @@ import type { FundingTopUp } from "../../funding/top-ups";
 import { DEPOSIT_EXPIRED_REASON, useSessionStore } from "../../stores/session";
 import { fmtCash } from "../../utils/cash";
 import { fmtFiat, isMoneyAmount } from "../../utils/money";
-import { formatWhenShort } from "../../utils/journey";
+import { formatWhenShort, type JourneySteps } from "../../utils/journey";
 import { refundedFailure } from "../../utils/recovery";
 import FundingJourneyTimeline from "../funding/progress/FundingJourneyTimeline.vue";
 import DetailRows from "../ui/DetailRows.vue";
@@ -55,17 +55,17 @@ const failure = computed(() => (state.value?.phase === "failed" ? state.value.fa
 const failedText = computed(() => session.fundingError ?? failure.value?.message ?? null);
 
 /**
- * The route's own timeline: crypto has no "Approved" leg and shows four steps.
+ * The route's own timeline: crypto shows three steps, the card rail five.
  *
  * The store owns the scale whenever a request is on screen — the completed count and the milestone
  * keys are both on it, and a second definition here would draw the last step as current and lose
  * the settled timestamp. The list's word on the route only stands in before the top-up is live.
  */
-const steps = computed<4 | 5>(() => {
+const steps = computed<JourneySteps>(() => {
   if (session.lastState !== null || !props.topUp) return session.journeySteps;
-  return props.topUp.route === "crypto" ? 4 : 5;
+  return props.topUp.route === "crypto" ? 3 : 5;
 });
-const crypto = computed(() => steps.value === 4);
+const crypto = computed(() => steps.value === 3);
 
 /** The design names the expired step itself, not "<stage> failed". */
 const failedLabel = computed(() => {

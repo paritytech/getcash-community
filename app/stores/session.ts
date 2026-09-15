@@ -329,10 +329,10 @@ export const useSessionStore = defineStore("session", () => {
   /** True while a claim is in flight: the host's sheet is up, or the credit is being verified. */
   const claiming = computed(() => phase.value === "funded" || phase.value === "working");
 
-  /** The journey's scale for the request on screen: the crypto timeline has no "processed" step.
-   *  The done count below and the milestone keys are both on it, so the screen reads this rather
-   *  than deciding the scale a second time. */
-  const journeySteps = computed<JourneySteps>(() => (method.value === "crypto" ? 4 : 5));
+  /** The journey's scale for the request on screen: the crypto timeline runs three steps, the
+   *  card's five. The done count below and the milestone keys are both on it, so the screen reads
+   *  this rather than deciding the scale a second time. */
+  const journeySteps = computed<JourneySteps>(() => (method.value === "crypto" ? 3 : 5));
 
   /**
    * A floor under the journey's step count, for the demo's Skip alone. Null in every real flow.
@@ -345,7 +345,7 @@ export const useSessionStore = defineStore("session", () => {
    */
   const demoJourneyFloor = ref<number | null>(null);
 
-  /** How many of the journey's steps are done, on the route's own scale (crypto shows four). */
+  /** How many of the journey's steps are done, on the route's own scale (crypto shows three). */
   const journeyDoneCount = computed(() => {
     const real = journeyDone(
       {
