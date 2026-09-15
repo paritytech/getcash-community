@@ -190,6 +190,7 @@ function isCritical(previous: RequestRecord, next: RequestRecord): boolean {
     (rankOf(previous) === 0 && rankOf(next) >= 1) ||
     (next.status.kind !== previous.status.kind && CRITICAL_KINDS.has(next.status.kind)) ||
     (previous.meldSubmittedAt === undefined && next.meldSubmittedAt !== undefined) ||
+    (previous.depositSkippedAt === undefined && next.depositSkippedAt !== undefined) ||
     (previous.failure === undefined && next.failure !== undefined)
   );
 }
@@ -941,6 +942,8 @@ export const useRequestsStore = defineStore("requests", () => {
   });
   /** True once the buyer finished in the widget. */
   const meldSubmitted = computed(() => foregroundRecord.value?.meldSubmittedAt !== undefined);
+  /** Demo only: true once Skip was pressed for the request on screen, so it is never offered again. */
+  const depositSkipped = computed(() => foregroundRecord.value?.depositSkippedAt !== undefined);
   /** True once the buyer submitted or the payment completed and the journey took over from the
    *  widget. */
   const meldHandedOff = computed(() =>
@@ -1132,6 +1135,12 @@ export const useRequestsStore = defineStore("requests", () => {
   /** The buyer finished the provider's widget; the stamp is on the host before this resolves. */
   function markMeldSubmitted(ref: RequestRef): Promise<void> {
     return observe(ref, { source: "user", at: requestsNow(), event: "meld-submitted" });
+  }
+
+  /** Demo Skip was pressed; the stamp is on the host before this resolves, so a re-open never
+   *  offers Skip again for this request. */
+  function markDepositSkipped(ref: RequestRef): Promise<void> {
+    return observe(ref, { source: "user", at: requestsNow(), event: "deposit-skipped" });
   }
 
   /** One read of the provider's status for `ref`, applied as the provider's observation: the
@@ -1873,11 +1882,13 @@ export const useRequestsStore = defineStore("requests", () => {
     meldDelayed,
     meldFailureMessage,
     meldSubmitted,
+    depositSkipped,
     meldHandedOff,
     leave,
     cancel,
     retry,
     markMeldSubmitted,
+    markDepositSkipped,
     startMeldPoll,
     stopMeldPoll,
     startForegroundClock,

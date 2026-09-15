@@ -461,6 +461,29 @@ describe("requests store", () => {
     expect(await stored(AWAITING_REF)).toMatchObject({ rev: 4 });
   });
 
+  it("a pressed Skip is persisted critically and survives a re-open", async () => {
+    await seed([awaitingDepositCryptoRecord]);
+    const requests = useRequestsStore();
+    await requests.reconcile("boot");
+    requests.setForeground(AWAITING_REF);
+    expect(requests.depositSkipped).toBe(false);
+
+    const key = requestKey(AWAITING_REF);
+    const before = host.writesTo(key);
+    await requests.markDepositSkipped(AWAITING_REF);
+    // Critical: on the host before the call resolves, and the flag is up in memory.
+    expect(requests.depositSkipped).toBe(true);
+    expect(host.writesTo(key)).toBe(before + 1);
+    expect(await stored(AWAITING_REF)).toMatchObject({ depositSkippedAt: FIXTURE_NOW });
+
+    // A re-open (a fresh store over the same host) still knows Skip was pressed.
+    setActivePinia(createPinia());
+    const reopened = useRequestsStore();
+    await reopened.reconcile("boot");
+    reopened.setForeground(AWAITING_REF);
+    expect(reopened.depositSkipped).toBe(true);
+  });
+
   it("a host write rejection keeps memory and retries on the next observation", async () => {
     await seed([awaitingDepositCryptoRecord]);
     const requests = useRequestsStore();

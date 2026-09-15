@@ -208,10 +208,14 @@ export const useSessionStore = defineStore("session", () => {
       if (stage === "complete") creditMeldSettlement();
     },
   );
-  /** Whether the deposit can be skipped: one is still awaited and the faucet has not paid. */
+  /** Whether the deposit can be skipped: one is still awaited, the faucet has not paid, and Skip
+   *  was not already pressed for this request (persisted, so a re-open never offers it again). */
   const canSkipDeposit = computed(
     () =>
-      requests.phase === "awaiting-deposit" && !requests.fundsSeen && faucetState.value === "idle",
+      requests.phase === "awaiting-deposit" &&
+      !requests.fundsSeen &&
+      !requests.depositSkipped &&
+      faucetState.value === "idle",
   );
   /** The on-screen request has its live session, so a cancel can clear the slot it holds. */
   const cancelReady = computed(() => live.value !== null || mock.value !== null);
@@ -1309,6 +1313,7 @@ export const useSessionStore = defineStore("session", () => {
     )
       return;
     faucetState.value = "funding";
+    void markDepositSkipped();
     try {
       const tradeN = live.value.tradeN;
       const faucetRef = requestRefOf(live.value.sourceId, tradeN);
@@ -1335,8 +1340,16 @@ export const useSessionStore = defineStore("session", () => {
 
   // Mock world controls (browser demo)
   function simulateDeposit() {
+    void markDepositSkipped();
     if (mock.value && amountBase.value !== null)
       mock.value.harness.setSettlementBalance(amountBase.value);
+  }
+
+  /** Demo Skip was pressed: record it on the request so a re-open never offers Skip again.
+   *  Stamped through the central store, persisted before it resolves. */
+  async function markDepositSkipped(): Promise<void> {
+    if (foregroundRef === null || requests.depositSkipped) return;
+    await requests.markDepositSkipped(foregroundRef);
   }
 
   /** The buyer finished in the widget: the stamp hands the screen over to the journey now, not on
