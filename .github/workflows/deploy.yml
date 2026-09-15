@@ -1,7 +1,9 @@
 name: Deploy
 
-# Merge to main publishes straight to `getcash` on paseo-next-v2; the gates in
-# .github/actions/build-site are the only check. workflow_dispatch redeploys main by hand.
+# Merge to main publishes straight to `getcash` on paseo-next-v2 and previewnet;
+# the gates in .github/actions/build-site are the only check. workflow_dispatch
+# redeploys main by hand, which is also how paritytech/autodeployer restores the
+# names after a testnet wipe.
 
 on:
   push:
@@ -30,8 +32,16 @@ jobs:
 
   deploy:
     needs: build
-    name: getcash
+    name: getcash (${{ matrix.target.env }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - env: paseo-next-v2
+            domain: getcash.paseo
+          - env: preview
+            domain: getcash.testnet
     permissions:
       contents: read
     steps:
@@ -40,7 +50,8 @@ jobs:
 
       - uses: ./.github/actions/deploy-site
         with:
-          # The production name, with the environment's TLD; the config's default.
-          domain: getcash.paseo
+          # The production name, with the environment's TLD.
+          domain: ${{ matrix.target.domain }}
+          env: ${{ matrix.target.env }}
           # Owner of the getcash name; the account deploy.sh signs with locally.
           mnemonic: ${{ secrets.MNEMONIC }}
