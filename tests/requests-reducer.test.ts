@@ -300,6 +300,33 @@ describe("request reducer: top-up transitions", () => {
     expect(refunded.rail.provider).toBe("manual");
   });
 
+  it("provider received then failed → failed non-recoverable; after a worker sighting the failure is rail only", () => {
+    // Meld's sighting is the fiat leg moving; a decline can still follow it, and the record fails.
+    const seen = reduce(card(), meld(at(1), { status: "receiving" }));
+    expect(seen.status).toMatchObject({ kind: "deposit-seen", via: "rail" });
+    const failed = reduce(seen, meld(at(2), declined));
+    expect(failed.status).toEqual({ kind: "failed", at: at(2), recoverable: false });
+    expect(failed.failure?.step).toBe("deposit");
+    expect(failed.failure?.message).toBe(DECLINED);
+    expect(failed.failureReason).toBe(DECLINED);
+    expect(failed.rail.stage).toBe("failed");
+
+    // The worker has the deposit in hand: the money leg is its to fail, the rail alone records
+    // the provider's word.
+    const onBurner = reduce(seen, worker(at(2), job({ fundsSeenAt: at(2), lastTickAt: at(2) })));
+    expect(onBurner.status).toEqual({
+      kind: "deposit-seen",
+      at: at(1),
+      assurance: "finalized",
+      via: "rail",
+    });
+    const railOnly = reduce(onBurner, meld(at(3), declined));
+    expect(railOnly.status).toEqual(onBurner.status);
+    expect(railOnly.failure).toBeUndefined();
+    expect(railOnly.failureReason).toBeUndefined();
+    expect(railOnly.rail.stage).toBe("failed");
+  });
+
   it("chain funds at best → deposit-seen provisional; worker fundsSeenAt upgrades to finalized", () => {
     const provisional = reduce(awaiting(), chain(at(1), FUNDS, "best", 8_000_100));
     expect(provisional.status).toEqual({

@@ -26,6 +26,8 @@ export function phaseLike(record: RequestRecord): PaymentPhase {
       return (status.via === "rail" || status.via === "core") && rail.provider !== "manual"
         ? "swapping"
         : "awaiting-deposit";
+    case "converting":
+      return "swapping";
     default:
       return "awaiting-deposit";
   }

@@ -195,7 +195,7 @@ describe("requests store: foreground, clock and user actions", () => {
 
     await requests.observe(AWAITING_REF, workerSwap(at(2)));
     expect(views()).toEqual({
-      phase: "awaiting-deposit",
+      phase: "swapping",
       fundsSeen: true,
       fundingStep: "swap",
       claiming: false,

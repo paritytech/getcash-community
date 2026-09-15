@@ -33,10 +33,18 @@ export function migrateRecord(raw: unknown, ref: RequestRef, now: number): Reque
   if (!isStoredRecord(raw)) return null;
   const upgraded = upgradeLegacyRecord(raw, ref, now);
   if (raw.schema !== 2) return upgraded;
-  // Stored additive fields win; the upgrade fills whatever a partial write left out. The key the
-  // record was read under is its identity.
+  // Stored additive fields win; the upgrade fills whatever a partial write left out. The stored
+  // progress is the app's own record of it, normalised but never advanced; the funded guess is
+  // for legacy records. The key the record was read under is its identity.
   const stored = raw as Partial<RequestRecord> & ActiveFlowRecord;
-  return { ...upgraded, ...stored, schema: 2, ref, progress: upgraded.progress };
+  const progress =
+    stored.progress === undefined
+      ? upgraded.progress
+      : resolveFundingProgressSnapshot(
+          stored.progress,
+          progressProviderForSource(effectiveSourceId(ref)).createProfile(),
+        );
+  return { ...upgraded, ...stored, schema: 2, ref, progress };
 }
 
 function upgradeLegacyRecord(raw: ActiveFlowRecord, ref: RequestRef, now: number): RequestRecord {

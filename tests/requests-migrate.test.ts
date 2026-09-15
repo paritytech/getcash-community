@@ -182,6 +182,23 @@ describe("request record migration", () => {
     });
   });
 
+  it("keeps the stored progress of a schema-2 record", () => {
+    // The provider saw the card charge: `funded` is set while the progress stands at the payment
+    // stage. A reload must not advance it to the conversion.
+    const seen: RequestRecord = { ...migrated(submittedCardRecord), funded: FIXTURE_NOW - 60_000 };
+    expect(seen.progress.confirmedStageKey).toBe("meld-payment");
+    const reloaded = migrated(seen, seen.ref);
+    expect(reloaded.progress).toEqual(seen.progress);
+    expect(reloaded.progress.confirmedStageKey).toBe("meld-payment");
+    expect(reloaded.progress.routeCompletedAt).toBeUndefined();
+    expect(reloaded.progress.stageTimestamps["cash-conversion"]).toBeUndefined();
+
+    // A legacy record has no better information: its funded stamp still guesses the conversion.
+    expect(migrated(fundedCryptoRecord).progress.stageTimestamps["cash-conversion"]).toBe(
+      fundedCryptoRecord.funded,
+    );
+  });
+
   it("rejects a record without a parseable amount", () => {
     const ref = refOf(awaitingDepositCryptoRecord);
     for (const amountHuman of ["abc", "0", "", "1.2345678"]) {

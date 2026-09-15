@@ -391,10 +391,18 @@ function applyProviderResult(record: RequestRecord, observation: ProviderResult)
     if (next.status.kind === "expired") next = { ...next, status: { kind: "awaiting-deposit" } };
     return moneySeen(next, at, "provisional", "rail");
   }
+  // The provider gives up before any money reached the burner: nothing was seen, or only the
+  // provider's own side saw it (Meld's "seen" is the fiat leg moving; a decline or a refund can
+  // still follow). Money on the burner is the worker's to fail: the rail alone records the word.
+  const seenOnlyByProvider =
+    next.status.kind === "deposit-seen" &&
+    next.status.assurance === "provisional" &&
+    (next.status.via === "rail" || next.status.via === "core") &&
+    !workerSawFunds(next);
   if (
     rail.stage === "failed" &&
     rail.failure !== undefined &&
-    rankOf(next) === 0 &&
+    (rankOf(next) === 0 || seenOnlyByProvider) &&
     !atSideExit(next)
   ) {
     // A refund-like failure marks the record refunded, as core's own failure does.

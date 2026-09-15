@@ -661,7 +661,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "2": 1746554272000,
       "4": 1746554274000,
     },
-    "phase": "awaiting-deposit",
+    "phase": "swapping",
     "scene": "12/31 card / journey: converting",
   },
   {
@@ -1317,7 +1317,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "2": 1746554272000,
       "4": 1746554272000,
     },
-    "phase": "awaiting-deposit",
+    "phase": "swapping",
     "scene": "21/31 crypto / pipeline: swap",
   },
   {
@@ -1400,7 +1400,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "2": 1746554272000,
       "4": 1746554272000,
     },
-    "phase": "awaiting-deposit",
+    "phase": "swapping",
     "scene": "22/31 crypto / pipeline: transfer",
   },
   {
@@ -1483,7 +1483,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "2": 1746554272000,
       "4": 1746554272000,
     },
-    "phase": "awaiting-deposit",
+    "phase": "swapping",
     "scene": "23/31 crypto / pipeline: arrival wait",
   },
   {
@@ -1565,7 +1565,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "2": 1746554272000,
       "4": 1746554272000,
     },
-    "phase": "awaiting-deposit",
+    "phase": "swapping",
     "scene": "24/31 crypto / heal: reconnecting",
   },
   {
