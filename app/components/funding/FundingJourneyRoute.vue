@@ -8,6 +8,7 @@ import { useVisibilityReconcile } from "../../composables/useVisibilityReconcile
 import type { FundingJourneyStatus } from "../../funding/handoff";
 import type { FundingTopUp } from "../../funding/top-ups";
 import { useSessionStore } from "../../stores/session";
+import ReturnFundsScreen from "../screens/ReturnFundsScreen.vue";
 import FundingSettledStatusScreen from "./FundingSettledStatusScreen.vue";
 import MeldFeeDetailsScreen from "./routes/MeldFeeDetailsScreen.vue";
 
@@ -20,6 +21,8 @@ const props = defineProps<{
   open?: ((topUp: FundingTopUp) => Promise<boolean>) | null;
   status?: FundingJourneyStatus | null;
 }>();
+// startOver bubbles up from a fiat top-up that ended: the host re-enters its package with the same
+// amount.
 const emit = defineEmits<{ back: []; startOver: [] }>();
 
 const session = useSessionStore();
@@ -42,8 +45,27 @@ watch(
     if (!q) showingFees.value = false;
   },
 );
+/** The return-funds drill-in over a refunded journey. Back (toolbar or bottom button) returns. */
+const showingRefund = ref(false);
+// A state that is no longer failed has no refund to walk through.
+watch(
+  () => session.lastState?.phase,
+  (phase) => {
+    if (phase !== "failed") showingRefund.value = false;
+  },
+);
+// The preview deck lands straight on the opened guide.
+watch(
+  () => session.revealRefund,
+  (want) => {
+    if (want) showingRefund.value = true;
+  },
+  { immediate: true },
+);
+
 function goBack() {
-  if (showingFees.value) showingFees.value = false;
+  if (showingRefund.value) showingRefund.value = false;
+  else if (showingFees.value) showingFees.value = false;
   else emit("back");
 }
 
@@ -100,6 +122,7 @@ onUnmounted(() => {
         </p>
       </div>
 
+      <ReturnFundsScreen v-else-if="showingRefund" @back="showingRefund = false" />
       <MeldFeeDetailsScreen v-else-if="showingFees" @back="showingFees = false" />
       <JourneyScreen
         v-else
@@ -107,6 +130,7 @@ onUnmounted(() => {
         :status="status ?? null"
         :top-up="topUp ?? null"
         @fees="showingFees = true"
+        @refund="showingRefund = true"
         @close="emit('back')"
         @start-over="emit('startOver')"
       />

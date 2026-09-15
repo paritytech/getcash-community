@@ -68,6 +68,19 @@ export function applyLiveStatus(
   }
 }
 
+/** The rail's persisted quote, spread onto the top-up when the record carries one. */
+export function quoteOf(record: FundingTopUpRecord): Pick<FundingTopUp, "quote"> {
+  return record.sourceAmount && record.sourceSymbol
+    ? {
+        quote: {
+          amount: record.sourceAmount,
+          symbol: record.sourceSymbol,
+          ...(record.sourceFee ? { fee: record.sourceFee } : {}),
+        },
+      }
+    : {};
+}
+
 export function creditedAmount(record: FundingTopUpRecord): string {
   if (record.claimed === undefined) return record.amountHuman;
   try {

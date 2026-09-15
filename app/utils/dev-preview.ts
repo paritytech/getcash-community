@@ -2,7 +2,8 @@
 // write synthetic state into the stores; Ctrl+Shift+R reloads the page.
 
 import type { PaymentState, SourceId } from "@getsome/core";
-import type { SourceFloorResult } from "@getsome/chainflip";
+import { SOURCE_CONFIG_BY_ID, type SourceFloorResult } from "@getsome/chainflip";
+import { SOURCE_CHAINS } from "~~/lib/config";
 import {
   advanceFundingProgressSnapshot,
   chainflipProgressProvider,
@@ -11,6 +12,7 @@ import {
   fundingProgressSignalForSharedStep,
 } from "../funding/progress";
 import { createMockCoinageSession } from "~~/lib/coinage";
+import { isDemoBuild } from "./demo";
 import type { useFlowStore } from "../stores/flow";
 import { useOffersStore } from "../stores/offers";
 import { DEPOSIT_EXPIRED_REASON, type useSessionStore } from "../stores/session";
@@ -112,8 +114,10 @@ function base(session: Session, flow: Flow) {
   session.lastState = null;
   session.foregroundProgress = null;
   session.fundsSeen = false;
+  session.revealRefund = false;
   session.milestones = {};
   flow.step = "amount";
+  flow.confirmingCancel = false;
   // Bitcoin, matching the canned quote.
   flow.srcChainIndex = 0;
   flow.srcAssetIndex = 0;
@@ -152,10 +156,80 @@ function selection(session: Session, flow: Flow) {
   base(session, flow);
   session.setAmount("100");
   session.quoted = { ...QUOTED, nativeAmount: 58_694_260_960n };
-  useOffersStore().floors = FLOORS;
+  const offers = useOffersStore();
+  offers.floors = FLOORS;
+  // The paused scene turns the demo fallback off; every other scene gets the build's own setting.
+  offers.demoFallback = isDemoBuild();
   flow.srcChainIndex = 1; // Ethereum
   flow.srcAssetIndex = 0;
 }
+
+/** Decimal string -> base-units string, for the refund amounts below. */
+function toBaseUnits(decimal: string, decimals: number): string {
+  const [whole = "0", frac = ""] = decimal.split(".");
+  const joined = `${whole}${frac.padEnd(decimals, "0").slice(0, decimals)}`;
+  return joined.replace(/^0+(?=\d)/, "");
+}
+
+/** A refunded failure on `sourceId`: the return-funds copy varies per chain and asset, so every
+ *  source gets its own scene. The screen reads the key off the mock world the scene installs. */
+function refunded(sourceId: SourceId, send: string) {
+  const source = SOURCE_CONFIG_BY_ID.get(sourceId);
+  if (!source) throw new Error(`preview: no source config for ${sourceId}`);
+  const chainIndex = SOURCE_CHAINS.findIndex((c) => c.chain === source.chain);
+  const assetIndex = (SOURCE_CHAINS[chainIndex]?.assets as readonly string[] | undefined)?.indexOf(
+    source.asset,
+  );
+  return (s: Session, f: Flow) => {
+    base(s, f);
+    // The deposit was paid — that is what makes it a refund — so Started reads done and the
+    // failed marker lands on Payment, as the design draws it.
+    s.fundsSeen = true;
+    f.srcChainIndex = Math.max(chainIndex, 0);
+    f.srcAssetIndex = Math.max(assetIndex ?? 0, 0);
+    s.quoted = {
+      ...QUOTED,
+      send,
+      symbol: source.asset,
+      sourceAsset: source.asset,
+      sourceChain: source.chain,
+    };
+    s.lastState = {
+      phase: "failed",
+      sourceId,
+      failure: {
+        kind: "refunded",
+        step: "swap",
+        message: "The deposit didn't go through. It is being returned to your recovery address.",
+        recoverable: false,
+      },
+      refund: {
+        amount: toBaseUnits(send, source.decimals),
+        txRef: "7f1c9b2e4d6a8c0f1e3b5d7a9c2e4f6081a3c5e7",
+      },
+    } as PaymentState;
+    void createMockCoinageSession({
+      recipient: DEPOSIT.address,
+      amount: BigInt(toBaseUnits(send, source.decimals)),
+      sourceId,
+    }).then((world) => {
+      s.mock = world;
+    });
+  };
+}
+
+/** Every UI source, with a plausible refund amount in its own precision. */
+const REFUND_PREVIEWS: readonly [SourceId, string][] = [
+  ["usdt-tron", "5.02"],
+  ["trx-tron", "15.4"],
+  ["btc", "0.00004545"],
+  ["eth", "0.0012"],
+  ["usdc-eth", "5.02"],
+  ["usdt-eth", "5.02"],
+  ["sol-solana", "0.025"],
+  ["usdc-solana", "5.02"],
+  ["usdt-solana", "5.02"],
+];
 
 // Scenes start at the first screen a package owns.
 export const SCENES: Scene[] = [
@@ -163,6 +237,14 @@ export const SCENES: Scene[] = [
     name: "crypto / network",
     apply: (s, f) => {
       selection(s, f);
+      f.step = "network";
+    },
+  },
+  {
+    name: "crypto / network: loading",
+    apply: (s, f) => {
+      selection(s, f);
+      useOffersStore().floors = null; // still learning: the skeleton rows
       f.step = "network";
     },
   },
@@ -179,12 +261,15 @@ export const SCENES: Scene[] = [
     name: "crypto / network: paused",
     apply: (s, f) => {
       selection(s, f);
-      useOffersStore().floors = new Map(
+      const offers = useOffersStore();
+      offers.floors = new Map(
         [...FLOORS.keys()].map((id) => [
           id,
           { kind: "unavailable", reason: "Quoting is currently unavailable due to maintenance" },
         ]),
       );
+      // The demo build's carry-on fallback would swallow the paused state this scene shows.
+      offers.demoFallback = false;
       f.step = "network";
     },
   },
@@ -196,6 +281,14 @@ export const SCENES: Scene[] = [
     },
   },
   {
+    // The deposit screen's skeleton shapes while the request is being opened.
+    name: "crypto / deposit: opening",
+    apply: (s, f) => {
+      base(s, f);
+      s.resuming = true;
+    },
+  },
+  {
     name: "crypto / deposit: waiting",
     apply: (s, f) => {
       base(s, f);
@@ -203,23 +296,15 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "crypto / deposit: faucet sent",
+    // The full-screen confirmation over an open deposit.
+    name: "crypto / deposit: cancel confirm",
     apply: (s, f) => {
       base(s, f);
       s.lastState = awaitingDeposit();
-      s.faucetState = "sent";
+      f.confirmingCancel = true;
     },
   },
   {
-    name: "crypto / deposit: faucet failed",
-    apply: (s, f) => {
-      base(s, f);
-      s.lastState = awaitingDeposit();
-      s.fundingError = "faucet transfer failed on-chain (is the faucet funded on Asset Hub?)";
-    },
-  },
-  {
-    // The channel deadline as a ticking countdown row.
     name: "crypto / deposit: expiring",
     apply: (s, f) => {
       base(s, f);
@@ -240,6 +325,15 @@ export const SCENES: Scene[] = [
     apply: (s, f) => {
       base(s, f);
       s.lastState = swapping("receiving");
+    },
+  },
+  {
+    // The chain is slow to confirm: amber Payment step, its own ribbon line, never terminal.
+    name: "crypto / convert: delayed",
+    apply: (s, f) => {
+      base(s, f);
+      s.lastState = swapping("receiving");
+      s.meldDelayed = true;
     },
   },
   {
@@ -423,38 +517,21 @@ export const SCENES: Scene[] = [
   },
   {
     name: "crypto / failed: refunded",
-    apply: (s, f) => {
-      base(s, f);
-      f.srcChainIndex = 3;
-      f.srcAssetIndex = 1; // USDT on Tron: a token refund, with the gas note
-      s.quoted = {
-        ...QUOTED,
-        send: "5.02",
-        symbol: "USDT",
-        sourceAsset: "USDT",
-        sourceChain: "Tron",
-      };
-      s.lastState = {
-        phase: "failed",
-        sourceId: "usdt-tron",
-        failure: {
-          kind: "refunded",
-          step: "swap",
-          message: "The deposit didn't go through. It is being returned to your recovery address.",
-          recoverable: false,
-        },
-        refund: { amount: "5020000", txRef: "7f1c9b2e4d6a8c0f1e3b5d7a9c2e4f6081a3c5e7" },
-      } as PaymentState;
-      // The panel reads the refund key off the request's world.
-      void createMockCoinageSession({
-        recipient: DEPOSIT.address,
-        amount: 5_000_000n,
-        sourceId: "usdt-tron",
-      }).then((world) => {
-        s.mock = world;
-      });
-    },
+    apply: refunded("usdt-tron", "5.02"),
   },
+  // The return-funds screen opened with the key revealed, once per source: the step copy is
+  // templated on the chain, its native coin, and the asset, so each reads differently.
+  ...REFUND_PREVIEWS.map(([sourceId, send]) => {
+    const source = SOURCE_CONFIG_BY_ID.get(sourceId)!;
+    const apply = refunded(sourceId, send);
+    return {
+      name: `crypto / refund key: ${source.asset} on ${source.chain}`,
+      apply: (s: Session, f: Flow) => {
+        apply(s, f);
+        s.revealRefund = true;
+      },
+    };
+  }),
   {
     name: "crypto / success",
     apply: (s, f) => {
