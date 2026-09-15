@@ -10,7 +10,7 @@ import { projectFundingProgress, type FundingProgressProjection } from "../../fu
 import type { FundingTopUp } from "../../funding/top-ups";
 import { DEPOSIT_EXPIRED_REASON, useSessionStore } from "../../stores/session";
 import { fmtCash } from "../../utils/cash";
-import { fmtFiat, isMoneyAmount } from "../../utils/money";
+import { quoteDetailRows } from "../../funding/quote-rows";
 import { formatWhenShort, type JourneySteps } from "../../utils/journey";
 import { refundedFailure } from "../../utils/recovery";
 import FundingJourneyTimeline from "../funding/progress/FundingJourneyTimeline.vue";
@@ -55,6 +55,20 @@ const failure = computed(() => (state.value?.phase === "failed" ? state.value.fa
 const failedText = computed(() => session.fundingError ?? failure.value?.message ?? null);
 
 /**
+ * What the list stored about a top-up that already failed. A journey opened from history often has
+ * no live request behind it — the world was torn down, or the record outlived it — and this is then
+ * the only account of what happened.
+ */
+const storedFailure = computed(() =>
+  props.topUp?.state.kind === "failed" ? props.topUp.state : null,
+);
+/** When the top-up reached its end, for a journey with nothing live to read it from. */
+const storedEndedAt = computed(() => {
+  const stored = props.topUp?.state;
+  return stored?.kind === "settled" || stored?.kind === "failed" ? stored.at : null;
+});
+
+/**
  * The route's own timeline: crypto shows three steps, the card rail five.
  *
  * The store owns the scale whenever a request is on screen — the completed count and the milestone
@@ -78,10 +92,18 @@ const failedLabel = computed(() => {
 const expired = computed(() => failedLabel.value !== null);
 /** The quote rows leave with the money: nothing was kept on an expired or refunded top-up. */
 const hideRows = computed(
-  () => expired.value || (failure.value !== null && refundedFailure(failure.value.kind)),
+  () =>
+    expired.value ||
+    (failure.value !== null && refundedFailure(failure.value.kind)) ||
+    storedFailure.value?.refunded === true,
 );
 
-const heroFailed = computed(() => progress.value?.view.kind === "failed" || failure.value !== null);
+const heroFailed = computed(
+  () =>
+    progress.value?.view.kind === "failed" ||
+    failure.value !== null ||
+    storedFailure.value !== null,
+);
 
 const creditedAmount = computed(() =>
   session.claimedBase != null ? fmtCash(session.claimedBase) : session.amountHuman,
@@ -92,13 +114,13 @@ const amountText = computed(() => {
   return `${session.amountHuman || (props.topUp?.amount ?? "")} $CASH`;
 });
 
-/** When the CASH landed: the live milestone (stamped at the route's last step), else the list's
- *  settled timestamp. */
+/** When the top-up reached its end, under the hero: the live milestone (stamped at the route's
+ *  last step) for a credit that just landed, else the list's own timestamp. A failed top-up gets
+ *  one too — when it stopped is part of what a buyer opens this screen to find out. */
 const settledWhen = computed(() => {
-  if (!finished.value) return null;
-  const at =
-    session.milestones[steps.value] ??
-    (props.topUp?.state.kind === "settled" ? props.topUp.state.at : null);
+  const at = finished.value
+    ? (session.milestones[steps.value] ?? storedEndedAt.value)
+    : storedEndedAt.value;
   return at != null ? formatWhenShort(at) : null;
 });
 
@@ -134,20 +156,12 @@ const quoteView = computed(() => {
     live: false,
   };
 });
-const detailRows = computed(() => {
-  const q = quoteView.value;
-  // The crypto rail doesn't restate the deposit amount here — the deposit screen owns that figure.
-  if (!q || q.crypto) return [];
-  // Symbol-first for the fiat rails ("€50.55").
-  const money = (amount: string) => fmtFiat(amount, q.symbol);
-  const rows: { label: string; value: string; fees?: boolean }[] = [];
-  // The fee row drills into the breakdown screen when the live quote backs it with a fee the
-  // breakdown can actually split; an unparseable one still shows, as plain text.
-  if (q.fee)
-    rows.push({ label: "Fees", value: money(q.fee), fees: q.live && isMoneyAmount(q.fee) });
-  rows.push({ label: "Total", value: money(q.amount) });
-  return rows;
-});
+/** The rows come from the shared helper, so the journey and the settled receipt present the same
+ *  quote identically. The crypto rail doesn't restate the deposit amount here — the deposit screen
+ *  owns that figure — but the settled receipt, which has no deposit screen, still shows it. */
+const detailRows = computed(() =>
+  quoteView.value?.crypto ? [] : quoteDetailRows(quoteView.value),
+);
 
 /**
  * Whether to offer a fresh attempt at a card or bank top-up that ended.
@@ -181,6 +195,8 @@ const message = computed(() => {
     return `The rate moved too far to complete the swap. Your ${asset.value || "crypto"} was sent back, minus network fees.`;
   }
   if (failedText.value) return failedText.value;
+  // Nothing live to ask: the record's own reason is the only account of the failure left.
+  if (storedFailure.value?.reason) return storedFailure.value.reason;
   if (session.fundingNotice) return session.fundingNotice;
   if (delayed.value) {
     // Each rail waits on something else: the card provider's retry vs chain confirmations.

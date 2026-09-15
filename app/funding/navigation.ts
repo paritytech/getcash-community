@@ -18,7 +18,11 @@ export function resolveFundingTopUpDestination(state: FundingTopUpState): Fundin
 export function resolveFundingShellScreen(
   requested: FundingShellEntryScreen,
   hasPendingContent: boolean,
+  hasTopUpInProgress = false,
 ): FundingShellScreen {
   if (requested === "pending") return hasPendingContent ? "pending" : "amount";
-  return requested === "auto" ? "amount" : requested;
+  // Launch: a top-up still running is what the buyer reopened the app for, so it owns the first
+  // screen. A settled one does not — the design titles this screen "Top-up in progress".
+  if (requested === "auto") return hasTopUpInProgress ? "pending" : "amount";
+  return requested;
 }
