@@ -3,7 +3,7 @@
 // the moment it opens. Once the buyer finishes, a small loader replaces the widget while the poll
 // confirms.
 import { onMounted, onUnmounted } from "vue";
-import { CircleX } from "lucide-vue-next";
+import { ArrowDown, CircleX } from "lucide-vue-next";
 import { useSessionStore } from "../../../stores/session";
 
 defineProps<{ payUrl?: string | null }>();
@@ -36,8 +36,23 @@ onUnmounted(() => window.removeEventListener("message", onMessage));
   <div class="flex min-h-0 w-full flex-1 flex-col">
     <!-- The hosted widget until the buyer finishes, then a small loader while the poll
          confirms. -->
+    <!-- A refund is reassuring, not an error: the money came back. Its own calm treatment, before
+         the red failure below, so it never reads as "payment failed, try again". -->
     <div
-      v-if="session.meldStage === 'failed'"
+      v-if="session.meldStage === 'failed' && session.meldRefunded"
+      class="flex min-h-0 w-full flex-1 flex-col items-center justify-center gap-2 text-center"
+    >
+      <ArrowDown class="size-8 text-fg-primary" aria-hidden="true" />
+      <p class="text-label-l font-semibold text-fg-primary">Payment refunded</p>
+      <p class="max-w-[260px] text-body-m text-fg-secondary">
+        {{
+          session.meldFailureMessage ??
+          "Your payment was refunded. The money has been returned to you."
+        }}
+      </p>
+    </div>
+    <div
+      v-else-if="session.meldStage === 'failed'"
       class="flex min-h-0 w-full flex-1 flex-col items-center justify-center gap-2 text-center"
     >
       <CircleX class="size-8 text-fg-error" aria-hidden="true" />

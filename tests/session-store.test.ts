@@ -119,4 +119,18 @@ describe("session store: Meld (card / bank) in the mock world", () => {
     // meldPayUrl null keeps the widget from rendering again.
     expect(store.meldPayUrl).toBeNull();
   });
+
+  it("cancels a card top-up and tears the request down", async () => {
+    const store = useSessionStore();
+    store.setMethod("card");
+    store.setAmount("100");
+    await store.fetchMeldQuote();
+    await store.start("");
+    expect(store.phase).toBe("awaiting-deposit");
+
+    // The fake adapter withdraws the pay page, so the local cancel goes through.
+    expect(await store.cancelTopUp()).toBe(true);
+    expect(store.cancelNotice).toBeNull();
+    expect(store.phase).toBeNull();
+  });
 });

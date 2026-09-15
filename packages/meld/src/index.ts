@@ -7,6 +7,7 @@ export {
   type MeldSessionRequest,
   type MeldSessionResult,
   type MeldStatusResult,
+  type MeldCancelResult,
 } from "./client";
 export { NATIVE_ASSET, NATIVE_DECIMALS, formatNative, toNativeUnits } from "./native";
 export { computeMeldQuote, pickBestQuote, type MeldQuoteContext, type MeldQuoteRaw } from "./quote";
