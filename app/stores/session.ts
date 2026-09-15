@@ -2321,12 +2321,13 @@ export const useSessionStore = defineStore("session", () => {
       // it and keep the request: telling the buyer it is cancelled while their money moves is the
       // one thing not to say. A transport error fails open (a still-served page is the pre-existing
       // behaviour), so a dead adapter never strands the cancel.
-      if (meldStatusClient !== null && meldFundingRequestId !== null) {
+      const meldRequestId = meldFundingRequestId.value;
+      if (meldStatusClient !== null && meldRequestId !== null) {
         try {
           const outcome = await step(
             "withdraw the pay page",
             15_000,
-            meldStatusClient.cancel(meldFundingRequestId),
+            meldStatusClient.cancel(meldRequestId),
           );
           if (outcome.outcome === "not-cancellable") {
             cancelNotice.value =
