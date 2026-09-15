@@ -642,6 +642,8 @@ let index = -1;
 
 /** Applies the next scene; resolves once its observations have landed. */
 export async function directScene(session: Session, flow: Flow, delta: 1 | -1): Promise<string> {
+  // The deck's requests are fakes: they never reach the host store or the worker.
+  useRequestsStore().enterSandbox();
   index = (index + delta + SCENES.length) % SCENES.length;
   const scene = SCENES[index]!;
   const label = `${index + 1}/${SCENES.length} ${scene.name}`;

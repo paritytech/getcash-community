@@ -15,6 +15,7 @@ import {
 } from "../app/funding/requests/model";
 import {
   createMemoryKeyedStorage,
+  MIRROR_KEY,
   REQUEST_INDEX_KEY,
   requestKey,
   setMirrorStorage,
@@ -23,8 +24,10 @@ import {
   type KeyedStorage,
   type WebStorageLike,
 } from "../app/funding/requests/storage";
+import { useFlowStore } from "../app/stores/flow";
 import { useRequestsStore } from "../app/stores/requests";
-import type { ActiveFlowRecord } from "../app/stores/session";
+import { useSessionStore, type ActiveFlowRecord } from "../app/stores/session";
+import { directScene, SCENES } from "../app/utils/dev-preview";
 import {
   requestRefKey,
   requestRefOf,
@@ -129,6 +132,21 @@ const startFunding = (sessionId: string, payload: WorkerHandoffPayload) => ({
   api: "startFunding",
   payload: { sessionId, ...payload },
 });
+
+/** A memory record storage that counts its writes. */
+function countingStorage() {
+  const inner = createMemoryKeyedStorage();
+  let writes = 0;
+  const storage: KeyedStorage = {
+    read: (key) => inner.read(key),
+    write: (key, value) => {
+      writes += 1;
+      return inner.write(key, value);
+    },
+    clear: (key) => inner.clear(key),
+  };
+  return { storage, totalWrites: () => writes };
+}
 
 function fakeWebStorage(): WebStorageLike {
   const entries = new Map<string, string>();
@@ -479,5 +497,38 @@ describe("requests store: the hand-off step", () => {
     expect(skipped).toEqual([
       ["[requests] worker not running; 2 hand-off(s) wait for the next pass"],
     ]);
+  });
+
+  it("the preview deck writes nothing durable and hands nothing to the worker", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    const counting = countingStorage();
+    setRecordStorage(counting.storage);
+    const mirror = fakeWebStorage();
+    setMirrorStorage(mirror);
+    const requests = useRequestsStore();
+    // A real request off screen the worker has no job for: the next pass would hand it off.
+    await requests.create(AWAITING_REF, {
+      ...migrated(awaitingDepositCryptoRecord),
+      handoff: AWAITING_HANDOFF,
+    });
+    const writesBefore = counting.totalWrites();
+    const mirrorBefore = mirror.getItem(MIRROR_KEY);
+    expect(mirrorBefore).toContain(`"${requestRefKey(AWAITING_REF)}"`);
+
+    const session = useSessionStore();
+    const flow = useFlowStore();
+    for (let n = 0; n < SCENES.length; n++) await directScene(session, flow, 1);
+    await requests.reconcile("boot");
+
+    expect(requests.sandboxed).toBe(true);
+    expect(counting.totalWrites()).toBe(writesBefore);
+    expect(mirror.getItem(MIRROR_KEY)).toBe(mirrorBefore);
+    expect(worker.calls).toEqual([]);
+    expect(worlds.builds).toEqual([]);
+    // Memory holds the deck's own requests alone; the real one is back on the next reload.
+    const tradeNumbers = requests.openRecords.map((record) => record.ref.tradeN);
+    expect(tradeNumbers.length).toBeGreaterThan(0);
+    expect(tradeNumbers.every((tradeN) => tradeN >= 900)).toBe(true);
+    expect(requests.has(AWAITING_REF)).toBe(false);
   });
 });

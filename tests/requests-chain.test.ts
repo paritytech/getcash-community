@@ -387,11 +387,18 @@ describe("requests store: the chain step", () => {
 
     await requests.reconcile("boot");
 
-    expect(chain.probes.sort()).toEqual(["dot-assethub:5", "dot-assethub:6"]);
-    // 5 was empty: noted, so it is not read again for a day.
+    // Every number under the counter without a record or a job, below the records too.
+    expect(chain.probes.sort()).toEqual([
+      "dot-assethub:1",
+      "dot-assethub:2",
+      "dot-assethub:5",
+      "dot-assethub:6",
+    ]);
+    // 1, 2 and 5 were empty: noted, so they are not read again for a day.
+    const empty = { firstAt: FIXTURE_NOW, lastAt: FIXTURE_NOW };
     expect(JSON.parse((await host.read(PROBED_KEY))!)).toEqual({
       schema: 1,
-      "dot-assethub": { "5": { firstAt: FIXTURE_NOW, lastAt: FIXTURE_NOW } },
+      "dot-assethub": { "1": empty, "2": empty, "5": empty },
     });
     // 6 holds funds and core's slot knows the amount: a record, funded by the chain's read, and
     // handed to the worker on the same pass.
@@ -420,7 +427,7 @@ describe("requests store: the chain step", () => {
     ]);
     expect(await storedIndex()).toEqual([LOST_REF, AWAITING_REF]);
 
-    // The same boot again: 5 is noted and 6 is a record now; nothing is read.
+    // The same boot again: 1, 2 and 5 are noted and 6 is a record now; nothing is read.
     chain.probes.length = 0;
     await requests.reconcile("boot");
     expect(chain.probes).toEqual([]);
@@ -428,6 +435,23 @@ describe("requests store: the chain step", () => {
     chain.counters.set("dot-assethub", 9);
     await requests.reconcile("refresh");
     expect(chain.probes).toEqual([]);
+  });
+
+  it("gap sweep covers a source with no records left", async () => {
+    const requests = useRequestsStore();
+    // Nothing in memory or on the host: only the chain remembers two card requests were made.
+    chain.counters.set("meld-card", 3);
+
+    await requests.reconcile("boot");
+
+    // Every other source's counter reads 1 and costs nothing beyond that read.
+    expect(chain.probes.sort()).toEqual(["meld-card:1", "meld-card:2"]);
+    const empty = { firstAt: FIXTURE_NOW, lastAt: FIXTURE_NOW };
+    expect(JSON.parse((await host.read(PROBED_KEY))!)).toEqual({
+      schema: 1,
+      "meld-card": { "1": empty, "2": empty },
+    });
+    expect(requests.records).toEqual([]);
   });
 
   it("the deposit watch subscribes to the burner at a best block and ends once the deposit is seen", async () => {

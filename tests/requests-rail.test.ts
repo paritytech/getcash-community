@@ -213,31 +213,33 @@ describe("rail mapping", () => {
     const delivered = rail("delivered", "complete", 4);
     const failed = railFromSwapStatus("meld", failure, 5);
 
-    // Forward, and a same-stage read is the newer one.
+    // Forward, and a same-stage read with another status is the newer one.
     expect(mergeRail(waiting, received)).toBe(received);
     expect(mergeRail(received, processing)).toBe(processing);
     expect(mergeRail(processing, delivered)).toBe(delivered);
-    expect(mergeRail(received, rail("received", "receiving", 6))).toEqual(
-      rail("received", "receiving", 6),
-    );
+    const sending = rail("processing", "sending", 6);
+    expect(mergeRail(processing, sending)).toBe(sending);
 
-    // Backwards keeps the stage; only the read time and the delay marker follow the latest read.
-    expect(mergeRail(delivered, rail("received", "receiving", 7))).toEqual(
-      rail("delivered", "complete", 7),
-    );
+    // An identical status is the very same rail: a repeated read is not a change.
+    expect(mergeRail(received, rail("received", "receiving", 6))).toBe(received);
+    expect(mergeRail(delivered, rail("received", "receiving", 7))).toBe(delivered);
+
+    // Backwards keeps the stage; only a delay marker that changed follows the latest read, with
+    // its time.
     expect(mergeRail(delivered, rail("received", "receiving", 8, true))).toEqual(
       rail("delivered", "complete", 8, true),
     );
     expect(
       mergeRail(rail("delivered", "complete", 8, true), rail("waiting", "waiting", 9)),
     ).toEqual(rail("delivered", "complete", 9));
+    const delayedReceived = rail("received", "receiving", 9, true);
+    expect(mergeRail(received, delayedReceived)).toBe(delayedReceived);
+    const undelayed = rail("received", "receiving", 9, false);
+    expect(mergeRail(undelayed, received)).toBe(undelayed);
 
     // Failed is reached from any stage and is not left by a later happy-path read.
     expect(mergeRail(waiting, failed)).toBe(failed);
     expect(mergeRail(delivered, failed)).toBe(failed);
-    expect(mergeRail(failed, rail("delivered", "complete", 10))).toEqual({
-      ...failed,
-      updatedAt: 10,
-    });
+    expect(mergeRail(failed, rail("delivered", "complete", 10))).toBe(failed);
   });
 });

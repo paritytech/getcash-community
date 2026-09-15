@@ -86,10 +86,15 @@ export function railFromSwapStatus(
   };
 }
 
-/** `next` when it fails or is at least as far along as `current`; else `current` with the
- *  latest read's `delayed` and time, since a stage never moves backwards. */
+/** `next` when it fails or moves the stage or status forward; `current` itself when the read
+ *  changes nothing, since a stage never moves backwards and an unchanged rail must not look like
+ *  a change; else `current` with the latest read's `delayed` and time. */
 export function mergeRail(current: RailState, next: RailState): RailState {
-  if (next.stage === "failed" || stageRank(next.stage) >= stageRank(current.stage)) return next;
+  const forward = stageRank(next.stage) - stageRank(current.stage);
+  if (next.stage === "failed" || forward > 0) return next;
+  const sameDelay = (current.delayed ?? false) === (next.delayed ?? false);
+  if (forward === 0) return sameDelay && next.status === current.status ? current : next;
+  if (sameDelay) return current;
   const merged: RailState = { ...current, updatedAt: next.updatedAt };
   if (next.delayed === undefined) delete merged.delayed;
   else merged.delayed = next.delayed;

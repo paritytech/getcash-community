@@ -376,7 +376,9 @@ function applyProviderResult(record: RequestRecord, observation: ProviderResult)
     record.rail,
     railFromSwapStatus(record.rail.provider, result, at, observation.delayed),
   );
-  let next = witnessed({ ...record, rail }, { provider: { status: result.status, at } });
+  let next = witnessed(rail === record.rail ? record : { ...record, rail }, {
+    provider: { status: result.status, at },
+  });
   if (rail.stage !== record.rail.stage || rail.status !== record.rail.status) {
     const provider = progressProviderForSource(effectiveSourceId(record.ref));
     next = advanced(
@@ -421,6 +423,7 @@ function applyProviderResult(record: RequestRecord, observation: ProviderResult)
 
 function applyProviderUnreachable(record: RequestRecord, at: number): RequestRecord {
   // A poll that cannot confirm the delay must not keep asserting it.
+  if (!record.rail.delayed) return record;
   return { ...record, rail: { ...record.rail, delayed: false, updatedAt: at } };
 }
 

@@ -41,11 +41,14 @@ import {
 } from "../funding/requests/model";
 import { reduce } from "../funding/requests/reducer";
 import {
+  createMemoryKeyedStorage,
   getRecordStorage,
   PROBED_KEY,
   readMirrorSync,
   REQUEST_INDEX_KEY,
   requestKey,
+  setMirrorStorage,
+  setRecordStorage,
   WORKER_JOBS_KEY,
   writeMirrorSync,
   type KeyedStorage,
@@ -61,7 +64,7 @@ import {
   milestonesOf,
   phaseLike,
 } from "../funding/requests/views";
-import { CRYPTO_SOURCE_ID } from "../funding/source-ids";
+import { CRYPTO_SOURCE_ID, MELD_SOURCE_IDS } from "../funding/source-ids";
 import { fmtCash, toCashBase } from "../utils/cash";
 import {
   parseRequestIndex,
@@ -123,6 +126,11 @@ const WORKER_NOT_RUNNING =
 /** Today's message for a payment the adapter no longer knows; a 404 never self-heals. */
 const MELD_GONE_MESSAGE =
   "We can no longer find this payment. Do not pay again. Contact support with your reference.";
+/** Consecutive "not found" answers before a payment is declared gone: one 404 can be an adapter restart. */
+const MELD_GONE_AFTER = 3;
+
+/** The demo deck entered its sandbox this session; a reload leaves it. */
+let sandboxEntered = false;
 
 // The client the background Meld reads go through: the adapter named by `VITE_MELD_BASE_URL`,
 // built once; null when this build has no adapter, and the reads are skipped.
@@ -564,6 +572,8 @@ export const useRequestsStore = defineStore("requests", () => {
   /** The store's second hand, advanced while the page is visible and an unfinished record
    *  exists; a settled record's freshness does not depend on time. */
   const tick = ref(requestsNow());
+  /** The demo deck's sandbox: records live in memory alone and nothing outside is read or told. */
+  const sandboxed = ref(false);
 
   const records = computed(() => Object.values(entries.value).map((entry) => entry.record));
   const open = computed(() => records.value.filter((record) => record.status.kind !== "cancelled"));
@@ -977,6 +987,7 @@ export const useRequestsStore = defineStore("requests", () => {
   const foregroundAwaiting = (): boolean =>
     foregroundRecord.value?.status.kind === "awaiting-deposit";
   function startDepositWatch(): void {
+    if (sandboxed.value) return;
     const record = foregroundRecord.value;
     if (record === null || record.status.kind !== "awaiting-deposit") return;
     const { ref } = record;
@@ -1167,9 +1178,13 @@ export const useRequestsStore = defineStore("requests", () => {
     return observe(ref, { source: "user", at: requestsNow(), event: "deposit-skipped" });
   }
 
+  // Consecutive "not found" answers per request, on screen or in the background.
+  const meldNotFound = new Map<RequestKey, number>();
+
   /** One read of the provider's status for `ref`, applied as the provider's observation: the
-   *  result, `gone` on a 404 (terminal, with today's message), `unreachable` on any other error,
-   *  logged against the `failures` the caller has counted so far. */
+   *  result, `gone` on the `MELD_GONE_AFTER`th consecutive 404 (terminal, with today's message),
+   *  `unreachable` on an earlier 404 or any other error, logged against the `failures` the caller
+   *  has counted so far. */
   async function observeMeldStatus(
     ref: RequestRef,
     client: MeldClientLike,
@@ -1177,8 +1192,10 @@ export const useRequestsStore = defineStore("requests", () => {
     failures = 0,
   ): Promise<"ok" | "gone" | "unreachable"> {
     const at = requestsNow();
+    const key = requestRefKey(ref);
     try {
       const result = await getMeldStatus(client, fundingRequestId);
+      meldNotFound.delete(key);
       await observe(ref, {
         source: "provider",
         provider: "meld",
@@ -1190,6 +1207,16 @@ export const useRequestsStore = defineStore("requests", () => {
     } catch (e) {
       const httpStatus = (e as { status?: number } | null)?.status;
       if (httpStatus === 404) {
+        const notFound = (meldNotFound.get(key) ?? 0) + 1;
+        if (notFound < MELD_GONE_AFTER) {
+          meldNotFound.set(key, notFound);
+          console.warn(
+            `[meld] status for ${fundingRequestId} not found (${String(notFound)}/${String(MELD_GONE_AFTER)})`,
+          );
+          await observe(ref, { source: "provider", provider: "meld", at, unreachable: true });
+          return "unreachable";
+        }
+        meldNotFound.delete(key);
         console.error(
           `[meld] status poll got a terminal 404 for ${fundingRequestId}, stopping:`,
           e,
@@ -1203,6 +1230,7 @@ export const useRequestsStore = defineStore("requests", () => {
         });
         return "gone";
       }
+      meldNotFound.delete(key);
       // A 401 is an auth problem on this side and retries with the other transients.
       if (httpStatus === 401) {
         console.error(
@@ -1231,6 +1259,7 @@ export const useRequestsStore = defineStore("requests", () => {
    *  removed. Starting it again for the same request is a no-op; for another request it replaces
    *  the running poll. */
   function startMeldPoll(ref: RequestRef, client: MeldClientLike, fundingRequestId: string): void {
+    if (sandboxed.value) return;
     const key = requestRefKey(ref);
     if (meldPoll?.key === key) return;
     stopMeldPoll();
@@ -1289,9 +1318,32 @@ export const useRequestsStore = defineStore("requests", () => {
     meldPoll = null;
   }
 
+  /** The provider's word can still move the record: it awaits or has seen its deposit, or it
+   *  expired or failed without the provider's final word and a late "received" can still re-open
+   *  it, until the deposit window plus the tombstone grace is out. */
+  function meldCanMove(record: RequestRecord): boolean {
+    const { status, rail, deadline } = record;
+    switch (status.kind) {
+      case "awaiting-deposit":
+      case "deposit-seen":
+        return true;
+      case "expired":
+      case "failed":
+        return (
+          rail.stage !== "failed" &&
+          requestsNow() <=
+            (deadline.depositExpiresAt ?? record.startedAt + depositWindowFor(record.route)) +
+              TOMBSTONE_GRACE_MS
+        );
+      default:
+        return false;
+    }
+  }
+
   /** Reconcile's provider step, hosted only: one status read for every Meld request off screen
-   *  that the provider can still move, at rank 0–1. Skipped when this build has no adapter. */
+   *  that the provider can still move. Skipped when this build has no adapter. */
   async function readBackgroundMeldStatuses(): Promise<void> {
+    if (sandboxed.value) return;
     if (!isHosted()) return;
     const client = meldStatusClientFactory();
     if (client === null) return;
@@ -1299,7 +1351,7 @@ export const useRequestsStore = defineStore("requests", () => {
       const { meldFundingRequestId: fundingRequestId, ref } = record;
       return fundingRequestId === undefined ||
         record.rail.provider !== "meld" ||
-        rankOf(record) > 1 ||
+        !meldCanMove(record) ||
         requestRefKey(ref) === foreground.value
         ? []
         : [{ ref, fundingRequestId }];
@@ -1322,15 +1374,17 @@ export const useRequestsStore = defineStore("requests", () => {
    *  watching, each read bounded, a failed read changing nothing. (a) A cancelled or expired
    *  request: funds resurrect it; a cancelled one confirmed empty past its window and grace is
    *  removed (today's reap rule). (b) A waiting request whose worker is unknown, stale or not
-   *  running. (c) The gap sweep: every trade number under the source's counter with neither a
-   *  record nor a job is read once and noted under `getsome:probed`, re-read at most once a day
-   *  while its deposit window is open; funds with a core flow slot become a record that the
-   *  hand-off step sends on this pass. (a) and (c) run on boot and return only, (b) every time. */
+   *  running. (c) The gap sweep: under every source this app can run, every trade number from one
+   *  to the source's counter with neither a record nor a job is read once and noted under
+   *  `getsome:probed`, re-read at most once a day while its deposit window is open; funds with a
+   *  core flow slot become a record that the hand-off step sends on this pass. (a) and (c) run on
+   *  boot and return only, (b) every time. */
   async function readChain(
     reason: string,
     now: number,
     jobs: Record<string, WorkerJob>,
   ): Promise<void> {
+    if (sandboxed.value) return;
     if (!isHosted()) return;
     const [
       { probeTradeBurner, readHostedTradeCounter, readFlowSlot, lostRequestHandoff },
@@ -1414,13 +1468,18 @@ export const useRequestsStore = defineStore("requests", () => {
       probed[sourceId] = { ...probed[sourceId], [String(n)]: entry };
       probedChanged = true;
     }
-    const highestBySource = new Map<string, number>();
-    for (const { ref } of records.value) {
-      const sourceId = effectiveSourceId(ref);
-      highestBySource.set(sourceId, Math.max(highestBySource.get(sourceId) ?? 0, ref.tradeN));
+    // Every source a request can run under: a total storage loss leaves no record to learn them
+    // from, and a lost number can sit below the highest record.
+    const sources = new Set<string>([CRYPTO_SOURCE_ID, ...MELD_SOURCE_IDS]);
+    for (const { chain, assets } of SOURCE_CHAINS) {
+      for (const asset of assets) {
+        const sourceId = sourceIdFor(chain, asset);
+        if (sourceId !== undefined) sources.add(sourceId);
+      }
     }
+    for (const { ref } of records.value) sources.add(effectiveSourceId(ref));
     const gaps: { sourceId: string; n: number }[] = [];
-    for (const [sourceId, highest] of highestBySource) {
+    for (const sourceId of sources) {
       const counter = await bounded(`trade counter read for ${sourceId}`, PROBE_BOUND_MS, () =>
         readHostedTradeCounter(sourceId),
       );
@@ -1428,7 +1487,10 @@ export const useRequestsStore = defineStore("requests", () => {
         console.warn(`[requests] ${counter.reason}; gap sweep skipped`);
         continue;
       }
-      for (let n = highest + 1; n < counter.value; n++) {
+      for (let n = 1; n < counter.value; n++) {
+        if (has(requestRefOf(sourceId, n))) continue;
+        // A legacy record of the crypto rail's own source sits under the bare ref.
+        if (sourceId === CRYPTO_SOURCE_ID && has({ tradeN: n })) continue;
         if (jobs[workerSessionId(sourceId, n)]) continue;
         const seen = probed[sourceId]?.[String(n)];
         if (
@@ -1500,6 +1562,7 @@ export const useRequestsStore = defineStore("requests", () => {
    *  answer arrives with the next job read. A failure is noted on the entry and the next
    *  reconcile tries again. */
   async function handOffLostRequests(now: number): Promise<void> {
+    if (sandboxed.value) return;
     if (!isHosted()) return;
     const lost = records.value.flatMap((record) => {
       const reason = lostHandoff(record);
@@ -1587,7 +1650,7 @@ export const useRequestsStore = defineStore("requests", () => {
     typeof document === "undefined" || document.visibilityState !== "hidden";
 
   function startJobPoll(): void {
-    if (jobPollTimer !== null) return;
+    if (sandboxed.value || jobPollTimer !== null) return;
     jobPollTimer = setInterval(() => void pollJobs(), JOB_POLL_MS);
   }
   function stopJobPoll(): void {
@@ -1715,6 +1778,7 @@ export const useRequestsStore = defineStore("requests", () => {
    *  clock expire what it must. Single-flight: a caller arriving mid-run makes it run once more,
    *  as a refresh, to catch what landed mid-pass without repeating the boot-only reads. */
   function reconcile(reason: string): Promise<void> {
+    if (sandboxed.value) return Promise.resolve();
     if (reconciling) {
       reconcileAgain = true;
       return reconciling;
@@ -1872,10 +1936,28 @@ export const useRequestsStore = defineStore("requests", () => {
     syncTick();
   }
 
+  /** Demo builds only, once per session: every poll and watch stops, memory is emptied, the
+   *  records live in a throwaway store with no mirror or adapter, and nothing reads the chain,
+   *  the worker or the provider or hands the worker a request again until a reload. */
+  function enterSandbox(): void {
+    if (sandboxEntered) return;
+    sandboxEntered = true;
+    sandboxed.value = true;
+    stopJobPoll();
+    stopMeldPoll();
+    stopDepositWatch();
+    entries.value = {};
+    setRecordStorage(createMemoryKeyedStorage());
+    setMirrorStorage(null);
+    setMeldStatusClientFactory(() => null);
+  }
+
   return {
     entries,
     records,
     openRecords,
+    sandboxed,
+    enterSandbox,
     hydrated,
     hostReadDone,
     storage,
