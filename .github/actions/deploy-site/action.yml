@@ -11,6 +11,9 @@ inputs:
   mnemonic:
     description: Owner of the name and signer of every record written.
     required: true
+  env:
+    description: bulletin-deploy environment id the name lives on.
+    default: paseo-next-v2
 
 runs:
   using: composite
@@ -39,6 +42,7 @@ runs:
       env:
         MNEMONIC: ${{ inputs.mnemonic }}
         DEPLOY_DOMAIN: ${{ inputs.domain }} # read by bulletin-deploy.config.ts
+        DEPLOY_ENV: ${{ inputs.env }}
       with:
         timeout_minutes: 30
         max_attempts: 3
@@ -46,4 +50,4 @@ runs:
         retry_on_exit_code: 75
         command: >-
           node "$(npm root -g)/bulletin-deploy/tools/release-retry-wrapper.mjs"
-          bulletin-deploy --env paseo-next-v2 --js-merkle .output/public "$DEPLOY_DOMAIN"
+          bulletin-deploy --env "$DEPLOY_ENV" --js-merkle .output/public "$DEPLOY_DOMAIN"
