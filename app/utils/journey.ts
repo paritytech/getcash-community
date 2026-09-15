@@ -1,10 +1,13 @@
-// The journey as steps: started, payment received, (card only: payment processed), converted to
-// CASH, added to the balance. Maps the session and pipeline state onto how many are done.
+// The journey as steps. The card timeline runs the full five: started, payment received, payment
+// processed, converted to CASH, added to the balance. The crypto timeline runs three — started,
+// conversion, added — dropping both payment legs: the deposit screen owns the payment, so by the
+// time the journey opens there is nothing left to report about it. Maps session and pipeline state
+// onto how many are done.
 
 import type { FundingStep } from "@getsome/funding";
 
-/** How many steps the route's journey shows: the crypto timeline has no "processed" step. */
-export type JourneySteps = 4 | 5;
+/** How many steps the route's journey shows: three on the crypto timeline, five on the card's. */
+export type JourneySteps = 3 | 5;
 
 export interface JourneyInput {
   phase: string | null;
@@ -21,6 +24,7 @@ export interface JourneyInput {
  * step behind it; the card scale keeps "receiving" on the payment step itself.
  */
 export function journeyDone(input: JourneyInput, steps: JourneySteps = 5): number {
+  const crypto = steps === 3;
   switch (input.phase) {
     case "done":
       return steps;
@@ -30,7 +34,10 @@ export function journeyDone(input: JourneyInput, steps: JourneySteps = 5): numbe
     case "failed":
       return failedAt(input, steps);
     case "swapping":
-      if (input.swap === "receiving") return steps === 4 ? 2 : 1;
+      // The crypto timeline is on the conversion for the whole swap, and moves onto "added" only
+      // once the swap is done.
+      if (crypto) return input.swap === "complete" ? 2 : 1;
+      if (input.swap === "receiving") return 1;
       if (input.swap === "complete") return 3;
       return 2;
     case "awaiting-deposit":
@@ -48,7 +55,8 @@ function fromPipeline(step: FundingStep | null, steps: JourneySteps): number {
     case "swap":
     case "xcm":
     case "await-arrival":
-      return steps - 2;
+      // The conversion is underway: everything before it is done on either scale.
+      return steps === 3 ? 1 : 3;
     default:
       return 1;
   }
@@ -68,8 +76,8 @@ function failedAt(input: JourneyInput, steps: JourneySteps): number {
     case "refunded":
     case "refund-failed":
       // The swap network took the payment but could not deliver: the processed step on the card
-      // scale, the payment step itself on the crypto one (the design strikes "Payment").
-      return steps - 3;
+      // scale, the conversion on the crypto one, which is where its delivery would have landed.
+      return steps === 3 ? 1 : 2;
     case "unknown":
       // The fiat rail could not tell whether the buyer paid; hold at what the pipeline witnessed.
       return pipeline;

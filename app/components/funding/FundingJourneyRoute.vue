@@ -21,8 +21,9 @@ const props = defineProps<{
   open?: ((topUp: FundingTopUp) => Promise<boolean>) | null;
   status?: FundingJourneyStatus | null;
 }>();
-// again bubbles up from an expired journey: the host starts a fresh purchase at the amount screen.
-const emit = defineEmits<{ back: []; again: [] }>();
+// startOver bubbles up from a fiat top-up that ended: the host re-enters its package with the same
+// amount.
+const emit = defineEmits<{ back: []; startOver: [] }>();
 
 const session = useSessionStore();
 // A settled top-up is read from the list only: nothing resumed, nothing reset on the way out.
@@ -139,7 +140,7 @@ onUnmounted(() => {
         @fees="showingFees = true"
         @refund="showingRefund = true"
         @close="emit('back')"
-        @again="emit('again')"
+        @start-over="emit('startOver')"
       />
     </div>
 

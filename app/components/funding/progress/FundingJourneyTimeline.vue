@@ -7,7 +7,7 @@ import type { JourneySteps } from "../../../utils/journey";
 const props = withDefaults(
   defineProps<{
     progress: FundingProgressProjection;
-    /** The card journey shows five steps; crypto has no "Approved" leg and shows four. */
+    /** The card journey shows five steps; the crypto timeline shows three. */
     steps?: JourneySteps;
     /** The one line under the stepper: the ribbon only shows when there is something to say. */
     message?: string | null;
@@ -25,18 +25,28 @@ const props = withDefaults(
 );
 
 const CARD_STAGES = ["Started", "Payment", "Approved", "Conversion", "Added"] as const;
-const CRYPTO_STAGES = ["Started", "Payment", "Conversion", "Added"] as const;
-const stages = computed<readonly string[]>(() => (props.steps === 4 ? CRYPTO_STAGES : CARD_STAGES));
+const CRYPTO_STAGES = ["Started", "Conversion", "Added"] as const;
+const stages = computed<readonly string[]>(() => (props.steps === 3 ? CRYPTO_STAGES : CARD_STAGES));
+
+/**
+ * The card scale's active step projected onto the crypto timeline, by index.
+ *
+ * Both payment legs ("Confirming" and "Processing") collapse onto "Started": the deposit screen
+ * owns the payment, so the journey opens with it already behind. Converting is the crypto
+ * timeline's own second step, crediting its third. The settled index (5) runs past the end,
+ * marking all three done.
+ */
+const CRYPTO_STEP_BY_CARD_STEP = [0, 1, 1, 1, 2, 3] as const;
 
 const settled = computed(() => props.progress.view.kind === "settled");
 const failed = computed(() => props.progress.view.kind === "failed");
 /** Completed markers, derived from the progress projection (not a separate step count) so the
- *  timeline tracks the same phase the history list shows. The projection counts on the card's
- *  five-step scale; the crypto timeline drops the "Approved" leg, so everything past the payment
- *  shifts down one. */
+ *  timeline tracks the same phase the history list shows. The projection always counts on the
+ *  card's five-step scale, so the crypto timeline projects it down to its own three. */
 const completed = computed(() => {
   const step = journeyTimelineStep(props.progress);
-  return props.steps === 4 && step > 1 ? step - 1 : step;
+  if (props.steps !== 3) return step;
+  return CRYPTO_STEP_BY_CARD_STEP[step] ?? CRYPTO_STAGES.length;
 });
 const activeIndex = computed(() =>
   settled.value ? -1 : Math.min(completed.value, stages.value.length - 1),
