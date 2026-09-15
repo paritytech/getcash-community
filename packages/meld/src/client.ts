@@ -165,7 +165,8 @@ class AdapterRefusal extends Error {
   }
 }
 
-/** How many concluded attempts `createSession` walks past before giving up. */
+/** How many finished attempts — concluded or cancelled — `createSession` walks past before giving
+ *  up. */
 const MAX_ATTEMPTS = 5;
 
 /**
@@ -414,16 +415,26 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike {
               widgetUrl: "",
             };
           }
-          const concluded =
-            err instanceof AdapterRefusal && err.status === 409 && err.code === "REQUEST_CONCLUDED";
-          if (!concluded || nextKey) throw err;
-          console.info(`[meld] attempt ${attempt} already concluded; starting a new one`);
+          // A finished attempt: concluded, or cancelled. Both are dead keys with no live request
+          // and no payment behind them (a cancel is refused outright while one is on its way), so
+          // the next attempt suffix is safe to mint — and for `REQUEST_CANCELLED` it is literally
+          // what the adapter asks for: "start a new one with a new key". Matched on the code
+          // alone, not the status: the buyer meets this on every re-entry after a cancel, and it
+          // must not turn on which conflict status the adapter picks for it.
+          const finished =
+            err instanceof AdapterRefusal &&
+            ((err.status === 409 && err.code === "REQUEST_CONCLUDED") ||
+              err.code === "REQUEST_CANCELLED");
+          if (!finished || nextKey) throw err;
+          console.info(
+            `[meld] attempt ${attempt} is ${err.code?.toLowerCase()}; starting a new one`,
+          );
           lastRefusal = err;
         }
       }
       // Every attempt this walk can name has already concluded.
       throw new Error(
-        `This purchase has already been completed ${MAX_ATTEMPTS} times. If you are expecting funds that have not arrived, contact support with your wallet address. Starting another will not help.`,
+        `This purchase has already been opened and closed ${MAX_ATTEMPTS} times. If you are expecting funds that have not arrived, contact support with your wallet address. Starting another will not help.`,
         lastRefusal instanceof Error ? { cause: lastRefusal } : undefined,
       );
     },
