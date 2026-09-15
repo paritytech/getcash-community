@@ -39,6 +39,18 @@ export function flagEmoji(country: string): string {
   return String.fromCodePoint(...[...cc].map((c) => 0x1f1e6 + (c.charCodeAt(0) - 65)));
 }
 
+/** The English name of an ISO 3166-1 alpha-2 code (GB -> "United Kingdom"), for regions the live
+ *  catalog did not name. Falls back to the code itself. */
+export function countryName(country: string): string {
+  const cc = country.trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(cc)) return country;
+  try {
+    return new Intl.DisplayNames(["en"], { type: "region" }).of(cc) ?? cc;
+  } catch {
+    return cc;
+  }
+}
+
 function baseUrl(): string | undefined {
   return import.meta.env.VITE_MELD_BASE_URL as string | undefined;
 }

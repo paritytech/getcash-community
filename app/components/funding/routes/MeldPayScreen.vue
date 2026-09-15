@@ -5,6 +5,7 @@ import { computed, onMounted, ref } from "vue";
 import { ChevronRight } from "lucide-vue-next";
 import { useSessionStore } from "../../../stores/session";
 import { corridorOptions } from "~~/lib/supported";
+import { localeCountry } from "../../../utils/locale";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import type { FundingRoute } from "../../../funding/selection";
 import CountryCombobox from "../../ui/CountryCombobox.vue";
@@ -35,29 +36,8 @@ const FALLBACK_COUNTRIES = [
 /** The region shown before the buyer picks one; matches the quoter's own default region. */
 const DEFAULT_COUNTRY = "US";
 
-/**
- * The device's own region, e.g. "BR" for a pt-BR phone.
- *
- * Testers landed on the screen already quoting US and did not read the picker as something they had
- * to change, so a Brazilian card was priced against a US corridor and declined. The device locale is
- * the closest thing to the buyer's real region available without the geolocation scope: still a
- * guess, but a guess drawn from the buyer rather than from us. Returns null on anything that is not
- * a plain alpha-2 region, so the caller keeps DEFAULT_COUNTRY.
- */
-function localeCountry(): string | null {
-  if (typeof navigator === "undefined") return null;
-  const tag = navigator.language;
-  if (!tag) return null;
-  try {
-    // `maximize()` supplies the region a bare language tag omits ("pt" -> "pt-Latn-BR").
-    const region = new Intl.Locale(tag).maximize().region;
-    return region !== undefined && /^[A-Z]{2}$/.test(region) ? region : null;
-  } catch {
-    return null;
-  }
-}
-
-// Picker rows: live catalog or static fallback, enriched per active method (session.method re-greys card<->bank).
+// Picker rows: live catalog or static fallback, enriched per active method (session.method
+// re-greys card<->bank).
 const countryOptions = computed(() => {
   const live = session.supportedCountries;
   const base =
@@ -99,8 +79,9 @@ const otherMethodAvailable = computed(() =>
 );
 const methodLabel = (m: "card" | "bank") => (m === "bank" ? "Bank transfer" : "Card");
 function useOtherMethod() {
-  session.setMethod(otherMethod.value);
-  requote();
+  // Through the shell, not `setMethod`: each method has its own package screen, and swapping the
+  // method under this one would leave a bank transfer being made on the card screen.
+  emit("switchRoute", otherMethod.value);
 }
 function useCryptoRoute() {
   emit("switchRoute", "crypto");
