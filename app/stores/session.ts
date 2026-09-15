@@ -1650,7 +1650,7 @@ export const useSessionStore = defineStore("session", () => {
     failure?: string;
     lastError?: string;
     state?: { fundsSeenAt?: number | null };
-    claim?: { phase?: string; amount?: string } | null;
+    claim?: { phase?: "sizing" | "registering" | "claiming" | "claimed"; amount?: string } | null;
   };
 
   /** Failures the worker cannot get past on its own; re-opening the request is the retry. Every
