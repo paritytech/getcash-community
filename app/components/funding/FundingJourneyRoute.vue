@@ -20,7 +20,7 @@ const props = defineProps<{
   open?: ((topUp: FundingTopUp) => Promise<boolean>) | null;
   status?: FundingJourneyStatus | null;
 }>();
-const emit = defineEmits<{ back: [] }>();
+const emit = defineEmits<{ back: []; startOver: [] }>();
 
 const session = useSessionStore();
 // A settled top-up is read from the list only: nothing resumed, nothing reset on the way out.
@@ -108,6 +108,7 @@ onUnmounted(() => {
         :top-up="topUp ?? null"
         @fees="showingFees = true"
         @close="emit('back')"
+        @start-over="emit('startOver')"
       />
     </div>
 
