@@ -151,6 +151,8 @@ export interface RequestRecord {
   meldCountry?: string;
   meldFundingRequestId?: string;
   meldSubmittedAt?: number;
+  /** Demo only: when Skip was pressed, so a re-open never offers Skip again for this request. */
+  depositSkippedAt?: number;
   depositAddress?: string;
   depositExpiresAt?: number;
   funded?: number;
@@ -229,7 +231,8 @@ export type Observation =
   | { source: "clock"; at: number }
   | { source: "user"; at: number; event: "cancelled"; depositExpiresAt: number }
   | { source: "user"; at: number; event: "retry" }
-  | { source: "user"; at: number; event: "meld-submitted" };
+  | { source: "user"; at: number; event: "meld-submitted" }
+  | { source: "user"; at: number; event: "deposit-skipped" };
 
 /** The source a request runs under: a bare legacy ref means the crypto rail's. */
 export const effectiveSourceId = (ref: RequestRef): string => ref.sourceId ?? CRYPTO_SOURCE_ID;

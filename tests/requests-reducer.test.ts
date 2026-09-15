@@ -608,4 +608,13 @@ describe("request reducer: top-up transitions", () => {
       submitted,
     );
   });
+
+  it("a deposit-skipped user event stamps depositSkippedAt once, then is idempotent", () => {
+    const record = awaiting();
+    expect(record.depositSkippedAt).toBeUndefined();
+    const skipped = reduce(record, { source: "user", at: at(1), event: "deposit-skipped" });
+    expect(skipped.depositSkippedAt).toBe(at(1));
+    // A second press keeps the first stamp and returns the same reference.
+    expect(reduce(skipped, { source: "user", at: at(2), event: "deposit-skipped" })).toBe(skipped);
+  });
 });

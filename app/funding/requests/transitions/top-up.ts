@@ -513,5 +513,7 @@ function applyUser(record: RequestRecord, observation: UserObservation): Request
     }
     case "meld-submitted":
       return record.meldSubmittedAt === undefined ? { ...record, meldSubmittedAt: at } : record;
+    case "deposit-skipped":
+      return record.depositSkippedAt === undefined ? { ...record, depositSkippedAt: at } : record;
   }
 }
