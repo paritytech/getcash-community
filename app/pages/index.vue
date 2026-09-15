@@ -209,12 +209,23 @@ function leaveJourney() {
   else returnToSelector("pending");
 }
 
-/** "Add funds again" from an expired journey: whatever its origin, a fresh purchase starts at
- *  the amount screen. */
-function addFundsAgain() {
+/**
+ * "Start over" on a fiat top-up that ended: re-enter its own route's package with the same amount.
+ *
+ * The failed request is left exactly where it is — it happened, and the list keeps it. Mounting
+ * the package quotes again and opens a NEW funding request, which is the only way back into the
+ * provider's widget: the old request's pay page is dead and will not take a second payment.
+ */
+function startOverFromJourney() {
+  const current = journey.value;
+  if (current === null) return;
+  // By origin: `selection` outlives the screen that set it, so preferring it would restart a
+  // top-up opened off the list at whatever was typed last.
+  const amount =
+    (current.origin === "top-up" ? activeTopUp.value?.amount : selection.value?.amount) ?? "";
   journey.value = null;
   returnFromTopUp();
-  returnToSelector("amount");
+  void continueToPackage({ amount, route: current.route });
 }
 
 const openTopUpRequest = (topUp: FundingTopUp): Promise<boolean> =>
@@ -257,7 +268,7 @@ onMounted(async () => {
     :open="journey.origin === 'top-up' ? openTopUpRequest : null"
     :status="journeyStatus"
     @back="leaveJourney"
-    @again="addFundsAgain"
+    @start-over="startOverFromJourney"
   />
   <component
     :is="activeTopUpPackage"

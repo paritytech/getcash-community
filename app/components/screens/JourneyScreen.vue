@@ -29,8 +29,8 @@ const props = defineProps<{
   topUp?: FundingTopUp | null;
 }>();
 // fees and refund ask the host to swap in their drill-ins; close leaves the finished journey;
-// again leaves an expired one for a fresh purchase at the amount screen.
-const emit = defineEmits<{ fees: []; refund: []; close: []; again: [] }>();
+// startOver asks it to re-enter this route for a fresh attempt at the same top-up.
+const emit = defineEmits<{ fees: []; refund: []; close: []; startOver: [] }>();
 const session = useSessionStore();
 
 const cadence = computed(
@@ -74,7 +74,7 @@ const failedLabel = computed(() => {
   if (session.fundingError === DEPOSIT_EXPIRED_REASON) return "Expired";
   return null;
 });
-/** Nothing was paid on an expired top-up: no quote rows, and the way out is a fresh one. */
+/** Nothing was paid on an expired top-up, so it carries no quote rows. */
 const expired = computed(() => failedLabel.value !== null);
 /** The quote rows leave with the money: nothing was kept on an expired or refunded top-up. */
 const hideRows = computed(
@@ -149,6 +149,23 @@ const detailRows = computed(() => {
   return rows;
 });
 
+/**
+ * Whether to offer a fresh attempt at a card or bank top-up that ended.
+ *
+ * The failed request itself cannot be re-entered — its pay page is dead and the provider will not
+ * take a second payment against it — so the offer is a new funding request, which is why the
+ * button says "Start over" rather than "Try again".
+ *
+ * Withheld on `unobserved` alone: there the rail could not tell whether the buyer was charged, so
+ * inviting a second payment risks charging them twice.
+ */
+const canStartOver = computed(
+  () =>
+    session.method !== "crypto" &&
+    session.meldStage === "failed" &&
+    session.meldFailureCode !== "unobserved",
+);
+
 /** Temporarily stuck (the provider is retrying): amber on the stepper, never terminal. */
 const delayed = computed(() => session.meldDelayed && !finished.value && !heroFailed.value);
 
@@ -217,12 +234,15 @@ const message = computed(() => {
         Return funds
       </PillButton>
 
+      <!-- A recoverable failure comes first on either rail: the payment landed and only the credit
+           is outstanding, so re-entering it is the fix. Starting a second payment there would
+           charge the buyer twice. -->
       <PillButton v-if="failure?.recoverable" class="mt-auto" @click="session.retry()">
         Try again
       </PillButton>
 
-      <PillButton v-if="expired" class="mt-auto" @click="emit('again')">
-        Add funds again
+      <PillButton v-else-if="canStartOver" class="mt-auto" @click="emit('startOver')">
+        Start over
       </PillButton>
 
       <PillButton v-if="finished" variant="tertiary" class="mt-auto" @click="emit('close')">

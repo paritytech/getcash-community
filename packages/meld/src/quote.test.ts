@@ -35,6 +35,7 @@ function rateClient(rate: number, reqs?: MeldQuoteRequest[]): MeldClientLike {
       widgetUrl: "https://pay",
     }),
     getStatus: async () => ({ status: "PENDING" }),
+    cancel: async () => ({ outcome: "cancelled" as const }),
   };
 }
 
@@ -49,6 +50,7 @@ function fixedClient(quotes: MeldQuoteEntry[]): MeldClientLike {
       widgetUrl: "https://pay",
     }),
     getStatus: async () => ({ status: "PENDING" }),
+    cancel: async () => ({ outcome: "cancelled" as const }),
   };
 }
 
@@ -151,6 +153,7 @@ describe("computeMeldQuote (forward inversion)", () => {
         throw new Error("not used");
       },
       getStatus: async () => ({ status: "created" }),
+      cancel: async () => ({ outcome: "cancelled" as const }),
     };
     await expect(computeMeldQuote(capped, CTX, twentyDot())).rejects.toThrow(/could not price/);
   });
