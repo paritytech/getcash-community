@@ -91,8 +91,12 @@ interface Scene {
 const QUOTED_CARD = {
   send: "52.06",
   symbol: "USD",
+  provider: "TRANSAK",
   fee: "1.56",
-  networkFee: "0.01",
+  // The shape real card quotes come back in: a provider fee and our flat cut, no network fee.
+  transactionFee: "1.06",
+  networkFee: null,
+  partnerFee: "0.50",
   nativeAmount: null,
   sourceAsset: null,
   sourceChain: null,
@@ -123,12 +127,18 @@ function base(session: Session, flow: Flow) {
   flow.srcAssetIndex = 0;
 }
 
+/** The adapter's funding-request id for the card scenes. Abbreviates to the "a1f9-4c2e" the
+ *  design frames show, so the failed journey's reference row renders as drawn. */
+const CARD_REQUEST_ID = "a1f9c3d2-7b44-4e10-9f21-00ab9e4c2e";
+
 /** Baseline for the card-journey scenes: the Meld quote and method the design frames show. */
 function cardJourney(session: Session, flow: Flow) {
   base(session, flow);
   session.setAmount("50");
   session.method = "card";
   session.quoted = { ...QUOTED_CARD };
+  // The scenes never run createSession, which is what captures this on a real payment.
+  session.meldFundingRequestId = CARD_REQUEST_ID;
 }
 
 /**

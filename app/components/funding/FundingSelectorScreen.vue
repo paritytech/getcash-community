@@ -72,11 +72,10 @@ const availableRouteIds = computed<readonly FundingRoute[]>(
 );
 const isRouteAvailable = (candidate: FundingRoute) => availableRouteIds.value.includes(candidate);
 const amount = ref(props.initialSelection?.amount ?? props.config.amount.initial);
-// A remembered route this build cannot run starts unpicked.
-const initialRoute = props.initialSelection?.route ?? null;
-const route = ref<FundingRoute | null>(
-  initialRoute !== null && isRouteAvailable(initialRoute) ? initialRoute : null,
-);
+// A buyer returning from a package keeps their route; a fresh entry starts on the configured
+// default. Either one starts unpicked when this build cannot run it.
+const initialRoute = props.initialSelection?.route ?? props.config.defaultRoute;
+const route = ref<FundingRoute | null>(isRouteAvailable(initialRoute) ? initialRoute : null);
 
 function changeAmount(next: string) {
   amount.value = next;

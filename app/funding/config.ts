@@ -16,6 +16,9 @@ export interface FundingSelectorConfig {
     presets: readonly string[];
   };
   routes: readonly FundingRouteOption[];
+  /** The route picked for a buyer who has not chosen one. Ignored when the build cannot run it,
+   *  which leaves the pills unpicked as before. */
+  defaultRoute: FundingRoute;
 }
 
 export const fundingSelectorConfig = {
@@ -30,6 +33,7 @@ export const fundingSelectorConfig = {
     // The lowest preset sits on the minimum, so the floor is a tappable amount.
     presets: ["10", "50", "100"],
   },
+  defaultRoute: "crypto",
   routes: [
     {
       id: "crypto",

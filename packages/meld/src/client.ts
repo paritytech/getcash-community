@@ -24,8 +24,16 @@ export interface MeldQuoteEntry {
   readonly sourceAmount: string;
   /** Crypto delivered for that fiat (decimal string). */
   readonly destinationAmount: string;
+  /** The whole fee, and the components it is made of. Meld sends each as its own field; they are
+   *  reported verbatim rather than derived, so a component missing from a quote simply is not
+   *  shown. Observed on card quotes: `transactionFee + partnerFee === totalFee`, `networkFee`
+   *  null. */
   readonly totalFee?: string;
+  /** The provider's own fee (Transak's, say). */
+  readonly transactionFee?: string;
   readonly networkFee?: string;
+  /** Our cut, surfaced to the buyer as the service fee. */
+  readonly partnerFee?: string;
   /** Meld's provider ranking; higher is better. Used only to break ties. */
   readonly customerScore?: number;
 }
@@ -323,7 +331,9 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike {
           sourceAmount: String(q.sourceAmount ?? ""),
           destinationAmount: String(q.destinationAmount ?? ""),
           ...(q.totalFee != null ? { totalFee: String(q.totalFee) } : {}),
+          ...(q.transactionFee != null ? { transactionFee: String(q.transactionFee) } : {}),
           ...(q.networkFee != null ? { networkFee: String(q.networkFee) } : {}),
+          ...(q.partnerFee != null ? { partnerFee: String(q.partnerFee) } : {}),
           // Meld returns customerScore as a string. Coerce it and keep it only when finite.
           ...((): { customerScore?: number } => {
             // A blank score is unscored, not 0.

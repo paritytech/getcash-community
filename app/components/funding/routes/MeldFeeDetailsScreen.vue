@@ -1,28 +1,47 @@
 <script setup lang="ts">
-// The Fees drill-in behind the pay screen's fee row: the quoted fee split, its total, and the
-// effective rate. Read-only; both the toolbar and the bottom button return to the pay screen.
+// The Fees drill-in behind the pay screen's hero caption: the quoted fee split, its total, the
+// charge it is part of, and the effective rate. Read-only; both the toolbar and the bottom button
+// return to the pay screen.
 import { computed } from "vue";
 import { useSessionStore } from "../../../stores/session";
-import { fmtFiat, splitFees } from "../../../utils/money";
+import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import DetailRows from "../../ui/DetailRows.vue";
 import PillButton from "../../ui/PillButton.vue";
 
 const session = useSessionStore();
 const emit = defineEmits<{ back: [] }>();
 
-/** No service fee is charged, so that design row is omitted. */
+/**
+ * The fee's components, exactly as the quote reported them.
+ *
+ * Meld sends each component as its own field, so they are read rather than derived: a quote that
+ * names no network fee shows no network row, and nothing is inferred by subtracting one component
+ * from the total. A quote carrying no components at all leaves the total to stand on its own.
+ */
 const feeRows = computed(() => {
   const q = session.quoted;
-  const split = q ? splitFees(q.fee, q.networkFee) : null;
-  if (!q || !split) return [];
-  const rows = [{ label: "Provider fee", value: fmtFiat(split.provider, q.symbol) }];
-  if (split.network) rows.push({ label: "Network fee", value: fmtFiat(split.network, q.symbol) });
-  return rows;
+  if (!q) return [];
+  return [
+    { label: "Provider fee", amount: q.transactionFee },
+    { label: "Network fee", amount: q.networkFee },
+    { label: "Service fee", amount: q.partnerFee },
+  ].flatMap(({ label, amount }) =>
+    isMoneyAmount(amount) && Number(amount) > 0
+      ? [{ label, value: fmtFiat(amount, q.symbol) }]
+      : [],
+  );
 });
 
-const totalFees = computed(() => {
+/** The sum of the split, carried in its own rule-bracketed row. */
+const totalRows = computed(() => {
   const q = session.quoted;
-  return q?.fee ? fmtFiat(q.fee, q.symbol) : null;
+  return q?.fee ? [{ label: "Total fees", value: fmtFiat(q.fee, q.symbol) }] : [];
+});
+
+/** The charge itself. The split above explains it; this is the number the buyer actually pays. */
+const totalCharge = computed(() => {
+  const q = session.quoted;
+  return q ? fmtFiat(q.send, q.symbol) : null;
 });
 
 /** Fiat per CASH net of fees: what the buyer's money actually buys. */
@@ -38,14 +57,21 @@ const rate = computed(() => {
 
 <template>
   <div class="flex min-h-0 flex-1 flex-col">
-    <DetailRows class="gap-2" :rows="feeRows" muted />
+    <!-- The split, its total, then the charge. The rule above the total is what makes it read as
+         a sum, so it only appears when there are components above it to sum. -->
+    <template v-if="feeRows.length">
+      <DetailRows class="gap-2" :rows="feeRows" muted />
+      <hr class="my-2 border-stroke-secondary" />
+    </template>
 
-    <hr class="my-4 border-stroke-secondary" />
+    <DetailRows class="gap-2" :rows="totalRows" muted />
 
-    <div class="flex flex-col gap-1">
+    <hr class="my-2 border-stroke-secondary" />
+
+    <div class="mt-2 flex flex-col gap-1">
       <div class="flex items-center justify-between gap-4">
-        <span class="text-paragraph-l text-fg-secondary">Total fees</span>
-        <span class="text-display-l text-fg-primary">{{ totalFees }}</span>
+        <span class="text-paragraph-l text-fg-secondary">You’ll pay</span>
+        <span class="text-display-l text-fg-primary">{{ totalCharge }}</span>
       </div>
       <div v-if="rate" class="flex items-baseline justify-between gap-4">
         <span class="text-paragraph-l text-fg-secondary">Rate</span>

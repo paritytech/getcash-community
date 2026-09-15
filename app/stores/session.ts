@@ -85,8 +85,13 @@ interface ActiveFlowRecord {
   sourceSymbol?: string;
   /** The provider's quoted fee (Meld), in `sourceSymbol` units. */
   sourceFee?: string;
-  /** The network-fee share of `sourceFee`, when the rail broke it out. */
+  /** The components of `sourceFee`, as the rail reported them. Persisted so a resumed request's
+   *  breakdown reads the same as the one quoted at the start. */
+  /** The provider that priced the request, for the journey's reference rows. */
+  sourceProvider?: string;
+  sourceTransactionFee?: string;
   sourceNetworkFee?: string;
+  sourcePartnerFee?: string;
   startedAt: number;
   depositAddress?: string;
   progress?: FundingProgressSnapshot;
@@ -202,10 +207,16 @@ function stepOf(status: RequestStatus | undefined): FundingStep | null {
 export interface QuotedView {
   send: string;
   symbol: string;
-  /** The provider's total fee in `symbol` units, when the rail quotes one (Meld does). */
+  /** The total fee in `symbol` units, when the rail quotes one (Meld does). */
   fee?: string | null;
-  /** The network-fee share of `fee`, when the rail breaks it out (Meld may). */
+  /** The components of `fee`, each as the rail reported it. Meld sends these as separate fields,
+   *  so they are carried through rather than derived from `fee`; any of them can be absent from a
+   *  given quote, and the breakdown simply omits what it was not given. */
+  transactionFee?: string | null;
   networkFee?: string | null;
+  partnerFee?: string | null;
+  /** The provider these terms came from ("TRANSAK"), not the aggregator in front of it. */
+  provider?: string | null;
   /** Live world only: the native (DOT) budget the rail must deliver, 10-dec base units. */
   nativeAmount: bigint | null;
   sourceAsset: string | null;
@@ -219,7 +230,10 @@ function meldQuotedView(raw: MeldQuoteRaw): QuotedView {
     send: raw.provider.sourceAmount,
     symbol: raw.context.fiat,
     fee: raw.provider.totalFee ?? null,
+    provider: raw.provider.serviceProvider,
+    transactionFee: raw.provider.transactionFee ?? null,
     networkFee: raw.provider.networkFee ?? null,
+    partnerFee: raw.provider.partnerFee ?? null,
     nativeAmount: null,
     sourceAsset: null,
     sourceChain: null,
@@ -303,7 +317,9 @@ export const useSessionStore = defineStore("session", () => {
   // The Meld status client, captured when a Meld session is created.
   let meldStatusClient: MeldClientLike | null = null;
   // The adapter's funding-request id, which its status route answers on.
-  let meldFundingRequestId: string | null = null;
+  // Reactive: the journey shows it as the payment's reference when a top-up fails, so a buyer
+  // can quote it to support.
+  const meldFundingRequestId = ref<string | null>(null);
   let meldPollStop: (() => void) | null = null;
   // The country the current Meld quote was priced in.
   let meldRegionCountry: string | null = null;
@@ -438,7 +454,7 @@ export const useSessionStore = defineStore("session", () => {
     meldSubmitted.value = false;
     meldHandedOff.value = false;
     meldCredited = false;
-    meldFundingRequestId = null;
+    meldFundingRequestId.value = null;
     meldStatusClient = null;
     cancelNotice.value = null;
     sub?.unsubscribe();
@@ -840,7 +856,7 @@ export const useSessionStore = defineStore("session", () => {
       getQuote: (r) => baseClient.getQuote(r),
       createSession: async (r) => {
         const s = await baseClient.createSession(r);
-        meldFundingRequestId = s.fundingRequestId;
+        meldFundingRequestId.value = s.fundingRequestId;
         return s;
       },
       getStatus: (id) => baseClient.getStatus(id),
@@ -1500,8 +1516,15 @@ export const useSessionStore = defineStore("session", () => {
               sourceAmount: quoted.value.send,
               sourceSymbol: quoted.value.symbol,
               ...(quoted.value.fee != null ? { sourceFee: quoted.value.fee } : {}),
+              ...(quoted.value.provider ? { sourceProvider: quoted.value.provider } : {}),
+              ...(quoted.value.transactionFee != null
+                ? { sourceTransactionFee: quoted.value.transactionFee }
+                : {}),
               ...(quoted.value.networkFee != null
                 ? { sourceNetworkFee: quoted.value.networkFee }
+                : {}),
+              ...(quoted.value.partnerFee != null
+                ? { sourcePartnerFee: quoted.value.partnerFee }
                 : {}),
             }
           : null
@@ -1523,7 +1546,7 @@ export const useSessionStore = defineStore("session", () => {
         // The session's source id; a resume re-enters under it.
         sourceId: world.sourceId,
         // Only a Meld request has these; the crypto rail leaves them null.
-        ...(meldFundingRequestId ? { meldFundingRequestId } : {}),
+        ...(meldFundingRequestId.value ? { meldFundingRequestId: meldFundingRequestId.value } : {}),
         ...(isMeldSourceId(world.sourceId) && meldRegionCountry
           ? { meldCountry: meldRegionCountry }
           : {}),
@@ -1926,7 +1949,10 @@ export const useSessionStore = defineStore("session", () => {
         send: record.sourceAmount ?? "",
         symbol: record.sourceSymbol ?? record.asset,
         fee: record.sourceFee ?? null,
+        provider: record.sourceProvider ?? null,
+        transactionFee: record.sourceTransactionFee ?? null,
         networkFee: record.sourceNetworkFee ?? null,
+        partnerFee: record.sourcePartnerFee ?? null,
         nativeAmount: null,
         sourceAsset: record.asset,
         sourceChain: record.chain,
@@ -1956,7 +1982,7 @@ export const useSessionStore = defineStore("session", () => {
               (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
           });
           meldStatusClient = client;
-          meldFundingRequestId = record.meldFundingRequestId;
+          meldFundingRequestId.value = record.meldFundingRequestId;
           // Recover the pay URL from the adapter; the rail keeps pay URLs only in memory.
           void client
             .getStatus(record.meldFundingRequestId)
@@ -2163,7 +2189,7 @@ export const useSessionStore = defineStore("session", () => {
   function pollMeldStatus(): void {
     if (meldPollStop || meldStage.value === "complete") return;
     const client = meldStatusClient;
-    const ref = meldFundingRequestId;
+    const ref = meldFundingRequestId.value;
     if (!client || !ref) return;
     meldStage.value = meldStage.value ?? "waiting";
     let stopped = false;
@@ -2300,12 +2326,13 @@ export const useSessionStore = defineStore("session", () => {
       // it and keep the request: telling the buyer it is cancelled while their money moves is the
       // one thing not to say. A transport error fails open (a still-served page is the pre-existing
       // behaviour), so a dead adapter never strands the cancel.
-      if (meldStatusClient !== null && meldFundingRequestId !== null) {
+      const meldRequestId = meldFundingRequestId.value;
+      if (meldStatusClient !== null && meldRequestId !== null) {
         try {
           const outcome = await step(
             "withdraw the pay page",
             15_000,
-            meldStatusClient.cancel(meldFundingRequestId),
+            meldStatusClient.cancel(meldRequestId),
           );
           if (outcome.outcome === "not-cancellable") {
             cancelNotice.value =
@@ -2388,6 +2415,7 @@ export const useSessionStore = defineStore("session", () => {
     meldFailureCode,
     meldResumeWidgetUrl,
     meldSubmitted,
+    meldFundingRequestId,
     meldHandedOff,
     meldPayUrl,
     sourcePrice,
