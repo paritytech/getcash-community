@@ -93,12 +93,13 @@ onBeforeUnmount(() => {
   resizeObserver = null;
 });
 const limitLabel = computed(() => {
-  const limit =
-    amountState.value.kind === "above-maximum"
-      ? props.config.amount.maximum
-      : props.config.amount.minimum;
-  const boundary = amountState.value.kind === "above-maximum" ? "Maximum" : "Minimum";
-  return `${boundary} ${formatAmount(limit)} ${props.config.asset}`;
+  const { minimum, maximum } = props.config.amount;
+  const asset = props.config.asset;
+  if (amountState.value.kind === "below-minimum")
+    return `Minimum ${formatAmount(minimum)} ${asset}`;
+  if (amountState.value.kind === "above-maximum")
+    return `Maximum ${formatAmount(maximum)} ${asset}`;
+  return `${formatAmount(minimum)} to ${formatAmount(maximum)} ${asset}`;
 });
 
 function enter(key: FundingKey) {
@@ -109,7 +110,7 @@ function enter(key: FundingKey) {
 <template>
   <div class="funding-screen">
     <FundingEntryHeader
-      title="Add funds"
+      title="Top up funds"
       :history="history"
       :skeleton="skeleton"
       @history="emit('history')"
@@ -156,10 +157,12 @@ function enter(key: FundingKey) {
         </div>
 
         <SkeletonBlock v-if="skeleton" style="width: 8.125rem; height: 1rem" />
+        <!-- The limit line names the bound an amount broke, so a breach has to be announced. -->
         <p
           v-else
           class="funding-limits text-body-m"
           :class="{ 'funding-limits-warning': limitWarning }"
+          aria-live="polite"
         >
           {{ limitLabel }}
         </p>
@@ -208,7 +211,7 @@ function enter(key: FundingKey) {
           :disabled="skeleton || loading || !canContinue"
           @click="emit('continue')"
         >
-          {{ skeleton ? "" : loading ? `Opening ${config.provider}…` : "Continue" }}
+          {{ skeleton ? "" : loading ? `Opening ${config.provider}…` : "Continue to top up" }}
         </button>
       </div>
     </div>
@@ -358,10 +361,12 @@ function enter(key: FundingKey) {
   min-height: 1rem;
   color: var(--fg-secondary);
   text-align: center;
+  transition: color 150ms ease;
 }
 
 .funding-limits-warning {
   color: var(--fg-error);
+  font-weight: 500;
 }
 
 .funding-presets {

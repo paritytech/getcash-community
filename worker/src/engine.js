@@ -1,4 +1,10 @@
-import { deriveEntropy, getHostLocalStorage, getHostProvider, topUpFromBurner } from "./host.js";
+import {
+  deriveEntropy,
+  getHostLocalStorage,
+  getHostProvider,
+  readTopUpStatus,
+  registerTopUp,
+} from "./host.js";
 import { deriveKeypairWithSecret, toSchnorrkelSecret } from "@getsome/ephemeral";
 import {
   DEFAULT_KEEP_NATIVE_FOR_FEES,
@@ -12,9 +18,11 @@ import {
   tickOnce,
 } from "@getsome/funding";
 import { CASH_SETTLEMENT, createPeopleChainPort } from "@getsome/people";
+import { PaymentTopUpErr, PaymentTopUpStatusErr } from "@novasamatech/host-api";
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import { createClient } from "polkadot-api";
 import { readParams } from "./params.js";
+import { topUpIdFor } from "./topup-id.js";
 
 // The funding engine: the only driver of tickOnce, one tick per live job per pass.
 //
@@ -29,7 +37,8 @@ const RECORD_V = 1;
 const FUNDING_KEY = "getsome.funding.jobs";
 
 /**
- * Worker time the conversion and the claim may take once funds are seen (see accountWorkedTime).
+ * Worker time the conversion and the claim's registration may take once funds are seen (see
+ * accountWorkedTime). Once registered, the claim is the host's and runs on CLAIM_TRACK_WINDOW_MS.
  */
 const RUN_TIMEOUT_MS = 900_000;
 /** A gap between ticks longer than this means the worker was not running in between. */
@@ -87,13 +96,17 @@ const asBig = (value, fallback = 0n) => {
  *   settleAmount, remoteFeeBuffer, keepNativeForFees, slippagePct,   // bigints as strings
  *   underlyingAssetId, peopleParaId, assetHubGenesis, peopleGenesis,
  *   phase: "starting" | FundingStep | "failed",
- *   failure?: "shortfall" | "timeout" | "expired" | "cancelled",
+ *   failure?: "shortfall" | "timeout" | "expired" | "cancelled" | "claim",
  *   done, createdAt, armedAt, lastTickAt, lastError?,
  *   state: { swapSubmitted, xcmSubmitted, peopleAtXcm: string, fundsSeenAt: number|null,
  *            workedMs },
  *   submitting?: { call: "swap"|"xcm", at },  // written before a submit
  *   txs: [{ call, txHash, block? }],
- *   claim?: { phase: "claiming"|"claimed", amount, at, attempts, error? },
+ *   claim?: { phase: "sizing"|"registering"|"claiming"|"claimed", attempt, credited,
+ *             id?, amount?, at, attempts, registeredAt?, status?, partial?, error? },
+ *                                            // attempt: 0-based; each has its own id (hex)
+ *                                            // credited: CASH the host minted so far
+ *                                            // status: the host's last word on the top-up
  * }
  */
 function newRecord(input, nowMs) {
@@ -211,8 +224,9 @@ const depositExpiryOf = (input) => {
 };
 
 /**
- * Re-arms a failed job on a re-sent hand-off. The run clock and the deposit window restart.
- * Submit latches survive except after a shortfall; a mid-retry claim is retried at once.
+ * Re-arms a failed job on a re-sent hand-off. The run clock, the deposit window and the claim's
+ * tracking window restart. Submit latches survive except after a shortfall; a claim that was
+ * still registering is retried at once, and a claim the host settled short gets a fresh attempt.
  */
 function rearm(record, nowMs) {
   record.phase = record.done ? "done" : "starting";
@@ -230,8 +244,12 @@ function rearm(record, nowMs) {
     record.state.xcmSubmitted = false;
     record.state.peopleAtXcm = "0";
   }
-  if (record.claim?.phase === "claiming") {
+  if (record.claim?.phase === "registering") {
     record.claim = { ...record.claim, attempts: 0, at: 0 };
+  }
+  if (record.claim?.phase === "claiming") {
+    record.claim =
+      failure === "claim" ? nextAttempt(record.claim) : { ...record.claim, registeredAt: nowMs };
   }
 }
 
@@ -271,43 +289,164 @@ async function claimableOn(peoplePort, burner, what) {
   return (held / CLAIM_UNIT) * CLAIM_UNIT;
 }
 
-/** Claims are multiples of 0.01 CASH (6 decimals). */
+/**
+ * Claims are multiples of 0.01 CASH (6 decimals): the coinage instance's asset unit, so a
+ * registered amount is exactly what the host can mint.
+ */
 const CLAIM_UNIT = 10_000n;
-/** Timeout for one host top-up call. */
+/** Timeout for one host top-up call or status read. */
 const CLAIM_TIMEOUT_MS = 45_000;
-/** Minimum wait before a failed claim call is retried. */
+/** Minimum wait before a failed registration is retried. */
 const CLAIM_RETRY_MS = 180_000;
+/** Time a registered claim may stay unsettled on the host before the job is failed. */
+const CLAIM_TRACK_WINDOW_MS = 5_400_000;
+/** Registrations a job makes on its own before it settles for what the host credited. */
+const MAX_CLAIM_ATTEMPTS = 3;
 
 /**
- * Claims the burner's CASH into the purse once the funding leg is done. The claim is recorded
- * on the host's answer. The `claiming` marker is written before the call; a later tick that
- * finds the burner empty under that marker records the claim as landed.
+ * Claims the burner's CASH into the purse once the funding leg is done. Each attempt sizes the
+ * burner, registers that amount with the host under an id derived from the burner's public key,
+ * and follows the top-up to its terminal status; the host drives it from registration on. A
+ * top-up the host settles short leaves CASH on the burner, and the next attempt claims it. The
+ * `registering` marker is written before the call, so a wake that finds it re-registers, and
+ * `AlreadyExists` counts as registered.
  */
 async function claimFor(record, burner, peoplePort) {
   const claim = record.claim ?? null;
   if (claim?.phase === "claimed") return;
-  if (claim?.phase === "claiming" && Date.now() - claim.at < CLAIM_RETRY_MS) return;
-
-  const amount = await claimableOn(peoplePort, burner, "burner CASH read");
-  if (amount === 0n) {
-    if (claim?.phase === "claiming") {
-      record.claim = { ...claim, phase: "claimed", at: Date.now() };
-    }
+  if (claim?.phase === "claiming") {
+    await followClaim(record, burner);
+    return;
+  }
+  if (claim?.phase === "registering") {
+    if (Date.now() - claim.at < CLAIM_RETRY_MS) return;
+    await registerClaim(record, burner);
     return;
   }
 
-  const attempts = (claim?.attempts ?? 0) + 1;
-  record.claim = { phase: "claiming", amount: amount.toString(), at: Date.now(), attempts };
+  const amount = await claimableOn(peoplePort, burner, "burner CASH read");
+  if (amount === 0n) {
+    if (claim?.phase === "sizing") settleOnCredited(record);
+    return;
+  }
+  const attempt = claim?.attempt ?? 0;
+  record.claim = {
+    phase: "registering",
+    attempt,
+    credited: claim?.credited ?? "0",
+    id: toHex(topUpIdFor(burner.publicKey, attempt)),
+    amount: amount.toString(),
+    at: 0,
+    attempts: 0,
+  };
+  await saveJobs();
+  await registerClaim(record, burner);
+}
+
+async function registerClaim(record, burner) {
+  record.claim = { ...record.claim, at: Date.now(), attempts: record.claim.attempts + 1 };
   await saveJobs();
   try {
     // The host expects the secret in schnorrkel's canonical layout.
     const hostSecret = toSchnorrkelSecret(burner.secretKey);
-    await bounded(topUpFromBurner(amount, hostSecret), CLAIM_TIMEOUT_MS, "topUp");
-    record.claim = { phase: "claimed", amount: amount.toString(), at: Date.now(), attempts };
+    await bounded(
+      registerTopUp(
+        asBig(record.claim.amount),
+        hostSecret,
+        topUpIdFor(burner.publicKey, record.claim.attempt),
+      ),
+      CLAIM_TIMEOUT_MS,
+      "topUp",
+    );
   } catch (error) {
+    if (error instanceof PaymentTopUpErr.InvalidSource) {
+      fail(record, "claim", "the host refused the burner as a top-up source");
+      return;
+    }
+    if (!(error instanceof PaymentTopUpErr.AlreadyExists)) {
+      record.claim = { ...record.claim, error: String(error?.message ?? error) };
+      throw error;
+    }
+  }
+  delete record.claim.error;
+  record.claim = { ...record.claim, phase: "claiming", registeredAt: Date.now() };
+}
+
+async function followClaim(record, burner) {
+  let status;
+  try {
+    status = await readTopUpStatus(
+      topUpIdFor(burner.publicKey, record.claim.attempt),
+      CLAIM_TIMEOUT_MS,
+    );
+  } catch (error) {
+    if (error instanceof PaymentTopUpStatusErr.NotFound) {
+      record.claim = { ...record.claim, phase: "registering", at: 0 };
+      return;
+    }
     record.claim = { ...record.claim, error: String(error?.message ?? error) };
     throw error;
   }
+  delete record.claim.error;
+  record.claim = { ...record.claim, status: status.type };
+  switch (status.type) {
+    case "claimed":
+      if (status.finalized) {
+        const credited = asBig(record.claim.credited) + asBig(record.claim.amount);
+        record.claim = {
+          ...record.claim,
+          phase: "claimed",
+          credited: credited.toString(),
+          amount: credited.toString(),
+          at: Date.now(),
+        };
+      }
+      return;
+    case "claimedPartially":
+      record.claim = {
+        ...record.claim,
+        credited: (asBig(record.claim.credited) + status.actualClaimed).toString(),
+      };
+      settleShort(record);
+      return;
+    case "notClaimed":
+      settleShort(record);
+      return;
+  }
+}
+
+/** The host is done with this attempt and the burner may still hold CASH: try again or settle. */
+function settleShort(record) {
+  if (record.claim.attempt + 1 < MAX_CLAIM_ATTEMPTS) {
+    record.claim = nextAttempt(record.claim);
+    return;
+  }
+  settleOnCredited(record);
+}
+
+/** The next attempt's marker; the burner is sized again on the following tick. */
+const nextAttempt = (claim) => ({
+  phase: "sizing",
+  attempt: claim.attempt + 1,
+  credited: claim.credited,
+  at: 0,
+  attempts: 0,
+});
+
+/** Nothing more will be registered: what the host minted is the claim, or there was none. */
+function settleOnCredited(record) {
+  const credited = record.claim.credited ?? "0";
+  if (asBig(credited) > 0n) {
+    record.claim = {
+      ...record.claim,
+      phase: "claimed",
+      amount: credited,
+      partial: true,
+      at: Date.now(),
+    };
+    return;
+  }
+  fail(record, "claim", "the host claimed no CASH from the burner");
 }
 
 /** Rough progress percentage per phase, for display. */
@@ -411,9 +550,13 @@ async function burnerFor(record) {
   return deriveKeypairWithSecret(result.value);
 }
 
-/** True from the first tick that saw funds until the claim is made. */
+const hostOwnsClaim = (record) => record.claim?.phase === "claiming";
+
+/** True from the first tick that saw funds until the claim is registered with the host. */
 const onTheClock = (record) =>
-  !isFinished(record) && (record.done || record.state.fundsSeenAt !== null);
+  !isFinished(record) &&
+  !hostOwnsClaim(record) &&
+  (record.done || record.state.fundsSeenAt !== null);
 
 /** Adds this tick's gap, capped at MAX_TICK_GAP_MS, to the job's worked time while on the clock. */
 function accountWorkedTime(record, nowMs) {
@@ -425,14 +568,18 @@ function accountWorkedTime(record, nowMs) {
 }
 
 /**
- * Fails a job over the run bound, or past the deposit window when this tick read the chain.
- * Called after the tick.
+ * Fails a job over the run bound, past the claim's tracking window, or past the deposit window
+ * when this tick read the chain. Called after the tick.
  */
 function judgeBounds(record, nowMs, read) {
   if (record.phase === "failed") return;
   if (onTheClock(record) && (record.state.workedMs ?? 0) > RUN_TIMEOUT_MS) {
     const what = record.done ? "claim" : "conversion";
     fail(record, "timeout", `${what} exceeded ${RUN_TIMEOUT_MS}ms of worker time`);
+    return;
+  }
+  if (hostOwnsClaim(record) && nowMs - record.claim.registeredAt > CLAIM_TRACK_WINDOW_MS) {
+    fail(record, "timeout", `the host has not settled the claim within ${CLAIM_TRACK_WINDOW_MS}ms`);
     return;
   }
   // The rail's deadline when the surface passed one, the default window otherwise.
