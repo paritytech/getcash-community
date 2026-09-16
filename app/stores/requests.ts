@@ -58,6 +58,7 @@ import {
   freshnessOf,
   fundingStepOf,
   fundsSeenOf,
+  journeyScaleOf,
   journeyStepsOf,
   meldHandedOffOf,
   meldStageOf,
@@ -912,10 +913,11 @@ export const useRequestsStore = defineStore("requests", () => {
   const milestones = computed<Record<number, number>>(() =>
     foregroundRecord.value ? milestonesOf(foregroundRecord.value) : {},
   );
-  /** How many of the journey's five steps are done. */
-  const journeyDone = computed(() =>
-    foregroundRecord.value ? journeyStepsOf(foregroundRecord.value) : 1,
-  );
+  /** How many of the journey's steps are done, on the scale the record's own route shows. */
+  const journeyDone = computed(() => {
+    const record = foregroundRecord.value;
+    return record ? journeyStepsOf(record, journeyScaleOf(record.route)) : 1;
+  });
   /** True while a claim is in flight: the host's sheet is up, or the credit is being verified. */
   const claiming = computed(() =>
     foregroundRecord.value ? claimingOf(foregroundRecord.value) : false,
@@ -950,6 +952,15 @@ export const useRequestsStore = defineStore("requests", () => {
     const record = foregroundRecord.value;
     return record?.rail.stage === "failed" ? (record.rail.failure?.message ?? null) : null;
   });
+  /** The ending's own code (`refunded`, `declined`, `cancelled`, `unobserved`, …) as the rail
+   *  reported it. Null unless the rail failed. It decides whether a fresh attempt is safe to
+   *  offer: `unobserved` means the rail could not tell whether the buyer was charged. */
+  const meldFailureCode = computed<string | null>(() => {
+    const record = foregroundRecord.value;
+    return record?.rail.stage === "failed" ? (record.rail.failure?.code ?? null) : null;
+  });
+  /** True when the failure is a refund (money taken then returned), not a plain decline. */
+  const meldRefunded = computed(() => meldFailureCode.value === "refunded");
   /** True once the buyer finished in the widget. */
   const meldSubmitted = computed(() => foregroundRecord.value?.meldSubmittedAt !== undefined);
   /** Demo only: true once Skip was pressed for the request on screen, so it is never offered again. */
@@ -1993,6 +2004,8 @@ export const useRequestsStore = defineStore("requests", () => {
     meldStage,
     meldDelayed,
     meldFailureMessage,
+    meldFailureCode,
+    meldRefunded,
     meldSubmitted,
     depositSkipped,
     meldHandedOff,

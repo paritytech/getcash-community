@@ -265,7 +265,7 @@ describe("request reducer: top-up transitions", () => {
       provider: "meld",
       status: "failed",
       stage: "failed",
-      failure: { kind: "deposit-rejected", message: DECLINED },
+      failure: { kind: "deposit-rejected", message: DECLINED, code: "declined" },
       updatedAt: at(1),
     });
     expect(failed.progress.failedAt).toBe(at(1));
@@ -436,7 +436,8 @@ describe("request reducer: top-up transitions", () => {
       worker(at(3), job({ phase: "swap", fundsSeenAt: at(1), lastTickAt: at(3) })),
     );
     expect(stale.status).toEqual(arriving.status);
-    expect(stale.progress.confirmedStageKey).toBe("cash-teleport");
+    // The swap and the teleport are one program, so awaiting the arrival is still the conversion.
+    expect(stale.progress.confirmedStageKey).toBe("cash-conversion");
     expect(stale.witnesses.worker).toMatchObject({ known: true, phase: "swap", at: at(3) });
 
     const claiming = reduce(

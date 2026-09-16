@@ -14,7 +14,7 @@ type Stage = RailState["stage"];
 interface Expected {
   status: RailState["status"];
   stage: Stage;
-  failure?: { kind: FailureKind; message: string };
+  failure?: { kind: FailureKind; message: string; code?: string };
   delayed?: boolean;
 }
 
@@ -104,6 +104,8 @@ describe("rail mapping", () => {
       });
     }
 
+    // Every Meld ending carries the adapter's own code, which the record keeps: it is what tells
+    // a refund from a decline, and an unobserved payment from either.
     const meldCases: [string, Expected][] = [
       ["created", { status: "waiting", stage: "waiting" }],
       ["session_opened", { status: "waiting", stage: "waiting" }],
@@ -120,6 +122,7 @@ describe("rail mapping", () => {
           failure: {
             kind: "deposit-rejected",
             message: "Top-up didn't go through. No money was taken.",
+            code: "failed",
           },
         },
       ],
@@ -131,6 +134,7 @@ describe("rail mapping", () => {
           failure: {
             kind: "expired",
             message: "The payment window closed before the payment arrived.",
+            code: "expired",
           },
         },
       ],
@@ -142,6 +146,7 @@ describe("rail mapping", () => {
           failure: {
             kind: "deposit-rejected",
             message: "The payment was declined before it started.",
+            code: "refused",
           },
         },
       ],
@@ -153,6 +158,7 @@ describe("rail mapping", () => {
           failure: {
             kind: "deposit-rejected",
             message: "Your bank declined the payment. Check your card details or try another card.",
+            code: "declined",
           },
         },
       ],
@@ -165,6 +171,7 @@ describe("rail mapping", () => {
             kind: "deposit-rejected",
             message:
               "Your top-up didn't go through. Your 52.06 USD has been returned to your card.",
+            code: "refunded",
           },
         },
       ],
@@ -176,6 +183,7 @@ describe("rail mapping", () => {
           failure: {
             kind: "unknown",
             message: "We could not confirm this payment. Contact support before trying again.",
+            code: "unobserved",
           },
         },
       ],

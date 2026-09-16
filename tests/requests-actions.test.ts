@@ -161,11 +161,15 @@ describe("requests store: foreground, clock and user actions", () => {
       await waitFor(() => requests.get(ref)?.status.kind === "settled", 10_000);
       expect(requests.get(ref)?.status.kind).toBe("settled");
       expect(requests.phase).toBe("done");
-      expect(requests.journeyDone).toBe(5);
+      // A crypto record counts on the journey's three-stop scale: settled is all three.
+      expect(requests.journeyDone).toBe(3);
       expect(requests.foregroundProgress?.snapshot.confirmedStageKey).toBe("cash-top-up");
     },
   );
 
+  // The record is a crypto one, so `journeyDone` counts on the three-stop scale: it opens at 0
+  // because the journey only starts once the deposit is seen, and until then the deposit screen
+  // is showing.
   it("computed views match the milestone-1 table for a core-driven sequence", async () => {
     setRequestsClock(() => FIXTURE_NOW);
     const requests = useRequestsStore();
@@ -189,7 +193,7 @@ describe("requests store: foreground, clock and user actions", () => {
       fundsSeen: false,
       fundingStep: null,
       claiming: false,
-      journeyDone: 1,
+      journeyDone: 0,
       milestones: { 1: startedAt },
       progress: {
         confirmedStageKey: undefined,
@@ -206,7 +210,7 @@ describe("requests store: foreground, clock and user actions", () => {
       fundsSeen: true,
       fundingStep: "swap",
       claiming: false,
-      journeyDone: 3,
+      journeyDone: 1,
       milestones: { 1: startedAt, 2: at(2), 4: at(2) },
       progress: {
         confirmedStageKey: "cash-conversion",
@@ -223,7 +227,7 @@ describe("requests store: foreground, clock and user actions", () => {
       fundsSeen: true,
       fundingStep: "done",
       claiming: true,
-      journeyDone: 4,
+      journeyDone: 2,
       milestones: { 1: startedAt, 2: at(2), 4: at(2) },
       progress: {
         confirmedStageKey: "cash-top-up",
@@ -241,7 +245,7 @@ describe("requests store: foreground, clock and user actions", () => {
       fundsSeen: true,
       fundingStep: "done",
       claiming: false,
-      journeyDone: 5,
+      journeyDone: 3,
       milestones: { 1: startedAt, 2: at(2), 4: at(2), 5: at(4) },
       progress: {
         confirmedStageKey: "cash-top-up",

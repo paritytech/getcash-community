@@ -65,8 +65,7 @@ const failedText = computed(() => requests.fundingError ?? failure.value?.messag
  * The route's own timeline: crypto shows three steps, the card rail five.
  *
  * The store owns the scale whenever a request is on screen; the list's word on the route only
- * stands in before the top-up is live. The completed count below stays on the card's five-step
- * scale, which the timeline projects onto its own three.
+ * stands in before the top-up is live. `requests.journeyDone` counts on that same scale.
  */
 const steps = computed<JourneySteps>(() => {
   if (requests.foregroundRecord !== null || !props.topUp) return session.journeySteps;
@@ -170,7 +169,7 @@ const canStartOver = computed(
   () =>
     session.method !== "crypto" &&
     requests.meldStage === "failed" &&
-    session.meldFailureCode !== "unobserved",
+    requests.meldFailureCode !== "unobserved",
 );
 
 /** Temporarily stuck (the provider is retrying): amber on the stepper, never terminal. */

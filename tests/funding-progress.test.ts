@@ -233,10 +233,9 @@ describe("funding progress registry", () => {
       "chainflip-swapping",
       "chainflip-sending",
       "cash-conversion",
-      "cash-teleport",
       "cash-top-up",
     ]);
-    expect(p.stages).toHaveLength(6);
+    expect(p.stages).toHaveLength(5);
     expect(p.routeStageCount).toBe(3);
     expect(p.startedNodeLabel).toBe("Payment seen");
     expect(p.stages[0]).toMatchObject({
@@ -251,7 +250,7 @@ describe("funding progress registry", () => {
     const p = chainflipProgressProvider.createProfile({ ingressDurationMs: duration });
     const ingress = p.stages.slice(0, 3).reduce((sum, stage) => sum + stage.nominalMs, 0);
     expect(ingress).toBeCloseTo(duration);
-    expect(p.stages[3]?.nominalMs).toBe(3 * 60 * SECOND);
+    expect(p.stages[3]?.nominalMs).toBe(8 * 60 * SECOND);
   });
 
   it("maps normalized route and shared statuses", () => {
@@ -265,9 +264,10 @@ describe("funding progress registry", () => {
       kind: "stage",
       stageKey: "cash-conversion",
     });
+    // The swap and the teleport are one program, so both report the conversion.
     expect(observeSharedCashProgress("await-arrival")).toEqual({
       kind: "stage",
-      stageKey: "cash-teleport",
+      stageKey: "cash-conversion",
     });
     expect(observeSharedCashProgress("working")).toEqual({
       kind: "stage",

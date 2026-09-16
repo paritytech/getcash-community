@@ -1,7 +1,7 @@
 // The rail leg: a provider's normalised swap status folded onto the generic stage the shell
 // reads, and the merge that keeps that stage monotonic.
 
-import type { SwapStatusResult } from "@getsome/core";
+import type { ChainflipFailureInfo, SwapStatusResult } from "@getsome/core";
 import type { RailState } from "./model";
 
 type RailStage = RailState["stage"];
@@ -36,16 +36,22 @@ function stageOf(result: SwapStatusResult): RailStage {
   }
 }
 
+/** The ending's own code, when the rail named one. The fallback egress and the plain SDK failure
+ *  below carry none: neither is a verdict the provider reported. */
+const code = (failure: ChainflipFailureInfo): { code?: string } =>
+  failure.reason?.code === undefined ? {} : { code: failure.reason.code };
+
 /** `mapSwapFailure` from `packages/core/src/session.ts`, which core does not export, reduced
  *  to the kind and message. Keep the two in step. */
 function railFailure(result: SwapStatusResult): RailFailure {
   if (result.depositFailure) {
-    // The rail's own kind and message take precedence over the Chainflip defaults.
+    // The rail's own kind, code and message take precedence over the Chainflip defaults.
     return {
       kind: result.depositFailure.kind ?? "deposit-rejected",
       message:
         result.depositFailure.reason?.message ??
         "Deposit rejected by Chainflip; funds not recoverable",
+      ...code(result.depositFailure),
     };
   }
   if (result.swapEgressFailure) {
@@ -54,6 +60,7 @@ function railFailure(result: SwapStatusResult): RailFailure {
       message:
         result.swapEgressFailure.reason?.message ??
         "Swap egress failed; funds stuck on Chainflip. Contact support",
+      ...code(result.swapEgressFailure),
     };
   }
   if (result.fallbackEgress) {

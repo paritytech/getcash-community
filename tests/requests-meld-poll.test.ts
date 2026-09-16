@@ -19,6 +19,7 @@ import {
   setMirrorStorage,
   setRecordStorage,
   type KeyedStorage,
+  type WebStorageLike,
 } from "../app/funding/requests/storage";
 import { setMeldStatusClientFactory, useRequestsStore } from "../app/stores/requests";
 import type { ActiveFlowRecord } from "../app/stores/session";
@@ -96,6 +97,20 @@ function countingStorage() {
     clear: (key) => inner.clear(key),
   };
   return { storage, writesTo: (key: string) => writes.get(key) ?? 0 };
+}
+
+/** A window storage the mirror is written to and read back from. */
+function fakeWebStorage(): WebStorageLike {
+  const entries = new Map<string, string>();
+  return {
+    getItem: (key) => entries.get(key) ?? null,
+    setItem: (key, value) => {
+      entries.set(key, value);
+    },
+    removeItem: (key) => {
+      entries.delete(key);
+    },
+  };
 }
 
 const MINUTE = 60_000;
@@ -229,6 +244,9 @@ describe("requests store: the Meld poll", () => {
     expect(requests.meldFailureMessage).toBe(
       "Your bank declined the payment. Check your card details or try another card.",
     );
+    // The provider's own verdict rides on the record: a decline is not a refund.
+    expect(requests.meldFailureCode).toBe("declined");
+    expect(requests.meldRefunded).toBe(false);
     expect(requests.get(DECLINED_REF)?.status.kind).toBe("failed");
     const declinedReads = declined.reads["mfr-declined"];
     await nextPoll();
@@ -305,12 +323,40 @@ describe("requests store: the Meld poll", () => {
     expect(client.reads).toEqual({ mfr: 3 });
     expect(requests.meldStage).toBe("failed");
     expect(requests.meldFailureMessage).toBe(MELD_GONE);
+    // The rail could not tell whether the buyer was charged, so a fresh attempt is never offered.
+    expect(requests.meldFailureCode).toBe("unobserved");
     expect(requests.get(CARD_REF)).toMatchObject({
       status: { kind: "failed", recoverable: false },
       rail: { stage: "failed" },
     });
     await nextPoll();
     expect(client.reads).toEqual({ mfr: 3 });
+  });
+
+  it("a refunded payment carries its code on the record", async () => {
+    vi.useFakeTimers();
+    setMirrorStorage(fakeWebStorage());
+    const requests = useRequestsStore();
+    const client = fakeMeldClient("refunded");
+    await requests.create(CARD_REF, migrated(unsubmittedCard));
+    requests.setForeground(CARD_REF);
+
+    requests.startMeldPoll(CARD_REF, client, "mfr");
+    await settled();
+    expect(requests.meldStage).toBe("failed");
+    expect(requests.meldFailureCode).toBe("refunded");
+    expect(requests.meldRefunded).toBe(true);
+
+    // The verdict belongs to the record, not to the session that watched it arrive: a fresh store
+    // hydrating from the mirror reads the same words back.
+    requests.leave();
+    setActivePinia(createPinia());
+    const reopened = useRequestsStore();
+    reopened.hydrateFromMirror();
+    reopened.setForeground(CARD_REF);
+    expect(reopened.get(CARD_REF)?.rail.failure?.code).toBe("refunded");
+    expect(reopened.meldFailureCode).toBe("refunded");
+    expect(reopened.meldRefunded).toBe(true);
   });
 
   it("reconcile reads one status per background Meld entry", async () => {

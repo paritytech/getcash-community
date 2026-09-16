@@ -7,8 +7,9 @@ import { useMeldJourneyStatus } from "../app/composables/useMeldJourneyStatus";
 import { requestRefOf } from "../app/utils/request-index";
 import { FIXTURE_NOW, submittedCardRecord } from "./fixtures/requests";
 
-/** A Meld request on screen whose rail failed; the stage the composable reads comes off it. */
-async function failedMeldRequest(): Promise<void> {
+/** A Meld request on screen whose rail failed with `code`; the stage and the ending the composable
+ *  reads both come off the record. */
+async function failedMeldRequest(code?: string): Promise<void> {
   const requests = useRequestsStore();
   requests.enterSandbox();
   const ref = requestRefOf("meld-card", 2);
@@ -16,7 +17,17 @@ async function failedMeldRequest(): Promise<void> {
   if (record === null) throw new Error("fixture did not migrate");
   await requests.create(ref, {
     ...record,
-    rail: { ...record.rail, status: "failed", stage: "failed", updatedAt: FIXTURE_NOW },
+    rail: {
+      ...record.rail,
+      status: "failed",
+      stage: "failed",
+      failure: {
+        kind: "deposit-rejected",
+        message: "The payment ended",
+        ...(code === undefined ? {} : { code }),
+      },
+      updatedAt: FIXTURE_NOW,
+    },
   });
   requests.setForeground(ref);
 }
@@ -28,13 +39,17 @@ describe("useMeldJourneyStatus", () => {
     const store = useSessionStore();
     store.setMethod("card");
     const status = useMeldJourneyStatus();
-    await failedMeldRequest();
+    await failedMeldRequest("refunded");
 
-    store.meldRefunded = true;
     expect(status.value).toEqual({ text: "Top-up refunded", tone: "failed" });
+  });
 
-    // A plain decline still reads as a failure, named after the rail.
-    store.meldRefunded = false;
+  it("names the rail on a decline, which returned no money", async () => {
+    const store = useSessionStore();
+    store.setMethod("card");
+    const status = useMeldJourneyStatus();
+    await failedMeldRequest("declined");
+
     expect(status.value).toEqual({ text: "Card payment could not be completed", tone: "failed" });
   });
 

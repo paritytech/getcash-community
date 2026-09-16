@@ -89,15 +89,11 @@ describe("funding progress transitions", () => {
       ...fundingProgressSignalForSharedStep("swap"),
       at: 300,
     });
-    const teleport = advanceFundingProgressSnapshot(conversion, {
+    const arriving = advanceFundingProgressSnapshot(conversion, {
       ...fundingProgressSignalForSharedStep("await-arrival"),
       at: 400,
     });
-    const sameTeleport = advanceFundingProgressSnapshot(teleport, {
-      ...fundingProgressSignalForSharedStep("await-arrival"),
-      at: 500,
-    });
-    const topUp = advanceFundingProgressSnapshot(teleport, {
+    const topUp = advanceFundingProgressSnapshot(arriving, {
       ...fundingProgressSignalForSharedStep("done"),
       at: 600,
     });
@@ -106,16 +102,11 @@ describe("funding progress transitions", () => {
     expect(conversion).toMatchObject({
       confirmedStageKey: "cash-conversion",
       routeCompletedAt: 300,
+      stageTimestamps: { "chainflip-sending": 100, "cash-conversion": 300 },
     });
-    expect(teleport).toMatchObject({
-      confirmedStageKey: "cash-teleport",
-      stageTimestamps: {
-        "chainflip-sending": 100,
-        "cash-conversion": 300,
-        "cash-teleport": 400,
-      },
-    });
-    expect(sameTeleport).toBe(teleport);
+    // The swap and the teleport are the one program, so awaiting the arrival is still the
+    // conversion: the stage keeps the timestamp the swap gave it.
+    expect(arriving).toBe(conversion);
     expect(topUp.confirmedStageKey).toBe("cash-top-up");
   });
 

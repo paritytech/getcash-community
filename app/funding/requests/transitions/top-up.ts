@@ -432,7 +432,9 @@ function applyProviderGone(record: RequestRecord, at: number, message: string): 
     ...record.rail,
     status: "failed",
     stage: "failed",
-    failure: { kind: "unknown", message },
+    // The rail could not tell whether the buyer was charged, which is what `unobserved` means
+    // everywhere else; the ending is this reducer's own verdict, not one the provider reported.
+    failure: { kind: "unknown", message, code: "unobserved" },
     delayed: false,
     updatedAt: at,
   };

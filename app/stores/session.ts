@@ -40,7 +40,7 @@ import {
   type SupportedCountry,
 } from "~~/lib/supported";
 import { requestRefOf, type RequestRef } from "../utils/request-index";
-import type { JourneySteps } from "../funding/requests/views";
+import { journeyScaleOf, type JourneySteps } from "../funding/requests/views";
 import { estimateSourceAmount, estimateSourceFromCash } from "~~/lib/demo-rates";
 import { priceSourceLeg, type SourcePriceResult } from "~~/lib/source-price";
 import {
@@ -187,12 +187,6 @@ export const useSessionStore = defineStore("session", () => {
   /** The selected country's corridor: its resolved fiat and the methods it routes. Null when
    *  discovery is unreachable. */
   const meldCorridor = shallowRef<SupportedCorridor | null>(null);
-  /** True when the failure is a refund (money taken then returned), not a plain decline. */
-  const meldRefunded = ref(false);
-  /** The ending's own code (`refunded`, `declined`, `cancelled`, `unobserved`, …) as the rail
-   *  reported it. Null unless the rail failed. It decides whether a fresh attempt is safe to
-   *  offer: `unobserved` means the rail could not tell whether the buyer was charged. */
-  const meldFailureCode = ref<string | null>(null);
   /** The provider widget URL recovered when resuming a Meld request; null unless a resume found a
    *  live one. */
   const meldResumeWidgetUrl = ref<string | null>(null);
@@ -263,8 +257,11 @@ export const useSessionStore = defineStore("session", () => {
   }
 
   /** The journey's scale for the request on screen: the crypto timeline runs three steps, the
-   *  card's five. */
-  const journeySteps = computed<JourneySteps>(() => (method.value === "crypto" ? 3 : 5));
+   *  card's five. The record on screen owns its route; the selected method stands in on the entry
+   *  screens, before there is a record. */
+  const journeySteps = computed<JourneySteps>(() =>
+    journeyScaleOf(requests.foregroundRecord?.route ?? method.value),
+  );
 
   /**
    * TODO: remove this cap once the deposit is real money. Any replacement must clear the swap
@@ -324,8 +321,6 @@ export const useSessionStore = defineStore("session", () => {
   function teardownWorld() {
     quoteEpoch += 1;
     stopSimulatedPayment();
-    meldRefunded.value = false;
-    meldFailureCode.value = null;
     meldResumeWidgetUrl.value = null;
     meldCredited = false;
     meldFundingRequestId = null;
@@ -1569,8 +1564,6 @@ export const useSessionStore = defineStore("session", () => {
     meldMethodUnavailable,
     supportedCountries,
     meldCorridor,
-    meldRefunded,
-    meldFailureCode,
     meldResumeWidgetUrl,
     meldPayUrl,
     sourcePrice,

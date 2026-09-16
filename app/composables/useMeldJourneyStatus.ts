@@ -21,7 +21,7 @@ export function useMeldJourneyStatus() {
       case "failed":
         // A refund is not a "could not be completed, try again": the money came back. Say so, so
         // the header does not contradict the "money returned" detail below it.
-        return session.meldRefunded
+        return requests.meldRefunded
           ? { text: "Top-up refunded", tone: "failed" }
           : { text: `${Rail} could not be completed`, tone: "failed" };
       default:

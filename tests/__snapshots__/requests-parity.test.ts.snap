@@ -110,13 +110,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
             "activeLabel": "Converting to $CASH",
             "key": "cash-conversion",
             "nodeLabel": "Converted",
-            "nominalMs": 180000,
-          },
-          {
-            "activeLabel": "Teleporting $CASH",
-            "key": "cash-teleport",
-            "nodeLabel": "Teleported",
-            "nominalMs": 300000,
+            "nominalMs": 480000,
           },
           {
             "activeLabel": "Adding to your balance",
@@ -136,7 +130,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "fundingNotice": null,
     "fundingStep": null,
     "fundsSeen": false,
-    "journeyDone": 1,
+    "journeyDone": 0,
     "meldDelayed": false,
     "meldFailureMessage": null,
     "meldHandedOff": false,
@@ -184,13 +178,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
             "activeLabel": "Converting to $CASH",
             "key": "cash-conversion",
             "nodeLabel": "Converted",
-            "nominalMs": 180000,
-          },
-          {
-            "activeLabel": "Teleporting $CASH",
-            "key": "cash-teleport",
-            "nodeLabel": "Teleported",
-            "nominalMs": 300000,
+            "nominalMs": 480000,
           },
           {
             "activeLabel": "Adding to your balance",
@@ -210,7 +198,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "fundingNotice": null,
     "fundingStep": null,
     "fundsSeen": false,
-    "journeyDone": 1,
+    "journeyDone": 0,
     "meldDelayed": false,
     "meldFailureMessage": null,
     "meldHandedOff": false,
@@ -258,13 +246,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
             "activeLabel": "Converting to $CASH",
             "key": "cash-conversion",
             "nodeLabel": "Converted",
-            "nominalMs": 180000,
-          },
-          {
-            "activeLabel": "Teleporting $CASH",
-            "key": "cash-teleport",
-            "nodeLabel": "Teleported",
-            "nominalMs": 300000,
+            "nominalMs": 480000,
           },
           {
             "activeLabel": "Adding to your balance",
@@ -284,7 +266,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "fundingNotice": null,
     "fundingStep": null,
     "fundsSeen": false,
-    "journeyDone": 1,
+    "journeyDone": 0,
     "meldDelayed": false,
     "meldFailureMessage": null,
     "meldHandedOff": false,
@@ -332,13 +314,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
             "activeLabel": "Converting to $CASH",
             "key": "cash-conversion",
             "nodeLabel": "Converted",
-            "nominalMs": 180000,
-          },
-          {
-            "activeLabel": "Teleporting $CASH",
-            "key": "cash-teleport",
-            "nodeLabel": "Teleported",
-            "nominalMs": 300000,
+            "nominalMs": 480000,
           },
           {
             "activeLabel": "Adding to your balance",
@@ -358,7 +334,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "fundingNotice": null,
     "fundingStep": null,
     "fundsSeen": false,
-    "journeyDone": 1,
+    "journeyDone": 0,
     "meldDelayed": false,
     "meldFailureMessage": null,
     "meldHandedOff": false,
@@ -407,13 +383,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
             "activeLabel": "Converting to $CASH",
             "key": "cash-conversion",
             "nodeLabel": "Converted",
-            "nominalMs": 180000,
-          },
-          {
-            "activeLabel": "Teleporting $CASH",
-            "key": "cash-teleport",
-            "nodeLabel": "Teleported",
-            "nominalMs": 300000,
+            "nominalMs": 480000,
           },
           {
             "activeLabel": "Adding to your balance",
@@ -433,7 +403,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "fundingNotice": null,
     "fundingStep": null,
     "fundsSeen": false,
-    "journeyDone": 1,
+    "journeyDone": 0,
     "meldDelayed": false,
     "meldFailureMessage": null,
     "meldHandedOff": false,
@@ -484,13 +454,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
             "activeLabel": "Converting to $CASH",
             "key": "cash-conversion",
             "nodeLabel": "Converted",
-            "nominalMs": 180000,
-          },
-          {
-            "activeLabel": "Teleporting $CASH",
-            "key": "cash-teleport",
-            "nodeLabel": "Teleported",
-            "nominalMs": 300000,
+            "nominalMs": 480000,
           },
           {
             "activeLabel": "Adding to your balance",
@@ -512,7 +476,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "fundingNotice": null,
     "fundingStep": null,
     "fundsSeen": false,
-    "journeyDone": 2,
+    "journeyDone": 1,
     "meldDelayed": false,
     "meldFailureMessage": null,
     "meldHandedOff": false,
@@ -552,13 +516,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
             "activeLabel": "Converting to $CASH",
             "key": "cash-conversion",
             "nodeLabel": "Converted",
-            "nominalMs": 180000,
-          },
-          {
-            "activeLabel": "Teleporting $CASH",
-            "key": "cash-teleport",
-            "nodeLabel": "Teleported",
-            "nominalMs": 300000,
+            "nominalMs": 480000,
           },
           {
             "activeLabel": "Adding to your balance",
@@ -620,13 +578,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
             "activeLabel": "Converting to $CASH",
             "key": "cash-conversion",
             "nodeLabel": "Converted",
-            "nominalMs": 180000,
-          },
-          {
-            "activeLabel": "Teleporting $CASH",
-            "key": "cash-teleport",
-            "nodeLabel": "Teleported",
-            "nominalMs": 300000,
+            "nominalMs": 480000,
           },
           {
             "activeLabel": "Adding to your balance",
@@ -691,13 +643,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
             "activeLabel": "Converting to $CASH",
             "key": "cash-conversion",
             "nodeLabel": "Converted",
-            "nominalMs": 180000,
-          },
-          {
-            "activeLabel": "Teleporting $CASH",
-            "key": "cash-teleport",
-            "nodeLabel": "Teleported",
-            "nominalMs": 300000,
+            "nominalMs": 480000,
           },
           {
             "activeLabel": "Adding to your balance",
@@ -759,13 +705,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
             "activeLabel": "Converting to $CASH",
             "key": "cash-conversion",
             "nodeLabel": "Converted",
-            "nominalMs": 180000,
-          },
-          {
-            "activeLabel": "Teleporting $CASH",
-            "key": "cash-teleport",
-            "nodeLabel": "Teleported",
-            "nominalMs": 300000,
+            "nominalMs": 480000,
           },
           {
             "activeLabel": "Adding to your balance",
@@ -828,13 +768,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
             "activeLabel": "Converting to $CASH",
             "key": "cash-conversion",
             "nodeLabel": "Converted",
-            "nominalMs": 180000,
-          },
-          {
-            "activeLabel": "Teleporting $CASH",
-            "key": "cash-teleport",
-            "nodeLabel": "Teleported",
-            "nominalMs": 300000,
+            "nominalMs": 480000,
           },
           {
             "activeLabel": "Adding to your balance",
@@ -897,13 +831,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
             "activeLabel": "Converting to $CASH",
             "key": "cash-conversion",
             "nodeLabel": "Converted",
-            "nominalMs": 180000,
-          },
-          {
-            "activeLabel": "Teleporting $CASH",
-            "key": "cash-teleport",
-            "nodeLabel": "Teleported",
-            "nominalMs": 300000,
+            "nominalMs": 480000,
           },
           {
             "activeLabel": "Adding to your balance",
@@ -966,13 +894,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
             "activeLabel": "Converting to $CASH",
             "key": "cash-conversion",
             "nodeLabel": "Converted",
-            "nominalMs": 180000,
-          },
-          {
-            "activeLabel": "Teleporting $CASH",
-            "key": "cash-teleport",
-            "nodeLabel": "Teleported",
-            "nominalMs": 300000,
+            "nominalMs": 480000,
           },
           {
             "activeLabel": "Adding to your balance",
@@ -1034,13 +956,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
             "activeLabel": "Converting to $CASH",
             "key": "cash-conversion",
             "nodeLabel": "Converted",
-            "nominalMs": 180000,
-          },
-          {
-            "activeLabel": "Teleporting $CASH",
-            "key": "cash-teleport",
-            "nodeLabel": "Teleported",
-            "nominalMs": 300000,
+            "nominalMs": 480000,
           },
           {
             "activeLabel": "Adding to your balance",
@@ -1117,13 +1033,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
             "activeLabel": "Converting to $CASH",
             "key": "cash-conversion",
             "nodeLabel": "Converted",
-            "nominalMs": 180000,
-          },
-          {
-            "activeLabel": "Teleporting $CASH",
-            "key": "cash-teleport",
-            "nodeLabel": "Teleported",
-            "nominalMs": 300000,
+            "nominalMs": 480000,
           },
           {
             "activeLabel": "Adding to your balance",
@@ -1145,7 +1055,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "fundingNotice": null,
     "fundingStep": null,
     "fundsSeen": false,
-    "journeyDone": 2,
+    "journeyDone": 1,
     "meldDelayed": false,
     "meldFailureMessage": null,
     "meldHandedOff": false,
@@ -1197,13 +1107,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
             "activeLabel": "Converting to $CASH",
             "key": "cash-conversion",
             "nodeLabel": "Converted",
-            "nominalMs": 180000,
-          },
-          {
-            "activeLabel": "Teleporting $CASH",
-            "key": "cash-teleport",
-            "nodeLabel": "Teleported",
-            "nominalMs": 300000,
+            "nominalMs": 480000,
           },
           {
             "activeLabel": "Adding to your balance",
@@ -1225,7 +1129,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "fundingNotice": null,
     "fundingStep": null,
     "fundsSeen": false,
-    "journeyDone": 2,
+    "journeyDone": 1,
     "meldDelayed": false,
     "meldFailureMessage": null,
     "meldHandedOff": false,
@@ -1277,13 +1181,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
             "activeLabel": "Converting to $CASH",
             "key": "cash-conversion",
             "nodeLabel": "Converted",
-            "nominalMs": 180000,
-          },
-          {
-            "activeLabel": "Teleporting $CASH",
-            "key": "cash-teleport",
-            "nodeLabel": "Teleported",
-            "nominalMs": 300000,
+            "nominalMs": 480000,
           },
           {
             "activeLabel": "Adding to your balance",
@@ -1306,7 +1204,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "fundingNotice": null,
     "fundingStep": "swap",
     "fundsSeen": true,
-    "journeyDone": 3,
+    "journeyDone": 1,
     "meldDelayed": false,
     "meldFailureMessage": null,
     "meldHandedOff": false,
@@ -1324,9 +1222,9 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "claimStage": null,
     "claimedBase": null,
     "foregroundSnapshot": {
-      "confirmedStageKey": "cash-teleport",
+      "confirmedStageKey": "cash-conversion",
       "detectedAt": 1746554272000,
-      "estimatedCompletionAt": 1746554632000,
+      "estimatedCompletionAt": 1746554812000,
       "latestRouteStatus": "complete",
       "preDetectionEstimateText": "≈10 min after your transfer",
       "profile": {
@@ -1359,13 +1257,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
             "activeLabel": "Converting to $CASH",
             "key": "cash-conversion",
             "nodeLabel": "Converted",
-            "nominalMs": 180000,
-          },
-          {
-            "activeLabel": "Teleporting $CASH",
-            "key": "cash-teleport",
-            "nodeLabel": "Teleported",
-            "nominalMs": 300000,
+            "nominalMs": 480000,
           },
           {
             "activeLabel": "Adding to your balance",
@@ -1382,14 +1274,13 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "schemaVersion": 1,
       "stageTimestamps": {
         "cash-conversion": 1746554272000,
-        "cash-teleport": 1746554272000,
       },
     },
     "fundingError": null,
     "fundingNotice": null,
     "fundingStep": "await-arrival",
     "fundsSeen": true,
-    "journeyDone": 4,
+    "journeyDone": 1,
     "meldDelayed": false,
     "meldFailureMessage": null,
     "meldHandedOff": false,
@@ -1442,13 +1333,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
             "activeLabel": "Converting to $CASH",
             "key": "cash-conversion",
             "nodeLabel": "Converted",
-            "nominalMs": 180000,
-          },
-          {
-            "activeLabel": "Teleporting $CASH",
-            "key": "cash-teleport",
-            "nodeLabel": "Teleported",
-            "nominalMs": 300000,
+            "nominalMs": 480000,
           },
           {
             "activeLabel": "Adding to your balance",
@@ -1471,7 +1356,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "fundingNotice": "connection lost, reconnecting…",
     "fundingStep": "swap",
     "fundsSeen": true,
-    "journeyDone": 3,
+    "journeyDone": 1,
     "meldDelayed": false,
     "meldFailureMessage": null,
     "meldHandedOff": false,
@@ -1524,13 +1409,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
             "activeLabel": "Converting to $CASH",
             "key": "cash-conversion",
             "nodeLabel": "Converted",
-            "nominalMs": 180000,
-          },
-          {
-            "activeLabel": "Teleporting $CASH",
-            "key": "cash-teleport",
-            "nodeLabel": "Teleported",
-            "nominalMs": 300000,
+            "nominalMs": 480000,
           },
           {
             "activeLabel": "Adding to your balance",
@@ -1554,7 +1433,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "fundingNotice": null,
     "fundingStep": "done",
     "fundsSeen": true,
-    "journeyDone": 4,
+    "journeyDone": 2,
     "meldDelayed": false,
     "meldFailureMessage": null,
     "meldHandedOff": false,
@@ -1607,13 +1486,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
             "activeLabel": "Converting to $CASH",
             "key": "cash-conversion",
             "nodeLabel": "Converted",
-            "nominalMs": 180000,
-          },
-          {
-            "activeLabel": "Teleporting $CASH",
-            "key": "cash-teleport",
-            "nodeLabel": "Teleported",
-            "nominalMs": 300000,
+            "nominalMs": 480000,
           },
           {
             "activeLabel": "Adding to your balance",
@@ -1637,7 +1510,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "fundingNotice": null,
     "fundingStep": "done",
     "fundsSeen": true,
-    "journeyDone": 4,
+    "journeyDone": 2,
     "meldDelayed": false,
     "meldFailureMessage": null,
     "meldHandedOff": false,
@@ -1690,13 +1563,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
             "activeLabel": "Converting to $CASH",
             "key": "cash-conversion",
             "nodeLabel": "Converted",
-            "nominalMs": 180000,
-          },
-          {
-            "activeLabel": "Teleporting $CASH",
-            "key": "cash-teleport",
-            "nodeLabel": "Teleported",
-            "nominalMs": 300000,
+            "nominalMs": 480000,
           },
           {
             "activeLabel": "Adding to your balance",
@@ -1720,7 +1587,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "fundingNotice": null,
     "fundingStep": "done",
     "fundsSeen": true,
-    "journeyDone": 4,
+    "journeyDone": 2,
     "meldDelayed": false,
     "meldFailureMessage": null,
     "meldHandedOff": false,
@@ -1774,13 +1641,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
             "activeLabel": "Converting to $CASH",
             "key": "cash-conversion",
             "nodeLabel": "Converted",
-            "nominalMs": 180000,
-          },
-          {
-            "activeLabel": "Teleporting $CASH",
-            "key": "cash-teleport",
-            "nodeLabel": "Teleported",
-            "nominalMs": 300000,
+            "nominalMs": 480000,
           },
           {
             "activeLabel": "Adding to your balance",
@@ -1804,7 +1665,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "fundingNotice": null,
     "fundingStep": "done",
     "fundsSeen": true,
-    "journeyDone": 4,
+    "journeyDone": 2,
     "meldDelayed": false,
     "meldFailureMessage": null,
     "meldHandedOff": false,
@@ -1855,13 +1716,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
             "activeLabel": "Converting to $CASH",
             "key": "cash-conversion",
             "nodeLabel": "Converted",
-            "nominalMs": 180000,
-          },
-          {
-            "activeLabel": "Teleporting $CASH",
-            "key": "cash-teleport",
-            "nodeLabel": "Teleported",
-            "nominalMs": 300000,
+            "nominalMs": 480000,
           },
           {
             "activeLabel": "Adding to your balance",
@@ -1881,7 +1736,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "fundingNotice": null,
     "fundingStep": null,
     "fundsSeen": false,
-    "journeyDone": 2,
+    "journeyDone": 1,
     "meldDelayed": false,
     "meldFailureMessage": null,
     "meldHandedOff": false,
@@ -1932,13 +1787,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
             "activeLabel": "Converting to $CASH",
             "key": "cash-conversion",
             "nodeLabel": "Converted",
-            "nominalMs": 180000,
-          },
-          {
-            "activeLabel": "Teleporting $CASH",
-            "key": "cash-teleport",
-            "nodeLabel": "Teleported",
-            "nominalMs": 300000,
+            "nominalMs": 480000,
           },
           {
             "activeLabel": "Adding to your balance",
@@ -1961,7 +1810,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "fundingNotice": null,
     "fundingStep": "done",
     "fundsSeen": true,
-    "journeyDone": 5,
+    "journeyDone": 3,
     "meldDelayed": false,
     "meldFailureMessage": null,
     "meldHandedOff": false,
@@ -2057,19 +1906,14 @@ exports[`request list projection > projects the fixture records exactly as today
               "state": "current",
             },
             {
-              "key": "cash-teleport",
-              "label": "Teleported",
-              "state": "upcoming",
-            },
-            {
               "key": "cash-top-up",
               "label": "Added",
               "state": "upcoming",
             },
           ],
           "stageElapsedMs": 900000,
-          "value": 0.7295657894736842,
-          "valueNow": 73,
+          "value": 0.9498947368421052,
+          "valueNow": 95,
           "valueText": "Converting to $CASH",
         },
       },
@@ -2135,11 +1979,6 @@ exports[`request list projection > projects the fixture records exactly as today
             {
               "key": "cash-conversion",
               "label": "Converted",
-              "state": "upcoming",
-            },
-            {
-              "key": "cash-teleport",
-              "label": "Teleported",
               "state": "upcoming",
             },
             {
@@ -2224,11 +2063,6 @@ exports[`request list projection > projects the fixture records exactly as today
               "state": "current",
             },
             {
-              "key": "cash-teleport",
-              "label": "Teleported",
-              "state": "upcoming",
-            },
-            {
               "key": "cash-top-up",
               "label": "Added",
               "state": "upcoming",
@@ -2303,11 +2137,6 @@ exports[`request list projection > projects the fixture records exactly as today
             {
               "key": "cash-conversion",
               "label": "Converted",
-              "state": "upcoming",
-            },
-            {
-              "key": "cash-teleport",
-              "label": "Teleported",
               "state": "upcoming",
             },
             {
@@ -2388,11 +2217,6 @@ exports[`request list projection > projects the fixture records exactly as today
               "state": "upcoming",
             },
             {
-              "key": "cash-teleport",
-              "label": "Teleported",
-              "state": "upcoming",
-            },
-            {
               "key": "cash-top-up",
               "label": "Added",
               "state": "upcoming",
@@ -2461,11 +2285,6 @@ exports[`request list projection > projects the fixture records exactly as today
               "state": "upcoming",
             },
             {
-              "key": "cash-teleport",
-              "label": "Teleported",
-              "state": "upcoming",
-            },
-            {
               "key": "cash-top-up",
               "label": "Added",
               "state": "upcoming",
@@ -2514,7 +2333,7 @@ exports[`request list projection > projects the fixture records exactly as today
           "meld-payment": 1746549120000,
         },
         "view": {
-          "activeNodeIndex": 4,
+          "activeNodeIndex": 3,
           "kind": "settled",
           "label": "Ready to spend",
           "nodes": [
@@ -2531,11 +2350,6 @@ exports[`request list projection > projects the fixture records exactly as today
             {
               "key": "cash-conversion",
               "label": "Converted",
-              "state": "complete",
-            },
-            {
-              "key": "cash-teleport",
-              "label": "Teleported",
               "state": "complete",
             },
             {
@@ -2629,19 +2443,14 @@ exports[`request list projection > projects the fixture records with live status
               "state": "current",
             },
             {
-              "key": "cash-teleport",
-              "label": "Teleported",
-              "state": "upcoming",
-            },
-            {
               "key": "cash-top-up",
               "label": "Added",
               "state": "upcoming",
             },
           ],
           "stageElapsedMs": 900000,
-          "value": 0.7295657894736842,
-          "valueNow": 73,
+          "value": 0.9498947368421052,
+          "valueNow": 95,
           "valueText": "Converting to $CASH",
         },
       },
@@ -2713,11 +2522,6 @@ exports[`request list projection > projects the fixture records with live status
               "key": "cash-conversion",
               "label": "Converted",
               "state": "current",
-            },
-            {
-              "key": "cash-teleport",
-              "label": "Teleported",
-              "state": "upcoming",
             },
             {
               "key": "cash-top-up",
@@ -2801,11 +2605,6 @@ exports[`request list projection > projects the fixture records with live status
               "state": "current",
             },
             {
-              "key": "cash-teleport",
-              "label": "Teleported",
-              "state": "upcoming",
-            },
-            {
               "key": "cash-top-up",
               "label": "Added",
               "state": "upcoming",
@@ -2880,11 +2679,6 @@ exports[`request list projection > projects the fixture records with live status
             {
               "key": "cash-conversion",
               "label": "Converted",
-              "state": "upcoming",
-            },
-            {
-              "key": "cash-teleport",
-              "label": "Teleported",
               "state": "upcoming",
             },
             {
@@ -2965,11 +2759,6 @@ exports[`request list projection > projects the fixture records with live status
               "state": "upcoming",
             },
             {
-              "key": "cash-teleport",
-              "label": "Teleported",
-              "state": "upcoming",
-            },
-            {
               "key": "cash-top-up",
               "label": "Added",
               "state": "upcoming",
@@ -3012,17 +2801,16 @@ exports[`request list projection > projects the fixture records with live status
       "progress": {
         "cadenceMs": 5000,
         "detectedAt": 1746552120000,
-        "estimateText": "Ready by 18:06",
+        "estimateText": "Ready by 18:09",
         "stageTimestamps": {
           "cash-conversion": 1746554400000,
-          "cash-teleport": 1746554400000,
           "meld-payment": 1746552120000,
         },
         "view": {
-          "activeNodeIndex": 3,
-          "activeStageKey": "cash-teleport",
+          "activeNodeIndex": 2,
+          "activeStageKey": "cash-conversion",
           "kind": "active",
-          "label": "Teleporting $CASH",
+          "label": "Converting to $CASH",
           "nodes": [
             {
               "key": "started",
@@ -3037,11 +2825,6 @@ exports[`request list projection > projects the fixture records with live status
             {
               "key": "cash-conversion",
               "label": "Converted",
-              "state": "complete",
-            },
-            {
-              "key": "cash-teleport",
-              "label": "Teleported",
               "state": "current",
             },
             {
@@ -3051,9 +2834,9 @@ exports[`request list projection > projects the fixture records with live status
             },
           ],
           "stageElapsedMs": 0,
-          "value": 0.6357142857142857,
-          "valueNow": 64,
-          "valueText": "Teleporting $CASH",
+          "value": 0.4535714285714285,
+          "valueNow": 45,
+          "valueText": "Converting to $CASH",
         },
       },
       "quote": {
@@ -3065,7 +2848,7 @@ exports[`request list projection > projects the fixture records with live status
       "startedAt": 1746552000000,
       "state": {
         "kind": "finishing",
-        "status": "Teleporting $CASH",
+        "status": "Converting to $CASH",
       },
     },
     {
@@ -3093,7 +2876,7 @@ exports[`request list projection > projects the fixture records with live status
           "meld-payment": 1746549120000,
         },
         "view": {
-          "activeNodeIndex": 4,
+          "activeNodeIndex": 3,
           "kind": "settled",
           "label": "Ready to spend",
           "nodes": [
@@ -3110,11 +2893,6 @@ exports[`request list projection > projects the fixture records with live status
             {
               "key": "cash-conversion",
               "label": "Converted",
-              "state": "complete",
-            },
-            {
-              "key": "cash-teleport",
-              "label": "Teleported",
               "state": "complete",
             },
             {

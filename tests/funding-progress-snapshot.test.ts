@@ -29,7 +29,7 @@ describe("funding progress snapshots", () => {
 
     const restored = parseFundingProgressSnapshot(JSON.parse(JSON.stringify(original)));
     expect(restored).toEqual(original);
-    expect(restored?.profile.stages).toHaveLength(6);
+    expect(restored?.profile.stages).toHaveLength(5);
   });
 
   it("restores the route boundary metadata on existing Chainflip snapshots", () => {
@@ -134,16 +134,16 @@ describe("funding progress snapshots", () => {
   it("does not backfill skipped stages when a later stage was already observed", () => {
     const p = profile();
     const snapshot = createFundingProgressSnapshot(p, {
-      confirmedStageKey: "cash-teleport",
+      confirmedStageKey: "cash-top-up",
       detectedAt: 8_000,
-      stageTimestamps: { "cash-teleport": 9_000 },
+      stageTimestamps: { "cash-top-up": 9_000 },
     });
     const restored = resolveFundingProgressSnapshot(snapshot, p, { fundedAt: 10_000 });
 
     expect(restored).toMatchObject({
-      confirmedStageKey: "cash-teleport",
+      confirmedStageKey: "cash-top-up",
       routeCompletedAt: 10_000,
-      stageTimestamps: { "cash-teleport": 9_000 },
+      stageTimestamps: { "cash-top-up": 9_000 },
     });
     expect(restored.stageTimestamps["cash-conversion"]).toBeUndefined();
   });

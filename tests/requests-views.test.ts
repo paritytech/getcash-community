@@ -79,8 +79,58 @@ const refunded: RequestFailure = {
 };
 
 describe("request views", () => {
-  it("journeyStepsOf counts the five markers from the record", () => {
+  // The scale is the caller's, not the record's, so both tables read the same builders; only the
+  // card table's first case needs a record of its own rail.
+  it("journeyStepsOf counts the crypto journey's three stops from the record", () => {
     const cases: [string, RequestRecord, number][] = [
+      // The journey opens on the first sighting: before that the deposit screen is showing, so
+      // nothing is complete.
+      ["awaiting-deposit", at({ kind: "awaiting-deposit" }), 0],
+      ["expired", at({ kind: "expired", at: AT }, { failureReason: DEPOSIT_EXPIRED_REASON }), 0],
+      ["cancelled", at({ kind: "cancelled", at: AT }), 0],
+      // "Started" is the deposit seen at a best block, whatever confirmed it.
+      ["deposit-seen provisional via chain", at(seen("chain")), 1],
+      ["deposit-seen finalized via worker", at(seen("worker", "finalized")), 1],
+      // One program swaps and teleports, so both steps sit inside "Conversion".
+      ["converting at the swap", at({ kind: "converting", at: AT, step: "swap" }), 1],
+      [
+        "converting, awaiting arrival",
+        at({ kind: "converting", at: AT, step: "await-arrival" }),
+        1,
+      ],
+      // The worker reported `done`: the conversion is behind the record and the claim has started.
+      ["claiming", at({ kind: "claiming", at: AT }), 2],
+      ["settled", at({ kind: "settled", at: AT }), 3],
+      [
+        "failed at the claim",
+        at({ kind: "failed", at: AT, recoverable: true }, { failure: mintFailure }),
+        2,
+      ],
+      [
+        "failed at the swap",
+        at({ kind: "failed", at: AT, recoverable: true }, { failure: shortfall }),
+        1,
+      ],
+      // The network took the deposit, so it was seen; a plain rejection means it never was.
+      [
+        "failed at the deposit, refunded",
+        at({ kind: "failed", at: AT, recoverable: false }, { failure: refunded, refunded: true }),
+        1,
+      ],
+      [
+        "failed at the deposit, rejected",
+        at({ kind: "failed", at: AT, recoverable: false }, { failure: rejected }),
+        0,
+      ],
+    ];
+    for (const [name, record, steps] of cases) {
+      expect(journeyStepsOf(record, 3), name).toBe(steps);
+    }
+  });
+
+  it("journeyStepsOf counts the card and bank journey's five stops from the record", () => {
+    const cases: [string, RequestRecord, number][] = [
+      // "Started" is the request itself: it exists, so the first marker is behind it.
       ["awaiting-deposit", at({ kind: "awaiting-deposit" }), 1],
       // A provisional sighting by any witness is a payment received; "Approved" waits for the
       // deposit on the burner at finality, whatever the rail reports of its delivery.
@@ -97,13 +147,14 @@ describe("request views", () => {
         at(seen("rail"), { rail: rail("chainflip", "delivered", "complete") }),
         2,
       ],
-      // The swap is the conversion; past it the CASH is on its way to the balance.
+      // One program swaps and teleports, so both steps sit inside "Conversion".
       ["converting at the swap", at({ kind: "converting", at: AT, step: "swap" }), 3],
       [
         "converting, awaiting arrival",
         at({ kind: "converting", at: AT, step: "await-arrival" }),
-        4,
+        3,
       ],
+      // The worker reported `done`: the conversion is behind the record and the claim has started.
       ["claiming", at({ kind: "claiming", at: AT }), 4],
       ["settled", at({ kind: "settled", at: AT }), 5],
       // A side exit reports the leg it left; from the deposit, the kind says whether the network
@@ -132,7 +183,7 @@ describe("request views", () => {
       ["cancelled", at({ kind: "cancelled", at: AT }), 1],
     ];
     for (const [name, record, steps] of cases) {
-      expect(journeyStepsOf(record), name).toBe(steps);
+      expect(journeyStepsOf(record, 5), name).toBe(steps);
     }
   });
 

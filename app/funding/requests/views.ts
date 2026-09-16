@@ -1,7 +1,7 @@
 // Pure projections of a request record onto the values the session store exposes today, so the
 // screens and the list adapters read the same things from the new record.
 
-import type { PaymentPhase } from "@getsome/core";
+import type { FailureKind, PaymentPhase } from "@getsome/core";
 import type { FundingStep } from "@getsome/funding";
 import type { FundingProgressProjection } from "../progress";
 import { creditedAmount } from "../top-up-projection";
@@ -70,43 +70,75 @@ export const fundsSeenOf = (record: RequestRecord): boolean =>
 /** How many steps the route's journey shows: three on the crypto timeline, five on the card's. */
 export type JourneySteps = 3 | 5;
 
-/** How many of the journey's five markers are complete, 1..5. Started: the request exists, so a
- *  record awaiting its deposit, expired or cancelled counts one. Payment: the deposit was seen
- *  provisionally by any witness (the provider's report, a chain read at a best block). Approved:
- *  the deposit is on the burner at finality (the worker, the faucet, a finalized chain read), or
- *  the swap is under way. Conversion: the swap is done and the CASH is teleporting, or the claim
- *  is under way. Added: the request settled. A side exit reports the leg it left; from the
+/** The scale a route's journey is counted on. */
+export const journeyScaleOf = (route: RequestRecord["route"]): JourneySteps =>
+  route === "crypto" ? 3 : 5;
+
+/** A side exit's kind: the network took the payment even though it could not deliver it. */
+const paymentTaken = (kind?: FailureKind): boolean =>
+  kind === "refunded" ||
+  kind === "refund-failed" ||
+  kind === "egress-failed" ||
+  kind === "fallback-egress";
+
+/** How many of the crypto journey's three markers are complete, 0..3. The scale starts at 0: the
+ *  journey only opens once the deposit is seen, and until then the deposit screen is showing.
+ *  Started: the deposit was seen at a best block, whatever its assurance. Conversion: the worker
+ *  reported `done`, so the one program that swaps and teleports is behind the record and the
+ *  claim has started. Added: the request settled. A side exit reports the leg it left; from the
  *  deposit, the kind says whether the network took the payment. */
-export function journeyStepsOf(record: RequestRecord): number {
+function cryptoJourneySteps(record: RequestRecord): number {
   const { status, failure } = record;
   switch (status.kind) {
     case "awaiting-deposit":
+      return 0;
+    case "deposit-seen":
+    case "converting":
+      return 1;
+    case "claiming":
+      return 2;
+    case "settled":
+      return 3;
+    case "failed":
     case "expired":
     case "cancelled":
+      if (failure?.step === "mint") return 2;
+      if (failure?.step === "swap") return 1;
+      return paymentTaken(failure?.kind) ? 1 : 0;
+  }
+}
+
+/** How many of the card and bank journey's five markers are complete, 1..5. Started: the request
+ *  exists, so a record awaiting its payment counts one. Payment: the provider reported the
+ *  payment. Approved: the deposit is on the burner at finality. Conversion: the worker reported
+ *  `done`, since the swap and the teleport are one program. Added: the request settled. */
+function cardJourneySteps(record: RequestRecord): number {
+  const { status, failure } = record;
+  switch (status.kind) {
+    case "awaiting-deposit":
       return 1;
     case "deposit-seen":
       // "Approved" waits for finality on the burner: a rail's delivery on its own is a payment
       // received and no more.
       return status.assurance === "finalized" ? 3 : 2;
     case "converting":
-      return status.step === "swap" ? 3 : 4;
+      return 3;
     case "claiming":
       return 4;
     case "settled":
       return 5;
     case "failed":
+    case "expired":
+    case "cancelled":
       if (failure?.step === "mint") return 4;
       if (failure?.step === "swap") return 3;
-      switch (failure?.kind) {
-        case "refunded":
-        case "refund-failed":
-        case "egress-failed":
-        case "fallback-egress":
-          return 2; // the network took the payment but could not deliver
-        default:
-          return 1;
-      }
+      return paymentTaken(failure?.kind) ? 2 : 1;
   }
+}
+
+/** How many of the journey's markers are complete, on the scale the route shows. */
+export function journeyStepsOf(record: RequestRecord, steps: JourneySteps): number {
+  return steps === 3 ? cryptoJourneySteps(record) : cardJourneySteps(record);
 }
 
 /** The list row's state, worded by the same progress projection the journey ribbon shows. A

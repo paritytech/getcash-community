@@ -87,7 +87,9 @@ export interface RailState {
   status: SwapProgress | "failed";
   stage: "waiting" | "received" | "processing" | "delivered" | "failed";
   delayed?: boolean;
-  failure?: { kind: FailureKind; message: string };
+  /** The provider's own code for the ending (`refunded`, `declined`, `unobserved`, …), when it
+   *  reported one. */
+  failure?: { kind: FailureKind; message: string; code?: string };
   updatedAt: number;
 }
 

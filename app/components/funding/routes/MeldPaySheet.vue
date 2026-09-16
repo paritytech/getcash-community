@@ -41,7 +41,7 @@ onUnmounted(() => window.removeEventListener("message", onMessage));
     <!-- A refund is reassuring, not an error: the money came back. Its own calm treatment, before
          the red failure below, so it never reads as "payment failed, try again". -->
     <div
-      v-if="requests.meldStage === 'failed' && session.meldRefunded"
+      v-if="requests.meldStage === 'failed' && requests.meldRefunded"
       class="flex min-h-0 w-full flex-1 flex-col items-center justify-center gap-2 text-center"
     >
       <ArrowDown class="size-8 text-fg-primary" aria-hidden="true" />
