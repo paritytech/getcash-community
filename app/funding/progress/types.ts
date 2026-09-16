@@ -121,7 +121,6 @@ export interface FundingProgressProjection {
   estimateText: string;
   cadenceMs: number;
   detectedAt?: number;
-  routeCompletedAt?: number;
   failedAt?: number;
   settledAt?: number;
   stageTimestamps: Readonly<Record<string, number>>;

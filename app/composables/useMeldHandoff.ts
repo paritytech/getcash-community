@@ -4,14 +4,16 @@ import { computed, watch } from "vue";
 import { meldDepositPending } from "../funding/meld-handoff";
 import { projectFundingProgress } from "../funding/progress";
 import { useFlowStore } from "../stores/flow";
+import { useRequestsStore } from "../stores/requests";
 import { useSessionStore } from "../stores/session";
 
 export function useMeldHandoff(emit: (event: "handoff") => void) {
   const session = useSessionStore();
+  const requests = useRequestsStore();
   const flow = useFlowStore();
 
   const depositPending = computed(() => {
-    const foreground = session.foregroundProgress;
+    const foreground = requests.foregroundProgress;
     const progressKind = foreground
       ? projectFundingProgress({
           snapshot: foreground.snapshot,
@@ -20,10 +22,10 @@ export function useMeldHandoff(emit: (event: "handoff") => void) {
         }).view.kind
       : null;
     return meldDepositPending({
-      fundsSeen: session.fundsSeen,
-      meldHandedOff: session.meldHandedOff,
-      meldStage: session.meldStage,
-      phase: session.phase,
+      fundsSeen: requests.fundsSeen,
+      meldHandedOff: requests.meldHandedOff,
+      meldStage: requests.meldStage,
+      phase: requests.phase,
       progressKind,
     });
   });
