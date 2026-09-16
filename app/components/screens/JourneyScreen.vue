@@ -8,13 +8,12 @@ import { useFundingProgressClock } from "../../composables/useFundingProgressClo
 import type { FundingJourneyStatus } from "../../funding/handoff";
 import { projectFundingProgress, type FundingProgressProjection } from "../../funding/progress";
 import type { FundingTopUp } from "../../funding/top-ups";
-import { useSessionStore } from "../../stores/session";
+import { DEPOSIT_EXPIRED_REASON, useSessionStore } from "../../stores/session";
 import { fmtCash } from "../../utils/cash";
 import { fmtFiat, isMoneyAmount } from "../../utils/money";
-import { formatWhenShort } from "../../utils/journey";
+import { formatWhenShort, type JourneySteps } from "../../utils/journey";
 import { refundedFailure } from "../../utils/recovery";
 import FundingJourneyTimeline from "../funding/progress/FundingJourneyTimeline.vue";
-import RefundRecovery from "../funding/RefundRecovery.vue";
 import DetailRows from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
 
@@ -29,8 +28,9 @@ const props = defineProps<{
    *  is live in the store. */
   topUp?: FundingTopUp | null;
 }>();
-// fees asks the host to swap in the fee-breakdown drill-in; close leaves the finished journey.
-const emit = defineEmits<{ fees: []; close: [] }>();
+// fees and refund ask the host to swap in their drill-ins; close leaves the finished journey;
+// startOver asks it to re-enter this route for a fresh attempt at the same top-up.
+const emit = defineEmits<{ fees: []; refund: []; close: []; startOver: [] }>();
 const session = useSessionStore();
 
 const cadence = computed(
@@ -54,6 +54,33 @@ const finished = computed(() => session.phase === "done");
 const failure = computed(() => (state.value?.phase === "failed" ? state.value.failure : null));
 const failedText = computed(() => session.fundingError ?? failure.value?.message ?? null);
 
+/**
+ * The route's own timeline: crypto shows three steps, the card rail five.
+ *
+ * The store owns the scale whenever a request is on screen — the completed count and the milestone
+ * keys are both on it, and a second definition here would draw the last step as current and lose
+ * the settled timestamp. The list's word on the route only stands in before the top-up is live.
+ */
+const steps = computed<JourneySteps>(() => {
+  if (session.lastState !== null || !props.topUp) return session.journeySteps;
+  return props.topUp.route === "crypto" ? 3 : 5;
+});
+const crypto = computed(() => steps.value === 3);
+
+/** The design names the expired step itself, not "<stage> failed". */
+const failedLabel = computed(() => {
+  const kind = failure.value?.kind;
+  if (kind === "expired" || kind === "stale") return "Expired";
+  if (session.fundingError === DEPOSIT_EXPIRED_REASON) return "Expired";
+  return null;
+});
+/** Nothing was paid on an expired top-up, so it carries no quote rows. */
+const expired = computed(() => failedLabel.value !== null);
+/** The quote rows leave with the money: nothing was kept on an expired or refunded top-up. */
+const hideRows = computed(
+  () => expired.value || (failure.value !== null && refundedFailure(failure.value.kind)),
+);
+
 const heroFailed = computed(() => progress.value?.view.kind === "failed" || failure.value !== null);
 
 const creditedAmount = computed(() =>
@@ -65,11 +92,13 @@ const amountText = computed(() => {
   return `${session.amountHuman || (props.topUp?.amount ?? "")} $CASH`;
 });
 
-/** When the CASH landed: the live milestone, else the list's settled timestamp. */
+/** When the CASH landed: the live milestone (stamped at the route's last step), else the list's
+ *  settled timestamp. */
 const settledWhen = computed(() => {
   if (!finished.value) return null;
   const at =
-    session.milestones[5] ?? (props.topUp?.state.kind === "settled" ? props.topUp.state.at : null);
+    session.milestones[steps.value] ??
+    (props.topUp?.state.kind === "settled" ? props.topUp.state.at : null);
   return at != null ? formatWhenShort(at) : null;
 });
 
@@ -78,7 +107,6 @@ const refunded = computed(
   () =>
     failure.value !== null && refundedFailure(failure.value.kind) && session.refundAddress !== null,
 );
-const refund = computed(() => (state.value?.phase === "failed" ? state.value.refund : undefined));
 const asset = computed(() => {
   const sourceId = state.value?.sourceId;
   return sourceId ? (SOURCE_CONFIG_BY_ID.get(sourceId)?.asset ?? "") : "";
@@ -108,10 +136,10 @@ const quoteView = computed(() => {
 });
 const detailRows = computed(() => {
   const q = quoteView.value;
-  if (!q) return [];
-  // Symbol-first for the fiat rails ("€50.55"); crypto keeps its full-precision ticker form.
-  const money = (amount: string) =>
-    q.crypto ? `${amount} ${q.symbol}` : fmtFiat(amount, q.symbol);
+  // The crypto rail doesn't restate the deposit amount here — the deposit screen owns that figure.
+  if (!q || q.crypto) return [];
+  // Symbol-first for the fiat rails ("€50.55").
+  const money = (amount: string) => fmtFiat(amount, q.symbol);
   const rows: { label: string; value: string; fees?: boolean }[] = [];
   // The fee row drills into the breakdown screen when the live quote backs it with a fee the
   // breakdown can actually split; an unparseable one still shows, as plain text.
@@ -121,6 +149,23 @@ const detailRows = computed(() => {
   return rows;
 });
 
+/**
+ * Whether to offer a fresh attempt at a card or bank top-up that ended.
+ *
+ * The failed request itself cannot be re-entered — its pay page is dead and the provider will not
+ * take a second payment against it — so the offer is a new funding request, which is why the
+ * button says "Start over" rather than "Try again".
+ *
+ * Withheld on `unobserved` alone: there the rail could not tell whether the buyer was charged, so
+ * inviting a second payment risks charging them twice.
+ */
+const canStartOver = computed(
+  () =>
+    session.method !== "crypto" &&
+    session.meldStage === "failed" &&
+    session.meldFailureCode !== "unobserved",
+);
+
 /** Temporarily stuck (the provider is retrying): amber on the stepper, never terminal. */
 const delayed = computed(() => session.meldDelayed && !finished.value && !heroFailed.value);
 
@@ -128,9 +173,21 @@ const delayed = computed(() => session.meldDelayed && !finished.value && !heroFa
  *  delay, or the rail's own word on its payment. The last matters most on the bank rail, where
  *  "Confirming your bank transfer…" can be the state for days. */
 const message = computed(() => {
+  // The stored reason is the terse "Channel expired"; the design spells out what it means.
+  if (expired.value) return "This top-up expired because no funds arrived in time";
+  // Chainflip refunds when the swap cannot execute within the quote's price bounds, so the rate
+  // is the cause by construction; the deposit returns minus the refund transfer's network fees.
+  if (failure.value?.kind === "refunded") {
+    return `The rate moved too far to complete the swap. Your ${asset.value || "crypto"} was sent back, minus network fees.`;
+  }
   if (failedText.value) return failedText.value;
   if (session.fundingNotice) return session.fundingNotice;
-  if (delayed.value) return "Taking a little longer than usual";
+  if (delayed.value) {
+    // Each rail waits on something else: the card provider's retry vs chain confirmations.
+    return crypto.value
+      ? "Waiting for network confirmations. This can take a while"
+      : "Taking a little longer than usual";
+  }
   if (props.status) return props.status.text;
   return null;
 });
@@ -158,28 +215,34 @@ const message = computed(() => {
       <p v-if="settledWhen" class="text-paragraph-l text-fg-secondary">{{ settledWhen }}</p>
     </div>
 
-    <div class="mt-4 flex flex-1 flex-col gap-6">
+    <div class="mt-6 flex flex-1 flex-col gap-6">
       <!-- The stepper leaves once the CASH lands. -->
       <FundingJourneyTimeline
         v-if="progress && !finished"
         :progress="progress"
-        :completed-steps="session.journeyDone"
+        :steps="steps"
         :message="message"
         :delayed="delayed"
+        :failed-label="failedLabel"
       />
 
-      <DetailRows v-if="detailRows.length" :rows="detailRows" @fees="emit('fees')" />
+      <DetailRows v-if="detailRows.length && !hideRows" :rows="detailRows" @fees="emit('fees')" />
 
-      <!-- The way back to a refunded deposit: the key controlling the address it returns to. -->
-      <RefundRecovery
-        v-if="refunded && failure"
-        :failure="failure"
-        :refund="refund"
-        :asset="asset"
-      />
+      <!-- The way back to a refunded deposit drills into the return-funds guide, which carries
+           the refund's own status line. -->
+      <PillButton v-if="refunded" class="mt-auto" @click="emit('refund')">
+        Return funds
+      </PillButton>
 
+      <!-- A recoverable failure comes first on either rail: the payment landed and only the credit
+           is outstanding, so re-entering it is the fix. Starting a second payment there would
+           charge the buyer twice. -->
       <PillButton v-if="failure?.recoverable" class="mt-auto" @click="session.retry()">
         Try again
+      </PillButton>
+
+      <PillButton v-else-if="canStartOver" class="mt-auto" @click="emit('startOver')">
+        Start over
       </PillButton>
 
       <PillButton v-if="finished" variant="tertiary" class="mt-auto" @click="emit('close')">

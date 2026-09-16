@@ -21,6 +21,7 @@ import {
   activeState,
   applyLiveStatus,
   creditedAmount,
+  quoteOf,
   type FundingTopUpRecord,
 } from "./top-up-projection";
 import type { FundingTopUp, FundingTopUpDetails } from "./top-ups";
@@ -92,9 +93,7 @@ export function projectChainflipTopUps(
         startedAt: record.startedAt,
         progress,
         details,
-        ...(record.sourceAmount && record.sourceSymbol
-          ? { quote: { amount: record.sourceAmount, symbol: record.sourceSymbol } }
-          : {}),
+        ...quoteOf(record),
         state,
       },
     ];

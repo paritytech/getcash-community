@@ -1,35 +1,55 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { Check, LoaderCircle, X } from "lucide-vue-next";
-import type { FundingProgressProjection } from "../../../funding/progress";
+import { journeyTimelineStep, type FundingProgressProjection } from "../../../funding/progress";
+import type { JourneySteps } from "../../../utils/journey";
 
 const props = withDefaults(
   defineProps<{
     progress: FundingProgressProjection;
-    completedSteps: number;
+    /** The card journey shows five steps; the crypto timeline shows three. */
+    steps?: JourneySteps;
     /** The one line under the stepper: the ribbon only shows when there is something to say. */
     message?: string | null;
     /** Temporarily stuck, not failed: the current step renders amber and keeps spinning. */
     delayed?: boolean;
+    /** Replaces the failed step's "<stage> failed" wording (the design's "Expired"). */
+    failedLabel?: string | null;
   }>(),
   {
+    steps: 5,
     message: null,
     delayed: false,
+    failedLabel: null,
   },
 );
 
-const stages = ["Started", "Payment", "Approved", "Conversion", "Added"] as const;
+const CARD_STAGES = ["Started", "Payment", "Approved", "Conversion", "Added"] as const;
+const CRYPTO_STAGES = ["Started", "Conversion", "Added"] as const;
+const stages = computed<readonly string[]>(() => (props.steps === 3 ? CRYPTO_STAGES : CARD_STAGES));
+
+/**
+ * The card scale's active step projected onto the crypto timeline, by index.
+ *
+ * Both payment legs ("Confirming" and "Processing") collapse onto "Started": the deposit screen
+ * owns the payment, so the journey opens with it already behind. Converting is the crypto
+ * timeline's own second step, crediting its third. The settled index (5) runs past the end,
+ * marking all three done.
+ */
+const CRYPTO_STEP_BY_CARD_STEP = [0, 1, 1, 1, 2, 3] as const;
 
 const settled = computed(() => props.progress.view.kind === "settled");
 const failed = computed(() => props.progress.view.kind === "failed");
-/** Completed markers. A failure before any payment was detected stops on the first marker with
- *  nothing complete. */
+/** Completed markers, derived from the progress projection (not a separate step count) so the
+ *  timeline tracks the same phase the history list shows. The projection always counts on the
+ *  card's five-step scale, so the crypto timeline projects it down to its own three. */
 const completed = computed(() => {
-  if (failed.value && props.progress.detectedAt === undefined) return 0;
-  return Math.max(props.completedSteps, 0);
+  const step = journeyTimelineStep(props.progress);
+  if (props.steps !== 3) return step;
+  return CRYPTO_STEP_BY_CARD_STEP[step] ?? CRYPTO_STAGES.length;
 });
 const activeIndex = computed(() =>
-  settled.value ? -1 : Math.min(completed.value, stages.length - 1),
+  settled.value ? -1 : Math.min(completed.value, stages.value.length - 1),
 );
 
 type StepState = "complete" | "current" | "delayed" | "failed" | "upcoming";
@@ -43,8 +63,9 @@ function stageState(index: number): StepState {
 }
 
 function stageLabel(index: number): string {
-  const label = stages[index]!;
-  return stageState(index) === "failed" ? `${label} failed` : label;
+  const label = stages.value[index]!;
+  if (stageState(index) !== "failed") return label;
+  return props.failedLabel ?? `${label} failed`;
 }
 
 /** What the hidden live region reads out: the stage the journey is on, and the ribbon's message
@@ -54,15 +75,15 @@ const announcement = computed(() => {
   const stage = settled.value
     ? "Top-up complete"
     : failed.value
-      ? `${stages[activeIndex.value]!} failed`
-      : `Step ${activeIndex.value + 1} of ${stages.length}: ${stages[activeIndex.value]!}`;
+      ? stageLabel(activeIndex.value)
+      : `Step ${activeIndex.value + 1} of ${stages.value.length}: ${stages.value[activeIndex.value]!}`;
   return props.message ? `${stage}. ${props.message}` : stage;
 });
 </script>
 
 <template>
   <section class="funding-journey" aria-label="Top-up progress">
-    <div class="funding-journey-card">
+    <div class="funding-journey-card" :style="{ '--funding-journey-gaps': stages.length - 1 }">
       <ol class="funding-journey-steps">
         <!-- Connectors run centre to centre behind the markers; each takes the colour of the
              step it leads to. The marker's outer ring is the card surface, masking the line. -->
@@ -71,7 +92,7 @@ const announcement = computed(() => {
           :key="`connector-${index}`"
           class="funding-journey-connector"
           :class="`funding-journey-connector-${stageState(index)}`"
-          :style="{ left: `calc(1rem + ${index - 1} * (100% - 2rem) / 4)` }"
+          :style="{ left: `calc(1rem + ${index - 1} * (100% - 2rem) / ${stages.length - 1})` }"
           aria-hidden="true"
         />
         <li
@@ -84,13 +105,13 @@ const announcement = computed(() => {
           "
         >
           <span class="funding-journey-marker" aria-hidden="true">
+            <!-- The default stroke (2 in the 24px viewBox) is the design's 1.3px at this size. -->
             <LoaderCircle
               v-if="stageState(index) === 'current' || stageState(index) === 'delayed'"
               class="funding-journey-spinner size-4"
-              :stroke-width="1.5"
             />
-            <X v-else-if="stageState(index) === 'failed'" class="size-4" :stroke-width="1.5" />
-            <Check v-else class="size-4" :stroke-width="1.5" />
+            <X v-else-if="stageState(index) === 'failed'" class="size-4" />
+            <Check v-else class="size-4" />
           </span>
           <span class="funding-journey-label text-label-xs">{{ stageLabel(index) }}</span>
         </li>
@@ -133,7 +154,7 @@ const announcement = computed(() => {
 .funding-journey-connector {
   position: absolute;
   top: calc(1rem - 1.5px);
-  width: calc((100% - 2rem) / 4);
+  width: calc((100% - 2rem) / var(--funding-journey-gaps, 4));
   height: 3px;
   background: var(--stroke-secondary);
 }
@@ -142,9 +163,10 @@ const announcement = computed(() => {
   background: var(--fg-success);
 }
 
-/* The line into the in-progress step is half done, half pending. */
+/* The line into the in-progress step is half done, half pending; the pending half takes the
+ * marker's own colour, so the line reads as leading into it. */
 .funding-journey-connector-current {
-  background: linear-gradient(to right, var(--fg-success) 50%, var(--stroke-secondary) 50%);
+  background: linear-gradient(to right, var(--fg-success) 50%, var(--bg-illustration-dark) 50%);
 }
 
 .funding-journey-connector-failed {
@@ -153,7 +175,7 @@ const announcement = computed(() => {
 
 /* Delayed keeps the process alive in amber: nothing struck, no terminal red. */
 .funding-journey-connector-delayed {
-  background: var(--bg-status-warning);
+  background: linear-gradient(to right, var(--fg-success) 50%, var(--bg-status-warning) 50%);
 }
 
 .funding-journey-step {

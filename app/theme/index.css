@@ -187,6 +187,15 @@
   letter-spacing: -1px;
 }
 
+/* Display Small: full-screen confirmation titles ("Cancel top-up?"). */
+@utility text-display-s {
+  font-family: var(--font-sans);
+  font-size: var(--scale-font-size-36);
+  line-height: var(--scale-line-height-48);
+  font-weight: var(--tw-font-weight, var(--scale-font-weight-semibold));
+  letter-spacing: -0.5px;
+}
+
 @utility text-heading-xl {
   font-size: var(--scale-font-size-24);
   line-height: var(--scale-line-height-32);

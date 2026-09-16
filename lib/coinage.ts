@@ -202,7 +202,9 @@ export function createCoinageHandoff(opts: {
           await recordWorkerClaim(key, claim);
           return { id: key };
         }
-        console.warn(`[coinage] isSettled: not settled (worker claim: ${claim?.phase ?? "none"})`);
+        console.warn(
+          `[coinage] isSettled: not settled (worker claim: ${claim?.phase ?? "none"}${claim?.status ? `, host: ${claim.status}` : ""})`,
+        );
         return null;
       } catch (e) {
         console.error(`[coinage] isSettled THREW (probe error, not a claim): ${msgOf(e)}`);
@@ -577,12 +579,15 @@ interface WorkerFundingStatus {
 }
 
 /**
- * The worker's claim record: `claiming` before the host call, `claimed` once the host has answered.
+ * The worker's claim record: `sizing` and `registering` before the host has the top-up,
+ * `claiming` while the host drives it, `claimed` once its last attempt is final. `status` is the
+ * host's last word on the current attempt.
  */
 export interface WorkerClaim {
-  phase: "claiming" | "claimed";
+  phase: "sizing" | "registering" | "claiming" | "claimed";
   amount?: string;
   at: number;
+  status?: string;
   error?: string;
 }
 

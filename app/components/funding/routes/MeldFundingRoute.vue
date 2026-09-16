@@ -30,7 +30,8 @@ const { previewLabel } = useStateDirector();
 const { handedOff } = useMeldHandoff(emit);
 
 const title = computed(
-  () => fundingSelectorConfig.routes.find(({ id }) => id === route)?.label ?? route,
+  () =>
+    `Add funds via ${fundingSelectorConfig.routes.find(({ id }) => id === route)?.label ?? route}`,
 );
 /** The fee-breakdown drill-in over the pay screen. Back (toolbar or bottom button) returns to it. */
 const showingFees = ref(false);
@@ -64,11 +65,12 @@ async function cancelTopUp() {
 }
 
 /**
- * Demo Skip: the mock world fakes the deposit; the hosted demo funds the burner from the faucet.
+ * Demo Skip: play the payment through from the start — the buyer leaving the widget, the provider
+ * seeing the transaction, then settling it — so the timeline runs its whole length. The store
+ * drives the deposit at the end of that, by faucet or by the mock harness.
  */
 function onSkip() {
-  if (session.mock) session.simulateDeposit();
-  else void session.fundFaucet();
+  session.simulateMeldPayment();
 }
 
 onMounted(() => {
@@ -141,12 +143,19 @@ onUnmounted(() => {
         <button
           v-if="canCancel"
           type="button"
-          class="mx-6 mt-3 mb-4 h-12 shrink-0 rounded-medium bg-status-error text-label-l text-fg-primary-inverted transition-colors hover:bg-status-error-hover disabled:opacity-50"
+          class="mx-6 mt-3 mb-4 h-12 shrink-0 rounded-medium bg-status-error text-label-l text-fg-static-white transition-colors hover:bg-status-error-hover disabled:opacity-50"
           :disabled="session.cancelling"
           @click="cancelTopUp"
         >
           {{ session.cancelling ? "Cancelling…" : "Cancel" }}
         </button>
+        <p
+          v-if="session.cancelNotice"
+          class="mx-6 mb-4 text-center text-body-m text-fg-secondary"
+          role="status"
+        >
+          {{ session.cancelNotice }}
+        </p>
       </template>
       <MeldFeeDetailsScreen v-else-if="showingFees" @back="showingFees = false" />
       <MeldPayScreen

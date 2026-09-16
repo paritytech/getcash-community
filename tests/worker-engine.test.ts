@@ -3,11 +3,14 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { deriveKeypair, deriveKeypairWithSecret, toSchnorrkelSecret } from "@getsome/ephemeral";
+import { PaymentTopUpErr, PaymentTopUpStatusErr } from "@novasamatech/host-api";
+import { topUpIdFor } from "../worker/src/topup-id.js";
 
 const mocks = vi.hoisted(() => ({
   deriveEntropy: vi.fn(),
   getHostProvider: vi.fn(),
-  topUpFromBurner: vi.fn(),
+  registerTopUp: vi.fn(),
+  readTopUpStatus: vi.fn(),
   stored: new Map<string, unknown>(),
   storageDown: false,
   tickOnce: vi.fn(),
@@ -19,7 +22,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../worker/src/host.js", () => ({
   deriveEntropy: mocks.deriveEntropy,
   getHostProvider: mocks.getHostProvider,
-  topUpFromBurner: mocks.topUpFromBurner,
+  registerTopUp: mocks.registerTopUp,
+  readTopUpStatus: mocks.readTopUpStatus,
   getHostLocalStorage: async () => ({
     readJSON: async (key: string) => {
       if (mocks.storageDown) throw new Error("storage down");
@@ -93,13 +97,35 @@ const storedJob = (): StoredJob =>
 
 const outcome = (step: string) => ({ step, balances: {}, submitted: false });
 
+const toHex = (bytes: Uint8Array) =>
+  `0x${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+const BURNER_ID = toHex(BURNER.publicKey);
+
+const claimed = (finalized: boolean) => ({ type: "claimed", finalized });
+
+const partially = (actualClaimed: bigint) => ({ type: "claimedPartially", actualClaimed });
+
+/** A landed job whose first attempt the host has registered; the status is still to come. */
+async function engineWithRegisteredClaim(): Promise<Engine> {
+  const engine = await engineWithLandedJob();
+  mocks.settlementBalance.mockResolvedValueOnce(SETTLE);
+  mocks.registerTopUp.mockResolvedValue(undefined);
+  await engine.tickAllFunding();
+  expect(storedJob().claim).toMatchObject({ phase: "claiming", attempt: 0 });
+  return engine;
+}
+
+const sessionStatus = (engine: Engine) =>
+  engine.fundingStatus(JSON.stringify({ sessionId: "s-1" }));
+
 function armSeams() {
   // Reset first: a leftover mockImplementationOnce from an earlier test must not leak.
   mocks.deriveEntropy.mockReset();
   mocks.getHostProvider.mockReset();
   mocks.discoverPool.mockReset();
   mocks.tickOnce.mockReset();
-  mocks.topUpFromBurner.mockReset();
+  mocks.registerTopUp.mockReset();
+  mocks.readTopUpStatus.mockReset();
   mocks.settlementBalance.mockReset();
   mocks.deriveEntropy.mockResolvedValue({ ok: true, value: SEED });
   mocks.getHostProvider.mockImplementation(async (genesis: string) => ({ genesis }));
@@ -487,66 +513,76 @@ describe("worker funding engine", () => {
     const engine = await freshEngine();
     mocks.tickOnce.mockResolvedValueOnce(outcome("done"));
     mocks.settlementBalance.mockResolvedValue(SETTLE);
-    mocks.topUpFromBurner.mockResolvedValue(undefined);
+    mocks.registerTopUp.mockResolvedValue(undefined);
+    mocks.readTopUpStatus.mockResolvedValue(claimed(true));
 
     await engine.tickAllFunding();
-    expect(storedJob()).toMatchObject({ done: true, claim: { phase: "claimed" } });
+    expect(storedJob()).toMatchObject({ done: true, claim: { phase: "claiming" } });
     expect(storedJob().failure).toBeUndefined();
+    await engine.tickAllFunding();
+    expect(storedJob()).toMatchObject({ claim: { phase: "claimed" } });
     expect((await engine.tickAllFunding()).ticked).toBe(0);
   });
 
-  it("takes the host's answer as the verdict: claimed the moment the top-up resolves", async () => {
-    armSeams();
-    const engine = await engineWithLandedJob();
-    // The burner still reads full after the call; the claim is recorded on the host's answer.
-    mocks.settlementBalance.mockResolvedValue(SETTLE);
-    mocks.topUpFromBurner.mockResolvedValue(undefined);
-
-    expect((await engine.tickAllFunding()).ticked).toBe(1);
-    expect(mocks.topUpFromBurner).toHaveBeenCalledTimes(1);
-    // One read sized the claim; nothing is read back after the host answered.
-    expect(mocks.settlementBalance).toHaveBeenCalledTimes(1);
-    const status = await engine.fundingStatus(JSON.stringify({ sessionId: "s-1" }));
-    expect(status.claim).toMatchObject({ phase: "claimed", amount: SETTLE.toString() });
-    expect((await engine.tickAllFunding()).ticked).toBe(0);
-  });
-
-  it("claims the landed CASH itself, in the same tick, and only then retires the job", async () => {
+  it("registers the landed CASH under the burner's public key and follows the claim to finality", async () => {
     armSeams();
     const engine = await engineWithLandedJob();
     // 20.005 CASH on People: the claim floors to the coin unit, dust stays.
     mocks.settlementBalance.mockResolvedValueOnce(SETTLE + 5_000n);
-    mocks.topUpFromBurner.mockResolvedValue(undefined);
+    mocks.registerTopUp.mockResolvedValue(undefined);
 
     expect((await engine.tickAllFunding()).ticked).toBe(1);
 
     // The host is handed the burner's secret in schnorrkel's canonical layout.
     const { secretKey } = deriveKeypairWithSecret(SEED);
-    expect(mocks.topUpFromBurner).toHaveBeenCalledExactlyOnceWith(
+    expect(mocks.registerTopUp).toHaveBeenCalledExactlyOnceWith(
       SETTLE,
       toSchnorrkelSecret(secretKey),
+      BURNER.publicKey,
     );
-    const status = await engine.fundingStatus(JSON.stringify({ sessionId: "s-1" }));
-    expect(status).toMatchObject({
+    expect(mocks.readTopUpStatus).not.toHaveBeenCalled();
+    expect(storedJob()).toMatchObject({
       done: true,
-      claim: { phase: "claimed", amount: SETTLE.toString() },
+      claim: {
+        phase: "claiming",
+        attempt: 0,
+        id: BURNER_ID,
+        amount: SETTLE.toString(),
+        attempts: 1,
+      },
     });
-    // Finished: nothing left to drive.
+    expect(storedJob().claim.registeredAt).toEqual(expect.any(Number));
+
+    // One read sized the claim; the host's status is the verdict from here on.
+    for (const status of [{ type: "detecting" }, { type: "claiming" }, claimed(false)]) {
+      mocks.readTopUpStatus.mockResolvedValueOnce(status);
+      expect((await engine.tickAllFunding()).ticked).toBe(1);
+      expect(storedJob().claim).toMatchObject({ phase: "claiming", status: status.type });
+    }
+    expect(mocks.settlementBalance).toHaveBeenCalledTimes(1);
+    expect(mocks.readTopUpStatus).toHaveBeenCalledWith(BURNER.publicKey, expect.any(Number));
+
+    mocks.readTopUpStatus.mockResolvedValueOnce(claimed(true));
+    expect((await engine.tickAllFunding()).ticked).toBe(1);
+    expect((await sessionStatus(engine)).claim).toMatchObject({
+      phase: "claimed",
+      amount: SETTLE.toString(),
+    });
     expect((await engine.tickAllFunding()).ticked).toBe(0);
   });
 
-  it("keeps a job alive while its claim is unsettled, and reads an empty burner as landed", async () => {
+  it("keeps the registering marker across a failed call and takes AlreadyExists as registered", async () => {
     armSeams();
     vi.useFakeTimers();
     const engine = await engineWithLandedJob();
     mocks.settlementBalance.mockResolvedValue(SETTLE);
-    mocks.topUpFromBurner.mockRejectedValueOnce(new Error("host busy"));
+    mocks.registerTopUp.mockRejectedValueOnce(new Error("host busy"));
 
     expect((await engine.tickAllFunding()).ticked).toBe(1);
-    let status = await engine.fundingStatus(JSON.stringify({ sessionId: "s-1" }));
-    // Durable marker survives the failure; the job is still live.
+    let status = await sessionStatus(engine);
     expect(status.claim).toMatchObject({
-      phase: "claiming",
+      phase: "registering",
+      id: BURNER_ID,
       amount: SETTLE.toString(),
       attempts: 1,
       error: "host busy",
@@ -556,40 +592,253 @@ describe("worker funding engine", () => {
     // Inside the retry window nothing is re-called.
     vi.advanceTimersByTime(120_000);
     await engine.tickAllFunding();
-    expect(mocks.topUpFromBurner).toHaveBeenCalledTimes(1);
+    expect(mocks.registerTopUp).toHaveBeenCalledTimes(1);
 
-    // Past the window the burner reads empty: the failed-looking call had landed.
+    // Past the window the host already knows the id: the failed-looking call had registered.
     vi.advanceTimersByTime(61_000);
-    mocks.settlementBalance.mockResolvedValue(0n);
+    mocks.registerTopUp.mockRejectedValueOnce(new PaymentTopUpErr.AlreadyExists());
     expect((await engine.tickAllFunding()).ticked).toBe(1);
-    expect(mocks.topUpFromBurner).toHaveBeenCalledTimes(1);
-    status = await engine.fundingStatus(JSON.stringify({ sessionId: "s-1" }));
-    expect(status.claim).toMatchObject({ phase: "claimed", amount: SETTLE.toString() });
+    expect(mocks.registerTopUp).toHaveBeenCalledTimes(2);
+    status = await sessionStatus(engine);
+    expect(status.claim).toMatchObject({ phase: "claiming", attempts: 2 });
+    expect(status.claim.error).toBeUndefined();
+    // The burner was sized once; the amount is fixed at registration.
+    expect(mocks.settlementBalance).toHaveBeenCalledTimes(1);
+
+    mocks.readTopUpStatus.mockResolvedValue(claimed(true));
+    await engine.tickAllFunding();
+    expect(storedJob().claim).toMatchObject({ phase: "claimed", amount: SETTLE.toString() });
     expect((await engine.tickAllFunding()).ticked).toBe(0);
   });
 
-  it("does not retire a job on an empty read it has no marker for", async () => {
-    // An empty read with no marker proves nothing; the job waits for a read it can act on.
+  it("fails the job when the host refuses the burner as a top-up source", async () => {
+    armSeams();
+    const engine = await engineWithLandedJob();
+    mocks.settlementBalance.mockResolvedValue(SETTLE);
+    mocks.registerTopUp.mockRejectedValueOnce(new PaymentTopUpErr.InvalidSource());
+
+    expect((await engine.tickAllFunding()).ticked).toBe(1);
+    expect(storedJob()).toMatchObject({ phase: "failed", failure: "claim", done: true });
+    expect(storedJob().claim).toMatchObject({ phase: "registering", attempts: 1 });
+    expect((await engine.tickAllFunding()).ticked).toBe(0);
+  });
+
+  it("re-registers a claim the host does not know", async () => {
+    armSeams();
+    const engine = await engineWithLandedJob();
+    mocks.settlementBalance.mockResolvedValue(SETTLE);
+    mocks.registerTopUp.mockResolvedValue(undefined);
+    await engine.tickAllFunding();
+    expect(storedJob().claim.phase).toBe("claiming");
+
+    mocks.readTopUpStatus.mockRejectedValueOnce(new PaymentTopUpStatusErr.NotFound());
+    expect((await engine.tickAllFunding()).ticked).toBe(1);
+    expect(storedJob().claim).toMatchObject({ phase: "registering", attempts: 1 });
+    expect(storedJob().lastError).toBeUndefined();
+
+    expect((await engine.tickAllFunding()).ticked).toBe(1);
+    expect(mocks.registerTopUp).toHaveBeenCalledTimes(2);
+    expect(storedJob().claim).toMatchObject({ phase: "claiming", attempts: 2 });
+  });
+
+  it("records a status read that failed and tries again on the next tick", async () => {
+    armSeams();
+    const engine = await engineWithLandedJob();
+    mocks.settlementBalance.mockResolvedValue(SETTLE);
+    mocks.registerTopUp.mockResolvedValue(undefined);
+    await engine.tickAllFunding();
+
+    mocks.readTopUpStatus.mockRejectedValueOnce(new Error("bridge down"));
+    expect((await engine.tickAllFunding()).ticked).toBe(1);
+    expect(storedJob().claim).toMatchObject({ phase: "claiming", error: "bridge down" });
+    expect(storedJob().lastError).toBe("bridge down");
+
+    mocks.readTopUpStatus.mockResolvedValueOnce(claimed(true));
+    expect((await engine.tickAllFunding()).ticked).toBe(1);
+    expect(storedJob().claim).toMatchObject({ phase: "claimed" });
+    expect(storedJob().claim.error).toBeUndefined();
+  });
+
+  it("claims what a partial top-up left on the burner under a fresh id, and sums the credit", async () => {
+    armSeams();
+    const engine = await engineWithRegisteredClaim();
+
+    mocks.readTopUpStatus.mockResolvedValueOnce(partially(SETTLE / 4n));
+    expect((await engine.tickAllFunding()).ticked).toBe(1);
+    expect(storedJob().claim).toMatchObject({
+      phase: "sizing",
+      attempt: 1,
+      credited: (SETTLE / 4n).toString(),
+    });
+    expect(storedJob().phase).toBe("done");
+
+    // The remainder is still on the burner; the next attempt registers it under its own id.
+    const remainder = SETTLE - SETTLE / 4n;
+    mocks.settlementBalance.mockResolvedValueOnce(remainder);
+    expect((await engine.tickAllFunding()).ticked).toBe(1);
+    const { secretKey } = deriveKeypairWithSecret(SEED);
+    expect(mocks.registerTopUp).toHaveBeenLastCalledWith(
+      remainder,
+      toSchnorrkelSecret(secretKey),
+      topUpIdFor(BURNER.publicKey, 1),
+    );
+    expect(storedJob().claim).toMatchObject({
+      phase: "claiming",
+      attempt: 1,
+      id: toHex(topUpIdFor(BURNER.publicKey, 1)),
+      amount: remainder.toString(),
+    });
+
+    mocks.readTopUpStatus.mockResolvedValueOnce(claimed(true));
+    expect((await engine.tickAllFunding()).ticked).toBe(1);
+    expect(mocks.readTopUpStatus).toHaveBeenLastCalledWith(
+      topUpIdFor(BURNER.publicKey, 1),
+      expect.any(Number),
+    );
+    expect(storedJob().claim).toMatchObject({
+      phase: "claimed",
+      amount: SETTLE.toString(),
+      credited: SETTLE.toString(),
+    });
+    expect(storedJob().claim.partial).toBeUndefined();
+    expect((await engine.tickAllFunding()).ticked).toBe(0);
+  });
+
+  it("settles on what was credited when the remainder is below the claim unit", async () => {
+    armSeams();
+    const engine = await engineWithRegisteredClaim();
+    const credited = SETTLE - 5_000n;
+
+    mocks.readTopUpStatus.mockResolvedValueOnce(partially(credited));
+    await engine.tickAllFunding();
+    mocks.settlementBalance.mockResolvedValueOnce(5_000n);
+    expect((await engine.tickAllFunding()).ticked).toBe(1);
+    expect(mocks.registerTopUp).toHaveBeenCalledTimes(1);
+    expect(storedJob().claim).toMatchObject({
+      phase: "claimed",
+      amount: credited.toString(),
+      partial: true,
+    });
+    expect((await engine.tickAllFunding()).ticked).toBe(0);
+  });
+
+  it("retries a top-up the host never saw funds for while the burner still holds them", async () => {
+    armSeams();
+    const engine = await engineWithRegisteredClaim();
+
+    mocks.readTopUpStatus.mockResolvedValueOnce({ type: "notClaimed" });
+    await engine.tickAllFunding();
+    expect(storedJob().claim).toMatchObject({ phase: "sizing", attempt: 1, credited: "0" });
+
+    mocks.settlementBalance.mockResolvedValueOnce(SETTLE);
+    expect((await engine.tickAllFunding()).ticked).toBe(1);
+    expect(mocks.registerTopUp).toHaveBeenLastCalledWith(
+      SETTLE,
+      expect.any(Uint8Array),
+      topUpIdFor(BURNER.publicKey, 1),
+    );
+    expect(storedJob().claim).toMatchObject({ phase: "claiming", attempt: 1 });
+  });
+
+  it("fails a claim nothing was credited for once the burner reads empty, and a re-sent hand-off sizes it again", async () => {
+    armSeams();
+    const engine = await engineWithRegisteredClaim();
+
+    mocks.readTopUpStatus.mockResolvedValueOnce({ type: "notClaimed" });
+    await engine.tickAllFunding();
+    mocks.settlementBalance.mockResolvedValueOnce(0n);
+    expect((await engine.tickAllFunding()).ticked).toBe(1);
+    expect(storedJob()).toMatchObject({ phase: "failed", failure: "claim", done: true });
+    expect(storedJob().claim).toMatchObject({ phase: "sizing", attempt: 1 });
+    expect((await engine.tickAllFunding()).ticked).toBe(0);
+
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    mocks.settlementBalance.mockResolvedValueOnce(SETTLE);
+    expect((await engine.tickAllFunding()).ticked).toBe(1);
+    expect(storedJob().claim).toMatchObject({
+      phase: "claiming",
+      attempt: 1,
+      id: toHex(topUpIdFor(BURNER.publicKey, 1)),
+    });
+  });
+
+  it("stops registering after three short attempts and settles on the credit, until re-armed", async () => {
+    armSeams();
+    const engine = await engineWithRegisteredClaim();
+    const slice = SETTLE / 10n;
+
+    for (const attempt of [1, 2]) {
+      mocks.readTopUpStatus.mockResolvedValueOnce(partially(slice));
+      await engine.tickAllFunding();
+      expect(storedJob().claim).toMatchObject({ phase: "sizing", attempt });
+      mocks.settlementBalance.mockResolvedValueOnce(SETTLE - slice * BigInt(attempt));
+      await engine.tickAllFunding();
+      expect(storedJob().claim).toMatchObject({ phase: "claiming", attempt });
+    }
+    expect(mocks.registerTopUp).toHaveBeenCalledTimes(3);
+
+    // The third short verdict is the last one acted on by the worker itself.
+    mocks.readTopUpStatus.mockResolvedValueOnce(partially(slice));
+    expect((await engine.tickAllFunding()).ticked).toBe(1);
+    expect(storedJob().claim).toMatchObject({
+      phase: "claimed",
+      attempt: 2,
+      amount: (slice * 3n).toString(),
+      partial: true,
+    });
+    expect((await engine.tickAllFunding()).ticked).toBe(0);
+  });
+
+  it("re-arms a claim that credited nothing in three attempts with a fourth", async () => {
+    armSeams();
+    const engine = await engineWithRegisteredClaim();
+
+    for (const attempt of [1, 2]) {
+      mocks.readTopUpStatus.mockResolvedValueOnce({ type: "notClaimed" });
+      await engine.tickAllFunding();
+      mocks.settlementBalance.mockResolvedValueOnce(SETTLE);
+      await engine.tickAllFunding();
+      expect(storedJob().claim).toMatchObject({ phase: "claiming", attempt });
+    }
+    mocks.readTopUpStatus.mockResolvedValueOnce({ type: "notClaimed" });
+    await engine.tickAllFunding();
+    expect(storedJob()).toMatchObject({ phase: "failed", failure: "claim" });
+    expect(storedJob().claim).toMatchObject({ phase: "claiming", attempt: 2 });
+
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    expect(storedJob().claim).toMatchObject({ phase: "sizing", attempt: 3 });
+    mocks.settlementBalance.mockResolvedValueOnce(SETTLE);
+    await engine.tickAllFunding();
+    expect(mocks.registerTopUp).toHaveBeenLastCalledWith(
+      SETTLE,
+      expect.any(Uint8Array),
+      topUpIdFor(BURNER.publicKey, 3),
+    );
+    expect(storedJob().claim).toMatchObject({ phase: "claiming", attempt: 3 });
+  });
+
+  it("does not register a claim on an empty read", async () => {
+    // Nothing to claim yet; the job waits for a read it can act on.
     armSeams();
     const engine = await engineWithLandedJob();
     mocks.settlementBalance.mockResolvedValueOnce(0n);
     expect((await engine.tickAllFunding()).ticked).toBe(1);
-    expect(mocks.topUpFromBurner).not.toHaveBeenCalled();
+    expect(mocks.registerTopUp).not.toHaveBeenCalled();
     expect(storedJob()).toMatchObject({ done: true });
     expect(storedJob().claim).toBeUndefined();
 
     mocks.settlementBalance.mockResolvedValue(SETTLE);
-    mocks.topUpFromBurner.mockResolvedValue(undefined);
+    mocks.registerTopUp.mockResolvedValue(undefined);
     expect((await engine.tickAllFunding()).ticked).toBe(1);
-    expect(storedJob().claim).toMatchObject({ phase: "claimed", amount: SETTLE.toString() });
+    expect(storedJob().claim).toMatchObject({ phase: "claiming", amount: SETTLE.toString() });
   });
 
-  it("gives a claim up when it has used the run bound of worker time, and a re-sent hand-off tries again", async () => {
+  it("gives up registering after the run bound of worker time, and a re-sent hand-off tries again", async () => {
     armSeams();
     vi.useFakeTimers();
     const engine = await engineWithLandedJob();
     mocks.settlementBalance.mockResolvedValue(SETTLE);
-    mocks.topUpFromBurner.mockRejectedValue(new Error("host busy"));
+    mocks.registerTopUp.mockRejectedValue(new Error("host busy"));
 
     // Ticks every 30s (each gap counts in full) for the whole bound, retrying every 3 minutes.
     const ticks = Math.ceil(900_000 / 30_000) + 2;
@@ -597,17 +846,54 @@ describe("worker funding engine", () => {
       await engine.tickAllFunding();
       vi.advanceTimersByTime(30_000);
     }
-    expect(mocks.topUpFromBurner).toHaveBeenCalledTimes(6);
+    expect(mocks.registerTopUp).toHaveBeenCalledTimes(6);
     expect(storedJob()).toMatchObject({ phase: "failed", failure: "timeout", done: true });
     expect(storedJob().lastError).toContain("claim exceeded");
     expect((await engine.tickAllFunding()).ticked).toBe(0);
 
-    // Re-opening the request re-arms the claim: no retry window to wait out.
-    mocks.topUpFromBurner.mockResolvedValue(undefined);
+    // Re-opening the request re-arms the registration: no retry window to wait out.
+    mocks.registerTopUp.mockResolvedValue(undefined);
     const rearmed = await engine.startFunding(JSON.stringify(HANDOFF));
     expect(rearmed).toMatchObject({ phase: "done", done: true });
     expect((await engine.tickAllFunding()).ticked).toBe(1);
-    expect(storedJob().claim).toMatchObject({ phase: "claimed", attempts: 1 });
+    expect(storedJob().claim).toMatchObject({ phase: "claiming", attempts: 1 });
+  });
+
+  it("stops the worker's clock once the host owns the claim, and fails it only past the tracking window", async () => {
+    armSeams();
+    vi.useFakeTimers();
+    const engine = await engineWithLandedJob();
+    mocks.settlementBalance.mockResolvedValue(SETTLE);
+    mocks.registerTopUp.mockResolvedValue(undefined);
+    mocks.readTopUpStatus.mockResolvedValue({ type: "claiming" });
+    await engine.tickAllFunding();
+    expect(storedJob().claim.phase).toBe("claiming");
+
+    // Well past the run bound the job is still live: the host is claiming, not the worker.
+    const ticks = Math.ceil(900_000 / 30_000) + 2;
+    for (let tick = 0; tick < ticks; tick += 1) {
+      vi.advanceTimersByTime(30_000);
+      await engine.tickAllFunding();
+    }
+    expect(storedJob().phase).toBe("done");
+    expect(storedJob().state.workedMs).toBe(0);
+
+    // Ninety minutes after registration with no verdict, the job is failed and let go of.
+    vi.advanceTimersByTime(5_400_000 - ticks * 30_000);
+    await engine.tickAllFunding();
+    expect(storedJob().phase).toBe("done");
+    vi.advanceTimersByTime(30_000);
+    await engine.tickAllFunding();
+    expect(storedJob()).toMatchObject({ phase: "failed", failure: "timeout" });
+    expect(storedJob().lastError).toContain("has not settled");
+    expect((await engine.tickAllFunding()).ticked).toBe(0);
+
+    // A re-sent hand-off re-arms the tracking, and the host's verdict settles the job.
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    mocks.readTopUpStatus.mockResolvedValue(claimed(true));
+    expect((await engine.tickAllFunding()).ticked).toBe(1);
+    expect(storedJob().claim).toMatchObject({ phase: "claimed", amount: SETTLE.toString() });
+    expect(mocks.registerTopUp).toHaveBeenCalledTimes(1);
   });
 
   it("loads the job map once, however many callers race for it at boot", async () => {
