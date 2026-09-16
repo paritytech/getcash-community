@@ -116,6 +116,17 @@ const meldPackage = {
   journeyStatus: useMeldJourneyStatus,
 } satisfies FundingRoutePackage;
 
+/** The withdrawal routes. Only crypto has a package; card and bank resolve to unavailable. */
+export const getcashWithdrawPackages = {
+  crypto: {
+    packageId: "@getsome/withdraw-crypto",
+    load: () =>
+      import("../components/withdraw/routes/CryptoWithdrawRoute.vue").then(
+        ({ default: component }) => component,
+      ),
+  },
+} satisfies FundingRoutePackages;
+
 export const getcashRoutePackages = {
   card: meldPackage,
   bank: meldPackage,
