@@ -29,6 +29,7 @@ const meld = (status: string) =>
       getQuote: () => Promise.reject(new Error("not under test")),
       createSession: () => Promise.reject(new Error("not under test")),
       getStatus: async () => ({ status, sourceAmount: "52.06", fiat: "USD" }),
+      cancel: () => Promise.reject(new Error("not under test")),
     },
     "mfr-1",
   );

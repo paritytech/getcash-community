@@ -141,6 +141,13 @@ onUnmounted(() => {
         >
           {{ session.cancelling ? "Cancelling…" : "Cancel" }}
         </button>
+        <p
+          v-if="session.cancelNotice"
+          class="mx-6 mb-4 text-center text-body-m text-fg-secondary"
+          role="status"
+        >
+          {{ session.cancelNotice }}
+        </p>
       </template>
     </div>
   </main>

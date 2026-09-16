@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import type { PaymentState } from "@getsome/core";
+import type { MeldCancelResult } from "@getsome/meld";
 import type { FundingProgressSnapshot } from "../app/funding/progress";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
@@ -27,6 +28,24 @@ import { useRequestsStore } from "../app/stores/requests";
 import { useSessionStore, type ActiveFlowRecord } from "../app/stores/session";
 import { requestRefKey, requestRefOf, type RequestRef } from "../app/utils/request-index";
 import { awaitingDepositCryptoRecord, FIXTURE_NOW } from "./fixtures/requests";
+
+/** How the mock world's Meld client answers a request to withdraw its pay page. Each card test
+ *  sets it; the offline fake cancels without complaint. */
+const { meldCancel } = vi.hoisted(() => ({
+  meldCancel: {
+    run: (): Promise<MeldCancelResult> => Promise.resolve({ outcome: "cancelled" }),
+  },
+}));
+vi.mock("@getsome/meld", async (importActual) => {
+  const actual = await importActual<typeof import("@getsome/meld")>();
+  return {
+    ...actual,
+    createFakeMeldClient: (...args: Parameters<typeof actual.createFakeMeldClient>) => ({
+      ...actual.createFakeMeldClient(...args),
+      cancel: () => meldCancel.run(),
+    }),
+  };
+});
 
 const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
@@ -325,6 +344,48 @@ describe("requests store: foreground, clock and user actions", () => {
     );
   });
 
+  it("a provider that refuses the withdrawal keeps the request", async () => {
+    meldCancel.run = () => Promise.resolve({ outcome: "not-cancellable" });
+    const session = useSessionStore();
+    const requests = useRequestsStore();
+    session.setMethod("card");
+    session.setAmount("100");
+    await session.fetchMeldQuote();
+    await session.start();
+    const ref = requestRefOf("meld-card", 1);
+    expect(requests.get(ref)?.status.kind).toBe("awaiting-deposit");
+
+    // A payment is already on its way: the buyer is told so, and nothing is touched.
+    expect(await session.cancelTopUp()).toBe(false);
+    expect(session.cancelNotice).toBe(
+      "Your payment is already on its way and can no longer be cancelled. It will finish on its own.",
+    );
+    expect(requests.get(ref)?.status.kind).toBe("awaiting-deposit");
+    expect(session.mock).not.toBeNull();
+    expect(requests.openRecords.map((record) => record.ref)).toEqual([ref]);
+  });
+
+  it("a dead adapter does not strand the cancel", async () => {
+    meldCancel.run = () => Promise.reject(new Error("adapter down"));
+    const session = useSessionStore();
+    const requests = useRequestsStore();
+    session.setMethod("card");
+    session.setAmount("100");
+    await session.fetchMeldQuote();
+    await session.start();
+    const ref = requestRefOf("meld-card", 1);
+
+    expect(await session.cancelTopUp()).toBe(true);
+    expect(session.cancelNotice).toBeNull();
+    expect(requests.get(ref)?.status.kind).toBe("cancelled");
+    expect(session.mock).toBeNull();
+    expect(
+      vi
+        .mocked(console.warn)
+        .mock.calls.filter(([line]) => String(line).startsWith("[meld] adapter cancel failed")),
+    ).toEqual([["[meld] adapter cancel failed (cancelling locally anyway): adapter down"]]);
+  });
+
   it("cancel returns unconfirmed when the reads time out", async () => {
     vi.useFakeTimers();
     setRequestsClock(() => FIXTURE_NOW);
@@ -466,7 +527,17 @@ describe("requests store: foreground, clock and user actions", () => {
     for (const match of source.matchAll(/\b(?:session|s)\.([a-zA-Z]+) = /g)) {
       written.add(match[1]!);
     }
-    const allowed = new Set(["quoted", "method", "mock", "faucetState", "resuming"]);
+    // Screen and demo flags only: request state belongs on the record, which the deck reaches
+    // through observations alone. `revealRefund` opens the refund-key panel unprompted, and the
+    // key it shows comes off the request's world, not its record.
+    const allowed = new Set([
+      "quoted",
+      "method",
+      "mock",
+      "faucetState",
+      "resuming",
+      "revealRefund",
+    ]);
     expect([...written].filter((name) => !allowed.has(name))).toEqual([]);
   });
 });

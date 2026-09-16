@@ -80,6 +80,9 @@ function fakeMeldClient(status: string): FakeMeldClient {
       if (client.failure !== null) throw client.failure;
       return { status: client.status };
     },
+    cancel: async () => {
+      throw new Error("unused");
+    },
   };
   return client;
 }

@@ -1505,6 +1505,31 @@ export const useSessionStore = defineStore("session", () => {
           return false;
         }
       }
+      // Withdraw the pay page on the adapter too. A local cancel alone leaves the adapter serving a
+      // payable page for this request, so its link could still be paid against a top-up the buyer
+      // was told was over. If the adapter refuses because a payment is already on its way, respect
+      // it and keep the request: telling the buyer it is cancelled while their money moves is the
+      // one thing not to say. A transport error fails open (a still-served page is the pre-existing
+      // behaviour), so a dead adapter never strands the cancel.
+      if (meldStatusClient !== null && meldFundingRequestId !== null) {
+        try {
+          const outcome = await step(
+            "withdraw the pay page",
+            15_000,
+            meldStatusClient.cancel(meldFundingRequestId),
+          );
+          if (outcome.outcome === "not-cancellable") {
+            cancelNotice.value =
+              "Your payment is already on its way and can no longer be cancelled. It will finish on its own.";
+            console.warn("[meld] cancel refused by the adapter: a payment is already in flight");
+            return false;
+          }
+        } catch (e) {
+          console.warn(
+            `[meld] adapter cancel failed (cancelling locally anyway): ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+      }
       const s = session();
       const ref = foregroundRef;
       const tradeN = ref?.tradeN;

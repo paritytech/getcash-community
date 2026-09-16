@@ -3,7 +3,8 @@
 // reloads the page.
 
 import type { PaymentState, SourceId } from "@getsome/core";
-import type { SourceFloorResult } from "@getsome/chainflip";
+import { SOURCE_CONFIG_BY_ID, type SourceFloorResult } from "@getsome/chainflip";
+import { SOURCE_CHAINS } from "~~/lib/config";
 import {
   advanceFundingProgressSnapshot,
   createFundingProgressSnapshot,
@@ -116,7 +117,8 @@ const QUOTED_CARD = {
   sourceChain: null,
 };
 
-/** What the record shows for each source the scenes use. */
+/** What the record shows for each source the scenes use. A source not named here is displayed as
+ *  its swap config names it. */
 const DISPLAY: Partial<Record<SourceId, { chain: string; asset: string }>> = {
   btc: { chain: "Bitcoin", asset: "BTC" },
   "usdt-tron": { chain: "Tron", asset: "USDT" },
@@ -144,7 +146,10 @@ async function previewRequest(
   const now = Date.now();
   const startedAt = now - 5 * 60_000;
   const expiresAt = opts.deposit?.expiresAt ?? 0;
-  const display = DISPLAY[sourceId] ?? { chain: sourceId, asset: sourceId };
+  const config = SOURCE_CONFIG_BY_ID.get(sourceId);
+  const display =
+    DISPLAY[sourceId] ??
+    (config ? { chain: config.chain, asset: config.asset } : { chain: sourceId, asset: sourceId });
   // As `persistActiveFlow` writes it: the initial snapshot moved by core's first state.
   const provider = progressProviderForSource(sourceId);
   const initial = createFundingProgressSnapshot(provider.createProfile(), {
@@ -204,11 +209,16 @@ async function core(request: PreviewRequest, step: number, state: PaymentState) 
   await request.observe({ source: "core", at: request.at(step), state });
 }
 
-/** The Meld poll's report that the provider's crypto delivery is stuck and retrying. */
-function meldDelayed(request: PreviewRequest, step: number): Observation {
+/** A rail poll's report that the payment is seen but stuck and retrying: Meld's crypto delivery, or
+ *  a deposit the chain is slow to confirm. */
+function railDelayed(
+  request: PreviewRequest,
+  step: number,
+  provider: "meld" | "chainflip",
+): Observation {
   return {
     source: "provider",
-    provider: "meld",
+    provider,
     at: request.at(step),
     result: { status: "receiving" },
     delayed: true,
@@ -233,6 +243,7 @@ function base(session: Session, flow: Flow) {
   session.method = "crypto";
   session.quoted = { ...QUOTED };
   session.resuming = false;
+  session.revealRefund = false;
   useRequestsStore().fundingNotice = null;
   useRequestsStore().setTransientError(null);
   useRequestsStore().leave();
@@ -294,6 +305,72 @@ async function claimConsent(s: Session, f: Flow, index: number): Promise<Preview
   return r;
 }
 
+/** Decimal string -> base-units string, for the refund amounts below. */
+function toBaseUnits(decimal: string, decimals: number): string {
+  const [whole = "0", frac = ""] = decimal.split(".");
+  const joined = `${whole}${frac.padEnd(decimals, "0").slice(0, decimals)}`;
+  return joined.replace(/^0+(?=\d)/, "");
+}
+
+/** A refunded failure on `sourceId`: the return-funds copy varies per chain and asset, so every
+ *  source gets its own scene. The screen reads the key off the mock world the scene installs. */
+function refunded(sourceId: SourceId, send: string) {
+  const source = SOURCE_CONFIG_BY_ID.get(sourceId);
+  if (!source) throw new Error(`preview: no source config for ${sourceId}`);
+  const chainIndex = SOURCE_CHAINS.findIndex((c) => c.chain === source.chain);
+  const assetIndex = (SOURCE_CHAINS[chainIndex]?.assets as readonly string[] | undefined)?.indexOf(
+    source.asset,
+  );
+  const amount = toBaseUnits(send, source.decimals);
+  return async (s: Session, f: Flow, index: number) => {
+    base(s, f);
+    f.srcChainIndex = Math.max(chainIndex, 0);
+    f.srcAssetIndex = Math.max(assetIndex ?? 0, 0);
+    s.quoted = {
+      ...QUOTED,
+      send,
+      symbol: source.asset,
+      sourceAsset: source.asset,
+      sourceChain: source.chain,
+    };
+    const r = await previewRequest(s, { sourceId, index });
+    await core(r, 0, {
+      phase: "failed",
+      sourceId,
+      failure: {
+        kind: "refunded",
+        step: "swap",
+        message: "The deposit didn't go through. It is being returned to your recovery address.",
+        recoverable: false,
+      },
+      refund: { amount, txRef: "7f1c9b2e4d6a8c0f1e3b5d7a9c2e4f6081a3c5e7" },
+    } as PaymentState);
+    // The panel reads the refund key off the request's world.
+    s.mock = await createMockCoinageSession({
+      recipient: DEPOSIT.address,
+      amount: BigInt(amount),
+      sourceId,
+    });
+  };
+}
+
+/** Every UI source, with a plausible refund amount in its own precision. */
+const REFUND_PREVIEWS: readonly [SourceId, string][] = [
+  ["usdt-tron", "5.02"],
+  ["trx-tron", "15.4"],
+  ["btc", "0.00004545"],
+  ["eth", "0.0012"],
+  ["usdc-eth", "5.02"],
+  ["usdt-eth", "5.02"],
+  ["sol-solana", "0.025"],
+  ["usdc-solana", "5.02"],
+  ["usdt-solana", "5.02"],
+];
+
+/** The store's own message for a payment the adapter no longer knows. */
+const MELD_GONE_MESSAGE =
+  "We can no longer find this payment. Do not pay again. Contact support with your reference.";
+
 const CARD_PAYMENT_FAILED: PaymentState = {
   phase: "failed",
   sourceId: "meld-card",
@@ -337,6 +414,14 @@ export const SCENES: Scene[] = [
     },
   },
   {
+    name: "crypto / network: loading",
+    apply: (s, f) => {
+      selection(s, f);
+      useOffersStore().floors = null; // still learning: the skeleton rows
+      f.step = "network";
+    },
+  },
+  {
     name: "crypto / network: too small",
     apply: (s, f) => {
       selection(s, f);
@@ -369,11 +454,29 @@ export const SCENES: Scene[] = [
     },
   },
   {
+    // The deposit screen's skeleton shapes while the request is being opened.
+    name: "crypto / deposit: opening",
+    apply: (s, f) => {
+      base(s, f);
+      s.resuming = true;
+    },
+  },
+  {
     name: "crypto / deposit: waiting",
     apply: async (s, f, i) => {
       base(s, f);
       const r = await previewRequest(s, { sourceId: "btc", index: i });
       await core(r, 0, awaitingDeposit());
+    },
+  },
+  {
+    // The full-screen confirmation over an open deposit.
+    name: "crypto / deposit: cancel confirm",
+    apply: async (s, f, i) => {
+      base(s, f);
+      const r = await previewRequest(s, { sourceId: "btc", index: i });
+      await core(r, 0, awaitingDeposit());
+      f.confirmingCancel = true;
     },
   },
   {
@@ -428,6 +531,16 @@ export const SCENES: Scene[] = [
     },
   },
   {
+    // The chain is slow to confirm: amber Payment step, its own ribbon line, never terminal.
+    name: "crypto / convert: delayed",
+    apply: async (s, f, i) => {
+      base(s, f);
+      const r = await previewRequest(s, { sourceId: "btc", index: i });
+      await core(r, 0, swapping("receiving"));
+      await r.observe(railDelayed(r, 1, "chainflip"));
+    },
+  },
+  {
     // The design's card journey at the Payment step: Fees and Total quoted in fiat.
     name: "card / journey: payment",
     apply: async (s, f, i) => {
@@ -449,7 +562,7 @@ export const SCENES: Scene[] = [
     name: "card / journey: delayed",
     apply: async (s, f, i) => {
       const r = await cardPayment(s, f, i);
-      await r.observe(meldDelayed(r, 1));
+      await r.observe(railDelayed(r, 1, "meld"));
     },
   },
   {
@@ -459,7 +572,7 @@ export const SCENES: Scene[] = [
     name: "card / journey: retrying (future)",
     apply: async (s, f, i) => {
       const r = await cardPayment(s, f, i);
-      await r.observe(meldDelayed(r, 1));
+      await r.observe(railDelayed(r, 1, "meld"));
       useRequestsStore().fundingNotice = "Hang tight, we're retrying your payment";
     },
   },
@@ -491,6 +604,24 @@ export const SCENES: Scene[] = [
     apply: async (s, f, i) => {
       const r = await cardPayment(s, f, i);
       await core(r, 1, CARD_REFUNDED);
+    },
+  },
+  {
+    // No Start over here: the rail could not tell whether the buyer was charged, and a second
+    // payment would risk charging them twice.
+    name: "card / journey: unconfirmed",
+    apply: async (s, f, i) => {
+      cardJourney(s, f);
+      const r = await previewRequest(s, { sourceId: "meld-card", index: i });
+      // The adapter's terminal 404, which the reducer ends `unobserved`: the payment was never
+      // reported, so the record must not be re-opened from here.
+      await r.observe({
+        source: "provider",
+        provider: "meld",
+        at: r.at(0),
+        gone: true,
+        message: MELD_GONE_MESSAGE,
+      });
     },
   },
   {
@@ -618,6 +749,19 @@ export const SCENES: Scene[] = [
       s.mock = world;
     },
   },
+  // The return-funds screen opened with the key revealed, once per source: the step copy is
+  // templated on the chain, its native coin, and the asset, so each reads differently.
+  ...REFUND_PREVIEWS.map(([sourceId, send]) => {
+    const source = SOURCE_CONFIG_BY_ID.get(sourceId)!;
+    const apply = refunded(sourceId, send);
+    return {
+      name: `crypto / refund key: ${source.asset} on ${source.chain}`,
+      apply: async (s: Session, f: Flow, index: number) => {
+        await apply(s, f, index);
+        s.revealRefund = true;
+      },
+    };
+  }),
   {
     name: "crypto / success",
     apply: async (s, f, i) => {
