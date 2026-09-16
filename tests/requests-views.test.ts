@@ -99,7 +99,6 @@ describe("request views", () => {
       ],
       // The swap is the conversion; past it the CASH is on its way to the balance.
       ["converting at the swap", at({ kind: "converting", at: AT, step: "swap" }), 3],
-      ["converting at the xcm", at({ kind: "converting", at: AT, step: "xcm" }), 4],
       [
         "converting, awaiting arrival",
         at({ kind: "converting", at: AT, step: "await-arrival" }),

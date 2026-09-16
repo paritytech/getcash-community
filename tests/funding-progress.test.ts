@@ -265,10 +265,6 @@ describe("funding progress registry", () => {
       kind: "stage",
       stageKey: "cash-conversion",
     });
-    expect(observeSharedCashProgress("xcm")).toEqual({
-      kind: "stage",
-      stageKey: "cash-teleport",
-    });
     expect(observeSharedCashProgress("await-arrival")).toEqual({
       kind: "stage",
       stageKey: "cash-teleport",

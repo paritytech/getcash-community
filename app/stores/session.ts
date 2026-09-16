@@ -40,6 +40,7 @@ import {
   type SupportedCountry,
 } from "~~/lib/supported";
 import { requestRefOf, type RequestRef } from "../utils/request-index";
+import type { JourneySteps } from "../funding/requests/views";
 import { estimateSourceAmount, estimateSourceFromCash } from "~~/lib/demo-rates";
 import { priceSourceLeg, type SourcePriceResult } from "~~/lib/source-price";
 import {
@@ -50,6 +51,7 @@ import {
 } from "~~/lib/coinage";
 import type { HostedCoinageWorld } from "~~/lib/coinage-live";
 import { isHosted } from "~~/lib/host-account";
+import { isDemoBuild } from "../utils/demo";
 import { isMeldSourceId, meldSourceIdFor } from "../funding/source-ids";
 import { toCashBase } from "../utils/cash";
 import { fundFromFaucet, isFaucetConfigured } from "~~/lib/faucet";
@@ -144,6 +146,20 @@ export interface QuotedView {
   sourceChain: string | null;
 }
 
+/** The Meld quote as the views read it. The buyer pays fiat, so the native budget and source
+ *  coin the crypto rail carries are not part of it. */
+function meldQuotedView(raw: MeldQuoteRaw): QuotedView {
+  return {
+    send: raw.provider.sourceAmount,
+    symbol: raw.context.fiat,
+    fee: raw.provider.totalFee ?? null,
+    networkFee: raw.provider.networkFee ?? null,
+    nativeAmount: null,
+    sourceAsset: null,
+    sourceChain: null,
+  };
+}
+
 export const useSessionStore = defineStore("session", () => {
   // Worlds and subscription (non-reactive internals)
   const mock = shallowRef<MockCoinageWorld | null>(null);
@@ -171,6 +187,12 @@ export const useSessionStore = defineStore("session", () => {
   /** The selected country's corridor: its resolved fiat and the methods it routes. Null when
    *  discovery is unreachable. */
   const meldCorridor = shallowRef<SupportedCorridor | null>(null);
+  /** True when the failure is a refund (money taken then returned), not a plain decline. */
+  const meldRefunded = ref(false);
+  /** The ending's own code (`refunded`, `declined`, `cancelled`, `unobserved`, …) as the rail
+   *  reported it. Null unless the rail failed. It decides whether a fresh attempt is safe to
+   *  offer: `unobserved` means the rail could not tell whether the buyer was charged. */
+  const meldFailureCode = ref<string | null>(null);
   /** The provider widget URL recovered when resuming a Meld request; null unless a resume found a
    *  live one. */
   const meldResumeWidgetUrl = ref<string | null>(null);
@@ -183,6 +205,10 @@ export const useSessionStore = defineStore("session", () => {
   const faucetState = ref<"idle" | "funding" | "sent">("idle");
   /** True while cancelTopUp runs. */
   const cancelling = ref(false);
+  /** Set when a cancel was refused because the payment is already on its way; shown to the buyer. */
+  const cancelNotice = ref<string | null>(null);
+  /** Asks the journey to open its refund-key panel unprompted; only the preview deck sets it. */
+  const revealRefund = ref(false);
 
   // Monotonic guard for async quote work. Every fetchQuote and reset bumps it; a resolution
   // with a stale token disposes what it built.
@@ -235,6 +261,10 @@ export const useSessionStore = defineStore("session", () => {
     }
     return highest + 1;
   }
+
+  /** The journey's scale for the request on screen: the crypto timeline runs three steps, the
+   *  card's five. */
+  const journeySteps = computed<JourneySteps>(() => (method.value === "crypto" ? 3 : 5));
 
   /**
    * TODO: remove this cap once the deposit is real money. Any replacement must clear the swap
@@ -293,10 +323,14 @@ export const useSessionStore = defineStore("session", () => {
 
   function teardownWorld() {
     quoteEpoch += 1;
+    stopSimulatedPayment();
+    meldRefunded.value = false;
+    meldFailureCode.value = null;
     meldResumeWidgetUrl.value = null;
     meldCredited = false;
     meldFundingRequestId = null;
     meldStatusClient = null;
+    cancelNotice.value = null;
     sub?.unsubscribe();
     sub = null;
     mock.value?.session.dispose();
@@ -308,6 +342,7 @@ export const useSessionStore = defineStore("session", () => {
     // Cleared with the epoch bump: a `pending` set by the outgoing quote is never resolved.
     sourcePrice.value = null;
     faucetState.value = "idle";
+    revealRefund.value = false;
     foregroundRef = null;
     requests.leave();
     // No reconcile here; reset(), start(), openRequest() and boot reconcile.
@@ -511,6 +546,7 @@ export const useSessionStore = defineStore("session", () => {
         return s;
       },
       getStatus: (id) => baseClient.getStatus(id),
+      cancel: (id) => baseClient.cancel(id),
     };
     meldStatusClient = meldClient;
     const rail = createMeldRail({
@@ -620,16 +656,7 @@ export const useSessionStore = defineStore("session", () => {
           return;
         }
         mock.value = world;
-        const raw = quote.raw as MeldQuoteRaw;
-        quoted.value = {
-          send: raw.provider.sourceAmount,
-          symbol: raw.context.fiat,
-          fee: raw.provider.totalFee ?? null,
-          networkFee: raw.provider.networkFee ?? null,
-          nativeAmount: null,
-          sourceAsset: null,
-          sourceChain: null,
-        };
+        quoted.value = meldQuotedView(quote.raw as MeldQuoteRaw);
         return;
       }
       // Hosted world: the same rail over the real host seams. The provider delivers DOT to the
@@ -658,16 +685,7 @@ export const useSessionStore = defineStore("session", () => {
         return;
       }
       live.value = world;
-      const raw = quote.raw as MeldQuoteRaw;
-      quoted.value = {
-        send: raw.provider.sourceAmount,
-        symbol: raw.context.fiat,
-        fee: raw.provider.totalFee ?? null,
-        networkFee: raw.provider.networkFee ?? null,
-        nativeAmount: null,
-        sourceAsset: null,
-        sourceChain: null,
-      };
+      quoted.value = meldQuotedView(quote.raw as MeldQuoteRaw);
     } catch (e: unknown) {
       if (epoch !== quoteEpoch) return; // a newer quote owns the state now
       console.error("[meld] quote failed:", e);
@@ -755,7 +773,7 @@ export const useSessionStore = defineStore("session", () => {
         if (typeof window !== "undefined" && settleForPricing !== null) {
           try {
             const [
-              { connectChain, ASSET_HUB },
+              { connectChain, ASSET_HUB, PEOPLE },
               {
                 sizeNativeBudget,
                 DEFAULT_KEEP_NATIVE_FOR_FEES,
@@ -770,17 +788,20 @@ export const useSessionStore = defineStore("session", () => {
               import("~~/lib/funding-fees"),
             ]);
             const client = await connectChain(ASSET_HUB);
-            // Size the deposit from live public reads. Best effort; falls back to the defaults.
+            // Size the deposit from live public reads. Best effort; falls back to the defaults,
+            // and an unreachable People chain leaves the pool quote below untouched.
             const sizing = await step(
               "funding sizing estimate (public read)",
               20_000,
-              estimateFundingSizing({
-                ahClient: client,
-                underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
-                peopleParaId: PASEO_PEOPLE_PARA_ID,
-                settleAmount: settleForPricing,
-                probeAddress: DEV_RECIPIENT,
-              }),
+              (async () =>
+                estimateFundingSizing({
+                  ahClient: client,
+                  peopleClient: await connectChain(PEOPLE),
+                  underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
+                  peopleParaId: PASEO_PEOPLE_PARA_ID,
+                  settleAmount: settleForPricing,
+                  probeAddress: DEV_RECIPIENT,
+                }))(),
             ).catch(() => null);
             const keepNativeForFees = sizing?.keepNativeForFees ?? DEFAULT_KEEP_NATIVE_FOR_FEES;
             const remoteFeeBuffer = sizing?.remoteFeeBuffer ?? DEFAULT_REMOTE_FEE_BUFFER;
@@ -1345,6 +1366,10 @@ export const useSessionStore = defineStore("session", () => {
   }
 
   // Mock world controls (browser demo)
+  /** One beat of the demo's simulated payment: long enough to watch a step land, short enough
+   *  that a demo does not stall on it. */
+  const SIMULATED_PAYMENT_STEP_MS = 2_500;
+
   function simulateDeposit() {
     void markDepositSkipped();
     if (mock.value && amountBase.value !== null)
@@ -1371,6 +1396,57 @@ export const useSessionStore = defineStore("session", () => {
     if (meldCredited) return;
     meldCredited = true;
     simulateDeposit();
+  }
+
+  /** Timers driving the demo's simulated payment; cleared with the world they belong to. */
+  let simulatedPaymentTimers: ReturnType<typeof setTimeout>[] = [];
+  function stopSimulatedPayment() {
+    for (const timer of simulatedPaymentTimers) clearTimeout(timer);
+    simulatedPaymentTimers = [];
+  }
+
+  /**
+   * Demo Skip: play the whole fiat payment through, from the buyer leaving the widget to the
+   * provider settling, instead of dropping a deposit on the burner mid-journey.
+   *
+   * Skipping straight to the deposit left the timeline starting halfway: the payment steps never
+   * happened, so the journey opened on "Approved" with nothing behind it. Feeding the record the
+   * observations the status poll would have written gets the stepper from Started to Added, which
+   * is the point of a demo. The record counts the steps either way, so the real pipeline overtakes
+   * the play without the stepper ever stepping backwards.
+   *
+   * The poll is stopped first. It re-reads the rail on its own cadence and would overwrite these
+   * stages with whatever the (unpaid, or faked) request really says.
+   */
+  function simulateMeldPayment(): void {
+    const ref = foregroundRef;
+    if (!isDemoBuild() || method.value === "crypto" || ref === null) return;
+    stopSimulatedPayment();
+    requests.stopMeldPoll();
+    let beat = 0;
+    const step = (run: () => void) => {
+      beat += 1;
+      simulatedPaymentTimers.push(setTimeout(run, SIMULATED_PAYMENT_STEP_MS * beat));
+    };
+    const report = (status: "receiving" | "complete") =>
+      void requests.observe(ref, {
+        source: "provider",
+        provider: "meld",
+        at: Date.now(),
+        result: { status },
+      });
+    // The buyer finishes in the widget: the journey takes over from the iframe.
+    void markMeldSubmitted();
+    // The provider sees the transaction, then approves it.
+    step(() => report("receiving"));
+    step(() => report("complete"));
+    // The conversion runs, and the deposit that pays for it arrives: the mock world fakes it
+    // through `creditMeldSettlement`, the hosted demo needs the faucet. The real pipeline takes
+    // the journey the rest of the way.
+    step(() => {
+      if (mock.value) creditMeldSettlement();
+      else void fundFaucet();
+    });
   }
 
   /** The provider's hosted pay page for the request on screen, or null. */
@@ -1414,6 +1490,7 @@ export const useSessionStore = defineStore("session", () => {
     // Declined, not failed: the request still stands.
     if (cancelling.value || requests.claiming || resuming.value || !cancelReady.value) return false;
     cancelling.value = true;
+    cancelNotice.value = null;
     try {
       // Last look before anything irreversible: funds on the burner or in the worker's hands mean
       // a purchase in progress. Refuse (the store latched it funded) and drive it. A read that
@@ -1492,15 +1569,19 @@ export const useSessionStore = defineStore("session", () => {
     meldMethodUnavailable,
     supportedCountries,
     meldCorridor,
+    meldRefunded,
+    meldFailureCode,
     meldResumeWidgetUrl,
     meldPayUrl,
     sourcePrice,
     loading,
     resuming,
     faucetState,
+    revealRefund,
     canSkipDeposit,
     cancelReady,
     cancelling,
+    cancelNotice,
     mock,
     live,
     refundAddress,
@@ -1522,8 +1603,10 @@ export const useSessionStore = defineStore("session", () => {
     resumeOpenRequests,
     openRequests,
     openRequest,
+    journeySteps,
     fundFaucet,
     simulateDeposit,
+    simulateMeldPayment,
     pollMeldStatus,
     markMeldSubmitted,
     approveClaim,

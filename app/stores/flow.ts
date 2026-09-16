@@ -31,6 +31,8 @@ export const useFlowStore = defineStore("flow", () => {
   const srcAssetIndex = ref(0);
   /** A purchase is being started: its quote is awaited, then its deposit opened. */
   const starting = ref(false);
+  /** The cancel confirmation has taken the deposit screen; back and "Keep it" return. */
+  const confirmingCancel = ref(false);
 
   const srcChain = computed(() => SOURCE_CHAINS[srcChainIndex.value] ?? SOURCE_CHAINS[0]);
   const srcAsset = computed(
@@ -125,6 +127,7 @@ export const useFlowStore = defineStore("flow", () => {
   /** Forgets the entry choices only; the session stays up. */
   function resetEntry() {
     step.value = "amount";
+    confirmingCancel.value = false;
   }
 
   function startOver() {
@@ -140,6 +143,7 @@ export const useFlowStore = defineStore("flow", () => {
     srcChain,
     srcAsset,
     starting,
+    confirmingCancel,
     screen,
     selectSource,
     startPurchase,

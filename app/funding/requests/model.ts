@@ -49,7 +49,9 @@ export type Kind = "top-up";
 /** How much a row's status can be trusted right now: confirmed by a read in this session and
  *  still within its TTL, waiting on a running reconcile, or the cache as it was left. */
 export type Freshness = "confirmed" | "reconciling" | "cached";
-/** The pipeline's steps between the deposit and the claim, derived from `FundingStep`. */
+/** The pipeline's steps between the deposit and the claim, derived from `FundingStep`: `swap` is
+ *  the one program that swaps and teleports together, `await-arrival` waits for the teleported
+ *  $CASH to be credited on People. */
 export type ConvertingStep = Exclude<FundingStep, "await-native" | "done">;
 export type DepositSeenVia = "worker" | "chain" | "rail" | "core" | "faucet" | "pre-cancel";
 /** The worker's claim as it moves: sized, registered with the host, claiming, claimed. */
@@ -57,7 +59,7 @@ export type WorkerClaimPhase = "sizing" | "registering" | "claiming" | "claimed"
 
 /** The converting steps in pipeline order. The `satisfies` fails to compile when `FundingStep`
  *  gains or loses a step, so the order can never drift from the type. */
-export const CONVERTING_STEP_ORDER = { swap: 0, xcm: 1, "await-arrival": 2 } satisfies Record<
+export const CONVERTING_STEP_ORDER = { swap: 0, "await-arrival": 1 } satisfies Record<
   ConvertingStep,
   number
 >;

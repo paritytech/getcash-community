@@ -10,7 +10,7 @@ import { projectFundingProgress, type FundingProgressSnapshot } from "./progress
 import type { RequestRecord } from "./requests/model";
 import { rowStateOf } from "./requests/views";
 import type { FundingTopUpAdapter } from "./top-up-adapter";
-import type { FundingTopUpRecord } from "./top-up-projection";
+import { quoteOf, type FundingTopUpRecord } from "./top-up-projection";
 import type { FundingTopUp, FundingTopUpDetails } from "./top-ups";
 
 export type ChainflipTopUpRecord = FundingTopUpRecord;
@@ -63,9 +63,7 @@ export function projectChainflipTopUps(
         startedAt: record.startedAt,
         progress,
         details: topUpDetails(record, snapshot),
-        ...(record.sourceAmount && record.sourceSymbol
-          ? { quote: { amount: record.sourceAmount, symbol: record.sourceSymbol } }
-          : {}),
+        ...quoteOf(record),
         state: rowStateOf(record, progress),
       },
     ];

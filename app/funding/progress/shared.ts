@@ -34,7 +34,6 @@ export function observeSharedCashProgress(
   switch (status) {
     case "swap":
       return { kind: "stage", stageKey: "cash-conversion" };
-    case "xcm":
     case "await-arrival":
       return { kind: "stage", stageKey: "cash-teleport" };
     case "done":

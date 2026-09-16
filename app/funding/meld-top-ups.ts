@@ -11,7 +11,7 @@ import { rowStateOf } from "./requests/views";
 import type { FundingRoute } from "./selection";
 import { isMeldSourceId, meldMethodFor, meldSourceIdFor, type MeldMethod } from "./source-ids";
 import type { FundingTopUpAdapter } from "./top-up-adapter";
-import type { FundingTopUpRecord } from "./top-up-projection";
+import { quoteOf, type FundingTopUpRecord } from "./top-up-projection";
 import type { FundingTopUp, FundingTopUpDetails } from "./top-ups";
 
 export type MeldTopUpRecord = FundingTopUpRecord;
@@ -72,15 +72,7 @@ export function projectMeldTopUps(
         startedAt: record.startedAt,
         progress,
         details: topUpDetails(record, method),
-        ...(record.sourceAmount && record.sourceSymbol
-          ? {
-              quote: {
-                amount: record.sourceAmount,
-                symbol: record.sourceSymbol,
-                ...(record.sourceFee ? { fee: record.sourceFee } : {}),
-              },
-            }
-          : {}),
+        ...quoteOf(record),
         state: worded,
       },
     ];

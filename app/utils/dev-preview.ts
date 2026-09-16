@@ -18,6 +18,7 @@ import {
   type RequestRecord,
 } from "../funding/requests/model";
 import { createMockCoinageSession } from "~~/lib/coinage";
+import { isDemoBuild } from "./demo";
 import type { useFlowStore } from "../stores/flow";
 import { useOffersStore } from "../stores/offers";
 import { useRequestsStore } from "../stores/requests";
@@ -236,6 +237,7 @@ function base(session: Session, flow: Flow) {
   useRequestsStore().setTransientError(null);
   useRequestsStore().leave();
   flow.step = "amount";
+  flow.confirmingCancel = false;
   // Bitcoin, matching the canned quote.
   flow.srcChainIndex = 0;
   flow.srcAssetIndex = 0;
@@ -254,7 +256,10 @@ function selection(session: Session, flow: Flow) {
   base(session, flow);
   session.setAmount("100");
   session.quoted = { ...QUOTED, nativeAmount: 58_694_260_960n };
-  useOffersStore().floors = FLOORS;
+  const offers = useOffersStore();
+  offers.floors = FLOORS;
+  // The paused scene turns the demo fallback off; every other scene gets the build's own setting.
+  offers.demoFallback = isDemoBuild();
   flow.srcChainIndex = 1; // Ethereum
   flow.srcAssetIndex = 0;
 }
@@ -344,12 +349,15 @@ export const SCENES: Scene[] = [
     name: "crypto / network: paused",
     apply: (s, f) => {
       selection(s, f);
-      useOffersStore().floors = new Map(
+      const offers = useOffersStore();
+      offers.floors = new Map(
         [...FLOORS.keys()].map((id) => [
           id,
           { kind: "unavailable", reason: "Quoting is currently unavailable due to maintenance" },
         ]),
       );
+      // The demo build's carry-on fallback would swallow the paused state this scene shows.
+      offers.demoFallback = false;
       f.step = "network";
     },
   },
@@ -519,12 +527,6 @@ export const SCENES: Scene[] = [
     name: "crypto / pipeline: swap",
     apply: async (s, f, i) => {
       await pipeline(s, f, i, "swap");
-    },
-  },
-  {
-    name: "crypto / pipeline: transfer",
-    apply: async (s, f, i) => {
-      await pipeline(s, f, i, "xcm");
     },
   },
   {

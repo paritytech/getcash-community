@@ -67,6 +67,9 @@ export const fundsSeenOf = (record: RequestRecord): boolean =>
       record.status.via === "faucet" ||
       record.status.via === "pre-cancel"));
 
+/** How many steps the route's journey shows: three on the crypto timeline, five on the card's. */
+export type JourneySteps = 3 | 5;
+
 /** How many of the journey's five markers are complete, 1..5. Started: the request exists, so a
  *  record awaiting its deposit, expired or cancelled counts one. Payment: the deposit was seen
  *  provisionally by any witness (the provider's report, a chain read at a best block). Approved:

@@ -3,6 +3,7 @@
 
 import { fmtCash } from "../utils/cash";
 import type { FundingProgressSnapshot } from "./progress";
+import type { FundingTopUp } from "./top-ups";
 
 /** The durable request record as the adapters read it. */
 export interface FundingTopUpRecord {
@@ -31,6 +32,19 @@ export interface FundingTopUpRecord {
   /** The failed swap was refunded to the request's own key. */
   refunded?: boolean;
   progress?: FundingProgressSnapshot;
+}
+
+/** The rail's persisted quote, spread onto the top-up when the record carries one. */
+export function quoteOf(record: FundingTopUpRecord): Pick<FundingTopUp, "quote"> {
+  return record.sourceAmount && record.sourceSymbol
+    ? {
+        quote: {
+          amount: record.sourceAmount,
+          symbol: record.sourceSymbol,
+          ...(record.sourceFee ? { fee: record.sourceFee } : {}),
+        },
+      }
+    : {};
 }
 
 export function creditedAmount(record: FundingTopUpRecord): string {

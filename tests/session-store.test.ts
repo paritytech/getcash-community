@@ -123,4 +123,18 @@ describe("session store: Meld (card / bank) in the mock world", () => {
     // meldPayUrl null keeps the widget from rendering again.
     expect(store.meldPayUrl).toBeNull();
   });
+
+  it("cancels a card top-up and tears the request down", async () => {
+    const store = useSessionStore();
+    const requests = useRequestsStore();
+    store.setMethod("card");
+    store.setAmount("100");
+    await store.fetchMeldQuote();
+    await store.start();
+    expect(requests.phase).toBe("awaiting-deposit");
+
+    expect(await store.cancelTopUp()).toBe(true);
+    expect(store.cancelNotice).toBeNull();
+    expect(requests.phase).toBeNull();
+  });
 });
