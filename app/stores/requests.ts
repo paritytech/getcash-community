@@ -407,7 +407,7 @@ type WithdrawJob = {
   failure?: string;
   lastError?: string;
   lastTickAt?: number | null;
-  state?: { fundsSeenAt?: number | null; messageId?: string | null };
+  state?: { fundsSeenAt?: number | null };
   txs?: WithdrawJobView["txs"];
   // The hand-off the worker keeps, read back when the surface has no record of the job.
   label?: string;
@@ -439,7 +439,6 @@ async function readWithdrawJobs(): Promise<Record<string, WithdrawJob>> {
 
 /** The withdrawal job as the record's reducer reads it. */
 function withdrawJobView(job: WithdrawJob): WithdrawJobView {
-  const messageId = job.state?.messageId;
   return {
     phase: job.phase ?? "",
     done: job.done === true,
@@ -447,7 +446,6 @@ function withdrawJobView(job: WithdrawJob): WithdrawJobView {
     ...(job.lastError === undefined ? {} : { lastError: job.lastError }),
     fundsSeenAt: job.state?.fundsSeenAt ?? null,
     lastTickAt: job.lastTickAt ?? null,
-    ...(typeof messageId === "string" ? { messageId } : {}),
     ...(job.txs === undefined ? {} : { txs: job.txs }),
   };
 }

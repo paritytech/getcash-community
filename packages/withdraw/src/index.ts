@@ -23,20 +23,19 @@ export {
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
   DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
   freshWithdrawTickState,
+  LANDING_TOLERANCE_PCT,
+  landingFloor,
   MAX_REJECTIONS,
-  messageIdOf,
   withdrawTickOnce,
   WithdrawRejectedError,
-  WithdrawTrappedError,
 } from "./tick";
 export type {
-  MessageOutcome,
   WithdrawStep,
   WithdrawTickInput,
   WithdrawTickOutcome,
   WithdrawTickState,
 } from "./tick";
-export { createMessageWatcher, MESSAGE_SEARCH_SPAN } from "./message-watch";
+export { readDestinationPas } from "./destination";
 export { cashInFor, pasOutFor } from "./pool";
 export type { PoolReserves } from "./pool";
 export {

@@ -9,8 +9,6 @@ export function withdrawalFailureText(failure: WithdrawalFailure): string {
       return failure.message || "The payment from your balance did not go through.";
     case "expired":
       return "This withdrawal expired because the payment never arrived.";
-    case "trapped":
-      return "The transfer was held on Asset Hub. Contact support to recover it.";
     case "rejected":
       return "The network refused the conversion. You can try again.";
     case "timeout":

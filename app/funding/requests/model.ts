@@ -253,7 +253,7 @@ export type WithdrawalStatus =
 /** The leg a withdrawal left when it failed; `withdrawalRankOf` reads the rank back from it. */
 export type WithdrawalFailureStep = "payment" | "convert" | "send";
 export type WithdrawalFailureKind =
-  "payment-failed" | "trapped" | "rejected" | "timeout" | "expired" | "egress-failed" | "unknown";
+  "payment-failed" | "rejected" | "timeout" | "expired" | "egress-failed" | "unknown";
 export interface WithdrawalFailure {
   kind: WithdrawalFailureKind;
   step: WithdrawalFailureStep;
@@ -310,7 +310,6 @@ export interface WithdrawJobView {
   lastError?: string;
   fundsSeenAt: number | null;
   lastTickAt: number | null;
-  messageId?: string;
   txs?: { call: "swap" | "withdraw"; txHash: string; block?: number }[];
 }
 
@@ -353,7 +352,6 @@ export interface WithdrawalRecord {
           fundsSeenAt: number | null;
           lastTickAt: number | null;
           failure?: string;
-          messageId?: string;
           at: number;
           txs?: WithdrawJobView["txs"];
         }

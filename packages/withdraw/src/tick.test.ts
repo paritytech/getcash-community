@@ -1,6 +1,6 @@
 // Offline coverage over a scripted People and Asset Hub: the two transactions in order, the fee
-// measurement converging on an exact allowance, the CASH leaving to the unit, arrival by message
-// id, and every refusal.
+// measurement converging on an exact allowance, the CASH leaving to the unit, arrival by the
+// destination's balance, and every refusal.
 
 import { AccountId } from "polkadot-api";
 import { describe, expect, it } from "vitest";
@@ -9,11 +9,10 @@ import { PASEO_PEOPLE_POOL_ACCOUNT } from "./paseo";
 import { cashInFor } from "./pool";
 import {
   freshWithdrawTickState,
+  landingFloor,
   MAX_REJECTIONS,
-  messageIdOf,
   withdrawTickOnce,
   WithdrawRejectedError,
-  WithdrawTrappedError,
   type WithdrawStep,
   type WithdrawTickState,
 } from "./tick";
@@ -37,7 +36,8 @@ const KEY = { address: "5Key", publicKeyHex: `0x${"07".repeat(32)}`, signer: {} 
 const DESTINATION = new Uint8Array(32).fill(0xaa);
 const DESTINATION_HEX = `0x${"aa".repeat(32)}`;
 const DESTINATION_SS58 = AccountId(42).dec(DESTINATION);
-const MESSAGE_ID = `0x${"5e".repeat(32)}`;
+/** What the destination holds before any withdrawal reaches it. */
+const DESTINATION_PAS = 3n * ED;
 
 type Instruction = { type: string; value?: unknown };
 type Fungible = { id: unknown; fun: { type: string; value: bigint } };
@@ -77,14 +77,12 @@ const rejectedExecution = (error: unknown) => ({
  *  did in the probes; the switches script the failures. */
 function scriptedWorld(
   opts: {
-    /** Asset Hub's message queue reports the message after this many searches. */
-    arrivalAfterSearches?: number;
-    /** Asset Hub fails the program when it processes the message. */
-    trapOnArrival?: boolean;
+    /** The destination shows the PAS after this many reads following the XCM. */
+    arrivalAfterReads?: number;
+    /** Asset Hub credits this much less than its dry run said. */
+    landShort?: bigint;
     /** People rejects the XCM at inclusion with this XCM error. */
     rejectXcm?: string;
-    /** The XCM submit's events carry no Sent event. */
-    loseMessageId?: boolean;
     /** The XCM lands but the submit's answer never comes back. */
     loseXcmAnswer?: boolean;
     /** Asset Hub's dry run traps this much. */
@@ -97,7 +95,12 @@ function scriptedWorld(
     dustLost: 0n,
     submits: [] as Submit[],
     dryRuns: 0,
-    searches: 0,
+    destinationPas: DESTINATION_PAS,
+    /** What the last Asset Hub dry run credited to the destination. */
+    lastDryRunLanded: 0n,
+    xcmLanded: false,
+    pasLanded: false,
+    destinationReads: 0,
   };
 
   const payFeesOf = (message: Message) =>
@@ -190,15 +193,9 @@ function scriptedWorld(
         state.dustLost += state.keyPas;
         state.keyPas = 0n;
       }
+      state.xcmLanded = true;
       if (opts.loseXcmAnswer) throw new Error("withdrawal submit timed out after 1s");
-      return {
-        ok: true,
-        txHash: txHashFor(),
-        block: { number: 500 },
-        events: opts.loseMessageId
-          ? []
-          : [{ type: "PolkadotXcm", value: { type: "Sent", value: { message_id: MESSAGE_ID } } }],
-      };
+      return { ok: true, txHash: txHashFor(), block: { number: 500 }, events: [] };
     },
   });
 
@@ -287,6 +284,7 @@ function scriptedWorld(
           const earmark = (forwarded.value[0]!.value as Fungible[])[0]!.fun.value;
           const pas = travelling.length === 2 ? travelling[0]!.fun.value : 0n;
           const cash = travelling[travelling.length - 1]!.fun.value + earmark - 3_546n;
+          state.lastDryRunLanded = pas + cash * AH_RATE;
           const events: unknown[] = [
             {
               type: "Balances",
@@ -309,17 +307,19 @@ function scriptedWorld(
     },
   };
 
-  const findMessageOutcome = async (_id: string, fromBlock: number) => {
-    state.searches += 1;
-    if (state.searches < (opts.arrivalAfterSearches ?? 1))
-      return { outcome: null, scannedTo: fromBlock + 5 };
-    return {
-      outcome: { success: !opts.trapOnArrival, block: fromBlock + 2 },
-      scannedTo: fromBlock + 2,
-    };
+  /** The destination's PAS at the head: the XCM's PAS shows after `arrivalAfterReads` reads. */
+  const readDestinationOnAssetHub = async () => {
+    if (state.xcmLanded && !state.pasLanded) {
+      state.destinationReads += 1;
+      if (state.destinationReads >= (opts.arrivalAfterReads ?? 1)) {
+        state.destinationPas += state.lastDryRunLanded - (opts.landShort ?? 0n);
+        state.pasLanded = true;
+      }
+    }
+    return state.destinationPas;
   };
 
-  return { state, peopleApi, assetHubApi, findMessageOutcome };
+  return { state, peopleApi, assetHubApi, readDestinationOnAssetHub };
 }
 
 type World = ReturnType<typeof scriptedWorld>;
@@ -347,8 +347,7 @@ async function drive(
         tickTimeoutMs: 1_000,
         submitTimeoutMs: 1_000,
         readKeyOnPeople: async () => ({ cash: world.state.keyCash, pas: world.state.keyPas }),
-        assetHubBestBlock: async () => 1_000,
-        findMessageOutcome: world.findMessageOutcome,
+        readDestinationOnAssetHub: world.readDestinationOnAssetHub,
         now: () => now,
         onTransientError: (e) => transients.push(e instanceof Error ? e.message : String(e)),
       },
@@ -366,8 +365,8 @@ const submitsOf = (world: World) => ({
 });
 
 describe("withdrawTickOnce", () => {
-  it("waits for CASH, swaps, then sizes, proves and submits the XCM, then follows the message to done", async () => {
-    const world = scriptedWorld({ arrivalAfterSearches: 2 });
+  it("waits for CASH, swaps, then sizes, proves and submits the XCM, then reads the destination to done", async () => {
+    const world = scriptedWorld({ arrivalAfterReads: 2 });
     world.state.keyCash = 0n;
     const idle = await drive(world, 1);
     expect(idle.steps).toEqual(["await-cash"]);
@@ -380,12 +379,20 @@ describe("withdrawTickOnce", () => {
       attempts: 2,
       rejections: 0,
       submitted: true,
-      messageId: MESSAGE_ID,
+      // The baseline is what the destination held before the XCM; the landing is the dry run's.
+      destinationPasBefore: DESTINATION_PAS,
+      expectedLanding: world.state.lastDryRunLanded,
     });
     expect(run.state.fundsSeenAt).toBe(2_000);
     expect(run.transients).toEqual([]);
-    // The search resumed from where it stopped, never from the start.
-    expect(run.state.scannedToBlock).toBeGreaterThan(1_000);
+    expect(world.state.destinationPas).toBe(DESTINATION_PAS + world.state.lastDryRunLanded);
+  });
+
+  it("keeps waiting while the destination gained less than the landing floor", async () => {
+    const world = scriptedWorld({ landShort: 20_000_000_000n });
+    const run = await drive(world, 4);
+    expect(run.steps).toEqual(["swap", "convert", "await-arrival", "await-arrival"]);
+    expect(landingFloor(100n)).toBe(95n);
   });
 
   it("leaves no CASH: the XCM withdraws the whole balance read after the swap, and only PAS dust stays", async () => {
@@ -444,15 +451,6 @@ describe("withdrawTickOnce", () => {
     expect(world.state.keyPas).toBe(0n);
   });
 
-  it("ends the run when Asset Hub fails the message, and keeps it alive while unprocessed", async () => {
-    const world = scriptedWorld({ arrivalAfterSearches: 3, trapOnArrival: true });
-    const state = freshWithdrawTickState();
-    await drive(world, 2, state);
-    const waiting = await drive(world, 1, state);
-    expect(waiting.steps).toEqual(["await-arrival"]);
-    await expect(drive(world, 2, state)).rejects.toBeInstanceOf(WithdrawTrappedError);
-  });
-
   it("names the failing instruction on a rejected XCM, retries with fresh sizing, and gives up after the cap", async () => {
     const world = scriptedWorld({ rejectXcm: "NoDeal" });
     // Enough PAS that no rejection sends the run back to the swap.
@@ -471,30 +469,32 @@ describe("withdrawTickOnce", () => {
     expect(world.state.keyCash).toBe(KEY_CASH);
   });
 
-  it("holds in await-arrival when the submit's answer carried no message id", async () => {
-    const world = scriptedWorld({ loseMessageId: true });
-    const state = freshWithdrawTickState();
-    const first = await drive(world, 2, state);
-    expect(first.steps).toEqual(["swap", "convert"]);
-    expect(first.transients[0]).toMatch(/no message id/);
-    expect(state.messageId).toBeNull();
-    const later = await drive(world, 2, state);
-    expect(later.steps).toEqual(["await-arrival", "await-arrival"]);
-    expect(world.state.searches).toBe(0);
-  });
-
-  it("holds in await-arrival when the XCM emptied the key but its answer was lost", async () => {
+  it("finishes when the XCM emptied the key but its answer was lost: the baseline read before the submit still measures the arrival", async () => {
     const world = scriptedWorld({ loseXcmAnswer: true });
     const state = freshWithdrawTickState();
     await drive(world, 1, state);
     await expect(drive(world, 1, state)).rejects.toThrow(/timed out/);
-    expect(state).toMatchObject({ attempts: 2, submitted: false });
+    expect(state).toMatchObject({
+      attempts: 2,
+      submitted: false,
+      destinationPasBefore: DESTINATION_PAS,
+      expectedLanding: world.state.lastDryRunLanded,
+    });
     expect(world.state.keyCash).toBe(0n);
-    // An empty key after a submit is not an unpaid key.
+    // An empty key after a submit is not an unpaid key; the next tick reads the destination.
+    const later = await drive(world, 2, state);
+    expect(later.steps).toEqual(["await-arrival", "done"]);
+    expect(state.submitted).toBe(true);
+  });
+
+  it("holds in await-arrival when the baseline was lost with the state", async () => {
+    const world = scriptedWorld();
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state);
+    state.destinationPasBefore = null;
     const later = await drive(world, 2, state);
     expect(later.steps).toEqual(["await-arrival", "await-arrival"]);
-    expect(state).toMatchObject({ submitted: true, messageId: null });
-    expect(world.state.searches).toBe(0);
+    expect(world.state.destinationReads).toBe(0);
   });
 
   it("refuses to submit the XCM when the Asset Hub dry run would trap assets", async () => {
@@ -504,19 +504,5 @@ describe("withdrawTickOnce", () => {
     await expect(drive(world, 1, state)).rejects.toThrow(/would trap 7 on Asset Hub/);
     expect(world.state.submits.map((s) => s.call)).toEqual(["swap"]);
     expect(world.state.keyPas).toBe(ED + RESERVE);
-  });
-});
-
-describe("messageIdOf", () => {
-  it("reads the Sent event's id, and nothing from other events", () => {
-    expect(
-      messageIdOf([
-        { type: "System", value: { type: "ExtrinsicSuccess", value: {} } },
-        { type: "PolkadotXcm", value: { type: "Sent", value: { message_id: "0xab" } } },
-      ]),
-    ).toBe("0xab");
-    expect(
-      messageIdOf([{ type: "System", value: { type: "ExtrinsicSuccess", value: {} } }]),
-    ).toBeNull();
   });
 });

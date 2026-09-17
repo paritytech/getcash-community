@@ -141,7 +141,6 @@ function workerWitness(job: WithdrawJobView, at: number): Witnesses["worker"] {
     lastTickAt: job.lastTickAt,
     at,
     ...(job.failure === undefined ? {} : { failure: job.failure }),
-    ...(job.messageId === undefined ? {} : { messageId: job.messageId }),
     ...(job.txs === undefined ? {} : { txs: job.txs }),
   };
 }
@@ -162,15 +161,6 @@ function applyWorker(
   if (job.phase === "failed") {
     if (atSideExit(next)) return next;
     switch (job.failure) {
-      case "trapped":
-        // Asset Hub failed the program: the assets sit there under the key as claimer, and no
-        // retry of the worker's leg can move them.
-        return failed(next, at, {
-          kind: "trapped",
-          step: "convert",
-          message: job.lastError ?? "the transfer was held on Asset Hub",
-          recoverable: false,
-        });
       case "rejected":
       case "timeout":
         if (rank < 1) return next;

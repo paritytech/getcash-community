@@ -1,23 +1,25 @@
 // The withdrawal pipeline: moves the CASH a disposable key holds on People to a destination on
 // Asset Hub as PAS, in two transactions signed by the key. The host pays the key; this waits for
-// that CASH, buys the PAS the fees need, sizes and proves the XCM, submits it once, and follows
-// the message to Asset Hub.
+// that CASH, buys the PAS the fees need, sizes and proves the XCM, submits it once, and waits for
+// the PAS to show on the destination.
 //
 // EVERYTHING THE KEY HOLDS LEAVES. The XCM is sized from the key's whole CASH balance after the
 // swap, read to the unit, and the PAS left for the transaction fee's headroom is reaped with the
 // account.
 //
-// ARRIVAL IS THE MESSAGE, NOT A BALANCE. The destination account is not ours, so its balance says
-// nothing reliable. The submit's Sent event names the message, and Asset Hub's message queue
-// reports the message processed, with success or failure. Processed with failure means the
-// program trapped its assets on Asset Hub, which ends the run: the claimer named in the program
-// can recover them, the pipeline cannot.
+// ARRIVAL IS A BALANCE READ AT THE HEAD, like every other read here. The destination account is
+// not ours, so its balance is measured against a baseline taken just before the XCM leaves, and
+// the arrival is what the Asset Hub dry run said would land, less a small tolerance. Nothing is
+// followed through block history: hosts serve the current head and nothing older, and a run that
+// resumes after a reload has no memory but the persisted state. A program that fails on Asset Hub
+// traps its assets there and never shows on the destination; the run holds until the driver's
+// bound, and the claimer named in the program can recover the assets.
 //
 // BALANCE-DRIVEN AND RE-ENTRANT: every tick reads the key's CASH and PAS and acts at most once.
 // PAS on the key means the swap happened; the XCM is next. A reload resumes from the persisted
-// state. A tick that throws is retried on the next tick. Terminal are a processed-with-failure
-// message and a transaction rejected at inclusion after the dry run passed, three times over,
-// since each rejection costs a fee and the same transaction will not pass on the fourth try.
+// state. A tick that throws is retried on the next tick. Terminal is a transaction rejected at
+// inclusion after the dry run passed, three times over, since each rejection costs a fee and the
+// same transaction will not pass on the fourth try.
 
 import type { PolkadotSigner } from "polkadot-api";
 import { describeDispatchError } from "@getsome/funding";
@@ -26,7 +28,7 @@ import { NeedsSwapError, sizeSwap, sizeXcm, type AssetHubApi } from "./fees";
 import { buildSwap, buildWithdrawXcm, withdrawMessage, type PeopleApi } from "./program";
 
 /** 'swap' buys the PAS the fees need; 'convert' submits the XCM; 'await-arrival' holds while the
- *  message crosses to Asset Hub. */
+ *  PAS has not shown on the destination. */
 export type WithdrawStep = "await-cash" | "swap" | "convert" | "await-arrival" | "done";
 
 /** Bound on a tick's chain reads and dry runs. */
@@ -37,6 +39,13 @@ export const DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS = 180_000;
 export const DEFAULT_WITHDRAW_SLIPPAGE_PCT = 5;
 /** Rejections at inclusion after a passing dry run before the run is given up. */
 export const MAX_REJECTIONS = 3;
+/** How far below the dry run's landing the destination's growth may fall and still count as the
+ *  arrival, for fee drift between the dry run and the execution. */
+export const LANDING_TOLERANCE_PCT = 5;
+
+/** The least the destination must gain for the PAS to count as arrived. */
+export const landingFloor = (landed: bigint): bigint =>
+  landed - (landed * BigInt(LANDING_TOLERANCE_PCT)) / 100n;
 
 function bounded<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -54,18 +63,6 @@ function bounded<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
   });
 }
 
-/** Terminal: Asset Hub processed the message and the program failed there, so its assets are
- *  trapped on Asset Hub under the claimer the program named. */
-export class WithdrawTrappedError extends Error {
-  constructor(
-    readonly messageId: string,
-    readonly block: number,
-  ) {
-    super(`withdrawal trapped: Asset Hub failed message ${messageId} at block ${block}`);
-    this.name = "WithdrawTrappedError";
-  }
-}
-
 /** Terminal: People rejected the transaction at inclusion MAX_REJECTIONS times after its dry run
  *  passed each time. Something the dry run cannot see differs at inclusion. */
 export class WithdrawRejectedError extends Error {
@@ -78,9 +75,6 @@ export class WithdrawRejectedError extends Error {
   }
 }
 
-/** What Asset Hub's message queue said about a message, or null while it has not processed it. */
-export type MessageOutcome = { success: boolean; block: number } | null;
-
 /** Cross-tick memory for one withdrawal. The driver persists it; `withdrawTickOnce` mutates it. */
 export interface WithdrawTickState {
   /** Submits so far, rejected ones included. */
@@ -89,10 +83,10 @@ export interface WithdrawTickState {
   rejections: number;
   /** Set once the XCM landed on People; holds the run in await-arrival. */
   submitted: boolean;
-  /** The forwarded message's id from the Sent event, once the XCM landed. */
-  messageId: string | null;
-  /** Asset Hub blocks up to this one have been searched for the message. */
-  scannedToBlock: number | null;
+  /** The destination's PAS on Asset Hub read just before the XCM left; what the arrival adds to. */
+  destinationPasBefore: bigint | null;
+  /** PAS the Asset Hub dry run credited to the destination, for the XCM that left. */
+  expectedLanding: bigint | null;
   /** When the first tick saw CASH (ms); null while the payment is still awaited. */
   fundsSeenAt: number | null;
 }
@@ -101,8 +95,8 @@ export const freshWithdrawTickState = (): WithdrawTickState => ({
   attempts: 0,
   rejections: 0,
   submitted: false,
-  messageId: null,
-  scannedToBlock: null,
+  destinationPasBefore: null,
+  expectedLanding: null,
   fundsSeenAt: null,
 });
 
@@ -127,14 +121,8 @@ export interface WithdrawTickInput {
   signOptions?: Record<string, unknown>;
   /** The key's CASH and PAS on People. */
   readKeyOnPeople: (ss58: string) => Promise<{ cash: bigint; pas: bigint }>;
-  /** The Asset Hub block the message search starts from: the best block at submit time. */
-  assetHubBestBlock: () => Promise<number>;
-  /** Searches Asset Hub from `fromBlock` for the message's processing. Returns the outcome when
-   *  found, and the last block searched either way. */
-  findMessageOutcome: (
-    messageId: string,
-    fromBlock: number,
-  ) => Promise<{ outcome: MessageOutcome; scannedTo: number }>;
+  /** The destination's free PAS on Asset Hub at the current head. */
+  readDestinationOnAssetHub: (destinationHex: string) => Promise<bigint>;
   now: () => number;
   onTx?: (info: { call: "swap" | "withdraw"; txHash: string; block?: number }) => void;
   onTransientError?: (error: unknown) => void;
@@ -148,25 +136,9 @@ export interface WithdrawTickOutcome {
   submitted: boolean;
 }
 
-/** The forwarded message's id out of a submit's events: the PolkadotXcm Sent event carries it,
- *  as the hex string papi decodes a 32-byte id to. */
-export function messageIdOf(events: readonly unknown[]): string | null {
-  for (const ev of events) {
-    const e = ev as {
-      type?: string;
-      value?: { type?: string; value?: { message_id?: unknown } };
-    };
-    if (e.type !== "PolkadotXcm" || e.value?.type !== "Sent") continue;
-    const id = e.value.value?.message_id;
-    if (typeof id === "string") return id;
-  }
-  return null;
-}
-
 /**
  * One reading of the key and at most one action on it. Retryable by calling again; the terminal
- * signals are the returned "done", a thrown WithdrawTrappedError and a thrown
- * WithdrawRejectedError.
+ * signals are the returned "done" and a thrown WithdrawRejectedError.
  */
 export async function withdrawTickOnce(
   input: WithdrawTickInput,
@@ -180,25 +152,25 @@ export async function withdrawTickOnce(
   );
 
   if (state.submitted) {
-    // The XCM landed; follow the message. Without its id the answer to the submit was lost and
-    // the message cannot be followed, so the run holds here until the driver's bound.
-    if (state.messageId === null || state.scannedToBlock === null) {
+    // The XCM left People; the PAS shows on the destination. Without the baseline the arrival
+    // cannot be measured, so the run holds here until the driver's bound.
+    if (state.destinationPasBefore === null || state.expectedLanding === null) {
       return { step: "await-arrival", balances, submitted: false };
     }
-    const { outcome, scannedTo } = await bounded(
-      input.findMessageOutcome(state.messageId, state.scannedToBlock + 1),
+    const destinationPas = await bounded(
+      input.readDestinationOnAssetHub(input.destinationHex),
       input.tickTimeoutMs,
-      "message search",
+      "destination balance read",
     );
-    state.scannedToBlock = Math.max(state.scannedToBlock, scannedTo);
-    if (outcome === null) return { step: "await-arrival", balances, submitted: false };
-    if (!outcome.success) throw new WithdrawTrappedError(state.messageId, outcome.block);
-    return { step: "done", balances, submitted: false };
+    const arrived =
+      destinationPas - state.destinationPasBefore >= landingFloor(state.expectedLanding);
+    return { step: arrived ? "done" : "await-arrival", balances, submitted: false };
   }
 
   if (balances.cash === 0n) {
     // Only the XCM empties the key of both assets. Seen CASH, a submit, and now nothing: the
-    // XCM landed and its answer was lost, so its message cannot be followed.
+    // XCM landed and its answer was lost. The baseline taken before the submit still measures
+    // the arrival.
     if (balances.pas === 0n && state.fundsSeenAt !== null && state.attempts > 0) {
       state.submitted = true;
       return { step: "await-arrival", balances, submitted: false };
@@ -241,12 +213,14 @@ export async function withdrawTickOnce(
         "withdrawal sizing",
       );
       const tx = buildWithdrawXcm(input.peopleApi, sizing.args);
-      // Read before the submit, so the search window covers the block the message lands in.
-      const fromBlock = await bounded(
-        input.assetHubBestBlock(),
+      // Read before the submit, so what the XCM adds is measured from what was there. Set before
+      // the driver persists, so a submit whose answer is lost keeps its baseline.
+      state.destinationPasBefore = await bounded(
+        input.readDestinationOnAssetHub(input.destinationHex),
         input.tickTimeoutMs,
-        "asset hub best block",
+        "destination balance read",
       );
+      state.expectedLanding = sizing.landed;
       await input.onBeforeSubmit?.("withdraw");
       // Counted before the broadcast, so a submit whose answer is lost is still counted.
       state.attempts += 1;
@@ -263,15 +237,6 @@ export async function withdrawTickOnce(
         );
       }
       state.submitted = true;
-      state.messageId = messageIdOf(res.events);
-      state.scannedToBlock = fromBlock - 1;
-      if (state.messageId === null) {
-        input.onTransientError?.(
-          new Error(
-            "the XCM landed but its Sent event carried no message id; arrival cannot be followed",
-          ),
-        );
-      }
       return { step: "convert", balances, submitted: true };
     } catch (error) {
       if (!(error instanceof NeedsSwapError)) throw error;

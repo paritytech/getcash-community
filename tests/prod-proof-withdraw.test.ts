@@ -11,7 +11,7 @@ import { deriveKeypairWithSecret } from "@getsome/ephemeral";
 import { PASEO_ASSET_HUB_PARA_ID, PASEO_PEOPLE_PARA_ID } from "@getsome/funding";
 import { CASH_LOCATION } from "@getsome/people";
 import {
-  createMessageWatcher,
+  readDestinationPas,
   DEFAULT_WITHDRAW_SLIPPAGE_PCT,
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
   DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
@@ -19,7 +19,6 @@ import {
   PASEO_PEOPLE_POOL_ACCOUNT,
   withdrawTickOnce,
   WithdrawRejectedError,
-  WithdrawTrappedError,
 } from "@getsome/withdraw";
 
 const cash = (v: bigint) => (Number(v) / 1e6).toFixed(6);
@@ -78,8 +77,7 @@ describe.runIf(process.env.PROD_PROOF_WITHDRAW === "1")("withdrawal production p
                 cash: await readCash(ss58),
                 pas: await readPas(ss58),
               }),
-              assetHubBestBlock: async () => (await ahC.getBestBlocks())[0]!.number,
-              findMessageOutcome: createMessageWatcher(ahC, assetHubApi),
+              readDestinationOnAssetHub: (hex) => readDestinationPas(assetHubApi, hex),
               now: Date.now,
               onTx: (i) => console.log(`  TX ${i.call} block=${i.block} hash=${i.txHash}`),
               onTransientError: (e) =>
@@ -94,7 +92,7 @@ describe.runIf(process.env.PROD_PROOF_WITHDRAW === "1")("withdrawal production p
             console.log(`  STEP -> ${step}`);
           }
         } catch (e) {
-          if (e instanceof WithdrawTrappedError || e instanceof WithdrawRejectedError) throw e;
+          if (e instanceof WithdrawRejectedError) throw e;
           console.log(`  tick failed, retrying: ${e instanceof Error ? e.message : String(e)}`);
         }
         if (step !== "done" && !submitted) await sleep(POLL_MS);
@@ -105,7 +103,7 @@ describe.runIf(process.env.PROD_PROOF_WITHDRAW === "1")("withdrawal production p
       const keyPas = await readPas(key.address);
       console.log("RESULT");
       console.log(`steps: ${steps.join(" -> ")}`);
-      console.log(`message: ${state.messageId}`);
+      console.log(`expected landing: ${state.expectedLanding}`);
       console.log(`ALICE gained: ${pas(aliceAfter - aliceBefore)} PAS`);
       console.log(`key left with: ${keyCash} CASH units, ${keyPas} planck on People`);
       // The PAS reserve's unspent part is below the existential deposit and reaped, so both read

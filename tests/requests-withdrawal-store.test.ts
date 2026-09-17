@@ -92,8 +92,8 @@ function job(overrides: Record<string, unknown> = {}) {
       attempts: 0,
       rejections: 0,
       submitted: false,
-      messageId: null,
-      scannedToBlock: null,
+      destinationPasBefore: null,
+      expectedLanding: null,
       fundsSeenAt: null,
       workedMs: 0,
     },
@@ -183,7 +183,7 @@ describe("requests store: withdrawals", () => {
         [SESSION]: job({
           phase: "done",
           done: true,
-          state: { fundsSeenAt: seenAt, submitted: true, messageId: "0x5e" },
+          state: { fundsSeenAt: seenAt, submitted: true },
         }),
       }),
     );
@@ -191,7 +191,7 @@ describe("requests store: withdrawals", () => {
     expect(requests.get(REF)).toMatchObject({
       status: { kind: "sent", at: FIXTURE_NOW },
       rail: { stage: "delivered" },
-      witnesses: { worker: { messageId: "0x5e" } },
+      witnesses: { worker: { phase: "done", done: true } },
     });
     expect(await stored(REF)).toMatchObject({ status: { kind: "sent" } });
   });

@@ -253,18 +253,8 @@ describe("withdrawal: the worker", () => {
     expect(sending.rail.stage).toBe("delivering");
   });
 
-  it("fails without recovery on a trap, recoverably on a rejection or a timeout", () => {
+  it("fails recoverably on a rejection or a timeout", () => {
     const seen = at(1);
-    const trapped = run(
-      prompted(),
-      worker(
-        at(3),
-        job({ phase: "failed", failure: "trapped", fundsSeenAt: seen, lastError: "held" }),
-      ),
-    );
-    expect(trapped.status).toEqual({ kind: "failed", at: at(3), recoverable: false });
-    expect(trapped.failure).toMatchObject({ kind: "trapped", step: "convert", message: "held" });
-
     const rejected = run(
       prompted(),
       worker(at(3), job({ phase: "failed", failure: "rejected", fundsSeenAt: seen })),

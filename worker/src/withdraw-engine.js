@@ -1,12 +1,11 @@
 import { CASH_LOCATION } from "@getsome/people";
 import {
-  createMessageWatcher,
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
   DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
   freshWithdrawTickState,
+  readDestinationPas,
   withdrawTickOnce,
   WithdrawRejectedError,
-  WithdrawTrappedError,
 } from "@getsome/withdraw";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import { readParams } from "./params.js";
@@ -53,9 +52,10 @@ const saveJobs = () => store.save();
  *   assetHubGenesis, peopleGenesis, peopleParaId, assetHubParaId, poolAccount, slippagePct,
  *   paymentExpiresAt: number|null,
  *   phase: "starting" | WithdrawStep | "failed",
- *   failure?: "trapped" | "rejected" | "timeout" | "expired" | "cancelled",
+ *   failure?: "rejected" | "timeout" | "expired" | "cancelled",
  *   done, createdAt, armedAt, lastTickAt, lastError?,
- *   state: { attempts, rejections, submitted, messageId, scannedToBlock, fundsSeenAt, workedMs },
+ *   state: { attempts, rejections, submitted, destinationPasBefore, expectedLanding,
+ *            fundsSeenAt, workedMs },       // the two balances as decimal strings or null
  *   submitting?: { call, at },               // written before a submit
  *   txs: [{ call, txHash, block? }],
  * }
@@ -238,7 +238,6 @@ function describeWithdraw(record) {
     submitting: record.submitting,
     txs: record.txs,
     fundsSeenAt: record.state?.fundsSeenAt ?? null,
-    messageId: record.state?.messageId ?? null,
   };
 }
 
@@ -300,9 +299,24 @@ async function tickRecord(record, nowMs) {
     state.attempts = record.state.attempts ?? 0;
     state.rejections = record.state.rejections ?? 0;
     state.submitted = !!record.state.submitted;
-    state.messageId = record.state.messageId ?? null;
-    state.scannedToBlock = record.state.scannedToBlock ?? null;
+    state.destinationPasBefore = asBig(record.state.destinationPasBefore, null);
+    state.expectedLanding = asBig(record.state.expectedLanding, null);
     state.fundsSeenAt = record.state.fundsSeenAt ?? null;
+
+    // Written before a submit and after every tick, thrown ones included; withdrawTickOnce
+    // mutates the state as it works and a lost submit answer must keep its baseline.
+    const persistState = () => {
+      record.state = {
+        attempts: state.attempts,
+        rejections: state.rejections,
+        submitted: state.submitted,
+        destinationPasBefore:
+          state.destinationPasBefore === null ? null : String(state.destinationPasBefore),
+        expectedLanding: state.expectedLanding === null ? null : String(state.expectedLanding),
+        fundsSeenAt: state.fundsSeenAt,
+        workedMs: record.state.workedMs ?? 0,
+      };
+    };
 
     let outcome;
     try {
@@ -327,11 +341,11 @@ async function tickRecord(record, nowMs) {
             ]);
             return { cash: asset?.balance ?? 0n, pas: native?.data?.free ?? 0n };
           },
-          assetHubBestBlock: async () => (await ahClient.getBestBlocks())[0].number,
-          findMessageOutcome: createMessageWatcher(ahClient, assetHubApi),
+          readDestinationOnAssetHub: (hex) => readDestinationPas(assetHubApi, hex),
           now: Date.now,
           // Persisted before the broadcast leaves.
           onBeforeSubmit: async (call) => {
+            persistState();
             record.submitting = { call, at: Date.now() };
             await saveJobs();
           },
@@ -346,16 +360,7 @@ async function tickRecord(record, nowMs) {
         state,
       );
     } finally {
-      // Write the state back even when the tick threw; withdrawTickOnce mutates it as it works.
-      record.state = {
-        attempts: state.attempts,
-        rejections: state.rejections,
-        submitted: state.submitted,
-        messageId: state.messageId,
-        scannedToBlock: state.scannedToBlock,
-        fundsSeenAt: state.fundsSeenAt,
-        workedMs: record.state.workedMs ?? 0,
-      };
+      persistState();
     }
     // A cancel that landed during this tick stands.
     if (record.phase === "failed") return;
@@ -396,9 +401,7 @@ export async function tickAllWithdraw() {
         await tickRecord(record, nowMs);
         read = true;
       } catch (error) {
-        if (error instanceof WithdrawTrappedError) {
-          fail(record, "trapped", error.message);
-        } else if (error instanceof WithdrawRejectedError) {
+        if (error instanceof WithdrawRejectedError) {
           fail(record, "rejected", error.message);
         } else {
           // Other errors are transient; the next wake retries.
