@@ -79,7 +79,10 @@ export function projectChainflipTopUps(
     const details = topUpDetails(record, snapshot);
     const state =
       record.settledAt === undefined
-        ? activeState(status, progress, record.failureReason, record.refunded)
+        ? activeState(status, progress, record.failureReason, record.refunded, {
+            ...(record.refundAmount ? { amount: record.refundAmount } : {}),
+            ...(record.refundTxRef ? { txRef: record.refundTxRef } : {}),
+          })
         : {
             kind: "settled" as const,
             at: record.settledAt,
@@ -94,6 +97,10 @@ export function projectChainflipTopUps(
         progress,
         details,
         ...quoteOf(record),
+        // The request's own identity, so a refund can be walked back to its key with no world.
+        ...(record.tradeN === undefined || record.sourceId === undefined
+          ? {}
+          : { request: { sourceId: record.sourceId, tradeN: record.tradeN } }),
         state,
       },
     ];

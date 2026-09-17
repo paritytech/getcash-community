@@ -50,11 +50,13 @@ watch(
 );
 /** The return-funds drill-in over a refunded journey. Back (toolbar or bottom button) returns. */
 const showingRefund = ref(false);
-// A state that is no longer failed has no refund to walk through.
+// A live state that is no longer failed has no refund to walk through. A journey opened from
+// history has no live state at all, and its guide is driven by the record instead, so the guard
+// only applies while a request is actually on screen.
 watch(
   () => session.lastState?.phase,
   (phase) => {
-    if (phase !== "failed") showingRefund.value = false;
+    if (phase !== undefined && phase !== "failed") showingRefund.value = false;
   },
 );
 // The preview deck lands straight on the opened guide.
@@ -130,7 +132,7 @@ onUnmounted(() => {
         </p>
       </div>
 
-      <ReturnFundsScreen v-else-if="showingRefund" @back="showingRefund = false" />
+      <ReturnFundsScreen v-else-if="showingRefund" :top-up="topUp" @back="showingRefund = false" />
       <MeldFeeDetailsScreen v-else-if="showingFees" @back="showingFees = false" />
       <JourneyScreen
         v-else

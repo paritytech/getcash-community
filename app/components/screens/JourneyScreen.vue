@@ -128,6 +128,15 @@ const concluded = computed(
   () => !crypto.value && !expired.value && (heroFailed.value || finished.value),
 );
 
+/**
+ * A refunded crypto top-up gets rows too, naming the network and the rail that handled it.
+ *
+ * Not the deposit figure: that belongs to the deposit screen, and repeating it beside a refund
+ * reads as a second charge. What became of the money — how much came back and the transaction
+ * that returned it — is the refund guide's to tell, where it can be linked and copied.
+ */
+const cryptoRefund = computed(() => crypto.value && refundedEnding.value);
+
 const hideRows = computed(() => expired.value || concluded.value || refundedEnding.value);
 
 const creditedAmount = computed(() =>
@@ -149,11 +158,23 @@ const settledWhen = computed(() => {
   return at != null ? formatWhenShort(at) : null;
 });
 
-/** Whether the failed swap's deposit is being refunded to this request's own key. */
-const refunded = computed(
-  () =>
-    failure.value !== null && refundedFailure(failure.value.kind) && session.refundAddress !== null,
-);
+/**
+ * Whether this top-up's deposit went back to the request's own key — the one ending that needs the
+ * recovery guide.
+ *
+ * The crypto rail only. A refunded card goes back to the card with nothing for the buyer to do,
+ * and the guide has no chain, key or address to draw for it; offering it there is a button into an
+ * empty screen.
+ *
+ * Either account will do. A live request answers from its world; one opened out of history answers
+ * from the record, and the guide re-derives the address and key from the request's own identity —
+ * they are a pure function of it, so the world being gone does not put the money out of reach.
+ */
+const refunded = computed(() => {
+  if (!crypto.value) return false;
+  if (failure.value !== null && refundedFailure(failure.value.kind)) return true;
+  return storedFailure.value?.refunded === true && props.topUp?.request !== undefined;
+});
 const asset = computed(() => {
   const sourceId = state.value?.sourceId;
   return sourceId ? (SOURCE_CONFIG_BY_ID.get(sourceId)?.asset ?? "") : "";
@@ -190,13 +211,17 @@ const detailRows = computed(() =>
 
 /** The live request's provider and reference, else the list's own record. */
 const paidRows = computed(() => {
-  if (!concluded.value) return [];
+  if (!concluded.value && !cryptoRefund.value) return [];
   const details = props.topUp?.details;
   const provider = session.meldServiceProvider ?? details?.provider?.label;
-  const reference = session.meldReference ?? details?.reference;
+  // The crypto rail has no id to show: its refund transaction is the chain's, and nothing
+  // persists it. The network stands in its place as the fact the record can answer.
+  const reference = cryptoRefund.value ? undefined : (session.meldReference ?? details?.reference);
+  const network = cryptoRefund.value ? details?.network?.label : undefined;
   return paidDetailRows(quoteView.value, {
     ...(provider ? { provider } : {}),
     ...(reference ? { reference } : {}),
+    ...(network ? { network } : {}),
   });
 });
 
@@ -281,7 +306,8 @@ const message = computed(() => {
 
       <DetailRows v-if="detailRows.length && !hideRows" :rows="detailRows" @fees="emit('fees')" />
 
-      <!-- What a concluded fiat top-up actually cost, with the handles support needs. -->
+      <!-- What an ended top-up actually cost: the charge and its handles on a fiat rail, the sum
+           sent and its network on a refunded crypto one. -->
       <DetailRows v-if="paidRows.length" :rows="paidRows" @fees="emit('fees')" />
 
       <!-- The way back to a refunded deposit drills into the recovery guide, which carries the

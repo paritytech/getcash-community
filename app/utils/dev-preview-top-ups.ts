@@ -113,6 +113,11 @@ interface PreviewCardOptions {
    *  request's id, which the journey shows as the transaction id. */
   provider?: string;
   reference?: string;
+  /** The request a crypto top-up is, so the journey can reach its refund key from the record. */
+  request?: { sourceId: string; tradeN: number };
+  /** What a refund actually returned, and the chain transaction that returned it. */
+  refundAmount?: string;
+  refundTxRef?: string;
 }
 
 /**
@@ -142,6 +147,8 @@ export function previewTopUp(
             at: endedAt,
             reason: label,
             ...(options.refunded === true ? { refunded: true } : {}),
+            ...(options.refundAmount ? { refundAmount: options.refundAmount } : {}),
+            ...(options.refundTxRef ? { refundTxRef: options.refundTxRef } : {}),
           }
         : kind === "waiting"
           ? { kind: "awaiting-transfer", status: label }
@@ -157,6 +164,7 @@ export function previewTopUp(
       return quote === undefined ? {} : { quote };
     })(),
     ...(options.delayed === true ? { delayed: true } : {}),
+    ...(options.request ? { request: options.request } : {}),
     ...(options.provider || options.reference
       ? {
           details: {
@@ -193,6 +201,11 @@ export function previewTopUpHistory(): FundingTopUp[] {
       amount: "50",
       quote: { amount: "0.00045", symbol: "BTC" },
       refunded: true,
+      // Base units, as the rail reports them: 0.00043 BTC at 8 decimals. Less than the 0.00045
+      // deposit — the refund pays its own network fees on the way back.
+      refundAmount: "43000",
+      refundTxRef: "7f1c9b2e4d6a8c0f1e3b5d7a9c2e4f6081a3c5e7",
+      request: { sourceId: "btc", tradeN: 5 },
       startedMinutesAgo: 3 * DAY,
       endedMinutesAgo: 3 * DAY - 14,
     }),

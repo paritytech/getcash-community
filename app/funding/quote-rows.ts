@@ -54,7 +54,7 @@ export function quoteDetailRows(quote: QuoteView | null): QuoteRow[] {
  */
 export function paidDetailRows(
   quote: QuoteView | null,
-  paid: { provider?: string; reference?: string } = {},
+  paid: { provider?: string; reference?: string; network?: string } = {},
 ): QuoteRow[] {
   const rows: QuoteRow[] = [];
   // Fiat only. The crypto rail's deposit figure belongs to the deposit screen, and restating it
@@ -66,6 +66,7 @@ export function paidDetailRows(
       fees: quote.live && isMoneyAmount(quote.fee ?? ""),
     });
   }
+  if (paid.network) rows.push({ label: "Network", value: paid.network });
   if (paid.provider) rows.push({ label: "Provider", value: paid.provider });
   if (paid.reference) {
     rows.push({

@@ -28,12 +28,11 @@ describe("a concluded fiat top-up's rows", () => {
   });
 
   it("leaves the crypto rail's deposit figure to the deposit screen", () => {
-    // Restating what was sent beside a refund would read as a second charge; the crypto journey
-    // takes that figure from the deposit screen instead.
+    // Restating what was sent beside a refund reads as a second charge. The refunded swap gets
+    // its context — the network and the rail — and the money's own story belongs to the guide.
     const crypto = { amount: "0.00045", symbol: "BTC", crypto: true, live: true, fee: "0.00001" };
-    expect(paidDetailRows(crypto, { provider: "Chainflip" }).map((r) => r.label)).toEqual([
-      "Provider",
-    ]);
+    const rows = paidDetailRows(crypto, { network: "Bitcoin", provider: "Chainflip" });
+    expect(rows.map((r) => r.label)).toEqual(["Network", "Provider"]);
   });
 });
 

@@ -39,8 +39,11 @@ export interface FundingTopUpRecord {
   claimed?: string;
   /** Why the request failed. */
   failureReason?: string;
-  /** The failed swap was refunded to the request's own key. */
+  /** The failed swap was refunded to the request's own key, with what came back and the
+   *  transaction that returned it. */
   refunded?: boolean;
+  refundAmount?: string;
+  refundTxRef?: string;
   progress?: FundingProgressSnapshot;
 }
 
@@ -101,6 +104,8 @@ export function activeState(
   progress: FundingProgressProjection,
   persistedReason?: string,
   persistedRefunded?: boolean,
+  /** The refund's own figures off the record; only ever present on a refunded one. */
+  refund?: { amount?: string; txRef?: string },
 ): FundingTopUp["state"] {
   if (status?.kind === "failed" || progress.view.kind === "failed") {
     const reason = status?.kind === "failed" ? status.reason : persistedReason;
@@ -110,6 +115,8 @@ export function activeState(
       ...(progress.failedAt === undefined ? {} : { at: progress.failedAt }),
       ...(reason === undefined ? {} : { reason }),
       ...(refunded ? { refunded } : {}),
+      ...(refunded && refund?.amount ? { refundAmount: refund.amount } : {}),
+      ...(refunded && refund?.txRef ? { refundTxRef: refund.txRef } : {}),
     };
   }
   if (progress.view.kind === "waiting") {

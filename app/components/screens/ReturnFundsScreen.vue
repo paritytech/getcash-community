@@ -2,22 +2,59 @@
 // The return-funds guide behind a refunded deposit: the numbered path from gas to key to a wallet
 // the buyer controls. The key is read on tap, never on load, and can be masked again after a look.
 import { computed, ref, watch } from "vue";
+import type { SourceId } from "@getsome/core";
 import { Check, Copy, Eye, EyeClosed } from "lucide-vue-next";
 import { formatSourceAmount, SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
 import { isRefundChain, type RefundKey } from "@getsome/ephemeral";
 import { useCopyToClipboard } from "../../composables/useCopyToClipboard";
+import type { FundingTopUp } from "../../funding/top-ups";
 import { useSessionStore } from "../../stores/session";
 import { recoveryNotes, refundStatusTail } from "../../utils/recovery";
 import PillButton from "../ui/PillButton.vue";
 
+const props = defineProps<{
+  /**
+   * The top-up as the list knows it, for a refund opened out of history. Everything below reads
+   * the live request first and falls back to this: the world is gone on that path, and the record
+   * is then the only account of the refund there is.
+   */
+  topUp?: FundingTopUp | null;
+}>();
 const emit = defineEmits<{ back: [] }>();
 const session = useSessionStore();
 
 const state = computed(() => session.lastState);
-const failure = computed(() => (state.value?.phase === "failed" ? state.value.failure : null));
-const refund = computed(() => (state.value?.phase === "failed" ? state.value.refund : undefined));
+/** The record's word on the failure, when no request is live to give one. */
+const storedRefund = computed(() =>
+  props.topUp?.state.kind === "failed" && props.topUp.state.refunded ? props.topUp.state : null,
+);
+const failure = computed(() => {
+  if (state.value?.phase === "failed") return state.value.failure;
+  const stored = storedRefund.value;
+  // Reconstructed, not stored: the record keeps the reason, and `refunded` is what makes it this
+  // failure rather than another. `recoverable` is false for every refund by construction.
+  return stored === null
+    ? null
+    : {
+        kind: "refunded" as const,
+        step: "swap" as const,
+        message: stored.reason ?? "",
+        recoverable: false,
+      };
+});
+const refund = computed(() => {
+  if (state.value?.phase === "failed") return state.value.refund;
+  const stored = storedRefund.value;
+  if (stored === null) return undefined;
+  return {
+    ...(stored.refundAmount ? { amount: stored.refundAmount } : {}),
+    ...(stored.refundTxRef ? { txRef: stored.refundTxRef } : {}),
+  };
+});
 const source = computed(() => {
-  const id = state.value?.sourceId;
+  // The record's source id is a plain string; a lookup miss is the same "no source" the live path
+  // already handles, so an id the registry does not know simply yields nothing.
+  const id = state.value?.sourceId ?? (props.topUp?.request?.sourceId as SourceId | undefined);
   return id ? (SOURCE_CONFIG_BY_ID.get(id) ?? null) : null;
 });
 const asset = computed(() => source.value?.asset ?? "");
@@ -26,21 +63,58 @@ const chain = computed(() => {
   return c !== undefined && isRefundChain(c) ? c : null;
 });
 
-/** "50 USDT" once the poll has sized the refund, the bare ticker before that. */
+/**
+ * "50 USDT" once the poll has sized the refund, the bare ticker before that.
+ *
+ * The amount is base units and may have come off a record written by an older build, so a value
+ * `formatSourceAmount` cannot parse falls back to the ticker. This is the screen that tells a
+ * buyer where their money is; a malformed figure must not be able to take it down.
+ */
 const subject = computed(() => {
   const s = source.value;
   const amount = refund.value?.amount;
-  return s && amount ? `${formatSourceAmount(s, amount)} ${asset.value}` : asset.value;
+  if (!s || !amount) return asset.value;
+  try {
+    return `${formatSourceAmount(s, amount)} ${asset.value}`;
+  } catch {
+    console.warn(`[refund] unreadable refund amount '${amount}' for ${s.asset}`);
+    return asset.value;
+  }
 });
 
 const revealed = ref<RefundKey | null>(null);
 const masked = ref(true);
-function toggleKey() {
+/**
+ * The address to return to. The live world's while a request is on screen; otherwise the recovered
+ * key's, which is the same address — both are the one derivation of (sourceId, tradeN).
+ */
+const recovered = ref<RefundKey | null>(null);
+const address = computed(() => session.refundAddress ?? recovered.value?.address ?? null);
+
+// A refund opened from history has no world to read, so the key is re-derived from the request's
+// own identity. The address is wanted on sight (it is where the money is); the secret stays behind
+// the reveal either way.
+watch(
+  () => props.topUp?.request,
+  async (request) => {
+    recovered.value = null;
+    if (!request || session.refundAddress !== null) return;
+    recovering.value = true;
+    try {
+      recovered.value = await session.recoverRefundKeyFor(request.sourceId, request.tradeN);
+    } finally {
+      recovering.value = false;
+    }
+  },
+  { immediate: true },
+);
+
+async function toggleKey() {
   if (!masked.value) {
     masked.value = true;
     return;
   }
-  if (!revealed.value) revealed.value = session.revealRefundKey();
+  if (!revealed.value) revealed.value = session.revealRefundKey() ?? recovered.value;
   if (revealed.value) masked.value = false;
 }
 // The preview deck lands on the shown key without a tap; the key still comes off the request's
@@ -80,6 +154,18 @@ const steps = computed(() => {
   ];
 });
 
+/**
+ * Whether this request's recovery material could be reached at all.
+ *
+ * The live world has it outright; a refund opened from history re-derives it. Either can come up
+ * empty — off-host there is no entropy root, and on-host the derivation can fail — and when it
+ * does the buyer must be told, not handed a control that does nothing and a step pointing at an
+ * address that was never drawn. `recovering` keeps that message off the screen while the
+ * derivation is still in flight.
+ */
+const recovering = ref(false);
+const material = computed(() => address.value !== null || revealed.value !== null);
+
 const { copied: addressCopied, copy: copyAddress } = useCopyToClipboard();
 const { copied: keyCopied, copy: copyKey } = useCopyToClipboard();
 </script>
@@ -114,22 +200,22 @@ const { copied: keyCopied, copy: copyKey } = useCopyToClipboard();
 
         <!-- The whole row copies the address; the icon confirms. -->
         <button
-          v-if="step.card === 'address' && session.refundAddress"
+          v-if="step.card === 'address' && address"
           type="button"
           class="flex items-center justify-between gap-4 rounded-container bg-surface-container py-3 pr-6 pl-4 text-left"
-          @click="copyAddress(session.refundAddress)"
+          @click="copyAddress(address)"
         >
           <span class="min-w-0">
             <span class="block text-body-s text-fg-secondary">Address on {{ chain }}</span>
             <span class="mt-1 block break-all text-paragraph-l text-fg-primary">
-              {{ session.refundAddress }}
+              {{ address }}
             </span>
           </span>
           <Check v-if="addressCopied" class="size-6 shrink-0 text-fg-success" aria-hidden="true" />
           <Copy v-else class="size-6 shrink-0 text-fg-secondary" aria-hidden="true" />
         </button>
 
-        <div v-else-if="step.card === 'key'" class="flex flex-col gap-3">
+        <div v-else-if="step.card === 'key' && material" class="flex flex-col gap-3">
           <div
             class="flex items-center justify-between gap-4 rounded-container bg-surface-container py-3 pr-6 pl-4"
           >
@@ -175,6 +261,13 @@ const { copied: keyCopied, copy: copyKey } = useCopyToClipboard();
         </div>
       </li>
     </ol>
+
+    <!-- Nothing to hand over. Said once, under the steps, rather than leaving each of them to
+         trail off into a card that never appears. -->
+    <p v-if="!material && !recovering" class="mt-6 shrink-0 text-center text-body-m text-fg-error">
+      Your recovery address and key can't be loaded on this device. Open this top-up in the Polkadot
+      App to reach them.
+    </p>
 
     <div class="mt-auto shrink-0 pt-8">
       <PillButton variant="tertiary" class="w-full" @click="emit('back')">Back</PillButton>

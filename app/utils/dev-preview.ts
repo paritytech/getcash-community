@@ -256,6 +256,24 @@ const REFUND_PREVIEWS: readonly [SourceId, string][] = [
   ["usdt-solana", "5.02"],
 ];
 
+/**
+ * Installs a mock world for p5, the refunded Bitcoin top-up in the preview history.
+ *
+ * Off-host `recoverRefundKeyFor` returns null — there is no entropy root to derive from — so the
+ * refund guide would otherwise show its "can't be loaded here" state on every scene. The mock
+ * world stands in for the derivation so the screen can be seen whole. Only a host build exercises
+ * the real recovery; this proves the screen, not the key.
+ */
+function installPreviewRefundWorld(session: Session) {
+  void createMockCoinageSession({
+    recipient: DEPOSIT.address,
+    amount: BigInt(toBaseUnits("0.00043", 8)),
+    sourceId: "btc",
+  }).then((world) => {
+    session.mock = world;
+  });
+}
+
 /** A top-ups scene: the shell's landing screen, with the cards it is asked to draw. */
 function topUpList(topUps: readonly FundingTopUp[], extra: Omit<PreviewTopUpScene, "topUps"> = {}) {
   return (s: Session, f: Flow) => {
@@ -290,6 +308,7 @@ function stageFor(scene: Scene): PreviewStage {
   const match = STAGE_BY_PREFIX.find(([prefix]) => scene.name.startsWith(prefix));
   return match?.[1] ?? { kind: "shell" };
 }
+
 // Scenes start at the first screen a package owns.
 export const SCENES: Scene[] = [
   {
@@ -353,9 +372,14 @@ export const SCENES: Scene[] = [
     }),
   },
   {
-    // Behind the clock: finished top-ups, credited and failed.
+    // Behind the clock: finished top-ups, credited and failed. The refunded Bitcoin card opens the
+    // recovery guide, so its world is installed here too — tapping through is how the screen is
+    // actually reached.
     name: "list / history",
-    apply: topUpList(previewTopUpHistory(), { entry: "history" }),
+    apply: (s, f) => {
+      topUpList(previewTopUpHistory(), { entry: "history" })(s, f);
+      installPreviewRefundWorld(s);
+    },
   },
   {
     // Nothing has ever been topped up.
@@ -677,6 +701,18 @@ export const SCENES: Scene[] = [
   {
     name: "crypto / failed: refunded",
     apply: refunded("usdt-tron", "5.02"),
+  },
+  {
+    // The same refund read from the list's own record, with nothing live behind it: the request
+    // could not be resumed, so the journey has only what history stored. This is the state the
+    // review comment is about — the rows are hidden because the deposit went back, and the guide
+    // behind "Refund info" is driven by the request's world, which is gone.
+    name: "crypto / refunded: from history",
+    stage: { kind: "journey", route: "crypto", topUpId: "p5" },
+    apply: (s, f) => {
+      topUpList(previewTopUpHistory(), { entry: "history" })(s, f);
+      installPreviewRefundWorld(s);
+    },
   },
   // The return-funds screen opened with the key revealed, once per source: the step copy is
   // templated on the chain, its native coin, and the asset, so each reads differently.

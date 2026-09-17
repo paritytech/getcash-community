@@ -114,6 +114,13 @@ interface ActiveFlowRecord {
   failureReason?: string;
   /** True when the failed swap was refunded to the request's own key. */
   refunded?: boolean;
+  /** What actually came back, in the source asset's BASE units as the rail reports them (not a
+   *  decimal string — `formatSourceAmount` renders it), and the chain transaction that returned
+   *  it. Less than the deposit: the refund pays its own network fees. Both live on the request's
+   *  `refund` progress, so without them a journey reopened from history can say only that a refund
+   *  happened, not how much or where to look for it. */
+  refundAmount?: string;
+  refundTxRef?: string;
   /** Timestamp of the user's cancel. Marks a tombstone: hidden from every list, never driven,
    *  resurrected or deleted by the sweep. */
   cancelledAt?: number;
@@ -333,6 +340,27 @@ export const useSessionStore = defineStore("session", () => {
   /** Reads the refund key from the world on demand. */
   function revealRefundKey(): RefundKey | null {
     return (mock.value ?? live.value)?.revealRefundKey() ?? null;
+  }
+
+  /**
+   * The recovery key for a request that is not on screen, re-derived from its own identity.
+   *
+   * For a refund opened out of history, where there is no world to ask. The host derives the same
+   * seed it did when the request was opened, so this is the key the rail was handed. Null off-host
+   * — a dev build has no entropy root, and the deck's scenes install a mock world instead.
+   */
+  async function recoverRefundKeyFor(sourceId: string, tradeN: number): Promise<RefundKey | null> {
+    if (!isHosted()) return null;
+    try {
+      const { probeRefundKey } = await import("~~/lib/coinage-live");
+      // A record's source id is a plain string on disk, and nothing narrows it here because the
+      // derivation fails closed on its own: an id with no refund chain, or one the source registry
+      // does not know, comes back null rather than deriving against the wrong chain.
+      return await probeRefundKey(sourceId as SourceId, tradeN);
+    } catch (e) {
+      console.warn("[coinage] refund key recovery failed:", e);
+      return null;
+    }
   }
   /** True while a claim is in flight: the host's sheet is up, or the credit is being verified. */
   const claiming = computed(() => phase.value === "funded" || phase.value === "working");
@@ -1306,18 +1334,36 @@ export const useSessionStore = defineStore("session", () => {
     });
   }
 
-  /** Keep the reason a request failed on its record, where it survives a restart. */
+  /**
+   * Keep the reason a request failed on its record, where it survives a restart.
+   *
+   * A refund's own figures ride along: they arrive on the payment state over several polls (the
+   * amount first, the transaction when the egress is scheduled, both before it is witnessed), so
+   * this is called again as each lands and only writes when something actually changed.
+   */
   function recordFailureReason(
     ref: RequestRef | undefined,
     reason: string,
     refunded = false,
+    refund?: { amount?: string; txRef?: string },
   ): void {
     if (ref === undefined) return;
-    void mutateRecord(ref, (record) =>
-      !record || (record.failureReason === reason && (record.refunded ?? false) === refunded)
-        ? undefined
-        : { ...record, failureReason: reason, ...(refunded ? { refunded } : {}) },
-    ).catch(() => {});
+    void mutateRecord(ref, (record) => {
+      if (!record) return undefined;
+      const next: ActiveFlowRecord = {
+        ...record,
+        failureReason: reason,
+        ...(refunded ? { refunded } : {}),
+        ...(refund?.amount ? { refundAmount: refund.amount } : {}),
+        ...(refund?.txRef ? { refundTxRef: refund.txRef } : {}),
+      };
+      const unchanged =
+        record.failureReason === next.failureReason &&
+        (record.refunded ?? false) === (next.refunded ?? false) &&
+        record.refundAmount === next.refundAmount &&
+        record.refundTxRef === next.refundTxRef;
+      return unchanged ? undefined : next;
+    }).catch(() => {});
   }
 
   function advanceForegroundProgress(
@@ -1421,7 +1467,7 @@ export const useSessionStore = defineStore("session", () => {
     const provider = progressProviderForSource(state.sourceId ?? ref?.sourceId);
     if (ref !== undefined && state.phase === "failed" && refundedFailure(state.failure.kind)) {
       setStatus(ref, { kind: "failed", reason: state.failure.message, refunded: true });
-      recordFailureReason(ref, state.failure.message, true);
+      recordFailureReason(ref, state.failure.message, true, state.refund);
     }
     const signal = fundingProgressSignalForPaymentState(provider, state);
     if (!signal) return;
@@ -2420,6 +2466,7 @@ export const useSessionStore = defineStore("session", () => {
     live,
     refundAddress,
     revealRefundKey,
+    recoverRefundKeyFor,
     meldServiceProvider,
     meldReference,
     // derived helpers

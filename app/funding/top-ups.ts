@@ -6,7 +6,16 @@ export type FundingTopUpState =
   | { kind: "awaiting-transfer"; status: string }
   | { kind: "finishing"; status: string }
   | { kind: "settled"; at: number; creditedAmount?: string }
-  | { kind: "failed"; at?: number; reason?: string; refunded?: boolean };
+  | {
+      kind: "failed";
+      at?: number;
+      reason?: string;
+      refunded?: boolean;
+      /** What came back and the transaction that returned it, for a refund with no live request
+       *  left to ask. Absent on records written before either was kept. */
+      refundAmount?: string;
+      refundTxRef?: string;
+    };
 
 export type FundingTopUpDetail = Readonly<{
   label: string;
@@ -46,6 +55,9 @@ export type FundingTopUp = Readonly<{
    * card shows the same amber the journey does.
    */
   delayed?: boolean;
+  /** The request this top-up is, as the store names it. Lets a screen reach the request's own
+   *  derived material — the refund key — without a live world behind it. */
+  request?: Readonly<{ sourceId: string; tradeN: number }>;
   state: FundingTopUpState;
 }>;
 
