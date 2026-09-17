@@ -2,6 +2,7 @@
 // receipt. Both screens read the same quote — the live one while a request is on screen, the
 // list's stored copy otherwise — and must present it identically.
 
+import { shortAddress } from "../utils/address";
 import { fmtFiat, isMoneyAmount } from "../utils/money";
 
 export interface QuoteView {
@@ -19,6 +20,8 @@ export interface QuoteRow {
   value: string;
   /** The value drills into the fee breakdown. */
   fees?: boolean;
+  /** The full text a copy control puts on the clipboard; `value` may be an elided form of it. */
+  copy?: string;
 }
 
 export function quoteDetailRows(quote: QuoteView | null): QuoteRow[] {
@@ -36,5 +39,40 @@ export function quoteDetailRows(quote: QuoteView | null): QuoteRow[] {
     });
   }
   rows.push({ label: "Total", value: money(quote.amount) });
+  return rows;
+}
+
+/**
+ * The rows a concluded fiat top-up shows instead of the live quote's Fees and Total.
+ *
+ * Both rails end up here. A card payment that was refunded still charged the buyer, and the two
+ * figures differ — the
+ * ribbon says what came back, this says what went out — so the design keeps the money row on a
+ * refund rather than dropping it with the quote. The provider and the reference ride with it:
+ * between them they are what a buyer hands support. The reference is the funding request's own id,
+ * the only identifier the adapter surfaces — the rail's is held back behind its DTO.
+ */
+export function paidDetailRows(
+  quote: QuoteView | null,
+  paid: { provider?: string; reference?: string } = {},
+): QuoteRow[] {
+  const rows: QuoteRow[] = [];
+  // Fiat only. The crypto rail's deposit figure belongs to the deposit screen, and restating it
+  // against a refund reads as a second charge rather than the one sum that went out and came back.
+  if (quote !== null && !quote.crypto) {
+    rows.push({
+      label: "You paid inc. fees",
+      value: fmtFiat(quote.amount, quote.symbol),
+      fees: quote.live && isMoneyAmount(quote.fee ?? ""),
+    });
+  }
+  if (paid.provider) rows.push({ label: "Provider", value: paid.provider });
+  if (paid.reference) {
+    rows.push({
+      label: "Transaction ID",
+      value: shortAddress(paid.reference),
+      copy: paid.reference,
+    });
+  }
   return rows;
 }

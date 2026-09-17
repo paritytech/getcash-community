@@ -10,7 +10,7 @@ import { projectFundingProgress, type FundingProgressProjection } from "../../fu
 import type { FundingTopUp } from "../../funding/top-ups";
 import { DEPOSIT_EXPIRED_REASON, useSessionStore } from "../../stores/session";
 import { fmtCash } from "../../utils/cash";
-import { quoteDetailRows } from "../../funding/quote-rows";
+import { paidDetailRows, quoteDetailRows } from "../../funding/quote-rows";
 import { formatWhenShort, type JourneySteps } from "../../utils/journey";
 import { refundedFailure } from "../../utils/recovery";
 import FundingJourneyTimeline from "../funding/progress/FundingJourneyTimeline.vue";
@@ -90,20 +90,45 @@ const failedLabel = computed(() => {
 });
 /** Nothing was paid on an expired top-up, so it carries no quote rows. */
 const expired = computed(() => failedLabel.value !== null);
-/** The quote rows leave with the money: nothing was kept on an expired or refunded top-up. */
-const hideRows = computed(
+
+/**
+ * Whether this top-up's money came back rather than being kept.
+ *
+ * Crypto refunds land at the request's own key; a card refund goes to the card. Either way the
+ * buyer was charged and then made whole, which is a different ending from a decline — where no
+ * money moved at all — and the screen says different things about the two.
+ */
+const refundedEnding = computed(
   () =>
-    expired.value ||
     (failure.value !== null && refundedFailure(failure.value.kind)) ||
+    session.meldRefunded ||
     storedFailure.value?.refunded === true,
 );
 
+/**
+ * The live quote's Fees and Total leave when nothing is being bought any more.
+ *
+ * An expired top-up never charged anyone, so it has nothing to show. A concluded fiat top-up is
+ * the opposite case: money did move, and the design replaces the forward-looking quote with what
+ * was actually paid — see `paidDetailRows`. So this drops the quote rows for both, and the paid
+ * rows below take over wherever there is something to say.
+ */
 const heroFailed = computed(
   () =>
     progress.value?.view.kind === "failed" ||
     failure.value !== null ||
     storedFailure.value !== null,
 );
+
+/**
+ * A fiat top-up that has ended, whichever way. The design gives it a receipt rather than a quote:
+ * what was charged, who took it, and the funding request's id to trace it by.
+ */
+const concluded = computed(
+  () => !crypto.value && !expired.value && (heroFailed.value || finished.value),
+);
+
+const hideRows = computed(() => expired.value || concluded.value || refundedEnding.value);
 
 const creditedAmount = computed(() =>
   session.claimedBase != null ? fmtCash(session.claimedBase) : session.amountHuman,
@@ -162,6 +187,18 @@ const quoteView = computed(() => {
 const detailRows = computed(() =>
   quoteView.value?.crypto ? [] : quoteDetailRows(quoteView.value),
 );
+
+/** The live request's provider and reference, else the list's own record. */
+const paidRows = computed(() => {
+  if (!concluded.value) return [];
+  const details = props.topUp?.details;
+  const provider = session.meldServiceProvider ?? details?.provider?.label;
+  const reference = session.meldReference ?? details?.reference;
+  return paidDetailRows(quoteView.value, {
+    ...(provider ? { provider } : {}),
+    ...(reference ? { reference } : {}),
+  });
+});
 
 /**
  * Whether to offer a fresh attempt at a card or bank top-up that ended.
@@ -243,6 +280,9 @@ const message = computed(() => {
       />
 
       <DetailRows v-if="detailRows.length && !hideRows" :rows="detailRows" @fees="emit('fees')" />
+
+      <!-- What a concluded fiat top-up actually cost, with the handles support needs. -->
+      <DetailRows v-if="paidRows.length" :rows="paidRows" @fees="emit('fees')" />
 
       <!-- The way back to a refunded deposit drills into the return-funds guide, which carries
            the refund's own status line. -->

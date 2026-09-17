@@ -109,6 +109,10 @@ interface PreviewCardOptions {
   refunded?: boolean;
   /** What the rail quoted, for the journey's Fees and Total rows. */
   quote?: FundingTopUp["quote"];
+  /** The fiat rails' receipt facts: the provider the request was opened with, and the funding
+   *  request's id, which the journey shows as the transaction id. */
+  provider?: string;
+  reference?: string;
 }
 
 /**
@@ -153,6 +157,16 @@ export function previewTopUp(
       return quote === undefined ? {} : { quote };
     })(),
     ...(options.delayed === true ? { delayed: true } : {}),
+    ...(options.provider || options.reference
+      ? {
+          details: {
+            ...(options.provider
+              ? { provider: { label: options.provider, icon: "/icons/card.svg" } }
+              : {}),
+            ...(options.reference ? { reference: options.reference } : {}),
+          },
+        }
+      : {}),
     state,
   };
 }
@@ -170,6 +184,8 @@ export function previewTopUpHistory(): FundingTopUp[] {
     previewTopUp("p4", "card", "failed", "The card issuer declined the payment", {
       amount: "200",
       quote: { amount: "212.40", symbol: "EUR", fee: "12.40" },
+      provider: "Transak",
+      reference: "a1f9c3d2-4c2e-4a71-9f0b-6d5e8c2b1a03",
       startedMinutesAgo: DAY + 3 * HOUR,
       endedMinutesAgo: DAY + 3 * HOUR - 2,
     }),
@@ -179,6 +195,28 @@ export function previewTopUpHistory(): FundingTopUp[] {
       refunded: true,
       startedMinutesAgo: 3 * DAY,
       endedMinutesAgo: 3 * DAY - 14,
+    }),
+    previewTopUp("p8", "card", "failed", "Refunded to your card", {
+      amount: "50",
+      quote: { amount: "50.55", symbol: "EUR", fee: "0.55" },
+      refunded: true,
+      provider: "Transak",
+      reference: "b7e4a10c-9d31-4f62-8ab5-3c0f7e19d248",
+      startedMinutesAgo: 4 * DAY,
+      endedMinutesAgo: 4 * DAY - 6,
+    }),
+    // Every record written before this release, and every one written after it until the adapter
+    // surfaces the rail's ids: the funding-request id was always persisted, so the reference is
+    // there, but nothing recorded which provider took the payment. `topUpDetails` names the
+    // aggregator rather than leaving the row blank.
+    previewTopUp("p9", "card", "failed", "Refunded to your card", {
+      amount: "30",
+      quote: { amount: "31.80", symbol: "EUR", fee: "1.80" },
+      refunded: true,
+      provider: "Meld",
+      reference: "0f2c8d41-7b93-4e05-a1d6-84be3f7c0925",
+      startedMinutesAgo: 9 * DAY,
+      endedMinutesAgo: 9 * DAY - 5,
     }),
     previewTopUp("p6", "bank", "settled", "Added to your balance", {
       amount: "25",

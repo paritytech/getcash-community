@@ -122,6 +122,15 @@ function base(session: Session, flow: Flow) {
   session.claimStage = null;
   session.resuming = false;
   session.meldDelayed = false;
+  // The card rail's ending, cleared with the rest: a scene that leaves these set makes the next
+  // one read a payment that is not on screen — which is how two record-driven scenes came to look
+  // identical, both showing the previous card scene's provider and reference.
+  session.meldStage = null;
+  session.meldFailureCode = null;
+  session.meldFailureMessage = null;
+  session.meldRefunded = false;
+  session.meldServiceProvider = null;
+  session.meldReference = null;
   session.lastState = null;
   session.foregroundProgress = null;
   session.fundsSeen = false;
@@ -142,6 +151,9 @@ function cardJourney(session: Session, flow: Flow) {
   session.setAmount("50");
   session.method = "card";
   session.quoted = { ...QUOTED_CARD };
+  // What the create call captured: the provider we opened with, and the funding request's id.
+  session.meldServiceProvider = "Transak";
+  session.meldReference = "a1f9c3d2-4c2e-4a71-9f0b-6d5e8c2b1a03";
 }
 
 /**
@@ -536,6 +548,22 @@ export const SCENES: Scene[] = [
         "refunded",
         "Your top-up didn't go through. Your 52.06 USD has been returned to your card.",
       ),
+  },
+  {
+    // The same refund read off the list's own record, with nothing live behind it. The receipt
+    // rows must survive the request being gone: they come from the record, not the session.
+    name: "card / refunded: from history",
+    stage: { kind: "journey", route: "card", topUpId: "p8" },
+    apply: topUpList(previewTopUpHistory(), { entry: "history" }),
+  },
+  {
+    // What every buyer's existing history actually renders today: the funding-request id was
+    // always persisted, so the reference is real, but no record knows which provider took the
+    // payment — the row names the aggregator instead. This is the shipped state; the scene above
+    // is what it becomes once the adapter surfaces the rail's own ids.
+    name: "card / refunded: provider unknown",
+    stage: { kind: "journey", route: "card", topUpId: "p9" },
+    apply: topUpList(previewTopUpHistory(), { entry: "history" }),
   },
   {
     // No Start over here: the rail could not tell whether the buyer was charged, and a second

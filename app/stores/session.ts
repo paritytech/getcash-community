@@ -108,6 +108,9 @@ interface ActiveFlowRecord {
   meldFundingRequestId?: string;
   /** Meld fiat requests only: the buyer country the quote was priced in. */
   meldCountry?: string;
+  /** Meld fiat requests only: the provider that took the payment (Transak, Koywe, ...). The
+   *  concluded journey names it, and a refund is theirs to trace. */
+  meldServiceProvider?: string;
   failureReason?: string;
   /** True when the failed swap was refunded to the request's own key. */
   refunded?: boolean;
@@ -268,6 +271,11 @@ export const useSessionStore = defineStore("session", () => {
    *  reported it. Null unless `meldStage === 'failed'`. It decides whether a fresh attempt is
    *  safe to offer: `unobserved` means the rail could not tell whether the buyer was charged. */
   const meldFailureCode = ref<string | null>(null);
+  /** Meld fiat requests only: the provider we opened the request with, and the funding request's
+   *  own id — the only identifier the adapter puts on the wire, and so what the concluded journey
+   *  shows as the transaction id. A record reopened from history restores both. */
+  const meldServiceProvider = ref<string | null>(null);
+  const meldReference = ref<string | null>(null);
   /** The provider widget URL recovered when resuming a Meld request; null unless a resume found a
    *  live one. */
   const meldResumeWidgetUrl = ref<string | null>(null);
@@ -439,6 +447,8 @@ export const useSessionStore = defineStore("session", () => {
     meldHandedOff.value = false;
     meldCredited = false;
     meldFundingRequestId = null;
+    meldServiceProvider.value = null;
+    meldReference.value = null;
     meldStatusClient = null;
     cancelNotice.value = null;
     sub?.unsubscribe();
@@ -841,6 +851,10 @@ export const useSessionStore = defineStore("session", () => {
       createSession: async (r) => {
         const s = await baseClient.createSession(r);
         meldFundingRequestId = s.fundingRequestId;
+        // The provider is ours from the quote we picked; the adapter's funding record does not
+        // report it back, so this is the only moment it can be captured.
+        meldServiceProvider.value = r.serviceProvider || null;
+        meldReference.value = s.fundingRequestId;
         return s;
       },
       getStatus: (id) => baseClient.getStatus(id),
@@ -1527,6 +1541,7 @@ export const useSessionStore = defineStore("session", () => {
         ...(isMeldSourceId(world.sourceId) && meldRegionCountry
           ? { meldCountry: meldRegionCountry }
           : {}),
+        ...(meldServiceProvider.value ? { meldServiceProvider: meldServiceProvider.value } : {}),
         ...(depositExpiresAt > 0 ? { depositExpiresAt } : {}),
       };
       await mutateRecord(ref, () => record);
@@ -1957,6 +1972,8 @@ export const useSessionStore = defineStore("session", () => {
           });
           meldStatusClient = client;
           meldFundingRequestId = record.meldFundingRequestId;
+          meldReference.value = record.meldFundingRequestId;
+          meldServiceProvider.value = record.meldServiceProvider ?? null;
           // Recover the pay URL from the adapter; the rail keeps pay URLs only in memory.
           void client
             .getStatus(record.meldFundingRequestId)
@@ -2403,6 +2420,8 @@ export const useSessionStore = defineStore("session", () => {
     live,
     refundAddress,
     revealRefundKey,
+    meldServiceProvider,
+    meldReference,
     // derived helpers
     isFaucetConfigured,
     amountStatus,

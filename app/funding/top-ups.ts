@@ -23,6 +23,9 @@ export type FundingTopUpDetails = Readonly<{
   region?: string;
   depositAddress?: string;
   arrivalEstimate?: string;
+  /** The id that traces this payment with the provider. The concluded journey shows it with a
+   *  copy control: it is what a buyer hands support when a refund needs chasing. */
+  reference?: string;
 }>;
 
 export type FundingTopUp = Readonly<{

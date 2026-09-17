@@ -30,6 +30,10 @@ export interface FundingTopUpRecord {
   sourceNetworkFee?: string;
   /** The Meld rail's buyer country. */
   meldCountry?: string;
+  /** The Meld rail's provider (Transak, Koywe, ...) and the funding request's id, which is what
+   *  the journey shows as the transaction id. */
+  meldServiceProvider?: string;
+  meldFundingRequestId?: string;
   funded?: number;
   settledAt?: number;
   claimed?: string;
