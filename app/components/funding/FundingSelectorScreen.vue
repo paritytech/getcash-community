@@ -14,6 +14,8 @@ import {
 } from "../../funding/selection";
 import {
   hasFundingPendingContent,
+  TOP_UP_LIST_WORDING,
+  type FundingListWording,
   type InProgressFundingTopUp,
   type PastFundingTopUp,
   type SettledFundingTopUp,
@@ -46,6 +48,8 @@ const props = withDefaults(
     /** Passed through to the amount screen: the balance its pill offers, null while loading,
      *  omitted for no pill. */
     available?: string | null;
+    /** The list screens' words around the rows; the top-up's by default. */
+    wording?: FundingListWording;
   }>(),
   {
     skeleton: false,
@@ -64,6 +68,7 @@ const props = withDefaults(
     title: undefined,
     cta: undefined,
     available: undefined,
+    wording: () => TOP_UP_LIST_WORDING,
   },
 );
 
@@ -150,6 +155,7 @@ watch(hasPendingContent, (hasContent) => {
       :latest-top-up="latestTopUp"
       :opening-top-up-id="openingTopUpId"
       :error="topUpError"
+      :wording="wording"
       @history="showHistory"
       @new-top-up="showAmount"
       @open="emit('openTopUp', $event, { screen: 'pending' })"
@@ -161,6 +167,7 @@ watch(hasPendingContent, (hasContent) => {
       :past="pastTopUps"
       :opening-top-up-id="openingTopUpId"
       :error="topUpError"
+      :empty-text="wording.emptyHistory"
       @back="closeHistory"
       @open="
         emit('openTopUp', $event, {

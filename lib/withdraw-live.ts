@@ -13,8 +13,13 @@ import {
   type HostLocalStorageLike,
 } from "@getsome/host";
 import { CASH_LOCATION } from "@getsome/people";
-import { DEFAULT_WITHDRAW_SLIPPAGE_PCT, PASEO_PEOPLE_POOL_ACCOUNT } from "@getsome/withdraw";
-import { paseo_people_next } from "@polkadot-api/descriptors";
+import {
+  CASH_ON_ASSET_HUB,
+  DEFAULT_WITHDRAW_SLIPPAGE_PCT,
+  PASEO_PEOPLE_POOL_ACCOUNT,
+  PEOPLE_NATIVE,
+} from "@getsome/withdraw";
+import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import {
   WITHDRAW_SOURCE_PREFIX,
   isWithdrawSourceId,
@@ -67,6 +72,28 @@ export async function probeWithdrawKey(
     at: "best",
   });
   return { address, cash: account?.balance ?? 0n };
+}
+
+/** The CASH the fees take from a direct withdrawal before the sale on Asset Hub, as measured on
+ *  Paseo: the People swap for the fee PAS, about 0.42 CASH, and Asset Hub's execution fee. */
+const DIRECT_FEES_CASH = 450_000n;
+
+/** What a direct withdrawal of `amount` CASH lands on Asset Hub, in planck, at today's pool
+ *  price: the amount less the fees, sold as the program sells it. An estimate for the summary,
+ *  not what the program is held to. */
+export async function quoteDirectReceive(amount: bigint): Promise<bigint> {
+  const sold = amount - DIRECT_FEES_CASH;
+  if (sold <= 0n) return 0n;
+  const { connectChain, ASSET_HUB } = await import("./host-chain");
+  const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
+  const quoted = await api.apis.AssetConversionApi.quote_price_exact_tokens_for_tokens(
+    CASH_ON_ASSET_HUB as never,
+    PEOPLE_NATIVE as never,
+    sold,
+    true,
+  );
+  if (quoted === undefined) throw new Error("Asset Hub cannot quote the sale");
+  return quoted;
 }
 
 async function hostStorageAdapter() {

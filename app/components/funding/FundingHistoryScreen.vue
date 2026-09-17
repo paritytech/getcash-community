@@ -6,13 +6,18 @@ import { formatFundingHistoryWhen } from "../../funding/history";
 import type { InProgressFundingTopUp, PastFundingTopUp } from "../../funding/top-ups";
 import FundingProgressRing from "./progress/FundingProgressRing.vue";
 
-const props = defineProps<{
-  config: FundingSelectorConfig;
-  inProgress: readonly InProgressFundingTopUp[];
-  past: readonly PastFundingTopUp[];
-  openingTopUpId?: string | null;
-  error?: string | null;
-}>();
+const props = withDefaults(
+  defineProps<{
+    config: FundingSelectorConfig;
+    inProgress: readonly InProgressFundingTopUp[];
+    past: readonly PastFundingTopUp[];
+    openingTopUpId?: string | null;
+    error?: string | null;
+    /** The line shown when there is nothing to list. */
+    emptyText?: string;
+  }>(),
+  { openingTopUpId: undefined, error: undefined, emptyText: "No top-ups yet." },
+);
 
 const emit = defineEmits<{
   back: [];
@@ -91,7 +96,7 @@ const empty = computed(() => props.inProgress.length === 0 && props.past.length 
         </ul>
       </section>
 
-      <p v-if="empty" class="funding-history-empty text-body-m">No top-ups yet.</p>
+      <p v-if="empty" class="funding-history-empty text-body-m">{{ emptyText }}</p>
       <p v-if="error" class="funding-history-error text-caption" role="alert">{{ error }}</p>
     </div>
   </div>

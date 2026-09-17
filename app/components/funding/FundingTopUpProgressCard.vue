@@ -11,17 +11,20 @@ const props = withDefaults(
   defineProps<{
     topUp: ProgressCardTopUp;
     asset: string;
+    /** The status line of a settled card. */
+    settledStatus?: string;
     opening?: boolean;
     disabled?: boolean;
   }>(),
   {
+    settledStatus: "Added to your balance",
     opening: false,
     disabled: false,
   },
 );
 
 const status = computed(() =>
-  props.topUp.state.kind === "settled" ? "Added to your balance" : props.topUp.progress.view.label,
+  props.topUp.state.kind === "settled" ? props.settledStatus : props.topUp.progress.view.label,
 );
 const detail = computed(() =>
   props.topUp.state.kind === "settled"

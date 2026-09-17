@@ -46,7 +46,13 @@ export function useWithdrawalRequest() {
   /** Creates the record, prompts the purse, and hands the worker the request. Puts the record on
    *  screen as soon as it exists. */
   async function start(input: WithdrawalStart): Promise<WithdrawalStartOutcome> {
-    if (!isHosted()) return { ok: false, ref: null, reason: "withdrawals need the host purse" };
+    if (!isHosted()) {
+      return {
+        ok: false,
+        ref: null,
+        reason: "Withdrawals are only available inside the Polkadot App.",
+      };
+    }
     const live = await import("~~/lib/withdraw-live");
     const sourceId = `${WITHDRAW_SOURCE_PREFIX}${input.destinationId}`;
     const n = await live.nextWithdrawNumber(sourceId, (candidate) =>
