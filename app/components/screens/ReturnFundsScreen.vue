@@ -88,10 +88,10 @@ const { copied: keyCopied, copy: copyKey } = useCopyToClipboard();
   <section
     v-if="failure && notes"
     class="flex min-h-0 flex-1 flex-col overflow-y-auto pb-6"
-    aria-label="Return funds"
+    aria-label="Refund info"
   >
     <div class="flex shrink-0 flex-col gap-2 text-center">
-      <h1 class="text-display-s text-fg-primary">Return funds</h1>
+      <h1 class="text-display-s text-fg-primary">Refund info</h1>
       <p class="text-paragraph-l text-fg-primary">
         <template v-if="failure.kind === 'refund-failed'">{{ failure.message }}</template>
         <template v-else>

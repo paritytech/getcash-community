@@ -284,10 +284,10 @@ const message = computed(() => {
       <!-- What a concluded fiat top-up actually cost, with the handles support needs. -->
       <DetailRows v-if="paidRows.length" :rows="paidRows" @fees="emit('fees')" />
 
-      <!-- The way back to a refunded deposit drills into the return-funds guide, which carries
-           the refund's own status line. -->
+      <!-- The way back to a refunded deposit drills into the recovery guide, which carries the
+           refund's own status line and the key that moves it. -->
       <PillButton v-if="refunded" class="mt-auto" @click="emit('refund')">
-        Return funds
+        Refund info
       </PillButton>
 
       <!-- A recoverable failure comes first on either rail: the payment landed and only the credit
