@@ -307,14 +307,14 @@ const message = computed(() => {
       <DetailRows v-if="detailRows.length && !hideRows" :rows="detailRows" @fees="emit('fees')" />
 
       <!-- What an ended top-up actually cost: the charge and its handles on a fiat rail, the sum
-           sent and its network on a refunded crypto one. -->
+           sent and its network on a refunded crypto one. The transaction id copies, so the screen
+           carries the confirmation. -->
       <DetailRows v-if="paidRows.length" :rows="paidRows" @fees="emit('fees')" />
+      <CopiedPill v-if="paidRows.length" />
 
       <!-- The way back to a refunded deposit drills into the recovery guide, which carries the
            refund's own status line and the key that moves it. -->
-      <PillButton v-if="refunded" class="mt-auto" @click="emit('refund')">
-        Refund info
-      </PillButton>
+      <PillButton v-if="refunded" class="mt-auto" @click="emit('refund')"> Refund info </PillButton>
 
       <!-- A recoverable failure comes first on either rail: the payment landed and only the credit
            is outstanding, so re-entering it is the fix. Starting a second payment there would

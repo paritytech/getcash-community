@@ -12,6 +12,7 @@ import type { FundingTopUp } from "../../funding/top-ups";
 import { useSessionStore } from "../../stores/session";
 import { refundTxUrl } from "../../utils/explorer";
 import { recoveryNotes, refundStatusTail } from "../../utils/recovery";
+import CopiedPill from "../ui/CopiedPill.vue";
 import PillButton from "../ui/PillButton.vue";
 
 const props = defineProps<{
@@ -307,6 +308,7 @@ const { copied: txCopied, copy: copyTx } = useCopyToClipboard();
     </p>
 
     <div class="mt-auto shrink-0 pt-8">
+      <CopiedPill />
       <PillButton variant="tertiary" class="w-full" @click="emit('back')">Back</PillButton>
     </div>
   </section>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { Check, Copy } from "lucide-vue-next";
+import { Copy } from "lucide-vue-next";
 import {
   demoDepositAddress,
   estimateSourceAmount,
@@ -88,8 +88,8 @@ const source = computed(() => {
 // Cancel is offered only while nothing has been paid.
 const showCancel = computed(() => session.faucetState === "idle" && !session.fundsSeen);
 
-// The "Copied" pill above the buttons answers either row's copy.
-const { copied, copy: copyToClipboard } = useCopyToClipboard();
+// Either row's copy raises the shared pill above the buttons.
+const { copy: copyToClipboard } = useCopyToClipboard();
 function copy(target: "amount" | "address") {
   const text = target === "amount" ? amount.value?.value : address.value;
   if (text) void copyToClipboard(text);
@@ -156,14 +156,7 @@ function copy(target: "amount" | "address") {
     </button>
 
     <div class="mt-auto flex shrink-0 flex-col pt-6 pb-6">
-      <div v-if="copied" class="flex justify-center pb-3" aria-live="polite">
-        <span
-          class="flex items-center gap-2 rounded-full bg-surface-container px-4 py-2 text-label-m text-fg-primary shadow-1"
-        >
-          <Check class="size-4 text-fg-success" aria-hidden="true" />
-          Copied
-        </span>
-      </div>
+      <CopiedPill />
       <!-- Cancel asks the route for the confirmation screen; offered only while nothing has
            been paid. -->
       <div class="grid grid-cols-2 gap-2">
