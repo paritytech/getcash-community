@@ -31,6 +31,7 @@
     "@getsome/meld": "workspace:*",
     "@getsome/people": "workspace:*",
     "@getsome/testing": "workspace:*",
+    "@getsome/withdraw": "workspace:*",
     "@noble/hashes": "^2.2.0",
     "@novasamatech/host-api": "0.12.0",
     "@novasamatech/host-api-wrapper": "0.12.0",

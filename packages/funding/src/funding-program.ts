@@ -20,8 +20,9 @@
 // trap assets, or land short of the target is reported instead of submitted.
 
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
-import { AccountId, type TypedApi } from "polkadot-api";
+import type { TypedApi } from "polkadot-api";
 import { describeDispatchError } from "./dispatch-error";
+import { creditedTo, forwardedTo, siblingOrigin, signedOrigin, trappedIn } from "./xcm-dry-run";
 
 type AssetHubApi = TypedApi<typeof paseo_next_v2>;
 export type PeopleApi = TypedApi<typeof paseo_people_next>;
@@ -161,32 +162,6 @@ function forwardedProgramStandIn(assetId: AssetLocation, amount: bigint, benefic
   };
 }
 
-const signedOrigin = (from: string) => ({
-  type: "system",
-  value: { type: "Signed", value: from },
-});
-
-/** Asset Hub as People sees it: the sender of every forwarded program. */
-const assetHubOrigin = (assetHubParaId: number) => ({
-  type: "V5",
-  value: {
-    parents: 1,
-    interior: { type: "X1", value: { type: "Parachain", value: assetHubParaId } },
-  },
-});
-
-/** The program Asset Hub's dry run forwards to People, or null when nothing goes there. */
-function forwardedToPeople(effects: unknown, peopleParaId: number): unknown | null {
-  const forwarded = (effects as { forwarded_xcms?: Array<[unknown, unknown[]]> }).forwarded_xcms;
-  const toPeople = forwarded?.find(([dest]) => {
-    const loc = (
-      dest as { value?: { parents?: number; interior?: { value?: { value?: number } } } }
-    ).value;
-    return loc?.parents === 1 && loc?.interior?.value?.value === peopleParaId;
-  });
-  return toPeople?.[1]?.[0] ?? null;
-}
-
 /** The real program People will receive, taken from a dry-run of the actual call. Requires an
  *  origin that already holds the native. Returns null when the dry-run cannot produce it. */
 async function realForwardedProgram(
@@ -201,26 +176,11 @@ async function realForwardedProgram(
       api.tx.PolkadotXcm.execute(execArgs).decodedCall as never,
       5,
     );
-    return dr.success ? forwardedToPeople(dr.value, peopleParaId) : null;
+    return dr.success ? forwardedTo(dr.value, peopleParaId) : null;
   } catch {
     // A runtime without the dry-run API, or one that rejects this call shape.
     return null;
   }
-}
-
-/** The fungible total the PolkadotXcm.AssetsTrapped events of a dry run report. */
-function trappedIn(events: unknown[]): bigint {
-  let total = 0n;
-  for (const ev of events) {
-    const e = ev as { type?: string; value?: { type?: string; value?: { assets?: unknown } } };
-    if (e.type !== "PolkadotXcm" || e.value?.type !== "AssetsTrapped") continue;
-    const assets = (e.value.value?.assets as { value?: unknown })?.value;
-    for (const a of Array.isArray(assets) ? assets : []) {
-      const fun = (a as { fun?: { type?: string; value?: bigint } }).fun;
-      if (fun?.type === "Fungible") total += BigInt(fun.value ?? 0n);
-    }
-  }
-  return total;
 }
 
 type PeopleDryRun = { landed: bigint; trapped: bigint } | { failed: string };
@@ -235,7 +195,7 @@ async function dryRunOnPeople(args: {
   beneficiaryHex: string;
 }): Promise<PeopleDryRun> {
   const dr = await args.peopleApi.apis.DryRunApi.dry_run_xcm(
-    assetHubOrigin(args.assetHubParaId) as never,
+    siblingOrigin(args.assetHubParaId) as never,
     args.program as never,
   );
   if (!dr.success) return { failed: "People would not dry-run the forwarded program" };
@@ -244,14 +204,8 @@ async function dryRunOnPeople(args: {
     const error = (outcome.value as { error?: { type?: string } }).error?.type ?? outcome.type;
     return { failed: `the forwarded program fails on People with ${error}` };
   }
-  const beneficiary = args.beneficiaryHex.toLowerCase();
-  let landed = 0n;
-  for (const ev of dr.value.emitted_events) {
-    if (ev.type !== "Assets" || ev.value.type !== "Deposited") continue;
-    const who = `0x${toHex(AccountId().enc(ev.value.value.who))}`;
-    if (who === beneficiary) landed += ev.value.value.amount;
-  }
-  return { landed, trapped: trappedIn(dr.value.emitted_events) };
+  const events = dr.value.emitted_events;
+  return { landed: creditedTo(events, args.beneficiaryHex, "asset"), trapped: trappedIn(events) };
 }
 
 /** Runs the funding program on both chains without submitting it: the call on Asset Hub as the
@@ -287,7 +241,7 @@ export async function dryRunFundingProgram(args: {
   if (trappedOnAssetHub > 0n) {
     throw new Error(`not submitted: the program would trap ${trappedOnAssetHub} on Asset Hub`);
   }
-  const forwarded = forwardedToPeople(effects, args.peopleParaId);
+  const forwarded = forwardedTo(effects, args.peopleParaId);
   if (forwarded === null) {
     throw new Error("not submitted: Asset Hub forwards nothing to People");
   }
@@ -449,10 +403,6 @@ export async function estimateDestinationFeeCash(args: {
   }
   // The stand-in teleports the amount twice and deposits what is left to the beneficiary.
   return 2n * args.amount - run.landed;
-}
-
-function toHex(bytes: Uint8Array): string {
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 /** The fungible amount out of a VersionedAssets delivery-fee result (its single native entry). */

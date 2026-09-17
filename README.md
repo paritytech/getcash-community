@@ -5,8 +5,9 @@
 
 A prototype funding surface for Polkadot App mobile hosts. It receives an inbound asset, crypto or
 fiat-sourced, on an ephemeral account on Asset Hub, converts it into CASH on the People chain,
-and hands the result to the host. The prototype consists of a static Nuxt 4 single-page app
-plus a background worker, both published to bulletin/DotNS.
+and hands the result to the host. The same surface runs the other way at `#/withdraw`: it takes
+CASH out of the host's purse and delivers PAS to an Asset Hub address. The prototype consists of
+a static Nuxt 4 single-page app plus a background worker, both published to bulletin/DotNS.
 
 ## Architecture
 
@@ -39,6 +40,22 @@ The rail delivers funds to the ephemeral's address. The worker re-derives the sa
 spend them. When the claim completes, the next request moves to a new trade number and a new
 account. Rails with a refund leg get a second per-request key on the source chain, derived
 the same way, so a refund never needs a typed address.
+
+### The withdrawal
+
+The off-ramp reuses the pieces above in the other direction. The page at `#/withdraw` derives a
+fresh ephemeral key under a `wd:` label and asks the host to pay the CASH into it, under a payment
+id derived from the key. The worker watches that key on People and runs two transactions signed
+by it: a swap that buys the PAS the fees need, then one XCM that withdraws everything the key
+holds and lands PAS on the destination account on Asset Hub. The key is left empty and reaped.
+Arrival is a balance read at the head, like every other read in the engine: the destination's
+PAS is read just before the XCM leaves, and the run is done once it has grown by what the Asset
+Hub dry run said would land. Hosts serve the current head and nothing older, so nothing follows
+block history. `@getsome/withdraw` holds the program, the sizing and the tick;
+`worker/src/withdraw-engine.js` drives it.
+
+Withdrawals are a second record kind in the same request store as the top-ups, moved by the
+same observations and the same reconcile.
 
 ### Rails as packages
 
@@ -95,6 +112,7 @@ brand/        the product icon used in the bulletin manifest
 | `@getsome/core`      | session state machine, flow store, re-entry logic, port types    |
 | `@getsome/ephemeral` | seed to keypair derivation, handoff secret encoding, refund keys |
 | `@getsome/funding`   | the funding program the worker runs on Asset Hub                 |
+| `@getsome/withdraw`  | the withdrawal legs the worker runs on People, swap then XCM     |
 | `@getsome/chainflip` | crypto rail over the Chainflip SDK                               |
 | `@getsome/meld`      | card and bank rail over the Meld adapter                         |
 | `@getsome/people`    | People chain port: CASH balances and the handoff submit          |
