@@ -3,12 +3,14 @@
 // the buyer controls. The key is read on tap, never on load, and can be masked again after a look.
 import { computed, ref, watch } from "vue";
 import type { SourceId } from "@getsome/core";
-import { Check, Copy, Eye, EyeClosed } from "lucide-vue-next";
+import { ArrowUpRight, Check, Copy, Eye, EyeClosed } from "lucide-vue-next";
 import { formatSourceAmount, SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
 import { isRefundChain, type RefundKey } from "@getsome/ephemeral";
+import { shortAddress } from "../../utils/address";
 import { useCopyToClipboard } from "../../composables/useCopyToClipboard";
 import type { FundingTopUp } from "../../funding/top-ups";
 import { useSessionStore } from "../../stores/session";
+import { refundTxUrl } from "../../utils/explorer";
 import { recoveryNotes, refundStatusTail } from "../../utils/recovery";
 import PillButton from "../ui/PillButton.vue";
 
@@ -166,8 +168,15 @@ const steps = computed(() => {
 const recovering = ref(false);
 const material = computed(() => address.value !== null || revealed.value !== null);
 
+/** How far the refund has come, with its transaction split out so the screen can act on it. */
+const status = computed(() => refundStatusTail(refund.value));
+/** Where to watch it land. Null on a chain with no explorer mapped; the reference is still shown
+ *  and still copyable, so the buyer can search for it themselves. */
+const txUrl = computed(() => refundTxUrl(chain.value, status.value.txRef));
+
 const { copied: addressCopied, copy: copyAddress } = useCopyToClipboard();
 const { copied: keyCopied, copy: copyKey } = useCopyToClipboard();
+const { copied: txCopied, copy: copyTx } = useCopyToClipboard();
 </script>
 
 <template>
@@ -181,7 +190,35 @@ const { copied: keyCopied, copy: copyKey } = useCopyToClipboard();
       <p class="text-paragraph-l text-fg-primary">
         <template v-if="failure.kind === 'refund-failed'">{{ failure.message }}</template>
         <template v-else>
-          Your <span class="font-semibold">{{ subject }}</span> {{ refundStatusTail(refund) }}
+          Your <span class="font-semibold">{{ subject }}</span> {{ status.text }}
+          <!-- The reference is the buyer's handle on the money in flight: it opens on the chain's
+               explorer, and copies whether or not one is mapped. -->
+          <template v-if="status.txRef">
+            <!-- The arrow sits inside the underline, as the design draws it: one target, not a
+                 word with a symbol loose beside it. -->
+            <a
+              v-if="txUrl"
+              :href="txUrl"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="whitespace-nowrap underline decoration-1 underline-offset-4"
+            >
+              {{ shortAddress(status.txRef)
+              }}<ArrowUpRight class="ml-0.5 inline size-[1em] align-baseline" aria-hidden="true" />
+            </a>
+            <span v-else>{{ shortAddress(status.txRef) }}</span>
+            <!-- Padded to a thumb, with the padding pulled back out of the line box so it does
+                 not open up the sentence's leading. -->
+            <button
+              type="button"
+              class="-my-2 ml-1 inline-flex items-center p-2 align-middle"
+              aria-label="Copy the transaction"
+              @click="copyTx(status.txRef)"
+            >
+              <Check v-if="txCopied" class="size-5 text-fg-success" aria-hidden="true" />
+              <Copy v-else class="size-5 text-fg-secondary" aria-hidden="true" />
+            </button>
+          </template>
         </template>
       </p>
     </div>
