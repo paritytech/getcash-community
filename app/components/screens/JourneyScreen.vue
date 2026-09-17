@@ -87,6 +87,14 @@ const steps = computed<JourneySteps>(() => {
 });
 const crypto = computed(() => steps.value === 3);
 
+/** How many markers the timeline draws as done, counted on `steps`. The request on screen counts
+ *  them; a journey opened from history has none, and takes the count the list's own record made —
+ *  a top-up that was paid and converted before it failed must not redraw as though it never
+ *  started. */
+const completedSteps = computed(() =>
+  requests.foregroundRecord !== null ? requests.journeyDone : (props.topUp?.journeyDone ?? 1),
+);
+
 /** The design names the expired step itself, not "<stage> failed". */
 const failedLabel = computed(() => {
   const kind = failure.value?.kind;
@@ -308,7 +316,7 @@ const message = computed(() => {
         v-if="progress && !finished"
         :progress="progress"
         :steps="steps"
-        :completed-steps="requests.journeyDone"
+        :completed-steps="completedSteps"
         :message="message"
         :delayed="delayed"
         :failed-label="failedLabel"

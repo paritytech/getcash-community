@@ -118,6 +118,30 @@ interface PreviewCardOptions {
   /** What a refund actually returned, and the chain transaction that returned it. */
   refundAmount?: string;
   refundTxRef?: string;
+  /** How many of the journey's markers are done, as the record counted them. Defaults to what
+   *  `kind` implies; set it where the label says more than the kind does. */
+  journeyDone?: number;
+}
+
+/**
+ * The marker count a record of this shape would have made, on the route's own scale.
+ *
+ * The journey opened from history reads this off the row, so a deck scene that leaves it out
+ * draws the top-up as though it never started. A refunded top-up counts its payment: the money
+ * was taken before it came back.
+ */
+function defaultJourneyDone(route: FundingRoute, kind: CardKind, refunded: boolean): number {
+  const crypto = route === "crypto";
+  switch (kind) {
+    case "settled":
+      return crypto ? 3 : 5;
+    case "waiting":
+      return crypto ? 0 : 1;
+    case "failed":
+      return refunded ? (crypto ? 1 : 2) : crypto ? 0 : 1;
+    default:
+      return crypto ? 1 : 3;
+  }
 }
 
 /**
@@ -164,6 +188,7 @@ export function previewTopUp(
       return quote === undefined ? {} : { quote };
     })(),
     ...(options.delayed === true ? { delayed: true } : {}),
+    journeyDone: options.journeyDone ?? defaultJourneyDone(route, kind, options.refunded === true),
     ...(options.request ? { request: options.request } : {}),
     ...(options.provider || options.reference
       ? {

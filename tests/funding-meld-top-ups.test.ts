@@ -138,6 +138,37 @@ describe("Meld top-up adapter", () => {
     });
   });
 
+  it("counts the journey's markers on the row, for a journey opened with nothing live", () => {
+    // The journey reads the count off the request on screen; opened from history there is none,
+    // and the row is the only thing that can say how far this top-up actually got. A card top-up
+    // whose payment landed and whose claim then failed stands on four of five markers.
+    const paid = reduce(
+      record({ tradeN: 9, amountHuman: "50", startedAt: 100, sourceId: "meld-card" }, 200),
+      worker(300, "done"),
+    );
+    const mintFailed = reduce(paid, {
+      source: "core",
+      at: 400,
+      state: {
+        phase: "failed",
+        sourceId: "meld-card",
+        failure: {
+          kind: "mint",
+          step: "mint",
+          message: "Settled, but verification failed.",
+          recoverable: true,
+        },
+      } as never,
+    });
+    expect(projectMeldTopUps([mintFailed], 500)[0]?.journeyDone).toBe(4);
+    // Nothing paid yet: the card scale's first marker alone.
+    const waiting = record(
+      { tradeN: 10, amountHuman: "50", startedAt: 100, sourceId: "meld-card" },
+      200,
+    );
+    expect(projectMeldTopUps([waiting], 500)[0]?.journeyDone).toBe(1);
+  });
+
   it("leaves other rails' records alone and reads only its own ids", () => {
     const records = [
       record({ tradeN: 7, amountHuman: "25", startedAt: 100, sourceId: "dot-assethub" }, 200),

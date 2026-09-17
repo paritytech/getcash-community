@@ -58,6 +58,10 @@ export type FundingTopUp = Readonly<{
   /** The request this top-up is, as the store names it. Lets a screen reach the request's own
    *  derived material — the refund key — without a live world behind it. */
   request?: Readonly<{ sourceId: string; tradeN: number }>;
+  /** How many of the journey's markers the record counted, on this route's own scale. The journey
+   *  opened from history has no live request to count them from, and a top-up that was paid and
+   *  converted before it failed must not redraw as though it never started. */
+  journeyDone?: number;
   state: FundingTopUpState;
 }>;
 

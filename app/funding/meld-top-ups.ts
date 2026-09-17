@@ -7,7 +7,7 @@ import { DEPOSIT_EXPIRED_REASON, useSessionStore } from "../stores/session";
 import { parseRequestRefKey, requestRefKey, type RequestRef } from "../utils/request-index";
 import { projectFundingProgress } from "./progress";
 import type { RequestRecord } from "./requests/model";
-import { rowStateOf } from "./requests/views";
+import { journeyScaleOf, journeyStepsOf, rowStateOf } from "./requests/views";
 import type { FundingRoute } from "./selection";
 import { isMeldSourceId, meldMethodFor, meldSourceIdFor, type MeldMethod } from "./source-ids";
 import type { FundingTopUpAdapter } from "./top-up-adapter";
@@ -79,6 +79,7 @@ export function projectMeldTopUps(
         progress,
         details: topUpDetails(record, method),
         ...quoteOf(record),
+        journeyDone: journeyStepsOf(record, journeyScaleOf(record.route)),
         state: worded,
       },
     ];

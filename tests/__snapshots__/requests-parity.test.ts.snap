@@ -3011,6 +3011,7 @@ exports[`request list projection > projects the fixture records exactly as today
         },
       },
       "id": "crypto:dot-assethub#4",
+      "journeyDone": 1,
       "progress": {
         "cadenceMs": 5000,
         "detectedAt": 1746553500000,
@@ -3095,6 +3096,7 @@ exports[`request list projection > projects the fixture records exactly as today
         },
       },
       "id": "crypto:dot-assethub#3",
+      "journeyDone": 0,
       "progress": {
         "cadenceMs": 5000,
         "estimateText": "≈10 min after your transfer",
@@ -3175,6 +3177,7 @@ exports[`request list projection > projects the fixture records exactly as today
         },
       },
       "id": "crypto:dot-assethub#2",
+      "journeyDone": 0,
       "progress": {
         "cadenceMs": 5000,
         "detectedAt": 1746551400000,
@@ -3261,6 +3264,7 @@ exports[`request list projection > projects the fixture records exactly as today
         },
       },
       "id": "crypto:dot-assethub#1",
+      "journeyDone": 0,
       "progress": {
         "cadenceMs": 5000,
         "estimateText": "≈10 min after your transfer",
@@ -3342,6 +3346,7 @@ exports[`request list projection > projects the fixture records exactly as today
         },
       },
       "id": "crypto:#7",
+      "journeyDone": 0,
       "progress": {
         "cadenceMs": 5000,
         "estimateText": "≈10 min after your transfer",
@@ -3421,6 +3426,7 @@ exports[`request list projection > projects the fixture records exactly as today
         "region": "US",
       },
       "id": "card:meld-card#2",
+      "journeyDone": 1,
       "progress": {
         "cadenceMs": 5000,
         "detectedAt": 1746552120000,
@@ -3489,6 +3495,7 @@ exports[`request list projection > projects the fixture records exactly as today
         "region": "US",
       },
       "id": "card:meld-card#1",
+      "journeyDone": 5,
       "progress": {
         "cadenceMs": 5000,
         "detectedAt": 1746549120000,
@@ -3569,6 +3576,7 @@ exports[`request list projection > projects the fixture records with live status
         },
       },
       "id": "crypto:dot-assethub#4",
+      "journeyDone": 1,
       "progress": {
         "cadenceMs": 5000,
         "detectedAt": 1746553500000,
@@ -3655,6 +3663,7 @@ exports[`request list projection > projects the fixture records with live status
         },
       },
       "id": "crypto:dot-assethub#3",
+      "journeyDone": 1,
       "progress": {
         "cadenceMs": 5000,
         "detectedAt": 1746554400000,
@@ -3739,6 +3748,7 @@ exports[`request list projection > projects the fixture records with live status
         },
       },
       "id": "crypto:dot-assethub#2",
+      "journeyDone": 0,
       "progress": {
         "cadenceMs": 5000,
         "detectedAt": 1746551400000,
@@ -3825,6 +3835,7 @@ exports[`request list projection > projects the fixture records with live status
         },
       },
       "id": "crypto:dot-assethub#1",
+      "journeyDone": 0,
       "progress": {
         "cadenceMs": 5000,
         "estimateText": "≈10 min after your transfer",
@@ -3906,6 +3917,7 @@ exports[`request list projection > projects the fixture records with live status
         },
       },
       "id": "crypto:#7",
+      "journeyDone": 0,
       "progress": {
         "cadenceMs": 5000,
         "estimateText": "≈10 min after your transfer",
@@ -3985,6 +3997,7 @@ exports[`request list projection > projects the fixture records with live status
         "region": "US",
       },
       "id": "card:meld-card#2",
+      "journeyDone": 3,
       "progress": {
         "cadenceMs": 5000,
         "detectedAt": 1746552120000,
@@ -4054,6 +4067,7 @@ exports[`request list projection > projects the fixture records with live status
         "region": "US",
       },
       "id": "card:meld-card#1",
+      "journeyDone": 5,
       "progress": {
         "cadenceMs": 5000,
         "detectedAt": 1746549120000,

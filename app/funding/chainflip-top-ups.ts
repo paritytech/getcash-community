@@ -8,7 +8,7 @@ import { parseRequestRefKey, requestRefKey, type RequestRef } from "../utils/req
 import { isCryptoSourceId } from "./source-ids";
 import { projectFundingProgress, type FundingProgressSnapshot } from "./progress";
 import { effectiveSourceId, type RequestRecord } from "./requests/model";
-import { rowStateOf } from "./requests/views";
+import { journeyScaleOf, journeyStepsOf, rowStateOf } from "./requests/views";
 import type { FundingTopUpAdapter } from "./top-up-adapter";
 import { quoteOf, type FundingTopUpRecord } from "./top-up-projection";
 import type { FundingTopUp, FundingTopUpDetails } from "./top-ups";
@@ -66,6 +66,7 @@ export function projectChainflipTopUps(
         ...quoteOf(record),
         // The request's own identity, so a refund can be walked back to its key with no world.
         request: { sourceId: effectiveSourceId(ref), tradeN: ref.tradeN },
+        journeyDone: journeyStepsOf(record, journeyScaleOf(record.route)),
         state: rowStateOf(record, progress),
       },
     ];
