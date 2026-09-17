@@ -74,8 +74,12 @@ const emit = defineEmits<{
 }>();
 
 const hasPendingContent = computed(() => hasFundingPendingContent(props.topUps, props.latestTopUp));
-const entryScreen = () =>
-  resolveFundingShellScreen(props.initialScreen, hasPendingContent.value, props.topUps.length > 0);
+// The clock only opens a screen that has something on it: with nothing running and nothing
+// finished, history is a dead end, so the control is not drawn at all.
+const hasHistoryContent = computed(() => props.topUps.length > 0 || props.pastTopUps.length > 0);
+/** A top-up still running; the only thing that may open the "Top-up in progress" screen. */
+const hasTopUpInProgress = computed(() => props.topUps.length > 0);
+const entryScreen = () => resolveFundingShellScreen(props.initialScreen, hasTopUpInProgress.value);
 const screen = ref(entryScreen());
 const historyReturnScreen = ref<FundingHistoryReturnScreen>(props.historyReturn);
 const availableRouteIds = computed<readonly FundingRoute[]>(
@@ -114,10 +118,9 @@ function showHistory() {
 }
 
 function closeHistory() {
-  screen.value =
-    historyReturnScreen.value === "pending" && !hasPendingContent.value
-      ? "amount"
-      : historyReturnScreen.value;
+  // The same entry rule the shell was opened under: the list the buyer came from may have emptied
+  // while they were in history.
+  screen.value = resolveFundingShellScreen(historyReturnScreen.value, hasTopUpInProgress.value);
   emit("change");
 }
 
@@ -127,6 +130,9 @@ function continueToPackage() {
   if (selection !== null) emit("continue", selection);
 }
 
+// Leaving is gated on the settled card too, not just on what is running: a top-up that lands
+// while the buyer is watching it should leave its "Added to your balance" card up until they go,
+// rather than throwing them to the amount screen at the moment it succeeds.
 watch(hasPendingContent, (hasContent) => {
   if (screen.value === "pending" && !hasContent) showAmount();
 });
@@ -194,7 +200,7 @@ watch(
       :amount="amount"
       :route="route"
       :available-routes="availableRouteIds"
-      history
+      :history="hasHistoryContent"
       :error="error"
       :loading="loading"
       @change="changeAmount"

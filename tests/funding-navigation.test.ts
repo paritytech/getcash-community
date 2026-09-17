@@ -5,24 +5,22 @@ import {
 } from "../app/funding/navigation";
 
 describe("funding shell entry navigation", () => {
-  it("opens pending when it has active or recently settled content", () => {
+  it("opens the top-ups screen only while a top-up is in progress", () => {
     expect(resolveFundingShellScreen("pending", true)).toBe("pending");
+    expect(resolveFundingShellScreen("auto", true)).toBe("pending");
+  });
+
+  it("sends a buyer whose top-ups have all settled to the amount screen", () => {
+    // Nothing is running, so there is no "Top-up in progress" to title: the receipt is history,
+    // and the amount screen's clock is how the buyer reaches it. This is the case a journey
+    // closing back to the list ("pending") lands in once the last top-up has landed.
     expect(resolveFundingShellScreen("pending", false)).toBe("amount");
+    expect(resolveFundingShellScreen("auto", false)).toBe("amount");
   });
 
   it("restores explicit amount and history destinations", () => {
     expect(resolveFundingShellScreen("amount", true)).toBe("amount");
     expect(resolveFundingShellScreen("history", false)).toBe("history");
-  });
-
-  it("lands automatic entry on the amount screen when nothing is running", () => {
-    expect(resolveFundingShellScreen("auto", false)).toBe("amount");
-    // Recently settled content alone is not a running top-up.
-    expect(resolveFundingShellScreen("auto", true)).toBe("amount");
-  });
-
-  it("lands automatic entry on the pending screen while a top-up is in progress", () => {
-    expect(resolveFundingShellScreen("auto", true, true)).toBe("pending");
   });
 });
 

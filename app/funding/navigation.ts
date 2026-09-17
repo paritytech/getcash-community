@@ -15,14 +15,18 @@ export function resolveFundingTopUpDestination(state: FundingTopUpState): Fundin
   return state.kind === "awaiting-transfer" ? "package" : "journey";
 }
 
+/**
+ * Where the shell lands. The design titles the top-ups screen "Top-up in progress", so it is only
+ * ever entered with one running: a settled top-up is history, and the amount screen's clock is the
+ * way to it. That holds for a launch ("auto") and for a return from a journey or from history
+ * ("pending") alike — the buyer whose last top-up just landed gets the input screen back, not a
+ * list titled for work that has finished.
+ */
 export function resolveFundingShellScreen(
   requested: FundingShellEntryScreen,
-  hasPendingContent: boolean,
-  hasTopUpInProgress = false,
+  hasTopUpInProgress: boolean,
 ): FundingShellScreen {
-  if (requested === "pending") return hasPendingContent ? "pending" : "amount";
-  // Launch: a top-up still running is what the buyer reopened the app for, so it owns the first
-  // screen. A settled one does not — the design titles this screen "Top-up in progress".
-  if (requested === "auto") return hasTopUpInProgress ? "pending" : "amount";
+  if (requested === "pending" || requested === "auto")
+    return hasTopUpInProgress ? "pending" : "amount";
   return requested;
 }
