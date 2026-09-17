@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// The withdrawal entry, at #/offramping. The amount shell the top-up uses, with withdrawal wording
+// The withdrawal entry, at #/withdraw. The amount shell the top-up uses, with withdrawal wording
 // and the purse balance on offer, over the withdrawal route registry: crypto opens its package,
 // card and bank are not available yet. The pending and history screens list the withdrawals, and
 // opening one lands on its journey inside the package.
