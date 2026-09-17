@@ -392,7 +392,8 @@ describe("withdrawTickOnce", () => {
     const world = scriptedWorld({ landShort: 20_000_000_000n });
     const run = await drive(world, 4);
     expect(run.steps).toEqual(["swap", "convert", "await-arrival", "await-arrival"]);
-    expect(landingFloor(100n)).toBe(95n);
+    expect(landingFloor(100n, 5)).toBe(95n);
+    expect(landingFloor(1_000n, 0.5)).toBe(995n);
   });
 
   it("leaves no CASH: the XCM withdraws the whole balance read after the swap, and only PAS dust stays", async () => {
@@ -495,6 +496,24 @@ describe("withdrawTickOnce", () => {
     const later = await drive(world, 2, state);
     expect(later.steps).toEqual(["await-arrival", "await-arrival"]);
     expect(world.state.destinationReads).toBe(0);
+  });
+
+  it("does not count a deposit from elsewhere as the arrival while the key still holds funds", async () => {
+    const world = scriptedWorld();
+    const state = freshWithdrawTickState();
+    state.submitted = true;
+    state.fundsSeenAt = 1_000;
+    state.destinationPasBefore = DESTINATION_PAS;
+    state.expectedLanding = 5n * ED;
+    // A stranger pays the destination while the key, unspent, still holds its CASH.
+    world.state.destinationPas = DESTINATION_PAS + 5n * ED;
+    const waiting = await drive(world, 1, state);
+    expect(waiting.steps).toEqual(["await-arrival"]);
+    // The XCM took the CASH; PAS dust the reaping missed does not hold the run.
+    world.state.keyCash = 0n;
+    world.state.keyPas = 1n;
+    const done = await drive(world, 1, state);
+    expect(done.steps).toEqual(["done"]);
   });
 
   it("refuses to submit the XCM when the Asset Hub dry run would trap assets", async () => {

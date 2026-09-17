@@ -23,7 +23,6 @@ export {
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
   DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
   freshWithdrawTickState,
-  LANDING_TOLERANCE_PCT,
   landingFloor,
   MAX_REJECTIONS,
   withdrawTickOnce,

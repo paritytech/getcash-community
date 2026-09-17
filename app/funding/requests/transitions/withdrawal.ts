@@ -9,6 +9,7 @@
 
 import {
   PAYMENT_EXPIRED_REASON,
+  PAYMENT_WINDOW_MS,
   SENDING_STEP_ORDER,
   isSendingStep,
   paymentTaken,
@@ -282,11 +283,16 @@ function applyUser(record: WithdrawalRecord, observation: UserObservation): With
       if (record.status.kind !== "failed" || !record.status.recoverable) return record;
       const { failure: _cleared, ...rest } = record;
       if (record.failure?.step === "payment") {
-        // A fresh attempt: the surface prompts again and stamps it.
+        // A fresh attempt: the surface prompts again and stamps it. The payment window restarts
+        // with it, on the record's clock and on the hand-off the worker is re-armed with, so a
+        // late retry is not expired on arrival.
+        const paymentExpiresAt = at + PAYMENT_WINDOW_MS;
         return {
           ...rest,
           status: { kind: "awaiting-payment" },
           payment: { attempt: record.payment.attempt + 1 },
+          deadline: { paymentExpiresAt },
+          handoff: { ...record.handoff, paymentExpiresAt },
         };
       }
       const worker = record.witnesses.worker;

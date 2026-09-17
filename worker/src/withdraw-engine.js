@@ -162,10 +162,10 @@ export async function startWithdraw(params) {
     if (shown && shown !== existing.keyAddress) {
       return { error: "invalid", reason: mismatchReason(existing.keyAddress, shown) };
     }
-    if (existing.phase === "failed") {
-      rearm(existing, Date.now());
-      existing.paymentExpiresAt = paymentExpiryOf(input) ?? existing.paymentExpiresAt;
-    }
+    if (existing.phase === "failed") rearm(existing, Date.now());
+    // A re-sent hand-off carries the surface's current payment window: a retried payment gets a
+    // fresh one, and the job must not expire on the old clock while the surface waits on the new.
+    existing.paymentExpiresAt = paymentExpiryOf(input) ?? existing.paymentExpiresAt;
     await saveJobs();
     return describeWithdraw(existing);
   }

@@ -188,6 +188,9 @@ describe("withdrawal: the payment", () => {
     expect(again.status).toEqual({ kind: "awaiting-payment" });
     expect(again.payment).toEqual({ attempt: 1 });
     expect(again.failure).toBeUndefined();
+    // The payment window restarts with the attempt, on the record and on the hand-off.
+    expect(again.deadline.paymentExpiresAt).toBe(at(3) + PAYMENT_WINDOW_MS);
+    expect(again.handoff.paymentExpiresAt).toBe(at(3) + PAYMENT_WINDOW_MS);
   });
 });
 

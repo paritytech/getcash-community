@@ -9,11 +9,14 @@
 //
 // ARRIVAL IS A BALANCE READ AT THE HEAD, like every other read here. The destination account is
 // not ours, so its balance is measured against a baseline taken just before the XCM leaves, and
-// the arrival is what the Asset Hub dry run said would land, less a small tolerance. Nothing is
-// followed through block history: hosts serve the current head and nothing older, and a run that
-// resumes after a reload has no memory but the persisted state. A program that fails on Asset Hub
-// traps its assets there and never shows on the destination; the run holds until the driver's
-// bound, and the claimer named in the program can recover the assets.
+// the arrival is what the Asset Hub dry run said would land, less the slippage the program
+// itself allows: a sale that slips further fails the program, so nothing less can be a landing.
+// The key must hold no CASH too, which says the XCM executed on People; a deposit from
+// elsewhere alone does not count. Nothing is followed through block history: hosts serve the
+// current head and nothing older, and a run that resumes after a reload has no memory but the
+// persisted state. A program that fails on Asset Hub traps its assets there and never shows on
+// the destination; the run holds until the driver's bound, and the claimer named in the program
+// can recover the assets.
 //
 // BALANCE-DRIVEN AND RE-ENTRANT: every tick reads the key's CASH and PAS and acts at most once.
 // PAS on the key means the swap happened; the XCM is next. A reload resumes from the persisted
@@ -39,13 +42,11 @@ export const DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS = 180_000;
 export const DEFAULT_WITHDRAW_SLIPPAGE_PCT = 5;
 /** Rejections at inclusion after a passing dry run before the run is given up. */
 export const MAX_REJECTIONS = 3;
-/** How far below the dry run's landing the destination's growth may fall and still count as the
- *  arrival, for fee drift between the dry run and the execution. */
-export const LANDING_TOLERANCE_PCT = 5;
-
-/** The least the destination must gain for the PAS to count as arrived. */
-export const landingFloor = (landed: bigint): bigint =>
-  landed - (landed * BigInt(LANDING_TOLERANCE_PCT)) / 100n;
+/** The least the destination must gain for the PAS to count as arrived: the dry run's landing
+ *  less the slippage the program allows the sale, since a sale that slips further fails the
+ *  program on Asset Hub and lands nothing. */
+export const landingFloor = (landed: bigint, slippagePct: number): bigint =>
+  landed - (landed * BigInt(Math.round(slippagePct * 100))) / 10_000n;
 
 function bounded<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -162,9 +163,14 @@ export async function withdrawTickOnce(
       input.tickTimeoutMs,
       "destination balance read",
     );
-    const arrived =
-      destinationPas - state.destinationPasBefore >= landingFloor(state.expectedLanding);
-    return { step: arrived ? "done" : "await-arrival", balances, submitted: false };
+    // Two signals: the key holds no CASH, which only the XCM takes in full, so it executed on
+    // People; and the destination gained at least what a successful sale can land. Either alone
+    // is not an arrival.
+    const cashGone = balances.cash === 0n;
+    const landed =
+      destinationPas - state.destinationPasBefore >=
+      landingFloor(state.expectedLanding, input.slippagePct);
+    return { step: cashGone && landed ? "done" : "await-arrival", balances, submitted: false };
   }
 
   if (balances.cash === 0n) {
