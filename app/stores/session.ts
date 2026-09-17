@@ -51,9 +51,11 @@ import {
 } from "~~/lib/coinage";
 import type { HostedCoinageWorld } from "~~/lib/coinage-live";
 import { isHosted } from "~~/lib/host-account";
+import type { FundingSizing } from "~~/lib/funding-fees";
 import { isDemoBuild } from "../utils/demo";
 import { isMeldSourceId, meldSourceIdFor } from "../funding/source-ids";
 import { toCashBase } from "../utils/cash";
+import { isMoneyAmount, sumMoney } from "../utils/money";
 import { fundFromFaucet, isFaucetConfigured } from "~~/lib/faucet";
 import { sourceIdFor } from "~~/lib/config";
 import { useRequestsStore } from "./requests";
@@ -79,6 +81,8 @@ export interface ActiveFlowRecord {
   sourceTransactionFee?: string;
   sourceNetworkFee?: string;
   sourcePartnerFee?: string;
+  /** The funding leg's own network fee as the quote priced it, in `sourceSymbol` units. */
+  sourceChainFee?: string;
   startedAt: number;
   depositAddress?: string;
   progress?: FundingProgressSnapshot;
@@ -149,6 +153,10 @@ export interface QuotedView {
   transactionFee?: string | null;
   networkFee?: string | null;
   partnerFee?: string | null;
+  /** The funding leg's own network fee, in `symbol` units: what the swap and the teleport up to
+   *  CASH on People cost, which the rail's quote knows nothing about. Priced by the app, not
+   *  reported by the rail. */
+  chainFee?: string | null;
   /** The provider these terms came from ("TRANSAK"), not the aggregator in front of it. */
   provider?: string | null;
   /** Live world only: the native (DOT) budget the rail must deliver, 10-dec base units. */
@@ -157,9 +165,59 @@ export interface QuotedView {
   sourceChain: string | null;
 }
 
+/**
+ * The funding leg's network fee in the quote's fiat, or null when the quote cannot price it.
+ *
+ * Meld's own fees stop where its delivery does: native on Asset Hub. Getting from there to CASH
+ * on People costs two more things, both already sized by the funding estimate and both already
+ * inside what the buyer pays, because the deposit was over-bought to cover them —
+ * `keepNativeForFees` (dispatch, execution and delivery on Asset Hub, in native) and
+ * `remoteFeeBuffer` (execution on People, in CASH). Neither has a row of its own on the rail's
+ * quote, so the breakdown prices them here.
+ *
+ * The native side converts at the quote's own implied rate: the fiat left after the rail's fees
+ * is what bought `destinationAmount`. The CASH side takes the peg this app quotes against
+ * throughout, one CASH to one unit of the quote fiat (see `sizeMeldNativeBudget`).
+ */
+function meldChainFeeFiat(raw: MeldQuoteRaw, sizing: FundingSizing): string | null {
+  const nativeOut = Number(raw.destinationAmount);
+  const netFiat = Number(raw.provider.sourceAmount) - Number(raw.provider.totalFee ?? 0);
+  if (!Number.isFinite(nativeOut) || nativeOut <= 0) return null;
+  if (!Number.isFinite(netFiat) || netFiat <= 0) return null;
+  const onAssetHub =
+    (Number(sizing.keepNativeForFees) / 10 ** NATIVE_DECIMALS) * (netFiat / nativeOut);
+  const onPeople = Number(sizing.remoteFeeBuffer) / 10 ** CASH_DECIMALS;
+  const total = onAssetHub + onPeople;
+  // Carried unrounded: the row's display rounds it, and the total has to sum the exact figures.
+  return Number.isFinite(total) && total > 0 ? String(total) : null;
+}
+
+/** Half a cent: below this the split and the total still round to the same figure. */
+const FEE_SPLIT_TOLERANCE = 0.005;
+
+/**
+ * Reports a rail total its own components do not account for.
+ *
+ * The breakdown lists the components and totals the rail's `fee`, so the two disagreeing means the
+ * screen shows a sum that does not sum. Nothing is corrected here: what the buyer is charged is
+ * the rail's total, not ours, and a component the rail did not name is still money it took. The
+ * disagreement is said out loud rather than buried in a figure that looks reconciled.
+ */
+function warnOnFeeSplitDrift(raw: MeldQuoteRaw): void {
+  const { transactionFee, networkFee, partnerFee, totalFee } = raw.provider;
+  const summed = sumMoney(transactionFee, networkFee, partnerFee);
+  if (summed === null || !isMoneyAmount(totalFee)) return;
+  if (Math.abs(summed - Number(totalFee)) < FEE_SPLIT_TOLERANCE) return;
+  console.warn(
+    `[meld] fee split does not add up: components sum to ${summed} against a reported total of ` +
+      `${totalFee} ${raw.context.fiat}; the breakdown totals the reported figure`,
+  );
+}
+
 /** The Meld quote as the views read it. The buyer pays fiat, so the native budget and source
  *  coin the crypto rail carries are not part of it. */
-function meldQuotedView(raw: MeldQuoteRaw): QuotedView {
+function meldQuotedView(raw: MeldQuoteRaw, sizing: FundingSizing): QuotedView {
+  warnOnFeeSplitDrift(raw);
   return {
     send: raw.provider.sourceAmount,
     symbol: raw.context.fiat,
@@ -168,6 +226,7 @@ function meldQuotedView(raw: MeldQuoteRaw): QuotedView {
     transactionFee: raw.provider.transactionFee ?? null,
     networkFee: raw.provider.networkFee ?? null,
     partnerFee: raw.provider.partnerFee ?? null,
+    chainFee: meldChainFeeFiat(raw, sizing),
     nativeAmount: null,
     sourceAsset: null,
     sourceChain: null,
@@ -606,6 +665,26 @@ export const useSessionStore = defineStore("session", () => {
     return BigInt(Math.ceil(fiat * nativePerFiat * 10 ** NATIVE_DECIMALS));
   }
 
+  /**
+   * The funding leg's sizing for a mock-world Meld quote: the destination's execution fee and the
+   * native the burner keeps for the program, read live off the public chains.
+   *
+   * The hosted world gets these from the world that sized its deposit. Here there is no such
+   * world yet, so the quote reads them itself — best effort, like the crypto route's pool
+   * pricing. Outside a browser there is nothing to read and nothing to price: the zero sizing
+   * leaves both the budget and the breakdown as they were.
+   */
+  async function meldFundingSizing(settleAmount: bigint): Promise<FundingSizing> {
+    if (typeof window === "undefined") return { remoteFeeBuffer: 0n, keepNativeForFees: 0n };
+    const { estimatePublicFundingSizing, FALLBACK_FUNDING_SIZING } =
+      await import("~~/lib/funding-fees");
+    return step(
+      "funding sizing estimate (public read)",
+      20_000,
+      estimatePublicFundingSizing({ settleAmount, probeAddress: DEV_RECIPIENT }),
+    ).catch(() => FALLBACK_FUNDING_SIZING);
+  }
+
   /** (Re)quotes the Meld rail for the current CASH amount and region. The mock world simulates
    *  settlement through the harness; the hosted world runs the rail over the real host seams. */
   function fetchMeldQuote(): Promise<void> {
@@ -641,23 +720,33 @@ export const useSessionStore = defineStore("session", () => {
       meldRegionCountry = built.region.country;
       // Mock world: quote, session and widget are real; settlement is simulated by the harness.
       if (!isHosted()) {
-        // The Meld rail egresses the native token and is sized by a native budget.
-        const nativeBudget = await sizeMeldNativeBudget(
+        // The funding leg's fees, from the same public reads the crypto route prices with. They
+        // enlarge the budget the rail must deliver — the buyer pays for them — and the quote
+        // reports them as their own row. Skipped in node test runs, which have no chain to read:
+        // a zero sizing quotes exactly what this path quoted before it priced the leg at all.
+        const sizing = await meldFundingSizing(amountBase.value);
+        if (epoch !== quoteEpoch) return;
+        // The Meld rail egresses the native token and is sized by a native budget: the settle
+        // amount plus People's execution fee, quoted against the fiat peg, plus the native the
+        // burner keeps for the program on Asset Hub.
+        const quotedBudget = await sizeMeldNativeBudget(
           built.client,
           { ...built.region, paymentMethodType: built.paymentMethodType },
-          amountBase.value,
+          amountBase.value + sizing.remoteFeeBuffer,
         );
         if (epoch !== quoteEpoch) return;
-        if (nativeBudget === null) {
+        if (quotedBudget === null) {
           quoteError.value = "No provider offers this payment method or region. Try another.";
           return;
         }
+        const nativeBudget = quotedBudget + sizing.keepNativeForFees;
         const world = await createMockCoinageSession({
           recipient: DEV_RECIPIENT,
           amount: amountBase.value,
           sourceId: built.sourceId,
           rail: built.rail,
           nativeBudget,
+          fundingSizing: sizing,
           tradeN: nextMockTradeN(built.sourceId),
         });
         await world.session.ready;
@@ -667,7 +756,7 @@ export const useSessionStore = defineStore("session", () => {
           return;
         }
         mock.value = world;
-        quoted.value = meldQuotedView(quote.raw as MeldQuoteRaw);
+        quoted.value = meldQuotedView(quote.raw as MeldQuoteRaw, world.fundingSizing);
         return;
       }
       // Hosted world: the same rail over the real host seams. The provider delivers DOT to the
@@ -696,7 +785,7 @@ export const useSessionStore = defineStore("session", () => {
         return;
       }
       live.value = world;
-      quoted.value = meldQuotedView(quote.raw as MeldQuoteRaw);
+      quoted.value = meldQuotedView(quote.raw as MeldQuoteRaw, world.fundingSizing);
     } catch (e: unknown) {
       if (epoch !== quoteEpoch) return; // a newer quote owns the state now
       console.error("[meld] quote failed:", e);
@@ -784,15 +873,9 @@ export const useSessionStore = defineStore("session", () => {
         if (typeof window !== "undefined" && settleForPricing !== null) {
           try {
             const [
-              { connectChain, ASSET_HUB, PEOPLE },
-              {
-                sizeNativeBudget,
-                DEFAULT_KEEP_NATIVE_FOR_FEES,
-                DEFAULT_REMOTE_FEE_BUFFER,
-                PASEO_UNDERLYING_ASSET_ID,
-                PASEO_PEOPLE_PARA_ID,
-              },
-              { estimateFundingSizing },
+              { connectChain, ASSET_HUB },
+              { sizeNativeBudget, PASEO_UNDERLYING_ASSET_ID },
+              { estimatePublicFundingSizing, FALLBACK_FUNDING_SIZING },
             ] = await Promise.all([
               import("~~/lib/host-chain"),
               import("@getsome/funding"),
@@ -804,18 +887,11 @@ export const useSessionStore = defineStore("session", () => {
             const sizing = await step(
               "funding sizing estimate (public read)",
               20_000,
-              (async () =>
-                estimateFundingSizing({
-                  ahClient: client,
-                  peopleClient: await connectChain(PEOPLE),
-                  underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
-                  peopleParaId: PASEO_PEOPLE_PARA_ID,
-                  settleAmount: settleForPricing,
-                  probeAddress: DEV_RECIPIENT,
-                }))(),
-            ).catch(() => null);
-            const keepNativeForFees = sizing?.keepNativeForFees ?? DEFAULT_KEEP_NATIVE_FOR_FEES;
-            const remoteFeeBuffer = sizing?.remoteFeeBuffer ?? DEFAULT_REMOTE_FEE_BUFFER;
+              estimatePublicFundingSizing({
+                settleAmount: settleForPricing,
+                probeAddress: DEV_RECIPIENT,
+              }),
+            ).catch(() => FALLBACK_FUNDING_SIZING);
             nativeAmount = await step(
               "pool quote (public read)",
               30_000,
@@ -824,8 +900,8 @@ export const useSessionStore = defineStore("session", () => {
                   client,
                   underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
                   settleAmount: settleForPricing,
-                  remoteFeeBuffer,
-                  keepNativeForFees,
+                  remoteFeeBuffer: sizing.remoteFeeBuffer,
+                  keepNativeForFees: sizing.keepNativeForFees,
                 }))(),
             );
           } catch (e) {
@@ -1068,6 +1144,7 @@ export const useSessionStore = defineStore("session", () => {
               ...(quoted.value.partnerFee != null
                 ? { sourcePartnerFee: quoted.value.partnerFee }
                 : {}),
+              ...(quoted.value.chainFee != null ? { sourceChainFee: quoted.value.chainFee } : {}),
             }
           : null
         : sourceDisplayForRecord();
@@ -1289,6 +1366,7 @@ export const useSessionStore = defineStore("session", () => {
         transactionFee: record.sourceTransactionFee ?? null,
         networkFee: record.sourceNetworkFee ?? null,
         partnerFee: record.sourcePartnerFee ?? null,
+        chainFee: record.sourceChainFee ?? null,
         nativeAmount: null,
         sourceAsset: record.asset,
         sourceChain: record.chain,

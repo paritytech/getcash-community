@@ -24,6 +24,8 @@ export interface FundingTopUpRecord {
   sourceTransactionFee?: string;
   sourceNetworkFee?: string;
   sourcePartnerFee?: string;
+  /** The funding leg's own network fee, priced by the app rather than reported by the rail. */
+  sourceChainFee?: string;
   /** The Meld rail's buyer country. */
   meldCountry?: string;
   funded?: number;

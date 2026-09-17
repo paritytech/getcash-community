@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fmtFiat, isMoneyAmount } from "../app/utils/money";
+import { fmtFiat, isMoneyAmount, sumMoney } from "../app/utils/money";
 
 describe("fmtFiat", () => {
   it("formats a fiat amount symbol-first", () => {
@@ -29,5 +29,30 @@ describe("isMoneyAmount", () => {
     expect(isMoneyAmount("")).toBe(false);
     expect(isMoneyAmount(null)).toBe(false);
     expect(isMoneyAmount("about three quid")).toBe(false);
+  });
+});
+
+describe("sumMoney", () => {
+  it("totals the amounts that are money", () => {
+    expect(sumMoney("1.06", "0.50")).toBe(1.56);
+  });
+
+  it("skips what it cannot add rather than counting it as zero", () => {
+    // A card quote names no network fee; the total is still the two fees it does name.
+    expect(sumMoney("1.06", null, "0.50")).toBe(1.56);
+    expect(sumMoney("1.06", "", undefined, "not a number")).toBe(1.06);
+  });
+
+  it("has no total when nothing it was given is money", () => {
+    expect(sumMoney()).toBe(null);
+    expect(sumMoney(null, undefined, "")).toBe(null);
+  });
+
+  it("totals the card frame's split against the figure the rail reported", () => {
+    // The dev-preview card quote: the rail's three components add up to the total it reports, so
+    // the breakdown's rule reads as a sum rather than an assertion.
+    expect(sumMoney("1.06", null, "0.50")).toBe(Number("1.56"));
+    // And the screen's own total is that, plus the funding leg the rail never saw.
+    expect(fmtFiat(String(sumMoney("1.56", "0.0867")), "USD")).toBe("$1.65");
   });
 });

@@ -20,3 +20,18 @@ export function fmtFiat(amount: string, currency: string): string {
   }
   return `${amount} ${currency}`;
 }
+
+/**
+ * The sum of the amounts that are money, or null when none of them is.
+ *
+ * Absent and unparseable amounts are skipped rather than counted as zero: a total built from
+ * nothing is not a total of zero, and a caller with nothing to total wants no total row at all.
+ * Returned unrounded — `fmtFiat` rounds for display, and a caller doing further arithmetic on it
+ * should not be handed a figure that has already lost its fractions.
+ */
+export function sumMoney(...amounts: Array<string | null | undefined>): number | null {
+  const parts = amounts.filter(isMoneyAmount).map(Number);
+  if (parts.length === 0) return null;
+  const total = parts.reduce((acc, part) => acc + part, 0);
+  return Number.isFinite(total) ? total : null;
+}

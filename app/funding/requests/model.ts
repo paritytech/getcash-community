@@ -158,6 +158,9 @@ export interface RequestRecord {
   sourceTransactionFee?: string;
   sourceNetworkFee?: string;
   sourcePartnerFee?: string;
+  /** The funding leg's own network fee as the quote priced it. Not a component of `sourceFee`:
+   *  the rail never reported it, the app priced it. */
+  sourceChainFee?: string;
   meldCountry?: string;
   meldFundingRequestId?: string;
   meldSubmittedAt?: number;

@@ -31,6 +31,10 @@ export interface MeldQuoteEntry {
   readonly totalFee?: string;
   /** The provider's own fee (Transak's, say). */
   readonly transactionFee?: string;
+  /** The chain's own charge for the provider's outgoing transfer to the address it was given —
+   *  Meld: "outgoing transactions to external cryptocurrency addresses typically incur a 'mining'
+   *  or 'network' fee". It covers the delivery and stops there; nothing the receiver goes on to do
+   *  with the funds is in it. */
   readonly networkFee?: string;
   /** Our cut, surfaced to the buyer as the service fee. */
   readonly partnerFee?: string;
