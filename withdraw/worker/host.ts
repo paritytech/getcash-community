@@ -8,6 +8,7 @@ import {
   type PaymentStatus,
 } from "@novasamatech/host-api-wrapper";
 import type { JsonRpcProvider } from "polkadot-api";
+import { withdrawEntropyContext } from "../entropy";
 
 export async function getWithdrawStorage() {
   return hostLocalStorage;
@@ -20,7 +21,7 @@ export async function getWithdrawHostProvider(
 }
 
 export async function deriveWithdrawEntropy(label: string): Promise<Uint8Array> {
-  const result = await hostDeriveEntropy(new TextEncoder().encode(label));
+  const result = await hostDeriveEntropy(withdrawEntropyContext(label));
   if (result.isOk()) return result.value;
   throw new Error(`deriveEntropy refused: ${String(result.error?.message ?? result.error)}`);
 }

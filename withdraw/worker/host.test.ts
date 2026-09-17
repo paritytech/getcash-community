@@ -40,10 +40,16 @@ describe("withdrawal Host adapter", () => {
   it("uses the saved derivation label and surfaces entropy refusal", async () => {
     const entropy = new Uint8Array(32).fill(3);
     host.deriveEntropy.mockResolvedValueOnce({ isOk: () => true, value: entropy });
-    const label = "getcash:withdraw:v1:example";
+    const label = `getcash:withdraw:v1:0x${"11".repeat(32)}`;
 
     expect(await deriveWithdrawEntropy(label)).toBe(entropy);
-    expect(host.deriveEntropy).toHaveBeenCalledExactlyOnceWith(new TextEncoder().encode(label));
+    expect(host.deriveEntropy).toHaveBeenCalledExactlyOnceWith(
+      Uint8Array.from([
+        0xb4, 0x1d, 0xbc, 0x48, 0x99, 0x25, 0x94, 0x70, 0xf8, 0x93, 0x78, 0x3c, 0x93, 0x0e, 0x52,
+        0xf6, 0x2e, 0x83, 0x58, 0x98, 0x63, 0x66, 0xb3, 0x15, 0xff, 0x8e, 0xcb, 0x68, 0x45, 0xaf,
+        0x7b, 0x40,
+      ]),
+    );
 
     host.deriveEntropy.mockResolvedValueOnce({
       isOk: () => false,
