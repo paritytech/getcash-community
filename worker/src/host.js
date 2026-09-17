@@ -43,6 +43,38 @@ export function registerTopUp(amount, secretKey, id) {
  * or with a timeout error after `timeoutMs`.
  */
 export function readTopUpStatus(id, timeoutMs) {
+  return firstStatus(
+    (callback) => paymentManager.subscribeTopUpStatus(id, callback),
+    timeoutMs,
+    "top-up",
+  );
+}
+
+/**
+ * Asks the host to pay `amount` from the purse to `destination` (a 32-byte account) under the
+ * product's 32-byte `id`. Resolves once the host registered the payment, after the user approved
+ * it; rejects with `PaymentRequestErr.AlreadyExists` for a known id, `Rejected` when the user
+ * declined, `InsufficientBalance` when the purse cannot cover it.
+ */
+export function requestPayment(amount, destination, id) {
+  return paymentManager.requestPayment(amount, destination, id);
+}
+
+/**
+ * Reads the current status of the payment registered under `id`, the way `readTopUpStatus`
+ * does. Rejects with `PaymentStatusErr.PaymentNotFound` for an unknown id.
+ */
+export function readPaymentStatus(id, timeoutMs) {
+  return firstStatus(
+    (callback) => paymentManager.subscribePaymentStatus(id, callback),
+    timeoutMs,
+    "payment",
+  );
+}
+
+/** The first value of a host status subscription, within `timeoutMs`; the subscription is closed
+ *  right after. An interrupt before the first value rejects with the host's error. */
+function firstStatus(subscribe, timeoutMs, what) {
   return new Promise((resolve, reject) => {
     let subscription = null;
     let done = false;
@@ -54,9 +86,9 @@ export function readTopUpStatus(id, timeoutMs) {
     const timer = setTimeout(() => {
       if (done) return;
       finish();
-      reject(new Error(`top-up status read timed out after ${timeoutMs}ms`));
+      reject(new Error(`${what} status read timed out after ${timeoutMs}ms`));
     }, timeoutMs);
-    subscription = paymentManager.subscribeTopUpStatus(id, (status) => {
+    subscription = subscribe((status) => {
       if (done) return;
       finish();
       resolve(status);

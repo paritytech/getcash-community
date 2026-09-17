@@ -10,6 +10,8 @@ import type { RequestRef } from "../../utils/request-index";
 export const REQUEST_INDEX_KEY = "getsome:requests";
 /** Storage key for the worker's funding jobs, keyed `${sourceId}:${tradeN}`. */
 export const WORKER_JOBS_KEY = "getsome.funding.jobs";
+/** Storage key for the worker's withdrawal jobs, keyed the same way. */
+export const WITHDRAW_JOBS_KEY = "getsome.withdraw.jobs";
 /** Web Storage key for the boot mirror of the request map. */
 export const MIRROR_KEY = "getsome:mirror:v2";
 /** Storage key for the trade numbers whose burners were probed and found empty. */

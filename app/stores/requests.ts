@@ -22,23 +22,36 @@ import {
   JOB_POLL_MS,
   MELD_POLL_MS,
   MIRROR_SETTLED_LIMIT,
+  PAYMENT_POLL_MS,
+  PAYMENT_WINDOW_MS,
   PROBED_RECHECK_MS,
   TOMBSTONE_GRACE_MS,
   WORKER_READY_MS,
   WORKER_STALE_MS,
   buyerPaid,
   effectiveSourceId,
+  isFinished,
+  isTopUp,
+  isWithdrawSourceId,
+  isWithdrawal,
+  paymentTaken,
   railProviderOf,
   rankOf,
   requestsNow,
   routeOf,
   type Freshness,
+  type HostPaymentStatus,
   type Observation,
   type RequestKey,
   type RequestRecord,
+  type TopUpRecord,
+  type WithdrawJobView,
+  type WithdrawalHandoffPayload,
+  type WithdrawalRecord,
   type WorkerHandoffPayload,
   type WorkerJobView,
 } from "../funding/requests/model";
+import { paymentIdFor } from "../funding/requests/payment-id";
 import { reduce } from "../funding/requests/reducer";
 import {
   createMemoryKeyedStorage,
@@ -49,6 +62,7 @@ import {
   requestKey,
   setMirrorStorage,
   setRecordStorage,
+  WITHDRAW_JOBS_KEY,
   WORKER_JOBS_KEY,
   writeMirrorSync,
   type KeyedStorage,
@@ -189,19 +203,35 @@ const CRITICAL_KINDS = new Set<RequestRecord["status"]["kind"]>([
   "cancelled",
   "failed",
   "expired",
+  "paid",
+  "sent",
 ]);
 
-/** A critical change is written to the host before `observe` resolves: the deposit's first
- *  sighting (a worker step can carry a record from awaiting-deposit straight to converting), a
- *  terminal or side-exit kind, the buyer's submit, a failure. */
+/** A critical change is written to the host before `observe` resolves: the money's first
+ *  sighting (a worker step can carry a record from rank 0 straight to converting), a terminal or
+ *  side-exit kind, a failure; for a top-up the buyer's submit; for a withdrawal the prompt's
+ *  stamp with its id, so a prompt that went out is on the host before the host is asked. */
 function isCritical(previous: RequestRecord, next: RequestRecord): boolean {
-  return (
+  if (
     (rankOf(previous) === 0 && rankOf(next) >= 1) ||
     (next.status.kind !== previous.status.kind && CRITICAL_KINDS.has(next.status.kind)) ||
-    (previous.meldSubmittedAt === undefined && next.meldSubmittedAt !== undefined) ||
-    (previous.depositSkippedAt === undefined && next.depositSkippedAt !== undefined) ||
     (previous.failure === undefined && next.failure !== undefined)
-  );
+  ) {
+    return true;
+  }
+  if (isTopUp(previous) && isTopUp(next)) {
+    return (
+      (previous.meldSubmittedAt === undefined && next.meldSubmittedAt !== undefined) ||
+      (previous.depositSkippedAt === undefined && next.depositSkippedAt !== undefined)
+    );
+  }
+  if (isWithdrawal(previous) && isWithdrawal(next)) {
+    return (
+      previous.payment.requestedAt !== next.payment.requestedAt ||
+      previous.payment.id !== next.payment.id
+    );
+  }
+  return false;
 }
 
 /** The fields an observation changes without moving the record: per-session facts, never
@@ -228,12 +258,18 @@ interface Mirror {
 
 const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
+const tradeNOf = (record: RequestRecord): number =>
+  isTopUp(record) ? (record.tradeN ?? record.ref.tradeN) : record.ref.tradeN;
+
 /** Newest first; the trade number breaks ties. Today's `readAllRequests` order. */
 const newestFirst = (a: RequestRecord, b: RequestRecord): number =>
-  b.startedAt - a.startedAt || (b.tradeN ?? b.ref.tradeN) - (a.tradeN ?? a.ref.tradeN);
+  b.startedAt - a.startedAt || tradeNOf(b) - tradeNOf(a);
 
-const settledAtOf = (record: RequestRecord): number =>
-  record.status.kind === "settled" ? record.status.at : 0;
+/** When a finished record finished: a top-up settled, a withdrawal sent. 0 for one that has not. */
+function finishedAtOf(record: RequestRecord): number {
+  if (isTopUp(record)) return record.status.kind === "settled" ? record.status.at : 0;
+  return record.status.kind === "sent" ? record.status.at : 0;
+}
 
 function parseMirror(raw: string): Mirror | null {
   let parsed: unknown;
@@ -263,12 +299,15 @@ async function inParallel<T>(
 
 const MINUTE = 60_000;
 
-/** Rank 0–3 in the design's sense: a request the worker is still moving. */
+/** Rank 0–3 in the design's sense: a request the worker is still moving. A withdrawal at
+ *  `sending` is the rail's to move, not the worker's. */
 const WORKER_DRIVEN_KINDS = new Set<RequestRecord["status"]["kind"]>([
   "awaiting-deposit",
   "deposit-seen",
   "converting",
   "claiming",
+  "awaiting-payment",
+  "paid",
 ]);
 const isWorkerDriven = (record: RequestRecord): boolean =>
   WORKER_DRIVEN_KINDS.has(record.status.kind);
@@ -277,12 +316,19 @@ const followsWorker = (record: RequestRecord): boolean =>
   isWorkerDriven(record) || record.status.kind === "failed" || record.status.kind === "expired";
 
 /** Why the worker must be handed the request again, or null when it has the job in hand: it has
- *  no job for it (`unknown`), or it expired the job after the buyer paid (`expired`). */
+ *  no job for it (`unknown`), or it retired the job after the money was paid (`expired`): a job
+ *  that expired, or a withdrawal's job cancelled while the host's sheet was still up and then
+ *  approved, whose CASH reached the key after all. */
 function lostHandoff(record: RequestRecord): "unknown" | "expired" | null {
   const { worker } = record.witnesses;
   if (worker === undefined || !isWorkerDriven(record)) return null;
   if (!worker.known) return "unknown";
-  return worker.failure === "expired" && buyerPaid(record) ? "expired" : null;
+  if (isWithdrawal(record) && worker.failure === "cancelled" && rankOf(record) >= 1) {
+    return "expired";
+  }
+  if (worker.failure !== "expired") return null;
+  const paid = isTopUp(record) ? buyerPaid(record) : paymentTaken(record);
+  return paid ? "expired" : null;
 }
 
 /** What this surface reads of a worker's stored job record. */
@@ -350,6 +396,58 @@ function jobView(job: WorkerJob): WorkerJobView {
             at: claim.at ?? job.lastTickAt ?? Date.now(),
           }
         : null,
+    ...(job.txs === undefined ? {} : { txs: job.txs }),
+  };
+}
+
+/** What this surface reads of a worker's stored withdrawal job. */
+type WithdrawJob = {
+  phase?: string;
+  done?: boolean;
+  failure?: string;
+  lastError?: string;
+  lastTickAt?: number | null;
+  state?: { fundsSeenAt?: number | null; messageId?: string | null };
+  txs?: WithdrawJobView["txs"];
+  // The hand-off the worker keeps, read back when the surface has no record of the job.
+  label?: string;
+  keyAddress?: string;
+  keyPublicKeyHex?: string;
+  amount?: string;
+  destination?: { chain?: unknown; asset?: unknown; address?: unknown };
+  landingHex?: string;
+  rail?: string;
+  assetHubGenesis?: string;
+  peopleGenesis?: string;
+  peopleParaId?: number;
+  assetHubParaId?: number;
+  poolAccount?: string;
+  slippagePct?: number;
+  paymentExpiresAt?: number;
+  createdAt?: number;
+};
+
+/** Every withdrawal job, keyed by workerSessionId; {} when there are none. */
+async function readWithdrawJobs(): Promise<Record<string, WithdrawJob>> {
+  try {
+    const raw = await (await getRecordStorage()).read(WITHDRAW_JOBS_KEY);
+    return raw === null ? {} : (JSON.parse(raw) as Record<string, WithdrawJob>);
+  } catch {
+    return {};
+  }
+}
+
+/** The withdrawal job as the record's reducer reads it. */
+function withdrawJobView(job: WithdrawJob): WithdrawJobView {
+  const messageId = job.state?.messageId;
+  return {
+    phase: job.phase ?? "",
+    done: job.done === true,
+    ...(job.failure === undefined ? {} : { failure: job.failure }),
+    ...(job.lastError === undefined ? {} : { lastError: job.lastError }),
+    fundsSeenAt: job.state?.fundsSeenAt ?? null,
+    lastTickAt: job.lastTickAt ?? null,
+    ...(typeof messageId === "string" ? { messageId } : {}),
     ...(job.txs === undefined ? {} : { txs: job.txs }),
   };
 }
@@ -453,9 +551,91 @@ function handoffOf(job: WorkerJob): WorkerHandoffPayload | undefined {
   };
 }
 
+/** The hand-off the worker keeps on its withdrawal job, when every field is there. */
+function withdrawHandoffOf(job: WithdrawJob): WithdrawalHandoffPayload | undefined {
+  const { destination, rail } = job;
+  if (
+    !isString(job.label) ||
+    !isString(job.keyAddress) ||
+    !isString(job.keyPublicKeyHex) ||
+    !isString(job.amount) ||
+    !/^\d+$/.test(job.amount) ||
+    !isString(destination?.chain) ||
+    !isString(destination?.asset) ||
+    !isString(destination?.address) ||
+    !isString(job.landingHex) ||
+    (rail !== "direct" && rail !== "chainflip") ||
+    !isString(job.assetHubGenesis) ||
+    !isString(job.peopleGenesis) ||
+    !isNumber(job.peopleParaId) ||
+    !isNumber(job.assetHubParaId) ||
+    !isString(job.poolAccount) ||
+    !isNumber(job.slippagePct) ||
+    !isNumber(job.paymentExpiresAt)
+  ) {
+    return undefined;
+  }
+  return {
+    label: job.label,
+    keyAddress: job.keyAddress,
+    keyPublicKeyHex: job.keyPublicKeyHex,
+    amount: job.amount,
+    destination: {
+      chain: destination.chain,
+      asset: destination.asset,
+      address: destination.address,
+    },
+    landingHex: job.landingHex,
+    rail,
+    assetHubGenesis: job.assetHubGenesis,
+    peopleGenesis: job.peopleGenesis,
+    peopleParaId: job.peopleParaId,
+    assetHubParaId: job.assetHubParaId,
+    poolAccount: job.poolAccount,
+    slippagePct: job.slippagePct,
+    paymentExpiresAt: job.paymentExpiresAt,
+  };
+}
+
+/** A withdrawal record for a job the surface has no record of. The prompt happened before the
+ *  hand-off, under the first attempt's id, which the key derives again: the host can be asked
+ *  about it. Null when the job lacks what a record needs. */
+function recordFromWithdrawJob(sessionId: string, job: WithdrawJob): WithdrawalRecord | null {
+  const ref = refOfSessionId(sessionId);
+  const handoff = withdrawHandoffOf(job);
+  if (ref === null || handoff === undefined || !isNumber(job.createdAt)) return null;
+  const startedAt = job.createdAt;
+  return {
+    schema: 2,
+    kind: "withdrawal",
+    ref,
+    rev: 0,
+    updatedAt: startedAt,
+    startedAt,
+    amountHuman: fmtCash(BigInt(handoff.amount)),
+    route: "crypto",
+    destination: handoff.destination,
+    key: {
+      label: handoff.label,
+      address: handoff.keyAddress,
+      publicKeyHex: handoff.keyPublicKeyHex,
+    },
+    payment: {
+      attempt: 0,
+      requestedAt: startedAt,
+      id: paymentIdFor(handoff.keyPublicKeyHex, 0),
+    },
+    deadline: { paymentExpiresAt: handoff.paymentExpiresAt },
+    handoff,
+    status: { kind: "awaiting-payment" },
+    rail: { provider: handoff.rail, stage: "waiting", updatedAt: startedAt },
+    witnesses: {},
+  };
+}
+
 /** A record for a job the surface has no record of, the "chain knows, cache does not" case; it
  *  renders with generic labels. Null when the job lacks what a record needs. */
-function recordFromJob(sessionId: string, job: WorkerJob): RequestRecord | null {
+function recordFromJob(sessionId: string, job: WorkerJob): TopUpRecord | null {
   const ref = refOfSessionId(sessionId);
   const { settleAmount, createdAt } = job;
   if (
@@ -515,7 +695,7 @@ function recordFromFlowSlot(
   slot: FlowState & { handoffAmount: string },
   handoff: WorkerHandoffPayload,
   now: number,
-): RequestRecord {
+): TopUpRecord {
   const sourceId = effectiveSourceId(ref);
   const startedAt = slot.createdAt;
   const depositAddress = slot.depositAddress ?? address;
@@ -580,6 +760,10 @@ export const useRequestsStore = defineStore("requests", () => {
   const open = computed(() => records.value.filter((record) => record.status.kind !== "cancelled"));
   /** The open records in list order, newest first. */
   const openRecords = computed(() => [...open.value].sort(newestFirst));
+  const topUps = computed(() => records.value.filter(isTopUp));
+  const openTopUps = computed(() => openRecords.value.filter(isTopUp));
+  const withdrawals = computed(() => records.value.filter(isWithdrawal));
+  const openWithdrawals = computed(() => openRecords.value.filter(isWithdrawal));
   const freshness = computed<Record<RequestKey, Freshness>>(() => {
     const out: Record<RequestKey, Freshness> = {};
     for (const record of records.value) {
@@ -600,7 +784,8 @@ export const useRequestsStore = defineStore("requests", () => {
    *  blob. A number with a trace is never given to a new request. */
   async function hasTrace(sourceId: string, n: number): Promise<boolean> {
     if (has(requestRefOf(sourceId, n))) return true;
-    return (await readWorkerJobs())[workerSessionId(sourceId, n)] !== undefined;
+    const jobs = isWithdrawSourceId(sourceId) ? await readWithdrawJobs() : await readWorkerJobs();
+    return jobs[workerSessionId(sourceId, n)] !== undefined;
   }
 
   function setEntry(key: RequestKey, entry: RequestEntry): void {
@@ -630,18 +815,18 @@ export const useRequestsStore = defineStore("requests", () => {
     return run;
   }
 
-  /** The open records plus the most recently settled, as one synchronous blob. */
+  /** The open records plus the most recently finished, as one synchronous blob. */
   function writeMirror(): void {
     const all = records.value;
     const kept: Record<RequestKey, RequestRecord> = {};
     for (const record of all) {
-      if (record.status.kind !== "settled") kept[requestRefKey(record.ref)] = record;
+      if (!isFinished(record)) kept[requestRefKey(record.ref)] = record;
     }
-    const settled = all
-      .filter((record) => record.status.kind === "settled")
-      .sort((a, b) => settledAtOf(b) - settledAtOf(a))
+    const finished = all
+      .filter(isFinished)
+      .sort((a, b) => finishedAtOf(b) - finishedAtOf(a))
       .slice(0, MIRROR_SETTLED_LIMIT);
-    for (const record of settled) kept[requestRefKey(record.ref)] = record;
+    for (const record of finished) kept[requestRefKey(record.ref)] = record;
     const mirror: Mirror = {
       schema: 2,
       writtenAt: requestsNow(),
@@ -766,13 +951,14 @@ export const useRequestsStore = defineStore("requests", () => {
     });
   }
 
-  /** Notes on the record something no observation carries: the core slot it expects is gone. */
+  /** Notes on a top-up's record something no observation carries: the core slot it expects is
+   *  gone. A withdrawal has no core slot and is left alone. */
   function flag(ref: RequestRef, note: string): Promise<void> {
     const key = requestRefKey(ref);
     if (entries.value[key] === undefined) return Promise.resolve();
     return enqueue(key, async () => {
       const entry = entries.value[key];
-      if (entry === undefined) return;
+      if (entry === undefined || !isTopUp(entry.record)) return;
       const { record } = entry;
       const conflict = { source: "core" as const, note, at: requestsNow() };
       const witnesses = { ...record.witnesses, conflict };
@@ -787,7 +973,7 @@ export const useRequestsStore = defineStore("requests", () => {
     if (entries.value[key] === undefined) return Promise.resolve();
     return enqueue(key, async () => {
       const entry = entries.value[key];
-      if (entry === undefined) return;
+      if (entry === undefined || !isTopUp(entry.record)) return;
       const { record } = entry;
       await commit(key, { ...record, rev: record.rev + 1, handoff }, false);
     });
@@ -822,12 +1008,31 @@ export const useRequestsStore = defineStore("requests", () => {
     return next;
   }
 
-  /** Reconcile step 2, and the poll's tick: one read of the worker's blob; every record the
-   *  worker can still move observes its job (`known: false` without one), and a job with no
+  /** The worker's job for a record, as the record's reducer reads it: the funding blob for a
+   *  top-up, the withdrawal blob for a withdrawal. */
+  function jobObservation(
+    record: RequestRecord,
+    blobs: WorkerBlobs,
+    sessionId: string,
+    now: number,
+  ): Observation {
+    if (isTopUp(record)) {
+      const job = blobs.jobs[sessionId];
+      return { source: "worker", at: now, job: job ? jobView(job) : null };
+    }
+    const job = blobs.withdrawJobs[sessionId];
+    return { source: "worker", at: now, withdrawJob: job ? withdrawJobView(job) : null };
+  }
+
+  type WorkerBlobs = { jobs: Record<string, WorkerJob>; withdrawJobs: Record<string, WithdrawJob> };
+
+  /** Reconcile step 2, and the poll's tick: one read of each of the worker's blobs; every record
+   *  the worker can still move observes its job (`known: false` without one), and a job with no
    *  record gets one, created from the job and then observed with it. Returns the jobs read, so
-   *  the chain step works from the same blob. */
-  async function observeWorkerJobs(now: number): Promise<Record<string, WorkerJob>> {
-    const jobs = await readWorkerJobs();
+   *  the chain step works from the same blobs. */
+  async function observeWorkerJobs(now: number): Promise<WorkerBlobs> {
+    const [jobs, withdrawJobs] = await Promise.all([readWorkerJobs(), readWithdrawJobs()]);
+    const blobs: WorkerBlobs = { jobs, withdrawJobs };
     const known = new Set<string>();
     const observed: Promise<void>[] = [];
     for (const record of records.value) {
@@ -835,24 +1040,30 @@ export const useRequestsStore = defineStore("requests", () => {
       const sessionId = workerSessionId(effectiveSourceId(ref), ref.tradeN);
       known.add(sessionId);
       if (!followsWorker(record)) continue;
-      const job = jobs[sessionId];
-      observed.push(observe(ref, { source: "worker", at: now, job: job ? jobView(job) : null }));
+      observed.push(observe(ref, jobObservation(record, blobs, sessionId, now)));
     }
-    for (const [sessionId, job] of Object.entries(jobs)) {
-      // A cancelled request whose record is gone must not come back as a pending row.
-      if (!job || known.has(sessionId) || job.failure === "cancelled") continue;
-      const record = recordFromJob(sessionId, job);
-      if (record === null) continue;
+    const adopt = (sessionId: string, record: RequestRecord): void => {
       observed.push(
         create(record.ref, record)
-          .then(() => observe(record.ref, { source: "worker", at: now, job: jobView(job) }))
+          .then(() => observe(record.ref, jobObservation(record, blobs, sessionId, now)))
           .catch((e: unknown) => {
             console.warn(`[requests] record for worker job ${sessionId} failed: ${messageOf(e)}`);
           }),
       );
+    };
+    for (const [sessionId, job] of Object.entries(jobs)) {
+      // A cancelled request whose record is gone must not come back as a pending row.
+      if (!job || known.has(sessionId) || job.failure === "cancelled") continue;
+      const record = recordFromJob(sessionId, job);
+      if (record !== null) adopt(sessionId, record);
+    }
+    for (const [sessionId, job] of Object.entries(withdrawJobs)) {
+      if (!job || known.has(sessionId) || job.failure === "cancelled") continue;
+      const record = recordFromWithdrawJob(sessionId, job);
+      if (record !== null) adopt(sessionId, record);
     }
     await Promise.all(observed);
-    return jobs;
+    return blobs;
   }
 
   /** The key of the request on screen. Its own world hands it to the worker; the hand-off step
@@ -861,9 +1072,17 @@ export const useRequestsStore = defineStore("requests", () => {
   const foregroundEntry = computed<RequestEntry | null>(() =>
     foreground.value === null ? null : (entries.value[foreground.value] ?? null),
   );
-  const foregroundRecord = computed<RequestRecord | null>(
-    () => foregroundEntry.value?.record ?? null,
-  );
+  /** The top-up on screen; null when the foreground is a withdrawal or nothing. The on-ramp's
+   *  screens read their views from it. */
+  const foregroundRecord = computed<TopUpRecord | null>(() => {
+    const record = foregroundEntry.value?.record;
+    return record !== undefined && isTopUp(record) ? record : null;
+  });
+  /** The withdrawal on screen; null when the foreground is a top-up or nothing. */
+  const foregroundWithdrawal = computed<WithdrawalRecord | null>(() => {
+    const record = foregroundEntry.value?.record;
+    return record !== undefined && isWithdrawal(record) ? record : null;
+  });
   function setForeground(ref: RequestRef | null): void {
     foreground.value = ref === null ? null : requestRefKey(ref);
   }
@@ -1059,12 +1278,13 @@ export const useRequestsStore = defineStore("requests", () => {
     { immediate: true },
   );
 
-  /** The request on screen is gone: the clock, the deposit watch and the provider poll stop, no
-   *  key is foreground, and what the screen showed beside the record goes with it. */
+  /** The request on screen is gone: the clock, the deposit watch and the polls stop, no key is
+   *  foreground, and what the screen showed beside the record goes with it. */
   function leave(): void {
     stopForegroundClock();
     stopDepositWatch();
     stopMeldPoll();
+    stopPaymentPoll();
     setForeground(null);
     transientError.value = null;
     fundingNotice.value = null;
@@ -1072,6 +1292,8 @@ export const useRequestsStore = defineStore("requests", () => {
 
   /** `work` settled within `ms`, or why not: its failure, or the bound. */
   type Bounded<T> = { ok: true; value: T } | { ok: false; reason: string };
+  /** One read of the host's word on a payment. */
+  type HostPaymentReading = { status: HostPaymentStatus; reason?: string; actualClaimed?: string };
   function bounded<T>(label: string, ms: number, work: () => Promise<T>): Promise<Bounded<T>> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const expiry = new Promise<Bounded<T>>((resolve) => {
@@ -1102,7 +1324,8 @@ export const useRequestsStore = defineStore("requests", () => {
     opts: { readBurner: () => Promise<bigint> },
   ): Promise<"ok" | "refused" | "unconfirmed"> {
     const record = get(ref);
-    if (record !== undefined && rankOf(record) >= 1) return "refused";
+    // A withdrawal's last look is its own: the key and the host's payment.
+    if (record !== undefined && (!isTopUp(record) || rankOf(record) >= 1)) return "refused";
     const at = requestsNow();
     const [burner, jobs] = await Promise.all([
       bounded("the burner read", CANCEL_CONFIRM_MS, opts.readBurner),
@@ -1145,7 +1368,12 @@ export const useRequestsStore = defineStore("requests", () => {
    *  poll runs again once the record moves. */
   async function retry(ref: RequestRef): Promise<boolean> {
     const record = get(ref);
-    if (record === undefined || record.status.kind !== "failed" || !record.status.recoverable) {
+    if (
+      record === undefined ||
+      !isTopUp(record) ||
+      record.status.kind !== "failed" ||
+      !record.status.recoverable
+    ) {
       return false;
     }
     const sessionId = workerSessionId(effectiveSourceId(ref), ref.tradeN);
@@ -1187,6 +1415,129 @@ export const useRequestsStore = defineStore("requests", () => {
    *  offers Skip again for this request. */
   function markDepositSkipped(ref: RequestRef): Promise<void> {
     return observe(ref, { source: "user", at: requestsNow(), event: "deposit-skipped" });
+  }
+
+  // The withdrawal's payment. The surface has the worker prompt the purse under an id it derived;
+  // the record is stamped with the attempt and its id on the host before the prompt goes out.
+
+  /** The purse is about to be prompted for attempt `attempt` under `id`. */
+  function markPaymentRequested(ref: RequestRef, attempt: number, id: string): Promise<void> {
+    return observe(ref, {
+      source: "user",
+      at: requestsNow(),
+      event: "payment-requested",
+      attempt,
+      id,
+    });
+  }
+
+  /** One read of the host's word on a withdrawal's payment, through the worker, applied as the
+   *  host's observation. Nothing to read before a prompt; a read that fails changes nothing. */
+  async function observePaymentStatus(ref: RequestRef): Promise<"ok" | "skipped" | "failed"> {
+    const record = get(ref);
+    if (record === undefined || !isWithdrawal(record) || record.payment.id === undefined) {
+      return "skipped";
+    }
+    const { attempt, id } = record.payment;
+    const at = requestsNow();
+    try {
+      const [{ getStorageWorkerManager }, { readPaymentStatus }] = await Promise.all([
+        import("~~/lib/worker-rpc"),
+        import("~~/lib/withdraw-live"),
+      ]);
+      const reading = await readPaymentStatus(getStorageWorkerManager(), id);
+      await observe(ref, { source: "host", at, payment: { attempt, ...reading } });
+      return "ok";
+    } catch (e) {
+      console.warn(
+        `[requests] payment status read for ${requestRefKey(ref)} failed: ${messageOf(e)}`,
+      );
+      return "failed";
+    }
+  }
+
+  /** The last look before a withdrawal's cancel. A record past its payment, or whose payment the
+   *  host has in hand, refuses at once. Otherwise the key's CASH and, once a prompt went out, the
+   *  host's status are each read within `CANCEL_CONFIRM_MS`: money in either refuses the cancel
+   *  and reaches the record as the read that found it; a read that did not answer leaves the
+   *  cancel unconfirmed. */
+  async function cancelWithdrawal(
+    ref: RequestRef,
+    opts: { readKeyCash: () => Promise<bigint> },
+  ): Promise<"ok" | "refused" | "unconfirmed"> {
+    const record = get(ref);
+    if (record === undefined || !isWithdrawal(record)) return "refused";
+    if (rankOf(record) >= 1 || paymentTaken(record)) return "refused";
+    const at = requestsNow();
+    const { attempt, id } = record.payment;
+    const [key, host] = await Promise.all([
+      bounded("the key read", CANCEL_CONFIRM_MS, opts.readKeyCash),
+      id === undefined
+        ? Promise.resolve<Bounded<HostPaymentReading | null>>({ ok: true, value: null })
+        : bounded("the payment status read", CANCEL_CONFIRM_MS, async () => {
+            const [{ getStorageWorkerManager }, { readPaymentStatus }] = await Promise.all([
+              import("~~/lib/worker-rpc"),
+              import("~~/lib/withdraw-live"),
+            ]);
+            return readPaymentStatus(getStorageWorkerManager(), id);
+          }),
+    ]);
+    if (key.ok && key.value > 0n) {
+      await observe(ref, {
+        source: "chain",
+        at,
+        keyCash: key.value.toString(),
+        finality: "best",
+        via: "pre-cancel",
+      });
+      return "refused";
+    }
+    if (host.ok && host.value !== null) {
+      await observe(ref, { source: "host", at, payment: { attempt, ...host.value } });
+      if (paymentTaken({ payment: { ...record.payment, ...host.value } })) return "refused";
+    }
+    for (const read of [key, host]) {
+      if (!read.ok) {
+        console.warn(`[requests] cancel unconfirmed: ${read.reason}`);
+        return "unconfirmed";
+      }
+    }
+    return "ok";
+  }
+
+  /** A user retry of a failed withdrawal. A payment that failed gets a fresh attempt for the
+   *  surface to prompt; a conversion that failed has its hand-off re-sent, hosted, so the worker
+   *  re-arms the job, and is moved back into the pipeline. */
+  async function retryWithdrawal(ref: RequestRef): Promise<boolean> {
+    const record = get(ref);
+    if (
+      record === undefined ||
+      !isWithdrawal(record) ||
+      record.status.kind !== "failed" ||
+      !record.status.recoverable
+    ) {
+      return false;
+    }
+    if (record.failure?.step !== "payment" && isHosted()) {
+      const key = requestRefKey(ref);
+      try {
+        const [{ getStorageWorkerManager }, { sendWithdrawHandoff }] = await Promise.all([
+          import("~~/lib/worker-rpc"),
+          import("~~/lib/withdraw-live"),
+        ]);
+        const sessionId = workerSessionId(effectiveSourceId(ref), ref.tradeN);
+        await sendWithdrawHandoff(getStorageWorkerManager(), sessionId, record.handoff);
+        patchEntry(key, ({ handoffError: _cleared, ...sent }) => sent);
+      } catch (e) {
+        const handoffError = messageOf(e);
+        console.warn(`[requests] retry for ${key} could not re-arm the worker: ${handoffError}`);
+        patchEntry(key, (current) => ({ ...current, handoffError }));
+        return false;
+      }
+    }
+    await observe(ref, { source: "user", at: requestsNow(), event: "retry" });
+    syncJobPoll();
+    return true;
   }
 
   // Consecutive "not found" answers per request, on screen or in the background.
@@ -1329,10 +1680,59 @@ export const useRequestsStore = defineStore("requests", () => {
     meldPoll = null;
   }
 
+  // The payment poll: while the withdrawal on screen awaits its payment and the host's id is
+  // known, the host's status is read every PAYMENT_POLL_MS, one read at a time. The key's CASH is
+  // the worker's to see; this poll only brings the host's own word forward.
+  let paymentPoll: { key: RequestKey; timer: ReturnType<typeof setTimeout> | null } | null = null;
+  const foregroundAwaitingPayment = (): WithdrawalRecord | null => {
+    const record = foregroundWithdrawal.value;
+    return record !== null &&
+      record.status.kind === "awaiting-payment" &&
+      record.payment.id !== undefined
+      ? record
+      : null;
+  };
+  function startPaymentPoll(): void {
+    if (sandboxed.value) return;
+    const record = foregroundAwaitingPayment();
+    if (record === null) return;
+    const key = requestRefKey(record.ref);
+    if (paymentPoll?.key === key) return;
+    stopPaymentPoll();
+    const poll = { key, timer: null as ReturnType<typeof setTimeout> | null };
+    paymentPoll = poll;
+    const tick = async (): Promise<void> => {
+      if (paymentPoll !== poll) return;
+      await observePaymentStatus(record.ref);
+      if (paymentPoll !== poll) return;
+      if (foregroundAwaitingPayment()?.ref !== record.ref) {
+        stopPaymentPoll();
+        return;
+      }
+      poll.timer = setTimeout(() => void tick(), PAYMENT_POLL_MS);
+    };
+    void tick();
+  }
+  function stopPaymentPoll(): void {
+    if (paymentPoll === null) return;
+    if (paymentPoll.timer !== null) clearTimeout(paymentPoll.timer);
+    paymentPoll = null;
+  }
+  /** The poll follows the withdrawal on screen while it awaits its payment, and not otherwise. */
+  function syncPaymentPoll(): void {
+    if (foregroundAwaitingPayment() !== null) startPaymentPoll();
+    else stopPaymentPoll();
+  }
+  watch(
+    () => foregroundAwaitingPayment()?.payment.id ?? null,
+    () => syncPaymentPoll(),
+    { immediate: true },
+  );
+
   /** The provider's word can still move the record: it awaits or has seen its deposit, or it
    *  expired or failed without the provider's final word and a late "received" can still re-open
    *  it, until the deposit window plus the tombstone grace is out. */
-  function meldCanMove(record: RequestRecord): boolean {
+  function meldCanMove(record: TopUpRecord): boolean {
     const { status, rail, deadline } = record;
     switch (status.kind) {
       case "awaiting-deposit":
@@ -1358,7 +1758,7 @@ export const useRequestsStore = defineStore("requests", () => {
     if (!isHosted()) return;
     const client = meldStatusClientFactory();
     if (client === null) return;
-    const pending = records.value.flatMap((record) => {
+    const pending = topUps.value.flatMap((record) => {
       const { meldFundingRequestId: fundingRequestId, ref } = record;
       return fundingRequestId === undefined ||
         record.rail.provider !== "meld" ||
@@ -1380,6 +1780,103 @@ export const useRequestsStore = defineStore("requests", () => {
     finality: "best",
     via: "probe",
   });
+  /** A withdrawal key's CASH as the chain's own sighting of the request. */
+  const keyReading = (cash: bigint, at: number): Observation => ({
+    source: "chain",
+    at,
+    keyCash: cash.toString(),
+    finality: "best",
+    via: "probe",
+  });
+
+  /** Reconcile's host step, hosted only: one status read for every withdrawal off screen that
+   *  awaits its payment under a known id. The foreground's own poll covers the one on screen. */
+  async function readPaymentStatuses(): Promise<void> {
+    if (sandboxed.value) return;
+    if (!isHosted()) return;
+    const pending = withdrawals.value.filter(
+      (record) =>
+        record.status.kind === "awaiting-payment" &&
+        record.payment.id !== undefined &&
+        requestRefKey(record.ref) !== foreground.value,
+    );
+    await inParallel(pending, MELD_READ_PARALLELISM, async (record) => {
+      await observePaymentStatus(record.ref);
+    });
+  }
+
+  /** Reconcile's chain step for withdrawals, hosted only: every key nothing else is watching is
+   *  read, each read bounded, a failed read changing nothing. (a) A cancelled or expired
+   *  withdrawal: CASH resurrects it; a cancelled one confirmed empty past its window and grace is
+   *  removed. (b) An unpaid withdrawal whose worker is unknown, stale or not running. (a) runs on
+   *  boot and return only, (b) every time. */
+  async function readWithdrawKeys(reason: string, now: number, blobs: WorkerBlobs): Promise<void> {
+    if (sandboxed.value) return;
+    if (!isHosted()) return;
+    if (withdrawals.value.length === 0) return;
+    const [{ probeWithdrawKey }, { getStorageWorkerManager }] = await Promise.all([
+      import("~~/lib/withdraw-live"),
+      import("~~/lib/worker-rpc"),
+    ]);
+    const onReturn = reason === "boot" || reason === "visible";
+    const workerAlive = getStorageWorkerManager().isAvailable();
+
+    async function probe(record: WithdrawalRecord): Promise<bigint | null> {
+      const { ref } = record;
+      const sourceId = effectiveSourceId(ref);
+      const read = await bounded(`key read for ${sourceId}#${ref.tradeN}`, PROBE_BOUND_MS, () =>
+        probeWithdrawKey(sourceId, ref.tradeN),
+      );
+      if (!read.ok) {
+        console.warn(`[requests] ${read.reason} (kept)`);
+        return null;
+      }
+      await observe(ref, keyReading(read.value.cash, now));
+      return read.value.cash;
+    }
+
+    if (onReturn) {
+      const tombstoned = withdrawals.value.filter(
+        (record) => record.status.kind === "cancelled" || record.status.kind === "expired",
+      );
+      await inParallel(tombstoned, CHAIN_READ_PARALLELISM, async (record) => {
+        const { ref } = record;
+        const cash = await probe(record);
+        if (cash === null) return;
+        if (cash > 0n) {
+          console.warn(`[requests] withdrawal #${ref.tradeN} resurrected: ${cash} CASH on its key`);
+          if (record.status.kind === "cancelled") {
+            const sessionId = workerSessionId(effectiveSourceId(ref), ref.tradeN);
+            await observe(ref, jobObservation(record, blobs, sessionId, now));
+          }
+          return;
+        }
+        if (record.status.kind !== "cancelled") return;
+        if (record.deadline.paymentExpiresAt + TOMBSTONE_GRACE_MS >= now) return;
+        try {
+          await remove(ref);
+          console.warn(`[requests] withdrawal #${ref.tradeN} reaped: window closed, key empty`);
+        } catch (e) {
+          console.warn(`[requests] withdrawal #${ref.tradeN} reap failed (kept): ${messageOf(e)}`);
+        }
+      });
+    }
+
+    const unwatched = withdrawals.value.filter((record) => {
+      if (record.status.kind !== "awaiting-payment") return false;
+      const { worker } = record.witnesses;
+      return (
+        !workerAlive ||
+        worker === undefined ||
+        !worker.known ||
+        worker.lastTickAt === null ||
+        now - worker.lastTickAt > WORKER_STALE_MS
+      );
+    });
+    await inParallel(unwatched, CHAIN_READ_PARALLELISM, async (record) => {
+      await probe(record);
+    });
+  }
 
   /** Reconcile step 4, hosted only: the chain is asked about every burner nothing else is
    *  watching, each read bounded, a failed read changing nothing. (a) A cancelled or expired
@@ -1397,6 +1894,8 @@ export const useRequestsStore = defineStore("requests", () => {
   ): Promise<void> {
     if (sandboxed.value) return;
     if (!isHosted()) return;
+    // Every read here is a top-up's burner on Asset Hub; the withdrawals' keys have their own step.
+    const topUpRecords = topUps.value;
     const [
       { probeTradeBurner, readHostedTradeCounter, readFlowSlot, lostRequestHandoff },
       { getStorageWorkerManager },
@@ -1426,7 +1925,7 @@ export const useRequestsStore = defineStore("requests", () => {
     }
 
     if (onReturn) {
-      const tombstoned = records.value.filter(
+      const tombstoned = topUpRecords.filter(
         (record) => record.status.kind === "cancelled" || record.status.kind === "expired",
       );
       await inParallel(tombstoned, CHAIN_READ_PARALLELISM, async (record) => {
@@ -1456,7 +1955,7 @@ export const useRequestsStore = defineStore("requests", () => {
       });
     }
 
-    const unwatched = records.value.filter((record) => {
+    const unwatched = topUpRecords.filter((record) => {
       if (record.status.kind !== "awaiting-deposit") return false;
       const { worker } = record.witnesses;
       return (
@@ -1488,7 +1987,7 @@ export const useRequestsStore = defineStore("requests", () => {
         if (sourceId !== undefined) sources.add(sourceId);
       }
     }
-    for (const { ref } of records.value) sources.add(effectiveSourceId(ref));
+    for (const { ref } of topUpRecords) sources.add(effectiveSourceId(ref));
     const gaps: { sourceId: string; n: number }[] = [];
     for (const sourceId of sources) {
       const counter = await bounded(`trade counter read for ${sourceId}`, PROBE_BOUND_MS, () =>
@@ -1582,8 +2081,15 @@ export const useRequestsStore = defineStore("requests", () => {
         : [{ record, reason }];
     });
     if (lost.length === 0) return;
-    const [{ getStorageWorkerManager }, { createHostedCoinageWorld, ensureChainSubmitGrant }] =
-      await Promise.all([import("~~/lib/worker-rpc"), import("~~/lib/coinage-live")]);
+    const [
+      { getStorageWorkerManager },
+      { createHostedCoinageWorld, ensureChainSubmitGrant },
+      { sendWithdrawHandoff },
+    ] = await Promise.all([
+      import("~~/lib/worker-rpc"),
+      import("~~/lib/coinage-live"),
+      import("~~/lib/withdraw-live"),
+    ]);
     const worker = getStorageWorkerManager();
     // One wait per pass, so a worker that is down costs the pass one bound, not one per record.
     const readyBy = Date.now() + WORKER_READY_MS;
@@ -1605,7 +2111,7 @@ export const useRequestsStore = defineStore("requests", () => {
     // The worker submits on the user's behalf; the grant is requested before the first send.
     await ensureChainSubmitGrant();
 
-    async function obtainHandoff(record: RequestRecord): Promise<WorkerHandoffPayload> {
+    async function obtainHandoff(record: TopUpRecord): Promise<WorkerHandoffPayload> {
       const { ref } = record;
       const amount = toCashBase(record.amountHuman);
       if (amount === null) throw new Error(`'${record.amountHuman}' is not a CASH amount`);
@@ -1624,7 +2130,7 @@ export const useRequestsStore = defineStore("requests", () => {
     }
     // Worlds are built one at a time; a failed build never blocks the next.
     let building: Promise<unknown> = Promise.resolve();
-    function buildHandoff(record: RequestRecord): Promise<WorkerHandoffPayload> {
+    function buildHandoff(record: TopUpRecord): Promise<WorkerHandoffPayload> {
       const run = () => obtainHandoff(record);
       const next = building.then(run, run);
       building = next.catch(() => {});
@@ -1635,13 +2141,24 @@ export const useRequestsStore = defineStore("requests", () => {
       lost.map(async ({ record, reason }) => {
         const { ref } = record;
         const key = requestRefKey(ref);
+        const sessionId = workerSessionId(effectiveSourceId(ref), ref.tradeN);
         try {
-          const stored = record.handoff ?? (await buildHandoff(record));
-          const payload =
-            reason === "expired"
-              ? { ...stored, depositExpiresAt: now + depositWindowFor(record.route) }
-              : stored;
-          await sendHandoff(worker, workerSessionId(effectiveSourceId(ref), ref.tradeN), payload);
+          if (isWithdrawal(record)) {
+            // The withdrawal's record always carries its hand-off; an expired job gets a fresh
+            // payment window, since the worker keeps the hand-off's own.
+            const payload =
+              reason === "expired"
+                ? { ...record.handoff, paymentExpiresAt: now + PAYMENT_WINDOW_MS }
+                : record.handoff;
+            await sendWithdrawHandoff(worker, sessionId, payload);
+          } else {
+            const stored = record.handoff ?? (await buildHandoff(record));
+            const payload =
+              reason === "expired"
+                ? { ...stored, depositExpiresAt: now + depositWindowFor(record.route) }
+                : stored;
+            await sendHandoff(worker, sessionId, payload);
+          }
           patchEntry(key, ({ handoffError: _cleared, ...sent }) => sent);
         } catch (e) {
           const handoffError = messageOf(e);
@@ -1697,8 +2214,7 @@ export const useRequestsStore = defineStore("requests", () => {
 
   // The second hand behind `freshness`: it runs while the page is visible and an unfinished
   // record exists.
-  const anyUnfinished = (): boolean =>
-    records.value.some((record) => record.status.kind !== "settled");
+  const anyUnfinished = (): boolean => records.value.some((record) => !isFinished(record));
   let tickTimer: ReturnType<typeof setInterval> | null = null;
   function syncTick(): void {
     if (pageVisible() && anyUnfinished()) {
@@ -1715,23 +2231,25 @@ export const useRequestsStore = defineStore("requests", () => {
   // The last open record can finish between the sync points, as when the poll settles it.
   watch(anyUnfinished, () => syncTick());
 
-  /** Hidden: the job poll, the deposit watch, the provider poll and the second hand stop. The
-   *  foreground clock keeps running so the deposit still expires on time. */
+  /** Hidden: the job poll, the deposit watch, the provider and payment polls and the second hand
+   *  stop. The foreground clock keeps running so the deposit still expires on time. */
   function pausePolls(): void {
     stopJobPoll();
     stopDepositWatch();
     meldPoll?.pause();
+    stopPaymentPoll();
     if (tickTimer !== null) {
       clearInterval(tickTimer);
       tickTimer = null;
     }
   }
-  /** Visible again: whatever paused starts where it left off, the provider poll with a read now. */
+  /** Visible again: whatever paused starts where it left off, the polls with a read now. */
   function resumePolls(): void {
     syncJobPoll();
     syncDepositWatch();
     syncTick();
     meldPoll?.resume();
+    syncPaymentPoll();
   }
 
   /** Back from a background stint long enough that nothing read before it can be trusted: every
@@ -1842,8 +2360,8 @@ export const useRequestsStore = defineStore("requests", () => {
     async function readOne(ref: RequestRef): Promise<void> {
       const key = requestRefKey(ref);
       const entry = entries.value[key];
-      // Settled is terminal: history costs no read once it is in memory.
-      if (entry?.record.status.kind === "settled") {
+      // Finished is terminal: history costs no read once it is in memory.
+      if (entry !== undefined && isFinished(entry.record)) {
         if (entry.pendingWrite) scheduleWrite(key);
         return;
       }
@@ -1911,9 +2429,9 @@ export const useRequestsStore = defineStore("requests", () => {
       }
     }
 
-    let jobs: Record<string, WorkerJob> = {};
+    let blobs: WorkerBlobs = { jobs: {}, withdrawJobs: {} };
     try {
-      jobs = await observeWorkerJobs(now);
+      blobs = await observeWorkerJobs(now);
     } catch (e) {
       console.warn(`[requests] reconcile (${reason}): worker jobs step failed: ${messageOf(e)}`);
     }
@@ -1927,15 +2445,27 @@ export const useRequestsStore = defineStore("requests", () => {
     );
 
     try {
-      await readChain(reason, now, jobs);
+      await readChain(reason, now, blobs.jobs);
     } catch (e) {
       console.warn(`[requests] reconcile (${reason}): chain step failed: ${messageOf(e)}`);
+    }
+
+    try {
+      await readWithdrawKeys(reason, now, blobs);
+    } catch (e) {
+      console.warn(`[requests] reconcile (${reason}): key step failed: ${messageOf(e)}`);
     }
 
     try {
       await readBackgroundMeldStatuses();
     } catch (e) {
       console.warn(`[requests] reconcile (${reason}): provider step failed: ${messageOf(e)}`);
+    }
+
+    try {
+      await readPaymentStatuses();
+    } catch (e) {
+      console.warn(`[requests] reconcile (${reason}): host step failed: ${messageOf(e)}`);
     }
 
     try {
@@ -1956,6 +2486,7 @@ export const useRequestsStore = defineStore("requests", () => {
     sandboxed.value = true;
     stopJobPoll();
     stopMeldPoll();
+    stopPaymentPoll();
     stopDepositWatch();
     entries.value = {};
     setRecordStorage(createMemoryKeyedStorage());
@@ -1967,6 +2498,10 @@ export const useRequestsStore = defineStore("requests", () => {
     entries,
     records,
     openRecords,
+    topUps,
+    openTopUps,
+    withdrawals,
+    openWithdrawals,
     sandboxed,
     enterSandbox,
     hydrated,
@@ -1987,6 +2522,7 @@ export const useRequestsStore = defineStore("requests", () => {
     foreground,
     foregroundEntry,
     foregroundRecord,
+    foregroundWithdrawal,
     setForeground,
     transientError,
     setTransientError,
@@ -2014,8 +2550,14 @@ export const useRequestsStore = defineStore("requests", () => {
     retry,
     markMeldSubmitted,
     markDepositSkipped,
+    cancelWithdrawal,
+    retryWithdrawal,
+    markPaymentRequested,
+    observePaymentStatus,
     startMeldPoll,
     stopMeldPoll,
+    startPaymentPoll,
+    stopPaymentPoll,
     startForegroundClock,
     stopForegroundClock,
     startDepositWatch,

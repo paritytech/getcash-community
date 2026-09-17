@@ -23,15 +23,15 @@ import {
   type Observation,
   type RailState,
   type RequestFailure,
-  type RequestRecord,
+  type TopUpRecord,
   type RequestStatus,
   type WorkerJobView,
 } from "../model";
 import { mergeRail, railFromSwapStatus, stageRank } from "../rail";
 
-type Witnesses = RequestRecord["witnesses"];
+type Witnesses = TopUpRecord["witnesses"];
 type Assurance = Extract<RequestStatus, { kind: "deposit-seen" }>["assurance"];
-type ChainObservation = Extract<Observation, { source: "chain" }>;
+type ChainObservation = Extract<Observation, { source: "chain"; burnerNative: string }>;
 type UserObservation = Extract<Observation, { source: "user" }>;
 type ProviderResult = Extract<Observation, { source: "provider"; result: unknown }>;
 /** The fields a positive money observation clears from a record it resurrects. */
@@ -51,21 +51,21 @@ const EXPIRED_FAILURE: RequestFailure = {
   recoverable: false,
 };
 
-export function applyTopUp(record: RequestRecord, observation: Observation): RequestRecord {
+export function applyTopUp(record: TopUpRecord, observation: Observation): TopUpRecord {
   const next = apply(record, observation);
   if (next === record) return record;
   const kept = isTerminal(record.status) ? settledOnly(record, next) : next;
   return { ...kept, updatedAt: observation.at };
 }
 
-function apply(record: RequestRecord, observation: Observation): RequestRecord {
+function apply(record: TopUpRecord, observation: Observation): TopUpRecord {
   switch (observation.source) {
     case "core":
       return "state" in observation
         ? applyCoreState(record, observation.at, observation.state)
         : applyCoreClaim(record, observation.claim.claimed);
     case "worker":
-      return applyWorker(record, observation.at, observation.job);
+      return "job" in observation ? applyWorker(record, observation.at, observation.job) : record;
     case "provider":
       if ("result" in observation) return applyProviderResult(record, observation);
       if ("gone" in observation) {
@@ -73,17 +73,19 @@ function apply(record: RequestRecord, observation: Observation): RequestRecord {
       }
       return applyProviderUnreachable(record, observation.at);
     case "chain":
-      return applyChain(record, observation);
+      return "burnerNative" in observation ? applyChain(record, observation) : record;
     case "clock":
       return applyClock(record, observation.at);
     case "user":
       return applyUser(record, observation);
+    case "host":
+      return record;
   }
 }
 
 /** Settled is terminal: of what an observation changed, only the witnesses, the rail, a missing
  *  `claimed` and `confirmedAt` are kept. */
-function settledOnly(record: RequestRecord, next: RequestRecord): RequestRecord {
+function settledOnly(record: TopUpRecord, next: TopUpRecord): TopUpRecord {
   return {
     ...record,
     witnesses: next.witnesses,
@@ -95,16 +97,16 @@ function settledOnly(record: RequestRecord, next: RequestRecord): RequestRecord 
   };
 }
 
-function advanced(record: RequestRecord, signal: FundingProgressSignal, at: number): RequestRecord {
+function advanced(record: TopUpRecord, signal: FundingProgressSignal, at: number): TopUpRecord {
   const progress = advanceFundingProgressSnapshot(record.progress, { ...signal, at });
   return progress === record.progress ? record : { ...record, progress };
 }
 
-function witnessed(record: RequestRecord, patch: Partial<Witnesses>): RequestRecord {
+function witnessed(record: TopUpRecord, patch: Partial<Witnesses>): TopUpRecord {
   return { ...record, witnesses: { ...record.witnesses, ...patch } };
 }
 
-function without(record: RequestRecord, fields: readonly ClearedField[]): RequestRecord {
+function without(record: TopUpRecord, fields: readonly ClearedField[]): TopUpRecord {
   const copy = { ...record };
   for (const field of fields) delete copy[field];
   return copy;
@@ -120,7 +122,7 @@ const stepLeft = (rank: number): FailureStep =>
 
 /** A side exit is left only by money (resurrection) or by the user; a failure or expiry
  *  observation never turns one side exit into another. */
-const atSideExit = (record: RequestRecord): boolean =>
+const atSideExit = (record: TopUpRecord): boolean =>
   record.status.kind === "failed" ||
   record.status.kind === "expired" ||
   record.status.kind === "cancelled";
@@ -131,18 +133,18 @@ const atSideExit = (record: RequestRecord): boolean =>
  *  payment leg; the conversion stage waits for the worker's swap report. A sighting on the
  *  provider's side holds, and the branch's own route observation carries the stage. */
 function moneySeen(
-  record: RequestRecord,
+  record: TopUpRecord,
   at: number,
   assurance: Assurance,
   via: DepositSeenVia,
-): RequestRecord {
+): TopUpRecord {
   const { status } = record;
   if (status.kind === "deposit-seen") {
     if (status.assurance !== "provisional" || assurance !== "finalized") return record;
     return { ...record, status: { ...status, assurance }, funded: earliest(record.funded, at) };
   }
   if (rankOf(record) !== 0) return record;
-  const seen: RequestRecord = {
+  const seen: TopUpRecord = {
     ...without(record, ["cancelledAt", "failureReason", "refunded", "failure"]),
     status: { kind: "deposit-seen", at, assurance, via },
     funded: earliest(record.funded, at),
@@ -151,12 +153,12 @@ function moneySeen(
   return advanced(seen, onBurner ? ROUTE_COMPLETE : HOLD, at);
 }
 
-function failed(record: RequestRecord, at: number, failure: RequestFailure): RequestRecord {
+function failed(record: TopUpRecord, at: number, failure: RequestFailure): TopUpRecord {
   const status: RequestStatus = { kind: "failed", at, recoverable: failure.recoverable };
   return advanced({ ...record, status, failure, failureReason: failure.message }, FAILED, at);
 }
 
-function expired(record: RequestRecord, at: number): RequestRecord {
+function expired(record: TopUpRecord, at: number): TopUpRecord {
   const status: RequestStatus = { kind: "expired", at };
   return advanced(
     { ...record, status, failure: EXPIRED_FAILURE, failureReason: DEPOSIT_EXPIRED_REASON },
@@ -165,19 +167,19 @@ function expired(record: RequestRecord, at: number): RequestRecord {
   );
 }
 
-function settled(record: RequestRecord, at: number): RequestRecord {
+function settled(record: TopUpRecord, at: number): TopUpRecord {
   return advanced({ ...record, status: { kind: "settled", at }, settledAt: at }, SETTLED, at);
 }
 
 /** The conversion started no later than the step that follows it: a record whose first worker
  *  report is already past the swap still gets the stage stamped, at that report's instant. */
-function conversionStarted(record: RequestRecord, at: number): RequestRecord {
+function conversionStarted(record: TopUpRecord, at: number): TopUpRecord {
   return record.progress.stageTimestamps["cash-conversion"] === undefined
     ? advanced(record, fundingProgressSignalForSharedStep("swap"), at)
     : record;
 }
 
-function claiming(record: RequestRecord, at: number): RequestRecord {
+function claiming(record: TopUpRecord, at: number): TopUpRecord {
   const status: RequestStatus = { kind: "claiming", at };
   return advanced(
     conversionStarted({ ...record, status }, at),
@@ -186,7 +188,7 @@ function claiming(record: RequestRecord, at: number): RequestRecord {
   );
 }
 
-function converting(record: RequestRecord, at: number, step: ConvertingStep): RequestRecord {
+function converting(record: TopUpRecord, at: number, step: ConvertingStep): TopUpRecord {
   const status: RequestStatus = { kind: "converting", at, step };
   return advanced(
     conversionStarted({ ...record, status }, at),
@@ -196,8 +198,8 @@ function converting(record: RequestRecord, at: number, step: ConvertingStep): Re
 }
 
 function sameDeposit(
-  current: RequestRecord["deposit"],
-  opened: NonNullable<RequestRecord["deposit"]>,
+  current: TopUpRecord["deposit"],
+  opened: NonNullable<TopUpRecord["deposit"]>,
 ): boolean {
   return (
     current !== undefined &&
@@ -209,12 +211,12 @@ function sameDeposit(
   );
 }
 
-function applyCoreState(record: RequestRecord, at: number, state: PaymentState): RequestRecord {
+function applyCoreState(record: TopUpRecord, at: number, state: PaymentState): TopUpRecord {
   const next = witnessed(record, { core: { phase: state.phase, at } });
   switch (state.phase) {
     case "awaiting-deposit": {
       const { deposit } = state;
-      const opened: RequestRecord["deposit"] = {
+      const opened: TopUpRecord["deposit"] = {
         address: deposit.address,
         amount: deposit.amount.toString(),
         formatted: deposit.formatted,
@@ -272,7 +274,7 @@ function applyCoreState(record: RequestRecord, at: number, state: PaymentState):
         ...(refunded === undefined ? {} : { refunded }),
         ...(state.refund === undefined ? {} : { refund: state.refund }),
       };
-      const detailed: RequestRecord = {
+      const detailed: TopUpRecord = {
         ...next,
         failure,
         failureReason: failure.message,
@@ -290,7 +292,7 @@ function applyCoreState(record: RequestRecord, at: number, state: PaymentState):
   }
 }
 
-function applyCoreClaim(record: RequestRecord, claimed: string | undefined): RequestRecord {
+function applyCoreClaim(record: TopUpRecord, claimed: string | undefined): TopUpRecord {
   return claimed !== undefined && record.claimed === undefined ? { ...record, claimed } : record;
 }
 
@@ -314,10 +316,10 @@ function workerWitness(job: WorkerJobView, at: number): Witnesses["worker"] {
   };
 }
 
-function applyWorker(record: RequestRecord, at: number, job: WorkerJobView | null): RequestRecord {
+function applyWorker(record: TopUpRecord, at: number, job: WorkerJobView | null): TopUpRecord {
   if (job === null) return witnessed(record, { worker: { known: false, at } });
   const witnessAt = Math.max(at, job.lastTickAt ?? 0, job.claim?.at ?? 0);
-  let next: RequestRecord = {
+  let next: TopUpRecord = {
     ...witnessed(record, { worker: workerWitness(job, witnessAt) }),
     confirmedAt: at,
   };
@@ -368,7 +370,7 @@ function applyWorker(record: RequestRecord, at: number, job: WorkerJobView | nul
   return next;
 }
 
-function applyProviderResult(record: RequestRecord, observation: ProviderResult): RequestRecord {
+function applyProviderResult(record: TopUpRecord, observation: ProviderResult): TopUpRecord {
   const { at, result } = observation;
   // The record's own rail keeps its provider; a poll never rewrites it (a manual-rail record
   // stays manual under a Chainflip-shaped failure report).
@@ -421,13 +423,13 @@ function applyProviderResult(record: RequestRecord, observation: ProviderResult)
   return next;
 }
 
-function applyProviderUnreachable(record: RequestRecord, at: number): RequestRecord {
+function applyProviderUnreachable(record: TopUpRecord, at: number): TopUpRecord {
   // A poll that cannot confirm the delay must not keep asserting it.
   if (!record.rail.delayed) return record;
   return { ...record, rail: { ...record.rail, delayed: false, updatedAt: at } };
 }
 
-function applyProviderGone(record: RequestRecord, at: number, message: string): RequestRecord {
+function applyProviderGone(record: TopUpRecord, at: number, message: string): TopUpRecord {
   const rail: RailState = {
     ...record.rail,
     status: "failed",
@@ -443,15 +445,15 @@ function applyProviderGone(record: RequestRecord, at: number, message: string): 
   return failed(next, at, { kind: "unknown", step: "deposit", message, recoverable: false });
 }
 
-const workerSawFunds = (record: RequestRecord): boolean => {
+const workerSawFunds = (record: TopUpRecord): boolean => {
   const worker = record.witnesses.worker;
   return worker !== undefined && worker.known && worker.fundsSeenAt !== null;
 };
 
-function applyChain(record: RequestRecord, observation: ChainObservation): RequestRecord {
+function applyChain(record: TopUpRecord, observation: ChainObservation): TopUpRecord {
   const { at, burnerNative, finality, block, via } = observation;
   const reading = { burnerNative, ...(block === undefined ? {} : { block }), at };
-  const next: RequestRecord = {
+  const next: TopUpRecord = {
     ...witnessed(record, { chain: { ...record.witnesses.chain, [finality]: reading } }),
     confirmedAt: at,
   };
@@ -480,7 +482,7 @@ function applyChain(record: RequestRecord, observation: ChainObservation): Reque
   return next;
 }
 
-function applyClock(record: RequestRecord, at: number): RequestRecord {
+function applyClock(record: TopUpRecord, at: number): TopUpRecord {
   const next = witnessed(record, { clock: { at } });
   const { status, deadline } = next;
   const expirable =
@@ -499,7 +501,7 @@ function applyClock(record: RequestRecord, at: number): RequestRecord {
   return next;
 }
 
-function applyUser(record: RequestRecord, observation: UserObservation): RequestRecord {
+function applyUser(record: TopUpRecord, observation: UserObservation): TopUpRecord {
   const { at } = observation;
   switch (observation.event) {
     case "cancelled": {
@@ -528,5 +530,7 @@ function applyUser(record: RequestRecord, observation: UserObservation): Request
       return record.meldSubmittedAt === undefined ? { ...record, meldSubmittedAt: at } : record;
     case "deposit-skipped":
       return record.depositSkippedAt === undefined ? { ...record, depositSkippedAt: at } : record;
+    case "payment-requested":
+      return record;
   }
 }
