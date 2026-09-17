@@ -2243,6 +2243,9 @@ export const useRequestsStore = defineStore("requests", () => {
   }
   // The last open record can finish between the sync points, as when the poll settles it.
   watch(anyUnfinished, () => syncTick());
+  // A record the worker moves can appear between the sync points too, as when a withdrawal is
+  // created: the poll starts with it, and stops itself once nothing is left to follow.
+  watch(anyWorkerDriven, () => syncJobPoll());
 
   /** Hidden: the job poll, the deposit watch, the provider and payment polls and the second hand
    *  stop. The foreground clock keeps running so the deposit still expires on time. */

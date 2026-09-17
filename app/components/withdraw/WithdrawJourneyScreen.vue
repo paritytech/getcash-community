@@ -59,12 +59,11 @@ const message = computed(() => {
   if (props.notice) return props.notice;
   if (status.value.kind === "cancelled") return "This withdrawal was cancelled.";
   if (failure.value) return withdrawalFailureText(failure.value);
+  // The funding product is approved without a sheet, so a requested payment is processing.
   if (status.value.kind === "awaiting-payment") {
-    return props.record.payment.status === "processing"
-      ? "Your payment is being processed"
-      : props.record.payment.requestedAt === undefined
-        ? "Waiting for your payment"
-        : "Approve the payment to continue";
+    return props.record.payment.requestedAt === undefined
+      ? "Waiting for your payment"
+      : "Your payment is being processed";
   }
   if (status.value.kind === "sent") {
     return `Sent to ${shortAddress(props.record.destination.address)}`;

@@ -192,6 +192,33 @@ describe("requests store: withdrawals", () => {
     }
   });
 
+  it("starts the job poll when a withdrawal is created, without a reconcile", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      await storage.write(
+        WITHDRAW_JOBS_KEY,
+        JSON.stringify({ [SESSION]: job({ phase: "await-cash" }) }),
+      );
+      const requests = useRequestsStore();
+      await requests.create(REF, withdrawal());
+      expect(requests.get(REF)?.witnesses.worker).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(JOB_POLL_MS);
+      for (
+        let turns = 0;
+        turns < 1_000 && requests.get(REF)?.witnesses.worker === undefined;
+        turns += 1
+      ) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      expect(requests.get(REF)?.witnesses.worker).toMatchObject({
+        known: true,
+        phase: "await-cash",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("moves a withdrawal by its job in the withdrawal blob, through to sent", async () => {
     const seenAt = FIXTURE_NOW - 60_000;
     await seed([withdrawal()], {

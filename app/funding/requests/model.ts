@@ -352,6 +352,8 @@ export interface WithdrawalRecord {
           fundsSeenAt: number | null;
           lastTickAt: number | null;
           failure?: string;
+          /** The worker's last tick error, kept while a run is stuck between ticks. */
+          lastError?: string;
           at: number;
           txs?: WithdrawJobView["txs"];
         }
