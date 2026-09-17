@@ -98,7 +98,9 @@ if (isDemoBuild() && typeof window !== "undefined") {
 watch(
   previewTopUpScene,
   (scene) => {
-    if (scene !== null) shellEntry.value = scene.entry ?? "pending";
+    if (scene === null) return;
+    shellEntry.value = scene.entry ?? "pending";
+    topUpError.value = scene.error ?? null;
   },
   { immediate: true },
 );

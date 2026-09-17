@@ -28,6 +28,8 @@ export interface PreviewTopUpScene {
    * point of that scenario.
    */
   entry?: FundingShellEntryScreen;
+  /** The list's own error line, as a failed open would leave it. */
+  error?: string;
 }
 
 /**

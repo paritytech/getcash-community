@@ -68,6 +68,12 @@ const busy = computed(() => Boolean(props.openingTopUpId));
     </div>
 
     <div v-else class="flex min-h-0 flex-1 flex-col px-4 pt-6 pb-6">
+      <!-- Above the list, not after it: the error answers a tap on a card near the top, and the
+           list is long enough that anything below it is never scrolled to. -->
+      <p v-if="error" class="pb-3 text-center text-caption text-fg-error" role="alert">
+        {{ error }}
+      </p>
+
       <div class="-mx-4 min-h-0 flex-1 overflow-y-auto px-4">
         <section v-if="inProgress.length > 0">
           <h2 class="text-heading-l text-fg-primary">In progress</h2>
@@ -100,10 +106,6 @@ const busy = computed(() => Boolean(props.openingTopUpId));
             </li>
           </ul>
         </section>
-
-        <p v-if="error" class="pt-3 text-center text-caption text-fg-error" role="alert">
-          {{ error }}
-        </p>
       </div>
     </div>
   </div>

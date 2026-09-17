@@ -355,6 +355,16 @@ export const SCENES: Scene[] = [
     apply: topUpList([], { entry: "history", skeleton: true }),
   },
   {
+    // A top-up that would not open, with the list long enough to scroll. The review comment on
+    // `FundingHistoryScreen` is about where the line lands: it is the last thing in the scroller,
+    // so the buyer who just tapped a card at the top never sees it.
+    name: "list / history: error",
+    apply: topUpList(previewTopUpHistory(), {
+      entry: "history",
+      error: "Crypto status couldn't be opened. Try again.",
+    }),
+  },
+  {
     name: "crypto / network",
     apply: (s, f) => {
       selection(s, f);
