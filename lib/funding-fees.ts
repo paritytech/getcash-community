@@ -1,33 +1,36 @@
-// Sizes the deposit's fee allowances from live runtime fee reads: the extra underlying the
-// teleport spends on its fees, and the native the burner keeps to dispatch the swap. Any failure
-// returns null.
+// Sizes the two fee allowances the deposit must carry, priced live from both chains with no funds
+// and no stand-in account. keepNativeForFees is the native the deposit carries on top of the pool
+// quote for the program's own costs on Asset Hub: dispatch, local execution and delivery.
+// remoteFeeBuffer is the extra underlying to over-buy for the destination's execution fee, read
+// from a dry run of the forwarded program on People. Every figure is a runtime read against our
+// own message. Any failure returns null and the caller keeps the funding package's static
+// fallbacks.
 
-import { paseo_next_v2 } from "@polkadot-api/descriptors";
+import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import type { PolkadotClient } from "polkadot-api";
 import {
-  buildSelfFundingTeleport,
+  DEFAULT_SLIPPAGE_PCT,
+  destinationEarmark,
   discoverPool,
-  estimateTeleportFeesCash,
-  reserveForDispatchFee,
+  estimateDestinationFeeCash,
+  estimateFundingProgramFees,
+  PASEO_ASSET_HUB_PARA_ID,
+  quoteNativeInMax,
 } from "@getsome/funding";
 
 export interface FundingSizing {
-  /** Extra underlying to buy for the fees the teleport pays in the underlying: its PayFees
-   *  earmark and its own dispatch fee. */
+  /** Extra underlying to over-buy for the destination's execution fee. */
   remoteFeeBuffer: bigint;
-  /** Native the burner keeps to dispatch the swap. */
+  /** Native the deposit carries for the program's dispatch fee and fee allowance. */
   keepNativeForFees: bigint;
 }
-
-/** Margin on the native dispatch reserve, ×1.2. */
-const KEEP_MARGIN_NUM = 6n;
-const KEEP_MARGIN_DEN = 5n;
 
 /** A throwaway 32-byte beneficiary for the fee reads; it does not affect any fee. */
 const ZERO_32 = `0x${"00".repeat(32)}`;
 
 export async function estimateFundingSizing(args: {
   ahClient: PolkadotClient;
+  peopleClient: PolkadotClient;
   underlyingAssetId: number;
   peopleParaId: number;
   settleAmount: bigint;
@@ -36,47 +39,36 @@ export async function estimateFundingSizing(args: {
 }): Promise<FundingSizing | null> {
   try {
     const api = args.ahClient.getTypedApi(paseo_next_v2);
+    const peopleApi = args.peopleClient.getTypedApi(paseo_people_next);
     const pool = await discoverPool(api, args.underlyingAssetId);
 
-    // The teleport's in-CASH fees (local + delivery), fund-free.
-    const fees = await estimateTeleportFeesCash({
+    const destinationFee = await estimateDestinationFeeCash({
+      peopleApi,
+      pool,
+      assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
+      beneficiaryHex: ZERO_32,
+      amount: args.settleAmount,
+    });
+
+    // The fee probes carry the amounts a real deposit would, so the measured dispatch fee matches
+    // the submitted call's length.
+    const buyTarget = args.settleAmount + destinationFee;
+    const nativeInMax = await quoteNativeInMax(api, pool, buyTarget, DEFAULT_SLIPPAGE_PCT);
+
+    const fees = await estimateFundingProgramFees({
       api,
       pool,
       beneficiaryHex: ZERO_32,
       peopleParaId: args.peopleParaId,
-      amount: args.settleAmount,
+      nativeBalance: nativeInMax,
+      minUnderlyingOut: buyTarget,
+      remoteFeesCash: destinationEarmark(buyTarget, destinationFee),
+      feeProbeAddress: args.probeAddress,
     });
-
-    // The teleport's own dispatch fee, also paid in the underlying.
-    const dispatchCash = await reserveForDispatchFee({
-      api,
-      pool,
-      execArgs: buildSelfFundingTeleport({
-        pool,
-        withdrawAmount: args.settleAmount,
-        payFeesCash: fees.payFeesCash,
-        remoteFeesCash: fees.payFeesCash,
-        beneficiaryHex: ZERO_32,
-        peopleParaId: args.peopleParaId,
-        maxWeight: fees.maxWeight,
-      }),
-      from: args.probeAddress,
-    });
-
-    // The swap's native dispatch fee, from a representative call: the fee depends on the call
-    // shape, not the amounts or the signer.
-    const swapTx = api.tx.AssetConversion.swap_exact_tokens_for_tokens({
-      path: [pool.native, pool.underlying],
-      amount_in: 10_000_000_000n,
-      amount_out_min: 0n,
-      send_to: args.probeAddress,
-      keep_alive: false,
-    });
-    const swapFee = await swapTx.getEstimatedFees(args.probeAddress);
 
     return {
-      remoteFeeBuffer: fees.payFeesCash + dispatchCash,
-      keepNativeForFees: (swapFee * KEEP_MARGIN_NUM) / KEEP_MARGIN_DEN,
+      remoteFeeBuffer: destinationFee,
+      keepNativeForFees: fees.payFeesNative + fees.dispatchNative,
     };
   } catch (e) {
     console.warn("[coinage] funding sizing estimate failed; using static fallbacks:", e);

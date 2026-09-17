@@ -3,15 +3,19 @@
 // every package.
 import { computed } from "vue";
 import { Plus, RefreshCcw, X } from "lucide-vue-next";
+import type { SourceId } from "@getsome/core";
 import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
 import type { FundingJourneyStatus } from "../../funding/handoff";
 import { projectFundingProgress, type FundingProgressProjection } from "../../funding/progress";
+import { effectiveSourceId } from "../../funding/requests/model";
+import type { JourneySteps } from "../../funding/requests/views";
 import type { FundingTopUp } from "../../funding/top-ups";
+import { useRequestsStore } from "../../stores/requests";
 import { DEPOSIT_EXPIRED_REASON, useSessionStore } from "../../stores/session";
 import { fmtCash } from "../../utils/cash";
 import { fmtFiat, isMoneyAmount } from "../../utils/money";
-import { formatWhenShort, shortRef, type JourneySteps } from "../../utils/journey";
+import { formatWhenShort, shortRef } from "../../utils/journey";
 import { refundedFailure } from "../../utils/recovery";
 import FundingJourneyTimeline from "../funding/progress/FundingJourneyTimeline.vue";
 import DetailRows, { type DetailRow } from "../ui/DetailRows.vue";
@@ -32,13 +36,15 @@ const props = defineProps<{
 // startOver asks it to re-enter this route for a fresh attempt at the same top-up.
 const emit = defineEmits<{ fees: []; refund: []; close: []; startOver: [] }>();
 const session = useSessionStore();
+const requests = useRequestsStore();
 
 const cadence = computed(
-  () => session.foregroundProgress?.snapshot.profile.cadenceMs ?? props.progress?.cadenceMs ?? null,
+  () =>
+    requests.foregroundProgress?.snapshot.profile.cadenceMs ?? props.progress?.cadenceMs ?? null,
 );
 const now = useFundingProgressClock(cadence);
 const progress = computed(() => {
-  const foreground = session.foregroundProgress;
+  const foreground = requests.foregroundProgress;
   if (foreground) {
     return projectFundingProgress({
       snapshot: foreground.snapshot,
@@ -49,20 +55,20 @@ const progress = computed(() => {
   return props.progress ?? null;
 });
 
-const state = computed(() => session.lastState);
-const finished = computed(() => session.phase === "done");
-const failure = computed(() => (state.value?.phase === "failed" ? state.value.failure : null));
-const failedText = computed(() => session.fundingError ?? failure.value?.message ?? null);
+const finished = computed(() => requests.phase === "done");
+const failure = computed(() =>
+  requests.phase === "failed" ? (requests.foregroundRecord?.failure ?? null) : null,
+);
+const failedText = computed(() => requests.fundingError ?? failure.value?.message ?? null);
 
 /**
  * The route's own timeline: crypto shows three steps, the card rail five.
  *
- * The store owns the scale whenever a request is on screen — the completed count and the milestone
- * keys are both on it, and a second definition here would draw the last step as current and lose
- * the settled timestamp. The list's word on the route only stands in before the top-up is live.
+ * The store owns the scale whenever a request is on screen; the list's word on the route only
+ * stands in before the top-up is live. `requests.journeyDone` counts on that same scale.
  */
 const steps = computed<JourneySteps>(() => {
-  if (session.lastState !== null || !props.topUp) return session.journeySteps;
+  if (requests.foregroundRecord !== null || !props.topUp) return session.journeySteps;
   return props.topUp.route === "crypto" ? 3 : 5;
 });
 const crypto = computed(() => steps.value === 3);
@@ -71,7 +77,7 @@ const crypto = computed(() => steps.value === 3);
 const failedLabel = computed(() => {
   const kind = failure.value?.kind;
   if (kind === "expired" || kind === "stale") return "Expired";
-  if (session.fundingError === DEPOSIT_EXPIRED_REASON) return "Expired";
+  if (requests.fundingError === DEPOSIT_EXPIRED_REASON) return "Expired";
   return null;
 });
 /** Nothing was paid on an expired top-up, so it carries no quote rows. */
@@ -84,7 +90,7 @@ const hideRows = computed(
 const heroFailed = computed(() => progress.value?.view.kind === "failed" || failure.value !== null);
 
 const creditedAmount = computed(() =>
-  session.claimedBase != null ? fmtCash(session.claimedBase) : session.amountHuman,
+  requests.claimedBase != null ? fmtCash(requests.claimedBase) : session.amountHuman,
 );
 const amountText = computed(() => {
   if (finished.value) return `+${creditedAmount.value} $CASH`;
@@ -97,8 +103,7 @@ const amountText = computed(() => {
 const settledWhen = computed(() => {
   if (!finished.value) return null;
   const at =
-    session.milestones[steps.value] ??
-    (props.topUp?.state.kind === "settled" ? props.topUp.state.at : null);
+    requests.milestones[5] ?? (props.topUp?.state.kind === "settled" ? props.topUp.state.at : null);
   return at != null ? formatWhenShort(at) : null;
 });
 
@@ -108,8 +113,9 @@ const refunded = computed(
     failure.value !== null && refundedFailure(failure.value.kind) && session.refundAddress !== null,
 );
 const asset = computed(() => {
-  const sourceId = state.value?.sourceId;
-  return sourceId ? (SOURCE_CONFIG_BY_ID.get(sourceId)?.asset ?? "") : "";
+  const record = requests.foregroundRecord;
+  if (!record) return "";
+  return SOURCE_CONFIG_BY_ID.get(effectiveSourceId(record.ref) as SourceId)?.asset ?? "";
 });
 /** The rows' source: the live quote, else the top-up's stored one. Only the live quote carries
  *  the split the fee drill-in needs. */
@@ -163,7 +169,9 @@ const detailRows = computed<DetailRow[]>(() => {
   // has something to ask about.
   if (heroFailed.value) {
     if (q.provider) rows.push({ label: "Provider", value: q.provider });
-    const reference = session.meldFundingRequestId;
+    // Off the request's own record: a top-up opened from the list has no session behind it, and
+    // the reference is the one thing a buyer needs most on the journey that failed.
+    const reference = requests.foregroundRecord?.meldFundingRequestId;
     if (reference)
       rows.push({ label: "Transaction ID", value: shortRef(reference), copy: reference });
   }
@@ -183,12 +191,12 @@ const detailRows = computed<DetailRow[]>(() => {
 const canStartOver = computed(
   () =>
     session.method !== "crypto" &&
-    session.meldStage === "failed" &&
-    session.meldFailureCode !== "unobserved",
+    requests.meldStage === "failed" &&
+    requests.meldFailureCode !== "unobserved",
 );
 
 /** Temporarily stuck (the provider is retrying): amber on the stepper, never terminal. */
-const delayed = computed(() => session.meldDelayed && !finished.value && !heroFailed.value);
+const delayed = computed(() => requests.meldDelayed && !finished.value && !heroFailed.value);
 
 /** The one ribbon line under the stepper: a failure reason, an out-of-band notice, a transient
  *  delay, or the rail's own word on its payment. The last matters most on the bank rail, where
@@ -202,7 +210,7 @@ const message = computed(() => {
     return `The rate moved too far to complete the swap. Your ${asset.value || "crypto"} was sent back, minus network fees.`;
   }
   if (failedText.value) return failedText.value;
-  if (session.fundingNotice) return session.fundingNotice;
+  if (requests.fundingNotice) return requests.fundingNotice;
   if (delayed.value) {
     // Each rail waits on something else: the card provider's retry vs chain confirmations.
     return crypto.value
@@ -242,6 +250,7 @@ const message = computed(() => {
         v-if="progress && !finished"
         :progress="progress"
         :steps="steps"
+        :completed-steps="requests.journeyDone"
         :message="message"
         :delayed="delayed"
         :failed-label="failedLabel"

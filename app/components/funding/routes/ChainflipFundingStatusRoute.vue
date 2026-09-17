@@ -9,16 +9,20 @@ import { chainflipRequestRef } from "../../../funding/chainflip-top-ups";
 import type { FundingPackageEmits } from "../../../funding/handoff";
 import type { FundingTopUp } from "../../../funding/top-ups";
 import { useFlowStore } from "../../../stores/flow";
+import { useRequestsStore } from "../../../stores/requests";
 import { useSessionStore } from "../../../stores/session";
 
 const props = defineProps<{ topUp: FundingTopUp }>();
 const emit = defineEmits<FundingPackageEmits>();
 
 const session = useSessionStore();
+const requests = useRequestsStore();
 const flow = useFlowStore();
 const opening = ref(true);
 const unavailable = ref(false);
-const waiting = computed(() => opening.value && session.lastState === null && !unavailable.value);
+const waiting = computed(
+  () => opening.value && requests.foregroundRecord === null && !unavailable.value,
+);
 let active = true;
 
 useVisibilityReconcile();
@@ -42,13 +46,19 @@ function onDepositSkip() {
 
 onMounted(async () => {
   const ref = chainflipRequestRef(props.topUp.id);
-  const opened = ref === null ? false : await session.openRequest(ref);
-  if (!active) {
-    if (opened && !handedOff()) session.reset();
-    return;
+  let opened = false;
+  try {
+    opened = ref === null ? false : await session.openRequest(ref);
+  } catch (e) {
+    console.warn("[funding] could not open the top-up:", e);
+    opened = false;
+  } finally {
+    if (active) {
+      unavailable.value = !opened;
+      opening.value = false;
+    }
   }
-  unavailable.value = !opened;
-  opening.value = false;
+  if (!active && opened && !handedOff()) session.reset();
 });
 
 onUnmounted(() => {
@@ -70,7 +80,7 @@ onUnmounted(() => {
     "
   >
     <Toolbar
-      :back="!waiting && !session.claiming"
+      :back="!waiting && !requests.claiming"
       :title="flow.confirmingCancel ? undefined : 'Add funds via Crypto'"
       @back="onBack"
     >

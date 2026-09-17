@@ -10,18 +10,20 @@ import { SOURCE_CHAINS } from "~~/lib/config";
 import { useCopyToClipboard } from "../../composables/useCopyToClipboard";
 import { shortAddress } from "../../utils/address";
 import { useFlowStore } from "../../stores/flow";
+import { useRequestsStore } from "../../stores/requests";
 import { useSessionStore } from "../../stores/session";
 
 // Cancel is a request: the route swaps in the full-screen confirmation and performs the cancel.
 const emit = defineEmits<{ cancel: [] }>();
 
 const session = useSessionStore();
+const requests = useRequestsStore();
 const flow = useFlowStore();
 
-// While the deposit is still being opened this screen renders its skeleton shapes instead.
+// The record keeps the amount as a decimal string; the estimate takes the bigint core gave it.
 const deposit = computed(() => {
-  const s = session.lastState;
-  return s?.phase === "awaiting-deposit" ? s.deposit : null;
+  const d = requests.foregroundRecord?.deposit;
+  return requests.phase === "awaiting-deposit" && d ? { ...d, amount: BigInt(d.amount) } : null;
 });
 
 /** The address the QR and the copy row carry: a source-chain stand-in in the live demo, the real
@@ -86,7 +88,7 @@ const source = computed(() => {
 });
 
 // Cancel is offered only while nothing has been paid.
-const showCancel = computed(() => session.faucetState === "idle" && !session.fundsSeen);
+const showCancel = computed(() => session.faucetState === "idle" && !requests.fundsSeen);
 
 // The "Copied" pill above the buttons answers either row's copy.
 const { copied, copy: copyToClipboard } = useCopyToClipboard();
