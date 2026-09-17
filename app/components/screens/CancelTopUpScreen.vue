@@ -20,7 +20,7 @@ const session = useSessionStore();
       <button
         type="button"
         class="h-12 rounded-full bg-status-error text-label-l text-fg-static-white transition-colors hover:bg-status-error-hover disabled:opacity-50"
-        :disabled="session.cancelling"
+        :disabled="session.cancelling || !session.cancelReady"
         @click="emit('confirm')"
       >
         {{ session.cancelling ? "Cancelling…" : "Cancel" }}

@@ -1,16 +1,44 @@
 import { describe, expect, it } from "vitest";
 import { chainflipRequestRef, projectChainflipTopUps } from "../app/funding/chainflip-top-ups";
 import { chainflipProgressProvider, createFundingProgressSnapshot } from "../app/funding/progress";
-import type { RequestStatus } from "../app/stores/session";
+import { migrateRecord } from "../app/funding/requests/migrate";
+import type { Observation, RequestRecord, WorkerJobView } from "../app/funding/requests/model";
+import { reduce } from "../app/funding/requests/reducer";
+import type { ActiveFlowRecord } from "../app/stores/session";
+import { requestRefOf } from "../app/utils/request-index";
+
+type Stored = Partial<ActiveFlowRecord> & {
+  tradeN: number;
+  amountHuman: string;
+  startedAt: number;
+};
+
+/** A stored record as the store reads it: migrated under its own key at `now`. */
+function record(stored: Stored, now: number): RequestRecord {
+  const migrated = migrateRecord(stored, requestRefOf(stored.sourceId, stored.tradeN), now);
+  if (migrated === null) throw new Error("record did not migrate");
+  return migrated;
+}
+
+/** The worker's job at `phase`, its deposit in hand since `at`. */
+const worker = (at: number, phase: string, job: Partial<WorkerJobView> = {}): Observation => ({
+  source: "worker",
+  at,
+  job: { phase, done: phase === "done", fundsSeenAt: at, lastTickAt: at, claim: null, ...job },
+});
 
 describe("Chainflip top-up adapter", () => {
   it("projects unfunded and funded records into active shell states", () => {
+    const now = 1_000;
     const records = [
-      { tradeN: 2, amountHuman: "25", startedAt: 200 }, // pre-source-aware: bare key
-      { tradeN: 3, amountHuman: "50", startedAt: 300, funded: 350, sourceId: "dot-assethub" },
+      record({ tradeN: 2, amountHuman: "25", startedAt: 200 }, now), // pre-source-aware: bare key
+      record(
+        { tradeN: 3, amountHuman: "50", startedAt: 300, funded: 350, sourceId: "dot-assethub" },
+        now,
+      ),
     ];
 
-    const topUps = projectChainflipTopUps(records, {}, 1_000);
+    const topUps = projectChainflipTopUps(records, now);
 
     expect(topUps[0]).toMatchObject({
       id: "crypto:#2",
@@ -37,24 +65,33 @@ describe("Chainflip top-up adapter", () => {
     });
   });
 
-  it("uses live statuses ahead of the durable funded marker", () => {
-    const records = [{ tradeN: 4, amountHuman: "20", startedAt: 400, sourceId: "dot-assethub" }];
-    const statuses = {
-      "dot-assethub#4": { kind: "ready" },
-    } satisfies Record<string, RequestStatus>;
+  it("reads the worker's claim ahead of the durable funded marker", () => {
+    const funded = record(
+      { tradeN: 4, amountHuman: "20", startedAt: 400, sourceId: "dot-assethub" },
+      500,
+    );
+    const claimed = reduce(
+      funded,
+      worker(450, "done", { claim: { phase: "claimed", amount: "20250000", at: 450 } }),
+    );
 
-    expect(projectChainflipTopUps(records, statuses, 500)[0]).toMatchObject({
-      progress: { view: { kind: "active", activeStageKey: "cash-top-up" } },
-      state: {
-        kind: "finishing",
-        status: "Adding to your balance",
-      },
+    expect(projectChainflipTopUps([claimed], 500)[0]).toMatchObject({
+      progress: { view: { kind: "settled", label: "Ready to spend" }, settledAt: 450 },
+      state: { kind: "settled", at: 450, creditedAmount: "20.25" },
     });
   });
 
   it("projects failed and settled requests as history records", () => {
-    const records = [
-      { tradeN: 5, amountHuman: "40", startedAt: 500 },
+    const now = 900;
+    const swapping = reduce(
+      record({ tradeN: 5, amountHuman: "40", startedAt: 500 }, now),
+      worker(600, "swap"),
+    );
+    const failed = reduce(
+      swapping,
+      worker(now, "failed", { failure: "shortfall", lastError: "Deposit expired" }),
+    );
+    const settled = record(
       {
         tradeN: 6,
         amountHuman: "100",
@@ -65,18 +102,16 @@ describe("Chainflip top-up adapter", () => {
         settledAt: 800,
         claimed: "100250000",
       },
-    ];
-    const statuses = {
-      "#5": { kind: "failed", reason: "Deposit expired" },
-    } satisfies Record<string, RequestStatus>;
-    const now = 900;
+      now,
+    );
+    const records = [failed, settled];
 
-    // With no persisted failure time, the failure is dated at the observation time.
-    expect(projectChainflipTopUps(records, statuses, now).map(({ state }) => state)).toEqual([
+    // With no persisted failure time, the failure is dated at the worker's report.
+    expect(projectChainflipTopUps(records, now).map(({ state }) => state)).toEqual([
       { kind: "failed", at: now, reason: "Deposit expired" },
       { kind: "settled", at: 800, creditedAmount: "100.25" },
     ]);
-    expect(projectChainflipTopUps(records, statuses, now)[1]?.details).toEqual({
+    expect(projectChainflipTopUps(records, now)[1]?.details).toEqual({
       network: { label: "Bitcoin", icon: "/icons/bitcoin.svg" },
       token: { label: "BTC", icon: "/icons/bitcoin.svg" },
       provider: { label: "Chainflip", icon: "/icons/chainflip.png" },
@@ -87,21 +122,20 @@ describe("Chainflip top-up adapter", () => {
 
   it("keeps a persisted failure time over the observation time", () => {
     const failedAt = 700;
-    const records = [
+    const failed = record(
       {
         tradeN: 8,
         amountHuman: "40",
         startedAt: 500,
+        failureReason: "Deposit expired",
         progress: createFundingProgressSnapshot(chainflipProgressProvider.createProfile(), {
           failedAt,
         }),
       },
-    ];
-    const statuses = {
-      "#8": { kind: "failed", reason: "Deposit expired" },
-    } satisfies Record<string, RequestStatus>;
+      900,
+    );
 
-    expect(projectChainflipTopUps(records, statuses, 900)[0]?.state).toEqual({
+    expect(projectChainflipTopUps([failed], 900)[0]?.state).toEqual({
       kind: "failed",
       at: failedAt,
       reason: "Deposit expired",
@@ -109,7 +143,9 @@ describe("Chainflip top-up adapter", () => {
   });
 
   it("ignores incomplete records and rejects foreign identifiers", () => {
-    expect(projectChainflipTopUps([{ amountHuman: "25", startedAt: 100 }], {})).toEqual([]);
+    const incomplete = migrateRecord({ startedAt: 100 }, requestRefOf(undefined, 1), 100);
+    expect(incomplete).toBeNull();
+    expect(projectChainflipTopUps(incomplete === null ? [] : [incomplete])).toEqual([]);
     expect(chainflipRequestRef("crypto:dot-assethub#17")).toEqual({
       sourceId: "dot-assethub",
       tradeN: 17,
@@ -124,18 +160,15 @@ describe("Chainflip top-up adapter", () => {
   it("leaves another rail's records to that rail's adapter", () => {
     // The trade counter is per source: meld-card #7 and dot-assethub #7 are different purchases.
     const records = [
-      { tradeN: 7, amountHuman: "25", startedAt: 100, sourceId: "meld-card" },
-      { tradeN: 7, amountHuman: "30", startedAt: 110, sourceId: "dot-assethub" },
+      record({ tradeN: 7, amountHuman: "25", startedAt: 100, sourceId: "meld-card" }, 200),
+      record({ tradeN: 7, amountHuman: "30", startedAt: 110, sourceId: "dot-assethub" }, 200),
     ];
-    expect(projectChainflipTopUps(records, {}).map(({ id }) => id)).toEqual([
-      "crypto:dot-assethub#7",
-    ]);
+    expect(projectChainflipTopUps(records).map(({ id }) => id)).toEqual(["crypto:dot-assethub#7"]);
   });
 
   it("keeps route details available for legacy records", () => {
-    expect(
-      projectChainflipTopUps([{ tradeN: 7, amountHuman: "25", startedAt: 100 }], {})[0]?.details,
-    ).toEqual({
+    const legacy = record({ tradeN: 7, amountHuman: "25", startedAt: 100 }, 200);
+    expect(projectChainflipTopUps([legacy])[0]?.details).toEqual({
       provider: { label: "Chainflip", icon: "/icons/chainflip.png" },
       arrivalEstimate: "≈10 min after your transfer",
     });

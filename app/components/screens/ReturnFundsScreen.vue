@@ -3,22 +3,27 @@
 // the buyer controls. The key is read on tap, never on load, and can be masked again after a look.
 import { computed, ref, watch } from "vue";
 import { Check, Copy, Eye, EyeClosed } from "lucide-vue-next";
+import type { SourceId } from "@getsome/core";
 import { formatSourceAmount, SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
 import { isRefundChain, type RefundKey } from "@getsome/ephemeral";
 import { useCopyToClipboard } from "../../composables/useCopyToClipboard";
+import { effectiveSourceId } from "../../funding/requests/model";
+import { useRequestsStore } from "../../stores/requests";
 import { useSessionStore } from "../../stores/session";
 import { recoveryNotes, refundStatusTail } from "../../utils/recovery";
 import PillButton from "../ui/PillButton.vue";
 
 const emit = defineEmits<{ back: [] }>();
 const session = useSessionStore();
+const requests = useRequestsStore();
 
-const state = computed(() => session.lastState);
-const failure = computed(() => (state.value?.phase === "failed" ? state.value.failure : null));
-const refund = computed(() => (state.value?.phase === "failed" ? state.value.refund : undefined));
+/** The failed request on screen; nothing to return while it stands. */
+const record = computed(() => (requests.phase === "failed" ? requests.foregroundRecord : null));
+const failure = computed(() => record.value?.failure ?? null);
+const refund = computed(() => failure.value?.refund);
 const source = computed(() => {
-  const id = state.value?.sourceId;
-  return id ? (SOURCE_CONFIG_BY_ID.get(id) ?? null) : null;
+  const r = record.value;
+  return r ? (SOURCE_CONFIG_BY_ID.get(effectiveSourceId(r.ref) as SourceId) ?? null) : null;
 });
 const asset = computed(() => source.value?.asset ?? "");
 const chain = computed(() => {

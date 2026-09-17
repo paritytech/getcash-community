@@ -4,11 +4,13 @@
 // confirms.
 import { onMounted, onUnmounted } from "vue";
 import { ArrowDown, CircleX } from "lucide-vue-next";
+import { useRequestsStore } from "../../../stores/requests";
 import { useSessionStore } from "../../../stores/session";
 
 defineProps<{ payUrl?: string | null }>();
 
 const session = useSessionStore();
+const requests = useRequestsStore();
 
 // The return page posts `meld:paid` from the adapter origin; only that origin is trusted.
 const ADAPTER_ORIGIN = (() => {
@@ -39,31 +41,31 @@ onUnmounted(() => window.removeEventListener("message", onMessage));
     <!-- A refund is reassuring, not an error: the money came back. Its own calm treatment, before
          the red failure below, so it never reads as "payment failed, try again". -->
     <div
-      v-if="session.meldStage === 'failed' && session.meldRefunded"
+      v-if="requests.meldStage === 'failed' && requests.meldRefunded"
       class="flex min-h-0 w-full flex-1 flex-col items-center justify-center gap-2 text-center"
     >
       <ArrowDown class="size-8 text-fg-primary" aria-hidden="true" />
       <p class="text-label-l font-semibold text-fg-primary">Payment refunded</p>
       <p class="max-w-[260px] text-body-m text-fg-secondary">
         {{
-          session.meldFailureMessage ??
+          requests.meldFailureMessage ??
           "Your payment was refunded. The money has been returned to you."
         }}
       </p>
     </div>
     <div
-      v-else-if="session.meldStage === 'failed'"
+      v-else-if="requests.meldStage === 'failed'"
       class="flex min-h-0 w-full flex-1 flex-col items-center justify-center gap-2 text-center"
     >
       <CircleX class="size-8 text-fg-error" aria-hidden="true" />
       <!-- The adapter's own reason: the four failure states are not interchangeable, and
            `unobserved` (the buyer may have been charged) must not read as "try again". -->
       <p class="max-w-[240px] text-label-m text-fg-error">
-        {{ session.meldFailureMessage ?? "Payment could not be completed" }}
+        {{ requests.meldFailureMessage ?? "Payment could not be completed" }}
       </p>
     </div>
     <div
-      v-else-if="session.meldSubmitted"
+      v-else-if="requests.meldSubmitted"
       class="flex min-h-0 w-full flex-1 items-center justify-center"
     >
       <span

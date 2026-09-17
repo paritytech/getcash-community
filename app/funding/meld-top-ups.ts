@@ -2,36 +2,25 @@
 
 import { computed } from "vue";
 import { useFundingProgressClock } from "../composables/useFundingProgressClock";
-import { DEPOSIT_EXPIRED_REASON, useSessionStore, type RequestStatus } from "../stores/session";
-import {
-  parseRequestRefKey,
-  requestRefKey,
-  requestRefOf,
-  type RequestRef,
-} from "../utils/request-index";
-import {
-  meldProgressProvider,
-  projectFundingProgress,
-  resolveFundingProgressSnapshot,
-} from "./progress";
+import { useRequestsStore } from "../stores/requests";
+import { DEPOSIT_EXPIRED_REASON, useSessionStore } from "../stores/session";
+import { parseRequestRefKey, requestRefKey, type RequestRef } from "../utils/request-index";
+import { projectFundingProgress } from "./progress";
+import type { RequestRecord } from "./requests/model";
+import { rowStateOf } from "./requests/views";
 import type { FundingRoute } from "./selection";
 import { isMeldSourceId, meldMethodFor, meldSourceIdFor, type MeldMethod } from "./source-ids";
 import type { FundingTopUpAdapter } from "./top-up-adapter";
-import {
-  activeState,
-  applyLiveStatus,
-  creditedAmount,
-  quoteOf,
-  type FundingTopUpRecord,
-} from "./top-up-projection";
+import { quoteOf, type FundingTopUpRecord } from "./top-up-projection";
 import type { FundingTopUp, FundingTopUpDetails } from "./top-ups";
 
 export type MeldTopUpRecord = FundingTopUpRecord;
 
-const fallbackProfile = meldProgressProvider.createProfile();
-
 /** A fiat top-up's id: the route that paid, then the request's identity (`card:meld-card#3`). */
 const topUpId = (route: MeldMethod, ref: RequestRef) => `${route}:${requestRefKey(ref)}`;
+
+/** The rows whose progress no longer moves on its own. */
+const FINISHED = new Set<RequestRecord["status"]["kind"]>(["settled", "failed", "expired"]);
 
 /** The request a top-up id names, or null for an id that is not this package's or whose route
  *  and source disagree (`card:meld-bank#1`). */
@@ -61,33 +50,16 @@ function topUpDetails(record: MeldTopUpRecord, method: MeldMethod): FundingTopUp
 }
 
 export function projectMeldTopUps(
-  records: readonly MeldTopUpRecord[],
-  statuses: Readonly<Record<string, RequestStatus>>,
+  records: readonly RequestRecord[],
   now = Date.now(),
 ): FundingTopUp[] {
   return records.flatMap((record) => {
-    if (record.tradeN === undefined || !isMeldSourceId(record.sourceId)) return [];
-    const ref = requestRefOf(record.sourceId, record.tradeN);
-    const method = meldMethodFor(record.sourceId);
+    const { ref, progress: snapshot } = record;
+    if (!isMeldSourceId(ref.sourceId)) return [];
+    const method = meldMethodFor(ref.sourceId);
     const route: FundingRoute = method;
-    const status = statuses[requestRefKey(ref)];
-    const snapshot = applyLiveStatus(
-      resolveFundingProgressSnapshot(record.progress, fallbackProfile, {
-        fundedAt: record.funded,
-        settledAt: record.settledAt,
-      }),
-      status,
-      now,
-    );
     const progress = projectFundingProgress({ snapshot, createdAt: record.startedAt, now });
-    const state =
-      record.settledAt === undefined
-        ? activeState(status, progress, record.failureReason)
-        : {
-            kind: "settled" as const,
-            at: record.settledAt,
-            creditedAmount: creditedAmount(record),
-          };
+    const state = rowStateOf(record, progress);
     const worded =
       state.kind === "failed" && state.reason === DEPOSIT_EXPIRED_REASON
         ? { ...state, reason: MELD_WINDOW_CLOSED_REASON }
@@ -109,26 +81,19 @@ export function projectMeldTopUps(
 
 export function useMeldTopUpAdapter(): FundingTopUpAdapter {
   const session = useSessionStore();
+  const requests = useRequestsStore();
   const cadence = computed(() => {
-    const cadences = session.requestList.flatMap((record) =>
-      !isMeldSourceId(record.sourceId) ||
-      record.settledAt !== undefined ||
-      record.progress?.settledAt !== undefined ||
-      record.progress?.failedAt !== undefined ||
-      (record.tradeN !== undefined &&
-        session.requestStatus[requestRefKey(requestRefOf(record.sourceId, record.tradeN))]?.kind ===
-          "failed")
+    const cadences = requests.openRecords.flatMap((record) =>
+      !isMeldSourceId(record.ref.sourceId) || FINISHED.has(record.status.kind)
         ? []
-        : [record.progress?.profile.cadenceMs ?? fallbackProfile.cadenceMs],
+        : [record.progress.profile.cadenceMs],
     );
     return cadences.length === 0 ? null : Math.min(...cadences);
   });
   const now = useFundingProgressClock(cadence);
   return {
-    topUps: computed(() =>
-      projectMeldTopUps(session.requestList, session.requestStatus, now.value),
-    ),
-    refresh: () => session.resumeOpenRequests(),
+    topUps: computed(() => projectMeldTopUps(requests.openRecords, now.value)),
+    refresh: () => session.resumeOpenRequests("boot"),
     open: (topUp) => {
       const ref = meldRequestRef(topUp.id);
       return ref === null ? Promise.resolve(false) : session.openRequest(ref);
