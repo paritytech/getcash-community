@@ -1,5 +1,5 @@
 {
   "extends": "./tsconfig.base.json",
-  "compilerOptions": { "noEmit": true },
-  "include": ["packages/*/src/**/*.ts", "withdraw/chain/**/*.ts"]
+  "compilerOptions": { "noEmit": true, "resolveJsonModule": true },
+  "include": ["packages/*/src/**/*.ts", "withdraw/chain/**/*.ts", "withdraw/worker/**/*.ts"]
 }
