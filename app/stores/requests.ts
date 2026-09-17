@@ -1429,8 +1429,8 @@ export const useRequestsStore = defineStore("requests", () => {
     });
   }
 
-  /** One read of the host's word on a withdrawal's payment, through the worker, applied as the
-   *  host's observation. Nothing to read before a prompt; a read that fails changes nothing. */
+  /** One read of the host's word on a withdrawal's payment, applied as the host's observation.
+   *  Nothing to read before a prompt; a read that fails changes nothing. */
   async function observePaymentStatus(ref: RequestRef): Promise<"ok" | "skipped" | "failed"> {
     const record = get(ref);
     if (record === undefined || !isWithdrawal(record) || record.payment.id === undefined) {
@@ -1439,11 +1439,8 @@ export const useRequestsStore = defineStore("requests", () => {
     const { attempt, id } = record.payment;
     const at = requestsNow();
     try {
-      const [{ getStorageWorkerManager }, { readPaymentStatus }] = await Promise.all([
-        import("~~/lib/worker-rpc"),
-        import("~~/lib/withdraw-live"),
-      ]);
-      const reading = await readPaymentStatus(getStorageWorkerManager(), id);
+      const { readPaymentStatus } = await import("~~/lib/withdraw-live");
+      const reading = await readPaymentStatus(id);
       await observe(ref, { source: "host", at, payment: { attempt, ...reading } });
       return "ok";
     } catch (e) {
@@ -1473,11 +1470,8 @@ export const useRequestsStore = defineStore("requests", () => {
       id === undefined
         ? Promise.resolve<Bounded<HostPaymentReading | null>>({ ok: true, value: null })
         : bounded("the payment status read", CANCEL_CONFIRM_MS, async () => {
-            const [{ getStorageWorkerManager }, { readPaymentStatus }] = await Promise.all([
-              import("~~/lib/worker-rpc"),
-              import("~~/lib/withdraw-live"),
-            ]);
-            return readPaymentStatus(getStorageWorkerManager(), id);
+            const { readPaymentStatus } = await import("~~/lib/withdraw-live");
+            return readPaymentStatus(id);
           }),
     ]);
     if (key.ok && key.value > 0n) {

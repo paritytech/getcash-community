@@ -4,6 +4,8 @@
 // top-up claims already; this page hands the request over and reads it back, as coinage-live
 // does for the on-ramp.
 
+import { PaymentRequestErr, PaymentStatusErr } from "@novasamatech/host-api";
+import { paymentManager, type PaymentStatus } from "@novasamatech/host-api-wrapper";
 import { deriveEntropy, getHostLocalStorage } from "@parity/product-sdk-host";
 import { deriveKeypair } from "@getsome/ephemeral";
 import { PASEO_ASSET_HUB_PARA_ID, PASEO_PEOPLE_PARA_ID } from "@getsome/funding";
@@ -198,24 +200,50 @@ export function nudgeWithdrawTicks(worker: WorkerLike): void {
   void worker.call("tickAllWithdraw").catch(() => {});
 }
 
-/** The host's answer to a payment request, as the worker keeps it: the sheet is up, the host
- *  registered the payment, or the host refused it. */
-export type PaymentPrompt = "prompting" | "registered" | "refused";
+// The purse's payment to a withdrawal key is requested from the page, not the worker: the host
+// shows its sheets, the approval and the privacy consent, to a page and to nothing else. The
+// worker only watches the key the purse pays.
 
-/** Has the worker ask the host to pay `amount` CASH to the key under `idHex`. Returns at once
- *  with the attempt's state: the host's sheet outlives the call, and its answer is read back with
- *  the status. Idempotent on the id: a repeated command raises no second sheet. */
-export async function requestKeyPayment(
-  worker: WorkerLike,
-  args: { sessionId: string; idHex: string; amount: bigint; key: WithdrawKey },
-): Promise<{ prompt: PaymentPrompt; reason?: string }> {
-  await awaitWorker(worker, "the payment cannot be requested");
-  return worker.call<{ prompt: PaymentPrompt; reason?: string }>("requestPayment", {
-    sessionId: args.sessionId,
-    idHex: args.idHex,
-    amount: args.amount.toString(),
-    destinationHex: args.key.publicKeyHex,
-  });
+const fromHex = (hex: string): Uint8Array =>
+  Uint8Array.from(hex.slice(2).match(/.{2}/g) ?? [], (byte) => parseInt(byte, 16));
+
+/** The host refused a payment request; the message is the user's reason. */
+export class PaymentRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PaymentRefusedError";
+  }
+}
+
+/** What the host's refusal means to the user. */
+function refusalReason(error: unknown): string {
+  if (error instanceof PaymentRequestErr.Rejected) return "The payment was declined.";
+  if (error instanceof PaymentRequestErr.InsufficientBalance) {
+    return "The balance does not cover this withdrawal.";
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** Asks the host to pay `amount` CASH to the key under `idHex`. Resolves once the host registered
+ *  the payment, which is after the user's decision on its sheets, so a caller starts it and reads
+ *  the answer back through the status. Idempotent on the id: a known id resolves at once and
+ *  raises no second sheet. Throws PaymentRefusedError with the user's reason when the host
+ *  refused. */
+export async function requestKeyPayment(args: {
+  idHex: string;
+  amount: bigint;
+  key: WithdrawKey;
+}): Promise<void> {
+  try {
+    await paymentManager.requestPayment(
+      args.amount,
+      fromHex(args.key.publicKeyHex),
+      fromHex(args.idHex),
+    );
+  } catch (error) {
+    if (error instanceof PaymentRequestErr.AlreadyExists) return;
+    throw new PaymentRefusedError(refusalReason(error));
+  }
 }
 
 export interface PaymentStatusReading {
@@ -225,52 +253,64 @@ export interface PaymentStatusReading {
   actualClaimed?: string;
 }
 
-const HOST_STATUSES: readonly HostPaymentStatus[] = [
-  "processing",
-  "completed",
-  "failed",
-  "partiallyClaimed",
-];
-
-/** What the worker answers a status read with. */
-interface WorkerPaymentStatus {
-  prompt: PaymentPrompt | "unknown";
-  reason?: string;
-  /** The host's status; null while the host knows nothing of the id; absent when the read failed. */
-  host?: { type: string; reason?: string; actualClaimed?: string } | null;
-  hostError?: string;
+interface StatusSubscription {
+  unsubscribe(): void;
+  onInterrupt(callback: (error: unknown) => void): unknown;
 }
 
-/** One read of the host's word on payment `idHex`, through the worker. The host's status when it
- *  has one; a refused prompt reads as a failed payment with the host's reason; an id the host
- *  does not know yet reads as `not-found`. Throws when the host could not be asked. */
-export async function readPaymentStatus(
-  worker: WorkerLike,
-  idHex: string,
-): Promise<PaymentStatusReading> {
-  const answer = await worker.call<WorkerPaymentStatus>(
-    "paymentStatus",
-    { idHex },
-    { deadlineMs: PAYMENT_STATUS_DEADLINE_MS },
-  );
-  const { host } = answer;
-  if (host !== null && host !== undefined) {
-    const status = HOST_STATUSES.find((known) => known === host.type);
-    if (status === undefined) throw new Error(`unknown payment status '${host.type}'`);
-    return {
-      status,
-      ...(host.reason === undefined ? {} : { reason: host.reason }),
-      ...(host.actualClaimed === undefined ? {} : { actualClaimed: host.actualClaimed }),
+/** The first value of a host status subscription within `timeoutMs`; the subscription is closed
+ *  right after. An interrupt before the first value rejects with the host's error. */
+function firstStatus<T>(
+  subscribe: (callback: (status: T) => void) => StatusSubscription,
+  timeoutMs: number,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let subscription: StatusSubscription | null = null;
+    let done = false;
+    const finish = (): void => {
+      done = true;
+      clearTimeout(timer);
+      subscription?.unsubscribe();
     };
+    const timer = setTimeout(() => {
+      if (done) return;
+      finish();
+      reject(new Error(`payment status read timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    subscription = subscribe((status) => {
+      if (done) return;
+      finish();
+      resolve(status);
+    });
+    subscription.onInterrupt((error) => {
+      if (done) return;
+      finish();
+      reject(error instanceof Error ? error : new Error(String(error)));
+    });
+    if (done) subscription.unsubscribe();
+  });
+}
+
+/** One read of the host's word on payment `idHex`: its status when it has one, `not-found` for an
+ *  id it does not know yet. Throws when the host could not be asked. */
+export async function readPaymentStatus(idHex: string): Promise<PaymentStatusReading> {
+  let status: PaymentStatus;
+  try {
+    status = await firstStatus<PaymentStatus>(
+      (callback) => paymentManager.subscribePaymentStatus(fromHex(idHex), callback),
+      PAYMENT_STATUS_DEADLINE_MS,
+    );
+  } catch (error) {
+    if (error instanceof PaymentStatusErr.PaymentNotFound) return { status: "not-found" };
+    throw error;
   }
-  if (host === undefined) {
-    throw new Error(answer.hostError ?? "the host could not be asked about the payment");
+  switch (status.type) {
+    case "processing":
+    case "completed":
+      return { status: status.type };
+    case "failed":
+      return { status: "failed", reason: status.reason };
+    case "partiallyClaimed":
+      return { status: "partiallyClaimed", actualClaimed: status.actualClaimed.toString() };
   }
-  if (answer.prompt === "refused") {
-    return {
-      status: "failed",
-      ...(answer.reason === undefined ? {} : { reason: answer.reason }),
-    };
-  }
-  return { status: "not-found" };
 }

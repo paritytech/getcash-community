@@ -136,34 +136,29 @@ export function useWithdrawalRequest() {
     const { attempt } = record.payment;
     const idHex = paymentIdFor(record.key.publicKeyHex, attempt);
     await requests.markPaymentRequested(ref, attempt, idHex);
-    try {
-      const { getStorageWorkerManager } = await import("~~/lib/worker-rpc");
-      const answer = await live.requestKeyPayment(getStorageWorkerManager(), {
-        sessionId: workerSessionId(ref.sourceId, ref.tradeN),
+    // The request resolves after the user's decision on the host's sheets, so it is started and
+    // left to run: the status poll reads the host's answer back, and a refusal is applied here
+    // the moment it comes. Until then a cancel is still possible, since the host has nothing in
+    // hand.
+    void live
+      .requestKeyPayment({
         idHex,
         amount: BigInt(record.handoff.amount),
         key: {
           address: record.key.address,
           publicKeyHex: record.key.publicKeyHex as `0x${string}`,
         },
-      });
-      if (answer.prompt === "refused") {
-        const reason = answer.reason ?? "the payment did not go through";
+      })
+      .catch(async (e: unknown) => {
+        const reason = e instanceof live.PaymentRefusedError ? e.message : messageOf(e);
+        console.warn(`[withdraw] payment for ${ref.sourceId}#${ref.tradeN} refused: ${reason}`);
         await requests.observe(ref, {
           source: "host",
           at: requestsNow(),
           payment: { attempt, status: "failed", reason },
         });
-        return { ok: false, reason };
-      }
-      return { ok: true };
-    } catch (e) {
-      // The worker could not be asked. The record keeps its stamp and id: the status poll and the
-      // window settle it, and a cancel is still possible since the host has nothing in hand.
-      const reason = messageOf(e);
-      console.warn(`[withdraw] payment prompt for ${ref.sourceId}#${ref.tradeN} failed: ${reason}`);
-      return { ok: false, reason };
-    }
+      });
+    return { ok: true };
   }
 
   /** A user retry: a failed payment is prompted again under a fresh attempt; a failed

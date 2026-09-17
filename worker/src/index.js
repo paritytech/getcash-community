@@ -1,6 +1,5 @@
 import { cancelFunding, fundingStatus, startFunding, tickAllFunding } from "./engine.js";
 import { createKeepAlive } from "./keepalive.js";
-import { paymentStatus, requestPayment } from "./payments.js";
 import { startRpcDispatcher } from "./rpc.js";
 import {
   cancelWithdraw,
@@ -11,11 +10,10 @@ import {
 
 // GetSome background worker: drives the funding and withdrawal jobs handed over by the surface
 // (startFunding, startWithdraw), with records in product storage and the keys re-derived from
-// host entropy on every wake, and makes the purse's payments to withdrawal keys on the surface's
-// command. Bundled into a single `worker/index.js` before publishing (`pnpm build:worker`).
+// host entropy on every wake. Bundled into a single `worker/index.js` before publishing
+// (`pnpm build:worker`).
 
 export { cancelFunding, fundingStatus, startFunding, tickAllFunding } from "./engine.js";
-export { paymentStatus, requestPayment } from "./payments.js";
 export {
   cancelWithdraw,
   startWithdraw,
@@ -82,8 +80,6 @@ startRpcDispatcher({
     tickAllWithdraw: () => tickAllWithdraw(),
     withdrawStatus: (params) => withdrawStatus(params),
     cancelWithdraw: (params) => cancelWithdraw(params),
-    requestPayment: (params) => requestPayment(params),
-    paymentStatus: (params) => paymentStatus(params),
   },
 });
 
