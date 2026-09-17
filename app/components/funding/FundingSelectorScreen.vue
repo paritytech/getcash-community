@@ -65,7 +65,7 @@ const props = withDefaults(
 
 // The shell owns the preview deck while no package is open, so the top-ups scenes can be cycled
 // from here.
-const { previewLabel } = useStateDirector();
+useStateDirector();
 
 const emit = defineEmits<{
   change: [];
@@ -203,12 +203,8 @@ watch(
       @history="showHistory"
     />
 
-    <p
-      v-if="previewLabel"
-      class="pointer-events-none absolute inset-x-0 bottom-2 text-center text-caption text-fg-tertiary"
-    >
-      {{ previewLabel }}
-    </p>
+    <!-- state-director scene label (dev/demo keys only) -->
+    <PreviewSceneLabel />
   </section>
 </template>
 

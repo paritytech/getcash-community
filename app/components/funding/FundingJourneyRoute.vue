@@ -37,7 +37,7 @@ const waiting = computed(() => opening.value && session.lastState === null && !u
 let active = true;
 
 useVisibilityReconcile();
-const { previewLabel } = useStateDirector();
+useStateDirector();
 
 /** The fee-breakdown drill-in over the journey. Back (toolbar or bottom button) returns to it. */
 const showingFees = ref(false);
@@ -145,11 +145,6 @@ onUnmounted(() => {
     </div>
 
     <!-- state-director scene label (dev/demo keys only) -->
-    <span
-      v-if="previewLabel"
-      class="fixed bottom-2 left-2 rounded-small bg-surface-container px-2 py-1 font-mono text-overline text-fg-secondary shadow-1"
-    >
-      {{ previewLabel }}
-    </span>
+    <PreviewSceneLabel />
   </main>
 </template>

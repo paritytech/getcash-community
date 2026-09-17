@@ -20,9 +20,10 @@ import {
   type PreviewTopUpScene,
 } from "./dev-preview-top-ups";
 import type { FundingTopUp } from "../funding/top-ups";
-import type { useFlowStore } from "../stores/flow";
+import { previewStage, type PreviewStage } from "./dev-preview-stage";
+import { useFlowStore } from "../stores/flow";
 import { useOffersStore } from "../stores/offers";
-import { DEPOSIT_EXPIRED_REASON, type useSessionStore } from "../stores/session";
+import { DEPOSIT_EXPIRED_REASON, useSessionStore } from "../stores/session";
 
 type Session = ReturnType<typeof useSessionStore>;
 type Flow = ReturnType<typeof useFlowStore>;
@@ -91,6 +92,9 @@ function working(step: "awaiting-consent" | "verifying" | "minting"): PaymentSta
 
 interface Scene {
   name: string;
+  /** Which container the scene's state is meant to be read in. Derived from the scene's family
+   *  when left out; set it only where the name cannot say it (a journey opened on one top-up). */
+  stage?: PreviewStage;
   apply: (session: Session, flow: Flow) => void;
 }
 
@@ -248,6 +252,32 @@ function topUpList(topUps: readonly FundingTopUp[], extra: Omit<PreviewTopUpScen
   };
 }
 
+const CRYPTO_PACKAGE: PreviewStage = { kind: "package", route: "crypto" };
+const CRYPTO_JOURNEY: PreviewStage = { kind: "journey", route: "crypto" };
+const CARD_JOURNEY: PreviewStage = { kind: "journey", route: "card" };
+
+/**
+ * The scene families, in the order they are matched: the first prefix a scene's name starts with
+ * wins. The names are already a taxonomy — "crypto / deposit: waiting" belongs to the package that
+ * owns the deposit, "crypto / claim: consent" to the journey that owns the claim — so the stage is
+ * read off them rather than repeated on all fifty-odd scenes.
+ */
+const STAGE_BY_PREFIX: readonly (readonly [string, PreviewStage])[] = [
+  ["list / ", { kind: "shell" }],
+  // The crypto package owns everything up to and including the deposit.
+  ["crypto / network", CRYPTO_PACKAGE],
+  ["crypto / token", CRYPTO_PACKAGE],
+  ["crypto / deposit", CRYPTO_PACKAGE],
+  ["crypto / resume spinner", CRYPTO_PACKAGE],
+  ["crypto / ", CRYPTO_JOURNEY],
+  ["card / ", CARD_JOURNEY],
+];
+
+function stageFor(scene: Scene): PreviewStage {
+  if (scene.stage) return scene.stage;
+  const match = STAGE_BY_PREFIX.find(([prefix]) => scene.name.startsWith(prefix));
+  return match?.[1] ?? { kind: "shell" };
+}
 // Scenes start at the first screen a package owns.
 export const SCENES: Scene[] = [
   {
@@ -674,9 +704,16 @@ function applyProgress(session: Session) {
   session.foregroundProgress = { startedAt, snapshot };
 }
 
-export function directScene(session: Session, flow: Flow, delta: 1 | -1): string {
-  index = (index + delta + SCENES.length) % SCENES.length;
-  const scene = SCENES[index]!;
+/**
+ * Writes the current scene's state. Separate from `directScene` because the shell re-runs it once
+ * a scene's container is up: mounting a package or leaving the journey runs that container's own
+ * entry and teardown, which would otherwise land on top of the state the scene just wrote.
+ */
+export function applyCurrentScene(): void {
+  const scene = SCENES[index];
+  if (!scene) return;
+  const session = useSessionStore();
+  const flow = useFlowStore();
   scene.apply(session, flow);
   applyProgress(session);
   // The journey's timestamps, staggered three minutes apart from a fixed evening.
@@ -684,6 +721,14 @@ export function directScene(session: Session, flow: Flow, delta: 1 | -1): string
   const times = { ...session.milestones };
   for (let n = 1; n <= session.journeyDone; n++) times[n] ??= T0 + (n - 1) * 3 * 60_000;
   session.milestones = times;
+}
+
+export function directScene(delta: 1 | -1): string {
+  index = (index + delta + SCENES.length) % SCENES.length;
+  const scene = SCENES[index]!;
+  // The container first: the shell reads this and moves, then applies the state again on top.
+  previewStage.value = stageFor(scene);
+  applyCurrentScene();
   const label = `${index + 1}/${SCENES.length} ${scene.name}`;
   console.info(`[preview] ${label}`);
   return label;
