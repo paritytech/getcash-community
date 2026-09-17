@@ -34,7 +34,10 @@ export type FundingTopUp = Readonly<{
   details?: FundingTopUpDetails;
   /** What the buyer pays as the rail quoted it, for the journey's Fees/Total rows when the
    *  request is not (yet) live in the store. */
-  quote?: Readonly<{ amount: string; symbol: string; fee?: string }>;
+  quote?: Readonly<{ amount: string; symbol: string; fee?: string; provider?: string }>;
+  /** The rail's own id for the payment, as the buyer would quote it to support. Persisted with
+   *  the request, so a journey opened long after the session that made it still carries it. */
+  reference?: string;
   state: FundingTopUpState;
 }>;
 
