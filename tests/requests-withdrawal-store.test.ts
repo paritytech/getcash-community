@@ -5,6 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import {
+  JOB_POLL_MS,
   PAYMENT_WINDOW_MS,
   setRequestsClock,
   type WithdrawalRecord,
@@ -160,6 +161,35 @@ describe("requests store: withdrawals", () => {
       status: { kind: "awaiting-payment" },
       witnesses: { worker: { known: false, at: FIXTURE_NOW } },
     });
+  });
+
+  it("nudges the worker into a pass on each poll round while a withdrawal is its to move", async () => {
+    // setImmediate stays real: the nudge sits behind module imports the fake clock cannot drive.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    const call = vi.fn(async () => ({}));
+    vi.doMock("../lib/worker-rpc", () => ({
+      getStorageWorkerManager: () => ({ isAvailable: () => true, call }),
+    }));
+    try {
+      const rpc = await import("../lib/worker-rpc");
+      expect(rpc.getStorageWorkerManager().isAvailable()).toBe(true);
+      // Warm the live module, so the store's own import of it is not first-time I/O.
+      await import("../lib/withdraw-live");
+      await seed([withdrawal()], {
+        [SESSION]: job({ phase: "convert", state: { fundsSeenAt: FIXTURE_NOW - 60_000 } }),
+      });
+      const requests = useRequestsStore();
+      await requests.reconcile("boot");
+      expect(requests.get(REF)?.status.kind).toBe("converting");
+      await vi.advanceTimersByTimeAsync(JOB_POLL_MS);
+      for (let turns = 0; turns < 1_000 && call.mock.calls.length === 0; turns += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      expect(call).toHaveBeenCalledWith("tickAllWithdraw");
+    } finally {
+      vi.doUnmock("../lib/worker-rpc");
+      vi.useRealTimers();
+    }
   });
 
   it("moves a withdrawal by its job in the withdrawal blob, through to sent", async () => {

@@ -2184,6 +2184,20 @@ export const useRequestsStore = defineStore("requests", () => {
     clearInterval(jobPollTimer);
     jobPollTimer = null;
   }
+  /** While a withdrawal is the worker's to move, each poll round first nudges the worker into a
+   *  pass, as the top-up's loop does. Never throws: the poll reads the blobs either way. */
+  async function nudgeWithdrawWorker(): Promise<void> {
+    if (!records.value.some((record) => isWithdrawal(record) && isWorkerDriven(record))) return;
+    try {
+      const [{ getStorageWorkerManager }, { nudgeWithdrawTicks }] = await Promise.all([
+        import("~~/lib/worker-rpc"),
+        import("~~/lib/withdraw-live"),
+      ]);
+      nudgeWithdrawTicks(getStorageWorkerManager());
+    } catch (e: unknown) {
+      console.warn(`[requests] worker nudge failed: ${messageOf(e)}`);
+    }
+  }
   /** One tick. Single-flight: a tick arriving while the previous one runs joins it, one while
    *  hidden is skipped, and one that finds no request at rank 0–3 stops the poll. */
   function pollJobs(): Promise<void> {
@@ -2193,7 +2207,8 @@ export const useRequestsStore = defineStore("requests", () => {
       return Promise.resolve();
     }
     if (!pageVisible()) return Promise.resolve();
-    jobPollTick = observeWorkerJobs(requestsNow())
+    jobPollTick = nudgeWithdrawWorker()
+      .then(() => observeWorkerJobs(requestsNow()))
       .then(() => undefined)
       .catch((e: unknown) => {
         console.warn(`[requests] job poll failed: ${messageOf(e)}`);

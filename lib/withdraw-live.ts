@@ -190,6 +190,14 @@ export function cancelWithdrawJob(worker: WorkerLike, sessionId: string): Promis
   return worker.call("cancelWithdraw", { sessionId });
 }
 
+/** Nudges the worker into a pass over its withdrawals. A run has stalled between wakes while the
+ *  page was up, so each poll round drives a pass, as the top-up's loop does. Detached: a tick can
+ *  take tens of seconds and the poll does not wait on it. A worker that is not up is left alone. */
+export function nudgeWithdrawTicks(worker: WorkerLike): void {
+  if (!worker.isAvailable()) return;
+  void worker.call("tickAllWithdraw").catch(() => {});
+}
+
 /** The host's answer to a payment request, as the worker keeps it: the sheet is up, the host
  *  registered the payment, or the host refused it. */
 export type PaymentPrompt = "prompting" | "registered" | "refused";
