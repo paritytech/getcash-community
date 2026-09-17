@@ -124,9 +124,9 @@ describe("funding progress projections", () => {
     const profile = chainflipProgressProvider.createProfile();
     const failedAt = at(1, 10, 0);
     const failedSnapshot = createFundingProgressSnapshot(profile, {
-      confirmedStageKey: "cash-teleport",
+      confirmedStageKey: "cash-conversion",
       detectedAt: at(1, 9, 30),
-      stageTimestamps: { "cash-teleport": at(1, 9, 55) },
+      stageTimestamps: { "cash-conversion": at(1, 9, 55) },
       failedAt,
     });
     const first = projectFundingProgress({

@@ -5,14 +5,16 @@ import { computed, watch } from "vue";
 import { chainflipDepositPending } from "../funding/chainflip-handoff";
 import { projectFundingProgress } from "../funding/progress";
 import { useFlowStore } from "../stores/flow";
+import { useRequestsStore } from "../stores/requests";
 import { useSessionStore } from "../stores/session";
 
 export function useChainflipHandoff(emit: (event: "handoff") => void) {
   const session = useSessionStore();
+  const requests = useRequestsStore();
   const flow = useFlowStore();
 
   const depositPending = computed(() => {
-    const foreground = session.foregroundProgress;
+    const foreground = requests.foregroundProgress;
     // The view kind does not depend on the clock.
     const progressKind = foreground
       ? projectFundingProgress({
@@ -22,8 +24,8 @@ export function useChainflipHandoff(emit: (event: "handoff") => void) {
         }).view.kind
       : null;
     return chainflipDepositPending({
-      fundsSeen: session.fundsSeen,
-      phase: session.phase,
+      fundsSeen: requests.fundsSeen,
+      phase: requests.phase,
       progressKind,
     });
   });

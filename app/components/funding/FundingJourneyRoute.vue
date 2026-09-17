@@ -7,6 +7,7 @@ import { useStateDirector } from "../../composables/useStateDirector";
 import { useVisibilityReconcile } from "../../composables/useVisibilityReconcile";
 import type { FundingJourneyStatus } from "../../funding/handoff";
 import type { FundingTopUp } from "../../funding/top-ups";
+import { useRequestsStore } from "../../stores/requests";
 import { useSessionStore } from "../../stores/session";
 import ReturnFundsScreen from "../screens/ReturnFundsScreen.vue";
 import FundingSettledStatusScreen from "./FundingSettledStatusScreen.vue";
@@ -26,6 +27,7 @@ const props = defineProps<{
 const emit = defineEmits<{ back: []; startOver: [] }>();
 
 const session = useSessionStore();
+const requests = useRequestsStore();
 // A settled top-up is read from the list only: nothing resumed, nothing reset on the way out.
 const readOnly = props.topUp?.state.kind === "settled";
 const opening = ref(!readOnly && props.topUp != null && props.open != null);
@@ -33,7 +35,9 @@ const opening = ref(!readOnly && props.topUp != null && props.open != null);
 const unresumable = ref(false);
 /** Nothing left to show at all: not resumable, and no stored record to fall back on. */
 const unavailable = computed(() => unresumable.value && props.topUp == null);
-const waiting = computed(() => opening.value && session.lastState === null && !unresumable.value);
+const waiting = computed(
+  () => opening.value && requests.foregroundRecord === null && !unresumable.value,
+);
 let active = true;
 
 useVisibilityReconcile();
@@ -54,9 +58,9 @@ const showingRefund = ref(false);
 // history has no live state at all, and its guide is driven by the record instead, so the guard
 // only applies while a request is actually on screen.
 watch(
-  () => session.lastState?.phase,
+  () => requests.phase,
   (phase) => {
-    if (phase !== undefined && phase !== "failed") showingRefund.value = false;
+    if (phase !== null && phase !== "failed") showingRefund.value = false;
   },
 );
 // The preview deck lands straight on the opened guide.
@@ -76,13 +80,19 @@ function goBack() {
 
 onMounted(async () => {
   if (!opening.value || !props.topUp || !props.open) return;
-  const opened = await props.open(props.topUp);
-  if (!active) {
-    if (opened) session.reset();
-    return;
+  let opened = false;
+  try {
+    opened = await props.open(props.topUp);
+  } catch (e) {
+    console.warn("[funding] could not open the top-up:", e);
+    opened = false;
+  } finally {
+    if (active) {
+      unresumable.value = !opened;
+      opening.value = false;
+    }
   }
-  unresumable.value = !opened;
-  opening.value = false;
+  if (!active && opened) session.reset();
 });
 
 onUnmounted(() => {

@@ -1,29 +1,16 @@
 import { computed } from "vue";
 import { SOURCE_CHAINS } from "~~/lib/config";
 import { useFundingProgressClock } from "../composables/useFundingProgressClock";
-import { useSessionStore, type RequestStatus } from "../stores/session";
+import { useRequestsStore } from "../stores/requests";
+import { useSessionStore } from "../stores/session";
 import { networkIcon, tokenIcon } from "../utils/icons";
-import {
-  parseRequestRefKey,
-  requestRefKey,
-  requestRefOf,
-  type RequestRef,
-} from "../utils/request-index";
+import { parseRequestRefKey, requestRefKey, type RequestRef } from "../utils/request-index";
 import { isCryptoSourceId } from "./source-ids";
-import {
-  chainflipProgressProvider,
-  projectFundingProgress,
-  resolveFundingProgressSnapshot,
-  type FundingProgressSnapshot,
-} from "./progress";
+import { projectFundingProgress, type FundingProgressSnapshot } from "./progress";
+import { effectiveSourceId, type RequestRecord } from "./requests/model";
+import { rowStateOf } from "./requests/views";
 import type { FundingTopUpAdapter } from "./top-up-adapter";
-import {
-  activeState,
-  applyLiveStatus,
-  creditedAmount,
-  quoteOf,
-  type FundingTopUpRecord,
-} from "./top-up-projection";
+import { quoteOf, type FundingTopUpRecord } from "./top-up-projection";
 import type { FundingTopUp, FundingTopUpDetails } from "./top-ups";
 
 export type ChainflipTopUpRecord = FundingTopUpRecord;
@@ -31,7 +18,9 @@ export type ChainflipTopUpRecord = FundingTopUpRecord;
 /** A top-up's id: the route, then the request's identity (`crypto:dot-assethub#12`). Parsed by
  *  `chainflipRequestRef`. */
 const topUpId = (ref: RequestRef) => `crypto:${requestRefKey(ref)}`;
-const fallbackProfile = chainflipProgressProvider.createProfile();
+
+/** The rows whose progress no longer moves on its own. */
+const FINISHED = new Set<RequestRecord["status"]["kind"]>(["settled", "failed", "expired"]);
 
 function topUpDetails(
   record: ChainflipTopUpRecord,
@@ -54,40 +43,18 @@ function topUpDetails(
 }
 
 /** Whether the record belongs to the crypto rail. */
-export function isChainflipRecord(record: ChainflipTopUpRecord): boolean {
-  return isCryptoSourceId(record.sourceId);
+export function isChainflipRecord(record: Pick<RequestRecord, "ref">): boolean {
+  return isCryptoSourceId(record.ref.sourceId);
 }
 
 export function projectChainflipTopUps(
-  records: readonly ChainflipTopUpRecord[],
-  statuses: Readonly<Record<string, RequestStatus>>,
+  records: readonly RequestRecord[],
   now = Date.now(),
 ): FundingTopUp[] {
   return records.flatMap((record) => {
-    if (record.tradeN === undefined || !isChainflipRecord(record)) return [];
-    const ref = requestRefOf(record.sourceId, record.tradeN);
-    const status = statuses[requestRefKey(ref)];
-    const snapshot = applyLiveStatus(
-      resolveFundingProgressSnapshot(record.progress, fallbackProfile, {
-        fundedAt: record.funded,
-        settledAt: record.settledAt,
-      }),
-      status,
-      now,
-    );
+    if (!isChainflipRecord(record)) return [];
+    const { ref, progress: snapshot } = record;
     const progress = projectFundingProgress({ snapshot, createdAt: record.startedAt, now });
-    const details = topUpDetails(record, snapshot);
-    const state =
-      record.settledAt === undefined
-        ? activeState(status, progress, record.failureReason, record.refunded, {
-            ...(record.refundAmount ? { amount: record.refundAmount } : {}),
-            ...(record.refundTxRef ? { txRef: record.refundTxRef } : {}),
-          })
-        : {
-            kind: "settled" as const,
-            at: record.settledAt,
-            creditedAmount: creditedAmount(record),
-          };
     return [
       {
         id: topUpId(ref),
@@ -95,13 +62,11 @@ export function projectChainflipTopUps(
         route: "crypto" as const,
         startedAt: record.startedAt,
         progress,
-        details,
+        details: topUpDetails(record, snapshot),
         ...quoteOf(record),
         // The request's own identity, so a refund can be walked back to its key with no world.
-        ...(record.tradeN === undefined || record.sourceId === undefined
-          ? {}
-          : { request: { sourceId: record.sourceId, tradeN: record.tradeN } }),
-        state,
+        request: { sourceId: effectiveSourceId(ref), tradeN: ref.tradeN },
+        state: rowStateOf(record, progress),
       },
     ];
   });
@@ -117,25 +82,17 @@ export function chainflipRequestRef(id: string): RequestRef | null {
 
 export function useChainflipTopUpAdapter(): FundingTopUpAdapter {
   const session = useSessionStore();
+  const requests = useRequestsStore();
   const cadence = computed(() => {
-    const cadences = session.requestList.flatMap((record) =>
-      record.settledAt !== undefined ||
-      record.progress?.settledAt !== undefined ||
-      record.progress?.failedAt !== undefined ||
-      (record.tradeN !== undefined &&
-        session.requestStatus[requestRefKey(requestRefOf(record.sourceId, record.tradeN))]?.kind ===
-          "failed")
-        ? []
-        : [record.progress?.profile.cadenceMs ?? fallbackProfile.cadenceMs],
+    const cadences = requests.openRecords.flatMap((record) =>
+      FINISHED.has(record.status.kind) ? [] : [record.progress.profile.cadenceMs],
     );
     return cadences.length === 0 ? null : Math.min(...cadences);
   });
   const now = useFundingProgressClock(cadence);
   return {
-    topUps: computed(() =>
-      projectChainflipTopUps(session.requestList, session.requestStatus, now.value),
-    ),
-    refresh: () => session.resumeOpenRequests(),
+    topUps: computed(() => projectChainflipTopUps(requests.openRecords, now.value)),
+    refresh: () => session.resumeOpenRequests("boot"),
     open: (topUp) => {
       const ref = chainflipRequestRef(topUp.id);
       return ref === null ? Promise.resolve(false) : session.openRequest(ref);

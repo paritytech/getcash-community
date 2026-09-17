@@ -23,6 +23,7 @@ import {
   discoverPool,
   freshTickState,
   FundingShortfallError,
+  PASEO_ASSET_HUB_PARA_ID,
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
   sizeNativeBudget,
@@ -72,6 +73,7 @@ describe.runIf(process.env.PROD_PROOF === "1")("production proof", () => {
       // Size the deposit as the app does
       const sizing = await estimateFundingSizing({
         ahClient: ahC,
+        peopleClient: peC,
         underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
         peopleParaId: PASEO_PEOPLE_PARA_ID,
         settleAmount: SETTLE,
@@ -122,13 +124,14 @@ describe.runIf(process.env.PROD_PROOF === "1")("production proof", () => {
           const outcome = await tickOnce(
             {
               api: ah,
+              peopleApi: pe,
               pool,
               address: burner.address,
               signer: burner.signer,
               beneficiaryHex: toHex(burner.publicKey),
               settleAmount: SETTLE,
-              underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
               peopleParaId: PASEO_PEOPLE_PARA_ID,
+              assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
               remoteFeeBuffer: sizing.remoteFeeBuffer,
               keepNativeForFees: sizing.keepNativeForFees,
               slippagePct: DEFAULT_SLIPPAGE_PCT,

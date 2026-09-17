@@ -32,12 +32,14 @@ import {
 import type { FundingRoute, FundingSelection } from "../funding/selection";
 import type { FundingTopUpAdapter } from "../funding/top-up-adapter";
 import { projectFundingTopUps, type FundingTopUp } from "../funding/top-ups";
+import { useRequestsStore } from "../stores/requests";
 import { isDemoBuild } from "../utils/demo";
 import { applyCurrentScene } from "../utils/dev-preview";
 import { previewStage, type PreviewStage } from "../utils/dev-preview-stage";
 import { launchPreviewTopUps, previewTopUpScene } from "../utils/dev-preview-top-ups";
 
 useVisualViewportHeight();
+const requests = useRequestsStore();
 
 const selection = ref<FundingSelection | null>(null);
 const activePackage = shallowRef<Component | null>(null);
@@ -47,7 +49,7 @@ const loading = ref(false);
 const routeError = ref<string | null>(null);
 const openingTopUpId = ref<string | null>(null);
 const topUpError = ref<string | null>(null);
-const topUpsReady = ref(false);
+const topUpsReady = computed(() => requests.hydrated || requests.hostReadDone);
 // Launch lands on add-funds; history is behind the clock.
 const shellEntry = ref<FundingShellEntryScreen>("auto");
 const historyReturn = ref<FundingHistoryReturnScreen>("amount");
@@ -310,7 +312,7 @@ watch(previewStage, async (stage) => {
   // The container is up. Its own mount and teardown ran as it changed — a package starts its entry
   // flow over, a journey left behind resets the session — so the scene's state goes on top again.
   await nextTick();
-  applyCurrentScene();
+  await applyCurrentScene();
 });
 
 const openTopUpRequest = (topUp: FundingTopUp): Promise<boolean> =>
@@ -339,8 +341,6 @@ onMounted(async () => {
     await Promise.all(topUpAdapters.map((adapter) => adapter.refresh()));
   } catch (error: unknown) {
     console.warn("[funding] could not refresh top-ups:", error);
-  } finally {
-    topUpsReady.value = true;
   }
 });
 </script>

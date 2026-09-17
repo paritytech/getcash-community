@@ -8,7 +8,9 @@ import { formatSourceAmount, SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
 import { isRefundChain, type RefundKey } from "@getsome/ephemeral";
 import { shortAddress } from "../../utils/address";
 import { useCopyToClipboard } from "../../composables/useCopyToClipboard";
+import { effectiveSourceId, type RequestFailure } from "../../funding/requests/model";
 import type { FundingTopUp } from "../../funding/top-ups";
+import { useRequestsStore } from "../../stores/requests";
 import { useSessionStore } from "../../stores/session";
 import { refundTxUrl } from "../../utils/explorer";
 import { recoveryNotes, refundStatusTail } from "../../utils/recovery";
@@ -25,28 +27,27 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ back: [] }>();
 const session = useSessionStore();
+const requests = useRequestsStore();
 
-const state = computed(() => session.lastState);
+/** The failed request on screen; nothing to return while it stands. */
+const record = computed(() => (requests.phase === "failed" ? requests.foregroundRecord : null));
 /** The record's word on the failure, when no request is live to give one. */
 const storedRefund = computed(() =>
   props.topUp?.state.kind === "failed" && props.topUp.state.refunded ? props.topUp.state : null,
 );
-const failure = computed(() => {
-  if (state.value?.phase === "failed") return state.value.failure;
+const failure = computed<RequestFailure | null>(() => {
+  const live = record.value?.failure;
+  if (live) return live;
   const stored = storedRefund.value;
   // Reconstructed, not stored: the record keeps the reason, and `refunded` is what makes it this
   // failure rather than another. `recoverable` is false for every refund by construction.
   return stored === null
     ? null
-    : {
-        kind: "refunded" as const,
-        step: "swap" as const,
-        message: stored.reason ?? "",
-        recoverable: false,
-      };
+    : { kind: "refunded", step: "swap", message: stored.reason ?? "", recoverable: false };
 });
 const refund = computed(() => {
-  if (state.value?.phase === "failed") return state.value.refund;
+  const live = record.value?.failure?.refund;
+  if (live) return live;
   const stored = storedRefund.value;
   if (stored === null) return undefined;
   return {
@@ -57,7 +58,10 @@ const refund = computed(() => {
 const source = computed(() => {
   // The record's source id is a plain string; a lookup miss is the same "no source" the live path
   // already handles, so an id the registry does not know simply yields nothing.
-  const id = state.value?.sourceId ?? (props.topUp?.request?.sourceId as SourceId | undefined);
+  const r = record.value;
+  const id = r
+    ? (effectiveSourceId(r.ref) as SourceId)
+    : (props.topUp?.request?.sourceId as SourceId | undefined);
   return id ? (SOURCE_CONFIG_BY_ID.get(id) ?? null) : null;
 });
 const asset = computed(() => source.value?.asset ?? "");

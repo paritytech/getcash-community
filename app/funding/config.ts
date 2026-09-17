@@ -1,3 +1,4 @@
+import { DEFAULT_DEPOSIT_WINDOW_MS } from "./requests/model";
 import type { FundingAmountRules, FundingRoute } from "./selection";
 
 export interface FundingRouteOption {
@@ -6,6 +7,8 @@ export interface FundingRouteOption {
   description: string;
   estimate: string;
   icon: string;
+  /** How long the buyer has to pay when the rail sets no deadline of its own. */
+  depositWindowMs: number;
 }
 
 export interface FundingSelectorConfig {
@@ -37,6 +40,7 @@ export const fundingSelectorConfig = {
       description: "Send from another wallet",
       estimate: "~3 min",
       icon: "/icons/crypto.svg",
+      depositWindowMs: 86_400_000,
     },
     {
       id: "card",
@@ -44,6 +48,7 @@ export const fundingSelectorConfig = {
       description: "Arrive in minutes",
       estimate: "Instant",
       icon: "/icons/card.svg",
+      depositWindowMs: 86_400_000,
     },
     {
       id: "bank",
@@ -51,6 +56,15 @@ export const fundingSelectorConfig = {
       description: "1-2 business days",
       estimate: "1-2 days",
       icon: "/icons/bank.svg",
+      depositWindowMs: 86_400_000,
     },
   ],
 } as const satisfies FundingSelectorConfig;
+
+/** The route's deposit window, or the shared default for a route the config does not list. */
+export function depositWindowFor(route: FundingRoute): number {
+  return (
+    fundingSelectorConfig.routes.find((option) => option.id === route)?.depositWindowMs ??
+    DEFAULT_DEPOSIT_WINDOW_MS
+  );
+}

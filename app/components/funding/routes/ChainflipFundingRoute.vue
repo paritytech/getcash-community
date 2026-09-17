@@ -11,6 +11,7 @@ import type { FundingPackageEmits } from "../../../funding/handoff";
 import type { FundingSelection } from "../../../funding/selection";
 import { useFlowStore } from "../../../stores/flow";
 import { useOffersStore } from "../../../stores/offers";
+import { useRequestsStore } from "../../../stores/requests";
 import { useSessionStore } from "../../../stores/session";
 
 const props = defineProps<{ selection: FundingSelection }>();
@@ -21,6 +22,7 @@ if (props.selection.route !== "crypto") {
 }
 
 const session = useSessionStore();
+const requests = useRequestsStore();
 const flow = useFlowStore();
 const offers = useOffersStore();
 useVisibilityReconcile();
@@ -38,9 +40,9 @@ const toolbar = computed<{
   // "journey" here is the deposit stage: the request exists and funds are still to be seen.
   if (flow.screen === "journey") {
     return {
-      back: !session.claiming,
+      back: !requests.claiming,
       title: "Add funds via Crypto",
-      trailing: session.canSkipDeposit && !session.claiming && isDemoBuild() ? "skip" : null,
+      trailing: session.canSkipDeposit && !requests.claiming && isDemoBuild() ? "skip" : null,
     };
   }
   return {

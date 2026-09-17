@@ -1,4 +1,6 @@
 import type { Component, Ref } from "vue";
+import ChainflipFundingStatusRoute from "../components/funding/routes/ChainflipFundingStatusRoute.vue";
+import MeldFundingStatusRoute from "../components/funding/routes/MeldFundingStatusRoute.vue";
 import type { FundingJourneyStatus } from "./handoff";
 import { useMeldJourneyStatus } from "../composables/useMeldJourneyStatus";
 import { useChainflipTopUpAdapter } from "./chainflip-top-ups";
@@ -109,10 +111,7 @@ const meldPackage = {
     ),
   topUps: {
     useAdapter: useMeldTopUpAdapter,
-    loadStatus: () =>
-      import("../components/funding/routes/MeldFundingStatusRoute.vue").then(
-        ({ default: component }) => component,
-      ),
+    loadStatus: async () => MeldFundingStatusRoute,
   },
   journeyStatus: useMeldJourneyStatus,
 } satisfies FundingRoutePackage;
@@ -128,10 +127,7 @@ export const getcashRoutePackages = {
       ),
     topUps: {
       useAdapter: useChainflipTopUpAdapter,
-      loadStatus: () =>
-        import("../components/funding/routes/ChainflipFundingStatusRoute.vue").then(
-          ({ default: component }) => component,
-        ),
+      loadStatus: async () => ChainflipFundingStatusRoute,
     },
   },
 } satisfies FundingRoutePackages;
