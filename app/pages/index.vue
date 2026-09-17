@@ -22,8 +22,10 @@ import {
 import type { FundingRoute, FundingSelection } from "../funding/selection";
 import type { FundingTopUpAdapter } from "../funding/top-up-adapter";
 import { projectFundingTopUps, type FundingTopUp } from "../funding/top-ups";
+import { useRequestsStore } from "../stores/requests";
 
 useVisualViewportHeight();
+const requests = useRequestsStore();
 
 const selection = ref<FundingSelection | null>(null);
 const activePackage = shallowRef<Component | null>(null);
@@ -33,7 +35,7 @@ const loading = ref(false);
 const routeError = ref<string | null>(null);
 const openingTopUpId = ref<string | null>(null);
 const topUpError = ref<string | null>(null);
-const topUpsReady = ref(false);
+const topUpsReady = computed(() => requests.hydrated || requests.hostReadDone);
 // Launch lands on add-funds; history is behind the clock.
 const shellEntry = ref<FundingShellEntryScreen>("auto");
 const historyReturn = ref<FundingHistoryReturnScreen>("amount");
@@ -254,8 +256,6 @@ onMounted(async () => {
     await Promise.all(topUpAdapters.map((adapter) => adapter.refresh()));
   } catch (error: unknown) {
     console.warn("[funding] could not refresh top-ups:", error);
-  } finally {
-    topUpsReady.value = true;
   }
 });
 </script>

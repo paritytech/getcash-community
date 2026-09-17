@@ -15,11 +15,11 @@ plus a background worker, both published to bulletin/DotNS.
 The **surface** (`app/`, `lib/`) is what the user sees. It quotes, shows a deposit address or
 opens the provider's widget, and tracks the request. The **worker** (`worker/`) runs in the
 background inside the host. Once a deposit has landed, the surface hands the job to the
-worker, which swaps on Asset Hub, teleports to the People chain, and claims the CASH through
-the host's top-up call. The top-up is registered under the ephemeral account's public key and
-driven by the host from there; the worker follows its status until the claim is final, and
-registers a further top-up for whatever a short claim left on the account. The worker keeps
-going after the surface is closed.
+worker, which converts it to CASH and teleports it to the People chain in a single XCM on Asset
+Hub, then claims the CASH through the host's top-up call. The top-up is registered under the
+ephemeral account's public key and driven by the host from there; the worker follows its status
+until the claim is final, and registers a further top-up for whatever a short claim left on the
+account. The worker keeps going after the surface is closed.
 
 The two talk over host storage. `lib/worker-rpc.ts` (surface side) and `worker/src/rpc.js`
 (worker side) implement a polled request/response channel: the surface writes a request under
@@ -94,7 +94,7 @@ brand/        the product icon used in the bulletin manifest
 | -------------------- | ---------------------------------------------------------------- |
 | `@getsome/core`      | session state machine, flow store, re-entry logic, port types    |
 | `@getsome/ephemeral` | seed to keypair derivation, handoff secret encoding, refund keys |
-| `@getsome/funding`   | the swap and teleport pipeline the worker runs on Asset Hub      |
+| `@getsome/funding`   | the funding program the worker runs on Asset Hub                 |
 | `@getsome/chainflip` | crypto rail over the Chainflip SDK                               |
 | `@getsome/meld`      | card and bank rail over the Meld adapter                         |
 | `@getsome/people`    | People chain port: CASH balances and the handoff submit          |

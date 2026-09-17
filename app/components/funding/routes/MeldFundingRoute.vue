@@ -10,6 +10,7 @@ import { isDemoBuild } from "../../../utils/demo";
 import type { FundingPackageEmits } from "../../../funding/handoff";
 import type { FundingSelection } from "../../../funding/selection";
 import { useFlowStore } from "../../../stores/flow";
+import { useRequestsStore } from "../../../stores/requests";
 import { useSessionStore } from "../../../stores/session";
 import MeldFeeDetailsScreen from "./MeldFeeDetailsScreen.vue";
 import MeldPayScreen from "./MeldPayScreen.vue";
@@ -24,6 +25,7 @@ if (route !== "card" && route !== "bank") {
 }
 
 const session = useSessionStore();
+const requests = useRequestsStore();
 const flow = useFlowStore();
 useVisibilityReconcile();
 const { previewLabel } = useStateDirector();
@@ -56,7 +58,7 @@ watch(paying, (now) => {
 });
 /** Cancel is offered only while nothing can have been paid. */
 const canCancel = computed(
-  () => paying.value && !session.meldSubmitted && !session.fundsSeen && !session.claiming,
+  () => paying.value && !requests.meldSubmitted && !requests.fundsSeen && !requests.claiming,
 );
 
 /** Performs the cancel. One that went through leaves for the selector; a declined one stays put. */
@@ -102,14 +104,14 @@ onUnmounted(() => {
     <!-- No title while the widget is up; the back control stays. -->
     <Toolbar
       :title="paying ? '' : showingFees ? 'Fees' : title"
-      :back="!session.claiming && !session.resuming"
+      :back="!requests.claiming && !session.resuming"
       @back="goBack"
     >
       <template
         v-if="
           paying &&
           isDemoBuild() &&
-          !session.claiming &&
+          !requests.claiming &&
           (session.canSkipDeposit || session.faucetState !== 'idle')
         "
         #trailing
@@ -144,7 +146,7 @@ onUnmounted(() => {
           v-if="canCancel"
           type="button"
           class="mx-6 mt-3 mb-4 h-12 shrink-0 rounded-medium bg-status-error text-label-l text-fg-static-white transition-colors hover:bg-status-error-hover disabled:opacity-50"
-          :disabled="session.cancelling"
+          :disabled="session.cancelling || !session.cancelReady"
           @click="cancelTopUp"
         >
           {{ session.cancelling ? "Cancelling…" : "Cancel" }}

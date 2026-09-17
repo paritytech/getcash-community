@@ -7,15 +7,10 @@ export const sharedCashProgress = {
   stages: [
     {
       key: "cash-conversion",
+      // One XCM program swaps and teleports, so the teleport's own time belongs to the conversion.
       nodeLabel: "Converted",
       activeLabel: "Converting to $CASH",
-      nominalMs: 3 * MINUTE,
-    },
-    {
-      key: "cash-teleport",
-      nodeLabel: "Teleported",
-      activeLabel: "Teleporting $CASH",
-      nominalMs: 5 * MINUTE,
+      nominalMs: 8 * MINUTE,
     },
     {
       key: "cash-top-up",
@@ -33,10 +28,8 @@ export function observeSharedCashProgress(
 ): FundingProgressObservation {
   switch (status) {
     case "swap":
-      return { kind: "stage", stageKey: "cash-conversion" };
-    case "xcm":
     case "await-arrival":
-      return { kind: "stage", stageKey: "cash-teleport" };
+      return { kind: "stage", stageKey: "cash-conversion" };
     case "done":
     case "funded":
     case "working":

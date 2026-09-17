@@ -25,7 +25,6 @@ describe("Meld progress provider", () => {
     expect(profile.stages.map(({ key }) => key)).toEqual([
       MELD_PAYMENT_STAGE,
       "cash-conversion",
-      "cash-teleport",
       "cash-top-up",
     ]);
     expect(profile.routeStageCount).toBe(1);
