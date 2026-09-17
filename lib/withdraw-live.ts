@@ -5,7 +5,6 @@
 // does for the on-ramp.
 
 import { PaymentRequestErr, PaymentStatusErr } from "@novasamatech/host-api";
-import { paymentManager, type PaymentStatus } from "@novasamatech/host-api-wrapper";
 import { deriveEntropy, getHostLocalStorage } from "@parity/product-sdk-host";
 import { deriveKeypair } from "@getsome/ephemeral";
 import { PASEO_ASSET_HUB_PARA_ID, PASEO_PEOPLE_PARA_ID } from "@getsome/funding";
@@ -29,6 +28,12 @@ import {
   type WithdrawalHandoffPayload,
 } from "../app/funding/requests/model";
 import { hostSafeEntropy, nextFreeTradeNumber, readTradeCounter, tradeCounterKey } from "./coinage";
+import {
+  requestPayment as hostRequestPayment,
+  subscribePaymentStatus,
+  type PaymentStatus,
+  type StatusSubscription,
+} from "./host-payments";
 import { ASSET_HUB_GENESIS, PEOPLE_GENESIS } from "./host-chain";
 
 /** How long to wait for the worker to come up before a hand-off fails. */
@@ -202,7 +207,9 @@ export function nudgeWithdrawTicks(worker: WorkerLike): void {
 
 // The purse's payment to a withdrawal key is requested from the page, not the worker: the host
 // shows its sheets, the approval and the privacy consent, to a page and to nothing else. The
-// worker only watches the key the purse pays.
+// worker only watches the key the purse pays. The page SDK cannot make the request (its payment
+// codec predates the id), so it goes over the host protocol client in host-payments, which shares
+// the SDK's channel.
 
 const fromHex = (hex: string): Uint8Array =>
   Uint8Array.from(hex.slice(2).match(/.{2}/g) ?? [], (byte) => parseInt(byte, 16));
@@ -235,11 +242,7 @@ export async function requestKeyPayment(args: {
   key: WithdrawKey;
 }): Promise<void> {
   try {
-    await paymentManager.requestPayment(
-      args.amount,
-      fromHex(args.key.publicKeyHex),
-      fromHex(args.idHex),
-    );
+    await hostRequestPayment(args.amount, fromHex(args.key.publicKeyHex), fromHex(args.idHex));
   } catch (error) {
     if (error instanceof PaymentRequestErr.AlreadyExists) return;
     throw new PaymentRefusedError(refusalReason(error));
@@ -251,11 +254,6 @@ export interface PaymentStatusReading {
   reason?: string;
   /** Base units, when the host paid short. */
   actualClaimed?: string;
-}
-
-interface StatusSubscription {
-  unsubscribe(): void;
-  onInterrupt(callback: (error: unknown) => void): unknown;
 }
 
 /** The first value of a host status subscription within `timeoutMs`; the subscription is closed
@@ -297,7 +295,7 @@ export async function readPaymentStatus(idHex: string): Promise<PaymentStatusRea
   let status: PaymentStatus;
   try {
     status = await firstStatus<PaymentStatus>(
-      (callback) => paymentManager.subscribePaymentStatus(fromHex(idHex), callback),
+      (callback) => subscribePaymentStatus(fromHex(idHex), callback),
       PAYMENT_STATUS_DEADLINE_MS,
     );
   } catch (error) {

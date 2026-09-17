@@ -1,5 +1,5 @@
-// The page's side of the purse's payment to a withdrawal key: the request through the host's
-// payment manager, the host's refusals as the user's reasons, and one status read.
+// The page's side of the purse's payment to a withdrawal key: the request through the host
+// protocol client, the host's refusals as the user's reasons, and one status read.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -17,7 +17,10 @@ vi.mock("@novasamatech/host-api", () => ({
   PaymentRequestErr: { Rejected, InsufficientBalance, AlreadyExists },
   PaymentStatusErr: { PaymentNotFound },
 }));
-vi.mock("@novasamatech/host-api-wrapper", () => ({ paymentManager: manager }));
+vi.mock("../lib/host-payments", () => ({
+  requestPayment: manager.requestPayment,
+  subscribePaymentStatus: manager.subscribePaymentStatus,
+}));
 
 const ID = `0x${"5e".repeat(32)}`;
 const KEY = {
