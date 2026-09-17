@@ -62,7 +62,7 @@ export type InProgressFundingTopUp = FundingTopUpBase &
 
 export type SettledFundingTopUp = FundingTopUpBase &
   Readonly<{
-    state: { kind: "settled"; status: "Added"; at: number; creditedAmount: string };
+    state: { kind: "settled"; status: string; at: number; creditedAmount: string };
   }>;
 
 export type FailedFundingTopUp = FundingTopUpBase &
@@ -85,9 +85,33 @@ export function hasFundingPendingContent(
   return inProgress.length > 0 || latestSettled !== null;
 }
 
+/** The words the rows use for a finished request: a top-up is added, a withdrawal is sent. */
+export interface FundingTopUpWording {
+  settled: string;
+}
+
+const TOP_UP_WORDING: FundingTopUpWording = { settled: "Added" };
+
+/** The words the shell's list screens use around the rows. */
+export interface FundingListWording {
+  pendingTitle: string;
+  latestTitle: string;
+  emptyHistory: string;
+  /** The settled card's status line. */
+  settledCard: string;
+}
+
+export const TOP_UP_LIST_WORDING: FundingListWording = {
+  pendingTitle: "Top-ups",
+  latestTitle: "Your latest top-up",
+  emptyHistory: "No top-ups yet.",
+  settledCard: "Added to your balance",
+};
+
 export function projectFundingTopUps(
   topUps: readonly FundingTopUp[],
   config: FundingSelectorConfig,
+  wording: FundingTopUpWording = TOP_UP_WORDING,
 ): FundingTopUpSections {
   const inProgress: InProgressFundingTopUp[] = [];
   const past: PastFundingTopUp[] = [];
@@ -130,7 +154,7 @@ export function projectFundingTopUps(
           ...base,
           state: {
             kind: "settled",
-            status: "Added",
+            status: wording.settled,
             at: topUp.state.at,
             creditedAmount: topUp.state.creditedAmount ?? topUp.amount,
           },

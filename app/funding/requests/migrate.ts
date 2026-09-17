@@ -1,6 +1,7 @@
 // Reads a stored record into the schema 2 shape. A legacy `ActiveFlowRecord` is upgraded from
-// its fields, which are kept as they are; a schema 2 record is taken as stored, with any missing
-// additive field filled by the same rules.
+// its fields, which are kept as they are; a schema 2 top-up is taken as stored, with any missing
+// additive field filled by the same rules. A withdrawal has no legacy form: it is taken as
+// stored when it carries what the reducer reads, and dropped otherwise.
 
 import type { ActiveFlowRecord } from "../../stores/session";
 import { toCashBase } from "../../utils/cash";
@@ -15,11 +16,13 @@ import {
   type RequestFailure,
   type RequestRecord,
   type RequestStatus,
+  type TopUpRecord,
+  type WithdrawalRecord,
 } from "./model";
 import type { FundingProgressSnapshot } from "../progress";
 
 /** A stored record of either schema; only the legacy fields are trusted before migration. */
-type StoredRecord = ActiveFlowRecord & { schema?: unknown };
+type StoredRecord = ActiveFlowRecord & { schema?: unknown; kind?: unknown };
 
 /** Today's `readAllRequests` validity rule: an object with a parseable amount. */
 function isStoredRecord(raw: unknown): raw is StoredRecord {
@@ -28,15 +31,48 @@ function isStoredRecord(raw: unknown): raw is StoredRecord {
   return typeof amountHuman === "string" && toCashBase(amountHuman) !== null;
 }
 
-/** Null only when `raw` is not a record with a parseable `amountHuman`. */
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+/** A stored withdrawal with every field the reducer and the drivers read. The key the record
+ *  was read under is its identity. */
+function withdrawalRecord(raw: StoredRecord, ref: RequestRef): WithdrawalRecord | null {
+  const stored = raw as unknown as Partial<WithdrawalRecord>;
+  if (
+    stored.schema !== 2 ||
+    !isObject(stored.status) ||
+    typeof stored.status.kind !== "string" ||
+    !isObject(stored.payment) ||
+    typeof stored.payment.attempt !== "number" ||
+    !isObject(stored.key) ||
+    !isObject(stored.handoff) ||
+    !isObject(stored.destination) ||
+    !isObject(stored.deadline) ||
+    !isObject(stored.rail) ||
+    typeof stored.startedAt !== "number"
+  ) {
+    return null;
+  }
+  return {
+    ...(stored as WithdrawalRecord),
+    kind: "withdrawal",
+    ref,
+    rev: typeof stored.rev === "number" ? stored.rev : 0,
+    witnesses: isObject(stored.witnesses) ? stored.witnesses : {},
+  };
+}
+
+/** Null when `raw` is not a record with a parseable `amountHuman`, or a withdrawal missing what
+ *  the reducer reads. */
 export function migrateRecord(raw: unknown, ref: RequestRef, now: number): RequestRecord | null {
   if (!isStoredRecord(raw)) return null;
+  if (raw.kind === "withdrawal") return withdrawalRecord(raw, ref);
   const upgraded = upgradeLegacyRecord(raw, ref, now);
   if (raw.schema !== 2) return upgraded;
   // Stored additive fields win; the upgrade fills whatever a partial write left out. The stored
   // progress is the app's own record of it, normalised but never advanced; the funded guess is
   // for legacy records. The key the record was read under is its identity.
-  const stored = raw as Partial<RequestRecord> & ActiveFlowRecord;
+  const stored = raw as Partial<TopUpRecord> & ActiveFlowRecord;
   const progress =
     stored.progress === undefined
       ? upgraded.progress
@@ -44,10 +80,10 @@ export function migrateRecord(raw: unknown, ref: RequestRef, now: number): Reque
           stored.progress,
           progressProviderForSource(effectiveSourceId(ref)).createProfile(),
         );
-  return { ...upgraded, ...stored, schema: 2, ref, progress };
+  return { ...upgraded, ...stored, schema: 2, kind: "top-up", ref, progress };
 }
 
-function upgradeLegacyRecord(raw: ActiveFlowRecord, ref: RequestRef, now: number): RequestRecord {
+function upgradeLegacyRecord(raw: ActiveFlowRecord, ref: RequestRef, now: number): TopUpRecord {
   const sourceId = effectiveSourceId(ref);
   const progress = resolveFundingProgressSnapshot(
     raw.progress,

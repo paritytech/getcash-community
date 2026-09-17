@@ -10,19 +10,29 @@ import {
   type FundingRoute,
 } from "../../funding/selection";
 
-const props = defineProps<{
-  config: FundingSelectorConfig;
-  amount: string;
-  route: FundingRoute | null;
-  /** Routes this build can run. Any other renders dimmed, marked "Soon", and unclickable. */
-  availableRoutes?: readonly FundingRoute[];
-  history: boolean;
-  error?: string | null;
-  loading?: boolean;
-  /** Launch-load placeholder: static chrome (amount, keypad) renders inert while the data-driven
-   *  parts (title, route pills, limits, presets, CTA label) show skeleton shapes. */
-  skeleton?: boolean;
-}>();
+const props = withDefaults(
+  defineProps<{
+    config: FundingSelectorConfig;
+    amount: string;
+    route: FundingRoute | null;
+    /** Routes this build can run. Any other renders dimmed, marked "Soon", and unclickable. */
+    availableRoutes?: readonly FundingRoute[];
+    history: boolean;
+    error?: string | null;
+    loading?: boolean;
+    /** Launch-load placeholder: static chrome (amount, keypad) renders inert while the data-driven
+     *  parts (title, route pills, limits, presets, CTA label) show skeleton shapes. */
+    skeleton?: boolean;
+    /** The screen's title and the main action's label; the top-up wording by default. */
+    title?: string;
+    cta?: string;
+    /** The balance the amount may be drawn from, as an amount string. Shown as a pill that fills
+     *  the amount when tapped. Omit to show no pill; null shows the pill's skeleton while the
+     *  balance loads. */
+    available?: string | null;
+  }>(),
+  { title: "Top up funds", cta: "Continue to top up", available: undefined },
+);
 
 const emit = defineEmits<{
   change: [amount: string];
@@ -110,7 +120,7 @@ function enter(key: FundingKey) {
 <template>
   <div class="funding-screen">
     <FundingEntryHeader
-      title="Top up funds"
+      :title="title"
       :history="history"
       :skeleton="skeleton"
       @history="emit('history')"
@@ -148,6 +158,21 @@ function enter(key: FundingKey) {
             >
           </button>
         </div>
+
+        <!-- The available balance, when the screen has one to offer: a tap fills the amount. -->
+        <SkeletonBlock
+          v-if="available === null || (skeleton && available !== undefined)"
+          class="funding-available-skeleton"
+          style="width: 10.5rem; height: 1.75rem"
+        />
+        <button
+          v-else-if="available !== undefined"
+          type="button"
+          class="funding-available text-label-m"
+          @click="emit('change', available)"
+        >
+          Available {{ formatAmount(available) }} {{ config.asset }}
+        </button>
 
         <div ref="amountRow" class="funding-amount" aria-live="polite">
           <span ref="amountValue" class="text-display-xl"
@@ -211,7 +236,7 @@ function enter(key: FundingKey) {
           :disabled="skeleton || loading || !canContinue"
           @click="emit('continue')"
         >
-          {{ skeleton ? "" : loading ? `Opening ${config.provider}…` : "Continue to top up" }}
+          {{ skeleton ? "" : loading ? `Opening ${config.provider}…` : cta }}
         </button>
       </div>
     </div>
@@ -298,6 +323,31 @@ function enter(key: FundingKey) {
   height: 1.5rem;
   flex: none;
   border-radius: 9999px;
+}
+
+.funding-available,
+.funding-available-skeleton {
+  margin-top: 1.5rem;
+}
+
+.funding-available {
+  height: 1.75rem;
+  border-radius: 9999px;
+  background: var(--bg-surface-nested);
+  padding: 0 0.75rem;
+  color: var(--fg-secondary);
+  white-space: nowrap;
+  transition: background-color 120ms ease-out;
+}
+
+.funding-available:hover {
+  background: var(--bg-selection-container-hover);
+}
+
+/* The pill takes the gap the amount row would otherwise open. */
+.funding-available + .funding-amount,
+.funding-available-skeleton + .funding-amount {
+  margin-top: 0.75rem;
 }
 
 .funding-amount {

@@ -20,6 +20,16 @@ export function fmtCash(base: bigint): string {
   return `${s.slice(0, -CASH_DECIMALS)}.${s.slice(-CASH_DECIMALS)}`.replace(/\.?0+$/, "") || "0";
 }
 
+/** Turns CASH base units into the amount string the keypad edits, rounded down to `decimals`
+ *  places, with a whole number left bare ("226.78", "5", "5.5"). */
+export function cashToAmountInput(base: bigint, decimals: number): string {
+  const drop = CASH_DECIMALS - decimals;
+  const scaled = drop >= 0 ? base / 10n ** BigInt(drop) : base * 10n ** BigInt(-drop);
+  if (decimals === 0) return scaled.toString();
+  const s = scaled.toString().padStart(decimals + 1, "0");
+  return `${s.slice(0, -decimals)}.${s.slice(-decimals)}`.replace(/\.?0+$/, "");
+}
+
 /** 6-dec CASH base units -> a money-like string with at least two decimals ("10.00", "18.75"). */
 export function fmtCashDisplay(base: bigint): string {
   const s = base.toString().padStart(CASH_DECIMALS + 1, "0");

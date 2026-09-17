@@ -1,17 +1,31 @@
 <script setup lang="ts">
 import type { FundingSelectorConfig } from "../../funding/config";
-import type { InProgressFundingTopUp, SettledFundingTopUp } from "../../funding/top-ups";
+import {
+  TOP_UP_LIST_WORDING,
+  type FundingListWording,
+  type InProgressFundingTopUp,
+  type SettledFundingTopUp,
+} from "../../funding/top-ups";
 import FundingTopUpProgressCard from "./FundingTopUpProgressCard.vue";
 
 type PendingTopUp = InProgressFundingTopUp | SettledFundingTopUp;
 
-defineProps<{
-  config: FundingSelectorConfig;
-  topUps: readonly InProgressFundingTopUp[];
-  latestTopUp?: SettledFundingTopUp | null;
-  openingTopUpId?: string | null;
-  error?: string | null;
-}>();
+withDefaults(
+  defineProps<{
+    config: FundingSelectorConfig;
+    topUps: readonly InProgressFundingTopUp[];
+    latestTopUp?: SettledFundingTopUp | null;
+    openingTopUpId?: string | null;
+    error?: string | null;
+    wording?: FundingListWording;
+  }>(),
+  {
+    latestTopUp: undefined,
+    openingTopUpId: undefined,
+    error: undefined,
+    wording: () => TOP_UP_LIST_WORDING,
+  },
+);
 
 const emit = defineEmits<{
   history: [];
@@ -22,7 +36,7 @@ const emit = defineEmits<{
 
 <template>
   <div class="funding-screen">
-    <FundingEntryHeader title="Top-ups" history @history="emit('history')" />
+    <FundingEntryHeader :title="wording.pendingTitle" history @history="emit('history')" />
 
     <div class="funding-pending-content">
       <div class="funding-pending-scroll">
@@ -33,6 +47,7 @@ const emit = defineEmits<{
               <FundingTopUpProgressCard
                 :top-up="topUp"
                 :asset="config.asset"
+                :settled-status="wording.settledCard"
                 :opening="openingTopUpId === topUp.id"
                 :disabled="openingTopUpId !== null && openingTopUpId !== undefined"
                 @open="emit('open', $event)"
@@ -42,11 +57,12 @@ const emit = defineEmits<{
         </section>
 
         <section v-if="latestTopUp" :class="{ 'funding-pending-latest-spaced': topUps.length > 0 }">
-          <h2 class="text-overline">Your latest top-up</h2>
+          <h2 class="text-overline">{{ wording.latestTitle }}</h2>
           <FundingTopUpProgressCard
             class="funding-pending-latest-card"
             :top-up="latestTopUp"
             :asset="config.asset"
+            :settled-status="wording.settledCard"
             :opening="openingTopUpId === latestTopUp.id"
             :disabled="openingTopUpId !== null && openingTopUpId !== undefined"
             @open="emit('open', $event)"
