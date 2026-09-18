@@ -59,7 +59,7 @@ export function composeFundingProgressProfile(
     cadenceMs: route.cadenceMs,
     routeStageCount: route.stages.length,
     startedNodeLabel: route.startedNodeLabel ?? "Started",
-    waitingLabel: route.waitingLabel ?? "Waiting for your transfer",
+    waitingLabel: options.waitingLabel ?? route.waitingLabel ?? "Waiting for your transfer",
     routeCompletedLabel: route.routeCompletedLabel ?? "Payment received",
     settledLabel: "Ready to spend",
     stages: Object.freeze(stages),

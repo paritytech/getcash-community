@@ -134,6 +134,9 @@ export interface FundingProgressProjectionInput {
 
 export interface FundingProgressProfileOptions {
   ingressDurationMs?: number;
+  /** Overrides the route's own waiting label, for a route whose methods word the wait
+   *  differently: a card is paid, a bank transfer is sent. */
+  waitingLabel?: string;
 }
 
 export interface FundingProgressRouteDefinition {
