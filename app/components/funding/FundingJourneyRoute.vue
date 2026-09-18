@@ -26,9 +26,8 @@ const props = defineProps<{
   status?: FundingJourneyStatus | null;
 }>();
 // startOver bubbles up from a fiat top-up that ended: the host re-enters its package with the same
-// amount. cancelled says the top-up is gone rather than left behind, so the host does not return
-// to the screen it was opened from.
-const emit = defineEmits<{ back: []; cancelled: []; startOver: [] }>();
+// amount.
+const emit = defineEmits<{ back: []; startOver: [] }>();
 
 const session = useSessionStore();
 const requests = useRequestsStore();
@@ -94,11 +93,11 @@ function goBack() {
   else emit("back");
 }
 
-/** Performs the cancel. One that went through hands the screen back to the shell — there is no
- *  top-up left to return to; a declined one returns to the journey, where the store's notice says
- *  why. */
+/** Performs the cancel. One that went through leaves the way any other exit does — to the list the
+ *  top-up was opened from, or the shell for a purchase that had none; a declined one returns to the
+ *  journey, where the store's notice says why. */
 async function cancelTopUp() {
-  if (await session.cancelTopUp()) emit("cancelled");
+  if (await session.cancelTopUp()) emit("back");
   else flow.confirmingCancel = false;
 }
 
