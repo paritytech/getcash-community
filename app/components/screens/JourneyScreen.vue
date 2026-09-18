@@ -14,7 +14,7 @@ import { journeyScaleOf, type JourneyScale } from "../../funding/requests/views"
 import type { FundingTopUp } from "../../funding/top-ups";
 import { useRequestsStore } from "../../stores/requests";
 import { useSessionStore } from "../../stores/session";
-import { fmtCash } from "../../utils/cash";
+import { cashAmount, fmtCash } from "../../utils/cash";
 import { fmtFiat, isMoneyAmount } from "../../utils/money";
 import { formatWhenShort, shortRef } from "../../utils/journey";
 import { refundedFailure } from "../../utils/recovery";
@@ -92,9 +92,9 @@ const creditedAmount = computed(() =>
   requests.claimedBase != null ? fmtCash(requests.claimedBase) : session.amountHuman,
 );
 const amountText = computed(() => {
-  if (finished.value) return `+${creditedAmount.value} $CASH`;
+  if (finished.value) return `+${cashAmount(creditedAmount.value)}`;
   // The store's amount is empty until the request is live; the list's word on it fills in.
-  return `${session.amountHuman || (props.topUp?.amount ?? "")} $CASH`;
+  return cashAmount(session.amountHuman || (props.topUp?.amount ?? ""));
 });
 
 /** When the CASH landed: the live milestone (stamped at the route's last step), else the list's
