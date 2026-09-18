@@ -14,6 +14,7 @@ import { ChevronRight, CircleAlert } from "lucide-vue-next";
 import { regionForCountry } from "~~/lib/region";
 import { useRequestsStore } from "../../../stores/requests";
 import { useSessionStore } from "../../../stores/session";
+import { cashAmount } from "../../../utils/cash";
 import { currencyName } from "../../../utils/currency";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import type { FundingRoute } from "../../../funding/selection";
@@ -226,8 +227,10 @@ function confirmSent() {
 
         <div class="flex items-baseline justify-between gap-4">
           <span class="text-paragraph-l text-fg-primary">You’ll receive</span>
-          <span v-if="blocked" class="text-heading-m text-fg-disabled">0 $CASH</span>
-          <span v-else class="text-heading-m text-fg-primary">{{ session.amountHuman }} $CASH</span>
+          <span v-if="blocked" class="text-heading-m text-fg-disabled">{{ cashAmount("0") }}</span>
+          <span v-else class="text-heading-m text-fg-primary">
+            {{ cashAmount(session.amountHuman) }}
+          </span>
         </div>
 
         <!-- Nothing is arriving while there is no quote, so the row goes with it. -->

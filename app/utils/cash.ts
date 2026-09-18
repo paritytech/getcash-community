@@ -20,6 +20,15 @@ export function fmtCash(base: bigint): string {
   return `${s.slice(0, -CASH_DECIMALS)}.${s.slice(-CASH_DECIMALS)}`.replace(/\.?0+$/, "") || "0";
 }
 
+/**
+ * A CASH amount as the designs write it: the symbol on the number, the token beside it
+ * ("$50 CASH", "+$50 CASH").
+ *
+ * The bare token in prose keeps its own form — "Converting to $CASH", "Final $CASH depends on the
+ * rate on arrival" — because there it is a name, not a sum.
+ */
+export const cashAmount = (human: string): string => `$${human} CASH`;
+
 /** 6-dec CASH base units -> a money-like string with at least two decimals ("10.00", "18.75"). */
 export function fmtCashDisplay(base: bigint): string {
   const s = base.toString().padStart(CASH_DECIMALS + 1, "0");

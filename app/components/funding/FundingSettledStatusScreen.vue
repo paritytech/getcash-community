@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { cashAmount } from "../../utils/cash";
 import { ArrowDown, Clock, Plus } from "lucide-vue-next";
 import type { FundingStatusDetail } from "../../funding/status";
 import type { FundingTopUp } from "../../funding/top-ups";
@@ -61,7 +62,7 @@ const details = computed<readonly FundingStatusDetail[]>(() => {
   rows.push({
     key: "receive",
     label: "You'll receive",
-    value: `${creditedAmount.value} $CASH`,
+    value: cashAmount(creditedAmount.value),
     icon: ArrowDown,
   });
   if (topUpDetails?.depositAddress) {
@@ -83,7 +84,7 @@ const details = computed<readonly FundingStatusDetail[]>(() => {
         <Plus class="size-6 text-fg-secondary" aria-hidden="true" />
       </span>
       <p class="mt-4 text-body-l text-fg-secondary">Added</p>
-      <p class="mt-3 text-display-xl text-fg-success">+{{ creditedAmount }} $CASH</p>
+      <p class="mt-3 text-display-xl text-fg-success">+{{ cashAmount(creditedAmount) }}</p>
       <p class="text-body-l text-fg-secondary">To your balance</p>
     </div>
 

@@ -3,6 +3,7 @@
 // widget. The method is fixed by the route; the region is the buyer's only choice.
 import { computed, onMounted, ref } from "vue";
 import { useSessionStore } from "../../../stores/session";
+import { cashAmount } from "../../../utils/cash";
 import { localeCountry } from "../../../utils/locale";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import type { FundingRoute } from "../../../funding/selection";
@@ -112,7 +113,7 @@ const quoteRows = computed(() => {
     rows.push({ label: "Fees", value: fmtFiat(q.fee, q.symbol), fees: isMoneyAmount(q.fee) });
   rows.push(
     { label: "Arrives", value: arrivesText },
-    { label: "You’ll receive", value: `${session.amountHuman} $CASH` },
+    { label: "You’ll receive", value: cashAmount(session.amountHuman) },
   );
   return rows;
 });
