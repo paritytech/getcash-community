@@ -3157,6 +3157,7 @@ exports[`request list projection > projects the fixture records exactly as today
         "fee": "1.56",
         "symbol": "USD",
       },
+      "reference": "mfr-fixture-card-2",
       "route": "card",
       "startedAt": 1746552000000,
       "state": {
@@ -3225,6 +3226,7 @@ exports[`request list projection > projects the fixture records exactly as today
         "fee": "1.56",
         "symbol": "USD",
       },
+      "reference": "mfr-fixture-card-1",
       "route": "card",
       "startedAt": 1746549000000,
       "state": {
@@ -3700,6 +3702,7 @@ exports[`request list projection > projects the fixture records with live status
         "fee": "1.56",
         "symbol": "USD",
       },
+      "reference": "mfr-fixture-card-2",
       "route": "card",
       "startedAt": 1746552000000,
       "state": {
@@ -3768,6 +3771,7 @@ exports[`request list projection > projects the fixture records with live status
         "fee": "1.56",
         "symbol": "USD",
       },
+      "reference": "mfr-fixture-card-1",
       "route": "card",
       "startedAt": 1746549000000,
       "state": {

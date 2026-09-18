@@ -158,7 +158,16 @@ export interface TopUpRecord {
   sourceAmount?: string;
   sourceSymbol?: string;
   sourceFee?: string;
+  /** The provider that priced the request ("TRANSAK"), not the aggregator in front of it, and the
+   *  components of `sourceFee` as the rail reported them. Persisted so a resumed request's
+   *  breakdown and its reference rows read the same as the ones quoted at the start. */
+  sourceProvider?: string;
+  sourceTransactionFee?: string;
   sourceNetworkFee?: string;
+  sourcePartnerFee?: string;
+  /** The funding leg's own network fee as the quote priced it. Not a component of `sourceFee`:
+   *  the rail never reported it, the app priced it. */
+  sourceChainFee?: string;
   meldCountry?: string;
   meldFundingRequestId?: string;
   meldSubmittedAt?: number;

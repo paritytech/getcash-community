@@ -9,12 +9,16 @@
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import type { PolkadotClient } from "polkadot-api";
 import {
+  DEFAULT_KEEP_NATIVE_FOR_FEES,
+  DEFAULT_REMOTE_FEE_BUFFER,
   DEFAULT_SLIPPAGE_PCT,
   destinationEarmark,
   discoverPool,
   estimateDestinationFeeCash,
   estimateFundingProgramFees,
   PASEO_ASSET_HUB_PARA_ID,
+  PASEO_PEOPLE_PARA_ID,
+  PASEO_UNDERLYING_ASSET_ID,
   quoteNativeInMax,
 } from "@getsome/funding";
 
@@ -73,5 +77,44 @@ export async function estimateFundingSizing(args: {
   } catch (e) {
     console.warn("[coinage] funding sizing estimate failed; using static fallbacks:", e);
     return null;
+  }
+}
+
+/** The funding package's static sizing, as the callers fall back to it. */
+export const FALLBACK_FUNDING_SIZING: FundingSizing = {
+  remoteFeeBuffer: DEFAULT_REMOTE_FEE_BUFFER,
+  keepNativeForFees: DEFAULT_KEEP_NATIVE_FOR_FEES,
+};
+
+/**
+ * The sizing over the shared public clients, on the chain ids this deployment funds against.
+ *
+ * The quote paths' single entry point: it never rejects and never returns null, so a caller that
+ * only needs figures to price with can use the result directly. An unreachable chain leaves the
+ * static fallbacks, the same ones the worker itself falls back to.
+ */
+export async function estimatePublicFundingSizing(args: {
+  settleAmount: bigint;
+  probeAddress: string;
+}): Promise<FundingSizing> {
+  try {
+    const { connectChain, ASSET_HUB, PEOPLE } = await import("./host-chain");
+    const [ahClient, peopleClient] = await Promise.all([
+      connectChain(ASSET_HUB),
+      connectChain(PEOPLE),
+    ]);
+    return (
+      (await estimateFundingSizing({
+        ahClient,
+        peopleClient,
+        underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
+        peopleParaId: PASEO_PEOPLE_PARA_ID,
+        settleAmount: args.settleAmount,
+        probeAddress: args.probeAddress,
+      })) ?? FALLBACK_FUNDING_SIZING
+    );
+  } catch (e) {
+    console.warn("[coinage] funding sizing unreachable; using static fallbacks:", e);
+    return FALLBACK_FUNDING_SIZING;
   }
 }

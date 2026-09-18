@@ -9,7 +9,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-
+    inputs:
+      network:
+        description: "Network to deploy; all on push, pick one for a targeted redeploy"
+        type: choice
+        default: all
+        options: [all, preview, paseo-next-v2]
 permissions:
   contents: read
 
@@ -30,18 +35,42 @@ jobs:
           faucet-seed: ${{ secrets.VITE_FAUCET_SEED }}
           meld-base-url: ${{ secrets.VITE_MELD_BASE_URL }}
 
+  # Which network legs this run deploys: every target on push, the chosen one
+  # on a targeted redeploy (paritytech/autodeployer dispatches per network).
+  plan:
+    name: Pick networks
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.plan.outputs.targets }}
+    steps:
+      - id: plan
+        env:
+          NETWORK: ${{ inputs.network || 'all' }}
+        run: |
+          targets=$(jq -c --arg n "$NETWORK" 'map(select($n == "all" or .env == $n))' <<'JSON'
+          [
+            {
+              "env": "paseo-next-v2",
+              "domain": "getcash.paseo"
+            },
+            {
+              "env": "preview",
+              "domain": "getcash.testnet"
+            }
+          ]
+          JSON
+          )
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+          echo "$targets" | jq -r '.[] | "deploying " + .env'
+
   deploy:
-    needs: build
+    needs: [build, plan]
     name: getcash (${{ matrix.target.env }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - env: paseo-next-v2
-            domain: getcash.paseo
-          - env: preview
-            domain: getcash.testnet
+        target: ${{ fromJSON(needs.plan.outputs.targets) }}
     permissions:
       contents: read
     steps:
