@@ -98,6 +98,17 @@ const masked = ref(true);
 const recovered = ref<RefundKey | null>(null);
 const address = computed(() => session.refundAddress ?? recovered.value?.address ?? null);
 
+/**
+ * Whether this request's recovery material could be reached at all.
+ *
+ * The live world has it outright; a refund opened from history re-derives it. Either can come up
+ * empty — off-host there is no entropy root, and on-host the derivation can fail — and when it
+ * does the buyer must be told, not handed a control that does nothing and a step pointing at an
+ * address that was never drawn. `recovering` keeps that message off the screen while the
+ * derivation is still in flight.
+ */
+const recovering = ref(false);
+
 // A refund opened from history has no world to read, so the key is re-derived from the request's
 // own identity. The address is wanted on sight (it is where the money is); the secret stays behind
 // the reveal either way.
@@ -161,16 +172,6 @@ const steps = computed(() => {
   ];
 });
 
-/**
- * Whether this request's recovery material could be reached at all.
- *
- * The live world has it outright; a refund opened from history re-derives it. Either can come up
- * empty — off-host there is no entropy root, and on-host the derivation can fail — and when it
- * does the buyer must be told, not handed a control that does nothing and a step pointing at an
- * address that was never drawn. `recovering` keeps that message off the screen while the
- * derivation is still in flight.
- */
-const recovering = ref(false);
 const material = computed(() => address.value !== null || revealed.value !== null);
 
 /** How far the refund has come, with its transaction split out so the screen can act on it. */
