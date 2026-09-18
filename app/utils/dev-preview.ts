@@ -196,7 +196,11 @@ async function previewRequest(
   const provider = progressProviderForSource(sourceId);
   const ingressDurationMs = INGRESS_MS[sourceId];
   const initial = createFundingProgressSnapshot(
-    provider.createProfile(ingressDurationMs === undefined ? {} : { ingressDurationMs }),
+    provider.createProfile({
+      ...(ingressDurationMs === undefined ? {} : { ingressDurationMs }),
+      // As `initialProgress` words it: a transfer is sent, not paid.
+      ...(sourceId === "meld-bank" ? { waitingLabel: "Waiting for your transfer" } : {}),
+    }),
     { preDetectionEstimateText: ESTIMATE[sourceId] ?? "≈10 min after your transfer" },
   );
   const opening = fundingProgressSignalForPaymentState(provider, awaitingDeposit(0, sourceId));

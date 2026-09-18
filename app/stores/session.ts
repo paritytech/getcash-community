@@ -1011,6 +1011,8 @@ export const useSessionStore = defineStore("session", () => {
       const bank = method.value === "bank";
       const profile = provider.createProfile({
         ingressDurationMs: bank ? 24 * 60 * 60_000 : 5 * 60_000,
+        // The rail's own label is the card's ("your payment"); a transfer is sent, not paid.
+        ...(bank ? { waitingLabel: "Waiting for your transfer" } : {}),
       });
       const estimatedDurationMs =
         profile.expectedUserDelayMs +
