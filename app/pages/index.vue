@@ -189,17 +189,6 @@ function leaveJourney() {
 }
 
 /**
- * A cancelled top-up: the row it was opened from is gone with it, so the shell takes the screen
- * rather than the list position it came from — its in-progress list while anything else is still
- * running, the add-funds screen when nothing is.
- */
-function leaveCancelledJourney() {
-  journey.value = null;
-  returnFromTopUp();
-  returnToSelector("pending");
-}
-
-/**
  * "Start over" on a fiat top-up that ended: re-enter its own route's package with the same amount.
  *
  * The failed request is left exactly where it is — it happened, and the list keeps it. Mounting
@@ -256,7 +245,6 @@ onMounted(async () => {
     :open="journey.origin === 'top-up' ? openTopUpRequest : null"
     :status="journeyStatus"
     @back="leaveJourney"
-    @cancelled="leaveCancelledJourney"
     @start-over="startOverFromJourney"
   />
   <component
