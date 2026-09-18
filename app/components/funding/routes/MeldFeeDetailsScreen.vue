@@ -1,6 +1,7 @@
 <script setup lang="ts">
-// The Fees drill-in behind the pay screen's fee row: the quoted fee split, its total, and the
-// effective rate. Read-only; both the toolbar and the bottom button return to the pay screen.
+// The Fees drill-in behind the pay screen's fee row: the quoted fee split, its total, the amount
+// those fees add up to, and the effective rate. Read-only; both the toolbar and the bottom button
+// return to the screen behind it.
 import { computed } from "vue";
 import { useSessionStore } from "../../../stores/session";
 import { fmtFiat, splitFees } from "../../../utils/money";
@@ -20,9 +21,15 @@ const feeRows = computed(() => {
   return rows;
 });
 
-const totalFees = computed(() => {
+const totalFeesRow = computed(() => {
   const q = session.quoted;
-  return q?.fee ? fmtFiat(q.fee, q.symbol) : null;
+  return q?.fee ? [{ label: "Total fees", value: fmtFiat(q.fee, q.symbol) }] : [];
+});
+
+/** What the buyer actually sends: the fees are already in it, which is the point of this screen. */
+const amountToSend = computed(() => {
+  const q = session.quoted;
+  return q ? fmtFiat(q.send, q.symbol) : null;
 });
 
 /** Fiat per CASH net of fees: what the buyer's money actually buys. */
@@ -40,12 +47,15 @@ const rate = computed(() => {
   <div class="flex min-h-0 flex-1 flex-col">
     <DetailRows class="gap-2" :rows="feeRows" muted />
 
-    <hr class="my-4 border-stroke-secondary" />
+    <!-- The total is ruled off from its parts above and from the charge below. -->
+    <hr class="my-2 border-stroke-secondary" />
+    <DetailRows :rows="totalFeesRow" muted />
+    <hr class="mt-2 border-stroke-secondary" />
 
-    <div class="flex flex-col gap-1">
+    <div class="mt-4 flex flex-col gap-2">
       <div class="flex items-center justify-between gap-4">
-        <span class="text-paragraph-l text-fg-secondary">Total fees</span>
-        <span class="text-display-l text-fg-primary">{{ totalFees }}</span>
+        <span class="text-paragraph-l text-fg-secondary">Amount to send inc. fees</span>
+        <span class="text-display-l text-fg-primary">{{ amountToSend }}</span>
       </div>
       <div v-if="rate" class="flex items-baseline justify-between gap-4">
         <span class="text-paragraph-l text-fg-secondary">Rate</span>

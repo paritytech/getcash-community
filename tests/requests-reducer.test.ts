@@ -5,6 +5,7 @@ import type { SwapStatusResult } from "@getsome/core";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
   DEPOSIT_EXPIRED_REASON,
+  paymentWatchUntil,
   PROVISIONAL_REVERT_MS,
   type Observation,
   type RequestRecord,
@@ -167,6 +168,32 @@ describe("request reducer: top-up transitions", () => {
     expect(later.claimed).toBe("25250000");
     expect(later.confirmedAt).toBe(at(7));
     expect(later.updatedAt).toBe(at(7));
+  });
+
+  it("a bank transfer expires on the payment watch, not when its pay page lapses", () => {
+    const page = FIXTURE_NOW + 24 * 60 * MINUTE;
+    // The same request unsent: `buyerPaid` is what otherwise stops the clock, and a buyer who
+    // never tapped "I've sent funds" is exactly the one this protects.
+    const { meldSubmittedAt: _unsent, ...unsubmitted } = submittedCardRecord;
+    const terms = { ...unsubmitted, startedAt: FIXTURE_NOW, depositExpiresAt: page };
+    const transfer = migrated(
+      { ...terms, sourceId: "meld-bank", tradeN: 4 },
+      requestRefOf("meld-bank", 4),
+    );
+    expect(transfer.route).toBe("bank");
+
+    // Past the page, inside the watch: the money may still be in the post, and the rail is still
+    // being asked. Saying "expired" here would contradict a transfer already sent.
+    expect(reduce(transfer, clock(page + MINUTE)).status).toEqual({ kind: "awaiting-deposit" });
+
+    // Past the watch, where even the rail can no longer answer: the clock is the backstop.
+    const done = reduce(transfer, clock(paymentWatchUntil(transfer) + 1));
+    expect(done.status).toMatchObject({ kind: "expired" });
+    expect(done.failureReason).toBe(DEPOSIT_EXPIRED_REASON);
+
+    // The card keeps its rail's own deadline: its charge is instant, so a lapsed page is the end.
+    const card5 = migrated({ ...terms, tradeN: 5 }, requestRefOf("meld-card", 5));
+    expect(reduce(card5, clock(page + MINUTE)).status).toMatchObject({ kind: "expired" });
   });
 
   it("clock past deadline while rail waiting → expired with DEPOSIT_EXPIRED_REASON", () => {

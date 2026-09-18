@@ -36,8 +36,21 @@ export const WORKER_READY_MS = 20_000;
 export const MIRROR_SETTLED_LIMIT = 50;
 /** Bound on the reads a cancel performs before acting. */
 export const CANCEL_CONFIRM_MS = 8_000;
-/** A cancelled record is reaped after its deadline plus this grace. */
+/** A cancelled record is reaped after its watch window plus this grace. */
 export const TOMBSTONE_GRACE_MS = 86_400_000;
+/**
+ * How long a request whose payment has not been seen is still worth asking the rail about.
+ *
+ * Not the pay page's own expiry: that says when the buyer can no longer *start* paying, which is
+ * no evidence about whether they already did — reading it as the deadline concludes "nothing
+ * arrived" over a buyer whose transfer is still in the post. A bank transfer settles in up to a
+ * day, and one started on a Friday lands on Monday.
+ *
+ * Three days matches the adapter's own `worker.session_max_age_ms`, which keeps watching for that
+ * long and holds the verdict; with the tombstone grace on top, this record outlives that watch, so
+ * the adapter's answer always has somewhere to land.
+ */
+export const PAYMENT_WATCH_MS = 72 * 3_600_000;
 /** Route fallback when the rail gives no deposit expiry. */
 export const DEFAULT_DEPOSIT_WINDOW_MS = 86_400_000;
 /** A probed-empty gap number is re-read at most this often. */
@@ -161,6 +174,8 @@ export interface TopUpRecord {
   sourceNetworkFee?: string;
   meldCountry?: string;
   meldFundingRequestId?: string;
+  /** The provider the rail quoted through (Meld's `TRANSAK`), as the concluded top-up names it. */
+  meldServiceProvider?: string;
   meldSubmittedAt?: number;
   /** Demo only: when Skip was pressed, so a re-open never offers Skip again for this request. */
   depositSkippedAt?: number;
@@ -510,10 +525,31 @@ export const paymentTaken = (record: Pick<WithdrawalRecord, "payment">): boolean
   return status === "processing" || status === "completed" || status === "partiallyClaimed";
 };
 
+/**
+ * Until when a top-up whose payment has not been seen is watched: the rail is still worth asking,
+ * and the record is still worth keeping.
+ *
+ * The rail's own expiry only ever extends this, never shortens it. A pay page that closed says
+ * nothing about a transfer already sent, so the window is measured from when the request started
+ * and sized to outlast the adapter's watch (see `PAYMENT_WATCH_MS`).
+ */
+export const paymentWatchUntil = (record: Pick<TopUpRecord, "startedAt" | "deadline">): number =>
+  Math.max(record.startedAt + PAYMENT_WATCH_MS, record.deadline.depositExpiresAt ?? 0) +
+  TOMBSTONE_GRACE_MS;
+
+/**
+ * The rail has the money: it reports the deposit at or past `received`.
+ *
+ * Distinct from `buyerPaid`, which also counts the buyer's own word. On a rail nobody can
+ * observe, that word opens the journey but settles nothing — only the rail's sighting says the
+ * money is out of the buyer's hands, and with it the instructions and the cancel.
+ */
+export const railSawPayment = (record: Pick<TopUpRecord, "rail">): boolean =>
+  record.rail.stage === "received" ||
+  record.rail.stage === "processing" ||
+  record.rail.stage === "delivered";
+
 /** The buyer has paid: the rail reports the deposit at or past `received`, or the buyer finished
  *  the provider's widget. Such a request never expires, however long the funds take to land. */
 export const buyerPaid = (record: Pick<TopUpRecord, "rail" | "meldSubmittedAt">): boolean =>
-  record.rail.stage === "received" ||
-  record.rail.stage === "processing" ||
-  record.rail.stage === "delivered" ||
-  record.meldSubmittedAt !== undefined;
+  railSawPayment(record) || record.meldSubmittedAt !== undefined;

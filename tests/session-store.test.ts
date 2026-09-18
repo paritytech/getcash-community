@@ -124,6 +124,33 @@ describe("session store: Meld (card / bank) in the mock world", () => {
     expect(store.meldPayUrl).toBeNull();
   });
 
+  it("re-opens a top-up from the list with no host to rebuild a hosted world from", async () => {
+    const store = useSessionStore();
+    const requests = useRequestsStore();
+    store.setMethod("card");
+    store.setAmount("100");
+    await store.fetchMeldQuote();
+    await store.start();
+    const record = requests.foregroundRecord;
+    if (record === null) throw new Error("the started request has no record");
+    const { ref } = record;
+    const send = store.quoted?.send;
+
+    // Leaving the screen drops the world, as walking back to the list does. The record stays.
+    store.reset();
+    expect(requests.foregroundRecord).toBeNull();
+
+    // Tapping the row. The browser has no host, and the top-up opens all the same.
+    expect(await store.openRequest(ref)).toBe(true);
+    expect(requests.foregroundRecord?.ref).toEqual(ref);
+    expect(requests.phase).toBe("awaiting-deposit");
+    // The quote it was opened with, read back off the record rather than quoted again.
+    expect(store.quoted).toMatchObject({ send, symbol: "USD" });
+    // A world the screens can act on: a cancel has a session to clear, and the resume is over.
+    expect(store.cancelReady).toBe(true);
+    expect(store.resuming).toBe(false);
+  });
+
   it("cancels a card top-up and tears the request down", async () => {
     const store = useSessionStore();
     const requests = useRequestsStore();
