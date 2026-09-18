@@ -146,6 +146,7 @@ const rowId = (i: number) => `${listboxId}-row-${i}`;
         class="w-full rounded-nested bg-surface-container py-3 pr-10 text-body-l text-fg-primary placeholder:text-fg-tertiary"
         :class="showFlag ? 'pl-11' : 'pl-4'"
         @focus="openList"
+        @click="openList"
         @input="onInput"
         @blur="onBlur"
         @keydown.down.prevent="move(1)"
