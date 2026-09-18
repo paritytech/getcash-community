@@ -1,5 +1,15 @@
 <script setup lang="ts">
-import { computed, markRaw, onMounted, ref, shallowRef, type Component, type Ref } from "vue";
+import {
+  computed,
+  markRaw,
+  nextTick,
+  onMounted,
+  ref,
+  shallowRef,
+  watch,
+  type Component,
+  type Ref,
+} from "vue";
 import FundingJourneyRoute from "../components/funding/FundingJourneyRoute.vue";
 import FundingSelectorScreen from "../components/funding/FundingSelectorScreen.vue";
 import { useRoutePackageLoader } from "../composables/useRoutePackageLoader";
@@ -23,6 +33,10 @@ import type { FundingRoute, FundingSelection } from "../funding/selection";
 import type { FundingTopUpAdapter } from "../funding/top-up-adapter";
 import { projectFundingTopUps, type FundingTopUp } from "../funding/top-ups";
 import { useRequestsStore } from "../stores/requests";
+import { isDemoBuild } from "../utils/demo";
+import { applyCurrentScene } from "../utils/dev-preview";
+import { previewStage, type PreviewStage } from "../utils/dev-preview-stage";
+import { launchPreviewTopUps, previewTopUpScene } from "../utils/dev-preview-top-ups";
 
 useVisualViewportHeight();
 const requests = useRequestsStore();
@@ -82,7 +96,27 @@ for (const [route, routePackage] of Object.entries(getcashRoutePackages)) {
   if (status) statusByRoute.set(route as FundingRoute, status);
 }
 const topUpAdapters = [...adapterByPackage.values()];
-const topUps = computed(() => topUpAdapters.flatMap((adapter) => adapter.topUps.value));
+// A preview scene's canned cards stand in for the adapters' — null in every production build.
+const topUps = computed(
+  () => previewTopUpScene.value?.topUps ?? topUpAdapters.flatMap((adapter) => adapter.topUps.value),
+);
+
+// Launch simulation. `?preview=top-ups` seeds a running top-up before the first render, so the
+// shell takes the same path a returning buyer's would: auto entry, resolved against live content.
+if (isDemoBuild() && typeof window !== "undefined") {
+  const scene = new URLSearchParams(window.location.search).get("preview");
+  if (scene === "top-ups") previewTopUpScene.value = launchPreviewTopUps();
+}
+// A scene sets the entry screen the once; the shell's own navigation owns it from there.
+watch(
+  previewTopUpScene,
+  (scene) => {
+    if (scene === null) return;
+    shellEntry.value = scene.entry ?? "pending";
+    topUpError.value = scene.error ?? null;
+  },
+  { immediate: true },
+);
 const journeyStatus = computed<FundingJourneyStatus | null>(() =>
   journey.value === null ? null : (statusByRoute.get(journey.value.route)?.value ?? null),
 );
@@ -114,7 +148,7 @@ async function openTopUp(topUp: FundingTopUp, target: FundingTopUpReturnTarget) 
   // opens its package's screen.
   if (resolveFundingTopUpDestination(topUp.state) === "journey") {
     activeTopUpId.value = topUp.id;
-    journey.value = { title: "Status", route: topUp.route, origin: "top-up" };
+    journey.value = { title: "Top-up", route: topUp.route, origin: "top-up" };
     return;
   }
 
@@ -165,7 +199,7 @@ function handOffToJourney() {
   const openedTopUp = activeTopUp.value;
   const chosen = selection.value;
   if (activeTopUpPackage.value !== null && openedTopUp !== null) {
-    journey.value = { title: "Status", route: openedTopUp.route, origin: "top-up" };
+    journey.value = { title: "Top-up", route: openedTopUp.route, origin: "top-up" };
   } else if (activePackage.value !== null && chosen !== null) {
     journey.value = { title: routeLabel(chosen.route), route: chosen.route, origin: "package" };
   } else {
@@ -206,6 +240,57 @@ function startOverFromJourney() {
   returnFromTopUp();
   void continueToPackage({ amount, route: current.route });
 }
+
+/**
+ * Puts the shell where a preview scene's state can be read. A scene only writes the stores, and
+ * each screen reads a different part of them, so cycling one that belongs to a package or the
+ * journey while the list has the screen left the deck looking stuck. Returns whether anything
+ * moved. Dev and demo builds only — `previewStage` is null in every other.
+ */
+async function stagePreview(stage: PreviewStage): Promise<boolean> {
+  if (stage.kind === "shell") {
+    if (journey.value === null && activePackage.value === null && activeTopUpPackage.value === null)
+      return false;
+    journey.value = null;
+    returnFromTopUp();
+    // The scene's own entry screen, already set from its cards.
+    returnToSelector(shellEntry.value);
+    return true;
+  }
+  if (stage.kind === "journey") {
+    // A journey already on this top-up (or on none) stays: re-entering it would reset the session
+    // the scene just wrote.
+    const topUpId = stage.topUpId ?? null;
+    if (journey.value?.route === stage.route && activeTopUpId.value === topUpId) return false;
+    loadEpoch += 1;
+    unmountPackages();
+    openingTopUpId.value = null;
+    activeTopUpId.value = topUpId;
+    journey.value = {
+      title: topUpId === null ? routeLabel(stage.route) : "Top-up",
+      route: stage.route,
+      origin: topUpId === null ? "package" : "top-up",
+    };
+    return true;
+  }
+  if (activePackage.value !== null && selection.value?.route === stage.route) return false;
+  journey.value = null;
+  activeTopUpId.value = null;
+  activeTopUpPackage.value = null;
+  await continueToPackage({
+    amount: selection.value?.amount ?? fundingSelectorConfig.amount.initial,
+    route: stage.route,
+  });
+  return true;
+}
+
+watch(previewStage, async (stage) => {
+  if (stage === null || !(await stagePreview(stage))) return;
+  // The container is up. Its own mount and teardown ran as it changed — a package starts its entry
+  // flow over, a journey left behind resets the session — so the scene's state goes on top again.
+  await nextTick();
+  await applyCurrentScene();
+});
 
 const openTopUpRequest = (topUp: FundingTopUp): Promise<boolean> =>
   adapterByRoute.get(topUp.route)?.open(topUp) ?? Promise.resolve(false);
@@ -261,6 +346,12 @@ onMounted(async () => {
     @back="returnToSelector()"
     @handoff="handOffToJourney"
     @switch-route="switchRoute"
+  />
+  <!-- A list loading placeholder, from the preview deck. -->
+  <FundingSelectorScreen
+    v-else-if="previewTopUpScene?.skeleton"
+    skeleton
+    :skeleton-screen="previewTopUpScene.entry === 'history' ? 'history' : 'pending'"
   />
   <FundingSelectorScreen
     v-else-if="topUpsReady"

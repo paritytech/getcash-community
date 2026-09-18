@@ -86,12 +86,10 @@ describe("preview scenes", () => {
 
   it("foreground views per preview scene match the snapshot", async () => {
     setActivePinia(createPinia());
-    const session = useSessionStore();
     const requests = useRequestsStore();
-    const flow = useFlowStore();
     const views = [];
     for (let n = 0; n < SCENES.length; n++) {
-      const scene = await directScene(session, flow, 1);
+      const scene = await directScene(1);
       await nextTick();
       views.push({
         scene,

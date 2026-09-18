@@ -9,5 +9,5 @@ export {
 export type { EphemeralKeypair, EphemeralKeypairWithSecret } from "./derive";
 export { createEphemeral } from "./ephemeral";
 export type { CreatedEphemeral } from "./ephemeral";
-export { deriveRefundKey, isRefundChain } from "./refund";
+export { deriveRefundKey, isRefundChain, REFUND_CHAINS } from "./refund";
 export type { BitcoinNetwork, RefundChain, RefundKey } from "./refund";

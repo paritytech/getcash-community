@@ -515,9 +515,7 @@ describe("requests store: the hand-off step", () => {
     const mirrorBefore = mirror.getItem(MIRROR_KEY);
     expect(mirrorBefore).toContain(`"${requestRefKey(AWAITING_REF)}"`);
 
-    const session = useSessionStore();
-    const flow = useFlowStore();
-    for (let n = 0; n < SCENES.length; n++) await directScene(session, flow, 1);
+    for (let n = 0; n < SCENES.length; n++) await directScene(1);
     await requests.reconcile("boot");
 
     expect(requests.sandboxed).toBe(true);

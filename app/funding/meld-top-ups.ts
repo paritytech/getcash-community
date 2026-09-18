@@ -7,7 +7,7 @@ import { DEPOSIT_EXPIRED_REASON, useSessionStore } from "../stores/session";
 import { parseRequestRefKey, requestRefKey, type RequestRef } from "../utils/request-index";
 import { projectFundingProgress } from "./progress";
 import type { TopUpRecord } from "./requests/model";
-import { rowStateOf } from "./requests/views";
+import { journeyScaleOf, journeyStepsOf, rowStateOf } from "./requests/views";
 import type { FundingRoute } from "./selection";
 import { isMeldSourceId, meldMethodFor, meldSourceIdFor, type MeldMethod } from "./source-ids";
 import type { FundingTopUpAdapter } from "./top-up-adapter";
@@ -37,12 +37,18 @@ export const MELD_WINDOW_CLOSED_REASON = "Payment window closed";
 
 function topUpDetails(record: MeldTopUpRecord, method: MeldMethod): FundingTopUpDetails {
   return {
-    provider: { label: "Meld", icon: method === "card" ? "/icons/card.svg" : "/icons/bank.svg" },
+    // The provider that actually took the payment when the record kept it; "Meld" is the
+    // aggregator, and all an older record can say.
+    provider: {
+      label: record.meldServiceProvider ?? "Meld",
+      icon: method === "card" ? "/icons/card.svg" : "/icons/bank.svg",
+    },
     method: {
       label: method === "card" ? "Card" : "Bank transfer",
       icon: method === "card" ? "/icons/card.svg" : "/icons/bank.svg",
     },
     ...(record.meldCountry ? { region: record.meldCountry } : {}),
+    ...(record.meldFundingRequestId ? { reference: record.meldFundingRequestId } : {}),
     ...(record.progress?.preDetectionEstimateText
       ? { arrivalEstimate: record.progress.preDetectionEstimateText }
       : {}),
@@ -73,6 +79,7 @@ export function projectMeldTopUps(
         progress,
         details: topUpDetails(record, method),
         ...quoteOf(record),
+        journeyDone: journeyStepsOf(record, journeyScaleOf(record.route)),
         state: worded,
       },
     ];

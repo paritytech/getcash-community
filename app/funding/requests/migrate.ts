@@ -146,6 +146,15 @@ function legacyStatus(
         message: raw.failureReason,
         recoverable: false,
         ...(raw.refunded === undefined ? {} : { refunded: raw.refunded }),
+        // A legacy record kept the refund's figures flat; the record keeps them on the failure.
+        ...(raw.refundAmount === undefined && raw.refundTxRef === undefined
+          ? {}
+          : {
+              refund: {
+                ...(raw.refundAmount === undefined ? {} : { amount: raw.refundAmount }),
+                ...(raw.refundTxRef === undefined ? {} : { txRef: raw.refundTxRef }),
+              },
+            }),
       },
     };
   }

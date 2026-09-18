@@ -28,7 +28,7 @@ const session = useSessionStore();
 const requests = useRequestsStore();
 const flow = useFlowStore();
 useVisibilityReconcile();
-const { previewLabel } = useStateDirector();
+useStateDirector();
 const { handedOff } = useMeldHandoff(emit);
 
 const title = computed(
@@ -168,11 +168,6 @@ onUnmounted(() => {
     </div>
 
     <!-- state-director scene label (dev/demo keys only) -->
-    <span
-      v-if="previewLabel"
-      class="fixed bottom-2 left-2 rounded-small bg-surface-container px-2 py-1 font-mono text-overline text-fg-secondary shadow-1"
-    >
-      {{ previewLabel }}
-    </span>
+    <PreviewSceneLabel />
   </main>
 </template>

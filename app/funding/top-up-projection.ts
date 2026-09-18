@@ -24,13 +24,20 @@ export interface FundingTopUpRecord {
   sourceNetworkFee?: string;
   /** The Meld rail's buyer country. */
   meldCountry?: string;
+  /** The Meld rail's provider (Transak, Koywe, ...) and the funding request's id, which is what
+   *  the journey shows as the transaction id. */
+  meldServiceProvider?: string;
+  meldFundingRequestId?: string;
   funded?: number;
   settledAt?: number;
   claimed?: string;
   /** Why the request failed. */
   failureReason?: string;
-  /** The failed swap was refunded to the request's own key. */
+  /** The failed swap was refunded to the request's own key, with what came back and the
+   *  transaction that returned it. */
   refunded?: boolean;
+  refundAmount?: string;
+  refundTxRef?: string;
   progress?: FundingProgressSnapshot;
 }
 

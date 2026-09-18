@@ -20,10 +20,18 @@ import {
 } from "../funding/requests/model";
 import { createMockCoinageSession } from "~~/lib/coinage";
 import { isDemoBuild } from "./demo";
-import type { useFlowStore } from "../stores/flow";
+import {
+  previewTopUp,
+  previewTopUpHistory,
+  previewTopUpScene,
+  type PreviewTopUpScene,
+} from "./dev-preview-top-ups";
+import type { FundingTopUp } from "../funding/top-ups";
+import { previewStage, type PreviewStage } from "./dev-preview-stage";
+import { useFlowStore } from "../stores/flow";
 import { useOffersStore } from "../stores/offers";
 import { useRequestsStore } from "../stores/requests";
-import type { useSessionStore } from "../stores/session";
+import { useSessionStore } from "../stores/session";
 import type { RequestRef } from "../utils/request-index";
 
 type Session = ReturnType<typeof useSessionStore>;
@@ -102,6 +110,9 @@ function working(
 
 interface Scene {
   name: string;
+  /** Which container the scene's state is meant to be read in. Derived from the scene's family
+   *  when left out; set it only where the name cannot say it (a journey opened on one top-up). */
+  stage?: PreviewStage;
   /** `index` is the scene's position in `SCENES`; it keys the scene's synthetic request. */
   apply: (session: Session, flow: Flow, index: number) => void | Promise<void>;
 }
@@ -137,7 +148,14 @@ interface PreviewRequest {
  *  a request the scene made before is removed first. */
 async function previewRequest(
   session: Session,
-  opts: { sourceId: SourceId; index: number; deposit?: { expiresAt: number } },
+  opts: {
+    sourceId: SourceId;
+    index: number;
+    deposit?: { expiresAt: number };
+    /** What the Meld create call captured: the provider that took the payment, and the funding
+     *  request's id. The record keeps both, as a real card request's does. */
+    meld?: { serviceProvider: string; fundingRequestId: string };
+  },
 ): Promise<PreviewRequest> {
   const requests = useRequestsStore();
   const { sourceId } = opts;
@@ -174,6 +192,12 @@ async function previewRequest(
     progress,
     tradeN: ref.tradeN,
     sourceId,
+    ...(opts.meld
+      ? {
+          meldServiceProvider: opts.meld.serviceProvider,
+          meldFundingRequestId: opts.meld.fundingRequestId,
+        }
+      : {}),
     route: routeOf(sourceId),
     deposit: {
       address: DEPOSIT.address,
@@ -249,6 +273,8 @@ function base(session: Session, flow: Flow) {
   useRequestsStore().leave();
   flow.step = "amount";
   flow.confirmingCancel = false;
+  // The shell reads the adapters again unless a top-ups scene says otherwise.
+  previewTopUpScene.value = null;
   // Bitcoin, matching the canned quote.
   flow.srcChainIndex = 0;
   flow.srcAssetIndex = 0;
@@ -261,6 +287,12 @@ function cardJourney(session: Session, flow: Flow) {
   session.method = "card";
   session.quoted = { ...QUOTED_CARD };
 }
+
+/** What the card scenes' create call captured, as the record keeps it. */
+const PREVIEW_MELD = {
+  serviceProvider: "Transak",
+  fundingRequestId: "a1f9c3d2-4c2e-4a71-9f0b-6d5e8c2b1a03",
+};
 
 /** Baseline for the selection scenes: 100 CASH, floors already learned, source set directly. */
 function selection(session: Session, flow: Flow) {
@@ -278,7 +310,7 @@ function selection(session: Session, flow: Flow) {
 /** The card scenes' request, once the provider has seen the payment. */
 async function cardPayment(s: Session, f: Flow, index: number): Promise<PreviewRequest> {
   cardJourney(s, f);
-  const r = await previewRequest(s, { sourceId: "meld-card", index });
+  const r = await previewRequest(s, { sourceId: "meld-card", index, meld: PREVIEW_MELD });
   await core(r, 0, swapping("receiving", "meld-card"));
   return r;
 }
@@ -367,6 +399,59 @@ const REFUND_PREVIEWS: readonly [SourceId, string][] = [
   ["usdt-solana", "5.02"],
 ];
 
+/**
+ * Installs a mock world for p5, the refunded Bitcoin top-up in the preview history.
+ *
+ * Off-host `recoverRefundKeyFor` returns null — there is no entropy root to derive from — so the
+ * refund guide would otherwise show its "can't be loaded here" state on every scene. The mock
+ * world stands in for the derivation so the screen can be seen whole. Only a host build exercises
+ * the real recovery; this proves the screen, not the key.
+ */
+function installPreviewRefundWorld(session: Session) {
+  void createMockCoinageSession({
+    recipient: DEPOSIT.address,
+    amount: BigInt(toBaseUnits("0.00043", 8)),
+    sourceId: "btc",
+  }).then((world) => {
+    session.mock = world;
+  });
+}
+
+/** A top-ups scene: the shell's landing screen, with the cards it is asked to draw. */
+function topUpList(topUps: readonly FundingTopUp[], extra: Omit<PreviewTopUpScene, "topUps"> = {}) {
+  return (s: Session, f: Flow) => {
+    base(s, f);
+    previewTopUpScene.value = { topUps, ...extra };
+  };
+}
+
+const CRYPTO_PACKAGE: PreviewStage = { kind: "package", route: "crypto" };
+const CRYPTO_JOURNEY: PreviewStage = { kind: "journey", route: "crypto" };
+const CARD_JOURNEY: PreviewStage = { kind: "journey", route: "card" };
+
+/**
+ * The scene families, in the order they are matched: the first prefix a scene's name starts with
+ * wins. The names are already a taxonomy — "crypto / deposit: waiting" belongs to the package that
+ * owns the deposit, "crypto / claim: consent" to the journey that owns the claim — so the stage is
+ * read off them rather than repeated on all fifty-odd scenes.
+ */
+const STAGE_BY_PREFIX: readonly (readonly [string, PreviewStage])[] = [
+  ["list / ", { kind: "shell" }],
+  // The crypto package owns everything up to and including the deposit.
+  ["crypto / network", CRYPTO_PACKAGE],
+  ["crypto / token", CRYPTO_PACKAGE],
+  ["crypto / deposit", CRYPTO_PACKAGE],
+  ["crypto / resume spinner", CRYPTO_PACKAGE],
+  ["crypto / ", CRYPTO_JOURNEY],
+  ["card / ", CARD_JOURNEY],
+];
+
+function stageFor(scene: Scene): PreviewStage {
+  if (scene.stage) return scene.stage;
+  const match = STAGE_BY_PREFIX.find(([prefix]) => scene.name.startsWith(prefix));
+  return match?.[1] ?? { kind: "shell" };
+}
+
 /** The store's own message for a payment the adapter no longer knows. */
 const MELD_GONE_MESSAGE =
   "We can no longer find this payment. Do not pay again. Contact support with your reference.";
@@ -406,6 +491,95 @@ const CARD_REFUNDED: PaymentState = {
 
 // Scenes start at the first screen a package owns.
 export const SCENES: Scene[] = [
+  {
+    // The shell's landing screen: one crypto top-up still waiting on its transfer.
+    name: "list / top-up: waiting",
+    apply: topUpList([previewTopUp("p1", "crypto", "waiting", "Waiting for your transfer")]),
+  },
+  {
+    name: "list / top-up: converting",
+    apply: topUpList([previewTopUp("p1", "crypto", "active", "Converting to $CASH")]),
+  },
+  {
+    name: "list / top-up: adding",
+    apply: topUpList([previewTopUp("p1", "crypto", "active", "Adding to your balance")]),
+  },
+  {
+    // The amber line: the card rail is retrying, which is never terminal.
+    name: "list / top-up: retrying",
+    apply: topUpList([
+      previewTopUp("p1", "card", "active", "Retrying your payment…", { delayed: true }),
+    ]),
+  },
+  {
+    name: "list / top-up: taking longer",
+    apply: topUpList([
+      previewTopUp("p1", "bank", "active", "Taking a little longer than usual", { delayed: true }),
+    ]),
+  },
+  {
+    // The settled card rides at the end of the running ones.
+    name: "list / top-up: settled",
+    apply: topUpList([
+      previewTopUp("p1", "crypto", "waiting", "Waiting for your transfer"),
+      previewTopUp("p2", "card", "settled", "Added to your balance"),
+    ]),
+  },
+  {
+    // The scene asks for the top-ups screen with nothing running, which is what closing a journey
+    // after your last top-up landed used to do. The entry rule now sends it to the amount screen
+    // with the clock instead, so this scene is the review comment's fix rather than the bug: a
+    // list titled "Top-up in progress" must never open with no top-up in progress.
+    name: "list / top-up: all settled",
+    apply: topUpList([previewTopUp("p2", "card", "settled", "Added to your balance")]),
+  },
+  {
+    // Past the collapse: three cards and the Show more pill.
+    name: "list / top-ups: show more",
+    apply: topUpList([
+      previewTopUp("p1", "bank", "waiting", "Waiting for your transfer"),
+      previewTopUp("p2", "crypto", "active", "Converting to $CASH", { amount: "120" }),
+      previewTopUp("p3", "crypto", "active", "Adding to your balance", { amount: "25" }),
+      previewTopUp("p4", "card", "active", "Retrying your payment…", { delayed: true }),
+      previewTopUp("p5", "crypto", "settled", "Added to your balance", { amount: "80" }),
+    ]),
+  },
+  {
+    // The screen's own shapes while the top-ups are still being read.
+    name: "list / top-ups: loading",
+    apply: topUpList([previewTopUp("p1", "crypto", "waiting", "Waiting for your transfer")], {
+      skeleton: true,
+    }),
+  },
+  {
+    // Behind the clock: finished top-ups, credited and failed. The refunded Bitcoin card opens the
+    // recovery guide, so its world is installed here too — tapping through is how the screen is
+    // actually reached.
+    name: "list / history",
+    apply: (s, f) => {
+      topUpList(previewTopUpHistory(), { entry: "history" })(s, f);
+      installPreviewRefundWorld(s);
+    },
+  },
+  {
+    // Nothing has ever been topped up.
+    name: "list / history: empty",
+    apply: topUpList([], { entry: "history" }),
+  },
+  {
+    name: "list / history: loading",
+    apply: topUpList([], { entry: "history", skeleton: true }),
+  },
+  {
+    // A top-up that would not open, with the list long enough to scroll. The review comment on
+    // `FundingHistoryScreen` is about where the line lands: it is the last thing in the scroller,
+    // so the buyer who just tapped a card at the top never sees it.
+    name: "list / history: error",
+    apply: topUpList(previewTopUpHistory(), {
+      entry: "history",
+      error: "Crypto status couldn't be opened. Try again.",
+    }),
+  },
   {
     name: "crypto / network",
     apply: (s, f) => {
@@ -607,12 +781,29 @@ export const SCENES: Scene[] = [
     },
   },
   {
+    // The same refund read off the list's own record, with nothing live behind it. The receipt
+    // rows must survive the request being gone: they come from the record, not the session.
+    name: "card / refunded: from history",
+    stage: { kind: "journey", route: "card", topUpId: "p8" },
+    apply: topUpList(previewTopUpHistory(), { entry: "history" }),
+  },
+  {
+    // What every buyer's existing history actually renders today: the funding-request id was
+    // always persisted, so the reference is real, but no record knows which provider took the
+    // payment — the row names the aggregator instead. This is the shipped state; the scene above
+    // is what it becomes once the adapter surfaces the rail's own ids.
+    name: "card / refunded: provider unknown",
+    stage: { kind: "journey", route: "card", topUpId: "p9" },
+    apply: topUpList(previewTopUpHistory(), { entry: "history" }),
+  },
+  {
     // No Start over here: the rail could not tell whether the buyer was charged, and a second
     // payment would risk charging them twice.
     name: "card / journey: unconfirmed",
     apply: async (s, f, i) => {
       cardJourney(s, f);
-      const r = await previewRequest(s, { sourceId: "meld-card", index: i });
+      // The reference is the whole point of this ending: the message asks the buyer for it.
+      const r = await previewRequest(s, { sourceId: "meld-card", index: i, meld: PREVIEW_MELD });
       // The adapter's terminal 404, which the reducer ends `unobserved`: the payment was never
       // reported, so the record must not be re-opened from here.
       await r.observe({
@@ -749,6 +940,18 @@ export const SCENES: Scene[] = [
       s.mock = world;
     },
   },
+  {
+    // The same refund read from the list's own record, with nothing live behind it: the request
+    // could not be resumed, so the journey has only what history stored. This is the state the
+    // review comment is about — the rows are hidden because the deposit went back, and the guide
+    // behind "Refund info" is driven by the request's world, which is gone.
+    name: "crypto / refunded: from history",
+    stage: { kind: "journey", route: "crypto", topUpId: "p5" },
+    apply: (s, f) => {
+      topUpList(previewTopUpHistory(), { entry: "history" })(s, f);
+      installPreviewRefundWorld(s);
+    },
+  },
   // The return-funds screen opened with the key revealed, once per source: the step copy is
   // templated on the chain, its native coin, and the asset, so each reads differently.
   ...REFUND_PREVIEWS.map(([sourceId, send]) => {
@@ -786,14 +989,27 @@ export const SCENES: Scene[] = [
 
 let index = -1;
 
+/**
+ * Writes the current scene's state. Separate from `directScene` because the shell re-runs it once
+ * a scene's container is up: mounting a package or leaving the journey runs that container's own
+ * entry and teardown, which would otherwise land on top of the state the scene just wrote.
+ */
+export async function applyCurrentScene(): Promise<void> {
+  const scene = SCENES[index];
+  if (!scene) return;
+  await scene.apply(useSessionStore(), useFlowStore(), index);
+}
+
 /** Applies the next scene; resolves once its observations have landed. */
-export async function directScene(session: Session, flow: Flow, delta: 1 | -1): Promise<string> {
+export async function directScene(delta: 1 | -1): Promise<string> {
   // The deck's requests are fakes: they never reach the host store or the worker.
   useRequestsStore().enterSandbox();
   index = (index + delta + SCENES.length) % SCENES.length;
   const scene = SCENES[index]!;
+  // The container first: the shell reads this and moves, then applies the state again on top.
+  previewStage.value = stageFor(scene);
   const label = `${index + 1}/${SCENES.length} ${scene.name}`;
   console.info(`[preview] ${label}`);
-  await scene.apply(session, flow, index);
+  await applyCurrentScene();
   return label;
 }

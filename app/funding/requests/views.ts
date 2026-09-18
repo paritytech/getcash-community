@@ -165,11 +165,17 @@ export function rowStateOf(
     case "failed":
     case "expired": {
       const reason = record.failure?.message ?? record.failureReason;
+      // A refund's own figures, for a journey reopened from history: without them it can say only
+      // that a refund happened, not how much came back or where to look for it.
+      const refunded = record.refunded === true;
+      const refund = record.failure?.refund;
       return {
         kind: "failed",
         at: status.at,
         ...(reason === undefined ? {} : { reason }),
-        ...(record.refunded === true ? { refunded: true } : {}),
+        ...(refunded ? { refunded: true } : {}),
+        ...(refunded && refund?.amount ? { refundAmount: refund.amount } : {}),
+        ...(refunded && refund?.txRef ? { refundTxRef: refund.txRef } : {}),
       };
     }
     case "cancelled":

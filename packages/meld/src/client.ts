@@ -79,6 +79,19 @@ export interface MeldStatusResult {
   readonly sourceAmount?: string;
 }
 
+/*
+ * No transaction id is read back here, deliberately.
+ *
+ * The adapter holds Meld's own id as `FundingRecord.provider_transaction_id`, but
+ * `toFundingRequestDto` drops every rail join key on the way to the wire, so the DTO above is all
+ * a caller ever sees. Its `id` — the funding request's, which the app persists as
+ * `meldFundingRequestId` — is therefore the one identifier we have, and it is what the concluded
+ * journey shows the buyer as their transaction id. It is real and traceable: the adapter's
+ * `GET /funding/:id` answers on it.
+ *
+ * Should that contract open up, read the id here and prefer it in `session.meldReference`.
+ */
+
 /** The outcome of asking the adapter to withdraw a request's pay page. */
 export type MeldCancelResult =
   | { readonly outcome: "cancelled"; readonly cancelledAt?: number }
