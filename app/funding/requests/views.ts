@@ -67,12 +67,21 @@ export const fundsSeenOf = (record: RequestRecord): boolean =>
       record.status.via === "faucet" ||
       record.status.via === "pre-cancel"));
 
-/** How many steps the route's journey shows: three on the crypto timeline, five on the card's. */
-export type JourneySteps = 3 | 5;
+/** The scale a route's journey is drawn and counted on: each names its own stops. */
+export type JourneyScale = "crypto" | "card" | "bank";
 
 /** The scale a route's journey is counted on. */
-export const journeyScaleOf = (route: RequestRecord["route"]): JourneySteps =>
-  route === "crypto" ? 3 : 5;
+export const journeyScaleOf = (route: RequestRecord["route"]): JourneyScale =>
+  route === "crypto" ? "crypto" : route === "bank" ? "bank" : "card";
+
+/** The stops each scale draws, in order. The bank transfer has no "Approved" of its own: nothing
+ *  can be approved before the money lands, and the conversion that follows is over in the same
+ *  breath, so the design draws the wait as one step. */
+export const JOURNEY_STAGES: Record<JourneyScale, readonly string[]> = {
+  crypto: ["Started", "Conversion", "Added"],
+  card: ["Started", "Payment", "Approved", "Conversion", "Added"],
+  bank: ["Started", "Payment", "Added"],
+};
 
 /** A side exit's kind: the network took the payment even though it could not deliver it. */
 const paymentTaken = (kind?: FailureKind): boolean =>
@@ -136,9 +145,53 @@ function cardJourneySteps(record: RequestRecord): number {
   }
 }
 
+/** How many of the bank journey's three markers are complete, 1..3. Started: the request exists,
+ *  so a transfer still to arrive counts one — the buyer has been given the details to pay. Payment:
+ *  the money was seen, whoever saw it. Added: the request settled. The conversion sits inside
+ *  "Payment": from the buyer's side the transfer is the wait, and what follows it is not theirs to
+ *  watch. */
+function bankJourneySteps(record: RequestRecord): number {
+  const { status, failure } = record;
+  switch (status.kind) {
+    case "awaiting-deposit":
+      return 1;
+    case "deposit-seen":
+    case "converting":
+    case "claiming":
+      return 2;
+    case "settled":
+      return 3;
+    case "failed":
+    case "expired":
+    case "cancelled":
+      // Past the deposit the money was taken, whatever the leg it then failed on.
+      if (failure?.step === "mint" || failure?.step === "swap") return 2;
+      return paymentTaken(failure?.kind) ? 2 : 1;
+  }
+}
+
+/**
+ * The markers the timeline draws as complete, which is not always what the record counted.
+ *
+ * The crypto journey opens on the first sighting — its "Started" marker *is* the deposit — so a
+ * failure with nothing detected has nothing behind it. The fiat scales count "Started" as the
+ * request itself, which exists whatever the payment did, so their count stands as recorded: a
+ * declined transfer is a failure at "Payment", not at the beginning.
+ */
+export function completedMarkers(
+  scale: JourneyScale,
+  counted: number,
+  failed: { failed: boolean; detected: boolean },
+): number {
+  const floor = Math.max(counted, 0);
+  if (scale !== "crypto") return floor;
+  return failed.failed && !failed.detected ? 0 : floor;
+}
+
 /** How many of the journey's markers are complete, on the scale the route shows. */
-export function journeyStepsOf(record: RequestRecord, steps: JourneySteps): number {
-  return steps === 3 ? cryptoJourneySteps(record) : cardJourneySteps(record);
+export function journeyStepsOf(record: RequestRecord, scale: JourneyScale): number {
+  if (scale === "crypto") return cryptoJourneySteps(record);
+  return scale === "bank" ? bankJourneySteps(record) : cardJourneySteps(record);
 }
 
 /** The list row's state, worded by the same progress projection the journey ribbon shows. A

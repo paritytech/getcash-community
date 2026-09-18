@@ -40,7 +40,7 @@ import {
   type SupportedCountry,
 } from "~~/lib/supported";
 import { requestRefOf, type RequestRef } from "../utils/request-index";
-import { journeyScaleOf, type JourneySteps } from "../funding/requests/views";
+import { journeyScaleOf, type JourneyScale } from "../funding/requests/views";
 import { estimateSourceAmount, estimateSourceFromCash } from "~~/lib/demo-rates";
 import { priceSourceLeg, type SourcePriceResult } from "~~/lib/source-price";
 import {
@@ -140,6 +140,9 @@ export interface QuotedView {
   fee?: string | null;
   /** The network-fee share of `fee`, when the rail breaks it out (Meld may). */
   networkFee?: string | null;
+  /** The provider the rail quoted through (Meld's `TRANSAK`), named on a concluded top-up so a
+   *  buyer chasing one knows whose payment it was. */
+  serviceProvider?: string | null;
   /** Live world only: the native (DOT) budget the rail must deliver, 10-dec base units. */
   nativeAmount: bigint | null;
   sourceAsset: string | null;
@@ -154,6 +157,7 @@ function meldQuotedView(raw: MeldQuoteRaw): QuotedView {
     symbol: raw.context.fiat,
     fee: raw.provider.totalFee ?? null,
     networkFee: raw.provider.networkFee ?? null,
+    serviceProvider: raw.provider.serviceProvider,
     nativeAmount: null,
     sourceAsset: null,
     sourceChain: null,
@@ -256,10 +260,10 @@ export const useSessionStore = defineStore("session", () => {
     return highest + 1;
   }
 
-  /** The journey's scale for the request on screen: the crypto timeline runs three steps, the
-   *  card's five. The record on screen owns its route; the selected method stands in on the entry
-   *  screens, before there is a record. */
-  const journeySteps = computed<JourneySteps>(() =>
+  /** The journey's scale for the request on screen: the card timeline runs five stops, the crypto
+   *  and bank ones three. The record on screen owns its route; the selected method stands in on the
+   *  entry screens, before there is a record. */
+  const journeyScale = computed<JourneyScale>(() =>
     journeyScaleOf(requests.foregroundRecord?.route ?? method.value),
   );
 
@@ -1070,6 +1074,9 @@ export const useSessionStore = defineStore("session", () => {
         sourceId: world.sourceId,
         // Only a Meld request has these; the crypto rail leaves them null.
         ...(meldFundingRequestId ? { meldFundingRequestId } : {}),
+        ...(quoted.value?.serviceProvider
+          ? { meldServiceProvider: quoted.value.serviceProvider }
+          : {}),
         ...(isMeldSourceId(world.sourceId) && meldRegionCountry
           ? { meldCountry: meldRegionCountry }
           : {}),
@@ -1263,6 +1270,7 @@ export const useSessionStore = defineStore("session", () => {
         symbol: record.sourceSymbol ?? record.asset,
         fee: record.sourceFee ?? null,
         networkFee: record.sourceNetworkFee ?? null,
+        serviceProvider: record.meldServiceProvider ?? null,
         nativeAmount: null,
         sourceAsset: record.asset,
         sourceChain: record.chain,
@@ -1621,7 +1629,7 @@ export const useSessionStore = defineStore("session", () => {
     resumeOpenRequests,
     openRequests,
     openRequest,
-    journeySteps,
+    journeyScale,
     fundFaucet,
     simulateDeposit,
     simulateMeldPayment,

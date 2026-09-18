@@ -2,17 +2,20 @@
 // The finish of a top-up: the timeline from a confirmed deposit to CASH in the balance, shared by
 // every package.
 import { computed } from "vue";
-import { Plus, RefreshCcw, X } from "lucide-vue-next";
+import { Check, Plus, RefreshCcw, X } from "lucide-vue-next";
 import type { SourceId } from "@getsome/core";
 import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
+import { useCopyToClipboard } from "../../composables/useCopyToClipboard";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
 import type { FundingJourneyStatus } from "../../funding/handoff";
 import { projectFundingProgress, type FundingProgressProjection } from "../../funding/progress";
 import { effectiveSourceId } from "../../funding/requests/model";
-import type { JourneySteps } from "../../funding/requests/views";
+import { bankEndingText, endingLabel, isExpiredEnding } from "../../funding/journey-endings";
+import { journeyScaleOf, type JourneyScale } from "../../funding/requests/views";
 import type { FundingTopUp } from "../../funding/top-ups";
 import { useRequestsStore } from "../../stores/requests";
-import { DEPOSIT_EXPIRED_REASON, useSessionStore } from "../../stores/session";
+import { useSessionStore } from "../../stores/session";
+import { elideMiddle } from "../../utils/address";
 import { fmtCash } from "../../utils/cash";
 import { fmtFiat, isMoneyAmount } from "../../utils/money";
 import { formatWhenShort } from "../../utils/journey";
@@ -32,9 +35,10 @@ const props = defineProps<{
    *  is live in the store. */
   topUp?: FundingTopUp | null;
 }>();
-// fees and refund ask the host to swap in their drill-ins; close leaves the finished journey;
-// startOver asks it to re-enter this route for a fresh attempt at the same top-up.
-const emit = defineEmits<{ fees: []; refund: []; close: []; startOver: [] }>();
+// fees and refund ask the host to swap in their drill-ins; cancel asks it for the cancel
+// confirmation; close leaves the finished journey; startOver asks it to re-enter this route for a
+// fresh attempt at the same top-up.
+const emit = defineEmits<{ fees: []; refund: []; cancel: []; close: []; startOver: [] }>();
 const session = useSessionStore();
 const requests = useRequestsStore();
 
@@ -62,26 +66,23 @@ const failure = computed(() =>
 const failedText = computed(() => requests.fundingError ?? failure.value?.message ?? null);
 
 /**
- * The route's own timeline: crypto shows three steps, the card rail five.
+ * The route's own timeline: the card rail shows five stops, crypto and bank three of their own.
  *
  * The store owns the scale whenever a request is on screen; the list's word on the route only
  * stands in before the top-up is live. `requests.journeyDone` counts on that same scale.
  */
-const steps = computed<JourneySteps>(() => {
-  if (requests.foregroundRecord !== null || !props.topUp) return session.journeySteps;
-  return props.topUp.route === "crypto" ? 3 : 5;
+const scale = computed<JourneyScale>(() => {
+  if (requests.foregroundRecord !== null || !props.topUp) return session.journeyScale;
+  return journeyScaleOf(props.topUp.route);
 });
-const crypto = computed(() => steps.value === 3);
+const crypto = computed(() => scale.value === "crypto");
+const bank = computed(() => scale.value === "bank");
 
-/** The design names the expired step itself, not "<stage> failed". */
-const failedLabel = computed(() => {
-  const kind = failure.value?.kind;
-  if (kind === "expired" || kind === "stale") return "Expired";
-  if (requests.fundingError === DEPOSIT_EXPIRED_REASON) return "Expired";
-  return null;
-});
 /** Nothing was paid on an expired top-up, so it carries no quote rows. */
-const expired = computed(() => failedLabel.value !== null);
+const expired = computed(() => isExpiredEnding(failure.value?.kind, requests.fundingError));
+/** The design names the ending itself, not "<stage> failed": a window that closed, a bank that
+ *  said no, a payment that came back. */
+const failedLabel = computed(() => endingLabel(expired.value, requests.meldFailureCode));
 /** The quote rows leave with the money: nothing was kept on an expired or refunded top-up. */
 const hideRows = computed(
   () => expired.value || (failure.value !== null && refundedFailure(failure.value.kind)),
@@ -140,20 +141,118 @@ const quoteView = computed(() => {
     live: false,
   };
 });
-const detailRows = computed(() => {
+type DetailRow = { label: string; value: string; fees?: boolean; copy?: string; note?: string };
+
+/** The handle the provider knows this transfer by; the journey only draws it once the request it
+ *  belongs to is on screen. */
+const reference = computed(() => requests.foregroundRecord?.meldFundingRequestId ?? null);
+
+/** Who the rail quoted through, as the record kept it. Written with the request, so it is there
+ *  whenever the journey has one. */
+const serviceProvider = computed(() => requests.foregroundRecord?.meldServiceProvider ?? null);
+
+/** Whether the fee breakdown can be drilled into: only the live quote carries the split. */
+const feesDrillIn = (q: NonNullable<typeof quoteView.value>) => q.live && isMoneyAmount(q.fee);
+
+const detailRows = computed<DetailRow[]>(() => {
   const q = quoteView.value;
+  // Symbol-first for the fiat rails ("€50.55").
+  const money = (amount: string) => (q ? fmtFiat(amount, q.symbol) : amount);
+  // A concluded transfer leads with what it cost, in the past tense, over the fee breakdown.
+  const sent = (): DetailRow[] =>
+    q
+      ? [
+          {
+            label: "Sent inc. fees",
+            value: money(q.amount),
+            ...(feesDrillIn(q) ? { fees: true } : {}),
+          },
+        ]
+      : [];
+  // Arrived: nothing else on the screen is still owed to the buyer.
+  if (bank.value && finished.value) return sent();
+  // Ended badly: the handles for chasing it. Whoever the buyer asks — their bank, or support —
+  // asks for one of these, and this screen is the only place they are written down. An expired
+  // top-up keeps none of it: no payment was ever made against the request.
+  if (bank.value && heroFailed.value && !expired.value) {
+    const rows = sent();
+    const handle = reference.value;
+    if (handle) {
+      rows.push({ label: "Reference", value: elideMiddle(handle), copy: handle });
+    }
+    if (serviceProvider.value) rows.push({ label: "Provider", value: serviceProvider.value });
+    // The provider knows this payment by its funding request, so the reference the buyer quotes
+    // and the transaction it names are the same handle until the adapter reports one of its own.
+    if (handle) {
+      rows.push({ label: "Transaction ID", value: elideMiddle(handle), copy: handle });
+    }
+    return rows;
+  }
+  // The bank journey restates the transfer itself: what to send, what to quote with it, and when
+  // it lands. The buyer may still be in their banking app, and this is the only place those three
+  // survive once the provider's page is behind them. A transfer that has arrived or failed is
+  // past instructing anyone, and reads as the receipt every other rail leaves.
+  if (bank.value && !finished.value && !heroFailed.value) {
+    const rows: DetailRow[] = [];
+    if (q)
+      rows.push({
+        label: "Send this exact amount inc. fees",
+        value: money(q.amount),
+        ...(feesDrillIn(q) ? { fees: true } : {}),
+      });
+    if (reference.value)
+      rows.push({
+        label: "Reference",
+        value: elideMiddle(reference.value),
+        copy: reference.value,
+      });
+    rows.push({
+      label: "Arrives",
+      value: "1–2 business days",
+      note: "Final $CASH depends on the rate on arrival",
+    });
+    return rows;
+  }
   // The crypto rail doesn't restate the deposit amount here — the deposit screen owns that figure.
   if (!q || q.crypto) return [];
-  // Symbol-first for the fiat rails ("€50.55").
-  const money = (amount: string) => fmtFiat(amount, q.symbol);
-  const rows: { label: string; value: string; fees?: boolean }[] = [];
+  const rows: DetailRow[] = [];
   // The fee row drills into the breakdown screen when the live quote backs it with a fee the
   // breakdown can actually split; an unparseable one still shows, as plain text.
-  if (q.fee)
-    rows.push({ label: "Fees", value: money(q.fee), fees: q.live && isMoneyAmount(q.fee) });
+  if (q.fee) rows.push({ label: "Fees", value: money(q.fee), fees: feesDrillIn(q) });
   rows.push({ label: "Total", value: money(q.amount) });
   return rows;
 });
+
+/** The bank transfer's own wording for an ending the adapter words for a card. */
+const bankFailureText = computed(() => {
+  if (!bank.value) return null;
+  const q = quoteView.value;
+  return bankEndingText(requests.meldFailureCode, q ? fmtFiat(q.amount, q.symbol) : null);
+});
+
+/** The reference is the one thing here the buyer retypes elsewhere, so it copies. */
+const { copied, copy } = useCopyToClipboard();
+
+/**
+ * Cancel, bank only: the provider's pay page can still be withdrawn while no money has arrived.
+ *
+ * "I've sent funds" does not close it — on this rail that is the buyer's word and not the money,
+ * and a transfer they never made would otherwise leave a payable page standing. The confirmation
+ * screen carries the warning for the buyer who did already pay.
+ */
+const canCancel = computed(
+  () =>
+    bank.value &&
+    requests.foregroundRecord !== null &&
+    !finished.value &&
+    !heroFailed.value &&
+    // The rail delivered, or the burner holds the deposit: the money is ours to convert and there
+    // is nothing left to call off.
+    requests.meldStage !== "complete" &&
+    !requests.fundsSeen &&
+    !requests.claiming &&
+    session.cancelReady,
+);
 
 /**
  * Whether to offer a fresh attempt at a card or bank top-up that ended.
@@ -186,6 +285,7 @@ const message = computed(() => {
   if (failure.value?.kind === "refunded") {
     return `The rate moved too far to complete the swap. Your ${asset.value || "crypto"} was sent back, minus network fees.`;
   }
+  if (bankFailureText.value) return bankFailureText.value;
   if (failedText.value) return failedText.value;
   if (requests.fundingNotice) return requests.fundingNotice;
   if (delayed.value) {
@@ -195,6 +295,11 @@ const message = computed(() => {
       : "Taking a little longer than usual";
   }
   if (props.status) return props.status.text;
+  // Nothing has been reported on a bank transfer yet: days can pass here, so the ribbon says what
+  // the silence means rather than leaving the stepper to speak for itself.
+  if (bank.value && !finished.value) {
+    return "If you've sent the money from your bank, it's on its way to us. We'll let you know when it's arrived.";
+  }
   return null;
 });
 </script>
@@ -226,14 +331,19 @@ const message = computed(() => {
       <FundingJourneyTimeline
         v-if="progress && !finished"
         :progress="progress"
-        :steps="steps"
+        :scale="scale"
         :completed-steps="requests.journeyDone"
         :message="message"
         :delayed="delayed"
         :failed-label="failedLabel"
       />
 
-      <DetailRows v-if="detailRows.length && !hideRows" :rows="detailRows" @fees="emit('fees')" />
+      <DetailRows
+        v-if="detailRows.length && !hideRows"
+        :rows="detailRows"
+        @fees="emit('fees')"
+        @copy="copy"
+      />
 
       <!-- The way back to a refunded deposit drills into the return-funds guide, which carries
            the refund's own status line. -->
@@ -254,6 +364,27 @@ const message = computed(() => {
 
       <PillButton v-if="finished" variant="tertiary" class="mt-auto" @click="emit('close')">
         Close
+      </PillButton>
+
+      <!-- The answer to the reference row's copy, above whatever the journey ends on. -->
+      <div v-if="copied" class="mt-auto flex justify-center" aria-live="polite">
+        <span
+          class="flex items-center gap-2 rounded-full bg-surface-container px-4 py-2 text-label-m text-fg-primary shadow-1"
+        >
+          <Check class="size-4 text-fg-success" aria-hidden="true" />
+          Copied
+        </span>
+      </div>
+
+      <!-- The way out of a transfer that has not been paid. The confirmation is the route's, so
+           this only asks for it. -->
+      <PillButton
+        v-if="canCancel"
+        variant="danger"
+        :class="copied ? '' : 'mt-auto'"
+        @click="emit('cancel')"
+      >
+        Cancel
       </PillButton>
     </div>
   </div>
