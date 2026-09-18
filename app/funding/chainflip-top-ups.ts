@@ -7,7 +7,7 @@ import { networkIcon, tokenIcon } from "../utils/icons";
 import { parseRequestRefKey, requestRefKey, type RequestRef } from "../utils/request-index";
 import { isCryptoSourceId } from "./source-ids";
 import { projectFundingProgress, type FundingProgressSnapshot } from "./progress";
-import type { RequestRecord } from "./requests/model";
+import type { TopUpRecord } from "./requests/model";
 import { rowStateOf } from "./requests/views";
 import type { FundingTopUpAdapter } from "./top-up-adapter";
 import { quoteOf, type FundingTopUpRecord } from "./top-up-projection";
@@ -20,7 +20,7 @@ export type ChainflipTopUpRecord = FundingTopUpRecord;
 const topUpId = (ref: RequestRef) => `crypto:${requestRefKey(ref)}`;
 
 /** The rows whose progress no longer moves on its own. */
-const FINISHED = new Set<RequestRecord["status"]["kind"]>(["settled", "failed", "expired"]);
+const FINISHED = new Set<TopUpRecord["status"]["kind"]>(["settled", "failed", "expired"]);
 
 function topUpDetails(
   record: ChainflipTopUpRecord,
@@ -43,12 +43,12 @@ function topUpDetails(
 }
 
 /** Whether the record belongs to the crypto rail. */
-export function isChainflipRecord(record: Pick<RequestRecord, "ref">): boolean {
+export function isChainflipRecord(record: Pick<TopUpRecord, "ref">): boolean {
   return isCryptoSourceId(record.ref.sourceId);
 }
 
 export function projectChainflipTopUps(
-  records: readonly RequestRecord[],
+  records: readonly TopUpRecord[],
   now = Date.now(),
 ): FundingTopUp[] {
   return records.flatMap((record) => {
@@ -82,14 +82,14 @@ export function useChainflipTopUpAdapter(): FundingTopUpAdapter {
   const session = useSessionStore();
   const requests = useRequestsStore();
   const cadence = computed(() => {
-    const cadences = requests.openRecords.flatMap((record) =>
+    const cadences = requests.openTopUps.flatMap((record) =>
       FINISHED.has(record.status.kind) ? [] : [record.progress.profile.cadenceMs],
     );
     return cadences.length === 0 ? null : Math.min(...cadences);
   });
   const now = useFundingProgressClock(cadence);
   return {
-    topUps: computed(() => projectChainflipTopUps(requests.openRecords, now.value)),
+    topUps: computed(() => projectChainflipTopUps(requests.openTopUps, now.value)),
     refresh: () => session.resumeOpenRequests("boot"),
     open: (topUp) => {
       const ref = chainflipRequestRef(topUp.id);

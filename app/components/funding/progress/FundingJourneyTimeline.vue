@@ -21,16 +21,20 @@ const props = withDefaults(
     delayed?: boolean;
     /** Replaces the failed step's "<stage> failed" wording (the design's "Expired"). */
     failedLabel?: string | null;
+    /** The markers' labels, one per step; the top-up's by default. */
+    labels?: readonly string[] | null;
   }>(),
   {
     scale: "card",
     message: null,
     delayed: false,
     failedLabel: null,
+    labels: null,
   },
 );
 
-const stages = computed<readonly string[]>(() => JOURNEY_STAGES[props.scale]);
+// A caller with its own stops names them; a top-up takes its route's.
+const stages = computed<readonly string[]>(() => props.labels ?? JOURNEY_STAGES[props.scale]);
 
 const settled = computed(() => props.progress.view.kind === "settled");
 const failed = computed(() => props.progress.view.kind === "failed");

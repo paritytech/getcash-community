@@ -6,6 +6,7 @@ const NETWORK_ICONS: Record<string, string> = {
   Solana: "/icons/solana.svg",
   Tron: "/icons/tron.svg",
   Polkadot: "/icons/polkadot.svg",
+  AssetHub: "/icons/polkadot.svg",
 };
 
 const TOKEN_ICONS: Record<string, string> = {

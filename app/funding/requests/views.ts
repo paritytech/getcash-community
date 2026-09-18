@@ -6,10 +6,17 @@ import type { FundingStep } from "@getsome/funding";
 import type { FundingProgressProjection } from "../progress";
 import { creditedAmount } from "../top-up-projection";
 import type { FundingTopUpState } from "../top-ups";
-import { CONFIRMED_TTL_MS, rankOf, type Freshness, type RequestRecord } from "./model";
+import {
+  CONFIRMED_TTL_MS,
+  isFinished,
+  rankOf,
+  type Freshness,
+  type RequestRecord,
+  type TopUpRecord,
+} from "./model";
 
 /** The core phase the record stands in for. */
-export function phaseLike(record: RequestRecord): PaymentPhase {
+export function phaseLike(record: TopUpRecord): PaymentPhase {
   const { status, rail } = record;
   switch (status.kind) {
     case "settled":
@@ -35,7 +42,7 @@ export function phaseLike(record: RequestRecord): PaymentPhase {
 
 /** Today's step comes from the worker's job or the faucet; a core, rail or chain sighting sets
  *  none. A side exit reports the leg it kept the rank of. */
-export function fundingStepOf(record: RequestRecord): FundingStep | null {
+export function fundingStepOf(record: TopUpRecord): FundingStep | null {
   const { status } = record;
   switch (status.kind) {
     case "converting":
@@ -60,7 +67,7 @@ export function fundingStepOf(record: RequestRecord): FundingStep | null {
 
 /** Today's latch: a worker step past `await-native`, the faucet's transfer, or the burner read a
  *  cancel refused on. */
-export const fundsSeenOf = (record: RequestRecord): boolean =>
+export const fundsSeenOf = (record: TopUpRecord): boolean =>
   rankOf(record) >= 2 ||
   (record.status.kind === "deposit-seen" &&
     (record.status.via === "worker" ||
@@ -71,7 +78,7 @@ export const fundsSeenOf = (record: RequestRecord): boolean =>
 export type JourneyScale = "crypto" | "card" | "bank";
 
 /** The scale a route's journey is counted on. */
-export const journeyScaleOf = (route: RequestRecord["route"]): JourneyScale =>
+export const journeyScaleOf = (route: TopUpRecord["route"]): JourneyScale =>
   route === "crypto" ? "crypto" : route === "bank" ? "bank" : "card";
 
 /** The stops each scale draws, in order. The bank transfer has no "Approved" of its own: nothing
@@ -96,7 +103,7 @@ const paymentTaken = (kind?: FailureKind): boolean =>
  *  reported `done`, so the one program that swaps and teleports is behind the record and the
  *  claim has started. Added: the request settled. A side exit reports the leg it left; from the
  *  deposit, the kind says whether the network took the payment. */
-function cryptoJourneySteps(record: RequestRecord): number {
+function cryptoJourneySteps(record: TopUpRecord): number {
   const { status, failure } = record;
   switch (status.kind) {
     case "awaiting-deposit":
@@ -121,7 +128,7 @@ function cryptoJourneySteps(record: RequestRecord): number {
  *  exists, so a record awaiting its payment counts one. Payment: the provider reported the
  *  payment. Approved: the deposit is on the burner at finality. Conversion: the worker reported
  *  `done`, since the swap and the teleport are one program. Added: the request settled. */
-function cardJourneySteps(record: RequestRecord): number {
+function cardJourneySteps(record: TopUpRecord): number {
   const { status, failure } = record;
   switch (status.kind) {
     case "awaiting-deposit":
@@ -150,7 +157,7 @@ function cardJourneySteps(record: RequestRecord): number {
  *  the money was seen, whoever saw it. Added: the request settled. The conversion sits inside
  *  "Payment": from the buyer's side the transfer is the wait, and what follows it is not theirs to
  *  watch. */
-function bankJourneySteps(record: RequestRecord): number {
+function bankJourneySteps(record: TopUpRecord): number {
   const { status, failure } = record;
   switch (status.kind) {
     case "awaiting-deposit":
@@ -193,7 +200,7 @@ export function completedMarkers(
 }
 
 /** How many of the journey's markers are complete, on the scale the route shows. */
-export function journeyStepsOf(record: RequestRecord, scale: JourneyScale): number {
+export function journeyStepsOf(record: TopUpRecord, scale: JourneyScale): number {
   if (scale === "crypto") return cryptoJourneySteps(record);
   return scale === "bank" ? bankJourneySteps(record) : cardJourneySteps(record);
 }
@@ -201,7 +208,7 @@ export function journeyStepsOf(record: RequestRecord, scale: JourneyScale): numb
 /** The list row's state, worded by the same progress projection the journey ribbon shows. A
  *  cancelled record is never listed; it reads as failed so the type has a value. */
 export function rowStateOf(
-  record: RequestRecord,
+  record: TopUpRecord,
   progress: FundingProgressProjection,
 ): FundingTopUpState {
   const { status } = record;
@@ -234,7 +241,7 @@ export function rowStateOf(
 }
 
 export function meldStageOf(
-  record: RequestRecord,
+  record: TopUpRecord,
 ): "waiting" | "receiving" | "complete" | "failed" | null {
   const { rail } = record;
   if (rail.provider !== "meld") return null;
@@ -246,11 +253,11 @@ export function meldStageOf(
 }
 
 /** The journey took over from the widget: the buyer submitted, or the payment completed. */
-export const meldHandedOffOf = (record: RequestRecord): boolean =>
+export const meldHandedOffOf = (record: TopUpRecord): boolean =>
   record.meldSubmittedAt !== undefined || record.rail.stage === "delivered";
 
 /** When each journey step landed, by step number. */
-export function milestonesOf(record: RequestRecord): Record<number, number> {
+export function milestonesOf(record: TopUpRecord): Record<number, number> {
   const { progress } = record;
   const milestones: Record<number, number> = { 1: record.startedAt };
   if (progress.detectedAt !== undefined) milestones[2] = progress.detectedAt;
@@ -260,9 +267,9 @@ export function milestonesOf(record: RequestRecord): Record<number, number> {
   return milestones;
 }
 
-export const claimingOf = (record: RequestRecord): boolean => record.status.kind === "claiming";
+export const claimingOf = (record: TopUpRecord): boolean => record.status.kind === "claiming";
 
-/** Confirmed by a read since `epoch` that has not aged past the TTL (a settled record's never
+/** Confirmed by a read since `epoch` that has not aged past the TTL (a finished record's never
  *  does); otherwise reconciling while a pass runs, else the cache as it was left. */
 export function freshnessOf(
   record: RequestRecord,
@@ -274,7 +281,7 @@ export function freshnessOf(
   if (
     confirmedAt !== undefined &&
     confirmedAt >= epoch &&
-    (record.status.kind === "settled" || tick - confirmedAt < CONFIRMED_TTL_MS)
+    (isFinished(record) || tick - confirmedAt < CONFIRMED_TTL_MS)
   ) {
     return "confirmed";
   }

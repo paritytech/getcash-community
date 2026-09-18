@@ -38,15 +38,18 @@ importers:
       '@getsome/testing':
         specifier: workspace:*
         version: link:packages/testing
+      '@getsome/withdraw':
+        specifier: workspace:*
+        version: link:packages/withdraw
       '@noble/hashes':
         specifier: ^2.2.0
         version: 2.3.0
       '@novasamatech/host-api':
-        specifier: 0.11.0
-        version: 0.11.0
+        specifier: 0.12.0
+        version: 0.12.0
       '@novasamatech/host-api-wrapper':
-        specifier: 0.11.0
-        version: 0.11.0(@polkadot/api@16.5.6(bufferutil@4.1.0)(utf-8-validate@6.0.6))(@polkadot/util@14.0.3)(bufferutil@4.1.0)(esbuild@0.28.2)(rxjs@7.8.2)(utf-8-validate@6.0.6)
+        specifier: 0.12.0
+        version: 0.12.0(@polkadot/api@16.5.6(bufferutil@4.1.0)(utf-8-validate@6.0.6))(@polkadot/util@14.0.3)(bufferutil@4.1.0)(esbuild@0.28.2)(rxjs@7.8.2)(utf-8-validate@6.0.6)
       '@parity/product-sdk-host':
         specifier: ^0.15.1
         version: 0.15.1(bufferutil@4.1.0)(esbuild@0.28.2)(rxjs@7.8.2)(utf-8-validate@6.0.6)
@@ -255,6 +258,21 @@ importers:
       '@getsome/core':
         specifier: workspace:*
         version: link:../core
+
+  packages/withdraw:
+    dependencies:
+      '@getsome/funding':
+        specifier: workspace:*
+        version: link:../funding
+      '@getsome/people':
+        specifier: workspace:*
+        version: link:../people
+      '@polkadot-api/descriptors':
+        specifier: file:../../.papi/descriptors
+        version: file:.papi/descriptors(polkadot-api@2.2.2(bufferutil@4.1.0)(esbuild@0.28.2)(rxjs@7.8.2)(utf-8-validate@6.0.6))
+      polkadot-api:
+        specifier: 2.2.2
+        version: 2.2.2(bufferutil@4.1.0)(esbuild@0.28.2)(rxjs@7.8.2)(utf-8-validate@6.0.6)
 
 packages:
 
@@ -748,14 +766,14 @@ packages:
     resolution: {integrity: sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg==}
     engines: {node: '>= 8'}
 
-  '@novasamatech/host-api-wrapper@0.11.0':
-    resolution: {integrity: sha512-FP8XtbuGrtb+nG/LeJuSCT8n6g7o4FGa0ZMDlFsEIcgmXL/z3d2Ga/8e15ixJtZkaDwDmUNB2OiTG6wwk8JEfQ==}
+  '@novasamatech/host-api-wrapper@0.12.0':
+    resolution: {integrity: sha512-2kuxEcv1ogU8X/I7xr+L2omUa+7IMg/TuCCaVP4iRnvwp4s4HEtewBOf3aMtkZPykJheRv9rXi1IGcE8UWZSmQ==}
 
-  '@novasamatech/host-api@0.11.0':
-    resolution: {integrity: sha512-uUymzRZyS5YXmsUVBQLgHtD18kkyAth6frLm/+Nw0cZlSBl/4jD185XjeG1Wu4XjjWxb4qMtsjqq+etyWhoflg==}
+  '@novasamatech/host-api@0.12.0':
+    resolution: {integrity: sha512-1wvhk/3zz8tQ0Xp+Us9k7NDMmSkRkx4v7l3+5bkdEg1Ia1CShclRVx8IpRl7YVAD52v4oNVmYEo5MLNjBtAeEw==}
 
-  '@novasamatech/scale@0.11.0':
-    resolution: {integrity: sha512-dtc2GVAgbpLcf4aiOAEWe+YO38JQmTPdvCkMfs50QXU00zgxtFF3KWUnXIycAve9iAcacJkH8PYWx9UfN+kwQw==}
+  '@novasamatech/scale@0.12.0':
+    resolution: {integrity: sha512-LwqkDLfeK82hdbOxEDfq7huMbeq/UXKhNPtkbkU68keLY0wvHrZ2rw1ibzDqspM6KWUPAxuWXbmGEM+cZJyxBg==}
 
   '@nuxt/cli@3.37.0':
     resolution: {integrity: sha512-Zj9NwHjEBzVrgezsgMFjpMhNqwNgROk9DzNi/dyfk1mCbXIRigV11br2xOl0Satek30bmv7oZAfMtCnDe6Ip0Q==}
@@ -6148,9 +6166,9 @@ snapshots:
       '@nodelib/fs.scandir': 2.1.5
       fastq: 1.20.1
 
-  '@novasamatech/host-api-wrapper@0.11.0(@polkadot/api@16.5.6(bufferutil@4.1.0)(utf-8-validate@6.0.6))(@polkadot/util@14.0.3)(bufferutil@4.1.0)(esbuild@0.28.2)(rxjs@7.8.2)(utf-8-validate@6.0.6)':
+  '@novasamatech/host-api-wrapper@0.12.0(@polkadot/api@16.5.6(bufferutil@4.1.0)(utf-8-validate@6.0.6))(@polkadot/util@14.0.3)(bufferutil@4.1.0)(esbuild@0.28.2)(rxjs@7.8.2)(utf-8-validate@6.0.6)':
     dependencies:
-      '@novasamatech/host-api': 0.11.0
+      '@novasamatech/host-api': 0.12.0
       '@polkadot-api/json-rpc-provider-proxy': 0.4.1
       '@polkadot-api/signers-common': 0.3.1(rxjs@7.8.2)
       '@polkadot-api/substrate-bindings': 0.21.1
@@ -6166,15 +6184,15 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@novasamatech/host-api@0.11.0':
+  '@novasamatech/host-api@0.12.0':
     dependencies:
-      '@novasamatech/scale': 0.11.0
+      '@novasamatech/scale': 0.12.0
       nanoevents: 10.0.0
       nanoid: 6.0.1
       neverthrow: 8.2.0
       scale-ts: 1.6.1
 
-  '@novasamatech/scale@0.11.0':
+  '@novasamatech/scale@0.12.0':
     dependencies:
       '@polkadot-api/utils': 0.4.0
       scale-ts: 1.6.1
@@ -6580,8 +6598,8 @@ snapshots:
       fs.promises.exists: 1.1.4
       ora: 9.4.1
       read-pkg: 10.1.0
-      rollup: 4.62.4
-      rollup-plugin-esbuild: 6.2.1(esbuild@0.28.2)(rollup@4.62.4)
+      rollup: 4.63.1
+      rollup-plugin-esbuild: 6.2.1(esbuild@0.28.2)(rollup@4.63.1)
       rxjs: 7.8.2
       tsc-prog: 2.3.0(typescript@6.0.3)
       typescript: 6.0.3
@@ -6774,7 +6792,7 @@ snapshots:
 
   '@polkadot-api/signer@0.3.3':
     dependencies:
-      '@noble/hashes': 2.3.0
+      '@noble/hashes': 2.4.0
       '@polkadot-api/merkleize-metadata': 1.2.3
       '@polkadot-api/polkadot-signer': 0.1.6
       '@polkadot-api/signers-common': 0.2.3
@@ -7711,7 +7729,7 @@ snapshots:
 
   '@types/connect@3.4.38':
     dependencies:
-      '@types/node': 26.2.0
+      '@types/node': 26.4.1
 
   '@types/deep-eql@4.0.2': {}
 
@@ -7751,11 +7769,11 @@ snapshots:
 
   '@types/ws@7.4.7':
     dependencies:
-      '@types/node': 26.2.0
+      '@types/node': 26.4.1
 
   '@types/ws@8.18.1':
     dependencies:
-      '@types/node': 26.2.0
+      '@types/node': 26.4.1
 
   '@unhead/bundler@3.3.2(@oxc-project/types@0.144.0)(esbuild@0.28.2)(lightningcss@1.33.0)(rolldown@1.2.4)(rollup@4.62.4)(unhead@3.3.2(esbuild@0.28.2)(rolldown@1.2.4)(rollup@4.62.4)(vite@8.2.1(@types/node@26.4.1)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.50.0)(yaml@2.9.0)))(vite@8.2.1(@types/node@26.4.1)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.50.0)(yaml@2.9.0))':
     dependencies:
@@ -10696,17 +10714,6 @@ snapshots:
       '@rolldown/binding-openharmony-arm64': 1.2.4
       '@rolldown/binding-win32-arm64-msvc': 1.2.4
       '@rolldown/binding-win32-x64-msvc': 1.2.4
-
-  rollup-plugin-esbuild@6.2.1(esbuild@0.28.2)(rollup@4.62.4):
-    dependencies:
-      debug: 4.4.3
-      es-module-lexer: 1.7.0
-      esbuild: 0.28.2
-      get-tsconfig: 4.14.3
-      rollup: 4.62.4
-      unplugin-utils: 0.2.5
-    transitivePeerDependencies:
-      - supports-color
 
   rollup-plugin-esbuild@6.2.1(esbuild@0.28.2)(rollup@4.63.1):
     dependencies:

@@ -149,6 +149,8 @@ export interface FundingProgressRouteDefinition {
   waitingLabel?: string;
   /** The node label once the rail's own leg is done. Defaults to "Payment received". */
   routeCompletedLabel?: string;
+  /** The label once everything is done. Defaults to "Ready to spend". */
+  settledLabel?: string;
   stages: readonly FundingProgressStage[];
   observe(status: string): FundingProgressObservation;
 }
