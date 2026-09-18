@@ -786,6 +786,15 @@ export const SCENES: Scene[] = [
     },
   },
   {
+    // The provider has the money and its delivery is stuck, retrying on their side. Nothing is
+    // left to instruct or to call off, and the stepper goes amber rather than red.
+    name: "bank / journey: delayed",
+    apply: async (s, f, i) => {
+      const r = await bankTransfer(s, f, i);
+      await r.observe(railDelayed(r, 1, "meld"));
+    },
+  },
+  {
     // The transfer landed: the provider delivered it and the worker has the deposit. The wait is
     // off the buyer now, so the stepper moves on and the cancel goes with it.
     name: "bank / journey: transfer arrived",

@@ -196,9 +196,12 @@ describe("request views", () => {
       // "Started" is the request itself: the buyer has the details to pay from, so the transfer
       // still to arrive stands on the first marker.
       ["awaiting-deposit", at({ kind: "awaiting-deposit" }), 1],
-      // The money was seen: everything after it is one wait, so the marker does not move again
+      // The provider's word alone leaves the payment leg running: their delivery can still be
+      // stuck, which is what the design draws amber on "Payment".
+      ["deposit-seen provisional via rail", at(seen("rail")), 1],
+      // The money is ours: everything after it is one wait, so the marker does not move again
       // until the CASH lands.
-      ["deposit-seen provisional via rail", at(seen("rail")), 2],
+      ["deposit-seen provisional via chain", at(seen("chain")), 2],
       ["deposit-seen finalized via worker", at(seen("worker", "finalized")), 2],
       ["converting at the swap", at({ kind: "converting", at: AT, step: "swap" }), 2],
       ["claiming", at({ kind: "claiming", at: AT }), 2],

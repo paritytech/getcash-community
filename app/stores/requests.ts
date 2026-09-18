@@ -36,6 +36,7 @@ import {
   paymentTaken,
   paymentWatchUntil,
   railProviderOf,
+  railSawPayment,
   rankOf,
   requestsNow,
   routeOf,
@@ -1164,6 +1165,11 @@ export const useRequestsStore = defineStore("requests", () => {
   /** The Meld payment is temporarily stuck (provider retrying its crypto delivery). Transient:
    *  the record's rail says so, never terminal on its own. */
   const meldDelayed = computed(() => foregroundRecord.value?.rail.delayed === true);
+  /** The rail has the money for the request on screen. What the buyer is still told to do, and
+   *  what they can still call off, both end here. */
+  const railSeen = computed(() =>
+    foregroundRecord.value ? railSawPayment(foregroundRecord.value) : false,
+  );
   /** The adapter's reason for a failed Meld payment. Null unless `meldStage === 'failed'`. */
   const meldFailureMessage = computed<string | null>(() => {
     const record = foregroundRecord.value;
@@ -2551,6 +2557,7 @@ export const useRequestsStore = defineStore("requests", () => {
     foregroundProgress,
     meldStage,
     meldDelayed,
+    railSeen,
     meldFailureMessage,
     meldFailureCode,
     meldRefunded,

@@ -543,10 +543,19 @@ export const paymentWatchUntil = (record: Pick<RequestRecord, "startedAt" | "dea
   Math.max(record.startedAt + PAYMENT_WATCH_MS, record.deadline.depositExpiresAt ?? 0) +
   TOMBSTONE_GRACE_MS;
 
+/**
+ * The rail has the money: it reports the deposit at or past `received`.
+ *
+ * Distinct from `buyerPaid`, which also counts the buyer's own word. On a rail nobody can
+ * observe, that word opens the journey but settles nothing — only the rail's sighting says the
+ * money is out of the buyer's hands, and with it the instructions and the cancel.
+ */
+export const railSawPayment = (record: Pick<RequestRecord, "rail">): boolean =>
+  record.rail.stage === "received" ||
+  record.rail.stage === "processing" ||
+  record.rail.stage === "delivered";
+
 /** The buyer has paid: the rail reports the deposit at or past `received`, or the buyer finished
  *  the provider's widget. Such a request never expires, however long the funds take to land. */
 export const buyerPaid = (record: Pick<TopUpRecord, "rail" | "meldSubmittedAt">): boolean =>
-  record.rail.stage === "received" ||
-  record.rail.stage === "processing" ||
-  record.rail.stage === "delivered" ||
-  record.meldSubmittedAt !== undefined;
+  railSawPayment(record) || record.meldSubmittedAt !== undefined;

@@ -163,6 +163,10 @@ function bankJourneySteps(record: RequestRecord): number {
     case "awaiting-deposit":
       return 1;
     case "deposit-seen":
+      // The provider's own word that a transfer reached them is not the payment leg done: their
+      // delivery can still be stuck and retrying. "Payment" completes when the money is ours —
+      // the burner holds it, or the worker saw it land.
+      return status.via === "rail" || status.via === "core" ? 1 : 2;
     case "converting":
     case "claiming":
       return 2;

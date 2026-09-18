@@ -179,7 +179,9 @@ const detailRows = computed<DetailRow[]>(() => {
   if (bank.value && !finished.value && !heroFailed.value) {
     if (q)
       rows.push({
-        label: "Send this exact amount inc. fees",
+        // Once the rail has the money there is nothing left to instruct, so the line reads as the
+        // concluded journeys word it: what was sent, not what to send.
+        label: requests.railSeen ? "Sent inc. fees" : "Send this exact amount inc. fees",
         value: money(q.amount),
         fees: feesDrillIn(q),
       });
@@ -251,9 +253,9 @@ const canCancel = computed(
     requests.foregroundRecord !== null &&
     !finished.value &&
     !heroFailed.value &&
-    // The rail delivered, or the burner holds the deposit: the money is ours to convert and there
-    // is nothing left to call off.
-    requests.meldStage !== "complete" &&
+    // The rail has the money — seen, processing or delivered — or the burner holds the deposit:
+    // it is out of the buyer's hands, and there is nothing left to call off.
+    !requests.railSeen &&
     !requests.fundsSeen &&
     !requests.claiming &&
     session.cancelReady,
