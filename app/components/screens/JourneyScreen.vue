@@ -189,7 +189,11 @@ const detailRows = computed<DetailRow[]>(() => {
         value: shortRef(reference.value),
         copy: reference.value,
       });
-    rows.push({ label: "Arrives", value: "1–2 business days" });
+    rows.push({
+      label: "Arrives",
+      value: "1–2 business days",
+      note: "Final $CASH depends on the rate on arrival",
+    });
     return rows;
   }
 
