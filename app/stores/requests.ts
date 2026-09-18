@@ -23,7 +23,6 @@ import {
   MELD_POLL_MS,
   MIRROR_SETTLED_LIMIT,
   PROBED_RECHECK_MS,
-  TOMBSTONE_GRACE_MS,
   WORKER_READY_MS,
   WORKER_STALE_MS,
   buyerPaid,
@@ -60,6 +59,7 @@ import {
   fundsSeenOf,
   journeyScaleOf,
   journeyStepsOf,
+  paymentWatchUntil,
   meldHandedOffOf,
   meldStageOf,
   milestonesOf,
@@ -1329,23 +1329,26 @@ export const useRequestsStore = defineStore("requests", () => {
     meldPoll = null;
   }
 
-  /** The provider's word can still move the record: it awaits or has seen its deposit, or it
-   *  expired or failed without the provider's final word and a late "received" can still re-open
-   *  it, until the deposit window plus the tombstone grace is out. */
+  /**
+   * The provider's word can still move the record: it awaits or has seen its deposit, or it ended
+   * without the provider's final word and a late "received" can still re-open it, until the
+   * payment watch is out.
+   *
+   * A cancelled request is asked about for the same reason the others are. Cancelling withdraws
+   * the pay page; it does not recall a transfer already sent, and the adapter keeps watching the
+   * row precisely so it can still report where that money went. Dropping the question here is how
+   * a settled or refunded transfer went unnoticed.
+   */
   function meldCanMove(record: RequestRecord): boolean {
-    const { status, rail, deadline } = record;
+    const { status, rail } = record;
     switch (status.kind) {
       case "awaiting-deposit":
       case "deposit-seen":
         return true;
       case "expired":
       case "failed":
-        return (
-          rail.stage !== "failed" &&
-          requestsNow() <=
-            (deadline.depositExpiresAt ?? record.startedAt + depositWindowFor(record.route)) +
-              TOMBSTONE_GRACE_MS
-        );
+      case "cancelled":
+        return rail.stage !== "failed" && requestsNow() <= paymentWatchUntil(record);
       default:
         return false;
     }
@@ -1441,10 +1444,9 @@ export const useRequestsStore = defineStore("requests", () => {
           return;
         }
         if (record.status.kind !== "cancelled") return;
-        const windowEnd =
-          (record.deadline.depositExpiresAt ??
-            (record.cancelledAt ?? 0) + depositWindowFor(record.route)) + TOMBSTONE_GRACE_MS;
-        if (windowEnd >= now) return;
+        // The same watch the rail is asked under: while the adapter could still report where a
+        // transfer went, the row it would report against has to exist.
+        if (paymentWatchUntil(record) >= now) return;
         try {
           await remove(ref);
           console.warn(

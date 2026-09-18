@@ -6,6 +6,8 @@ import { projectFundingProgress } from "../app/funding/progress";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
   DEPOSIT_EXPIRED_REASON,
+  PAYMENT_WATCH_MS,
+  TOMBSTONE_GRACE_MS,
   type Observation,
   type RailState,
   type RequestFailure,
@@ -16,6 +18,7 @@ import { reduce } from "../app/funding/requests/reducer";
 import {
   completedMarkers,
   journeyStepsOf,
+  paymentWatchUntil,
   meldHandedOffOf,
   meldStageOf,
   rowStateOf,
@@ -245,6 +248,33 @@ describe("request views", () => {
     expect(completedMarkers("crypto", 2, running)).toBe(2);
     // A negative count never reads as a marker.
     expect(completedMarkers("bank", -1, running)).toBe(0);
+  });
+
+  it("paymentWatchUntil measures from the start, and a rail expiry only extends it", () => {
+    const started = FIXTURE_NOW;
+    const watch = started + PAYMENT_WATCH_MS + TOMBSTONE_GRACE_MS;
+    // No rail expiry, or one inside the watch: the watch stands. A pay page that closed early
+    // says nothing about a transfer already sent.
+    expect(
+      paymentWatchUntil({
+        startedAt: started,
+        deadline: { depositExpiresAt: null, source: "route" },
+      }),
+    ).toBe(watch);
+    expect(
+      paymentWatchUntil({
+        startedAt: started,
+        deadline: { depositExpiresAt: started + 3_600_000, source: "rail" },
+      }),
+    ).toBe(watch);
+    // A rail expiry beyond it extends the watch rather than being ignored.
+    const late = started + 10 * 24 * 3_600_000;
+    expect(
+      paymentWatchUntil({
+        startedAt: started,
+        deadline: { depositExpiresAt: late, source: "rail" },
+      }),
+    ).toBe(late + TOMBSTONE_GRACE_MS);
   });
 
   it("rowStateOf uses the same words as the journey", () => {
