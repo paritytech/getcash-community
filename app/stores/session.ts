@@ -1174,9 +1174,6 @@ export const useSessionStore = defineStore("session", () => {
         sourceId: world.sourceId,
         // Only a Meld request has these; the crypto rail leaves them null.
         ...(meldFundingRequestId ? { meldFundingRequestId } : {}),
-        ...(quoted.value?.serviceProvider
-          ? { meldServiceProvider: quoted.value.serviceProvider }
-          : {}),
         ...(isMeldSourceId(world.sourceId) && meldRegionCountry
           ? { meldCountry: meldRegionCountry }
           : {}),
@@ -1339,6 +1336,61 @@ export const useSessionStore = defineStore("session", () => {
         `[coinage] reopen request #${record.tradeN}: funded=${record.funded ?? "no"} status=${status} submitted=${record.meldSubmittedAt !== undefined}`,
       );
       const epoch = quoteEpoch;
+      // Display context for the journey, from the record itself; neither path re-quotes.
+      // Display context for the journey; no re-quote on either path that reads it.
+      const displayQuote: QuotedView = {
+        send: record.sourceAmount ?? "",
+        symbol: record.sourceSymbol ?? record.asset,
+        fee: record.sourceFee ?? null,
+        provider: record.sourceProvider ?? null,
+        transactionFee: record.sourceTransactionFee ?? null,
+        networkFee: record.sourceNetworkFee ?? null,
+        partnerFee: record.sourcePartnerFee ?? null,
+        chainFee: record.sourceChainFee ?? null,
+        nativeAmount: null,
+        sourceAsset: record.asset,
+        sourceChain: record.chain,
+      };
+
+      /**
+       * The browser has no host to derive this request's burner from, so there is no hosted world
+       * to rebuild. A mock one under the record's own source and trade number gives the screens
+       * what they ask a world for — a cancel to perform, a refund key to reveal, a harness the
+       * demo's Skip can credit — so a top-up opened from the list is as live off-host as it is
+       * inside the app. Without this every row answered "Top-up unavailable", which was never
+       * true: the record is right there, and the mock flow that wrote it persists the same shape.
+       *
+       * Not rebuilt: the provider's pay page. It is held in memory by the rail and re-fetched from
+       * the adapter on the hosted path, and a plain browser has neither — so a re-opened transfer
+       * shows its details as lapsed, which off-host is what they are.
+       */
+      if (!isHosted()) {
+        const amount = amountBase.value;
+        if (amount === null) {
+          console.warn(
+            `[coinage] reopen request #${record.tradeN}: "${record.amountHuman}" is not an amount`,
+          );
+          return false;
+        }
+        const world = await createMockCoinageSession({
+          recipient: DEV_RECIPIENT,
+          amount,
+          sourceId: effectiveSourceId(ref) as SourceId,
+          tradeN: ref.tradeN,
+        });
+        await world.session.ready;
+        if (epoch !== quoteEpoch) {
+          world.session.dispose();
+          return false;
+        }
+        mock.value = world;
+        quoted.value = displayQuote;
+        sub?.unsubscribe();
+        // The same observation the fresh flow makes. The session is not started here: this
+        // request's deposit was opened once already, and the record is what carries it.
+        sub = world.session.subscribe((state) => observePaymentState(state, ref));
+        return true;
+      }
       // Core's stale bound is the record's own window: the rail's deadline when it set one, the
       // route's otherwise.
       const { deadline } = record;
@@ -1366,20 +1418,7 @@ export const useSessionStore = defineStore("session", () => {
         return false;
       }
       live.value = world;
-      // Display context for the journey; no re-quote on this path.
-      quoted.value = {
-        send: record.sourceAmount ?? "",
-        symbol: record.sourceSymbol ?? record.asset,
-        fee: record.sourceFee ?? null,
-        provider: record.sourceProvider ?? null,
-        transactionFee: record.sourceTransactionFee ?? null,
-        networkFee: record.sourceNetworkFee ?? null,
-        partnerFee: record.sourcePartnerFee ?? null,
-        chainFee: record.sourceChainFee ?? null,
-        nativeAmount: null,
-        sourceAsset: record.asset,
-        sourceChain: record.chain,
-      };
+      quoted.value = displayQuote;
       sub?.unsubscribe();
       sub = world.session.subscribe((state) => {
         observePaymentState(state, ref);

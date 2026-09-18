@@ -224,7 +224,7 @@ async function previewRequest(
     ...(sourceId === "meld-card" || sourceId === "meld-bank"
       ? {
           meldFundingRequestId: `preview-funding-${ref.tradeN}`,
-          meldServiceProvider: "TRANSAK",
+          sourceProvider: "TRANSAK",
         }
       : {}),
     deposit: {

@@ -183,8 +183,6 @@ export interface TopUpRecord {
   sourceChainFee?: string;
   meldCountry?: string;
   meldFundingRequestId?: string;
-  /** The provider the rail quoted through (Meld's `TRANSAK`), as the concluded top-up names it. */
-  meldServiceProvider?: string;
   meldSubmittedAt?: number;
   /** Demo only: when Skip was pressed, so a re-open never offers Skip again for this request. */
   depositSkippedAt?: number;
