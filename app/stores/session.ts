@@ -194,6 +194,9 @@ export const useSessionStore = defineStore("session", () => {
   /** The provider widget URL recovered when resuming a Meld request; null unless a resume found a
    *  live one. */
   const meldResumeWidgetUrl = ref<string | null>(null);
+  /** True while a re-opened request is still asking the adapter for its pay page. Absence of a
+   *  URL means "lapsed" only once this is false; before that it means "not asked yet". */
+  const meldPayUrlPending = ref(false);
   /** Latched once the settled payment has been credited to the coinage leg. */
   let meldCredited = false;
   /** The swap network's price for the selected source; `pending` while asking. */
@@ -326,6 +329,7 @@ export const useSessionStore = defineStore("session", () => {
     quoteEpoch += 1;
     stopSimulatedPayment();
     meldResumeWidgetUrl.value = null;
+    meldPayUrlPending.value = false;
     meldCredited = false;
     meldFundingRequestId = null;
     meldStatusClient = null;
@@ -1342,14 +1346,20 @@ export const useSessionStore = defineStore("session", () => {
           });
           meldStatusClient = client;
           meldFundingRequestId = record.meldFundingRequestId;
-          // Recover the pay URL from the adapter; the rail keeps pay URLs only in memory.
+          // Recover the pay URL from the adapter; the rail keeps pay URLs only in memory. The
+          // adapter serves one only while the request is still payable, so a row past its page
+          // comes back without one — which the screen may only call lapsed once this settles.
+          meldPayUrlPending.value = true;
           void client
             .getStatus(record.meldFundingRequestId)
             .then((s) => {
               if (s.serviceProviderWidgetUrl)
                 meldResumeWidgetUrl.value = s.serviceProviderWidgetUrl;
             })
-            .catch(() => {});
+            .catch(() => {})
+            .finally(() => {
+              meldPayUrlPending.value = false;
+            });
           pollMeldStatus();
         }
       }
@@ -1639,6 +1649,7 @@ export const useSessionStore = defineStore("session", () => {
     supportedCountries,
     meldCorridor,
     meldResumeWidgetUrl,
+    meldPayUrlPending,
     meldPayUrl,
     sourcePrice,
     loading,

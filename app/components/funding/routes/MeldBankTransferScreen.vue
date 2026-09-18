@@ -27,6 +27,9 @@ const props = defineProps<{
   country: string;
   /** Which step is showing. The route owns it, so Back can step between them. */
   step: "summary" | "details";
+  /** Offer a cancel under the confirmation. Set when the transfer was re-opened from the list:
+   *  there the details are all the buyer came back for, and leaving is the other way out. */
+  cancellable?: boolean;
 }>();
 // `fees` and `currency` open this route's drill-ins; `continue` asks the route for the details
 // step; `switchRoute` asks the shell for another package when no transfer can be routed from here.
@@ -34,6 +37,9 @@ const emit = defineEmits<{
   fees: [];
   currency: [];
   continue: [];
+  cancel: [];
+  /** Leave the screen without touching the request: a lapsed transfer may still be arriving. */
+  leave: [];
   switchRoute: [route: FundingRoute];
 }>();
 
@@ -61,6 +67,23 @@ const currencyLabel = computed(() => currencyName(fiat.value));
 
 const starting = ref(false);
 const startError = ref<string | null>(null);
+
+/**
+ * The provider no longer serves a page for this request: it is still live, but past the point
+ * where it can be paid on, so there are no account details left to read and nothing to confirm.
+ *
+ * Only once the lookup has settled — a re-opened request has no URL until the adapter answers,
+ * and calling that lapsed would accuse every resume of having expired.
+ */
+const lapsed = computed(
+  () =>
+    props.step === "details" &&
+    requestOpen.value &&
+    !starting.value &&
+    !session.meldPayUrlPending &&
+    session.meldPayUrl === null &&
+    !requests.meldSubmitted,
+);
 
 /** Opens the request behind the details step. A resumed request already has one. */
 async function openRequest() {
@@ -249,7 +272,19 @@ function confirmSent() {
       <div
         class="flex min-h-0 flex-1 flex-col overflow-clip rounded-container bg-surface-container"
       >
-        <MeldPaySheet v-if="requestOpen && !startError" :pay-url="session.meldPayUrl" />
+        <!-- Past the provider's page: say so, rather than embedding an empty frame. -->
+        <div
+          v-if="lapsed"
+          class="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center"
+        >
+          <CircleAlert class="size-8 text-fg-secondary" aria-hidden="true" />
+          <p class="text-label-l font-semibold text-fg-primary">Transfer details expired</p>
+          <p class="max-w-[260px] text-body-m text-fg-secondary">
+            This transfer can no longer be paid. If you have already sent it, it will still arrive.
+            Otherwise start a new top-up.
+          </p>
+        </div>
+        <MeldPaySheet v-else-if="requestOpen && !startError" :pay-url="session.meldPayUrl" />
         <div
           v-else-if="!startError"
           class="flex-1 animate-pulse bg-action-disabled"
@@ -266,18 +301,29 @@ function confirmSent() {
         {{ session.cancelNotice }}
       </p>
 
-      <PillButton v-if="startError" class="mt-6 mb-6 w-full shrink-0" @click="openRequest">
-        Try again
-      </PillButton>
-      <!-- The count is on the button, so the wait is visibly the button's and not a failure. -->
-      <PillButton
-        v-else
-        class="mt-6 mb-6 w-full shrink-0"
-        :disabled="!canConfirm"
-        @click="confirmSent"
-      >
-        I’ve sent funds<template v-if="countdown > 0"> {{ countdown }}</template>
-      </PillButton>
+      <div class="mt-6 mb-6 flex shrink-0 flex-col gap-3">
+        <PillButton v-if="startError" class="w-full" @click="openRequest">Try again</PillButton>
+        <!-- Nothing left to confirm on a lapsed transfer, and nothing to cancel either: a
+             transfer already sent still arrives, so this only leaves the screen. -->
+        <PillButton v-else-if="lapsed" class="w-full" @click="emit('leave')">
+          Back to top-ups
+        </PillButton>
+        <!-- The count is on the button, so the wait is visibly the button's and not a failure. -->
+        <PillButton v-else class="w-full" :disabled="!canConfirm" @click="confirmSent">
+          <!-- A non-breaking space: the compiler condenses a plain one away, and the count must
+               not wrap off the label either. -->
+          I’ve sent funds<template v-if="countdown > 0">&nbsp;{{ countdown }}</template>
+        </PillButton>
+        <!-- A resumed transfer's way out: nothing can have been taken while this screen is up. -->
+        <PillButton
+          v-if="cancellable && !lapsed && !startError"
+          variant="danger"
+          class="w-full"
+          @click="emit('cancel')"
+        >
+          Cancel
+        </PillButton>
+      </div>
     </template>
   </div>
 </template>
