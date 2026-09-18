@@ -7,6 +7,7 @@ import { migrateRecord } from "../app/funding/requests/migrate";
 import {
   DEPOSIT_EXPIRED_REASON,
   PAYMENT_WATCH_MS,
+  paymentWatchUntil,
   TOMBSTONE_GRACE_MS,
   type Observation,
   type RailState,
@@ -18,7 +19,6 @@ import { reduce } from "../app/funding/requests/reducer";
 import {
   completedMarkers,
   journeyStepsOf,
-  paymentWatchUntil,
   meldHandedOffOf,
   meldStageOf,
   rowStateOf,
