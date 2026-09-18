@@ -20,10 +20,18 @@ export interface FundingTopUpRecord {
   sourceSymbol?: string;
   /** The provider's quoted fee (Meld), in `sourceSymbol` units. */
   sourceFee?: string;
-  /** The network-fee share of `sourceFee`, when the rail broke it out. */
+  /** The provider that priced the request ("TRANSAK"), not the aggregator in front of it. */
+  sourceProvider?: string;
+  /** The components of `sourceFee`, as the rail reported them. */
+  sourceTransactionFee?: string;
   sourceNetworkFee?: string;
+  sourcePartnerFee?: string;
+  /** The funding leg's own network fee, priced by the app rather than reported by the rail. */
+  sourceChainFee?: string;
   /** The Meld rail's buyer country. */
   meldCountry?: string;
+  /** The Meld rail's funding-request id: the reference a failed journey shows. */
+  meldFundingRequestId?: string;
   funded?: number;
   settledAt?: number;
   claimed?: string;
@@ -42,9 +50,21 @@ export function quoteOf(record: FundingTopUpRecord): Pick<FundingTopUp, "quote">
           amount: record.sourceAmount,
           symbol: record.sourceSymbol,
           ...(record.sourceFee ? { fee: record.sourceFee } : {}),
+          ...(record.sourceProvider ? { provider: record.sourceProvider } : {}),
         },
       }
     : {};
+}
+
+/**
+ * The rail's reference for the payment, spread onto the top-up when the record carries one.
+ *
+ * Read from the record rather than from whatever session happens to be live: the journey that
+ * most needs the reference is the one that failed, and by the time the buyer comes back to read
+ * it off the screen there may be no session left to ask.
+ */
+export function referenceOf(record: FundingTopUpRecord): Pick<FundingTopUp, "reference"> {
+  return record.meldFundingRequestId ? { reference: record.meldFundingRequestId } : {};
 }
 
 export function creditedAmount(record: FundingTopUpRecord): string {
