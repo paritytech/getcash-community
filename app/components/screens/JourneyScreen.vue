@@ -210,7 +210,7 @@ const detailRows = computed<DetailRow[]>(() => {
   // these are rows of reference nobody needs, but a declined payment is the moment a buyer has
   // something to ask about. An expired top-up keeps none of it: no payment was ever made against
   // the request.
-  if (heroFailed.value && !expired.value) {
+  if (!crypto.value && heroFailed.value && !expired.value) {
     // A transfer is quoted back to a bank by its reference; the provider knows the same payment
     // by its funding request, so the two labels carry one handle until the adapter reports a
     // transaction id of its own.
