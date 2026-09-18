@@ -4,7 +4,12 @@
 import { computed, ref } from "vue";
 import { ChevronDown, ChevronUp } from "lucide-vue-next";
 import type { FundingSelectorConfig } from "../../funding/config";
-import type { InProgressFundingTopUp, SettledFundingTopUp } from "../../funding/top-ups";
+import {
+  TOP_UP_LIST_WORDING,
+  type FundingListWording,
+  type InProgressFundingTopUp,
+  type SettledFundingTopUp,
+} from "../../funding/top-ups";
 import PillButton from "../ui/PillButton.vue";
 import FundingTopUpProgressCard from "./FundingTopUpProgressCard.vue";
 
@@ -23,6 +28,8 @@ const props = withDefaults(
     error?: string | null;
     /** Launch-load placeholder: the screen's own shapes instead of the list. */
     skeleton?: boolean;
+    /** What the screen calls the thing it lists; the top-up wording by default. */
+    wording?: FundingListWording;
   }>(),
   {
     topUps: () => [],
@@ -30,6 +37,7 @@ const props = withDefaults(
     openingTopUpId: null,
     error: null,
     skeleton: false,
+    wording: () => TOP_UP_LIST_WORDING,
   },
 );
 
@@ -55,18 +63,14 @@ const busy = computed(() => Boolean(props.openingTopUpId));
 <template>
   <div class="flex h-full min-h-0 flex-col">
     <FundingEntryHeader
-      :title="skeleton ? '' : 'Top-up in progress'"
+      :title="skeleton ? '' : wording.pendingTitle"
       history
       :skeleton="skeleton"
       @history="emit('history')"
     />
 
     <!-- The screen's own shapes while the top-ups are still being read. -->
-    <div
-      v-if="skeleton"
-      class="flex min-h-0 flex-1 flex-col px-4 pt-4 pb-6"
-      aria-label="Loading your top-ups"
-    >
+    <div v-if="skeleton" class="flex min-h-0 flex-1 flex-col px-4 pt-4 pb-6" aria-label="Loading">
       <div class="flex flex-col gap-2">
         <span
           v-for="n in COLLAPSED_CARDS"

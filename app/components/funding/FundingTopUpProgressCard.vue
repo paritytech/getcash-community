@@ -39,9 +39,10 @@ const amountText = computed(() => {
 
 const statusText = computed(() => {
   if (props.opening) return "Opening…";
+  // A finished row names the outcome before the moment — the row's own word for it, so a
+  // withdrawal reads "Sent" where a top-up reads "Added"; a running one is the rail's word.
   const done = settled.value;
-  if (done) return formatWhenShort(done.at);
-  // A failed top-up names the outcome before the moment; a running one is the rail's own word.
+  if (done) return `${done.status} · ${formatWhenShort(done.at)}`;
   const gone = failed.value;
   return gone ? `${gone.status} · ${formatWhenShort(gone.at)}` : props.topUp.progress.view.label;
 });

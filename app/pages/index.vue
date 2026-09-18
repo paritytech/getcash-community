@@ -12,12 +12,12 @@ import {
 } from "vue";
 import FundingJourneyRoute from "../components/funding/FundingJourneyRoute.vue";
 import FundingSelectorScreen from "../components/funding/FundingSelectorScreen.vue";
+import { useRoutePackageLoader } from "../composables/useRoutePackageLoader";
 import { useVisualViewportHeight } from "../composables/useVisualViewportHeight";
 import { fundingSelectorConfig } from "../funding/config";
 import {
   availableFundingRoutes,
   getcashRoutePackages,
-  loadFundingPackage,
   loadFundingTopUpPackage,
   uniqueFundingPackages,
 } from "../funding/packages";
@@ -41,18 +41,29 @@ import { launchPreviewTopUps, previewTopUpScene } from "../utils/dev-preview-top
 useVisualViewportHeight();
 const requests = useRequestsStore();
 
-const selection = ref<FundingSelection | null>(null);
-const activePackage = shallowRef<Component | null>(null);
+function routeLabel(route: FundingRoute): string {
+  return fundingSelectorConfig.routes.find(({ id }) => id === route)?.label ?? route;
+}
+
+const {
+  selection,
+  activePackage,
+  loading,
+  routeError,
+  continueToPackage: loadPackage,
+  switchRoute,
+  cancelPendingLoad: cancelPackageLoad,
+  returnToShell,
+} = useRoutePackageLoader(getcashRoutePackages, routeLabel);
 const activeTopUpPackage = shallowRef<Component | null>(null);
 const activeTopUpId = ref<string | null>(null);
-const loading = ref(false);
-const routeError = ref<string | null>(null);
 const openingTopUpId = ref<string | null>(null);
 const topUpError = ref<string | null>(null);
 const topUpsReady = computed(() => requests.hydrated || requests.hostReadDone);
 // Launch lands on add-funds; history is behind the clock.
 const shellEntry = ref<FundingShellEntryScreen>("auto");
 const historyReturn = ref<FundingHistoryReturnScreen>("amount");
+// Top-up status loads; the package loader keeps its own.
 let loadEpoch = 0;
 
 /** The journey screen, entered from a package handoff ("package") or from the top-ups list
@@ -119,42 +130,16 @@ const availableRoutes = availableFundingRoutes(
   fundingSelectorConfig.routes.map(({ id }) => id),
 );
 
-function routeLabel(route: FundingRoute): string {
-  return fundingSelectorConfig.routes.find(({ id }) => id === route)?.label ?? route;
-}
-
 async function continueToPackage(next: FundingSelection) {
-  const epoch = ++loadEpoch;
   shellEntry.value = "amount";
-  selection.value = next;
-  loading.value = true;
-  routeError.value = null;
   topUpError.value = null;
-
-  const result = await loadFundingPackage(getcashRoutePackages, next);
-  if (epoch !== loadEpoch) return;
-
-  loading.value = false;
-  if (result.kind === "loaded") {
-    activePackage.value = markRaw(result.component);
-    return;
-  }
-  if (result.kind === "unavailable") {
-    routeError.value = `${routeLabel(next.route)} isn't available in this build yet.`;
-    return;
-  }
-
-  console.error(`[funding] could not load ${result.packageId}:`, result.error);
-  routeError.value = `${routeLabel(next.route)} couldn't be opened. Try again.`;
-}
-
-/** Reloads the shell on another route's package, carrying the current amount. */
-function switchRoute(route: FundingRoute) {
-  void continueToPackage({ amount: selection.value?.amount ?? "", route });
+  await loadPackage(next);
 }
 
 async function openTopUp(topUp: FundingTopUp, target: FundingTopUpReturnTarget) {
   const epoch = ++loadEpoch;
+  // A package still loading must not surface under the top-up once it arrives.
+  cancelPackageLoad();
   shellEntry.value = target.screen;
   if (target.screen === "history") historyReturn.value = target.historyReturn;
   topUpError.value = null;
@@ -187,24 +172,16 @@ async function openTopUp(topUp: FundingTopUp, target: FundingTopUpReturnTarget) 
 }
 
 function cancelPendingLoad() {
-  if (!loading.value && openingTopUpId.value === null) {
-    routeError.value = null;
-    topUpError.value = null;
-    return;
-  }
-  loadEpoch += 1;
-  loading.value = false;
+  cancelPackageLoad();
+  if (openingTopUpId.value !== null) loadEpoch += 1;
   openingTopUpId.value = null;
-  routeError.value = null;
   topUpError.value = null;
 }
 
 function returnToSelector(entry: FundingShellEntryScreen = "amount") {
   loadEpoch += 1;
   shellEntry.value = entry;
-  activePackage.value = null;
-  loading.value = false;
-  routeError.value = null;
+  returnToShell();
 }
 
 function returnFromTopUp() {

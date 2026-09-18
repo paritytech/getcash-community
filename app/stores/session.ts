@@ -17,9 +17,10 @@ import {
 import { depositWindowFor } from "../funding/config";
 import {
   effectiveSourceId,
+  isTopUp,
   railProviderOf,
   routeOf,
-  type RequestRecord,
+  type TopUpRecord,
 } from "../funding/requests/model";
 import {
   createFakeMeldClient,
@@ -1089,7 +1090,7 @@ export const useSessionStore = defineStore("session", () => {
       const depositExpiresAt =
         state?.phase === "awaiting-deposit" ? (state.deposit.expiresAt ?? 0) : 0;
       const deposit = state && "deposit" in state && state.deposit ? state.deposit : null;
-      const record: RequestRecord = {
+      const record: TopUpRecord = {
         schema: 2,
         kind: "top-up",
         ref,
@@ -1209,14 +1210,14 @@ export const useSessionStore = defineStore("session", () => {
       });
   }
 
-  /** Every open request's record, newest first, once the store has caught up with the host. */
-  async function readAllRequests(): Promise<RequestRecord[]> {
+  /** Every open top-up's record, newest first, once the store has caught up with the host. */
+  async function readAllRequests(): Promise<TopUpRecord[]> {
     await requests.reconcile("refresh");
-    return requests.openRecords;
+    return requests.openTopUps;
   }
 
-  /** The records the app acts on. Tombstoned requests are excluded; only the sweep reads them. */
-  function openRequests(): Promise<RequestRecord[]> {
+  /** The top-ups the app acts on. Tombstoned requests are excluded; only the sweep reads them. */
+  function openRequests(): Promise<TopUpRecord[]> {
     return readAllRequests();
   }
   /** Gets every open request converting again and puts nothing on screen; the boot passes
@@ -1236,7 +1237,9 @@ export const useSessionStore = defineStore("session", () => {
       await requests.reconcile("refresh");
       record = requests.get(ref);
     }
-    if (record === undefined || record.status.kind === "cancelled") return false;
+    if (record === undefined || !isTopUp(record) || record.status.kind === "cancelled") {
+      return false;
+    }
     try {
       return await enterRequest(record);
     } finally {
@@ -1245,7 +1248,7 @@ export const useSessionStore = defineStore("session", () => {
     }
   }
 
-  async function enterRequest(record: RequestRecord): Promise<boolean> {
+  async function enterRequest(record: TopUpRecord): Promise<boolean> {
     const { ref } = record;
     resuming.value = true;
     setAmount(record.amountHuman);
