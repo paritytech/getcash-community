@@ -36,8 +36,21 @@ export const WORKER_READY_MS = 20_000;
 export const MIRROR_SETTLED_LIMIT = 50;
 /** Bound on the reads a cancel performs before acting. */
 export const CANCEL_CONFIRM_MS = 8_000;
-/** A cancelled record is reaped after its deadline plus this grace. */
+/** A cancelled record is reaped after its watch window plus this grace. */
 export const TOMBSTONE_GRACE_MS = 86_400_000;
+/**
+ * How long a request whose payment has not been seen is still worth asking the rail about.
+ *
+ * Not the pay page's own expiry: that says when the buyer can no longer *start* paying, which is
+ * no evidence about whether they already did — reading it as the deadline concludes "nothing
+ * arrived" over a buyer whose transfer is still in the post. A bank transfer settles in up to a
+ * day, and one started on a Friday lands on Monday.
+ *
+ * Three days matches the adapter's own `worker.session_max_age_ms`, which keeps watching for that
+ * long and holds the verdict; with the tombstone grace on top, this record outlives that watch, so
+ * the adapter's answer always has somewhere to land.
+ */
+export const PAYMENT_WATCH_MS = 72 * 3_600_000;
 /** Route fallback when the rail gives no deposit expiry. */
 export const DEFAULT_DEPOSIT_WINDOW_MS = 86_400_000;
 /** A probed-empty gap number is re-read at most this often. */
