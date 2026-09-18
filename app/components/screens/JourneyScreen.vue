@@ -158,26 +158,28 @@ const detailRows = computed<DetailRow[]>(() => {
   const q = quoteView.value;
   // Symbol-first for the fiat rails ("€50.55").
   const money = (amount: string) => (q ? fmtFiat(amount, q.symbol) : amount);
-  // A concluded transfer leads with what it cost, in the past tense, over the fee breakdown.
-  const sent = (): DetailRow[] =>
+  // A concluded top-up leads with what it cost, in the past tense, over the fee breakdown. Each
+  // rail names the act the buyer performed: a transfer was sent, a card was paid.
+  const charged = (): DetailRow[] =>
     q
       ? [
           {
-            label: "Sent inc. fees",
+            label: bank.value ? "Sent inc. fees" : "You paid inc. fees",
             value: money(q.amount),
             ...(feesDrillIn(q) ? { fees: true } : {}),
           },
         ]
       : [];
   // Arrived: nothing else on the screen is still owed to the buyer.
-  if (bank.value && finished.value) return sent();
-  // Ended badly: the handles for chasing it. Whoever the buyer asks — their bank, or support —
-  // asks for one of these, and this screen is the only place they are written down. An expired
-  // top-up keeps none of it: no payment was ever made against the request.
-  if (bank.value && heroFailed.value && !expired.value) {
-    const rows = sent();
+  if (bank.value && finished.value) return charged();
+  // Ended badly on either fiat rail: the handles for chasing it. Whoever the buyer asks — their
+  // bank, or support — asks for one of these, and this screen is the only place they are written
+  // down. An expired top-up keeps none of it: no payment was ever made against the request.
+  if (!crypto.value && heroFailed.value && !expired.value) {
+    const rows = charged();
     const handle = reference.value;
-    if (handle) {
+    // A transfer is quoted back to a bank; a card payment has no reference to give.
+    if (bank.value && handle) {
       rows.push({ label: "Reference", value: elideMiddle(handle), copy: handle });
     }
     if (serviceProvider.value) rows.push({ label: "Provider", value: serviceProvider.value });
