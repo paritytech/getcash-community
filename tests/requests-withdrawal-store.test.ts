@@ -25,6 +25,9 @@ import { requestRefOf, serializeRequestIndex, type RequestRef } from "../app/uti
 import { awaitingDepositCryptoRecord, FIXTURE_NOW } from "./fixtures/requests";
 
 const MINUTE = 60_000;
+/** How long a poll tick may take to land: its worker nudge imports modules the fake clock cannot
+ *  drive, so the outcome is awaited in real time. */
+const POLL_SETTLES = { timeout: 10_000, interval: 5 };
 const STARTED = FIXTURE_NOW - 5 * MINUTE;
 const SOURCE = "wd:pas-assethub";
 const REF = requestRefOf(SOURCE, 2);
@@ -164,7 +167,6 @@ describe("requests store: withdrawals", () => {
   });
 
   it("nudges the worker into a pass on each poll round while a withdrawal is its to move", async () => {
-    // setImmediate stays real: the nudge sits behind module imports the fake clock cannot drive.
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     const call = vi.fn(async () => ({}));
     vi.doMock("../lib/worker-rpc", () => ({
@@ -182,10 +184,7 @@ describe("requests store: withdrawals", () => {
       await requests.reconcile("boot");
       expect(requests.get(REF)?.status.kind).toBe("converting");
       await vi.advanceTimersByTimeAsync(JOB_POLL_MS);
-      for (let turns = 0; turns < 1_000 && call.mock.calls.length === 0; turns += 1) {
-        await new Promise((resolve) => setImmediate(resolve));
-      }
-      expect(call).toHaveBeenCalledWith("tickAllWithdraw");
+      await vi.waitFor(() => expect(call).toHaveBeenCalledWith("tickAllWithdraw"), POLL_SETTLES);
     } finally {
       vi.doUnmock("../lib/worker-rpc");
       vi.useRealTimers();
@@ -203,17 +202,14 @@ describe("requests store: withdrawals", () => {
       await requests.create(REF, withdrawal());
       expect(requests.get(REF)?.witnesses.worker).toBeUndefined();
       await vi.advanceTimersByTimeAsync(JOB_POLL_MS);
-      for (
-        let turns = 0;
-        turns < 1_000 && requests.get(REF)?.witnesses.worker === undefined;
-        turns += 1
-      ) {
-        await new Promise((resolve) => setImmediate(resolve));
-      }
-      expect(requests.get(REF)?.witnesses.worker).toMatchObject({
-        known: true,
-        phase: "await-cash",
-      });
+      await vi.waitFor(
+        () =>
+          expect(requests.get(REF)?.witnesses.worker).toMatchObject({
+            known: true,
+            phase: "await-cash",
+          }),
+        POLL_SETTLES,
+      );
     } finally {
       vi.useRealTimers();
     }
