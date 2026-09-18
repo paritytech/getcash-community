@@ -11,7 +11,7 @@ import { rowStateOf } from "./requests/views";
 import type { FundingRoute } from "./selection";
 import { isMeldSourceId, meldMethodFor, meldSourceIdFor, type MeldMethod } from "./source-ids";
 import type { FundingTopUpAdapter } from "./top-up-adapter";
-import { quoteOf, type FundingTopUpRecord } from "./top-up-projection";
+import { quoteOf, referenceOf, type FundingTopUpRecord } from "./top-up-projection";
 import type { FundingTopUp, FundingTopUpDetails } from "./top-ups";
 
 export type MeldTopUpRecord = FundingTopUpRecord;
@@ -73,6 +73,7 @@ export function projectMeldTopUps(
         progress,
         details: topUpDetails(record, method),
         ...quoteOf(record),
+        ...referenceOf(record),
         state: worded,
       },
     ];
