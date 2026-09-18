@@ -160,32 +160,29 @@ export async function fetchSupportedCorridors(): Promise<Map<string, SupportedCo
   }
 }
 
-/** One region-dropdown row, enriched with per-method availability for greying and a limits hint. */
+/** One picker row: a country, its availability for the active method, and its fiat minimum. */
 export interface CountryOption {
   country: string;
   name: string;
   /** Unsupported for the active method: rendered greyed and non-selectable. */
   disabled?: boolean;
-  /** The per-region limits hint ("10 to 5000 USD") on a supported row, or the reason on a disabled one. */
-  subLabel?: string;
-}
-
-/** Human method name for a sub-label. */
-function methodLabel(ui: "card" | "bank"): string {
-  return ui === "bank" ? "bank transfer" : "card";
+  /** The corridor's fiat minimum, on a supported row that carries one. */
+  min?: string;
+  /** The fiat the min is denominated in, e.g. "GBP". */
+  currency?: string;
 }
 
 // Trim trailing decimal zeros for display: "26.00" -> "26", "10.50" -> "10.5" (string-only, no Number()).
-function trimAmount(s: string): string {
+export function trimAmount(s: string): string {
   return s.includes(".") ? s.replace(/\.?0+$/, "") : s;
 }
 
-// A plain, always-selectable row (no greying, no hint).
+// A plain, always-selectable row (no greying, no min).
 function plainRow(c: SupportedCountry): CountryOption {
   return { country: c.country, name: c.name };
 }
 
-// Dropdown rows for the active method: supported shows limits, unsupported is disabled; a null/empty map leaves all rows plain.
+// Picker rows for the active method: supported carries its fiat min, unsupported is disabled; a null/empty map leaves all rows plain.
 export function corridorOptions(
   base: readonly SupportedCountry[],
   corridors: Map<string, SupportedCorridor> | null,
@@ -194,20 +191,10 @@ export function corridorOptions(
   if (corridors === null || corridors.size === 0) return base.map(plainRow);
   const rows = base.map((c): CountryOption => {
     const method = corridors.get(c.country)?.methods.find((m) => m.category === ui) ?? null;
-    if (method === null) {
-      return {
-        country: c.country,
-        name: c.name,
-        disabled: true,
-        subLabel: `Not available for ${methodLabel(ui)}`,
-      };
-    }
-    // A row without both bounds keeps the name but no misleading "0 to 0" hint.
-    const hint =
-      method.min !== "" && method.max !== ""
-        ? `${trimAmount(method.min)} to ${trimAmount(method.max)} ${method.currency}`
-        : undefined;
-    return { country: c.country, name: c.name, subLabel: hint };
+    if (method === null) return { country: c.country, name: c.name, disabled: true };
+    // A supported method with no bound or no currency stays selectable but shows no min.
+    if (method.min === "" || method.currency === "") return { country: c.country, name: c.name };
+    return { country: c.country, name: c.name, min: method.min, currency: method.currency };
   });
   // Never brick: a map that disables every row (case skew, disjoint fallback) degrades to plain selectable rows.
   return rows.some((r) => !r.disabled) ? rows : base.map(plainRow);
@@ -231,6 +218,36 @@ export function nextSelectable(
 // First non-disabled index, or -1 when none is selectable.
 export function firstSelectable(options: readonly CountryOption[]): number {
   return options.findIndex((o) => !o.disabled);
+}
+
+/** A labelled picker section: the heading and its options, each tagged with its `ordered` index. */
+export interface CountryGroup {
+  label: string;
+  options: { o: CountryOption; index: number }[];
+}
+
+// Split rows into the detected pin, supported, and unsupported groups. `ordered` is the flat
+// keyboard-nav order (detected, supported, unsupported); every group option's `index` is its
+// position in `ordered`, so the two never drift apart.
+export function groupOptions(
+  rows: readonly CountryOption[],
+  selected: string,
+): { ordered: CountryOption[]; groups: CountryGroup[] } {
+  const detected = rows.find((o) => o.country === selected) ?? null;
+  const others = rows.filter((o) => o.country !== selected);
+  const supported = others.filter((o) => !o.disabled);
+  const unsupported = others.filter((o) => o.disabled);
+  const ordered = [...(detected ? [detected] : []), ...supported, ...unsupported];
+  const groups: CountryGroup[] = [];
+  let i = 0;
+  const add = (label: string, list: readonly CountryOption[]) => {
+    if (list.length === 0) return;
+    groups.push({ label, options: list.map((o) => ({ o, index: i++ })) });
+  };
+  if (detected) add("Detected country", [detected]);
+  add(detected ? "Or choose another country" : "Countries", supported);
+  add("Unsupported country", unsupported);
+  return { ordered, groups };
 }
 
 /** The first method of the given category in a corridor, or `null` when it offers none. */

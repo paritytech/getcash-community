@@ -245,9 +245,17 @@ describe("lib/supported", () => {
         },
       ],
     ]);
+    const { trimAmount } = await import("../lib/supported");
     const rows = corridorOptions([{ country: "US", name: "United States" }], map, "card");
-    // No "1e+21"; trailing-zero trim keeps exact text.
-    expect(rows[0]?.subLabel).toBe("10.5 to 1000000000000000000000 USD");
+    // The option carries the raw min; trimAmount trims for display without exponential notation.
+    expect(rows[0]).toEqual({
+      country: "US",
+      name: "United States",
+      min: "10.50",
+      currency: "USD",
+    });
+    expect(trimAmount("10.50")).toBe("10.5");
+    expect(trimAmount("1000000000000000000000")).toBe("1000000000000000000000"); // not "1e+21"
   });
 
   it("corridorOptions omits the limits hint when a supported method carries no bounds", async () => {
@@ -272,8 +280,8 @@ describe("lib/supported", () => {
       ],
     ]);
     const rows = corridorOptions([{ country: "US", name: "United States" }], map, "card");
-    // No misleading "0 to 0 USD"; the row is supported (selectable) with just its name.
-    expect(rows[0]).toEqual({ country: "US", name: "United States", subLabel: undefined });
+    // No misleading "0" min; the row is supported (selectable) with just its name.
+    expect(rows[0]).toEqual({ country: "US", name: "United States" });
   });
 
   it("corridorOptions greys a row unsupported for the active method and labels its limits", async () => {
@@ -321,17 +329,16 @@ describe("lib/supported", () => {
       { country: "GB", name: "United Kingdom" },
     ];
     const card = corridorOptions(base, map, "card");
-    expect(card[0]).toEqual({ country: "US", name: "United States", subLabel: "10 to 5000 USD" });
-    expect(card[1]?.disabled).toBe(true); // BR absent from the map
-    expect(card[1]?.subLabel).toBe("Not available for card");
+    expect(card[0]).toEqual({
+      country: "US",
+      name: "United States",
+      min: "10.00",
+      currency: "USD",
+    });
+    expect(card[1]).toEqual({ country: "BR", name: "Brazil", disabled: true }); // BR absent from the map
     const bank = corridorOptions(base, map, "bank");
-    expect(bank[0]?.disabled).toBe(true); // US has no bank method
-    expect(bank[0]?.subLabel).toBe("Not available for bank transfer");
-    expect(bank[2]).toEqual({
-      country: "GB",
-      name: "United Kingdom",
-      subLabel: "15 to 55650 GBP",
-    }); // GB bank is supported
+    expect(bank[0]).toEqual({ country: "US", name: "United States", disabled: true }); // US has no bank method
+    expect(bank[2]).toEqual({ country: "GB", name: "United Kingdom", min: "15", currency: "GBP" }); // GB bank supported
   });
 
   it("nextSelectable steps to the next non-disabled row, wrapping, and firstSelectable finds the first", async () => {
@@ -350,5 +357,41 @@ describe("lib/supported", () => {
     const allOff = [{ country: "A", name: "A", disabled: true }];
     expect(nextSelectable(allOff, 0, 1)).toBe(-1); // none selectable
     expect(firstSelectable(allOff)).toBe(-1);
+  });
+
+  it("groupOptions pins the detected country, splits supported/unsupported, and aligns indices with ordered", async () => {
+    const { groupOptions } = await import("../lib/supported");
+    const rows = [
+      { country: "US", name: "United States", min: "5", currency: "USD" },
+      { country: "GB", name: "United Kingdom", min: "4", currency: "GBP" },
+      { country: "BR", name: "Brazil", disabled: true },
+      { country: "AU", name: "Australia", min: "7", currency: "AUD" },
+    ];
+    const { ordered, groups } = groupOptions(rows, "GB");
+    // Detected (GB) first, then supported others (US, AU), then unsupported (BR).
+    expect(ordered.map((o) => o.country)).toEqual(["GB", "US", "AU", "BR"]);
+    expect(groups.map((g) => g.label)).toEqual([
+      "Detected country",
+      "Or choose another country",
+      "Unsupported country",
+    ]);
+    // Every group option's index is exactly its position in `ordered` (no drift).
+    for (const g of groups) for (const { o, index } of g.options) expect(ordered[index]).toBe(o);
+    expect(groups[0]?.options.map((r) => r.o.country)).toEqual(["GB"]);
+    expect(groups[2]?.options[0]?.o.country).toBe("BR");
+  });
+
+  it("groupOptions labels the list 'Countries' when nothing is detected, and drops empty groups", async () => {
+    const { groupOptions } = await import("../lib/supported");
+    const rows = [
+      { country: "US", name: "United States", min: "5", currency: "USD" },
+      { country: "AU", name: "Australia", min: "7", currency: "AUD" },
+    ];
+    const { ordered, groups } = groupOptions(rows, "ZZ"); // detected absent
+    expect(ordered.map((o) => o.country)).toEqual(["US", "AU"]);
+    expect(groups.map((g) => g.label)).toEqual(["Countries"]); // no detected + no unsupported groups
+    const empty = groupOptions([], "US");
+    expect(empty.ordered).toEqual([]);
+    expect(empty.groups).toEqual([]);
   });
 });
