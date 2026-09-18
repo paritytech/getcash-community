@@ -17,18 +17,23 @@ const props = withDefaults(
     delayed?: boolean;
     /** Replaces the failed step's "<stage> failed" wording (the design's "Expired"). */
     failedLabel?: string | null;
+    /** The markers' labels, one per step; the top-up's by default. */
+    labels?: readonly string[] | null;
   }>(),
   {
     steps: 5,
     message: null,
     delayed: false,
     failedLabel: null,
+    labels: null,
   },
 );
 
 const CARD_STAGES = ["Started", "Payment", "Approved", "Conversion", "Added"] as const;
 const CRYPTO_STAGES = ["Started", "Conversion", "Added"] as const;
-const stages = computed<readonly string[]>(() => (props.steps === 3 ? CRYPTO_STAGES : CARD_STAGES));
+const stages = computed<readonly string[]>(
+  () => props.labels ?? (props.steps === 3 ? CRYPTO_STAGES : CARD_STAGES),
+);
 
 const settled = computed(() => props.progress.view.kind === "settled");
 const failed = computed(() => props.progress.view.kind === "failed");

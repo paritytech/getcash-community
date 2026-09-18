@@ -20,7 +20,8 @@ export {
   estimateFundingProgramFees,
   FUNDING_PROGRAM_MAX_WEIGHT,
 } from "./funding-program";
-export type { FundingProgramFees, Pool } from "./funding-program";
+export type { FundingProgramFees, PeopleApi, Pool } from "./funding-program";
+export { creditedTo, forwardedTo, siblingOrigin, signedOrigin, trappedIn } from "./xcm-dry-run";
 export { describeDispatchError } from "./dispatch-error";
 export { createManualRail } from "./manual-rail";
 export type { ManualRailOptions } from "./manual-rail";

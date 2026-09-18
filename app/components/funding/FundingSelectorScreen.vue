@@ -14,6 +14,8 @@ import {
 } from "../../funding/selection";
 import {
   hasFundingPendingContent,
+  TOP_UP_LIST_WORDING,
+  type FundingListWording,
   type InProgressFundingTopUp,
   type PastFundingTopUp,
   type SettledFundingTopUp,
@@ -40,6 +42,14 @@ const props = withDefaults(
     historyReturn?: FundingHistoryReturnScreen;
     openingTopUpId?: string | null;
     topUpError?: string | null;
+    /** Passed through to the amount screen; the top-up wording by default. */
+    title?: string;
+    cta?: string;
+    /** Passed through to the amount screen: the balance its pill offers, null while loading,
+     *  omitted for no pill. */
+    available?: string | null;
+    /** The list screens' words around the rows; the top-up's by default. */
+    wording?: FundingListWording;
   }>(),
   {
     skeleton: false,
@@ -55,6 +65,10 @@ const props = withDefaults(
     historyReturn: "amount",
     openingTopUpId: null,
     topUpError: null,
+    title: undefined,
+    cta: undefined,
+    available: undefined,
+    wording: () => TOP_UP_LIST_WORDING,
   },
 );
 
@@ -130,6 +144,9 @@ watch(hasPendingContent, (hasContent) => {
       amount=""
       :route="null"
       :history="false"
+      :title="title"
+      :cta="cta"
+      :available="available"
     />
     <FundingPendingScreen
       v-else-if="screen === 'pending'"
@@ -138,6 +155,7 @@ watch(hasPendingContent, (hasContent) => {
       :latest-top-up="latestTopUp"
       :opening-top-up-id="openingTopUpId"
       :error="topUpError"
+      :wording="wording"
       @history="showHistory"
       @new-top-up="showAmount"
       @open="emit('openTopUp', $event, { screen: 'pending' })"
@@ -149,6 +167,7 @@ watch(hasPendingContent, (hasContent) => {
       :past="pastTopUps"
       :opening-top-up-id="openingTopUpId"
       :error="topUpError"
+      :empty-text="wording.emptyHistory"
       @back="closeHistory"
       @open="
         emit('openTopUp', $event, {
@@ -166,6 +185,9 @@ watch(hasPendingContent, (hasContent) => {
       :history="topUps.length > 0 || pastTopUps.length > 0"
       :error="error"
       :loading="loading"
+      :title="title"
+      :cta="cta"
+      :available="available"
       @change="changeAmount"
       @route="changeRoute"
       @continue="continueToPackage"

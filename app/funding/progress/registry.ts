@@ -61,7 +61,7 @@ export function composeFundingProgressProfile(
     startedNodeLabel: route.startedNodeLabel ?? "Started",
     waitingLabel: route.waitingLabel ?? "Waiting for your transfer",
     routeCompletedLabel: route.routeCompletedLabel ?? "Payment received",
-    settledLabel: "Ready to spend",
+    settledLabel: route.settledLabel ?? "Ready to spend",
     stages: Object.freeze(stages),
   });
 }

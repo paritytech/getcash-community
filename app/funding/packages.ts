@@ -5,6 +5,7 @@ import type { FundingJourneyStatus } from "./handoff";
 import { useMeldJourneyStatus } from "../composables/useMeldJourneyStatus";
 import { useChainflipTopUpAdapter } from "./chainflip-top-ups";
 import { useMeldTopUpAdapter } from "./meld-top-ups";
+import { useWithdrawalTopUpAdapter } from "../withdraw/rows";
 import type { FundingRoute, FundingSelection } from "./selection";
 import type { FundingTopUpAdapter } from "./top-up-adapter";
 import type { FundingTopUp } from "./top-ups";
@@ -115,6 +116,24 @@ const meldPackage = {
   },
   journeyStatus: useMeldJourneyStatus,
 } satisfies FundingRoutePackage;
+
+const loadCryptoWithdrawRoute = () =>
+  import("../components/withdraw/routes/CryptoWithdrawRoute.vue").then(
+    ({ default: component }) => component,
+  );
+
+/** The withdrawal routes. Only crypto has a package; card and bank resolve to unavailable. The
+ *  package hosts its own journey, so a withdrawal opened from the list loads the same route. */
+export const getcashWithdrawPackages = {
+  crypto: {
+    packageId: "@getsome/withdraw-crypto",
+    load: loadCryptoWithdrawRoute,
+    topUps: {
+      useAdapter: useWithdrawalTopUpAdapter,
+      loadStatus: loadCryptoWithdrawRoute,
+    },
+  },
+} satisfies FundingRoutePackages;
 
 export const getcashRoutePackages = {
   card: meldPackage,

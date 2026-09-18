@@ -1,11 +1,5 @@
-import {
-  deriveEntropy,
-  getHostLocalStorage,
-  getHostProvider,
-  readTopUpStatus,
-  registerTopUp,
-} from "./host.js";
-import { deriveKeypairWithSecret, toSchnorrkelSecret } from "@getsome/ephemeral";
+import { readTopUpStatus, registerTopUp } from "./host.js";
+import { toSchnorrkelSecret } from "@getsome/ephemeral";
 import {
   DEFAULT_KEEP_NATIVE_FOR_FEES,
   DEFAULT_REMOTE_FEE_BUFFER,
@@ -21,8 +15,16 @@ import {
 import { CASH_SETTLEMENT, createPeopleChainPort } from "@getsome/people";
 import { PaymentTopUpErr, PaymentTopUpStatusErr } from "@novasamatech/host-api";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
-import { createClient } from "polkadot-api";
 import { readParams } from "./params.js";
+import {
+  asBig,
+  bounded,
+  connectChain,
+  createJobStore,
+  keypairFor,
+  signOptionsFor,
+  toHex,
+} from "./shared.js";
 import { topUpIdFor } from "./topup-id.js";
 
 // The funding engine: the only driver of tickOnce, one tick per live job per pass.
@@ -47,45 +49,9 @@ const MAX_TICK_GAP_MS = 30_000;
 /** A job whose deposit never arrives is retired after this, releasing the keep-alive. */
 const DEPOSIT_WINDOW_MS = 86_400_000;
 
-let jobs = null;
-let loading = null;
-
-/** Loads the job map once, single-flight. A failed read throws; no empty map is cached. */
-function loadJobs() {
-  if (jobs) return Promise.resolve(jobs);
-  loading ??= readJobs().finally(() => {
-    loading = null;
-  });
-  return loading;
-}
-
-async function readJobs() {
-  const store = await getHostLocalStorage();
-  if (!store) throw new Error("product storage unavailable");
-  const stored = await store.readJSON(FUNDING_KEY);
-  jobs = stored && typeof stored === "object" ? stored : {};
-  return jobs;
-}
-
-async function saveJobs() {
-  if (!jobs) return;
-  try {
-    const store = await getHostLocalStorage();
-    await store?.writeJSON(FUNDING_KEY, jobs);
-  } catch (error) {
-    // The in-memory copy keeps answering after a failed write.
-    console.warn(`[funding] jobs write failed: ${String(error?.message ?? error)}`);
-  }
-}
-
-/** Parses a bigint stored as a string, with a fallback for bad input. */
-const asBig = (value, fallback = 0n) => {
-  try {
-    return BigInt(value);
-  } catch {
-    return fallback;
-  }
-};
+const store = createJobStore(FUNDING_KEY, "funding");
+const loadJobs = () => store.load();
+const saveJobs = () => store.save();
 
 /**
  * One funding job's record, as persisted between wakes.
@@ -194,7 +160,7 @@ export async function startFunding(params) {
     // reason).
     return { error: "invalid", reason: String(error?.message ?? error) };
   }
-  const burner = await burnerFor(record);
+  const burner = await keypairFor(record.label);
   if (burner.address !== record.burnerAddress) {
     return { error: "invalid", reason: mismatchReason(burner.address, record.burnerAddress) };
   }
@@ -212,7 +178,7 @@ const mismatchReason = (derived, shown) =>
  */
 async function burnerMismatch(record, shown) {
   if (!shown) return null;
-  const known = record.burnerAddress ?? (await burnerFor(record)).address;
+  const known = record.burnerAddress ?? (await keypairFor(record.label)).address;
   if (shown !== known) return mismatchReason(known, shown);
   record.burnerAddress = known;
   return null;
@@ -491,65 +457,6 @@ export async function fundingStatus(params) {
   return { jobs: Object.values(all).map(describeFunding) };
 }
 
-/** Rejects with a timeout error when `promise` takes longer than `ms`. */
-function bounded(promise, ms, what) {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms}ms`)), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error) => {
-        clearTimeout(timer);
-        reject(error);
-      },
-    );
-  });
-}
-
-/**
- * Creates a papi client for `genesisHash` through the host and verifies the chain it serves.
- * Clients live for one tick and are destroyed when it ends (see tickRecord).
- */
-async function connectChain(genesisHash, what) {
-  const provider = await bounded(getHostProvider(genesisHash), 8_000, `${what} provider`);
-  if (!provider) throw new Error(`${what}: no host provider (not in a container?)`);
-  const client = createClient(provider);
-  try {
-    const spec = await bounded(client.getChainSpecData(), 10_000, `${what} chainSpec`);
-    if (spec.genesisHash !== genesisHash) {
-      throw new Error(`${what}: genesis mismatch: host routed ${spec.genesisHash}`);
-    }
-    return client;
-  } catch (error) {
-    client.destroy();
-    throw error;
-  }
-}
-
-/**
- * Anchors the mortal era and nonce of a submit to the client's best block. Throws when the
- * tip cannot be read.
- */
-async function signOptionsFor(client) {
-  const best = await bounded(client.getBestBlocks(), 8_000, "best block");
-  const hash = best?.[0]?.hash;
-  if (!hash) throw new Error("no best block to anchor the submit against");
-  return { at: hash };
-}
-
-const toHex = (bytes) => `0x${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
-
-/** Re-derives the burner keypair for a record from host entropy. Never persisted. */
-async function burnerFor(record) {
-  const result = await deriveEntropy(new TextEncoder().encode(record.label));
-  if (!result.ok) {
-    throw new Error(`deriveEntropy refused: ${String(result.error?.message ?? result.error)}`);
-  }
-  return deriveKeypairWithSecret(result.value);
-}
-
 const hostOwnsClaim = (record) => record.claim?.phase === "claiming";
 
 /** True from the first tick that saw funds until the claim is registered with the host. */
@@ -594,7 +501,7 @@ function judgeBounds(record, nowMs, read) {
 /** One tick for one record: connect, read the world, act at most once, persist, let go. */
 async function tickRecord(record, nowMs) {
   accountWorkedTime(record, nowMs);
-  const burner = await burnerFor(record);
+  const burner = await keypairFor(record.label);
   const ahClient = await connectChain(record.assetHubGenesis, "asset hub");
   let peopleClient = null;
   try {
