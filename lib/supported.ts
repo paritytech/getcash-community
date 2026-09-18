@@ -53,6 +53,7 @@ function headers(): Record<string, string> {
 
 let countriesCache: SupportedCountry[] | null = null;
 const corridorCache = new Map<string, SupportedCorridor>();
+let corridorsCache: Map<string, SupportedCorridor> | null = null;
 
 function isCategory(value: unknown): value is SupportedMethodCategory {
   return value === "card" || value === "bank" || value === "wallet" || value === "other";
@@ -128,6 +129,108 @@ export async function fetchCorridor(country: string): Promise<SupportedCorridor 
   } catch {
     return null;
   }
+}
+
+// Every supported corridor as a country -> corridor map, DB-backed and tab-cached; null when unreachable.
+export async function fetchSupportedCorridors(): Promise<Map<string, SupportedCorridor> | null> {
+  if (corridorsCache !== null) return corridorsCache;
+  const base = baseUrl();
+  if (base === undefined) return null;
+  try {
+    const res = await fetch(
+      `${base.replace(/\/$/, "")}/supported/corridors?destinationCurrencyCode=${encodeURIComponent(MELD_DESTINATION)}`,
+      { headers: headers() },
+    );
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      corridors?: { country?: string; fiat?: string; methods?: Record<string, unknown>[] }[];
+    };
+    const map = new Map<string, SupportedCorridor>();
+    for (const c of data.corridors ?? []) {
+      const country = String(c.country ?? "");
+      const fiat = String(c.fiat ?? "");
+      if (country === "") continue;
+      map.set(country, { country, fiat, methods: (c.methods ?? []).map((m) => toMethod(m, fiat)) });
+    }
+    // Only a non-empty result is cached; an empty one (cold cache) is retried next call.
+    if (map.size > 0) corridorsCache = map;
+    return map;
+  } catch {
+    return null;
+  }
+}
+
+/** One region-dropdown row, enriched with per-method availability for greying and a limits hint. */
+export interface CountryOption {
+  country: string;
+  name: string;
+  /** Unsupported for the active method: rendered greyed and non-selectable. */
+  disabled?: boolean;
+  /** The per-region limits hint ("10 to 5000 USD") on a supported row, or the reason on a disabled one. */
+  subLabel?: string;
+}
+
+/** Human method name for a sub-label. */
+function methodLabel(ui: "card" | "bank"): string {
+  return ui === "bank" ? "bank transfer" : "card";
+}
+
+// Trim trailing decimal zeros for display: "26.00" -> "26", "10.50" -> "10.5" (string-only, no Number()).
+function trimAmount(s: string): string {
+  return s.includes(".") ? s.replace(/\.?0+$/, "") : s;
+}
+
+// A plain, always-selectable row (no greying, no hint).
+function plainRow(c: SupportedCountry): CountryOption {
+  return { country: c.country, name: c.name };
+}
+
+// Dropdown rows for the active method: supported shows limits, unsupported is disabled; a null/empty map leaves all rows plain.
+export function corridorOptions(
+  base: readonly SupportedCountry[],
+  corridors: Map<string, SupportedCorridor> | null,
+  ui: "card" | "bank",
+): CountryOption[] {
+  if (corridors === null || corridors.size === 0) return base.map(plainRow);
+  const rows = base.map((c): CountryOption => {
+    const method = corridors.get(c.country)?.methods.find((m) => m.category === ui) ?? null;
+    if (method === null) {
+      return {
+        country: c.country,
+        name: c.name,
+        disabled: true,
+        subLabel: `Not available for ${methodLabel(ui)}`,
+      };
+    }
+    // A row without both bounds keeps the name but no misleading "0 to 0" hint.
+    const hint =
+      method.min !== "" && method.max !== ""
+        ? `${trimAmount(method.min)} to ${trimAmount(method.max)} ${method.currency}`
+        : undefined;
+    return { country: c.country, name: c.name, subLabel: hint };
+  });
+  // Never brick: a map that disables every row (case skew, disjoint fallback) degrades to plain selectable rows.
+  return rows.some((r) => !r.disabled) ? rows : base.map(plainRow);
+}
+
+// Next non-disabled index from `from` stepping by `delta`, wrapping; -1 when none is selectable.
+export function nextSelectable(
+  options: readonly CountryOption[],
+  from: number,
+  delta: number,
+): number {
+  const n = options.length;
+  if (n === 0) return -1;
+  for (let step = 1; step <= n; step += 1) {
+    const idx = (((from + delta * step) % n) + n) % n;
+    if (!options[idx]?.disabled) return idx;
+  }
+  return -1;
+}
+
+// First non-disabled index, or -1 when none is selectable.
+export function firstSelectable(options: readonly CountryOption[]): number {
+  return options.findIndex((o) => !o.disabled);
 }
 
 /** The first method of the given category in a corridor, or `null` when it offers none. */

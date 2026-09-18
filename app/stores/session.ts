@@ -34,6 +34,7 @@ import { CASH_DECIMALS } from "@getsome/people";
 import { meldPaymentMethod, resolveMeldRegion } from "~~/lib/region";
 import {
   fetchCorridor,
+  fetchSupportedCorridors,
   fetchSupportedCountries,
   methodFor,
   type SupportedCorridor,
@@ -184,6 +185,8 @@ export const useSessionStore = defineStore("session", () => {
   const meldMethodUnavailable = ref(false);
   /** Every Meld on-ramp country from the adapter's live catalog; null until loaded. */
   const supportedCountries = ref<SupportedCountry[] | null>(null);
+  /** Bulk per-country corridors for greying the dropdown; null until loaded or when unreachable. */
+  const corridorByCountry = shallowRef<Map<string, SupportedCorridor> | null>(null);
   /** The selected country's corridor: its resolved fiat and the methods it routes. Null when
    *  discovery is unreachable. */
   const meldCorridor = shallowRef<SupportedCorridor | null>(null);
@@ -1578,6 +1581,12 @@ export const useSessionStore = defineStore("session", () => {
     if (rows !== null) supportedCountries.value = rows;
   }
 
+  // Loads the bulk per-country corridors; only a real catalog is adopted so a cold/empty read greys nothing.
+  async function loadSupportedCorridors(): Promise<void> {
+    const map = await fetchSupportedCorridors();
+    if (map !== null && map.size > 0) corridorByCountry.value = map;
+  }
+
   return {
     // state
     amountHuman,
@@ -1588,6 +1597,7 @@ export const useSessionStore = defineStore("session", () => {
     quoteError,
     meldMethodUnavailable,
     supportedCountries,
+    corridorByCountry,
     meldCorridor,
     meldResumeWidgetUrl,
     meldPayUrl,
@@ -1612,6 +1622,7 @@ export const useSessionStore = defineStore("session", () => {
     setMethod,
     setMeldCountry,
     loadSupportedCountries,
+    loadSupportedCorridors,
     fetchQuote,
     fetchMeldQuote,
     start,

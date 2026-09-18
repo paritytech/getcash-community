@@ -3,11 +3,11 @@
 // selecting commits. `commit` fires only on a chosen country, never on filter text.
 import { computed, nextTick, ref, watch } from "vue";
 import { ChevronDown } from "lucide-vue-next";
-import { flagEmoji } from "~~/lib/supported";
+import { flagEmoji, firstSelectable, nextSelectable, type CountryOption } from "~~/lib/supported";
 
 const props = defineProps<{
-  /** Every selectable country, in the caller's order. */
-  options: readonly { country: string; name: string }[];
+  /** Every country row, in the caller's order. A disabled row is greyed and non-selectable. */
+  options: readonly CountryOption[];
   /** The committed selection, as an ISO 3166-1 alpha-2 code. */
   modelValue: string;
   label?: string;
@@ -38,7 +38,7 @@ const showFlag = computed(() => !open.value && selected.value !== null);
 const filtered = computed(() => {
   const q = query.value.trim().toLowerCase();
   if (q === "") return props.options;
-  type Row = { country: string; name: string };
+  type Row = CountryOption;
   const starts: Row[] = [];
   const contains: Row[] = [];
   const byCode: Row[] = [];
@@ -53,14 +53,20 @@ const filtered = computed(() => {
 
 watch(filtered, (rows) => {
   if (active.value >= rows.length) active.value = rows.length - 1;
+  // Keep the highlight off a greyed row when the list changes under it (e.g. corridors load while open).
+  if (active.value >= 0 && rows[active.value]?.disabled) active.value = firstSelectable(rows);
 });
 
 function openList() {
   if (open.value) return;
   open.value = true;
-  // Opens with the whole list and the committed country highlighted.
+  // Opens with the whole list and the committed country highlighted, unless it is disabled.
   query.value = "";
-  active.value = props.options.findIndex((o) => o.country === props.modelValue);
+  const committed = props.options.findIndex((o) => o.country === props.modelValue);
+  active.value =
+    committed >= 0 && !props.options[committed]?.disabled
+      ? committed
+      : firstSelectable(props.options);
   void scrollActiveIntoView();
 }
 
@@ -72,6 +78,8 @@ function close() {
 }
 
 function choose(country: string) {
+  // A disabled row never commits.
+  if (props.options.find((o) => o.country === country)?.disabled) return;
   close();
   // Re-choosing the committed country does not emit.
   if (country !== props.modelValue) emit("commit", country);
@@ -88,9 +96,8 @@ function move(delta: number) {
     openList();
     return;
   }
-  const rows = filtered.value;
-  if (rows.length === 0) return;
-  active.value = (active.value + delta + rows.length) % rows.length;
+  // Arrow keys land only on selectable rows, wrapping past greyed ones.
+  active.value = nextSelectable(filtered.value, active.value, delta);
   void scrollActiveIntoView();
 }
 
@@ -103,8 +110,8 @@ function onEnter() {
 function onInput(e: Event) {
   query.value = (e.target as HTMLInputElement).value;
   open.value = true;
-  // Points at the best match, or at nothing when the filter matches nothing.
-  active.value = filtered.value.length > 0 ? 0 : -1;
+  // Points at the best selectable match, or at nothing when none is selectable.
+  active.value = firstSelectable(filtered.value);
 }
 
 // Rows commit on `mousedown.prevent`, which keeps focus on the input.
@@ -172,14 +179,26 @@ const rowId = (i: number) => `${listboxId}-row-${i}`;
           :id="rowId(i)"
           :key="o.country"
           role="option"
-          :aria-selected="o.country === modelValue"
+          :aria-selected="o.country === modelValue && !o.disabled"
+          :aria-disabled="o.disabled ? 'true' : undefined"
           :data-active="i === active"
-          class="cursor-pointer px-4 py-2.5 text-body-l text-fg-primary data-[active=true]:bg-selection-container-hover"
+          class="flex items-center justify-between gap-2 px-4 py-2.5 text-body-l data-[active=true]:bg-selection-container-hover"
+          :class="
+            o.disabled ? 'cursor-not-allowed text-fg-tertiary' : 'cursor-pointer text-fg-primary'
+          "
           @mousedown.prevent="choose(o.country)"
-          @mousemove="active = i"
+          @mousemove="o.disabled || (active = i)"
         >
-          <span class="mr-2">{{ flagEmoji(o.country) }}</span
-          >{{ o.name }}
+          <span
+            ><span class="mr-2">{{ flagEmoji(o.country) }}</span
+            >{{ o.name }}</span
+          >
+          <span
+            v-if="o.subLabel"
+            class="shrink-0 text-body-m"
+            :class="o.disabled ? 'text-fg-tertiary' : 'text-fg-secondary'"
+            >{{ o.subLabel }}</span
+          >
         </li>
         <li v-if="filtered.length === 0" class="px-4 py-2.5 text-body-m text-fg-secondary">
           No country matches “{{ query }}”
