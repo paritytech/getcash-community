@@ -531,6 +531,17 @@ export const paymentTaken = (record: Pick<WithdrawalRecord, "payment">): boolean
   const { status } = record.payment;
   return status === "processing" || status === "completed" || status === "partiallyClaimed";
 };
+/**
+ * Until when a request whose payment has not been seen is watched: the rail is still worth asking,
+ * and the record is still worth keeping.
+ *
+ * The rail's own expiry only ever extends this, never shortens it. A pay page that closed says
+ * nothing about a transfer already sent, so the window is measured from when the request started
+ * and sized to outlast the adapter's watch (see `PAYMENT_WATCH_MS`).
+ */
+export const paymentWatchUntil = (record: Pick<RequestRecord, "startedAt" | "deadline">): number =>
+  Math.max(record.startedAt + PAYMENT_WATCH_MS, record.deadline.depositExpiresAt ?? 0) +
+  TOMBSTONE_GRACE_MS;
 
 /** The buyer has paid: the rail reports the deposit at or past `received`, or the buyer finished
  *  the provider's widget. Such a request never expires, however long the funds take to land. */

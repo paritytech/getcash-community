@@ -9,9 +9,7 @@ import type { FundingTopUpState } from "../top-ups";
 import {
   CONFIRMED_TTL_MS,
   isFinished,
-  PAYMENT_WATCH_MS,
   rankOf,
-  TOMBSTONE_GRACE_MS,
   type Freshness,
   type RequestRecord,
   type TopUpRecord,
@@ -75,18 +73,6 @@ export const fundsSeenOf = (record: TopUpRecord): boolean =>
     (record.status.via === "worker" ||
       record.status.via === "faucet" ||
       record.status.via === "pre-cancel"));
-
-/**
- * Until when a request whose payment has not been seen is watched: the rail is still worth asking,
- * and the record is still worth keeping.
- *
- * The rail's own expiry only ever extends this, never shortens it. A pay page that closed says
- * nothing about a transfer already sent, so the window is measured from when the request started
- * and sized to outlast the adapter's watch (see `PAYMENT_WATCH_MS`).
- */
-export const paymentWatchUntil = (record: Pick<RequestRecord, "startedAt" | "deadline">): number =>
-  Math.max(record.startedAt + PAYMENT_WATCH_MS, record.deadline.depositExpiresAt ?? 0) +
-  TOMBSTONE_GRACE_MS;
 
 /** The scale a route's journey is drawn and counted on: each names its own stops. */
 export type JourneyScale = "crypto" | "card" | "bank";
