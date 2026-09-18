@@ -4,6 +4,7 @@
 import { computed, onMounted, ref } from "vue";
 import { ChevronRight } from "lucide-vue-next";
 import { useSessionStore } from "../../../stores/session";
+import { corridorOptions } from "~~/lib/supported";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import type { FundingRoute } from "../../../funding/selection";
 import CountryCombobox from "../../ui/CountryCombobox.vue";
@@ -56,12 +57,15 @@ function localeCountry(): string | null {
   }
 }
 
-// The picker's rows: every country the live catalog lists, else the static fallback.
+// Picker rows: live catalog or static fallback, enriched per active method (session.method re-greys card<->bank).
 const countryOptions = computed(() => {
   const live = session.supportedCountries;
-  return live && live.length > 0
-    ? live
-    : FALLBACK_COUNTRIES.map((c) => ({ country: c.country, name: c.name }));
+  const base =
+    live && live.length > 0
+      ? live
+      : FALLBACK_COUNTRIES.map((c) => ({ country: c.country, name: c.name }));
+  const ui: "card" | "bank" = session.method === "bank" ? "bank" : "card";
+  return corridorOptions(base, session.corridorByCountry, ui);
 });
 // The shown country matches the quoted region.
 const selectedCountry = computed(() => session.meldCountry ?? DEFAULT_COUNTRY);
@@ -74,6 +78,7 @@ onMounted(() => {
     requote();
   }
   void session.loadSupportedCountries();
+  void session.loadSupportedCorridors();
 });
 // Re-quoting clears a previous refusal.
 function requote() {

@@ -1,7 +1,7 @@
 // Store-level smoke: the browser (mock-world) quote path end to end, the exact path a
 // plain localhost:3000 visitor exercises.
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import type { FakeRail } from "@getsome/testing";
 import { useRequestsStore } from "../app/stores/requests";
@@ -136,5 +136,81 @@ describe("session store: Meld (card / bank) in the mock world", () => {
     expect(await store.cancelTopUp()).toBe(true);
     expect(store.cancelNotice).toBeNull();
     expect(requests.phase).toBeNull();
+  });
+
+  // Discovery is unconfigured in the mock world (no VITE_MELD_BASE_URL), so the loader is a no-op.
+  it("loadSupportedCorridors leaves corridorByCountry null when discovery is unconfigured", async () => {
+    const store = useSessionStore();
+    await store.loadSupportedCorridors();
+    expect(store.corridorByCountry).toBeNull();
+  });
+});
+
+describe("session store: supported corridors loader against a live adapter", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it("fills corridorByCountry from the bulk endpoint", async () => {
+    vi.resetModules();
+    vi.stubEnv("VITE_MELD_BASE_URL", "https://adapter.test");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              corridors: [
+                {
+                  country: "US",
+                  fiat: "USD",
+                  methods: [
+                    {
+                      paymentMethodType: "CREDIT_DEBIT_CARD",
+                      category: "card",
+                      min: "10",
+                      max: "5000",
+                      currency: "USD",
+                      providers: [],
+                    },
+                  ],
+                },
+              ],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+      ),
+    );
+    // Re-import both pinia and the store after the reset so they share one module instance.
+    const { createPinia: freshPinia, setActivePinia: setFresh } = await import("pinia");
+    setFresh(freshPinia());
+    const { useSessionStore: freshStore } = await import("../app/stores/session");
+    const store = freshStore();
+    await store.loadSupportedCorridors();
+    expect(store.corridorByCountry?.get("US")?.methods[0]?.category).toBe("card");
+  });
+
+  it("keeps corridorByCountry null on a cold (empty) bulk read, so the dropdown never bricks", async () => {
+    vi.resetModules();
+    vi.stubEnv("VITE_MELD_BASE_URL", "https://adapter.test");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ corridors: [] }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+      ),
+    );
+    const { createPinia: freshPinia, setActivePinia: setFresh } = await import("pinia");
+    setFresh(freshPinia());
+    const { useSessionStore: freshStore } = await import("../app/stores/session");
+    const store = freshStore();
+    await store.loadSupportedCorridors();
+    // Empty catalog must not be adopted (else every country greys out).
+    expect(store.corridorByCountry).toBeNull();
   });
 });
