@@ -1,17 +1,38 @@
 <script setup lang="ts">
-// Label/value rows for a quote or receipt. A row flagged `fees` renders its value as a button
-// into the fee-breakdown drill-in.
-import type { HTMLAttributes } from "vue";
-import { ChevronRight } from "lucide-vue-next";
+// Label/value rows for a quote or receipt. A row flagged `fees` renders its value as a button into
+// the fee-breakdown drill-in; a row carrying `copy` renders it as a button that puts that text on
+// the clipboard, which lets `value` be an abbreviation of something too long to show in full.
+import { ref, type HTMLAttributes } from "vue";
+import { Check, ChevronRight, Copy } from "lucide-vue-next";
+import { useCopyToClipboard } from "@/composables/useCopyToClipboard";
 import { cn } from "@/lib/cn";
 
+export interface DetailRow {
+  label: string;
+  value: string;
+  /** Renders the value as the entry into the fee breakdown. */
+  fees?: boolean;
+  /** The full text to copy, when the row is copyable. `value` may be a shortened form of it. */
+  copy?: string;
+}
+
 const props = defineProps<{
-  rows: { label: string; value: string; fees?: boolean }[];
+  rows: DetailRow[];
   /** Secondary labels, for screens where the values carry the emphasis. */
   muted?: boolean;
   class?: HTMLAttributes["class"];
 }>();
 const emit = defineEmits<{ fees: [] }>();
+
+// One flag across the list: only one row is ever copied at a time, and the tick sits on the row
+// that was tapped because the others have no copy button to show it on.
+const { copied, copy } = useCopyToClipboard();
+const justCopied = ref<string | null>(null);
+async function copyRow(row: DetailRow) {
+  if (row.copy === undefined) return;
+  justCopied.value = row.label;
+  await copy(row.copy);
+}
 </script>
 
 <template>
@@ -28,6 +49,22 @@ const emit = defineEmits<{ fees: [] }>();
         >
           {{ row.value }}
           <ChevronRight class="size-4 text-fg-secondary" aria-hidden="true" />
+        </button>
+      </dd>
+      <dd v-else-if="row.copy !== undefined">
+        <button
+          type="button"
+          class="flex items-center gap-2 text-heading-m text-fg-primary"
+          :aria-label="`Copy ${row.label}`"
+          @click="copyRow(row)"
+        >
+          {{ row.value }}
+          <Check
+            v-if="copied && justCopied === row.label"
+            class="size-5 text-fg-success"
+            aria-hidden="true"
+          />
+          <Copy v-else class="size-5 text-fg-secondary" aria-hidden="true" />
         </button>
       </dd>
       <dd v-else class="text-heading-m text-fg-primary">{{ row.value }}</dd>

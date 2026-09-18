@@ -192,6 +192,9 @@ describe("requests store: withdrawals", () => {
   });
 
   it("starts the job poll when a withdrawal is created, without a reconcile", async () => {
+    // Warm the modules the poll's nudge imports: cold, that first-time I/O outlasts the turns
+    // this test spends waiting, and the witness never lands within them.
+    await Promise.all([import("../lib/worker-rpc"), import("../lib/withdraw-live")]);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     try {
       await storage.write(

@@ -15,10 +15,10 @@ import { useRequestsStore } from "../../stores/requests";
 import { DEPOSIT_EXPIRED_REASON, useSessionStore } from "../../stores/session";
 import { fmtCash } from "../../utils/cash";
 import { fmtFiat, isMoneyAmount } from "../../utils/money";
-import { formatWhenShort } from "../../utils/journey";
+import { formatWhenShort, shortRef } from "../../utils/journey";
 import { refundedFailure } from "../../utils/recovery";
 import FundingJourneyTimeline from "../funding/progress/FundingJourneyTimeline.vue";
-import DetailRows from "../ui/DetailRows.vue";
+import DetailRows, { type DetailRow } from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
 
 const props = defineProps<{
@@ -126,6 +126,7 @@ const quoteView = computed(() => {
       amount: q.send,
       symbol: q.symbol,
       fee: q.fee ?? null,
+      provider: q.provider ?? null,
       crypto: session.method === "crypto",
       live: true,
     };
@@ -136,22 +137,46 @@ const quoteView = computed(() => {
     amount: stored.amount,
     symbol: stored.symbol,
     fee: stored.fee ?? null,
+    provider: stored.provider ?? null,
     crypto: props.topUp?.route === "crypto",
     live: false,
   };
 });
-const detailRows = computed(() => {
+/**
+ * What the buyer paid, and on a failure who to chase about it.
+ *
+ * A separate Fees row restated part of the number sitting right beside it; the total already
+ * contains the fee, so the label says so and the chevron carries the split. The drill-in is
+ * offered only when the live quote backs it with a fee the breakdown can itemize — a stored quote
+ * or an unparseable fee leaves the row as plain text.
+ *
+ * The failure rows stand on their own. A journey with no quote to show still has a payment the
+ * buyer may need to ask about, so what they would have to quote does not hang on a figure being
+ * available to print above it.
+ */
+const detailRows = computed<DetailRow[]>(() => {
   const q = quoteView.value;
-  // The crypto rail doesn't restate the deposit amount here — the deposit screen owns that figure.
-  if (!q || q.crypto) return [];
-  // Symbol-first for the fiat rails ("€50.55").
-  const money = (amount: string) => fmtFiat(amount, q.symbol);
-  const rows: { label: string; value: string; fees?: boolean }[] = [];
-  // The fee row drills into the breakdown screen when the live quote backs it with a fee the
-  // breakdown can actually split; an unparseable one still shows, as plain text.
-  if (q.fee)
-    rows.push({ label: "Fees", value: money(q.fee), fees: q.live && isMoneyAmount(q.fee) });
-  rows.push({ label: "Total", value: money(q.amount) });
+  const rows: DetailRow[] = [];
+  if (q) {
+    // Symbol-first for the fiat rails ("€50.55"); crypto keeps its full-precision ticker form.
+    const money = (amount: string) =>
+      q.crypto ? `${amount} ${q.symbol}` : fmtFiat(amount, q.symbol);
+    rows.push({
+      label: q.fee ? "You paid inc. fees" : "You paid",
+      value: money(q.amount),
+      fees: !!q.fee && q.live && isMoneyAmount(q.fee),
+    });
+  }
+  // Who to chase and what to quote them. Only on a failure: on a journey that is working or done
+  // these are two rows of reference nobody needs, but a declined payment is the moment a buyer
+  // has something to ask about. Both come off the request's own record before the live session:
+  // the journey that most needs them is re-opened from the list long after that session is gone.
+  if (heroFailed.value) {
+    if (q?.provider) rows.push({ label: "Provider", value: q.provider });
+    const reference = props.topUp?.reference ?? requests.foregroundRecord?.meldFundingRequestId;
+    if (reference)
+      rows.push({ label: "Transaction ID", value: shortRef(reference), copy: reference });
+  }
   return rows;
 });
 

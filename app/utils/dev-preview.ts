@@ -110,8 +110,16 @@ interface Scene {
 const QUOTED_CARD = {
   send: "52.06",
   symbol: "USD",
+  provider: "TRANSAK",
   fee: "1.56",
-  networkFee: "0.01",
+  // The shape real card quotes come back in: a provider fee and our flat cut, no network fee.
+  transactionFee: "1.06",
+  networkFee: null,
+  partnerFee: "0.50",
+  // Not Meld's: the swap and teleport up to CASH on People, as the store prices them. Measured
+  // against Paseo for this frame's 50 CASH — 0.0343 DOT of Asset Hub fees at the quote's implied
+  // rate, plus 0.000043 CASH of execution on People.
+  chainFee: "0.0867",
   nativeAmount: null,
   sourceAsset: null,
   sourceChain: null,
@@ -137,7 +145,14 @@ interface PreviewRequest {
  *  a request the scene made before is removed first. */
 async function previewRequest(
   session: Session,
-  opts: { sourceId: SourceId; index: number; deposit?: { expiresAt: number } },
+  opts: {
+    sourceId: SourceId;
+    index: number;
+    deposit?: { expiresAt: number };
+    /** The adapter's funding-request id, as `createSession` captures it on a real card payment.
+     *  The record keeps it, and the failed journey shows it as the payment's reference. */
+    meldFundingRequestId?: string;
+  },
 ): Promise<PreviewRequest> {
   const requests = useRequestsStore();
   const { sourceId } = opts;
@@ -174,6 +189,7 @@ async function previewRequest(
     progress,
     tradeN: ref.tradeN,
     sourceId,
+    ...(opts.meldFundingRequestId ? { meldFundingRequestId: opts.meldFundingRequestId } : {}),
     route: routeOf(sourceId),
     deposit: {
       address: DEPOSIT.address,
@@ -254,6 +270,10 @@ function base(session: Session, flow: Flow) {
   flow.srcAssetIndex = 0;
 }
 
+/** The adapter's funding-request id for the card scenes. Abbreviates to the "a1f9-4c2e" the
+ *  design frames show, so the failed journey's reference row renders as drawn. */
+const CARD_REQUEST_ID = "a1f9c3d2-7b44-4e10-9f21-00ab9e4c2e";
+
 /** Baseline for the card-journey scenes: the Meld quote and method the design frames show. */
 function cardJourney(session: Session, flow: Flow) {
   base(session, flow);
@@ -278,7 +298,13 @@ function selection(session: Session, flow: Flow) {
 /** The card scenes' request, once the provider has seen the payment. */
 async function cardPayment(s: Session, f: Flow, index: number): Promise<PreviewRequest> {
   cardJourney(s, f);
-  const r = await previewRequest(s, { sourceId: "meld-card", index });
+  // The scenes never run createSession, which is what captures the id on a real payment; the
+  // record carries it here instead, as a real card request's does.
+  const r = await previewRequest(s, {
+    sourceId: "meld-card",
+    index,
+    meldFundingRequestId: CARD_REQUEST_ID,
+  });
   await core(r, 0, swapping("receiving", "meld-card"));
   return r;
 }
@@ -612,7 +638,12 @@ export const SCENES: Scene[] = [
     name: "card / journey: unconfirmed",
     apply: async (s, f, i) => {
       cardJourney(s, f);
-      const r = await previewRequest(s, { sourceId: "meld-card", index: i });
+      // The reference is the whole point of this ending: the message asks the buyer for it.
+      const r = await previewRequest(s, {
+        sourceId: "meld-card",
+        index: i,
+        meldFundingRequestId: CARD_REQUEST_ID,
+      });
       // The adapter's terminal 404, which the reducer ends `unobserved`: the payment was never
       // reported, so the record must not be re-opened from here.
       await r.observe({
