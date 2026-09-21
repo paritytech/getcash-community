@@ -11,6 +11,7 @@
     }
   },
   "dependencies": {
+    "@getsome/core": "workspace:*",
     "@getsome/funding": "workspace:*",
     "@getsome/people": "workspace:*",
     "@polkadot-api/descriptors": "file:../../.papi/descriptors",

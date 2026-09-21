@@ -2,13 +2,17 @@ import { CASH_LOCATION } from "@getsome/people";
 import {
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
   DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+  freshRailLegState,
   freshWithdrawTickState,
+  RailFailedError,
+  railTickOnce,
   readDestinationPas,
   withdrawTickOnce,
   WithdrawRejectedError,
 } from "@getsome/withdraw";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import { readParams } from "./params.js";
+import { payRail, railFor } from "./providers.js";
 import {
   asBig,
   bounded,
@@ -18,7 +22,9 @@ import {
   signOptionsFor,
 } from "./shared.js";
 
-// The withdrawal engine: the only driver of withdrawTickOnce, one tick per live job per pass.
+// The withdrawal engine: the only driver of withdrawTickOnce and railTickOnce, one tick per live
+// job per pass. The message leg moves the CASH to Asset Hub as PAS; for a destination beyond
+// Asset Hub the rail leg then hands the PAS to a provider and follows its word.
 //
 // Once this engine holds a job it is the only writer for it. The surface only reads records back.
 // Each dispatch runs at most one tick per live job, persists what it learned, and exits. Records
@@ -51,11 +57,13 @@ const saveJobs = () => store.save();
  *   amount, destination, landingHex, rail,   // what the surface asked for; kept for its records
  *   assetHubGenesis, peopleGenesis, peopleParaId, assetHubParaId, poolAccount, slippagePct,
  *   paymentExpiresAt: number|null,
- *   phase: "starting" | WithdrawStep | "failed",
- *   failure?: "rejected" | "timeout" | "expired" | "cancelled",
+ *   phase: "starting" | WithdrawStep | RailStep | "failed",
+ *   failure?: "rejected" | "timeout" | "expired" | "cancelled" | "no-rail" | "rail-failed",
+ *   landed,                                  // the message leg is done: PAS on Asset Hub
  *   done, createdAt, armedAt, lastTickAt, lastError?,
  *   state: { attempts, rejections, submitted, destinationPasBefore, expectedLanding,
  *            fundsSeenAt, workedMs },       // the two balances as decimal strings or null
+ *   leg: { handoff, paid, reading },         // the rail leg, for a provider rail
  *   submitting?: { call, at },               // written before a submit
  *   txs: [{ call, txHash, block? }],
  * }
@@ -93,8 +101,8 @@ function newRecord(input, nowMs) {
   ) {
     throw new Error("startWithdraw: destination needs chain, asset and address");
   }
-  if (input.rail !== "direct" && input.rail !== "chainflip") {
-    throw new Error("startWithdraw: rail must be direct or chainflip");
+  if (!RAILS.includes(input.rail)) {
+    throw new Error(`startWithdraw: rail must be one of ${RAILS.join(", ")}`);
   }
   if (!assetHubGenesis || !peopleGenesis) {
     throw new Error("startWithdraw: both chain genesis hashes are required");
@@ -126,14 +134,19 @@ function newRecord(input, nowMs) {
     slippagePct,
     paymentExpiresAt: paymentExpiryOf(input),
     phase: "starting",
+    landed: false,
     done: false,
     createdAt: nowMs,
     armedAt: nowMs,
     lastTickAt: null,
     state: freshRecordState(),
+    leg: freshRailLegState(),
     txs: [],
   };
 }
+
+/** The rails a hand-off may name; `direct` ends with the message, the rest add the rail leg. */
+const RAILS = ["direct", "chainflip", "meld"];
 
 const freshRecordState = () => ({ ...freshWithdrawTickState(), workedMs: 0 });
 
@@ -186,7 +199,8 @@ export async function startWithdraw(params) {
 
 /**
  * Re-arms a failed job on a re-sent hand-off. The run clock and the payment window restart. A
- * rejected job sizes and submits afresh; a job whose XCM landed keeps following its message.
+ * rejected job sizes and submits afresh; a job whose XCM landed keeps following its message; a
+ * job whose provider failed starts the rail leg over with a fresh channel.
  */
 function rearm(record, nowMs) {
   const { failure } = record;
@@ -199,6 +213,7 @@ function rearm(record, nowMs) {
     record.state.rejections = 0;
   }
   if (failure === "expired" || failure === "cancelled") record.state.fundsSeenAt = null;
+  if (failure === "rail-failed" || failure === "no-rail") record.leg = freshRailLegState();
 }
 
 function fail(record, failure, reason) {
@@ -229,7 +244,10 @@ function describeWithdraw(record) {
     v: RECORD_V,
     sessionId: record.sessionId,
     phase: record.phase,
+    // Records from before the rail leg carry no `landed`; for them the message was the whole job.
+    landed: record.landed ?? record.done,
     done: record.done,
+    ...(record.leg?.reading == null ? {} : { rail: record.leg.reading }),
     amount: record.amount,
     createdAt: record.createdAt,
     lastTickAt: record.lastTickAt,
@@ -253,8 +271,11 @@ export async function withdrawStatus(params) {
   return { jobs: Object.values(all).map(describeWithdraw) };
 }
 
-/** True from the first tick that saw CASH until the XCM's message was processed. */
-const onTheClock = (record) => !record.done && record.state.fundsSeenAt !== null;
+/** True from the first tick that saw CASH until the job's own work is over: the message
+ *  processed for a direct rail, the provider paid for the rest. What the provider then takes is
+ *  its time, not this worker's. */
+const onTheClock = (record) =>
+  !record.done && record.state.fundsSeenAt !== null && !(record.landed && record.leg?.paid);
 
 /** Adds this tick's gap, capped at MAX_TICK_GAP_MS, to the job's worked time while on the clock. */
 function accountWorkedTime(record, nowMs) {
@@ -283,9 +304,65 @@ function judgeBounds(record, nowMs, read) {
   }
 }
 
-/** One tick for one record: connect, read the world, act at most once, persist, let go. */
+/**
+ * One tick on the rail leg: the provider's channel opened, then paid, then read. The worker
+ * persists the channel before paying it, so a payment whose answer is lost is never made twice.
+ * The provider's verdict ends the leg: delivered completes the job, a failure fails it with the
+ * reading kept for the surface to read.
+ */
+async function tickRailLeg(record) {
+  const rail = railFor(record.rail, record);
+  if (rail === null) {
+    fail(record, "no-rail", `no ${record.rail} provider in this build`);
+    return;
+  }
+  const state = {
+    handoff: record.leg?.handoff ?? null,
+    paid: record.leg?.paid === true,
+    reading: record.leg?.reading ?? null,
+  };
+  const persistLeg = () => {
+    record.leg = { handoff: state.handoff, paid: state.paid, reading: state.reading };
+  };
+  let outcome;
+  try {
+    outcome = await railTickOnce(
+      {
+        rail,
+        pay: (handoff) => payRail(record, handoff),
+        tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+        payTimeoutMs: DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
+        now: Date.now,
+        onBeforePay: async () => {
+          persistLeg();
+          await saveJobs();
+        },
+      },
+      state,
+    );
+  } catch (error) {
+    persistLeg();
+    if (error instanceof RailFailedError) {
+      fail(record, "rail-failed", error.message);
+      return;
+    }
+    throw error;
+  }
+  persistLeg();
+  // A cancel that landed during this tick stands.
+  if (record.phase === "failed") return;
+  record.phase = outcome.step;
+  if (outcome.step === "done") record.done = true;
+}
+
+/** One tick for one record: connect, read the world, act at most once, persist, let go. The
+ *  message leg until the PAS is on Asset Hub, the rail leg after that for a provider rail. */
 async function tickRecord(record, nowMs) {
   accountWorkedTime(record, nowMs);
+  if (record.landed && record.rail !== "direct") {
+    await tickRailLeg(record);
+    return;
+  }
   const key = await keypairFor(record.label);
   const ahClient = await connectChain(record.assetHubGenesis, "asset hub");
   let peopleClient = null;
@@ -367,7 +444,13 @@ async function tickRecord(record, nowMs) {
     record.phase = outcome.step;
     // A completed tick clears any stale submitting marker.
     delete record.submitting;
-    if (outcome.step === "done") record.done = true;
+    if (outcome.step === "done") {
+      // The PAS is on Asset Hub. That is the whole job for a direct rail; a provider rail
+      // carries on from the key on the next tick.
+      record.landed = true;
+      if (record.rail === "direct") record.done = true;
+      else record.phase = "handoff";
+    }
   } finally {
     try {
       peopleClient?.destroy();

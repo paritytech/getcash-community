@@ -35,6 +35,21 @@ export type {
   WithdrawTickState,
 } from "./tick";
 export { readDestinationPas } from "./destination";
+export {
+  describeFailure,
+  freshRailLegState,
+  RailFailedError,
+  railTickOnce,
+  readingFailed,
+} from "./rail-leg";
+export type {
+  RailClient,
+  RailHandoff,
+  RailLegInput,
+  RailLegOutcome,
+  RailLegState,
+  RailStep,
+} from "./rail-leg";
 export { cashInFor, pasOutFor } from "./pool";
 export type { PoolReserves } from "./pool";
 export {

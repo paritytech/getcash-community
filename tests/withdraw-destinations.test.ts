@@ -57,13 +57,12 @@ describe("withdrawal destinations", () => {
     expect(landingAccountHex(withdrawDestination("dot-assethub")!, ALICE_POLKADOT)).toBe(ALICE_HEX);
   });
 
-  it("checks a Chainflip destination's address with that chain's rule, and has no landing yet", () => {
+  it("checks a Chainflip destination's address with that chain's rule, and lands on the key", () => {
     const ethereum = withdrawDestination("usdc-eth")!;
     expect(ethereum.validateAddress("0x4B2c0000000000000000000000000000000C02db")).toBe(true);
     expect(ethereum.validateAddress(ALICE_POLKADOT)).toBe(false);
-    expect(() => landingAccountHex(ethereum, "0x4B2c0000000000000000000000000000000C02db")).toThrow(
-      /no rail/,
-    );
+    // No landing of its own: the PAS lands on the withdrawal's key, which pays the provider.
+    expect(landingAccountHex(ethereum, "0x4B2c0000000000000000000000000000000C02db")).toBeNull();
   });
 
   it("shortens an address around an ellipsis", () => {

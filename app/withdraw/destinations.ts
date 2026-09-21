@@ -112,16 +112,14 @@ export const withdrawDestination = (id: string): WithdrawDestination | undefined
 export const destinationTokenIcon = (destination: WithdrawDestination): string =>
   tokenIcon(destination.asset);
 
-/** The Asset Hub account the PAS lands on for a destination: the address itself for Asset Hub;
- *  the rail's channel for a Chainflip network, which the reverse rail opens. */
+/** The Asset Hub account the PAS lands on for a destination: the address itself for Asset Hub.
+ *  Null for a provider destination: the PAS lands on the withdrawal's own key, which then pays
+ *  the provider and is where a refund comes back to. */
 export function landingAccountHex(
   destination: WithdrawDestination,
   address: string,
-): `0x${string}` {
-  if (destination.rail !== "direct") {
-    throw new Error(`the ${destination.chainLabel} destination has no rail in this build`);
-  }
-  return assetHubAccountHex(address);
+): `0x${string}` | null {
+  return destination.rail === "direct" ? assetHubAccountHex(address) : null;
 }
 
 /** The address as the summary shows it: the first and last characters around an ellipsis. */

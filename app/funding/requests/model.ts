@@ -261,8 +261,17 @@ export type WithdrawalStatus =
 
 /** The leg a withdrawal left when it failed; `withdrawalRankOf` reads the rank back from it. */
 export type WithdrawalFailureStep = "payment" | "convert" | "send";
+/** The last four are the provider's endings on the rail leg, as the deposit side names them. */
 export type WithdrawalFailureKind =
-  "payment-failed" | "rejected" | "timeout" | "expired" | "egress-failed" | "unknown";
+  | "payment-failed"
+  | "rejected"
+  | "timeout"
+  | "expired"
+  | "unknown"
+  | "deposit-rejected"
+  | "egress-failed"
+  | "fallback-egress"
+  | "refunded";
 export interface WithdrawalFailure {
   kind: WithdrawalFailureKind;
   step: WithdrawalFailureStep;
@@ -314,19 +323,34 @@ export interface WithdrawalHandoffPayload {
 /** What the store extracts from one withdrawal job in the worker's blob. */
 export interface WithdrawJobView {
   phase: string;
+  /** The whole job: the PAS reached the destination, or the provider delivered. */
   done: boolean;
+  /** The message leg: the PAS is on Asset Hub, on the destination or on the key for a provider. */
+  landed: boolean;
   failure?: string;
   lastError?: string;
   fundsSeenAt: number | null;
   lastTickAt: number | null;
   txs?: { call: "swap" | "withdraw"; txHash: string; block?: number }[];
+  /** The provider's latest word on the swap, once the worker has paid it. */
+  rail?: SwapStatusResult;
 }
 
+/** `direct` for a destination on Asset Hub, which the PAS reaches with the XCM itself; the rest
+ *  carry it on from the key's own Asset Hub account. */
+export type WithdrawalRailProvider = "direct" | "chainflip" | "meld";
+export const WITHDRAWAL_RAILS: readonly WithdrawalRailProvider[] = ["direct", "chainflip", "meld"];
+export const isWithdrawalRail = (value: unknown): value is WithdrawalRailProvider =>
+  (WITHDRAWAL_RAILS as readonly unknown[]).includes(value);
+
+/** The rail leg of a withdrawal, in the deposit side's stages so one fold serves both. */
 export interface WithdrawalRailState {
-  /** `direct` for a destination on Asset Hub, which the PAS reaches with the XCM itself. */
-  provider: "direct" | "chainflip";
-  stage: "waiting" | "delivering" | "delivered" | "failed";
-  failure?: { message: string; code?: string };
+  provider: WithdrawalRailProvider;
+  /** The provider's own status, once it has reported. */
+  status?: SwapProgress | "failed";
+  stage: RailState["stage"];
+  delayed?: boolean;
+  failure?: RailState["failure"];
   updatedAt: number;
 }
 
@@ -339,7 +363,7 @@ export interface WithdrawalRecord {
   startedAt: number;
   /** The CASH the user asked to withdraw, human form. */
   amountHuman: string;
-  route: "crypto";
+  route: "crypto" | "card" | "bank";
   /** The network and asset the funds arrive as, and where. */
   destination: { chain: string; asset: string; address: string };
   /** The disposable key the purse pays: its entropy label, its People address, its public key. */

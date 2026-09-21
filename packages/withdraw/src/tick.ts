@@ -26,6 +26,7 @@
 
 import type { PolkadotSigner } from "polkadot-api";
 import { describeDispatchError } from "@getsome/funding";
+import { bounded } from "./bounded";
 import { PEOPLE_TX_OPTIONS } from "./paseo";
 import { NeedsSwapError, sizeSwap, sizeXcm, type AssetHubApi } from "./fees";
 import { buildSwap, buildWithdrawXcm, withdrawMessage, type PeopleApi } from "./program";
@@ -47,22 +48,6 @@ export const MAX_REJECTIONS = 3;
  *  program on Asset Hub and lands nothing. */
 export const landingFloor = (landed: bigint, slippagePct: number): bigint =>
   landed - (landed * BigInt(Math.round(slippagePct * 100))) / 10_000n;
-
-function bounded<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms / 1000}s`)), ms);
-    work.then(
-      (v) => {
-        clearTimeout(timer);
-        resolve(v);
-      },
-      (e: unknown) => {
-        clearTimeout(timer);
-        reject(e instanceof Error ? e : new Error(String(e)));
-      },
-    );
-  });
-}
 
 /** Terminal: People rejected the transaction at inclusion MAX_REJECTIONS times after its dry run
  *  passed each time. Something the dry run cannot see differs at inclusion. */

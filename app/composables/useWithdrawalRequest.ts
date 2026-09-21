@@ -26,8 +26,9 @@ export interface WithdrawalStart {
   /** The CASH to withdraw, base units. */
   amount: bigint;
   destination: WithdrawalRecord["destination"];
-  /** The Asset Hub account the PAS lands on: the rail's channel, or the destination itself. */
-  landingHex: string;
+  /** The Asset Hub account the PAS lands on: the destination itself, or null for the
+   *  withdrawal's own key when a provider carries the PAS on. */
+  landingHex: string | null;
   rail: WithdrawalRailState["provider"];
 }
 
@@ -68,7 +69,7 @@ export function useWithdrawalRequest() {
       key,
       amount: input.amount,
       destination: input.destination,
-      landingHex: input.landingHex,
+      landingHex: input.landingHex ?? key.publicKeyHex,
       rail: input.rail,
       paymentExpiresAt,
     });

@@ -1,0 +1,117 @@
+// The provider leg of a withdrawal. Once the PAS sits on the key's own Asset Hub account, a
+// provider carries it to the destination the user named. Three moves, at most one per tick:
+// open the provider's channel, pay it with everything the key holds, then read the swap until
+// the provider says it is delivered or that it failed.
+//
+// PROVIDER AGNOSTIC. The provider is a client with two calls, open and status, and the payment
+// is a hand the driver supplies. Chainflip and Meld each plug in behind that shape; nothing here
+// knows which one it is talking to.
+//
+// RE-ENTRANT, like the message leg. The state is the driver's to persist; a tick that throws is
+// retried on the next tick, and a channel that was opened is never opened twice. Terminal is the
+// provider's own verdict: delivered, or a failure it names.
+
+import type { SwapStatusResult } from "@getsome/core";
+import { bounded } from "./bounded";
+
+/** 'handoff' opens the channel and pays it; 'follow' holds while the provider works. */
+export type RailStep = "handoff" | "follow" | "done";
+
+/** The channel the provider opened for this withdrawal. */
+export interface RailHandoff {
+  id: string;
+  /** The Asset Hub account the key pays. */
+  address: string;
+  openedAt: number;
+}
+
+/** Cross-tick memory for the leg. The driver persists it; `railTickOnce` mutates it. */
+export interface RailLegState {
+  handoff: RailHandoff | null;
+  /** The key paid the channel. */
+  paid: boolean;
+  /** The provider's latest word on the swap. */
+  reading: SwapStatusResult | null;
+}
+
+export const freshRailLegState = (): RailLegState => ({
+  handoff: null,
+  paid: false,
+  reading: null,
+});
+
+/** A provider, bound to one withdrawal: it knows the amount, the destination and the refund
+ *  account already. */
+export interface RailClient {
+  open(): Promise<{ id: string; address: string }>;
+  status(id: string): Promise<SwapStatusResult>;
+}
+
+export interface RailLegInput {
+  rail: RailClient;
+  /** Moves everything the key holds on Asset Hub to the channel. */
+  pay: (handoff: RailHandoff) => Promise<void>;
+  /** Bound on a provider call. */
+  tickTimeoutMs: number;
+  /** Bound on the payment's resolution. */
+  payTimeoutMs: number;
+  now: () => number;
+  /** Runs before the payment leaves, so the driver can persist the channel it is about to pay. */
+  onBeforePay?: (handoff: RailHandoff) => Promise<void> | void;
+}
+
+export interface RailLegOutcome {
+  step: RailStep;
+  reading: SwapStatusResult | null;
+}
+
+/** The provider reported an ending that is not a delivery. Terminal for this channel. */
+export class RailFailedError extends Error {
+  constructor(readonly reading: SwapStatusResult) {
+    super(`the provider reported the swap failed: ${describeFailure(reading)}`);
+    this.name = "RailFailedError";
+  }
+}
+
+/** The provider's ending, in a line; mirrors how the surface reads a status. */
+export function describeFailure(reading: SwapStatusResult): string {
+  const failure = reading.depositFailure ?? reading.swapEgressFailure;
+  if (failure?.reason?.message) return failure.reason.message;
+  if (reading.fallbackEgress) return "the funds were routed to a fallback";
+  return "the deposit is being refunded";
+}
+
+export const readingFailed = (reading: SwapStatusResult): boolean =>
+  reading.status === "failed" ||
+  reading.depositFailure !== undefined ||
+  reading.swapEgressFailure !== undefined ||
+  reading.fallbackEgress !== undefined;
+
+/**
+ * One move on the provider leg. Retryable by calling again; the terminal signals are the
+ * returned "done" and a thrown RailFailedError.
+ */
+export async function railTickOnce(
+  input: RailLegInput,
+  state: RailLegState,
+): Promise<RailLegOutcome> {
+  if (state.handoff === null) {
+    const opened = await bounded(input.rail.open(), input.tickTimeoutMs, "channel open");
+    state.handoff = { id: opened.id, address: opened.address, openedAt: input.now() };
+    return { step: "handoff", reading: null };
+  }
+  if (!state.paid) {
+    await input.onBeforePay?.(state.handoff);
+    await bounded(input.pay(state.handoff), input.payTimeoutMs, "channel payment");
+    state.paid = true;
+    return { step: "handoff", reading: null };
+  }
+  const reading = await bounded(
+    input.rail.status(state.handoff.id),
+    input.tickTimeoutMs,
+    "swap status read",
+  );
+  state.reading = reading;
+  if (readingFailed(reading)) throw new RailFailedError(reading);
+  return { step: reading.status === "complete" ? "done" : "follow", reading };
+}
