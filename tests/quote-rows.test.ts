@@ -2,7 +2,12 @@
 // paid once a fiat top-up has ended.
 
 import { describe, expect, it } from "vitest";
-import { paidDetailRows, quoteDetailRows, type QuoteView } from "../app/funding/quote-rows";
+import {
+  journeyMoneyRows,
+  paidDetailRows,
+  quoteDetailRows,
+  type QuoteView,
+} from "../app/funding/quote-rows";
 
 const card: QuoteView = { amount: "50.55", symbol: "EUR", fee: "0.55", crypto: false, live: true };
 
@@ -63,5 +68,32 @@ describe("a live quote's rows", () => {
 
   it("has nothing to show without a quote", () => {
     expect(quoteDetailRows(null)).toEqual([]);
+  });
+});
+
+describe("which money rows an ending shows", () => {
+  const fiat = { crypto: false, expired: false, failed: false, refunded: false };
+
+  it("shows the charge alone while a top-up runs and once it lands", () => {
+    // The design's settled frames carry no provider or reference row: a buyer holding their CASH
+    // has nobody to chase. This regressed once — the receipt rows leaked onto a credit.
+    expect(journeyMoneyRows(fiat)).toBe("quote");
+  });
+
+  it("replaces the quote with the receipt when a fiat top-up fails", () => {
+    expect(journeyMoneyRows({ ...fiat, failed: true })).toBe("receipt");
+    expect(journeyMoneyRows({ ...fiat, failed: true, refunded: true })).toBe("receipt");
+  });
+
+  it("shows nothing for a top-up that expired, because nobody was charged", () => {
+    expect(journeyMoneyRows({ ...fiat, expired: true, failed: true })).toBe("none");
+  });
+
+  it("leaves the crypto rail's deposit figure to the deposit screen", () => {
+    const crypto = { ...fiat, crypto: true };
+    expect(journeyMoneyRows(crypto)).toBe("none");
+    expect(journeyMoneyRows({ ...crypto, failed: true })).toBe("none");
+    // Except on a refund, where the receipt names the network and the rail that handled it.
+    expect(journeyMoneyRows({ ...crypto, failed: true, refunded: true })).toBe("receipt");
   });
 });

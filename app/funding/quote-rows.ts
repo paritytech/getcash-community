@@ -48,6 +48,34 @@ export function quoteDetailRows(quote: QuoteView | null): QuoteRow[] {
   return quote === null ? [] : [paidRow(quote)];
 }
 
+/** Which set of money rows a journey shows: the quote it is running against, the receipt for what
+ *  was actually paid, or neither. */
+export type JourneyMoneyRows = "quote" | "receipt" | "none";
+
+/**
+ * Which money rows the journey shows for an ending.
+ *
+ * The design draws three cases. A top-up still running, or one that simply landed, shows the
+ * charge and nothing else — a buyer with their CASH has nobody to chase, so the settled frames
+ * carry no provider or reference row. A fiat top-up that failed gets the receipt instead: the
+ * charge, who took it, and the id to quote them. An expired one shows nothing, because nobody was
+ * ever charged.
+ *
+ * The crypto rail keeps its deposit figure on the deposit screen, which owns it, so it shows no
+ * money rows at all — except on a refund, where the receipt names the network and the rail that
+ * handled it and the guide tells the money's own story.
+ */
+export function journeyMoneyRows(ending: {
+  crypto: boolean;
+  expired: boolean;
+  failed: boolean;
+  refunded: boolean;
+}): JourneyMoneyRows {
+  if (ending.expired) return "none";
+  if (ending.crypto) return ending.refunded ? "receipt" : "none";
+  return ending.failed ? "receipt" : "quote";
+}
+
 /**
  * The rows a concluded fiat top-up shows instead of the live quote's own.
  *

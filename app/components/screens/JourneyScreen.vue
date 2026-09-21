@@ -14,7 +14,7 @@ import type { FundingTopUp } from "../../funding/top-ups";
 import { useRequestsStore } from "../../stores/requests";
 import { DEPOSIT_EXPIRED_REASON, useSessionStore } from "../../stores/session";
 import { fmtCash } from "../../utils/cash";
-import { paidDetailRows, quoteDetailRows } from "../../funding/quote-rows";
+import { journeyMoneyRows, paidDetailRows, quoteDetailRows } from "../../funding/quote-rows";
 import { formatWhenShort } from "../../utils/journey";
 import { refundedFailure } from "../../utils/recovery";
 import FundingJourneyTimeline from "../funding/progress/FundingJourneyTimeline.vue";
@@ -119,14 +119,7 @@ const refundedEnding = computed(
     storedFailure.value?.refunded === true,
 );
 
-/**
- * The live quote's Fees and Total leave when nothing is being bought any more.
- *
- * An expired top-up never charged anyone, so it has nothing to show. A concluded fiat top-up is
- * the opposite case: money did move, and the design replaces the forward-looking quote with what
- * was actually paid — see `paidDetailRows`. So this drops the quote rows for both, and the paid
- * rows below take over wherever there is something to say.
- */
+/** Whether this journey's top-up stopped rather than finished, live or as history stored it. */
 const heroFailed = computed(
   () =>
     progress.value?.view.kind === "failed" ||
@@ -134,12 +127,14 @@ const heroFailed = computed(
     storedFailure.value !== null,
 );
 
-/**
- * A fiat top-up that has ended, whichever way. The design gives it a receipt rather than a quote:
- * what was charged, who took it, and the funding request's id to trace it by.
- */
-const concluded = computed(
-  () => !crypto.value && !expired.value && (heroFailed.value || finished.value),
+/** Which money rows this ending shows; the rule is the design's, not this screen's. */
+const moneyRows = computed(() =>
+  journeyMoneyRows({
+    crypto: crypto.value,
+    expired: expired.value,
+    failed: heroFailed.value,
+    refunded: refundedEnding.value,
+  }),
 );
 
 /**
@@ -150,8 +145,6 @@ const concluded = computed(
  * that returned it — is the refund guide's to tell, where it can be linked and copied.
  */
 const cryptoRefund = computed(() => crypto.value && refundedEnding.value);
-
-const hideRows = computed(() => expired.value || concluded.value || refundedEnding.value);
 
 const creditedAmount = computed(() =>
   requests.claimedBase != null ? fmtCash(requests.claimedBase) : session.amountHuman,
@@ -219,15 +212,14 @@ const quoteView = computed(() => {
   };
 });
 /** The rows come from the shared helper, so the journey and the settled receipt present the same
- *  quote identically. The crypto rail doesn't restate the deposit amount here — the deposit screen
- *  owns that figure — but the settled receipt, which has no deposit screen, still shows it. */
+ *  quote identically. */
 const detailRows = computed(() =>
-  quoteView.value?.crypto ? [] : quoteDetailRows(quoteView.value),
+  moneyRows.value === "quote" ? quoteDetailRows(quoteView.value) : [],
 );
 
 /** The request on screen's provider and reference, else the list's own record. */
 const paidRows = computed(() => {
-  if (!concluded.value && !cryptoRefund.value) return [];
+  if (moneyRows.value !== "receipt") return [];
   const live = requests.foregroundRecord;
   const details = props.topUp?.details;
   const provider = live?.meldServiceProvider ?? details?.provider?.label;
@@ -324,7 +316,7 @@ const message = computed(() => {
         :failed-label="failedLabel"
       />
 
-      <DetailRows v-if="detailRows.length && !hideRows" :rows="detailRows" @fees="emit('fees')" />
+      <DetailRows v-if="detailRows.length" :rows="detailRows" @fees="emit('fees')" />
 
       <!-- What an ended top-up actually cost: the charge and its handles on a fiat rail, the sum
            sent and its network on a refunded crypto one. The transaction id copies, so the screen
