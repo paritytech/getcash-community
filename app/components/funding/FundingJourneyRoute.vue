@@ -11,6 +11,7 @@ import { useRequestsStore } from "../../stores/requests";
 import { useSessionStore } from "../../stores/session";
 import ReturnFundsScreen from "../screens/ReturnFundsScreen.vue";
 import FundingSettledStatusScreen from "./FundingSettledStatusScreen.vue";
+import { useJourneyQuote } from "../../composables/useJourneyQuote";
 import MeldFeeDetailsScreen from "./routes/MeldFeeDetailsScreen.vue";
 
 const props = defineProps<{
@@ -45,13 +46,13 @@ useStateDirector();
 
 /** The fee-breakdown drill-in over the journey. Back (toolbar or bottom button) returns to it. */
 const showingFees = ref(false);
-// A cleared quote leaves nothing to break down.
-watch(
-  () => session.quoted,
-  (q) => {
-    if (!q) showingFees.value = false;
-  },
-);
+// The quote the journey's money row was built from, so the row and the breakdown behind its
+// chevron cannot disagree about what the buyer paid.
+const { quote, cashAmount } = useJourneyQuote(() => props.topUp);
+// A quote gone from both the session and the record leaves nothing to break down.
+watch(quote, (q) => {
+  if (!q) showingFees.value = false;
+});
 /** The return-funds drill-in over a refunded journey. Back (toolbar or bottom button) returns. */
 const showingRefund = ref(false);
 // A live state that is no longer failed has no refund to walk through. A journey opened from
@@ -143,7 +144,12 @@ onUnmounted(() => {
       </div>
 
       <ReturnFundsScreen v-else-if="showingRefund" :top-up="topUp" @back="showingRefund = false" />
-      <MeldFeeDetailsScreen v-else-if="showingFees" @back="showingFees = false" />
+      <MeldFeeDetailsScreen
+        v-else-if="showingFees"
+        :quote="quote"
+        :cash-amount="cashAmount"
+        @back="showingFees = false"
+      />
       <JourneyScreen
         v-else
         :progress="topUp?.progress ?? null"

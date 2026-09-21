@@ -14,6 +14,7 @@ import type { FundingTopUp } from "../../funding/top-ups";
 import { useRequestsStore } from "../../stores/requests";
 import { DEPOSIT_EXPIRED_REASON, useSessionStore } from "../../stores/session";
 import { fmtCash } from "../../utils/cash";
+import { useJourneyQuote } from "../../composables/useJourneyQuote";
 import { journeyMoneyRows, paidDetailRows, quoteDetailRows } from "../../funding/quote-rows";
 import { formatWhenShort } from "../../utils/journey";
 import { refundedFailure } from "../../utils/recovery";
@@ -186,31 +187,8 @@ const asset = computed(() => {
   if (!record) return "";
   return SOURCE_CONFIG_BY_ID.get(effectiveSourceId(record.ref) as SourceId)?.asset ?? "";
 });
-/** The rows' source: the live quote, else the top-up's stored one. Only the live quote carries
- *  the split the fee drill-in needs. */
-const quoteView = computed(() => {
-  const q = session.quoted;
-  if (q) {
-    return {
-      amount: q.send,
-      symbol: q.symbol,
-      fee: q.fee ?? null,
-      provider: q.provider ?? null,
-      crypto: session.method === "crypto",
-      live: true,
-    };
-  }
-  const stored = props.topUp?.quote;
-  if (!stored) return null;
-  return {
-    amount: stored.amount,
-    symbol: stored.symbol,
-    fee: stored.fee ?? null,
-    provider: stored.provider ?? null,
-    crypto: props.topUp?.route === "crypto",
-    live: false,
-  };
-});
+/** The quote the rows read, resolved the same way the fee breakdown behind them resolves it. */
+const { quote: quoteView } = useJourneyQuote(() => props.topUp);
 /** The rows come from the shared helper, so the journey and the settled receipt present the same
  *  quote identically. */
 const detailRows = computed(() =>

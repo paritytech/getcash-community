@@ -4,12 +4,14 @@
 import { describe, expect, it } from "vitest";
 import {
   journeyMoneyRows,
+  liveQuoteView,
   paidDetailRows,
   quoteDetailRows,
+  storedQuoteView,
   type QuoteView,
 } from "../app/funding/quote-rows";
 
-const card: QuoteView = { amount: "50.55", symbol: "EUR", fee: "0.55", crypto: false, live: true };
+const card: QuoteView = { amount: "50.55", symbol: "EUR", fee: "0.55", crypto: false };
 
 describe("a concluded fiat top-up's rows", () => {
   it("keeps the money row on a refund, because the charge happened", () => {
@@ -35,7 +37,7 @@ describe("a concluded fiat top-up's rows", () => {
   it("leaves the crypto rail's deposit figure to the deposit screen", () => {
     // Restating what was sent beside a refund reads as a second charge. The refunded swap gets
     // its context — the network and the rail — and the money's own story belongs to the guide.
-    const crypto = { amount: "0.00045", symbol: "BTC", crypto: true, live: true, fee: "0.00001" };
+    const crypto = { amount: "0.00045", symbol: "BTC", crypto: true, fee: "0.00001" };
     const rows = paidDetailRows(crypto, { network: "Bitcoin", provider: "Chainflip" });
     expect(rows.map((r) => r.label)).toEqual(["Network", "Provider"]);
   });
@@ -51,7 +53,9 @@ describe("a live quote's rows", () => {
     expect(rest).toEqual([]);
   });
 
-  it("offers the breakdown only where the fee is a figure it can split", () => {
+  it("offers the breakdown wherever the fee is a figure it can split", () => {
+    // Including a quote read back off the list: the record persists the components, so a journey
+    // opened from history keeps the chevron the design draws on it.
     expect(quoteDetailRows(card)[0]?.fees).toBe(true);
     expect(quoteDetailRows({ ...card, fee: "free" })[0]?.fees).toBe(false);
     expect(quoteDetailRows({ ...card, fee: null })[0]?.fees).toBe(false);
@@ -62,7 +66,7 @@ describe("a live quote's rows", () => {
   });
 
   it("keeps the crypto rail's full-precision ticker form", () => {
-    const crypto: QuoteView = { amount: "0.00045", symbol: "BTC", crypto: true, live: true };
+    const crypto: QuoteView = { amount: "0.00045", symbol: "BTC", crypto: true };
     expect(quoteDetailRows(crypto)[0]?.value).toBe("0.00045 BTC");
   });
 
@@ -95,5 +99,31 @@ describe("which money rows an ending shows", () => {
     expect(journeyMoneyRows({ ...crypto, failed: true })).toBe("none");
     // Except on a refund, where the receipt names the network and the rail that handled it.
     expect(journeyMoneyRows({ ...crypto, failed: true, refunded: true })).toBe("receipt");
+  });
+});
+
+describe("resolving which quote a screen reads", () => {
+  it("reads the live quote's charge off `send`, and keeps the split with it", () => {
+    const view = liveQuoteView(
+      { send: "50.55", symbol: "EUR", fee: "0.55", transactionFee: "0.42", chainFee: "0.04" },
+      false,
+    );
+    expect(view).toMatchObject({ amount: "50.55", symbol: "EUR", crypto: false });
+    expect(view).toMatchObject({ fee: "0.55", transactionFee: "0.42", chainFee: "0.04" });
+    // Absent components read as null rather than undefined, so the breakdown tests one thing.
+    expect(view.partnerFee).toBeNull();
+  });
+
+  it("carries the stored quote's split too, so a reopened breakdown has something to show", () => {
+    // The record persists every component; dropping them here is what killed the drill-in.
+    const view = storedQuoteView(
+      { amount: "31.80", symbol: "EUR", fee: "1.80", networkFee: "0.30" },
+      false,
+    );
+    expect(view).toMatchObject({ amount: "31.80", fee: "1.80", networkFee: "0.30" });
+  });
+
+  it("has no quote to read when the record kept none", () => {
+    expect(storedQuoteView(undefined, false)).toBeNull();
   });
 });

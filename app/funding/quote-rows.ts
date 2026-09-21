@@ -5,15 +5,53 @@
 import { shortRef } from "../utils/journey";
 import { fmtFiat, isMoneyAmount } from "../utils/money";
 
-export interface QuoteView {
+/**
+ * A fee and the components behind it, named as every source of a quote names them.
+ *
+ * The record persists all of them, so a quote read back off the list carries the same split the
+ * live one did: the breakdown a buyer opens from history is the one they agreed to, not an
+ * approximation of it.
+ */
+export interface FeeSplit {
+  fee?: string | null;
+  /** The provider's own cut. */
+  transactionFee?: string | null;
+  /** The rail's network fee; the app's own funding leg is priced separately as `chainFee`. */
+  networkFee?: string | null;
+  partnerFee?: string | null;
+  chainFee?: string | null;
+}
+
+export interface QuoteView extends FeeSplit {
+  /** The charge, in `symbol`. */
   amount: string;
   symbol: string;
-  fee?: string | null;
   /** Crypto keeps its full-precision ticker form; the fiat rails read symbol-first. */
   crypto: boolean;
-  /** Only the live quote carries the split the fee drill-in needs. */
-  live: boolean;
 }
+
+const splitOf = (q: FeeSplit): FeeSplit => ({
+  fee: q.fee ?? null,
+  transactionFee: q.transactionFee ?? null,
+  networkFee: q.networkFee ?? null,
+  partnerFee: q.partnerFee ?? null,
+  chainFee: q.chainFee ?? null,
+});
+
+/** The session's live quote as the rows and the breakdown read it; its charge is `send`. */
+export const liveQuoteView = (
+  quote: FeeSplit & { send: string; symbol: string },
+  crypto: boolean,
+): QuoteView => ({ amount: quote.send, symbol: quote.symbol, crypto, ...splitOf(quote) });
+
+/** A record's stored quote, as the rows and the breakdown read it. */
+export const storedQuoteView = (
+  quote: (FeeSplit & { amount: string; symbol: string }) | undefined,
+  crypto: boolean,
+): QuoteView | null =>
+  quote === undefined
+    ? null
+    : { amount: quote.amount, symbol: quote.symbol, crypto, ...splitOf(quote) };
 
 export interface QuoteRow {
   label: string;
@@ -28,9 +66,10 @@ export interface QuoteRow {
  * What the buyer paid, as the one row both screens lead with.
  *
  * A separate Fees row restated part of the number sitting right beside it; the total already
- * contains the fee, so the label says so and the chevron carries the split. The drill-in is only
- * offered while the quote is live, because only a live quote carries the split the breakdown
- * reads; an unparseable fee, or a stored one, leaves the row as plain text.
+ * contains the fee, so the label says so and the chevron carries the split. The drill-in is
+ * offered wherever there is a fee the breakdown can read — a stored quote carries the same split
+ * the live one did, so a journey opened from history keeps the chevron; only a fee that will not
+ * parse leaves the row as plain text.
  */
 function paidRow(quote: QuoteView): QuoteRow {
   // Symbol-first for the fiat rails ("€50.55"); crypto keeps its full-precision ticker form.
@@ -40,7 +79,7 @@ function paidRow(quote: QuoteView): QuoteRow {
   return {
     label: quote.fee ? "You paid inc. fees" : "You paid",
     value,
-    fees: quote.live && isMoneyAmount(quote.fee ?? ""),
+    fees: isMoneyAmount(quote.fee ?? ""),
   };
 }
 

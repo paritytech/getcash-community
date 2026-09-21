@@ -2,7 +2,7 @@
 // A finished top-up's receipt, opened from the list: what landed, when, and what it cost.
 import { computed } from "vue";
 import { Plus } from "lucide-vue-next";
-import { quoteDetailRows, type QuoteView } from "../../funding/quote-rows";
+import { quoteDetailRows, storedQuoteView } from "../../funding/quote-rows";
 import type { FundingTopUp } from "../../funding/top-ups";
 import { formatWhenShort } from "../../utils/journey";
 import DetailRows from "../ui/DetailRows.vue";
@@ -16,22 +16,11 @@ const settled = computed(() => (props.topUp.state.kind === "settled" ? props.top
 const creditedAmount = computed(() => settled.value?.creditedAmount ?? props.topUp.amount);
 const when = computed(() => (settled.value === null ? null : formatWhenShort(settled.value.at)));
 
-/**
- * The receipt's own quote is always the list's stored one: this screen is only ever reached from
- * the top-ups list, never from a live request, so the fee row never drills in.
- */
-const rows = computed(() => {
-  const stored = props.topUp.quote;
-  if (!stored) return [];
-  const view: QuoteView = {
-    amount: stored.amount,
-    symbol: stored.symbol,
-    ...(stored.fee === undefined ? {} : { fee: stored.fee }),
-    crypto: props.topUp.route === "crypto",
-    live: false,
-  };
-  return quoteDetailRows(view);
-});
+/** The receipt is only ever reached from the list, so its quote is the record's stored one — the
+ *  split included, which is what keeps the fee row's drill-in alive here. */
+const rows = computed(() =>
+  quoteDetailRows(storedQuoteView(props.topUp.quote, props.topUp.route === "crypto")),
+);
 </script>
 
 <template>

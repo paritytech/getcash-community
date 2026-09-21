@@ -28,7 +28,7 @@ import {
   previewTopUpScene,
   type PreviewTopUpScene,
 } from "./dev-preview-top-ups";
-import type { FundingTopUp } from "../funding/top-ups";
+import type { FundingTopUp, StoredQuote } from "../funding/top-ups";
 import { previewStage, type PreviewStage } from "./dev-preview-stage";
 import { useFlowStore } from "../stores/flow";
 import { useOffersStore } from "../stores/offers";
@@ -182,9 +182,9 @@ async function previewRequest(
     amountHuman?: string;
     /** How long ago the request was opened. */
     startedMinutesAgo?: number;
-    /** The rail's persisted quote: what the list and a reopened journey read their money row
-     *  off. */
-    quote?: FundingTopUp["quote"];
+    /** The rail's persisted quote: what the list and a reopened journey read their money row off,
+     *  and the split the fee breakdown behind it itemizes. */
+    quote?: StoredQuote;
     /** The buyer's region, as a fiat record keeps it. */
     meldCountry?: string;
     /** What the Meld create call captured: the provider that took the payment, and the funding
@@ -238,6 +238,10 @@ async function previewRequest(
           sourceSymbol: opts.quote.symbol,
           ...(opts.quote.fee ? { sourceFee: opts.quote.fee } : {}),
           ...(opts.quote.provider ? { sourceProvider: opts.quote.provider } : {}),
+          ...(opts.quote.transactionFee ? { sourceTransactionFee: opts.quote.transactionFee } : {}),
+          ...(opts.quote.networkFee ? { sourceNetworkFee: opts.quote.networkFee } : {}),
+          ...(opts.quote.partnerFee ? { sourcePartnerFee: opts.quote.partnerFee } : {}),
+          ...(opts.quote.chainFee ? { sourceChainFee: opts.quote.chainFee } : {}),
         }
       : {}),
     ...(opts.meldCountry ? { meldCountry: opts.meldCountry } : {}),

@@ -90,8 +90,20 @@ export function previewQuote(route: FundingRoute, amount: string): FundingTopUp[
   if (!Number.isFinite(cash) || cash <= 0) return undefined;
   // The crypto rail quotes the source coin; the fiat rails quote the charge, fee included.
   if (route === "crypto") return { amount: (cash * 0.000009).toFixed(8), symbol: "BTC" };
-  const fee = cash * 0.06;
-  return { amount: (cash + fee).toFixed(2), symbol: "EUR", fee: fee.toFixed(2) };
+  // The fiat split as the design frames show it: about 1.1% of the charge, most of it the
+  // provider's. Carried in full because the fee row drills into the breakdown, which itemizes it.
+  const transactionFee = cash * 0.0084;
+  const networkFee = cash * 0.0018;
+  const partnerFee = cash * 0.0008;
+  const fee = transactionFee + networkFee + partnerFee;
+  return {
+    amount: (cash + fee).toFixed(2),
+    symbol: "EUR",
+    fee: fee.toFixed(2),
+    transactionFee: transactionFee.toFixed(2),
+    networkFee: networkFee.toFixed(2),
+    partnerFee: partnerFee.toFixed(2),
+  };
 }
 
 interface PreviewCardOptions {

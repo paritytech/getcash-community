@@ -34,6 +34,20 @@ export type FundingTopUpDetails = Readonly<{
   arrivalEstimate?: string;
 }>;
 
+/** The rail's quote as the record kept it: the charge, the fee, and the components the fee
+ *  breakdown itemizes. Persisted with the request, so the split survives the session. */
+export type StoredQuote = Readonly<{
+  amount: string;
+  symbol: string;
+  fee?: string;
+  /** The provider that priced the request. */
+  provider?: string;
+  transactionFee?: string;
+  networkFee?: string;
+  partnerFee?: string;
+  chainFee?: string;
+}>;
+
 export type FundingTopUp = Readonly<{
   id: string;
   amount: string;
@@ -41,9 +55,10 @@ export type FundingTopUp = Readonly<{
   startedAt: number;
   progress: FundingProgressProjection;
   details?: FundingTopUpDetails;
-  /** What the buyer pays as the rail quoted it, for the journey's Fees/Total rows when the
-   *  request is not (yet) live in the store. */
-  quote?: Readonly<{ amount: string; symbol: string; fee?: string; provider?: string }>;
+  /** What the buyer pays as the rail quoted it, for the journey's money row when the request is
+   *  not (yet) live in the store — and for the fee breakdown behind it, which is why the fee's
+   *  own components ride along. */
+  quote?: StoredQuote;
   /** The rail is retrying or running late: the list draws the status line amber. Never terminal.
    *  Read off the record's own `rail.delayed`, which the foreground journey reads too, so the
    *  list and the journey never disagree about the same request. */

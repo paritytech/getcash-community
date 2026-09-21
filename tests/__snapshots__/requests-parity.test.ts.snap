@@ -3469,6 +3469,7 @@ exports[`request list projection > projects the fixture records exactly as today
       "quote": {
         "amount": "52.06",
         "fee": "1.56",
+        "networkFee": "0.01",
         "symbol": "USD",
       },
       "reference": "mfr-fixture-card-2",
@@ -3539,6 +3540,7 @@ exports[`request list projection > projects the fixture records exactly as today
       "quote": {
         "amount": "52.06",
         "fee": "1.56",
+        "networkFee": "0.01",
         "symbol": "USD",
       },
       "reference": "mfr-fixture-card-1",
@@ -4041,6 +4043,7 @@ exports[`request list projection > projects the fixture records with live status
       "quote": {
         "amount": "52.06",
         "fee": "1.56",
+        "networkFee": "0.01",
         "symbol": "USD",
       },
       "reference": "mfr-fixture-card-2",
@@ -4111,6 +4114,7 @@ exports[`request list projection > projects the fixture records with live status
       "quote": {
         "amount": "52.06",
         "fee": "1.56",
+        "networkFee": "0.01",
         "symbol": "USD",
       },
       "reference": "mfr-fixture-card-1",

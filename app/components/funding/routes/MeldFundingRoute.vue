@@ -12,12 +12,16 @@ import type { FundingSelection } from "../../../funding/selection";
 import { useFlowStore } from "../../../stores/flow";
 import { useRequestsStore } from "../../../stores/requests";
 import { useSessionStore } from "../../../stores/session";
+import { useJourneyQuote } from "../../../composables/useJourneyQuote";
 import MeldFeeDetailsScreen from "./MeldFeeDetailsScreen.vue";
 import MeldPayScreen from "./MeldPayScreen.vue";
 import MeldPaySheet from "./MeldPaySheet.vue";
 
 const props = defineProps<{ selection: FundingSelection }>();
 const emit = defineEmits<FundingPackageEmits>();
+
+// No row to fall back on here: the pay flow always has its own live quote.
+const { quote, cashAmount } = useJourneyQuote(() => null);
 
 const route = props.selection.route;
 if (route !== "card" && route !== "bank") {
@@ -161,7 +165,12 @@ onUnmounted(() => {
           {{ session.cancelNotice }}
         </p>
       </template>
-      <MeldFeeDetailsScreen v-else-if="showingFees" @back="showingFees = false" />
+      <MeldFeeDetailsScreen
+        v-else-if="showingFees"
+        :quote="quote"
+        :cash-amount="cashAmount"
+        @back="showingFees = false"
+      />
       <MeldPayScreen
         v-else
         @fees="showingFees = true"

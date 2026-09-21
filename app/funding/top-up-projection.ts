@@ -56,6 +56,11 @@ export function quoteOf(record: FundingTopUpRecord): Pick<FundingTopUp, "quote">
           symbol: record.sourceSymbol,
           ...(record.sourceFee ? { fee: record.sourceFee } : {}),
           ...(record.sourceProvider ? { provider: record.sourceProvider } : {}),
+          // The components too: the breakdown a buyer opens from the list has no session to ask.
+          ...(record.sourceTransactionFee ? { transactionFee: record.sourceTransactionFee } : {}),
+          ...(record.sourceNetworkFee ? { networkFee: record.sourceNetworkFee } : {}),
+          ...(record.sourcePartnerFee ? { partnerFee: record.sourcePartnerFee } : {}),
+          ...(record.sourceChainFee ? { chainFee: record.sourceChainFee } : {}),
         },
       }
     : {};
