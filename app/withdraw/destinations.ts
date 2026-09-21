@@ -1,13 +1,13 @@
 // Where a withdrawal can go: the networks the picker lists, the tokens on each, and for each
 // destination how an address is checked and where the PAS lands on Asset Hub. Asset Hub itself is
 // the direct destination, reached by the XCM alone. The Chainflip networks are listed as the
-// design shows them but stay unavailable until the reverse rail lands.
+// design shows them and open up with the channel rail.
 
 import { AccountId } from "polkadot-api";
 import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
 import type { WithdrawalRailState } from "../funding/requests/model";
 import { networkIcon, tokenIcon } from "../utils/icons";
-import { SOURCE_CHAINS, sourceIdFor } from "~~/lib/config";
+import { CHAINFLIP_RAIL_ENABLED, SOURCE_CHAINS, sourceIdFor } from "~~/lib/config";
 
 export interface WithdrawDestination {
   /** The destination's id, the tail of the withdrawal's source id: `dot-assethub`, `btc`. */
@@ -73,7 +73,7 @@ function chainflipDestinations(chain: string, assets: readonly string[]): Withdr
         chainLabel: chain,
         asset,
         rail: "chainflip" as const,
-        available: false,
+        available: CHAINFLIP_RAIL_ENABLED,
         validateAddress: (address: string) => config.validateRefundAddress(address.trim()),
       }),
     ];

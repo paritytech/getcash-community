@@ -153,4 +153,45 @@ describe("offers store", () => {
     expect(offers.paused).toBe(false);
     expect(offers.offeredTokens("Ethereum").map((t) => t.asset)).toEqual(["ETH", "USDT"]);
   });
+
+  it("still lists every token on a network, the greyed ones included", () => {
+    const session = useSessionStore();
+    const offers = useOffersStore();
+    sized(session, 100n * DOT);
+    offers.floors = LEARNED;
+    expect(offers.tokensOf("Ethereum").map((t) => t.asset)).toEqual(["ETH", "USDC", "USDT"]);
+    expect(offers.tokensOf("Bitcoin").map((t) => t.offer.state)).toEqual(["too-small"]);
+    expect(offers.tokensOf("Mars")).toEqual([]);
+  });
+
+  it("shows skeleton rows only while an answer is actually awaited", () => {
+    const offers = useOffersStore();
+    expect(offers.awaitingFloors).toBe(true); // rail on, nothing learned yet
+    offers.railEnabled = false;
+    expect(offers.awaitingFloors).toBe(false); // nothing will be asked: show the greyed rows
+    offers.railEnabled = true;
+    offers.floors = LEARNED;
+    expect(offers.awaitingFloors).toBe(false);
+  });
+
+  it("greys every route while the build does not move money through Chainflip", () => {
+    const session = useSessionStore();
+    const offers = useOffersStore();
+    offers.railEnabled = false; // a real build before the channel rail
+    sized(session, 100n * DOT);
+    // Nothing is ever learned in this build; the rows still say so.
+    expect(offers.awaitingFloors).toBe(false);
+    expect(
+      offers.networks.flatMap((n) => n.tokens).every((t) => t.offer.state === "rail-off"),
+    ).toBe(true);
+    offers.floors = LEARNED; // whatever Chainflip said, nothing is pickable
+    expect(offers.networks).toHaveLength(4);
+    expect(offers.networks.every((n) => !n.available && !n.checking)).toBe(true);
+    expect(
+      offers.networks.flatMap((n) => n.tokens).every((t) => t.offer.state === "rail-off"),
+    ).toBe(true);
+    expect(offers.offeredNetworks).toEqual([]);
+    expect(offers.offeredTokens("Ethereum")).toEqual([]);
+    expect(offers.paused).toBe(false);
+  });
 });
