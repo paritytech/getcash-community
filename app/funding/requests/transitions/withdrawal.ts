@@ -172,6 +172,15 @@ function applyWorker(
           message: job.lastError ?? "the conversion failed in the background",
           recoverable: true,
         });
+      case "unresolved":
+        // The worker could not tell whether the provider was paid. This must surface: left as
+        // a live "converting" it would sit there forever and nobody would look.
+        return failed(next, at, {
+          kind: "unresolved",
+          step: "send",
+          message: job.lastError ?? "the provider payment could not be confirmed",
+          recoverable: false,
+        });
       case "expired":
         return rank === 0 && !paymentTaken(next) ? expired(next, at) : next;
       default:

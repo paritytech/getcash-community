@@ -13,6 +13,16 @@
 // dry run confirms the exact allowance: the program completes and traps nothing. Asset Hub then
 // runs the forwarded program and the PAS credited to the destination is read back.
 //
+// THE SALE'S FLOOR MEANS TWO DIFFERENT THINGS. For a self-custody withdrawal it is a slippage
+// guard: the proceeds are the user's own, so a price that floats is only a worse price. For an
+// off-ramp it is a solvency guard, because a provider was promised an exact figure and the
+// payment that follows the sale must actually be affordable out of what the sale returns. The
+// floor is then the commitment plus that payment's transfer fee plus Asset Hub's existential
+// deposit, and the slippage guard on top of it when it is higher. The fee is estimated on the
+// real transfer call rather than constanted, so a fee schedule change cannot quietly under-fund
+// the floor. A sale that cannot clear the floor fails the program on Asset Hub, which means the
+// XCM fails its dry run on People and is never signed — nothing is spent and nothing is stranded.
+//
 // The XCM's transaction fee is paid in PAS and estimated with a margin. People withdraws a fee
 // while keeping the account alive, so the key must hold the existential deposit on top of the
 // fee when the XCM is signed; the swap buys both. A dry run charges no fee, so the withdrawn PAS
@@ -31,9 +41,11 @@ import {
   signedOrigin,
   trappedIn,
 } from "@getsome/funding";
+import { assetHubAddressFor } from "./destination";
 import { PEOPLE_NATIVE, PEOPLE_TX_OPTIONS } from "./paseo";
 import { cashInFor, type PoolReserves } from "./pool";
 import {
+  buildProviderPayment,
   buildWithdrawXcm,
   CASH_ON_ASSET_HUB,
   forwardedStandIn,
@@ -56,6 +68,13 @@ export const SWAP_HEADROOM_PCT = 2;
 /** Headroom on the XCM's transaction fee estimate, percent. The unspent part is reaped dust. */
 export const XCM_TX_FEE_HEADROOM_PCT = 5;
 
+/** Headroom on the Asset Hub payment's fee, percent. The fee is estimated twice, once to put
+ *  the floor under the sale and again at the moment of paying, and an estimate that rose in
+ *  between would leave the sale a hair under what the payment needs — the money on the burner
+ *  and the provider never paid. Generous, because the fee is a rounding error beside the
+ *  payment: a quarter of a transfer fee is a ten-thousandth of a typical commitment. */
+export const ASSET_HUB_TRANSFER_FEE_HEADROOM_PCT = 25;
+
 /** Rounds of measure and confirm before the sizing gives up on an exact People allowance. */
 const FEE_ROUNDS = 3;
 
@@ -70,6 +89,23 @@ export class NeedsSwapError extends Error {
   ) {
     super(`withdraw sizing: the key holds ${pasOnKey} PAS and the XCM needs ${pasNeeded}`);
     this.name = "NeedsSwapError";
+  }
+}
+
+/** The commitment can no longer be funded: the sale's floor has to be at least the exact payment
+ *  plus its fee and the deposit, and the pool has moved so far that no sale of this CASH can
+ *  reach it. Distinct from NeedsSwapError and from a transient failure on purpose — the answer is
+ *  to cancel the provider's order, not to retry, because retrying cannot make the pool come back
+ *  in time. */
+export class CommitmentUnfundableError extends Error {
+  constructor(
+    readonly quoted: bigint,
+    readonly floor: bigint,
+  ) {
+    super(
+      `withdraw sizing: the sale quotes ${quoted} and the committed payment needs ${floor}; the pool moved`,
+    );
+    this.name = "CommitmentUnfundableError";
   }
 }
 
@@ -165,6 +201,40 @@ export interface SizeXcmInput {
   peopleParaId: number;
   /** How far below the quoted sale the Asset Hub price may move before the program fails there. */
   slippagePct: number;
+  /** The exact amount committed to a fiat provider, planck. Absent for a self-custody
+   *  withdrawal, whose sale may float freely. Present, it replaces the slippage floor with a
+   *  solvency floor: see `saleFloor`. */
+  commitPlanck?: bigint;
+  /** The provider's Asset Hub deposit address; required with `commitPlanck`, since the transfer
+   *  fee is estimated on the real payment call rather than guessed. */
+  payoutAddress?: string;
+}
+
+/**
+ * The least PAS the sale on Asset Hub may return.
+ *
+ * Without a commitment this is the quote less the slippage the caller allows: the proceeds are
+ * the user's own and a floating output is fine.
+ *
+ * With one it must also be enough to make the payment, or the whole point of splitting the
+ * payment out of the XCM is lost — the burner would be left holding proceeds it cannot pay the
+ * provider from. So the floor is the payment, its transfer fee, and the existential deposit that
+ * has to stay behind for the later residue return, and the slippage floor still applies when it
+ * is the higher of the two. An XCM that cannot clear it fails its dry run on People and is never
+ * signed.
+ */
+export function saleFloor(input: {
+  quoted: bigint;
+  slippagePct: number;
+  commitPlanck?: bigint;
+  transferFeePlanck?: bigint;
+  existentialDeposit?: bigint;
+}): bigint {
+  const slippage = (input.quoted * BigInt(Math.round((100 - input.slippagePct) * 100))) / 10_000n;
+  if (input.commitPlanck === undefined) return slippage;
+  const solvency =
+    input.commitPlanck + (input.transferFeePlanck ?? 0n) + (input.existentialDeposit ?? 0n);
+  return solvency > slippage ? solvency : slippage;
 }
 
 /** What a dry run of the XCM on People reports. */
@@ -241,6 +311,33 @@ async function weighed(
   return w.success ? { ref_time: w.value.ref_time, proof_size: w.value.proof_size } : undefined;
 }
 
+/** What the exact payment costs the burner on top of the payment itself: the transfer's fee,
+ *  estimated on the real call so a fee schedule change cannot silently under-fund it and carried
+ *  with headroom so the two estimates cannot disagree in the direction that stalls the payout,
+ *  and Asset Hub's existential deposit, read from the chain's constants as `sizeSwap` reads
+ *  People's. Both the sale's floor and the gate that lets the payment go use this one answer. */
+export async function assetHubPaymentOverhead(
+  assetHubApi: AssetHubApi,
+  burnerPublicKeyHex: string,
+  args: { commitPlanck?: bigint; payoutAddress?: string },
+): Promise<{ transferFeePlanck: bigint; existentialDeposit: bigint }> {
+  if (args.payoutAddress === undefined) {
+    throw new Error("withdraw sizing: a committed withdrawal needs the provider's payout address");
+  }
+  const payment = buildProviderPayment(assetHubApi, {
+    payoutAddress: args.payoutAddress,
+    amount: args.commitPlanck ?? 0n,
+  });
+  const [estimate, existentialDeposit] = await Promise.all([
+    payment.getEstimatedFees(assetHubAddressFor(burnerPublicKeyHex)),
+    assetHubApi.constants.Balances.ExistentialDeposit(),
+  ]);
+  return {
+    transferFeePlanck: (estimate * BigInt(100 + ASSET_HUB_TRANSFER_FEE_HEADROOM_PCT)) / 100n,
+    existentialDeposit,
+  };
+}
+
 export async function sizeXcm(input: SizeXcmInput): Promise<XcmSizing> {
   const { peopleApi, assetHubApi, key } = input;
   const claimerHex = input.claimerHex ?? key.publicKeyHex;
@@ -255,7 +352,20 @@ export async function sizeXcm(input: SizeXcmInput): Promise<XcmSizing> {
     true,
   );
   if (quoted === undefined) throw new Error("withdraw sizing: Asset Hub cannot quote the sale");
-  const minPasOut = (quoted * BigInt(Math.round((100 - input.slippagePct) * 100))) / 10_000n;
+  const minPasOut = saleFloor({
+    quoted,
+    slippagePct: input.slippagePct,
+    commitPlanck: input.commitPlanck,
+    ...(input.commitPlanck === undefined
+      ? {}
+      : await assetHubPaymentOverhead(assetHubApi, key.publicKeyHex, input)),
+  });
+  // The sale cannot reach the floor at any price the pool will give: the commitment is dead and
+  // the order it belongs to has to be cancelled, so say so distinctly rather than dry-running a
+  // program that is certain to fail.
+  if (input.commitPlanck !== undefined && minPasOut > quoted) {
+    throw new CommitmentUnfundableError(quoted, minPasOut);
+  }
 
   const base = (pasToWithdraw: bigint, payFeesPas: bigint): WithdrawXcmArgs => ({
     cashToTeleport: input.cashOnKey,

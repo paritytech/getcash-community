@@ -234,12 +234,16 @@ export const WITHDRAW_SOURCE_PREFIX = "wd:";
 export const isWithdrawSourceId = (sourceId: string | undefined): boolean =>
   sourceId !== undefined && sourceId.startsWith(WITHDRAW_SOURCE_PREFIX);
 
-/** The worker's steps between the payment and the arrival on Asset Hub. */
+/** The worker's steps between the payment and the arrival on Asset Hub. `pay-provider` is last
+ *  and runs on Asset Hub, not People: only a withdrawal that committed an exact amount to an
+ *  off-ramp provider reaches it, and the self-custody path ends at the arrival. */
 export type SendingStep = Exclude<WithdrawStep, "await-cash" | "done">;
-export const SENDING_STEP_ORDER = { swap: 0, convert: 1, "await-arrival": 2 } satisfies Record<
-  SendingStep,
-  number
->;
+export const SENDING_STEP_ORDER = {
+  swap: 0,
+  convert: 1,
+  "await-arrival": 2,
+  "pay-provider": 3,
+} satisfies Record<SendingStep, number>;
 export const isSendingStep = (step: string): step is SendingStep =>
   Object.hasOwn(SENDING_STEP_ORDER, step);
 
@@ -262,7 +266,15 @@ export type WithdrawalStatus =
 /** The leg a withdrawal left when it failed; `withdrawalRankOf` reads the rank back from it. */
 export type WithdrawalFailureStep = "payment" | "convert" | "send";
 export type WithdrawalFailureKind =
-  "payment-failed" | "rejected" | "timeout" | "expired" | "egress-failed" | "unknown";
+  | "payment-failed"
+  | "rejected"
+  | "timeout"
+  | "expired"
+  | "egress-failed"
+  // The provider payment cannot be settled from the chain: possibly unpaid, possibly paid
+  // twice over. Never recoverable by retrying — a person has to reconcile it.
+  | "unresolved"
+  | "unknown";
 export interface WithdrawalFailure {
   kind: WithdrawalFailureKind;
   step: WithdrawalFailureStep;

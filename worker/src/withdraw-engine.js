@@ -3,7 +3,10 @@ import {
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
   DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
   freshWithdrawTickState,
+  PaymentUnresolvedError,
   readDestinationPas,
+  restoreWithdrawTickState,
+  serialiseWithdrawTickState,
   withdrawTickOnce,
   WithdrawRejectedError,
 } from "@getsome/withdraw";
@@ -25,7 +28,11 @@ import {
 // carry the entropy label, never a secret; the key is re-derived on every wake. The engine never
 // starts a payment: it watches the key the purse pays and moves what lands there.
 
-/** Bump when the record shape changes; readers skip versions they don't know. */
+/** Bump when the record shape changes; readers skip versions they don't know — and a skipped
+ *  record is never ticked and never failed, so it becomes a job with funds on a burner that
+ *  nobody is driving. The state is stored generically now, with bigints boxed, but
+ *  `restoreWithdrawTickState` reads the older bare-string form too, so the shape did not have
+ *  to break and this stays where it is. */
 const RECORD_V = 1;
 
 /** Storage key for the job map, keyed by session id. */
@@ -41,6 +48,8 @@ const PAYMENT_WINDOW_MS = 1_800_000;
 const store = createJobStore(WITHDRAW_KEY, "withdraw");
 const loadJobs = () => store.load();
 const saveJobs = () => store.save();
+/** Throws when the write does not land. For state a broadcast must not outrun. */
+const saveJobsStrict = () => store.saveStrict();
 
 /**
  * One withdrawal job's record, as persisted between wakes.
@@ -52,10 +61,11 @@ const saveJobs = () => store.save();
  *   assetHubGenesis, peopleGenesis, peopleParaId, assetHubParaId, poolAccount, slippagePct,
  *   paymentExpiresAt: number|null,
  *   phase: "starting" | WithdrawStep | "failed",
- *   failure?: "rejected" | "timeout" | "expired" | "cancelled",
+ *   failure?: "rejected" | "timeout" | "expired" | "cancelled" | "unresolved",
  *   done, createdAt, armedAt, lastTickAt, lastError?,
- *   state: { attempts, rejections, submitted, destinationPasBefore, expectedLanding,
- *            fundsSeenAt, workedMs },       // the two balances as decimal strings or null
+ *   state: { ...serialiseWithdrawTickState(tickState), workedMs },
+ *                                           // every field of the tick state, bigints boxed as
+ *                                           // { $bigint }, plus the engine's own workedMs
  *   submitting?: { call, at },               // written before a submit
  *   txs: [{ call, txHash, block? }],
  * }
@@ -135,7 +145,10 @@ function newRecord(input, nowMs) {
   };
 }
 
-const freshRecordState = () => ({ ...freshWithdrawTickState(), workedMs: 0 });
+const freshRecordState = () => ({
+  ...serialiseWithdrawTickState(freshWithdrawTickState()),
+  workedMs: 0,
+});
 
 /** The surface's payment deadline, or null when it gave none. */
 const paymentExpiryOf = (input) => {
@@ -190,6 +203,9 @@ export async function startWithdraw(params) {
  */
 function rearm(record, nowMs) {
   const { failure } = record;
+  // An unresolved payment is not a thing to try again: whether the provider holds the money is
+  // unknown, and re-arming would drive straight back into the same refusal, or worse.
+  if (failure === "unresolved") return;
   record.phase = "starting";
   delete record.failure;
   delete record.lastError;
@@ -197,6 +213,7 @@ function rearm(record, nowMs) {
   record.state.workedMs = 0;
   if (failure === "rejected" || failure === "timeout") {
     record.state.rejections = 0;
+    record.state.payRejections = 0;
   }
   if (failure === "expired" || failure === "cancelled") record.state.fundsSeenAt = null;
 }
@@ -294,26 +311,18 @@ async function tickRecord(record, nowMs) {
     const assetHubApi = ahClient.getTypedApi(paseo_next_v2);
     const peopleApi = peopleClient.getTypedApi(paseo_people_next);
 
-    // Restore the persisted state into the shape withdrawTickOnce mutates.
-    const state = freshWithdrawTickState();
-    state.attempts = record.state.attempts ?? 0;
-    state.rejections = record.state.rejections ?? 0;
-    state.submitted = !!record.state.submitted;
-    state.destinationPasBefore = asBig(record.state.destinationPasBefore, null);
-    state.expectedLanding = asBig(record.state.expectedLanding, null);
-    state.fundsSeenAt = record.state.fundsSeenAt ?? null;
+    // Restore the persisted state into the shape withdrawTickOnce mutates. The package owns
+    // both halves of this round trip and copies EVERY field of the state generically: a
+    // hand-written list here once dropped the evidence that keeps a provider from being paid
+    // twice, because nothing makes a new field appear in a literal someone has to remember.
+    const state = restoreWithdrawTickState(record.state);
 
     // Written before a submit and after every tick, thrown ones included; withdrawTickOnce
-    // mutates the state as it works and a lost submit answer must keep its baseline.
+    // mutates the state as it works and a lost submit answer must keep its baseline. workedMs
+    // is the engine's own bookkeeping and rides alongside, not part of the tick's state.
     const persistState = () => {
       record.state = {
-        attempts: state.attempts,
-        rejections: state.rejections,
-        submitted: state.submitted,
-        destinationPasBefore:
-          state.destinationPasBefore === null ? null : String(state.destinationPasBefore),
-        expectedLanding: state.expectedLanding === null ? null : String(state.expectedLanding),
-        fundsSeenAt: state.fundsSeenAt,
+        ...serialiseWithdrawTickState(state),
         workedMs: record.state.workedMs ?? 0,
       };
     };
@@ -343,11 +352,19 @@ async function tickRecord(record, nowMs) {
           },
           readDestinationOnAssetHub: (hex) => readDestinationPas(assetHubApi, hex),
           now: Date.now,
-          // Persisted before the broadcast leaves.
+          // Persisted before the broadcast leaves, and STRICTLY: a write that did not land
+          // must stop the submit, or a pinned nonce can be lost out from under a transaction
+          // already on its way and the next reload pays the provider a second time.
           onBeforeSubmit: async (call) => {
             persistState();
             record.submitting = { call, at: Date.now() };
-            await saveJobs();
+            await saveJobsStrict();
+          },
+          // A change the end of the tick is too late to save: the pin moving on after an
+          // answered failure. Losing it strands the run as unresolvable.
+          onStateCheckpoint: async () => {
+            persistState();
+            await saveJobsStrict();
           },
           onTx: (info) => {
             delete record.submitting;
@@ -403,6 +420,11 @@ export async function tickAllWithdraw() {
       } catch (error) {
         if (error instanceof WithdrawRejectedError) {
           fail(record, "rejected", error.message);
+        } else if (error instanceof PaymentUnresolvedError) {
+          // Whether the provider was paid cannot be settled from the chain's head. Retrying
+          // cannot learn more and the pinned nonce makes a retry a no-op anyway, so the job
+          // stops here for a human rather than looping on an unanswerable question.
+          fail(record, "unresolved", error.message);
         } else {
           // Other errors are transient; the next wake retries.
           record.lastError = String(error?.message ?? error);
