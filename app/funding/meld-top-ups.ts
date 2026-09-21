@@ -79,6 +79,7 @@ export function projectMeldTopUps(
         details: topUpDetails(record, method),
         ...quoteOf(record),
         ...referenceOf(record),
+        ...(record.rail.delayed === true ? { delayed: true } : {}),
         journeyDone: journeyStepsOf(record, journeyScaleOf(record.route)),
         state: worded,
       },

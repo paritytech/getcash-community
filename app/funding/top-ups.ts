@@ -44,13 +44,9 @@ export type FundingTopUp = Readonly<{
   /** What the buyer pays as the rail quoted it, for the journey's Fees/Total rows when the
    *  request is not (yet) live in the store. */
   quote?: Readonly<{ amount: string; symbol: string; fee?: string; provider?: string }>;
-  /**
-   * The rail is retrying or running late: the list draws the status line amber. Never terminal.
-   *
-   * TODO: no adapter sets this yet — the Meld delay marker lives on the session store and only
-   * reaches the foreground journey. Wire it through the Meld top-up projection so a backgrounded
-   * card shows the same amber the journey does.
-   */
+  /** The rail is retrying or running late: the list draws the status line amber. Never terminal.
+   *  Read off the record's own `rail.delayed`, which the foreground journey reads too, so the
+   *  list and the journey never disagree about the same request. */
   delayed?: boolean;
   /** The request this top-up is, as the store names it. Lets a screen reach the request's own
    *  derived material — the refund key — without a live world behind it. */

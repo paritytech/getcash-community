@@ -66,6 +66,7 @@ export function projectChainflipTopUps(
         ...quoteOf(record),
         // The request's own identity, so a refund can be walked back to its key with no world.
         request: { sourceId: effectiveSourceId(ref), tradeN: ref.tradeN },
+        ...(record.rail.delayed === true ? { delayed: true } : {}),
         journeyDone: journeyStepsOf(record, journeyScaleOf(record.route)),
         state: rowStateOf(record, progress),
       },
