@@ -18,8 +18,8 @@ import { cashAmount } from "../../../utils/cash";
 import { currencyName } from "../../../utils/currency";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import type { FundingRoute } from "../../../funding/selection";
-import FlagCircle from "../../ui/FlagCircle.vue";
 import PillButton from "../../ui/PillButton.vue";
+import RegionRow from "../../ui/RegionRow.vue";
 import SkeletonBlock from "../../ui/SkeletonBlock.vue";
 import MeldPaySheet from "./MeldPaySheet.vue";
 
@@ -210,20 +210,12 @@ function confirmSent() {
       <div v-else class="mt-6 flex flex-col gap-4">
         <!-- The region the transfer is priced in, named by the currency it charges. Live even
              while blocked: changing it is the other way out. -->
-        <div class="flex items-start justify-between gap-4">
-          <span class="text-paragraph-l text-fg-primary">Paying with</span>
-          <button
-            type="button"
-            class="flex items-center gap-2 text-heading-m text-fg-primary"
-            @click="emit('currency')"
-          >
-            <span class="flex items-center gap-1">
-              <FlagCircle :country="country" :size="24" />
-              {{ currencyLabel }}
-            </span>
-            <ChevronRight class="size-4 text-fg-secondary" aria-hidden="true" />
-          </button>
-        </div>
+        <RegionRow
+          label="Paying with"
+          :value="currencyLabel"
+          :country="country"
+          @open="emit('currency')"
+        />
 
         <div class="flex items-baseline justify-between gap-4">
           <span class="text-paragraph-l text-fg-primary">You’ll receive</span>
