@@ -237,19 +237,15 @@ const detailRows = computed<DetailRow[]>(() => {
   // something to ask about. An expired top-up keeps none of it: no payment was ever made against
   // the request.
   if (!crypto.value && heroFailed.value && !expired.value) {
-    // A transfer is quoted back to a bank by its reference; the provider knows the same payment
-    // by its funding request, so the two labels carry one handle until the adapter reports a
-    // transaction id of its own.
-    if (bank.value && reference.value)
-      rows.push({
-        label: "Reference",
-        value: shortRef(reference.value),
-        copy: reference.value,
-      });
     if (q?.provider) rows.push({ label: "Provider", value: q.provider });
+    // One handle, under the word the rest of the flow already uses. There is a single id for a
+    // payment here — the adapter's funding request — and Meld's own session id stays server-side
+    // for an operator's support conversation, so a second row could only reprint the first beside
+    // it. "Reference" is what the transfer instructions call it, so a buyer chasing a failure
+    // quotes back the same thing they were asked to send.
     if (reference.value)
       rows.push({
-        label: "Transaction ID",
+        label: "Reference",
         value: shortRef(reference.value),
         copy: reference.value,
       });
