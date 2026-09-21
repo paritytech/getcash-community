@@ -5,13 +5,14 @@
 // journey once the payment is approved, asserted, or fails.
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { bankRailCountries } from "~~/lib/region";
-import { countryName } from "~~/lib/supported";
+import { corridorOptions, countryName, type CountryOption } from "~~/lib/supported";
 import { useMeldHandoff } from "../../../composables/useMeldHandoff";
 import { useStateDirector } from "../../../composables/useStateDirector";
 import { useVisibilityReconcile } from "../../../composables/useVisibilityReconcile";
 import { fundingSelectorConfig } from "../../../funding/config";
 import { isDemoBuild } from "../../../utils/demo";
 import { localeCountry } from "../../../utils/locale";
+import { isMoneyAmount } from "../../../utils/money";
 import type { FundingPackageEmits } from "../../../funding/handoff";
 import type { FundingSelection } from "../../../funding/selection";
 import { useFlowStore } from "../../../stores/flow";
@@ -47,7 +48,7 @@ const title = computed(() => {
 });
 /** The fee-breakdown drill-in over the pay screen. Back (toolbar or bottom button) returns to it. */
 const showingFees = ref(false);
-/** The region drill-in, bank only: which currency the transfer is made in. */
+/** The region drill-in: which country the payment is made from, and so which currency it charges. */
 const showingCurrency = ref(false);
 /** The bank route's two steps: the priced summary, then the provider's transfer details. */
 const bankStep = ref<"summary" | "details">("summary");
@@ -76,7 +77,9 @@ const paying = computed(() => !isBank && flow.screen === "journey");
 // on while the fee screen is up leaves the flag set, and the next Back tap is silently spent
 // clearing it instead of leaving.
 watch(paying, (now) => {
-  if (now) showingFees.value = false;
+  if (!now) return;
+  showingFees.value = false;
+  showingCurrency.value = false;
 });
 /** Cancel is offered only while nothing can have been paid. Card only: the bank screen has no
  *  cancel, so a transfer the buyer walks away from is left to the provider to expire. */
@@ -97,16 +100,53 @@ const selectedCountry = computed(() => session.meldCountry ?? "DE");
  * country without a rail is a dead end rather than a slower corridor. Named by the live catalog
  * where it has them, alphabetically, as the design lists them.
  */
-const bankCountries = computed(() => {
+const bankCountries = computed<CountryOption[]>(() => {
   const named = new Map((session.supportedCountries ?? []).map((c) => [c.country, c.name]));
   return bankRailCountries()
     .map((country) => ({ country, name: named.get(country) ?? countryName(country) }))
     .sort((a, b) => a.name.localeCompare(b.name));
 });
-/** The device's own region, when a transfer can be made from it. */
+
+/** Fallback region list, used when the adapter's live catalog is unreachable. Remove once
+ *  geolocation lands. */
+const FALLBACK_COUNTRIES = [
+  { country: "US", name: "United States" },
+  { country: "CA", name: "Canada" },
+  { country: "GB", name: "United Kingdom" },
+  { country: "DE", name: "Germany" },
+  { country: "AU", name: "Australia" },
+  { country: "BR", name: "Brazil" },
+];
+
+/**
+ * What this purchase costs, for the regions priced in the same currency.
+ *
+ * A corridor's minimum is written in its own fiat, and nothing here holds a rate to cross from one
+ * to another: only a region charging what the quote charges can be told to be out of reach. The
+ * rest stay pickable, and a region that then refuses the quote says so on the screen below.
+ */
+const quotedFloor = computed(() => {
+  const q = session.quoted;
+  return q && isMoneyAmount(q.send) ? { fiat: q.symbol, amount: q.send } : null;
+});
+
+/** Card rows: the live catalog or the static fallback, greyed per what the card rail routes. */
+const cardCountries = computed<CountryOption[]>(() => {
+  const live = session.supportedCountries;
+  const base = live && live.length > 0 ? live : FALLBACK_COUNTRIES;
+  return corridorOptions(base, session.corridorByCountry, "card", quotedFloor.value);
+});
+
+/** The rows the drill-in lists, which is the rail's own idea of where it can be paid from. */
+const pickerCountries = computed(() => (isBank ? bankCountries.value : cardCountries.value));
+
+/** The device's own region, when this route can be paid from it. The card picker judges that for
+ *  itself — it pins the region only while it is pickable — so only bank filters here. */
 const detectedCountry = computed(() => {
   const detected = localeCountry();
-  return detected && bankRailCountries().includes(detected) ? detected : null;
+  if (detected === null) return null;
+  if (!isBank) return detected;
+  return bankRailCountries().includes(detected) ? detected : null;
 });
 
 /**
@@ -165,7 +205,17 @@ onUnmounted(() => {
   >
     <!-- No title while the card widget is up; the back control stays. -->
     <Toolbar
-      :title="paying ? '' : showingCurrency ? 'Choose a currency' : showingFees ? 'Fees' : title"
+      :title="
+        paying
+          ? ''
+          : showingCurrency
+            ? isBank
+              ? 'Choose a currency'
+              : 'Choose payment country'
+            : showingFees
+              ? 'Fees'
+              : title
+      "
       :back="!requests.claiming && !session.resuming && !session.cancelling"
       @back="goBack"
     >
@@ -208,7 +258,7 @@ onUnmounted(() => {
         <MeldFeeDetailsScreen v-if="showingFees" @back="showingFees = false" />
         <CurrencySelectScreen
           v-else-if="showingCurrency"
-          :options="bankCountries"
+          :options="pickerCountries"
           :model-value="selectedCountry"
           :detected="detectedCountry"
           :busy="session.cancelling"
@@ -244,9 +294,19 @@ onUnmounted(() => {
         </p>
       </template>
       <MeldFeeDetailsScreen v-else-if="showingFees" @back="showingFees = false" />
+      <CurrencySelectScreen
+        v-else-if="showingCurrency"
+        :options="pickerCountries"
+        :model-value="selectedCountry"
+        :detected="detectedCountry"
+        :busy="session.cancelling"
+        placeholder="Search for a country"
+        @pick="pickCurrency"
+      />
       <MeldPayScreen
         v-else
         @fees="showingFees = true"
+        @currency="showingCurrency = true"
         @switch-route="emit('switchRoute', $event)"
       />
     </div>

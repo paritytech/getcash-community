@@ -252,7 +252,7 @@ describe("lib/supported", () => {
       country: "US",
       name: "United States",
       min: "10.50",
-      currency: "USD",
+      fiat: "USD",
     });
     expect(trimAmount("10.50")).toBe("10.5");
     expect(trimAmount("1000000000000000000000")).toBe("1000000000000000000000"); // not "1e+21"
@@ -280,8 +280,8 @@ describe("lib/supported", () => {
       ],
     ]);
     const rows = corridorOptions([{ country: "US", name: "United States" }], map, "card");
-    // No misleading "0" min; the row is supported (selectable) with just its name.
-    expect(rows[0]).toEqual({ country: "US", name: "United States" });
+    // No misleading "0" min; the row is supported (selectable), named with the currency it charges.
+    expect(rows[0]).toEqual({ country: "US", name: "United States", fiat: "USD" });
   });
 
   it("corridorOptions greys a row unsupported for the active method and labels its limits", async () => {
@@ -333,65 +333,92 @@ describe("lib/supported", () => {
       country: "US",
       name: "United States",
       min: "10.00",
-      currency: "USD",
+      fiat: "USD",
     });
     expect(card[1]).toEqual({ country: "BR", name: "Brazil", disabled: true }); // BR absent from the map
     const bank = corridorOptions(base, map, "bank");
-    expect(bank[0]).toEqual({ country: "US", name: "United States", disabled: true }); // US has no bank method
-    expect(bank[2]).toEqual({ country: "GB", name: "United Kingdom", min: "15", currency: "GBP" }); // GB bank supported
+    // US has no bank method: greyed, but still named by the currency the region charges.
+    expect(bank[0]).toEqual({ country: "US", name: "United States", fiat: "USD", disabled: true });
+    expect(bank[2]).toEqual({ country: "GB", name: "United Kingdom", min: "15", fiat: "GBP" }); // GB bank supported
   });
 
-  it("nextSelectable steps to the next non-disabled row, wrapping, and firstSelectable finds the first", async () => {
-    const { nextSelectable, firstSelectable } = await import("../lib/supported");
-    const rows = [
-      { country: "A", name: "A", disabled: true },
-      { country: "B", name: "B" },
-      { country: "C", name: "C", disabled: true },
-      { country: "D", name: "D" },
+  it("corridorOptions greys a corridor whose minimum is above what this purchase pays", async () => {
+    const { corridorOptions } = await import("../lib/supported");
+    const method = (category: "card" | "bank", min: string, currency: string) => ({
+      paymentMethodType: "CREDIT_DEBIT_CARD",
+      category,
+      min,
+      max: "5000",
+      currency,
+      providers: [],
+    });
+    const map = new Map<string, SupportedCorridor>([
+      ["GB", { country: "GB", fiat: "GBP", methods: [method("card", "40", "GBP")] }],
+      ["US", { country: "US", fiat: "USD", methods: [method("card", "40", "USD")] }],
+      ["DE", { country: "DE", fiat: "EUR", methods: [method("card", "4", "EUR")] }],
+    ]);
+    const base = [
+      { country: "GB", name: "United Kingdom" },
+      { country: "US", name: "United States" },
+      { country: "DE", name: "Germany" },
     ];
-    expect(firstSelectable(rows)).toBe(1); // skips the leading disabled
-    expect(nextSelectable(rows, 1, 1)).toBe(3); // B -> D, skipping C
-    expect(nextSelectable(rows, 3, 1)).toBe(1); // D wraps past A to B
-    expect(nextSelectable(rows, 1, -1)).toBe(3); // B wraps back to D
-    expect(nextSelectable([], 0, 1)).toBe(-1); // empty
-    const allOff = [{ country: "A", name: "A", disabled: true }];
-    expect(nextSelectable(allOff, 0, 1)).toBe(-1); // none selectable
-    expect(firstSelectable(allOff)).toBe(-1);
+    // Paying £12.50: GBP 40 is out of reach, EUR 4 is not, and USD 40 is in another currency
+    // altogether — no rate to cross with, so it stays pickable rather than guessed at.
+    const rows = corridorOptions(base, map, "card", { fiat: "GBP", amount: "12.50" });
+    expect(rows[0]?.belowMinimum).toBe(true);
+    expect(rows[1]?.belowMinimum).toBeUndefined();
+    expect(rows[2]?.belowMinimum).toBeUndefined();
+    // No floor at all, and an unreadable one, leave every row pickable.
+    expect(corridorOptions(base, map, "card").some((r) => r.belowMinimum)).toBe(false);
+    const blank = corridorOptions(base, map, "card", { fiat: "GBP", amount: "" });
+    expect(blank.some((r) => r.belowMinimum)).toBe(false);
   });
 
-  it("groupOptions pins the detected country, splits supported/unsupported, and aligns indices with ordered", async () => {
-    const { groupOptions } = await import("../lib/supported");
+  it("regionGroups pins the detected region and sections the rest by why they cannot be picked", async () => {
+    const { regionGroups } = await import("../lib/supported");
     const rows = [
-      { country: "US", name: "United States", min: "5", currency: "USD" },
-      { country: "GB", name: "United Kingdom", min: "4", currency: "GBP" },
-      { country: "BR", name: "Brazil", disabled: true },
-      { country: "AU", name: "Australia", min: "7", currency: "AUD" },
+      { country: "US", name: "United States", min: "5", fiat: "USD" },
+      { country: "GB", name: "United Kingdom", min: "4", fiat: "GBP" },
+      { country: "BR", name: "Brazil", fiat: "BRL", disabled: true },
+      { country: "AU", name: "Australia", min: "70", fiat: "AUD", belowMinimum: true },
     ];
-    const { ordered, groups } = groupOptions(rows, "GB");
-    // Detected (GB) first, then supported others (US, AU), then unsupported (BR).
-    expect(ordered.map((o) => o.country)).toEqual(["GB", "US", "AU", "BR"]);
-    expect(groups.map((g) => g.label)).toEqual([
-      "Detected country",
-      "Or choose another country",
+    const groups = regionGroups(rows, "GB");
+    expect(groups.map((g) => g.title)).toEqual([
+      "Detected currency",
+      "All currencies",
+      "Minimum payment amount",
       "Unsupported country",
     ]);
-    // Every group option's index is exactly its position in `ordered` (no drift).
-    for (const g of groups) for (const { o, index } of g.options) expect(ordered[index]).toBe(o);
-    expect(groups[0]?.options.map((r) => r.o.country)).toEqual(["GB"]);
-    expect(groups[2]?.options[0]?.o.country).toBe("BR");
+    expect(groups[0]?.rows.map((r) => r.country)).toEqual(["GB"]);
+    expect(groups[1]?.rows.map((r) => r.country)).toEqual(["US"]);
+    expect(groups[2]?.rows.map((r) => r.country)).toEqual(["AU"]);
+    expect(groups[3]?.rows.map((r) => r.country)).toEqual(["BR"]);
   });
 
-  it("groupOptions labels the list 'Countries' when nothing is detected, and drops empty groups", async () => {
-    const { groupOptions } = await import("../lib/supported");
+  it("regionGroups never pins a region that cannot be picked, and drops empty sections", async () => {
+    const { regionGroups } = await import("../lib/supported");
     const rows = [
-      { country: "US", name: "United States", min: "5", currency: "USD" },
-      { country: "AU", name: "Australia", min: "7", currency: "AUD" },
+      { country: "US", name: "United States", min: "5", fiat: "USD" },
+      { country: "AU", name: "Australia", min: "70", fiat: "AUD", belowMinimum: true },
     ];
-    const { ordered, groups } = groupOptions(rows, "ZZ"); // detected absent
-    expect(ordered.map((o) => o.country)).toEqual(["US", "AU"]);
-    expect(groups.map((g) => g.label)).toEqual(["Countries"]); // no detected + no unsupported groups
-    const empty = groupOptions([], "US");
-    expect(empty.ordered).toEqual([]);
-    expect(empty.groups).toEqual([]);
+    // The device's own region is out of reach at this amount: it stays in its section rather than
+    // leading the list as something to tap.
+    expect(regionGroups(rows, "AU").map((g) => g.title)).toEqual([
+      "All currencies",
+      "Minimum payment amount",
+    ]);
+    expect(regionGroups([], "US")).toEqual([]);
+  });
+
+  it("regionGroups leads the matches unheaded while a filter is running", async () => {
+    const { regionGroups } = await import("../lib/supported");
+    const rows = [
+      { country: "GB", name: "United Kingdom", min: "4", fiat: "GBP" },
+      { country: "BR", name: "Brazil", fiat: "BRL", disabled: true },
+    ];
+    const groups = regionGroups(rows, "GB", true);
+    // No pin, and the search's answer leads without a heading; the reasons keep theirs.
+    expect(groups.map((g) => g.title)).toEqual([null, "Unsupported country"]);
+    expect(groups[0]?.rows.map((r) => r.country)).toEqual(["GB"]);
   });
 });

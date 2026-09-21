@@ -178,10 +178,38 @@ export interface CountryOption {
   name: string;
   /** Unsupported for the active method: rendered greyed and non-selectable. */
   disabled?: boolean;
-  /** The corridor's fiat minimum, on a supported row that carries one. */
+  /** Supported, but this purchase is under the corridor's minimum: greyed, and the row says so
+   *  rather than letting the buyer pick a region the quote would then refuse. */
+  belowMinimum?: boolean;
+  /** The corridor's fiat minimum, on a row that carries one. */
   min?: string;
-  /** The fiat the min is denominated in, e.g. "GBP". */
-  currency?: string;
+  /** The corridor's fiat, e.g. "GBP": names the row's currency, and denominates `min`. */
+  fiat?: string;
+}
+
+/** The purchase a minimum is judged against: what this buyer is being charged, and in what. */
+export interface FiatFloor {
+  fiat: string;
+  /** The exact decimal text of the total, as the quote wrote it. */
+  amount: string;
+}
+
+/**
+ * Whether `min` is above what the buyer is paying.
+ *
+ * Only ever asked of two amounts in the same currency — a corridor's minimum is denominated in its
+ * own fiat, and nothing here holds a rate to cross from one to another. An unparseable pair is not
+ * below anything: a row is greyed on a bound we can read, never on one we cannot.
+ */
+function overFloor(min: string, floor: FiatFloor | null | undefined, fiat: string): boolean {
+  if (!floor || floor.fiat !== fiat) return false;
+  // `Number("")` is 0, which would put every region in this currency out of reach; a blank is a
+  // missing amount, not a free one.
+  const amount = (s: string) => (s.trim() === "" ? NaN : Number(s));
+  const bound = amount(min);
+  const paying = amount(floor.amount);
+  if (!Number.isFinite(bound) || !Number.isFinite(paying)) return false;
+  return bound > paying;
 }
 
 // Trim trailing decimal zeros for display: "26.00" -> "26", "10.50" -> "10.5" (string-only, no Number()).
@@ -194,72 +222,75 @@ function plainRow(c: SupportedCountry): CountryOption {
   return { country: c.country, name: c.name };
 }
 
-// Picker rows for the active method: supported carries its fiat min, unsupported is disabled; a null/empty map leaves all rows plain.
+// Picker rows for the active method: supported carries its fiat min, unsupported is disabled, and a
+// minimum above `floor` greys the row it belongs to; a null/empty map leaves all rows plain.
 export function corridorOptions(
   base: readonly SupportedCountry[],
   corridors: Map<string, SupportedCorridor> | null,
   ui: "card" | "bank",
+  floor?: FiatFloor | null,
 ): CountryOption[] {
   if (corridors === null || corridors.size === 0) return base.map(plainRow);
   const rows = base.map((c): CountryOption => {
-    const method = corridors.get(c.country)?.methods.find((m) => m.category === ui) ?? null;
-    if (method === null) return { country: c.country, name: c.name, disabled: true };
+    const corridor = corridors.get(c.country) ?? null;
+    const method = corridor?.methods.find((m) => m.category === ui) ?? null;
+    // A region names its currency whether or not this method is routed from it: the picker greys
+    // the row, it does not leave it nameless.
+    const named = {
+      country: c.country,
+      name: c.name,
+      ...(corridor ? { fiat: corridor.fiat } : {}),
+    };
+    if (method === null) return { ...named, disabled: true };
     // A supported method with no bound or no currency stays selectable but shows no min.
-    if (method.min === "" || method.currency === "") return { country: c.country, name: c.name };
-    return { country: c.country, name: c.name, min: method.min, currency: method.currency };
+    if (method.min === "" || method.currency === "") return named;
+    const row: CountryOption = { ...named, min: method.min, fiat: method.currency };
+    return overFloor(method.min, floor, method.currency) ? { ...row, belowMinimum: true } : row;
   });
   // Never brick: a map that disables every row (case skew, disjoint fallback) degrades to plain selectable rows.
   return rows.some((r) => !r.disabled) ? rows : base.map(plainRow);
 }
 
-// Next non-disabled index from `from` stepping by `delta`, wrapping; -1 when none is selectable.
-export function nextSelectable(
-  options: readonly CountryOption[],
-  from: number,
-  delta: number,
-): number {
-  const n = options.length;
-  if (n === 0) return -1;
-  for (let step = 1; step <= n; step += 1) {
-    const idx = (((from + delta * step) % n) + n) % n;
-    if (!options[idx]?.disabled) return idx;
-  }
-  return -1;
+/** A labelled section of the region list. A null title leads the list unheaded. */
+export interface RegionGroup {
+  title: string | null;
+  rows: CountryOption[];
 }
 
-// First non-disabled index, or -1 when none is selectable.
-export function firstSelectable(options: readonly CountryOption[]): number {
-  return options.findIndex((o) => !o.disabled);
-}
-
-/** A labelled picker section: the heading and its options, each tagged with its `ordered` index. */
-export interface CountryGroup {
-  label: string;
-  options: { o: CountryOption; index: number }[];
-}
-
-// Split rows into the detected pin, supported, and unsupported groups. `ordered` is the flat
-// keyboard-nav order (detected, supported, unsupported); every group option's `index` is its
-// position in `ordered`, so the two never drift apart.
-export function groupOptions(
+/**
+ * The region list as the design sections it: what can be picked, then what cannot and why.
+ *
+ * A region the buyer's own device reports leads, so the common case is one tap away. Below the
+ * pickable regions come the two that are not — this purchase is under the region's minimum, or
+ * nothing routes there at all — kept in the list rather than dropped, because a buyer looking for
+ * their own country needs to be told why it is not on offer.
+ *
+ * While a filter is running there is no detected pin and the matches lead unheaded: what is being
+ * shown is the search's answer, not the whole list.
+ */
+export function regionGroups(
   rows: readonly CountryOption[],
-  selected: string,
-): { ordered: CountryOption[]; groups: CountryGroup[] } {
-  const detected = rows.find((o) => o.country === selected) ?? null;
-  const others = rows.filter((o) => o.country !== selected);
-  const supported = others.filter((o) => !o.disabled);
-  const unsupported = others.filter((o) => o.disabled);
-  const ordered = [...(detected ? [detected] : []), ...supported, ...unsupported];
-  const groups: CountryGroup[] = [];
-  let i = 0;
-  const add = (label: string, list: readonly CountryOption[]) => {
-    if (list.length === 0) return;
-    groups.push({ label, options: list.map((o) => ({ o, index: i++ })) });
+  detected: string | null,
+  filtering = false,
+): RegionGroup[] {
+  const pickable = (o: CountryOption) => !o.disabled && !o.belowMinimum;
+  const pin = filtering ? null : (rows.find((o) => o.country === detected && pickable(o)) ?? null);
+  const rest = pin ? rows.filter((o) => o !== pin) : rows;
+  const groups: RegionGroup[] = [];
+  const add = (title: string | null, list: CountryOption[]) => {
+    if (list.length > 0) groups.push({ title, rows: list });
   };
-  if (detected) add("Detected country", [detected]);
-  add(detected ? "Or choose another country" : "Countries", supported);
-  add("Unsupported country", unsupported);
-  return { ordered, groups };
+  if (pin) add("Detected currency", [pin]);
+  add(filtering ? null : "All currencies", rest.filter(pickable));
+  add(
+    "Minimum payment amount",
+    rest.filter((o) => o.belowMinimum && !o.disabled),
+  );
+  add(
+    "Unsupported country",
+    rest.filter((o) => o.disabled),
+  );
+  return groups;
 }
 
 /** The first method of the given category in a corridor, or `null` when it offers none. */
