@@ -136,6 +136,79 @@ const QUOTED_BANK = {
   sourceChain: null,
 };
 
+/**
+ * A live catalog, as the adapter answers `/supported`: the regions the picker lists and what each
+ * corridor charges.
+ *
+ * Priced in GBP against a £12.50 purchase, so one region of each kind is on screen at once: ones
+ * that can be paid from, one whose minimum is above this purchase (Guernsey, £40), and ones the
+ * rail does not route at all. Without a corridor map the picker has no minimums to show and
+ * nothing to grey, which is what a deck run against no adapter would otherwise draw.
+ */
+const PREVIEW_COUNTRIES = [
+  { country: "GB", name: "United Kingdom" },
+  { country: "DE", name: "Germany" },
+  { country: "PT", name: "Portugal" },
+  { country: "FR", name: "France" },
+  { country: "ES", name: "Spain" },
+  { country: "IT", name: "Italy" },
+  { country: "NL", name: "Netherlands" },
+  { country: "IE", name: "Ireland" },
+  { country: "AT", name: "Austria" },
+  { country: "BE", name: "Belgium" },
+  { country: "FI", name: "Finland" },
+  { country: "GR", name: "Greece" },
+  { country: "LU", name: "Luxembourg" },
+  { country: "BR", name: "Brazil" },
+  { country: "GG", name: "Guernsey" },
+  { country: "VA", name: "Vatican City" },
+  { country: "EC", name: "Ecuador" },
+];
+
+/** The SEPA rails, every one of them routed and priced the same: the bank picker lists its rails
+ *  whether or not the catalog priced them, and a rail missing from this fixture would grey as
+ *  unsupported for no reason a reviewer could act on. */
+const SEPA_PREVIEW = ["DE", "PT", "FR", "ES", "IT", "NL", "IE", "AT", "BE", "FI", "GR", "LU"];
+
+function previewMethod(category: "card" | "bank", min: string, currency: string) {
+  const paymentMethodType = category === "card" ? "CREDIT_DEBIT_CARD" : "SEPA";
+  return { paymentMethodType, category, min, max: "5000", currency, providers: ["TRANSAK"] };
+}
+
+/** `[country, fiat, the card minimum, the bank minimum]`; a null minimum is a rail that does not
+ *  reach that region, which the picker greys as unsupported. */
+const PREVIEW_CORRIDORS: readonly [string, string, string | null, string | null][] = [
+  ["GB", "GBP", "4.00", "4.00"],
+  ...SEPA_PREVIEW.map((country): [string, string, string, string] => [
+    country,
+    "EUR",
+    "4.00",
+    "4.00",
+  ]),
+  ["BR", "BRL", "26.00", null],
+  ["GG", "GBP", "40.00", "40.00"],
+  ["VA", "EUR", null, null],
+  ["EC", "USD", null, null],
+];
+
+/** Stages that catalog on the session, the way `loadSupported*` would once the adapter answers. */
+function meldCatalog(session: Session) {
+  session.supportedCountries = [...PREVIEW_COUNTRIES];
+  session.corridorByCountry = new Map(
+    PREVIEW_CORRIDORS.map(([country, fiat, card, bank]) => [
+      country,
+      {
+        country,
+        fiat,
+        methods: [
+          ...(card ? [previewMethod("card", card, fiat)] : []),
+          ...(bank ? [previewMethod("bank", bank, fiat)] : []),
+        ],
+      },
+    ]),
+  );
+}
+
 /** What the record shows for each source the scenes use. A source not named here is displayed as
  *  its swap config names it. */
 const DISPLAY: Partial<Record<SourceId, { chain: string; asset: string }>> = {
@@ -305,6 +378,9 @@ function base(session: Session, flow: Flow) {
   useRequestsStore().leave();
   flow.step = "amount";
   flow.confirmingCancel = false;
+  flow.previewDrillIn = null;
+  session.supportedCountries = null;
+  session.corridorByCountry = null;
   // Bitcoin, matching the canned quote.
   flow.srcChainIndex = 0;
   flow.srcAssetIndex = 0;
@@ -320,6 +396,35 @@ function cardJourney(session: Session, flow: Flow) {
   session.setAmount("50");
   session.method = "card";
   session.quoted = { ...QUOTED_CARD };
+}
+
+/**
+ * Baseline for the card summary scenes: a £12.50 purchase against the staged catalog.
+ *
+ * Priced in GBP so the picker has a region it can call out of reach — a minimum only binds when
+ * it is written in the currency the quote is priced in.
+ */
+function cardSummary(session: Session, flow: Flow) {
+  base(session, flow);
+  session.setAmount("12");
+  session.method = "card";
+  session.setMeldCountry("GB");
+  session.quoted = {
+    ...QUOTED_CARD,
+    send: "12.50",
+    symbol: "GBP",
+    fee: "0.38",
+    transactionFee: "0.26",
+    partnerFee: "0.12",
+  };
+  meldCatalog(session);
+}
+
+/** Baseline for the bank summary scenes: the bank frames' own quote, against the same catalog. */
+function bankSummary(session: Session, flow: Flow) {
+  bankJourney(session, flow);
+  session.setMeldCountry("PT");
+  meldCatalog(session);
 }
 
 /** Baseline for the selection scenes: 100 CASH, floors already learned, source set directly. */
@@ -658,6 +763,23 @@ export const SCENES: Scene[] = [
     },
   },
   {
+    // The design's card summary: the region row above the quote's own terms. Cycle to it from
+    // inside the card package — the deck stages what a route shows, not which route is mounted.
+    name: "card / summary: payment country",
+    apply: (s, f) => {
+      cardSummary(s, f);
+    },
+  },
+  {
+    // The picker over that summary, with one region of each kind: pickable, under its minimum
+    // (Guernsey at £40 against a £12.50 purchase), and not routed at all.
+    name: "card / picker: choose payment country",
+    apply: (s, f) => {
+      cardSummary(s, f);
+      f.previewDrillIn = "currency";
+    },
+  },
+  {
     // The design's card journey at the Payment step: Fees and Total quoted in fiat.
     name: "card / journey: payment",
     apply: async (s, f, i) => {
@@ -761,6 +883,21 @@ export const SCENES: Scene[] = [
     },
   },
   {
+    // The design's bank summary: the same region row, the transfer's own terms under it.
+    name: "bank / summary: payment country",
+    apply: (s, f) => {
+      bankSummary(s, f);
+    },
+  },
+  {
+    // The bank picker: its rails only, but carrying the same minimums the card list does.
+    name: "bank / picker: choose payment country",
+    apply: (s, f) => {
+      bankSummary(s, f);
+      f.previewDrillIn = "currency";
+    },
+  },
+  {
     // The journey's skeleton: the store is bringing a bank top-up back to the foreground and the
     // screen holds its own shapes until the record lands.
     name: "bank / journey: opening",
@@ -848,6 +985,26 @@ export const SCENES: Scene[] = [
         "declined",
         "Your bank declined the payment. Check your card details or try another card.",
       );
+    },
+  },
+  {
+    // The rate moved between the payment and the claim: the hero corrects itself to what will
+    // actually land, and the ribbon names both figures so the difference is the buyer's to check.
+    name: "bank / journey: rate changed",
+    apply: async (s, f, i) => {
+      const r = await bankTransfer(s, f, i);
+      await r.observe({
+        source: "provider",
+        provider: "meld",
+        at: r.at(1),
+        result: { status: "complete" },
+      });
+      // 48.2 CASH claimed against the 50 quoted, in 6-decimal base units.
+      await r.observe({
+        source: "core",
+        at: r.at(2),
+        claim: { stage: "crediting", claimed: "48200000" },
+      });
     },
   },
   {

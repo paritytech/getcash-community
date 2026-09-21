@@ -63,6 +63,19 @@ watch(
     bankStep.value = "summary";
   },
 );
+// Demo deck: a scene can ask for a drill-in, which the route owns and a scene cannot otherwise
+// reach. Inert everywhere else.
+if (isDemoBuild()) {
+  watch(
+    () => flow.previewDrillIn,
+    (want) => {
+      showingCurrency.value = want === "currency";
+      showingFees.value = want === "fees";
+    },
+    { immediate: true },
+  );
+}
+
 function goBack() {
   if (showingCurrency.value) showingCurrency.value = false;
   else if (showingFees.value) showingFees.value = false;
