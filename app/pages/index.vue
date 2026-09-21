@@ -34,7 +34,7 @@ import type { FundingTopUpAdapter } from "../funding/top-up-adapter";
 import { projectFundingTopUps, type FundingTopUp } from "../funding/top-ups";
 import { useRequestsStore } from "../stores/requests";
 import { isDemoBuild } from "../utils/demo";
-import { applyCurrentScene } from "../utils/dev-preview";
+import { applyCurrentScene, seedLaunchPreviewTopUps } from "../utils/dev-preview";
 import { previewStage, type PreviewStage } from "../utils/dev-preview-stage";
 import { launchPreviewTopUps, previewTopUpScene } from "../utils/dev-preview-top-ups";
 
@@ -59,7 +59,10 @@ const activeTopUpPackage = shallowRef<Component | null>(null);
 const activeTopUpId = ref<string | null>(null);
 const openingTopUpId = ref<string | null>(null);
 const topUpError = ref<string | null>(null);
-const topUpsReady = computed(() => requests.hydrated || requests.hostReadDone);
+const previewSeeding = ref(false);
+const topUpsReady = computed(
+  () => !previewSeeding.value && (requests.hydrated || requests.hostReadDone),
+);
 // Launch lands on add-funds; history is behind the clock.
 const shellEntry = ref<FundingShellEntryScreen>("auto");
 const historyReturn = ref<FundingHistoryReturnScreen>("amount");
@@ -97,15 +100,27 @@ for (const [route, routePackage] of Object.entries(getcashRoutePackages)) {
 }
 const topUpAdapters = [...adapterByPackage.values()];
 // A preview scene's canned cards stand in for the adapters' — null in every production build.
-const topUps = computed(
-  () => previewTopUpScene.value?.topUps ?? topUpAdapters.flatMap((adapter) => adapter.topUps.value),
-);
+// A preview scene's own rows sit alongside the adapters', never instead of them: the top-ups it
+// still has running are seeded as real records, so their cards are the adapters' own projections
+// and opening one opens the request. Only the finished ones are the scene's to supply.
+const topUps = computed(() => [
+  ...(previewTopUpScene.value?.topUps ?? []),
+  ...topUpAdapters.flatMap((adapter) => adapter.topUps.value),
+]);
 
 // Launch simulation. `?preview=top-ups` seeds a running top-up before the first render, so the
 // shell takes the same path a returning buyer's would: auto entry, resolved against live content.
 if (isDemoBuild() && typeof window !== "undefined") {
   const scene = new URLSearchParams(window.location.search).get("preview");
-  if (scene === "top-ups") previewTopUpScene.value = launchPreviewTopUps();
+  if (scene === "top-ups") {
+    // The placeholder holds until the running records are in: `resolveFundingShellScreen` reads
+    // the list once, so it has to read it complete.
+    previewSeeding.value = true;
+    void seedLaunchPreviewTopUps().finally(() => {
+      previewTopUpScene.value = launchPreviewTopUps();
+      previewSeeding.value = false;
+    });
+  }
 }
 // A scene sets the entry screen the once; the shell's own navigation owns it from there.
 watch(

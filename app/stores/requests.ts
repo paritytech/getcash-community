@@ -2504,6 +2504,20 @@ export const useRequestsStore = defineStore("requests", () => {
     setMeldStatusClientFactory(() => null);
   }
 
+  /**
+   * Empties the sandbox, so a preview scene starts from no records rather than inheriting the
+   * ones the scene before it seeded.
+   *
+   * A no-op until something has entered the sandbox: nothing else may drop records wholesale.
+   * Gated on the same module-level latch as the storage it swaps, not on this store's own flag —
+   * a second store over an already-sandboxed module holds the deck's records too.
+   */
+  function clearSandbox(): void {
+    if (!sandboxEntered) return;
+    entries.value = {};
+    setRecordStorage(createMemoryKeyedStorage());
+  }
+
   return {
     entries,
     records,
@@ -2514,6 +2528,7 @@ export const useRequestsStore = defineStore("requests", () => {
     openWithdrawals,
     sandboxed,
     enterSandbox,
+    clearSandbox,
     hydrated,
     hostReadDone,
     storage,

@@ -1,16 +1,11 @@
-// Fake top-ups for the preview deck and the launch simulation.
+// The finished top-ups the preview deck and the launch simulation put behind the clock.
 //
-// The real list is pulled by the package adapters (`useChainflipTopUpAdapter`,
-// `useMeldTopUpAdapter`): each projects `session.requestList` — the persisted request records —
-// against the live `session.requestStatus`, and `session.resumeOpenRequests()` is the refresh.
-// That path returns nothing outside a hosted build, so there is no way to see the top-ups list or
-// history with content on a plain dev server. These stand in for the adapters' output, at the same
-// `FundingTopUp` shape, so `projectFundingTopUps` splits them into in-progress, past and
-// latest-settled exactly as it would the real thing.
-//
-// The projections are built by hand rather than driven through the progress state machine: the
-// deck needs one exact label per card, including the rail-supplied delay wording that no provider
-// stage defines.
+// Running top-ups are not here: a scene seeds those as real records and the package adapters
+// project them, so their rows carry the request's own id, the progress machine's own label and
+// the record's own quote — see `seedRunningTopUps` in `dev-preview`. A finished one is built by
+// hand on purpose. The journey a history row opens has to stand up with no live request behind
+// it, which is the state a hand-made row models exactly; seeding a record instead would hand that
+// journey a live foreground and stop exercising the path it was written for.
 
 import { shallowRef } from "vue";
 import type { FundingShellEntryScreen } from "../funding/navigation";
@@ -19,7 +14,9 @@ import type { FundingRoute } from "../funding/selection";
 import type { FundingTopUp } from "../funding/top-ups";
 
 export interface PreviewTopUpScene {
-  topUps: readonly FundingTopUp[];
+  /** Rows the scene supplies itself, listed alongside whatever the adapters project from the
+   *  records it seeded. Finished top-ups only; see this module's header. */
+  topUps?: readonly FundingTopUp[];
   /** Draw the screen's loading placeholder instead of the cards. */
   skeleton?: boolean;
   /**
@@ -43,18 +40,17 @@ const MINUTE = 60_000;
 const HOUR = 60;
 const DAY = 24 * HOUR;
 
-type CardKind = FundingProgressView["kind"];
+/** A top-up that has stopped moving: the only kind built by hand. */
+type FinishedKind = Extract<FundingProgressView["kind"], "settled" | "failed">;
 
-/** How far along the ring is drawn for each state. */
-const RING_VALUE: Record<CardKind, number> = {
-  waiting: 0.08,
-  active: 0.55,
+/** How far along the ring is drawn for each ending. */
+const RING_VALUE: Record<FinishedKind, number> = {
   failed: 0.55,
   settled: 1,
 };
 
 function projection(
-  kind: CardKind,
+  kind: FinishedKind,
   label: string,
   endedAt: number,
   detectedAt?: number,
@@ -86,9 +82,10 @@ function projection(
 /**
  * A plausible quote for the budget, so every preview card's detail has its Fees and Total rows.
  * The real records always carry one — `quoteOf` reads it off the persisted request — so a card
- * without it would be a mock artefact, not a state worth styling.
+ * without it would be a mock artefact, not a state worth styling. Shared with the records a
+ * running scene seeds, which persist these same figures.
  */
-function defaultQuote(route: FundingRoute, amount: string): FundingTopUp["quote"] {
+export function previewQuote(route: FundingRoute, amount: string): FundingTopUp["quote"] {
   const cash = Number(amount.replace(/,/g, ""));
   if (!Number.isFinite(cash) || cash <= 0) return undefined;
   // The crypto rail quotes the source coin; the fiat rails quote the charge, fee included.
@@ -99,8 +96,6 @@ function defaultQuote(route: FundingRoute, amount: string): FundingTopUp["quote"
 
 interface PreviewCardOptions {
   amount?: string;
-  /** The rail is retrying or late: the status line goes amber. */
-  delayed?: boolean;
   /** How long ago the top-up was started. */
   startedMinutesAgo?: number;
   /** How long ago it settled or failed. Defaults to a few minutes after it started. */
@@ -130,28 +125,20 @@ interface PreviewCardOptions {
  * draws the top-up as though it never started. A refunded top-up counts its payment: the money
  * was taken before it came back.
  */
-function defaultJourneyDone(route: FundingRoute, kind: CardKind, refunded: boolean): number {
+function defaultJourneyDone(route: FundingRoute, kind: FinishedKind, refunded: boolean): number {
   const crypto = route === "crypto";
-  switch (kind) {
-    case "settled":
-      return crypto ? 3 : 5;
-    case "waiting":
-      return crypto ? 0 : 1;
-    case "failed":
-      return refunded ? (crypto ? 1 : 2) : crypto ? 0 : 1;
-    default:
-      return crypto ? 1 : 3;
-  }
+  if (kind === "settled") return crypto ? 3 : 5;
+  return refunded ? (crypto ? 1 : 2) : crypto ? 0 : 1;
 }
 
 /**
- * One top-up. `kind` picks the glyph, the ring and which list it lands in; `label` is the status
- * line, which for every running state is also the rail's own word on it.
+ * One finished top-up. `kind` picks the glyph, the ring and which list it lands in; `label` is
+ * the failure's stored reason, which is all a journey reopened from history has to go on.
  */
 export function previewTopUp(
   id: string,
   route: FundingRoute,
-  kind: CardKind,
+  kind: FinishedKind,
   label: string,
   options: PreviewCardOptions = {},
 ): FundingTopUp {
@@ -160,23 +147,21 @@ export function previewTopUp(
   const startedAgo = options.startedMinutesAgo ?? 12;
   const startedAt = now - startedAgo * MINUTE;
   const endedAt = now - (options.endedMinutesAgo ?? Math.max(0, startedAgo - 8)) * MINUTE;
-  // Everything past the deposit has had its payment seen; only a waiting top-up has not.
-  const detectedAt = kind === "waiting" ? undefined : startedAt + 2 * MINUTE;
+  // A finished top-up always had its payment seen. Where the journey's failed marker lands
+  // depends on it: without it the stepper strikes "Started", which is wrong for anything that
+  // failed after paying.
+  const detectedAt = startedAt + 2 * MINUTE;
   const state: FundingTopUp["state"] =
     kind === "settled"
       ? { kind: "settled", at: endedAt, creditedAmount: amount }
-      : kind === "failed"
-        ? {
-            kind: "failed",
-            at: endedAt,
-            reason: label,
-            ...(options.refunded === true ? { refunded: true } : {}),
-            ...(options.refundAmount ? { refundAmount: options.refundAmount } : {}),
-            ...(options.refundTxRef ? { refundTxRef: options.refundTxRef } : {}),
-          }
-        : kind === "waiting"
-          ? { kind: "awaiting-transfer", status: label }
-          : { kind: "finishing", status: label };
+      : {
+          kind: "failed",
+          at: endedAt,
+          reason: label,
+          ...(options.refunded === true ? { refunded: true } : {}),
+          ...(options.refundAmount ? { refundAmount: options.refundAmount } : {}),
+          ...(options.refundTxRef ? { refundTxRef: options.refundTxRef } : {}),
+        };
   return {
     id,
     amount,
@@ -184,10 +169,9 @@ export function previewTopUp(
     startedAt,
     progress: projection(kind, label, endedAt, detectedAt),
     ...(() => {
-      const quote = options.quote ?? defaultQuote(route, amount);
+      const quote = options.quote ?? previewQuote(route, amount);
       return quote === undefined ? {} : { quote };
     })(),
-    ...(options.delayed === true ? { delayed: true } : {}),
     journeyDone: options.journeyDone ?? defaultJourneyDone(route, kind, options.refunded === true),
     ...(options.request ? { request: options.request } : {}),
     ...(options.reference ? { reference: options.reference } : {}),
@@ -265,22 +249,11 @@ export function previewTopUpHistory(): FundingTopUp[] {
 }
 
 /**
- * The launch scenario: two top-ups still running, plus the history behind the clock, seeded before
- * the shell's first interactive render so `resolveFundingShellScreen` decides the entry screen
- * itself. Reachable in a dev or demo build with `?preview=top-ups`.
+ * The launch scenario's history. The two top-ups still running are seeded as records by
+ * `seedLaunchPreviewTopUps`; both land before the shell's first interactive render so
+ * `resolveFundingShellScreen` decides the entry screen itself, which is the whole point of the
+ * scenario. Reachable in a dev or demo build with `?preview=top-ups`.
  */
 export function launchPreviewTopUps(): PreviewTopUpScene {
-  return {
-    topUps: [
-      previewTopUp("p1", "crypto", "waiting", "Waiting for your transfer", {
-        startedMinutesAgo: 4,
-      }),
-      previewTopUp("p2", "card", "active", "Converting to $CASH", {
-        amount: "120",
-        startedMinutesAgo: 21,
-      }),
-      ...previewTopUpHistory(),
-    ],
-    entry: "auto",
-  };
+  return { topUps: previewTopUpHistory(), entry: "auto" };
 }
