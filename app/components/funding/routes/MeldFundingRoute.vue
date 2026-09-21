@@ -100,7 +100,7 @@ const selectedCountry = computed(() => session.meldCountry ?? "DE");
  * country without a rail is a dead end rather than a slower corridor. Named by the live catalog
  * where it has them, alphabetically, as the design lists them.
  */
-const bankCountries = computed<CountryOption[]>(() => {
+const bankRails = computed(() => {
   const named = new Map((session.supportedCountries ?? []).map((c) => [c.country, c.name]));
   return bankRailCountries()
     .map((country) => ({ country, name: named.get(country) ?? countryName(country) }))
@@ -130,15 +130,23 @@ const quotedFloor = computed(() => {
   return q && isMoneyAmount(q.send) ? { fiat: q.symbol, amount: q.send } : null;
 });
 
-/** Card rows: the live catalog or the static fallback, greyed per what the card rail routes. */
-const cardCountries = computed<CountryOption[]>(() => {
+/**
+ * The rows the drill-in lists: each rail's own idea of where it can be paid from, both carrying
+ * what that region charges and greyed where it cannot take this purchase.
+ *
+ * The base lists differ — bank has its rails, card has the whole catalog — but what a row says
+ * about itself does not, so both go through `corridorOptions`.
+ */
+const pickerCountries = computed<CountryOption[]>(() => {
   const live = session.supportedCountries;
-  const base = live && live.length > 0 ? live : FALLBACK_COUNTRIES;
-  return corridorOptions(base, session.corridorByCountry, "card", quotedFloor.value);
+  const base = isBank ? bankRails.value : live && live.length > 0 ? live : FALLBACK_COUNTRIES;
+  return corridorOptions(
+    base,
+    session.corridorByCountry,
+    isBank ? "bank" : "card",
+    quotedFloor.value,
+  );
 });
-
-/** The rows the drill-in lists, which is the rail's own idea of where it can be paid from. */
-const pickerCountries = computed(() => (isBank ? bankCountries.value : cardCountries.value));
 
 /** The device's own region, when this route can be paid from it. The card picker judges that for
  *  itself — it pins the region only while it is pickable — so only bank filters here. */
@@ -183,6 +191,10 @@ onMounted(() => {
   // The bank route starts from a region that can quote it: the buyer's own where a transfer can be
   // made from it, else a SEPA one, until geolocation lands.
   if (isBank && session.meldCountry === null) session.setMeldCountry(detectedCountry.value ?? "DE");
+  // The catalog belongs to the route, not to one of its screens: the picker is the route's, and
+  // both rails read the same corridors for what a region charges and whether it routes at all.
+  void session.loadSupportedCountries();
+  void session.loadSupportedCorridors();
   void import("~~/lib/host-chain").then((hostChain) => hostChain.prewarmChains());
   void session.fetchMeldQuote();
 });
@@ -206,15 +218,7 @@ onUnmounted(() => {
     <!-- No title while the card widget is up; the back control stays. -->
     <Toolbar
       :title="
-        paying
-          ? ''
-          : showingCurrency
-            ? isBank
-              ? 'Choose a currency'
-              : 'Choose payment country'
-            : showingFees
-              ? 'Fees'
-              : title
+        paying ? '' : showingCurrency ? 'Choose payment country' : showingFees ? 'Fees' : title
       "
       :back="!requests.claiming && !session.resuming && !session.cancelling"
       @back="goBack"

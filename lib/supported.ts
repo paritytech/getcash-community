@@ -251,6 +251,12 @@ export function corridorOptions(
   return rows.some((r) => !r.disabled) ? rows : base.map(plainRow);
 }
 
+/** The region's name as the live catalog writes it, else the one Intl has, else the code. Both
+ *  Meld screens name their committed region this way. */
+export function namedCountry(country: string, catalog: readonly SupportedCountry[] | null): string {
+  return (catalog ?? []).find((c) => c.country === country)?.name ?? countryName(country);
+}
+
 /** A labelled section of the region list. A null title leads the list unheaded. */
 export interface RegionGroup {
   title: string | null;
@@ -260,8 +266,8 @@ export interface RegionGroup {
 /**
  * The region list as the design sections it: what can be picked, then what cannot and why.
  *
- * A region the buyer's own device reports leads, so the common case is one tap away. Below the
- * pickable regions come the two that are not — this purchase is under the region's minimum, or
+ * A region the buyer's own device reports leads, so the common case is one tap away, and the rest
+ * are what is left to choose from. Below the pickable regions come the two that are not — this purchase is under the region's minimum, or
  * nothing routes there at all — kept in the list rather than dropped, because a buyer looking for
  * their own country needs to be told why it is not on offer.
  *
@@ -280,8 +286,11 @@ export function regionGroups(
   const add = (title: string | null, list: CountryOption[]) => {
     if (list.length > 0) groups.push({ title, rows: list });
   };
-  if (pin) add("Detected currency", [pin]);
-  add(filtering ? null : "All currencies", rest.filter(pickable));
+  if (pin) add("Detected country", [pin]);
+  add(
+    filtering ? null : pin ? "Or choose another country" : "All countries",
+    rest.filter(pickable),
+  );
   add(
     "Minimum payment amount",
     rest.filter((o) => o.belowMinimum && !o.disabled),

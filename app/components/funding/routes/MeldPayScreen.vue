@@ -4,7 +4,7 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { ChevronRight } from "lucide-vue-next";
 import { useSessionStore } from "../../../stores/session";
-import { countryName } from "~~/lib/supported";
+import { namedCountry } from "~~/lib/supported";
 import { cashAmount } from "../../../utils/cash";
 import { localeCountry } from "../../../utils/locale";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
@@ -29,10 +29,9 @@ const DEFAULT_COUNTRY = "US";
 // The shown country matches the quoted region.
 const selectedCountry = computed(() => session.meldCountry ?? DEFAULT_COUNTRY);
 /** The region's own name, as the live catalog writes it; Intl names the ones it did not. */
-const countryLabel = computed(() => {
-  const named = (session.supportedCountries ?? []).find((c) => c.country === selectedCountry.value);
-  return named?.name ?? countryName(selectedCountry.value);
-});
+const countryLabel = computed(() =>
+  namedCountry(selectedCountry.value, session.supportedCountries),
+);
 
 // Adopts the default region and quotes when none is chosen, then loads the full catalog. A catalog
 // failure leaves the fallback list in place.
@@ -41,8 +40,6 @@ onMounted(() => {
     session.setMeldCountry(localeCountry() ?? DEFAULT_COUNTRY);
     requote();
   }
-  void session.loadSupportedCountries();
-  void session.loadSupportedCorridors();
 });
 // Re-quoting clears a previous refusal.
 function requote() {

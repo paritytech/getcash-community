@@ -12,10 +12,10 @@
 import { computed, onUnmounted, ref, watch } from "vue";
 import { ChevronRight, CircleAlert } from "lucide-vue-next";
 import { regionForCountry } from "~~/lib/region";
+import { namedCountry } from "~~/lib/supported";
 import { useRequestsStore } from "../../../stores/requests";
 import { useSessionStore } from "../../../stores/session";
 import { cashAmount } from "../../../utils/cash";
-import { currencyName } from "../../../utils/currency";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import type { FundingRoute } from "../../../funding/selection";
 import PillButton from "../../ui/PillButton.vue";
@@ -64,7 +64,8 @@ const heroAmount = computed(() => {
 /** The caption drills into the breakdown only when the fee is a number it can split. */
 const feesKnown = computed(() => isMoneyAmount(session.quoted?.fee));
 
-const currencyLabel = computed(() => currencyName(fiat.value));
+/** The region the transfer is made from, named as the catalog names it. */
+const countryLabel = computed(() => namedCountry(props.country, session.supportedCountries));
 
 const starting = ref(false);
 const startError = ref<string | null>(null);
@@ -202,7 +203,7 @@ function confirmSent() {
       </div>
 
       <div v-if="pricing" class="mt-6 flex flex-col gap-4">
-        <div v-for="n in 3" :key="n" class="flex h-6 items-center justify-between">
+        <div v-for="n in 4" :key="n" class="flex h-6 items-center justify-between">
           <SkeletonBlock class="h-4 w-2/5" />
           <SkeletonBlock class="h-4 w-1/5" />
         </div>
@@ -211,8 +212,8 @@ function confirmSent() {
         <!-- The region the transfer is priced in, named by the currency it charges. Live even
              while blocked: changing it is the other way out. -->
         <RegionRow
-          label="Paying with"
-          :value="currencyLabel"
+          label="Payment country"
+          :value="countryLabel"
           :country="country"
           @open="emit('currency')"
         />

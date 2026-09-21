@@ -374,6 +374,15 @@ describe("lib/supported", () => {
     expect(blank.some((r) => r.belowMinimum)).toBe(false);
   });
 
+  it("namedCountry prefers the catalog's own name, then Intl's, then the code", async () => {
+    const { namedCountry } = await import("../lib/supported");
+    const catalog = [{ country: "GB", name: "United Kingdom of Great Britain" }];
+    expect(namedCountry("GB", catalog)).toBe("United Kingdom of Great Britain"); // catalog wins
+    expect(namedCountry("BR", catalog)).toBe("Brazil"); // absent from the catalog: Intl names it
+    expect(namedCountry("BR", null)).toBe("Brazil"); // no catalog at all
+    expect(namedCountry("ZZZ", null)).toBe("ZZZ"); // not a region code: itself
+  });
+
   it("regionGroups pins the detected region and sections the rest by why they cannot be picked", async () => {
     const { regionGroups } = await import("../lib/supported");
     const rows = [
@@ -384,8 +393,8 @@ describe("lib/supported", () => {
     ];
     const groups = regionGroups(rows, "GB");
     expect(groups.map((g) => g.title)).toEqual([
-      "Detected currency",
-      "All currencies",
+      "Detected country",
+      "Or choose another country",
       "Minimum payment amount",
       "Unsupported country",
     ]);
@@ -403,8 +412,9 @@ describe("lib/supported", () => {
     ];
     // The device's own region is out of reach at this amount: it stays in its section rather than
     // leading the list as something to tap.
+    // With no pin there is nothing to choose "another" of, so the list names itself.
     expect(regionGroups(rows, "AU").map((g) => g.title)).toEqual([
-      "All currencies",
+      "All countries",
       "Minimum payment amount",
     ]);
     expect(regionGroups([], "US")).toEqual([]);
