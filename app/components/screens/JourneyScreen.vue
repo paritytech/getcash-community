@@ -14,7 +14,7 @@ import { journeyScaleOf, type JourneyScale } from "../../funding/requests/views"
 import type { FundingTopUp } from "../../funding/top-ups";
 import { useRequestsStore } from "../../stores/requests";
 import { useSessionStore } from "../../stores/session";
-import { cashAmount, fmtCash } from "../../utils/cash";
+import { cashAmount, fmtCash, toCashBase } from "../../utils/cash";
 import { fmtFiat, isMoneyAmount } from "../../utils/money";
 import { formatWhenShort, shortRef } from "../../utils/journey";
 import { refundedFailure } from "../../utils/recovery";
@@ -91,10 +91,34 @@ const heroFailed = computed(() => progress.value?.view.kind === "failed" || fail
 const creditedAmount = computed(() =>
   requests.claimedBase != null ? fmtCash(requests.claimedBase) : session.amountHuman,
 );
+/** What the buyer asked for. The store's amount is empty until the request is live; the list's
+ *  word on it fills in. */
+const quotedAmount = computed(() => session.amountHuman || (props.topUp?.amount ?? ""));
+
+/**
+ * What the rail will actually deliver, when the rate moved it off the quote.
+ *
+ * The fiat was priced when the payment started and the CASH is bought when it lands, so a transfer
+ * spending days in between can arrive against a different rate. The claim is the first thing that
+ * knows the real figure, and it knows it before the journey ends — so the screen corrects itself
+ * while the buyer is still watching, rather than surprising them at the end.
+ *
+ * Meld only: a crypto swap that misses its bounds is refunded rather than filled short, and that
+ * ending has its own words.
+ */
+const revisedAmount = computed<string | null>(() => {
+  if (crypto.value) return null;
+  const claimed = requests.claimedBase;
+  const quoted = toCashBase(quotedAmount.value);
+  if (claimed === null || quoted === null || claimed === quoted) return null;
+  return fmtCash(claimed);
+});
+
 const amountText = computed(() => {
   if (finished.value) return `+${cashAmount(creditedAmount.value)}`;
-  // The store's amount is empty until the request is live; the list's word on it fills in.
-  return cashAmount(session.amountHuman || (props.topUp?.amount ?? ""));
+  // A rate that moved is news the hero carries too: the figure the buyer is owed, not the one
+  // they were quoted.
+  return cashAmount(revisedAmount.value ?? quotedAmount.value);
 });
 
 /** When the CASH landed: the live milestone (stamped at the route's last step), else the list's
@@ -294,6 +318,11 @@ const message = computed(() => {
   }
   if (bankFailureText.value) return bankFailureText.value;
   if (failedText.value) return failedText.value;
+  // The rate moved under a payment that is still on its way: say so before the hero's new figure
+  // is read as a mistake, and name both amounts so the difference is the buyer's to check.
+  if (revisedAmount.value) {
+    return `Rates changed while your money was on its way. You'll get ${cashAmount(revisedAmount.value)} instead of ${cashAmount(quotedAmount.value)}`;
+  }
   if (requests.fundingNotice) return requests.fundingNotice;
   if (delayed.value) {
     // Each rail waits on something else: the card provider's retry vs chain confirmations.

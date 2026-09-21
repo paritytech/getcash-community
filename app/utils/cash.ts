@@ -21,8 +21,8 @@ export function fmtCash(base: bigint): string {
 }
 
 /**
- * A CASH amount as the designs write it: the symbol on the number, the token beside it
- * ("$50 CASH", "+$50 CASH").
+ * A CASH amount as the designs write it, wherever it is written: the symbol on the number, the
+ * token beside it ("$50 CASH", "+$50 CASH"). A sum inside a sentence takes this form too.
  *
  * The bare token in prose keeps its own form — "Converting to $CASH", "Final $CASH depends on the
  * rate on arrival" — because there it is a name, not a sum.
