@@ -76,9 +76,9 @@ export interface ActiveFlowRecord {
   sourceSymbol?: string;
   /** The provider's quoted fee (Meld), in `sourceSymbol` units. */
   sourceFee?: string;
-  /** The components of `sourceFee`, as the rail reported them. Persisted so a resumed request's
-   *  breakdown reads the same as the one quoted at the start. */
-  /** The provider that priced the request, for the journey's reference rows. */
+  /** The provider that priced the request ("TRANSAK"), not the aggregator in front of it, and the
+   *  components of `sourceFee` as the rail reported them. Persisted so a resumed request's
+   *  breakdown and its reference rows read the same as the ones quoted at the start. */
   sourceProvider?: string;
   sourceTransactionFee?: string;
   sourceNetworkFee?: string;

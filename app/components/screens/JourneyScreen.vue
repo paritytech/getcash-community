@@ -2,7 +2,7 @@
 // The finish of a top-up: the timeline from a confirmed deposit to CASH in the balance, shared by
 // every package.
 import { computed } from "vue";
-import { Check, Plus, RefreshCcw, X } from "lucide-vue-next";
+import { Plus, RefreshCcw, X } from "lucide-vue-next";
 import type { SourceId } from "@getsome/core";
 import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
@@ -345,11 +345,7 @@ const message = computed(() => {
         :failed-label="failedLabel"
       />
 
-      <DetailRows
-        v-if="detailRows.length && !hideRows"
-        :rows="detailRows"
-        @fees="emit('fees')"
-      />
+      <DetailRows v-if="detailRows.length && !hideRows" :rows="detailRows" @fees="emit('fees')" />
 
       <!-- The way back to a refunded deposit drills into the return-funds guide, which carries
            the refund's own status line. -->
@@ -374,12 +370,7 @@ const message = computed(() => {
 
       <!-- The way out of a transfer that has not been paid. The confirmation is the route's, so
            this only asks for it. -->
-      <PillButton
-        v-if="canCancel"
-        variant="danger"
-        class="mt-auto"
-        @click="emit('cancel')"
-      >
+      <PillButton v-if="canCancel" variant="danger" class="mt-auto" @click="emit('cancel')">
         Cancel
       </PillButton>
     </div>

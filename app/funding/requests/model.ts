@@ -532,14 +532,14 @@ export const paymentTaken = (record: Pick<WithdrawalRecord, "payment">): boolean
   return status === "processing" || status === "completed" || status === "partiallyClaimed";
 };
 /**
- * Until when a request whose payment has not been seen is watched: the rail is still worth asking,
+ * Until when a top-up whose payment has not been seen is watched: the rail is still worth asking,
  * and the record is still worth keeping.
  *
  * The rail's own expiry only ever extends this, never shortens it. A pay page that closed says
  * nothing about a transfer already sent, so the window is measured from when the request started
  * and sized to outlast the adapter's watch (see `PAYMENT_WATCH_MS`).
  */
-export const paymentWatchUntil = (record: Pick<RequestRecord, "startedAt" | "deadline">): number =>
+export const paymentWatchUntil = (record: Pick<TopUpRecord, "startedAt" | "deadline">): number =>
   Math.max(record.startedAt + PAYMENT_WATCH_MS, record.deadline.depositExpiresAt ?? 0) +
   TOMBSTONE_GRACE_MS;
 
@@ -550,7 +550,7 @@ export const paymentWatchUntil = (record: Pick<RequestRecord, "startedAt" | "dea
  * observe, that word opens the journey but settles nothing — only the rail's sighting says the
  * money is out of the buyer's hands, and with it the instructions and the cancel.
  */
-export const railSawPayment = (record: Pick<RequestRecord, "rail">): boolean =>
+export const railSawPayment = (record: Pick<TopUpRecord, "rail">): boolean =>
   record.rail.stage === "received" ||
   record.rail.stage === "processing" ||
   record.rail.stage === "delivered";

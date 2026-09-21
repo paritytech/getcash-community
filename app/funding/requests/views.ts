@@ -78,7 +78,7 @@ export const fundsSeenOf = (record: TopUpRecord): boolean =>
 export type JourneyScale = "crypto" | "card" | "bank";
 
 /** The scale a route's journey is counted on. */
-export const journeyScaleOf = (route: RequestRecord["route"]): JourneyScale =>
+export const journeyScaleOf = (route: TopUpRecord["route"]): JourneyScale =>
   route === "crypto" ? "crypto" : route === "bank" ? "bank" : "card";
 
 /** The stops each scale draws, in order. The bank transfer has no "Approved" of its own: nothing
@@ -157,7 +157,7 @@ function cardJourneySteps(record: TopUpRecord): number {
  *  the money was seen, whoever saw it. Added: the request settled. The conversion sits inside
  *  "Payment": from the buyer's side the transfer is the wait, and what follows it is not theirs to
  *  watch. */
-function bankJourneySteps(record: RequestRecord): number {
+function bankJourneySteps(record: TopUpRecord): number {
   const { status, failure } = record;
   switch (status.kind) {
     case "awaiting-deposit":
@@ -200,7 +200,7 @@ export function completedMarkers(
 }
 
 /** How many of the journey's markers are complete, on the scale the route shows. */
-export function journeyStepsOf(record: RequestRecord, scale: JourneyScale): number {
+export function journeyStepsOf(record: TopUpRecord, scale: JourneyScale): number {
   if (scale === "crypto") return cryptoJourneySteps(record);
   return scale === "bank" ? bankJourneySteps(record) : cardJourneySteps(record);
 }

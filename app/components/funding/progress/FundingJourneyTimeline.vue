@@ -33,7 +33,8 @@ const props = withDefaults(
   },
 );
 
-const stages = computed<readonly string[]>(() => JOURNEY_STAGES[props.scale]);
+// A caller with its own stops names them; a top-up takes its route's.
+const stages = computed<readonly string[]>(() => props.labels ?? JOURNEY_STAGES[props.scale]);
 
 const settled = computed(() => props.progress.view.kind === "settled");
 const failed = computed(() => props.progress.view.kind === "failed");

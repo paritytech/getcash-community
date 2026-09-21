@@ -12,6 +12,7 @@
 import { computed, onUnmounted, ref, watch } from "vue";
 import { ChevronRight, CircleAlert } from "lucide-vue-next";
 import { regionForCountry } from "~~/lib/region";
+import { useRequestsStore } from "../../../stores/requests";
 import { useSessionStore } from "../../../stores/session";
 import { cashAmount } from "../../../utils/cash";
 import { currencyName } from "../../../utils/currency";
@@ -44,11 +45,12 @@ const emit = defineEmits<{
 }>();
 
 const session = useSessionStore();
+const requests = useRequestsStore();
 
 /** No quote, or one that cannot be paid from here. */
 const blocked = computed(() => session.meldMethodUnavailable || session.quoteError !== null);
 /** A request exists: the provider has a pay page for this quote. */
-const requestOpen = computed(() => session.phase !== null);
+const requestOpen = computed(() => requests.phase !== null);
 /** The summary has nothing to price yet. */
 const pricing = computed(() => !blocked.value && !session.quoted);
 
@@ -158,9 +160,9 @@ onUnmounted(stopCountdown);
 const canConfirm = computed(
   () =>
     countdown.value === 0 &&
-    !session.meldSubmitted &&
+    !requests.meldSubmitted &&
     session.meldPayUrl !== null &&
-    !session.claiming,
+    !requests.claiming,
 );
 function confirmSent() {
   if (!canConfirm.value) return;

@@ -120,7 +120,7 @@ async function pickCurrency(country: string) {
     showingCurrency.value = false;
     return;
   }
-  if (session.phase !== null && !(await session.cancelTopUp())) return;
+  if (requests.phase !== null && !(await session.cancelTopUp())) return;
   session.setMeldCountry(country);
   showingCurrency.value = false;
   // The bank screen opens the new request as soon as this quote lands.
