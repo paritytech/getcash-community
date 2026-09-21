@@ -37,7 +37,31 @@ describe("a concluded fiat top-up's rows", () => {
 });
 
 describe("a live quote's rows", () => {
-  it("still shows Fees and Total while the top-up is being bought", () => {
-    expect(quoteDetailRows(card).map((r) => r.label)).toEqual(["Fees", "Total"]);
+  it("says the total includes the fee rather than restating it on its own row", () => {
+    // A separate Fees row restated part of the number sitting right beside it. The label carries
+    // that now, and the chevron carries the split.
+    const [row, ...rest] = quoteDetailRows(card);
+    expect(row?.label).toBe("You paid inc. fees");
+    expect(row?.value).toContain("50.55");
+    expect(rest).toEqual([]);
+  });
+
+  it("offers the breakdown only where the fee is a figure it can split", () => {
+    expect(quoteDetailRows(card)[0]?.fees).toBe(true);
+    expect(quoteDetailRows({ ...card, fee: "free" })[0]?.fees).toBe(false);
+    expect(quoteDetailRows({ ...card, fee: null })[0]?.fees).toBe(false);
+  });
+
+  it("drops the inc.-fees wording when there was no fee to include", () => {
+    expect(quoteDetailRows({ ...card, fee: null })[0]?.label).toBe("You paid");
+  });
+
+  it("keeps the crypto rail's full-precision ticker form", () => {
+    const crypto: QuoteView = { amount: "0.00045", symbol: "BTC", crypto: true, live: true };
+    expect(quoteDetailRows(crypto)[0]?.value).toBe("0.00045 BTC");
+  });
+
+  it("has nothing to show without a quote", () => {
+    expect(quoteDetailRows(null)).toEqual([]);
   });
 });
