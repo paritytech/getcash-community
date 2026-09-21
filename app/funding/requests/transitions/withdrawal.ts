@@ -366,6 +366,9 @@ function applyUser(record: WithdrawalRecord, observation: UserObservation): With
         worker?.known && isSendingStep(worker.phase) ? worker.phase : "swap";
       return { ...rest, status: { kind: "converting", at, step } };
     }
+    case "channel-opened":
+      // A fresh channel for the rail leg; the hand-off the worker is re-armed with carries it.
+      return { ...record, handoff: { ...record.handoff, channel: observation.channel } };
     case "meld-submitted":
     case "deposit-skipped":
       return record;

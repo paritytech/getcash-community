@@ -46,6 +46,7 @@ import {
   type RequestRecord,
   type TopUpRecord,
   isWithdrawalRail,
+  type WithdrawalChannel,
   type WithdrawJobView,
   type WithdrawalHandoffPayload,
   type WithdrawalRecord,
@@ -428,6 +429,13 @@ type WithdrawJob = {
   poolAccount?: string;
   slippagePct?: number;
   paymentExpiresAt?: number;
+  channel?: {
+    id?: unknown;
+    address?: unknown;
+    openedAt?: unknown;
+    expiresAt?: unknown;
+    expectedEgress?: unknown;
+  };
   createdAt?: number;
 };
 
@@ -560,6 +568,7 @@ function handoffOf(job: WorkerJob): WorkerHandoffPayload | undefined {
 /** The hand-off the worker keeps on its withdrawal job, when every field is there. */
 function withdrawHandoffOf(job: WithdrawJob): WithdrawalHandoffPayload | undefined {
   const { destination, rail } = job;
+  const channel = channelOf(job);
   if (
     !isString(job.label) ||
     !isString(job.keyAddress) ||
@@ -600,6 +609,29 @@ function withdrawHandoffOf(job: WithdrawJob): WithdrawalHandoffPayload | undefin
     poolAccount: job.poolAccount,
     slippagePct: job.slippagePct,
     paymentExpiresAt: job.paymentExpiresAt,
+    ...(channel === undefined ? {} : { channel }),
+  };
+}
+
+/** The channel a job carries, when every field is there. */
+function channelOf(job: WithdrawJob): WithdrawalChannel | undefined {
+  const c = job.channel;
+  if (
+    c === undefined ||
+    !isString(c.id) ||
+    !isString(c.address) ||
+    !isNumber(c.openedAt) ||
+    !isNumber(c.expiresAt) ||
+    !isString(c.expectedEgress)
+  ) {
+    return undefined;
+  }
+  return {
+    id: c.id,
+    address: c.address,
+    openedAt: c.openedAt,
+    expiresAt: c.expiresAt,
+    expectedEgress: c.expectedEgress,
   };
 }
 

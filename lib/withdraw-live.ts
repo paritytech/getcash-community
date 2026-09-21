@@ -19,14 +19,24 @@ import {
   DEFAULT_WITHDRAW_SLIPPAGE_PCT,
   PASEO_PEOPLE_POOL_ACCOUNT,
   PEOPLE_NATIVE,
+  readDestinationPas,
 } from "@getsome/withdraw";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import {
   WITHDRAW_SOURCE_PREFIX,
   isWithdrawSourceId,
   type HostPaymentStatus,
+  type WithdrawalChannel,
   type WithdrawalHandoffPayload,
 } from "../app/funding/requests/model";
+import {
+  formatSourceAmount,
+  openWithdrawChannel,
+  quoteOutgoing,
+  SOURCE_CONFIG_BY_ID,
+} from "@getsome/chainflip";
+import { AccountId } from "polkadot-api";
+import { mainnetSdk } from "./chainflip-backend";
 import { hostSafeEntropy, nextFreeTradeNumber, readTradeCounter, tradeCounterKey } from "./coinage";
 import {
   requestPayment as hostRequestPayment,
@@ -136,6 +146,56 @@ export async function advanceWithdrawCounter(sourceId: string, n: number): Promi
   }
 }
 
+/** The key's free native on Asset Hub at the current head: what a provider refunded, when the
+ *  swap could not fill, and what a fresh channel is quoted for. */
+export async function readWithdrawKeyNativeOnAssetHub(keyPublicKeyHex: string): Promise<bigint> {
+  const { connectChain, ASSET_HUB } = await import("./host-chain");
+  const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
+  return readDestinationPas(api, keyPublicKeyHex);
+}
+
+/** A provider destination's asset and chain, as Chainflip names them, with the asset's decimals
+ *  for showing what lands. */
+function providerDestination(destination: { id: string; chain: string; asset: string }) {
+  const config = SOURCE_CONFIG_BY_ID.get(destination.id as never);
+  if (config === undefined) {
+    throw new Error(`no Chainflip source for the ${destination.asset} destination`);
+  }
+  return config;
+}
+
+/** What `amountNative` sells for on the destination, formatted in its asset, for the summary. */
+export async function quoteWithdrawReceive(
+  amountNative: bigint,
+  destination: { id: string; chain: string; asset: string },
+): Promise<string> {
+  const config = providerDestination(destination);
+  const quote = await quoteOutgoing(await mainnetSdk(), amountNative, config);
+  return `${formatSourceAmount(config, quote.egressAmount, { maxDecimals: 6 })} ${config.asset}`;
+}
+
+/** Opens the provider's channel for a withdrawal, with the key on Asset Hub as the refund. */
+export async function openWithdrawChannelFor(args: {
+  amountNative: bigint;
+  destination: { id: string; chain: string; asset: string; address: string };
+  keyPublicKeyHex: string;
+}): Promise<WithdrawalChannel> {
+  const config = providerDestination(args.destination);
+  const channel = await openWithdrawChannel({
+    sdk: await mainnetSdk(),
+    amount: args.amountNative,
+    destination: { chain: config.chain, asset: config.asset, address: args.destination.address },
+    refundAddress: AccountId(0).dec(args.keyPublicKeyHex as `0x${string}`),
+  });
+  return {
+    id: channel.id,
+    address: channel.address,
+    openedAt: Date.now(),
+    expiresAt: channel.expiresAt,
+    expectedEgress: channel.expectedEgress.toString(),
+  };
+}
+
 /** The hand-off for a withdrawal, with the chain facts this build is made for. */
 export function withdrawHandoff(args: {
   sourceId: string;
@@ -146,8 +206,10 @@ export function withdrawHandoff(args: {
   landingHex: string;
   rail: WithdrawalHandoffPayload["rail"];
   paymentExpiresAt: number;
+  channel?: WithdrawalChannel;
 }): WithdrawalHandoffPayload {
   return {
+    ...(args.channel === undefined ? {} : { channel: args.channel }),
     label: withdrawEntropyLabel(args.sourceId, args.n),
     keyAddress: args.key.address,
     keyPublicKeyHex: args.key.publicKeyHex,
@@ -195,6 +257,12 @@ export async function sendWithdrawHandoff(
 /** Tells the worker a withdrawal still waiting for its payment was cancelled. */
 export function cancelWithdrawJob(worker: WorkerLike, sessionId: string): Promise<unknown> {
   return worker.call("cancelWithdraw", { sessionId });
+}
+
+/** Dev builds only: tells the worker to take a withdrawal's swap as delivered. On a test network
+ *  the provider's channel is real but cannot be paid, so the walk ends here by hand. */
+export function skipWithdrawRail(worker: WorkerLike, sessionId: string): Promise<unknown> {
+  return worker.call("skipWithdrawRail", { sessionId });
 }
 
 /** Nudges the worker into a pass over its withdrawals. A run has stalled between wakes while the

@@ -318,6 +318,21 @@ export interface WithdrawalHandoffPayload {
   poolAccount: string;
   slippagePct: number;
   paymentExpiresAt: number;
+  /** The provider's channel, opened on the page at confirm; the worker pays it. Present for
+   *  every rail but `direct`. */
+  channel?: WithdrawalChannel;
+}
+
+/** A provider's channel for one withdrawal: where the key pays, and what the quote promised. */
+export interface WithdrawalChannel {
+  id: string;
+  /** The Asset Hub account the key pays, SS58. */
+  address: string;
+  openedAt: number;
+  /** When the provider closes the channel (ms); 0 when it gave none. */
+  expiresAt: number;
+  /** What the quote said would land, in the destination asset's base units. */
+  expectedEgress: string;
 }
 
 /** What the store extracts from one withdrawal job in the worker's blob. */
@@ -457,7 +472,9 @@ export type Observation =
         actualClaimed?: string;
       };
     }
-  | { source: "user"; at: number; event: "payment-requested"; attempt: number; id: string };
+  | { source: "user"; at: number; event: "payment-requested"; attempt: number; id: string }
+  /** The page opened a fresh provider channel for a retry; the hand-off carries it next. */
+  | { source: "user"; at: number; event: "channel-opened"; channel: WithdrawalChannel };
 
 /** The source a request runs under: a bare legacy ref means the crypto rail's. */
 export const effectiveSourceId = (ref: RequestRef): string => ref.sourceId ?? CRYPTO_SOURCE_ID;

@@ -9,6 +9,7 @@ import type { FundingSelection } from "../../../funding/selection";
 import type { FundingTopUp } from "../../../funding/top-ups";
 import { useRequestsStore } from "../../../stores/requests";
 import { toCashBase } from "../../../utils/cash";
+import { isDemoBuild } from "../../../utils/demo";
 import {
   landingAccountHex,
   type WithdrawDestination,
@@ -45,6 +46,8 @@ const destination = ref<WithdrawDestination | null>(null);
 const address = ref("");
 /** What arrives, formatted; null while quoting; undefined without a quote. */
 const receive = ref<string | null | undefined>(undefined);
+/** The native the estimate is for; what a provider's channel is quoted with at confirm. */
+const expectedNative = ref<bigint | null>(null);
 const starting = ref(false);
 const startError = ref<string | null>(null);
 const busy = ref(false);
@@ -58,6 +61,24 @@ const unavailable = computed(() => {
   const ref = withdrawalRequestRef(props.topUp.id);
   return ref === null || !requests.has(ref);
 });
+
+/** Demo Skip: the provider's channel is real on a test network but can never be paid there, so
+ *  the swap is taken as delivered by hand and the walk can reach its end. */
+const canSkipRail = computed(
+  () =>
+    isDemoBuild() &&
+    step.value === "journey" &&
+    record.value?.status.kind === "sending" &&
+    record.value.rail.provider !== "direct",
+);
+
+function onSkipRail() {
+  const current = record.value;
+  if (current === null || busy.value) return;
+  void withdrawal.skipRail(current.ref).catch((error: unknown) => {
+    notice.value = error instanceof Error ? error.message : String(error);
+  });
+}
 
 const toolbar = computed<{ title?: string; back: boolean }>(() => {
   switch (step.value) {
@@ -119,15 +140,23 @@ async function onAddress(entered: string) {
   step.value = "summary";
   const picked = destination.value;
   const base = toCashBase(amount.value);
-  if (picked === null || picked.rail !== "direct" || base === null) {
+  expectedNative.value = null;
+  if (picked === null || base === null) {
     receive.value = undefined;
     return;
   }
   receive.value = null;
   try {
-    const { quoteDirectReceive } = await import("~~/lib/withdraw-live");
-    const planck = await quoteDirectReceive(base);
-    if (step.value === "summary") receive.value = `${formatNative(planck, 10)} ${picked.asset}`;
+    const live = await import("~~/lib/withdraw-live");
+    // What the CASH sells for on Asset Hub; a provider destination then sells that native on.
+    const planck = await live.quoteDirectReceive(base);
+    const estimate =
+      picked.rail === "direct"
+        ? `${formatNative(planck, 10)} ${picked.asset}`
+        : await live.quoteWithdrawReceive(planck, picked);
+    if (step.value !== "summary") return;
+    expectedNative.value = planck;
+    receive.value = estimate;
   } catch (error: unknown) {
     console.warn("[withdraw] receive estimate unavailable:", error);
     receive.value = undefined;
@@ -147,6 +176,7 @@ async function confirm() {
       destination: { chain: picked.chainLabel, asset: picked.asset, address: address.value },
       landingHex: landingAccountHex(picked, address.value),
       rail: picked.rail,
+      ...(expectedNative.value === null ? {} : { expectedNative: expectedNative.value }),
     });
     if (outcome.ref === null) {
       startError.value = outcome.reason;
@@ -226,7 +256,17 @@ onUnmounted(() => {
       padding-bottom: env(safe-area-inset-bottom);
     "
   >
-    <Toolbar :title="toolbar.title" :back="toolbar.back" @back="onBack" />
+    <Toolbar :title="toolbar.title" :back="toolbar.back" @back="onBack">
+      <template v-if="canSkipRail" #trailing>
+        <button
+          type="button"
+          class="rounded-medium px-4 py-3 text-label-l font-normal text-fg-primary transition-colors hover:bg-action-tertiary-hover"
+          @click="onSkipRail"
+        >
+          Skip
+        </button>
+      </template>
+    </Toolbar>
 
     <div class="flex min-h-0 flex-1 flex-col px-6 pt-6">
       <WithdrawNetworkScreen v-if="step === 'network'" @pick="pickNetwork" />

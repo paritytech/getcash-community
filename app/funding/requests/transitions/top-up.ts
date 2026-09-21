@@ -531,6 +531,7 @@ function applyUser(record: TopUpRecord, observation: UserObservation): TopUpReco
     case "deposit-skipped":
       return record.depositSkippedAt === undefined ? { ...record, depositSkippedAt: at } : record;
     case "payment-requested":
+    case "channel-opened":
       return record;
   }
 }

@@ -56,6 +56,7 @@ const saveJobs = () => store.save();
  *   v: 1, sessionId, label,                  // label: the entropy label the surface used
  *   keyAddress, keyPublicKeyHex,             // the key the surface showed and the purse pays
  *   amount, destination, landingHex, rail,   // what the surface asked for; kept for its records
+ *   channel?,                                // the provider's channel the page opened
  *   assetHubGenesis, peopleGenesis, peopleParaId, assetHubParaId, poolAccount, slippagePct,
  *   paymentExpiresAt: number|null,
  *   phase: "starting" | WithdrawStep | RailStep | "failed",
@@ -105,6 +106,9 @@ function newRecord(input, nowMs) {
   if (!RAILS.includes(input.rail)) {
     throw new Error(`startWithdraw: rail must be one of ${RAILS.join(", ")}`);
   }
+  if (input.rail !== "direct" && !isChannel(input.channel)) {
+    throw new Error("startWithdraw: a provider rail needs the channel the page opened");
+  }
   if (!assetHubGenesis || !peopleGenesis) {
     throw new Error("startWithdraw: both chain genesis hashes are required");
   }
@@ -134,6 +138,8 @@ function newRecord(input, nowMs) {
     poolAccount,
     slippagePct,
     paymentExpiresAt: paymentExpiryOf(input),
+    // Kept as handed over, so a surface that lost its record can rebuild the hand-off whole.
+    ...(isChannel(input.channel) ? { channel: channelOf(input.channel) } : {}),
     phase: "starting",
     landed: false,
     done: false,
@@ -141,13 +147,45 @@ function newRecord(input, nowMs) {
     armedAt: nowMs,
     lastTickAt: null,
     state: freshRecordState(),
-    leg: freshRailLegState(),
+    leg: legFor(input, nowMs),
     txs: [],
   };
 }
 
 /** The rails a hand-off may name; `direct` ends with the message, the rest add the rail leg. */
 const RAILS = ["direct", "chainflip", "meld"];
+
+/** A channel as the page hands it over: the provider's id and the Asset Hub account to pay. */
+const isChannel = (channel) =>
+  typeof channel === "object" &&
+  channel !== null &&
+  typeof channel.id === "string" &&
+  channel.id !== "" &&
+  typeof channel.address === "string" &&
+  channel.address !== "";
+
+/** The channel's fields as the surface sent them, numbers and strings only. */
+function channelOf(channel) {
+  const openedAt = Number(channel.openedAt);
+  const expiresAt = Number(channel.expiresAt);
+  return {
+    id: channel.id,
+    address: channel.address,
+    openedAt: Number.isFinite(openedAt) && openedAt > 0 ? openedAt : 0,
+    expiresAt: Number.isFinite(expiresAt) && expiresAt > 0 ? expiresAt : 0,
+    expectedEgress: String(channel.expectedEgress ?? "0"),
+  };
+}
+
+/** A fresh rail leg, seeded with the hand-off's channel when it carries one. */
+function legFor(input, nowMs) {
+  const leg = freshRailLegState();
+  if (isChannel(input.channel)) {
+    const { id, address, openedAt } = channelOf(input.channel);
+    leg.handoff = { id, address, openedAt: openedAt || nowMs };
+  }
+  return leg;
+}
 
 const freshRecordState = () => ({ ...freshWithdrawTickState(), workedMs: 0 });
 
@@ -180,6 +218,11 @@ export async function startWithdraw(params) {
     // A re-sent hand-off carries the surface's current payment window: a retried payment gets a
     // fresh one, and the job must not expire on the old clock while the surface waits on the new.
     existing.paymentExpiresAt = paymentExpiryOf(input) ?? existing.paymentExpiresAt;
+    // A fresh channel, after a swap that refunded, starts the rail leg over: unpaid, unread.
+    if (isChannel(input.channel) && input.channel.id !== existing.leg?.handoff?.id) {
+      existing.channel = channelOf(input.channel);
+      existing.leg = legFor(input, Date.now());
+    }
     await saveJobs();
     return describeWithdraw(existing);
   }
@@ -201,7 +244,7 @@ export async function startWithdraw(params) {
 /**
  * Re-arms a failed job on a re-sent hand-off. The run clock and the payment window restart. A
  * rejected job sizes and submits afresh; a job whose XCM landed keeps following its message; a
- * job whose provider failed starts the rail leg over with a fresh channel.
+ * job whose provider failed starts the rail leg over with the fresh channel the hand-off brings.
  */
 function rearm(record, nowMs) {
   const { failure } = record;
@@ -215,7 +258,6 @@ function rearm(record, nowMs) {
     if (record.leg?.sweep) record.leg.sweep.rejections = 0;
   }
   if (failure === "expired" || failure === "cancelled") record.state.fundsSeenAt = null;
-  if (failure === "rail-failed" || failure === "no-rail") record.leg = freshRailLegState();
 }
 
 function fail(record, failure, reason) {
@@ -259,6 +301,27 @@ function describeWithdraw(record) {
     txs: record.txs,
     fundsSeenAt: record.state?.fundsSeenAt ?? null,
   };
+}
+
+/**
+ * Dev builds only: takes the provider's word as delivered for a job on the rail leg, so the walk
+ * can be finished where the provider cannot be reached. On a test network the channel is real
+ * but the swap never runs, since the provider watches another chain.
+ */
+export async function skipWithdrawRail(params) {
+  const input = readParams(params);
+  const all = await loadJobs();
+  const sessionId = String(input.sessionId ?? "");
+  const record = all[sessionId];
+  if (!record) return { sessionId, known: false };
+  if (!record.landed || record.done || record.rail === "direct" || record.phase === "failed") {
+    return { error: "invalid", reason: "the job is not on the rail leg" };
+  }
+  record.leg = { ...(record.leg ?? freshRailLegState()), reading: { status: "complete" } };
+  record.phase = "done";
+  record.done = true;
+  await saveJobs();
+  return describeWithdraw(record);
 }
 
 /** Reads one job by `sessionId`, or all jobs. */

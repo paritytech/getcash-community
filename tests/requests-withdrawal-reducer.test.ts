@@ -369,6 +369,19 @@ describe("withdrawal: the worker", () => {
     });
   });
 
+  it("carries a fresh channel on the hand-off when the page opens one for a retry", () => {
+    const channel = {
+      id: "77",
+      address: "5FreshChannel",
+      openedAt: at(5),
+      expiresAt: at(60 * 24),
+      expectedEgress: "123456",
+    };
+    const opened = run(railed(), { source: "user", at: at(5), event: "channel-opened", channel });
+    expect(opened.handoff.channel).toEqual(channel);
+    expect(opened.status).toEqual(railed().status); // the channel alone moves nothing else
+  });
+
   it("fails recoverably on a rejection or a timeout", () => {
     const seen = at(1);
     const rejected = run(

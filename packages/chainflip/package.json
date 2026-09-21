@@ -8,6 +8,10 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./swap-status": {
+      "types": "./src/swap-status.ts",
+      "default": "./src/swap-status.ts"
     }
   },
   "dependencies": {

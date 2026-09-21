@@ -1,7 +1,9 @@
-// The providers this worker can hand a withdrawal to, and the hand that pays them. No provider
-// client yet: the pickers keep every provider route greyed until one lands here, and a job that
-// reaches the rail leg without one fails plainly rather than waiting on nothing.
+// The providers this worker can follow, and the hand that pays them. The channel itself is
+// opened on the page, at confirm, and arrives with the hand-off; here a provider is only asked
+// how the swap behind it is going, one fetch per tick. Chainflip carries the crypto
+// destinations; the pickers grey a route until its provider is here.
 
+import { readSwapStatus } from "@getsome/chainflip/swap-status";
 import {
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
   DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
@@ -12,12 +14,12 @@ import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import { connectChain, keypairFor, signOptionsFor } from "./shared.js";
 
 /**
- * The provider client for a job, bound to that job, or null when this build has none. A client
- * has two calls: `open()`, the channel and the Asset Hub account the key pays, and `status(id)`,
- * the provider's word on the swap.
+ * The provider client for a job, or null when this build has none for its rail. A client has
+ * one call, `status(id)`: the provider's word on the swap behind the channel.
  */
-export function railFor(_provider, _record) {
-  return null;
+export function railFor(provider, _record) {
+  if (provider !== "chainflip") return null;
+  return { status: (id) => readSwapStatus(id) };
 }
 
 /**
