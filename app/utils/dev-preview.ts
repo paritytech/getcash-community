@@ -438,7 +438,8 @@ function cardJourney(session: Session, flow: Flow) {
 /** What the card scenes' create call captured, as the record keeps it. The id abbreviates to the
  *  "a1f9-4c2e" the design frames show, so the journey's reference row renders as drawn. */
 const PREVIEW_MELD = {
-  serviceProvider: "Transak",
+  // Meld's own casing, so the scenes exercise the name the row has to re-case.
+  serviceProvider: "TRANSAK",
   fundingRequestId: "a1f9c3d2-7b44-4e10-9f21-00ab9e4c2e",
 };
 
@@ -996,10 +997,9 @@ export const SCENES: Scene[] = [
     apply: topUpList({ finished: previewTopUpHistory(), entry: "history" }),
   },
   {
-    // What every buyer's existing history actually renders today: the funding-request id was
-    // always persisted, so the reference is real, but no record knows which provider took the
-    // payment — the row names the aggregator instead. This is the shipped state; the scene above
-    // is what it becomes once the adapter surfaces the rail's own ids.
+    // A record that kept neither of the provider's names — no create call captured one and no
+    // quote was stored to fall back on — so the row can only name the aggregator. The
+    // funding-request id was always persisted, so the reference beside it is still real.
     name: "card / refunded: provider unknown",
     stage: { kind: "journey", route: "card", topUpId: "p9" },
     apply: topUpList({ finished: previewTopUpHistory(), entry: "history" }),

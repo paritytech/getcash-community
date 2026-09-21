@@ -16,6 +16,7 @@ import { DEPOSIT_EXPIRED_REASON, useSessionStore } from "../../stores/session";
 import { fmtCash } from "../../utils/cash";
 import { useJourneyQuote } from "../../composables/useJourneyQuote";
 import { journeyMoneyRows, paidDetailRows, quoteDetailRows } from "../../funding/quote-rows";
+import { providerNameOf } from "../../funding/top-up-projection";
 import { formatWhenShort } from "../../utils/journey";
 import { refundedFailure } from "../../utils/recovery";
 import FundingJourneyTimeline from "../funding/progress/FundingJourneyTimeline.vue";
@@ -200,7 +201,9 @@ const paidRows = computed(() => {
   if (moneyRows.value !== "receipt") return [];
   const live = requests.foregroundRecord;
   const details = props.topUp?.details;
-  const provider = live?.meldServiceProvider ?? details?.provider?.label;
+  // The live record and the list's row have to name the provider identically, so both go
+  // through `providerNameOf`; the row's label is already its output.
+  const provider = (live ? providerNameOf(live) : undefined) ?? details?.provider?.label;
   // The crypto rail has no id to show: its refund transaction is the chain's, and nothing
   // persists it. The network stands in its place as the fact the record can answer.
   const reference = cryptoRefund.value

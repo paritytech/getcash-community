@@ -233,10 +233,9 @@ export function previewTopUpHistory(): FundingTopUp[] {
       startedMinutesAgo: 4 * DAY,
       endedMinutesAgo: 4 * DAY - 6,
     }),
-    // Every record written before this release, and every one written after it until the adapter
-    // surfaces the rail's ids: the funding-request id was always persisted, so the reference is
-    // there, but nothing recorded which provider took the payment. `topUpDetails` names the
-    // aggregator rather than leaving the row blank.
+    // The oldest history: the funding-request id was always persisted, so the reference is
+    // there, but neither of the provider's names was kept — not the create call's, not the
+    // quote's. `topUpDetails` names the aggregator rather than leaving the row blank.
     previewTopUp("p9", "card", "failed", "Refunded to your card", {
       amount: "30",
       quote: { amount: "31.80", symbol: "EUR", fee: "1.80" },

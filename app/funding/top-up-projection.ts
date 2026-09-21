@@ -47,6 +47,42 @@ export interface FundingTopUpRecord {
   progress?: FundingProgressSnapshot;
 }
 
+/**
+ * Meld spells its providers in caps — "TRANSAK", "COINBASE_PAY" — and the design draws them as
+ * names. Only an all-caps value is re-cased: anything carrying a lowercase letter already arrived
+ * spelled the way somebody meant it, and re-casing it would be us overruling them.
+ */
+function asName(provider: string): string {
+  if (/[a-z]/.test(provider)) return provider;
+  return provider
+    .toLowerCase()
+    .split(/[\s_-]+/)
+    .filter((word) => word !== "")
+    .map((word) => word[0]!.toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+/**
+ * The provider the payment actually went through, ready to draw, or undefined when the record
+ * cannot say.
+ *
+ * Meld is only the aggregator in front of Transak, Koywe and the rest, and it is the one behind it
+ * that took the buyer's money — so it is the one worth naming on a receipt. The record keeps that
+ * name twice, from two moments: `meldServiceProvider` off the create call, and `sourceProvider`
+ * off the quote the request was priced against. The create call is the better witness, because it
+ * names who was actually paid; the quote stands in when an older record kept only that.
+ *
+ * Undefined rather than a fallback: only the caller knows which rail it is projecting, and so
+ * which aggregator to name in place of a provider it never recorded.
+ */
+export function providerNameOf(record: {
+  meldServiceProvider?: string;
+  sourceProvider?: string;
+}): string | undefined {
+  const provider = record.meldServiceProvider ?? record.sourceProvider;
+  return provider ? asName(provider) : undefined;
+}
+
 /** The rail's persisted quote, spread onto the top-up when the record carries one. */
 export function quoteOf(record: FundingTopUpRecord): Pick<FundingTopUp, "quote"> {
   return record.sourceAmount && record.sourceSymbol

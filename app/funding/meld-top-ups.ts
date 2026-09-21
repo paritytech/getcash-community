@@ -11,7 +11,7 @@ import { journeyScaleOf, journeyStepsOf, rowStateOf } from "./requests/views";
 import type { FundingRoute } from "./selection";
 import { isMeldSourceId, meldMethodFor, meldSourceIdFor, type MeldMethod } from "./source-ids";
 import type { FundingTopUpAdapter } from "./top-up-adapter";
-import { quoteOf, referenceOf, type FundingTopUpRecord } from "./top-up-projection";
+import { providerNameOf, quoteOf, referenceOf, type FundingTopUpRecord } from "./top-up-projection";
 import type { FundingTopUp, FundingTopUpDetails } from "./top-ups";
 
 export type MeldTopUpRecord = FundingTopUpRecord;
@@ -38,9 +38,9 @@ export const MELD_WINDOW_CLOSED_REASON = "Payment window closed";
 function topUpDetails(record: MeldTopUpRecord, method: MeldMethod): FundingTopUpDetails {
   return {
     // The provider that actually took the payment when the record kept it; "Meld" is the
-    // aggregator, and all an older record can say.
+    // aggregator, and all a record that kept neither of its names can say.
     provider: {
-      label: record.meldServiceProvider ?? "Meld",
+      label: providerNameOf(record) ?? "Meld",
       icon: method === "card" ? "/icons/card.svg" : "/icons/bank.svg",
     },
     method: {
