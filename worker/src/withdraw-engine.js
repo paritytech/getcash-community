@@ -3,6 +3,7 @@ import {
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
   DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
   freshRailLegState,
+  freshSweepState,
   freshWithdrawTickState,
   RailFailedError,
   railTickOnce,
@@ -63,7 +64,7 @@ const saveJobs = () => store.save();
  *   done, createdAt, armedAt, lastTickAt, lastError?,
  *   state: { attempts, rejections, submitted, destinationPasBefore, expectedLanding,
  *            fundsSeenAt, workedMs },       // the two balances as decimal strings or null
- *   leg: { handoff, paid, reading },         // the rail leg, for a provider rail
+ *   leg: { handoff, paid, sweep, reading },  // the rail leg, for a provider rail
  *   submitting?: { call, at },               // written before a submit
  *   txs: [{ call, txHash, block? }],
  * }
@@ -211,6 +212,7 @@ function rearm(record, nowMs) {
   record.state.workedMs = 0;
   if (failure === "rejected" || failure === "timeout") {
     record.state.rejections = 0;
+    if (record.leg?.sweep) record.leg.sweep.rejections = 0;
   }
   if (failure === "expired" || failure === "cancelled") record.state.fundsSeenAt = null;
   if (failure === "rail-failed" || failure === "no-rail") record.leg = freshRailLegState();
@@ -319,24 +321,37 @@ async function tickRailLeg(record) {
   const state = {
     handoff: record.leg?.handoff ?? null,
     paid: record.leg?.paid === true,
+    sweep: record.leg?.sweep ?? freshSweepState(),
     reading: record.leg?.reading ?? null,
   };
   const persistLeg = () => {
-    record.leg = { handoff: state.handoff, paid: state.paid, reading: state.reading };
+    record.leg = {
+      handoff: state.handoff,
+      paid: state.paid,
+      sweep: state.sweep,
+      reading: state.reading,
+    };
+  };
+  const persistAndSave = async () => {
+    persistLeg();
+    await saveJobs();
   };
   let outcome;
   try {
     outcome = await railTickOnce(
       {
         rail,
-        pay: (handoff) => payRail(record, handoff),
+        pay: (handoff, sweep) =>
+          payRail(record, handoff, sweep, {
+            onBeforeSubmit: persistAndSave,
+            onTx: (info) => record.txs.push(info),
+          }),
         tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
-        payTimeoutMs: DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
+        // The payment reads the key and then submits, each on its own bound; this outer bound
+        // must outlast both, or it fires while the transfer is still in flight.
+        payTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS + DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
         now: Date.now,
-        onBeforePay: async () => {
-          persistLeg();
-          await saveJobs();
-        },
+        onBeforePay: persistAndSave,
       },
       state,
     );

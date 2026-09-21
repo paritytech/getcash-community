@@ -331,7 +331,7 @@ export interface WithdrawJobView {
   lastError?: string;
   fundsSeenAt: number | null;
   lastTickAt: number | null;
-  txs?: { call: "swap" | "withdraw"; txHash: string; block?: number }[];
+  txs?: { call: "swap" | "withdraw" | "sweep"; txHash: string; block?: number }[];
   /** The provider's latest word on the swap, once the worker has paid it. */
   rail?: SwapStatusResult;
 }

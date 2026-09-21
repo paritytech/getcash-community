@@ -4,8 +4,8 @@
 // the provider says it is delivered or that it failed.
 //
 // PROVIDER AGNOSTIC. The provider is a client with two calls, open and status, and the payment
-// is a hand the driver supplies. Chainflip and Meld each plug in behind that shape; nothing here
-// knows which one it is talking to.
+// is a hand the driver supplies, the sweep of the key. Chainflip and Meld each plug in behind
+// that shape; nothing here knows which one it is talking to.
 //
 // RE-ENTRANT, like the message leg. The state is the driver's to persist; a tick that throws is
 // retried on the next tick, and a channel that was opened is never opened twice. Terminal is the
@@ -13,6 +13,7 @@
 
 import type { SwapStatusResult } from "@getsome/core";
 import { bounded } from "./bounded";
+import { freshSweepState, type SweepState } from "./sweep";
 
 /** 'handoff' opens the channel and pays it; 'follow' holds while the provider works. */
 export type RailStep = "handoff" | "follow" | "done";
@@ -30,6 +31,8 @@ export interface RailLegState {
   handoff: RailHandoff | null;
   /** The key paid the channel. */
   paid: boolean;
+  /** The sweep's own memory, for the hand that pays. */
+  sweep: SweepState;
   /** The provider's latest word on the swap. */
   reading: SwapStatusResult | null;
 }
@@ -37,6 +40,7 @@ export interface RailLegState {
 export const freshRailLegState = (): RailLegState => ({
   handoff: null,
   paid: false,
+  sweep: freshSweepState(),
   reading: null,
 });
 
@@ -49,8 +53,9 @@ export interface RailClient {
 
 export interface RailLegInput {
   rail: RailClient;
-  /** Moves everything the key holds on Asset Hub to the channel. */
-  pay: (handoff: RailHandoff) => Promise<void>;
+  /** Moves everything the key holds on Asset Hub to the channel; resolves once the key is
+   *  empty. The sweep state is its to keep across ticks. */
+  pay: (handoff: RailHandoff, sweep: SweepState) => Promise<void>;
   /** Bound on a provider call. */
   tickTimeoutMs: number;
   /** Bound on the payment's resolution. */
@@ -102,7 +107,7 @@ export async function railTickOnce(
   }
   if (!state.paid) {
     await input.onBeforePay?.(state.handoff);
-    await bounded(input.pay(state.handoff), input.payTimeoutMs, "channel payment");
+    await bounded(input.pay(state.handoff, state.sweep), input.payTimeoutMs, "channel payment");
     state.paid = true;
     return { step: "handoff", reading: null };
   }

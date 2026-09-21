@@ -53,7 +53,7 @@ export const landingFloor = (landed: bigint, slippagePct: number): bigint =>
  *  passed each time. Something the dry run cannot see differs at inclusion. */
 export class WithdrawRejectedError extends Error {
   constructor(
-    readonly call: "swap" | "withdraw",
+    readonly call: "swap" | "withdraw" | "sweep",
     readonly reason: string,
   ) {
     super(`withdrawal given up: ${call} rejected ${MAX_REJECTIONS} times, last: ${reason}`);

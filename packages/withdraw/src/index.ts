@@ -50,6 +50,8 @@ export type {
   RailLegState,
   RailStep,
 } from "./rail-leg";
+export { buildSweep, freshSweepState, sweepOnce } from "./sweep";
+export type { SweepInput, SweepState } from "./sweep";
 export { cashInFor, pasOutFor } from "./pool";
 export type { PoolReserves } from "./pool";
 export {

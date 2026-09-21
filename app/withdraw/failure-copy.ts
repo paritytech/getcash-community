@@ -10,7 +10,7 @@ export function withdrawalFailureText(failure: WithdrawalFailure): string {
     case "expired":
       return "This withdrawal expired because the payment never arrived.";
     case "rejected":
-      return "The network refused the conversion. You can try again.";
+      return "The network refused the transaction. You can try again.";
     case "timeout":
       return "The conversion is taking longer than expected. You can try again.";
     case "egress-failed":
