@@ -4,15 +4,19 @@
 // The artwork is whatever sits in `app/assets/flags` as `<alpha-2>.svg`, picked up at build time:
 // committing a file is all it takes to light a country up. A country with no artwork yet falls
 // back to the regional-indicator emoji rather than a hole, so the list is never missing a row's
-// identity.
+// identity. The emoji is a fallback, not a plan: Windows ships no flag glyphs, so a Chrome there
+// draws the two letters instead, and every region a picker can offer wants a file.
 import { computed } from "vue";
 import { flagEmoji } from "~~/lib/supported";
 
 const props = withDefaults(defineProps<{ country: string; size?: number }>(), { size: 48 });
 
+// `no-inline` is load-bearing: every flag is under Vite's 4 KB inline limit, so without it the
+// whole set is base64'd into the entry chunk and every session pays for 250-odd flags to draw one.
+// Emitted as files, the browser fetches only the rows it actually paints.
 const ART = import.meta.glob("../../assets/flags/*.svg", {
   eager: true,
-  query: "?url",
+  query: "?no-inline&url",
   import: "default",
 }) as Record<string, string>;
 
