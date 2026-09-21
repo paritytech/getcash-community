@@ -76,6 +76,43 @@ describe("Meld top-up adapter", () => {
     });
   });
 
+  it("carries the reference and the provider a failed journey has to show", () => {
+    // Both are read off the record, not off a live session: the journey that needs them is
+    // re-opened from the list after a restart, with nothing live left to ask.
+    const now = 900;
+    const failed = record(
+      {
+        tradeN: 7,
+        amountHuman: "50",
+        startedAt: 500,
+        sourceId: "meld-card",
+        sourceAmount: "52.06",
+        sourceSymbol: "USD",
+        sourceFee: "1.56",
+        sourceProvider: "TRANSAK",
+        meldFundingRequestId: "a1f9c3d2-7b44-4e10-9f21-00ab9e4c2e",
+      },
+      now,
+    );
+
+    expect(projectMeldTopUps([failed], now)[0]).toMatchObject({
+      reference: "a1f9c3d2-7b44-4e10-9f21-00ab9e4c2e",
+      quote: { amount: "52.06", symbol: "USD", fee: "1.56", provider: "TRANSAK" },
+    });
+  });
+
+  it("leaves both out of a record that never carried them", () => {
+    const now = 900;
+    const bare = record(
+      { tradeN: 8, amountHuman: "50", startedAt: 500, sourceId: "meld-card" },
+      now,
+    );
+    const topUp = projectMeldTopUps([bare], now)[0];
+
+    expect(topUp).not.toHaveProperty("reference");
+    expect(topUp?.quote).toBeUndefined();
+  });
+
   it("shows the conversion running once the worker reports the swap", () => {
     const snapshot = createFundingProgressSnapshot(meldProgressProvider.createProfile());
     const waiting = record(

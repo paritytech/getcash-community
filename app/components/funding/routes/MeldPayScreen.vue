@@ -2,7 +2,9 @@
 // The Meld package's first screen: region, the quote it produced, and Continue into the provider
 // widget. The method is fixed by the route; the region is the buyer's only choice.
 import { computed, onMounted, ref } from "vue";
+import { ChevronRight } from "lucide-vue-next";
 import { useSessionStore } from "../../../stores/session";
+import { corridorOptions } from "~~/lib/supported";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import type { FundingRoute } from "../../../funding/selection";
 import CountryCombobox from "../../ui/CountryCombobox.vue";
@@ -55,12 +57,15 @@ function localeCountry(): string | null {
   }
 }
 
-// The picker's rows: every country the live catalog lists, else the static fallback.
+// Picker rows: live catalog or static fallback, enriched per active method (session.method re-greys card<->bank).
 const countryOptions = computed(() => {
   const live = session.supportedCountries;
-  return live && live.length > 0
-    ? live
-    : FALLBACK_COUNTRIES.map((c) => ({ country: c.country, name: c.name }));
+  const base =
+    live && live.length > 0
+      ? live
+      : FALLBACK_COUNTRIES.map((c) => ({ country: c.country, name: c.name }));
+  const ui: "card" | "bank" = session.method === "bank" ? "bank" : "card";
+  return corridorOptions(base, session.corridorByCountry, ui);
 });
 // The shown country matches the quoted region.
 const selectedCountry = computed(() => session.meldCountry ?? DEFAULT_COUNTRY);
@@ -73,6 +78,7 @@ onMounted(() => {
     requote();
   }
   void session.loadSupportedCountries();
+  void session.loadSupportedCorridors();
 });
 // Re-quoting clears a previous refusal.
 function requote() {
@@ -105,10 +111,12 @@ const heroAmount = computed(() => {
   const q = session.quoted;
   return q ? fmtFiat(q.send, q.symbol) : null;
 });
+// The caption states the charge is fee-inclusive and is itself the way into the breakdown, so the
+// quote no longer spends a row on a fee it has already accounted for.
 const heroCaption = computed(() =>
   session.method === "bank"
-    ? "Will be charged from your bank account"
-    : "Will be charged from your card",
+    ? "Will be charged to the bank account inc. fees"
+    : "Will be charged to the card inc. fees",
 );
 
 /**
@@ -120,32 +128,21 @@ const arrivesText = computed(() =>
   session.method === "bank" ? "1-2 business days" : "A few minutes",
 );
 
-/** The picked region's own name, for the quote's terms. Falls back to the code when the catalog is
- *  the static list and the code is not in it. */
-const selectedCountryName = computed(
-  () =>
-    countryOptions.value.find((o) => o.country === selectedCountry.value)?.name ??
-    selectedCountry.value,
-);
+/** The caption drills in only when the fee is a number the breakdown can actually split. */
+const canOpenFees = computed(() => {
+  const q = session.quoted;
+  return !!q?.fee && isMoneyAmount(q.fee);
+});
 
 const quoteRows = computed(() => {
   const q = session.quoted;
   if (!q) return [];
-  const rows: { label: string; value: string; fees?: boolean }[] = [
-    { label: "Provider", value: "Meld" },
-    // Names the corridor these terms were priced against. Two Card failures in one testathon
-    // session came from two DIFFERENT regions, and nothing on the quote said which one it was.
-    { label: "Region", value: selectedCountryName.value },
-  ];
-  // The fee row drills into the breakdown screen — only when the fee is a number the breakdown
-  // can actually split; an unparseable one still shows, as plain text.
-  if (q.fee)
-    rows.push({ label: "Fees", value: fmtFiat(q.fee, q.symbol), fees: isMoneyAmount(q.fee) });
-  rows.push(
-    { label: "Arrives", value: arrivesText.value },
+  // What the money buys leads; when it lands follows. Provider and region are settings rather
+  // than terms, and the picker above already names the region.
+  return [
     { label: "You’ll receive", value: `${session.amountHuman} $CASH` },
-  );
-  return rows;
+    { label: "Arrives", value: arrivesText.value },
+  ];
 });
 
 const starting = ref(false);
@@ -183,7 +180,16 @@ async function next() {
     >
       <template v-if="heroAmount">
         <p class="text-display-xl text-fg-primary">{{ heroAmount }}</p>
-        <p class="text-paragraph-l text-fg-secondary">{{ heroCaption }}</p>
+        <button
+          v-if="canOpenFees"
+          type="button"
+          class="flex items-center gap-2 text-paragraph-l text-fg-secondary"
+          @click="emit('fees')"
+        >
+          {{ heroCaption }}
+          <ChevronRight class="size-4" aria-hidden="true" />
+        </button>
+        <p v-else class="text-paragraph-l text-fg-secondary">{{ heroCaption }}</p>
       </template>
       <template v-else>
         <SkeletonBlock class="h-16 w-44" />
@@ -235,23 +241,17 @@ async function next() {
 
     <!-- The quote's detail rows, bare on the surface. -->
     <div v-else-if="session.loading || !session.quoted" class="mt-6 flex flex-col gap-4">
-      <div v-for="n in 3" :key="n" class="flex h-6 items-center justify-between">
+      <div v-for="n in 2" :key="n" class="flex h-6 items-center justify-between">
         <SkeletonBlock class="h-4 w-2/5" />
         <SkeletonBlock class="h-4 w-1/5" />
       </div>
     </div>
-    <DetailRows v-else class="mt-6" :rows="quoteRows" @fees="emit('fees')" />
+    <DetailRows v-else class="mt-6" :rows="quoteRows" />
 
     <p v-if="startError" class="mt-4 text-body-m text-fg-error">{{ startError }}</p>
 
     <PillButton class="mt-auto mb-6 w-full" :disabled="!canContinue" @click="next">
-      {{
-        starting
-          ? "Starting…"
-          : session.method === "bank"
-            ? "Enter bank details"
-            : "Enter card details"
-      }}
+      {{ starting ? "Starting…" : "Continue" }}
     </PillButton>
   </div>
 </template>

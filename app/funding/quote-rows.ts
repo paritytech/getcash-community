@@ -2,7 +2,7 @@
 // receipt. Both screens read the same quote — the live one while a request is on screen, the
 // list's stored copy otherwise — and must present it identically.
 
-import { shortAddress } from "../utils/address";
+import { shortRef } from "../utils/journey";
 import { fmtFiat, isMoneyAmount } from "../utils/money";
 
 export interface QuoteView {
@@ -71,7 +71,7 @@ export function paidDetailRows(
   if (paid.reference) {
     rows.push({
       label: "Transaction ID",
-      value: shortAddress(paid.reference),
+      value: shortRef(paid.reference),
       copy: paid.reference,
     });
   }

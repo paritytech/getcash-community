@@ -4,7 +4,12 @@
 import { computed, ref } from "vue";
 import { ChevronDown, ChevronUp } from "lucide-vue-next";
 import type { FundingSelectorConfig } from "../../funding/config";
-import type { InProgressFundingTopUp, SettledFundingTopUp } from "../../funding/top-ups";
+import {
+  TOP_UP_LIST_WORDING,
+  type FundingListWording,
+  type InProgressFundingTopUp,
+  type SettledFundingTopUp,
+} from "../../funding/top-ups";
 import PillButton from "../ui/PillButton.vue";
 import FundingTopUpProgressCard from "./FundingTopUpProgressCard.vue";
 
@@ -23,6 +28,8 @@ const props = withDefaults(
     error?: string | null;
     /** Launch-load placeholder: the screen's own shapes instead of the list. */
     skeleton?: boolean;
+    /** The words around the rows; the top-up's by default, the withdrawal page's on that page. */
+    wording?: FundingListWording;
   }>(),
   {
     topUps: () => [],
@@ -30,6 +37,7 @@ const props = withDefaults(
     openingTopUpId: null,
     error: null,
     skeleton: false,
+    wording: () => TOP_UP_LIST_WORDING,
   },
 );
 
@@ -55,7 +63,7 @@ const busy = computed(() => Boolean(props.openingTopUpId));
 <template>
   <div class="flex h-full min-h-0 flex-col">
     <FundingEntryHeader
-      :title="skeleton ? '' : 'Top-up in progress'"
+      :title="skeleton ? '' : wording.pendingTitle"
       history
       :skeleton="skeleton"
       @history="emit('history')"

@@ -121,8 +121,16 @@ interface Scene {
 const QUOTED_CARD = {
   send: "52.06",
   symbol: "USD",
+  provider: "TRANSAK",
   fee: "1.56",
-  networkFee: "0.01",
+  // The shape real card quotes come back in: a provider fee and our flat cut, no network fee.
+  transactionFee: "1.06",
+  networkFee: null,
+  partnerFee: "0.50",
+  // Not Meld's: the swap and teleport up to CASH on People, as the store prices them. Measured
+  // against Paseo for this frame's 50 CASH — 0.0343 DOT of Asset Hub fees at the quote's implied
+  // rate, plus 0.000043 CASH of execution on People.
+  chainFee: "0.0867",
   nativeAmount: null,
   sourceAsset: null,
   sourceChain: null,
@@ -153,7 +161,8 @@ async function previewRequest(
     index: number;
     deposit?: { expiresAt: number };
     /** What the Meld create call captured: the provider that took the payment, and the funding
-     *  request's id. The record keeps both, as a real card request's does. */
+     *  request's id. The record keeps both, as a real card request's does, and the failed journey
+     *  shows the id as the payment's reference. */
     meld?: { serviceProvider: string; fundingRequestId: string };
   },
 ): Promise<PreviewRequest> {
@@ -288,10 +297,11 @@ function cardJourney(session: Session, flow: Flow) {
   session.quoted = { ...QUOTED_CARD };
 }
 
-/** What the card scenes' create call captured, as the record keeps it. */
+/** What the card scenes' create call captured, as the record keeps it. The id abbreviates to the
+ *  "a1f9-4c2e" the design frames show, so the journey's reference row renders as drawn. */
 const PREVIEW_MELD = {
   serviceProvider: "Transak",
-  fundingRequestId: "a1f9c3d2-4c2e-4a71-9f0b-6d5e8c2b1a03",
+  fundingRequestId: "a1f9c3d2-7b44-4e10-9f21-00ab9e4c2e",
 };
 
 /** Baseline for the selection scenes: 100 CASH, floors already learned, source set directly. */
@@ -310,6 +320,8 @@ function selection(session: Session, flow: Flow) {
 /** The card scenes' request, once the provider has seen the payment. */
 async function cardPayment(s: Session, f: Flow, index: number): Promise<PreviewRequest> {
   cardJourney(s, f);
+  // The scenes never run createSession, which is what captures these on a real payment; the
+  // record carries them here instead, as a real card request's does.
   const r = await previewRequest(s, { sourceId: "meld-card", index, meld: PREVIEW_MELD });
   await core(r, 0, swapping("receiving", "meld-card"));
   return r;

@@ -41,6 +41,7 @@ import {
   sizeNativeBudget,
 } from "@getsome/funding";
 import { createHostDeps } from "@getsome/host";
+import type { FundingSizing } from "./funding-fees";
 import {
   CASH_DECIMALS,
   CASH_SETTLEMENT,
@@ -508,6 +509,8 @@ export interface CoinageSessionArgs {
 
 export interface MockCoinageWorld extends RefundKeyHold {
   session: PaymentSession<never>;
+  /** The sizing the caller priced this world with; zeroes when it priced against nothing. */
+  fundingSizing: FundingSizing;
   handoff: FakeHandoff;
   harness: Harness;
   rail: ChainflipRail;
@@ -568,8 +571,13 @@ function mockEntropy(): EntropyPort {
  * Offline world: the real session and state machine over scriptable fakes, with no host or network.
  */
 export async function createMockCoinageSession(
-  args: CoinageSessionArgs & { recipient: string },
+  args: CoinageSessionArgs & {
+    recipient: string;
+    /** The live sizing the caller quoted against, when it had one to quote against. */
+    fundingSizing?: FundingSizing;
+  },
 ): Promise<MockCoinageWorld> {
+  const fundingSizing = args.fundingSizing ?? { remoteFeeBuffer: 0n, keepNativeForFees: 0n };
   const handoff = createFakeHandoff({ manualConsent: true });
   const harness = createFakeHarness();
   const rail = args.rail ?? createFakeRail();
@@ -612,11 +620,12 @@ export async function createMockCoinageSession(
     peopleParaId: 0,
     assetHubGenesis: "",
     peopleGenesis: "",
-    remoteFeeBuffer: "0",
-    keepNativeForFees: "0",
+    remoteFeeBuffer: fundingSizing.remoteFeeBuffer.toString(),
+    keepNativeForFees: fundingSizing.keepNativeForFees.toString(),
   }));
   return {
     session,
+    fundingSizing,
     handoff,
     harness,
     rail,
@@ -631,6 +640,9 @@ export async function createMockCoinageSession(
 
 export interface CoinageWorld extends RefundKeyHold {
   session: PaymentSession<never>;
+  /** The live sizing the deposit was built on: the destination's execution fee and the native the
+   *  burner keeps for the funding program. The quote prices its network-fee row off these. */
+  fundingSizing: FundingSizing;
   /** This request's burner (SS58). It receives the deposit and holds the CASH until the claim. */
   burnerAddress: string;
   /**
@@ -1027,6 +1039,7 @@ export async function createCoinageSession(
 
   return {
     session,
+    fundingSizing: { remoteFeeBuffer, keepNativeForFees },
     burnerAddress: burnerKey.address,
     ...holdRefundKey(session, deps.storage, args.sourceId, tradeN, refundKey),
     sourceId: args.sourceId,

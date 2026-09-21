@@ -202,6 +202,7 @@ const quoteView = computed(() => {
       amount: q.send,
       symbol: q.symbol,
       fee: q.fee ?? null,
+      provider: q.provider ?? null,
       crypto: session.method === "crypto",
       live: true,
     };
@@ -212,6 +213,7 @@ const quoteView = computed(() => {
     amount: stored.amount,
     symbol: stored.symbol,
     fee: stored.fee ?? null,
+    provider: stored.provider ?? null,
     crypto: props.topUp?.route === "crypto",
     live: false,
   };
@@ -233,7 +235,7 @@ const paidRows = computed(() => {
   // persists it. The network stands in its place as the fact the record can answer.
   const reference = cryptoRefund.value
     ? undefined
-    : (live?.meldFundingRequestId ?? details?.reference);
+    : (live?.meldFundingRequestId ?? props.topUp?.reference);
   const network = cryptoRefund.value ? details?.network?.label : undefined;
   return paidDetailRows(quoteView.value, {
     ...(provider ? { provider } : {}),

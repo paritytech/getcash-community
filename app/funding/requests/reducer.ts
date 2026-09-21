@@ -3,6 +3,7 @@
 
 import type { Observation, RequestRecord } from "./model";
 import { applyTopUp } from "./transitions/top-up";
+import { applyWithdrawal } from "./transitions/withdrawal";
 
 /** When the observation's source last reported, for the per-source monotonic check. A chain read
  *  is checked against its own finality; user actions and the clock are never dropped. */
@@ -12,11 +13,13 @@ function lastWitnessedAt(record: RequestRecord, observation: Observation): numbe
     case "chain":
       return witnesses.chain?.[observation.finality]?.at;
     case "core":
-      return witnesses.core?.at;
+      return record.kind === "top-up" ? record.witnesses.core?.at : undefined;
     case "worker":
       return witnesses.worker?.at;
     case "provider":
-      return witnesses.provider?.at;
+      return record.kind === "top-up" ? record.witnesses.provider?.at : undefined;
+    case "host":
+      return record.kind === "withdrawal" ? record.witnesses.host?.at : undefined;
     case "user":
     case "clock":
       return undefined;
@@ -29,5 +32,7 @@ export function reduce(record: RequestRecord, observation: Observation): Request
   switch (record.kind) {
     case "top-up":
       return applyTopUp(record, observation);
+    case "withdrawal":
+      return applyWithdrawal(record, observation);
   }
 }

@@ -6,12 +6,12 @@ import { useRequestsStore } from "../stores/requests";
 import { DEPOSIT_EXPIRED_REASON, useSessionStore } from "../stores/session";
 import { parseRequestRefKey, requestRefKey, type RequestRef } from "../utils/request-index";
 import { projectFundingProgress } from "./progress";
-import type { RequestRecord } from "./requests/model";
+import type { TopUpRecord } from "./requests/model";
 import { journeyScaleOf, journeyStepsOf, rowStateOf } from "./requests/views";
 import type { FundingRoute } from "./selection";
 import { isMeldSourceId, meldMethodFor, meldSourceIdFor, type MeldMethod } from "./source-ids";
 import type { FundingTopUpAdapter } from "./top-up-adapter";
-import { quoteOf, type FundingTopUpRecord } from "./top-up-projection";
+import { quoteOf, referenceOf, type FundingTopUpRecord } from "./top-up-projection";
 import type { FundingTopUp, FundingTopUpDetails } from "./top-ups";
 
 export type MeldTopUpRecord = FundingTopUpRecord;
@@ -20,7 +20,7 @@ export type MeldTopUpRecord = FundingTopUpRecord;
 const topUpId = (route: MeldMethod, ref: RequestRef) => `${route}:${requestRefKey(ref)}`;
 
 /** The rows whose progress no longer moves on its own. */
-const FINISHED = new Set<RequestRecord["status"]["kind"]>(["settled", "failed", "expired"]);
+const FINISHED = new Set<TopUpRecord["status"]["kind"]>(["settled", "failed", "expired"]);
 
 /** The request a top-up id names, or null for an id that is not this package's or whose route
  *  and source disagree (`card:meld-bank#1`). */
@@ -48,7 +48,6 @@ function topUpDetails(record: MeldTopUpRecord, method: MeldMethod): FundingTopUp
       icon: method === "card" ? "/icons/card.svg" : "/icons/bank.svg",
     },
     ...(record.meldCountry ? { region: record.meldCountry } : {}),
-    ...(record.meldFundingRequestId ? { reference: record.meldFundingRequestId } : {}),
     ...(record.progress?.preDetectionEstimateText
       ? { arrivalEstimate: record.progress.preDetectionEstimateText }
       : {}),
@@ -56,7 +55,7 @@ function topUpDetails(record: MeldTopUpRecord, method: MeldMethod): FundingTopUp
 }
 
 export function projectMeldTopUps(
-  records: readonly RequestRecord[],
+  records: readonly TopUpRecord[],
   now = Date.now(),
 ): FundingTopUp[] {
   return records.flatMap((record) => {
@@ -79,6 +78,7 @@ export function projectMeldTopUps(
         progress,
         details: topUpDetails(record, method),
         ...quoteOf(record),
+        ...referenceOf(record),
         journeyDone: journeyStepsOf(record, journeyScaleOf(record.route)),
         state: worded,
       },
@@ -90,7 +90,7 @@ export function useMeldTopUpAdapter(): FundingTopUpAdapter {
   const session = useSessionStore();
   const requests = useRequestsStore();
   const cadence = computed(() => {
-    const cadences = requests.openRecords.flatMap((record) =>
+    const cadences = requests.openTopUps.flatMap((record) =>
       !isMeldSourceId(record.ref.sourceId) || FINISHED.has(record.status.kind)
         ? []
         : [record.progress.profile.cadenceMs],
@@ -99,7 +99,7 @@ export function useMeldTopUpAdapter(): FundingTopUpAdapter {
   });
   const now = useFundingProgressClock(cadence);
   return {
-    topUps: computed(() => projectMeldTopUps(requests.openRecords, now.value)),
+    topUps: computed(() => projectMeldTopUps(requests.openTopUps, now.value)),
     refresh: () => session.resumeOpenRequests("boot"),
     open: (topUp) => {
       const ref = meldRequestRef(topUp.id);

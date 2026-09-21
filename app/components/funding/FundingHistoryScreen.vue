@@ -4,7 +4,11 @@
 import { computed } from "vue";
 import { History } from "lucide-vue-next";
 import type { FundingSelectorConfig } from "../../funding/config";
-import type { InProgressFundingTopUp, PastFundingTopUp } from "../../funding/top-ups";
+import {
+  TOP_UP_LIST_WORDING,
+  type InProgressFundingTopUp,
+  type PastFundingTopUp,
+} from "../../funding/top-ups";
 import FundingTopUpProgressCard from "./FundingTopUpProgressCard.vue";
 
 /** How many card shapes the placeholder lays out; the design draws a screenful. */
@@ -19,6 +23,8 @@ const props = withDefaults(
     error?: string | null;
     /** Load placeholder: the list's own shapes, under the real toolbar. */
     skeleton?: boolean;
+    /** The line shown when there is nothing to list; the withdrawal page words it its own way. */
+    emptyText?: string;
   }>(),
   {
     inProgress: () => [],
@@ -26,6 +32,7 @@ const props = withDefaults(
     openingTopUpId: null,
     error: null,
     skeleton: false,
+    emptyText: TOP_UP_LIST_WORDING.emptyHistory,
   },
 );
 
@@ -62,9 +69,7 @@ const busy = computed(() => Boolean(props.openingTopUpId));
       class="flex min-h-0 flex-1 flex-col items-center justify-center px-4 pb-6 text-center"
     >
       <History class="size-7 text-fg-secondary" aria-hidden="true" />
-      <p class="mt-2 max-w-[19.5rem] text-body-m text-fg-secondary">
-        Nothing here yet. Your top-ups will appear as you make them.
-      </p>
+      <p class="mt-2 max-w-[19.5rem] text-body-m text-fg-secondary">{{ emptyText }}</p>
     </div>
 
     <div v-else class="flex min-h-0 flex-1 flex-col px-4 pt-6 pb-6">

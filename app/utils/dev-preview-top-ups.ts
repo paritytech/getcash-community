@@ -190,15 +190,9 @@ export function previewTopUp(
     ...(options.delayed === true ? { delayed: true } : {}),
     journeyDone: options.journeyDone ?? defaultJourneyDone(route, kind, options.refunded === true),
     ...(options.request ? { request: options.request } : {}),
-    ...(options.provider || options.reference
-      ? {
-          details: {
-            ...(options.provider
-              ? { provider: { label: options.provider, icon: "/icons/card.svg" } }
-              : {}),
-            ...(options.reference ? { reference: options.reference } : {}),
-          },
-        }
+    ...(options.reference ? { reference: options.reference } : {}),
+    ...(options.provider
+      ? { details: { provider: { label: options.provider, icon: "/icons/card.svg" } } }
       : {}),
     state,
   };

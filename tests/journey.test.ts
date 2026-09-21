@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatWhen, formatWhenShort, journeyLabels } from "../app/utils/journey";
+import { formatWhen, formatWhenShort, journeyLabels, shortRef } from "../app/utils/journey";
 
 describe("journeyLabels", () => {
   it("names what arrived when the asset is known", () => {
@@ -53,5 +53,19 @@ describe("formatWhenShort", () => {
     expect(formatWhenShort(Date.parse("2025-04-30T09:00:00"), "en-US", firstOfMay)).toMatch(
       /^Yesterday at 9:00\s?AM$/,
     );
+  });
+});
+
+describe("shortRef", () => {
+  it("shows a long reference as its ends, ignoring separators", () => {
+    expect(shortRef("a1f9c3d2-7b44-4e10-9f21-00ab9e4c2e")).toBe("a1f9-4c2e");
+    // Same id unhyphenated abbreviates identically, so the two forms compare by eye.
+    expect(shortRef("a1f9c3d27b444e109f2100ab9e4c2e")).toBe("a1f9-4c2e");
+  });
+
+  it("leaves a reference short enough to read in full alone", () => {
+    // Shortening one that already fits would cost the reader the middle for nothing.
+    expect(shortRef("a1f9-4c2e")).toBe("a1f9-4c2e");
+    expect(shortRef("mock-1")).toBe("mock-1");
   });
 });

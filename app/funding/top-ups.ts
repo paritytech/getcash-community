@@ -32,9 +32,6 @@ export type FundingTopUpDetails = Readonly<{
   region?: string;
   depositAddress?: string;
   arrivalEstimate?: string;
-  /** The id that traces this payment with the provider. The concluded journey shows it with a
-   *  copy control: it is what a buyer hands support when a refund needs chasing. */
-  reference?: string;
 }>;
 
 export type FundingTopUp = Readonly<{
@@ -46,7 +43,7 @@ export type FundingTopUp = Readonly<{
   details?: FundingTopUpDetails;
   /** What the buyer pays as the rail quoted it, for the journey's Fees/Total rows when the
    *  request is not (yet) live in the store. */
-  quote?: Readonly<{ amount: string; symbol: string; fee?: string }>;
+  quote?: Readonly<{ amount: string; symbol: string; fee?: string; provider?: string }>;
   /**
    * The rail is retrying or running late: the list draws the status line amber. Never terminal.
    *
@@ -62,6 +59,9 @@ export type FundingTopUp = Readonly<{
    *  opened from history has no live request to count them from, and a top-up that was paid and
    *  converted before it failed must not redraw as though it never started. */
   journeyDone?: number;
+  /** The rail's own id for the payment, as the buyer would quote it to support. Persisted with
+   *  the request, so a journey opened long after the session that made it still carries it. */
+  reference?: string;
   state: FundingTopUpState;
 }>;
 
@@ -87,7 +87,7 @@ export type InProgressFundingTopUp = FundingTopUpBase &
 
 export type SettledFundingTopUp = FundingTopUpBase &
   Readonly<{
-    state: { kind: "settled"; status: "Added"; at: number; creditedAmount: string };
+    state: { kind: "settled"; status: string; at: number; creditedAmount: string };
   }>;
 
 export type FailedFundingTopUp = FundingTopUpBase &
@@ -110,9 +110,30 @@ export function hasFundingPendingContent(
   return inProgress.length > 0 || latestSettled !== null;
 }
 
+/** The words the rows use for a finished request: a top-up is added, a withdrawal is sent. */
+export interface FundingTopUpWording {
+  settled: string;
+}
+
+const TOP_UP_WORDING: FundingTopUpWording = { settled: "Added" };
+
+/** The words the shell's list screens use around the rows. */
+export interface FundingListWording {
+  /** The pending screen's toolbar title. */
+  pendingTitle: string;
+  /** The line the history screen shows when there is nothing to list. */
+  emptyHistory: string;
+}
+
+export const TOP_UP_LIST_WORDING: FundingListWording = {
+  pendingTitle: "Top-up in progress",
+  emptyHistory: "Nothing here yet. Your top-ups will appear as you make them.",
+};
+
 export function projectFundingTopUps(
   topUps: readonly FundingTopUp[],
   config: FundingSelectorConfig,
+  wording: FundingTopUpWording = TOP_UP_WORDING,
 ): FundingTopUpSections {
   const inProgress: InProgressFundingTopUp[] = [];
   const past: PastFundingTopUp[] = [];
@@ -156,7 +177,7 @@ export function projectFundingTopUps(
           ...base,
           state: {
             kind: "settled",
-            status: "Added",
+            status: wording.settled,
             at: topUp.state.at,
             creditedAmount: topUp.state.creditedAmount ?? topUp.amount,
           },
