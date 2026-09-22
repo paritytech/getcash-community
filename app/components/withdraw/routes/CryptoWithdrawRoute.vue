@@ -8,7 +8,7 @@ import type { FundingPackageEmits } from "../../../funding/handoff";
 import type { FundingSelection } from "../../../funding/selection";
 import type { FundingTopUp } from "../../../funding/top-ups";
 import { useRequestsStore } from "../../../stores/requests";
-import { useWithdrawFloorStore } from "../../../stores/withdraw-floor";
+import { useWithdrawOffersStore } from "../../../stores/withdraw-offers";
 import { toCashBase } from "../../../utils/cash";
 import { isDemoBuild } from "../../../utils/demo";
 import {
@@ -58,7 +58,7 @@ const record = computed(() => requests.foregroundWithdrawal);
 const amount = computed(() => props.selection?.amount ?? props.topUp?.amount ?? "");
 /** The amount in base units; null while the shell's string cannot be read. */
 const amountBase = computed(() => toCashBase(amount.value));
-const floor = useWithdrawFloorStore();
+const offers = useWithdrawOffersStore();
 /** A withdrawal opened from the list whose record the store no longer has. */
 const unavailable = computed(() => {
   if (!props.topUp || record.value !== null) return false;
@@ -151,16 +151,25 @@ async function onAddress(entered: string) {
   }
   receive.value = null;
   try {
-    const live = await import("~~/lib/withdraw-live");
-    // What the CASH sells for on Asset Hub; a provider destination then sells that native on.
-    const planck = await live.quoteDirectReceive(base);
-    const estimate =
-      picked.rail === "direct"
-        ? `${formatNative(planck, 10)} ${picked.asset}`
-        : await live.quoteWithdrawReceive(planck, picked);
+    if (picked.rail === "direct") {
+      // What the CASH sells for on Asset Hub's pool: the direct rail lands exactly that.
+      const live = await import("~~/lib/withdraw-live");
+      const planck = await live.quoteDirectReceive(base);
+      if (step.value !== "summary") return;
+      receive.value = `${formatNative(planck, 10)} ${picked.asset}`;
+      return;
+    }
+    // A provider destination shows what its offer for this amount said would land, and the
+    // channel is opened at confirm for the native that offer was quoted for.
+    await offers.learn(base);
     if (step.value !== "summary") return;
-    expectedNative.value = planck;
-    receive.value = estimate;
+    const offer = offers.offerFor(picked);
+    if (offer.state !== "available" || offers.sellable === null) {
+      receive.value = undefined;
+      return;
+    }
+    expectedNative.value = offers.sellable;
+    receive.value = offer.formatted;
   } catch (error: unknown) {
     console.warn("[withdraw] receive estimate unavailable:", error);
     receive.value = undefined;
@@ -171,9 +180,9 @@ async function confirm() {
   const picked = destination.value;
   const base = toCashBase(amount.value);
   if (picked === null || base === null || starting.value) return;
-  // Judged once more here: the price may have moved since the pick, and the channel is opened
-  // next. Under the floor nothing is opened.
-  const allowed = floor.stateOf(picked, base);
+  // Judged once more here: the offer may have changed since the pick, and the channel is opened
+  // next. Under the minimum, or with the provider not answering, nothing is opened.
+  const allowed = offers.rowFor(picked);
   if (!allowed.pickable) {
     startError.value = allowed.subtitle ?? "This destination cannot take the amount.";
     return;
@@ -284,7 +293,6 @@ onUnmounted(() => {
       <WithdrawTokenScreen
         v-else-if="step === 'token' && network"
         :network="network"
-        :amount="amountBase"
         @pick="pickToken"
       />
       <WithdrawAddressScreen

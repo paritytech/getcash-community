@@ -30,14 +30,15 @@ import {
   type WithdrawalHandoffPayload,
 } from "../app/funding/requests/model";
 import {
-  ASSET_HUB_DOT,
+  BelowMinimumSwapAmountError,
+  ChainflipRequestError,
   formatSourceAmount,
   openWithdrawChannel,
   quoteOutgoing,
   SOURCE_CONFIG_BY_ID,
 } from "@getsome/chainflip";
 import { AccountId } from "polkadot-api";
-import type { WithdrawFloor } from "../app/withdraw/floor";
+import type { WithdrawOffer } from "../app/withdraw/offers";
 import { mainnetSdk } from "./chainflip-backend";
 import { withTimeout } from "./timeout";
 import { hostSafeEntropy, nextFreeTradeNumber, readTradeCounter, tradeCounterKey } from "./coinage";
@@ -131,42 +132,120 @@ export async function quoteDirectCashFor(native: bigint): Promise<bigint> {
   return quoted + DIRECT_FEES_CASH;
 }
 
-/** Headroom over Chainflip's minimum: the sale on Asset Hub may slip by up to the program's own
- *  tolerance and still go through, and the sweep's fee comes off the deposit after that. What
- *  the floor promises has to clear the minimum in the worst case the program allows. */
-const FLOOR_HEADROOM_PCT = BigInt(DEFAULT_WITHDRAW_SLIPPAGE_PCT) + 1n;
-/** Ceiling on the wait for the floor. */
-const FLOOR_TIMEOUT_MS = 10_000;
+/** Headroom between the pool's answer and what the provider is asked to take: the sale on Asset
+ *  Hub may slip by up to the program's own tolerance and still go through, and the sweep's fee
+ *  comes off the deposit after that. The provider is quoted for the worst case the program
+ *  allows, so a withdrawal that passes here lands enough to swap. */
+const PROVIDER_QUOTE_HEADROOM_PCT = BigInt(DEFAULT_WITHDRAW_SLIPPAGE_PCT) + 1n;
+/** Ceiling on the wait for the offers. */
+const OFFERS_TIMEOUT_MS = 15_000;
+
+const withHeadroom = (native: bigint): bigint =>
+  native + (native * PROVIDER_QUOTE_HEADROOM_PCT) / 100n;
+const lessHeadroom = (native: bigint): bigint =>
+  native - (native * PROVIDER_QUOTE_HEADROOM_PCT) / 100n;
 
 /**
- * The smallest provider withdrawal, in CASH: Chainflip's minimum swap out of Asset Hub, with
- * headroom, priced at the pool. Never throws: what could not be learned comes back as unknown,
- * with the reason.
+ * What every provider destination offers for `amountCash`: the pool prices the CASH into native,
+ * the headroom comes off, and each destination is quoted for what is left. One refused quote
+ * says the amount is under the provider's minimum, priced back into CASH; a provider that is not
+ * answering marks every destination after the first, without asking the rest. Never throws.
  */
-export async function learnWithdrawFloor(): Promise<WithdrawFloor> {
+export async function quoteWithdrawOffers(
+  amountCash: bigint,
+  destinations: readonly { id: string; chain: string; asset: string }[],
+): Promise<{ sellable: bigint | null; offers: ReadonlyMap<string, WithdrawOffer> }> {
+  const offers = new Map<string, WithdrawOffer>();
+  const allUnavailable = (reason: string) => {
+    for (const destination of destinations)
+      offers.set(destination.id, { state: "unavailable", reason });
+    console.warn(`[withdraw] offers unavailable: ${reason}`);
+    return { sellable: null, offers };
+  };
+
+  let sellable: bigint;
+  let sdk: Awaited<ReturnType<typeof mainnetSdk>>;
   try {
-    const { minimumSwapAmounts } = await withTimeout(
-      mainnetSdk().then((sdk) => sdk.getSwapLimits()),
-      FLOOR_TIMEOUT_MS,
-      "withdraw floor",
+    [sellable, sdk] = await withTimeout(
+      Promise.all([quoteDirectReceive(amountCash).then(lessHeadroom), mainnetSdk()]),
+      OFFERS_TIMEOUT_MS,
+      "withdraw offers",
     );
-    const minimum = minimumSwapAmounts[ASSET_HUB_DOT.chain]?.[ASSET_HUB_DOT.asset];
-    if (minimum === undefined) {
-      return { state: "unknown", reason: "Chainflip lists no minimum for DOT on Asset Hub" };
-    }
-    const target = minimum + (minimum * FLOOR_HEADROOM_PCT) / 100n;
-    const minimumCash = await withTimeout(
-      quoteDirectCashFor(target),
-      FLOOR_TIMEOUT_MS,
-      "withdraw floor price",
-    );
-    return { state: "known", minimumCash };
   } catch (e) {
-    const reason = e instanceof Error ? e.message : String(e);
-    console.warn(`[withdraw] floor unavailable: ${reason}`);
-    return { state: "unknown", reason };
+    return allUnavailable(messageOf(e));
   }
+
+  // An amount the fees eat whole sells for nothing; a quote for one planck still makes Chainflip
+  // name its minimum, which is the answer such a row needs.
+  const probe = sellable > 0n ? sellable : 1n;
+  // The minimum is on the DOT sold, so every destination names the same one: priced once.
+  const minimumCashFor = new Map<bigint, Promise<bigint>>();
+  const tooSmall = async (minimum: bigint): Promise<WithdrawOffer> => {
+    let priced = minimumCashFor.get(minimum);
+    if (priced === undefined) {
+      priced = quoteDirectCashFor(withHeadroom(minimum));
+      minimumCashFor.set(minimum, priced);
+    }
+    try {
+      return { state: "too-small", minimumCash: await priced };
+    } catch (e) {
+      return { state: "unavailable", reason: messageOf(e) };
+    }
+  };
+
+  const quoteOne = async (destination: {
+    id: string;
+    chain: string;
+    asset: string;
+  }): Promise<{ offer: WithdrawOffer; outage: boolean }> => {
+    const config = providerDestination(destination);
+    try {
+      const quote = await withTimeout(
+        quoteOutgoing(sdk, probe, config),
+        OFFERS_TIMEOUT_MS,
+        `${config.asset} offer`,
+      );
+      const formatted = formatSourceAmount(config, quote.egressAmount, { maxDecimals: 6 });
+      return {
+        offer: {
+          state: "available",
+          egress: quote.egressAmount,
+          formatted: `${formatted} ${config.asset}`,
+          etaSeconds: quote.estimatedDurationSeconds,
+        },
+        outage: false,
+      };
+    } catch (e) {
+      if (e instanceof BelowMinimumSwapAmountError) {
+        return { offer: await tooSmall(e.minimumBaseUnits), outage: false };
+      }
+      return {
+        offer: { state: "unavailable", reason: messageOf(e) },
+        outage: e instanceof ChainflipRequestError && e.outage,
+      };
+    }
+  };
+
+  // The first destination is asked alone: a provider that is not answering says so once.
+  const [first, ...rest] = destinations;
+  if (first === undefined) return { sellable, offers };
+  const canary = await quoteOne(first);
+  offers.set(first.id, canary.offer);
+  if (canary.outage && canary.offer.state === "unavailable") {
+    const { reason } = canary.offer;
+    for (const destination of rest) offers.set(destination.id, { state: "unavailable", reason });
+    console.warn(`[withdraw] offers unavailable: ${reason}`);
+    return { sellable, offers };
+  }
+  await Promise.all(
+    rest.map(async (destination) => {
+      offers.set(destination.id, (await quoteOne(destination)).offer);
+    }),
+  );
+  return { sellable, offers };
 }
+
+const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 async function hostStorageAdapter() {
   const storage = await getHostLocalStorage();
@@ -217,16 +296,6 @@ function providerDestination(destination: { id: string; chain: string; asset: st
     throw new Error(`no Chainflip source for the ${destination.asset} destination`);
   }
   return config;
-}
-
-/** What `amountNative` sells for on the destination, formatted in its asset, for the summary. */
-export async function quoteWithdrawReceive(
-  amountNative: bigint,
-  destination: { id: string; chain: string; asset: string },
-): Promise<string> {
-  const config = providerDestination(destination);
-  const quote = await quoteOutgoing(await mainnetSdk(), amountNative, config);
-  return `${formatSourceAmount(config, quote.egressAmount, { maxDecimals: 6 })} ${config.asset}`;
 }
 
 /** Opens the provider's channel for a withdrawal, with the key on Asset Hub as the refund. */

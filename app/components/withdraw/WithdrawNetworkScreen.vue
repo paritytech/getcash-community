@@ -1,9 +1,10 @@
 <script setup lang="ts">
 // Network picker for a withdrawal: every network the design lists, judged against the amount on
 // screen. Asset Hub is always open; a Chainflip network is dimmed with the reason when this build
-// cannot run it, while its floor is being learned, or when the amount is under that floor.
-import { computed, onMounted } from "vue";
-import { useWithdrawFloorStore } from "../../stores/withdraw-floor";
+// cannot run it, while its offers are being quoted, when the provider is not answering, or when
+// the amount is under the provider's minimum.
+import { computed, watch } from "vue";
+import { useWithdrawOffersStore } from "../../stores/withdraw-offers";
 import { WITHDRAW_NETWORKS, type WithdrawNetwork } from "../../withdraw/destinations";
 
 const props = defineProps<{
@@ -12,16 +13,17 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ pick: [network: WithdrawNetwork] }>();
 
-const floor = useWithdrawFloorStore();
-onMounted(() => {
-  void floor.learn();
-});
+const offers = useWithdrawOffersStore();
+watch(
+  () => props.amount,
+  (amount) => {
+    void offers.learn(amount);
+  },
+  { immediate: true },
+);
 
 const rows = computed(() =>
-  WITHDRAW_NETWORKS.map((network) => ({
-    network,
-    state: floor.networkStateOf(network, props.amount),
-  })),
+  WITHDRAW_NETWORKS.map((network) => ({ network, state: offers.networkRowFor(network) })),
 );
 </script>
 

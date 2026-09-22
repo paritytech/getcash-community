@@ -1,27 +1,23 @@
 <script setup lang="ts">
-// Token picker for a withdrawal: the tokens on the chosen network, judged against the amount on
-// screen, under a reminder of the network already picked.
+// Token picker for a withdrawal: the tokens on the chosen network, each judged by its own offer
+// for the amount on screen, under a reminder of the network already picked.
 import { computed } from "vue";
-import { useWithdrawFloorStore } from "../../stores/withdraw-floor";
+import { useWithdrawOffersStore } from "../../stores/withdraw-offers";
 import {
   destinationTokenIcon,
   type WithdrawDestination,
   type WithdrawNetwork,
 } from "../../withdraw/destinations";
 
-const props = defineProps<{
-  network: WithdrawNetwork;
-  /** The CASH to withdraw, base units; null while it cannot be read. */
-  amount: bigint | null;
-}>();
+const props = defineProps<{ network: WithdrawNetwork }>();
 const emit = defineEmits<{ pick: [destination: WithdrawDestination] }>();
 
-const floor = useWithdrawFloorStore();
+const offers = useWithdrawOffersStore();
 
 const rows = computed(() =>
   props.network.destinations.map((destination) => ({
     destination,
-    state: floor.stateOf(destination, props.amount),
+    state: offers.rowFor(destination),
   })),
 );
 </script>
