@@ -18,21 +18,23 @@ import { useMeldSellQuote } from "../../../composables/useMeldSellQuote";
 import { useMeldWithdrawalPoll } from "../../../composables/useMeldWithdrawalPoll";
 import { useWithdrawalRequest } from "../../../composables/useWithdrawalRequest";
 import type { FundingPackageEmits } from "../../../funding/handoff";
-import { meldDepositKnown } from "../../../funding/requests/model";
+import { meldDepositKnown, requestsNow } from "../../../funding/requests/model";
 import type { FundingSelection } from "../../../funding/selection";
 import type { FundingTopUp } from "../../../funding/top-ups";
 import { useMeldSellClients } from "../../../stores/meldSellClients";
 import { useRequestsStore } from "../../../stores/requests";
 import { toCashBase } from "../../../utils/cash";
-import { requestRefKey } from "../../../utils/request-index";
+import { requestRefKey, type RequestRef } from "../../../utils/request-index";
 import { withdrawalCancellable } from "../../../withdraw/cancel";
 import {
+  browserSettlementObservations,
   formatCommittedCrypto,
   formatEstimatedPayout,
   meldSellDestination,
 } from "../../../withdraw/meld-sell";
 import { withdrawalRequestRef } from "../../../withdraw/rows";
 import { corridorOptions } from "~~/lib/supported";
+import { isHosted } from "~~/lib/host-account";
 import Toolbar from "../../ui/Toolbar.vue";
 import WithdrawJourneyScreen from "../WithdrawJourneyScreen.vue";
 import MeldSellFeeDetailsScreen from "../MeldSellFeeDetailsScreen.vue";
@@ -206,6 +208,16 @@ async function retryJourney() {
   }
 }
 
+// Browser demo has no host to pay the key or run the worker, so drive those legs ourselves and let the poll settle the sale, the way the buy side simulates its own settlement.
+const SIMULATED_SETTLE_MS = 1200;
+let settlementSimulated = false;
+async function simulateBrowserSettlement(ref: RequestRef): Promise<void> {
+  const [funded, done] = browserSettlementObservations(requestsNow(), requestsNow());
+  await requests.observe(ref, funded);
+  await new Promise((resolve) => setTimeout(resolve, SIMULATED_SETTLE_MS));
+  await requests.observe(ref, { ...done, at: requestsNow() });
+}
+
 // Once the sale discloses its deposit address the widget's job is done — the reconcile loop
 // takes the payment and the worker from here — so the screen moves on by itself, the same way
 // the buy side's `useMeldHandoff` hands off once its own deposit clears.
@@ -213,6 +225,11 @@ watch(
   () => (record.value?.rail.provider === "meld" ? meldDepositKnown(record.value.rail) : false),
   (known) => {
     if (known && step.value === "kyc") step.value = "journey";
+    // Browser only: the host legs never run, so settle the sale for the demo.
+    if (known && !isHosted() && !settlementSimulated && record.value) {
+      settlementSimulated = true;
+      void simulateBrowserSettlement(record.value.ref);
+    }
   },
 );
 

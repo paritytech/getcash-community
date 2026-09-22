@@ -13,6 +13,7 @@ import {
   type WithdrawalRecord,
 } from "../app/funding/requests/model";
 import { reduce } from "../app/funding/requests/reducer";
+import { browserSettlementObservations } from "../app/withdraw/meld-sell";
 import { requestRefOf } from "../app/utils/request-index";
 
 const MINUTE = 60_000;
@@ -509,6 +510,17 @@ describe("withdrawal: the Meld rail", () => {
     // The provider's own payout settles: only now is the withdrawal sent.
     const sent = run(sending, meldPoll(at(8), "complete"));
     expect(sent.status).toEqual({ kind: "sent", at: at(8) });
+    expect(sent.rail.stage).toBe("delivered");
+  });
+
+  it("browser-mock observations carry a disclosed Meld sale to sent", () => {
+    const known = run(meldRecord(), meldPoll(at(1), "waiting", { deposit: meldDeposit(at(1)) }));
+    expect(known.rail.sale?.phase).toBe("deposit-known");
+    const [funded, done] = browserSettlementObservations(at(2), at(3));
+    const sending = run(known, funded, done);
+    expect(sending.status.kind).toBe("sending");
+    const sent = run(sending, meldPoll(at(4), "complete"));
+    expect(sent.status).toEqual({ kind: "sent", at: at(4) });
     expect(sent.rail.stage).toBe("delivered");
   });
 

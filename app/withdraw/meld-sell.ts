@@ -11,7 +11,7 @@
 
 import { formatNative } from "@getsome/meld";
 import { fmtFiat } from "../utils/money";
-import type { WithdrawalRecord } from "../funding/requests/model";
+import type { Observation, WithdrawalRecord } from "../funding/requests/model";
 
 /** The Meld payout methods a withdrawal can route through. */
 export type MeldWithdrawMethod = "card" | "bank";
@@ -51,4 +51,23 @@ export function formatEstimatedPayout(
  *  "Sent to <address>": there is no address to shorten, only the payout method. */
 export function meldSentMessage(method: MeldWithdrawMethod): string {
   return method === "bank" ? "Paid to your bank account" : "Paid to your card";
+}
+
+// Browser demo only: the worker legs the host would run (funds seen, then done), so a disclosed sale reaches "sent".
+export function browserSettlementObservations(
+  seenAt: number,
+  doneAt: number,
+): [Observation, Observation] {
+  return [
+    {
+      source: "worker",
+      at: seenAt,
+      withdrawJob: { phase: "swap", done: false, fundsSeenAt: seenAt, lastTickAt: seenAt },
+    },
+    {
+      source: "worker",
+      at: doneAt,
+      withdrawJob: { phase: "pay-provider", done: true, fundsSeenAt: seenAt, lastTickAt: doneAt },
+    },
+  ];
 }
