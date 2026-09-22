@@ -5,6 +5,7 @@ import {
   cancelWithdraw,
   startWithdraw,
   tickAllWithdraw,
+  tickAllWithdrawReturn,
   withdrawStatus,
 } from "./withdraw-engine.js";
 
@@ -12,22 +13,34 @@ import {
 // (startFunding, startWithdraw), with records in product storage and the keys re-derived from
 // host entropy on every wake. Bundled into a single `worker/index.js` before publishing
 // (`pnpm build:worker`).
+//
+// tickAllWithdrawReturn is a third engine over the withdrawal job store (see
+// withdraw-return-engine.js): it never drives a live withdrawal, only one already at rest, so
+// it is folded into the same pass rather than given its own timer.
 
 export { cancelFunding, fundingStatus, startFunding, tickAllFunding } from "./engine.js";
 export {
   cancelWithdraw,
   startWithdraw,
   tickAllWithdraw,
+  tickAllWithdrawReturn,
   withdrawStatus,
 } from "./withdraw-engine.js";
 
 const keepAlive = createKeepAlive();
 
-/** One pass over both engines: how many jobs were ticked, and whether either engine still had a
+/** One pass over every engine: how many jobs were ticked, and whether any engine still had a
  *  pass running, in which case the keep-alive is left as it is. */
 async function tickAll() {
-  const [funding, withdraw] = await Promise.all([tickAllFunding(), tickAllWithdraw()]);
-  return { ticked: funding.ticked + withdraw.ticked, busy: funding.busy || withdraw.busy };
+  const [funding, withdraw, withdrawReturn] = await Promise.all([
+    tickAllFunding(),
+    tickAllWithdraw(),
+    tickAllWithdrawReturn(),
+  ]);
+  return {
+    ticked: funding.ticked + withdraw.ticked + withdrawReturn.ticked,
+    busy: funding.busy || withdraw.busy || withdrawReturn.busy,
+  };
 }
 
 // Adopt a predecessor's keep-alive operation while either engine has work, close it otherwise.

@@ -3,6 +3,7 @@ import {
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
   DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
   freshWithdrawTickState,
+  paymentResolved,
   PaymentUnresolvedError,
   readBurnerOnAssetHub,
   readDestinationPas,
@@ -22,6 +23,7 @@ import {
   keypairFor,
   signOptionsFor,
 } from "./shared.js";
+import { createWithdrawReturnDriver } from "./withdraw-return-engine.js";
 
 // The withdrawal engine: the only driver of withdrawTickOnce, one tick per live job per pass.
 //
@@ -52,6 +54,17 @@ const loadJobs = () => store.load();
 const saveJobs = () => store.save();
 /** Throws when the write does not land. For state a broadcast must not outrun. */
 const saveJobsStrict = () => store.saveStrict();
+
+/** The residue return and the unwind, over the SAME job store -- see withdraw-return-engine.js's
+ *  header for why it must be the same store instance rather than a second one opened on the same
+ *  key. */
+const { tickAllWithdrawReturn } = createWithdrawReturnDriver({
+  loadJobs,
+  saveJobs,
+  saveJobsStrict,
+  recordVersion: RECORD_V,
+});
+export { tickAllWithdrawReturn };
 
 /**
  * One withdrawal job's record, as persisted between wakes.
@@ -275,6 +288,12 @@ function rearm(record, nowMs) {
   // An unresolved payment is not a thing to try again: whether the provider holds the money is
   // unknown, and re-arming would drive straight back into the same refusal, or worse.
   if (failure === "unresolved") return;
+  // A return has already signed from this burner, or has decided the residue is not worth
+  // moving. Re-arming would hand the job back to withdrawTickOnce, whose first-nonce reasoning
+  // no longer holds once anything besides the provider payment has signed here -- see contract 4
+  // in tick.ts's header. This is permanent: nothing clears `returnStarted`, because nothing ever
+  // should.
+  if (record.returnStarted) return;
   record.phase = "starting";
   delete record.failure;
   delete record.lastError;
@@ -310,6 +329,36 @@ export async function cancelWithdraw(params) {
   return describeWithdraw(record);
 }
 
+/** The return's own honest summary, or null while nothing has been decided about it yet. Distinct
+ *  from `phase`/`failure` above on purpose: a reader must be able to tell a sale that paid the
+ *  provider and swept a residue home from a sale that never paid anyone and came home whole --
+ *  `reason` says which, and `returned`/`returnedAmount` say what actually reached the purse, so
+ *  nothing here can be read as "sent" for a withdrawal whose money never left. */
+function describeReturn(record) {
+  const r = record.return;
+  if (!r) return null;
+  return {
+    reason: r.reason,
+    phase: r.phase,
+    returned: r.returned === true,
+    returnedAmount: r.returnedAmount ?? null,
+    // The balance a `left-below-floor` decision was made against, so a surface can say the
+    // honest thing -- "we left N behind, it costs more to move than it is worth" -- instead of
+    // silently doing nothing. Null on every other phase, where no floor decision was made.
+    nativeSeen: r.nativeSeen ?? null,
+    claim: r.claim
+      ? {
+          amount: r.claim.amount,
+          status: r.claim.status ?? null,
+          partial: r.claim.partial === true,
+          error: r.claim.error,
+        }
+      : null,
+    txs: r.txs,
+    lastError: r.lastError,
+  };
+}
+
 function describeWithdraw(record) {
   return {
     v: RECORD_V,
@@ -324,6 +373,7 @@ function describeWithdraw(record) {
     submitting: record.submitting,
     txs: record.txs,
     fundsSeenAt: record.state?.fundsSeenAt ?? null,
+    return: describeReturn(record),
   };
 }
 
@@ -358,6 +408,20 @@ function accountWorkedTime(record, nowMs) {
 function judgeBounds(record, nowMs, read) {
   if (record.phase === "failed") return;
   if (onTheClock(record) && (record.state.workedMs ?? 0) > RUN_TIMEOUT_MS) {
+    // A pin taken but not yet resolved is not an ordinary timeout: "unresolved" is the bucket for
+    // "we cannot tell whether the provider was paid", and the residue return treats an ordinary
+    // timeout as safe ground to act on (see withdraw-return-engine.js's eligibility filter).
+    // Filing this under "timeout" instead would hand the return engine a withdrawal whose payment
+    // is genuinely undecided the moment the run bound trips mid-payment, which is exactly the
+    // reachable interleaving contract 4 in tick.ts's header exists to rule out.
+    if (!paymentResolved(restoreWithdrawTickState(record.state))) {
+      fail(
+        record,
+        "unresolved",
+        `conversion exceeded ${RUN_TIMEOUT_MS}ms of worker time with the payment unresolved`,
+      );
+      return;
+    }
     fail(record, "timeout", `conversion exceeded ${RUN_TIMEOUT_MS}ms of worker time`);
     return;
   }

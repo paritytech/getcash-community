@@ -62,6 +62,7 @@ export type {
   WithdrawTickState,
 } from "./tick";
 export { assetHubAddressFor, readBurnerOnAssetHub, readDestinationPas } from "./destination";
+export { residueWorthReturning, RETURN_FLOOR_PLANCK } from "./residue";
 export { cashInFor, pasOutFor } from "./pool";
 export type { PoolReserves } from "./pool";
 export {

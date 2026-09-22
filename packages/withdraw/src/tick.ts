@@ -59,6 +59,17 @@
 // The run stops with PaymentUnresolvedError for a human to reconcile, because guessing either way
 // risks a second payment or an abandoned one.
 //
+// THE SECOND CASE IS A CONCLUSION, NOT A CONFIRMATION, AND SAYS SO. "the pinned nonce is used and
+// at least the committed amount has left" is the strongest evidence this code will ever have
+// without an answered submit, but it is still an inference from a balance, not a hash the chain
+// handed back — `paidTxHash` stays null, because a fabricated hash is a lie the next reader would
+// chase. `paidByInference` records that this is how the run ended, and `paymentResolved` treats
+// it the same as an answered payment: the alternative is a withdrawal that reads `done` forever
+// while `paymentResolved` stays false forever, which is not caution, it is a residue with nobody
+// left to return it. Nothing about this weakens contract 3 below — it does not become SAFER for
+// something else to sign here because the inference is generous, it is simply what the state
+// honestly says happened once resolution is no longer in question.
+//
 // THE PIN CANNOT BE THE ONLY GUARD, BECAUSE THE PIN CAN BE LOST. A write that never lands, or a
 // second driver in another tab whose memory never had it, both produce a tick holding no pin
 // while a payment is already on the chain; pinning a FRESH nonce there would be accepted and pay
@@ -70,7 +81,7 @@
 // rather than taking a pin the chain would honour. The balance reading is not what saves us
 // there, and is not asked to be.
 //
-// THREE CONTRACTS THE REST OF THE SYSTEM MUST HONOUR, all of which this reasoning depends on:
+// FOUR CONTRACTS THE REST OF THE SYSTEM MUST HONOUR, all of which this reasoning depends on:
 //
 //   1. SINGLE WRITER — A PRECONDITION OF `withdrawTickOnce`, not an aspiration. One tick at a
 //      time per withdrawal, across tabs and processes as well as within one. `payProvider`
@@ -89,6 +100,22 @@
 //      no longer means "our payment was included" — it could even move more than the committed
 //      amount and read as a payment that never happened. `paymentResolved` is the exported
 //      predicate that step must gate itself on.
+//   4. AND ONCE THE RETURN HAS SIGNED, THIS WITHDRAWAL MUST NEVER REACH `withdrawTickOnce` AGAIN.
+//      BURNER_FIRST_NONCE's reasoning — a bare nonce with no pin recorded can only be a lost
+//      payment — is sound only as long as `payProvider` is the sole thing that has ever signed
+//      from the burner. A return leg that has moved the residue (or, on a sale that never paid,
+//      the whole balance) has by then signed from the SAME account, so a later tick reading "no
+//      pin, nonce above zero" could no longer tell a lost payment from an ordinary return having
+//      done its job — the two are indistinguishable from the head, the same way the pin's own
+//      third case is. This code does not attempt to tell them apart, because it cannot: contract
+//      3 already establishes that nothing else may sign here before resolution, so the only
+//      sound position afterward is that nothing ever calls `withdrawTickOnce` again for this
+//      withdrawal. That is not this module's to enforce — it has no visibility into a return it
+//      never drives — so it falls to whoever holds the record: once a return has started, that
+//      fact must be recorded durably and independent of chain state (not inferred from `done` or
+//      a `failed` phase alone, since a retried hand-off is exactly the thing that re-arms a
+//      failed job), and a re-arm must refuse a job that carries it, permanently, the same way it
+//      already refuses one left `PaymentUnresolvedError`-failed.
 
 import type { PolkadotSigner } from "polkadot-api";
 import { describeDispatchError, signedOrigin } from "@getsome/funding";
@@ -220,6 +247,12 @@ export interface WithdrawTickState {
   /** The hash of a payment the chain confirmed. Authoritative: set only from an `ok` submit, and
    *  the one reading that ends the run without consulting the chain again. */
   paidTxHash: string | null;
+  /** Set when the run ended `done` from the balance-inference branch — the pin was used and the
+   *  balance fell by at least the commitment — rather than from an answered submit. There is no
+   *  transaction hash to show for it and none is invented; this is what tells `paymentResolved`
+   *  the run is over anyway, so a genuine residue is not orphaned behind a predicate that can
+   *  never see resolution reach a case that never carries a hash. See the header. */
+  paidByInference: boolean;
 }
 
 export const freshWithdrawTickState = (): WithdrawTickState => ({
@@ -235,15 +268,18 @@ export const freshWithdrawTickState = (): WithdrawTickState => ({
   payFreeBefore: null,
   payAmount: null,
   paidTxHash: null,
+  paidByInference: false,
 });
 
-/** True when no provider payment is in flight: either one was confirmed, or none is pinned and
- *  unanswered. The residue return must not sign from the burner until this holds — it would
- *  consume the pinned nonce and destroy the evidence the payment is resolved by. `payAmount` is
- *  the marker rather than the pin, because the pin advances past an answered failure and stands
- *  at the nonce the NEXT attempt would use, with nothing in flight behind it. */
+/** True when no provider payment is in flight: either one was confirmed (by an answered submit
+ *  or, failing that, by the balance-inference branch, which `paidByInference` marks so the two
+ *  are never confused for the same evidence), or none is pinned and unanswered. The residue
+ *  return must not sign from the burner until this holds — it would consume the pinned nonce and
+ *  destroy the evidence the payment is resolved by. `payAmount` is the marker rather than the
+ *  pin, because the pin advances past an answered failure and stands at the nonce the NEXT
+ *  attempt would use, with nothing in flight behind it. */
 export const paymentResolved = (state: WithdrawTickState): boolean =>
-  state.paidTxHash !== null || state.payAmount === null;
+  state.paidTxHash !== null || state.paidByInference || state.payAmount === null;
 
 /** The persisted form of the tick state: the same keys, with bigints boxed so JSON round-trips
  *  them back as bigints. */
@@ -393,6 +429,10 @@ async function payProvider(
   if (state.payNonce !== null && burner.nonce > state.payNonce) {
     const moved = (state.payFreeBefore ?? 0n) - burner.free;
     if (state.payFreeBefore !== null && moved >= commitment.planck) {
+      // Concluded, not confirmed: no submit answered, so there is no hash to record. See the
+      // header on why `paidByInference` exists rather than leaving this indistinguishable from
+      // an answered payment on one side, or leaving `paymentResolved` false forever on the other.
+      state.paidByInference = true;
       return { step: "done", balances, submitted: false };
     }
     // The pin was spent and the money is still here. That is either an included failure or a

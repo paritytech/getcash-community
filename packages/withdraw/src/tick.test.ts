@@ -809,6 +809,14 @@ describe("withdrawTickOnce with a commitment", () => {
     expect(resumed.steps).toEqual(["done"]);
     expect(world.state.submits.filter((s) => s.call === "pay")).toHaveLength(1);
     expect(world.state.paidOut).toBe(COMMIT);
+    // The "done" above came from the balance-inference branch, not an answered submit: no hash
+    // to show for it, so paidTxHash stays null. Without paidByInference, paymentResolved would
+    // read false forever from here on -- a withdrawal stuck `done` with no evidence anyone will
+    // ever accept as resolved, and a residue return permanently refused for a payment that, as
+    // far as this code can tell, plainly went through.
+    expect(resumed.state.paidTxHash).toBeNull();
+    expect(resumed.state.paidByInference).toBe(true);
+    expect(paymentResolved(resumed.state)).toBe(true);
   });
 
   it("refuses to decide when the pin was used and the money is still there", async () => {
