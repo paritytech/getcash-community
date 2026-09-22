@@ -11,9 +11,10 @@ import {
   type SourceFloorResult,
   type SourceOffer,
 } from "@getsome/chainflip";
-import { CHAINFLIP_RAIL_ENABLED, SOURCE_CHAINS, sourceIdFor } from "~~/lib/config";
+import { SOURCE_CHAINS, sourceIdFor } from "~~/lib/config";
 import { learnSourceFloors } from "~~/lib/source-floors";
 import { isDemoBuild } from "../utils/demo";
+import { chainflipRailOn } from "../utils/rail";
 import type { DocumentLike } from "./requests";
 import { useSessionStore } from "./session";
 
@@ -82,10 +83,8 @@ export const useOffersStore = defineStore("offers", () => {
    *  answers for nothing. A ref so tests can pin it either way. */
   const demoFallback = ref(isDemoBuild());
 
-  /** Whether a pick can lead anywhere. Demo builds keep the routes open so the flow can be
-   *  walked to the deposit screen; a real build greys them until the channel rail is on. A ref
-   *  so tests can pin it either way. */
-  const railEnabled = ref(CHAINFLIP_RAIL_ENABLED || isDemoBuild());
+  /** Whether a pick can lead anywhere; see `chainflipRailOn`. A ref so tests can pin it. */
+  const railEnabled = ref(chainflipRailOn());
 
   /** Nothing to show yet and an answer is on its way: the pickers show skeleton rows. A build
    *  with the rail off never asks, so its rows show at once, greyed. */

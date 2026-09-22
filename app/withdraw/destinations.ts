@@ -1,13 +1,13 @@
 // Where a withdrawal can go: the networks the picker lists, the tokens on each, and for each
 // destination how an address is checked and where the PAS lands on Asset Hub. Asset Hub itself is
 // the direct destination, reached by the XCM alone. The Chainflip networks are listed as the
-// design shows them and open up with the channel rail.
+// design shows them; whether a row can be picked for an amount is the floor store's call.
 
 import { AccountId } from "polkadot-api";
 import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
 import type { WithdrawalRailState } from "../funding/requests/model";
 import { networkIcon, tokenIcon } from "../utils/icons";
-import { CHAINFLIP_RAIL_ENABLED, SOURCE_CHAINS, sourceIdFor } from "~~/lib/config";
+import { SOURCE_CHAINS, sourceIdFor } from "~~/lib/config";
 
 export interface WithdrawDestination {
   /** The destination's id, the tail of the withdrawal's source id: `dot-assethub`, `btc`. */
@@ -17,8 +17,6 @@ export interface WithdrawDestination {
   chainLabel: string;
   asset: string;
   rail: WithdrawalRailState["provider"];
-  /** Whether this build can run the destination. */
-  available: boolean;
   validateAddress(address: string): boolean;
 }
 
@@ -26,7 +24,6 @@ export interface WithdrawNetwork {
   chain: string;
   label: string;
   icon: string;
-  available: boolean;
   destinations: readonly WithdrawDestination[];
 }
 
@@ -55,7 +52,6 @@ const assetHub: WithdrawDestination = Object.freeze({
   chainLabel: "Asset Hub",
   asset: "DOT",
   rail: "direct",
-  available: true,
   validateAddress: isAssetHubAddress,
 });
 
@@ -73,7 +69,6 @@ function chainflipDestinations(chain: string, assets: readonly string[]): Withdr
         chainLabel: chain,
         asset,
         rail: "chainflip" as const,
-        available: CHAINFLIP_RAIL_ENABLED,
         validateAddress: (address: string) => config.validateRefundAddress(address.trim()),
       }),
     ];
@@ -86,19 +81,16 @@ export const WITHDRAW_NETWORKS: readonly WithdrawNetwork[] = Object.freeze([
     chain: ASSET_HUB_CHAIN,
     label: "Asset Hub",
     icon: networkIcon("Polkadot"),
-    available: true,
     destinations: Object.freeze([assetHub]),
   }),
-  ...SOURCE_CHAINS.map(({ chain, label, assets }) => {
-    const destinations = Object.freeze(chainflipDestinations(chain, assets));
-    return Object.freeze({
+  ...SOURCE_CHAINS.map(({ chain, label, assets }) =>
+    Object.freeze({
       chain,
       label,
       icon: networkIcon(chain),
-      available: destinations.some((destination) => destination.available),
-      destinations,
-    });
-  }),
+      destinations: Object.freeze(chainflipDestinations(chain, assets)),
+    }),
+  ),
 ]);
 
 export const withdrawNetwork = (chain: string): WithdrawNetwork | undefined =>

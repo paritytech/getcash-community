@@ -8,6 +8,7 @@ import type { FundingPackageEmits } from "../../../funding/handoff";
 import type { FundingSelection } from "../../../funding/selection";
 import type { FundingTopUp } from "../../../funding/top-ups";
 import { useRequestsStore } from "../../../stores/requests";
+import { useWithdrawFloorStore } from "../../../stores/withdraw-floor";
 import { toCashBase } from "../../../utils/cash";
 import { isDemoBuild } from "../../../utils/demo";
 import {
@@ -55,6 +56,9 @@ const notice = ref<string | null>(null);
 
 const record = computed(() => requests.foregroundWithdrawal);
 const amount = computed(() => props.selection?.amount ?? props.topUp?.amount ?? "");
+/** The amount in base units; null while the shell's string cannot be read. */
+const amountBase = computed(() => toCashBase(amount.value));
+const floor = useWithdrawFloorStore();
 /** A withdrawal opened from the list whose record the store no longer has. */
 const unavailable = computed(() => {
   if (!props.topUp || record.value !== null) return false;
@@ -167,6 +171,13 @@ async function confirm() {
   const picked = destination.value;
   const base = toCashBase(amount.value);
   if (picked === null || base === null || starting.value) return;
+  // Judged once more here: the price may have moved since the pick, and the channel is opened
+  // next. Under the floor nothing is opened.
+  const allowed = floor.stateOf(picked, base);
+  if (!allowed.pickable) {
+    startError.value = allowed.subtitle ?? "This destination cannot take the amount.";
+    return;
+  }
   starting.value = true;
   startError.value = null;
   try {
@@ -269,10 +280,11 @@ onUnmounted(() => {
     </Toolbar>
 
     <div class="flex min-h-0 flex-1 flex-col px-6 pt-6">
-      <WithdrawNetworkScreen v-if="step === 'network'" @pick="pickNetwork" />
+      <WithdrawNetworkScreen v-if="step === 'network'" :amount="amountBase" @pick="pickNetwork" />
       <WithdrawTokenScreen
         v-else-if="step === 'token' && network"
         :network="network"
+        :amount="amountBase"
         @pick="pickToken"
       />
       <WithdrawAddressScreen

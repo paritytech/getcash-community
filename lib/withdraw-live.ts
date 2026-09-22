@@ -30,13 +30,16 @@ import {
   type WithdrawalHandoffPayload,
 } from "../app/funding/requests/model";
 import {
+  ASSET_HUB_DOT,
   formatSourceAmount,
   openWithdrawChannel,
   quoteOutgoing,
   SOURCE_CONFIG_BY_ID,
 } from "@getsome/chainflip";
 import { AccountId } from "polkadot-api";
+import type { WithdrawFloor } from "../app/withdraw/floor";
 import { mainnetSdk } from "./chainflip-backend";
+import { withTimeout } from "./timeout";
 import { hostSafeEntropy, nextFreeTradeNumber, readTradeCounter, tradeCounterKey } from "./coinage";
 import {
   requestPayment as hostRequestPayment,
@@ -111,6 +114,58 @@ export async function quoteDirectReceive(amount: bigint): Promise<bigint> {
   );
   if (quoted === undefined) throw new Error("Asset Hub cannot quote the sale");
   return quoted;
+}
+
+/** The CASH a direct withdrawal must take for `native` planck to land on Asset Hub, at today's
+ *  pool price: what exactly that much native costs, plus the fees the program takes on the way. */
+export async function quoteDirectCashFor(native: bigint): Promise<bigint> {
+  const { connectChain, ASSET_HUB } = await import("./host-chain");
+  const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
+  const quoted = await api.apis.AssetConversionApi.quote_price_tokens_for_exact_tokens(
+    CASH_ON_ASSET_HUB as never,
+    PEOPLE_NATIVE as never,
+    native,
+    true,
+  );
+  if (quoted === undefined) throw new Error("Asset Hub cannot quote the purchase");
+  return quoted + DIRECT_FEES_CASH;
+}
+
+/** Headroom over Chainflip's minimum: the sale on Asset Hub may slip by up to the program's own
+ *  tolerance and still go through, and the sweep's fee comes off the deposit after that. What
+ *  the floor promises has to clear the minimum in the worst case the program allows. */
+const FLOOR_HEADROOM_PCT = BigInt(DEFAULT_WITHDRAW_SLIPPAGE_PCT) + 1n;
+/** Ceiling on the wait for the floor. */
+const FLOOR_TIMEOUT_MS = 10_000;
+
+/**
+ * The smallest provider withdrawal, in CASH: Chainflip's minimum swap out of Asset Hub, with
+ * headroom, priced at the pool. Never throws: what could not be learned comes back as unknown,
+ * with the reason.
+ */
+export async function learnWithdrawFloor(): Promise<WithdrawFloor> {
+  try {
+    const { minimumSwapAmounts } = await withTimeout(
+      mainnetSdk().then((sdk) => sdk.getSwapLimits()),
+      FLOOR_TIMEOUT_MS,
+      "withdraw floor",
+    );
+    const minimum = minimumSwapAmounts[ASSET_HUB_DOT.chain]?.[ASSET_HUB_DOT.asset];
+    if (minimum === undefined) {
+      return { state: "unknown", reason: "Chainflip lists no minimum for DOT on Asset Hub" };
+    }
+    const target = minimum + (minimum * FLOOR_HEADROOM_PCT) / 100n;
+    const minimumCash = await withTimeout(
+      quoteDirectCashFor(target),
+      FLOOR_TIMEOUT_MS,
+      "withdraw floor price",
+    );
+    return { state: "known", minimumCash };
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    console.warn(`[withdraw] floor unavailable: ${reason}`);
+    return { state: "unknown", reason };
+  }
 }
 
 async function hostStorageAdapter() {
