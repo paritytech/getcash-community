@@ -602,9 +602,14 @@ function recordFromWithdrawJob(sessionId: string, job: WithdrawJob): WithdrawalR
   const ref = refOfSessionId(sessionId);
   const handoff = withdrawHandoffOf(job);
   if (ref === null || handoff === undefined || !isNumber(job.createdAt)) return null;
+  // `withdrawHandoffOf` only ever returns `"direct"` or `"chainflip"` today (its own guard
+  // refuses anything else) — this is that fact made visible to the type checker, and a fail-
+  // closed refusal rather than a silent cast the day the guard is loosened for `"meld"` without
+  // this site being taught how to rebuild a sale from the job blob.
+  if (handoff.rail === "meld") return null;
   const startedAt = job.createdAt;
   return {
-    schema: 2,
+    schema: 3,
     kind: "withdrawal",
     ref,
     rev: 0,

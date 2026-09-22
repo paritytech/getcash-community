@@ -53,6 +53,12 @@ export function useWithdrawalRequest() {
         reason: "Withdrawals are only available inside the Polkadot App.",
       };
     }
+    // No destination hands out a `meld` rail yet — starting one needs a sale (a quote, a
+    // session, a committed amount) that nothing here builds. Refused explicitly rather than
+    // building a rail the type system would otherwise require a `sale` for.
+    if (input.rail === "meld") {
+      return { ok: false, ref: null, reason: "Off-ramp withdrawals are not available yet." };
+    }
     const live = await import("~~/lib/withdraw-live");
     const sourceId = `${WITHDRAW_SOURCE_PREFIX}${input.destinationId}`;
     const n = await live.nextWithdrawNumber(sourceId, (candidate) =>
@@ -73,7 +79,7 @@ export function useWithdrawalRequest() {
       paymentExpiresAt,
     });
     const record: WithdrawalRecord = {
-      schema: 2,
+      schema: 3,
       kind: "withdrawal",
       ref,
       rev: 0,

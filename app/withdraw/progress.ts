@@ -57,6 +57,9 @@ function sendingStage(nominalMs: number) {
 const PROFILES: Record<WithdrawalRailState["provider"], FundingProgressProfile> = {
   direct: composeFundingProgressProfile(route, sendingStage(MINUTE)),
   chainflip: composeFundingProgressProfile(route, sendingStage(20 * MINUTE)),
+  // A payout rail, not a swap: the chain legs land in minutes, but the provider's own payout
+  // (ACH, SEPA, ...) can run to a business day, the same order as the on-ramp's bank route.
+  meld: composeFundingProgressProfile(route, sendingStage(24 * 60 * MINUTE)),
 };
 
 export const withdrawalProgressProfile = (rail: WithdrawalRailState["provider"]) => PROFILES[rail];

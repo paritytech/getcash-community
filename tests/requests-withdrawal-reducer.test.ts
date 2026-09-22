@@ -2,6 +2,8 @@
 // migration of a stored withdrawal.
 
 import { describe, expect, it } from "vitest";
+import type { SwapStatusResult } from "@getsome/core";
+import type { MeldDepositDisclosure } from "@getsome/meld";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
   PAYMENT_EXPIRED_REASON,
@@ -25,7 +27,7 @@ const CASH = "21000000";
 
 function record(overrides: Partial<WithdrawalRecord> = {}): WithdrawalRecord {
   return {
-    schema: 2,
+    schema: 3,
     kind: "withdrawal",
     ref: REF,
     rev: 0,
@@ -109,6 +111,84 @@ const cancelled = (time: number): Observation => ({
   at: time,
   event: "cancelled",
   depositExpiresAt: 0,
+});
+
+const MELD_FUNDING_ID = "fr_1";
+const COMMITTED = "5000000000";
+const PROVIDER_PAYOUT = "13UVJyLnbVp9RBZYFwFGyDvVd1y27Tt8tkntv6Q7JVPhFsTB";
+const DEPOSIT_ADDRESS = "16ZL8yLyXv3V3W3Q7q2yzP1QDeVzrY9367ZTt8tkntv6Q7JVP";
+
+/** A withdrawal on the Meld rail, its sale not yet given a deposit address. */
+function meldRecord(overrides: Partial<WithdrawalRecord> = {}): WithdrawalRecord {
+  const base = record();
+  return record({
+    rail: {
+      provider: "meld",
+      stage: "waiting",
+      updatedAt: STARTED,
+      sale: {
+        phase: "awaiting-deposit-address",
+        meldFundingRequestId: MELD_FUNDING_ID,
+        committedAmount: COMMITTED,
+        quotedFiatAmount: "42.00",
+        quotedFiatCurrency: "USD",
+        sessionExpiresAt: STARTED + 30 * MINUTE,
+      },
+    },
+    handoff: {
+      ...base.handoff,
+      rail: "meld",
+      meld: {
+        committedAmount: COMMITTED,
+        providerPayoutAddress: PROVIDER_PAYOUT,
+        orderRef: base.key.address,
+      },
+    },
+    ...overrides,
+  });
+}
+
+const meldDeposit = (observedAt: number, amount = COMMITTED): MeldDepositDisclosure => ({
+  address: DEPOSIT_ADDRESS,
+  amount,
+  currency: "DOT_ASSETHUB",
+  observedAt,
+});
+
+/** A provider poll, in the shape the reducer's `Observation` union carries: the normalised
+ *  status, and the sell's deposit terms only on the polls that disclose them. */
+function meldPoll(
+  time: number,
+  status: SwapStatusResult["status"],
+  opts: { deposit?: MeldDepositDisclosure; raw?: string; message?: string } = {},
+): Observation {
+  const result: SwapStatusResult = {
+    status,
+    ...(opts.raw === undefined ? {} : { raw: opts.raw }),
+    ...(status === "failed"
+      ? { depositFailure: { reason: { message: opts.message ?? "the sale failed" } } }
+      : {}),
+  };
+  return {
+    source: "provider",
+    at: time,
+    provider: "meld",
+    result,
+    ...(opts.deposit === undefined ? {} : { deposit: opts.deposit }),
+  };
+}
+const meldGone = (time: number, message: string): Observation => ({
+  source: "provider",
+  at: time,
+  provider: "meld",
+  gone: true,
+  message,
+});
+const meldUnreachable = (time: number): Observation => ({
+  source: "provider",
+  at: time,
+  provider: "meld",
+  unreachable: true,
 });
 
 /** Reduces `observations` in order. */
@@ -312,6 +392,202 @@ describe("withdrawal: the clock and the user", () => {
   });
 });
 
+describe("withdrawal: the Meld rail", () => {
+  it("carries a Meld withdrawal through its full happy path", () => {
+    const start = meldRecord({ payment: { attempt: 0, requestedAt: at(0), id: "pay-1" } });
+    const paid = run(start, host(at(1), "completed"));
+    expect(paid.status).toEqual({ kind: "paid", at: at(1), via: "host" });
+
+    // KYC concludes mid-conversion: the deposit address arrives.
+    const converting = run(
+      paid,
+      worker(at(2), job({ phase: "swap", fundsSeenAt: at(1) })),
+      meldPoll(at(3), "waiting", { deposit: meldDeposit(at(3)) }),
+    );
+    expect(converting.status).toEqual({ kind: "converting", at: at(2), step: "swap" });
+    expect(converting.rail.sale?.phase).toBe("deposit-known");
+    if (converting.rail.sale?.phase === "deposit-known") {
+      expect(converting.rail.sale.deposit).toEqual(meldDeposit(at(3)));
+    }
+
+    // The chain legs land the committed amount at the provider: rank 3, "sending".
+    const sending = run(
+      converting,
+      worker(at(5), job({ phase: "pay-provider", fundsSeenAt: at(1) })),
+      worker(at(6), job({ phase: "done", done: true, fundsSeenAt: at(1) })),
+    );
+    expect(sending.status).toEqual({ kind: "sending", at: at(6) });
+    expect(sending.rail.stage).toBe("delivering");
+
+    // The provider's own payout settles: only now is the withdrawal sent.
+    const sent = run(sending, meldPoll(at(8), "complete"));
+    expect(sent.status).toEqual({ kind: "sent", at: at(8) });
+    expect(sent.rail.stage).toBe("delivered");
+  });
+
+  it("keeps the deposit address once known, even once the adapter stops disclosing it", () => {
+    const known = run(meldRecord(), meldPoll(at(1), "waiting", { deposit: meldDeposit(at(1)) }));
+    expect(known.rail.sale?.phase).toBe("deposit-known");
+    // The adapter withholds the disclosure once the request has moved further along; the
+    // record must not forget the address it already has.
+    const later = run(known, meldPoll(at(2), "receiving"));
+    expect(later.rail.sale?.phase).toBe("deposit-known");
+    if (later.rail.sale?.phase === "deposit-known") {
+      expect(later.rail.sale.deposit).toEqual(meldDeposit(at(1)));
+    }
+  });
+
+  it("fails irrecoverably when the provider reports a failure after the crypto was sent", () => {
+    const sending = run(
+      meldRecord({ payment: { attempt: 0, requestedAt: at(0), id: "pay-1" } }),
+      host(at(1), "completed"),
+      worker(at(2), job({ phase: "done", done: true, fundsSeenAt: at(1) })),
+    );
+    expect(sending.status).toEqual({ kind: "sending", at: at(2) });
+    const failed = run(sending, meldPoll(at(4), "failed", { message: "declined" }));
+    expect(failed.status).toEqual({ kind: "failed", at: at(4), recoverable: false });
+    // The provider's own reason survives verbatim: it is the only evidence support has for
+    // telling "check Asset Hub" apart from "check Meld's dashboard" once the money is gone.
+    expect(failed.failure).toEqual({
+      kind: "unresolved",
+      step: "send",
+      message: "declined",
+      recoverable: false,
+    });
+    expect(failed.rail.stage).toBe("failed");
+    // Not retryable from here: the sale itself ended, and only a human can reconcile it.
+    expect(run(failed, { source: "user", at: at(5), event: "retry" })).toBe(failed);
+  });
+
+  it("never resurrects a send-step side exit into sent on a late complete, and freezes once terminal", () => {
+    const sending = run(
+      meldRecord({ payment: { attempt: 0, requestedAt: at(0), id: "pay-1" } }),
+      host(at(1), "completed"),
+      worker(at(2), job({ phase: "done", done: true, fundsSeenAt: at(1) })),
+    );
+    const failedAtSend = run(sending, meldPoll(at(3), "failed", { message: "declined" }));
+    expect(failedAtSend.status).toMatchObject({ kind: "failed" });
+    expect(failedAtSend.failure?.step).toBe("send");
+
+    // A late "complete" must not walk this back into "sent": rank 3 is ambiguous between the
+    // live "sending" status and a send-step side exit, so the check is on the status kind.
+    const late = run(failedAtSend, meldPoll(at(4), "complete"));
+    expect(late.status).toEqual(failedAtSend.status);
+
+    // And once there, the record is fully done with the rail: a repeat poll — even one with a
+    // fresh reason — is a true no-op, not merely one whose status doesn't move.
+    expect(run(failedAtSend, meldPoll(at(5), "failed", { message: "declined again" }))).toBe(
+      failedAtSend,
+    );
+    expect(run(failedAtSend, meldGone(at(5), "still gone"))).toBe(failedAtSend);
+  });
+
+  it("never lets a stale failure or gone poll corrupt a sent record's rail", () => {
+    const sent = run(
+      meldRecord({ payment: { attempt: 0, requestedAt: at(0), id: "pay-1" } }),
+      host(at(1), "completed"),
+      worker(at(2), job({ phase: "done", done: true, fundsSeenAt: at(1) })),
+      meldPoll(at(3), "complete"),
+    );
+    expect(sent.status).toEqual({ kind: "sent", at: at(3) });
+    expect(sent.rail.stage).toBe("delivered");
+
+    // A stale "failed" (or a "gone") arriving after the fact must not leave `sent` sitting next
+    // to a `rail.stage === "failed"` with a populated failure nobody asked for.
+    const stillSent = run(sent, meldPoll(at(1), "failed", { message: "declined" }));
+    expect(stillSent).toBe(sent);
+    expect(stillSent.rail.stage).toBe("delivered");
+    expect(stillSent.failure).toBeUndefined();
+
+    const alsoStillSent = run(sent, meldGone(at(9), "request not found"));
+    expect(alsoStillSent).toBe(sent);
+  });
+
+  it("fails at every rank a provider failure can reach it at", () => {
+    const awaitingPayment = run(meldRecord(), meldPoll(at(1), "failed", { message: "x" }));
+    expect(awaitingPayment.status).toMatchObject({ kind: "failed" });
+    expect(awaitingPayment.failure?.step).toBe("payment");
+    expect(awaitingPayment.failure?.recoverable).toBe(false);
+
+    const paid = run(
+      meldRecord({ payment: { attempt: 0, requestedAt: at(0), id: "pay-1" } }),
+      host(at(1), "completed"),
+      meldPoll(at(2), "failed", { message: "x" }),
+    );
+    expect(paid.status).toMatchObject({ kind: "failed" });
+    expect(paid.failure?.step).toBe("payment");
+
+    const converting = run(
+      meldRecord({ payment: { attempt: 0, requestedAt: at(0), id: "pay-1" } }),
+      host(at(1), "completed"),
+      worker(at(2), job({ phase: "swap", fundsSeenAt: at(1) })),
+      meldPoll(at(3), "failed", { message: "x" }),
+    );
+    expect(converting.status).toMatchObject({ kind: "failed" });
+    expect(converting.failure?.step).toBe("convert");
+  });
+
+  it("does not move the record backwards on an out-of-order provider poll", () => {
+    // "complete" before the chain legs finish must not fast-forward past them.
+    const early = run(meldRecord(), meldPoll(at(1), "complete"));
+    expect(early.status).toEqual({ kind: "awaiting-payment" });
+
+    // Once sent, a stale poll changes nothing but the rail's own bookkeeping.
+    const sent = run(
+      meldRecord({ payment: { attempt: 0, requestedAt: at(0), id: "pay-1" } }),
+      host(at(1), "completed"),
+      worker(at(2), job({ phase: "done", done: true, fundsSeenAt: at(1) })),
+      meldPoll(at(3), "complete"),
+    );
+    expect(sent.status).toEqual({ kind: "sent", at: at(3) });
+    const stale = run(sent, meldPoll(at(1), "receiving"));
+    expect(stale.status).toEqual(sent.status);
+  });
+
+  it("refuses to cancel once the sale has a deposit address, even before payment", () => {
+    const known = run(meldRecord(), meldPoll(at(1), "waiting", { deposit: meldDeposit(at(1)) }));
+    expect(known.status).toEqual({ kind: "awaiting-payment" });
+    expect(run(known, cancelled(at(2))).status).toEqual({ kind: "awaiting-payment" });
+    // Before the address is known, a plain rank-0 cancel still works.
+    expect(run(meldRecord(), cancelled(at(2))).status).toEqual({ kind: "cancelled", at: at(2) });
+  });
+
+  it("learns nothing but the witness from an unreachable poll, and fails irrecoverably when the adapter loses the request", () => {
+    const start = meldRecord();
+    const missed = run(start, meldUnreachable(at(1)));
+    expect(missed.status).toEqual(start.status);
+    expect(missed.rail).toEqual(start.rail);
+    expect(missed.witnesses.provider).toEqual({ at: at(1) });
+
+    const gone = run(start, meldGone(at(1), "request not found"));
+    expect(gone.status).toEqual({ kind: "failed", at: at(1), recoverable: false });
+    expect(gone.failure?.kind).toBe("unknown");
+    expect(gone.failure?.step).toBe("payment");
+  });
+
+  it("drops a provider poll older than the last one, before it ever reaches the sale", () => {
+    const known = run(meldRecord(), meldPoll(at(3), "waiting", { deposit: meldDeposit(at(3)) }));
+    expect(known.witnesses.provider).toEqual({ at: at(3) });
+    // Older than the last provider witness: reducer.ts drops it outright, so a deposit it
+    // carries never even reaches `applyMeldResult`.
+    const stale = reduce(known, meldPoll(at(2), "waiting", { deposit: meldDeposit(at(2), "1") }));
+    expect(stale).toBe(known);
+  });
+
+  it("leaves a chainflip rail's own provider polls untouched, wired for Meld alone", () => {
+    const railed = record({
+      rail: { provider: "chainflip", stage: "waiting", updatedAt: STARTED },
+    });
+    const polled: Observation = {
+      source: "provider",
+      at: at(1),
+      provider: "chainflip",
+      result: { status: "complete" },
+    };
+    expect(reduce(railed, polled)).toBe(railed);
+  });
+});
+
 describe("withdrawal: terminal and monotonic", () => {
   it("keeps only witnesses on a sent record", () => {
     const sent = run(
@@ -345,5 +621,46 @@ describe("withdrawal: migration", () => {
     });
     const { payment: _dropped, ...broken } = stored;
     expect(migrateRecord(broken, REF, at(9))).toBeNull();
+  });
+
+  it("migrates a schema-2 direct withdrawal to schema 3 and keeps it reducible", () => {
+    const { schema: _s, ...rest } = prompted();
+    const stored = { schema: 2, ...rest };
+    const migrated = migrateRecord(JSON.parse(JSON.stringify(stored)), REF, at(9));
+    expect(migrated).not.toBeNull();
+    expect(migrated?.schema).toBe(3);
+    expect(migrated).toMatchObject({
+      kind: "withdrawal",
+      status: stored.status,
+      rail: { provider: "direct" },
+    });
+    expect(reduce(migrated!, chain(at(2), CASH)).status).toEqual({
+      kind: "paid",
+      at: at(2),
+      via: "chain",
+    });
+  });
+
+  it("migrates a schema-2 chainflip withdrawal to schema 3 and keeps it reducible", () => {
+    const railed = record({
+      payment: { attempt: 0, requestedAt: at(0), id: "pay-1" },
+      rail: { provider: "chainflip", stage: "waiting", updatedAt: STARTED },
+    });
+    const { schema: _s, ...rest } = railed;
+    const stored = { schema: 2, ...rest };
+    const migrated = migrateRecord(JSON.parse(JSON.stringify(stored)), REF, at(9));
+    expect(migrated).not.toBeNull();
+    expect(migrated?.schema).toBe(3);
+    expect(migrated).toMatchObject({
+      kind: "withdrawal",
+      status: stored.status,
+      rail: { provider: "chainflip" },
+    });
+    const sending = reduce(migrated!, {
+      source: "worker",
+      at: at(2),
+      withdrawJob: job({ phase: "done", done: true, fundsSeenAt: at(1) }),
+    });
+    expect(sending.status).toEqual({ kind: "sending", at: at(2) });
   });
 });
