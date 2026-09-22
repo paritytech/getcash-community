@@ -78,22 +78,30 @@ export function projectWithdrawalTopUps(
 ): FundingTopUp[] {
   return records.map((record) => {
     const progress = withdrawalProgress(record, now);
+    // A Meld sale has no network/token destination to look up — the row's icon and label come
+    // from its route instead (`routeIcon`/`routeLabel` in `projectFundingTopUps`, off the same
+    // `fundingSelectorConfig.routes` the buy side's card/bank rows already use).
+    const isMeld = record.route === "card" || record.route === "bank";
     const destinationId = record.ref.sourceId?.slice(WITHDRAW_SOURCE_PREFIX.length) ?? "";
-    const destination = withdrawDestination(destinationId);
+    const destination = isMeld ? undefined : withdrawDestination(destinationId);
     const network = destination === undefined ? undefined : withdrawNetwork(destination.chain);
     return {
       id: rowId(record.ref),
       amount: record.amountHuman,
-      route: "crypto",
+      route: record.route,
       startedAt: record.startedAt,
       progress,
-      details: {
-        network: { label: record.destination.chain, icon: network?.icon ?? UNKNOWN_ICON },
-        token: {
-          label: record.destination.asset,
-          icon: destination === undefined ? UNKNOWN_ICON : destinationTokenIcon(destination),
-        },
-      },
+      ...(isMeld
+        ? {}
+        : {
+            details: {
+              network: { label: record.destination.chain, icon: network?.icon ?? UNKNOWN_ICON },
+              token: {
+                label: record.destination.asset,
+                icon: destination === undefined ? UNKNOWN_ICON : destinationTokenIcon(destination),
+              },
+            },
+          }),
       state: withdrawalRowStateOf(record, progress.view.label),
     };
   });

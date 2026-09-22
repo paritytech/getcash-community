@@ -15,12 +15,17 @@ import {
 } from "@getsome/host";
 import { CASH_LOCATION } from "@getsome/people";
 import {
+  ASSET_HUB_POOL_FEE_PPM,
   assetHubAddressFor,
+  assetHubPaymentOverhead,
   CASH_ON_ASSET_HUB,
   DEFAULT_WITHDRAW_SLIPPAGE_PCT,
   PASEO_PEOPLE_POOL_ACCOUNT,
   PEOPLE_NATIVE,
+  probeAssetHubReserves,
   RELAY_NATIVE_DECIMALS,
+  sizeCommitment,
+  type Commitment,
 } from "@getsome/withdraw";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import {
@@ -135,6 +140,46 @@ export async function quoteDirectReceive(amount: bigint): Promise<bigint> {
   );
   if (quoted === undefined) throw new Error("Asset Hub cannot quote the sale");
   return quoted;
+}
+
+/**
+ * Sizes the exact DOT a Meld sale commits to: what Asset Hub's pool still pays out after a KYC
+ * window's worth of adverse flow, less the transfer fee and existential deposit the payment
+ * leaves behind, quantised to the provider's own precision. See `sizeCommitment` for the reasoning
+ * behind the buffer; this is only the chain-reading side of it.
+ *
+ * The provider's payout address is not known this early — it only arrives once KYC concludes — so
+ * the transfer-fee estimate is read against the burner's OWN address rather than the real one. A
+ * same-shaped balance transfer's weight does not turn on whose account receives it, and the
+ * worker's own overhead estimate, made once the real address is known, carries the same headroom
+ * this one does (`ASSET_HUB_TRANSFER_FEE_HEADROOM_PCT`), so a difference between the two is
+ * absorbed rather than fatal.
+ */
+export async function sizeMeldCommitment(
+  key: WithdrawKey,
+  cashToSell: bigint,
+): Promise<Commitment> {
+  const { connectChain, ASSET_HUB } = await import("./host-chain");
+  const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
+  const [reserves, quotedOut, overhead] = await Promise.all([
+    probeAssetHubReserves(api, cashToSell, ASSET_HUB_POOL_FEE_PPM),
+    api.apis.AssetConversionApi.quote_price_exact_tokens_for_tokens(
+      CASH_ON_ASSET_HUB as never,
+      PEOPLE_NATIVE as never,
+      cashToSell,
+      true,
+    ),
+    assetHubPaymentOverhead(api, key.publicKeyHex, { payoutAddress: key.address }),
+  ]);
+  if (quotedOut === undefined) throw new Error("Asset Hub cannot quote the sale");
+  return sizeCommitment({
+    cashToSell,
+    reserves,
+    poolFeePpm: ASSET_HUB_POOL_FEE_PPM,
+    quotedOut,
+    transferFeePlanck: overhead.transferFeePlanck,
+    existentialDeposit: overhead.existentialDeposit,
+  });
 }
 
 async function hostStorageAdapter() {

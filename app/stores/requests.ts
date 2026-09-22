@@ -14,6 +14,7 @@ import {
   type FundingProgressSnapshot,
 } from "../funding/progress";
 import { depositWindowFor } from "../funding/config";
+import { withdrawalCancellable } from "../withdraw/cancel";
 import { assetHubAccountHex, isAssetHubAddress } from "../withdraw/destinations";
 import { migrateRecord } from "../funding/requests/migrate";
 import {
@@ -1603,7 +1604,11 @@ export const useRequestsStore = defineStore("requests", () => {
   ): Promise<"ok" | "refused" | "unconfirmed"> {
     const record = get(ref);
     if (record === undefined || !isWithdrawal(record)) return "refused";
-    if (rankOf(record) >= 1 || paymentTaken(record)) return "refused";
+    // The one rule, read from the one place it is defined: nothing paid, and — for a Meld sale —
+    // no deposit address disclosed yet. Deriving this a second way here is how a store-level
+    // "last look" cancel and the journey's own cancel button drift apart; see
+    // `withdrawalCancellable` for why the deposit boundary has to gate independently of rank.
+    if (!withdrawalCancellable(record)) return "refused";
     const at = requestsNow();
     const { attempt, id } = record.payment;
     const [key, host] = await Promise.all([
@@ -2871,6 +2876,12 @@ export const useRequestsStore = defineStore("requests", () => {
     observePaymentStatus,
     startMeldPoll,
     stopMeldPoll,
+    // Exported for a foreground surface with its own scheduling needs, not a read-only accessor —
+    // it applies what it reads through `observe()` like everything else here. The withdrawal
+    // side's sell flow owns the client that opened its session (see `useMeldWithdrawalPoll`) and
+    // cannot route its polls through the buy side's own foreground poll above, which is keyed to
+    // a single request and a client this store built itself.
+    observeMeldStatus,
     startPaymentPoll,
     stopPaymentPoll,
     startForegroundClock,

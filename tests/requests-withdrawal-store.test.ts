@@ -388,6 +388,50 @@ describe("requests store: withdrawals", () => {
     expect(await requests.cancelWithdrawal(REF, { readKeyCash: async () => 0n })).toBe("refused");
   });
 
+  it("refuses a Meld sale's cancel once its deposit address is known, without reading the key or the host", async () => {
+    let readKeyCalled = false;
+    await seed(
+      [
+        withdrawal({
+          payment: { attempt: 0 },
+          rail: {
+            provider: "meld",
+            stage: "waiting",
+            updatedAt: STARTED,
+            sale: {
+              phase: "deposit-known",
+              meldFundingRequestId: "funding-1",
+              committedAmount: "900000000",
+              quotedFiatAmount: "150.00",
+              quotedFiatCurrency: "USD",
+              deposit: {
+                address: "14Kt4HmnCzMqUKvWcGZdLaWkLNcL4TcUSXYvKyKdbMhsvRxM",
+                amount: "0.09",
+                currency: "DOT_ASSETHUB",
+                observedAt: STARTED,
+              },
+            },
+          },
+        }),
+      ],
+      {},
+    );
+    const requests = useRequestsStore();
+    await requests.reconcile("boot");
+    // Nothing was paid and the rank is still 0 — a rank/payment check alone would say "ok" here.
+    const outcome = await requests.cancelWithdrawal(REF, {
+      readKeyCash: async () => {
+        readKeyCalled = true;
+        return 0n;
+      },
+    });
+    expect(outcome).toBe("refused");
+    // Refused before it ever asked the chain: a bounded read that timed out would have answered
+    // "unconfirmed" instead, telling the seller to check their connection when the honest answer
+    // is that the sale has already moved past the point a cancel can be honoured.
+    expect(readKeyCalled).toBe(false);
+  });
+
   it("keeps the top-up paths for top-ups: their cancel and retry refuse a withdrawal", async () => {
     await seed([withdrawal({ payment: { attempt: 0 } })], {});
     const requests = useRequestsStore();

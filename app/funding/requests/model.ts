@@ -429,8 +429,13 @@ export interface WithdrawalRecord {
   startedAt: number;
   /** The CASH the user asked to withdraw, human form. */
   amountHuman: string;
-  route: "crypto";
-  /** The network and asset the funds arrive as, and where. */
+  /** How the withdrawal leaves: a crypto address on the `direct`/`chainflip` rails, or the payout
+   *  method a Meld sale was opened for. Mirrors `FundingSelection["route"]` so the shell's own
+   *  route registry and the rows it lists off `FundingTopUp.route` need no translation between
+   *  the two. */
+  route: "crypto" | "card" | "bank";
+  /** The network and asset the funds arrive as, and where. For a Meld rail there is no address of
+   *  its own to land on; `meldSellDestination` fills this in with the payout method instead. */
   destination: { chain: string; asset: string; address: string };
   /** The disposable key the purse pays: its entropy label, its People address, its public key. */
   key: { label: string; address: string; publicKeyHex: string };

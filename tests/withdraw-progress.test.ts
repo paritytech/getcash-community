@@ -148,4 +148,28 @@ describe("withdrawal rows", () => {
     const [sent] = projectWithdrawalTopUps([record({ status: { kind: "sent", at: at(6) } })]);
     expect(sent!.state).toEqual({ kind: "settled", at: at(6) });
   });
+
+  it("projects a Meld sale under its payout route, with no crypto destination to look up", () => {
+    const [row] = projectWithdrawalTopUps([
+      record({
+        ref: requestRefOf("wd:meld-bank", 1),
+        route: "bank",
+        destination: { chain: "Meld", asset: "Bank", address: "Your bank account" },
+        rail: {
+          provider: "meld",
+          stage: "waiting",
+          updatedAt: STARTED,
+          sale: {
+            phase: "awaiting-deposit-address",
+            meldFundingRequestId: "funding-1",
+            committedAmount: "900000000",
+            quotedFiatAmount: "150.00",
+            quotedFiatCurrency: "USD",
+          },
+        },
+      }),
+    ]);
+    expect(row).toMatchObject({ route: "bank" });
+    expect(row!.details).toBeUndefined();
+  });
 });

@@ -21,6 +21,7 @@ import {
   type WithdrawalRecord,
 } from "../funding/requests/model";
 import { paymentIdFor } from "../funding/requests/payment-id";
+import { isMeldSourceId, meldMethodFor } from "../funding/source-ids";
 import { useRequestsStore } from "../stores/requests";
 import { fmtCash } from "../utils/cash";
 import { requestRefOf, type RequestRef } from "../utils/request-index";
@@ -61,7 +62,14 @@ export interface WithdrawalStart {
 }
 
 export type WithdrawalStartOutcome =
-  | { ok: true; ref: RequestRef }
+  | {
+      ok: true;
+      ref: RequestRef;
+      /** A Meld rail's hosted KYC page, straight off `createSellSession` — the record itself does
+       *  not carry it (see `MeldSale`), so a caller that needs to embed it right after `start`
+       *  cannot wait on a status poll to hand it back. Undefined for every other rail. */
+      widgetUrl?: string;
+    }
   /** The record exists and awaits its payment; the prompt was declined or failed. */
   | { ok: false; ref: RequestRef; reason: string }
   /** Nothing was created. */
@@ -104,6 +112,9 @@ export function useWithdrawalRequest() {
     const landingHex = input.rail === "meld" ? live.meldLandingHex(key) : input.landingHex;
 
     let sale: MeldSale | undefined;
+    // The hosted KYC page for a fresh sale. Never read back off the record (see
+    // `WithdrawalStartOutcome.widgetUrl`), so it only ever exists in this call's own scope.
+    let widgetUrl: string | undefined;
     if (input.rail === "meld" && input.meld !== undefined) {
       const meld = input.meld;
       // The order ref that stops two sales in this corridor resuming into each other: derived
@@ -134,6 +145,7 @@ export function useWithdrawalRequest() {
         quotedFiatAmount: meld.quotedFiatAmount,
         quotedFiatCurrency: meld.destinationCurrencyCode,
       };
+      widgetUrl = session.meldWidgetUrl ?? session.widgetUrl;
     }
 
     const handoff = live.withdrawHandoff({
@@ -150,6 +162,14 @@ export function useWithdrawalRequest() {
       // either block on a field nothing can fill in or let it run the chain legs blind. The
       // reconcile loop fills this in and sends the hand-off once that address is known.
     });
+    // A Meld rail's route is the payout method the destination id names ("meld-card" ->
+    // "card"), the same vocabulary the top-up side already uses for its own Meld sources; every
+    // other rail is a crypto destination.
+    const route: WithdrawalRecord["route"] =
+      input.rail === "meld" && isMeldSourceId(input.destinationId)
+        ? meldMethodFor(input.destinationId)
+        : "crypto";
+
     const record: WithdrawalRecord = {
       schema: 3,
       kind: "withdrawal",
@@ -158,7 +178,7 @@ export function useWithdrawalRequest() {
       updatedAt: startedAt,
       startedAt,
       amountHuman: fmtCash(input.amount),
-      route: "crypto",
+      route,
       destination: input.destination,
       key: { label: handoff.label, address: key.address, publicKeyHex: key.publicKeyHex },
       payment: { attempt: 0 },
@@ -190,7 +210,7 @@ export function useWithdrawalRequest() {
     // the address arriving before the payment (see `applyUser`'s "cancelled" case) stays true as
     // a fallback the machine must still cope with — a host payment can be slow — it just stops
     // being the path this call takes.
-    if (input.rail === "meld") return { ok: true, ref };
+    if (input.rail === "meld") return { ok: true, ref, ...(widgetUrl ? { widgetUrl } : {}) };
 
     const prompted = await prompt(ref, live);
     if (!prompted.ok) return { ok: false, ref, reason: prompted.reason };
