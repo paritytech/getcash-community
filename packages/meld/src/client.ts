@@ -343,6 +343,39 @@ interface SessionWalk {
   readonly noSurfaceMessage: (fundingRequestId: string) => string;
   /** Refusal copy when every attempt the walk can name has already concluded. */
   readonly exhaustedMessage: string;
+  /**
+   * Whether a `REQUEST_CANCELLED` 409 on THIS direction is safe to walk past like a concluded
+   * one, minting a fresh key rather than refusing.
+   *
+   * True on a sell: cancelling is refused once the deposit address is disclosed (see
+   * `createSellSession`'s `terms`/the surface's cancel gate), so a cancelled sell row is
+   * provably one nothing was ever sent to — there is no address a stray transfer could still be
+   * landing on.
+   *
+   * False on a buy, and deliberately not symmetric with the sell case: a buy's cancel is gated
+   * only on the payment not yet being OBSERVED (`!transaction_seen`), because a buy has no
+   * address of its own to gate on the way a sell's deposit address does. That proves nothing was
+   * seen yet, not that nothing is in flight — a card or bank payment submitted moments before the
+   * cancel can still settle against the cancelled row. Walking forward here would open a second
+   * session while that is still possible, risking paying twice. So a buy's `REQUEST_CANCELLED`
+   * is refused like any other unwalkable code, not walked.
+   */
+  readonly cancelledIsSafeToWalk: boolean;
+  /**
+   * Refusal copy for a `REQUEST_CANCELLED` this walk does NOT walk past: every buy, and a sell
+   * whose caller supplied its own key (which this walk never moves for any code — see
+   * `openSession`).
+   */
+  readonly cancelledMessage: string;
+  /**
+   * Refusal copy when every attempt is exhausted and the LAST one was a cancellation rather than
+   * an ordinary conclusion. Only reachable on a direction where `cancelledIsSafeToWalk` is true:
+   * `exhaustedMessage`'s "already been completed" wording is false of a run that was cancelled
+   * every time, not concluded, and would tell a seller who never sent anything the opposite of
+   * what happened. Optional because a direction that never walks a cancellation can never reach
+   * this exhaustion path.
+   */
+  readonly exhaustedCancelledMessage?: string;
 }
 
 /**
@@ -564,10 +597,12 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
   }
 
   /**
-   * Opens a session, walking the attempt forward past concluded ones only. A caller-supplied key
-   * is used verbatim and never walked. `REQUEST_OUTCOME_UNKNOWN`, `REQUEST_IN_FLIGHT` and
-   * `REQUEST_ALREADY_SETTLED` are rethrown: none of them rules out that money moved, and minting
-   * a fresh key on any of them would open a second request against the same intent.
+   * Opens a session, walking the attempt forward past concluded ones, and past cancelled ones on
+   * a direction whose `cancelledIsSafeToWalk` says a cancel there proves nothing is in flight
+   * (see that field's doc). A caller-supplied key is used verbatim and never walked.
+   * `REQUEST_OUTCOME_UNKNOWN`, `REQUEST_IN_FLIGHT` and `REQUEST_ALREADY_SETTLED` are rethrown:
+   * none of them rules out that money moved, and minting a fresh key on any of them would open a
+   * second request against the same intent.
    */
   async function openSession(walk: SessionWalk): Promise<MeldSessionResult> {
     let lastRefusal: unknown;
@@ -630,6 +665,31 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
             widgetUrl: "",
           };
         }
+        // `REQUEST_CANCELLED`: this key belongs to a request the caller cancelled. Walked past
+        // like a concluded one ONLY where `cancelledIsSafeToWalk` says the direction's cancel
+        // proves nothing is in flight (a sell), and only for the walk's own key — a
+        // caller-supplied key is never moved for any code, the same rule `IDEMPOTENCY_KEY_REUSED`
+        // and `REQUEST_CONCLUDED` already follow.
+        if (
+          err instanceof AdapterRefusal &&
+          err.status === 409 &&
+          err.code === "REQUEST_CANCELLED"
+        ) {
+          if (walk.cancelledIsSafeToWalk && !nextKey) {
+            console.info(
+              `[meld] attempt ${attempt} was cancelled; nothing was paid, starting a new one`,
+            );
+            lastRefusal = err;
+            continue;
+          }
+          throw new AdapterRefusal(
+            walk.cancelledMessage,
+            err.status,
+            err.code,
+            err.fundingRequestId,
+            { cause: err },
+          );
+        }
         const concluded =
           err instanceof AdapterRefusal && err.status === 409 && err.code === "REQUEST_CONCLUDED";
         if (!concluded || nextKey) throw err;
@@ -637,9 +697,16 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
         lastRefusal = err;
       }
     }
-    // Every attempt this walk can name has already concluded.
+    // Every attempt this walk can name has already concluded — or, on a direction that walks a
+    // cancellation, been cancelled. The two are not the same claim: "already completed" is false,
+    // and the opposite of the truth, of a run that was cancelled every time and never paid, so
+    // that case gets its own wording rather than reusing the concluded one.
+    const cancelledOut =
+      lastRefusal instanceof AdapterRefusal &&
+      lastRefusal.code === "REQUEST_CANCELLED" &&
+      walk.exhaustedCancelledMessage !== undefined;
     throw new Error(
-      walk.exhaustedMessage,
+      cancelledOut ? walk.exhaustedCancelledMessage! : walk.exhaustedMessage,
       lastRefusal instanceof Error ? { cause: lastRefusal } : undefined,
     );
   }
@@ -716,6 +783,14 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
         noSurfaceMessage: (fundingRequestId) =>
           `[meld] the adapter returned no pay page for funding request ${fundingRequestId}; there is nothing for the buyer to pay on`,
         exhaustedMessage: `This purchase has already been completed ${MAX_ATTEMPTS} times. If you are expecting funds that have not arrived, contact support with your wallet address. Starting another will not help.`,
+        // A buy's cancel is gated only on the payment not yet being observed, which proves
+        // nothing was SEEN yet, not that nothing is IN FLIGHT — unlike a sell, there is no
+        // address of its own a buy could gate the cancel on instead. Walking forward here could
+        // open a second session while a card or bank payment submitted just before the cancel is
+        // still landing on the first, and pay twice. See `cancelledIsSafeToWalk`'s doc.
+        cancelledIsSafeToWalk: false,
+        cancelledMessage:
+          "This purchase was cancelled, but a payment may still have been in flight at the time. Wait a few minutes and check your bank or card statement before starting another — do not assume nothing was charged.",
       });
     },
 
@@ -768,6 +843,15 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
         noSurfaceMessage: (fundingRequestId) =>
           `[meld] the adapter returned no hosted page for funding request ${fundingRequestId}; there is nothing for the seller to continue on`,
         exhaustedMessage: `This sale has already been completed ${MAX_ATTEMPTS} times. If you have sent funds and have not been paid, contact support. Starting another will not help.`,
+        // Safe on a sell, unlike a buy: cancelling is refused once the deposit address is
+        // disclosed (see the surface's cancel gate), so a cancelled sell row is provably one
+        // nothing was ever sent to. See `cancelledIsSafeToWalk`'s doc for the asymmetry.
+        cancelledIsSafeToWalk: true,
+        // Reached only when a caller supplies its own key: the walk itself never refuses a
+        // cancelled sell (see `cancelledIsSafeToWalk`), so this is not the ordinary path.
+        cancelledMessage:
+          "This sale was cancelled before any crypto was sent. It's safe to start a new one.",
+        exhaustedCancelledMessage: `This sale has been cancelled ${MAX_ATTEMPTS} times. Nothing was ever sent, so nothing was lost — start again whenever you're ready.`,
       });
     },
 

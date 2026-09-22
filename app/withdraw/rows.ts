@@ -21,6 +21,7 @@ import { parseRequestRefKey, requestRefKey, type RequestRef } from "../utils/req
 import { destinationTokenIcon, withdrawDestination, withdrawNetwork } from "./destinations";
 import { withdrawalFailureText } from "./failure-copy";
 import { withdrawalProgress, withdrawalProgressProfile } from "./progress";
+import { withdrawalReturnText } from "./return-copy";
 
 /** The words the rows use for a withdrawal. */
 export const WITHDRAWAL_WORDING: FundingTopUpWording = { settled: "Sent" };
@@ -44,6 +45,13 @@ export function withdrawalRequestRef(id: string): RequestRef | null {
   return ref !== null && isWithdrawSourceId(ref.sourceId) ? ref : null;
 }
 
+/** A failure's own text, with the return's note appended when there is one to add — so a row
+ *  reading "Expired" (say) does not leave a seller wondering whether the money is simply gone. */
+function failureReasonWithReturn(record: WithdrawalRecord, base: string): string {
+  const note = withdrawalReturnText(record.return);
+  return note ? `${base} ${note}` : base;
+}
+
 /** The row's state, worded by the same projection the journey ribbon shows. A cancelled record
  *  is never listed; it reads as failed so the type has a value. */
 export function withdrawalRowStateOf(record: WithdrawalRecord, label: string): FundingTopUpState {
@@ -62,10 +70,16 @@ export function withdrawalRowStateOf(record: WithdrawalRecord, label: string): F
       return {
         kind: "failed",
         at: status.at,
-        ...(record.failure === undefined ? {} : { reason: withdrawalFailureText(record.failure) }),
+        ...(record.failure === undefined
+          ? {}
+          : { reason: failureReasonWithReturn(record, withdrawalFailureText(record.failure)) }),
       };
     case "cancelled":
-      return { kind: "failed", at: status.at, reason: "Cancelled" };
+      return {
+        kind: "failed",
+        at: status.at,
+        reason: failureReasonWithReturn(record, "Cancelled"),
+      };
   }
 }
 

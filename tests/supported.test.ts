@@ -381,6 +381,92 @@ describe("lib/supported", () => {
     expect(groups[2]?.options[0]?.o.country).toBe("BR");
   });
 
+  it("fetchCorridor sends no direction for a buy call, byte-identical to before direction existed", async () => {
+    const fetchMock = stubFetch({
+      "/supported?country=US": { country: "US", fiat: "USD", methods: [] },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { fetchCorridor } = await import("../lib/supported");
+    await fetchCorridor("US");
+    const [url] = fetchMock.mock.calls[0] ?? [];
+    expect(String(url)).not.toContain("direction");
+  });
+
+  it("fetchCorridor sends direction=sell only when asked for it", async () => {
+    const fetchMock = stubFetch({
+      "/supported?country=US": { country: "US", fiat: "USD", methods: [] },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { fetchCorridor } = await import("../lib/supported");
+    await fetchCorridor("US", "sell");
+    const [url] = fetchMock.mock.calls[0] ?? [];
+    expect(String(url)).toContain("direction=sell");
+  });
+
+  it("fetchCorridor caches buy and sell separately for the same country", async () => {
+    // A direction-aware corridor per call: buy answers one fiat, sell another, so a shared cache
+    // entry would leak one direction's answer into the other's read.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL) => {
+        const u = String(url);
+        if (!u.includes("/supported?country=US")) return new Response("not found", { status: 404 });
+        const body = u.includes("direction=sell")
+          ? { country: "US", fiat: "USD_SELL", methods: [] }
+          : { country: "US", fiat: "USD_BUY", methods: [] };
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    );
+    const { fetchCorridor } = await import("../lib/supported");
+    const buy = await fetchCorridor("US");
+    const sell = await fetchCorridor("US", "sell");
+    expect(buy?.fiat).toBe("USD_BUY");
+    expect(sell?.fiat).toBe("USD_SELL");
+  });
+
+  it("fetchSupportedCountries and fetchSupportedCorridors send direction=sell only when asked", async () => {
+    const fetchMock = vi.fn(async (url: string | URL) => {
+      const u = String(url);
+      if (u.includes("/supported/countries")) {
+        return new Response(JSON.stringify({ countries: [{ country: "US", name: "US" }] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (u.includes("/supported/corridors")) {
+        return new Response(
+          JSON.stringify({ corridors: [{ country: "US", fiat: "USD", methods: [] }] }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { fetchSupportedCountries, fetchSupportedCorridors } = await import("../lib/supported");
+
+    await fetchSupportedCountries();
+    await fetchSupportedCountries("sell");
+    await fetchSupportedCorridors();
+    await fetchSupportedCorridors("sell");
+
+    const urls = fetchMock.mock.calls.map(([u]) => String(u));
+    expect(
+      urls.filter((u) => u.includes("/supported/countries") && !u.includes("direction")),
+    ).toHaveLength(1);
+    expect(
+      urls.filter((u) => u.includes("/supported/countries") && u.includes("direction=sell")),
+    ).toHaveLength(1);
+    expect(
+      urls.filter((u) => u.includes("/supported/corridors") && !u.includes("direction")),
+    ).toHaveLength(1);
+    expect(
+      urls.filter((u) => u.includes("/supported/corridors") && u.includes("direction=sell")),
+    ).toHaveLength(1);
+  });
+
   it("groupOptions labels the list 'Countries' when nothing is detected, and drops empty groups", async () => {
     const { groupOptions } = await import("../lib/supported");
     const rows = [

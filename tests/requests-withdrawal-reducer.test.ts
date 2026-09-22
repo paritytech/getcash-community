@@ -369,6 +369,93 @@ describe("withdrawal: the worker", () => {
   });
 });
 
+describe("withdrawal: the return", () => {
+  const unwindReturn = (overrides: Partial<NonNullable<WithdrawJobView["return"]>> = {}) => ({
+    reason: "unwind" as const,
+    phase: "await-native",
+    returned: false,
+    returnedAmount: null,
+    nativeSeen: null,
+    claim: null,
+    txs: [],
+    ...overrides,
+  });
+
+  it("carries the return onto the record without moving status, failure or done", () => {
+    // The return never writes phase/done/failure (see WithdrawalReturnView's header): a failed
+    // sale stays failed even once its return object says money came back.
+    const failed = run(
+      prompted(),
+      worker(at(3), job({ phase: "failed", failure: "timeout", fundsSeenAt: at(1) })),
+      worker(at(4), job({ phase: "failed", failure: "timeout", return: unwindReturn() })),
+    );
+    expect(failed.status.kind).toBe("failed");
+    expect(failed.failure?.kind).toBe("timeout");
+    expect(failed.return).toEqual(unwindReturn());
+  });
+
+  it("never reads sent once the return finishes, however complete the unwind is", () => {
+    const returned = unwindReturn({ phase: "done", returned: true, returnedAmount: "21000000" });
+    const failed = run(
+      prompted(),
+      worker(at(3), job({ phase: "failed", failure: "rejected", fundsSeenAt: at(1) })),
+      worker(at(4), job({ phase: "failed", failure: "rejected", return: returned })),
+    );
+    expect(failed.status.kind).not.toBe("sent");
+    expect(failed.status.kind).toBe("failed");
+    expect(failed.return?.returned).toBe(true);
+  });
+
+  it("keeps a residue's return moving even once the sale itself already reads sent", () => {
+    // `sentOnly` trims a sent record to its witnesses, rail and confirmedAt -- the return must
+    // survive that trim, since the residue leg only starts once the sale is already done.
+    const sent = run(
+      prompted(),
+      worker(at(3), job({ phase: "done", done: true, fundsSeenAt: at(1) })),
+    );
+    expect(sent.status).toEqual({ kind: "sent", at: at(3) });
+    expect(sent.return).toBeUndefined();
+
+    const withResidue = run(
+      sent,
+      worker(
+        at(5),
+        job({
+          phase: "done",
+          done: true,
+          fundsSeenAt: at(1),
+          return: {
+            reason: "residue",
+            phase: "done",
+            returned: true,
+            returnedAmount: "150000",
+            nativeSeen: null,
+            claim: { amount: "150000", status: "claimed", partial: false },
+            txs: [],
+          },
+        }),
+      ),
+    );
+    expect(withResidue.status).toEqual({ kind: "sent", at: at(3) }); // untouched by sentOnly
+    expect(withResidue.return?.reason).toBe("residue");
+    expect(withResidue.return?.returned).toBe(true);
+    expect(withResidue.return?.returnedAmount).toBe("150000");
+  });
+
+  it("keeps the return once set, even when a later poll happens not to repeat it", () => {
+    const withReturn = run(
+      prompted(),
+      worker(at(3), job({ phase: "failed", failure: "timeout", return: unwindReturn() })),
+    );
+    expect(withReturn.return).toEqual(unwindReturn());
+    const again = run(
+      withReturn,
+      worker(at(4), job({ phase: "failed", failure: "timeout" })), // no `return` this time
+    );
+    expect(again.return).toEqual(unwindReturn());
+  });
+});
+
 describe("withdrawal: the clock and the user", () => {
   it("expires an unpaid request past its window, and never one the host has in hand", () => {
     const late = at(31);

@@ -351,6 +351,34 @@ export interface WithdrawalHandoffPayload {
   };
 }
 
+/**
+ * The worker's own honest summary of what came back from the burner once the sale was over —
+ * `describeReturn` in `worker/src/withdraw-engine.js`, read straight through. `reason` says which
+ * journey this was: `"residue"` when the provider was paid and this is what quantisation and the
+ * drift buffer left over, `"unwind"` when the sale ended with no payment at all and the whole
+ * balance is coming home instead — a reader must not report that case as a completed sale, since
+ * the seller got CASH back, not fiat. `phase` is the return's own step (`"checking-floor"` through
+ * `"done"`, or `"left-below-floor"`), never the withdrawal's own `phase`/`done`/`failure`: the
+ * return never writes those, on purpose (see tick.ts's header, contract 4), so this is the only
+ * place a reader learns what it did.
+ */
+export interface WithdrawalReturnView {
+  reason: "residue" | "unwind";
+  phase: string;
+  returned: boolean;
+  returnedAmount: string | null;
+  /** The balance a `left-below-floor` decision was made against; null on every other phase. */
+  nativeSeen: string | null;
+  claim: {
+    amount: string;
+    status: string | null;
+    partial: boolean;
+    error?: string;
+  } | null;
+  txs: { call: string; txHash: string; block?: number }[];
+  lastError?: string;
+}
+
 /** What the store extracts from one withdrawal job in the worker's blob. */
 export interface WithdrawJobView {
   phase: string;
@@ -360,6 +388,9 @@ export interface WithdrawJobView {
   fundsSeenAt: number | null;
   lastTickAt: number | null;
   txs?: { call: "swap" | "withdraw"; txHash: string; block?: number }[];
+  /** Absent until the return has something to report — most of a withdrawal's life, and forever
+   *  on the direct/chainflip rails, which never land anything on their own burner to sweep. */
+  return?: WithdrawalReturnView;
 }
 
 /**
@@ -447,6 +478,10 @@ export interface WithdrawalRecord {
   failure?: WithdrawalFailure;
   /** Base units of CASH the key was seen holding, once seen. */
   paidAmount?: string;
+  /** What the worker's return leg brought home from the burner, once it has something to say —
+   *  see `WithdrawalReturnView`. Never read by anything that derives `status` or `failure`: this
+   *  is purely informational, carried straight through from the worker's own `job.return`. */
+  return?: WithdrawalReturnView;
   witnesses: {
     worker?:
       | {

@@ -15,6 +15,7 @@ import {
   formatEstimatedPayout,
   meldSentMessage,
 } from "../../withdraw/meld-sell";
+import { withdrawalReturnText } from "../../withdraw/return-copy";
 import {
   WITHDRAWAL_JOURNEY_LABELS,
   withdrawalJourneyDone,
@@ -110,6 +111,11 @@ const meldDetail = computed(() => {
     payout: formatEstimatedPayout(sale.quotedFiatAmount, sale.quotedFiatCurrency),
   };
 });
+
+/** What the return brought home, under the main message — a residue's own bonus line on a sale
+ *  that still reads `sent`, or, on a sale that reads as a side exit, the one line that keeps an
+ *  unwind from looking like money lost rather than money that came straight back. */
+const returnNote = computed(() => withdrawalReturnText(props.record.return));
 </script>
 
 <template>
@@ -146,6 +152,8 @@ const meldDetail = computed(() => {
         :message="message"
         :failed-label="failedLabel"
       />
+
+      <p v-if="returnNote" class="text-body-m text-fg-secondary">{{ returnNote }}</p>
 
       <PillButton v-if="canRetry" class="mt-auto" :disabled="busy" @click="emit('retry')">
         Try again

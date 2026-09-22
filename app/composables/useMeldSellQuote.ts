@@ -1,8 +1,8 @@
 // The Meld sell quote: sizes the exact crypto this withdrawal commits — once, region-independent,
 // off the chain's own pool — then prices the estimated fiat payout for whichever region the
 // seller picks. The two figures stay apart the whole way through (see `../withdraw/meld-sell`),
-// and the region catalog this drives the picker off is a stand-in — see `../withdraw/meld-corridors`
-// for why and what to point at once the adapter's own sell endpoint exists.
+// and the region catalog this drives the picker off is the adapter's real sell corridor — see
+// `../withdraw/meld-corridors`.
 
 import { computed, ref, shallowRef } from "vue";
 import {
@@ -23,8 +23,8 @@ import { useWithdrawalRequest, type WithdrawalStartOutcome } from "./useWithdraw
 import { meldPaymentMethod, resolveMeldRegion } from "~~/lib/region";
 import { methodFor, type SupportedCorridor, type SupportedCountry } from "~~/lib/supported";
 
-/** The one crypto this whole surface names: what the sale sells and what today's stand-in
- *  corridor catalog is scoped to (see `MELD_DESTINATION` in `~~/lib/supported`). */
+/** The one crypto this whole surface names: what the sale sells and what the corridor catalog
+ *  is scoped to (see `MELD_DESTINATION` in `~~/lib/supported`). */
 const SOURCE_CURRENCY_CODE = "DOT_ASSETHUB";
 
 /** The region shown before the seller picks one. */

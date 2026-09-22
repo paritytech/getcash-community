@@ -82,18 +82,16 @@ const methodLabel = computed(() => (props.method === "bank" ? "Bank transfer" : 
       v-if="unavailable || commitError || quoteError"
       class="mt-6 rounded-container bg-surface-container p-4 shadow-1"
     >
-      <!-- Hedged on purpose: `unavailable` is read off the corridor stand-in (today's BUY
-           catalog, not a sell one — see `../../withdraw/meld-corridors`), which cannot actually
-           confirm a sell corridor either way. Once the adapter's real sell `/supported` endpoint
-           is behind that seam, this copy can say "isn't available" as a fact rather than a
-           caution. -->
+      <!-- `unavailable` is read off the adapter's own sell corridor catalog (see
+           `../../withdraw/meld-corridors`), so this is a fact about the region rather than a
+           guess drawn from the buy catalog: say it plainly instead of hedging. -->
       <div v-if="unavailable" class="flex flex-col gap-3">
         <p v-if="otherMethodAvailable" class="text-body-m text-fg-secondary">
-          We can't confirm {{ methodLabel.toLowerCase() }} payouts for this region yet, but
+          {{ methodLabel }} payouts aren't available for this region yet, but
           {{ otherMethodLabel.toLowerCase() }} might work.
         </p>
         <p v-else class="text-body-m text-fg-secondary">
-          We can't confirm card or bank payouts for this region yet. You can withdraw as crypto
+          Card and bank payouts aren't available for this region yet. You can withdraw as crypto
           instead.
         </p>
         <SecondaryButton

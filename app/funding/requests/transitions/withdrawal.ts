@@ -74,14 +74,17 @@ function apply(record: WithdrawalRecord, observation: Observation): WithdrawalRe
   }
 }
 
-/** Sent is terminal: of what an observation changed, only the witnesses, the rail and
- *  `confirmedAt` are kept. */
+/** Sent is terminal: of what an observation changed, only the witnesses, the rail, `confirmedAt`
+ *  and the return are kept. The return is the one field of substance a "sent" record can still
+ *  gain: a residue can go on being swept home well after the sale itself reads as sent, and
+ *  without this it would arrive on every later observation only to be discarded here. */
 function sentOnly(record: WithdrawalRecord, next: WithdrawalRecord): WithdrawalRecord {
   return {
     ...record,
     witnesses: next.witnesses,
     rail: next.rail,
     ...(next.confirmedAt === undefined ? {} : { confirmedAt: next.confirmedAt }),
+    ...(next.return === undefined ? {} : { return: next.return }),
   };
 }
 
@@ -165,6 +168,10 @@ function applyWorker(
   let next: WithdrawalRecord = {
     ...witnessed(record, { worker: workerWitness(job, witnessAt) }),
     confirmedAt: at,
+    // Carried straight onto the record, independent of everything below: the return never moves
+    // `phase`/`done`/`failure` (see WithdrawalReturnView's header), and once set here it is never
+    // cleared by a later poll that happens not to repeat it.
+    ...(job.return === undefined ? {} : { return: job.return }),
   };
   if (job.fundsSeenAt !== null) next = paidSeen(next, job.fundsSeenAt, "worker");
   const rank = withdrawalRankOf(next);

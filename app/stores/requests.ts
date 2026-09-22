@@ -53,6 +53,7 @@ import {
   type WithdrawJobView,
   type WithdrawalHandoffPayload,
   type WithdrawalRecord,
+  type WithdrawalReturnView,
   type WorkerHandoffPayload,
   type WorkerJobView,
 } from "../funding/requests/model";
@@ -422,6 +423,8 @@ type WithdrawJob = {
   lastTickAt?: number | null;
   state?: { fundsSeenAt?: number | null };
   txs?: WithdrawJobView["txs"];
+  // Raw and unvalidated: `returnViewOf` below is what turns this into `WithdrawJobView["return"]`.
+  return?: unknown;
   // The hand-off the worker keeps, read back when the surface has no record of the job.
   label?: string;
   keyAddress?: string;
@@ -461,8 +464,67 @@ async function readWithdrawJobs(): Promise<Record<string, WithdrawJob>> {
   }
 }
 
+/** The worker's `return.claim`, validated. `null` is a legitimate value (nothing claimed yet),
+ *  told apart here from "not shaped like a claim at all". */
+function parseReturnClaim(value: unknown): WithdrawalReturnView["claim"] | undefined {
+  if (value === null) return null;
+  if (typeof value !== "object") return undefined;
+  const c = value as Record<string, unknown>;
+  if (!isString(c.amount)) return undefined;
+  if (!(c.status === null || isString(c.status))) return undefined;
+  if (typeof c.partial !== "boolean") return undefined;
+  return {
+    amount: c.amount,
+    status: c.status,
+    partial: c.partial,
+    ...(isString(c.error) ? { error: c.error } : {}),
+  };
+}
+
+/** The worker's `return.txs`, validated the same way `job.txs` already is: each entry needs at
+ *  least its call name and hash. */
+function parseReturnTxs(value: unknown): WithdrawalReturnView["txs"] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const txs: WithdrawalReturnView["txs"] = [];
+  for (const t of value as unknown[]) {
+    if (typeof t !== "object" || t === null) return undefined;
+    const { call, txHash, block } = t as Record<string, unknown>;
+    if (!isString(call) || !isString(txHash)) return undefined;
+    txs.push({ call, txHash, ...(isNumber(block) ? { block } : {}) });
+  }
+  return txs;
+}
+
+/** The worker's `return` field, validated as defensively as every other worker-sourced value
+ *  here: absent or malformed reads as "nothing to report" rather than throwing, since a return
+ *  that has not started yet — most of a withdrawal's life, and the whole of a direct/chainflip
+ *  one's — is the ordinary case, not a fault. */
+function returnViewOf(raw: unknown): WithdrawalReturnView | undefined {
+  if (raw === null || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  if (r.reason !== "residue" && r.reason !== "unwind") return undefined;
+  if (!isString(r.phase)) return undefined;
+  if (typeof r.returned !== "boolean") return undefined;
+  if (!(r.returnedAmount === null || isString(r.returnedAmount))) return undefined;
+  if (!(r.nativeSeen === null || isString(r.nativeSeen))) return undefined;
+  const claim = parseReturnClaim(r.claim);
+  const txs = parseReturnTxs(r.txs);
+  if (claim === undefined || txs === undefined) return undefined;
+  return {
+    reason: r.reason,
+    phase: r.phase,
+    returned: r.returned,
+    returnedAmount: r.returnedAmount,
+    nativeSeen: r.nativeSeen,
+    claim,
+    txs,
+    ...(isString(r.lastError) ? { lastError: r.lastError } : {}),
+  };
+}
+
 /** The withdrawal job as the record's reducer reads it. */
 function withdrawJobView(job: WithdrawJob): WithdrawJobView {
+  const returnView = returnViewOf(job.return);
   return {
     phase: job.phase ?? "",
     done: job.done === true,
@@ -471,6 +533,7 @@ function withdrawJobView(job: WithdrawJob): WithdrawJobView {
     fundsSeenAt: job.state?.fundsSeenAt ?? null,
     lastTickAt: job.lastTickAt ?? null,
     ...(job.txs === undefined ? {} : { txs: job.txs }),
+    ...(returnView === undefined ? {} : { return: returnView }),
   };
 }
 

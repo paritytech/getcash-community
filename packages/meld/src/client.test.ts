@@ -21,6 +21,11 @@ const concluded = {
   status: 409,
   body: { error: { tag: "Other", value: { code: "REQUEST_CONCLUDED", message: "concluded" } } },
 };
+const cancelled = {
+  status: 409,
+  // The adapter's answer for a key that belongs to a request the caller cancelled themselves.
+  body: { error: { tag: "Other", value: { code: "REQUEST_CANCELLED", message: "cancelled" } } },
+};
 const outcomeUnknown = {
   status: 409,
   body: { error: { tag: "Other", value: { code: "REQUEST_OUTCOME_UNKNOWN", message: "unknown" } } },
@@ -354,6 +359,21 @@ describe("createMeldClient error mapping", () => {
     const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
 
     await expect(client.createSession(SESSION_REQ)).rejects.toThrow();
+    expect(calls).toHaveLength(1);
+  });
+
+  it("does NOT walk past a cancelled purchase: a buy's cancel does not prove nothing is in flight", async () => {
+    // Unlike a sell, a buy's cancel is gated only on the payment not yet being observed — that
+    // proves nothing was SEEN, not that nothing is IN FLIGHT. A card or bank payment submitted
+    // moments before the cancel can still settle against the cancelled row, so walking forward
+    // risks a second payment. This must stay refused, with better wording than the generic
+    // fallback, never a silent new session.
+    const { impl, calls } = stubSequence([cancelled, created]);
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+
+    await expect(client.createSession(SESSION_REQ)).rejects.toThrow(
+      /may still have been in flight/i,
+    );
     expect(calls).toHaveLength(1);
   });
 
@@ -877,6 +897,18 @@ describe("createMeldClient sell sessions", () => {
     for (const k of keys) expect(k).toContain("sell");
   });
 
+  it("starts a new attempt when the adapter says the last sale was cancelled", async () => {
+    // Backing out of a sale before paying is exactly what cancel is for; the next attempt must
+    // not be told the sale itself failed.
+    const { impl, calls } = stubSequence([cancelled, created]);
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+
+    const session = await client.createSellSession(SELL_SESSION_REQ);
+
+    expect(session.fundingRequestId).toBe("funding-9");
+    expect(calls).toHaveLength(2);
+  });
+
   it("does NOT walk past a sale the seller has already been paid for", async () => {
     const { impl, calls } = stubSequence([alreadySettled, created]);
     const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
@@ -951,6 +983,32 @@ describe("createMeldClient sell sessions", () => {
     await expect(client.createSellSession(SELL_SESSION_REQ)).rejects.toThrow();
     // Exactly MAX_ATTEMPTS: a weaker bound passes for a walk that gave up after one.
     expect(calls.length).toBe(5);
+  });
+
+  it("tells the truth when every attempt was cancelled rather than reusing the concluded wording", async () => {
+    // `exhaustedMessage`'s "already been completed" is false — and the opposite of the truth —
+    // of a run that was cancelled every time and never sent anything.
+    const { impl, calls } = stubSequence([cancelled]);
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+
+    const error: unknown = await client.createSellSession(SELL_SESSION_REQ).catch((e) => e);
+    expect(String((error as Error)?.message)).toMatch(/nothing was ever sent/i);
+    expect(String((error as Error)?.message)).not.toMatch(/already been completed/i);
+    // Exactly MAX_ATTEMPTS: a weaker bound passes for a walk that gave up after one.
+    expect(calls.length).toBe(5);
+  });
+
+  it("never walks a caller-supplied key past a cancellation either", async () => {
+    // The same rule every other code already follows: a caller-supplied key is never moved.
+    const { impl, calls } = stubSequence([cancelled, created]);
+    const client = createMeldClient({
+      baseUrl: "https://adapter.test",
+      fetchImpl: impl,
+      idempotencyKey: () => "caller-owns-this",
+    });
+
+    await expect(client.createSellSession(SELL_SESSION_REQ)).rejects.toThrow();
+    expect(calls).toHaveLength(1);
   });
 });
 

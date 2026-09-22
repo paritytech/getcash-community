@@ -252,6 +252,55 @@ describe("requests store: withdrawals", () => {
     expect(await stored(REF)).toMatchObject({ status: { kind: "sent" } });
   });
 
+  it("carries the worker's return through to the record, without reading it as sent", async () => {
+    // A rejected payment whose whole balance has come home: the sale itself stays failed --
+    // `return` is the only place a reader learns the money is back.
+    await seed([withdrawal()], {
+      [SESSION]: job({
+        phase: "failed",
+        failure: "rejected",
+        lastError: "the network refused it",
+        state: { fundsSeenAt: STARTED + 1_000, submitted: true },
+        return: {
+          reason: "unwind",
+          phase: "done",
+          returned: true,
+          returnedAmount: "21000000",
+          nativeSeen: null,
+          claim: { amount: "21000000", status: "claimed", partial: false },
+          txs: [{ call: "swap", txHash: "0xreturn" }],
+        },
+      }),
+    });
+    const requests = useRequestsStore();
+    await requests.reconcile("boot");
+    const record = requests.get(REF);
+    expect(record?.status.kind).toBe("failed");
+    expect(record).toMatchObject({
+      return: {
+        reason: "unwind",
+        phase: "done",
+        returned: true,
+        returnedAmount: "21000000",
+        claim: { amount: "21000000", status: "claimed", partial: false },
+      },
+    });
+  });
+
+  it("ignores a malformed return rather than throwing", async () => {
+    await seed([withdrawal()], {
+      [SESSION]: job({
+        phase: "failed",
+        failure: "rejected",
+        state: { fundsSeenAt: STARTED + 1_000, submitted: true },
+        return: { reason: "not-a-real-reason", phase: "done" },
+      }),
+    });
+    const requests = useRequestsStore();
+    await requests.reconcile("boot");
+    expect(requests.get(REF)?.return).toBeUndefined();
+  });
+
   it("gives a withdrawal job the surface never recorded a record from the hand-off it keeps", async () => {
     await seed([], { [SESSION]: job({ phase: "swap", state: { fundsSeenAt: STARTED + 1_000 } }) });
     const requests = useRequestsStore();
