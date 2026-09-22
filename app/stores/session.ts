@@ -1337,6 +1337,14 @@ export const useSessionStore = defineStore("session", () => {
       foregroundRef = ref; // after teardown, which clears it
       // On screen from its record at once; the world builds behind it.
       requests.setForeground(ref);
+      // The pay page is fetched from the adapter further down, once the world is back. Say so
+      // here, where the screen starts: from this line until that fetch settles the transfer has a
+      // request and no URL, which is exactly what `lapsed` reads as expired — and telling a buyer
+      // who came back to copy the account details that their transfer can no longer be paid, for
+      // however long a world takes to build, is the one thing those words must not do.
+      // Hosted only: off-host there is no lookup to wait for and a re-opened transfer is lapsed in
+      // truth, as the note on the mock world below says.
+      if (isHosted() && record.meldFundingRequestId !== undefined) meldPayUrlPending.value = true;
       const status = requests.get(ref)?.status.kind ?? "?";
       console.warn(
         `[coinage] reopen request #${record.tradeN}: funded=${record.funded ?? "no"} status=${status} submitted=${record.meldSubmittedAt !== undefined}`,
@@ -1412,7 +1420,11 @@ export const useSessionStore = defineStore("session", () => {
         undefined,
         record.sourceId as SourceId | undefined,
       );
-      if (!world) return false;
+      if (!world) {
+        // No world, so no lookup will run: the screen may judge the details for itself again.
+        meldPayUrlPending.value = false;
+        return false;
+      }
       if (world.session.peek() === null) {
         // A record with no slot: keep it, note the conflict on it, and fall back to a fresh entry.
         world.dispose();
@@ -1443,6 +1455,7 @@ export const useSessionStore = defineStore("session", () => {
           console.warn(
             `[meld] request #${String(record.tradeN)} persisted funding id ${record.meldFundingRequestId}, but VITE_MELD_BASE_URL is unset; its payment status cannot be resumed`,
           );
+          meldPayUrlPending.value = false;
         } else {
           const client = createMeldClient({
             baseUrl: meldBaseUrl,

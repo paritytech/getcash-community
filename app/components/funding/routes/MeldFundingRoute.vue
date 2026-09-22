@@ -279,6 +279,7 @@ onUnmounted(() => {
           :model-value="selectedCountry"
           :detected="detectedCountry"
           :busy="session.cancelling"
+          :notice="session.cancelNotice"
           @pick="pickCurrency"
         />
         <MeldBankTransferScreen
@@ -288,6 +289,7 @@ onUnmounted(() => {
           @fees="showingFees = true"
           @currency="showingCurrency = true"
           @continue="bankStep = 'details'"
+          @leave="emit('back')"
           @switch-route="emit('switchRoute', $event)"
         />
       </template>
@@ -317,6 +319,7 @@ onUnmounted(() => {
         :model-value="selectedCountry"
         :detected="detectedCountry"
         :busy="session.cancelling"
+        :notice="session.cancelNotice"
         placeholder="Search for a country"
         @pick="pickCurrency"
       />

@@ -294,16 +294,18 @@ async function previewRequest(
     progress,
     tradeN: ref.tradeN,
     sourceId,
-    ...(opts.meldFundingRequestId ? { meldFundingRequestId: opts.meldFundingRequestId } : {}),
     route: routeOf(sourceId),
     // The adapter's handle, which the bank journey shows as the transfer's reference, and the
-    // provider it quoted through, which a concluded one names.
+    // provider it quoted through, which a concluded one names. The handle is a default: a scene
+    // that brought its own is spread after it, since a scene naming a reference is a scene whose
+    // ending is about that reference.
     ...(sourceId === "meld-card" || sourceId === "meld-bank"
       ? {
           meldFundingRequestId: `preview-funding-${ref.tradeN}`,
           sourceProvider: "TRANSAK",
         }
       : {}),
+    ...(opts.meldFundingRequestId ? { meldFundingRequestId: opts.meldFundingRequestId } : {}),
     deposit: {
       address: DEPOSIT.address,
       amount: DEPOSIT.amount.toString(),

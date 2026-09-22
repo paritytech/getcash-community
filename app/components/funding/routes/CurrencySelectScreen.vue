@@ -22,10 +22,13 @@ const props = withDefaults(
     /** A pick is being carried out (the open request is being withdrawn): the list stops taking
      *  taps until it lands. */
     busy?: boolean;
+    /** Why the last pick did not commit, when something refused it. The list stays open on the
+     *  region it could not leave, so the reason has to be readable from here. */
+    notice?: string | null;
     /** What the search field prompts for, when "currency" is not the word for this list. */
     placeholder?: string;
   }>(),
-  { placeholder: "Search for a currency/country" },
+  { placeholder: "Search for a currency/country", notice: null },
 );
 const emit = defineEmits<{ pick: [country: string] }>();
 
@@ -90,6 +93,9 @@ const sections = computed(() =>
 
     <p v-if="busy" class="mt-4 shrink-0 text-body-m text-fg-secondary" role="status">
       Switching currency…
+    </p>
+    <p v-else-if="notice" class="mt-4 shrink-0 text-body-m text-fg-secondary" role="status">
+      {{ notice }}
     </p>
 
     <!-- The list scrolls under the search field; the negative margin lets a row's fill run the
