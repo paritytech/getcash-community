@@ -35,6 +35,8 @@ import {
   type WithdrawalHandoffPayload,
 } from "../app/funding/requests/model";
 import { hostSafeEntropy, nextFreeTradeNumber, readTradeCounter, tradeCounterKey } from "./coinage";
+import { isHosted } from "./host-account";
+import { createMemoryAdapter } from "@getsome/testing";
 import {
   requestPayment as hostRequestPayment,
   subscribePaymentStatus,
@@ -96,9 +98,24 @@ export function planckToDecimalString(amount: bigint, decimals = RELAY_NATIVE_DE
   return (negative ? "-" : "") + whole + (frac ? `.${frac}` : "");
 }
 
+// Browser-only deterministic seed when there is no host entropy root; the host always derives its own.
+function browserEntropyPort(): { deriveSeed(label: Uint8Array): Promise<Uint8Array> } {
+  return {
+    async deriveSeed(label: Uint8Array): Promise<Uint8Array> {
+      const out = new Uint8Array(32);
+      label.forEach((b, i) => {
+        out[i % 32] = (out[i % 32] ?? 0) ^ b;
+      });
+      return out;
+    },
+  };
+}
+
 /** Withdrawal `n`'s key, derived from the host's entropy root. */
 export async function withdrawKeyFor(sourceId: string, n: number): Promise<WithdrawKey> {
-  const entropy = createHostEntropyPort(hostSafeEntropy(deriveEntropy));
+  const entropy: { deriveSeed(label: Uint8Array): Promise<Uint8Array> } = isHosted()
+    ? createHostEntropyPort(hostSafeEntropy(deriveEntropy))
+    : browserEntropyPort();
   const seed = await entropy.deriveSeed(
     new TextEncoder().encode(withdrawEntropyLabel(sourceId, n)),
   );
@@ -182,7 +199,14 @@ export async function sizeMeldCommitment(
   });
 }
 
+// Browser-only in-memory counter when there is no host store; never used in the host.
+let browserStore: ReturnType<typeof createMemoryAdapter> | null = null;
+
 async function hostStorageAdapter() {
+  if (!isHosted()) {
+    if (browserStore === null) browserStore = createMemoryAdapter();
+    return browserStore;
+  }
   const storage = await getHostLocalStorage();
   if (!storage) throw new Error("host storage unavailable (not running inside the Polkadot App?)");
   return createHostStorageAdapter(storage as HostLocalStorageLike);

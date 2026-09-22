@@ -83,7 +83,8 @@ export function useWithdrawalRequest() {
   /** Creates the record, prompts the purse, and hands the worker the request. Puts the record on
    *  screen as soon as it exists. */
   async function start(input: WithdrawalStart): Promise<WithdrawalStartOutcome> {
-    if (!isHosted()) {
+    // Outside the host only a meld sale walks (mock storage/entropy, returns before payment); crypto still needs the host.
+    if (!isHosted() && input.rail !== "meld") {
       return {
         ok: false,
         ref: null,
