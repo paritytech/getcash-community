@@ -103,11 +103,14 @@ const quotedAmount = computed(() => session.amountHuman || (props.topUp?.amount 
  * knows the real figure, and it knows it before the journey ends — so the screen corrects itself
  * while the buyer is still watching, rather than surprising them at the end.
  *
- * Meld only: a crypto swap that misses its bounds is refunded rather than filled short, and that
- * ending has its own words.
+ * The bank rail only. A card is priced and bought minutes apart, and `claimedBase` is a whole
+ * burner sweep rather than the typed figure, so a card's claim differs by rounding rather than by
+ * a rate — news the buyer cannot act on, under a sentence about money being on its way. A crypto
+ * swap that misses its bounds is refunded rather than filled short, and that ending has its own
+ * words.
  */
 const revisedAmount = computed<string | null>(() => {
-  if (crypto.value) return null;
+  if (!bank.value) return null;
   const claimed = requests.claimedBase;
   const quoted = toCashBase(quotedAmount.value);
   if (claimed === null || quoted === null || claimed === quoted) return null;
@@ -314,17 +317,19 @@ const message = computed(() => {
   }
   if (bankFailureText.value) return bankFailureText.value;
   if (failedText.value) return failedText.value;
-  // The rate moved under a payment that is still on its way: say so before the hero's new figure
-  // is read as a mistake, and name both amounts so the difference is the buyer's to check.
-  if (revisedAmount.value) {
-    return `Rates changed while your money was on its way. You'll get ${cashAmount(revisedAmount.value)} instead of ${cashAmount(quotedAmount.value)}`;
-  }
   if (requests.fundingNotice) return requests.fundingNotice;
   if (delayed.value) {
     // Each rail waits on something else: the card provider's retry vs chain confirmations.
     return crypto.value
       ? "Waiting for network confirmations. This can take a while"
       : "Taking a little longer than usual";
+  }
+  // The rate moved under a payment that is still on its way: say so before the hero's new figure
+  // is read as a mistake, and name both amounts so the difference is the buyer's to check. Above
+  // the rail's own line, which by then reads "Bank transfer confirmed" — true, and not the news.
+  // Below the notices, which are what a buyer has to act on.
+  if (revisedAmount.value) {
+    return `Rates changed while your money was on its way. You'll get ${cashAmount(revisedAmount.value)} instead of ${cashAmount(quotedAmount.value)}`;
   }
   if (props.status) return props.status.text;
   // Nothing has been reported on a bank transfer yet: days can pass here, so the ribbon says what
