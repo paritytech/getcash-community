@@ -6,6 +6,11 @@
 // THE CHANNEL IS OPENED ELSEWHERE. The page opens it at confirm, while the user is there and
 // with the quote they were shown, and the hand-off carries it here. This leg never opens one.
 //
+// THE KEY PAYS, THE MESSAGE DOES NOT. Chainflip credits a deposit on Asset Hub only from a
+// balance transfer event inside an extrinsic. The message lands the native by XCM, which mints
+// it without such an event, so native landed in the channel that way is never witnessed and is
+// lost. The message therefore lands on the key, and the key pays the channel with a transfer.
+//
 // PROVIDER AGNOSTIC. The provider is a client with one call, status, and the payment is a hand
 // the driver supplies, the sweep of the key. Chainflip and Meld each plug in behind that shape;
 // nothing here knows which one it is talking to.
