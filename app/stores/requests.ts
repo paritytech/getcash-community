@@ -6,6 +6,7 @@ import { defineStore } from "pinia";
 import { computed, ref, shallowRef, watch } from "vue";
 import type { FlowState, SourceId } from "@getsome/core";
 import { createMeldClient, getMeldStatus, type MeldClientLike } from "@getsome/meld";
+import { assetHubAddressFor, RELAY_NATIVE_DECIMALS } from "@getsome/withdraw";
 import {
   advanceFundingProgressSnapshot,
   createFundingProgressSnapshot,
@@ -13,6 +14,7 @@ import {
   type FundingProgressSnapshot,
 } from "../funding/progress";
 import { depositWindowFor } from "../funding/config";
+import { assetHubAccountHex, isAssetHubAddress } from "../withdraw/destinations";
 import { migrateRecord } from "../funding/requests/migrate";
 import {
   CANCEL_CONFIRM_MS,
@@ -34,6 +36,7 @@ import {
   isTopUp,
   isWithdrawSourceId,
   isWithdrawal,
+  meldDepositKnown,
   paymentTaken,
   railProviderOf,
   rankOf,
@@ -41,6 +44,7 @@ import {
   routeOf,
   type Freshness,
   type HostPaymentStatus,
+  type MeldSale,
   type Observation,
   type RequestKey,
   type RequestRecord,
@@ -322,6 +326,14 @@ const followsWorker = (record: RequestRecord): boolean =>
 function lostHandoff(record: RequestRecord): "unknown" | "expired" | null {
   const { worker } = record.witnesses;
   if (worker === undefined || !isWorkerDriven(record)) return null;
+  // A meld sale not yet given a deposit address has nothing to tell the worker to pay: it is not
+  // "lost", it simply has not been handed off yet. Handing it a commitment with no payout address
+  // would either block on a field nothing can fill in, or -- far worse -- let it run the chain
+  // legs not knowing where the sale must ultimately be paid onward. `handOffLostRequests` is what
+  // sends this hand-off, once `meldDepositKnown` holds.
+  if (isWithdrawal(record) && record.rail.provider === "meld" && !meldDepositKnown(record.rail)) {
+    return null;
+  }
   if (!worker.known) return "unknown";
   if (isWithdrawal(record) && worker.failure === "cancelled" && rankOf(record) >= 1) {
     return "expired";
@@ -425,6 +437,17 @@ type WithdrawJob = {
   slippagePct?: number;
   paymentExpiresAt?: number;
   createdAt?: number;
+  // Only when `rail` is "meld"; see WithdrawalHandoffPayload["meld"] for what each field is and
+  // why every one of them rides along even past what the worker's own tick reads.
+  meld?: {
+    committedAmount?: string;
+    providerPayoutAddress?: string;
+    orderRef?: string;
+    meldFundingRequestId?: string;
+    quotedFiatAmount?: string;
+    quotedFiatCurrency?: string;
+    cryptoCurrency?: string;
+  } | null;
 };
 
 /** Every withdrawal job, keyed by workerSessionId; {} when there are none. */
@@ -549,7 +572,62 @@ function handoffOf(job: WorkerJob): WorkerHandoffPayload | undefined {
   };
 }
 
-/** The hand-off the worker keeps on its withdrawal job, when every field is there. */
+/** A planck amount as a whole-token decimal string, at the relay native asset's precision. Only
+ *  used to rebuild a display-only `MeldDepositDisclosure.amount` for `recordFromWithdrawJob`'s
+ *  worst case (see below); everything that actually pays reads `committedAmount` in planck. */
+function planckDecimal(amount: bigint, decimals = RELAY_NATIVE_DECIMALS): string {
+  const digits = amount.toString().padStart(decimals + 1, "0");
+  const whole = digits.slice(0, digits.length - decimals);
+  const frac = digits.slice(digits.length - decimals).replace(/0+$/, "");
+  return whole + (frac ? `.${frac}` : "");
+}
+
+/** The provider's disclosed payout address, canonicalised the same way a self-custody
+ *  destination is (`assetHubAccountHex`/`isAssetHubAddress` in app/withdraw/destinations.ts):
+ *  decoded to its 32-byte account and re-encoded. Null when it does not decode to one at all.
+ *
+ *  This is the destination of an irreversible transfer, arriving from outside our system (the
+ *  provider, via the adapter), not text the seller typed — so it gets the same treatment this
+ *  codebase gives any address it is about to sign a payment to, and a caller that gets null back
+ *  must refuse rather than hand the worker something it would only fail to sign against later,
+ *  less legibly. */
+function canonicalPayoutAddress(address: string): string | null {
+  if (!isAssetHubAddress(address)) return null;
+  return assetHubAddressFor(assetHubAccountHex(address));
+}
+
+/** The meld sub-object of the hand-off, when every field the worker persists is there. See
+ *  `WithdrawalHandoffPayload["meld"]` for what each one is. */
+function meldHandoffOf(meld: WithdrawJob["meld"]): WithdrawalHandoffPayload["meld"] | undefined {
+  if (
+    meld == null ||
+    !isString(meld.committedAmount) ||
+    !/^\d+$/.test(meld.committedAmount) ||
+    !isString(meld.providerPayoutAddress) ||
+    canonicalPayoutAddress(meld.providerPayoutAddress) === null ||
+    !isString(meld.orderRef) ||
+    !isString(meld.meldFundingRequestId) ||
+    !isString(meld.quotedFiatAmount) ||
+    !isString(meld.quotedFiatCurrency) ||
+    !isString(meld.cryptoCurrency)
+  ) {
+    return undefined;
+  }
+  return {
+    committedAmount: meld.committedAmount,
+    providerPayoutAddress: meld.providerPayoutAddress,
+    orderRef: meld.orderRef,
+    meldFundingRequestId: meld.meldFundingRequestId,
+    quotedFiatAmount: meld.quotedFiatAmount,
+    quotedFiatCurrency: meld.quotedFiatCurrency,
+    cryptoCurrency: meld.cryptoCurrency,
+  };
+}
+
+/** The hand-off the worker keeps on its withdrawal job, when every field is there. A meld rail
+ *  needs its `meld` sub-object too: the worker is never handed one without it (see
+ *  `setWithdrawalMeldHandoff`), so a job that has one but not the other is not this withdrawal's
+ *  real hand-off and is treated as absent, the same as any other malformed job. */
 function withdrawHandoffOf(job: WithdrawJob): WithdrawalHandoffPayload | undefined {
   const { destination, rail } = job;
   if (
@@ -562,7 +640,7 @@ function withdrawHandoffOf(job: WithdrawJob): WithdrawalHandoffPayload | undefin
     !isString(destination?.asset) ||
     !isString(destination?.address) ||
     !isString(job.landingHex) ||
-    (rail !== "direct" && rail !== "chainflip") ||
+    (rail !== "direct" && rail !== "chainflip" && rail !== "meld") ||
     !isString(job.assetHubGenesis) ||
     !isString(job.peopleGenesis) ||
     !isNumber(job.peopleParaId) ||
@@ -573,6 +651,8 @@ function withdrawHandoffOf(job: WithdrawJob): WithdrawalHandoffPayload | undefin
   ) {
     return undefined;
   }
+  const meld = rail === "meld" ? meldHandoffOf(job.meld) : undefined;
+  if (rail === "meld" && meld === undefined) return undefined;
   return {
     label: job.label,
     keyAddress: job.keyAddress,
@@ -592,22 +672,48 @@ function withdrawHandoffOf(job: WithdrawJob): WithdrawalHandoffPayload | undefin
     poolAccount: job.poolAccount,
     slippagePct: job.slippagePct,
     paymentExpiresAt: job.paymentExpiresAt,
+    ...(meld === undefined ? {} : { meld }),
   };
 }
 
 /** A withdrawal record for a job the surface has no record of. The prompt happened before the
  *  hand-off, under the first attempt's id, which the key derives again: the host can be asked
- *  about it. Null when the job lacks what a record needs. */
+ *  about it. Null when the job lacks what a record needs.
+ *
+ *  A meld rail can only reach this point already carrying its `meld` sub-object: the worker is
+ *  never handed a meld withdrawal until its sale has disclosed a payout address (see
+ *  `setWithdrawalMeldHandoff`), so the job that exists to be recovered from here always has one.
+ *  The rebuilt sale is therefore always `deposit-known` — this site cannot tell whether the
+ *  adapter is still disclosing the address on its live polls, only that it did once, so it reads
+ *  the worker's own record of it rather than guessing a fresher answer. The next provider poll
+ *  either confirms it or, if the address has since been withdrawn, leaves it exactly as disclosed
+ *  here: `deposit-known` is entered once and never left. */
 function recordFromWithdrawJob(sessionId: string, job: WithdrawJob): WithdrawalRecord | null {
   const ref = refOfSessionId(sessionId);
   const handoff = withdrawHandoffOf(job);
   if (ref === null || handoff === undefined || !isNumber(job.createdAt)) return null;
-  // `withdrawHandoffOf` only ever returns `"direct"` or `"chainflip"` today (its own guard
-  // refuses anything else) — this is that fact made visible to the type checker, and a fail-
-  // closed refusal rather than a silent cast the day the guard is loosened for `"meld"` without
-  // this site being taught how to rebuild a sale from the job blob.
-  if (handoff.rail === "meld") return null;
   const startedAt = job.createdAt;
+  let sale: MeldSale | undefined;
+  if (handoff.rail === "meld") {
+    const meld = handoff.meld;
+    if (meld === undefined) return null; // guarded by withdrawHandoffOf; narrows the type here
+    sale = {
+      phase: "deposit-known",
+      meldFundingRequestId: meld.meldFundingRequestId,
+      committedAmount: meld.committedAmount,
+      quotedFiatAmount: meld.quotedFiatAmount,
+      quotedFiatCurrency: meld.quotedFiatCurrency,
+      deposit: {
+        address: meld.providerPayoutAddress,
+        amount: planckDecimal(BigInt(meld.committedAmount)),
+        currency: meld.cryptoCurrency,
+        // Not really observed now: this is a reconstruction, not a fresh poll. Stamped at the
+        // job's own creation, a safe (early) lower bound, and the very next provider poll
+        // replaces it with a real reading.
+        observedAt: startedAt,
+      },
+    };
+  }
   return {
     schema: 3,
     kind: "withdrawal",
@@ -631,7 +737,13 @@ function recordFromWithdrawJob(sessionId: string, job: WithdrawJob): WithdrawalR
     deadline: { paymentExpiresAt: handoff.paymentExpiresAt },
     handoff,
     status: { kind: "awaiting-payment" },
-    rail: { provider: handoff.rail, stage: "waiting", updatedAt: startedAt },
+    // Narrowed on `handoff.rail` alone, not `sale`'s presence: the early return above guarantees
+    // a meld rail always reaches here with `sale` set, but a compound condition would not let the
+    // type checker see that, and would leave the "meld" branch able to build a railless sale.
+    rail:
+      handoff.rail === "meld"
+        ? { provider: "meld", sale: sale!, stage: "waiting", updatedAt: startedAt }
+        : { provider: handoff.rail, stage: "waiting", updatedAt: startedAt },
     witnesses: {},
   };
 }
@@ -979,6 +1091,30 @@ export const useRequestsStore = defineStore("requests", () => {
       if (entry === undefined || !isTopUp(entry.record)) return;
       const { record } = entry;
       await commit(key, { ...record, rev: record.rev + 1, handoff }, false);
+    });
+  }
+
+  /** Fills in a meld withdrawal's hand-off with the provider's own payout address, once its sale
+   *  has disclosed one: the moment the worker can safely be told to run the chain legs at all.
+   *  Set once and never rewritten while a sale is live — a resumed sale's terms are checked
+   *  against the row the adapter names, not silently overwritten here. Observation-free, like
+   *  `setHandoff`. */
+  function setWithdrawalMeldHandoff(
+    ref: RequestRef,
+    meld: NonNullable<WithdrawalHandoffPayload["meld"]>,
+  ): Promise<void> {
+    const key = requestRefKey(ref);
+    if (entries.value[key] === undefined) return Promise.resolve();
+    return enqueue(key, async () => {
+      const entry = entries.value[key];
+      if (entry === undefined || !isWithdrawal(entry.record)) return;
+      const { record } = entry;
+      if (record.handoff.meld !== undefined) return;
+      await commit(
+        key,
+        { ...record, rev: record.rev + 1, handoff: { ...record.handoff, meld } },
+        false,
+      );
     });
   }
 
@@ -1561,6 +1697,11 @@ export const useRequestsStore = defineStore("requests", () => {
         at,
         result,
         delayed: result.delayed === true,
+        // A buy's status never carries this; a sell's does, on the polls that disclose it. Riding
+        // it through unconditionally is what lets a withdrawal's sale hear about it at all --
+        // this function is shared by both kinds, and the top-up transitions simply have nothing
+        // that reads it.
+        ...(result.deposit === undefined ? {} : { deposit: result.deposit }),
       });
       return "ok";
     } catch (e) {
@@ -1766,6 +1907,84 @@ export const useRequestsStore = defineStore("requests", () => {
     });
     await inParallel(pending, MELD_READ_PARALLELISM, async ({ ref, fundingRequestId }) => {
       await observeMeldStatus(ref, client, fundingRequestId);
+    });
+  }
+
+  /** A meld withdrawal's sale is still live: not yet handed the worker a settled or failed
+   *  outcome to stop on. Mirrors `meldDone` in the withdrawal transitions -- there is no exported
+   *  twin of it to reuse, so this reads the same three terminal kinds off the status directly. */
+  function meldSaleLive(record: WithdrawalRecord): boolean {
+    const { kind } = record.status;
+    return kind !== "sent" && kind !== "failed" && kind !== "expired" && kind !== "cancelled";
+  }
+
+  /** The withdrawal side of `readBackgroundMeldStatuses`: every meld withdrawal's sale, on or off
+   *  screen, this step 5 has not yet built a dedicated screen to poll from the foreground. Folding
+   *  a disclosed deposit address through here is what eventually lets `handOffLostRequests` hand
+   *  the worker its commitment; see `lostHandoff`. */
+  async function readBackgroundMeldWithdrawalStatuses(): Promise<void> {
+    if (sandboxed.value) return;
+    if (!isHosted()) return;
+    const client = meldStatusClientFactory();
+    if (client === null) return;
+    const pending = withdrawals.value.flatMap((record) => {
+      if (record.rail.provider !== "meld" || !meldSaleLive(record)) return [];
+      return [{ ref: record.ref, fundingRequestId: record.rail.sale.meldFundingRequestId }];
+    });
+    await inParallel(pending, MELD_READ_PARALLELISM, async ({ ref, fundingRequestId }) => {
+      await observeMeldStatus(ref, client, fundingRequestId);
+    });
+  }
+
+  /** Reconcile's meld payment step: once a sale discloses where to pay the provider, the purse's
+   *  payment is prompted for the first time — never before. This is the other half of the same
+   *  phase boundary `handOffLostRequests` already observes for the hand-off: the design this
+   *  feature is built from starts "fund and convert" — the CASH moving off the purse — only once
+   *  the provider has issued a deposit address, precisely so a seller who opens a sale, starts
+   *  KYC and abandons it never has CASH parked on a burner for a sale that did not happen.
+   *
+   *  Runs after `readBackgroundMeldWithdrawalStatuses` in the same pass, so a deposit disclosed
+   *  this pass is prompted this pass. Fires the request and does not wait on the host's sheet —
+   *  the same shape `useWithdrawalRequest`'s own `prompt` uses for a direct or chainflip rail —
+   *  so one slow approval cannot hold the rest of reconcile hostage; the payment poll picks up
+   *  the answer once it lands. A payment already prompted (`payment.requestedAt !== undefined`)
+   *  is never prompted twice, from here or anywhere else. */
+  async function promptMeldPayments(): Promise<void> {
+    if (sandboxed.value) return;
+    if (!isHosted()) return;
+    const pending = withdrawals.value.filter(
+      (record) =>
+        record.rail.provider === "meld" &&
+        meldDepositKnown(record.rail) &&
+        record.status.kind === "awaiting-payment" &&
+        record.payment.requestedAt === undefined,
+    );
+    if (pending.length === 0) return;
+    const { requestKeyPayment, PaymentRefusedError } = await import("~~/lib/withdraw-live");
+    // Stamping is awaited (cheap, durable); the host request itself is not, so one slow or
+    // silent sheet cannot hold the rest of this pass, or the next one, hostage.
+    await inParallel(pending, MELD_READ_PARALLELISM, async (record) => {
+      const { attempt } = record.payment;
+      const idHex = paymentIdFor(record.key.publicKeyHex, attempt);
+      await markPaymentRequested(record.ref, attempt, idHex);
+      void requestKeyPayment({
+        idHex,
+        amount: BigInt(record.handoff.amount),
+        key: {
+          address: record.key.address,
+          publicKeyHex: record.key.publicKeyHex as `0x${string}`,
+        },
+      }).catch(async (e: unknown) => {
+        const reason = e instanceof PaymentRefusedError ? e.message : messageOf(e);
+        console.warn(
+          `[requests] meld payment prompt for ${requestRefKey(record.ref)} refused: ${reason}`,
+        );
+        await observe(record.ref, {
+          source: "host",
+          at: requestsNow(),
+          payment: { attempt, status: "failed", reason },
+        });
+      });
     });
   }
 
@@ -2060,28 +2279,38 @@ export const useRequestsStore = defineStore("requests", () => {
     }
   }
 
-  /** Reconcile step 6: the worker is handed every open request it lost, off screen only. The
-   *  pass waits for the worker's heartbeat once, up to `WORKER_READY_MS`, and skips every send
-   *  when it never comes. A job it has no record of gets the request's stored hand-off as it is;
-   *  a job it expired after the buyer paid gets it with a fresh deadline, because the worker
-   *  keeps the hand-off's own; a legacy record without a hand-off builds one hosted world to
-   *  obtain it, stores it and lets the world go. Nothing here observes the record: the worker's
-   *  answer arrives with the next job read. A failure is noted on the entry and the next
-   *  reconcile tries again. */
+  /** Reconcile step 6: the worker is handed every open request it lost, off screen only — with
+   *  one exception. A direct or chainflip withdrawal's hand-off is excluded on screen because
+   *  `start()` already sent it the moment the record was created; a meld withdrawal's is NOT,
+   *  because `start()` deliberately sends nothing until the sale discloses a deposit address
+   *  (see useWithdrawalRequest.ts), which makes this step the ONLY thing that ever sends a meld
+   *  hand-off, on screen or not. Excluding the foreground record for meld would strand a
+   *  seller's CASH on the burner for as long as they watch their own withdrawal through KYC —
+   *  which is the ordinary path, not an edge case — so `promptMeldPayments`, its sibling for the
+   *  payment, has never had a foreground gate either; this mirrors that.
+   *
+   *  The pass waits for the worker's heartbeat once, up to `WORKER_READY_MS`, and skips every
+   *  send when it never comes. A job it has no record of gets the request's stored hand-off as
+   *  it is; a job it expired after the buyer paid gets it with a fresh deadline, because the
+   *  worker keeps the hand-off's own; a legacy record without a hand-off builds one hosted world
+   *  to obtain it, stores it and lets the world go. Nothing here observes the record: the
+   *  worker's answer arrives with the next job read. A failure is noted on the entry and the
+   *  next reconcile tries again. */
   async function handOffLostRequests(now: number): Promise<void> {
     if (sandboxed.value) return;
     if (!isHosted()) return;
     const lost = records.value.flatMap((record) => {
       const reason = lostHandoff(record);
-      return reason === null || requestRefKey(record.ref) === foreground.value
-        ? []
-        : [{ record, reason }];
+      if (reason === null) return [];
+      const isForegroundMeld = isWithdrawal(record) && record.rail.provider === "meld";
+      if (requestRefKey(record.ref) === foreground.value && !isForegroundMeld) return [];
+      return [{ record, reason }];
     });
     if (lost.length === 0) return;
     const [
       { getStorageWorkerManager },
       { createHostedCoinageWorld, ensureChainSubmitGrant },
-      { sendWithdrawHandoff },
+      { meldOrderRefFor, sendWithdrawHandoff },
     ] = await Promise.all([
       import("~~/lib/worker-rpc"),
       import("~~/lib/coinage-live"),
@@ -2141,12 +2370,65 @@ export const useRequestsStore = defineStore("requests", () => {
         const sessionId = workerSessionId(effectiveSourceId(ref), ref.tradeN);
         try {
           if (isWithdrawal(record)) {
+            // A meld rail's hand-off is only ever missing its `meld` sub-object because it has
+            // not been sent before: `lostHandoff` refuses anything not yet `meldDepositKnown`, so
+            // by the time a meld withdrawal gets here the sale has a payout address to give. Built
+            // once and persisted, so a later resend reads it back rather than rebuilding it.
+            let base = record.handoff;
+            if (record.rail.provider === "meld" && base.meld === undefined) {
+              const { sale } = record.rail;
+              if (sale.phase !== "deposit-known") {
+                throw new Error("withdrawal: meld hand-off reached with no deposit address");
+              }
+              // The provider's own disclosed address, about to be handed to the worker as the
+              // destination of an irreversible transfer: decoded, checked and canonicalised
+              // before it can ever be signed against, not merely carried as a string. An
+              // unparseable value here is an upstream integrity failure -- the adapter or the
+              // provider handing us something we cannot act on -- not the seller mistyping
+              // anything, so this refuses loudly rather than politely asking anyone to fix it.
+              const payoutAddress = canonicalPayoutAddress(sale.deposit.address);
+              if (payoutAddress === null) {
+                // Retrying resolves nothing: the address is what it is. So this is a terminal
+                // failure the record and the UI can see, not a transient `handoffError` nothing
+                // outside the store reads -- which would otherwise retry every pass forever while
+                // the seller's CASH already sits on the burner. Reuses the same channel a Meld
+                // sale that cannot be completed already reaches the record through (`meldFailed`
+                // in transitions/withdrawal.ts), with its own code so a human reading the record
+                // later can tell this apart from the adapter losing the request outright.
+                console.error(
+                  `[requests] meld hand-off for ${sessionId} refused: the provider's payout address does not decode to an Asset Hub account`,
+                );
+                await observe(ref, {
+                  source: "provider",
+                  provider: "meld",
+                  at: now,
+                  gone: true,
+                  code: "invalid-payout-address",
+                  message:
+                    "The payment provider gave an address we could not use. Contact support with your reference.",
+                });
+                patchEntry(key, ({ handoffError: _cleared, ...rest }) => rest);
+                return;
+              }
+              const meld: NonNullable<WithdrawalHandoffPayload["meld"]> = {
+                committedAmount: sale.committedAmount,
+                providerPayoutAddress: payoutAddress,
+                orderRef: meldOrderRefFor({
+                  address: record.key.address,
+                  publicKeyHex: record.key.publicKeyHex as `0x${string}`,
+                }),
+                meldFundingRequestId: sale.meldFundingRequestId,
+                quotedFiatAmount: sale.quotedFiatAmount,
+                quotedFiatCurrency: sale.quotedFiatCurrency,
+                cryptoCurrency: sale.deposit.currency,
+              };
+              await setWithdrawalMeldHandoff(ref, meld);
+              base = { ...base, meld };
+            }
             // The withdrawal's record always carries its hand-off; an expired job gets a fresh
             // payment window, since the worker keeps the hand-off's own.
             const payload =
-              reason === "expired"
-                ? { ...record.handoff, paymentExpiresAt: now + PAYMENT_WINDOW_MS }
-                : record.handoff;
+              reason === "expired" ? { ...base, paymentExpiresAt: now + PAYMENT_WINDOW_MS } : base;
             await sendWithdrawHandoff(worker, sessionId, payload);
           } else {
             const stored = record.handoff ?? (await buildHandoff(record));
@@ -2478,6 +2760,23 @@ export const useRequestsStore = defineStore("requests", () => {
     }
 
     try {
+      await readBackgroundMeldWithdrawalStatuses();
+    } catch (e) {
+      console.warn(
+        `[requests] reconcile (${reason}): withdrawal provider step failed: ${messageOf(e)}`,
+      );
+    }
+
+    // After the read above: a deposit disclosed this pass must be able to prompt this pass.
+    try {
+      await promptMeldPayments();
+    } catch (e) {
+      console.warn(
+        `[requests] reconcile (${reason}): meld payment prompt step failed: ${messageOf(e)}`,
+      );
+    }
+
+    try {
       await readPaymentStatuses();
     } catch (e) {
       console.warn(`[requests] reconcile (${reason}): host step failed: ${messageOf(e)}`);
@@ -2533,6 +2832,7 @@ export const useRequestsStore = defineStore("requests", () => {
     observe,
     flag,
     setHandoff,
+    setWithdrawalMeldHandoff,
     remove,
     foreground,
     foregroundEntry,

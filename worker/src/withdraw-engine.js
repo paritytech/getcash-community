@@ -4,6 +4,7 @@ import {
   DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
   freshWithdrawTickState,
   PaymentUnresolvedError,
+  readBurnerOnAssetHub,
   readDestinationPas,
   restoreWithdrawTickState,
   serialiseWithdrawTickState,
@@ -11,6 +12,7 @@ import {
   WithdrawRejectedError,
 } from "@getsome/withdraw";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
+import { AccountId } from "polkadot-api";
 import { readParams } from "./params.js";
 import {
   asBig,
@@ -60,6 +62,14 @@ const saveJobsStrict = () => store.saveStrict();
  *   amount, destination, landingHex, rail,   // what the surface asked for; kept for its records
  *   assetHubGenesis, peopleGenesis, peopleParaId, assetHubParaId, poolAccount, slippagePct,
  *   paymentExpiresAt: number|null,
+ *   meld: { committedAmount, providerPayoutAddress, orderRef, meldFundingRequestId,
+ *           quotedFiatAmount, quotedFiatCurrency, cryptoCurrency } | null,
+ *                                           // only when rail is "meld": what turns into the
+ *                                           // tick's WithdrawCommitment. Everything past
+ *                                           // committedAmount/providerPayoutAddress is unused by
+ *                                           // the tick itself and carried only so a surface that
+ *                                           // lost its own record can rebuild the sale from this
+ *                                           // job alone -- see recordFromWithdrawJob.
  *   phase: "starting" | WithdrawStep | "failed",
  *   failure?: "rejected" | "timeout" | "expired" | "cancelled" | "unresolved",
  *   done, createdAt, armedAt, lastTickAt, lastError?,
@@ -103,8 +113,8 @@ function newRecord(input, nowMs) {
   ) {
     throw new Error("startWithdraw: destination needs chain, asset and address");
   }
-  if (input.rail !== "direct" && input.rail !== "chainflip") {
-    throw new Error("startWithdraw: rail must be direct or chainflip");
+  if (input.rail !== "direct" && input.rail !== "chainflip" && input.rail !== "meld") {
+    throw new Error("startWithdraw: rail must be direct, chainflip or meld");
   }
   if (!assetHubGenesis || !peopleGenesis) {
     throw new Error("startWithdraw: both chain genesis hashes are required");
@@ -114,6 +124,10 @@ function newRecord(input, nowMs) {
   }
   if (!poolAccount) throw new Error("startWithdraw: the pool account is required");
   if (!(slippagePct > 0)) throw new Error("startWithdraw: slippagePct must be positive");
+  // An off-ramp's sale lands with no rail of its own to carry it onward; the meld object is what
+  // turns into the tick's WithdrawCommitment, so it is validated as strictly as everything above,
+  // and its absence on a meld rail must fail before a burner is ever watched.
+  const meld = input.rail === "meld" ? meldFieldsOf(input.meld) : null;
   return {
     v: RECORD_V,
     sessionId,
@@ -135,6 +149,7 @@ function newRecord(input, nowMs) {
     poolAccount,
     slippagePct,
     paymentExpiresAt: paymentExpiryOf(input),
+    meld,
     phase: "starting",
     done: false,
     createdAt: nowMs,
@@ -143,6 +158,60 @@ function newRecord(input, nowMs) {
     state: freshRecordState(),
     txs: [],
   };
+}
+
+const accountId = AccountId();
+
+/** A 32-byte account in any SS58 prefix. The same check `isAssetHubAddress` in
+ *  app/withdraw/destinations.ts makes, duplicated rather than shared because the worker cannot
+ *  import from `app/` -- it is a separate build target. */
+function isAssetHubAddress(address) {
+  try {
+    return accountId.enc(String(address).trim()).length === 32;
+  } catch {
+    return false;
+  }
+}
+
+/** Validates and normalises a meld rail's sale details. Every field is required: a commitment
+ *  the tick can only half-act on -- an amount with no address to pay it to, say -- is worse than
+ *  one refused outright, since the failure would otherwise surface mid-run instead of at the
+ *  hand-off that could still be corrected.
+ *
+ *  `providerPayoutAddress` is decode-checked, not merely required non-empty like the fields that
+ *  are only ever carried: it is the destination of an irreversible payment `payProvider` signs
+ *  against, and a bad value reaching that point does not refuse -- it throws deep inside a dry
+ *  run, which `tickAllWithdraw` treats as transient and retries forever, never even counting
+ *  against `payAttempts`, since that only advances after a dry run has already passed. Both
+ *  surface call sites canonicalise before this is ever reached, so this is defence in depth, not
+ *  the only guard -- but it is the one that keeps a bad value from becoming an infinite retry
+ *  instead of a refusal. */
+function meldFieldsOf(meld) {
+  if (typeof meld !== "object" || meld === null) {
+    throw new Error("startWithdraw: a meld rail needs its sale details");
+  }
+  const committedAmount = String(meld.committedAmount ?? "");
+  if (!/^\d+$/.test(committedAmount) || asBig(committedAmount) <= 0n) {
+    throw new Error("startWithdraw: meld.committedAmount must be a positive integer string");
+  }
+  const strings = {
+    providerPayoutAddress: "meld.providerPayoutAddress",
+    orderRef: "meld.orderRef",
+    meldFundingRequestId: "meld.meldFundingRequestId",
+    quotedFiatAmount: "meld.quotedFiatAmount",
+    quotedFiatCurrency: "meld.quotedFiatCurrency",
+    cryptoCurrency: "meld.cryptoCurrency",
+  };
+  const out = { committedAmount };
+  for (const [field, what] of Object.entries(strings)) {
+    const value = String(meld[field] ?? "");
+    if (!value) throw new Error(`startWithdraw: ${what} is required`);
+    out[field] = value;
+  }
+  if (!isAssetHubAddress(out.providerPayoutAddress)) {
+    throw new Error("startWithdraw: meld.providerPayoutAddress is not a valid Asset Hub account");
+  }
+  return out;
 }
 
 const freshRecordState = () => ({
@@ -327,22 +396,45 @@ async function tickRecord(record, nowMs) {
       };
     };
 
+    // An off-ramp's sale commits to an exact figure; the self-custody path carries no commitment
+    // at all and is unaffected, exactly as it was before a rail could ever be "meld" here.
+    const commitment = record.meld
+      ? {
+          planck: asBig(record.meld.committedAmount),
+          payoutAddress: record.meld.providerPayoutAddress,
+        }
+      : undefined;
+    // The funding engine's burner signs on Asset Hub with this same derived keypair (see
+    // engine.js): one sr25519 signer serves every chain the key is asked to sign on, since papi
+    // anchors the chain into the call it signs rather than the key. No second derivation here.
+    const assetHubSigner = commitment ? key.signer : undefined;
+    // Only fetched when a commitment needs it: the self-custody path pays no fee here and asks
+    // for nothing on Asset Hub before the XCM itself lands.
+    const assetHubSignOptions = commitment ? await signOptionsFor(ahClient) : undefined;
+
     let outcome;
     try {
       outcome = await withdrawTickOnce(
         {
           peopleApi,
           assetHubApi,
-          key: { address: key.address, publicKeyHex: record.keyPublicKeyHex, signer: key.signer },
+          key: {
+            address: key.address,
+            publicKeyHex: record.keyPublicKeyHex,
+            signer: key.signer,
+            ...(assetHubSigner ? { assetHubSigner } : {}),
+          },
           destinationHex: record.landingHex,
+          ...(commitment ? { commitment } : {}),
           assetHubParaId: record.assetHubParaId,
           peopleParaId: record.peopleParaId,
           poolAccount: record.poolAccount,
           slippagePct: record.slippagePct,
           tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
           submitTimeoutMs: DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
-          // Every submit is on People; one anchor per tick serves them all.
+          // Every People submit shares this anchor; the Asset Hub payment gets its own below.
           signOptions: await signOptionsFor(peopleClient),
+          ...(assetHubSignOptions ? { assetHubSignOptions } : {}),
           readKeyOnPeople: async (ss58) => {
             const [asset, native] = await Promise.all([
               peopleApi.query.Assets.Account.getValue(CASH_LOCATION, ss58),
@@ -351,6 +443,9 @@ async function tickRecord(record, nowMs) {
             return { cash: asset?.balance ?? 0n, pas: native?.data?.free ?? 0n };
           },
           readDestinationOnAssetHub: (hex) => readDestinationPas(assetHubApi, hex),
+          ...(commitment
+            ? { readBurnerOnAssetHub: (hex) => readBurnerOnAssetHub(assetHubApi, hex) }
+            : {}),
           now: Date.now,
           // Persisted before the broadcast leaves, and STRICTLY: a write that did not land
           // must stop the submit, or a pinned nonce can be lost out from under a transaction

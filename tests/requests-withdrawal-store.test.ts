@@ -270,6 +270,55 @@ describe("requests store: withdrawals", () => {
     expect(await stored(REF)).not.toBeNull();
   });
 
+  it("rebuilds a meld withdrawal job the surface never recorded as an already deposit-known sale", async () => {
+    // The worker is never handed a meld job until its sale has disclosed a payout address (see
+    // requests-withdrawal-meld-handoff.test.ts), so a meld job that exists to be recovered from
+    // here always carries the full `meld` sub-object the hand-off was built with.
+    const meld = {
+      committedAmount: "900000000",
+      providerPayoutAddress: "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty",
+      orderRef: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+      meldFundingRequestId: "funding-req-1",
+      quotedFiatAmount: "156.30",
+      quotedFiatCurrency: "USD",
+      cryptoCurrency: "DOT_ASSETHUB",
+    };
+    await seed([], {
+      [SESSION]: job({
+        rail: "meld",
+        meld,
+        phase: "pay-provider",
+        state: { fundsSeenAt: STARTED + 1_000, submitted: true },
+      }),
+    });
+    const requests = useRequestsStore();
+    await requests.reconcile("boot");
+    const record = requests.get(REF);
+    expect(record?.rail.provider).toBe("meld");
+    if (record?.rail.provider !== "meld" || record.rail.sale.phase !== "deposit-known") {
+      throw new Error("expected a reconstructed meld sale, already deposit-known");
+    }
+    expect(record.rail.sale).toMatchObject({
+      meldFundingRequestId: "funding-req-1",
+      committedAmount: "900000000",
+      quotedFiatAmount: "156.30",
+      quotedFiatCurrency: "USD",
+      deposit: {
+        address: meld.providerPayoutAddress,
+        amount: "0.09", // 900000000 planck at 10 decimals
+        currency: "DOT_ASSETHUB",
+      },
+    });
+    expect(record.handoff.meld).toEqual(meld);
+  });
+
+  it("refuses a meld job missing its sale details, the same as any other malformed job", async () => {
+    await seed([], { [SESSION]: job({ rail: "meld", phase: "await-cash" }) });
+    const requests = useRequestsStore();
+    await requests.reconcile("boot");
+    expect(requests.has(REF)).toBe(false);
+  });
+
   it("does not sweep a cancelled withdrawal's job back into a record", async () => {
     await seed([], { [SESSION]: job({ phase: "failed", failure: "cancelled" }) });
     const requests = useRequestsStore();

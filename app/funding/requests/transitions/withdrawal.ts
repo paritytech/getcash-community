@@ -381,7 +381,10 @@ function applyProvider(
   const next = witnessed(record, { provider: { at: observation.at } });
   if ("unreachable" in observation) return next;
   if ("gone" in observation) {
-    return meldFailed(next, observation.at, { message: observation.message, code: "unobserved" });
+    return meldFailed(next, observation.at, {
+      message: observation.message,
+      code: observation.code ?? "unobserved",
+    });
   }
   return applyMeldResult(next, observation.at, observation.result, observation.deposit);
 }

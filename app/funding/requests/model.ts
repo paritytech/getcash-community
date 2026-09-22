@@ -326,8 +326,14 @@ export interface WithdrawalHandoffPayload {
   poolAccount: string;
   slippagePct: number;
   paymentExpiresAt: number;
-  /** Present only when `rail` is `"meld"`: the exact amount the sale owes the provider, where to
-   *  pay it, and the order key the sell session was opened under. */
+  /** Present only when `rail` is `"meld"`, and only once the sale has disclosed where to pay it:
+   *  the exact amount the sale owes the provider, where to pay it, and the order key the sell
+   *  session was opened under. `meldFundingRequestId`, `quotedFiatAmount`, `quotedFiatCurrency`
+   *  and `cryptoCurrency` are never read by the worker's own tick — it only ever needs
+   *  `committedAmount` and `providerPayoutAddress` — but ride along anyway so a surface that has
+   *  lost its own record can rebuild the sale from the worker's job alone (see
+   *  `recordFromWithdrawJob`), the same reason the worker persists every tick-state field
+   *  generically rather than by an allow-list. */
   meld?: {
     /** The exact PAS the provider committed to receive, base units. */
     committedAmount: string;
@@ -335,6 +341,13 @@ export interface WithdrawalHandoffPayload {
     providerPayoutAddress: string;
     /** Key material only, matching the sell session's `orderRef`; never sent anywhere itself. */
     orderRef: string;
+    /** The adapter's funding-request id; `GET /funding/:id` polls it. */
+    meldFundingRequestId: string;
+    /** The fiat the quote promised for `committedAmount`, and its currency. */
+    quotedFiatAmount: string;
+    quotedFiatCurrency: string;
+    /** Meld's code for the crypto being sold, e.g. `DOT_ASSETHUB`. */
+    cryptoCurrency: string;
   };
 }
 
@@ -481,7 +494,17 @@ export type Observation =
       deposit?: MeldDepositDisclosure;
     }
   | { source: "provider"; at: number; provider: "meld"; unreachable: true }
-  | { source: "provider"; at: number; provider: "meld"; gone: true; message: string }
+  | {
+      source: "provider";
+      at: number;
+      provider: "meld";
+      gone: true;
+      message: string;
+      /** The reason this sale can no longer be completed, carried onto the record's failure.
+       *  Defaults to "unobserved" (the adapter losing the request outright, a 404) when absent,
+       *  which is the only caller this variant had before a bad hand-off gained one too. */
+      code?: string;
+    }
   | {
       source: "chain";
       at: number;
