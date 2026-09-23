@@ -78,6 +78,12 @@ describe("funding top-up projections", () => {
     });
   });
 
+  it("says an expired top-up expired, not that a payment failed", () => {
+    const expired = { ...topUps[3]!, state: { ...topUps[3]!.state, expired: true } };
+    const sections = projectFundingTopUps([expired], fundingSelectorConfig);
+    expect(sections.past[0]?.state).toMatchObject({ kind: "failed", status: "Expired" });
+  });
+
   it("uses route configuration for presentation", () => {
     const sections = projectFundingTopUps(topUps, fundingSelectorConfig);
 

@@ -1005,6 +1005,19 @@ export const SCENES: Scene[] = [
     apply: topUpList({ finished: previewTopUpHistory(), entry: "history" }),
   },
   {
+    // An expiry read off the list's own record: the marker says "Expired", the ribbon spells out
+    // that no funds arrived, and there are no money rows — nobody was charged. The card twin below
+    // is the review comment's case: without the record's own word it drew the failure receipt.
+    name: "crypto / expired: from history",
+    stage: { kind: "journey", route: "crypto", topUpId: "p10" },
+    apply: topUpList({ finished: previewTopUpHistory(), entry: "history" }),
+  },
+  {
+    name: "card / expired: from history",
+    stage: { kind: "journey", route: "card", topUpId: "p11" },
+    apply: topUpList({ finished: previewTopUpHistory(), entry: "history" }),
+  },
+  {
     // No Start over here: the rail could not tell whether the buyer was charged, and a second
     // payment would risk charging them twice.
     name: "card / journey: unconfirmed",

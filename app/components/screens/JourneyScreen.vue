@@ -9,7 +9,7 @@ import { useFundingProgressClock } from "../../composables/useFundingProgressClo
 import type { FundingJourneyStatus } from "../../funding/handoff";
 import { projectFundingProgress, type FundingProgressProjection } from "../../funding/progress";
 import { effectiveSourceId } from "../../funding/requests/model";
-import type { JourneySteps } from "../../funding/requests/views";
+import { expiredFailure, type JourneySteps } from "../../funding/requests/views";
 import type { FundingTopUp } from "../../funding/top-ups";
 import { useRequestsStore } from "../../stores/requests";
 import { DEPOSIT_EXPIRED_REASON, useSessionStore } from "../../stores/session";
@@ -99,9 +99,10 @@ const completedSteps = computed(() =>
 
 /** The design names the expired step itself, not "<stage> failed". */
 const failedLabel = computed(() => {
-  const kind = failure.value?.kind;
-  if (kind === "expired" || kind === "stale") return "Expired";
+  if (expiredFailure(failure.value?.kind)) return "Expired";
   if (requests.fundingError === DEPOSIT_EXPIRED_REASON) return "Expired";
+  // Opened from history there is no live failure to read, so the record's own word stands in.
+  if (storedFailure.value?.expired === true) return "Expired";
   return null;
 });
 /** Nothing was paid on an expired top-up, so it carries no quote rows. */

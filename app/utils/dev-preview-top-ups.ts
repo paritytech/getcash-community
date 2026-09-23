@@ -114,6 +114,9 @@ interface PreviewCardOptions {
   endedMinutesAgo?: number;
   /** A failed top-up whose deposit went back to the buyer: "Refunded", not "Payment failed". */
   refunded?: boolean;
+  /** A top-up whose deposit window closed with nothing paid: "Expired" on the marker, and no
+   *  money rows — nobody was ever charged. */
+  expired?: boolean;
   /** What the rail quoted, for the journey's Fees and Total rows. */
   quote?: FundingTopUp["quote"];
   /** The fiat rails' receipt facts: the provider the request was opened with, and the funding
@@ -170,6 +173,7 @@ export function previewTopUp(
           kind: "failed",
           at: endedAt,
           reason: label,
+          ...(options.expired === true ? { expired: true } : {}),
           ...(options.refunded === true ? { refunded: true } : {}),
           ...(options.refundAmount ? { refundAmount: options.refundAmount } : {}),
           ...(options.refundTxRef ? { refundTxRef: options.refundTxRef } : {}),
@@ -244,6 +248,22 @@ export function previewTopUpHistory(): FundingTopUp[] {
       reference: "0f2c8d41-7b93-4e05-a1d6-84be3f7c0925",
       startedMinutesAgo: 9 * DAY,
       endedMinutesAgo: 9 * DAY - 5,
+    }),
+    // The two expired endings, as the record keeps them: the deposit window closed with nothing
+    // paid, so the journey says "Expired" and shows no money rows — card included, although its
+    // route would otherwise get the failure receipt.
+    previewTopUp("p10", "crypto", "failed", "Channel expired", {
+      amount: "60",
+      quote: { amount: "0.00054", symbol: "BTC" },
+      expired: true,
+      startedMinutesAgo: 5 * DAY,
+      endedMinutesAgo: 5 * DAY - 24 * 60,
+    }),
+    previewTopUp("p11", "card", "failed", "Channel expired", {
+      amount: "40",
+      expired: true,
+      startedMinutesAgo: 7 * DAY,
+      endedMinutesAgo: 7 * DAY - 24 * 60,
     }),
     previewTopUp("p6", "bank", "settled", "Added to your balance", {
       amount: "25",

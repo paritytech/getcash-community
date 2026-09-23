@@ -10,6 +10,9 @@ export type FundingTopUpState =
       kind: "failed";
       at?: number;
       reason?: string;
+      /** The deposit window closed with nothing paid, rather than a payment going wrong. A journey
+       *  opened from history has only the record to tell the two endings apart. */
+      expired?: boolean;
       refunded?: boolean;
       /** What came back and the transaction that returned it, for a refund with no live request
        *  left to ask. Absent on records written before either was kept. */
@@ -103,7 +106,12 @@ export type SettledFundingTopUp = FundingTopUpBase &
 
 export type FailedFundingTopUp = FundingTopUpBase &
   Readonly<{
-    state: { kind: "failed"; status: "Payment failed" | "Refunded"; at: number; reason?: string };
+    state: {
+      kind: "failed";
+      status: "Payment failed" | "Refunded" | "Expired";
+      at: number;
+      reason?: string;
+    };
   }>;
 
 export type PastFundingTopUp = SettledFundingTopUp | FailedFundingTopUp;
@@ -199,7 +207,13 @@ export function projectFundingTopUps(
           ...base,
           state: {
             kind: "failed",
-            status: topUp.state.refunded ? "Refunded" : "Payment failed",
+            // "Payment failed" claims a payment existed and went wrong; an expiry means nobody
+            // ever paid, and the row must not contradict the journey it opens.
+            status: topUp.state.expired
+              ? "Expired"
+              : topUp.state.refunded
+                ? "Refunded"
+                : "Payment failed",
             at: topUp.state.at ?? topUp.startedAt,
             ...(topUp.state.reason === undefined ? {} : { reason: topUp.state.reason }),
           },
