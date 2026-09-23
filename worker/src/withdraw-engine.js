@@ -1,5 +1,6 @@
 import { CASH_LOCATION } from "@getsome/people";
 import {
+  ChannelExpiredError,
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
   DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
   freshRailLegState,
@@ -60,7 +61,8 @@ const saveJobs = () => store.save();
  *   assetHubGenesis, peopleGenesis, peopleParaId, assetHubParaId, poolAccount, slippagePct,
  *   paymentExpiresAt: number|null,
  *   phase: "starting" | WithdrawStep | RailStep | "failed",
- *   failure?: "rejected" | "timeout" | "expired" | "cancelled" | "no-rail" | "rail-failed",
+ *   failure?: "rejected" | "timeout" | "expired" | "cancelled" | "no-rail" | "rail-failed"
+ *            | "channel-expired",
  *   landed,                                  // the message leg is done: PAS on Asset Hub
  *   done, createdAt, armedAt, lastTickAt, lastError?,
  *   state: { attempts, rejections, submitted, destinationPasBefore, expectedLanding,
@@ -177,14 +179,25 @@ function channelOf(channel) {
   };
 }
 
-/** A fresh rail leg, seeded with the hand-off's channel when it carries one. */
+/** A fresh rail leg, seeded with the hand-off's channel when it carries one. The expiry rides
+ *  along: the leg refuses to pay a channel the provider has closed. */
 function legFor(input, nowMs) {
   const leg = freshRailLegState();
   if (isChannel(input.channel)) {
-    const { id, address, openedAt } = channelOf(input.channel);
-    leg.handoff = { id, address, openedAt: openedAt || nowMs };
+    const { id, address, openedAt, expiresAt } = channelOf(input.channel);
+    leg.handoff = { id, address, openedAt: openedAt || nowMs, expiresAt };
   }
   return leg;
+}
+
+/** The channel this job's rail leg pays. The expiry is taken from the record's own channel when
+ *  the leg does not carry one, so a job stored before the leg kept it is still held to it. */
+function handoffOf(record) {
+  const handoff = record.leg?.handoff ?? null;
+  if (handoff === null) return null;
+  if (typeof handoff.expiresAt === "number") return handoff;
+  const expiresAt = Number(record.channel?.expiresAt);
+  return { ...handoff, expiresAt: Number.isFinite(expiresAt) && expiresAt > 0 ? expiresAt : 0 };
 }
 
 const freshRecordState = () => ({ ...freshWithdrawTickState(), workedMs: 0 });
@@ -382,7 +395,7 @@ async function tickRailLeg(record) {
     return;
   }
   const state = {
-    handoff: record.leg?.handoff ?? null,
+    handoff: handoffOf(record),
     paid: record.leg?.paid === true,
     sweep: record.leg?.sweep ?? freshSweepState(),
     reading: record.leg?.reading ?? null,
@@ -422,6 +435,11 @@ async function tickRailLeg(record) {
     persistLeg();
     if (error instanceof RailFailedError) {
       fail(record, "rail-failed", error.message);
+      return;
+    }
+    // Nothing moved: the native is still on the key and a fresh channel can carry it.
+    if (error instanceof ChannelExpiredError) {
+      fail(record, "channel-expired", error.message);
       return;
     }
     throw error;

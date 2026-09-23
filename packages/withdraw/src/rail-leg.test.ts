@@ -3,7 +3,10 @@
 
 import { describe, expect, it } from "vitest";
 import type { SwapStatusResult } from "@getsome/core";
+import { DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS, DEFAULT_WITHDRAW_TICK_TIMEOUT_MS } from "./tick";
 import {
+  CHANNEL_EXPIRY_MARGIN_MS,
+  ChannelExpiredError,
   freshRailLegState,
   RailFailedError,
   railTickOnce,
@@ -14,7 +17,16 @@ import {
   type RailLegState,
 } from "./rail-leg";
 
-const CHANNEL: RailHandoff = { id: "ch-1", address: "5Channel", openedAt: 1_700_000_000_000 };
+const OPENED = 1_700_000_000_000;
+const DAY = 86_400_000;
+const CHANNEL: RailHandoff = {
+  id: "ch-1",
+  address: "5Channel",
+  openedAt: OPENED,
+  expiresAt: OPENED + DAY,
+};
+/** A moment the channel is comfortably open. */
+const NOW = OPENED + 60_000;
 
 const reading = (status: SwapStatusResult["status"], extra: Partial<SwapStatusResult> = {}) =>
   ({ status, ...extra }) as SwapStatusResult;
@@ -44,6 +56,7 @@ function world(rail: RailClient, overrides: Partial<RailLegInput> = {}) {
     },
     tickTimeoutMs: 1_000,
     payTimeoutMs: 1_000,
+    now: () => NOW,
     onBeforePay: (handoff) => {
       persisted.push(handoff);
     },
@@ -122,5 +135,62 @@ describe("the provider leg", () => {
     const state = seeded();
     state.paid = true;
     await expect(railTickOnce(input, state)).rejects.toThrow(/timed out/);
+  });
+
+  it("refuses to pay a channel at or past its expiry, and moves nothing", async () => {
+    const provider = scripted([]);
+    // Inside the margin: what lands might not be witnessed before the channel closes.
+    const closing = world(provider.rail, {
+      now: () => CHANNEL.expiresAt - CHANNEL_EXPIRY_MARGIN_MS,
+    });
+    const state = seeded();
+    await expect(railTickOnce(closing.input, state)).rejects.toBeInstanceOf(ChannelExpiredError);
+    expect(closing.paid).toEqual([]);
+    expect(closing.persisted).toEqual([]);
+    expect(state.paid).toBe(false);
+
+    const past = world(provider.rail, { now: () => CHANNEL.expiresAt + 1 });
+    await expect(railTickOnce(past.input, seeded())).rejects.toBeInstanceOf(ChannelExpiredError);
+    expect(past.paid).toEqual([]);
+  });
+
+  it("pays a channel still short of the margin, and never re-checks once paid", async () => {
+    const provider = scripted([reading("swapping")]);
+    const { input, paid } = world(provider.rail, {
+      now: () => CHANNEL.expiresAt - CHANNEL_EXPIRY_MARGIN_MS - 1,
+    });
+    const state = seeded();
+    expect((await railTickOnce(input, state)).step).toBe("handoff");
+    expect(paid).toHaveLength(1);
+
+    // A channel that expires while the swap runs is the provider's business, not ours: the
+    // deposit is already in and the leg must keep following it.
+    const later = world(provider.rail, { now: () => CHANNEL.expiresAt + DAY });
+    expect((await railTickOnce(later.input, state)).step).toBe("follow");
+  });
+
+  it("takes a channel that named no expiry as open", async () => {
+    const provider = scripted([]);
+    const { input, paid } = world(provider.rail, { now: () => OPENED + 10 * DAY });
+    const state: RailLegState = { ...freshRailLegState(), handoff: { ...CHANNEL, expiresAt: 0 } };
+    await railTickOnce(input, state);
+    expect(paid).toHaveLength(1);
+  });
+
+  it("leaves the payment room to be submitted, included and witnessed", () => {
+    // The margin has to outlast this leg's own bounds, or a payment that starts inside it is
+    // still in flight when the channel closes.
+    expect(CHANNEL_EXPIRY_MARGIN_MS).toBeGreaterThan(
+      DEFAULT_WITHDRAW_TICK_TIMEOUT_MS + DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
+    );
+  });
+
+  it("says when the channel closes without ever throwing on a nonsense time", () => {
+    const sane = new ChannelExpiredError(CHANNEL, NOW);
+    expect(sane.message).toContain(new Date(CHANNEL.expiresAt).toISOString());
+    // Beyond what Date can represent: the message falls back to the raw milliseconds rather
+    // than throwing, which the driver would otherwise retry forever as a transient error.
+    const absurd = new ChannelExpiredError({ ...CHANNEL, expiresAt: 1e20 }, NOW);
+    expect(absurd.message).toContain(`${1e20}ms`);
   });
 });

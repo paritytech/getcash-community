@@ -36,6 +36,8 @@ export type {
 } from "./tick";
 export { readDestinationPas } from "./destination";
 export {
+  CHANNEL_EXPIRY_MARGIN_MS,
+  ChannelExpiredError,
   describeFailure,
   freshRailLegState,
   RailFailedError,

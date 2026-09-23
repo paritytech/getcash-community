@@ -222,6 +222,15 @@ function applyWorker(
         });
       case "expired":
         return rank === 0 && !paymentTaken(next) ? expired(next, at) : next;
+      case "channel-expired":
+        // The provider closed the channel before the key paid it, so nothing moved. A retry
+        // opens a fresh one for what is still sitting on the key.
+        return failed(next, at, {
+          kind: "channel-expired",
+          step: "send",
+          message: job.lastError ?? "the provider closed the channel before it was paid",
+          recoverable: true,
+        });
       case "no-rail":
         // Nothing in this build can carry the PAS on; the provider's reading, when there is
         // one, already spoke above.

@@ -22,6 +22,7 @@
 import type { SwapStatusResult } from "@getsome/core";
 import { bounded } from "./bounded";
 import { freshSweepState, type SweepState } from "./sweep";
+import { DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS, DEFAULT_WITHDRAW_TICK_TIMEOUT_MS } from "./tick";
 
 /** 'handoff' pays the channel; 'follow' holds while the provider works. */
 export type RailStep = "handoff" | "follow" | "done";
@@ -32,7 +33,21 @@ export interface RailHandoff {
   /** The Asset Hub account the key pays. */
   address: string;
   openedAt: number;
+  /** When the provider closes the channel (ms); 0 when it named none. */
+  expiresAt: number;
 }
+
+/**
+ * How close to a channel's expiry the key may still pay it. The payment has to be read, submitted,
+ * included and then witnessed by the provider before the channel closes, and a deposit into a
+ * closed one is neither swapped nor refunded. So the margin covers this leg's own bounds and
+ * leaves the provider time to see the transfer.
+ *
+ * Erring long is cheap: refusing early costs a retry on a fresh channel, with nothing moved.
+ * Erring short costs the whole withdrawal.
+ */
+export const CHANNEL_EXPIRY_MARGIN_MS =
+  DEFAULT_WITHDRAW_TICK_TIMEOUT_MS + DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS + 600_000;
 
 /** Cross-tick memory for the leg. The driver persists it; `railTickOnce` mutates it. */
 export interface RailLegState {
@@ -67,6 +82,8 @@ export interface RailLegInput {
   tickTimeoutMs: number;
   /** Bound on the payment's resolution. */
   payTimeoutMs: number;
+  /** Read once per tick, to judge the channel against its expiry. */
+  now: () => number;
   /** Runs before the payment leaves, so the driver can persist what it is about to pay. */
   onBeforePay?: (handoff: RailHandoff) => Promise<void> | void;
 }
@@ -74,6 +91,23 @@ export interface RailLegInput {
 export interface RailLegOutcome {
   step: RailStep;
   reading: SwapStatusResult | null;
+}
+
+/**
+ * The channel is at or past its expiry, so the key must not pay it: the provider does not witness
+ * a deposit into a closed channel, and what lands there is neither swapped nor refunded. Terminal
+ * for this channel, and recoverable through a fresh one, since nothing has moved.
+ */
+export class ChannelExpiredError extends Error {
+  constructor(
+    readonly handoff: RailHandoff,
+    readonly nowMs: number,
+  ) {
+    super(
+      `the provider's channel ${handoff.id} closes at ${stamp(handoff.expiresAt)}, too soon to pay it at ${stamp(nowMs)}`,
+    );
+    this.name = "ChannelExpiredError";
+  }
 }
 
 /** The provider reported an ending that is not a delivery. Terminal for this channel. */
@@ -92,6 +126,13 @@ export function describeFailure(reading: SwapStatusResult): string {
   return "the deposit is being refunded";
 }
 
+/** An ms instant for a message. Never throws: a nonsense time must not turn a refusal to pay
+ *  into an error the driver reads as transient and retries forever. */
+function stamp(ms: number): string {
+  const at = new Date(ms);
+  return Number.isNaN(at.getTime()) ? `${ms}ms` : at.toISOString();
+}
+
 export const readingFailed = (reading: SwapStatusResult): boolean =>
   reading.status === "failed" ||
   reading.depositFailure !== undefined ||
@@ -108,6 +149,13 @@ export async function railTickOnce(
 ): Promise<RailLegOutcome> {
   if (state.handoff === null) throw new Error("the rail leg has no channel to pay");
   if (!state.paid) {
+    // Checked before the money moves, not on the way in: every path here pays the same way, and a
+    // channel can go stale between the hand-off and the tick that acts on it.
+    const { expiresAt } = state.handoff;
+    const nowMs = input.now();
+    if (expiresAt > 0 && nowMs >= expiresAt - CHANNEL_EXPIRY_MARGIN_MS) {
+      throw new ChannelExpiredError(state.handoff, nowMs);
+    }
     await input.onBeforePay?.(state.handoff);
     await bounded(input.pay(state.handoff, state.sweep), input.payTimeoutMs, "channel payment");
     state.paid = true;

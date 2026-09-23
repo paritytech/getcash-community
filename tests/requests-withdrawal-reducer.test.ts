@@ -346,6 +346,34 @@ describe("withdrawal: the worker", () => {
     expect(run(stuck, { source: "user", at: at(5), event: "retry" })).toBe(stuck);
   });
 
+  it("fails a withdrawal whose channel closed before it was paid, retryably", () => {
+    const seen = at(1);
+    const stale = run(
+      railed(),
+      worker(
+        at(3),
+        job({
+          phase: "failed",
+          failure: "channel-expired",
+          landed: true,
+          fundsSeenAt: seen,
+          lastError: "the provider's channel ch-1 expired",
+        }),
+      ),
+    );
+    expect(stale.status).toEqual({ kind: "failed", at: at(3), recoverable: true });
+    expect(stale.failure).toMatchObject({
+      kind: "channel-expired",
+      step: "send",
+      message: "the provider's channel ch-1 expired",
+    });
+
+    // The retry path is the rail leg's: a fresh channel, for what still sits on the key.
+    const again = run(stale, { source: "user", at: at(4), event: "retry" });
+    expect(again.status).toEqual({ kind: "sending", at: at(4) });
+    expect(again.rail).toEqual({ provider: "chainflip", stage: "waiting", updatedAt: at(4) });
+  });
+
   it("fails the rail leg plainly when the build has no provider for it", () => {
     const seen = at(1);
     const none = run(
