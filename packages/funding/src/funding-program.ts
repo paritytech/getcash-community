@@ -7,15 +7,27 @@
 // minus the dispatch fee.
 //
 // The PSM tier has a second shape (`buildPsmFundingProgram`): the CASH a Psm.mint has just paid
-// onto the burner is withdrawn, the XCM's own fees are paid in that CASH, and the rest is
-// teleported. No exchange, since the mint did the conversion. It runs after the mint inside a
+// onto the burner is withdrawn whole and teleported, the XCM's own fees are paid in the external
+// (USDT) the mint left on the burner for them, and what the fees did not spend is deposited back
+// there. No exchange, since the mint did the conversion. It runs after the mint inside a
 // Utility.batch_all (psm-batch.ts), and the dry run below runs the whole batch.
 //
-// Every fee allowance is exact. The unspent part of a PayFees allowance is not returned to the
-// burner, and a dispatch fee refund would land on an account already emptied below the existential
-// deposit, so both are sized to what the runtime charges: local execution from the weighed message,
-// delivery from the forwarded program, dispatch from the declared weight. A fee that moves between
-// the estimate and inclusion fails the program, and the next tick re-prices and retries.
+// On the pool tier every fee allowance is exact. The unspent part of a PayFees allowance is not
+// returned to the burner, and a dispatch fee refund would land on an account already emptied below
+// the existential deposit, so both are sized to what the runtime charges: local execution from the
+// weighed message, delivery from the forwarded program, dispatch from the declared weight. A fee
+// that moves between the estimate and inclusion fails the program, and the next tick re-prices and
+// retries.
+//
+// The PSM tier's PayFees allowance carries FEE_MARGIN_BPS over the estimate instead, because the
+// estimate is structurally short: the runtime quotes execution and delivery against the pool as it
+// stands, while the program's execution swap moves that pool before the delivery swap is priced.
+// Measured live against the shallow Paseo pool, the delivery quote came in 0.6% under the charge
+// (76,204 quoted, 76,665 charged in CASH; 28,857 against 29,032 in USDT) and the exact allowance
+// failed the transfer with NotHoldingFees. The program ends with RefundSurplus and a DepositAsset
+// to the burner, since whatever is left in the holding when a program ends is trapped, and the dry
+// run refuses a program that would trap. Paying the fees in the external rather than in the minted
+// CASH keeps the mint at exactly the buyer's target, so no fee misestimate can land it short.
 //
 // The destination fee allowance is generous by design: the remote RefundSurplus returns what it
 // does not consume and the DepositAsset sweeps it to the burner.
@@ -24,7 +36,7 @@
 // burner, People runs the program Asset Hub forwards. A program that would fail on either chain,
 // trap assets, or land short of the target is reported instead of submitted.
 
-import { TOKENS } from "@getsome/core";
+import { TOKENS, type XcmJunction, type XcmLocation } from "@getsome/core";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import type { TypedApi } from "polkadot-api";
 import { describeDispatchError } from "./dispatch-error";
@@ -43,7 +55,62 @@ const NATIVE_HERE = { parents: 1, interior: { type: "Here" } };
  *  weight. */
 export const FUNDING_PROGRAM_MAX_WEIGHT = { ref_time: 8_000_000_000n, proof_size: 400_000n };
 
+/** Headroom over a measured fee before it is carried as an allowance, in basis points. About
+ *  17 times the 0.6% by which the delivery quote under-reports the charge (see the header), so it
+ *  also absorbs the pool moving between the estimate and inclusion, and small enough that the
+ *  refund it produces is dust. Applied to the PSM program's PayFees and to the destination fee. */
+export const FEE_MARGIN_BPS = 1_000n;
+
+/** `fee` plus FEE_MARGIN_BPS of it, rounded up, so a one-unit fee still gains a unit. */
+export function withFeeMargin(fee: bigint): bigint {
+  return fee + (fee * FEE_MARGIN_BPS + 9_999n) / 10_000n;
+}
+
 const native = (v: bigint) => ({ id: NATIVE_HERE, fun: { type: "Fungible", value: v } });
+
+const fungible = (id: XcmLocation, v: bigint) => ({ id, fun: { type: "Fungible", value: v } });
+
+/** XCM v5's Junction variants in declaration order, which is what the runtime's `Ord` compares
+ *  before the value. */
+const JUNCTION_ORDER = [
+  "Parachain",
+  "AccountId32",
+  "AccountIndex64",
+  "AccountKey20",
+  "PalletInstance",
+  "GeneralIndex",
+  "GeneralKey",
+  "OnlyChild",
+  "Plurality",
+  "GlobalConsensus",
+];
+
+const junctionsOf = (location: XcmLocation): XcmJunction[] =>
+  location.interior.type === "Here" ? [] : location.interior.value;
+
+/** `Location`'s `Ord`: parents, then the interior's arity (its variant), then each junction by
+ *  variant and value. */
+function compareLocations(a: XcmLocation, b: XcmLocation): number {
+  if (a.parents !== b.parents) return a.parents - b.parents;
+  const ja = junctionsOf(a);
+  const jb = junctionsOf(b);
+  if (ja.length !== jb.length) return ja.length - jb.length;
+  for (let i = 0; i < ja.length; i += 1) {
+    const x = ja[i]!;
+    const y = jb[i]!;
+    if (x.type !== y.type) return JUNCTION_ORDER.indexOf(x.type) - JUNCTION_ORDER.indexOf(y.type);
+    const vx = BigInt(x.value);
+    const vy = BigInt(y.value);
+    if (vx !== vy) return vx < vy ? -1 : 1;
+  }
+  return 0;
+}
+
+/** An XCM `Assets` list in the order the runtime's codec insists on: sorted by id. An unsorted
+ *  list fails to decode and the whole call with it. */
+export function sortedAssets<A extends { id: XcmLocation }>(assets: A[]): A[] {
+  return [...assets].sort((a, b) => compareLocations(a.id, b.id));
+}
 
 const cash = (pool: Pool, v: bigint) => ({
   id: pool.underlying,
@@ -121,12 +188,24 @@ export function buildFundingProgram(args: {
 }
 
 /** The PSM tier's program: the CASH the mint before it in the batch paid onto the burner in, the
- *  same CASH landed on the burner's People address, every Asset Hub fee paid in CASH. */
+ *  same CASH landed on the burner's People address, every Asset Hub fee paid in the external the
+ *  mint left on the burner, and the unspent part of that allowance back on the burner.
+ *
+ *  The refund comes AFTER the transfer: delivery is charged from the fees register inside
+ *  InitiateTransfer, and a RefundSurplus before it would empty that register and leave delivery
+ *  to be taken from a holding the transfer has already teleported. When the transfer runs the
+ *  external sits in the fees register and the holding is CASH alone, so the teleport's
+ *  `AllCounted(1)` is unambiguous; after RefundSurplus the holding is the external alone, so the
+ *  refund's is too. It counts one asset rather than `Wild(All)`, which is weighed as
+ *  MaxAssetsIntoHolding deposits and costs twenty times the fee. The refund lands in an account the
+ *  batch keeps alive (psm-batch.ts), and a deposit into a live account has no minimum. Should the
+ *  transfer fail, nothing after it runs and batch_all reverts the mint. */
 export function buildPsmFundingProgram(args: {
   /** CASH withdrawn into the holding: what the mint paid out. */
   withdrawCash: bigint;
-  /** Local execution plus delivery, in CASH. */
-  payFeesCash: bigint;
+  /** The allowance for local execution plus delivery, in the external the burner holds, with
+   *  FEE_MARGIN_BPS on top. Withdrawn beside the CASH and moved whole to the fees register. */
+  localFees: { id: XcmLocation; amount: bigint };
   /** Destination fee allowance in CASH. */
   remoteFeesCash: bigint;
   beneficiaryHex: string;
@@ -134,13 +213,22 @@ export function buildPsmFundingProgram(args: {
   /** The declared weight ceiling. Defaults to FUNDING_PROGRAM_MAX_WEIGHT. */
   maxWeight?: { ref_time: bigint; proof_size: bigint };
 }): ExecuteArgs {
-  const c = (v: bigint) => ({ id: TOKENS.CASH.location, fun: { type: "Fungible", value: v } });
+  const c = (v: bigint) => fungible(TOKENS.CASH.location, v);
+  const fees = fungible(args.localFees.id, args.localFees.amount);
   const message = {
     type: "V5",
     value: [
-      { type: "WithdrawAsset", value: [c(args.withdrawCash)] },
-      { type: "PayFees", value: { asset: c(args.payFeesCash) } },
+      { type: "WithdrawAsset", value: sortedAssets([fees, c(args.withdrawCash)]) },
+      { type: "PayFees", value: { asset: fees } },
       teleportHoldingToPeople(c(args.remoteFeesCash), args.beneficiaryHex, args.peopleParaId),
+      { type: "RefundSurplus" },
+      {
+        type: "DepositAsset",
+        value: {
+          assets: { type: "Wild", value: { type: "AllCounted", value: 1 } },
+          beneficiary: accountBeneficiary(args.beneficiaryHex),
+        },
+      },
     ],
   };
   return {
@@ -149,7 +237,7 @@ export function buildPsmFundingProgram(args: {
   } as unknown as ExecuteArgs;
 }
 
-/** The InitiateTransfer both shapes end with: everything in the holding teleported to People,
+/** The InitiateTransfer both shapes carry: everything in the holding teleported to People,
  *  `remoteFees` earmarked for the destination's execution. */
 function teleportHoldingToPeople(
   remoteFees: unknown,
@@ -437,11 +525,11 @@ function underlyingOnPeople(pool: Pool, assetHubParaId: number): AssetLocation {
   return { parents: 1, interior: { type: `X${all.length}`, value } } as unknown as AssetLocation;
 }
 
-/** The destination's execution fee for the forwarded program, in the underlying. People runs the
- *  program in a dry run as if Asset Hub had sent it, and the fee is whatever the teleported amount
- *  loses before it reaches the beneficiary. People cannot price a weight in the underlying
- *  directly, so this reads the charge its fee logic actually makes. Throws when the dry run does
- *  not complete. */
+/** The destination's execution fee for the forwarded program, in the underlying, with
+ *  FEE_MARGIN_BPS on top so it is never a bare measurement. People runs the program in a dry run
+ *  as if Asset Hub had sent it, and the fee is whatever the teleported amount loses before it
+ *  reaches the beneficiary. People cannot price a weight in the underlying directly, so this reads
+ *  the charge its fee logic actually makes. Throws when the dry run does not complete. */
 export async function estimateDestinationFeeCash(args: {
   peopleApi: PeopleApi;
   pool: Pool;
@@ -464,7 +552,7 @@ export async function estimateDestinationFeeCash(args: {
     throw new Error("destination fee estimate: nothing reached the beneficiary in the dry run");
   }
   // The stand-in teleports the amount twice and deposits what is left to the beneficiary.
-  return 2n * args.amount - run.landed;
+  return withFeeMargin(2n * args.amount - run.landed);
 }
 
 /** The fungible amount out of a VersionedAssets delivery-fee result (its single entry). */

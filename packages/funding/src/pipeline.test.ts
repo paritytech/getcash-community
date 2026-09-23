@@ -7,7 +7,7 @@ import { AccountId, type PolkadotClient } from "polkadot-api";
 import { describe, expect, it } from "vitest";
 import { describeDispatchError } from "./dispatch-error";
 import { createManualRail } from "./manual-rail";
-import { destinationEarmark, estimateDestinationFeeCash } from "./funding-program";
+import { destinationEarmark, estimateDestinationFeeCash, withFeeMargin } from "./funding-program";
 import {
   decideStep,
   DEFAULT_SLIPPAGE_PCT,
@@ -39,7 +39,7 @@ const ASK = (QUOTED * BigInt(10_000 + DEFAULT_SLIPPAGE_PCT * 100)) / 10_000n;
 const DISPATCH = 1_000n; // the execute() dispatch fee, native
 const LOCAL_FEE = 100n; // query_weight_to_asset_fee for the measured weight
 const DELIVERY = 0n; // query_delivery_fees
-const PAYFEES = LOCAL_FEE + DELIVERY; // the earmark is exact
+const PAYFEES = LOCAL_FEE + DELIVERY; // the pool tier's allowance is exact
 /** Native the funding program spends on itself. */
 const OVERHEAD = DISPATCH + PAYFEES;
 /** The sizing's fee native: what a live estimate reports, exactly the funding program's own costs.
@@ -57,9 +57,19 @@ const POOL: ConversionRoute = { tier: "pool" };
 const ROUTE: PsmRoute = { tier: "psm", external: "USDT", feeRate: 5_000 };
 /** The batch's dispatch fee as ChargeAssetTxPayment charges it: the pool's USDT price for DISPATCH. */
 const DISPATCH_USDT = 7_000n;
-/** The USDT the tier needs on the burner: the mint that pays out the target AND the XCM's own fees,
- *  which come out of the minted CASH, plus the dispatch fee. */
-const PSM_DEPOSIT = sizePsmMint(BUY + PAYFEES, ROUTE).externalIn + DISPATCH_USDT;
+/** The scripted runtime's answers for the PSM program's own fees, in USDT. */
+const LOCAL_USDT = 90n;
+const DELIVERY_USDT = 10n;
+const FEES_USDT = LOCAL_USDT + DELIVERY_USDT;
+/** The PSM tier's fee allowance: the measured fees and the margin the program refunds. */
+const ALLOWANCE = withFeeMargin(FEES_USDT);
+/** USDt's min_balance as the scripted chain has it; the burner keeps this much through the batch. */
+const MIN_BALANCE = 70_000n;
+/** Kept out of the mint beside the dispatch fee: the min_balance and the fee allowance. */
+const HELD_BACK = MIN_BALANCE + ALLOWANCE;
+/** The USDT the tier needs on the burner: the mint that pays out exactly the target, plus the
+ *  dispatch fee and what stays out of the mint. */
+const PSM_DEPOSIT = sizePsmMint(BUY, ROUTE).externalIn + DISPATCH_USDT + HELD_BACK;
 
 /** The burner on People, as the program names it and as People's events show it. */
 const BENEFICIARY = new Uint8Array(32).fill(7);
@@ -97,7 +107,7 @@ describe("decideStep", () => {
 });
 
 type Instruction = { type: string; value: never };
-type Fungible = { fun: { value: bigint } };
+type Fungible = { id?: unknown; fun: { value: bigint } };
 type ExecuteArgs = { message: { value: Instruction[] }; max_weight: unknown };
 
 const instruction = (args: ExecuteArgs, type: string) =>
@@ -405,10 +415,19 @@ type Call = { type: string; value: { type: string; value: unknown } };
 type MintArgs = { external_amount: bigint; max_fee: number };
 type PsmRefusal = "MintingStopped" | "AllSwapsStopped" | "ExceedsMaxPsmDebt";
 
+/** The pallet-assets id a location in the table names. */
+const generalIndex = (id: unknown) =>
+  (id as { interior: { value: Array<{ value: unknown }> } }).interior.value[1]!.value;
+const isCash = (a: Fungible) => generalIndex(a.id) === BigInt(TOKENS.CASH.assetHubId);
+const isUsdt = (a: Fungible) => generalIndex(a.id) === BigInt(TOKENS.USDT.assetHubId);
+
 /** Scripted Asset Hub + People for the PSM tier. The burner holds USDT and nothing else: a read of
  *  its native, of the pool's keys or an exact-in quote throws, so a tick that touches the pool
  *  tier's reads fails the test. The default destination fee is the buffer exactly, so what lands
- *  is exactly what the mint was sized for. */
+ *  is exactly what the mint was sized for. The program's fees charge exactly the measured figures
+ *  in USDT and the rest of the allowance comes back to the burner. pallet-assets is modelled where
+ *  it bites: an account left below min_balance by the mint or by the withdrawal is reaped, and the
+ *  program then fails to withdraw or to deposit. */
 function scriptedPsmWorld(
   opts: {
     remoteFee?: bigint;
@@ -452,19 +471,35 @@ function scriptedPsmWorld(
       forwarded_xcms: [],
     },
   });
-  // The batch as the runtime runs it: the mint pays out the external minus the PSM's fee, and the
-  // program withdraws from that, pays its fees in CASH and teleports the rest.
+  // The batch as the runtime runs it: the mint pays out the external minus the PSM's fee and
+  // leaves the rest of the USDT on the burner; the program withdraws the minted CASH and the fee
+  // allowance in USDT, moves the allowance to the fees register, teleports the CASH and deposits
+  // what the fees did not spend back on the burner.
   const run = (mint: MintArgs, args: ExecuteArgs, atDryRun: boolean) => {
     if (state.refuse && !(atDryRun && opts.refuseAtInclusion)) {
       return { error: psmError(state.refuse) };
     }
     if (mint.external_amount > state.usdtAh) return { error: balanceLow };
-    const withdrawn = (instruction(args, "WithdrawAsset") as Fungible[])[0]!.fun.value;
-    if (withdrawn > psmMintOut(mint.external_amount, ROUTE.feeRate)) {
+    let usdt = state.usdtAh - mint.external_amount;
+    // A mint that leaves the account below min_balance reaps it and sweeps the remainder: there is
+    // no USDT left for the program to withdraw.
+    if (usdt < MIN_BALANCE) return { error: incomplete(0, "FailedToTransactAsset") };
+    const withdrawn = instruction(args, "WithdrawAsset") as Fungible[];
+    const withdrawnCash = withdrawn.find(isCash)?.fun.value ?? 0n;
+    const withdrawnUsdt = withdrawn.find(isUsdt)?.fun.value ?? 0n;
+    if (withdrawnCash > psmMintOut(mint.external_amount, ROUTE.feeRate) || withdrawnUsdt > usdt) {
       return { error: incomplete(0, "FailedToTransactAsset") };
     }
-    const payFees = (instruction(args, "PayFees") as { asset: Fungible }).asset.fun.value;
-    return { teleported: withdrawn - payFees };
+    usdt -= withdrawnUsdt;
+    // A withdrawal that leaves the account below min_balance reaps it too, and the refund then has
+    // no live account to land in.
+    if (usdt < MIN_BALANCE) return { error: incomplete(4, "FailedToTransactAsset") };
+    const payFees = (instruction(args, "PayFees") as { asset: Fungible }).asset;
+    if (!isUsdt(payFees) || payFees.fun.value > withdrawnUsdt) {
+      return { error: incomplete(1, "NotHoldingFees") };
+    }
+    if (payFees.fun.value < FEES_USDT) return { error: incomplete(2, "NotHoldingFees") };
+    return { teleported: withdrawnCash, usdtLeft: usdt + payFees.fun.value - FEES_USDT };
   };
   const dryRunCall = (call: Call) => {
     if (state.transportDown) throw new Error("connection dropped");
@@ -493,7 +528,7 @@ function scriptedPsmWorld(
         state.usdtAh -= DISPATCH_USDT;
         const outcome = run(mint, args, false);
         if ("error" in outcome) return { ok: false, txHash, dispatchError: outcome.error };
-        state.usdtAh -= mint.external_amount;
+        state.usdtAh = outcome.usdtLeft;
         state.inFlight = outcome.teleported - remoteFee;
         state.arrivalIn = opts.arrivalAfterReads ?? 3;
         return { ok: true, txHash };
@@ -517,6 +552,13 @@ function scriptedPsmWorld(
         },
       },
       Assets: {
+        Asset: {
+          getValue: async (assetId: number) => {
+            if (state.transportDown) throw new Error("connection dropped");
+            expect(assetId).toBe(TOKENS.USDT.assetHubId);
+            return { min_balance: MIN_BALANCE };
+          },
+        },
         Account: {
           getValue: async (assetId: number) => {
             if (state.transportDown) throw new Error("connection dropped");
@@ -539,7 +581,21 @@ function scriptedPsmWorld(
         },
       },
       DryRunApi: { dry_run_call: async (_origin: unknown, call: Call) => dryRunCall(call) },
-      XcmPaymentApi: xcmPaymentApi,
+      // The program's own fees, priced in USDT and nothing else.
+      XcmPaymentApi: {
+        query_xcm_weight: xcmPaymentApi.query_xcm_weight,
+        query_weight_to_asset_fee: async (_weight: unknown, asset: unknown) => {
+          expect(asset).toEqual({ type: "V5", value: TOKENS.USDT.location });
+          return { success: true, value: LOCAL_USDT };
+        },
+        query_delivery_fees: async (_dest: unknown, _message: unknown, asset: unknown) => {
+          expect(asset).toEqual({ type: "V5", value: TOKENS.USDT.location });
+          return {
+            success: true,
+            value: { value: [{ fun: { type: "Fungible", value: DELIVERY_USDT } }] },
+          };
+        },
+      },
     },
     tx: {
       Psm: {
@@ -798,34 +854,44 @@ describe("tickOnce on the PSM tier", () => {
     expect(run.steps).toEqual(["swap", "await-arrival", "done"]);
     expect(run.txs).toEqual(["swap"]);
     expect(run.state).toMatchObject({ attempts: 1, xcmSubmitted: true, psmRefusals: 0 });
-    // The destination fee took the buffer exactly, so exactly the target landed, and nothing is
-    // left on the burner.
+    // The destination fee took the buffer exactly, so exactly the target landed. The burner keeps
+    // USDt's min_balance, which kept its account alive through the batch, plus the unspent tenth
+    // of the fee allowance the program deposited back.
     expect(world.state.underlyingPeople).toBe(SETTLE);
-    expect(world.state.usdtAh).toBe(0n);
+    expect(world.state.usdtAh).toBe(MIN_BALANCE + ALLOWANCE - FEES_USDT);
 
     const [tx] = world.state.txs;
-    // The mint takes everything the dispatch fee leaves, at the route's fee verbatim.
-    expect(tx!.mint.external_amount).toBe(PSM_DEPOSIT - DISPATCH_USDT);
+    // The mint takes everything the dispatch fee and the held-back USDT leave, at the route's fee
+    // verbatim, and pays out exactly the target.
+    expect(tx!.mint.external_amount).toBe(PSM_DEPOSIT - DISPATCH_USDT - HELD_BACK);
+    expect(psmMintOut(tx!.mint.external_amount, ROUTE.feeRate)).toBe(BUY);
     expect(tx!.mint.max_fee).toBe(ROUTE.feeRate);
-    // The program withdraws what the mint paid out, the target plus its own fees, pays those in
-    // CASH, and exchanges nothing.
-    expect((instruction(tx!.args, "WithdrawAsset") as Fungible[])[0]!.fun.value).toBe(
-      BUY + PAYFEES,
-    );
-    expect((instruction(tx!.args, "PayFees") as { asset: Fungible }).asset.fun.value).toBe(PAYFEES);
+    // The program withdraws what the mint paid out and the fee allowance in USDT, pays the fees
+    // from that allowance, exchanges nothing, and ends by refunding the surplus.
+    const withdrawn = instruction(tx!.args, "WithdrawAsset") as Fungible[];
+    expect(withdrawn.find(isCash)!.fun.value).toBe(BUY);
+    expect(withdrawn.find(isUsdt)!.fun.value).toBe(ALLOWANCE);
+    const payFees = (instruction(tx!.args, "PayFees") as { asset: Fungible }).asset;
+    expect(isUsdt(payFees)).toBe(true);
+    expect(payFees.fun.value).toBe(ALLOWANCE);
     expect(instruction(tx!.args, "ExchangeAsset")).toBeUndefined();
+    expect(tx!.args.message.value.slice(-2).map((i) => i.type)).toEqual([
+      "RefundSurplus",
+      "DepositAsset",
+    ]);
     expect(transferOf(tx!.args).remote_fees.value.value[0]!.fun.value).toBe(EARMARK);
     expect(tx!.args.max_weight).toEqual({ ref_time: 1_000_000n, proof_size: 1_000n });
     // The dispatch fee is charged in USDT, with the tick's anchor.
     expect(tx!.options).toEqual({ asset: TOKENS.USDT.location, ...SIGN_OPTIONS });
   });
 
-  it("sizes the mint for the target PLUS the XCM's own fees: a deposit sized without them waits", async () => {
-    // The XCM pays its execution and delivery out of the minted CASH. A gate without that term
-    // would admit this deposit, and the batch would then land PAYFEES short of the target and be
-    // refused by the dry run on every tick.
+  it("sizes the deposit for the mint PLUS the dispatch fee, the fee allowance and min_balance: one short waits", async () => {
+    // Without the held-back USDT the mint would reap the burner's account and the program would
+    // fail at its first instruction on every tick; without min_balance in it the withdrawal would.
     const world = scriptedPsmWorld();
     world.state.usdtAh = sizePsmMint(BUY, ROUTE).externalIn + DISPATCH_USDT;
+    expect((await drive(world, 1, freshTickState(), ROUTE)).steps).toEqual(["await-native"]);
+    world.state.usdtAh = sizePsmMint(BUY, ROUTE).externalIn + DISPATCH_USDT + ALLOWANCE;
     expect((await drive(world, 1, freshTickState(), ROUTE)).steps).toEqual(["await-native"]);
     world.state.usdtAh = PSM_DEPOSIT - 1n;
     expect((await drive(world, 1, freshTickState(), ROUTE)).steps).toEqual(["await-native"]);
@@ -839,8 +905,10 @@ describe("tickOnce on the PSM tier", () => {
     world.state.usdtAh = PSM_DEPOSIT + 1_000_000n;
     const run = await drive(world, 4, freshTickState(), ROUTE);
     expect(run.steps).toEqual(["swap", "done"]);
-    expect(world.state.txs[0]!.mint.external_amount).toBe(PSM_DEPOSIT + 1_000_000n - DISPATCH_USDT);
-    expect(world.state.usdtAh).toBe(0n);
+    expect(world.state.txs[0]!.mint.external_amount).toBe(
+      PSM_DEPOSIT + 1_000_000n - DISPATCH_USDT - HELD_BACK,
+    );
+    expect(world.state.usdtAh).toBe(MIN_BALANCE + ALLOWANCE - FEES_USDT);
     expect(world.state.underlyingPeople).toBeGreaterThan(SETTLE);
     expect(run.transients).toEqual([]);
   });
@@ -914,25 +982,26 @@ describe("tickOnce on the PSM tier", () => {
     expect(retry.steps).toEqual(["swap", "done"]);
     expect(state).toMatchObject({ attempts: 2, psmRefusals: 1, xcmSubmitted: true });
     expect(world.state.underlyingPeople).toBe(SETTLE);
-    expect(world.state.usdtAh).toBe(0n);
+    expect(world.state.usdtAh).toBe(MIN_BALANCE + ALLOWANCE - FEES_USDT);
   });
 });
 
 describe("psmDepositNeeded", () => {
-  it("is the mint for the target plus the XCM's fees, plus the dispatch fee in the external", () => {
+  it("is the mint for exactly the target, plus the dispatch fee and the held-back external", () => {
     const fees = {
-      localCash: 4_000n,
-      deliveryCash: 250n,
-      payFeesCash: 4_250n,
+      localExternal: 4_000n,
+      deliveryExternal: 250n,
+      feeAllowanceExternal: 4_675n,
+      minBalanceExternal: MIN_BALANCE,
+      heldBackExternal: MIN_BALANCE + 4_675n,
       dispatchNative: DISPATCH,
       dispatchExternal: DISPATCH_USDT,
       maxWeight: { ref_time: 1n, proof_size: 1n },
     };
     const needed = psmDepositNeeded(BUY, ROUTE, fees);
-    expect(needed).toBe(sizePsmMint(BUY + 4_250n, ROUTE).externalIn + DISPATCH_USDT);
-    // The XCM's fees are part of the mint, not left out of it.
-    expect(needed).toBeGreaterThan(sizePsmMint(BUY, ROUTE).externalIn + DISPATCH_USDT);
-    expect(psmMintOut(needed - DISPATCH_USDT, ROUTE.feeRate)).toBeGreaterThanOrEqual(BUY + 4_250n);
+    expect(needed).toBe(sizePsmMint(BUY, ROUTE).externalIn + DISPATCH_USDT + MIN_BALANCE + 4_675n);
+    // The XCM's fees are not part of the mint: it pays out the target and nothing more.
+    expect(psmMintOut(needed - DISPATCH_USDT - fees.heldBackExternal, ROUTE.feeRate)).toBe(BUY);
   });
 });
 
@@ -1238,9 +1307,10 @@ describe("estimateDestinationFeeCash", () => {
       },
     }) as never;
 
-  it("dry-runs the forwarded program on People as Asset Hub and reads the fee the beneficiary loses", async () => {
+  it("dry-runs the forwarded program on People as Asset Hub and reads the fee the beneficiary loses, a tenth on top", async () => {
     const calls: { origin?: unknown; program?: unknown } = {};
     // Two teleports of BUY reach People; 43 goes to the fee receiver, the rest to the beneficiary.
+    // 43 is what People charges today at every amount; the estimate carries 48.
     const events = [
       deposited(AccountId(42).dec(BENEFICIARY), 2n * BUY - 43n),
       deposited(AccountId(42).dec(new Uint8Array(32).fill(9)), 43n),
@@ -1252,7 +1322,7 @@ describe("estimateDestinationFeeCash", () => {
       beneficiaryHex: BENEFICIARY_HEX,
       amount: BUY,
     });
-    expect(fee).toBe(43n);
+    expect(fee).toBe(48n);
     expect(calls.origin).toEqual({
       type: "V5",
       value: { parents: 1, interior: { type: "X1", value: { type: "Parachain", value: 1500 } } },

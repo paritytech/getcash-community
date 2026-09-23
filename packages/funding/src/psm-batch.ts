@@ -7,10 +7,23 @@
 // buries a dispatch inside a program and depends on ExpectTransactStatus to fail with it. The
 // mint completes before the XCM runs, so the XCM withdraws and pays its fees in CASH directly.
 //
-// Fees (PLAN §4.2). The burner holds only USDT when the batch is dispatched, so the dispatch fee
-// is charged in USDT through ChargeAssetTxPayment, which prices it in the USDT/PAS pool. The XCM's
-// own fees are paid in the CASH the mint produced, priced in the CASH/PAS pool. The destination
-// fee is the CASH earmark the pool tier uses, unchanged.
+// Fees (PLAN §4.2, M13). The burner holds only USDT when the batch is dispatched, so the dispatch
+// fee is charged in USDT through ChargeAssetTxPayment, which prices it in the USDT/PAS pool. The
+// XCM's own fees are paid in USDT too, priced in the same pool, from an allowance a tenth over the
+// estimate (FEE_MARGIN_BPS, funding-program.ts) that the mint leaves on the burner and the program
+// withdraws, spends from and deposits the rest of back. The mint therefore pays out exactly the
+// buyer's target. The destination fee is the CASH earmark the pool tier uses.
+//
+// THE BURNER'S USDT ACCOUNT MUST STAY ALIVE THROUGH THE BATCH. pallet-assets reaps an account a
+// transfer or withdrawal leaves below the asset's min_balance and sweeps the remainder with it, and
+// a deposit that would create an account below min_balance is refused. USDt's min_balance here is
+// 70,000 (0.07 USDT), above the whole fee allowance: a mint that held back only the allowance
+// killed the account and the program failed at its first instruction with FailedToTransactAsset,
+// and a refund into a killed account failed with BelowMinimum (both dry-run on 2026-09-23). So
+// the mint holds back min_balance PLUS the allowance, the program withdraws only the allowance,
+// and the account never dips below min_balance: after the mint it holds both, after the withdrawal
+// exactly min_balance, after the refund min_balance plus the unspent allowance. That min_balance is
+// read live, never assumed, and staying on the burner is its accepted cost.
 //
 // Atomicity (PLAN §4.3). batch_all reverts the mint when the XCM returns an error, but an XCM
 // that completes while trapping assets or landing short returns Ok. The dry run of the whole batch
@@ -26,6 +39,7 @@ import {
   forwardedProgramStandIn,
   peopleDest,
   realForwardedProgram,
+  withFeeMargin,
   type PeopleApi,
 } from "./funding-program";
 import type { ConversionRoute, PsmExternal } from "./route";
@@ -42,7 +56,10 @@ export type PsmRoute = Extract<ConversionRoute, { tier: "psm" }>;
 export const PERMILL = 1_000_000n;
 
 const INTERNAL = TOKENS.CASH;
-const EXTERNAL_TOKENS: Record<PsmExternal, TokenSpec> = { USDT: TOKENS.USDT };
+/** The externals with the pallet-assets id their `min_balance` is read under. */
+const EXTERNAL_TOKENS: Record<PsmExternal, TokenSpec & { assetHubId: number }> = {
+  USDT: TOKENS.USDT,
+};
 // The table's Location type admits a value-less `Here`, which papi's type spells
 // `value: undefined`; the same plain data either way.
 const asLocation = (location: XcmLocation) => location as Location;
@@ -99,8 +116,10 @@ export interface PsmBatchArgs {
   externalIn: bigint;
   /** The CASH the mint pays out, withdrawn whole into the holding. */
   cashMinted: bigint;
-  /** Local execution plus delivery, in CASH. */
-  payFeesCash: bigint;
+  /** The allowance for local execution plus delivery, in the external: the estimate with
+   *  FEE_MARGIN_BPS on top. The mint leaves it on the burner beside the external's min_balance,
+   *  the program withdraws it, and what it does not spend comes back to the burner. */
+  feeAllowanceExternal: bigint;
   /** Destination fee allowance in CASH. */
   remoteFeesCash: bigint;
   beneficiaryHex: string;
@@ -112,9 +131,10 @@ export interface PsmBatchArgs {
 /** `Utility.batch_all([Psm.mint, PolkadotXcm.execute])`, in that order, and the execute's
  *  arguments for describing a rejection. */
 export function buildPsmBatch(api: AssetHubApi, args: PsmBatchArgs) {
+  const external = EXTERNAL_TOKENS[args.route.external];
   const execArgs = buildPsmFundingProgram({
     withdrawCash: args.cashMinted,
-    payFeesCash: args.payFeesCash,
+    localFees: { id: external.location, amount: args.feeAllowanceExternal },
     remoteFeesCash: args.remoteFeesCash,
     beneficiaryHex: args.beneficiaryHex,
     peopleParaId: args.peopleParaId,
@@ -122,7 +142,7 @@ export function buildPsmBatch(api: AssetHubApi, args: PsmBatchArgs) {
   });
   const mint = api.tx.Psm.mint({
     internal_asset: asLocation(INTERNAL.location),
-    external_asset: asLocation(EXTERNAL_TOKENS[args.route.external].location),
+    external_asset: asLocation(external.location),
     external_amount: args.externalIn,
     max_fee: args.route.feeRate,
   });
@@ -134,12 +154,17 @@ export function buildPsmBatch(api: AssetHubApi, args: PsmBatchArgs) {
 export type PsmBatch = ReturnType<typeof buildPsmBatch>;
 
 export interface PsmBatchFees {
-  /** Local XCM execution fee, CASH. */
-  localCash: bigint;
-  /** Delivery fee for the forwarded program, CASH. */
-  deliveryCash: bigint;
-  /** What to pass as `payFeesCash`: local plus delivery, exactly. */
-  payFeesCash: bigint;
+  /** Local XCM execution fee, in the external. */
+  localExternal: bigint;
+  /** Delivery fee for the forwarded program, in the external. */
+  deliveryExternal: bigint;
+  /** What to pass as `feeAllowanceExternal`: local plus delivery with FEE_MARGIN_BPS on top. */
+  feeAllowanceExternal: bigint;
+  /** The external's `min_balance`, as Asset Hub has it: what the burner must keep to stay alive. */
+  minBalanceExternal: bigint;
+  /** Kept out of the mint beside the dispatch fee: `minBalanceExternal` plus
+   *  `feeAllowanceExternal`. The min_balance stays on the burner; so does the unspent allowance. */
+  heldBackExternal: bigint;
   /** The batch's dispatch fee as the runtime weighs it, native. */
   dispatchNative: bigint;
   /** The dispatch fee as ChargeAssetTxPayment charges it: the external the USDT/PAS pool takes
@@ -149,18 +174,16 @@ export interface PsmBatchFees {
   maxWeight: Weight;
 }
 
-/** Every cost of the batch, measured against the batch itself. Throws when the runtime declines
- *  a read or the minted CASH does not cover the program's own fees. */
+/** Every cost of the batch, measured against the batch itself, all in the external. Throws when
+ *  the runtime declines a read or the deposit does not cover what is held back from the mint. */
 export async function estimatePsmBatchFees(args: {
   api: AssetHubApi;
   route: PsmRoute;
   beneficiaryHex: string;
   peopleParaId: number;
-  /** The external the mint will consume, at its real magnitude: the dispatch fee has a per-byte
-   *  component and compact-encoded amounts change length with magnitude. */
-  externalIn: bigint;
-  /** The CASH the program will withdraw, for the same reason. */
-  cashMinted: bigint;
+  /** The external the batch is carved from, at its real magnitude: the dispatch fee has a
+   *  per-byte component and compact-encoded amounts change length with magnitude. */
+  depositExternal: bigint;
   /** The destination fee allowance the program will carry, for the same reason. */
   remoteFeesCash: bigint;
   /** Any valid address for the dispatch fee read; the fee does not depend on the signer's
@@ -170,31 +193,47 @@ export async function estimatePsmBatchFees(args: {
    *  forwarded program instead of the stand-in. */
   dryRunFrom?: string;
 }): Promise<PsmBatchFees> {
-  const cashAsset = { type: "V5", value: INTERNAL.location };
-  const probe = (payFeesCash: bigint, maxWeight?: Weight) =>
-    buildPsmBatch(args.api, {
+  const external = EXTERNAL_TOKENS[args.route.external];
+  const externalAsset = { type: "V5", value: external.location };
+  const details = await args.api.query.Assets.Asset.getValue(external.assetHubId);
+  if (details === undefined) {
+    throw new Error(`psm batch fee estimate: ${external.symbol} is not an asset on Asset Hub`);
+  }
+  const minBalance = details.min_balance;
+  // The batch carved from the deposit with `feeAllowance` and `dispatchExternal` kept out of the
+  // mint beside the min_balance. Only the amounts' encoded lengths matter to the fees read off it.
+  const probe = (feeAllowance: bigint, dispatchExternal: bigint, maxWeight?: Weight) => {
+    const externalIn = args.depositExternal - dispatchExternal - minBalance - feeAllowance;
+    if (externalIn <= 0n) {
+      throw new Error(
+        `psm batch fee estimate: ${args.depositExternal} of the external does not cover the ${minBalance + feeAllowance} held back for fees`,
+      );
+    }
+    return buildPsmBatch(args.api, {
       route: args.route,
-      externalIn: args.externalIn,
-      cashMinted: args.cashMinted,
-      payFeesCash,
+      externalIn,
+      cashMinted: psmMintOut(externalIn, args.route.feeRate),
+      feeAllowanceExternal: feeAllowance,
       remoteFeesCash: args.remoteFeesCash,
       beneficiaryHex: args.beneficiaryHex,
       peopleParaId: args.peopleParaId,
       maxWeight,
     });
+  };
 
-  // Only the instruction list matters for the weight.
-  const rough = probe(args.cashMinted / 4n);
+  // Only the instruction list matters for the weight, and the dry run below needs an allowance
+  // that clears, so a quarter of the deposit.
+  const rough = probe(args.depositExternal / 4n, 0n);
   const weight = await args.api.apis.XcmPaymentApi.query_xcm_weight(
     (rough.execArgs as { message: unknown }).message as never,
   );
   if (!weight.success) throw new Error("psm batch fee estimate: the runtime would not weigh it");
   const localFee = await args.api.apis.XcmPaymentApi.query_weight_to_asset_fee(
     weight.value,
-    cashAsset as never,
+    externalAsset as never,
   );
   if (!localFee.success) throw new Error("psm batch fee estimate: local fee unavailable");
-  const localCash = localFee.value;
+  const localExternal = localFee.value;
 
   // The forwarded program sets the delivery fee through its size. The real one comes from a dry
   // run of the batch, since the burner holds the external and not the CASH the execute withdraws.
@@ -207,26 +246,28 @@ export async function estimatePsmBatchFees(args: {
           args.peopleParaId,
           args.dryRunFrom,
         )) ??
-    forwardedProgramStandIn(INTERNAL.locationOnPeople, args.cashMinted, args.beneficiaryHex);
+    forwardedProgramStandIn(
+      INTERNAL.locationOnPeople,
+      psmMintOut(args.depositExternal, args.route.feeRate),
+      args.beneficiaryHex,
+    );
   const df = await args.api.apis.XcmPaymentApi.query_delivery_fees(
     { type: "V5", value: peopleDest(args.peopleParaId) } as never,
     forwarded as never,
-    cashAsset as never,
+    externalAsset as never,
   );
   if (!df.success) throw new Error("psm batch fee estimate: delivery fee unavailable");
-  const deliveryCash = extractFungibleAmount(df.value);
-  const payFeesCash = localCash + deliveryCash;
-  if (payFeesCash >= args.cashMinted) {
-    throw new Error(
-      `psm batch fee estimate: ${args.cashMinted} CASH minted does not cover the program's own fees ${payFeesCash}`,
-    );
-  }
+  const deliveryExternal = extractFungibleAmount(df.value);
+  const feeAllowanceExternal = withFeeMargin(localExternal + deliveryExternal);
+  const heldBackExternal = minBalance + feeAllowanceExternal;
 
   const maxWeight = { ref_time: weight.value.ref_time, proof_size: weight.value.proof_size };
   // Price the dispatch against the batch carrying the final amounts and the declared weight, so
-  // the charge it predicts is the charge the submitted batch pays.
+  // the charge it predicts is the charge the submitted batch pays. The dispatch fee itself is not
+  // yet known to keep out of the probe's mint; a few thousand units do not change a compact
+  // encoding's length.
   const options = psmBatchTxOptions(args.route.external);
-  const dispatchNative = await probe(payFeesCash, maxWeight).batch.getEstimatedFees(
+  const dispatchNative = await probe(feeAllowanceExternal, 0n, maxWeight).batch.getEstimatedFees(
     args.dryRunFrom ?? args.feeProbeAddress,
     options,
   );
@@ -245,7 +286,16 @@ export async function estimatePsmBatchFees(args: {
     );
   }
 
-  return { localCash, deliveryCash, payFeesCash, dispatchNative, dispatchExternal, maxWeight };
+  return {
+    localExternal,
+    deliveryExternal,
+    feeAllowanceExternal,
+    minBalanceExternal: minBalance,
+    heldBackExternal,
+    dispatchNative,
+    dispatchExternal,
+    maxWeight,
+  };
 }
 
 /** The §4.3 gate for the batch: `dryRunFundingProgram` over the whole batch rather than the bare

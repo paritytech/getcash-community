@@ -4,7 +4,8 @@
 // native: one program pays its own fees in native, exchanges the rest through the AssetConversion
 // pool inside the XCM holding, and teleports the result to the ephemeral's People address. On the
 // PSM tier the deposit is the external (USDT): one batch mints CASH through the PSM and teleports
-// it, the dispatch fee charged in the external and the XCM's fees paid out of the minted CASH
+// it, the dispatch fee and the XCM's own fees both paid in the external, the latter from an
+// allowance the mint leaves on the burner and the program refunds the unspent part of
 // (psm-batch.ts). The handoff session's funded gate takes over from there; this pipeline never
 // touches the settle.
 //
@@ -13,7 +14,9 @@
 // deposit minus its dispatch fee and converts everything the fees leave. The target decides when
 // to convert, never how much. One exception, on the pool tier: a deposit the pool cannot absorb
 // whole falls back to buying the target, and the surplus stays on the burner, recoverable with its
-// secret. The PSM's rate is fixed, so on its tier the surplus simply lands as extra CASH.
+// secret. The PSM's rate is fixed, so on its tier the surplus simply lands as extra CASH; what its
+// tier keeps back is the external's min_balance, which the burner's account must hold to survive
+// the batch, and it stays there with the unspent fee allowance (psm-batch.ts).
 //
 // THE CLOCK STARTS WHEN FUNDS ARE SEEN, not when the run does. Waiting for a deposit has no
 // natural bound, while the conversion after it does: a submitted program that never credits
@@ -75,8 +78,11 @@ export type FundingStep = "await-native" | "swap" | "await-arrival" | "done";
 
 /** Extra underlying bought to cover the destination's execution fee, the one fee paid in the
  *  underlying. The remote RefundSurplus returns what it does not consume, so an over-buy lands as
- *  extra underlying. Fallback when the caller passes no live estimate; 0.3 at 6 decimals. */
-export const DEFAULT_REMOTE_FEE_BUFFER = 300_000n;
+ *  extra underlying. Fallback when the caller passes no live estimate (estimateDestinationFeeCash),
+ *  which is the primary source; 0.001 at 6 decimals, some twenty times the 43 base units People
+ *  charges today at every amount, so it survives People's fee constants moving by an order of
+ *  magnitude while over-buying a thousandth of a CASH when it does fire. */
+export const DEFAULT_REMOTE_FEE_BUFFER = 1_000n;
 /** Native the deposit carries beyond the pool quote for the program's own fees: dispatch, local
  *  execution and delivery. A sizing figure, not a reserve: everything the fees leave is converted.
  *  Fallback when the caller passes no live estimate; 0.02 at 10 decimals. Pool tier only: the
@@ -399,7 +405,7 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
     depositNeeded = nativeNeeded + input.keepNativeForFees;
   } else if (needsGate && route.tier === "psm") {
     // The PSM's rate is fixed, so the gate is arithmetic on the batch's own fees. Those take
-    // several reads, and a deposit short of even the fee-less mint waits without them.
+    // several reads, and a deposit short of even the bare mint waits without them.
     const floor = sizePsmMint(buyNow, route).externalIn;
     if (balances.depositAh < floor) {
       depositNeeded = floor;
@@ -410,9 +416,8 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
           route,
           beneficiaryHex: input.beneficiaryHex,
           peopleParaId: input.peopleParaId,
-          // At the magnitude the batch will carry: everything the burner holds is minted.
-          externalIn: balances.depositAh,
-          cashMinted: psmMintOut(balances.depositAh, route.feeRate),
+          // At the magnitude the batch will carry: everything the burner holds.
+          depositExternal: balances.depositAh,
           remoteFeesCash: earmark,
           feeProbeAddress: address,
           dryRunFrom: address,
@@ -568,19 +573,19 @@ const poolOf = (input: TickOnceInput): Pool => {
 };
 
 /** The external the PSM tier needs on the burner for `buyNow` CASH to reach People, per
- *  local/psm/PLAN.md §4.4. The mint runs first and the XCM then pays its local execution and
- *  delivery OUT OF THE MINTED CASH, so the mint must pay out the target and those fees both:
- *  `sizePsmMint(buyNow)` alone lands the program short, fails its InitiateTransfer and reverts
- *  the whole batch after the dispatch fee is paid. (On the pool tier the program pays its fees in
- *  native before the exchange, so the whole exchange output is the buyer's.) The dispatch fee is
- *  charged in the external before the mint, so it sits on top. */
+ *  local/psm/PLAN.md §4.4 and M13: the mint that pays out exactly `buyNow`, plus what stays out of
+ *  the mint. The dispatch fee is charged in the external before the mint. The XCM's local
+ *  execution and delivery are paid in the external too, from the allowance the mint leaves on the
+ *  burner beside the external's min_balance, which keeps the account alive for the program to
+ *  withdraw from and refund into. Without the held-back part the mint reaps the account and the
+ *  program fails at its first instruction; without the dispatch fee the mint finds the balance
+ *  short. */
 export function psmDepositNeeded(
   buyNow: bigint,
   route: PsmRoute,
-  fees: Pick<PsmBatchFees, "payFeesCash" | "dispatchExternal">,
+  fees: Pick<PsmBatchFees, "dispatchExternal" | "heldBackExternal">,
 ): bigint {
-  const cashOut = buyNow + fees.payFeesCash;
-  return sizePsmMint(cashOut, route).externalIn + fees.dispatchExternal;
+  return sizePsmMint(buyNow, route).externalIn + fees.dispatchExternal + fees.heldBackExternal;
 }
 
 /** The PSM tier's swap step: mint everything the dispatch fee leaves and teleport the CASH to the
@@ -602,14 +607,14 @@ async function mintThroughPsm(
       throw new FundingHeldError(describeDispatchError(dispatchError));
     }
   };
-  // Mint everything the dispatch fee leaves, not just enough for the target; the gate already
-  // saw that this pays out the target plus the XCM's fees.
-  const externalIn = balances.depositAh - fees.dispatchExternal;
+  // Mint everything the dispatch fee and the held-back external leave, not just enough for the
+  // target; the gate already saw that this pays out the target.
+  const externalIn = balances.depositAh - fees.dispatchExternal - fees.heldBackExternal;
   const { batch, execArgs } = buildPsmBatch(api, {
     route,
     externalIn,
     cashMinted: psmMintOut(externalIn, route.feeRate),
-    payFeesCash: fees.payFeesCash,
+    feeAllowanceExternal: fees.feeAllowanceExternal,
     remoteFeesCash,
     beneficiaryHex: input.beneficiaryHex,
     peopleParaId: input.peopleParaId,

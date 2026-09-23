@@ -3,11 +3,13 @@
 // costs differ in composition, not just in value (local/psm/PLAN.md §4.2, §4.4), so each has its
 // own shape. On the pool tier, keepNativeForFees is the native the deposit carries on top of the
 // pool quote for the program's own costs on Asset Hub, and any failure returns null so the caller
-// keeps the funding package's static fallbacks. On the PSM tier the batch's dispatch fee is
-// charged in the external, the XCM's own fees come out of the minted CASH, and the PSM takes its
-// fee on the mint; there is no static fallback, because the tier is only chosen once the chain
-// has answered. remoteFeeBuffer is the same on both: the extra underlying to over-buy for the
-// destination's execution fee, read from a dry run of the forwarded program on People.
+// keeps the funding package's static fallbacks. On the PSM tier the batch's dispatch fee and the
+// XCM's own fees are both charged in the external, the latter from an allowance a tenth over the
+// estimate that stays out of the mint with the external's min_balance and is refunded to the
+// burner where unspent, and the PSM takes its fee on the mint; there is no static fallback,
+// because the tier is only chosen once the chain has answered. remoteFeeBuffer is the same on
+// both: the extra underlying to over-buy for the destination's execution fee, read from a dry run
+// of the forwarded program on People, with the same tenth on top.
 
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import type { PolkadotClient } from "polkadot-api";
@@ -48,8 +50,12 @@ export interface PsmFundingSizing {
   external: PsmExternal;
   /** The dispatch fee, in the external, kept out of the mint. */
   dispatchExternal: bigint;
-  /** The XCM's local execution and delivery, in CASH, paid out of the minted CASH. */
-  payFeesCash: bigint;
+  /** Also kept out of the mint, in the external: the asset's min_balance, which the burner's
+   *  account must hold to survive the batch and which stays on it, plus `feeAllowanceExternal`. */
+  heldBackExternal: bigint;
+  /** The allowance for the XCM's local execution and delivery, in the external: a tenth over the
+   *  estimate, the unspent part refunded to the burner on Asset Hub. */
+  feeAllowanceExternal: bigint;
   /** The PSM's fee on the mint, Permill, as the route recorded it. */
   feeRate: number;
 }
@@ -127,14 +133,12 @@ export async function estimatePsmFundingSizing(
   const buyTarget = args.settleAmount + destinationFee;
   // At the magnitude the batch will carry, as the pool tier's probes do; the few cents the fees
   // add on top do not change the encoded lengths.
-  const mint = sizePsmMint(buyTarget, args.route);
   const fees = await estimatePsmBatchFees({
     api,
     route: args.route,
     beneficiaryHex: ZERO_32,
     peopleParaId: args.peopleParaId,
-    externalIn: mint.externalIn,
-    cashMinted: mint.cashMinted,
+    depositExternal: sizePsmMint(buyTarget, args.route).externalIn,
     remoteFeesCash: destinationEarmark(buyTarget, destinationFee),
     feeProbeAddress: args.probeAddress,
   });
@@ -143,7 +147,8 @@ export async function estimatePsmFundingSizing(
     remoteFeeBuffer: destinationFee,
     external: args.route.external,
     dispatchExternal: fees.dispatchExternal,
-    payFeesCash: fees.payFeesCash,
+    heldBackExternal: fees.heldBackExternal,
+    feeAllowanceExternal: fees.feeAllowanceExternal,
     feeRate: args.route.feeRate,
   };
 }

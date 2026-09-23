@@ -22,8 +22,10 @@ export {
   dryRunFundingProgram,
   estimateDestinationFeeCash,
   estimateFundingProgramFees,
+  FEE_MARGIN_BPS,
   FUNDING_PROGRAM_MAX_WEIGHT,
   ProgramRejectedError,
+  withFeeMargin,
 } from "./funding-program";
 export type { FundingProgramFees, PeopleApi, Pool } from "./funding-program";
 export {

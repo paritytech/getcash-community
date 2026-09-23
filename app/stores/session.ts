@@ -210,10 +210,12 @@ function feeFiat(total: number): string | null {
  * there to CASH on People costs more, all of it already sized by the funding estimate and already
  * inside what the buyer pays, because the deposit was over-bought to cover it. On the pool tier
  * that is `keepNativeForFees` (dispatch, execution and delivery on Asset Hub, in native) and
- * `remoteFeeBuffer` (execution on People, in CASH). On the PSM tier the Asset Hub side is two
- * figures in two assets: the batch's dispatch fee in the delivered stable, and the XCM's execution
- * and delivery in the CASH the mint produced (local/psm/PLAN.md §4.2). None has a row of its own
- * on the rail's quote, so the breakdown prices them here.
+ * `remoteFeeBuffer` (execution on People, in CASH). On the PSM tier the Asset Hub side is all in
+ * the delivered stable: the batch's dispatch fee plus what the mint keeps out for the XCM's
+ * execution and delivery, the fee allowance and the asset's min_balance that keeps the burner
+ * alive (local/psm/PLAN.md §4.2, M13). The min_balance and the unspent allowance stay on the
+ * burner, but the buyer paid for them, so they are part of the cost shown. None has a row of its
+ * own on the rail's quote, so the breakdown prices them here.
  *
  * The delivered token's side converts at the quote's implied rate (`meldImpliedRate`). The CASH
  * side takes the peg this app quotes against throughout, one CASH to one unit of the quote fiat
@@ -226,22 +228,25 @@ function meldChainFeeFiat(raw: MeldQuoteRaw, sizing: FundingSizing): string | nu
   const onAssetHub =
     sizing.tier === "pool"
       ? (Number(sizing.keepNativeForFees) / 10 ** TOKENS.PAS.decimals) * rate.fiatPerToken
-      : (Number(sizing.dispatchExternal) / 10 ** TOKENS[sizing.external].decimals) *
-          rate.fiatPerToken +
-        inCash(sizing.payFeesCash);
+      : (Number(sizing.dispatchExternal + sizing.heldBackExternal) /
+          10 ** TOKENS[sizing.external].decimals) *
+        rate.fiatPerToken;
   return feeFiat(onAssetHub + inCash(sizing.remoteFeeBuffer));
 }
 
 /**
  * The PSM's fee on the mint in the quote's fiat, or null when the quote cannot price it. The
- * pipeline mints everything the dispatch fee leaves of what the provider delivered, and the PSM
- * takes its Permill of that; at the quote's implied rate, since the fee is taken in the stable.
+ * pipeline mints everything the dispatch fee and the held-back external leave of what the
+ * provider delivered, and the PSM takes its Permill of that; at the quote's implied rate, since
+ * the fee is taken in the stable.
  */
 function meldMintFeeFiat(raw: MeldQuoteRaw, sizing: PsmFundingSizing): string | null {
   const rate = meldImpliedRate(raw);
   if (rate === null) return null;
   const minted =
-    rate.delivered - Number(sizing.dispatchExternal) / 10 ** TOKENS[sizing.external].decimals;
+    rate.delivered -
+    Number(sizing.dispatchExternal + sizing.heldBackExternal) /
+      10 ** TOKENS[sizing.external].decimals;
   return feeFiat(minted * (sizing.feeRate / Number(PERMILL)) * rate.fiatPerToken);
 }
 
