@@ -21,6 +21,7 @@ import { parseRequestRefKey, requestRefKey, type RequestRef } from "../utils/req
 import { destinationTokenIcon, withdrawDestination, withdrawNetwork } from "./destinations";
 import { withdrawalFailureText } from "./failure-copy";
 import { withdrawalProgress, withdrawalProgressProfile } from "./progress";
+import { withdrawalReturnText } from "./return-copy";
 
 /** The words the rows use for a withdrawal. */
 export const WITHDRAWAL_WORDING: FundingTopUpWording = { settled: "Sent" };
@@ -42,6 +43,13 @@ export function withdrawalRequestRef(id: string): RequestRef | null {
   return ref !== null && isWithdrawSourceId(ref.sourceId) ? ref : null;
 }
 
+/** A failure's own text, with the return's note appended when there is one to add — so a row
+ *  reading "Expired" (say) does not leave a seller wondering whether the money is simply gone. */
+function failureReasonWithReturn(record: WithdrawalRecord, base: string): string {
+  const note = withdrawalReturnText(record.return);
+  return note ? `${base} ${note}` : base;
+}
+
 /** The row's state, worded by the same projection the journey ribbon shows. A cancelled record
  *  is never listed; it reads as failed so the type has a value. */
 export function withdrawalRowStateOf(record: WithdrawalRecord, label: string): FundingTopUpState {
@@ -60,10 +68,16 @@ export function withdrawalRowStateOf(record: WithdrawalRecord, label: string): F
       return {
         kind: "failed",
         at: status.at,
-        ...(record.failure === undefined ? {} : { reason: withdrawalFailureText(record.failure) }),
+        ...(record.failure === undefined
+          ? {}
+          : { reason: failureReasonWithReturn(record, withdrawalFailureText(record.failure)) }),
       };
     case "cancelled":
-      return { kind: "failed", at: status.at, reason: "Cancelled" };
+      return {
+        kind: "failed",
+        at: status.at,
+        reason: failureReasonWithReturn(record, "Cancelled"),
+      };
   }
 }
 
@@ -76,22 +90,30 @@ export function projectWithdrawalTopUps(
 ): FundingTopUp[] {
   return records.map((record) => {
     const progress = withdrawalProgress(record, now);
+    // A Meld sale has no network/token destination to look up — the row's icon and label come
+    // from its route instead (`routeIcon`/`routeLabel` in `projectFundingTopUps`, off the same
+    // `fundingSelectorConfig.routes` the buy side's card/bank rows already use).
+    const isMeld = record.route === "card" || record.route === "bank";
     const destinationId = record.ref.sourceId?.slice(WITHDRAW_SOURCE_PREFIX.length) ?? "";
-    const destination = withdrawDestination(destinationId);
+    const destination = isMeld ? undefined : withdrawDestination(destinationId);
     const network = destination === undefined ? undefined : withdrawNetwork(destination.chain);
     return {
       id: rowId(record.ref),
       amount: record.amountHuman,
-      route: "crypto",
+      route: record.route,
       startedAt: record.startedAt,
       progress,
-      details: {
-        network: { label: record.destination.chain, icon: network?.icon ?? UNKNOWN_ICON },
-        token: {
-          label: record.destination.asset,
-          icon: destination === undefined ? UNKNOWN_ICON : destinationTokenIcon(destination),
-        },
-      },
+      ...(isMeld
+        ? {}
+        : {
+            details: {
+              network: { label: record.destination.chain, icon: network?.icon ?? UNKNOWN_ICON },
+              token: {
+                label: record.destination.asset,
+                icon: destination === undefined ? UNKNOWN_ICON : destinationTokenIcon(destination),
+              },
+            },
+          }),
       state: withdrawalRowStateOf(record, progress.view.label),
     };
   });

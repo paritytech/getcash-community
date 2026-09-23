@@ -7,7 +7,14 @@ import { deriveEntropy, getHostLocalStorage, getHostProvider } from "./host.js";
 
 /**
  * A job map under `storageKey`, loaded once and single-flight, saved after every change. A
- * failed load throws and caches nothing; a failed save keeps answering from memory.
+ * failed load throws and caches nothing.
+ *
+ * TWO SAVES, AND THE DIFFERENCE MATTERS. `save` is best-effort: a write that does not land is
+ * warned about and the map keeps answering from memory, which is right for bookkeeping a later
+ * save will carry anyway. `saveStrict` throws. Anything a broadcast must not outrun — a nonce
+ * pinned so a retry cannot pay twice — has to use it, because a silent write failure there means
+ * the next reload has no memory of a transaction that is already on its way, and the caller must
+ * be able to stop before sending it.
  */
 export function createJobStore(storageKey, label) {
   let jobs = null;
@@ -21,6 +28,12 @@ export function createJobStore(storageKey, label) {
     return jobs;
   }
 
+  async function write() {
+    const store = await getHostLocalStorage();
+    if (!store) throw new Error("product storage unavailable");
+    await store.writeJSON(storageKey, jobs);
+  }
+
   return {
     load() {
       if (jobs) return Promise.resolve(jobs);
@@ -32,11 +45,14 @@ export function createJobStore(storageKey, label) {
     async save() {
       if (!jobs) return;
       try {
-        const store = await getHostLocalStorage();
-        await store?.writeJSON(storageKey, jobs);
+        await write();
       } catch (error) {
         console.warn(`[${label}] jobs write failed: ${String(error?.message ?? error)}`);
       }
+    },
+    async saveStrict() {
+      if (!jobs) return;
+      await write();
     },
   };
 }

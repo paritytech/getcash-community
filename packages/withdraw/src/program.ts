@@ -1,4 +1,5 @@
-// The two transactions a withdrawal signs on People, and the pieces that size them.
+// The transactions a withdrawal signs — two on People, and one more on Asset Hub when it is an
+// off-ramp — and the pieces that size them.
 //
 // People has no XCM exchanger, so the PAS the XCM fees need is bought first with a pallet swap,
 // paid for in CASH. The XCM comes second and pays its transaction fee in that PAS. The order is
@@ -16,11 +17,18 @@
 //
 // CASH is keyed two ways: as People holds it for the calls that run on People, and as Asset Hub
 // holds it for the remote program, which is forwarded verbatim and so must speak Asset Hub's view.
+//
+// An off-ramp adds a third transaction, and it is signed on Asset Hub rather than People. A fiat
+// provider commits to receiving an exact figure and an exchange cannot promise one: whatever the
+// sale returns floats with the pool. So the off-ramp sends the sale's proceeds to the burner's own
+// Asset Hub account, where floating is harmless because we hold the key, and pays the provider
+// with a plain balance transfer, which is exact by construction.
 
-import { paseo_people_next } from "@polkadot-api/descriptors";
+import { MultiAddress, paseo_people_next } from "@polkadot-api/descriptors";
 import type { TypedApi } from "polkadot-api";
 import { CASH_LOCATION } from "@getsome/people";
 import { PASEO_UNDERLYING_ASSET_ID } from "@getsome/funding";
+import type { AssetHubApi } from "./fees";
 import { PEOPLE_NATIVE } from "./paseo";
 
 export type PeopleApi = TypedApi<typeof paseo_people_next>;
@@ -183,4 +191,21 @@ export function forwardedStandIn(args: WithdrawXcmArgs) {
       { type: "SetTopic", value: `0x${"00".repeat(32)}` },
     ],
   };
+}
+
+export interface ProviderPaymentArgs {
+  /** The provider's deposit address on Asset Hub, SS58. */
+  payoutAddress: string;
+  /** The exact amount committed to the provider, planck. */
+  amount: bigint;
+}
+
+/** The exact payment: a plain transfer of the committed amount to the provider's address, signed
+ *  on Asset Hub by the burner. Keep-alive, not allow-death: a later step returns the residue from
+ *  this same account, and a reaped account would take the residue with it. */
+export function buildProviderPayment(assetHubApi: AssetHubApi, args: ProviderPaymentArgs) {
+  return assetHubApi.tx.Balances.transfer_keep_alive({
+    dest: MultiAddress.Id(args.payoutAddress),
+    value: args.amount,
+  });
 }

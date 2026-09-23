@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
-import type { MeldClientLike } from "./client";
+import type { MeldClientLike, MeldDepositDisclosure } from "./client";
 import { getMeldStatus } from "./status";
 
 function clientReturning(
   status: string,
-  extra?: { providerStatus?: string; sourceAmount?: string; fiat?: string },
+  extra?: {
+    providerStatus?: string;
+    sourceAmount?: string;
+    fiat?: string;
+    deposit?: MeldDepositDisclosure;
+  },
 ): MeldClientLike {
   return {
     getQuote: async () => ({ quotes: [] }),
@@ -163,5 +168,51 @@ describe("getMeldStatus", () => {
       "transaction_seen",
     );
     expect((await getMeldStatus(clientReturning("settled"), "funding-1")).raw).toBe("settled");
+  });
+
+  // A sell's deposit terms have to reach the caller through this wrapper; it is the only way
+  // anything in the app reads them.
+  const DEPOSIT: MeldDepositDisclosure = {
+    address: "14Kt4HmnCzMqUKvWcGZdLaWkLNcL4TcUSXYvKyKdbMhsvRxM",
+    amount: "24.4123456789",
+    currency: "DOT_ASSETHUB",
+    observedAt: 1_800_000_000_000,
+  };
+
+  it("carries a sell's deposit terms through while the sale is still waiting", async () => {
+    const result = await getMeldStatus(
+      clientReturning("session_opened", { deposit: DEPOSIT }),
+      "funding-1",
+    );
+    expect(result.status).toBe("waiting");
+    // Verbatim, at full precision: this is what the seller is about to send.
+    expect(result.deposit).toEqual(DEPOSIT);
+  });
+
+  it("carries them on into receiving, when the transfer is already on its way", async () => {
+    const result = await getMeldStatus(
+      clientReturning("transaction_seen", { deposit: DEPOSIT }),
+      "funding-1",
+    );
+    expect(result.status).toBe("receiving");
+    expect(result.deposit).toEqual(DEPOSIT);
+  });
+
+  it("reports no deposit terms on a poll that did not disclose them", async () => {
+    // The normal early state, and the normal late one: absence is never an error here.
+    const result = await getMeldStatus(clientReturning("session_opened"), "funding-1");
+    expect(result.status).toBe("waiting");
+    expect(result).not.toHaveProperty("deposit");
+  });
+
+  it("does not hand back deposit terms on a concluded sale", async () => {
+    // The adapter withholds them once a request concludes. An address shown after that is one
+    // nobody is standing behind any more, so a terminal view does not carry one even if asked to.
+    const result = await getMeldStatus(
+      clientReturning("settled", { deposit: DEPOSIT }),
+      "funding-1",
+    );
+    expect(result.status).toBe("complete");
+    expect(result).not.toHaveProperty("deposit");
   });
 });

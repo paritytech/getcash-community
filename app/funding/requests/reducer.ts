@@ -17,7 +17,9 @@ function lastWitnessedAt(record: RequestRecord, observation: Observation): numbe
     case "worker":
       return witnesses.worker?.at;
     case "provider":
-      return record.kind === "top-up" ? record.witnesses.provider?.at : undefined;
+      // Both kinds keep a provider witness now: the top-up's Meld/Chainflip poll, and the
+      // withdrawal's Meld sale poll.
+      return witnesses.provider?.at;
     case "host":
       return record.kind === "withdrawal" ? record.witnesses.host?.at : undefined;
     case "user":

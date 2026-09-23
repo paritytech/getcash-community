@@ -2,8 +2,13 @@ export {
   createMeldClient,
   type MeldClientLike,
   type MeldEndpointConfig,
+  type MeldDepositDisclosure,
   type MeldQuoteRequest,
   type MeldQuoteEntry,
+  type MeldSellClientLike,
+  type MeldSellQuoteRequest,
+  type MeldSellSessionRequest,
+  type MeldSellSessionResult,
   type MeldSessionRequest,
   type MeldSessionResult,
   type MeldStatusResult,
@@ -14,4 +19,4 @@ export { computeMeldQuote, pickBestQuote, type MeldQuoteContext, type MeldQuoteR
 export { requestMeldDeposit, type MeldDepositChannel } from "./session";
 export { getMeldStatus } from "./status";
 export { createMeldRail, type MeldMethod, type MeldRail, type MeldRailOptions } from "./rail";
-export { createFakeMeldClient, type FakeMeldOptions } from "./fake";
+export { createFakeMeldClient, type FakeMeldOptions, type FakeRefusal } from "./fake";

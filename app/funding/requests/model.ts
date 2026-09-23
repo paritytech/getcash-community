@@ -11,6 +11,7 @@ import type {
   SwapStatusResult,
 } from "@getsome/core";
 import type { FundingStep } from "@getsome/funding";
+import type { MeldDepositDisclosure } from "@getsome/meld";
 import type { WithdrawStep } from "@getsome/withdraw";
 import type { RequestRef } from "../../utils/request-index";
 import type { FundingProgressSnapshot } from "../progress";
@@ -237,12 +238,16 @@ export const WITHDRAW_SOURCE_PREFIX = "wd:";
 export const isWithdrawSourceId = (sourceId: string | undefined): boolean =>
   sourceId !== undefined && sourceId.startsWith(WITHDRAW_SOURCE_PREFIX);
 
-/** The worker's steps between the payment and the arrival on Asset Hub. */
+/** The worker's steps between the payment and the arrival on Asset Hub. `pay-provider` is last
+ *  and runs on Asset Hub, not People: only a withdrawal that committed an exact amount to an
+ *  off-ramp provider reaches it, and the self-custody path ends at the arrival. */
 export type SendingStep = Exclude<WithdrawStep, "await-cash" | "done">;
-export const SENDING_STEP_ORDER = { swap: 0, convert: 1, "await-arrival": 2 } satisfies Record<
-  SendingStep,
-  number
->;
+export const SENDING_STEP_ORDER = {
+  swap: 0,
+  convert: 1,
+  "await-arrival": 2,
+  "pay-provider": 3,
+} satisfies Record<SendingStep, number>;
 export const isSendingStep = (step: string): step is SendingStep =>
   Object.hasOwn(SENDING_STEP_ORDER, step);
 
@@ -265,7 +270,15 @@ export type WithdrawalStatus =
 /** The leg a withdrawal left when it failed; `withdrawalRankOf` reads the rank back from it. */
 export type WithdrawalFailureStep = "payment" | "convert" | "send";
 export type WithdrawalFailureKind =
-  "payment-failed" | "rejected" | "timeout" | "expired" | "egress-failed" | "unknown";
+  | "payment-failed"
+  | "rejected"
+  | "timeout"
+  | "expired"
+  | "egress-failed"
+  // The provider payment cannot be settled from the chain: possibly unpaid, possibly paid
+  // twice over. Never recoverable by retrying — a person has to reconcile it.
+  | "unresolved"
+  | "unknown";
 export interface WithdrawalFailure {
   kind: WithdrawalFailureKind;
   step: WithdrawalFailureStep;
@@ -302,7 +315,11 @@ export interface WithdrawalHandoffPayload {
   /** The CASH the user asked to withdraw, base units. */
   amount: string;
   destination: { chain: string; asset: string; address: string };
-  /** The Asset Hub account the PAS lands on: the rail's channel, or the destination itself. */
+  /** The Asset Hub account the PAS lands on: the rail's channel, or the destination itself. For a
+   *  Meld withdrawal it is NEITHER of those — it is the BURNER'S OWN Asset Hub account, because
+   *  the sale lands the PAS there before the worker pays the provider onward at
+   *  `meld.providerPayoutAddress`. A reader must not take this field for the provider's address
+   *  on a Meld rail. */
   landingHex: string;
   rail: WithdrawalRailState["provider"];
   assetHubGenesis: string;
@@ -312,6 +329,57 @@ export interface WithdrawalHandoffPayload {
   poolAccount: string;
   slippagePct: number;
   paymentExpiresAt: number;
+  /** Present only when `rail` is `"meld"`, and only once the sale has disclosed where to pay it:
+   *  the exact amount the sale owes the provider, where to pay it, and the order key the sell
+   *  session was opened under. `meldFundingRequestId`, `quotedFiatAmount`, `quotedFiatCurrency`
+   *  and `cryptoCurrency` are never read by the worker's own tick — it only ever needs
+   *  `committedAmount` and `providerPayoutAddress` — but ride along anyway so a surface that has
+   *  lost its own record can rebuild the sale from the worker's job alone (see
+   *  `recordFromWithdrawJob`), the same reason the worker persists every tick-state field
+   *  generically rather than by an allow-list. */
+  meld?: {
+    /** The exact PAS the provider committed to receive, base units. */
+    committedAmount: string;
+    /** The provider's Asset Hub deposit address, SS58 — distinct from `landingHex`. */
+    providerPayoutAddress: string;
+    /** Key material only, matching the sell session's `orderRef`; never sent anywhere itself. */
+    orderRef: string;
+    /** The adapter's funding-request id; `GET /funding/:id` polls it. */
+    meldFundingRequestId: string;
+    /** The fiat the quote promised for `committedAmount`, and its currency. */
+    quotedFiatAmount: string;
+    quotedFiatCurrency: string;
+    /** Meld's code for the crypto being sold, e.g. `DOT_ASSETHUB`. */
+    cryptoCurrency: string;
+  };
+}
+
+/**
+ * The worker's own honest summary of what came back from the burner once the sale was over —
+ * `describeReturn` in `worker/src/withdraw-engine.js`, read straight through. `reason` says which
+ * journey this was: `"residue"` when the provider was paid and this is what quantisation and the
+ * drift buffer left over, `"unwind"` when the sale ended with no payment at all and the whole
+ * balance is coming home instead — a reader must not report that case as a completed sale, since
+ * the seller got CASH back, not fiat. `phase` is the return's own step (`"checking-floor"` through
+ * `"done"`, or `"left-below-floor"`), never the withdrawal's own `phase`/`done`/`failure`: the
+ * return never writes those, on purpose (see tick.ts's header, contract 4), so this is the only
+ * place a reader learns what it did.
+ */
+export interface WithdrawalReturnView {
+  reason: "residue" | "unwind";
+  phase: string;
+  returned: boolean;
+  returnedAmount: string | null;
+  /** The balance a `left-below-floor` decision was made against; null on every other phase. */
+  nativeSeen: string | null;
+  claim: {
+    amount: string;
+    status: string | null;
+    partial: boolean;
+    error?: string;
+  } | null;
+  txs: { call: string; txHash: string; block?: number }[];
+  lastError?: string;
 }
 
 /** What the store extracts from one withdrawal job in the worker's blob. */
@@ -323,18 +391,71 @@ export interface WithdrawJobView {
   fundsSeenAt: number | null;
   lastTickAt: number | null;
   txs?: { call: "swap" | "withdraw"; txHash: string; block?: number }[];
+  /** Absent until the return has something to report — most of a withdrawal's life, and forever
+   *  on the direct/chainflip rails, which never land anything on their own burner to sweep. */
+  return?: WithdrawalReturnView;
 }
 
-export interface WithdrawalRailState {
-  /** `direct` for a destination on Asset Hub, which the PAS reaches with the XCM itself. */
-  provider: "direct" | "chainflip";
+/**
+ * The Meld rail's own state: the sale a withdrawal committed to, and the deposit address once
+ * known. `awaiting-deposit-address` is the phase before the seller's KYC concludes it;
+ * `deposit-known` is entered once and never left, even when a later poll stops disclosing the
+ * address (the adapter withholds it once the request concludes — see `MeldDepositDisclosure`).
+ * This is the boundary the brief for this step calls out: past it, cancelling stops being safe,
+ * and the worker may run the chain legs that pay the provider.
+ */
+export type MeldSale =
+  | {
+      phase: "awaiting-deposit-address";
+      /** The adapter's funding-request id; `GET /funding/:id` polls it. */
+      meldFundingRequestId: string;
+      /** Crypto base units the sale committed the provider to receive, quantised to the
+       *  provider's own precision. */
+      committedAmount: string;
+      /** The fiat the quote promised for `committedAmount`, and its currency. */
+      quotedFiatAmount: string;
+      quotedFiatCurrency: string;
+      /** The provider's own last lifecycle word (`getMeldStatus`'s `raw`), once one has arrived. */
+      providerStatus?: string;
+      /** The deadline the surface imposes on the sale. A sell session returns no `expiresAt` of
+       *  its own, so this is never read off the provider. */
+      sessionExpiresAt?: number;
+    }
+  | {
+      phase: "deposit-known";
+      meldFundingRequestId: string;
+      committedAmount: string;
+      quotedFiatAmount: string;
+      quotedFiatCurrency: string;
+      providerStatus?: string;
+      sessionExpiresAt?: number;
+      /** Where the seller must send the crypto, as the adapter last disclosed it. */
+      deposit: MeldDepositDisclosure;
+    };
+
+interface BaseRailState {
   stage: "waiting" | "delivering" | "delivered" | "failed";
   failure?: { message: string; code?: string };
   updatedAt: number;
 }
 
+/**
+ * `direct` and `chainflip` carry nothing beyond the generic bookkeeping; `meld` additionally owes
+ * the provider an exact amount and always carries the sale it committed to — a discriminated
+ * union rather than an optional `sale` so that building a `meld` rail without one is a type
+ * error, not a record a later reader has to notice is missing it.
+ */
+export type WithdrawalRailState =
+  | (BaseRailState & { provider: "direct" | "chainflip" })
+  | (BaseRailState & { provider: "meld"; sale: MeldSale });
+
+/** Whether a Meld withdrawal has been given its deposit address: the boundary where cancelling
+ *  stops being safe and the chain legs may begin. False for any other rail, which has no sale. */
+export const meldDepositKnown = (rail: WithdrawalRailState): boolean =>
+  rail.provider === "meld" && rail.sale.phase === "deposit-known";
+
 export interface WithdrawalRecord {
-  schema: 2;
+  schema: 3;
   kind: "withdrawal";
   ref: RequestRef;
   rev: number;
@@ -342,8 +463,13 @@ export interface WithdrawalRecord {
   startedAt: number;
   /** The CASH the user asked to withdraw, human form. */
   amountHuman: string;
-  route: "crypto";
-  /** The network and asset the funds arrive as, and where. */
+  /** How the withdrawal leaves: a crypto address on the `direct`/`chainflip` rails, or the payout
+   *  method a Meld sale was opened for. Mirrors `FundingSelection["route"]` so the shell's own
+   *  route registry and the rows it lists off `FundingTopUp.route` need no translation between
+   *  the two. */
+  route: "crypto" | "card" | "bank";
+  /** The network and asset the funds arrive as, and where. For a Meld rail there is no address of
+   *  its own to land on; `meldSellDestination` fills this in with the payout method instead. */
   destination: { chain: string; asset: string; address: string };
   /** The disposable key the purse pays: its entropy label, its People address, its public key. */
   key: { label: string; address: string; publicKeyHex: string };
@@ -355,6 +481,10 @@ export interface WithdrawalRecord {
   failure?: WithdrawalFailure;
   /** Base units of CASH the key was seen holding, once seen. */
   paidAmount?: string;
+  /** What the worker's return leg brought home from the burner, once it has something to say —
+   *  see `WithdrawalReturnView`. Never read by anything that derives `status` or `failure`: this
+   *  is purely informational, carried straight through from the worker's own `job.return`. */
+  return?: WithdrawalReturnView;
   witnesses: {
     worker?:
       | {
@@ -371,6 +501,9 @@ export interface WithdrawalRecord {
         }
       | { known: false; at: number };
     host?: { status: HostPaymentStatus; at: number };
+    /** The Meld rail's own poll. Only its `at` is kept here — the sale's own state lives on
+     *  `rail.sale` — but it is what lets a late poll be told apart from a stale one. */
+    provider?: { at: number };
     chain?: {
       best?: { keyCash: string; block?: number; at: number };
       finalized?: { keyCash: string; block?: number; at: number };
@@ -398,9 +531,23 @@ export type Observation =
       provider: "meld" | "chainflip";
       result: SwapStatusResult;
       delayed?: boolean;
+      /** Sell only: the provider's deposit terms, on the polls that disclose them. Rides beside
+       *  `result` rather than inside it for the same reason `MeldStatusView` carries it that
+       *  way: it is not a status, it is an instruction the seller has to act on. */
+      deposit?: MeldDepositDisclosure;
     }
   | { source: "provider"; at: number; provider: "meld"; unreachable: true }
-  | { source: "provider"; at: number; provider: "meld"; gone: true; message: string }
+  | {
+      source: "provider";
+      at: number;
+      provider: "meld";
+      gone: true;
+      message: string;
+      /** The reason this sale can no longer be completed, carried onto the record's failure.
+       *  Defaults to "unobserved" (the adapter losing the request outright, a 404) when absent,
+       *  which is the only caller this variant had before a bad hand-off gained one too. */
+      code?: string;
+    }
   | {
       source: "chain";
       at: number;

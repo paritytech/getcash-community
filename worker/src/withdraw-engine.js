@@ -3,11 +3,17 @@ import {
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
   DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
   freshWithdrawTickState,
+  paymentResolved,
+  PaymentUnresolvedError,
+  readBurnerOnAssetHub,
   readDestinationPas,
+  restoreWithdrawTickState,
+  serialiseWithdrawTickState,
   withdrawTickOnce,
   WithdrawRejectedError,
 } from "@getsome/withdraw";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
+import { AccountId } from "polkadot-api";
 import { readParams } from "./params.js";
 import {
   asBig,
@@ -17,6 +23,7 @@ import {
   keypairFor,
   signOptionsFor,
 } from "./shared.js";
+import { createWithdrawReturnDriver } from "./withdraw-return-engine.js";
 
 // The withdrawal engine: the only driver of withdrawTickOnce, one tick per live job per pass.
 //
@@ -25,7 +32,11 @@ import {
 // carry the entropy label, never a secret; the key is re-derived on every wake. The engine never
 // starts a payment: it watches the key the purse pays and moves what lands there.
 
-/** Bump when the record shape changes; readers skip versions they don't know. */
+/** Bump when the record shape changes; readers skip versions they don't know — and a skipped
+ *  record is never ticked and never failed, so it becomes a job with funds on a burner that
+ *  nobody is driving. The state is stored generically now, with bigints boxed, but
+ *  `restoreWithdrawTickState` reads the older bare-string form too, so the shape did not have
+ *  to break and this stays where it is. */
 const RECORD_V = 1;
 
 /** Storage key for the job map, keyed by session id. */
@@ -41,6 +52,19 @@ const PAYMENT_WINDOW_MS = 1_800_000;
 const store = createJobStore(WITHDRAW_KEY, "withdraw");
 const loadJobs = () => store.load();
 const saveJobs = () => store.save();
+/** Throws when the write does not land. For state a broadcast must not outrun. */
+const saveJobsStrict = () => store.saveStrict();
+
+/** The residue return and the unwind, over the SAME job store -- see withdraw-return-engine.js's
+ *  header for why it must be the same store instance rather than a second one opened on the same
+ *  key. */
+const { tickAllWithdrawReturn } = createWithdrawReturnDriver({
+  loadJobs,
+  saveJobs,
+  saveJobsStrict,
+  recordVersion: RECORD_V,
+});
+export { tickAllWithdrawReturn };
 
 /**
  * One withdrawal job's record, as persisted between wakes.
@@ -51,11 +75,20 @@ const saveJobs = () => store.save();
  *   amount, destination, landingHex, rail,   // what the surface asked for; kept for its records
  *   assetHubGenesis, peopleGenesis, peopleParaId, assetHubParaId, poolAccount, slippagePct,
  *   paymentExpiresAt: number|null,
+ *   meld: { committedAmount, providerPayoutAddress, orderRef, meldFundingRequestId,
+ *           quotedFiatAmount, quotedFiatCurrency, cryptoCurrency } | null,
+ *                                           // only when rail is "meld": what turns into the
+ *                                           // tick's WithdrawCommitment. Everything past
+ *                                           // committedAmount/providerPayoutAddress is unused by
+ *                                           // the tick itself and carried only so a surface that
+ *                                           // lost its own record can rebuild the sale from this
+ *                                           // job alone -- see recordFromWithdrawJob.
  *   phase: "starting" | WithdrawStep | "failed",
- *   failure?: "rejected" | "timeout" | "expired" | "cancelled",
+ *   failure?: "rejected" | "timeout" | "expired" | "cancelled" | "unresolved",
  *   done, createdAt, armedAt, lastTickAt, lastError?,
- *   state: { attempts, rejections, submitted, destinationPasBefore, expectedLanding,
- *            fundsSeenAt, workedMs },       // the two balances as decimal strings or null
+ *   state: { ...serialiseWithdrawTickState(tickState), workedMs },
+ *                                           // every field of the tick state, bigints boxed as
+ *                                           // { $bigint }, plus the engine's own workedMs
  *   submitting?: { call, at },               // written before a submit
  *   txs: [{ call, txHash, block? }],
  * }
@@ -93,8 +126,8 @@ function newRecord(input, nowMs) {
   ) {
     throw new Error("startWithdraw: destination needs chain, asset and address");
   }
-  if (input.rail !== "direct" && input.rail !== "chainflip") {
-    throw new Error("startWithdraw: rail must be direct or chainflip");
+  if (input.rail !== "direct" && input.rail !== "chainflip" && input.rail !== "meld") {
+    throw new Error("startWithdraw: rail must be direct, chainflip or meld");
   }
   if (!assetHubGenesis || !peopleGenesis) {
     throw new Error("startWithdraw: both chain genesis hashes are required");
@@ -104,6 +137,10 @@ function newRecord(input, nowMs) {
   }
   if (!poolAccount) throw new Error("startWithdraw: the pool account is required");
   if (!(slippagePct > 0)) throw new Error("startWithdraw: slippagePct must be positive");
+  // An off-ramp's sale lands with no rail of its own to carry it onward; the meld object is what
+  // turns into the tick's WithdrawCommitment, so it is validated as strictly as everything above,
+  // and its absence on a meld rail must fail before a burner is ever watched.
+  const meld = input.rail === "meld" ? meldFieldsOf(input.meld) : null;
   return {
     v: RECORD_V,
     sessionId,
@@ -125,6 +162,7 @@ function newRecord(input, nowMs) {
     poolAccount,
     slippagePct,
     paymentExpiresAt: paymentExpiryOf(input),
+    meld,
     phase: "starting",
     done: false,
     createdAt: nowMs,
@@ -135,7 +173,64 @@ function newRecord(input, nowMs) {
   };
 }
 
-const freshRecordState = () => ({ ...freshWithdrawTickState(), workedMs: 0 });
+const accountId = AccountId();
+
+/** A 32-byte account in any SS58 prefix. The same check `isAssetHubAddress` in
+ *  app/withdraw/destinations.ts makes, duplicated rather than shared because the worker cannot
+ *  import from `app/` -- it is a separate build target. */
+function isAssetHubAddress(address) {
+  try {
+    return accountId.enc(String(address).trim()).length === 32;
+  } catch {
+    return false;
+  }
+}
+
+/** Validates and normalises a meld rail's sale details. Every field is required: a commitment
+ *  the tick can only half-act on -- an amount with no address to pay it to, say -- is worse than
+ *  one refused outright, since the failure would otherwise surface mid-run instead of at the
+ *  hand-off that could still be corrected.
+ *
+ *  `providerPayoutAddress` is decode-checked, not merely required non-empty like the fields that
+ *  are only ever carried: it is the destination of an irreversible payment `payProvider` signs
+ *  against, and a bad value reaching that point does not refuse -- it throws deep inside a dry
+ *  run, which `tickAllWithdraw` treats as transient and retries forever, never even counting
+ *  against `payAttempts`, since that only advances after a dry run has already passed. Both
+ *  surface call sites canonicalise before this is ever reached, so this is defence in depth, not
+ *  the only guard -- but it is the one that keeps a bad value from becoming an infinite retry
+ *  instead of a refusal. */
+function meldFieldsOf(meld) {
+  if (typeof meld !== "object" || meld === null) {
+    throw new Error("startWithdraw: a meld rail needs its sale details");
+  }
+  const committedAmount = String(meld.committedAmount ?? "");
+  if (!/^\d+$/.test(committedAmount) || asBig(committedAmount) <= 0n) {
+    throw new Error("startWithdraw: meld.committedAmount must be a positive integer string");
+  }
+  const strings = {
+    providerPayoutAddress: "meld.providerPayoutAddress",
+    orderRef: "meld.orderRef",
+    meldFundingRequestId: "meld.meldFundingRequestId",
+    quotedFiatAmount: "meld.quotedFiatAmount",
+    quotedFiatCurrency: "meld.quotedFiatCurrency",
+    cryptoCurrency: "meld.cryptoCurrency",
+  };
+  const out = { committedAmount };
+  for (const [field, what] of Object.entries(strings)) {
+    const value = String(meld[field] ?? "");
+    if (!value) throw new Error(`startWithdraw: ${what} is required`);
+    out[field] = value;
+  }
+  if (!isAssetHubAddress(out.providerPayoutAddress)) {
+    throw new Error("startWithdraw: meld.providerPayoutAddress is not a valid Asset Hub account");
+  }
+  return out;
+}
+
+const freshRecordState = () => ({
+  ...serialiseWithdrawTickState(freshWithdrawTickState()),
+  workedMs: 0,
+});
 
 /** The surface's payment deadline, or null when it gave none. */
 const paymentExpiryOf = (input) => {
@@ -190,6 +285,15 @@ export async function startWithdraw(params) {
  */
 function rearm(record, nowMs) {
   const { failure } = record;
+  // An unresolved payment is not a thing to try again: whether the provider holds the money is
+  // unknown, and re-arming would drive straight back into the same refusal, or worse.
+  if (failure === "unresolved") return;
+  // A return has already signed from this burner, or has decided the residue is not worth
+  // moving. Re-arming would hand the job back to withdrawTickOnce, whose first-nonce reasoning
+  // no longer holds once anything besides the provider payment has signed here -- see contract 4
+  // in tick.ts's header. This is permanent: nothing clears `returnStarted`, because nothing ever
+  // should.
+  if (record.returnStarted) return;
   record.phase = "starting";
   delete record.failure;
   delete record.lastError;
@@ -197,6 +301,7 @@ function rearm(record, nowMs) {
   record.state.workedMs = 0;
   if (failure === "rejected" || failure === "timeout") {
     record.state.rejections = 0;
+    record.state.payRejections = 0;
   }
   if (failure === "expired" || failure === "cancelled") record.state.fundsSeenAt = null;
 }
@@ -224,6 +329,36 @@ export async function cancelWithdraw(params) {
   return describeWithdraw(record);
 }
 
+/** The return's own honest summary, or null while nothing has been decided about it yet. Distinct
+ *  from `phase`/`failure` above on purpose: a reader must be able to tell a sale that paid the
+ *  provider and swept a residue home from a sale that never paid anyone and came home whole --
+ *  `reason` says which, and `returned`/`returnedAmount` say what actually reached the purse, so
+ *  nothing here can be read as "sent" for a withdrawal whose money never left. */
+function describeReturn(record) {
+  const r = record.return;
+  if (!r) return null;
+  return {
+    reason: r.reason,
+    phase: r.phase,
+    returned: r.returned === true,
+    returnedAmount: r.returnedAmount ?? null,
+    // The balance a `left-below-floor` decision was made against, so a surface can say the
+    // honest thing -- "we left N behind, it costs more to move than it is worth" -- instead of
+    // silently doing nothing. Null on every other phase, where no floor decision was made.
+    nativeSeen: r.nativeSeen ?? null,
+    claim: r.claim
+      ? {
+          amount: r.claim.amount,
+          status: r.claim.status ?? null,
+          partial: r.claim.partial === true,
+          error: r.claim.error,
+        }
+      : null,
+    txs: r.txs,
+    lastError: r.lastError,
+  };
+}
+
 function describeWithdraw(record) {
   return {
     v: RECORD_V,
@@ -238,6 +373,7 @@ function describeWithdraw(record) {
     submitting: record.submitting,
     txs: record.txs,
     fundsSeenAt: record.state?.fundsSeenAt ?? null,
+    return: describeReturn(record),
   };
 }
 
@@ -272,6 +408,20 @@ function accountWorkedTime(record, nowMs) {
 function judgeBounds(record, nowMs, read) {
   if (record.phase === "failed") return;
   if (onTheClock(record) && (record.state.workedMs ?? 0) > RUN_TIMEOUT_MS) {
+    // A pin taken but not yet resolved is not an ordinary timeout: "unresolved" is the bucket for
+    // "we cannot tell whether the provider was paid", and the residue return treats an ordinary
+    // timeout as safe ground to act on (see withdraw-return-engine.js's eligibility filter).
+    // Filing this under "timeout" instead would hand the return engine a withdrawal whose payment
+    // is genuinely undecided the moment the run bound trips mid-payment, which is exactly the
+    // reachable interleaving contract 4 in tick.ts's header exists to rule out.
+    if (!paymentResolved(restoreWithdrawTickState(record.state))) {
+      fail(
+        record,
+        "unresolved",
+        `conversion exceeded ${RUN_TIMEOUT_MS}ms of worker time with the payment unresolved`,
+      );
+      return;
+    }
     fail(record, "timeout", `conversion exceeded ${RUN_TIMEOUT_MS}ms of worker time`);
     return;
   }
@@ -294,29 +444,37 @@ async function tickRecord(record, nowMs) {
     const assetHubApi = ahClient.getTypedApi(paseo_next_v2);
     const peopleApi = peopleClient.getTypedApi(paseo_people_next);
 
-    // Restore the persisted state into the shape withdrawTickOnce mutates.
-    const state = freshWithdrawTickState();
-    state.attempts = record.state.attempts ?? 0;
-    state.rejections = record.state.rejections ?? 0;
-    state.submitted = !!record.state.submitted;
-    state.destinationPasBefore = asBig(record.state.destinationPasBefore, null);
-    state.expectedLanding = asBig(record.state.expectedLanding, null);
-    state.fundsSeenAt = record.state.fundsSeenAt ?? null;
+    // Restore the persisted state into the shape withdrawTickOnce mutates. The package owns
+    // both halves of this round trip and copies EVERY field of the state generically: a
+    // hand-written list here once dropped the evidence that keeps a provider from being paid
+    // twice, because nothing makes a new field appear in a literal someone has to remember.
+    const state = restoreWithdrawTickState(record.state);
 
     // Written before a submit and after every tick, thrown ones included; withdrawTickOnce
-    // mutates the state as it works and a lost submit answer must keep its baseline.
+    // mutates the state as it works and a lost submit answer must keep its baseline. workedMs
+    // is the engine's own bookkeeping and rides alongside, not part of the tick's state.
     const persistState = () => {
       record.state = {
-        attempts: state.attempts,
-        rejections: state.rejections,
-        submitted: state.submitted,
-        destinationPasBefore:
-          state.destinationPasBefore === null ? null : String(state.destinationPasBefore),
-        expectedLanding: state.expectedLanding === null ? null : String(state.expectedLanding),
-        fundsSeenAt: state.fundsSeenAt,
+        ...serialiseWithdrawTickState(state),
         workedMs: record.state.workedMs ?? 0,
       };
     };
+
+    // An off-ramp's sale commits to an exact figure; the self-custody path carries no commitment
+    // at all and is unaffected, exactly as it was before a rail could ever be "meld" here.
+    const commitment = record.meld
+      ? {
+          planck: asBig(record.meld.committedAmount),
+          payoutAddress: record.meld.providerPayoutAddress,
+        }
+      : undefined;
+    // The funding engine's burner signs on Asset Hub with this same derived keypair (see
+    // engine.js): one sr25519 signer serves every chain the key is asked to sign on, since papi
+    // anchors the chain into the call it signs rather than the key. No second derivation here.
+    const assetHubSigner = commitment ? key.signer : undefined;
+    // Only fetched when a commitment needs it: the self-custody path pays no fee here and asks
+    // for nothing on Asset Hub before the XCM itself lands.
+    const assetHubSignOptions = commitment ? await signOptionsFor(ahClient) : undefined;
 
     let outcome;
     try {
@@ -324,16 +482,23 @@ async function tickRecord(record, nowMs) {
         {
           peopleApi,
           assetHubApi,
-          key: { address: key.address, publicKeyHex: record.keyPublicKeyHex, signer: key.signer },
+          key: {
+            address: key.address,
+            publicKeyHex: record.keyPublicKeyHex,
+            signer: key.signer,
+            ...(assetHubSigner ? { assetHubSigner } : {}),
+          },
           destinationHex: record.landingHex,
+          ...(commitment ? { commitment } : {}),
           assetHubParaId: record.assetHubParaId,
           peopleParaId: record.peopleParaId,
           poolAccount: record.poolAccount,
           slippagePct: record.slippagePct,
           tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
           submitTimeoutMs: DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
-          // Every submit is on People; one anchor per tick serves them all.
+          // Every People submit shares this anchor; the Asset Hub payment gets its own below.
           signOptions: await signOptionsFor(peopleClient),
+          ...(assetHubSignOptions ? { assetHubSignOptions } : {}),
           readKeyOnPeople: async (ss58) => {
             const [asset, native] = await Promise.all([
               peopleApi.query.Assets.Account.getValue(CASH_LOCATION, ss58),
@@ -342,12 +507,23 @@ async function tickRecord(record, nowMs) {
             return { cash: asset?.balance ?? 0n, pas: native?.data?.free ?? 0n };
           },
           readDestinationOnAssetHub: (hex) => readDestinationPas(assetHubApi, hex),
+          ...(commitment
+            ? { readBurnerOnAssetHub: (hex) => readBurnerOnAssetHub(assetHubApi, hex) }
+            : {}),
           now: Date.now,
-          // Persisted before the broadcast leaves.
+          // Persisted before the broadcast leaves, and STRICTLY: a write that did not land
+          // must stop the submit, or a pinned nonce can be lost out from under a transaction
+          // already on its way and the next reload pays the provider a second time.
           onBeforeSubmit: async (call) => {
             persistState();
             record.submitting = { call, at: Date.now() };
-            await saveJobs();
+            await saveJobsStrict();
+          },
+          // A change the end of the tick is too late to save: the pin moving on after an
+          // answered failure. Losing it strands the run as unresolvable.
+          onStateCheckpoint: async () => {
+            persistState();
+            await saveJobsStrict();
           },
           onTx: (info) => {
             delete record.submitting;
@@ -403,6 +579,11 @@ export async function tickAllWithdraw() {
       } catch (error) {
         if (error instanceof WithdrawRejectedError) {
           fail(record, "rejected", error.message);
+        } else if (error instanceof PaymentUnresolvedError) {
+          // Whether the provider was paid cannot be settled from the chain's head. Retrying
+          // cannot learn more and the pinned nonce makes a retry a no-op anyway, so the job
+          // stops here for a human rather than looping on an unanswerable question.
+          fail(record, "unresolved", error.message);
         } else {
           // Other errors are transient; the next wake retries.
           record.lastError = String(error?.message ?? error);

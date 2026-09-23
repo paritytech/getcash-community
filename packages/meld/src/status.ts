@@ -2,7 +2,7 @@
 // payment's progress; the funding pipeline confirms the native-token arrival on the burner.
 
 import type { FailureKind, SwapStatusResult } from "@getsome/core";
-import type { MeldClientLike } from "./client";
+import type { MeldClientLike, MeldDepositDisclosure } from "./client";
 
 /** Delivered. The adapter saw a settled transaction filed under this request. */
 const SETTLED = "settled";
@@ -12,13 +12,26 @@ const RECEIVING = "transaction_seen";
 
 /**
  * Temporarily stuck, NOT terminal: the provider's crypto delivery failed and is being retried on
- * their side (Meld's TRANSACTION_CRYPTO_FAILED webhook). The poll keeps going and the journey
+ * their side (Meld's TRANSACTION_CRYPTO_FAILED event, which the adapter learns by polling Meld —
+ * nothing is pushed to us at any hop). The poll keeps going and the journey
  * shows a delay notice; a payment that stays stuck concludes through one of the terminal states.
  */
 const DELAYED = new Set(["crypto_failed", "transaction_crypto_failed"]);
 
-/** A Meld status view: core's normalized status plus the transient delay marker. */
-export type MeldStatusView = SwapStatusResult & { delayed?: boolean };
+/**
+ * A Meld status view: core's normalized status, the transient delay marker, and a sell's deposit
+ * terms when this poll disclosed them.
+ *
+ * `deposit` rides along rather than being folded into the normalized status because it is not a
+ * status at all — it is the instruction the seller has to act on, and the coarse states cannot
+ * carry it. It is present only on the polls the adapter discloses it on, so a caller reads it
+ * from the poll it came with and never from a remembered copy: the terms can be withdrawn, and
+ * an address kept after that is an address nobody is standing behind.
+ */
+export type MeldStatusView = SwapStatusResult & {
+  delayed?: boolean;
+  deposit?: MeldDepositDisclosure;
+};
 
 /**
  * Terminal with the money returned (Meld's REFUNDED: the charge was captured, then sent back to
@@ -100,11 +113,16 @@ export async function getMeldStatus(
   client: MeldClientLike,
   fundingRequestId: string,
 ): Promise<MeldStatusView> {
-  const { status, providerStatus, sourceAmount, fiat } = await client.getStatus(fundingRequestId);
+  const { status, providerStatus, sourceAmount, fiat, deposit } =
+    await client.getStatus(fundingRequestId);
+  // A sell's deposit terms, on the polls that disclosed them. Carried onto the live views only:
+  // the adapter withholds them once a request concludes, so a terminal view that somehow had
+  // them would be showing a seller an address nobody is standing behind any more.
+  const disclosed = deposit !== undefined ? { deposit } : {};
   if (status === SETTLED) return { status: "complete", raw: status };
-  if (status === RECEIVING) return { status: "receiving", raw: status };
+  if (status === RECEIVING) return { status: "receiving", raw: status, ...disclosed };
   // The payment went through; only the crypto delivery is stuck and retrying.
-  if (DELAYED.has(status)) return { status: "receiving", delayed: true, raw: status };
+  if (DELAYED.has(status)) return { status: "receiving", delayed: true, raw: status, ...disclosed };
   // Kept for an adapter whose lifecycle grows the state itself; today the refund arrives as
   // `failed` with a REFUNDED provider status, handled below.
   if (status === REFUNDED) {
@@ -131,6 +149,7 @@ export async function getMeldStatus(
       raw: providerStatus ?? status,
     };
   }
-  // `created`, `session_opened`, and any state added later.
-  return { status: "waiting", raw: status };
+  // `created`, `session_opened`, and any state added later. This is where a sell spends most of
+  // its life, and where its deposit terms are read from.
+  return { status: "waiting", raw: status, ...disclosed };
 }

@@ -252,6 +252,55 @@ describe("requests store: withdrawals", () => {
     expect(await stored(REF)).toMatchObject({ status: { kind: "sent" } });
   });
 
+  it("carries the worker's return through to the record, without reading it as sent", async () => {
+    // A rejected payment whose whole balance has come home: the sale itself stays failed --
+    // `return` is the only place a reader learns the money is back.
+    await seed([withdrawal()], {
+      [SESSION]: job({
+        phase: "failed",
+        failure: "rejected",
+        lastError: "the network refused it",
+        state: { fundsSeenAt: STARTED + 1_000, submitted: true },
+        return: {
+          reason: "unwind",
+          phase: "done",
+          returned: true,
+          returnedAmount: "21000000",
+          nativeSeen: null,
+          claim: { amount: "21000000", status: "claimed", partial: false },
+          txs: [{ call: "swap", txHash: "0xreturn" }],
+        },
+      }),
+    });
+    const requests = useRequestsStore();
+    await requests.reconcile("boot");
+    const record = requests.get(REF);
+    expect(record?.status.kind).toBe("failed");
+    expect(record).toMatchObject({
+      return: {
+        reason: "unwind",
+        phase: "done",
+        returned: true,
+        returnedAmount: "21000000",
+        claim: { amount: "21000000", status: "claimed", partial: false },
+      },
+    });
+  });
+
+  it("ignores a malformed return rather than throwing", async () => {
+    await seed([withdrawal()], {
+      [SESSION]: job({
+        phase: "failed",
+        failure: "rejected",
+        state: { fundsSeenAt: STARTED + 1_000, submitted: true },
+        return: { reason: "not-a-real-reason", phase: "done" },
+      }),
+    });
+    const requests = useRequestsStore();
+    await requests.reconcile("boot");
+    expect(requests.get(REF)?.return).toBeUndefined();
+  });
+
   it("gives a withdrawal job the surface never recorded a record from the hand-off it keeps", async () => {
     await seed([], { [SESSION]: job({ phase: "swap", state: { fundsSeenAt: STARTED + 1_000 } }) });
     const requests = useRequestsStore();
@@ -268,6 +317,55 @@ describe("requests store: withdrawals", () => {
       rail: { provider: "direct" },
     });
     expect(await stored(REF)).not.toBeNull();
+  });
+
+  it("rebuilds a meld withdrawal job the surface never recorded as an already deposit-known sale", async () => {
+    // The worker is never handed a meld job until its sale has disclosed a payout address (see
+    // requests-withdrawal-meld-handoff.test.ts), so a meld job that exists to be recovered from
+    // here always carries the full `meld` sub-object the hand-off was built with.
+    const meld = {
+      committedAmount: "900000000",
+      providerPayoutAddress: "5FHneW46xGXgs5mUiveU4sbTyGBzmstUspZC92UhjJM694ty",
+      orderRef: "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
+      meldFundingRequestId: "funding-req-1",
+      quotedFiatAmount: "156.30",
+      quotedFiatCurrency: "USD",
+      cryptoCurrency: "DOT_ASSETHUB",
+    };
+    await seed([], {
+      [SESSION]: job({
+        rail: "meld",
+        meld,
+        phase: "pay-provider",
+        state: { fundsSeenAt: STARTED + 1_000, submitted: true },
+      }),
+    });
+    const requests = useRequestsStore();
+    await requests.reconcile("boot");
+    const record = requests.get(REF);
+    expect(record?.rail.provider).toBe("meld");
+    if (record?.rail.provider !== "meld" || record.rail.sale.phase !== "deposit-known") {
+      throw new Error("expected a reconstructed meld sale, already deposit-known");
+    }
+    expect(record.rail.sale).toMatchObject({
+      meldFundingRequestId: "funding-req-1",
+      committedAmount: "900000000",
+      quotedFiatAmount: "156.30",
+      quotedFiatCurrency: "USD",
+      deposit: {
+        address: meld.providerPayoutAddress,
+        amount: "0.09", // 900000000 planck at 10 decimals
+        currency: "DOT_ASSETHUB",
+      },
+    });
+    expect(record.handoff.meld).toEqual(meld);
+  });
+
+  it("refuses a meld job missing its sale details, the same as any other malformed job", async () => {
+    await seed([], { [SESSION]: job({ rail: "meld", phase: "await-cash" }) });
+    const requests = useRequestsStore();
+    await requests.reconcile("boot");
+    expect(requests.has(REF)).toBe(false);
   });
 
   it("does not sweep a cancelled withdrawal's job back into a record", async () => {
@@ -337,6 +435,50 @@ describe("requests store: withdrawals", () => {
     const requests = useRequestsStore();
     await requests.reconcile("boot");
     expect(await requests.cancelWithdrawal(REF, { readKeyCash: async () => 0n })).toBe("refused");
+  });
+
+  it("refuses a Meld sale's cancel once its deposit address is known, without reading the key or the host", async () => {
+    let readKeyCalled = false;
+    await seed(
+      [
+        withdrawal({
+          payment: { attempt: 0 },
+          rail: {
+            provider: "meld",
+            stage: "waiting",
+            updatedAt: STARTED,
+            sale: {
+              phase: "deposit-known",
+              meldFundingRequestId: "funding-1",
+              committedAmount: "900000000",
+              quotedFiatAmount: "150.00",
+              quotedFiatCurrency: "USD",
+              deposit: {
+                address: "14Kt4HmnCzMqUKvWcGZdLaWkLNcL4TcUSXYvKyKdbMhsvRxM",
+                amount: "0.09",
+                currency: "DOT_ASSETHUB",
+                observedAt: STARTED,
+              },
+            },
+          },
+        }),
+      ],
+      {},
+    );
+    const requests = useRequestsStore();
+    await requests.reconcile("boot");
+    // Nothing was paid and the rank is still 0 — a rank/payment check alone would say "ok" here.
+    const outcome = await requests.cancelWithdrawal(REF, {
+      readKeyCash: async () => {
+        readKeyCalled = true;
+        return 0n;
+      },
+    });
+    expect(outcome).toBe("refused");
+    // Refused before it ever asked the chain: a bounded read that timed out would have answered
+    // "unconfirmed" instead, telling the seller to check their connection when the honest answer
+    // is that the sale has already moved past the point a cancel can be honoured.
+    expect(readKeyCalled).toBe(false);
   });
 
   it("keeps the top-up paths for top-ups: their cancel and retry refuse a withdrawal", async () => {

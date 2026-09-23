@@ -122,7 +122,23 @@ const loadCryptoWithdrawRoute = () =>
     ({ default: component }) => component,
   );
 
-/** The withdrawal routes. Only crypto has a package; card and bank resolve to unavailable. The
+const loadMeldWithdrawRoute = () =>
+  import("../components/withdraw/routes/MeldWithdrawRoute.vue").then(
+    ({ default: component }) => component,
+  );
+
+/** The package shared by the withdrawal side's card and bank routes, the same way `meldPackage`
+ *  above is shared on the buy side. */
+const meldWithdrawPackage = {
+  packageId: "@getsome/withdraw-meld",
+  load: loadMeldWithdrawRoute,
+  topUps: {
+    useAdapter: useWithdrawalTopUpAdapter,
+    loadStatus: loadMeldWithdrawRoute,
+  },
+} satisfies FundingRoutePackage;
+
+/** The withdrawal routes: crypto and, now, the Meld sell rail's card and bank payouts. Each
  *  package hosts its own journey, so a withdrawal opened from the list loads the same route. */
 export const getcashWithdrawPackages = {
   crypto: {
@@ -133,6 +149,8 @@ export const getcashWithdrawPackages = {
       loadStatus: loadCryptoWithdrawRoute,
     },
   },
+  card: meldWithdrawPackage,
+  bank: meldWithdrawPackage,
 } satisfies FundingRoutePackages;
 
 export const getcashRoutePackages = {

@@ -1,7 +1,10 @@
 // Reads a stored record into the schema 2 shape. A legacy `ActiveFlowRecord` is upgraded from
 // its fields, which are kept as they are; a schema 2 top-up is taken as stored, with any missing
 // additive field filled by the same rules. A withdrawal has no legacy form: it is taken as
-// stored when it carries what the reducer reads, and dropped otherwise.
+// stored when it carries what the reducer reads, and dropped otherwise. A withdrawal's own
+// schema 2 -> 3 step (the Meld rail) needs no field transform: the new rail and hand-off fields
+// are additive and optional, so a stored `direct` or `chainflip` record already satisfies schema
+// 3 and only its stamp is bumped.
 
 import type { ActiveFlowRecord } from "../../stores/session";
 import { toCashBase } from "../../utils/cash";
@@ -34,12 +37,16 @@ function isStoredRecord(raw: unknown): raw is StoredRecord {
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
-/** A stored withdrawal with every field the reducer and the drivers read. The key the record
- *  was read under is its identity. */
+/** A stored withdrawal with every field the reducer and the drivers read, schema 2 or 3. A
+ *  schema-2 record predates the Meld rail; its `direct` or `chainflip` rail and hand-off carry no
+ *  field schema 3 added, so it is taken as stored and only restamped. */
 function withdrawalRecord(raw: StoredRecord, ref: RequestRef): WithdrawalRecord | null {
+  // Checked against `raw.schema` (typed `unknown`) rather than the cast below: `WithdrawalRecord`
+  // only ever names its current schema, so a `Partial<WithdrawalRecord>` view of it cannot
+  // itself compare true to the old one.
+  if (raw.schema !== 2 && raw.schema !== 3) return null;
   const stored = raw as unknown as Partial<WithdrawalRecord>;
   if (
-    stored.schema !== 2 ||
     !isObject(stored.status) ||
     typeof stored.status.kind !== "string" ||
     !isObject(stored.payment) ||
@@ -55,6 +62,7 @@ function withdrawalRecord(raw: StoredRecord, ref: RequestRef): WithdrawalRecord 
   }
   return {
     ...(stored as WithdrawalRecord),
+    schema: 3,
     kind: "withdrawal",
     ref,
     rev: typeof stored.rev === "number" ? stored.rev : 0,

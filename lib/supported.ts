@@ -5,6 +5,11 @@
 /** The crypto every catalog query is for. */
 export const MELD_DESTINATION = "DOT_ASSETHUB";
 
+/** Which side of the trade a catalog query is for. Absent on the wire means buy — the adapter's
+ *  existing default and the direction every caller before the sell picker already sent none for —
+ *  so a buy call must never start sending `direction=buy` explicitly. */
+export type MeldDirection = "buy" | "sell";
+
 export type SupportedMethodCategory = "card" | "bank" | "wallet" | "other";
 
 /** One payment method a corridor offers, with its fiat limits. */
@@ -51,9 +56,17 @@ function headers(): Record<string, string> {
   };
 }
 
-let countriesCache: SupportedCountry[] | null = null;
-const corridorCache = new Map<string, SupportedCorridor>();
-let corridorsCache: Map<string, SupportedCorridor> | null = null;
+// Cached per direction: a buy and a sell catalog answer differently for the same country, and
+// conflating them would show a seller the buyer's routing or vice versa.
+const countriesCache = new Map<MeldDirection, SupportedCountry[]>();
+const corridorCache = new Map<string, SupportedCorridor>(); // key: `${direction}:${country}`
+const corridorsCache = new Map<MeldDirection, Map<string, SupportedCorridor>>();
+
+/** The query-string suffix for `direction`, empty for buy so its request stays byte-identical to
+ *  before this parameter existed. */
+function directionParam(direction: MeldDirection): string {
+  return direction === "sell" ? "&direction=sell" : "";
+}
 
 function isCategory(value: unknown): value is SupportedMethodCategory {
   return value === "card" || value === "bank" || value === "wallet" || value === "other";
@@ -71,16 +84,19 @@ function toMethod(raw: Record<string, unknown>, fiat: string): SupportedMethod {
 }
 
 /**
- * The region dropdown, from the adapter. Cached for the tab's lifetime. Returns `null` when
- * discovery is unreachable or unconfigured.
+ * The region dropdown, from the adapter. Cached for the tab's lifetime, per direction. Returns
+ * `null` when discovery is unreachable or unconfigured.
  */
-export async function fetchSupportedCountries(): Promise<SupportedCountry[] | null> {
-  if (countriesCache !== null) return countriesCache;
+export async function fetchSupportedCountries(
+  direction: MeldDirection = "buy",
+): Promise<SupportedCountry[] | null> {
+  const hit = countriesCache.get(direction);
+  if (hit !== undefined) return hit;
   const base = baseUrl();
   if (base === undefined) return null;
   try {
     const res = await fetch(
-      `${base.replace(/\/$/, "")}/supported/countries?destinationCurrencyCode=${encodeURIComponent(MELD_DESTINATION)}`,
+      `${base.replace(/\/$/, "")}/supported/countries?destinationCurrencyCode=${encodeURIComponent(MELD_DESTINATION)}${directionParam(direction)}`,
       { headers: headers() },
     );
     if (!res.ok) return null;
@@ -90,7 +106,7 @@ export async function fetchSupportedCountries(): Promise<SupportedCountry[] | nu
       name: String(r.name ?? r.country ?? ""),
     }));
     // Only a non-empty catalog is cached; an empty one is fetched again next call.
-    if (rows.length > 0) countriesCache = rows;
+    if (rows.length > 0) countriesCache.set(direction, rows);
     return rows;
   } catch {
     return null;
@@ -98,17 +114,21 @@ export async function fetchSupportedCountries(): Promise<SupportedCountry[] | nu
 }
 
 /**
- * The methods and limits a country's corridor offers. Cached per country. Returns `null` when
- * discovery is unreachable; an empty `methods` array means nothing routes here.
+ * The methods and limits a country's corridor offers. Cached per direction and country. Returns
+ * `null` when discovery is unreachable; an empty `methods` array means nothing routes here.
  */
-export async function fetchCorridor(country: string): Promise<SupportedCorridor | null> {
-  const hit = corridorCache.get(country);
+export async function fetchCorridor(
+  country: string,
+  direction: MeldDirection = "buy",
+): Promise<SupportedCorridor | null> {
+  const key = `${direction}:${country}`;
+  const hit = corridorCache.get(key);
   if (hit !== undefined) return hit;
   const base = baseUrl();
   if (base === undefined) return null;
   try {
     const res = await fetch(
-      `${base.replace(/\/$/, "")}/supported?country=${encodeURIComponent(country)}&destinationCurrencyCode=${encodeURIComponent(MELD_DESTINATION)}`,
+      `${base.replace(/\/$/, "")}/supported?country=${encodeURIComponent(country)}&destinationCurrencyCode=${encodeURIComponent(MELD_DESTINATION)}${directionParam(direction)}`,
       { headers: headers() },
     );
     if (!res.ok) return null;
@@ -124,21 +144,25 @@ export async function fetchCorridor(country: string): Promise<SupportedCorridor 
       fiat,
       methods: (data.methods ?? []).map((m) => toMethod(m, fiat)),
     };
-    corridorCache.set(country, corridor);
+    corridorCache.set(key, corridor);
     return corridor;
   } catch {
     return null;
   }
 }
 
-// Every supported corridor as a country -> corridor map, DB-backed and tab-cached; null when unreachable.
-export async function fetchSupportedCorridors(): Promise<Map<string, SupportedCorridor> | null> {
-  if (corridorsCache !== null) return corridorsCache;
+// Every supported corridor as a country -> corridor map, DB-backed and cached per direction for
+// the tab's lifetime; null when unreachable.
+export async function fetchSupportedCorridors(
+  direction: MeldDirection = "buy",
+): Promise<Map<string, SupportedCorridor> | null> {
+  const hit = corridorsCache.get(direction);
+  if (hit !== undefined) return hit;
   const base = baseUrl();
   if (base === undefined) return null;
   try {
     const res = await fetch(
-      `${base.replace(/\/$/, "")}/supported/corridors?destinationCurrencyCode=${encodeURIComponent(MELD_DESTINATION)}`,
+      `${base.replace(/\/$/, "")}/supported/corridors?destinationCurrencyCode=${encodeURIComponent(MELD_DESTINATION)}${directionParam(direction)}`,
       { headers: headers() },
     );
     if (!res.ok) return null;
@@ -153,7 +177,7 @@ export async function fetchSupportedCorridors(): Promise<Map<string, SupportedCo
       map.set(country, { country, fiat, methods: (c.methods ?? []).map((m) => toMethod(m, fiat)) });
     }
     // Only a non-empty result is cached; an empty one (cold cache) is retried next call.
-    if (map.size > 0) corridorsCache = map;
+    if (map.size > 0) corridorsCache.set(direction, map);
     return map;
   } catch {
     return null;

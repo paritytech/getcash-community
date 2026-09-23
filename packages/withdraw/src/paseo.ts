@@ -9,6 +9,12 @@ export const PASEO_PEOPLE_POOL_ACCOUNT = "5Di1GihZ1G2dYzfD7gv2DLEzFvRMBLas3jXGLe
 /** The pool's LP fee, parts per million: 0.3 percent. */
 export const PEOPLE_POOL_FEE_PPM = 3_000n;
 
+/** Asset Hub's LP fee, parts per million. Stated apart from People's because the two chains
+ *  configure the pallet independently and nothing keeps them equal; every caller takes it as a
+ *  parameter rather than reaching for People's. The runtime carries it as `AssetConversion.LPFee`,
+ *  but over a denominator that is a runtime detail, so it is named here instead of read. */
+export const ASSET_HUB_POOL_FEE_PPM = 3_000n;
+
 /** The native as People keys it. */
 export const PEOPLE_NATIVE = { parents: 1, interior: { type: "Here" } };
 

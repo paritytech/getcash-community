@@ -15,10 +15,17 @@ import {
 } from "@getsome/host";
 import { CASH_LOCATION } from "@getsome/people";
 import {
+  ASSET_HUB_POOL_FEE_PPM,
+  assetHubAddressFor,
+  assetHubPaymentOverhead,
   CASH_ON_ASSET_HUB,
   DEFAULT_WITHDRAW_SLIPPAGE_PCT,
   PASEO_PEOPLE_POOL_ACCOUNT,
   PEOPLE_NATIVE,
+  probeAssetHubReserves,
+  RELAY_NATIVE_DECIMALS,
+  sizeCommitment,
+  type Commitment,
 } from "@getsome/withdraw";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import {
@@ -28,6 +35,8 @@ import {
   type WithdrawalHandoffPayload,
 } from "../app/funding/requests/model";
 import { hostSafeEntropy, nextFreeTradeNumber, readTradeCounter, tradeCounterKey } from "./coinage";
+import { isHosted } from "./host-account";
+import { createMemoryAdapter } from "@getsome/testing";
 import {
   requestPayment as hostRequestPayment,
   subscribePaymentStatus,
@@ -57,9 +66,56 @@ export interface WithdrawKey {
   publicKeyHex: `0x${string}`;
 }
 
+/** The account a Meld sale's PAS lands on: the burner's OWN Asset Hub account, never the
+ *  destination the user asked to receive at and never the provider's payout address (which is
+ *  not known until the sale discloses it). The worker pays the provider onward from here once it
+ *  is told where. Same bytes as the People address: Asset Hub decodes the identical account from
+ *  them, the SS58 prefix being presentation only, so the "hex" form does not change across
+ *  chains — see `assetHubAddressFor`. */
+export function meldLandingHex(key: WithdrawKey): string {
+  return key.publicKeyHex;
+}
+
+/** The per-order key a Meld sell session's idempotency key is minted under: the burner's own
+ *  Asset Hub address, derived from the same key that will pay the provider. Stable across a
+ *  reload — the same label re-derives the same key, hence the same address — and distinct per
+ *  withdrawal, since every withdrawal derives its own key from its own number. This is what stops
+ *  two sales in one corridor from resuming into each other; see `MeldSellSessionRequest.orderRef`.
+ *  Never passed in by a caller: computing it here, from the key alone, is what makes "derived,
+ *  never passed in loosely" true rather than merely documented. */
+export function meldOrderRefFor(key: WithdrawKey): string {
+  return assetHubAddressFor(key.publicKeyHex);
+}
+
+/** A planck amount as the whole-token decimal string Meld's sell session wants, at the relay
+ *  native asset's full precision. Trims trailing fractional zeros; never scientific notation,
+ *  since `amount` is already an integer. */
+export function planckToDecimalString(amount: bigint, decimals = RELAY_NATIVE_DECIMALS): string {
+  const negative = amount < 0n;
+  const digits = (negative ? -amount : amount).toString().padStart(decimals + 1, "0");
+  const whole = digits.slice(0, digits.length - decimals);
+  const frac = digits.slice(digits.length - decimals).replace(/0+$/, "");
+  return (negative ? "-" : "") + whole + (frac ? `.${frac}` : "");
+}
+
+// Browser-only deterministic seed when there is no host entropy root; the host always derives its own.
+function browserEntropyPort(): { deriveSeed(label: Uint8Array): Promise<Uint8Array> } {
+  return {
+    async deriveSeed(label: Uint8Array): Promise<Uint8Array> {
+      const out = new Uint8Array(32);
+      label.forEach((b, i) => {
+        out[i % 32] = (out[i % 32] ?? 0) ^ b;
+      });
+      return out;
+    },
+  };
+}
+
 /** Withdrawal `n`'s key, derived from the host's entropy root. */
 export async function withdrawKeyFor(sourceId: string, n: number): Promise<WithdrawKey> {
-  const entropy = createHostEntropyPort(hostSafeEntropy(deriveEntropy));
+  const entropy: { deriveSeed(label: Uint8Array): Promise<Uint8Array> } = isHosted()
+    ? createHostEntropyPort(hostSafeEntropy(deriveEntropy))
+    : browserEntropyPort();
   const seed = await entropy.deriveSeed(
     new TextEncoder().encode(withdrawEntropyLabel(sourceId, n)),
   );
@@ -103,7 +159,54 @@ export async function quoteDirectReceive(amount: bigint): Promise<bigint> {
   return quoted;
 }
 
+/**
+ * Sizes the exact DOT a Meld sale commits to: what Asset Hub's pool still pays out after a KYC
+ * window's worth of adverse flow, less the transfer fee and existential deposit the payment
+ * leaves behind, quantised to the provider's own precision. See `sizeCommitment` for the reasoning
+ * behind the buffer; this is only the chain-reading side of it.
+ *
+ * The provider's payout address is not known this early — it only arrives once KYC concludes — so
+ * the transfer-fee estimate is read against the burner's OWN address rather than the real one. A
+ * same-shaped balance transfer's weight does not turn on whose account receives it, and the
+ * worker's own overhead estimate, made once the real address is known, carries the same headroom
+ * this one does (`ASSET_HUB_TRANSFER_FEE_HEADROOM_PCT`), so a difference between the two is
+ * absorbed rather than fatal.
+ */
+export async function sizeMeldCommitment(
+  key: WithdrawKey,
+  cashToSell: bigint,
+): Promise<Commitment> {
+  const { connectChain, ASSET_HUB } = await import("./host-chain");
+  const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
+  const [reserves, quotedOut, overhead] = await Promise.all([
+    probeAssetHubReserves(api, cashToSell, ASSET_HUB_POOL_FEE_PPM),
+    api.apis.AssetConversionApi.quote_price_exact_tokens_for_tokens(
+      CASH_ON_ASSET_HUB as never,
+      PEOPLE_NATIVE as never,
+      cashToSell,
+      true,
+    ),
+    assetHubPaymentOverhead(api, key.publicKeyHex, { payoutAddress: key.address }),
+  ]);
+  if (quotedOut === undefined) throw new Error("Asset Hub cannot quote the sale");
+  return sizeCommitment({
+    cashToSell,
+    reserves,
+    poolFeePpm: ASSET_HUB_POOL_FEE_PPM,
+    quotedOut,
+    transferFeePlanck: overhead.transferFeePlanck,
+    existentialDeposit: overhead.existentialDeposit,
+  });
+}
+
+// Browser-only in-memory counter when there is no host store; never used in the host.
+let browserStore: ReturnType<typeof createMemoryAdapter> | null = null;
+
 async function hostStorageAdapter() {
+  if (!isHosted()) {
+    if (browserStore === null) browserStore = createMemoryAdapter();
+    return browserStore;
+  }
   const storage = await getHostLocalStorage();
   if (!storage) throw new Error("host storage unavailable (not running inside the Polkadot App?)");
   return createHostStorageAdapter(storage as HostLocalStorageLike);
@@ -136,7 +239,13 @@ export async function advanceWithdrawCounter(sourceId: string, n: number): Promi
   }
 }
 
-/** The hand-off for a withdrawal, with the chain facts this build is made for. */
+/** The hand-off for a withdrawal, with the chain facts this build is made for.
+ *
+ *  `meld` is left off until the sale has a provider payout address to give the worker: handing
+ *  the worker a commitment it cannot pay out would either strand the run on a field nothing can
+ *  fill in, or — far worse — let it run the chain legs not knowing where the sale must ultimately
+ *  be paid onward. See `setWithdrawalMeldHandoff` in the requests store, which fills it in once
+ *  the deposit is disclosed and the hand-off actually goes out. */
 export function withdrawHandoff(args: {
   sourceId: string;
   n: number;
@@ -146,6 +255,7 @@ export function withdrawHandoff(args: {
   landingHex: string;
   rail: WithdrawalHandoffPayload["rail"];
   paymentExpiresAt: number;
+  meld?: WithdrawalHandoffPayload["meld"];
 }): WithdrawalHandoffPayload {
   return {
     label: withdrawEntropyLabel(args.sourceId, args.n),
@@ -162,6 +272,7 @@ export function withdrawHandoff(args: {
     poolAccount: PASEO_PEOPLE_POOL_ACCOUNT,
     slippagePct: DEFAULT_WITHDRAW_SLIPPAGE_PCT,
     paymentExpiresAt: args.paymentExpiresAt,
+    ...(args.meld === undefined ? {} : { meld: args.meld }),
   };
 }
 

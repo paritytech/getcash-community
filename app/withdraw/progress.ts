@@ -57,6 +57,27 @@ function sendingStage(nominalMs: number) {
 const PROFILES: Record<WithdrawalRailState["provider"], FundingProgressProfile> = {
   direct: composeFundingProgressProfile(route, sendingStage(MINUTE)),
   chainflip: composeFundingProgressProfile(route, sendingStage(20 * MINUTE)),
+  // A payout rail, not a swap: the chain legs land in minutes, but the provider's own payout
+  // (ACH, SEPA, ...) is what this node is actually waiting on for most of its length. The buy
+  // side's own bank route quotes "1-2 business days"; this takes the upper end of that rather
+  // than splitting it, because a sell's clock does not start until the chain legs and the
+  // provider's own conversion are also done, both of which the buy side's estimate never has to
+  // absorb. Card and bank share this figure: unlike the buy side, nothing here distinguishes the
+  // two payout methods' own timing, and a wrong split would be worse than an honest single
+  // number.
+  meld: composeFundingProgressProfile(route, {
+    stages: [
+      {
+        key: SENDING,
+        nodeLabel: "Sent",
+        // Two legs share this node: the chain carrying the crypto to the provider, then the
+        // provider converting it to fiat. Neither is "your address" — a payout has none — so the
+        // wording says what is actually happening instead of borrowing the crypto rails' line.
+        activeLabel: "Converting to cash",
+        nominalMs: 2 * 24 * 60 * MINUTE,
+      },
+    ],
+  }),
 };
 
 export const withdrawalProgressProfile = (rail: WithdrawalRailState["provider"]) => PROFILES[rail];
