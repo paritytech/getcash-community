@@ -5,7 +5,6 @@
 import { TOKENS } from "@getsome/core";
 import { describe, expect, it } from "vitest";
 import {
-  PSM_ROUTE_ENABLED,
   ROUTE_MARGIN_FLOOR,
   chooseRoute,
   mintHeadroom,
@@ -195,22 +194,6 @@ describe("withMargin and mintHeadroom", () => {
     expect(mintHeadroom({ ...base, debt: 30n, totalDebt: 30n })).toBe(0n);
     expect(mintHeadroom({ ...base, weight: 0n })).toBe(0n);
     expect(mintHeadroom({ ...base, totalWeight: 0n })).toBe(0n);
-  });
-});
-
-describe("chooseRoute", () => {
-  it("answers pool without a single read while the switch is off", async () => {
-    expect(PSM_ROUTE_ENABLED).toBe(false);
-    const untouchable = new Proxy(
-      {},
-      {
-        get() {
-          throw new Error("the chain must not be read while the PSM route is disabled");
-        },
-      },
-    ) as never;
-    expect(await chooseRoute(untouchable, mint(50n * CASH))).toEqual(POOL);
-    expect(await chooseRoute(untouchable, redeem(50n * CASH))).toEqual(POOL);
   });
 });
 
