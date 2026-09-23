@@ -10,7 +10,9 @@ import { keccak_256 } from "@noble/hashes/sha3.js";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 import { base58, bech32, createBase58check } from "@scure/base";
 
-const REFUND_CHAINS = ["Bitcoin", "Ethereum", "Arbitrum", "Tron", "Solana"] as const;
+/** Exported so a consumer that must cover every refund chain — an explorer map, say — can be
+ *  checked against the set rather than restating it. */
+export const REFUND_CHAINS = ["Bitcoin", "Ethereum", "Arbitrum", "Tron", "Solana"] as const;
 
 export type RefundChain = (typeof REFUND_CHAINS)[number];
 

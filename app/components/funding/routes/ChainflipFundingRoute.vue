@@ -3,6 +3,7 @@
 // off to the journey once funds are seen or the deposit window lapses.
 import { computed, onMounted, onUnmounted } from "vue";
 import { isDemoBuild } from "../../../utils/demo";
+import { previewStage } from "../../../utils/dev-preview-stage";
 import { useChainflipHandoff } from "../../../composables/useChainflipHandoff";
 import { useStateDirector } from "../../../composables/useStateDirector";
 import { useVisibilityReconcile } from "../../../composables/useVisibilityReconcile";
@@ -25,7 +26,7 @@ const requests = useRequestsStore();
 const flow = useFlowStore();
 const offers = useOffersStore();
 useVisibilityReconcile();
-const { previewLabel } = useStateDirector();
+useStateDirector();
 const { handedOff } = useChainflipHandoff(emit);
 
 const toolbar = computed<{
@@ -83,6 +84,9 @@ function onDepositSkip() {
 
 let active = true;
 onMounted(async () => {
+  // The preview deck put this package on screen for a scene that owns the store state; its own
+  // entry — a fresh flow, a re-quote, a floor sweep — would land on top of what the scene wrote.
+  if (previewStage.value?.kind === "package") return;
   flow.startOver();
   session.setAmount(props.selection.amount);
   flow.step = "network";
@@ -149,11 +153,6 @@ onUnmounted(() => {
     </div>
 
     <!-- state-director scene label (dev/demo keys only) -->
-    <span
-      v-if="previewLabel"
-      class="fixed bottom-2 left-2 rounded-small bg-surface-container px-2 py-1 font-mono text-overline text-fg-secondary shadow-1"
-    >
-      {{ previewLabel }}
-    </span>
+    <PreviewSceneLabel />
   </main>
 </template>

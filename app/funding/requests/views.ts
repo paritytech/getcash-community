@@ -90,6 +90,12 @@ export const JOURNEY_STAGES: Record<JourneyScale, readonly string[]> = {
   bank: ["Started", "Payment", "Added"],
 };
 
+/** A failure that closed the deposit window with nothing paid, as against a payment that went
+ *  wrong. The design names the step itself ("Expired") and shows no money rows, so the two endings
+ *  have to stay apart on the record as well as in the live world. */
+export const expiredFailure = (kind?: FailureKind): boolean =>
+  kind === "expired" || kind === "stale";
+
 /** A side exit's kind: the network took the payment even though it could not deliver it. */
 const paymentTaken = (kind?: FailureKind): boolean =>
   kind === "refunded" ||
@@ -222,11 +228,21 @@ export function rowStateOf(
     case "failed":
     case "expired": {
       const reason = record.failure?.message ?? record.failureReason;
+      // A refund's own figures, for a journey reopened from history: without them it can say only
+      // that a refund happened, not how much came back or where to look for it.
+      const refunded = record.refunded === true;
+      const refund = record.failure?.refund;
+      // The status is the rail's own word on an expiry; the failure's kind covers a record whose
+      // status stayed `failed` because the expiry came back from core rather than the deadline.
+      const expired = status.kind === "expired" || expiredFailure(record.failure?.kind);
       return {
         kind: "failed",
         at: status.at,
+        ...(expired ? { expired: true } : {}),
         ...(reason === undefined ? {} : { reason }),
-        ...(record.refunded === true ? { refunded: true } : {}),
+        ...(refunded ? { refunded: true } : {}),
+        ...(refunded && refund?.amount ? { refundAmount: refund.amount } : {}),
+        ...(refunded && refund?.txRef ? { refundTxRef: refund.txRef } : {}),
       };
     }
     case "cancelled":

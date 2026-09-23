@@ -47,20 +47,25 @@ describe("recoveryNotes", () => {
 });
 
 describe("refundStatusTail", () => {
-  it("shortens the transaction of a refund on its way", () => {
-    expect(refundStatusTail({ txRef: "7f1c9b2e4d6a8c0f1e3b5d7a9c2e4f6081a3c5e7" })).toBe(
-      "is on its way back, transaction 7f1c9b…3c5e7.",
-    );
+  it("hands the transaction back whole, for the screen to link and copy", () => {
+    // Not shortened into the sentence: the screen elides it for display but needs the full
+    // reference for the explorer URL and the clipboard.
+    const txRef = "7f1c9b2e4d6a8c0f1e3b5d7a9c2e4f6081a3c5e7";
+    expect(refundStatusTail({ txRef })).toEqual({
+      text: "is on its way back, transaction",
+      txRef,
+    });
   });
 
   it("prefers the landing over the transaction once witnessed", () => {
-    expect(refundStatusTail({ txRef: "x".repeat(40), witnessedAt: 1 })).toBe(
-      "is back at your recovery address.",
-    );
+    expect(refundStatusTail({ txRef: "x".repeat(40), witnessedAt: 1 })).toEqual({
+      text: "is back at your recovery address.",
+    });
   });
 
   it("promises the return before anything has been seen", () => {
-    expect(refundStatusTail(undefined)).toBe("is being returned to your recovery address.");
-    expect(refundStatusTail({})).toBe("is being returned to your recovery address.");
+    const promised = { text: "is being returned to your recovery address." };
+    expect(refundStatusTail(undefined)).toEqual(promised);
+    expect(refundStatusTail({})).toEqual(promised);
   });
 });

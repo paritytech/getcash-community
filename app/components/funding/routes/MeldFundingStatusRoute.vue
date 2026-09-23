@@ -9,6 +9,7 @@
 // Showing the widget for both left a re-opened transfer with no way to say it had been sent, and
 // an unconfirmed request expires on the clock while the money is still in the post.
 import { computed, onMounted, onUnmounted, ref } from "vue";
+import { useJourneyQuote } from "../../../composables/useJourneyQuote";
 import { useMeldHandoff } from "../../../composables/useMeldHandoff";
 import { useVisibilityReconcile } from "../../../composables/useVisibilityReconcile";
 import { isDemoBuild } from "../../../utils/demo";
@@ -49,6 +50,8 @@ const title = computed(() => {
 });
 /** The fee-breakdown drill-in over the transfer's details. Back returns to them. */
 const showingFees = ref(false);
+// The quote behind the breakdown: the restored live one, else the row's stored copy.
+const { quote, cashAmount } = useJourneyQuote(() => props.topUp);
 /** Whether the payment screen is showing: neither still opening nor unavailable. */
 const showingPayment = computed(() => !waiting.value && !unavailable.value);
 /** Edge to edge for the card widget only; the transfer's details take the screen's own gutter. */
@@ -175,7 +178,12 @@ onUnmounted(() => {
         @keep="flow.confirmingCancel = false"
       />
 
-      <MeldFeeDetailsScreen v-else-if="showingFees" @back="showingFees = false" />
+      <MeldFeeDetailsScreen
+        v-else-if="showingFees"
+        :quote="quote"
+        :cash-amount="cashAmount"
+        @back="showingFees = false"
+      />
 
       <!-- The transfer's own details step, the same screen the fresh flow ends on, with the way
            out that only a resumed transfer needs. -->

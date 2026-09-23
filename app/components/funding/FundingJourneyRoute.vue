@@ -14,6 +14,7 @@ import CancelTopUpScreen from "../screens/CancelTopUpScreen.vue";
 import JourneySkeleton from "../screens/JourneySkeleton.vue";
 import ReturnFundsScreen from "../screens/ReturnFundsScreen.vue";
 import FundingSettledStatusScreen from "./FundingSettledStatusScreen.vue";
+import { useJourneyQuote } from "../../composables/useJourneyQuote";
 import MeldFeeDetailsScreen from "./routes/MeldFeeDetailsScreen.vue";
 
 const props = defineProps<{
@@ -35,34 +36,42 @@ const flow = useFlowStore();
 // A settled top-up is read from the list only: nothing resumed, nothing reset on the way out.
 const readOnly = props.topUp?.state.kind === "settled";
 const opening = ref(!readOnly && props.topUp != null && props.open != null);
-const unavailable = ref(false);
+/** The request could not be brought to the foreground — an old top-up whose world is gone. */
+const unresumable = ref(false);
+/** Nothing left to show at all: not resumable, and no stored record to fall back on. */
+const unavailable = computed(() => unresumable.value && props.topUp == null);
 // Waiting on the record: this screen's own open, or a resume the store started under it (a
 // reconcile on return from the background brings one back the same way).
 const waiting = computed(
   () =>
-    (opening.value || session.resuming) && requests.foregroundRecord === null && !unavailable.value,
+    (opening.value || session.resuming) && requests.foregroundRecord === null && !unresumable.value,
 );
 let active = true;
 
 useVisibilityReconcile();
-const { previewLabel } = useStateDirector();
+useStateDirector();
 
 /** The fee-breakdown drill-in over the journey. Back (toolbar or bottom button) returns to it. */
 const showingFees = ref(false);
-// A cleared quote leaves nothing to break down.
-watch(
-  () => session.quoted,
-  (q) => {
-    if (!q) showingFees.value = false;
-  },
+// The quote the journey's money row was built from, so the row and the breakdown behind its
+// chevron cannot disagree about what the buyer paid.
+const { quote, cashAmount } = useJourneyQuote(
+  () => props.topUp,
+  () => readOnly,
 );
+// A quote gone from both the session and the record leaves nothing to break down.
+watch(quote, (q) => {
+  if (!q) showingFees.value = false;
+});
 /** The return-funds drill-in over a refunded journey. Back (toolbar or bottom button) returns. */
 const showingRefund = ref(false);
-// A state that is no longer failed has no refund to walk through.
+// A live state that is no longer failed has no refund to walk through. A journey opened from
+// history has no live state at all, and its guide is driven by the record instead, so the guard
+// only applies while a request is actually on screen.
 watch(
   () => requests.phase,
   (phase) => {
-    if (phase !== "failed") showingRefund.value = false;
+    if (phase !== null && phase !== "failed") showingRefund.value = false;
   },
 );
 // The preview deck lands straight on the opened guide.
@@ -111,7 +120,7 @@ onMounted(async () => {
     opened = false;
   } finally {
     if (active) {
-      unavailable.value = !opened;
+      unresumable.value = !opened;
       opening.value = false;
     }
   }
@@ -140,13 +149,18 @@ onUnmounted(() => {
          Back stays available during the claim: leaving lands on the top-ups list, where the
          in-flight top-up remains resumable. -->
     <Toolbar
-      :title="showingFees ? 'Fees' : readOnly || waiting || unavailable ? title : ''"
+      :title="showingFees ? 'Fees' : waiting || unresumable ? title : ''"
       :back="(readOnly || !waiting) && !session.cancelling"
       @back="goBack"
     />
 
     <div class="flex min-h-0 flex-1 flex-col px-6 pt-6">
-      <FundingSettledStatusScreen v-if="readOnly && topUp" :top-up="topUp" />
+      <FundingSettledStatusScreen
+        v-if="readOnly && topUp && !showingFees"
+        :top-up="topUp"
+        @fees="showingFees = true"
+        @close="emit('back')"
+      />
 
       <!-- The screen's own shapes while the request opens, not a spinner over an empty one. -->
       <JourneySkeleton v-else-if="waiting" :timeline="!readOnly" />
@@ -164,8 +178,13 @@ onUnmounted(() => {
         @confirm="cancelTopUp"
         @keep="flow.confirmingCancel = false"
       />
-      <ReturnFundsScreen v-else-if="showingRefund" @back="showingRefund = false" />
-      <MeldFeeDetailsScreen v-else-if="showingFees" @back="showingFees = false" />
+      <ReturnFundsScreen v-else-if="showingRefund" :top-up="topUp" @back="showingRefund = false" />
+      <MeldFeeDetailsScreen
+        v-else-if="showingFees"
+        :quote="quote"
+        :cash-amount="cashAmount"
+        @back="showingFees = false"
+      />
       <template v-else>
         <JourneyScreen
           :progress="topUp?.progress ?? null"
@@ -190,11 +209,6 @@ onUnmounted(() => {
     </div>
 
     <!-- state-director scene label (dev/demo keys only) -->
-    <span
-      v-if="previewLabel"
-      class="fixed bottom-2 left-2 rounded-small bg-surface-container px-2 py-1 font-mono text-overline text-fg-secondary shadow-1"
-    >
-      {{ previewLabel }}
-    </span>
+    <PreviewSceneLabel />
   </main>
 </template>

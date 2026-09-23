@@ -18,6 +18,7 @@ import type { FundingSelection } from "../../../funding/selection";
 import { useFlowStore } from "../../../stores/flow";
 import { useRequestsStore } from "../../../stores/requests";
 import { useSessionStore } from "../../../stores/session";
+import { useJourneyQuote } from "../../../composables/useJourneyQuote";
 import CurrencySelectScreen from "./CurrencySelectScreen.vue";
 import MeldBankTransferScreen from "./MeldBankTransferScreen.vue";
 import MeldFeeDetailsScreen from "./MeldFeeDetailsScreen.vue";
@@ -26,6 +27,9 @@ import MeldPaySheet from "./MeldPaySheet.vue";
 
 const props = defineProps<{ selection: FundingSelection }>();
 const emit = defineEmits<FundingPackageEmits>();
+
+// No row to fall back on here: the pay flow always has its own live quote.
+const { quote, cashAmount } = useJourneyQuote(() => null);
 
 const route = props.selection.route;
 if (route !== "card" && route !== "bank") {
@@ -37,7 +41,7 @@ const session = useSessionStore();
 const requests = useRequestsStore();
 const flow = useFlowStore();
 useVisibilityReconcile();
-const { previewLabel } = useStateDirector();
+useStateDirector();
 const { handedOff } = useMeldHandoff(emit);
 
 // "Add funds via card" / "Add funds via bank": the toolbar names the whole action, since the
@@ -272,7 +276,12 @@ onUnmounted(() => {
       <!-- Bank: both steps in one component, with the drill-ins laid over them. It stays mounted
            behind them — re-creating it would reload the provider's details page. -->
       <template v-else-if="isBank">
-        <MeldFeeDetailsScreen v-if="showingFees" @back="showingFees = false" />
+        <MeldFeeDetailsScreen
+          v-if="showingFees"
+          :quote="quote"
+          :cash-amount="cashAmount"
+          @back="showingFees = false"
+        />
         <CurrencySelectScreen
           v-else-if="showingCurrency"
           :options="pickerCountries"
@@ -312,7 +321,12 @@ onUnmounted(() => {
           {{ session.cancelNotice }}
         </p>
       </template>
-      <MeldFeeDetailsScreen v-else-if="showingFees" @back="showingFees = false" />
+      <MeldFeeDetailsScreen
+        v-else-if="showingFees"
+        :quote="quote"
+        :cash-amount="cashAmount"
+        @back="showingFees = false"
+      />
       <CurrencySelectScreen
         v-else-if="showingCurrency"
         :options="pickerCountries"
@@ -332,11 +346,6 @@ onUnmounted(() => {
     </div>
 
     <!-- state-director scene label (dev/demo keys only) -->
-    <span
-      v-if="previewLabel"
-      class="fixed bottom-2 left-2 rounded-small bg-surface-container px-2 py-1 font-mono text-overline text-fg-secondary shadow-1"
-    >
-      {{ previewLabel }}
-    </span>
+    <PreviewSceneLabel />
   </main>
 </template>

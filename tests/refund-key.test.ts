@@ -2,11 +2,12 @@
 
 import { describe, expect, it } from "vitest";
 import type { SourceId } from "@getsome/core";
-import { SOURCE_CONFIGS } from "@getsome/chainflip";
+import { formatSourceAmount, SOURCE_CONFIG_BY_ID, SOURCE_CONFIGS } from "@getsome/chainflip";
 import {
   createMockCoinageSession,
   depositLanded,
   provisionRefundKey,
+  recoverRefundKey,
   refundChainFor,
   refundEntropyLabel,
   refundStorageKey,
@@ -142,5 +143,62 @@ describe("createMockCoinageSession", () => {
     expect(JSON.parse(raw!)).toMatchObject({ chain: "Tron", address: key?.address });
     expect(raw).not.toContain(key?.secret);
     world.session.dispose();
+  });
+});
+
+describe("recovering a refund key after the fact", () => {
+  it("returns the key the request was opened with, from its identity alone", async () => {
+    // The whole point: a refund can be walked back to long after the world that created it is
+    // gone, because the key is a pure function of (sourceId, n) and both are on the record.
+    const provisioned = await provisionRefundKey(deps(), "usdt-tron", 7, "testnet");
+    const recovered = await recoverRefundKey(entropy, "usdt-tron", 7);
+    expect(recovered).not.toBeNull();
+    expect(recovered?.address).toBe(provisioned?.address);
+    expect(recovered?.secret).toBe(provisioned?.secret);
+  });
+
+  it("does not need the stored slot, so a cleared one cannot strand the funds", async () => {
+    // It takes no storage at all: the slot is a record of what was handed to the rail, not the
+    // source of the key. A request whose slot was pruned is still recoverable, and reading one
+    // cannot write a secret back for a request that should no longer have it.
+    const store = memoryStorage();
+    const recovered = await recoverRefundKey(entropy, "usdt-tron", 42);
+    expect(recovered?.address).toBeTruthy();
+    expect(store.map.size).toBe(0);
+    // Same key as provisioning would have produced, with nothing ever stored for it.
+    const provisioned = await provisionRefundKey(
+      { entropy, storage: store },
+      "usdt-tron",
+      42,
+      "testnet",
+    );
+    expect(provisioned?.address).toBe(recovered?.address);
+  });
+
+  it("gives a different key per request, so one refund cannot spend another's", async () => {
+    const seven = await recoverRefundKey(entropy, "usdt-tron", 7);
+    const eight = await recoverRefundKey(entropy, "usdt-tron", 8);
+    const other = await recoverRefundKey(entropy, "usdt-solana", 7);
+    expect(seven?.address).not.toBe(eight?.address);
+    expect(seven?.address).not.toBe(other?.address);
+  });
+
+  it("fails closed on a source with no refund chain", async () => {
+    expect(refundChainFor("dot-assethub" as SourceId)).toBeNull();
+    expect(await recoverRefundKey(entropy, "dot-assethub" as SourceId, 1)).toBeNull();
+  });
+});
+
+describe("the refund amount a record carries", () => {
+  const btc = SOURCE_CONFIG_BY_ID.get("btc" as SourceId)!;
+
+  it("is base units, which is what the guide renders it from", () => {
+    // The rail reports base units and the record stores them verbatim. Seeding a decimal string
+    // instead threw inside the guide's own heading and blanked the whole screen.
+    expect(formatSourceAmount(btc, "43000")).toBe("0.00043");
+  });
+
+  it("throws on a decimal string, so nothing may render one unguarded", () => {
+    expect(() => formatSourceAmount(btc, "0.00043")).toThrow();
   });
 });
