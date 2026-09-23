@@ -1717,6 +1717,10 @@ export const useSessionStore = defineStore("session", () => {
           return false;
         }
         if (verdict === "unconfirmed") {
+          // A read that did not answer says nothing about the money: nothing was cancelled, and
+          // the screen that asked stays put, so it has to say why the cancel didn't take.
+          cancelNotice.value =
+            "Couldn't confirm this top-up can still be cancelled, so nothing was cancelled. Please try again.";
           console.warn("[coinage] cancel declined: could not confirm the burner is empty");
           return false;
         }
