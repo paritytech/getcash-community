@@ -18,11 +18,20 @@ inputs:
       VITE_MELD_BASE_URL, the adapter origin the Meld card and bank rail talks to,
       inlined at build time. An empty value fails the build (see require-meld-base-url).
     default: ""
+  meld-product-id:
+    description: >
+      VITE_MELD_PRODUCT_ID, the product id sent as the adapter's `x-dev-product-id`
+      header and vetted against its `allowed_products`. Inlined at build time. An
+      empty value fails the build for the same reason meld-base-url does (see
+      require-meld-base-url): the code falls back to `getcash.dev`, which an adapter
+      that does not list it refuses with 401 on every call — a quote that cannot be
+      fetched, and a country catalog that silently empties to its fallback list.
+    default: ""
   require-meld-base-url:
     description: >
-      Whether an empty meld-base-url is a build failure. True for anything that
-      deploys. Pass false only where the value is legitimately unavailable rather
-      than forgotten: a fork or Dependabot PR cannot read repo secrets, and its
+      Whether an empty meld-base-url or meld-product-id is a build failure. True
+      for anything that deploys. Pass false only where the values are legitimately
+      unavailable rather than forgotten: a fork or Dependabot PR cannot read repo secrets, and its
       deploy job is skipped anyway, so failing the build there would gate the PR
       on a secret it can never have. Such a build simply carries the offline fake
       Meld client and must never be deployed.
@@ -74,6 +83,7 @@ runs:
       env:
         VITE_FAUCET_SEED: ${{ inputs.faucet-seed }}
         VITE_MELD_BASE_URL: ${{ inputs.meld-base-url }}
+        VITE_MELD_PRODUCT_ID: ${{ inputs.meld-product-id }}
         REQUIRE_MELD_BASE_URL: ${{ inputs.require-meld-base-url }}
       run: |
         if [ -z "$VITE_MELD_BASE_URL" ]; then
@@ -82,6 +92,13 @@ runs:
             exit 1
           fi
           echo "::warning::VITE_MELD_BASE_URL is empty (secrets unavailable for this build). Building with the offline fake Meld client; this artifact must not be deployed."
+        fi
+        if [ -z "$VITE_MELD_PRODUCT_ID" ]; then
+          if [ "$REQUIRE_MELD_BASE_URL" = "true" ]; then
+            echo "::error::VITE_MELD_PRODUCT_ID is empty. Set the repo secret VITE_MELD_PRODUCT_ID to a product id the adapter's allowed_products lists; the fallback (getcash.dev) is refused with 401 by any adapter that does not list it."
+            exit 1
+          fi
+          echo "::warning::VITE_MELD_PRODUCT_ID is empty (secrets unavailable for this build). Building with the fallback product id; this artifact must not be deployed."
         fi
         pnpm build
 
