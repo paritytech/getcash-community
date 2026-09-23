@@ -16,16 +16,28 @@ export interface JourneyQuote {
   cashAmount: ComputedRef<string>;
 }
 
-export function useJourneyQuote(topUp: () => FundingTopUp | null | undefined): JourneyQuote {
+export function useJourneyQuote(
+  topUp: () => FundingTopUp | null | undefined,
+  /**
+   * A record read from the list, with no request on screen behind it. Its own stored quote is then
+   * the only truth there is: the session's belongs to whatever top-up is actually live, and reading
+   * that one would put another top-up's numbers behind this one's money row.
+   */
+  readOnly: () => boolean = () => false,
+): JourneyQuote {
   const session = useSessionStore();
   return {
     quote: computed(() => {
-      const live = session.quoted;
-      if (live) return liveQuoteView(live, session.method === "crypto");
       const row = topUp();
+      if (!readOnly()) {
+        const live = session.quoted;
+        if (live) return liveQuoteView(live, session.method === "crypto");
+      }
       return storedQuoteView(row?.quote, row?.route === "crypto");
     }),
     // The store's amount is empty until the request is live; the list's word on it fills in.
-    cashAmount: computed(() => session.amountHuman || (topUp()?.amount ?? "")),
+    cashAmount: computed(() =>
+      readOnly() ? (topUp()?.amount ?? "") : session.amountHuman || (topUp()?.amount ?? ""),
+    ),
   };
 }

@@ -48,7 +48,10 @@ useStateDirector();
 const showingFees = ref(false);
 // The quote the journey's money row was built from, so the row and the breakdown behind its
 // chevron cannot disagree about what the buyer paid.
-const { quote, cashAmount } = useJourneyQuote(() => props.topUp);
+const { quote, cashAmount } = useJourneyQuote(
+  () => props.topUp,
+  () => readOnly,
+);
 // A quote gone from both the session and the record leaves nothing to break down.
 watch(quote, (q) => {
   if (!q) showingFees.value = false;
@@ -123,7 +126,7 @@ onUnmounted(() => {
 
     <div class="flex min-h-0 flex-1 flex-col px-6 pt-6">
       <FundingSettledStatusScreen
-        v-if="readOnly && topUp"
+        v-if="readOnly && topUp && !showingFees"
         :top-up="topUp"
         @fees="showingFees = true"
         @close="emit('back')"
