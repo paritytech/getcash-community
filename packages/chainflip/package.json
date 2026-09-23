@@ -17,6 +17,7 @@
   "dependencies": {
     "@chainflip/sdk": "^2.1.1",
     "@noble/hashes": "^2.0.1",
-    "@getsome/core": "workspace:*"
+    "@getsome/core": "workspace:*",
+    "axios": "^1.15.0"
   }
 }
