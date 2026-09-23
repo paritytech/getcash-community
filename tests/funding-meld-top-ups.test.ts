@@ -98,7 +98,53 @@ describe("Meld top-up adapter", () => {
     expect(projectMeldTopUps([failed], now)[0]).toMatchObject({
       reference: "a1f9c3d2-7b44-4e10-9f21-00ab9e4c2e",
       quote: { amount: "52.06", symbol: "USD", fee: "1.56", provider: "TRANSAK" },
+      // Named off the quote's provider: this record kept no `meldServiceProvider`, and the
+      // aggregator's name would have told the buyer less than the one it kept.
+      details: { provider: { label: "Transak" } },
     });
+  });
+
+  it("draws the provider Meld named, not Meld's shouting of it", () => {
+    // Meld sends "TRANSAK"; the design draws "Transak". The record keeps Meld's own spelling, so
+    // it still matches what support sees, and the row re-cases it on the way to the screen.
+    const now = 900;
+    const paid = (provider: string, tradeN: number) =>
+      record(
+        {
+          tradeN,
+          amountHuman: "50",
+          startedAt: 500,
+          sourceId: "meld-card",
+          meldServiceProvider: provider,
+        },
+        now,
+      );
+
+    const labelOf = (provider: string, tradeN = 11) =>
+      projectMeldTopUps([paid(provider, tradeN)], now)[0]?.details?.provider?.label;
+
+    expect(labelOf("TRANSAK")).toBe("Transak");
+    expect(labelOf("COINBASE_PAY")).toBe("Coinbase Pay");
+    // A name that already carries its own casing is left alone rather than overruled.
+    expect(labelOf("MoonPay")).toBe("MoonPay");
+  });
+
+  it("prefers who took the payment over who priced it", () => {
+    // The two can only disagree if Meld moved the request to another provider after quoting it.
+    // The create call is the one that names who was actually paid.
+    const now = 900;
+    const moved = record(
+      {
+        tradeN: 12,
+        amountHuman: "50",
+        startedAt: 500,
+        sourceId: "meld-card",
+        sourceProvider: "KOYWE",
+        meldServiceProvider: "TRANSAK",
+      },
+      now,
+    );
+    expect(projectMeldTopUps([moved], now)[0]?.details?.provider?.label).toBe("Transak");
   });
 
   it("leaves both out of a record that never carried them", () => {
@@ -173,6 +219,37 @@ describe("Meld top-up adapter", () => {
       kind: "failed",
       reason: MELD_WINDOW_CLOSED_REASON,
     });
+  });
+
+  it("counts the journey's markers on the row, for a journey opened with nothing live", () => {
+    // The journey reads the count off the request on screen; opened from history there is none,
+    // and the row is the only thing that can say how far this top-up actually got. A card top-up
+    // whose payment landed and whose claim then failed stands on four of five markers.
+    const paid = reduce(
+      record({ tradeN: 9, amountHuman: "50", startedAt: 100, sourceId: "meld-card" }, 200),
+      worker(300, "done"),
+    );
+    const mintFailed = reduce(paid, {
+      source: "core",
+      at: 400,
+      state: {
+        phase: "failed",
+        sourceId: "meld-card",
+        failure: {
+          kind: "mint",
+          step: "mint",
+          message: "Settled, but verification failed.",
+          recoverable: true,
+        },
+      } as never,
+    });
+    expect(projectMeldTopUps([mintFailed], 500)[0]?.journeyDone).toBe(4);
+    // Nothing paid yet: the card scale's first marker alone.
+    const waiting = record(
+      { tradeN: 10, amountHuman: "50", startedAt: 100, sourceId: "meld-card" },
+      200,
+    );
+    expect(projectMeldTopUps([waiting], 500)[0]?.journeyDone).toBe(1);
   });
 
   it("leaves other rails' records alone and reads only its own ids", () => {

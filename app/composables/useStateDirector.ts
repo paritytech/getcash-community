@@ -2,24 +2,27 @@
 // faucet, H forces a transport reconnect.
 
 import { onMounted, onUnmounted, ref } from "vue";
-import { useFlowStore } from "../stores/flow";
 import { useSessionStore } from "../stores/session";
 import { isDemoBuild } from "../utils/demo";
 import { directScene } from "../utils/dev-preview";
 
+/**
+ * The scene on screen, as `PreviewSceneLabel` draws it. Module state, not per-caller: the keys are
+ * handled by whichever container is up, and a scene usually lands on a different one.
+ */
+export const previewLabel = ref<string | null>(null);
+
 export function useStateDirector() {
   const session = useSessionStore();
-  const flow = useFlowStore();
-  const previewLabel = ref<string | null>(null);
 
   function onDemoKeys(e: KeyboardEvent) {
     if (!e.ctrlKey || !e.shiftKey) return;
     if (e.key === "N") {
-      void directScene(session, flow, 1).then((label) => {
+      void directScene(1).then((label) => {
         previewLabel.value = label;
       });
     } else if (e.key === "P") {
-      void directScene(session, flow, -1).then((label) => {
+      void directScene(-1).then((label) => {
         previewLabel.value = label;
       });
     } else if (e.key === "R") {
@@ -37,6 +40,4 @@ export function useStateDirector() {
     if (isDemoBuild()) window.addEventListener("keydown", onDemoKeys);
   });
   onUnmounted(() => window.removeEventListener("keydown", onDemoKeys));
-
-  return { previewLabel };
 }
