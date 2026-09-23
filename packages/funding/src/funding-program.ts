@@ -6,6 +6,11 @@
 // extrinsic is atomic: a failed exchange rolls the whole program back and the deposit stays native,
 // minus the dispatch fee.
 //
+// The PSM tier has a second shape (`buildPsmFundingProgram`): the CASH a Psm.mint has just paid
+// onto the burner is withdrawn, the XCM's own fees are paid in that CASH, and the rest is
+// teleported. No exchange, since the mint did the conversion. It runs after the mint inside a
+// Utility.batch_all (psm-batch.ts), and the dry run below runs the whole batch.
+//
 // Every fee allowance is exact. The unspent part of a PayFees allowance is not returned to the
 // burner, and a dispatch fee refund would land on an account already emptied below the existential
 // deposit, so both are sized to what the runtime charges: local execution from the weighed message,
@@ -19,6 +24,7 @@
 // burner, People runs the program Asset Hub forwards. A program that would fail on either chain,
 // trap assets, or land short of the target is reported instead of submitted.
 
+import { TOKENS } from "@getsome/core";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import type { TypedApi } from "polkadot-api";
 import { describeDispatchError } from "./dispatch-error";
@@ -53,13 +59,15 @@ const accountBeneficiary = (beneficiaryHex: string) => ({
   },
 });
 
-const peopleDest = (peopleParaId: number) => ({
+export const peopleDest = (peopleParaId: number) => ({
   parents: 1,
   interior: { type: "X1", value: { type: "Parachain", value: peopleParaId } },
 });
 
 /** The execute() argument type; built here from plain {type,value} objects and cast. */
 type ExecuteArgs = Parameters<AssetHubApi["tx"]["PolkadotXcm"]["execute"]>[0];
+/** A decoded call, as a transaction's `decodedCall` carries it and Utility.batch_all takes it. */
+export type AssetHubCall = ReturnType<AssetHubApi["tx"]["PolkadotXcm"]["execute"]>["decodedCall"];
 
 /** The destination fee allowance: the sized over-buy, or 1% of the target when that is more. The
  *  remote RefundSurplus returns the unused part, while an allowance too small to execute on traps
@@ -103,32 +111,7 @@ export function buildFundingProgram(args: {
           maximal: true,
         },
       },
-      {
-        type: "InitiateTransfer",
-        value: {
-          destination: peopleDest(args.peopleParaId),
-          remote_fees: {
-            type: "Teleport",
-            value: { type: "Definite", value: [c(args.remoteFeesCash)] },
-          },
-          preserve_origin: false,
-          assets: [
-            { type: "Teleport", value: { type: "Wild", value: { type: "AllCounted", value: 1 } } },
-          ],
-          remote_xcm: [
-            // Return the unused destination allowance to the holding, then sweep everything to
-            // the burner.
-            { type: "RefundSurplus" },
-            {
-              type: "DepositAsset",
-              value: {
-                assets: { type: "Wild", value: { type: "AllCounted", value: 1 } },
-                beneficiary: accountBeneficiary(args.beneficiaryHex),
-              },
-            },
-          ],
-        },
-      },
+      teleportHoldingToPeople(c(args.remoteFeesCash), args.beneficiaryHex, args.peopleParaId),
     ],
   };
   return {
@@ -137,10 +120,75 @@ export function buildFundingProgram(args: {
   } as unknown as ExecuteArgs;
 }
 
+/** The PSM tier's program: the CASH the mint before it in the batch paid onto the burner in, the
+ *  same CASH landed on the burner's People address, every Asset Hub fee paid in CASH. */
+export function buildPsmFundingProgram(args: {
+  /** CASH withdrawn into the holding: what the mint paid out. */
+  withdrawCash: bigint;
+  /** Local execution plus delivery, in CASH. */
+  payFeesCash: bigint;
+  /** Destination fee allowance in CASH. */
+  remoteFeesCash: bigint;
+  beneficiaryHex: string;
+  peopleParaId: number;
+  /** The declared weight ceiling. Defaults to FUNDING_PROGRAM_MAX_WEIGHT. */
+  maxWeight?: { ref_time: bigint; proof_size: bigint };
+}): ExecuteArgs {
+  const c = (v: bigint) => ({ id: TOKENS.CASH.location, fun: { type: "Fungible", value: v } });
+  const message = {
+    type: "V5",
+    value: [
+      { type: "WithdrawAsset", value: [c(args.withdrawCash)] },
+      { type: "PayFees", value: { asset: c(args.payFeesCash) } },
+      teleportHoldingToPeople(c(args.remoteFeesCash), args.beneficiaryHex, args.peopleParaId),
+    ],
+  };
+  return {
+    message,
+    max_weight: args.maxWeight ?? FUNDING_PROGRAM_MAX_WEIGHT,
+  } as unknown as ExecuteArgs;
+}
+
+/** The InitiateTransfer both shapes end with: everything in the holding teleported to People,
+ *  `remoteFees` earmarked for the destination's execution. */
+function teleportHoldingToPeople(
+  remoteFees: unknown,
+  beneficiaryHex: string,
+  peopleParaId: number,
+) {
+  return {
+    type: "InitiateTransfer",
+    value: {
+      destination: peopleDest(peopleParaId),
+      remote_fees: { type: "Teleport", value: { type: "Definite", value: [remoteFees] } },
+      preserve_origin: false,
+      assets: [
+        { type: "Teleport", value: { type: "Wild", value: { type: "AllCounted", value: 1 } } },
+      ],
+      remote_xcm: [
+        // Return the unused destination allowance to the holding, then sweep everything to the
+        // burner.
+        { type: "RefundSurplus" },
+        {
+          type: "DepositAsset",
+          value: {
+            assets: { type: "Wild", value: { type: "AllCounted", value: 1 } },
+            beneficiary: accountBeneficiary(beneficiaryHex),
+          },
+        },
+      ],
+    },
+  };
+}
+
 /** A stand-in for the program People receives, with the underlying keyed as `assetId`. Mirrors
  *  the instruction list the runtime forwards, which is what its weight and delivery fee depend
  *  on. */
-function forwardedProgramStandIn(assetId: AssetLocation, amount: bigint, beneficiaryHex: string) {
+export function forwardedProgramStandIn(
+  assetId: AssetLocation,
+  amount: bigint,
+  beneficiaryHex: string,
+) {
   const c = (v: bigint) => ({ id: assetId, fun: { type: "Fungible", value: v } });
   return {
     type: "V5",
@@ -163,19 +211,16 @@ function forwardedProgramStandIn(assetId: AssetLocation, amount: bigint, benefic
 }
 
 /** The real program People will receive, taken from a dry-run of the actual call. Requires an
- *  origin that already holds the native. Returns null when the dry-run cannot produce it. */
-async function realForwardedProgram(
+ *  origin that already holds what the call withdraws. Returns null when the dry-run cannot
+ *  produce it. */
+export async function realForwardedProgram(
   api: AssetHubApi,
-  execArgs: ExecuteArgs,
+  call: AssetHubCall,
   peopleParaId: number,
   from: string,
 ): Promise<unknown | null> {
   try {
-    const dr = await api.apis.DryRunApi.dry_run_call(
-      signedOrigin(from) as never,
-      api.tx.PolkadotXcm.execute(execArgs).decodedCall as never,
-      5,
-    );
+    const dr = await api.apis.DryRunApi.dry_run_call(signedOrigin(from) as never, call as never, 5);
     return dr.success ? forwardedTo(dr.value, peopleParaId) : null;
   } catch {
     // A runtime without the dry-run API, or one that rejects this call shape.
@@ -216,7 +261,11 @@ export async function dryRunFundingProgram(args: {
   api: AssetHubApi;
   peopleApi: PeopleApi;
   execArgs: ExecuteArgs;
-  /** The burner: it signs the call and holds the native. */
+  /** The call to run: the bare execute of `execArgs` unless given. The PSM tier passes its
+   *  Utility.batch_all, so the mint runs too and a program that completes but misbehaves is
+   *  caught here, the one outcome batch_all does not revert (local/psm/PLAN.md §4.3). */
+  call?: AssetHubCall;
+  /** The burner: it signs the call and holds what it withdraws. */
   from: string;
   beneficiaryHex: string;
   peopleParaId: number;
@@ -224,9 +273,10 @@ export async function dryRunFundingProgram(args: {
   /** The least underlying that must reach the beneficiary. */
   mustLand: bigint;
 }): Promise<{ landed: bigint }> {
+  const call = args.call ?? args.api.tx.PolkadotXcm.execute(args.execArgs).decodedCall;
   const dr = await args.api.apis.DryRunApi.dry_run_call(
     signedOrigin(args.from) as never,
-    args.api.tx.PolkadotXcm.execute(args.execArgs).decodedCall as never,
+    call as never,
     5,
   );
   if (!dr.success) {
@@ -334,7 +384,7 @@ export async function estimateFundingProgramFees(args: {
       ? null
       : await realForwardedProgram(
           args.api,
-          probe(args.nativeBalance / 4n, 1n),
+          args.api.tx.PolkadotXcm.execute(probe(args.nativeBalance / 4n, 1n)).decodedCall,
           args.peopleParaId,
           args.dryRunFrom,
         )) ??
@@ -345,7 +395,7 @@ export async function estimateFundingProgramFees(args: {
     { type: "V5", value: NATIVE_HERE } as never,
   );
   if (!df.success) throw new Error("funding program fee estimate: delivery fee unavailable");
-  const deliveryNative = extractNativeAmount(df.value);
+  const deliveryNative = extractFungibleAmount(df.value);
   const payFeesNative = localNative + deliveryNative;
   if (payFeesNative >= args.nativeBalance) {
     throw new Error(
@@ -405,8 +455,8 @@ export async function estimateDestinationFeeCash(args: {
   return 2n * args.amount - run.landed;
 }
 
-/** The fungible amount out of a VersionedAssets delivery-fee result (its single native entry). */
-function extractNativeAmount(versioned: unknown): bigint {
+/** The fungible amount out of a VersionedAssets delivery-fee result (its single entry). */
+export function extractFungibleAmount(versioned: unknown): bigint {
   const assets = (versioned as { value?: Array<{ fun?: { type?: string; value?: bigint } }> })
     .value;
   const first = Array.isArray(assets) ? assets[0] : undefined;

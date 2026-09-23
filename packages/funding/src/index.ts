@@ -14,6 +14,7 @@ export {
 export type { FundingStep, TickState } from "./pipeline";
 export {
   buildFundingProgram,
+  buildPsmFundingProgram,
   destinationEarmark,
   dryRunFundingProgram,
   estimateDestinationFeeCash,
@@ -21,6 +22,16 @@ export {
   FUNDING_PROGRAM_MAX_WEIGHT,
 } from "./funding-program";
 export type { FundingProgramFees, PeopleApi, Pool } from "./funding-program";
+export {
+  buildPsmBatch,
+  dryRunPsmBatch,
+  estimatePsmBatchFees,
+  permillMulCeil,
+  psmBatchTxOptions,
+  psmMintOut,
+  sizePsmMint,
+} from "./psm-batch";
+export type { PsmBatch, PsmBatchArgs, PsmBatchFees, PsmRoute } from "./psm-batch";
 export { chooseRoute, recordedRoute } from "./route";
 export type { ConversionRoute, PsmExternal, RouteQuery } from "./route";
 export { creditedTo, forwardedTo, siblingOrigin, signedOrigin, trappedIn } from "./xcm-dry-run";
