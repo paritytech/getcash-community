@@ -261,6 +261,9 @@ importers:
 
   packages/withdraw:
     dependencies:
+      '@getsome/core':
+        specifier: workspace:*
+        version: link:../core
       '@getsome/funding':
         specifier: workspace:*
         version: link:../funding

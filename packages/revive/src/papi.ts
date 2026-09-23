@@ -34,10 +34,15 @@ type TxOptions = Parameters<
 
 // IR -> papi translation
 
-/** Plain-data XCM location -> papi Enum shape (v5 junctions; PalletInstance/GeneralIndex only). */
+/** Plain-data XCM location -> papi Enum shape (v5 junctions; PalletInstance/GeneralIndex only).
+ *  `XcmLocation` spans interiors this spend path never builds, and `Enum` is loosely typed, so an
+ *  unsupported one is rejected here rather than silently truncated to the wrong X2. */
 function toPapiLocation(loc: XcmLocation) {
   if (loc.interior.type === "Here") {
     return { parents: loc.parents, interior: Enum("Here") };
+  }
+  if (loc.interior.type !== "X2") {
+    throw new Error(`unsupported XCM interior for a Revive swap path: ${loc.interior.type}`);
   }
   const [pallet, index] = loc.interior.value;
   return {
