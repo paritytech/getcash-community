@@ -101,11 +101,19 @@ const address = computed(() => session.refundAddress ?? recovered.value?.address
 // A refund opened from history has no world to read, so the key is re-derived from the request's
 // own identity. The address is wanted on sight (it is where the money is); the secret stays behind
 // the reveal either way.
+//
+// Watched as `sourceId:tradeN` rather than as the object: the list rebuilds its top-ups on every
+// record tick, so while one is running the object's identity changes although which request this
+// is has not — and re-deriving the key on each tick drops the address the screen is showing.
 watch(
-  () => props.topUp?.request,
-  async (request) => {
+  () => {
+    const r = props.topUp?.request;
+    return r ? `${r.sourceId}:${r.tradeN}` : null;
+  },
+  async (key) => {
     recovered.value = null;
-    if (!request || session.refundAddress !== null) return;
+    const request = props.topUp?.request;
+    if (key === null || !request || session.refundAddress !== null) return;
     recovering.value = true;
     try {
       recovered.value = await session.recoverRefundKeyFor(request.sourceId, request.tradeN);
