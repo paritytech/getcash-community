@@ -94,6 +94,7 @@ const { worker, manager, worlds, createWorld, LEGACY_HANDOFF } = vi.hoisted(() =
 vi.mock("../lib/host-account", () => ({ isHosted: () => true }));
 vi.mock("../lib/worker-rpc", () => ({ getStorageWorkerManager: () => manager }));
 vi.mock("../lib/coinage-live", () => ({
+  chooseHostedRoute: async () => ({ tier: "pool" }),
   createHostedCoinageWorld: createWorld,
   ensureChainSubmitGrant: async () => {},
 }));
@@ -351,7 +352,9 @@ describe("requests store: the hand-off step", () => {
 
     await requests.reconcile("boot");
 
-    expect(worlds.builds).toEqual([{ amount: 25_000_000n, tradeN: 3, sourceId: "dot-assethub" }]);
+    expect(worlds.builds).toEqual([
+      { amount: 25_000_000n, tradeN: 3, sourceId: "dot-assethub", route: { tier: "pool" } },
+    ]);
     expect(worlds.disposed).toBe(1);
     expect(worker.calls).toEqual([startFunding("dot-assethub:3", LEGACY_HANDOFF)]);
     // The payload is on the record with a rev bump, and reaches the host with the coalesced write.

@@ -11,6 +11,8 @@ import { getStorageWorkerManager } from "./worker-rpc";
 import { createFlowStore, type ChainflipRail, type FlowState, type SourceId } from "@getsome/core";
 import { deriveKeypair } from "@getsome/ephemeral";
 import {
+  chooseRoute,
+  type ConversionRoute,
   DEFAULT_KEEP_NATIVE_FOR_FEES,
   DEFAULT_REMOTE_FEE_BUFFER,
   PASEO_PEOPLE_PARA_ID,
@@ -36,7 +38,7 @@ import {
   tradeEntropyLabelString,
   type CoinageWorld,
 } from "./coinage";
-import { ASSET_HUB_GENESIS, PEOPLE_GENESIS } from "./host-chain";
+import { ASSET_HUB, ASSET_HUB_GENESIS, connectChain, PEOPLE_GENESIS } from "./host-chain";
 
 export interface HostedCoinageWorld extends CoinageWorld {
   /** Current host purse balance (CASH base units). */
@@ -167,10 +169,21 @@ function toCashBase(human: string): bigint {
   return BigInt(whole) * 10n ** BigInt(CASH_DECIMALS) + BigInt(frac.padEnd(CASH_DECIMALS, "0"));
 }
 
+/** The conversion tier a hosted request takes, read off the live PSM. The one place the
+ *  decision is made for a hosted request: it runs before the rail is built, since the tier
+ *  fixes the asset the rail delivers, and the world it is handed to freezes it into the hand-off
+ *  (local/psm/PLAN.md §2.2). */
+export async function chooseHostedRoute(amount: bigint): Promise<ConversionRoute> {
+  const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
+  return chooseRoute(api, { direction: "mint", internalAmount: amount });
+}
+
 /** The pool-funded session over the real host seams; budget sized live from the pool. */
 export async function createHostedCoinageWorld(args: {
   /** CASH base units (6 decimals). */
   amount: bigint;
+  /** The tier already decided for this request (see createCoinageSession.route). */
+  route: ConversionRoute;
   /** Which request's burner to derive; omit for a new one (see CoinageSessionArgs.tradeN). */
   tradeN?: number;
   /** Fiat rail and its source id, when the fiat route drives this run. */
@@ -188,6 +201,7 @@ export async function createHostedCoinageWorld(args: {
     ...(args.rail ? { rail: args.rail } : {}),
     ...(args.tradeN === undefined ? {} : { tradeN: args.tradeN }),
     ...(args.staleFlowMs === undefined ? {} : { staleFlowMs: args.staleFlowMs }),
+    route: args.route,
     hostLocalStorage: storage,
     deriveEntropy,
     // The storage-backed manager stands in for the SDK's getWorkerManager(); one per page.
@@ -222,7 +236,8 @@ export async function startLiveCoinage(args: {
   /** CASH to claim, human units, e.g. "5" or "0.25". */
   amountCash: string;
 }): Promise<HostedCoinageWorld> {
-  const world = await createHostedCoinageWorld({ amount: toCashBase(args.amountCash) });
+  const amount = toCashBase(args.amountCash);
+  const world = await createHostedCoinageWorld({ amount, route: await chooseHostedRoute(amount) });
 
   world.session.subscribe((s) => {
     console.info(`[coinage] phase=${s.phase}`, s);

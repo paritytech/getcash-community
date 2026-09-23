@@ -123,6 +123,7 @@ vi.mock("../lib/coinage-live", () => ({
   },
   lostRequestHandoff,
   ensureChainSubmitGrant: async () => {},
+  chooseHostedRoute: async () => ({ tier: "pool" }),
   createHostedCoinageWorld: async () => {
     throw new Error("no world is built here");
   },

@@ -6,7 +6,7 @@ import { computed, ref, shallowRef, watch } from "vue";
 import { TOKENS, type ChainflipRail, type PaymentState, type SourceId } from "@getsome/core";
 import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
 import type { RefundKey } from "@getsome/ephemeral";
-import type { FundingStep } from "@getsome/funding";
+import { recordedRoute, type ConversionRoute, type FundingStep } from "@getsome/funding";
 import {
   advanceFundingProgressSnapshot,
   createFundingProgressSnapshot,
@@ -487,10 +487,12 @@ export const useSessionStore = defineStore("session", () => {
 
   /** The hosted world up to hydration, shared by the fresh-quote and resume paths. Returns null
    *  when a newer quote superseded this one. `staleFlowMs` is the request's deposit window, so
-   *  core's stale guard and the record's deadline agree. */
+   *  core's stale guard and the record's deadline agree. `route` is the request's tier, already
+   *  decided: the world freezes it and never decides one. */
   async function createLiveWorld(
     epoch: number,
     staleFlowMs: number,
+    route: ConversionRoute,
     tradeN?: number,
     rail?: ChainflipRail,
     sourceId?: SourceId,
@@ -507,6 +509,7 @@ export const useSessionStore = defineStore("session", () => {
         // A re-opened request's own number; a new one's is the free number the quote reserved.
         ...(tradeN === undefined ? {} : { tradeN }),
         staleFlowMs,
+        route,
         // The fiat route injects a Meld rail and its source id; the crypto route leaves both unset.
         ...(rail ? { rail } : {}),
         ...(sourceId ? { sourceId } : {}),
@@ -530,6 +533,18 @@ export const useSessionStore = defineStore("session", () => {
       return null;
     }
     return world;
+  }
+
+  /**
+   * The conversion tier a fresh quote is built on, decided once here and handed down: the rail
+   * is built for the asset the tier delivers, and the world freezes the tier into the hand-off.
+   * Nothing downstream decides again. The mock world runs over fakes with no PSM to ask, so
+   * outside the host the tier is the pool.
+   */
+  async function chooseQuoteRoute(amount: bigint): Promise<ConversionRoute> {
+    if (!isHosted()) return { tier: "pool" };
+    const { chooseHostedRoute } = await import("~~/lib/coinage-live");
+    return step("route selection", 10_000, chooseHostedRoute(amount));
   }
 
   /** The quote in flight, whichever rail: start() waits for it before opening the deposit. */
@@ -709,6 +724,9 @@ export const useSessionStore = defineStore("session", () => {
     }
     loading.value = true;
     try {
+      // The tier first: the rail is built for the asset the tier delivers.
+      const route = await chooseQuoteRoute(amountBase.value);
+      if (epoch !== quoteEpoch) return;
       const built = await buildMeldRail();
       // A newer quote may have started while the corridor probe was in flight; do not clobber its
       // state.
@@ -751,6 +769,7 @@ export const useSessionStore = defineStore("session", () => {
           nativeBudget,
           fundingSizing: sizing,
           tradeN: nextMockTradeN(built.sourceId),
+          route,
         });
         await world.session.ready;
         const quote = await world.session.quote();
@@ -773,6 +792,7 @@ export const useSessionStore = defineStore("session", () => {
       const world = await createLiveWorld(
         epoch,
         depositWindowFor(method.value),
+        route,
         tradeN,
         built.rail,
         built.sourceId,
@@ -822,6 +842,8 @@ export const useSessionStore = defineStore("session", () => {
       `[coinage] quoting in the ${isHosted() ? "LIVE (hosted)" : "MOCK (browser)"} world`,
     );
     try {
+      const route = await chooseQuoteRoute(amountBase.value);
+      if (epoch !== quoteEpoch) return;
       if (isHosted()) {
         const { nextHostedTradeNumber } = await import("~~/lib/coinage-live");
         const tradeN = await step(
@@ -829,7 +851,7 @@ export const useSessionStore = defineStore("session", () => {
           10_000,
           nextHostedTradeNumber(DEFAULT_SOURCE_ID, (n) => requests.hasTrace(DEFAULT_SOURCE_ID, n)),
         );
-        const world = await createLiveWorld(epoch, depositWindowFor("crypto"), tradeN);
+        const world = await createLiveWorld(epoch, depositWindowFor("crypto"), route, tradeN);
         if (!world) return; // superseded by a newer quote
         if (epoch !== quoteEpoch) {
           world.dispose();
@@ -860,6 +882,7 @@ export const useSessionStore = defineStore("session", () => {
           amount: amountBase.value,
           sourceId,
           tradeN: nextMockTradeN(sourceId),
+          route,
         });
         await world.session.ready;
         const quote = await world.session.quote();
@@ -1342,10 +1365,12 @@ export const useSessionStore = defineStore("session", () => {
         deadline.depositExpiresAt === null
           ? depositWindowFor(record.route)
           : deadline.depositExpiresAt - record.startedAt;
-      // Re-enter under the record's own trade and source id.
+      // Re-enter under the record's own trade and source id, on the tier the record froze at
+      // quote time; a record from before tiers were recorded is a pool one. No decision here.
       const world = await createLiveWorld(
         epoch,
         staleFlowMs,
+        recordedRoute(record.handoff ?? {}),
         record.tradeN,
         undefined,
         record.sourceId as SourceId | undefined,

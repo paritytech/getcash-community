@@ -32,7 +32,7 @@ import {
 import { entropyToMiniSecret } from "@polkadot-labs/hdkd-helpers";
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import {
-  chooseRoute,
+  type ConversionRoute,
   createManualRail,
   DEFAULT_KEEP_NATIVE_FOR_FEES,
   DEFAULT_REMOTE_FEE_BUFFER,
@@ -544,9 +544,12 @@ export async function createMockCoinageSession(
     recipient: string;
     /** The live sizing the caller quoted against, when it had one to quote against. */
     fundingSizing?: FundingSizing;
+    /** The conversion tier the caller decided on. Omitted, the pool: the fakes have no PSM. */
+    route?: ConversionRoute;
   },
 ): Promise<MockCoinageWorld> {
   const fundingSizing = args.fundingSizing ?? { remoteFeeBuffer: 0n, keepNativeForFees: 0n };
+  const route: ConversionRoute = args.route ?? { tier: "pool" };
   const handoff = createFakeHandoff({ manualConsent: true });
   const harness = createFakeHarness();
   const rail = args.rail ?? createFakeRail();
@@ -591,7 +594,7 @@ export async function createMockCoinageSession(
     peopleGenesis: "",
     remoteFeeBuffer: fundingSizing.remoteFeeBuffer.toString(),
     keepNativeForFees: fundingSizing.keepNativeForFees.toString(),
-    tier: "pool",
+    ...route,
   }));
   return {
     session,
@@ -825,6 +828,9 @@ export async function createCoinageSession(
     deriveEntropy: ParityDeriveEntropy;
     /** The product's worker: the only driver of this session's funding and claim. */
     worker: WorkerLike;
+    /** The conversion tier, decided once by the caller before the rail was built and frozen into
+     *  the hand-off here. This world takes no part in the decision (local/psm/PLAN.md §2.2). */
+    route: ConversionRoute;
     onClaimProgress?: (stage: "prompted" | "crediting", claimed?: bigint) => void;
   },
 ): Promise<CoinageWorld> {
@@ -907,15 +913,6 @@ export async function createCoinageSession(
   const keepNativeForFees = sizing?.keepNativeForFees ?? DEFAULT_KEEP_NATIVE_FOR_FEES;
   const remoteFeeBuffer = sizing?.remoteFeeBuffer ?? DEFAULT_REMOTE_FEE_BUFFER;
 
-  // The conversion tier, decided once here and frozen into the hand-off below. The worker
-  // consumes it and never re-decides; every request resolves to the pool until the PSM path
-  // flips.
-  const route = await stage(
-    "route selection",
-    10_000,
-    chooseRoute(await assetHubApi(), { direction: "mint", internalAmount: args.amount }),
-  );
-
   // Size the native budget the user must deposit from the live pool quote for the CASH
   // settle amount, plus the headroom that lets the deposit clear the worker's swap gate after
   // the pool moves (DEFAULT_SLIPPAGE_PCT), plus the retained fee native.
@@ -988,7 +985,8 @@ export async function createCoinageSession(
       // The same live estimates that sized the deposit.
       remoteFeeBuffer: remoteFeeBuffer.toString(),
       keepNativeForFees: keepNativeForFees.toString(),
-      ...route,
+      // The worker consumes the recorded tier and never re-decides.
+      ...args.route,
     };
   });
 

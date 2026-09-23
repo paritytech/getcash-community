@@ -2087,7 +2087,7 @@ export const useRequestsStore = defineStore("requests", () => {
     if (lost.length === 0) return;
     const [
       { getStorageWorkerManager },
-      { createHostedCoinageWorld, ensureChainSubmitGrant },
+      { chooseHostedRoute, createHostedCoinageWorld, ensureChainSubmitGrant },
       { sendWithdrawHandoff },
     ] = await Promise.all([
       import("~~/lib/worker-rpc"),
@@ -2119,10 +2119,13 @@ export const useRequestsStore = defineStore("requests", () => {
       const { ref } = record;
       const amount = toCashBase(record.amountHuman);
       if (amount === null) throw new Error(`'${record.amountHuman}' is not a CASH amount`);
+      // A record with no hand-off has no recorded tier, so this path still decides one; the
+      // tier has to live on the record before the PSM route is enabled (local/psm/PLAN.md M11).
       const world = await createHostedCoinageWorld({
         amount,
         tradeN: ref.tradeN,
         sourceId: effectiveSourceId(ref) as SourceId,
+        route: await chooseHostedRoute(amount),
       });
       try {
         const handoff = await world.handoffPayload();
