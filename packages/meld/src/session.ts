@@ -34,7 +34,7 @@ export async function requestMeldDeposit(
     country: context.country,
     sourceCurrencyCode: context.fiat,
     sourceAmount: provider.sourceAmount,
-    destinationCurrencyCode: context.token,
+    destinationCurrencyCode: context.token.meldCurrencyCode,
     destinationAmount: provider.destinationAmount,
     walletAddress: args.destAddress,
     paymentMethodType: context.method,

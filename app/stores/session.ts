@@ -3,7 +3,7 @@
 
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef, watch } from "vue";
-import type { ChainflipRail, PaymentState, SourceId } from "@getsome/core";
+import { TOKENS, type ChainflipRail, type PaymentState, type SourceId } from "@getsome/core";
 import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
 import type { RefundKey } from "@getsome/ephemeral";
 import type { FundingStep } from "@getsome/funding";
@@ -26,7 +26,6 @@ import {
   createFakeMeldClient,
   createMeldClient,
   createMeldRail,
-  NATIVE_DECIMALS,
   pickBestQuote,
   type MeldClientLike,
   type MeldQuoteRaw,
@@ -187,7 +186,7 @@ function meldChainFeeFiat(raw: MeldQuoteRaw, sizing: FundingSizing): string | nu
   if (!Number.isFinite(nativeOut) || nativeOut <= 0) return null;
   if (!Number.isFinite(netFiat) || netFiat <= 0) return null;
   const onAssetHub =
-    (Number(sizing.keepNativeForFees) / 10 ** NATIVE_DECIMALS) * (netFiat / nativeOut);
+    (Number(sizing.keepNativeForFees) / 10 ** TOKENS.PAS.decimals) * (netFiat / nativeOut);
   const onPeople = Number(sizing.remoteFeeBuffer) / 10 ** CASH_DECIMALS;
   const total = onAssetHub + onPeople;
   // Carried unrounded: the row's display rounds it, and the total has to sum the exact figures.
@@ -650,8 +649,8 @@ export const useSessionStore = defineStore("session", () => {
     const { quotes } = await client.getQuote({
       country: ctx.country,
       sourceCurrencyCode: ctx.fiat,
-      // The rail's own destination code.
-      destinationCurrencyCode: "DOT_ASSETHUB",
+      // The rail's own destination code; the budget is priced in the asset the rail is built with.
+      destinationCurrencyCode: TOKENS.PAS.meldCurrencyCode,
       sourceAmount: fiat.toFixed(2),
       paymentMethodType: ctx.paymentMethodType,
     });
@@ -666,7 +665,7 @@ export const useSessionStore = defineStore("session", () => {
     const netFiat = Number.isFinite(fee) ? paid - fee : paid;
     if (!Number.isFinite(paid) || netFiat <= 0) return null;
     const nativePerFiat = out / netFiat;
-    return BigInt(Math.ceil(fiat * nativePerFiat * 10 ** NATIVE_DECIMALS));
+    return BigInt(Math.ceil(fiat * nativePerFiat * 10 ** TOKENS.PAS.decimals));
   }
 
   /**
