@@ -51,9 +51,11 @@ const { chain, worker, manager, lostRequestHandoff, log } = vi.hoisted(() => {
     burners: new Map<string, { address: string; free: bigint } | Error>(),
     /** Every burner read, in order. */
     probes: [] as string[],
-    /** Every burner subscription, in order; the test pushes balances through `onValue`. */
+    /** Every burner subscription, in order, with the tier it reads the burner in; the test
+     *  pushes balances through `onValue`. */
     watchers: [] as {
       key: string;
+      tier: string;
       onValue: (free: bigint, address: string) => void;
       onError: (e: unknown) => void;
       unsubscribed: boolean;
@@ -104,10 +106,17 @@ vi.mock("../lib/coinage-live", () => ({
   watchTradeBurner: async (
     sourceId: string,
     tradeN: number,
+    route: { tier: string },
     onValue: (free: bigint, address: string) => void,
     onError: (e: unknown) => void,
   ) => {
-    const watcher = { key: `${sourceId}:${tradeN}`, onValue, onError, unsubscribed: false };
+    const watcher = {
+      key: `${sourceId}:${tradeN}`,
+      tier: route.tier,
+      onValue,
+      onError,
+      unsubscribed: false,
+    };
     chain.watchers.push(watcher);
     log.push("subscribe");
     return () => {
@@ -499,6 +508,22 @@ describe("requests store: the chain step", () => {
     });
     expect(watchers()).toEqual([{ key: "dot-assethub:3", unsubscribed: true }]);
     expect(chain.probes).toEqual([]);
+    // A hand-off from before tiers were recorded is a pool one: the burner is read in the native.
+    expect(watcher.tier).toBe("pool");
+  });
+
+  it("the deposit watch reads the burner in the tier the record froze at quote time", async () => {
+    const requests = useRequestsStore();
+    await requests.create(AWAITING_REF, {
+      ...migrated(awaitingDepositCryptoRecord),
+      handoff: { ...AWAITING_HANDOFF, tier: "psm", external: "USDT", feeRate: 5_000 },
+    });
+    requests.setForeground(AWAITING_REF);
+    await nextTick();
+    await settled();
+    expect(chain.watchers.map(({ key, tier }) => ({ key, tier }))).toEqual([
+      { key: "dot-assethub:3", tier: "psm" },
+    ]);
   });
 
   it("the deposit watch pauses while hidden and stops when the request leaves the screen", async () => {

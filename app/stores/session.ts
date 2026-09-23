@@ -1529,13 +1529,19 @@ export const useSessionStore = defineStore("session", () => {
     try {
       const tradeN = live.value.tradeN;
       const faucetRef = requestRefOf(live.value.sourceId, tradeN);
-      await fundFromFaucet({ address: s.deposit.address, amount: s.deposit.amount });
+      // The world's route fixes the asset the faucet sends: the one the pipeline reads the burner
+      // for.
+      const sent = await fundFromFaucet({
+        address: s.deposit.address,
+        amount: s.deposit.amount,
+        route: live.value.route,
+      });
       faucetState.value = "sent";
       // The transfer is in a block: the chain's own sighting of the deposit.
       await requests.observe(faucetRef, {
         source: "chain",
         at: Date.now(),
-        burnerNative: s.deposit.amount.toString(),
+        burnerNative: sent.toString(),
         finality: "finalized",
         via: "faucet",
       });
@@ -1683,7 +1689,7 @@ export const useSessionStore = defineStore("session", () => {
       const world = live.value;
       if (world && foregroundRef !== null) {
         const verdict = await requests.cancel(foregroundRef, {
-          readBurner: () => world.readBurnerNativeOnAh(),
+          readBurner: () => world.readBurnerDepositOnAh(),
         });
         if (verdict === "refused") {
           console.warn("[coinage] cancel refused: the burner already holds funds");

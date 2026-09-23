@@ -32,6 +32,7 @@ import {
 } from "@getsome/ephemeral";
 import { entropyToMiniSecret } from "@polkadot-labs/hdkd-helpers";
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
+import type { TypedApi } from "polkadot-api";
 import {
   type ConversionRoute,
   createManualRail,
@@ -459,6 +460,49 @@ export function depositTokenOf(route: ConversionRoute) {
   return route.tier === "psm" ? TOKENS[route.external] : TOKENS.PAS;
 }
 
+type AssetHubApi = TypedApi<typeof paseo_next_v2>;
+
+/** A burner's balance on Asset Hub at the best block in the asset the route delivers to it: the
+ *  native's free balance on the pool tier, the PSM external's holding on the PSM tier. A deposit
+ *  in any other asset is not a deposit this request can use, so it is not one it sees. */
+export async function readDepositOnAh(
+  api: AssetHubApi,
+  route: ConversionRoute,
+  address: string,
+): Promise<bigint> {
+  if (route.tier === "pool") {
+    const account = await api.query.System.Account.getValue(address, { at: "best" });
+    return account?.data?.free ?? 0n;
+  }
+  const held = await api.query.Assets.Account.getValue(TOKENS[route.external].assetHubId, address, {
+    at: "best",
+  });
+  return held?.balance ?? 0n;
+}
+
+/** `readDepositOnAh` at every best block until the returned function is called. */
+export function watchDepositOnAh(
+  api: AssetHubApi,
+  route: ConversionRoute,
+  address: string,
+  onValue: (balance: bigint) => void,
+  onError: (e: unknown) => void,
+): () => void {
+  const subscription =
+    route.tier === "pool"
+      ? api.query.System.Account.watchValue(address, { at: "best" }).subscribe({
+          next: ({ value: account }) => onValue(account?.data?.free ?? 0n),
+          error: onError,
+        })
+      : api.query.Assets.Account.watchValue(TOKENS[route.external].assetHubId, address, {
+          at: "best",
+        }).subscribe({
+          next: ({ value: held }) => onValue(held?.balance ?? 0n),
+          error: onError,
+        });
+  return () => subscription.unsubscribe();
+}
+
 /** Core's budget for `amount` of the route's deposit token: what the rail is asked to deliver,
  *  in that token's own denomination. */
 function depositBudget(
@@ -675,8 +719,11 @@ export interface CoinageWorld extends RefundKeyHold {
   /** Moves the source's trade counter past this request's number, once the request has started
    *  and its number is taken for good. Idempotent; a failed write leaves it callable again. */
   advanceTrade(): Promise<void>;
-  /** The burner's native balance on Asset Hub at the best block. */
-  readBurnerNativeOnAh(): Promise<bigint>;
+  /** The tier this request was quoted on, frozen at quote time; the hand-off carries the same
+   *  one to the worker. It fixes the asset the burner is funded in and read for. */
+  route: ConversionRoute;
+  /** The burner's balance on Asset Hub at the best block, in the route's deposit asset. */
+  readBurnerDepositOnAh(): Promise<bigint>;
   /** The burner's recovery secret (0x hex mini-secret), importable into a wallet as a raw seed. */
   exportBurnerSecret(): Promise<string>;
   /** Stops this session's work; the shared chain clients stay connected. */
@@ -1072,10 +1119,9 @@ export async function createCoinageSession(
     runFunding,
     handoffPayload,
     advanceTrade,
-    async readBurnerNativeOnAh() {
-      const api = await assetHubApi();
-      const account = await api.query.System.Account.getValue(burnerKey.address, { at: "best" });
-      return account?.data?.free ?? 0n;
+    route: args.route,
+    async readBurnerDepositOnAh() {
+      return readDepositOnAh(await assetHubApi(), args.route, burnerKey.address);
     },
     async exportBurnerSecret() {
       return burnerHex;

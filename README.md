@@ -154,12 +154,12 @@ pnpm format             # prettier
 
 Copy `.env.example` to `.env` and fill in what you need. Nuxt reads `.env`, not `.env.local`.
 
-| Variable               | Purpose                                                                                       |
-| ---------------------- | --------------------------------------------------------------------------------------------- |
-| `VITE_FAUCET_SEED`     | demo faucet account for the mock world; inlined into the client bundle, use a testnet account |
-| `VITE_DEPLOYER_SEED`   | fallback for `MNEMONIC` in `deploy.sh`                                                        |
-| `VITE_MELD_BASE_URL`   | origin of the Meld adapter; unset, the offline fake Meld client runs instead                  |
-| `VITE_MELD_PRODUCT_ID` | product id the adapter expects in the `x-dev-product-id` header                               |
+| Variable               | Purpose                                                                                                       |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `VITE_FAUCET_SEED`     | demo faucet account, holding PAS and USDt on Asset Hub; inlined into the client bundle, use a testnet account |
+| `VITE_DEPLOYER_SEED`   | fallback for `MNEMONIC` in `deploy.sh`                                                                        |
+| `VITE_MELD_BASE_URL`   | origin of the Meld adapter; unset, the offline fake Meld client runs instead                                  |
+| `VITE_MELD_PRODUCT_ID` | product id the adapter expects in the `x-dev-product-id` header                                               |
 
 Two tests submit real transactions to the Paseo testnet and are skipped unless enabled:
 `PROD_PROOF=1` runs `tests/prod-proof.test.ts`, `VERIFY_AMOUNTS=1` runs
@@ -170,8 +170,9 @@ Two tests submit real transactions to the Paseo testnet and are skipped unless e
 Being a prototype, parts of the tree exist to keep a demo moving and are not what a real
 deployment would do. Each is marked `TODO(production)` at its definition:
 
-- the faucet (`lib/faucet.ts`, `app/utils/demo.ts`) and the `estimateSource*` helpers behind
-  the `≈` amounts on the deposit screen
+- the faucet (`lib/faucet.ts`, `app/utils/demo.ts`), which funds the burner in the route's
+  deposit asset on Skip, and the `estimateSource*` helpers behind the `≈` amounts on the deposit
+  screen
 - `demoFallback` in `app/stores/offers.ts`, which offers every source ungated when Chainflip
   answers for nothing
 - `DEMO_MAX_CASH` in `app/stores/session.ts`, a 200 CASH cap on a purchase

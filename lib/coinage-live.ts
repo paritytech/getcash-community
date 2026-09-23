@@ -32,10 +32,12 @@ import {
   DEFAULT_SOURCE_ID,
   hostSafeEntropy,
   nextFreeTradeNumber,
+  readDepositOnAh,
   readPurseBalance,
   readTradeCounter,
   tradeEntropyLabel,
   tradeEntropyLabelString,
+  watchDepositOnAh,
   type CoinageWorld,
 } from "./coinage";
 import { ASSET_HUB, ASSET_HUB_GENESIS, connectChain, PEOPLE_GENESIS } from "./host-chain";
@@ -63,34 +65,33 @@ export async function burnerAddressFor(sourceId: string, tradeN: number): Promis
   return deriveKeypair(seed).address;
 }
 
-/** A trade's burner address and its native balance on Asset Hub, without building a session. */
+/** A trade's burner address and its balance on Asset Hub in the asset the trade's recorded route
+ *  delivers, without building a session. */
 export async function probeTradeBurner(
   sourceId: string,
   tradeN: number,
+  route: ConversionRoute,
 ): Promise<{ address: string; free: bigint }> {
   const address = await burnerAddressFor(sourceId, tradeN);
   const { connectChain, ASSET_HUB } = await import("./host-chain");
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
-  const account = await api.query.System.Account.getValue(address, { at: "best" });
-  return { address, free: account?.data?.free ?? 0n };
+  return { address, free: await readDepositOnAh(api, route, address) };
 }
 
-/** Follows a trade's burner balance on Asset Hub at each best block until the returned function
- *  is called: every emission reaches `onValue`, a failed subscription `onError`. */
+/** Follows a trade's burner balance in its route's deposit asset on Asset Hub at each best block
+ *  until the returned function is called: every emission reaches `onValue`, a failed
+ *  subscription `onError`. */
 export async function watchTradeBurner(
   sourceId: string,
   tradeN: number,
+  route: ConversionRoute,
   onValue: (free: bigint, address: string) => void,
   onError: (e: unknown) => void,
 ): Promise<() => void> {
   const address = await burnerAddressFor(sourceId, tradeN);
   const { connectChain, ASSET_HUB } = await import("./host-chain");
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
-  const subscription = api.query.System.Account.watchValue(address, { at: "best" }).subscribe({
-    next: ({ value: account }) => onValue(account?.data?.free ?? 0n, address),
-    error: onError,
-  });
-  return () => subscription.unsubscribe();
+  return watchDepositOnAh(api, route, address, (free) => onValue(free, address), onError);
 }
 
 /** Core's storage over the host store, under the prefix `createCoinageSession` writes with. */

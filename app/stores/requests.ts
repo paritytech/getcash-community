@@ -1226,6 +1226,15 @@ export const useRequestsStore = defineStore("requests", () => {
   } | null = null;
   const foregroundAwaiting = (): boolean =>
     foregroundRecord.value?.status.kind === "awaiting-deposit";
+  /** The tier a request's deposit arrives on, from the hand-off its record froze at quote time:
+   *  it fixes the asset the burner is read in. A record without a hand-off is a pool one, as on
+   *  resume; so is a number with no record, which is the tier `lostRequestHandoff` gives it. */
+  const depositRouteOf = (ref: RequestRef): ConversionRoute => {
+    const record = get(ref);
+    return record !== undefined && isTopUp(record)
+      ? recordedRoute(record.handoff ?? {})
+      : { tier: "pool" };
+  };
   function startDepositWatch(): void {
     if (sandboxed.value) return;
     const record = foregroundRecord.value;
@@ -1252,6 +1261,7 @@ export const useRequestsStore = defineStore("requests", () => {
         watchTradeBurner(
           sourceId,
           ref.tradeN,
+          depositRouteOf(ref),
           (free) => {
             if (watching.stopped) return;
             void observe(ref, chainReading(free, requestsNow()));
@@ -1918,7 +1928,7 @@ export const useRequestsStore = defineStore("requests", () => {
     async function probe(ref: RequestRef): Promise<{ address: string; free: bigint } | null> {
       const sourceId = effectiveSourceId(ref);
       const read = await bounded(`burner read for ${sourceId}#${ref.tradeN}`, PROBE_BOUND_MS, () =>
-        probeTradeBurner(sourceId, ref.tradeN),
+        probeTradeBurner(sourceId, ref.tradeN, depositRouteOf(ref)),
       );
       if (!read.ok) {
         console.warn(`[requests] ${read.reason} (kept)`);
@@ -2018,8 +2028,10 @@ export const useRequestsStore = defineStore("requests", () => {
       }
     }
     await inParallel(gaps, CHAIN_READ_PARALLELISM, async ({ sourceId, n }) => {
+      // No record, so no recorded tier: the burner is read in the pool's asset, the tier the
+      // record built below gets.
       const read = await bounded(`burner read for ${sourceId}#${n}`, PROBE_BOUND_MS, () =>
-        probeTradeBurner(sourceId, n),
+        probeTradeBurner(sourceId, n, { tier: "pool" }),
       );
       if (!read.ok) {
         console.warn(`[requests] ${read.reason}`);
