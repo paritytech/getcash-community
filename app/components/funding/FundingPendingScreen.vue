@@ -47,15 +47,13 @@ const emit = defineEmits<{
   open: [topUp: PendingTopUp];
 }>();
 
-// The settled card rides at the end of the same list: the design gives it a state on the card,
-// not a section of its own.
-const cards = computed<readonly PendingTopUp[]>(() =>
-  props.latestTopUp === null ? props.topUps : [...props.topUps, props.latestTopUp],
-);
+// The settled card gets a section of its own, on the history frame's shape: appended to the one
+// list it rode behind the collapse whenever three top-ups were still running, and the buyer never
+// saw their money land. Only the running cards collapse; the Completed section stays visible.
 const expanded = ref(false);
-const collapsible = computed(() => cards.value.length > COLLAPSED_CARDS);
+const collapsible = computed(() => props.topUps.length > COLLAPSED_CARDS);
 const visible = computed(() =>
-  collapsible.value && !expanded.value ? cards.value.slice(0, COLLAPSED_CARDS) : cards.value,
+  collapsible.value && !expanded.value ? props.topUps.slice(0, COLLAPSED_CARDS) : props.topUps,
 );
 const busy = computed(() => Boolean(props.openingTopUpId));
 </script>
@@ -88,33 +86,51 @@ const busy = computed(() => Boolean(props.openingTopUpId));
 
     <div v-else class="flex min-h-0 flex-1 flex-col px-4 pt-4 pb-6">
       <div class="-mx-4 min-h-0 flex-1 overflow-y-auto px-4">
-        <ul class="flex flex-col gap-2">
-          <li v-for="topUp in visible" :key="topUp.id">
-            <FundingTopUpProgressCard
-              :top-up="topUp"
-              :asset="config.asset"
-              :opening="openingTopUpId === topUp.id"
-              :disabled="busy"
-              @open="emit('open', topUp)"
-            />
-          </li>
-        </ul>
+        <section v-if="topUps.length > 0">
+          <h2 class="text-heading-l text-fg-primary">In progress</h2>
+          <ul class="mt-4 flex flex-col gap-2">
+            <li v-for="topUp in visible" :key="topUp.id">
+              <FundingTopUpProgressCard
+                :top-up="topUp"
+                :asset="config.asset"
+                :opening="openingTopUpId === topUp.id"
+                :disabled="busy"
+                @open="emit('open', topUp)"
+              />
+            </li>
+          </ul>
 
-        <!-- The collapse keeps the button reachable when the list outgrows the screen. -->
-        <div v-if="collapsible" class="mt-2 flex justify-center">
-          <button
-            type="button"
-            class="flex h-8 items-center gap-1 rounded-full bg-surface-container px-3 text-body-m text-fg-primary transition-colors hover:bg-selection-container-hover"
-            @click="expanded = !expanded"
-          >
-            <span>{{ expanded ? "Show less" : "Show more" }}</span>
-            <component
-              :is="expanded ? ChevronUp : ChevronDown"
-              class="size-3 shrink-0"
-              aria-hidden="true"
-            />
-          </button>
-        </div>
+          <!-- The collapse keeps the button reachable when the list outgrows the screen. -->
+          <div v-if="collapsible" class="mt-2 flex justify-center">
+            <button
+              type="button"
+              class="flex h-8 items-center gap-1 rounded-full bg-surface-container px-3 text-body-m text-fg-primary transition-colors hover:bg-selection-container-hover"
+              @click="expanded = !expanded"
+            >
+              <span>{{ expanded ? "Show less" : "Show more" }}</span>
+              <component
+                :is="expanded ? ChevronUp : ChevronDown"
+                class="size-3 shrink-0"
+                aria-hidden="true"
+              />
+            </button>
+          </div>
+        </section>
+
+        <section v-if="latestTopUp" :class="{ 'mt-8': topUps.length > 0 }">
+          <h2 class="text-heading-l text-fg-primary">Completed</h2>
+          <ul class="mt-4 flex flex-col gap-2">
+            <li>
+              <FundingTopUpProgressCard
+                :top-up="latestTopUp"
+                :asset="config.asset"
+                :opening="openingTopUpId === latestTopUp.id"
+                :disabled="busy"
+                @open="emit('open', latestTopUp)"
+              />
+            </li>
+          </ul>
+        </section>
       </div>
 
       <p v-if="error" class="mt-3 text-center text-caption text-fg-error" role="alert">
