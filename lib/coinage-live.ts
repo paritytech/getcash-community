@@ -9,7 +9,7 @@ import {
 } from "@parity/product-sdk-host";
 import { getStorageWorkerManager } from "./worker-rpc";
 import { createFlowStore, type ChainflipRail, type FlowState, type SourceId } from "@getsome/core";
-import { deriveKeypair } from "@getsome/ephemeral";
+import { deriveKeypair, type RefundKey } from "@getsome/ephemeral";
 import {
   chooseRoute,
   type ConversionRoute,
@@ -36,6 +36,7 @@ import {
   readDepositOnAh,
   readPurseBalance,
   readTradeCounter,
+  recoverRefundKey,
   tradeEntropyLabel,
   tradeEntropyLabelString,
   watchDepositOnAh,
@@ -77,6 +78,21 @@ export async function probeTradeBurner(
   const { connectChain, ASSET_HUB } = await import("./host-chain");
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
   return { address, free: await readDepositOnAh(api, route, address) };
+}
+
+/**
+ * A refunded request's recovery key, from the record's own fields. No session, no network.
+ *
+ * The host derives the seed, exactly as it did when the request was opened, so this returns the
+ * same key the rail was given — which is why a refund can be recovered long after the world that
+ * created it is gone. Null off-host, where there is no entropy root to ask.
+ */
+export async function probeRefundKey(
+  sourceId: SourceId,
+  tradeN: number,
+): Promise<RefundKey | null> {
+  const entropy = createHostEntropyPort(hostSafeEntropy(deriveEntropy));
+  return recoverRefundKey(entropy, sourceId, tradeN);
 }
 
 /** Follows a trade's burner balance in its route's deposit asset on Asset Hub at each best block

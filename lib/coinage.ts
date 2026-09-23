@@ -347,6 +347,38 @@ export async function provisionRefundKey(
   return key;
 }
 
+/**
+ * Re-derives a request's refund key from its identity alone — no session, no storage read.
+ *
+ * `provisionRefundKey` above is the write path, used while a request is being opened: it records
+ * the address so a later derivation can be checked against what was handed to the rail. This is
+ * the read path, for a refunded request being looked at after the fact. The key is a pure function
+ * of (sourceId, n), both of which the durable record carries, so a request whose world is long
+ * gone can still be walked back to the funds.
+ *
+ * Deliberately does not touch storage. The slot is written when a request opens and cleared once
+ * its deposit lands; re-creating one here for a request that should not have it would leave a
+ * dangling secret behind a screen that only meant to read.
+ */
+export async function recoverRefundKey(
+  entropy: Pick<EntropyPort, "deriveSeed">,
+  sourceId: SourceId,
+  n: number,
+): Promise<RefundKey | null> {
+  const chain = refundChainFor(sourceId);
+  if (chain === null) return null; // the manual rail has no refund key
+  const seed = await entropy.deriveSeed(refundEntropyLabel(sourceId, n));
+  const key = deriveRefundKey(chain, seed, { bitcoinNetwork: BITCOIN_NETWORK });
+  // The check `provisionRefundKey` makes on the way in, repeated on the way out: an address that
+  // does not validate for its own source means the derivation is wrong, and pointing a buyer at
+  // an address their money is not at is worse than telling them nothing.
+  if (!SOURCE_CONFIG_BY_ID.get(sourceId)?.validateRefundAddress(key.address)) {
+    console.warn(`[coinage] recovered refund address is not valid for ${sourceId}`);
+    return null;
+  }
+  return key;
+}
+
 /** True once the deposit is on the burner. */
 export function depositLanded(phase: string | undefined): boolean {
   return phase === "funded" || phase === "working" || phase === "done";

@@ -108,9 +108,19 @@ export interface ActiveFlowRecord {
   meldFundingRequestId?: string;
   /** Meld fiat requests only: the buyer country the quote was priced in. */
   meldCountry?: string;
+  /** Meld fiat requests only: the provider that took the payment (Transak, Koywe, ...). The
+   *  concluded journey names it, and a refund is theirs to trace. */
+  meldServiceProvider?: string;
   failureReason?: string;
   /** True when the failed swap was refunded to the request's own key. */
   refunded?: boolean;
+  /** What actually came back, in the source asset's BASE units as the rail reports them (not a
+   *  decimal string — `formatSourceAmount` renders it), and the chain transaction that returned
+   *  it. Less than the deposit: the refund pays its own network fees. Both live on the request's
+   *  `refund` progress, so without them a journey reopened from history can say only that a refund
+   *  happened, not how much or where to look for it. */
+  refundAmount?: string;
+  refundTxRef?: string;
   /** Timestamp of the user's cancel. Marks a tombstone: hidden from every list, never driven,
    *  resurrected or deleted by the sweep. */
   cancelledAt?: number;
@@ -333,6 +343,10 @@ export const useSessionStore = defineStore("session", () => {
   // The journey shows it as the payment's reference when a top-up fails, and reads it off the
   // request's own record: a top-up opened from the list has no session behind it.
   let meldFundingRequestId: string | null = null;
+  /** Meld fiat requests only: the provider we opened the request with. The adapter's funding
+   *  record does not report it back, so the create call is the only moment it can be captured;
+   *  the request's record keeps it from there. */
+  let meldServiceProvider: string | null = null;
   // The country the current Meld quote was priced in.
   let meldRegionCountry: string | null = null;
   /** The ref of the request on screen; set on start or re-open, cleared with the world. */
@@ -365,6 +379,27 @@ export const useSessionStore = defineStore("session", () => {
   /** Reads the refund key from the world on demand. */
   function revealRefundKey(): RefundKey | null {
     return (mock.value ?? live.value)?.revealRefundKey() ?? null;
+  }
+
+  /**
+   * The recovery key for a request that is not on screen, re-derived from its own identity.
+   *
+   * For a refund opened out of history, where there is no world to ask. The host derives the same
+   * seed it did when the request was opened, so this is the key the rail was handed. Null off-host
+   * — a dev build has no entropy root, and the deck's scenes install a mock world instead.
+   */
+  async function recoverRefundKeyFor(sourceId: string, tradeN: number): Promise<RefundKey | null> {
+    if (!isHosted()) return null;
+    try {
+      const { probeRefundKey } = await import("~~/lib/coinage-live");
+      // A record's source id is a plain string on disk, and nothing narrows it here because the
+      // derivation fails closed on its own: an id with no refund chain, or one the source registry
+      // does not know, comes back null rather than deriving against the wrong chain.
+      return await probeRefundKey(sourceId as SourceId, tradeN);
+    } catch (e) {
+      console.warn("[coinage] refund key recovery failed:", e);
+      return null;
+    }
   }
 
   /** The trade number the next mock request takes: one past the highest this source has a record
@@ -448,6 +483,7 @@ export const useSessionStore = defineStore("session", () => {
     meldResumeWidgetUrl.value = null;
     meldCredited = false;
     meldFundingRequestId = null;
+    meldServiceProvider = null;
     meldStatusClient = null;
     cancelNotice.value = null;
     sub?.unsubscribe();
@@ -677,6 +713,7 @@ export const useSessionStore = defineStore("session", () => {
       createSession: async (r) => {
         const s = await baseClient.createSession(r);
         meldFundingRequestId = s.fundingRequestId;
+        meldServiceProvider = r.serviceProvider || null;
         return s;
       },
       getStatus: (id) => baseClient.getStatus(id),
@@ -1254,6 +1291,7 @@ export const useSessionStore = defineStore("session", () => {
         ...(isMeldSourceId(world.sourceId) && meldRegionCountry
           ? { meldCountry: meldRegionCountry }
           : {}),
+        ...(meldServiceProvider ? { meldServiceProvider } : {}),
         ...(depositExpiresAt > 0 ? { depositExpiresAt } : {}),
         route: routeOf(effectiveSourceId(ref)),
         ...(deposit
@@ -1484,6 +1522,7 @@ export const useSessionStore = defineStore("session", () => {
           });
           meldStatusClient = client;
           meldFundingRequestId = record.meldFundingRequestId;
+          meldServiceProvider = record.meldServiceProvider ?? null;
           // Recover the pay URL from the adapter; the rail keeps pay URLs only in memory.
           void client
             .getStatus(record.meldFundingRequestId)
@@ -1809,6 +1848,7 @@ export const useSessionStore = defineStore("session", () => {
     live,
     refundAddress,
     revealRefundKey,
+    recoverRefundKeyFor,
     // derived helpers
     isFaucetConfigured,
     amountStatus,

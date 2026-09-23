@@ -1,14 +1,21 @@
 <script setup lang="ts">
-// The Fees drill-in behind the pay screen's hero caption: the quoted fee split, its total, the
-// charge it is part of, and the effective rate. Read-only; both the toolbar and the bottom button
-// return to the pay screen.
+// The Fees drill-in behind the pay screen's hero caption and the journey's money row: the quoted
+// fee split, its total, the charge it is part of, and the effective rate. Read-only; both the
+// toolbar and the bottom button return to the screen behind.
+//
+// The quote is handed in rather than read off the session: a journey opened from the list has no
+// live request, and the record's own stored quote carries the same split.
 import { computed } from "vue";
-import { useSessionStore } from "../../../stores/session";
+import type { QuoteView } from "../../../funding/quote-rows";
 import { fmtFiat, isMoneyAmount, sumMoney } from "../../../utils/money";
 import DetailRows from "../../ui/DetailRows.vue";
 import PillButton from "../../ui/PillButton.vue";
 
-const session = useSessionStore();
+const props = defineProps<{
+  quote: QuoteView | null;
+  /** The CASH the charge buys, for the rate line. */
+  cashAmount: string;
+}>();
 const emit = defineEmits<{ back: [] }>();
 
 /**
@@ -31,7 +38,7 @@ const emit = defineEmits<{ back: [] }>();
  * there rather than zero.
  */
 const feeRows = computed(() => {
-  const q = session.quoted;
+  const q = props.quote;
   if (!q) return [];
   const networkFee = sumMoney(q.networkFee, q.chainFee);
   return [
@@ -56,13 +63,13 @@ const feeRows = computed(() => {
  * contains them.
  */
 const totalFee = computed(() => {
-  const q = session.quoted;
+  const q = props.quote;
   return q ? sumMoney(q.fee, q.chainFee, q.mintFee) : null;
 });
 
 /** The sum of the split, carried in its own rule-bracketed row. */
 const totalRows = computed(() => {
-  const q = session.quoted;
+  const q = props.quote;
   const total = totalFee.value;
   return q && total !== null
     ? [{ label: "Total fees", value: fmtFiat(String(total), q.symbol) }]
@@ -71,17 +78,17 @@ const totalRows = computed(() => {
 
 /** The charge itself. The split above explains it; this is the number the buyer actually pays. */
 const totalCharge = computed(() => {
-  const q = session.quoted;
-  return q ? fmtFiat(q.send, q.symbol) : null;
+  const q = props.quote;
+  return q ? fmtFiat(q.amount, q.symbol) : null;
 });
 
 /** Fiat per CASH net of fees: what the buyer's money actually buys. Net of the same total the
  *  row above carries, so the rate and the split cannot tell different stories. */
 const rate = computed(() => {
-  const q = session.quoted;
-  const cash = Number(session.amountHuman);
+  const q = props.quote;
+  const cash = Number(props.cashAmount.replace(/,/g, ""));
   if (!q || !Number.isFinite(cash) || cash <= 0) return null;
-  const net = Number(q.send) - (totalFee.value ?? 0);
+  const net = Number(q.amount) - (totalFee.value ?? 0);
   if (!Number.isFinite(net) || net <= 0) return null;
   return `1 $CASH ≈ ${fmtFiat((net / cash).toFixed(2), q.symbol)}`;
 });

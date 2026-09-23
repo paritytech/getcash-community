@@ -536,9 +536,13 @@ describe("requests store: the hand-off step", () => {
     const mirrorBefore = mirror.getItem(MIRROR_KEY);
     expect(mirrorBefore).toContain(`"${requestRefKey(AWAITING_REF)}"`);
 
-    const session = useSessionStore();
-    const flow = useFlowStore();
-    for (let n = 0; n < SCENES.length; n++) await directScene(session, flow, 1);
+    // Read after every scene, not once at the end: a scene starts from an empty sandbox, so the
+    // last one in the ring need not have seeded anything of its own.
+    const tradeNumbers = new Set<number>();
+    for (let n = 0; n < SCENES.length; n++) {
+      await directScene(1);
+      for (const record of requests.openRecords) tradeNumbers.add(record.ref.tradeN);
+    }
     await requests.reconcile("boot");
 
     expect(requests.sandboxed).toBe(true);
@@ -547,9 +551,8 @@ describe("requests store: the hand-off step", () => {
     expect(worker.calls).toEqual([]);
     expect(worlds.builds).toEqual([]);
     // Memory holds the deck's own requests alone; the real one is back on the next reload.
-    const tradeNumbers = requests.openRecords.map((record) => record.ref.tradeN);
-    expect(tradeNumbers.length).toBeGreaterThan(0);
-    expect(tradeNumbers.every((tradeN) => tradeN >= 900)).toBe(true);
+    expect(tradeNumbers.size).toBeGreaterThan(0);
+    expect([...tradeNumbers].every((tradeN) => tradeN >= 900)).toBe(true);
     expect(requests.has(AWAITING_REF)).toBe(false);
   });
 });
