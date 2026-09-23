@@ -170,6 +170,9 @@ export interface TopUpRecord {
   sourceChainFee?: string;
   meldCountry?: string;
   meldFundingRequestId?: string;
+  /** Meld fiat requests only: the provider that took the payment (Transak, Koywe, ...). The
+   *  concluded journey names it, and a refund is theirs to trace. */
+  meldServiceProvider?: string;
   meldSubmittedAt?: number;
   /** Demo only: when Skip was pressed, so a re-open never offers Skip again for this request. */
   depositSkippedAt?: number;

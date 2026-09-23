@@ -27,10 +27,8 @@ export const WITHDRAWAL_WORDING: FundingTopUpWording = { settled: "Sent" };
 
 /** The words the shell's list screens use on the withdrawal page. */
 export const WITHDRAWAL_LIST_WORDING: FundingListWording = {
-  pendingTitle: "Withdrawals",
-  latestTitle: "Your latest withdrawal",
-  emptyHistory: "No withdrawals yet.",
-  settledCard: "Sent to your address",
+  pendingTitle: "Withdrawal in progress",
+  emptyHistory: "Nothing here yet. Your withdrawals will appear as you make them.",
 };
 
 /** A withdrawal row's id: the kind, then the request's identity (`withdraw:wd:dot-assethub#3`). */

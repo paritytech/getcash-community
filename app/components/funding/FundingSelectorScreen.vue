@@ -12,6 +12,7 @@ import {
   type FundingRoute,
   type FundingSelection,
 } from "../../funding/selection";
+import { useStateDirector } from "../../composables/useStateDirector";
 import {
   hasFundingPendingContent,
   TOP_UP_LIST_WORDING,
@@ -21,13 +22,16 @@ import {
   type SettledFundingTopUp,
 } from "../../funding/top-ups";
 
-type OpenableFundingTopUp = InProgressFundingTopUp | SettledFundingTopUp;
+type OpenableFundingTopUp = InProgressFundingTopUp | PastFundingTopUp;
 
 const props = withDefaults(
   defineProps<{
-    /** Launch-load placeholder: renders the amount screen's chrome with skeleton shapes over the
+    /** Launch-load placeholder: renders the entry screen's chrome with skeleton shapes over the
      *  not-yet-loaded data instead of the interactive shell. */
     skeleton?: boolean;
+    /** Which screen the placeholder draws. Pending is for a launch that already knows a top-up
+     *  is running. */
+    skeletonScreen?: "amount" | "pending" | "history";
     config?: FundingSelectorConfig;
     initialSelection?: FundingSelection | null;
     /** Routes this build can run; the rest render dimmed and cannot be picked. Defaults to
@@ -53,6 +57,7 @@ const props = withDefaults(
   }>(),
   {
     skeleton: false,
+    skeletonScreen: "amount",
     config: () => fundingSelectorConfig,
     initialSelection: null,
     availableRoutes: null,
@@ -72,6 +77,10 @@ const props = withDefaults(
   },
 );
 
+// The shell owns the preview deck while no package is open, so the top-ups scenes can be cycled
+// from here.
+useStateDirector();
+
 const emit = defineEmits<{
   change: [];
   continue: [selection: FundingSelection];
@@ -79,7 +88,13 @@ const emit = defineEmits<{
 }>();
 
 const hasPendingContent = computed(() => hasFundingPendingContent(props.topUps, props.latestTopUp));
-const screen = ref(resolveFundingShellScreen(props.initialScreen, hasPendingContent.value));
+// The clock only opens a screen that has something on it: with nothing running and nothing
+// finished, history is a dead end, so the control is not drawn at all.
+const hasHistoryContent = computed(() => props.topUps.length > 0 || props.pastTopUps.length > 0);
+/** A top-up still running; the only thing that may open the "Top-up in progress" screen. */
+const hasTopUpInProgress = computed(() => props.topUps.length > 0);
+const entryScreen = () => resolveFundingShellScreen(props.initialScreen, hasTopUpInProgress.value);
+const screen = ref(entryScreen());
 const historyReturnScreen = ref<FundingHistoryReturnScreen>(props.historyReturn);
 const availableRouteIds = computed<readonly FundingRoute[]>(
   () => props.availableRoutes ?? props.config.routes.map(({ id }) => id),
@@ -116,10 +131,9 @@ function showHistory() {
 }
 
 function closeHistory() {
-  screen.value =
-    historyReturnScreen.value === "pending" && !hasPendingContent.value
-      ? "amount"
-      : historyReturnScreen.value;
+  // The same entry rule the shell was opened under: the list the buyer came from may have emptied
+  // while they were in history.
+  screen.value = resolveFundingShellScreen(historyReturnScreen.value, hasTopUpInProgress.value);
   emit("change");
 }
 
@@ -129,15 +143,38 @@ function continueToPackage() {
   if (selection !== null) emit("continue", selection);
 }
 
+// Leaving is gated on the settled card too, not just on what is running: a top-up that lands
+// while the buyer is watching it should leave its "Added to your balance" card up until they go,
+// rather than throwing them to the amount screen at the moment it succeeds.
 watch(hasPendingContent, (hasContent) => {
   if (screen.value === "pending" && !hasContent) showAmount();
 });
+
+// A fresh entry request from the host (a journey closing back to the list, a preview scene)
+// re-resolves the screen; the shell does not own where it was sent.
+watch(
+  () => props.initialScreen,
+  () => {
+    screen.value = entryScreen();
+  },
+);
 </script>
 
 <template>
   <section class="funding-selector">
+    <FundingPendingScreen
+      v-if="skeleton && skeletonScreen === 'pending'"
+      skeleton
+      :config="config"
+    />
+    <FundingHistoryScreen
+      v-else-if="skeleton && skeletonScreen === 'history'"
+      skeleton
+      :config="config"
+      @back="closeHistory"
+    />
     <FundingAmountScreen
-      v-if="skeleton"
+      v-else-if="skeleton"
       skeleton
       :config="config"
       amount=""
@@ -181,7 +218,7 @@ watch(hasPendingContent, (hasContent) => {
       :amount="amount"
       :route="route"
       :available-routes="availableRouteIds"
-      :history="topUps.length > 0 || pastTopUps.length > 0"
+      :history="hasHistoryContent"
       :error="error"
       :loading="loading"
       :title="title"
@@ -192,6 +229,9 @@ watch(hasPendingContent, (hasContent) => {
       @continue="continueToPackage"
       @history="showHistory"
     />
+
+    <!-- state-director scene label (dev/demo keys only) -->
+    <PreviewSceneLabel />
   </section>
 </template>
 
