@@ -563,6 +563,8 @@ export interface MockCoinageWorld extends RefundKeyHold {
   tradeN: number;
   /** The hand-off a worker would get for this request; the chain fields are blank offline. */
   handoffPayload(): Promise<WorkerHandoffPayload>;
+  /** The tier this request was quoted on (see CoinageWorld.route). */
+  route: ConversionRoute;
   /** The mock world has no counter to move. */
   advanceTrade(): Promise<void>;
 }
@@ -655,6 +657,7 @@ export async function createMockCoinageSession(
           settlement: CASH_SETTLEMENT,
           settleAmount: args.amount,
         }),
+    conversion: route,
     sourceId: args.sourceId,
   });
   const refund = holdRefundKey(session, storage, args.sourceId, tradeN, refundKey);
@@ -684,6 +687,7 @@ export async function createMockCoinageSession(
     tradeN,
     ...refund,
     handoffPayload,
+    route,
     async advanceTrade() {},
   };
 }
@@ -1041,6 +1045,8 @@ export async function createCoinageSession(
     entropyLabel,
     settlement: CASH_SETTLEMENT,
     settleAmount: args.amount,
+    // Into the flow slot, so a request that loses its record is recovered on this tier.
+    conversion: args.route,
     deps,
     // The rail quotes the budget in the route's deposit token.
     ...depositBudget(args.route, budget),

@@ -46,6 +46,10 @@ export const PROBED_RECHECK_MS = 86_400_000;
 export const PROVISIONAL_REVERT_MS = 600_000;
 /** Failure reason for a request whose deposit window lapsed. */
 export const DEPOSIT_EXPIRED_REASON = "Channel expired";
+/** The worker holds a request after the PSM refused the mint three times (local/psm/PLAN.md
+ *  §2.3): the deposit stays on the request's own address and a retry re-runs the mint. */
+export const FUNDING_HELD_REASON =
+  "CASH can't be minted right now. Your funds are safe at this request's deposit address; try again later.";
 /** Window for the purse's payment to reach a withdrawal's key before the request expires. */
 export const PAYMENT_WINDOW_MS = 1_800_000;
 /** Failure reason for a withdrawal whose payment never reached its key. */
@@ -205,6 +209,10 @@ export interface TopUpRecord {
   };
   deadline: { depositExpiresAt: number | null; source: "rail" | "route" };
   handoff?: WorkerHandoffPayload;
+  /** The conversion tier the request was quoted on, kept on the record itself so a request whose
+   *  hand-off never persisted is still recovered on it rather than re-decided (local/psm/PLAN.md
+   *  §2.2). A record from before tiers were recorded has none and is a pool one. */
+  conversion?: ConversionRoute;
   refundAddress?: string;
   status: RequestStatus;
   rail: RailState;

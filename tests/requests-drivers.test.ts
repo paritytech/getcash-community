@@ -367,6 +367,24 @@ describe("requests store: the hand-off step", () => {
     });
   });
 
+  it("rebuilds a record that lost its hand-off on the tier the record froze", async () => {
+    const PSM = { tier: "psm", external: "USDT", feeRate: 5_000 } as const;
+    const requests = useRequestsStore();
+    // The record kept the tier it was quoted on but not its hand-off: the world is built for
+    // that tier, read off the record, with nothing asked of the chain.
+    await requests.create(AWAITING_REF, {
+      ...migrated(awaitingDepositCryptoRecord),
+      conversion: PSM,
+    });
+
+    await requests.reconcile("boot");
+
+    expect(worlds.builds).toEqual([
+      { amount: 25_000_000n, tradeN: 3, sourceId: "dot-assethub", route: PSM },
+    ]);
+    expect(worker.calls).toEqual([startFunding("dot-assethub:3", LEGACY_HANDOFF)]);
+  });
+
   it("retry re-sends the stored hand-off and restarts the job poll", async () => {
     vi.useFakeTimers();
     const requests = useRequestsStore();

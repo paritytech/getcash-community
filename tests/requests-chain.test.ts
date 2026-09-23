@@ -51,6 +51,8 @@ const { chain, worker, manager, lostRequestHandoff, log } = vi.hoisted(() => {
     burners: new Map<string, { address: string; free: bigint } | Error>(),
     /** Every burner read, in order. */
     probes: [] as string[],
+    /** The tier each burner was last read in, by key. */
+    probeTiers: new Map<string, string>(),
     /** Every burner subscription, in order, with the tier it reads the burner in; the test
      *  pushes balances through `onValue`. */
     watchers: [] as {
@@ -74,31 +76,35 @@ const { chain, worker, manager, lostRequestHandoff, log } = vi.hoisted(() => {
     },
     dispose() {},
   };
+  /** As the live one: the tier is the slot's, and a slot without one is a pool one. */
   const lostRequestHandoff = (
     sourceId: string,
     tradeN: number,
     address: string,
     slot: FlowState,
-  ): WorkerHandoffPayload => ({
-    label: `onramp:eph:${sourceId}:${tradeN}`,
-    burnerAddress: address,
-    depositExpiresAt: slot.depositExpiresAt ?? 0,
-    settleAmount: slot.handoffAmount ?? "0",
-    underlyingAssetId: 1337,
-    peopleParaId: 1004,
-    assetHubGenesis: `0x${"aa".repeat(32)}`,
-    peopleGenesis: `0x${"bb".repeat(32)}`,
-    remoteFeeBuffer: "500000000",
-    keepNativeForFees: "100000000",
-  });
+  ): WorkerHandoffPayload =>
+    ({
+      label: `onramp:eph:${sourceId}:${tradeN}`,
+      burnerAddress: address,
+      depositExpiresAt: slot.depositExpiresAt ?? 0,
+      settleAmount: slot.handoffAmount ?? "0",
+      underlyingAssetId: 1337,
+      peopleParaId: 1004,
+      assetHubGenesis: `0x${"aa".repeat(32)}`,
+      peopleGenesis: `0x${"bb".repeat(32)}`,
+      remoteFeeBuffer: "500000000",
+      keepNativeForFees: slot.conversion?.tier === "psm" ? "0" : "100000000",
+      ...(slot.conversion ?? { tier: "pool" }),
+    }) as WorkerHandoffPayload;
   return { chain, worker, manager, lostRequestHandoff, log };
 });
 vi.mock("../lib/host-account", () => ({ isHosted: () => true }));
 vi.mock("../lib/worker-rpc", () => ({ getStorageWorkerManager: () => manager }));
 vi.mock("../lib/coinage-live", () => ({
-  probeTradeBurner: async (sourceId: string, tradeN: number) => {
+  probeTradeBurner: async (sourceId: string, tradeN: number, route: { tier: string }) => {
     const key = `${sourceId}:${tradeN}`;
     chain.probes.push(key);
+    chain.probeTiers.set(key, route.tier);
     const answer = chain.burners.get(key);
     if (answer instanceof Error) throw answer;
     return answer ?? { address: chain.address(key), free: 0n };
@@ -264,6 +270,7 @@ describe("requests store: the chain step", () => {
     setRequestsClock(() => FIXTURE_NOW);
     chain.burners.clear();
     chain.probes.length = 0;
+    chain.probeTiers.clear();
     chain.watchers.length = 0;
     chain.counters.clear();
     chain.slots.clear();
@@ -462,6 +469,54 @@ describe("requests store: the chain step", () => {
       "meld-card": { "1": empty, "2": empty },
     });
     expect(requests.records).toEqual([]);
+  });
+
+  it("gap sweep reads a lost number in the tier its slot froze and recovers it on that tier", async () => {
+    const requests = useRequestsStore();
+    const PSM = { tier: "psm", external: "USDT", feeRate: 5_000 } as const;
+    // Two numbers with no record or job. 1 never got a slot; 2 was quoted on the PSM tier, its
+    // slot says so, and its USDT is on the burner.
+    chain.counters.set("dot-assethub", 3);
+    const LOST_REF = requestRefOf("dot-assethub", 2);
+    const startedAt = FIXTURE_NOW - 10 * MINUTE;
+    chain.slots.set("dot-assethub:2", {
+      version: 2,
+      mode: "handoff",
+      sourceId: "dot-assethub",
+      recipient: "burner-dot-assethub:2",
+      ephemeralAddress: "burner-dot-assethub:2",
+      phase: "awaiting-deposit",
+      createdAt: startedAt,
+      idempotencyKey: "fixture-2",
+      payload: "",
+      priceEvm: "0",
+      handoffAmount: "12000000",
+      conversion: PSM,
+      settlement: { kind: "native" },
+      depositAddress: "burner-dot-assethub:2",
+      depositAmount: "12100000",
+      depositFormatted: "12.1 USDT",
+      depositAssetSymbol: "USDT",
+      depositExpiresAt: startedAt + DAY,
+    });
+    chain.burners.set("dot-assethub:2", { address: "burner-dot-assethub:2", free: 12_100_000n });
+
+    await requests.reconcile("boot");
+
+    // No slot, no tier: the native. A PSM slot: the external, so the USDT is found at all.
+    expect(chain.probeTiers.get("dot-assethub:1")).toBe("pool");
+    expect(chain.probeTiers.get("dot-assethub:2")).toBe("psm");
+    // The record and the worker get the tier the buyer was quoted, not a fresh decision.
+    expect(requests.get(LOST_REF)).toMatchObject({
+      handoff: { ...PSM, keepNativeForFees: "0" },
+      status: { kind: "deposit-seen", via: "chain" },
+    });
+    expect(worker.calls).toEqual([
+      {
+        api: "startFunding",
+        payload: expect.objectContaining({ sessionId: "dot-assethub:2", ...PSM }),
+      },
+    ]);
   });
 
   it("the deposit watch subscribes to the burner at a best block and ends once the deposit is seen", async () => {

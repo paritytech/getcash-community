@@ -12,6 +12,18 @@ export const FLOW_SCHEMA_VERSION = 2 as const;
  */
 export type FlowMode = "spend" | "deliver" | "handoff";
 
+/**
+ * Handoff mode: the conversion route the caller decided before the deposit channel was opened,
+ * in the shape the funding package records it (tier, external asset, fee rate). Core persists it
+ * verbatim and never reads it: it is here so a request whose record was lost is recovered on the
+ * tier it was quoted, never re-decided against an asset that has already arrived.
+ */
+export interface HandoffConversion {
+  tier: string;
+  external?: string;
+  feeRate?: number;
+}
+
 export interface FlowState {
   version: typeof FLOW_SCHEMA_VERSION;
   mode: FlowMode;
@@ -29,6 +41,8 @@ export interface FlowState {
   priceEvm: string;
   /** Handoff mode only: the exact settle amount (base units), stringified bigint. */
   handoffAmount?: string;
+  /** Handoff mode only; absent on a slot from before routes were recorded, which is a pool one. */
+  conversion?: HandoffConversion;
   settlement: SettlementAsset;
   /** Deliver mode: the witnessed egress txRef once complete (the Receipt id across resume). */
   deliverTxRef?: string;

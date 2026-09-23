@@ -17,6 +17,7 @@ import {
   DEFAULT_REMOTE_FEE_BUFFER,
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
+  recordedRoute,
   type FundingStep,
 } from "@getsome/funding";
 import {
@@ -139,13 +140,17 @@ export async function nextHostedTradeNumber(
 }
 
 /** The hand-off for a request whose record was lost, rebuilt from its flow slot with the sizing
- *  defaults the worker itself falls back to. */
+ *  defaults the worker itself falls back to. The tier is the one the slot froze at quote time
+ *  and nothing else: this takes no route and asks no chain, so a lost request cannot be
+ *  recovered on a tier other than the one its deposit was quoted for. A slot from before routes
+ *  were recorded is a pool one. */
 export function lostRequestHandoff(
   sourceId: string,
   tradeN: number,
   address: string,
   slot: FlowState,
 ): WorkerHandoffPayload {
+  const route = recordedRoute(slot.conversion ?? {});
   return {
     label: tradeEntropyLabelString(sourceId, tradeN),
     burnerAddress: address,
@@ -156,8 +161,8 @@ export function lostRequestHandoff(
     assetHubGenesis: ASSET_HUB_GENESIS,
     peopleGenesis: PEOPLE_GENESIS,
     remoteFeeBuffer: DEFAULT_REMOTE_FEE_BUFFER.toString(),
-    keepNativeForFees: DEFAULT_KEEP_NATIVE_FOR_FEES.toString(),
-    tier: "pool",
+    keepNativeForFees: (route.tier === "pool" ? DEFAULT_KEEP_NATIVE_FOR_FEES : 0n).toString(),
+    ...route,
   };
 }
 

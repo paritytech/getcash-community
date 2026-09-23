@@ -1275,6 +1275,7 @@ export const useSessionStore = defineStore("session", () => {
                 source: "route",
               },
         handoff: await world.handoffPayload(),
+        conversion: world.route,
         refundAddress: world.refundAddress ?? undefined,
         status: { kind: "awaiting-deposit" },
         rail: {
