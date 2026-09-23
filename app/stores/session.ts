@@ -4,7 +4,7 @@
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef, watch } from "vue";
 import { TOKENS, type ChainflipRail, type PaymentState, type SourceId } from "@getsome/core";
-import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
+import { egressFor, SOURCE_CONFIG_BY_ID, type ChainflipToken } from "@getsome/chainflip";
 import type { RefundKey } from "@getsome/ephemeral";
 import { PERMILL, recordedRoute, type ConversionRoute, type FundingStep } from "@getsome/funding";
 import {
@@ -167,8 +167,11 @@ export interface QuotedView {
   mintFee?: string | null;
   /** The provider these terms came from ("TRANSAK"), not the aggregator in front of it. */
   provider?: string | null;
-  /** Live world only: the native (DOT) budget the rail must deliver, 10-dec base units. */
+  /** Live world only: what the rail must deliver to the burner, in `depositToken`'s base units:
+   *  the native on the pool tier, the PSM's external on the PSM tier. */
   nativeAmount: bigint | null;
+  /** The token `nativeAmount` is counted in. Set with it; a quote without one is a pool one. */
+  depositToken?: ChainflipToken;
   sourceAsset: string | null;
   sourceChain: string | null;
 }
@@ -394,17 +397,20 @@ export const useSessionStore = defineStore("session", () => {
     return "ok";
   }
 
-  /** Prices the selected source for this budget in the background. Epoch-guarded. */
+  /** Prices the selected source for this budget, in `depositToken`, in the background.
+   *  Epoch-guarded. */
   function priceSelectedSource(
     chain: string,
     asset: string,
-    targetNativeBase: bigint,
+    targetBaseUnits: bigint,
+    depositToken: ChainflipToken,
     epoch: number,
   ) {
     const sourceId = sourceIdFor(chain, asset);
     if (sourceId === undefined) return;
     sourcePrice.value = { kind: "pending" };
-    void priceSourceLeg({ sourceId, targetNativeBase }).then((result) => {
+    const egress = egressFor(depositToken);
+    void priceSourceLeg({ sourceId, targetBaseUnits, egress }).then((result) => {
       if (epoch === quoteEpoch) sourcePrice.value = result;
     });
   }
@@ -906,14 +912,16 @@ export const useSessionStore = defineStore("session", () => {
           return;
         }
         live.value = world;
+        const depositToken = depositTokenOf(route);
         quoted.value = {
           send: quote.source.formatted,
           symbol: quote.source.assetSymbol,
           nativeAmount: quote.source.amount,
+          depositToken,
           sourceAsset: asset,
           sourceChain: chain,
         };
-        priceSelectedSource(chain, asset, quote.source.amount, epoch);
+        priceSelectedSource(chain, asset, quote.source.amount, depositToken, epoch);
       } else {
         const sourceId = sourceIdFor(chain, asset);
         if (!sourceId) {
@@ -992,12 +1000,15 @@ export const useSessionStore = defineStore("session", () => {
           send: est ?? quote.source.formatted,
           symbol: est && cfg ? cfg.asset : quote.source.assetSymbol,
           nativeAmount,
+          depositToken: TOKENS.PAS,
           sourceAsset: est && cfg ? cfg.asset : null,
           sourceChain: chain,
         };
         // The swap network's quote endpoint is public; it needs the pool figure above as its
         // target.
-        if (nativeAmount !== null) priceSelectedSource(chain, asset, nativeAmount, epoch);
+        if (nativeAmount !== null) {
+          priceSelectedSource(chain, asset, nativeAmount, TOKENS.PAS, epoch);
+        }
       }
     } catch (e: unknown) {
       if (epoch !== quoteEpoch) return; // a newer quote owns the state now

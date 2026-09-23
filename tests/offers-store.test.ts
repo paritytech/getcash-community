@@ -1,22 +1,35 @@
 // The offers store projects the learned floors and the amount on screen into the networks and
-// tokens to show. These seed the floors directly.
+// tokens to show. These seed the floors directly; the one learn they let through is faked.
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
-import type { SourceId } from "@getsome/core";
-import type { SourceFloorResult } from "@getsome/chainflip";
+import { nextTick } from "vue";
+import { TOKENS, type SourceId } from "@getsome/core";
+import { egressFor, type SourceFloorResult } from "@getsome/chainflip";
 import { useOffersStore } from "../app/stores/offers";
 import { useSessionStore } from "../app/stores/session";
+import { learnSourceFloors } from "../lib/source-floors";
+
+vi.mock("../lib/source-floors", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/source-floors")>()),
+  learnSourceFloors: vi.fn(),
+}));
 
 const DOT = 10_000_000_000n;
+const USDT = 1_000_000n;
 
-function floor(sourceId: SourceId, minimumBaseUnits: bigint, worthDot: bigint): SourceFloorResult {
+function floor(
+  sourceId: SourceId,
+  minimumBaseUnits: bigint,
+  worthDot: bigint,
+  unit = DOT,
+): SourceFloorResult {
   return {
     kind: "floor",
     floor: {
       sourceId,
       minimumBaseUnits,
-      minimumEgressBaseUnits: worthDot * DOT,
+      minimumEgressBaseUnits: worthDot * unit,
       etaSeconds: 600,
     },
   };
@@ -27,6 +40,20 @@ function sized(session: ReturnType<typeof useSessionStore>, nativeAmount: bigint
   session.setAmount("50");
   session.loading = false;
   session.quoted = { send: "", symbol: "DOT", nativeAmount, sourceAsset: null, sourceChain: null };
+}
+
+/** The same purchase on the PSM tier: 50 CASH sized at 50 USDT. */
+function sizedInUsdt(session: ReturnType<typeof useSessionStore>) {
+  session.setAmount("50");
+  session.loading = false;
+  session.quoted = {
+    send: "",
+    symbol: "USDT",
+    nativeAmount: 50n * USDT,
+    depositToken: TOKENS.USDT,
+    sourceAsset: null,
+    sourceChain: null,
+  };
 }
 
 const LEARNED = new Map<SourceId, SourceFloorResult>([
@@ -152,5 +179,53 @@ describe("offers store", () => {
     offers.floors = LEARNED; // only some sources unavailable: not paused
     expect(offers.paused).toBe(false);
     expect(offers.offeredTokens("Ethereum").map((t) => t.asset)).toEqual(["ETH", "USDT"]);
+  });
+
+  it("compares a PSM-tier quote against floors worth in its own asset, kept apart from the pool's", () => {
+    const session = useSessionStore();
+    const offers = useOffersStore();
+    sized(session, 100n * DOT);
+    offers.floors = LEARNED;
+
+    sizedInUsdt(session);
+    expect(offers.floors).toBeNull(); // nothing learned in USDT yet
+    offers.floors = new Map<SourceId, SourceFloorResult>([
+      ["btc", floor("btc", 40_000n, 160n, USDT)], // needs 160 USDT: too small for 50
+      ["eth", floor("eth", 10n ** 16n, 25n, USDT)], // 25 USDT: fine
+    ]);
+    const eth = offers.offeredTokens("Ethereum")[0]!.offer;
+    expect(eth.state).toBe("available");
+    // 50 USDT at 0.01 ETH per 25 USDT = 0.02 ETH, plus the 5% buffer.
+    if (eth.state === "available") expect(eth.offer.sendBaseUnits).toBe(21_000_000_000_000_000n);
+    const btc = offers.networks.find((n) => n.chain === "Bitcoin")!.tokens[0]!.offer;
+    // 50 CASH bought 50 USDT and the floor is worth 160 USDT: the smallest purchase is 160 CASH.
+    expect(btc).toEqual({ state: "too-small", minimumCashBase: 160_000_000n });
+
+    sized(session, 100n * DOT); // back on the pool tier: its floors were kept
+    expect(offers.floors).toBe(LEARNED);
+  });
+
+  it("learns the floors for an asset the first time a quote is sized in it", async () => {
+    const session = useSessionStore();
+    const offers = useOffersStore();
+    sized(session, 100n * DOT);
+    offers.floors = LEARNED;
+    const usdtFloors = new Map<SourceId, SourceFloorResult>([
+      ["eth", floor("eth", 10n ** 16n, 25n, USDT)],
+    ]);
+    vi.mocked(learnSourceFloors).mockResolvedValueOnce(usdtFloors);
+
+    sizedInUsdt(session);
+    await nextTick();
+    expect(learnSourceFloors).toHaveBeenCalledWith({ egress: egressFor(TOKENS.USDT) });
+    expect(offers.learning).toBe(true);
+    await offers.learn(); // joins the load in flight
+    expect(offers.learning).toBe(false);
+    expect(offers.floors).toBe(usdtFloors);
+    expect(offers.offeredTokens("Ethereum")[0]!.offer.state).toBe("available");
+    // The pool tier's floors, already learned, are not asked for again.
+    sized(session, 100n * DOT);
+    await nextTick();
+    expect(learnSourceFloors).toHaveBeenCalledTimes(1);
   });
 });

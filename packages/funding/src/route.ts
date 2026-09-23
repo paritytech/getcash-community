@@ -14,7 +14,7 @@ type AssetHubApi = TypedApi<typeof paseo_next_v2>;
 type PsmAssetId = Parameters<AssetHubApi["query"]["Psm"]["Psm"]["getValue"]>[0];
 
 /** Build scaffolding, NOT configuration: it is deleted, not set true, once the PSM path behind
- *  it is complete (local/psm/PLAN.md M10). The PSM is the intended route; it cannot be taken until
+ *  it is complete (local/psm/PLAN.md M12). The PSM is the intended route; it cannot be taken until
  *  the pipeline can execute it and the rails deliver USDT, and until then this keeps every commit
  *  in the sequence green by answering `pool` without reading the chain. Not exported from the
  *  package index: nothing outside this module chooses a tier by setting it. */

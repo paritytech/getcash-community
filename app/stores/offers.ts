@@ -1,10 +1,11 @@
-// What can pay for this purchase. Floors are learned from Chainflip once per session; every
-// amount on screen is then answered locally.
+// What can pay for this purchase. Floors are learned from Chainflip once per session for each
+// asset a purchase is sized in; every amount on screen is then answered locally.
 
 import { defineStore } from "pinia";
-import { computed, ref, shallowRef } from "vue";
-import type { SourceId } from "@getsome/core";
+import { computed, ref, shallowReactive, shallowRef, watch } from "vue";
+import { TOKENS, type SourceId } from "@getsome/core";
 import {
+  egressFor,
   offerFor,
   SOURCE_CONFIG_BY_ID,
   type SourceFloorResult,
@@ -16,7 +17,7 @@ import { isDemoBuild } from "../utils/demo";
 import { useSessionStore } from "./session";
 
 export type TokenOffer =
-  /** Floors still being learned, or the pool still sizing the purchase. */
+  /** Floors still being learned, or the quote still sizing the purchase. */
   | { state: "checking" }
   | { state: "available"; offer: SourceOffer }
   /** Below this asset's floor. `minimumCashBase` is the smallest purchase it serves, or null. */
@@ -45,30 +46,52 @@ export interface NetworkRow {
 export const useOffersStore = defineStore("offers", () => {
   const session = useSessionStore();
 
-  /** null until learned. `relearn` asks again. */
-  const floors = shallowRef<ReadonlyMap<SourceId, SourceFloorResult> | null>(null);
-  const learning = ref(false);
-  let inflight: Promise<void> | null = null;
+  /** What the swap must deliver for the purchase on screen: the quote's deposit token, or the
+   *  pool's native before a quote has said. A floor is worth a different figure in each, so
+   *  floors are learned per egress and every egress learned is kept for the session. */
+  const egress = computed(() => egressFor(session.quoted?.depositToken ?? TOKENS.PAS));
+  const floorsByEgress = shallowRef<ReadonlyMap<string, ReadonlyMap<SourceId, SourceFloorResult>>>(
+    new Map(),
+  );
+  const inflight = shallowReactive(new Map<string, Promise<void>>());
 
-  /** Learns the floors once. Repeat calls join the in-flight load. */
+  /** The floors for the egress on screen; null until learned. Writable so tests and previews
+   *  can seed them. `relearn` asks again. */
+  const floors = computed({
+    get: () => floorsByEgress.value.get(egress.value.asset) ?? null,
+    set: (value: ReadonlyMap<SourceId, SourceFloorResult> | null) => {
+      const next = new Map(floorsByEgress.value);
+      if (value === null) next.delete(egress.value.asset);
+      else next.set(egress.value.asset, value);
+      floorsByEgress.value = next;
+    },
+  });
+  const learning = computed(() => inflight.has(egress.value.asset));
+
+  /** Learns the floors for the egress on screen once. Repeat calls join the in-flight load. */
   function learn(): Promise<void> {
-    if (floors.value !== null) return Promise.resolve();
-    if (inflight) return inflight;
-    learning.value = true;
-    inflight = learnSourceFloors()
-      .then((learned) => {
-        floors.value = learned;
+    const asked = egress.value;
+    if (floorsByEgress.value.has(asked.asset)) return Promise.resolve();
+    const running = inflight.get(asked.asset);
+    if (running) return running;
+    const load = learnSourceFloors({ egress: asked })
+      .then((result) => {
+        floorsByEgress.value = new Map(floorsByEgress.value).set(asked.asset, result);
       })
-      .finally(() => {
-        learning.value = false;
-        inflight = null;
-      });
-    return inflight;
+      .finally(() => inflight.delete(asked.asset));
+    inflight.set(asked.asset, load);
+    return load;
   }
 
-  /** Ask again: Chainflip back from maintenance, or a buyer tapping retry. */
+  // A quote can size the purchase in an asset no floor has been learned for yet.
+  watch(
+    () => egress.value.asset,
+    () => void learn(),
+  );
+
+  /** Ask again for everything: Chainflip back from maintenance, or a buyer tapping retry. */
   function relearn(): Promise<void> {
-    floors.value = null;
+    floorsByEgress.value = new Map();
     return learn();
   }
 
@@ -84,9 +107,10 @@ export const useOffersStore = defineStore("offers", () => {
    *  answers for nothing. A ref so tests can pin it either way. */
   const demoFallback = ref(isDemoBuild());
 
-  /** DOT plancks this purchase needs, from the pool quote on screen; null while unknown. */
+  /** What this purchase needs delivered, in `egress` base units, from the quote on screen; null
+   *  while unknown. */
   const target = computed(() => session.quoted?.nativeAmount ?? null);
-  /** The pool has answered, or given up, for the amount on screen. */
+  /** The quote has answered, or given up, for the amount on screen. */
   const sized = computed(
     () => !session.loading && (session.quoted !== null || session.quoteError !== null),
   );
@@ -105,7 +129,7 @@ export const useOffersStore = defineStore("offers", () => {
     const offer = offerFor(source, learned.floor, target.value, 0n, { maxDecimals: 6 });
     if (offer.available) return { state: "available", offer };
     const amount = session.amountBase;
-    // Linear: CASH per planck is what the pool quote just said.
+    // Linear: CASH per egress base unit is what the quote just said.
     const minimumCashBase =
       amount === null || target.value === 0n
         ? null
