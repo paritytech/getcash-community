@@ -18,7 +18,7 @@ type PsmAssetId = Parameters<AssetHubApi["query"]["Psm"]["Psm"]["getValue"]>[0];
  *  the pipeline can execute it and the rails deliver USDT, and until then this keeps every commit
  *  in the sequence green by answering `pool` without reading the chain. Not exported from the
  *  package index: nothing outside this module chooses a tier by setting it. */
-export const PSM_ROUTE_ENABLED: boolean = false;
+export const PSM_ROUTE_ENABLED: boolean = true;
 
 /** Headroom demanded ABOVE the amount before the PSM tier is chosen, in basis points. A margin
  *  on the amount, not on the ceiling: the amount is what moves between quote and execution.
