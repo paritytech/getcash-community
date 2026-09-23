@@ -5,7 +5,7 @@
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef, watch } from "vue";
 import type { FlowState, SourceId } from "@getsome/core";
-import { createMeldClient, getMeldStatus, type MeldClientLike } from "@getsome/meld";
+import { createMeldClient, currentNetwork, getMeldStatus, type MeldClientLike } from "@getsome/meld";
 import {
   advanceFundingProgressSnapshot,
   createFundingProgressSnapshot,
@@ -157,6 +157,14 @@ function defaultMeldStatusClientFactory(): MeldClientLike | null {
       ? createMeldClient({
           baseUrl,
           productId: (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
+          // The People network this page is running on, from its hostname (see
+          // `packages/meld/src/network.ts` for why it is not a build-time constant: one artifact
+          // is published to every network). `undefined` when the hostname names none, which the
+          // adapter refuses explicitly rather than this guessing a chain.
+          network: currentNetwork(
+            globalThis.location?.hostname ?? "",
+            import.meta.env.VITE_PERSONHOOD_NETWORK as string | undefined,
+          ),
         })
       : null;
   }

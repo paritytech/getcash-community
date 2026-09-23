@@ -112,6 +112,21 @@ export interface MeldEndpointConfig {
   baseUrl: string;
   /** Sent as `x-dev-product-id` for the adapter's dev auth. */
   productId?: string;
+  /**
+   * Which People network this build's personhood proofs are verified against, matched exactly
+   * against the adapter's `auth.personhood.networks[].id`.
+   *
+   * A deploy-time fact, not something to detect at runtime: `deploy.yml` builds one site per
+   * network, so the build already knows which one it is. Carried here so the value travels with
+   * the adapter config it belongs to rather than being read from `import.meta.env` at the call
+   * site.
+   *
+   * Unused until the personhood handshake lands -- this build authenticates with
+   * `x-dev-product-id` and proves nothing on any chain. It is threaded now because the adapter
+   * refuses a redeem whose declared network is not one it serves, and a name invented at that
+   * point would be invented under deadline. See the naming note in the README.
+   */
+  network?: string;
   /** Idempotency key per session create. Defaults to a key derived from the purchase intent. */
   idempotencyKey?: () => string;
   /** Where the embedded widget lands the buyer on completion; forwarded to Meld's redirectUrl. */
