@@ -180,6 +180,47 @@ describe("worker funding engine", () => {
     expect(sixDecimals).toMatchObject({ sessionId: "s-3", phase: "starting" });
   });
 
+  it("converts through the recorded route, never a fresh decision, and reads a record without one as pool", async () => {
+    armSeams();
+    const engine = await freshEngine();
+    const quotedPsm = { ...HANDOFF, tier: "psm", external: "USDT", feeRate: 5_000 };
+    await engine.startFunding(JSON.stringify(quotedPsm));
+    expect(storedJob()).toMatchObject({ tier: "psm", external: "USDT", feeRate: 5_000 });
+
+    // No conversion path for that tier yet: the tick refuses rather than swapping through the
+    // pool at a rate the buyer was not quoted.
+    mocks.tickOnce.mockResolvedValue(outcome("swap"));
+    await engine.tickAllFunding();
+    expect(mocks.tickOnce).not.toHaveBeenCalled();
+    expect(storedJob()).toMatchObject({
+      phase: "starting",
+      lastError: expect.stringContaining("psm"),
+    });
+
+    // A restart re-sending the hand-off under another tier changes nothing: the record's stands.
+    const revived = await freshEngine();
+    await revived.startFunding(JSON.stringify({ ...HANDOFF, tier: "pool" }));
+    await revived.tickAllFunding();
+    expect(storedJob().tier).toBe("psm");
+    expect(mocks.tickOnce).not.toHaveBeenCalled();
+
+    // A record from before routes were recorded is a pool one, which is what it was.
+    delete storedJob().tier;
+    delete storedJob().external;
+    delete storedJob().feeRate;
+    const legacy = await freshEngine();
+    await legacy.tickAllFunding();
+    expect(mocks.tickOnce).toHaveBeenCalledTimes(1);
+    expect(storedJob().phase).toBe("swap");
+
+    // A psm hand-off without the fee the buyer was quoted is refused up front.
+    const noFee = await legacy.startFunding(
+      JSON.stringify({ ...HANDOFF, sessionId: "s-2", tier: "psm", external: "USDT" }),
+    );
+    expect(noFee).toMatchObject({ error: "invalid" });
+    expect(noFee.reason).toContain("fee rate");
+  });
+
   it("refuses a hand-off whose burner is not the one it derives, before and after the record exists", async () => {
     armSeams();
     const engine = await freshEngine();

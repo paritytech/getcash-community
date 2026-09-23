@@ -4,6 +4,7 @@
 
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef, watch } from "vue";
+import { recordedRoute, type ConversionRoute } from "@getsome/funding";
 import type { FlowState, SourceId } from "@getsome/core";
 import { createMeldClient, getMeldStatus, type MeldClientLike } from "@getsome/meld";
 import {
@@ -358,6 +359,9 @@ type WorkerJob = {
   peopleGenesis?: string;
   remoteFeeBuffer?: string;
   keepNativeForFees?: string;
+  tier?: unknown;
+  external?: unknown;
+  feeRate?: unknown;
   createdAt?: number;
   armedAt?: number;
 };
@@ -535,6 +539,13 @@ function handoffOf(job: WorkerJob): WorkerHandoffPayload | undefined {
   ) {
     return undefined;
   }
+  // The route the job was quoted with; a job from before routes were recorded is a pool one.
+  let route: ConversionRoute;
+  try {
+    route = recordedRoute(job);
+  } catch {
+    return undefined;
+  }
   return {
     label,
     burnerAddress,
@@ -546,6 +557,7 @@ function handoffOf(job: WorkerJob): WorkerHandoffPayload | undefined {
     peopleGenesis,
     remoteFeeBuffer,
     keepNativeForFees,
+    ...route,
   };
 }
 

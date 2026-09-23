@@ -154,6 +154,7 @@ export function lostRequestHandoff(
     peopleGenesis: PEOPLE_GENESIS,
     remoteFeeBuffer: DEFAULT_REMOTE_FEE_BUFFER.toString(),
     keepNativeForFees: DEFAULT_KEEP_NATIVE_FOR_FEES.toString(),
+    tier: "pool",
   };
 }
 

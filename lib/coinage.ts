@@ -32,6 +32,7 @@ import {
 import { entropyToMiniSecret } from "@polkadot-labs/hdkd-helpers";
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import {
+  chooseRoute,
   createManualRail,
   DEFAULT_KEEP_NATIVE_FOR_FEES,
   DEFAULT_REMOTE_FEE_BUFFER,
@@ -590,6 +591,7 @@ export async function createMockCoinageSession(
     peopleGenesis: "",
     remoteFeeBuffer: fundingSizing.remoteFeeBuffer.toString(),
     keepNativeForFees: fundingSizing.keepNativeForFees.toString(),
+    tier: "pool",
   }));
   return {
     session,
@@ -905,6 +907,15 @@ export async function createCoinageSession(
   const keepNativeForFees = sizing?.keepNativeForFees ?? DEFAULT_KEEP_NATIVE_FOR_FEES;
   const remoteFeeBuffer = sizing?.remoteFeeBuffer ?? DEFAULT_REMOTE_FEE_BUFFER;
 
+  // The conversion tier, decided once here and frozen into the hand-off below. The worker
+  // consumes it and never re-decides; every request resolves to the pool until the PSM path
+  // flips.
+  const route = await stage(
+    "route selection",
+    10_000,
+    chooseRoute(await assetHubApi(), { direction: "mint", internalAmount: args.amount }),
+  );
+
   // Size the native budget the user must deposit from the live pool quote for the CASH
   // settle amount, plus the headroom that lets the deposit clear the worker's swap gate after
   // the pool moves (DEFAULT_SLIPPAGE_PCT), plus the retained fee native.
@@ -977,6 +988,7 @@ export async function createCoinageSession(
       // The same live estimates that sized the deposit.
       remoteFeeBuffer: remoteFeeBuffer.toString(),
       keepNativeForFees: keepNativeForFees.toString(),
+      ...route,
     };
   });
 

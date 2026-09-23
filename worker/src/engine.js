@@ -10,6 +10,7 @@ import {
   PASEO_ASSET_HUB_PARA_ID,
   discoverPool,
   freshTickState,
+  recordedRoute,
   tickOnce,
 } from "@getsome/funding";
 import { CASH_SETTLEMENT, createPeopleChainPort } from "@getsome/people";
@@ -62,6 +63,8 @@ const saveJobs = () => store.save();
  *   depositExpiresAt: number|null,           // the rail's deposit deadline
  *   settleAmount, remoteFeeBuffer, keepNativeForFees, slippagePct,   // bigints as strings
  *   underlyingAssetId, peopleParaId, assetHubGenesis, peopleGenesis,
+ *   tier: "pool" | "psm", external?, feeRate?, // the conversion route the surface decided at
+ *                                            // quote time; consumed here, never re-decided
  *   phase: "starting" | FundingStep | "failed",
  *   failure?: "shortfall" | "timeout" | "expired" | "cancelled" | "claim",
  *   done, createdAt, armedAt, lastTickAt, lastError?,
@@ -98,6 +101,9 @@ function newRecord(input, nowMs) {
   if (!Number.isInteger(underlyingAssetId) || !Number.isInteger(peopleParaId)) {
     throw new Error("startFunding: underlyingAssetId and peopleParaId must be integers");
   }
+  // The route is the surface's decision, taken once at quote time; a hand-off whose psm route
+  // lacks its fee is refused here rather than guessed at.
+  const route = recordedRoute(input);
   return {
     v: RECORD_V,
     sessionId,
@@ -112,6 +118,7 @@ function newRecord(input, nowMs) {
     peopleParaId,
     assetHubGenesis,
     peopleGenesis,
+    ...route,
     phase: "starting",
     done: false,
     createdAt: nowMs,
@@ -501,6 +508,13 @@ function judgeBounds(record, nowMs, read) {
 /** One tick for one record: connect, read the world, act at most once, persist, let go. */
 async function tickRecord(record, nowMs) {
   accountWorkedTime(record, nowMs);
+  // The tier is an input to this worker, never a decision it makes: a job converts through the
+  // route it was quoted or not at all. Only the pool path is built so far, so a psm job waits
+  // for a worker that has one instead of converting through the pool at another rate.
+  const route = recordedRoute(record);
+  if (!record.done && route.tier !== "pool") {
+    throw new Error(`the ${route.tier} route has no conversion path in this worker yet`);
+  }
   const burner = await keypairFor(record.label);
   const ahClient = await connectChain(record.assetHubGenesis, "asset hub");
   let peopleClient = null;

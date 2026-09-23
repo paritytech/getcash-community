@@ -10,7 +10,7 @@ import type {
   SwapProgress,
   SwapStatusResult,
 } from "@getsome/core";
-import type { FundingStep } from "@getsome/funding";
+import type { ConversionRoute, FundingStep, PsmExternal } from "@getsome/funding";
 import type { WithdrawStep } from "@getsome/withdraw";
 import type { RequestRef } from "../../utils/request-index";
 import type { FundingProgressSnapshot } from "../progress";
@@ -121,6 +121,13 @@ export interface WorkerHandoffPayload {
   peopleGenesis: string;
   remoteFeeBuffer: string;
   keepNativeForFees: string;
+  /** The conversion tier decided at quote time and frozen here; the worker consumes it and never
+   *  re-decides (local/psm/PLAN.md §2.2). A payload from before tiers were recorded is a pool one. */
+  tier: ConversionRoute["tier"];
+  /** With a psm tier: the external asset, and the Permill fee rate read at quote time that the
+   *  call's `max_fee` repeats. */
+  external?: PsmExternal;
+  feeRate?: number;
 }
 
 /** What the store extracts from one job in the worker's blob. */
