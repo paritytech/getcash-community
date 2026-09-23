@@ -1389,7 +1389,6 @@ export const useSessionStore = defineStore("session", () => {
       );
       const epoch = quoteEpoch;
       // Display context for the journey, from the record itself; neither path re-quotes.
-      // Display context for the journey; no re-quote on either path that reads it.
       const displayQuote: QuotedView = {
         send: record.sourceAmount ?? "",
         symbol: record.sourceSymbol ?? record.asset,
