@@ -6,7 +6,13 @@ import { computed, ref, shallowRef, watch } from "vue";
 import { TOKENS, type ChainflipRail, type PaymentState, type SourceId } from "@getsome/core";
 import { egressFor, SOURCE_CONFIG_BY_ID, type ChainflipToken } from "@getsome/chainflip";
 import type { RefundKey } from "@getsome/ephemeral";
-import { PERMILL, recordedRoute, type ConversionRoute, type FundingStep } from "@getsome/funding";
+import {
+  PERMILL,
+  PSM_EXTERNAL,
+  recordedRoute,
+  type ConversionRoute,
+  type FundingStep,
+} from "@getsome/funding";
 import {
   advanceFundingProgressSnapshot,
   createFundingProgressSnapshot,
@@ -34,6 +40,7 @@ import { CASH_DECIMALS } from "@getsome/people";
 import { meldPaymentMethod, resolveMeldRegion } from "~~/lib/region";
 import {
   fetchCorridor,
+  DEFAULT_MELD_DESTINATION,
   fetchSupportedCorridors,
   fetchSupportedCountries,
   methodFor,
@@ -315,6 +322,15 @@ export const useSessionStore = defineStore("session", () => {
    *  failure; nothing to retry. */
   const meldMethodUnavailable = ref(false);
   /** Every Meld on-ramp country from the adapter's live catalog; null until loaded. */
+  /** The crypto the Meld catalog is read for. `chooseQuoteRoute` sets it from the route the moment
+   *  one is chosen, and that value is what every quote is placed against. This initial value only
+   *  covers the window before then: the catalog loads when the pay screen mounts, before any amount
+   *  exists and so before a route can be chosen, so it assumes the PSM tier's external rather than
+   *  the fallback's. A route that comes back `pool` — the PSM paused, at its ceiling, or below its
+   *  minimum — moves it to the native and the watch below reloads. Off-host there is no PSM. */
+  const meldDestination = ref<string>(
+    isHosted() ? TOKENS[PSM_EXTERNAL].meldCurrencyCode : DEFAULT_MELD_DESTINATION,
+  );
   const supportedCountries = ref<SupportedCountry[] | null>(null);
   /** Bulk per-country corridors for greying the dropdown; null until loaded or when unreachable. */
   const corridorByCountry = shallowRef<Map<string, SupportedCorridor> | null>(null);
@@ -631,7 +647,12 @@ export const useSessionStore = defineStore("session", () => {
   async function chooseQuoteRoute(amount: bigint): Promise<ConversionRoute> {
     if (!isHosted()) return { tier: "pool" };
     const { chooseHostedRoute } = await import("~~/lib/coinage-live");
-    return step("route selection", 10_000, chooseHostedRoute(amount));
+    const route = await step("route selection", 10_000, chooseHostedRoute(amount));
+    // The catalog is read for the crypto the rail will be asked to deliver. A region validated
+    // against one destination and quoted against another is how a supported region yields an
+    // unquotable request, so the dropdown follows the route rather than a constant.
+    meldDestination.value = depositTokenOf(route).meldCurrencyCode;
+    return route;
   }
 
   /** The quote in flight, whichever rail: start() waits for it before opening the deposit. */
@@ -688,7 +709,7 @@ export const useSessionStore = defineStore("session", () => {
     // The live corridor is authoritative when discovery is reachable. Otherwise fall back to the
     // static region map as a whole {country, fiat} tuple with a synthetic corridor. The caller
     // assigns `meldCorridor` after its epoch guard.
-    const live = await fetchCorridor(country);
+    const live = await fetchCorridor(meldDestination.value, country);
     let region: { country: string; fiat: string };
     let corridor: SupportedCorridor;
     let paymentMethodType: string | null;
@@ -902,7 +923,9 @@ export const useSessionStore = defineStore("session", () => {
       quoted.value = meldQuotedView(quote.raw as MeldQuoteRaw, world.fundingSizing);
     } catch (e: unknown) {
       if (epoch !== quoteEpoch) return; // a newer quote owns the state now
-      console.error("[meld] quote failed:", e);
+      // The host logger renders an Error as `{}`; log the message, as the transient
+      // hooks above already do, or a failed quote is undiagnosable from a device log.
+      console.error(`[meld] quote failed: ${e instanceof Error ? e.message : String(e)}`);
       quoted.value = null;
       quoteError.value = e instanceof Error ? e.message : String(e);
     } finally {
@@ -1062,7 +1085,7 @@ export const useSessionStore = defineStore("session", () => {
         evictChains();
         return fetchQuote(chain, asset, true);
       }
-      console.error("[coinage] quote failed:", e);
+      console.error(`[coinage] quote failed: ${e instanceof Error ? e.message : String(e)}`);
       quoted.value = null;
       quoteError.value = msg;
     } finally {
@@ -1719,7 +1742,9 @@ export const useSessionStore = defineStore("session", () => {
       return s
         .retry()
         .then(() => console.info(`[coinage] retry() resolved, phase now ${s.getState().phase}`))
-        .catch((e: unknown) => console.error("[coinage] retry() threw:", e));
+        .catch((e: unknown) =>
+          console.error(`[coinage] retry() threw: ${e instanceof Error ? e.message : String(e)}`),
+        );
     });
   }
 
@@ -1819,14 +1844,20 @@ export const useSessionStore = defineStore("session", () => {
 
   /** Loads the region dropdown from the adapter's live catalog. On failure `supportedCountries`
    *  stays null and the screen keeps its static list. */
+  // A destination change invalidates the catalog on screen; reload both for the new one.
+  watch(meldDestination, () => {
+    void loadSupportedCountries();
+    void loadSupportedCorridors();
+  });
+
   async function loadSupportedCountries(): Promise<void> {
-    const rows = await fetchSupportedCountries();
+    const rows = await fetchSupportedCountries(meldDestination.value);
     if (rows !== null) supportedCountries.value = rows;
   }
 
   // Loads the bulk per-country corridors; only a real catalog is adopted so a cold/empty read greys nothing.
   async function loadSupportedCorridors(): Promise<void> {
-    const map = await fetchSupportedCorridors();
+    const map = await fetchSupportedCorridors(meldDestination.value);
     if (map !== null && map.size > 0) corridorByCountry.value = map;
   }
 

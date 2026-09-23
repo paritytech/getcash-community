@@ -39,7 +39,7 @@ export {
   sizePsmMint,
 } from "./psm-batch";
 export type { PsmBatch, PsmBatchArgs, PsmBatchFees, PsmRoute } from "./psm-batch";
-export { chooseRoute, recordedRoute } from "./route";
+export { PSM_EXTERNAL, chooseRoute, recordedRoute } from "./route";
 export type { ConversionRoute, PsmExternal, RouteQuery } from "./route";
 export { creditedTo, forwardedTo, siblingOrigin, signedOrigin, trappedIn } from "./xcm-dry-run";
 export { describeDispatchError, isPsmRefusal } from "./dispatch-error";

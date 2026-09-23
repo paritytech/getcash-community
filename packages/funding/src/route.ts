@@ -33,6 +33,12 @@ export const ROUTE_MARGIN_FLOOR = 1_000_000n;
 /** An external the PSM can swap against, by its token-table symbol. */
 export type PsmExternal = "USDT";
 
+/** The external the PSM tier swaps against. Exported so a caller that must name a deposit asset
+ *  before a route exists — a provider catalog read at screen open, say — names the one the PSM
+ *  tier would use rather than the fallback's. The route itself always decides; this is only for
+ *  what to assume until it has. */
+export const PSM_EXTERNAL: PsmExternal = "USDT";
+
 /** The recorded decision. `feeRate` is the Permill (parts per million) the chain charged at
  *  quote time; it travels with the request so the eventual call's `max_fee` is the rate the
  *  buyer was quoted and a governance change in between fails the call instead of costing more. */
@@ -86,7 +92,7 @@ export function mintHeadroom(input: {
 /** The four checks of the routing rule against the live PSM, ungated. `chooseRoute` is the
  *  entry point; this is exported for its tests. */
 export async function readPsmRoute(api: AssetHubApi, query: RouteQuery): Promise<ConversionRoute> {
-  const external: PsmExternal = "USDT";
+  const external: PsmExternal = PSM_EXTERNAL;
   const externalLocation = EXTERNAL_LOCATIONS[external];
   const [instance, approval] = await Promise.all([
     api.query.Psm.Psm.getValue(INTERNAL),
