@@ -28,6 +28,8 @@ export interface FundingTopUpRecord {
   sourcePartnerFee?: string;
   /** The funding leg's own network fee, priced by the app rather than reported by the rail. */
   sourceChainFee?: string;
+  /** The PSM's fee on the mint, priced by the app; PSM tier only. */
+  sourceMintFee?: string;
   /** The Meld rail's buyer country. */
   meldCountry?: string;
   /** The Meld rail's funding-request id: the reference a failed journey shows. */

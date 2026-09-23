@@ -178,7 +178,7 @@ export async function chooseHostedRoute(amount: bigint): Promise<ConversionRoute
   return chooseRoute(api, { direction: "mint", internalAmount: amount });
 }
 
-/** The pool-funded session over the real host seams; budget sized live from the pool. */
+/** The funded session over the real host seams; budget sized live for the route's tier. */
 export async function createHostedCoinageWorld(args: {
   /** CASH base units (6 decimals). */
   amount: bigint;
@@ -243,7 +243,7 @@ export async function startLiveCoinage(args: {
     console.info(`[coinage] phase=${s.phase}`, s);
     if (s.phase === "awaiting-deposit") {
       console.info(
-        `[coinage] send exactly ${s.deposit.formatted} ${s.deposit.assetSymbol} (native) to ${s.deposit.address} on Asset Hub`,
+        `[coinage] send exactly ${s.deposit.formatted} ${s.deposit.assetSymbol} to ${s.deposit.address} on Asset Hub`,
       );
     }
   });

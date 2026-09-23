@@ -5,6 +5,7 @@
 import {
   createFlowStore,
   createPayment,
+  TOKENS,
   type ActionCall,
   type ChainflipRail,
   type ChainPort,
@@ -39,6 +40,7 @@ import {
   type FundingStep,
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
+  psmDepositNeeded,
   sizeNativeBudget,
 } from "@getsome/funding";
 import { createHostDeps } from "@getsome/host";
@@ -60,7 +62,6 @@ import {
 import { NETWORK } from "./chainflip-backend";
 import type { WorkerHandoffPayload } from "../app/funding/requests/model";
 
-const NATIVE_DECIMALS = 10;
 const BITCOIN_NETWORK: BitcoinNetwork = NETWORK === "mainnet" ? "mainnet" : "testnet";
 const PURSE_BALANCE_TIMEOUT_MS = 10_000;
 
@@ -452,6 +453,34 @@ export async function enumerateTradeBurners(args: {
   return out;
 }
 
+/** The token the route asks the rail to deliver to the burner: the native on the pool tier, the
+ *  PSM's external on the PSM tier. */
+export function depositTokenOf(route: ConversionRoute) {
+  return route.tier === "psm" ? TOKENS[route.external] : TOKENS.PAS;
+}
+
+/** Core's budget for `amount` of the route's deposit token: what the rail is asked to deliver,
+ *  in that token's own denomination. */
+function depositBudget(
+  route: ConversionRoute,
+  amount: bigint,
+): { budget: { amount: bigint; asset: SettlementAsset }; targetDecimals: number } {
+  const asset: SettlementAsset =
+    route.tier === "psm" ? { kind: "stable", asset: route.external } : { kind: "native" };
+  return { budget: { amount, asset }, targetDecimals: depositTokenOf(route).decimals };
+}
+
+/** The hand-off's fee fields. `keepNativeForFees` is the pool tier's; the PSM tier's batch prices
+ *  its own fees live, so the field carries nothing there. */
+function handoffFees(
+  sizing: FundingSizing,
+): Pick<WorkerHandoffPayload, "remoteFeeBuffer" | "keepNativeForFees"> {
+  return {
+    remoteFeeBuffer: sizing.remoteFeeBuffer.toString(),
+    keepNativeForFees: (sizing.tier === "pool" ? sizing.keepNativeForFees : 0n).toString(),
+  };
+}
+
 export interface CoinageSessionArgs {
   /** Settle amount in CASH base units (6 decimals). */
   amount: bigint;
@@ -459,8 +488,9 @@ export interface CoinageSessionArgs {
   /** Override the funding rail. Omitted, the mock world uses the scriptable fake rail. */
   rail?: ChainflipRail;
   /**
-   * Budget in native base units (10 decimals), for a rail whose egress is the native token.
-   * Omitted, the budget is the CASH settle amount itself.
+   * Budget in the route's deposit token (the native, 10 decimals, on the pool tier), for a rail
+   * that delivers that token rather than CASH. Omitted, the budget is the CASH settle amount
+   * itself.
    */
   nativeBudget?: bigint;
   /**
@@ -548,7 +578,11 @@ export async function createMockCoinageSession(
     route?: ConversionRoute;
   },
 ): Promise<MockCoinageWorld> {
-  const fundingSizing = args.fundingSizing ?? { remoteFeeBuffer: 0n, keepNativeForFees: 0n };
+  const fundingSizing: FundingSizing = args.fundingSizing ?? {
+    tier: "pool",
+    remoteFeeBuffer: 0n,
+    keepNativeForFees: 0n,
+  };
   const route: ConversionRoute = args.route ?? { tier: "pool" };
   const handoff = createFakeHandoff({ manualConsent: true });
   const harness = createFakeHarness();
@@ -568,12 +602,12 @@ export async function createMockCoinageSession(
     deriveKey: (seed) => toHandoffKey(deriveKeypairWithSecret(seed)),
     deps: { chain: harness.chain, chainflip: rail, storage, entropy },
     // A rail that egresses CASH takes the settle amount as its budget; one that egresses the
-    // native token needs a native budget and an explicit CASH settle leg. See `nativeBudget`.
+    // route's deposit token needs a budget in it and an explicit CASH settle leg. See
+    // `nativeBudget`.
     ...(args.nativeBudget === undefined
       ? { budget: { amount: args.amount, asset: CASH_SETTLEMENT }, targetDecimals: CASH_DECIMALS }
       : {
-          budget: { amount: args.nativeBudget, asset: { kind: "native" as const } },
-          targetDecimals: NATIVE_DECIMALS,
+          ...depositBudget(route, args.nativeBudget),
           settlement: CASH_SETTLEMENT,
           settleAmount: args.amount,
         }),
@@ -592,8 +626,7 @@ export async function createMockCoinageSession(
     peopleParaId: 0,
     assetHubGenesis: "",
     peopleGenesis: "",
-    remoteFeeBuffer: fundingSizing.remoteFeeBuffer.toString(),
-    keepNativeForFees: fundingSizing.keepNativeForFees.toString(),
+    ...handoffFees(fundingSizing),
     ...route,
   }));
   return {
@@ -613,8 +646,8 @@ export async function createMockCoinageSession(
 
 export interface CoinageWorld extends RefundKeyHold {
   session: PaymentSession<never>;
-  /** The live sizing the deposit was built on: the destination's execution fee and the native the
-   *  burner keeps for the funding program. The quote prices its network-fee row off these. */
+  /** The live sizing the deposit was built on: the funding leg's costs in the tier's own
+   *  composition. The quote prices its fee rows off these. */
   fundingSizing: FundingSizing;
   /** This request's burner (SS58). It receives the deposit and holds the CASH until the claim. */
   burnerAddress: string;
@@ -834,8 +867,8 @@ export async function createCoinageSession(
     onClaimProgress?: (stage: "prompted" | "crediting", claimed?: bigint) => void;
   },
 ): Promise<CoinageWorld> {
-  // The live world serves the sources that land native DOT on the burner: the manual rail and
-  // the Meld rails.
+  // The live world serves the sources that land the route's deposit token on the burner: the
+  // manual rail and the Meld rails.
   const LIVE_SOURCES = new Set<SourceId>(["dot-assethub", "meld-card", "meld-bank"]);
   if (!LIVE_SOURCES.has(args.sourceId)) {
     throw new Error(`live mode does not serve source '${args.sourceId}'`);
@@ -849,8 +882,9 @@ export async function createCoinageSession(
     // Required by the input type but unread: `chain` below supplies the port.
     client: peopleClient,
     chain: peoplePort,
-    // The Meld rail when the fiat route injected one; the manual rail (direct deposit) otherwise.
-    chainflip: args.rail ?? createManualRail(),
+    // The Meld rail when the fiat route injected one; the manual rail (direct deposit of the
+    // route's token) otherwise.
+    chainflip: args.rail ?? createManualRail({ token: depositTokenOf(args.route) }),
     // The host's storage matches the readString/writeString/clear shape createHostDeps wants.
     hostLocalStorage: args.hostLocalStorage as Parameters<
       typeof createHostDeps
@@ -895,38 +929,52 @@ export async function createCoinageSession(
       );
 
   // Size the deposit from live chain reads: the CASH over-buy for People's execution fee and the
-  // native the burner keeps for the funding program. The same figures feed the worker hand-off
-  // below.
-  const { estimateFundingSizing } = await import("./funding-fees");
-  const sizing = await stage(
-    "funding sizing estimate",
-    20_000,
-    estimateFundingSizing({
-      ahClient: await connectChain(ASSET_HUB),
-      peopleClient: await connectChain(PEOPLE),
-      underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
-      peopleParaId: PASEO_PEOPLE_PARA_ID,
-      settleAmount: args.amount,
-      probeAddress: burnerKey.address,
-    }),
-  ).catch(() => null);
-  const keepNativeForFees = sizing?.keepNativeForFees ?? DEFAULT_KEEP_NATIVE_FOR_FEES;
-  const remoteFeeBuffer = sizing?.remoteFeeBuffer ?? DEFAULT_REMOTE_FEE_BUFFER;
-
-  // Size the native budget the user must deposit from the live pool quote for the CASH
-  // settle amount, plus the headroom that lets the deposit clear the worker's swap gate after
-  // the pool moves (DEFAULT_SLIPPAGE_PCT), plus the retained fee native.
-  const budget = await stage(
-    "pool budget sizing",
-    15_000,
-    sizeNativeBudget({
-      client: await connectChain(ASSET_HUB),
-      underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
-      settleAmount: args.amount,
-      remoteFeeBuffer,
-      keepNativeForFees,
-    }),
-  );
+  // tier's own costs. The same figures feed the worker hand-off below.
+  const { estimateFundingSizing, estimatePsmFundingSizing } = await import("./funding-fees");
+  const sizingArgs = {
+    ahClient: await connectChain(ASSET_HUB),
+    peopleClient: await connectChain(PEOPLE),
+    underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
+    peopleParaId: PASEO_PEOPLE_PARA_ID,
+    settleAmount: args.amount,
+    probeAddress: burnerKey.address,
+  };
+  let sizing: FundingSizing;
+  let budget: bigint;
+  if (args.route.tier === "psm") {
+    // The PSM's rate is fixed, so the deposit is the §4.4 division over the batch's fees: no pool
+    // quote and no headroom, and nothing to fall back to when the reads fail.
+    const psm = await stage(
+      "funding sizing estimate",
+      20_000,
+      estimatePsmFundingSizing({ ...sizingArgs, route: args.route }),
+    );
+    sizing = psm;
+    budget = psmDepositNeeded(args.amount + psm.remoteFeeBuffer, args.route, psm);
+  } else {
+    const pool = await stage(
+      "funding sizing estimate",
+      20_000,
+      estimateFundingSizing(sizingArgs),
+    ).catch(() => null);
+    const keepNativeForFees = pool?.keepNativeForFees ?? DEFAULT_KEEP_NATIVE_FOR_FEES;
+    const remoteFeeBuffer = pool?.remoteFeeBuffer ?? DEFAULT_REMOTE_FEE_BUFFER;
+    sizing = { tier: "pool", remoteFeeBuffer, keepNativeForFees };
+    // Size the native budget the user must deposit from the live pool quote for the CASH
+    // settle amount, plus the headroom that lets the deposit clear the worker's swap gate after
+    // the pool moves (DEFAULT_SLIPPAGE_PCT), plus the retained fee native.
+    budget = await stage(
+      "pool budget sizing",
+      15_000,
+      sizeNativeBudget({
+        client: await connectChain(ASSET_HUB),
+        underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
+        settleAmount: args.amount,
+        remoteFeeBuffer,
+        keepNativeForFees,
+      }),
+    );
+  }
 
   const session = createPayment({
     // The burner is its own recipient; core uses this only to key the flow slot and the claim
@@ -947,8 +995,8 @@ export async function createCoinageSession(
     settlement: CASH_SETTLEMENT,
     settleAmount: args.amount,
     deps,
-    budget: { amount: budget, asset: { kind: "native" } },
-    targetDecimals: NATIVE_DECIMALS, // the manual rail quotes the native budget
+    // The rail quotes the budget in the route's deposit token.
+    ...depositBudget(args.route, budget),
     sourceId: args.sourceId,
     ...(args.staleFlowMs === undefined ? {} : { staleFlowMs: args.staleFlowMs }),
   });
@@ -983,8 +1031,7 @@ export async function createCoinageSession(
       assetHubGenesis: ASSET_HUB_GENESIS,
       peopleGenesis: PEOPLE_GENESIS,
       // The same live estimates that sized the deposit.
-      remoteFeeBuffer: remoteFeeBuffer.toString(),
-      keepNativeForFees: keepNativeForFees.toString(),
+      ...handoffFees(sizing),
       // The worker consumes the recorded tier and never re-decides.
       ...args.route,
     };
@@ -1017,7 +1064,7 @@ export async function createCoinageSession(
 
   return {
     session,
-    fundingSizing: { remoteFeeBuffer, keepNativeForFees },
+    fundingSizing: sizing,
     burnerAddress: burnerKey.address,
     ...holdRefundKey(session, deps.storage, args.sourceId, tradeN, refundKey),
     sourceId: args.sourceId,

@@ -1,10 +1,12 @@
 // The domain seam. The library owns batching, signing, submission and sweep; the action
 // returns an opaque priced call and never sees the signer.
 
+// The first two are what the funding tiers ask a rail to deliver (local/psm/PLAN.md §2): the pool
+// tier the relay native, the PSM tier a stablecoin it mints from.
 export type SettlementAsset =
-  | { kind: "native" } // DOT, Tier-1
-  | { kind: "stable"; asset: "USDC" | "USDT" } // Tier-2: swap-landed stable, fee paid in token
-  | { kind: "pooled"; assetId: number } // Tier-2: any DOT-pooled pallet asset
+  | { kind: "native" } // the relay native (DOT, PAS)
+  | { kind: "stable"; asset: "USDC" | "USDT" } // a stablecoin; the dispatch fee is paid in it
+  | { kind: "pooled"; assetId: number } // any native-pooled pallet asset
   /**
    * A foreign (XCM-Location-keyed) asset identified by an opaque port-defined id. The ChainPort
    * implementation maps the id to its chain's storage.

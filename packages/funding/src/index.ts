@@ -30,6 +30,7 @@ export {
   buildPsmBatch,
   dryRunPsmBatch,
   estimatePsmBatchFees,
+  PERMILL,
   permillMulCeil,
   psmBatchTxOptions,
   psmMintOut,

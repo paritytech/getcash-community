@@ -6,7 +6,7 @@ import { computed, ref, shallowRef, watch } from "vue";
 import { TOKENS, type ChainflipRail, type PaymentState, type SourceId } from "@getsome/core";
 import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
 import type { RefundKey } from "@getsome/ephemeral";
-import { recordedRoute, type ConversionRoute, type FundingStep } from "@getsome/funding";
+import { PERMILL, recordedRoute, type ConversionRoute, type FundingStep } from "@getsome/funding";
 import {
   advanceFundingProgressSnapshot,
   createFundingProgressSnapshot,
@@ -47,12 +47,13 @@ import { priceSourceLeg, type SourcePriceResult } from "~~/lib/source-price";
 import {
   createMockCoinageSession,
   DEFAULT_SOURCE_ID,
+  depositTokenOf,
   workerSessionId,
   type MockCoinageWorld,
 } from "~~/lib/coinage";
 import type { HostedCoinageWorld } from "~~/lib/coinage-live";
 import { isHosted } from "~~/lib/host-account";
-import type { FundingSizing } from "~~/lib/funding-fees";
+import type { FundingSizing, PoolFundingSizing, PsmFundingSizing } from "~~/lib/funding-fees";
 import { isDemoBuild } from "../utils/demo";
 import { isMeldSourceId, meldSourceIdFor } from "../funding/source-ids";
 import { toCashBase } from "../utils/cash";
@@ -84,6 +85,8 @@ export interface ActiveFlowRecord {
   sourcePartnerFee?: string;
   /** The funding leg's own network fee as the quote priced it, in `sourceSymbol` units. */
   sourceChainFee?: string;
+  /** The PSM's fee on the mint as the quote priced it, in `sourceSymbol` units; PSM tier only. */
+  sourceMintFee?: string;
   startedAt: number;
   depositAddress?: string;
   progress?: FundingProgressSnapshot;
@@ -158,6 +161,10 @@ export interface QuotedView {
    *  CASH on People cost, which the rail's quote knows nothing about. Priced by the app, not
    *  reported by the rail. */
   chainFee?: string | null;
+  /** The PSM's fee on the mint, in `symbol` units: the flat cut the PSM tier takes for turning the
+   *  delivered stable into CASH. Priced by the app; null on the pool tier, whose costs have no
+   *  such component. */
+  mintFee?: string | null;
   /** The provider these terms came from ("TRANSAK"), not the aggregator in front of it. */
   provider?: string | null;
   /** Live world only: the native (DOT) budget the rail must deliver, 10-dec base units. */
@@ -167,30 +174,62 @@ export interface QuotedView {
 }
 
 /**
+ * The quote's own implied rate for the token Meld delivers: the fiat left after the rail's fees is
+ * what bought `destinationAmount`. Null when the quote cannot price it.
+ */
+function meldImpliedRate(raw: MeldQuoteRaw): { delivered: number; fiatPerToken: number } | null {
+  const delivered = Number(raw.destinationAmount);
+  const netFiat = Number(raw.provider.sourceAmount) - Number(raw.provider.totalFee ?? 0);
+  if (!Number.isFinite(delivered) || delivered <= 0) return null;
+  if (!Number.isFinite(netFiat) || netFiat <= 0) return null;
+  return { delivered, fiatPerToken: netFiat / delivered };
+}
+
+/** Carried unrounded: the row's display rounds it, and the total has to sum the exact figures. */
+function feeFiat(total: number): string | null {
+  return Number.isFinite(total) && total > 0 ? String(total) : null;
+}
+
+/**
  * The funding leg's network fee in the quote's fiat, or null when the quote cannot price it.
  *
- * Meld's own fees stop where its delivery does: native on Asset Hub. Getting from there to CASH
- * on People costs two more things, both already sized by the funding estimate and both already
- * inside what the buyer pays, because the deposit was over-bought to cover them —
- * `keepNativeForFees` (dispatch, execution and delivery on Asset Hub, in native) and
- * `remoteFeeBuffer` (execution on People, in CASH). Neither has a row of its own on the rail's
- * quote, so the breakdown prices them here.
+ * Meld's own fees stop where its delivery does: the route's token on Asset Hub. Getting from
+ * there to CASH on People costs more, all of it already sized by the funding estimate and already
+ * inside what the buyer pays, because the deposit was over-bought to cover it. On the pool tier
+ * that is `keepNativeForFees` (dispatch, execution and delivery on Asset Hub, in native) and
+ * `remoteFeeBuffer` (execution on People, in CASH). On the PSM tier the Asset Hub side is two
+ * figures in two assets: the batch's dispatch fee in the delivered stable, and the XCM's execution
+ * and delivery in the CASH the mint produced (local/psm/PLAN.md §4.2). None has a row of its own
+ * on the rail's quote, so the breakdown prices them here.
  *
- * The native side converts at the quote's own implied rate: the fiat left after the rail's fees
- * is what bought `destinationAmount`. The CASH side takes the peg this app quotes against
- * throughout, one CASH to one unit of the quote fiat (see `sizeMeldNativeBudget`).
+ * The delivered token's side converts at the quote's implied rate (`meldImpliedRate`). The CASH
+ * side takes the peg this app quotes against throughout, one CASH to one unit of the quote fiat
+ * (see `sizeMeldNativeBudget`).
  */
 function meldChainFeeFiat(raw: MeldQuoteRaw, sizing: FundingSizing): string | null {
-  const nativeOut = Number(raw.destinationAmount);
-  const netFiat = Number(raw.provider.sourceAmount) - Number(raw.provider.totalFee ?? 0);
-  if (!Number.isFinite(nativeOut) || nativeOut <= 0) return null;
-  if (!Number.isFinite(netFiat) || netFiat <= 0) return null;
+  const rate = meldImpliedRate(raw);
+  if (rate === null) return null;
+  const inCash = (amount: bigint) => Number(amount) / 10 ** CASH_DECIMALS;
   const onAssetHub =
-    (Number(sizing.keepNativeForFees) / 10 ** TOKENS.PAS.decimals) * (netFiat / nativeOut);
-  const onPeople = Number(sizing.remoteFeeBuffer) / 10 ** CASH_DECIMALS;
-  const total = onAssetHub + onPeople;
-  // Carried unrounded: the row's display rounds it, and the total has to sum the exact figures.
-  return Number.isFinite(total) && total > 0 ? String(total) : null;
+    sizing.tier === "pool"
+      ? (Number(sizing.keepNativeForFees) / 10 ** TOKENS.PAS.decimals) * rate.fiatPerToken
+      : (Number(sizing.dispatchExternal) / 10 ** TOKENS[sizing.external].decimals) *
+          rate.fiatPerToken +
+        inCash(sizing.payFeesCash);
+  return feeFiat(onAssetHub + inCash(sizing.remoteFeeBuffer));
+}
+
+/**
+ * The PSM's fee on the mint in the quote's fiat, or null when the quote cannot price it. The
+ * pipeline mints everything the dispatch fee leaves of what the provider delivered, and the PSM
+ * takes its Permill of that; at the quote's implied rate, since the fee is taken in the stable.
+ */
+function meldMintFeeFiat(raw: MeldQuoteRaw, sizing: PsmFundingSizing): string | null {
+  const rate = meldImpliedRate(raw);
+  if (rate === null) return null;
+  const minted =
+    rate.delivered - Number(sizing.dispatchExternal) / 10 ** TOKENS[sizing.external].decimals;
+  return feeFiat(minted * (sizing.feeRate / Number(PERMILL)) * rate.fiatPerToken);
 }
 
 /** Half a cent: below this the split and the total still round to the same figure. */
@@ -228,6 +267,7 @@ function meldQuotedView(raw: MeldQuoteRaw, sizing: FundingSizing): QuotedView {
     networkFee: raw.provider.networkFee ?? null,
     partnerFee: raw.provider.partnerFee ?? null,
     chainFee: meldChainFeeFiat(raw, sizing),
+    mintFee: sizing.tier === "psm" ? meldMintFeeFiat(raw, sizing) : null,
     nativeAmount: null,
     sourceAsset: null,
     sourceChain: null,
@@ -580,10 +620,10 @@ export const useSessionStore = defineStore("session", () => {
   }
 
   /**
-   * Builds the Meld rail for the current selection, or signals that the method is not routed for
-   * the region.
+   * Builds the Meld rail for the current selection and the token the route delivers, or signals
+   * that the method is not routed for the region.
    */
-  async function buildMeldRail(): Promise<
+  async function buildMeldRail(route: ConversionRoute): Promise<
     | {
         rail: ChainflipRail;
         sourceId: SourceId;
@@ -643,6 +683,7 @@ export const useSessionStore = defineStore("session", () => {
       fiat: region.fiat,
       method: meldMethod,
       paymentMethodType,
+      token: depositTokenOf(route),
     });
     return { rail, sourceId, client: meldClient, region, paymentMethodType, corridor };
   }
@@ -692,8 +733,10 @@ export const useSessionStore = defineStore("session", () => {
    * pricing. Outside a browser there is nothing to read and nothing to price: the zero sizing
    * leaves both the budget and the breakdown as they were.
    */
-  async function meldFundingSizing(settleAmount: bigint): Promise<FundingSizing> {
-    if (typeof window === "undefined") return { remoteFeeBuffer: 0n, keepNativeForFees: 0n };
+  async function meldFundingSizing(settleAmount: bigint): Promise<PoolFundingSizing> {
+    if (typeof window === "undefined") {
+      return { tier: "pool", remoteFeeBuffer: 0n, keepNativeForFees: 0n };
+    }
     const { estimatePublicFundingSizing, FALLBACK_FUNDING_SIZING } =
       await import("~~/lib/funding-fees");
     return step(
@@ -727,7 +770,7 @@ export const useSessionStore = defineStore("session", () => {
       // The tier first: the rail is built for the asset the tier delivers.
       const route = await chooseQuoteRoute(amountBase.value);
       if (epoch !== quoteEpoch) return;
-      const built = await buildMeldRail();
+      const built = await buildMeldRail(route);
       // A newer quote may have started while the corridor probe was in flight; do not clobber its
       // state.
       if (epoch !== quoteEpoch) return;
@@ -781,8 +824,8 @@ export const useSessionStore = defineStore("session", () => {
         quoted.value = meldQuotedView(quote.raw as MeldQuoteRaw, world.fundingSizing);
         return;
       }
-      // Hosted world: the same rail over the real host seams. The provider delivers DOT to the
-      // burner and the funding leg swaps it to CASH.
+      // Hosted world: the same rail over the real host seams. The provider delivers the route's
+      // token to the burner and the funding leg converts it to CASH.
       const { nextHostedTradeNumber } = await import("~~/lib/coinage-live");
       const tradeN = await step(
         "trade number",
@@ -1171,6 +1214,7 @@ export const useSessionStore = defineStore("session", () => {
                 ? { sourcePartnerFee: quoted.value.partnerFee }
                 : {}),
               ...(quoted.value.chainFee != null ? { sourceChainFee: quoted.value.chainFee } : {}),
+              ...(quoted.value.mintFee != null ? { sourceMintFee: quoted.value.mintFee } : {}),
             }
           : null
         : sourceDisplayForRecord();
@@ -1397,6 +1441,7 @@ export const useSessionStore = defineStore("session", () => {
         networkFee: record.sourceNetworkFee ?? null,
         partnerFee: record.sourcePartnerFee ?? null,
         chainFee: record.sourceChainFee ?? null,
+        mintFee: record.sourceMintFee ?? null,
         nativeAmount: null,
         sourceAsset: record.asset,
         sourceChain: record.chain,

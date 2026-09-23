@@ -1397,4 +1397,19 @@ describe("createManualRail", () => {
     expect((await rail.probeLiquidity("dot-assethub")).status).toBe("available");
     expect(rail.sources()[0]?.sourceId).toBe("dot-assethub");
   });
+
+  it("built for a stable, quotes and names the deposit in it", async () => {
+    const rail = createManualRail({ token: TOKENS.USDT });
+    const quote = await rail.getQuote({
+      sourceId: "dot-assethub",
+      target: { amount: 5_000_000n, decimals: 6 },
+    });
+    expect(quote.source).toEqual({
+      amount: 5_000_000n,
+      formatted: "5",
+      assetSymbol: "USDT",
+      decimals: 6,
+    });
+    expect(rail.sources()[0]?.asset).toBe("USDT");
+  });
 });

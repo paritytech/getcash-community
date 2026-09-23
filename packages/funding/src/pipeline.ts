@@ -574,7 +574,11 @@ const poolOf = (input: TickOnceInput): Pool => {
  *  the whole batch after the dispatch fee is paid. (On the pool tier the program pays its fees in
  *  native before the exchange, so the whole exchange output is the buyer's.) The dispatch fee is
  *  charged in the external before the mint, so it sits on top. */
-export function psmDepositNeeded(buyNow: bigint, route: PsmRoute, fees: PsmBatchFees): bigint {
+export function psmDepositNeeded(
+  buyNow: bigint,
+  route: PsmRoute,
+  fees: Pick<PsmBatchFees, "payFeesCash" | "dispatchExternal">,
+): bigint {
   const cashOut = buyNow + fees.payFeesCash;
   return sizePsmMint(cashOut, route).externalIn + fees.dispatchExternal;
 }

@@ -120,6 +120,7 @@ export interface WorkerHandoffPayload {
   assetHubGenesis: string;
   peopleGenesis: string;
   remoteFeeBuffer: string;
+  /** Pool tier only; "0" on the PSM tier, whose batch prices its own fees live. */
   keepNativeForFees: string;
   /** The conversion tier decided at quote time and frozen here; the worker consumes it and never
    *  re-decides (local/psm/PLAN.md §2.2). A payload from before tiers were recorded is a pool one. */
@@ -175,6 +176,8 @@ export interface TopUpRecord {
   /** The funding leg's own network fee as the quote priced it. Not a component of `sourceFee`:
    *  the rail never reported it, the app priced it. */
   sourceChainFee?: string;
+  /** The PSM's fee on the mint as the quote priced it; PSM tier only, and the app's figure too. */
+  sourceMintFee?: string;
   meldCountry?: string;
   meldFundingRequestId?: string;
   meldSubmittedAt?: number;
