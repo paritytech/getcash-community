@@ -1215,7 +1215,11 @@ export const useSessionStore = defineStore("session", () => {
     const state = lastState.value;
     const deposit = state && "deposit" in state ? state.deposit : null;
     if (live.value && deposit) {
-      const estimate = estimateSourceAmount(deposit.amount, sourceSymbol);
+      const estimate = estimateSourceAmount(
+        deposit.amount,
+        depositTokenOf(live.value.route),
+        sourceSymbol,
+      );
       if (estimate) return { sourceAmount: `≈ ${estimate}`, sourceSymbol };
     }
     if (!live.value && amountBase.value !== null) {
