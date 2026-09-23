@@ -144,10 +144,22 @@ function startCountdown() {
     if (countdown.value <= 0) stopCountdown();
   }, 1_000);
 }
+/** The pay page the wait was served for. Tracked as the last URL seen, not the watch's previous
+ *  value: two requests are always separated by a null gap (the cancel tears the page down), so a
+ *  plain old-vs-new comparison would read the second one as the first. */
+let waitedFor: string | null = null;
 watch(
-  () => props.step === "details" && session.meldPayUrl !== null,
-  (showing) => {
-    if (showing) startCountdown();
+  () => (props.step === "details" ? session.meldPayUrl : null),
+  (url) => {
+    if (url === null) return;
+    if (waitedFor !== null && url !== waitedFor) {
+      // A new request behind the same mounted screen: new account, new amount — the wait is owed
+      // again. The same page seen again (Back, then Continue) keeps the wait already served.
+      stopCountdown();
+      countdown.value = CONFIRM_DELAY_S;
+    }
+    waitedFor = url;
+    startCountdown();
   },
   { immediate: true },
 );
