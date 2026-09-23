@@ -1,7 +1,8 @@
-// Offline coverage over a scripted chain: the step decision, single ticks of the funding program,
-// pool discovery, the quote headroom, the deposit sizing, the dispatch-error decoder, and the
-// manual rail.
+// Offline coverage over a scripted chain: the step decision, single ticks of the funding program
+// on either tier, pool discovery, the quote headroom, the deposit sizing, the dispatch-error
+// decoder, and the manual rail.
 
+import { TOKENS } from "@getsome/core";
 import { AccountId, type PolkadotClient } from "polkadot-api";
 import { describe, expect, it } from "vitest";
 import { describeDispatchError } from "./dispatch-error";
@@ -12,7 +13,10 @@ import {
   DEFAULT_SLIPPAGE_PCT,
   discoverPool,
   freshTickState,
+  FundingHeldError,
   FundingShortfallError,
+  MAX_PSM_REFUSALS,
+  psmDepositNeeded,
   quoteNativeIn,
   quoteNativeInMax,
   sizeNativeBudget,
@@ -20,6 +24,8 @@ import {
   type FundingStep,
   type TickState,
 } from "./pipeline";
+import { psmMintOut, sizePsmMint, type PsmRoute } from "./psm-batch";
+import type { ConversionRoute } from "./route";
 
 const SETTLE = 5_000_000n; // 5 underlying at 6 decimals
 const BUFFER = 100_000n;
@@ -45,6 +51,15 @@ const EARMARK = destinationEarmark(BUY, BUFFER);
 const SIGN_OPTIONS = { at: "0xbest" };
 const ASSET_HUB_PARA = 1500;
 const PEOPLE_PARA = 1004;
+const POOL: ConversionRoute = { tier: "pool" };
+
+// The PSM tier: the same target from a USDT deposit, at 0.5%.
+const ROUTE: PsmRoute = { tier: "psm", external: "USDT", feeRate: 5_000 };
+/** The batch's dispatch fee as ChargeAssetTxPayment charges it: the pool's USDT price for DISPATCH. */
+const DISPATCH_USDT = 7_000n;
+/** The USDT the tier needs on the burner: the mint that pays out the target AND the XCM's own fees,
+ *  which come out of the minted CASH, plus the dispatch fee. */
+const PSM_DEPOSIT = sizePsmMint(BUY + PAYFEES, ROUTE).externalIn + DISPATCH_USDT;
 
 /** The burner on People, as the program names it and as People's events show it. */
 const BENEFICIARY = new Uint8Array(32).fill(7);
@@ -65,22 +80,17 @@ const UNDERLYING_LOC = {
 };
 
 describe("decideStep", () => {
-  const targets = {
-    settleAmount: SETTLE,
-    remoteFeeBuffer: BUFFER,
-    keepNativeForFees: KEEP,
-    nativeNeeded: QUOTED,
-  };
+  const targets = { settleAmount: SETTLE, depositNeeded: QUOTED + KEEP };
   it("done once the underlying reached People, and not one base unit sooner", () => {
-    expect(decideStep({ nativeAh: 0n, underlyingPeople: SETTLE }, targets)).toBe("done");
+    expect(decideStep({ depositAh: 0n, underlyingPeople: SETTLE }, targets)).toBe("done");
     // the partial-arrival world: the destination fee ate past the buffer
-    expect(decideStep({ nativeAh: 0n, underlyingPeople: SETTLE - 1n }, targets)).toBe(
+    expect(decideStep({ depositAh: 0n, underlyingPeople: SETTLE - 1n }, targets)).toBe(
       "await-native",
     );
   });
-  it("converts once native covers the plain quote plus the fee native, no headroom demanded", () => {
-    expect(decideStep({ nativeAh: QUOTED + KEEP, underlyingPeople: 0n }, targets)).toBe("swap");
-    expect(decideStep({ nativeAh: QUOTED + KEEP - 1n, underlyingPeople: 0n }, targets)).toBe(
+  it("converts once the deposit covers what the conversion needs, fees included, and not sooner", () => {
+    expect(decideStep({ depositAh: QUOTED + KEEP, underlyingPeople: 0n }, targets)).toBe("swap");
+    expect(decideStep({ depositAh: QUOTED + KEEP - 1n, underlyingPeople: 0n }, targets)).toBe(
       "await-native",
     );
   });
@@ -98,6 +108,112 @@ const exchangeOf = (args: ExecuteArgs) =>
     want: Fungible[];
     maximal: boolean;
   };
+type Transfer = { remote_fees: { value: { value: Fungible[] } }; remote_xcm: Instruction[] };
+const transferOf = (args: ExecuteArgs) => instruction(args, "InitiateTransfer") as Transfer;
+
+const incomplete = (index: number, error: string) => ({
+  type: "Module",
+  value: {
+    type: "PolkadotXcm",
+    value: {
+      type: "LocalExecutionIncompleteWithError",
+      value: { index, error: { type: error } },
+    },
+  },
+});
+const trapped = (amount: bigint | undefined) =>
+  amount
+    ? [
+        {
+          type: "PolkadotXcm",
+          value: {
+            type: "AssetsTrapped",
+            value: {
+              assets: { type: "V5", value: [{ fun: { type: "Fungible", value: amount } }] },
+            },
+          },
+        },
+      ]
+    : [];
+const fungible = (value: bigint) => ({ fun: { type: "Fungible", value } });
+const toPeople = {
+  type: "V5",
+  value: {
+    parents: 1,
+    interior: { type: "X1", value: { type: "Parachain", value: PEOPLE_PARA } },
+  },
+};
+/** What the runtime forwards for `teleported` in the holding: the fee teleport, the asset
+ *  teleport, then the remote program. */
+const forwardedProgram = (transfer: Transfer, teleported: bigint) => {
+  const earmark = transfer.remote_fees.value.value[0]!.fun.value;
+  return {
+    type: "V5",
+    value: [
+      { type: "ReceiveTeleportedAsset", value: [fungible(earmark)] },
+      { type: "PayFees", value: { asset: fungible(earmark) } },
+      { type: "ReceiveTeleportedAsset", value: [fungible(teleported - earmark)] },
+      { type: "ClearOrigin" },
+      ...transfer.remote_xcm,
+      { type: "SetTopic", value: `0x${"00".repeat(32)}` },
+    ],
+  };
+};
+/** People's side of the dry run: the teleported amounts minus the fee reach the beneficiary, or
+ *  the program fails with `error()`. */
+const scriptedPeople = (opts: {
+  fee: () => bigint;
+  error: () => string | undefined;
+  trap?: bigint;
+}) => ({
+  apis: {
+    DryRunApi: {
+      dry_run_xcm: async (_origin: unknown, program: { value: Instruction[] }) => {
+        const error = opts.error();
+        if (error) {
+          return {
+            success: true,
+            value: {
+              execution_result: { type: "Incomplete", value: { used: {}, error: { type: error } } },
+              emitted_events: [],
+            },
+          };
+        }
+        const teleported = program.value
+          .filter((i) => i.type === "ReceiveTeleportedAsset")
+          .reduce((sum, i) => sum + (i.value as Fungible[])[0]!.fun.value, 0n);
+        const fee = opts.fee();
+        const deposited = (who: string, amount: bigint) => ({
+          type: "Assets",
+          value: { type: "Deposited", value: { who, amount } },
+        });
+        return {
+          success: true,
+          value: {
+            execution_result: { type: "Complete", value: { used: {} } },
+            emitted_events: [
+              deposited(BENEFICIARY_SS58, teleported - fee),
+              deposited(FEE_RECEIVER_SS58, fee),
+              ...trapped(opts.trap),
+            ],
+          },
+        };
+      },
+    },
+  },
+});
+/** The funding program's fee reads, scripted small. */
+const xcmPaymentApi = {
+  query_xcm_weight: async () => ({
+    success: true,
+    value: { ref_time: 1_000_000n, proof_size: 1_000n },
+  }),
+  query_weight_to_asset_fee: async () => ({ success: true, value: LOCAL_FEE }),
+  query_delivery_fees: async () => ({
+    success: true,
+    value: { value: [{ fun: { type: "Fungible", value: DELIVERY } }] },
+  }),
+};
 
 /** Scripted Asset Hub + People. XCM arrival is counted in People reads, not wall-clock. */
 function scriptedWorld(
@@ -150,31 +266,6 @@ function scriptedWorld(
   /** Underlying `nativeIn` buys at the current price. */
   const underlyingFor = (nativeIn: bigint) =>
     (((nativeIn * BUY) / QUOTED) * 10_000n) / state.priceBps;
-  const incomplete = (index: number, error: string) => ({
-    type: "Module",
-    value: {
-      type: "PolkadotXcm",
-      value: {
-        type: "LocalExecutionIncompleteWithError",
-        value: { index, error: { type: error } },
-      },
-    },
-  });
-  const trapped = (amount: bigint | undefined) =>
-    amount
-      ? [
-          {
-            type: "PolkadotXcm",
-            value: {
-              type: "AssetsTrapped",
-              value: {
-                assets: { type: "V5", value: [{ fun: { type: "Fungible", value: amount } }] },
-              },
-            },
-          },
-        ]
-      : [];
-  const fungible = (value: bigint) => ({ fun: { type: "Fungible", value } });
   // The program as a dry run sees it: at the current price, without the debit, and without the
   // scripted rejection or the price move at inclusion, which only the real submit meets.
   const dryRunCall = (args: ExecuteArgs) => {
@@ -192,79 +283,20 @@ function scriptedWorld(
     if (opts.assetHubDryRunError) return rejected(3, opts.assetHubDryRunError);
     const out = underlyingFor(give);
     if (out < want) return rejected(2, "NoDeal");
-    const transfer = instruction(args, "InitiateTransfer") as {
-      remote_fees: { value: { value: Fungible[] } };
-      remote_xcm: Instruction[];
-    };
-    const earmark = transfer.remote_fees.value.value[0]!.fun.value;
-    // What the runtime forwards: the fee teleport, the asset teleport, then the remote program.
-    const forwarded = {
-      type: "V5",
-      value: [
-        { type: "ReceiveTeleportedAsset", value: [fungible(earmark)] },
-        { type: "PayFees", value: { asset: fungible(earmark) } },
-        { type: "ReceiveTeleportedAsset", value: [fungible(out - earmark)] },
-        { type: "ClearOrigin" },
-        ...transfer.remote_xcm,
-        { type: "SetTopic", value: `0x${"00".repeat(32)}` },
-      ],
-    };
-    const toPeople = {
-      type: "V5",
-      value: {
-        parents: 1,
-        interior: { type: "X1", value: { type: "Parachain", value: PEOPLE_PARA } },
-      },
-    };
     return {
       success: true,
       value: {
         execution_result: { success: true, value: {} },
         emitted_events: trapped(opts.trapOnAssetHub),
-        forwarded_xcms: [[toPeople, [forwarded]]],
+        forwarded_xcms: [[toPeople, [forwardedProgram(transferOf(args), out)]]],
       },
     };
   };
-  // People's side of the dry run: the teleported amounts minus the fee reach the beneficiary.
-  const peopleApi = {
-    apis: {
-      DryRunApi: {
-        dry_run_xcm: async (_origin: unknown, program: { value: Instruction[] }) => {
-          if (opts.peopleDryRunError) {
-            return {
-              success: true,
-              value: {
-                execution_result: {
-                  type: "Incomplete",
-                  value: { used: {}, error: { type: opts.peopleDryRunError } },
-                },
-                emitted_events: [],
-              },
-            };
-          }
-          const teleported = program.value
-            .filter((i) => i.type === "ReceiveTeleportedAsset")
-            .reduce((sum, i) => sum + (i.value as Fungible[])[0]!.fun.value, 0n);
-          const fee = opts.remoteFeeAtDryRun ?? remoteFee;
-          const deposited = (who: string, amount: bigint) => ({
-            type: "Assets",
-            value: { type: "Deposited", value: { who, amount } },
-          });
-          return {
-            success: true,
-            value: {
-              execution_result: { type: "Complete", value: { used: {} } },
-              emitted_events: [
-                deposited(BENEFICIARY_SS58, teleported - fee),
-                deposited(FEE_RECEIVER_SS58, fee),
-                ...trapped(opts.trapOnPeople),
-              ],
-            },
-          };
-        },
-      },
-    },
-  };
+  const peopleApi = scriptedPeople({
+    fee: () => opts.remoteFeeAtDryRun ?? remoteFee,
+    error: () => opts.peopleDryRunError,
+    trap: opts.trapOnPeople,
+  });
   // The program as the runtime runs it. The dispatch fee is charged whatever happens. On success
   // the withdrawn native leaves in full, the exchange fills at the pool rate and the result goes in
   // flight to People minus the destination fee. A rejection rolls the program back and only the
@@ -345,19 +377,8 @@ function scriptedWorld(
         dry_run_call: async (_origin: unknown, call: { value: { value: ExecuteArgs } }) =>
           dryRunCall(call.value.value),
       },
-      // The funding program's fee reads, scripted small; the landing shortfall is driven by
-      // `remoteFee`.
-      XcmPaymentApi: {
-        query_xcm_weight: async () => ({
-          success: true,
-          value: { ref_time: 1_000_000n, proof_size: 1_000n },
-        }),
-        query_weight_to_asset_fee: async () => ({ success: true, value: LOCAL_FEE }),
-        query_delivery_fees: async () => ({
-          success: true,
-          value: { value: [{ fun: { type: "Fungible", value: DELIVERY } }] },
-        }),
-      },
+      // The landing shortfall is driven by `remoteFee`, not by these.
+      XcmPaymentApi: xcmPaymentApi,
     },
     tx: {
       PolkadotXcm: { execute },
@@ -380,8 +401,186 @@ function scriptedWorld(
 
 type World = ReturnType<typeof scriptedWorld>;
 
+type Call = { type: string; value: { type: string; value: unknown } };
+type MintArgs = { external_amount: bigint; max_fee: number };
+type PsmRefusal = "MintingStopped" | "AllSwapsStopped" | "ExceedsMaxPsmDebt";
+
+/** Scripted Asset Hub + People for the PSM tier. The burner holds USDT and nothing else: a read of
+ *  its native, of the pool's keys or an exact-in quote throws, so a tick that touches the pool
+ *  tier's reads fails the test. The default destination fee is the buffer exactly, so what lands
+ *  is exactly what the mint was sized for. */
+function scriptedPsmWorld(
+  opts: {
+    remoteFee?: bigint;
+    arrivalAfterReads?: number;
+    /** The PSM refuses the mint with this error, at the dry run and at inclusion alike. */
+    refuse?: PsmRefusal;
+    /** The dry run passes anyway, so the refusal is met at inclusion. */
+    refuseAtInclusion?: boolean;
+  } = {},
+) {
+  const remoteFee = opts.remoteFee ?? BUFFER;
+  const state = {
+    usdtAh: 0n,
+    underlyingPeople: 0n,
+    inFlight: 0n,
+    arrivalIn: 0,
+    /** Lifted by the tests, as an operator raising the ceiling would. */
+    refuse: (opts.refuse ?? null) as PsmRefusal | null,
+    /** Every chain read and dry run throws while set: a transport error, not a refusal. */
+    transportDown: false,
+    peopleError: undefined as string | undefined,
+    txs: [] as Array<{ call: string; mint: MintArgs; args: ExecuteArgs; options: unknown }>,
+  };
+  const psmError = (variant: PsmRefusal) => ({
+    type: "Module",
+    value: { type: "Psm", value: { type: variant } },
+  });
+  const balanceLow = { type: "Module", value: { type: "Assets", value: { type: "BalanceLow" } } };
+  const unwrap = (call: Call) => {
+    if (call.type !== "Utility" || call.value.type !== "batch_all") {
+      throw new Error(`expected Utility.batch_all, got ${call.type}.${call.value.type}`);
+    }
+    const calls = (call.value.value as { calls: Call[] }).calls;
+    return { mint: calls[0]!.value.value as MintArgs, args: calls[1]!.value.value as ExecuteArgs };
+  };
+  const rejected = (error: unknown) => ({
+    success: true,
+    value: {
+      execution_result: { success: false, value: { error } },
+      emitted_events: [],
+      forwarded_xcms: [],
+    },
+  });
+  // The batch as the runtime runs it: the mint pays out the external minus the PSM's fee, and the
+  // program withdraws from that, pays its fees in CASH and teleports the rest.
+  const run = (mint: MintArgs, args: ExecuteArgs, atDryRun: boolean) => {
+    if (state.refuse && !(atDryRun && opts.refuseAtInclusion)) {
+      return { error: psmError(state.refuse) };
+    }
+    if (mint.external_amount > state.usdtAh) return { error: balanceLow };
+    const withdrawn = (instruction(args, "WithdrawAsset") as Fungible[])[0]!.fun.value;
+    if (withdrawn > psmMintOut(mint.external_amount, ROUTE.feeRate)) {
+      return { error: incomplete(0, "FailedToTransactAsset") };
+    }
+    const payFees = (instruction(args, "PayFees") as { asset: Fungible }).asset.fun.value;
+    return { teleported: withdrawn - payFees };
+  };
+  const dryRunCall = (call: Call) => {
+    if (state.transportDown) throw new Error("connection dropped");
+    const { mint, args } = unwrap(call);
+    const outcome = run(mint, args, true);
+    if ("error" in outcome) return rejected(outcome.error);
+    return {
+      success: true,
+      value: {
+        execution_result: { success: true, value: {} },
+        emitted_events: [],
+        forwarded_xcms: [[toPeople, [forwardedProgram(transferOf(args), outcome.teleported)]]],
+      },
+    };
+  };
+  const batchAll = ({ calls }: { calls: Call[] }) => {
+    const call: Call = { type: "Utility", value: { type: "batch_all", value: { calls } } };
+    const { mint, args } = unwrap(call);
+    return {
+      decodedCall: call,
+      getEstimatedFees: async () => DISPATCH,
+      signAndSubmit: async (_signer: unknown, options: unknown) => {
+        state.txs.push({ call: "swap", mint, args, options });
+        const txHash = `0x${state.txs.length.toString(16).padStart(64, "0")}`;
+        // ChargeAssetTxPayment takes the dispatch fee in USDT before anything runs.
+        state.usdtAh -= DISPATCH_USDT;
+        const outcome = run(mint, args, false);
+        if ("error" in outcome) return { ok: false, txHash, dispatchError: outcome.error };
+        state.usdtAh -= mint.external_amount;
+        state.inFlight = outcome.teleported - remoteFee;
+        state.arrivalIn = opts.arrivalAfterReads ?? 3;
+        return { ok: true, txHash };
+      },
+    };
+  };
+  const api = {
+    query: {
+      AssetConversion: {
+        Pools: {
+          getEntries: async () => {
+            throw new Error("pool discovery on the psm tier");
+          },
+        },
+      },
+      System: {
+        Account: {
+          getValue: async () => {
+            throw new Error("native read on the psm tier");
+          },
+        },
+      },
+      Assets: {
+        Account: {
+          getValue: async (assetId: number) => {
+            if (state.transportDown) throw new Error("connection dropped");
+            if (assetId !== TOKENS.USDT.assetHubId) throw new Error(`asset ${assetId} read`);
+            return state.usdtAh === 0n ? undefined : { balance: state.usdtAh };
+          },
+        },
+      },
+    },
+    apis: {
+      AssetConversionApi: {
+        // The one pool read the tier makes: the dispatch fee priced in USDT.
+        quote_price_tokens_for_exact_tokens: async (give: unknown, _want: unknown, out: bigint) => {
+          expect(give).toEqual(TOKENS.USDT.location);
+          expect(out).toBe(DISPATCH);
+          return DISPATCH_USDT;
+        },
+        quote_price_exact_tokens_for_tokens: async () => {
+          throw new Error("exact-in quote on the psm tier");
+        },
+      },
+      DryRunApi: { dry_run_call: async (_origin: unknown, call: Call) => dryRunCall(call) },
+      XcmPaymentApi: xcmPaymentApi,
+    },
+    tx: {
+      Psm: {
+        mint: (args: MintArgs) => ({
+          decodedCall: { type: "Psm", value: { type: "mint", value: args } },
+        }),
+      },
+      PolkadotXcm: {
+        execute: (args: ExecuteArgs) => ({
+          decodedCall: { type: "PolkadotXcm", value: { type: "execute", value: args } },
+        }),
+      },
+      Utility: { batch_all: batchAll },
+    },
+  };
+  const readPeople = async () => {
+    if (state.arrivalIn > 0 && --state.arrivalIn === 0) {
+      state.underlyingPeople += state.inFlight;
+      state.inFlight = 0n;
+    }
+    return state.underlyingPeople;
+  };
+  return {
+    state,
+    readPeople,
+    peopleApi: scriptedPeople({ fee: () => remoteFee, error: () => state.peopleError }),
+    client: { getTypedApi: () => api } as unknown as PolkadotClient,
+  };
+}
+
+type Driveable = Pick<World, "client" | "peopleApi" | "readPeople"> & {
+  state: { txs: Array<{ call: string }> };
+};
+
 /** Drives `world` one tick at a time until done or `ticks` ticks. */
-async function drive(world: World, ticks: number, state: TickState = freshTickState()) {
+async function drive(
+  world: Driveable,
+  ticks: number,
+  state: TickState = freshTickState(),
+  route: ConversionRoute = POOL,
+) {
   const steps: FundingStep[] = [];
   const transients: string[] = [];
   let now = 1_000;
@@ -391,7 +590,10 @@ async function drive(world: World, ticks: number, state: TickState = freshTickSt
       {
         api: (world.client as unknown as { getTypedApi: () => never }).getTypedApi(),
         peopleApi: world.peopleApi as never,
-        pool: { native: NATIVE_LOC as never, underlying: UNDERLYING_LOC as never },
+        route,
+        ...(route.tier === "pool"
+          ? { pool: { native: NATIVE_LOC as never, underlying: UNDERLYING_LOC as never } }
+          : {}),
         address: "5Burner",
         signer: {} as never,
         beneficiaryHex: BENEFICIARY_HEX,
@@ -581,6 +783,156 @@ describe("tickOnce", () => {
     expect(retry.steps).toEqual(["swap"]);
     expect(state.xcmSubmitted).toBe(true);
     expect(world.state.nativeAh).toBe(0n);
+  });
+});
+
+describe("tickOnce on the PSM tier", () => {
+  it("mints the USDT through the PSM and teleports the CASH one tick at a time: batch, arrival, done", async () => {
+    const world = scriptedPsmWorld({ arrivalAfterReads: 2 });
+    const idle = await drive(world, 1, freshTickState(), ROUTE);
+    expect(idle.steps).toEqual(["await-native"]);
+    expect(idle.state.fundsSeenAt).toBeNull();
+
+    world.state.usdtAh = PSM_DEPOSIT;
+    const run = await drive(world, 6, idle.state, ROUTE);
+    expect(run.steps).toEqual(["swap", "await-arrival", "done"]);
+    expect(run.txs).toEqual(["swap"]);
+    expect(run.state).toMatchObject({ attempts: 1, xcmSubmitted: true, psmRefusals: 0 });
+    // The destination fee took the buffer exactly, so exactly the target landed, and nothing is
+    // left on the burner.
+    expect(world.state.underlyingPeople).toBe(SETTLE);
+    expect(world.state.usdtAh).toBe(0n);
+
+    const [tx] = world.state.txs;
+    // The mint takes everything the dispatch fee leaves, at the route's fee verbatim.
+    expect(tx!.mint.external_amount).toBe(PSM_DEPOSIT - DISPATCH_USDT);
+    expect(tx!.mint.max_fee).toBe(ROUTE.feeRate);
+    // The program withdraws what the mint paid out, the target plus its own fees, pays those in
+    // CASH, and exchanges nothing.
+    expect((instruction(tx!.args, "WithdrawAsset") as Fungible[])[0]!.fun.value).toBe(
+      BUY + PAYFEES,
+    );
+    expect((instruction(tx!.args, "PayFees") as { asset: Fungible }).asset.fun.value).toBe(PAYFEES);
+    expect(instruction(tx!.args, "ExchangeAsset")).toBeUndefined();
+    expect(transferOf(tx!.args).remote_fees.value.value[0]!.fun.value).toBe(EARMARK);
+    expect(tx!.args.max_weight).toEqual({ ref_time: 1_000_000n, proof_size: 1_000n });
+    // The dispatch fee is charged in USDT, with the tick's anchor.
+    expect(tx!.options).toEqual({ asset: TOKENS.USDT.location, ...SIGN_OPTIONS });
+  });
+
+  it("sizes the mint for the target PLUS the XCM's own fees: a deposit sized without them waits", async () => {
+    // The XCM pays its execution and delivery out of the minted CASH. A gate without that term
+    // would admit this deposit, and the batch would then land PAYFEES short of the target and be
+    // refused by the dry run on every tick.
+    const world = scriptedPsmWorld();
+    world.state.usdtAh = sizePsmMint(BUY, ROUTE).externalIn + DISPATCH_USDT;
+    expect((await drive(world, 1, freshTickState(), ROUTE)).steps).toEqual(["await-native"]);
+    world.state.usdtAh = PSM_DEPOSIT - 1n;
+    expect((await drive(world, 1, freshTickState(), ROUTE)).steps).toEqual(["await-native"]);
+    expect(world.state.txs).toEqual([]);
+    world.state.usdtAh = PSM_DEPOSIT;
+    expect((await drive(world, 1, freshTickState(), ROUTE)).steps).toEqual(["swap"]);
+  });
+
+  it("converts everything the burner holds; the surplus lands as extra CASH", async () => {
+    const world = scriptedPsmWorld({ arrivalAfterReads: 1 });
+    world.state.usdtAh = PSM_DEPOSIT + 1_000_000n;
+    const run = await drive(world, 4, freshTickState(), ROUTE);
+    expect(run.steps).toEqual(["swap", "done"]);
+    expect(world.state.txs[0]!.mint.external_amount).toBe(PSM_DEPOSIT + 1_000_000n - DISPATCH_USDT);
+    expect(world.state.usdtAh).toBe(0n);
+    expect(world.state.underlyingPeople).toBeGreaterThan(SETTLE);
+    expect(run.transients).toEqual([]);
+  });
+
+  it("retries a mint the PSM refuses at the dry run, and holds on the third refusal with nothing spent", async () => {
+    const world = scriptedPsmWorld({ refuse: "ExceedsMaxPsmDebt" });
+    world.state.usdtAh = PSM_DEPOSIT;
+    const state = freshTickState();
+    for (let refusals = 1; refusals < MAX_PSM_REFUSALS; refusals += 1) {
+      await expect(drive(world, 1, state, ROUTE)).rejects.toThrow(
+        /not submitted: Asset Hub rejects the program: Psm.ExceedsMaxPsmDebt/,
+      );
+      expect(state.psmRefusals).toBe(refusals);
+    }
+    await expect(drive(world, 1, state, ROUTE)).rejects.toThrow(
+      /funding held: the PSM refused the mint 3 times, last: Psm.ExceedsMaxPsmDebt/,
+    );
+    await expect(drive(world, 1, state, ROUTE)).rejects.toBeInstanceOf(FundingHeldError);
+    // Nothing went out and the deposit stays on the burner, in USDT.
+    expect(state).toMatchObject({ attempts: 0, xcmSubmitted: false });
+    expect(world.state.txs).toEqual([]);
+    expect(world.state.usdtAh).toBe(PSM_DEPOSIT);
+  });
+
+  it("counts the PSM's refusals only: a dropped connection or another rejection burns no retry", async () => {
+    const world = scriptedPsmWorld({ refuse: "MintingStopped" });
+    world.state.usdtAh = PSM_DEPOSIT;
+    const state = freshTickState();
+    await expect(drive(world, 1, state, ROUTE)).rejects.toThrow(/Psm.MintingStopped/);
+    expect(state.psmRefusals).toBe(1);
+    // The connection drops: a transport error, retried without limit.
+    world.state.transportDown = true;
+    await expect(drive(world, 1, state, ROUTE)).rejects.toThrow(/connection dropped/);
+    world.state.transportDown = false;
+    expect(state.psmRefusals).toBe(1);
+    // People fails the forwarded program: a rejection, but not the PSM's.
+    world.state.refuse = null;
+    world.state.peopleError = "TooExpensive";
+    await expect(drive(world, 1, state, ROUTE)).rejects.toThrow(
+      /not submitted: the forwarded program fails on People with TooExpensive/,
+    );
+    expect(state.psmRefusals).toBe(1);
+    world.state.peopleError = undefined;
+    // Two more refusals of the PSM's own reach the hold.
+    world.state.refuse = "AllSwapsStopped";
+    await expect(drive(world, 1, state, ROUTE)).rejects.toThrow(/Psm.AllSwapsStopped/);
+    expect(state.psmRefusals).toBe(2);
+    await expect(drive(world, 1, state, ROUTE)).rejects.toBeInstanceOf(FundingHeldError);
+    expect(world.state.txs).toEqual([]);
+  });
+
+  it("a refusal at inclusion costs the dispatch fee in USDT and counts; the run goes on once the PSM takes the mint", async () => {
+    const world = scriptedPsmWorld({
+      refuse: "MintingStopped",
+      refuseAtInclusion: true,
+      arrivalAfterReads: 1,
+    });
+    world.state.usdtAh = PSM_DEPOSIT;
+    const state = freshTickState();
+    await expect(drive(world, 1, state, ROUTE)).rejects.toThrow(
+      /psm batch dispatch rejected: Psm.MintingStopped/,
+    );
+    expect(state).toMatchObject({ attempts: 1, psmRefusals: 1, xcmSubmitted: false });
+    // The batch rolled back whole: the deposit is still USDT, the dispatch fee lighter.
+    expect(world.state.usdtAh).toBe(PSM_DEPOSIT - DISPATCH_USDT);
+
+    // The PSM reopens and the fee is made up: the next tick mints, priced afresh.
+    world.state.refuse = null;
+    world.state.usdtAh += DISPATCH_USDT;
+    const retry = await drive(world, 4, state, ROUTE);
+    expect(retry.steps).toEqual(["swap", "done"]);
+    expect(state).toMatchObject({ attempts: 2, psmRefusals: 1, xcmSubmitted: true });
+    expect(world.state.underlyingPeople).toBe(SETTLE);
+    expect(world.state.usdtAh).toBe(0n);
+  });
+});
+
+describe("psmDepositNeeded", () => {
+  it("is the mint for the target plus the XCM's fees, plus the dispatch fee in the external", () => {
+    const fees = {
+      localCash: 4_000n,
+      deliveryCash: 250n,
+      payFeesCash: 4_250n,
+      dispatchNative: DISPATCH,
+      dispatchExternal: DISPATCH_USDT,
+      maxWeight: { ref_time: 1n, proof_size: 1n },
+    };
+    const needed = psmDepositNeeded(BUY, ROUTE, fees);
+    expect(needed).toBe(sizePsmMint(BUY + 4_250n, ROUTE).externalIn + DISPATCH_USDT);
+    // The XCM's fees are part of the mint, not left out of it.
+    expect(needed).toBeGreaterThan(sizePsmMint(BUY, ROUTE).externalIn + DISPATCH_USDT);
+    expect(psmMintOut(needed - DISPATCH_USDT, ROUTE.feeRate)).toBeGreaterThanOrEqual(BUY + 4_250n);
   });
 });
 

@@ -1,6 +1,7 @@
 // Describes a rejected PolkadotXcm.execute by naming the instruction that failed and the XCM
-// error. The decoded shape comes from the runtime's metadata, so every field is read structurally
-// and nothing here throws on a shape it has not seen.
+// error, and recognises the PSM's refusals of a mint. The decoded shape comes from the runtime's
+// metadata, so every field is read structurally and nothing here throws on a shape it has not
+// seen.
 
 type Tagged = { type?: unknown; value?: unknown };
 
@@ -44,4 +45,18 @@ export function describeDispatchError(dispatchError: unknown, execArgs?: unknown
   }
   if (typeof outer.type === "string") return outer.type;
   return "unrecognised dispatch error";
+}
+
+/** The PSM's refusals of a swap: the pair paused for minting or for everything, or the mint over
+ *  its ceiling. What the funding pipeline retries a bounded number of times and then holds on
+ *  (local/psm/PLAN.md §2.3). */
+const PSM_REFUSALS = new Set(["MintingStopped", "AllSwapsStopped", "ExceedsMaxPsmDebt"]);
+
+/** True when `dispatchError` is one of the PSM's refusals. A transport error, a timeout or any
+ *  other pallet's error is not one. */
+export function isPsmRefusal(dispatchError: unknown): boolean {
+  const outer = tagged(dispatchError);
+  const pallet = tagged(outer?.value);
+  if (outer?.type !== "Module" || name(pallet) !== "Psm") return false;
+  return PSM_REFUSALS.has(name(pallet?.value) ?? "");
 }

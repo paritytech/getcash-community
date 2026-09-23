@@ -253,6 +253,18 @@ async function dryRunOnPeople(args: {
   return { landed: creditedTo(events, args.beneficiaryHex, "asset"), trapped: trappedIn(events) };
 }
 
+/** Asset Hub's dry run rejected the call. Carries the dispatch error so a caller can act on its
+ *  kind, as the pipeline does for the PSM's refusals of a mint. */
+export class ProgramRejectedError extends Error {
+  constructor(
+    readonly dispatchError: unknown,
+    reason: string,
+  ) {
+    super(`not submitted: Asset Hub rejects the program: ${reason}`);
+    this.name = "ProgramRejectedError";
+  }
+}
+
 /** Runs the funding program on both chains without submitting it: the call on Asset Hub as the
  *  burner, then the program Asset Hub forwards on People as Asset Hub. Throws with the reason when
  *  either chain fails the program or would trap assets, or when less than `mustLand` would reach
@@ -284,8 +296,8 @@ export async function dryRunFundingProgram(args: {
   }
   const effects = dr.value;
   if (!effects.execution_result.success) {
-    const reason = describeDispatchError(effects.execution_result.value.error, args.execArgs);
-    throw new Error(`not submitted: Asset Hub rejects the program: ${reason}`);
+    const { error } = effects.execution_result.value;
+    throw new ProgramRejectedError(error, describeDispatchError(error, args.execArgs));
   }
   const trappedOnAssetHub = trappedIn(effects.emitted_events);
   if (trappedOnAssetHub > 0n) {

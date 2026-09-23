@@ -3,6 +3,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { deriveKeypair, deriveKeypairWithSecret, toSchnorrkelSecret } from "@getsome/ephemeral";
+import { FundingHeldError } from "@getsome/funding";
 import { PaymentTopUpErr, PaymentTopUpStatusErr } from "@novasamatech/host-api";
 import { topUpIdFor } from "../worker/src/topup-id.js";
 
@@ -187,30 +188,40 @@ describe("worker funding engine", () => {
     await engine.startFunding(JSON.stringify(quotedPsm));
     expect(storedJob()).toMatchObject({ tier: "psm", external: "USDT", feeRate: 5_000 });
 
-    // No conversion path for that tier yet: the tick refuses rather than swapping through the
-    // pool at a rate the buyer was not quoted.
+    // The tick converts through the recorded tier: the pipeline is handed the route as recorded,
+    // and no pool is looked for on a tier that has none.
     mocks.tickOnce.mockResolvedValue(outcome("swap"));
     await engine.tickAllFunding();
-    expect(mocks.tickOnce).not.toHaveBeenCalled();
-    expect(storedJob()).toMatchObject({
-      phase: "starting",
-      lastError: expect.stringContaining("psm"),
+    expect(mocks.tickOnce).toHaveBeenCalledTimes(1);
+    expect(mocks.tickOnce.mock.calls[0]![0]).toMatchObject({
+      route: { tier: "psm", external: "USDT", feeRate: 5_000 },
+      pool: undefined,
     });
+    expect(mocks.discoverPool).not.toHaveBeenCalled();
+    expect(storedJob().phase).toBe("swap");
 
     // A restart re-sending the hand-off under another tier changes nothing: the record's stands.
     const revived = await freshEngine();
     await revived.startFunding(JSON.stringify({ ...HANDOFF, tier: "pool" }));
     await revived.tickAllFunding();
     expect(storedJob().tier).toBe("psm");
-    expect(mocks.tickOnce).not.toHaveBeenCalled();
+    expect(mocks.tickOnce).toHaveBeenCalledTimes(2);
+    expect(mocks.tickOnce.mock.calls[1]![0]).toMatchObject({ route: { tier: "psm" } });
+    expect(mocks.discoverPool).not.toHaveBeenCalled();
 
-    // A record from before routes were recorded is a pool one, which is what it was.
+    // A record from before routes were recorded is a pool one, which is what it was: the pool is
+    // discovered and handed over with the route.
     delete storedJob().tier;
     delete storedJob().external;
     delete storedJob().feeRate;
     const legacy = await freshEngine();
     await legacy.tickAllFunding();
-    expect(mocks.tickOnce).toHaveBeenCalledTimes(1);
+    expect(mocks.tickOnce).toHaveBeenCalledTimes(3);
+    expect(mocks.tickOnce.mock.calls[2]![0]).toMatchObject({
+      route: { tier: "pool" },
+      pool: { native: "N", underlying: "U" },
+    });
+    expect(mocks.discoverPool).toHaveBeenCalledTimes(1);
     expect(storedJob().phase).toBe("swap");
 
     // A psm hand-off without the fee the buyer was quoted is refused up front.
@@ -219,6 +230,48 @@ describe("worker funding engine", () => {
     );
     expect(noFee).toMatchObject({ error: "invalid" });
     expect(noFee.reason).toContain("fee rate");
+  });
+
+  it("holds a job the PSM refused three times, keeps its deposit and counter, and re-arms it with a fresh counter", async () => {
+    armSeams();
+    const engine = await freshEngine();
+    await engine.startFunding(
+      JSON.stringify({ ...HANDOFF, tier: "psm", external: "USDT", feeRate: 5_000 }),
+    );
+    // Two refusals so far: the tick throws as any transient, and the counter it bumped persists.
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.psmRefusals = 2;
+      throw new Error("not submitted: Asset Hub rejects the program: Psm.MintingStopped");
+    });
+    await engine.tickAllFunding();
+    expect(storedJob()).toMatchObject({
+      phase: "starting",
+      state: { psmRefusals: 2 },
+      lastError: expect.stringContaining("Psm.MintingStopped"),
+    });
+    // The next wake restores the counter, and the third refusal is terminal: held, not failed
+    // through the pool.
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      expect(state.psmRefusals).toBe(2);
+      state.psmRefusals = 3;
+      throw new FundingHeldError("Psm.MintingStopped");
+    });
+    await engine.tickAllFunding();
+    expect(storedJob()).toMatchObject({
+      phase: "failed",
+      failure: "held",
+      state: { psmRefusals: 3 },
+      lastError: expect.stringContaining("funding held"),
+    });
+    // A held job is not ticked again on its own.
+    await engine.tickAllFunding();
+    expect(mocks.tickOnce).toHaveBeenCalledTimes(2);
+    // A re-sent hand-off re-arms it with a fresh counter, for a ceiling raised since.
+    await engine.startFunding(
+      JSON.stringify({ ...HANDOFF, tier: "psm", external: "USDT", feeRate: 5_000 }),
+    );
+    expect(storedJob()).toMatchObject({ phase: "starting", state: { psmRefusals: 0 } });
+    expect(storedJob().failure).toBeUndefined();
   });
 
   it("refuses a hand-off whose burner is not the one it derives, before and after the record exists", async () => {
