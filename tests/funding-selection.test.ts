@@ -24,7 +24,7 @@ describe("funding selection configuration", () => {
       decimals: 2,
       initial: "",
       minimum: "10",
-      maximum: "2000",
+      maximum: "5000",
       presets: ["10", "50", "100"],
     });
     expect(fundingSelectorConfig.routes).toMatchObject([
@@ -61,8 +61,8 @@ describe("funding amount", () => {
   it("applies inclusive configured bounds", () => {
     expect(fundingAmountStatus("9.99", rules).kind).toBe("below-minimum");
     expect(fundingAmountStatus("10", rules).kind).toBe("valid");
-    expect(fundingAmountStatus("2000", rules).kind).toBe("valid");
-    expect(fundingAmountStatus("2000.01", rules).kind).toBe("above-maximum");
+    expect(fundingAmountStatus("5000", rules).kind).toBe("valid");
+    expect(fundingAmountStatus("5000.01", rules).kind).toBe("above-maximum");
     // Finer than the smallest coin: not an amount the purse could hold.
     expect(fundingAmountStatus("10.001", rules).kind).toBe("invalid");
   });

@@ -49,3 +49,11 @@ export function fmtCashDisplay(base: bigint): string {
   const frac = s.slice(-CASH_DECIMALS).replace(/0+$/, "").padEnd(2, "0");
   return `${whole}.${frac}`;
 }
+
+/** An amount string with thousands separated, the fraction left as typed ("2000" -> "2,000",
+ *  "226.78" -> "226.78"). The keypad edits an ungrouped string; every screen writes a grouped one. */
+export function groupAmountDigits(value: string): string {
+  const [whole = "0", fraction] = value.split(".");
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return fraction === undefined ? grouped : `${grouped}.${fraction}`;
+}

@@ -42,7 +42,8 @@ export const fundingSelectorConfig = {
     decimals: 2,
     initial: "",
     minimum: "10",
-    maximum: "2000",
+    // The Add funds frame answers $1,000,000 with "Maximum 5,000 $CASH".
+    maximum: "5000",
     // The lowest preset sits on the minimum, so the floor is a tappable amount.
     presets: ["10", "50", "100"],
   },
@@ -73,6 +74,16 @@ export const fundingSelectorConfig = {
       depositWindowMs: 86_400_000,
     },
   ],
+} as const satisfies FundingSelectorConfig;
+
+/** The withdrawal flow's variant: the same provider, routes and minimum, but its own ceiling —
+ *  the designs cap a withdrawal at $2,000 where a top-up may go to $5,000. */
+export const withdrawalSelectorConfig = {
+  ...fundingSelectorConfig,
+  amount: {
+    ...fundingSelectorConfig.amount,
+    maximum: "2000",
+  },
 } as const satisfies FundingSelectorConfig;
 
 /** The route's deposit window, or the shared default for a route the config does not list. */
