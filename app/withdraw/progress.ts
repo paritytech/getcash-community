@@ -12,6 +12,7 @@ import {
   type FundingProgressRouteDefinition,
   type FundingProgressSnapshotOptions,
 } from "../funding/progress";
+import { currencyConfig } from "../funding/config";
 import {
   withdrawalRankOf,
   type WithdrawalRailState,
@@ -38,7 +39,7 @@ const route = {
     {
       key: CONVERSION,
       nodeLabel: "Conversion",
-      activeLabel: "Converting your $CASH",
+      activeLabel: `Converting your ${currencyConfig.name}`,
       nominalMs: 3 * MINUTE,
     },
   ],

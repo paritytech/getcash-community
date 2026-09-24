@@ -6,6 +6,7 @@
 // always pickable.
 
 import { wholeCashCeil } from "../funding/source-groups";
+import { cashAmount } from "../utils/cash";
 import type { WithdrawDestination } from "./destinations";
 
 export type WithdrawOffer =
@@ -42,7 +43,10 @@ export function rowState(destination: WithdrawDestination, offer: WithdrawOffer)
     case "too-small":
       // The same line on a network row and on its token rows: the minimum is on the DOT sold,
       // whatever it buys.
-      return { pickable: false, subtitle: `Minimum is ${wholeCashCeil(offer.minimumCash)} $CASH` };
+      return {
+        pickable: false,
+        subtitle: `Minimum is ${cashAmount(wholeCashCeil(offer.minimumCash))}`,
+      };
     case "available":
       return PICKABLE;
   }

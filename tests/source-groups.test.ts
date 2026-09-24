@@ -46,7 +46,7 @@ describe("source groups", () => {
 
   it("says why a token cannot be picked, and nothing when it can", () => {
     expect(tokenSubtitle({ state: "too-small", minimumCashBase: 80_000_000n })).toBe(
-      "Minimum for this token is 80 $CASH",
+      "Minimum for this token is $80 CASH",
     );
     expect(tokenSubtitle({ state: "too-small", minimumCashBase: null })).toBe("Amount too small");
     expect(tokenSubtitle({ state: "rail-off" })).toBe("Not available yet");
@@ -61,7 +61,7 @@ describe("source groups", () => {
     const tooSmall = network("Bitcoin", [
       token("BTC", { state: "too-small", minimumCashBase: 80_000_000n }),
     ]);
-    expect(networkSubtitle(tooSmall)).toBe("Minimum for this network is 80 $CASH");
+    expect(networkSubtitle(tooSmall)).toBe("Minimum for this network is $80 CASH");
     const off = network("Tron", [token("TRX", { state: "rail-off" })]);
     expect(networkSubtitle(off)).toBe("Not available yet");
     const down = network("Solana", [token("SOL", { state: "unavailable", reason: "down" })]);

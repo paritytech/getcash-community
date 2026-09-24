@@ -9,6 +9,7 @@ import {
   type TokenOffer,
   type TokenRow,
 } from "../stores/offers";
+import { cashAmount } from "../utils/cash";
 
 export interface PickerGroup<T> {
   label: string;
@@ -43,7 +44,7 @@ export function tokenSubtitle(offer: TokenOffer): string | undefined {
     case "too-small":
       return offer.minimumCashBase === null
         ? "Amount too small"
-        : `Minimum for this token is ${wholeCashCeil(offer.minimumCashBase)} $CASH`;
+        : `Minimum for this token is ${cashAmount(wholeCashCeil(offer.minimumCashBase))}`;
     case "available":
     case "ungated":
       return undefined;
@@ -57,7 +58,7 @@ export function networkSubtitle(network: NetworkRow): string | undefined {
   const states = new Set(network.tokens.map((t) => t.offer.state));
   if (states.has("rail-off")) return "Not available yet";
   const minimum = smallestMinimumCash(network.tokens);
-  if (minimum !== null) return `Minimum for this network is ${wholeCashCeil(minimum)} $CASH`;
+  if (minimum !== null) return `Minimum for this network is ${cashAmount(wholeCashCeil(minimum))}`;
   if (states.has("too-small")) return "Amount too small";
   return "Not available right now";
 }

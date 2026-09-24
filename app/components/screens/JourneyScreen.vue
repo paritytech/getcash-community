@@ -23,10 +23,12 @@ import type { FundingTopUp } from "../../funding/top-ups";
 import { useRequestsStore } from "../../stores/requests";
 import { useSessionStore } from "../../stores/session";
 import { cashAmount, fmtCash, toCashBase } from "../../utils/cash";
+import { currencyConfig } from "../../funding/config";
 import { fmtFiat, isMoneyAmount } from "../../utils/money";
 import { formatWhenShort, shortRef } from "../../utils/journey";
 import { refundedFailure } from "../../utils/recovery";
 import FundingJourneyTimeline from "../funding/progress/FundingJourneyTimeline.vue";
+import CashAmount from "../ui/CashAmount.vue";
 import DetailRows, { type DetailRow } from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
 
@@ -187,11 +189,11 @@ const revisedAmount = computed<string | null>(() => {
   return fmtCash(claimed);
 });
 
-const amountText = computed(() => {
-  if (finished.value) return `+${cashAmount(creditedAmount.value)}`;
+const amountParts = computed(() => {
+  if (finished.value) return { sign: "+", amount: creditedAmount.value };
   // A rate that moved is news the hero carries too: the figure the buyer is owed, not the one
   // they were quoted.
-  return cashAmount(revisedAmount.value ?? quotedAmount.value);
+  return { sign: "", amount: revisedAmount.value ?? quotedAmount.value };
 });
 
 /** When the top-up reached its end, under the hero: the live milestone (stamped at the route's
@@ -278,7 +280,7 @@ const detailRows = computed<DetailRow[]>(() => {
     rows.push({
       label: "Arrives",
       value: "1–2 business days",
-      note: "Final $CASH depends on the rate on arrival",
+      note: `Final ${currencyConfig.name} depends on the rate on arrival`,
     });
     return rows;
   }
@@ -412,7 +414,7 @@ const message = computed(() => {
         class="mt-2 text-display-m"
         :class="finished ? 'text-fg-success' : heroFailed ? 'text-fg-secondary' : 'text-fg-primary'"
       >
-        {{ amountText }}
+        <CashAmount :sign="amountParts.sign" :amount="amountParts.amount" />
       </p>
       <p v-if="settledWhen" class="text-paragraph-l text-fg-secondary">{{ settledWhen }}</p>
     </div>
