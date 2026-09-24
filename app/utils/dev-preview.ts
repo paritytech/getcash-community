@@ -1560,6 +1560,30 @@ export const SCENES: Scene[] = [
       s.resuming = true;
     },
   },
+
+  // ——— The withdrawal package's pickers, staged by `#/withdraw`. The stage carries everything —
+  // the step on screen and the skeletons — and the screens read static data, so `base` only
+  // clears what a neighbouring scene seeded.
+  {
+    name: "withdraw / network: loaded",
+    stage: { kind: "withdraw-package", step: "network" },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    name: "withdraw / network: skeleton",
+    stage: { kind: "withdraw-package", step: "network", skeleton: true },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    name: "withdraw / token: loaded",
+    stage: { kind: "withdraw-package", step: "token", chain: "Ethereum" },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    name: "withdraw / token: skeleton",
+    stage: { kind: "withdraw-package", step: "token", chain: "Ethereum", skeleton: true },
+    apply: (s, f) => base(s, f),
+  },
 ];
 
 /**

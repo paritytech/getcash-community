@@ -79,7 +79,8 @@ function chainflipDestinations(chain: string, assets: readonly string[]): Withdr
 export const WITHDRAW_NETWORKS: readonly WithdrawNetwork[] = Object.freeze([
   Object.freeze({
     chain: ASSET_HUB_CHAIN,
-    label: "Asset Hub",
+    // The design names the row by the relay; the destination itself stays Asset Hub.
+    label: "Polkadot",
     icon: networkIcon("Polkadot"),
     destinations: Object.freeze([assetHub]),
   }),

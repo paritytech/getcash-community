@@ -3,6 +3,7 @@
 // purse was asked. Opened from the list with `topUp`, it goes straight to the journey of that
 // record. The record and the worker carry on when this screen is left.
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { useStateDirector } from "../../../composables/useStateDirector";
 import { useWithdrawalRequest } from "../../../composables/useWithdrawalRequest";
 import type { FundingPackageEmits } from "../../../funding/handoff";
 import type { FundingSelection } from "../../../funding/selection";
@@ -10,9 +11,11 @@ import type { FundingTopUp } from "../../../funding/top-ups";
 import { useRequestsStore } from "../../../stores/requests";
 import { useWithdrawOffersStore } from "../../../stores/withdraw-offers";
 import { toCashBase } from "../../../utils/cash";
+import { previewStage } from "../../../utils/dev-preview-stage";
 import { isDemoBuild } from "../../../utils/demo";
 import {
   landingAccountHex,
+  withdrawNetwork,
   type WithdrawDestination,
   type WithdrawNetwork,
 } from "../../../withdraw/destinations";
@@ -39,6 +42,7 @@ if (props.selection && props.selection.route !== "crypto") {
 
 const requests = useRequestsStore();
 const withdrawal = useWithdrawalRequest();
+useStateDirector();
 
 type Step = "network" | "token" | "address" | "summary" | "journey" | "cancel";
 const step = ref<Step>(props.topUp ? "journey" : "network");
@@ -253,6 +257,20 @@ watch(
   },
 );
 
+// The preview deck drives the step and the pickers' skeletons through the stage; a production
+// build never has one. Immediate: the deck may have staged this package before it mounted.
+const previewSkeleton = ref(false);
+watch(
+  previewStage,
+  (stage) => {
+    if (stage?.kind !== "withdraw-package") return;
+    network.value = withdrawNetwork(stage.chain ?? "Ethereum") ?? null;
+    step.value = stage.step;
+    previewSkeleton.value = stage.skeleton === true;
+  },
+  { immediate: true },
+);
+
 onMounted(() => {
   const opened = props.topUp;
   if (!opened) return;
@@ -289,10 +307,16 @@ onUnmounted(() => {
     </Toolbar>
 
     <div class="flex min-h-0 flex-1 flex-col px-6 pt-6">
-      <WithdrawNetworkScreen v-if="step === 'network'" :amount="amountBase" @pick="pickNetwork" />
+      <WithdrawNetworkScreen
+        v-if="step === 'network'"
+        :amount="amountBase"
+        :skeleton="previewSkeleton"
+        @pick="pickNetwork"
+      />
       <WithdrawTokenScreen
         v-else-if="step === 'token' && network"
         :network="network"
+        :skeleton="previewSkeleton"
         @pick="pickToken"
       />
       <WithdrawAddressScreen
@@ -343,5 +367,6 @@ onUnmounted(() => {
         <p class="text-body-m text-fg-secondary">Opening your withdrawal…</p>
       </div>
     </div>
+    <PreviewSceneLabel />
   </main>
 </template>

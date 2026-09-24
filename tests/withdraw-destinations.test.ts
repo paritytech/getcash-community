@@ -18,8 +18,8 @@ const ALICE_GENERIC = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY";
 const ALICE_HEX = "0xd43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d";
 
 describe("withdrawal destinations", () => {
-  it("lists Asset Hub first on the direct rail, then the Chainflip networks", () => {
-    expect(WITHDRAW_NETWORKS[0]).toMatchObject({ chain: "AssetHub", label: "Asset Hub" });
+  it("lists Polkadot (Asset Hub) first on the direct rail, then the Chainflip networks", () => {
+    expect(WITHDRAW_NETWORKS[0]).toMatchObject({ chain: "AssetHub", label: "Polkadot" });
     expect(WITHDRAW_NETWORKS[0]!.destinations.map((d) => d.rail)).toEqual(["direct"]);
     const others = WITHDRAW_NETWORKS.slice(1);
     expect(others.map((network) => network.label)).toEqual([

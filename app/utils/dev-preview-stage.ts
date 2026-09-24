@@ -15,7 +15,11 @@ export type PreviewStage =
   | { kind: "package"; route: FundingRoute }
   /** The journey. `topUpId` opens it as a top-up from the list; without one it reads as a
    *  package handoff. */
-  | { kind: "journey"; route: FundingRoute; topUpId?: string };
+  | { kind: "journey"; route: FundingRoute; topUpId?: string }
+  /** The withdrawal package's pickers, on `#/withdraw` — `app/pages/withdraw.vue` stages the
+   *  package and the route reads the rest: the step on screen, the network already picked for the
+   *  token step, and whether the pickers show their skeletons. */
+  | { kind: "withdraw-package"; step: "network" | "token"; chain?: string; skeleton?: boolean };
 
 /**
  * Non-null only while the deck is driving. Always null in a production build — `dev-preview` is
