@@ -35,7 +35,9 @@ import {
   isWithdrawSourceId,
   isWithdrawal,
   paymentTaken,
+  paymentWatchUntil,
   railProviderOf,
+  railSawPayment,
   rankOf,
   requestsNow,
   routeOf,
@@ -1164,6 +1166,11 @@ export const useRequestsStore = defineStore("requests", () => {
   /** The Meld payment is temporarily stuck (provider retrying its crypto delivery). Transient:
    *  the record's rail says so, never terminal on its own. */
   const meldDelayed = computed(() => foregroundRecord.value?.rail.delayed === true);
+  /** The rail has the money for the request on screen. What the buyer is still told to do, and
+   *  what they can still call off, both end here. */
+  const railSeen = computed(() =>
+    foregroundRecord.value ? railSawPayment(foregroundRecord.value) : false,
+  );
   /** The adapter's reason for a failed Meld payment. Null unless `meldStage === 'failed'`. */
   const meldFailureMessage = computed<string | null>(() => {
     const record = foregroundRecord.value;
@@ -1721,23 +1728,26 @@ export const useRequestsStore = defineStore("requests", () => {
     { immediate: true },
   );
 
-  /** The provider's word can still move the record: it awaits or has seen its deposit, or it
-   *  expired or failed without the provider's final word and a late "received" can still re-open
-   *  it, until the deposit window plus the tombstone grace is out. */
+  /**
+   * The provider's word can still move the record: it awaits or has seen its deposit, or it ended
+   * without the provider's final word and a late "received" can still re-open it, until the
+   * payment watch is out.
+   *
+   * A cancelled request is asked about for the same reason the others are. Cancelling withdraws
+   * the pay page; it does not recall a transfer already sent, and the adapter keeps watching the
+   * row precisely so it can still report where that money went. Dropping the question here is how
+   * a settled or refunded transfer went unnoticed.
+   */
   function meldCanMove(record: TopUpRecord): boolean {
-    const { status, rail, deadline } = record;
+    const { status, rail } = record;
     switch (status.kind) {
       case "awaiting-deposit":
       case "deposit-seen":
         return true;
       case "expired":
       case "failed":
-        return (
-          rail.stage !== "failed" &&
-          requestsNow() <=
-            (deadline.depositExpiresAt ?? record.startedAt + depositWindowFor(record.route)) +
-              TOMBSTONE_GRACE_MS
-        );
+      case "cancelled":
+        return rail.stage !== "failed" && requestsNow() <= paymentWatchUntil(record);
       default:
         return false;
     }
@@ -1932,10 +1942,9 @@ export const useRequestsStore = defineStore("requests", () => {
           return;
         }
         if (record.status.kind !== "cancelled") return;
-        const windowEnd =
-          (record.deadline.depositExpiresAt ??
-            (record.cancelledAt ?? 0) + depositWindowFor(record.route)) + TOMBSTONE_GRACE_MS;
-        if (windowEnd >= now) return;
+        // The same watch the rail is asked under: while the adapter could still report where a
+        // transfer went, the row it would report against has to exist.
+        if (paymentWatchUntil(record) >= now) return;
         try {
           await remove(ref);
           console.warn(
@@ -2564,6 +2573,7 @@ export const useRequestsStore = defineStore("requests", () => {
     foregroundProgress,
     meldStage,
     meldDelayed,
+    railSeen,
     meldFailureMessage,
     meldFailureCode,
     meldRefunded,

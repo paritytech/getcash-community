@@ -138,13 +138,89 @@ const QUOTED_CARD = {
   sourceChain: null,
 };
 
-/** How a fiat request is opened, as `initialProgress` composes it: a card confirms in minutes, a
- *  bank transfer takes business days, and the ring and the estimate both read off the difference.
- *  The crypto rail keeps its route's own nominal stages. */
-const MELD_INGRESS: Partial<Record<SourceId, { durationMs: number; estimate: string }>> = {
-  "meld-card": { durationMs: 5 * 60_000, estimate: "≈ minutes after you pay" },
-  "meld-bank": { durationMs: 24 * 60 * 60_000, estimate: "1-2 business days after you pay" },
+/** The canned bank quote for 50 CASH: the figures the bank design frames show. */
+const QUOTED_BANK = {
+  send: "50.55",
+  symbol: "EUR",
+  fee: "0.55",
+  networkFee: "0.05",
+  nativeAmount: null,
+  sourceAsset: null,
+  sourceChain: null,
 };
+
+/**
+ * A live catalog, as the adapter answers `/supported`: the regions the picker lists and what each
+ * corridor charges.
+ *
+ * Priced in GBP against a £12.50 purchase, so one region of each kind is on screen at once: ones
+ * that can be paid from, one whose minimum is above this purchase (Guernsey, £40), and ones the
+ * rail does not route at all. Without a corridor map the picker has no minimums to show and
+ * nothing to grey, which is what a deck run against no adapter would otherwise draw.
+ */
+const PREVIEW_COUNTRIES = [
+  { country: "GB", name: "United Kingdom" },
+  { country: "DE", name: "Germany" },
+  { country: "PT", name: "Portugal" },
+  { country: "FR", name: "France" },
+  { country: "ES", name: "Spain" },
+  { country: "IT", name: "Italy" },
+  { country: "NL", name: "Netherlands" },
+  { country: "IE", name: "Ireland" },
+  { country: "AT", name: "Austria" },
+  { country: "BE", name: "Belgium" },
+  { country: "FI", name: "Finland" },
+  { country: "GR", name: "Greece" },
+  { country: "LU", name: "Luxembourg" },
+  { country: "BR", name: "Brazil" },
+  { country: "GG", name: "Guernsey" },
+  { country: "VA", name: "Vatican City" },
+  { country: "EC", name: "Ecuador" },
+];
+
+/** The SEPA rails, every one of them routed and priced the same: the bank picker lists its rails
+ *  whether or not the catalog priced them, and a rail missing from this fixture would grey as
+ *  unsupported for no reason a reviewer could act on. */
+const SEPA_PREVIEW = ["DE", "PT", "FR", "ES", "IT", "NL", "IE", "AT", "BE", "FI", "GR", "LU"];
+
+function previewMethod(category: "card" | "bank", min: string, currency: string) {
+  const paymentMethodType = category === "card" ? "CREDIT_DEBIT_CARD" : "SEPA";
+  return { paymentMethodType, category, min, max: "5000", currency, providers: ["TRANSAK"] };
+}
+
+/** `[country, fiat, the card minimum, the bank minimum]`; a null minimum is a rail that does not
+ *  reach that region, which the picker greys as unsupported. */
+const PREVIEW_CORRIDORS: readonly [string, string, string | null, string | null][] = [
+  ["GB", "GBP", "4.00", "4.00"],
+  ...SEPA_PREVIEW.map((country): [string, string, string, string] => [
+    country,
+    "EUR",
+    "4.00",
+    "4.00",
+  ]),
+  ["BR", "BRL", "26.00", null],
+  ["GG", "GBP", "40.00", "40.00"],
+  ["VA", "EUR", null, null],
+  ["EC", "USD", null, null],
+];
+
+/** Stages that catalog on the session, the way `loadSupported*` would once the adapter answers. */
+function meldCatalog(session: Session) {
+  session.supportedCountries = [...PREVIEW_COUNTRIES];
+  session.corridorByCountry = new Map(
+    PREVIEW_CORRIDORS.map(([country, fiat, card, bank]) => [
+      country,
+      {
+        country,
+        fiat,
+        methods: [
+          ...(card ? [previewMethod("card", card, fiat)] : []),
+          ...(bank ? [previewMethod("bank", bank, fiat)] : []),
+        ],
+      },
+    ]),
+  );
+}
 
 /** What the record shows for each source the scenes use. A source not named here is displayed as
  *  its swap config names it. */
@@ -152,6 +228,21 @@ const DISPLAY: Partial<Record<SourceId, { chain: string; asset: string }>> = {
   btc: { chain: "Bitcoin", asset: "BTC" },
   "usdt-tron": { chain: "Tron", asset: "USDT" },
   "meld-card": { chain: "Meld", asset: "Card" },
+  "meld-bank": { chain: "Meld", asset: "Bank" },
+};
+
+/** What each rail says it will take, before anything is detected; the store words these the same
+ *  way when it opens a real request. */
+const ESTIMATE: Partial<Record<SourceId, string>> = {
+  "meld-card": "≈ minutes after you pay",
+  "meld-bank": "1-2 business days after you pay",
+};
+
+/** How long the rail's own leg is expected to take, where the store sizes it per method
+ *  (`initialProgress`): a card confirms within minutes, a bank transfer takes business days. */
+const INGRESS_MS: Partial<Record<SourceId, number>> = {
+  "meld-card": 5 * 60_000,
+  "meld-bank": 24 * 60 * 60_000,
 };
 
 /** The scene's synthetic request: its record and the handle the scene feeds observations through. */
@@ -205,14 +296,17 @@ async function previewRequest(
     opts.display ??
     DISPLAY[sourceId] ??
     (config ? { chain: config.chain, asset: config.asset } : { chain: sourceId, asset: sourceId });
-  // As `persistActiveFlow` writes it: the initial snapshot moved by core's first state, on the
-  // profile `initialProgress` would have composed — a bank transfer's ingress runs for days, a
-  // card's for minutes, and the ring and the estimate both read off it.
+  // As `persistActiveFlow` writes it: the initial snapshot moved by core's first state. The bank
+  // transfer's ingress is the store's own day-long one, so its progress crawls as a real one does.
   const provider = progressProviderForSource(sourceId);
-  const ingress = MELD_INGRESS[sourceId];
+  const ingressDurationMs = INGRESS_MS[sourceId];
   const initial = createFundingProgressSnapshot(
-    provider.createProfile(ingress === undefined ? {} : { ingressDurationMs: ingress.durationMs }),
-    { preDetectionEstimateText: ingress?.estimate ?? "≈10 min after your transfer" },
+    provider.createProfile({
+      ...(ingressDurationMs === undefined ? {} : { ingressDurationMs }),
+      // As `initialProgress` words it: a transfer is sent, not paid.
+      ...(sourceId === "meld-bank" ? { waitingLabel: "Waiting for your transfer" } : {}),
+    }),
+    { preDetectionEstimateText: ESTIMATE[sourceId] ?? "≈10 min after your transfer" },
   );
   const opening = fundingProgressSignalForPaymentState(provider, awaitingDeposit(0, sourceId));
   const progress =
@@ -232,6 +326,17 @@ async function previewRequest(
     progress,
     tradeN: ref.tradeN,
     sourceId,
+    route: routeOf(sourceId),
+    // The adapter's handle, which the bank journey shows as the transfer's reference, and the
+    // provider it quoted through, which a concluded one names. Both are defaults: a scene that
+    // brought its own quote or meld identity is spread after them, since a scene naming a
+    // reference is a scene whose ending is about that reference.
+    ...(sourceId === "meld-card" || sourceId === "meld-bank"
+      ? {
+          meldFundingRequestId: `preview-funding-${ref.tradeN}`,
+          sourceProvider: "TRANSAK",
+        }
+      : {}),
     ...(opts.quote
       ? {
           sourceAmount: opts.quote.amount,
@@ -251,7 +356,6 @@ async function previewRequest(
           meldFundingRequestId: opts.meld.fundingRequestId,
         }
       : {}),
-    route: routeOf(sourceId),
     deposit: {
       address: DEPOSIT.address,
       amount: DEPOSIT.amount.toString(),
@@ -420,6 +524,9 @@ function base(session: Session, flow: Flow) {
   useRequestsStore().clearSandbox();
   flow.step = "amount";
   flow.confirmingCancel = false;
+  flow.previewDrillIn = null;
+  session.supportedCountries = null;
+  session.corridorByCountry = null;
   // The shell reads the adapters again unless a top-ups scene says otherwise.
   previewTopUpScene.value = null;
   // Bitcoin, matching the canned quote.
@@ -433,6 +540,35 @@ function cardJourney(session: Session, flow: Flow) {
   session.setAmount("50");
   session.method = "card";
   session.quoted = { ...QUOTED_CARD };
+}
+
+/**
+ * Baseline for the card summary scenes: a £12.50 purchase against the staged catalog.
+ *
+ * Priced in GBP so the picker has a region it can call out of reach — a minimum only binds when
+ * it is written in the currency the quote is priced in.
+ */
+function cardSummary(session: Session, flow: Flow) {
+  base(session, flow);
+  session.setAmount("12");
+  session.method = "card";
+  session.setMeldCountry("GB");
+  session.quoted = {
+    ...QUOTED_CARD,
+    send: "12.50",
+    symbol: "GBP",
+    fee: "0.38",
+    transactionFee: "0.26",
+    partnerFee: "0.12",
+  };
+  meldCatalog(session);
+}
+
+/** Baseline for the bank summary scenes: the bank frames' own quote, against the same catalog. */
+function bankSummary(session: Session, flow: Flow) {
+  bankJourney(session, flow);
+  session.setMeldCountry("PT");
+  meldCatalog(session);
 }
 
 /** What the card scenes' create call captured, as the record keeps it. The id abbreviates to the
@@ -462,6 +598,57 @@ function selection(session: Session, flow: Flow) {
   offers.demoFallback = isDemoBuild();
   flow.srcChainIndex = 1; // Ethereum
   flow.srcAssetIndex = 0;
+}
+
+/** Baseline for the bank-journey scenes: the Meld quote and method the bank frames show. */
+function bankJourney(session: Session, flow: Flow) {
+  base(session, flow);
+  session.setAmount("50");
+  session.method = "bank";
+  session.setMeldCountry("DE");
+  session.quoted = { ...QUOTED_BANK };
+}
+
+/** The bank scenes' request, with the transfer the buyer says they have sent. The rail cannot see
+ *  an inbound transfer until it lands, so this assertion is all the journey opens on.
+ *
+ * The scene installs a world with it: cancelling reads one, so the screen's Cancel is only offered
+ * where a request could really be withdrawn. Without it the deck would show a journey no live run
+ * ever looks like. */
+async function bankTransfer(s: Session, f: Flow, index: number): Promise<PreviewRequest> {
+  bankJourney(s, f);
+  const r = await previewRequest(s, { sourceId: "meld-bank", index });
+  await r.observe({ source: "user", at: r.at(0), event: "meld-submitted" });
+  s.mock = await createMockCoinageSession({
+    recipient: DEPOSIT.address,
+    amount: s.amountBase ?? 50_000_000n,
+    sourceId: "meld-bank",
+    tradeN: r.ref.tradeN,
+  });
+  return r;
+}
+
+/** A bank transfer the rail ended, as `getMeldStatus` reports it: the ending's own code and the
+ *  adapter's message for it. The journey re-words the ones written for a card. */
+async function bankEnding(
+  s: Session,
+  f: Flow,
+  index: number,
+  code: string,
+  message: string,
+): Promise<PreviewRequest> {
+  const r = await bankTransfer(s, f, index);
+  await r.observe({
+    source: "provider",
+    provider: "meld",
+    at: r.at(1),
+    result: {
+      status: "failed",
+      depositFailure: { reason: { code, message }, kind: "deposit-rejected" },
+      raw: code,
+    },
+  } as Observation);
+  return r;
 }
 
 /** The card scenes' request, once the provider has seen the payment. */
@@ -924,6 +1111,23 @@ export const SCENES: Scene[] = [
     },
   },
   {
+    // The design's card summary: the region row above the quote's own terms. Cycle to it from
+    // inside the card package — the deck stages what a route shows, not which route is mounted.
+    name: "card / summary: payment country",
+    apply: (s, f) => {
+      cardSummary(s, f);
+    },
+  },
+  {
+    // The picker over that summary, with one region of each kind: pickable, under its minimum
+    // (Guernsey at £40 against a £12.50 purchase), and not routed at all.
+    name: "card / picker: choose payment country",
+    apply: (s, f) => {
+      cardSummary(s, f);
+      f.previewDrillIn = "currency";
+    },
+  },
+  {
     // The design's card journey at the Payment step: Fees and Total quoted in fiat.
     name: "card / journey: payment",
     apply: async (s, f, i) => {
@@ -1048,6 +1252,145 @@ export const SCENES: Scene[] = [
         sourceId: "meld-card",
         result: { id: "preview", sourceId: "meld-card" },
       } as PaymentState);
+    },
+  },
+  {
+    // The design's bank summary: the same region row, the transfer's own terms under it.
+    name: "bank / summary: payment country",
+    apply: (s, f) => {
+      bankSummary(s, f);
+    },
+  },
+  {
+    // The bank picker: its rails only, but carrying the same minimums the card list does.
+    name: "bank / picker: choose payment country",
+    apply: (s, f) => {
+      bankSummary(s, f);
+      f.previewDrillIn = "currency";
+    },
+  },
+  {
+    // The journey's skeleton: the store is bringing a bank top-up back to the foreground and the
+    // screen holds its own shapes until the record lands.
+    name: "bank / journey: opening",
+    apply: (s, f) => {
+      bankJourney(s, f);
+      s.resuming = true;
+    },
+  },
+  {
+    // The design's bank pending frame: the transfer is the buyer's word until the money lands, so
+    // the stepper waits on "Payment" and the rows restate what to send and what to quote with it.
+    name: "bank / journey: transfer sent",
+    apply: async (s, f, i) => {
+      await bankTransfer(s, f, i);
+    },
+  },
+  {
+    // The design's "Cancel top-up?" frame: the full-screen confirmation over the pending transfer.
+    name: "bank / journey: cancel confirm",
+    apply: async (s, f, i) => {
+      await bankTransfer(s, f, i);
+      f.confirmingCancel = true;
+    },
+  },
+  {
+    // The provider has the money and its delivery is stuck, retrying on their side. Nothing is
+    // left to instruct or to call off, and the stepper goes amber rather than red.
+    name: "bank / journey: delayed",
+    apply: async (s, f, i) => {
+      const r = await bankTransfer(s, f, i);
+      await r.observe(railDelayed(r, 1, "meld"));
+    },
+  },
+  {
+    // The transfer landed: the provider delivered it and the worker has the deposit. The wait is
+    // off the buyer now, so the stepper moves on and the cancel goes with it.
+    name: "bank / journey: transfer arrived",
+    apply: async (s, f, i) => {
+      const r = await bankTransfer(s, f, i);
+      await r.observe({
+        source: "provider",
+        provider: "meld",
+        at: r.at(1),
+        result: { status: "complete" },
+      });
+      await r.observe(worker(r, 2, "swap"));
+    },
+  },
+  {
+    // The design's bank success frame: the credit in green over its one past-tense row.
+    name: "bank / journey: success",
+    apply: async (s, f, i) => {
+      const r = await bankTransfer(s, f, i);
+      await r.observe({
+        source: "provider",
+        provider: "meld",
+        at: r.at(1),
+        result: { status: "complete" },
+      });
+      await core(r, 2, swapping("complete", "meld-bank"));
+      await core(r, 3, {
+        phase: "done",
+        sourceId: "meld-bank",
+        result: { id: "preview", sourceId: "meld-bank" },
+      } as PaymentState);
+    },
+  },
+  {
+    // The design's bank failure frame: nothing was taken, so the rows are the handles for asking
+    // about it and the way on is a fresh top-up.
+    name: "bank / journey: payment failed",
+    apply: async (s, f, i) => {
+      await bankEnding(s, f, i, "failed", "Top-up didn't go through. No money was taken.");
+    },
+  },
+  {
+    // The bank refused the transfer. The adapter words this one for a card; the journey says what
+    // it means for a transfer.
+    name: "bank / journey: declined",
+    apply: async (s, f, i) => {
+      await bankEnding(
+        s,
+        f,
+        i,
+        "declined",
+        "Your bank declined the payment. Check your card details or try another card.",
+      );
+    },
+  },
+  {
+    // The rate moved between the payment and the claim: the hero corrects itself to what will
+    // actually land, and the ribbon names both figures so the difference is the buyer's to check.
+    name: "bank / journey: rate changed",
+    apply: async (s, f, i) => {
+      const r = await bankTransfer(s, f, i);
+      await r.observe({
+        source: "provider",
+        provider: "meld",
+        at: r.at(1),
+        result: { status: "complete" },
+      });
+      // 48.2 CASH claimed against the 50 quoted, in 6-decimal base units.
+      await r.observe({
+        source: "core",
+        at: r.at(2),
+        claim: { stage: "crediting", claimed: "48200000" },
+      });
+    },
+  },
+  {
+    // The money was taken and sent back. Terminal: the provider will not retry it, and a fresh
+    // top-up is the only way on.
+    name: "bank / journey: refunded",
+    apply: async (s, f, i) => {
+      await bankEnding(
+        s,
+        f,
+        i,
+        "refunded",
+        "Your top-up didn't go through. Your 50.55 EUR has been returned to your card.",
+      );
     },
   },
   {

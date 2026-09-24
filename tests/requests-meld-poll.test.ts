@@ -9,6 +9,7 @@ import type { MeldClientLike } from "@getsome/meld";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
   MELD_POLL_MS,
+  PAYMENT_WATCH_MS,
   setRequestsClock,
   TOMBSTONE_GRACE_MS,
   type RequestRecord,
@@ -404,11 +405,12 @@ describe("requests store: the Meld poll", () => {
         deadline: { depositExpiresAt: expiredAt, source: "route" },
       }),
     );
-    // Expired past the window and the grace.
-    const longGone = FIXTURE_NOW - TOMBSTONE_GRACE_MS - MINUTE;
+    // Started long enough ago that the payment watch is out: nothing can arrive for it now.
+    const longGone = FIXTURE_NOW - PAYMENT_WATCH_MS - TOMBSTONE_GRACE_MS - MINUTE;
     await requests.create(
       requestRefOf("meld-card", 11),
       cardRecord(11, "mfr-expired-stale", {
+        startedAt: longGone,
         status: { kind: "expired", at: longGone },
         deadline: { depositExpiresAt: longGone, source: "route" },
       }),
@@ -427,11 +429,15 @@ describe("requests store: the Meld poll", () => {
         },
       }),
     );
+    // Cancelled, and past its watch too: the pay page is long gone and so is the window in which
+    // a transfer could still have arrived against it.
     await requests.create(
       requestRefOf("meld-card", 13),
       cardRecord(13, "mfr-cancelled", {
-        status: { kind: "cancelled", at: expiredAt },
-        cancelledAt: expiredAt,
+        startedAt: longGone,
+        status: { kind: "cancelled", at: longGone },
+        cancelledAt: longGone,
+        deadline: { depositExpiresAt: longGone, source: "route" },
       }),
     );
 
@@ -442,6 +448,32 @@ describe("requests store: the Meld poll", () => {
       kind: "expired",
       at: expiredAt,
     });
+  });
+
+  it("a cancelled request is still asked about, and the money arriving re-opens it", async () => {
+    const requests = useRequestsStore();
+    // The adapter saw a transaction against the row it kept watching.
+    const client = fakeMeldClient("transaction_seen");
+    setMeldStatusClientFactory(() => client);
+    const cancelledAt = FIXTURE_NOW - MINUTE;
+    const ref = requestRefOf("meld-card", 14);
+    await requests.create(
+      ref,
+      cardRecord(14, "mfr-cancelled-live", {
+        status: { kind: "cancelled", at: cancelledAt },
+        cancelledAt,
+      }),
+    );
+
+    await requests.reconcile("refresh");
+
+    // Cancelling withdrew the pay page; it never recalled a transfer already sent.
+    expect(client.reads).toEqual({ "mfr-cancelled-live": 1 });
+    expect(requests.get(ref)).toMatchObject({
+      status: { kind: "deposit-seen", via: "rail" },
+      rail: { stage: "received" },
+    });
+    expect(requests.get(ref)).not.toHaveProperty("cancelledAt");
   });
 
   it("three consecutive not-found answers across passes mark a background request gone; a good answer in between resets", async () => {

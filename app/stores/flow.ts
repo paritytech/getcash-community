@@ -21,6 +21,14 @@ const JOURNEY_PHASES = new Set([
  *  shell and read as "leave for the shell" inside a package. */
 export type Step = "amount" | "method" | "network" | "token";
 
+/**
+ * A drill-in a demo preview scene asked the Meld route to open over its screen.
+ *
+ * The drill-ins are the route's own refs, so a scene has no way into them: this is the one door,
+ * read behind `isDemoBuild()` and null in every build that is not the deck's.
+ */
+export type PreviewDrillIn = "currency" | "fees";
+
 export const useFlowStore = defineStore("flow", () => {
   const session = useSessionStore();
   const requests = useRequestsStore();
@@ -33,6 +41,8 @@ export const useFlowStore = defineStore("flow", () => {
   const starting = ref(false);
   /** The cancel confirmation has taken the deposit screen; back and "Keep it" return. */
   const confirmingCancel = ref(false);
+  /** Demo deck only: the drill-in a scene wants open. See `PreviewDrillIn`. */
+  const previewDrillIn = ref<PreviewDrillIn | null>(null);
 
   const srcChain = computed(() => SOURCE_CHAINS[srcChainIndex.value] ?? SOURCE_CHAINS[0]);
   const srcAsset = computed(
@@ -144,6 +154,7 @@ export const useFlowStore = defineStore("flow", () => {
     srcAsset,
     starting,
     confirmingCancel,
+    previewDrillIn,
     screen,
     selectSource,
     startPurchase,

@@ -2,15 +2,19 @@
 import { computed } from "vue";
 import { Check, LoaderCircle, X } from "lucide-vue-next";
 import type { FundingProgressProjection } from "../../../funding/progress";
-import type { JourneySteps } from "../../../funding/requests/views";
+import {
+  completedMarkers,
+  JOURNEY_STAGES,
+  type JourneyScale,
+} from "../../../funding/requests/views";
 
 const props = withDefaults(
   defineProps<{
     progress: FundingProgressProjection;
-    /** How many markers are done, on the scale `steps` names. */
+    /** How many markers are done, on the scale `scale` names. */
     completedSteps: number;
-    /** The card journey shows five steps; the crypto timeline shows three. */
-    steps?: JourneySteps;
+    /** Which stops the timeline draws: the card's five, the crypto or bank three. */
+    scale?: JourneyScale;
     /** The one line under the stepper: the ribbon only shows when there is something to say. */
     message?: string | null;
     /** Temporarily stuck, not failed: the current step renders amber and keeps spinning. */
@@ -21,7 +25,7 @@ const props = withDefaults(
     labels?: readonly string[] | null;
   }>(),
   {
-    steps: 5,
+    scale: "card",
     message: null,
     delayed: false,
     failedLabel: null,
@@ -29,18 +33,17 @@ const props = withDefaults(
   },
 );
 
-const CARD_STAGES = ["Started", "Payment", "Approved", "Conversion", "Added"] as const;
-const CRYPTO_STAGES = ["Started", "Conversion", "Added"] as const;
-const stages = computed<readonly string[]>(
-  () => props.labels ?? (props.steps === 3 ? CRYPTO_STAGES : CARD_STAGES),
-);
+// A caller with its own stops names them; a top-up takes its route's.
+const stages = computed<readonly string[]>(() => props.labels ?? JOURNEY_STAGES[props.scale]);
 
 const settled = computed(() => props.progress.view.kind === "settled");
 const failed = computed(() => props.progress.view.kind === "failed");
-/** Completed markers, as the record counted them. A failure before any payment was detected
- *  stops on the first marker with nothing complete. */
+/** Completed markers, as the record counted them and the scale reads them. */
 const completed = computed(() =>
-  failed.value && props.progress.detectedAt === undefined ? 0 : Math.max(props.completedSteps, 0),
+  completedMarkers(props.scale, props.completedSteps, {
+    failed: failed.value,
+    detected: props.progress.detectedAt !== undefined,
+  }),
 );
 const activeIndex = computed(() =>
   settled.value ? -1 : Math.min(completed.value, stages.value.length - 1),
@@ -93,7 +96,11 @@ const announcement = computed(() => {
           v-for="(stage, index) in stages"
           :key="stage"
           class="funding-journey-step"
-          :class="`funding-journey-step-${stageState(index)}`"
+          :class="[
+            `funding-journey-step-${stageState(index)}`,
+            index === 0 ? 'funding-journey-step-first' : '',
+            index === stages.length - 1 ? 'funding-journey-step-last' : '',
+          ]"
           :aria-current="
             stageState(index) === 'current' || stageState(index) === 'delayed' ? 'step' : undefined
           "
@@ -217,6 +224,20 @@ const announcement = computed(() => {
   translate: -50%;
   color: var(--fg-tertiary);
   white-space: nowrap;
+}
+
+/* The end markers sit a marker's width from the card's edge, so a label longer than that — an
+ * ending's own name, "Payment declined" — would hang off the card and be clipped by the scroller.
+ * The outer two grow inwards from their marker instead of out from its centre. */
+.funding-journey-step-first .funding-journey-label {
+  left: 0;
+  translate: none;
+}
+
+.funding-journey-step-last .funding-journey-label {
+  right: 0;
+  left: auto;
+  translate: none;
 }
 
 .funding-journey-step-complete .funding-journey-label {

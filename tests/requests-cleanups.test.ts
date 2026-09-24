@@ -174,6 +174,9 @@ describe("requests cleanups", () => {
   });
 
   it("passes the route window to core as staleFlowMs", async () => {
+    // Both halves are the hosted path: off-host a re-open builds a mock world instead, and a
+    // quote never reaches core's hosted one.
+    hosted.value = true;
     // A re-open: the record's own window, here the rail's six hours.
     const record: ActiveFlowRecord = {
       ...awaitingDepositCryptoRecord,
@@ -190,7 +193,6 @@ describe("requests cleanups", () => {
     expect(worlds[0]).toMatchObject({ tradeN: 3, sourceId: SOURCE, staleFlowMs: 6 * HOUR });
 
     // A fresh hosted quote: the route's window, under the number the quote reserved.
-    hosted.value = true;
     session.setAmount("1");
     await session.fetchQuote("Nowhere", "X");
     expect(session.quoteError).toBeNull();

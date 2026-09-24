@@ -58,6 +58,12 @@ const COUNTRY_BANK_RAIL: Record<string, string> = {
   LU: "SEPA",
 };
 
+/** Every country with a bank rail, in table order. The bank route's region list: a country
+ *  outside it cannot be paid by transfer at all, so offering it is a dead end. */
+export function bankRailCountries(): string[] {
+  return Object.keys(COUNTRY_BANK_RAIL);
+}
+
 /** The Meld `paymentMethodType` for a UI method + country. Card is global; bank resolves to the
  *  country's rail, or null when there is none. */
 export function meldPaymentMethod(method: "card" | "bank", country: string): string | null {

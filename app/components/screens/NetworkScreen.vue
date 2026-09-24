@@ -2,6 +2,7 @@
 // Network picker. Lists only networks with a token that can pay for this amount; skeleton rows
 // stand in while the floors are still being learned.
 import { computed } from "vue";
+import { cashAmount } from "../../utils/cash";
 import { networkIcon } from "../../utils/icons";
 import { useFlowStore } from "../../stores/flow";
 import { useOffersStore, type NetworkRow } from "../../stores/offers";
@@ -79,9 +80,9 @@ function pick(network: NetworkRow) {
       </template>
       <template v-else>
         <p class="text-body-m text-fg-secondary">
-          No network can do a top-up of {{ session.amountHuman }} $CASH.
+          No network can do a top-up of {{ cashAmount(session.amountHuman) }}.
           <template v-if="smallestCash">
-            The smallest crypto top-up right now is about {{ smallestCash }} $CASH.
+            The smallest crypto top-up right now is about {{ cashAmount(smallestCash) }}.
           </template>
         </p>
         <SecondaryButton class="self-start" @click="emit('changeAmount')">
