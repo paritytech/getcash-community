@@ -2,11 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import { currentNetwork, networkForHostname } from "./network";
 
-/**
- * The mapping is the load-bearing part: the adapter matches these ids exactly against
- * `auth.personhood.networks[].id`, so a name that drifts here is a 401 that reads as "you are not
- * a person" rather than "this page did not know where it was".
- */
 describe("networkForHostname", () => {
   it("maps each deployed TLD to its networks.json id", () => {
     expect(networkForHostname("getcash.testnet")).toBe("previewnet");
@@ -18,8 +13,7 @@ describe("networkForHostname", () => {
     expect(networkForHostname("app.getcash.paseo")).toBe("paseo-next-v2");
   });
 
-  // The deploy matrix calls previewnet `preview`, and `networks.json` calls it `previewnet`. The
-  // adapter only knows the latter, so the former must never be what reaches it.
+  // The deploy matrix calls previewnet `preview`; the adapter only knows `previewnet`.
   it("does not answer for the deploy workflow's own env names", () => {
     expect(networkForHostname("getcash.preview")).toBeUndefined();
   });
@@ -40,8 +34,6 @@ describe("currentNetwork", () => {
     expect(currentNetwork("getcash.paseo", "polkadot-test")).toBe("polkadot-test");
   });
 
-  // An unset env var arrives as "" or whitespace far more often than as undefined, and treating
-  // either as a real answer would pin every deployment to a network named by the empty string.
   it("ignores an override that is absent, empty or whitespace", () => {
     expect(currentNetwork("getcash.paseo", undefined)).toBe("paseo-next-v2");
     expect(currentNetwork("getcash.paseo", "")).toBe("paseo-next-v2");
