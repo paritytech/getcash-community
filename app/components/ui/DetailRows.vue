@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // Label/value rows for a quote or receipt. A row flagged `fees` renders its value as a button into
 // the fee-breakdown drill-in; a row carrying `copy` renders it as a button that puts that text on
-// the clipboard, which lets `value` be an abbreviation of something too long to show in full.
+// the clipboard, which lets `value` be an abbreviation of something too long to show in full; a
+// row carrying `note` hangs a quiet second line under the value.
 import { ref, type HTMLAttributes } from "vue";
 import { Check, ChevronRight, Copy } from "lucide-vue-next";
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard";
@@ -14,6 +15,8 @@ export interface DetailRow {
   fees?: boolean;
   /** The full text to copy, when the row is copyable. `value` may be a shortened form of it. */
   copy?: string;
+  /** A secondary line under the value (the rate caveat under an arrival estimate). */
+  note?: string;
 }
 
 const props = defineProps<{
@@ -64,8 +67,12 @@ async function copyRow(row: DetailRow) {
             class="size-5 text-fg-success"
             aria-hidden="true"
           />
-          <Copy v-else class="size-5 text-fg-secondary" aria-hidden="true" />
+          <Copy v-else class="size-5 shrink-0 text-fg-secondary" aria-hidden="true" />
         </button>
+      </dd>
+      <dd v-else-if="row.note" class="flex flex-col items-end text-right">
+        <span class="text-heading-m text-fg-primary">{{ row.value }}</span>
+        <span class="text-body-s text-fg-secondary">{{ row.note }}</span>
       </dd>
       <dd v-else class="text-heading-m text-fg-primary">{{ row.value }}</dd>
     </div>

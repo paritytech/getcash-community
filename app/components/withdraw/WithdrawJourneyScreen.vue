@@ -101,7 +101,6 @@ const canRetry = computed(() => status.value.kind === "failed" && status.value.r
     <div class="mt-6 flex flex-1 flex-col gap-6">
       <FundingJourneyTimeline
         :progress="progress"
-        :steps="3"
         :labels="WITHDRAWAL_JOURNEY_LABELS"
         :completed-steps="done"
         :message="message"

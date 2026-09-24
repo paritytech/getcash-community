@@ -15,6 +15,7 @@ import {
   FUNDING_HELD_REASON,
   PROVISIONAL_REVERT_MS,
   buyerPaid,
+  paymentWatchUntil,
   effectiveSourceId,
   isConvertingStep,
   isTerminal,
@@ -502,12 +503,17 @@ function applyClock(record: TopUpRecord, at: number): TopUpRecord {
     (status.kind === "deposit-seen" &&
       status.assurance === "provisional" &&
       status.via === "chain");
-  if (
-    expirable &&
-    !buyerPaid(next) &&
-    deadline.depositExpiresAt !== null &&
-    at > deadline.depositExpiresAt
-  ) {
+  /**
+   * The bank transfer's clock is the payment watch, not its pay page.
+   *
+   * A page that closed says the buyer can no longer *start* paying; it says nothing about a
+   * transfer already sent, which takes days to land. The rail concludes `expired` itself inside
+   * that watch — "it was asked, it answered, no payment existed" — so on this route the local
+   * clock is only the backstop for when even the rail can no longer say, and it never contradicts
+   * money still in the post. Every other route keeps its rail's own deadline.
+   */
+  const expiresAt = next.route === "bank" ? paymentWatchUntil(next) : deadline.depositExpiresAt;
+  if (expirable && !buyerPaid(next) && expiresAt !== null && at > expiresAt) {
     return expired(next, at);
   }
   return next;

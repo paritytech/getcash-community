@@ -354,9 +354,14 @@ onMounted(async () => {
     @back="returnFromTopUp"
     @handoff="handOffToJourney"
   />
+  <!-- Keyed by the route, not just by the component: card and bank are served by one package, so
+       switching between them leaves `:is` unchanged and Vue would patch the mounted screen rather
+       than remount it — leaving a route that reads its own selection once, at setup, showing the
+       method the buyer just left. -->
   <component
     :is="activePackage"
     v-else-if="activePackage && selection"
+    :key="selection.route"
     :selection="selection"
     @back="returnToSelector()"
     @handoff="handOffToJourney"

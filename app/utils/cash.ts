@@ -20,6 +20,15 @@ export function fmtCash(base: bigint): string {
   return `${s.slice(0, -CASH_DECIMALS)}.${s.slice(-CASH_DECIMALS)}`.replace(/\.?0+$/, "") || "0";
 }
 
+/**
+ * A CASH amount as the designs write it, wherever it is written: the symbol on the number, the
+ * token beside it ("$50 CASH", "+$50 CASH"). A sum inside a sentence takes this form too.
+ *
+ * The bare token in prose keeps its own form — "Converting to $CASH", "Final $CASH depends on the
+ * rate on arrival" — because there it is a name, not a sum.
+ */
+export const cashAmount = (human: string): string => `$${human} CASH`;
+
 /** Turns CASH base units into the amount string the keypad edits, rounded down to `decimals`
  *  places, with a whole number left bare ("226.78", "5", "5.5"). */
 export function cashToAmountInput(base: bigint, decimals: number): string {

@@ -9,6 +9,7 @@ import { migrateRecord } from "../app/funding/requests/migrate";
 import {
   HIDDEN_RESET_MS,
   setRequestsClock,
+  PAYMENT_WATCH_MS,
   TOMBSTONE_GRACE_MS,
   WORKER_STALE_MS,
   type RequestRecord,
@@ -179,8 +180,15 @@ function handoffOf(job: WorkerJobRecord): WorkerHandoffPayload {
 }
 
 /** A cancelled crypto request under another trade number, its window closing at `expiresAt`. */
-const tombstone = (tradeN: number, expiresAt: number): RequestRecord =>
-  migrated({ ...cancelledCryptoRecord, tradeN, depositExpiresAt: expiresAt });
+/** A cancelled record whose pay window closed at `expiresAt`. `startedAt` is what the payment
+ *  watch is measured from, so a record meant to be past that watch has to have started before it. */
+const tombstone = (tradeN: number, expiresAt: number, startedAt?: number): RequestRecord =>
+  migrated({
+    ...cancelledCryptoRecord,
+    tradeN,
+    depositExpiresAt: expiresAt,
+    ...(startedAt === undefined ? {} : { startedAt }),
+  });
 
 const AWAITING_REF = refOf(awaitingDepositCryptoRecord);
 const AWAITING_JOB = fixtureWorkerJobs["dot-assethub:3"]!;
@@ -291,13 +299,14 @@ describe("requests store: the chain step", () => {
     setRequestsClock(Date.now);
   });
 
-  it("tombstone with funds is resurrected; empty past grace is removed; read failure keeps it", async () => {
+  it("tombstone with funds is resurrected; empty past the watch is removed; read failure keeps it", async () => {
     const requests = useRequestsStore();
     const FUNDED_REF = requestRefOf("dot-assethub", 1);
     const EMPTY_REF = requestRefOf("dot-assethub", 2);
     const UNREAD_REF = requestRefOf("dot-assethub", 3);
     await requests.create(FUNDED_REF, tombstone(1, FIXTURE_NOW + 22 * 60 * MINUTE));
-    await requests.create(EMPTY_REF, tombstone(2, FIXTURE_NOW - TOMBSTONE_GRACE_MS - MINUTE));
+    const pastWatch = FIXTURE_NOW - PAYMENT_WATCH_MS - TOMBSTONE_GRACE_MS - MINUTE;
+    await requests.create(EMPTY_REF, tombstone(2, pastWatch, pastWatch));
     await requests.create(UNREAD_REF, tombstone(3, FIXTURE_NOW + 22 * 60 * MINUTE));
     chain.burners.set("dot-assethub:1", { address: "burner-1", free: 5_000_000_000n });
     chain.burners.set("dot-assethub:3", new Error("asset hub unreachable"));
@@ -311,7 +320,7 @@ describe("requests store: the chain step", () => {
       witnesses: { chain: { best: { burnerNative: "5000000000", at: FIXTURE_NOW } } },
     });
     expect(requests.get(FUNDED_REF)).not.toHaveProperty("cancelledAt");
-    // Confirmed empty past the window and the grace: gone from memory, the host and the index.
+    // Confirmed empty past the payment watch: gone from memory, the host and the index.
     expect(requests.entries).not.toHaveProperty(requestRefKey(EMPTY_REF));
     expect(await host.read(requestKey(EMPTY_REF))).toBeNull();
     expect(await storedIndex()).toEqual([UNREAD_REF, FUNDED_REF]);

@@ -1,74 +1,37 @@
 <script setup lang="ts">
 // The Meld package's first screen: region, the quote it produced, and Continue into the provider
 // widget. The method is fixed by the route; the region is the buyer's only choice.
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { ChevronRight } from "lucide-vue-next";
 import { useSessionStore } from "../../../stores/session";
-import { corridorOptions } from "~~/lib/supported";
+import { namedCountry } from "~~/lib/supported";
+import { cashAmount } from "../../../utils/cash";
+import { localeCountry } from "../../../utils/locale";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import type { FundingRoute } from "../../../funding/selection";
-import CountryCombobox from "../../ui/CountryCombobox.vue";
 import DetailRows from "../../ui/DetailRows.vue";
 import PillButton from "../../ui/PillButton.vue";
+import RegionRow from "../../ui/RegionRow.vue";
 import SecondaryButton from "../../ui/SecondaryButton.vue";
 import SkeletonBlock from "../../ui/SkeletonBlock.vue";
 
 const session = useSessionStore();
 // switchRoute asks the shell to swap to the crypto package when this region routes neither card
-// nor bank; fees opens the fee-breakdown drill-in.
-const emit = defineEmits<{ switchRoute: [route: FundingRoute]; fees: [] }>();
+// nor bank; fees opens the fee-breakdown drill-in, currency the region picker.
+const emit = defineEmits<{ switchRoute: [route: FundingRoute]; fees: []; currency: [] }>();
 
 // The adapter's buyer-facing refusal message, shown under the quote and blocking Continue.
 const startError = ref<string | null>(null);
 
-// Fallback region list, used when the adapter's live catalog is unreachable. Remove once
-// geolocation lands.
-const FALLBACK_COUNTRIES = [
-  { country: "US", name: "United States" },
-  { country: "CA", name: "Canada" },
-  { country: "GB", name: "United Kingdom" },
-  { country: "DE", name: "Germany" },
-  { country: "AU", name: "Australia" },
-  { country: "BR", name: "Brazil" },
-] as const;
-
 /** The region shown before the buyer picks one; matches the quoter's own default region. */
 const DEFAULT_COUNTRY = "US";
 
-/**
- * The device's own region, e.g. "BR" for a pt-BR phone.
- *
- * Testers landed on the screen already quoting US and did not read the picker as something they had
- * to change, so a Brazilian card was priced against a US corridor and declined. The device locale is
- * the closest thing to the buyer's real region available without the geolocation scope: still a
- * guess, but a guess drawn from the buyer rather than from us. Returns null on anything that is not
- * a plain alpha-2 region, so the caller keeps DEFAULT_COUNTRY.
- */
-function localeCountry(): string | null {
-  if (typeof navigator === "undefined") return null;
-  const tag = navigator.language;
-  if (!tag) return null;
-  try {
-    // `maximize()` supplies the region a bare language tag omits ("pt" -> "pt-Latn-BR").
-    const region = new Intl.Locale(tag).maximize().region;
-    return region !== undefined && /^[A-Z]{2}$/.test(region) ? region : null;
-  } catch {
-    return null;
-  }
-}
-
-// Picker rows: live catalog or static fallback, enriched per active method (session.method re-greys card<->bank).
-const countryOptions = computed(() => {
-  const live = session.supportedCountries;
-  const base =
-    live && live.length > 0
-      ? live
-      : FALLBACK_COUNTRIES.map((c) => ({ country: c.country, name: c.name }));
-  const ui: "card" | "bank" = session.method === "bank" ? "bank" : "card";
-  return corridorOptions(base, session.corridorByCountry, ui);
-});
 // The shown country matches the quoted region.
 const selectedCountry = computed(() => session.meldCountry ?? DEFAULT_COUNTRY);
+/** The region's own name, as the live catalog writes it; Intl names the ones it did not. */
+const countryLabel = computed(() =>
+  namedCountry(selectedCountry.value, session.supportedCountries),
+);
 
 // Adopts the default region and quotes when none is chosen, then loads the full catalog. A catalog
 // failure leaves the fallback list in place.
@@ -77,19 +40,21 @@ onMounted(() => {
     session.setMeldCountry(localeCountry() ?? DEFAULT_COUNTRY);
     requote();
   }
-  void session.loadSupportedCountries();
-  void session.loadSupportedCorridors();
 });
 // Re-quoting clears a previous refusal.
 function requote() {
   startError.value = null;
   void session.fetchMeldQuote();
 }
-// Fired only on a committed country, never on the picker's filter text.
-function pickCountry(country: string) {
-  session.setMeldCountry(country);
-  requote();
-}
+// So does changing region: the refusal the last one earned is not this one's, and it would
+// otherwise keep Continue disabled for a payment that was never refused. The picker lives in the
+// route, so the region is watched rather than handed over.
+watch(
+  () => session.meldCountry,
+  () => {
+    startError.value = null;
+  },
+);
 
 // When the chosen method is not routed for this region, offers the other method if the corridor has
 // it, otherwise the crypto route.
@@ -99,8 +64,9 @@ const otherMethodAvailable = computed(() =>
 );
 const methodLabel = (m: "card" | "bank") => (m === "bank" ? "Bank transfer" : "Card");
 function useOtherMethod() {
-  session.setMethod(otherMethod.value);
-  requote();
+  // Through the shell, not `setMethod`: each method has its own package screen, and swapping the
+  // method under this one would leave a bank transfer being made on the card screen.
+  emit("switchRoute", otherMethod.value);
 }
 function useCryptoRoute() {
   emit("switchRoute", "crypto");
@@ -140,7 +106,7 @@ const quoteRows = computed(() => {
   // What the money buys leads; when it lands follows. Provider and region are settings rather
   // than terms, and the picker above already names the region.
   return [
-    { label: "You’ll receive", value: `${session.amountHuman} $CASH` },
+    { label: "You’ll receive", value: cashAmount(session.amountHuman) },
     { label: "Arrives", value: arrivesText.value },
   ];
 });
@@ -197,15 +163,27 @@ async function next() {
       </template>
     </div>
 
-    <!-- Temporary region picker, removed once geolocation lands. -->
-    <CountryCombobox
-      class="mt-6"
-      label="CARD OR BANK COUNTRY"
-      hint="Where your card or bank account is registered. This sets which providers and payment methods you can use."
-      :options="countryOptions"
-      :model-value="selectedCountry"
-      @commit="pickCountry"
-    />
+    <!-- The region the card is registered in leads the terms, and is live even while the quote
+         below it is blocked: changing it is the way out of a region that routes nothing. -->
+    <div class="mt-6 flex flex-col gap-4">
+      <RegionRow
+        label="Payment country"
+        :value="countryLabel"
+        :country="selectedCountry"
+        @open="emit('currency')"
+      />
+
+      <!-- The quote's own rows, bare on the surface. -->
+      <template v-if="!session.meldMethodUnavailable && !session.quoteError">
+        <div v-if="session.loading || !session.quoted" class="flex flex-col gap-4">
+          <div v-for="n in 2" :key="n" class="flex h-6 items-center justify-between">
+            <SkeletonBlock class="h-4 w-2/5" />
+            <SkeletonBlock class="h-4 w-1/5" />
+          </div>
+        </div>
+        <DetailRows v-else :rows="quoteRows" />
+      </template>
+    </div>
 
     <!-- Why there is no quote. These states have no design; they keep the card treatment. -->
     <div
@@ -238,15 +216,6 @@ async function next() {
         <SecondaryButton class="self-start" @click="requote">Retry quote</SecondaryButton>
       </div>
     </div>
-
-    <!-- The quote's detail rows, bare on the surface. -->
-    <div v-else-if="session.loading || !session.quoted" class="mt-6 flex flex-col gap-4">
-      <div v-for="n in 2" :key="n" class="flex h-6 items-center justify-between">
-        <SkeletonBlock class="h-4 w-2/5" />
-        <SkeletonBlock class="h-4 w-1/5" />
-      </div>
-    </div>
-    <DetailRows v-else class="mt-6" :rows="quoteRows" />
 
     <p v-if="startError" class="mt-4 text-body-m text-fg-error">{{ startError }}</p>
 

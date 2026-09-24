@@ -1,18 +1,26 @@
 <script setup lang="ts">
-// Meld route for card and bank: pick the region, see the quote, then pay inside the provider's
-// widget. Hands off to the journey once the payment is approved or fails.
+// Meld route for card and bank. Card picks the region, sees the quote, then pays inside the
+// provider's widget. Bank prices the transfer first and opens its request on Continue, then shows
+// the provider's details for the buyer to pay from their own banking app. Both hand off to the
+// journey once the payment is approved, asserted, or fails.
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { bankRailCountries } from "~~/lib/region";
+import { corridorOptions, countryName, type CountryOption } from "~~/lib/supported";
 import { useMeldHandoff } from "../../../composables/useMeldHandoff";
 import { useStateDirector } from "../../../composables/useStateDirector";
 import { useVisibilityReconcile } from "../../../composables/useVisibilityReconcile";
 import { fundingSelectorConfig } from "../../../funding/config";
 import { isDemoBuild } from "../../../utils/demo";
+import { localeCountry } from "../../../utils/locale";
+import { isMoneyAmount } from "../../../utils/money";
 import type { FundingPackageEmits } from "../../../funding/handoff";
 import type { FundingSelection } from "../../../funding/selection";
 import { useFlowStore } from "../../../stores/flow";
 import { useRequestsStore } from "../../../stores/requests";
 import { useSessionStore } from "../../../stores/session";
 import { useJourneyQuote } from "../../../composables/useJourneyQuote";
+import CurrencySelectScreen from "./CurrencySelectScreen.vue";
+import MeldBankTransferScreen from "./MeldBankTransferScreen.vue";
 import MeldFeeDetailsScreen from "./MeldFeeDetailsScreen.vue";
 import MeldPayScreen from "./MeldPayScreen.vue";
 import MeldPaySheet from "./MeldPaySheet.vue";
@@ -27,6 +35,7 @@ const route = props.selection.route;
 if (route !== "card" && route !== "bank") {
   throw new Error(`Meld cannot handle the ${route} route`);
 }
+const isBank = route === "bank";
 
 const session = useSessionStore();
 const requests = useRequestsStore();
@@ -43,26 +52,54 @@ const title = computed(() => {
 });
 /** The fee-breakdown drill-in over the pay screen. Back (toolbar or bottom button) returns to it. */
 const showingFees = ref(false);
+/** The region drill-in: which country the payment is made from, and so which currency it charges. */
+const showingCurrency = ref(false);
+/** The bank route's two steps: the priced summary, then the provider's transfer details. */
+const bankStep = ref<"summary" | "details">("summary");
 // A cleared quote (re-quote, region change) leaves nothing to break down.
 watch(
   () => session.quoted,
   (q) => {
-    if (!q) showingFees.value = false;
+    if (q) return;
+    showingFees.value = false;
+    // Re-quoting (a region change) prices a different transfer: the details behind it are gone,
+    // so the step goes back to where that decision is made.
+    bankStep.value = "summary";
   },
 );
+// Demo deck: a scene can ask for a drill-in, which the route owns and a scene cannot otherwise
+// reach. Inert everywhere else.
+if (isDemoBuild()) {
+  watch(
+    () => flow.previewDrillIn,
+    (want) => {
+      showingCurrency.value = want === "currency";
+      showingFees.value = want === "fees";
+    },
+    { immediate: true },
+  );
+}
+
 function goBack() {
-  if (showingFees.value) showingFees.value = false;
+  if (showingCurrency.value) showingCurrency.value = false;
+  else if (showingFees.value) showingFees.value = false;
+  // Back off the details is back to the summary; the request it opened stays, and Continue
+  // returns to it rather than opening a second one.
+  else if (bankStep.value === "details") bankStep.value = "summary";
   else emit("back");
 }
-/** The widget stage: a request exists and the payment is still to be made. */
-const paying = computed(() => flow.screen === "journey");
+/** The widget stage, card only: a request exists and the payment is still to be made. */
+const paying = computed(() => !isBank && flow.screen === "journey");
 // The widget supersedes the drill-in (its template branch wins). Without this, a flow that moves
 // on while the fee screen is up leaves the flag set, and the next Back tap is silently spent
 // clearing it instead of leaving.
 watch(paying, (now) => {
-  if (now) showingFees.value = false;
+  if (!now) return;
+  showingFees.value = false;
+  showingCurrency.value = false;
 });
-/** Cancel is offered only while nothing can have been paid. */
+/** Cancel is offered only while nothing can have been paid. Card only: the bank screen has no
+ *  cancel, so a transfer the buyer walks away from is left to the provider to expire. */
 const canCancel = computed(
   () => paying.value && !requests.meldSubmitted && !requests.fundsSeen && !requests.claiming,
 );
@@ -70,6 +107,89 @@ const canCancel = computed(
 /** Performs the cancel. One that went through leaves for the selector; a declined one stays put. */
 async function cancelTopUp() {
   if (await session.cancelTopUp()) emit("back");
+}
+
+/** The region the quote is priced in; matches what the picker shows as committed. */
+const selectedCountry = computed(() => session.meldCountry ?? "DE");
+
+/**
+ * The regions a bank transfer can actually be made from: Meld has no generic bank code, so a
+ * country without a rail is a dead end rather than a slower corridor. Named by the live catalog
+ * where it has them, alphabetically, as the design lists them.
+ */
+const bankRails = computed(() => {
+  const named = new Map((session.supportedCountries ?? []).map((c) => [c.country, c.name]));
+  return bankRailCountries()
+    .map((country) => ({ country, name: named.get(country) ?? countryName(country) }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+});
+
+/** Fallback region list, used when the adapter's live catalog is unreachable. Remove once
+ *  geolocation lands. */
+const FALLBACK_COUNTRIES = [
+  { country: "US", name: "United States" },
+  { country: "CA", name: "Canada" },
+  { country: "GB", name: "United Kingdom" },
+  { country: "DE", name: "Germany" },
+  { country: "AU", name: "Australia" },
+  { country: "BR", name: "Brazil" },
+];
+
+/**
+ * What this purchase costs, for the regions priced in the same currency.
+ *
+ * A corridor's minimum is written in its own fiat, and nothing here holds a rate to cross from one
+ * to another: only a region charging what the quote charges can be told to be out of reach. The
+ * rest stay pickable, and a region that then refuses the quote says so on the screen below.
+ */
+const quotedFloor = computed(() => {
+  const q = session.quoted;
+  return q && isMoneyAmount(q.send) ? { fiat: q.symbol, amount: q.send } : null;
+});
+
+/**
+ * The rows the drill-in lists: each rail's own idea of where it can be paid from, both carrying
+ * what that region charges and greyed where it cannot take this purchase.
+ *
+ * The base lists differ — bank has its rails, card has the whole catalog — but what a row says
+ * about itself does not, so both go through `corridorOptions`.
+ */
+const pickerCountries = computed<CountryOption[]>(() => {
+  const live = session.supportedCountries;
+  const base = isBank ? bankRails.value : live && live.length > 0 ? live : FALLBACK_COUNTRIES;
+  return corridorOptions(
+    base,
+    session.corridorByCountry,
+    isBank ? "bank" : "card",
+    quotedFloor.value,
+  );
+});
+
+/** The device's own region, when this route can be paid from it. The card picker judges that for
+ *  itself — it pins the region only while it is pickable — so only bank filters here. */
+const detectedCountry = computed(() => {
+  const detected = localeCountry();
+  if (detected === null) return null;
+  if (!isBank) return detected;
+  return bankRailCountries().includes(detected) ? detected : null;
+});
+
+/**
+ * Commits a new region. A request already open for the old one is withdrawn first: its pay page
+ * charges in the old currency, and leaving it served would let it be paid against a top-up the
+ * buyer has moved on from. A refused cancel (a payment already on its way) keeps the old region,
+ * and the store's notice says why.
+ */
+async function pickCurrency(country: string) {
+  if (country === session.meldCountry) {
+    showingCurrency.value = false;
+    return;
+  }
+  if (requests.phase !== null && !(await session.cancelTopUp())) return;
+  session.setMeldCountry(country);
+  showingCurrency.value = false;
+  // The bank screen opens the new request as soon as this quote lands.
+  void session.fetchMeldQuote();
 }
 
 /**
@@ -85,8 +205,13 @@ onMounted(() => {
   flow.startOver();
   session.setMethod(route);
   session.setAmount(props.selection.amount);
-  // The bank route starts from a region that can quote it, until geolocation lands.
-  if (route === "bank" && session.meldCountry === null) session.setMeldCountry("DE");
+  // The bank route starts from a region that can quote it: the buyer's own where a transfer can be
+  // made from it, else a SEPA one, until geolocation lands.
+  if (isBank && session.meldCountry === null) session.setMeldCountry(detectedCountry.value ?? "DE");
+  // The catalog belongs to the route, not to one of its screens: the picker is the route's, and
+  // both rails read the same corridors for what a region charges and whether it routes at all.
+  void session.loadSupportedCountries();
+  void session.loadSupportedCorridors();
   void import("~~/lib/host-chain").then((hostChain) => hostChain.prewarmChains());
   void session.fetchMeldQuote();
 });
@@ -107,15 +232,17 @@ onUnmounted(() => {
       padding-bottom: env(safe-area-inset-bottom);
     "
   >
-    <!-- No title while the widget is up; the back control stays. -->
+    <!-- No title while the card widget is up; the back control stays. -->
     <Toolbar
-      :title="paying ? '' : showingFees ? 'Fees' : title"
-      :back="!requests.claiming && !session.resuming"
+      :title="
+        paying ? '' : showingCurrency ? 'Choose payment country' : showingFees ? 'Fees' : title
+      "
+      :back="!requests.claiming && !session.resuming && !session.cancelling"
       @back="goBack"
     >
       <template
         v-if="
-          paying &&
+          (paying || isBank) &&
           isDemoBuild() &&
           !requests.claiming &&
           (session.canSkipDeposit || session.faucetState !== 'idle')
@@ -138,7 +265,7 @@ onUnmounted(() => {
       </template>
     </Toolbar>
 
-    <!-- The screen padding is dropped while the widget is up. -->
+    <!-- The screen padding is dropped while the card widget is up. -->
     <div class="flex min-h-0 flex-1 flex-col" :class="paying ? '' : 'px-6 pt-6'">
       <div v-if="session.resuming" class="flex flex-col items-center gap-4 pt-16">
         <span
@@ -146,6 +273,35 @@ onUnmounted(() => {
         />
         <p class="text-body-m text-fg-secondary">Opening your top-up…</p>
       </div>
+      <!-- Bank: both steps in one component, with the drill-ins laid over them. It stays mounted
+           behind them — re-creating it would reload the provider's details page. -->
+      <template v-else-if="isBank">
+        <MeldFeeDetailsScreen
+          v-if="showingFees"
+          :quote="quote"
+          :cash-amount="cashAmount"
+          @back="showingFees = false"
+        />
+        <CurrencySelectScreen
+          v-else-if="showingCurrency"
+          :options="pickerCountries"
+          :model-value="selectedCountry"
+          :detected="detectedCountry"
+          :busy="session.cancelling"
+          :notice="session.cancelNotice"
+          @pick="pickCurrency"
+        />
+        <MeldBankTransferScreen
+          v-show="!showingFees && !showingCurrency"
+          :country="selectedCountry"
+          :step="bankStep"
+          @fees="showingFees = true"
+          @currency="showingCurrency = true"
+          @continue="bankStep = 'details'"
+          @leave="emit('back')"
+          @switch-route="emit('switchRoute', $event)"
+        />
+      </template>
       <template v-else-if="paying">
         <MeldPaySheet :pay-url="session.meldPayUrl" />
         <button
@@ -171,9 +327,20 @@ onUnmounted(() => {
         :cash-amount="cashAmount"
         @back="showingFees = false"
       />
+      <CurrencySelectScreen
+        v-else-if="showingCurrency"
+        :options="pickerCountries"
+        :model-value="selectedCountry"
+        :detected="detectedCountry"
+        :busy="session.cancelling"
+        :notice="session.cancelNotice"
+        placeholder="Search for a country"
+        @pick="pickCurrency"
+      />
       <MeldPayScreen
         v-else
         @fees="showingFees = true"
+        @currency="showingCurrency = true"
         @switch-route="emit('switchRoute', $event)"
       />
     </div>

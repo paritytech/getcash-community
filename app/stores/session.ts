@@ -48,7 +48,7 @@ import {
   type SupportedCountry,
 } from "~~/lib/supported";
 import { requestRefOf, type RequestRef } from "../utils/request-index";
-import { journeyScaleOf, type JourneySteps } from "../funding/requests/views";
+import { journeyScaleOf, type JourneyScale } from "../funding/requests/views";
 import { estimateSourceAmount, estimateSourceFromCash } from "~~/lib/demo-rates";
 import { priceSourceLeg, type SourcePriceResult } from "~~/lib/source-price";
 import {
@@ -83,9 +83,9 @@ export interface ActiveFlowRecord {
   sourceSymbol?: string;
   /** The provider's quoted fee (Meld), in `sourceSymbol` units. */
   sourceFee?: string;
-  /** The components of `sourceFee`, as the rail reported them. Persisted so a resumed request's
-   *  breakdown reads the same as the one quoted at the start. */
-  /** The provider that priced the request, for the journey's reference rows. */
+  /** The provider that priced the request ("TRANSAK"), not the aggregator in front of it, and the
+   *  components of `sourceFee` as the rail reported them. Persisted so a resumed request's
+   *  breakdown and its reference rows read the same as the ones quoted at the start. */
   sourceProvider?: string;
   sourceTransactionFee?: string;
   sourceNetworkFee?: string;
@@ -340,6 +340,9 @@ export const useSessionStore = defineStore("session", () => {
   /** The provider widget URL recovered when resuming a Meld request; null unless a resume found a
    *  live one. */
   const meldResumeWidgetUrl = ref<string | null>(null);
+  /** True while a re-opened request is still asking the adapter for its pay page. Absence of a
+   *  URL means "lapsed" only once this is false; before that it means "not asked yet". */
+  const meldPayUrlPending = ref(false);
   /** Latched once the settled payment has been credited to the coinage leg. */
   let meldCredited = false;
   /** The swap network's price for the selected source; `pending` while asking. */
@@ -433,10 +436,10 @@ export const useSessionStore = defineStore("session", () => {
     return highest + 1;
   }
 
-  /** The journey's scale for the request on screen: the crypto timeline runs three steps, the
-   *  card's five. The record on screen owns its route; the selected method stands in on the entry
-   *  screens, before there is a record. */
-  const journeySteps = computed<JourneySteps>(() =>
+  /** The journey's scale for the request on screen: the card timeline runs five stops, the crypto
+   *  and bank ones three. The record on screen owns its route; the selected method stands in on the
+   *  entry screens, before there is a record. */
+  const journeyScale = computed<JourneyScale>(() =>
     journeyScaleOf(requests.foregroundRecord?.route ?? method.value),
   );
 
@@ -502,6 +505,7 @@ export const useSessionStore = defineStore("session", () => {
     quoteEpoch += 1;
     stopSimulatedPayment();
     meldResumeWidgetUrl.value = null;
+    meldPayUrlPending.value = false;
     meldCredited = false;
     meldFundingRequestId = null;
     meldServiceProvider = null;
@@ -1148,6 +1152,8 @@ export const useSessionStore = defineStore("session", () => {
       const bank = method.value === "bank";
       const profile = provider.createProfile({
         ingressDurationMs: bank ? 24 * 60 * 60_000 : 5 * 60_000,
+        // The rail's own label is the card's ("your payment"); a transfer is sent, not paid.
+        ...(bank ? { waitingLabel: "Waiting for your transfer" } : {}),
       });
       const estimatedDurationMs =
         profile.expectedUserDelayMs +
@@ -1479,11 +1485,74 @@ export const useSessionStore = defineStore("session", () => {
       foregroundRef = ref; // after teardown, which clears it
       // On screen from its record at once; the world builds behind it.
       requests.setForeground(ref);
+      // The pay page is fetched from the adapter further down, once the world is back. Say so
+      // here, where the screen starts: from this line until that fetch settles the transfer has a
+      // request and no URL, which is exactly what `lapsed` reads as expired — and telling a buyer
+      // who came back to copy the account details that their transfer can no longer be paid, for
+      // however long a world takes to build, is the one thing those words must not do.
+      // Hosted only: off-host there is no lookup to wait for and a re-opened transfer is lapsed in
+      // truth, as the note on the mock world below says.
+      if (isHosted() && record.meldFundingRequestId !== undefined) meldPayUrlPending.value = true;
       const status = requests.get(ref)?.status.kind ?? "?";
       console.warn(
         `[coinage] reopen request #${record.tradeN}: funded=${record.funded ?? "no"} status=${status} submitted=${record.meldSubmittedAt !== undefined}`,
       );
       const epoch = quoteEpoch;
+      // Display context for the journey, from the record itself; neither path re-quotes.
+      const displayQuote: QuotedView = {
+        send: record.sourceAmount ?? "",
+        symbol: record.sourceSymbol ?? record.asset,
+        fee: record.sourceFee ?? null,
+        provider: record.sourceProvider ?? null,
+        transactionFee: record.sourceTransactionFee ?? null,
+        networkFee: record.sourceNetworkFee ?? null,
+        partnerFee: record.sourcePartnerFee ?? null,
+        chainFee: record.sourceChainFee ?? null,
+        mintFee: record.sourceMintFee ?? null,
+        nativeAmount: null,
+        sourceAsset: record.asset,
+        sourceChain: record.chain,
+      };
+
+      /**
+       * The browser has no host to derive this request's burner from, so there is no hosted world
+       * to rebuild. A mock one under the record's own source and trade number gives the screens
+       * what they ask a world for — a cancel to perform, a refund key to reveal, a harness the
+       * demo's Skip can credit — so a top-up opened from the list is as live off-host as it is
+       * inside the app. Without this every row answered "Top-up unavailable", which was never
+       * true: the record is right there, and the mock flow that wrote it persists the same shape.
+       *
+       * Not rebuilt: the provider's pay page. It is held in memory by the rail and re-fetched from
+       * the adapter on the hosted path, and a plain browser has neither — so a re-opened transfer
+       * shows its details as lapsed, which off-host is what they are.
+       */
+      if (!isHosted()) {
+        const amount = amountBase.value;
+        if (amount === null) {
+          console.warn(
+            `[coinage] reopen request #${record.tradeN}: "${record.amountHuman}" is not an amount`,
+          );
+          return false;
+        }
+        const world = await createMockCoinageSession({
+          recipient: DEV_RECIPIENT,
+          amount,
+          sourceId: effectiveSourceId(ref) as SourceId,
+          tradeN: ref.tradeN,
+        });
+        await world.session.ready;
+        if (epoch !== quoteEpoch) {
+          world.session.dispose();
+          return false;
+        }
+        mock.value = world;
+        quoted.value = displayQuote;
+        sub?.unsubscribe();
+        // The same observation the fresh flow makes. The session is not started here: this
+        // request's deposit was opened once already, and the record is what carries it.
+        sub = world.session.subscribe((state) => observePaymentState(state, ref));
+        return true;
+      }
       // Core's stale bound is the record's own window: the rail's deadline when it set one, the
       // route's otherwise.
       const { deadline } = record;
@@ -1501,7 +1570,11 @@ export const useSessionStore = defineStore("session", () => {
         undefined,
         record.sourceId as SourceId | undefined,
       );
-      if (!world) return false;
+      if (!world) {
+        // No world, so no lookup will run: the screen may judge the details for itself again.
+        meldPayUrlPending.value = false;
+        return false;
+      }
       if (world.session.peek() === null) {
         // A record with no slot: keep it, note the conflict on it, and fall back to a fresh entry.
         world.dispose();
@@ -1513,21 +1586,7 @@ export const useSessionStore = defineStore("session", () => {
         return false;
       }
       live.value = world;
-      // Display context for the journey; no re-quote on this path.
-      quoted.value = {
-        send: record.sourceAmount ?? "",
-        symbol: record.sourceSymbol ?? record.asset,
-        fee: record.sourceFee ?? null,
-        provider: record.sourceProvider ?? null,
-        transactionFee: record.sourceTransactionFee ?? null,
-        networkFee: record.sourceNetworkFee ?? null,
-        partnerFee: record.sourcePartnerFee ?? null,
-        chainFee: record.sourceChainFee ?? null,
-        mintFee: record.sourceMintFee ?? null,
-        nativeAmount: null,
-        sourceAsset: record.asset,
-        sourceChain: record.chain,
-      };
+      quoted.value = displayQuote;
       sub?.unsubscribe();
       sub = world.session.subscribe((state) => {
         observePaymentState(state, ref);
@@ -1546,6 +1605,7 @@ export const useSessionStore = defineStore("session", () => {
           console.warn(
             `[meld] request #${String(record.tradeN)} persisted funding id ${record.meldFundingRequestId}, but VITE_MELD_BASE_URL is unset; its payment status cannot be resumed`,
           );
+          meldPayUrlPending.value = false;
         } else {
           const client = createMeldClient({
             baseUrl: meldBaseUrl,
@@ -1555,14 +1615,20 @@ export const useSessionStore = defineStore("session", () => {
           meldStatusClient = client;
           meldFundingRequestId = record.meldFundingRequestId;
           meldServiceProvider = record.meldServiceProvider ?? null;
-          // Recover the pay URL from the adapter; the rail keeps pay URLs only in memory.
+          // Recover the pay URL from the adapter; the rail keeps pay URLs only in memory. The
+          // adapter serves one only while the request is still payable, so a row past its page
+          // comes back without one — which the screen may only call lapsed once this settles.
+          meldPayUrlPending.value = true;
           void client
             .getStatus(record.meldFundingRequestId)
             .then((s) => {
               if (s.serviceProviderWidgetUrl)
                 meldResumeWidgetUrl.value = s.serviceProviderWidgetUrl;
             })
-            .catch(() => {});
+            .catch(() => {})
+            .finally(() => {
+              meldPayUrlPending.value = false;
+            });
           pollMeldStatus();
         }
       }
@@ -1771,6 +1837,10 @@ export const useSessionStore = defineStore("session", () => {
           return false;
         }
         if (verdict === "unconfirmed") {
+          // A read that did not answer says nothing about the money: nothing was cancelled, and
+          // the screen that asked stays put, so it has to say why the cancel didn't take.
+          cancelNotice.value =
+            "Couldn't confirm this top-up can still be cancelled, so nothing was cancelled. Please try again.";
           console.warn("[coinage] cancel declined: could not confirm the burner is empty");
           return false;
         }
@@ -1874,6 +1944,7 @@ export const useSessionStore = defineStore("session", () => {
     corridorByCountry,
     meldCorridor,
     meldResumeWidgetUrl,
+    meldPayUrlPending,
     meldPayUrl,
     sourcePrice,
     loading,
@@ -1907,7 +1978,7 @@ export const useSessionStore = defineStore("session", () => {
     resumeOpenRequests,
     openRequests,
     openRequest,
-    journeySteps,
+    journeyScale,
     fundFaucet,
     simulateDeposit,
     simulateMeldPayment,

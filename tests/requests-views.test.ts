@@ -6,6 +6,9 @@ import { projectFundingProgress } from "../app/funding/progress";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
   DEPOSIT_EXPIRED_REASON,
+  PAYMENT_WATCH_MS,
+  paymentWatchUntil,
+  TOMBSTONE_GRACE_MS,
   type Observation,
   type RailState,
   type RequestFailure,
@@ -14,6 +17,7 @@ import {
 } from "../app/funding/requests/model";
 import { reduce } from "../app/funding/requests/reducer";
 import {
+  completedMarkers,
   journeyStepsOf,
   meldHandedOffOf,
   meldStageOf,
@@ -124,11 +128,11 @@ describe("request views", () => {
       ],
     ];
     for (const [name, record, steps] of cases) {
-      expect(journeyStepsOf(record, 3), name).toBe(steps);
+      expect(journeyStepsOf(record, "crypto"), name).toBe(steps);
     }
   });
 
-  it("journeyStepsOf counts the card and bank journey's five stops from the record", () => {
+  it("journeyStepsOf counts the card journey's five stops from the record", () => {
     const cases: [string, RequestRecord, number][] = [
       // "Started" is the request itself: it exists, so the first marker is behind it.
       ["awaiting-deposit", at({ kind: "awaiting-deposit" }), 1],
@@ -183,8 +187,97 @@ describe("request views", () => {
       ["cancelled", at({ kind: "cancelled", at: AT }), 1],
     ];
     for (const [name, record, steps] of cases) {
-      expect(journeyStepsOf(record, 5), name).toBe(steps);
+      expect(journeyStepsOf(record, "card"), name).toBe(steps);
     }
+  });
+
+  it("journeyStepsOf counts the bank journey's three stops from the record", () => {
+    const cases: [string, RequestRecord, number][] = [
+      // "Started" is the request itself: the buyer has the details to pay from, so the transfer
+      // still to arrive stands on the first marker.
+      ["awaiting-deposit", at({ kind: "awaiting-deposit" }), 1],
+      // The provider's word alone leaves the payment leg running: their delivery can still be
+      // stuck, which is what the design draws amber on "Payment".
+      ["deposit-seen provisional via rail", at(seen("rail")), 1],
+      // The money is ours: everything after it is one wait, so the marker does not move again
+      // until the CASH lands.
+      ["deposit-seen provisional via chain", at(seen("chain")), 2],
+      ["deposit-seen finalized via worker", at(seen("worker", "finalized")), 2],
+      ["converting at the swap", at({ kind: "converting", at: AT, step: "swap" }), 2],
+      ["claiming", at({ kind: "claiming", at: AT }), 2],
+      ["settled", at({ kind: "settled", at: AT }), 3],
+      // Past the deposit the transfer was taken, whatever the leg it then failed on.
+      [
+        "failed at the claim",
+        at({ kind: "failed", at: AT, recoverable: true }, { failure: mintFailure }),
+        2,
+      ],
+      [
+        "failed at the swap",
+        at({ kind: "failed", at: AT, recoverable: true }, { failure: shortfall }),
+        2,
+      ],
+      [
+        "failed at the deposit, refunded",
+        at({ kind: "failed", at: AT, recoverable: false }, { failure: refunded, refunded: true }),
+        2,
+      ],
+      // Nothing arrived: the transfer never was, so only "Started" is behind it.
+      [
+        "failed at the deposit, rejected",
+        at({ kind: "failed", at: AT, recoverable: false }, { failure: rejected }),
+        1,
+      ],
+      ["expired", at({ kind: "expired", at: AT }, { failureReason: DEPOSIT_EXPIRED_REASON }), 1],
+      ["cancelled", at({ kind: "cancelled", at: AT }), 1],
+    ];
+    for (const [name, record, steps] of cases) {
+      expect(journeyStepsOf(record, "bank"), name).toBe(steps);
+    }
+  });
+
+  it("completedMarkers keeps the fiat scales' first stop, and drops the crypto one", () => {
+    const nothingSeen = { failed: true, detected: false };
+    const seen = { failed: true, detected: true };
+    const running = { failed: false, detected: false };
+    // The bank's "Started" is the request itself: a declined transfer failed at "Payment", not at
+    // the beginning, so what the record counted stands.
+    expect(completedMarkers("bank", 1, nothingSeen)).toBe(1);
+    expect(completedMarkers("card", 1, nothingSeen)).toBe(1);
+    // The crypto timeline's first marker IS the deposit, so a failure that never saw one has
+    // nothing behind it.
+    expect(completedMarkers("crypto", 1, nothingSeen)).toBe(0);
+    expect(completedMarkers("crypto", 1, seen)).toBe(1);
+    expect(completedMarkers("crypto", 2, running)).toBe(2);
+    // A negative count never reads as a marker.
+    expect(completedMarkers("bank", -1, running)).toBe(0);
+  });
+
+  it("paymentWatchUntil measures from the start, and a rail expiry only extends it", () => {
+    const started = FIXTURE_NOW;
+    const watch = started + PAYMENT_WATCH_MS + TOMBSTONE_GRACE_MS;
+    // No rail expiry, or one inside the watch: the watch stands. A pay page that closed early
+    // says nothing about a transfer already sent.
+    expect(
+      paymentWatchUntil({
+        startedAt: started,
+        deadline: { depositExpiresAt: null, source: "route" },
+      }),
+    ).toBe(watch);
+    expect(
+      paymentWatchUntil({
+        startedAt: started,
+        deadline: { depositExpiresAt: started + 3_600_000, source: "rail" },
+      }),
+    ).toBe(watch);
+    // A rail expiry beyond it extends the watch rather than being ignored.
+    const late = started + 10 * 24 * 3_600_000;
+    expect(
+      paymentWatchUntil({
+        startedAt: started,
+        deadline: { depositExpiresAt: late, source: "rail" },
+      }),
+    ).toBe(late + TOMBSTONE_GRACE_MS);
   });
 
   it("rowStateOf uses the same words as the journey", () => {

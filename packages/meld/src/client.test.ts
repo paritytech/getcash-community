@@ -21,6 +21,20 @@ const concluded = {
   status: 409,
   body: { error: { tag: "Other", value: { code: "REQUEST_CONCLUDED", message: "concluded" } } },
 };
+const cancelled = {
+  status: 409,
+  // The adapter's answer for a key whose request was withdrawn: the buyer backed out of the bank
+  // screen, or switched currency, and came back to the same terms.
+  body: {
+    error: {
+      tag: "Other",
+      value: {
+        code: "REQUEST_CANCELLED",
+        message: "That request was cancelled. Start a new one with a new key.",
+      },
+    },
+  },
+};
 const outcomeUnknown = {
   status: 409,
   body: { error: { tag: "Other", value: { code: "REQUEST_OUTCOME_UNKNOWN", message: "unknown" } } },
@@ -333,6 +347,20 @@ describe("createMeldClient error mapping", () => {
     expect(new Set(keys).size).toBe(3);
     // Same intent throughout; only the attempt moves.
     for (const k of keys) expect(k).toContain(SESSION_REQ.walletAddress);
+  });
+
+  it("starts a new attempt when the adapter says the last one was cancelled", async () => {
+    // Re-entering the bank screen after a cancel must not dead-end on the withdrawn key: each
+    // `REQUEST_CANCELLED` advances the attempt suffix, which is the new key the adapter asks for.
+    const { impl, calls } = stubSequence([cancelled, created]);
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+
+    const session = await client.createSession(SESSION_REQ);
+
+    expect(session.fundingRequestId).toBe("funding-9");
+    const keys = calls.map((c) => JSON.parse(String(c.init?.body)).idempotencyKey);
+    expect(keys).toHaveLength(2);
+    expect(new Set(keys).size).toBe(2);
   });
 
   it("does NOT start a new attempt when the outcome is unknown", async () => {
