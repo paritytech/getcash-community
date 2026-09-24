@@ -194,6 +194,9 @@ export function useWithdrawalRequest() {
   async function retry(ref: RequestRef): Promise<boolean> {
     const record = requests.get(ref);
     if (record === undefined || record.kind !== "withdrawal") return false;
+    // Checked here as well as in the store's own retry: the send step opens a provider channel
+    // before it gets there, and a record that cannot be retried must not have one opened for it.
+    if (record.status.kind !== "failed" || !record.status.recoverable) return false;
     const step = record.failure?.step;
     const live = await import("~~/lib/withdraw-live");
     if (step === "send" && record.rail.provider !== "direct") {

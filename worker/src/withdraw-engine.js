@@ -1,6 +1,7 @@
 import { CASH_LOCATION } from "@getsome/people";
 import {
   ChannelExpiredError,
+  ChannelMismatchError,
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
   DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
   freshRailLegState,
@@ -62,7 +63,7 @@ const saveJobs = () => store.save();
  *   paymentExpiresAt: number|null,
  *   phase: "starting" | WithdrawStep | RailStep | "failed",
  *   failure?: "rejected" | "timeout" | "expired" | "cancelled" | "no-rail" | "rail-failed"
- *            | "channel-expired",
+ *            | "channel-expired" | "channel-mismatch",
  *   landed,                                  // the message leg is done: PAS on Asset Hub
  *   done, createdAt, armedAt, lastTickAt, lastError?,
  *   state: { attempts, rejections, submitted, destinationPasBefore, expectedLanding,
@@ -423,6 +424,7 @@ async function tickRailLeg(record) {
             onTx: (info) => record.txs.push(info),
           }),
         tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+        destinationAddress: record.destination?.address,
         // The payment reads the key and then submits, each on its own bound; this outer bound
         // must outlast both, or it fires while the transfer is still in flight.
         payTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS + DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
@@ -440,6 +442,10 @@ async function tickRailLeg(record) {
     // Nothing moved: the native is still on the key and a fresh channel can carry it.
     if (error instanceof ChannelExpiredError) {
       fail(record, "channel-expired", error.message);
+      return;
+    }
+    if (error instanceof ChannelMismatchError) {
+      fail(record, "channel-mismatch", error.message);
       return;
     }
     throw error;

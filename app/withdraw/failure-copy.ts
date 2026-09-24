@@ -23,6 +23,8 @@ export function withdrawalFailureText(failure: WithdrawalFailure): string {
       return "The swap did not go through and the funds came back. You can try again.";
     case "channel-expired":
       return "This withdrawal took too long to pay for. Nothing was sent, so you can try again.";
+    case "channel-mismatch":
+      return "We could not confirm this withdrawal with the provider. Nothing was sent, so you can try again.";
     case "unknown":
       return failure.message || "Something went wrong with this withdrawal.";
   }

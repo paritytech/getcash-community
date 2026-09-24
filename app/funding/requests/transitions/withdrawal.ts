@@ -231,6 +231,15 @@ function applyWorker(
           message: job.lastError ?? "the provider closed the channel before it was paid",
           recoverable: true,
         });
+      case "channel-mismatch":
+        // The provider's own record of the channel disagreed with the withdrawal, so the key
+        // never paid it. A retry opens a fresh channel from the record's own details.
+        return failed(next, at, {
+          kind: "channel-mismatch",
+          step: "send",
+          message: job.lastError ?? "the provider's channel did not match this withdrawal",
+          recoverable: true,
+        });
       case "no-rail":
         // Nothing in this build can carry the PAS on; the provider's reading, when there is
         // one, already spoke above.

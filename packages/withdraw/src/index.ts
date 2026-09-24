@@ -38,6 +38,7 @@ export { readDestinationPas } from "./destination";
 export {
   CHANNEL_EXPIRY_MARGIN_MS,
   ChannelExpiredError,
+  ChannelMismatchError,
   describeFailure,
   freshRailLegState,
   RailFailedError,
@@ -45,6 +46,7 @@ export {
   readingFailed,
 } from "./rail-leg";
 export type {
+  RailChannelRecord,
   RailClient,
   RailHandoff,
   RailLegInput,

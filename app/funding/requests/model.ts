@@ -289,7 +289,9 @@ export type WithdrawalFailureKind =
   | "fallback-egress"
   | "refunded"
   /** The provider closed the channel before the key paid it; nothing moved. */
-  | "channel-expired";
+  | "channel-expired"
+  /** The provider's record of the channel did not match the withdrawal; nothing moved. */
+  | "channel-mismatch";
 export interface WithdrawalFailure {
   kind: WithdrawalFailureKind;
   step: WithdrawalFailureStep;

@@ -2,6 +2,7 @@
 // the ones that cannot take it, each greyed with the line that says why. The same split the
 // country picker draws, so the two pickers read alike. Pure, so both screens share one wording.
 
+import { CASH_DECIMALS } from "@getsome/people";
 import {
   isNetworkPickable,
   isPickable,
@@ -16,7 +17,7 @@ export interface PickerGroup<T> {
   rows: T[];
 }
 
-const CASH_BASE = 1_000_000n;
+const CASH_BASE = 10n ** BigInt(CASH_DECIMALS);
 
 /** Whole CASH, rounded up: a minimum is never understated. */
 export const wholeCashCeil = (base: bigint): string =>

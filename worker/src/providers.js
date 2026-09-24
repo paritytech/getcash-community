@@ -3,7 +3,7 @@
 // how the swap behind it is going, one fetch per tick. Chainflip carries the crypto
 // destinations; the pickers grey a route until its provider is here.
 
-import { readSwapStatus } from "@getsome/chainflip/swap-status";
+import { readChannelRecord, readSwapStatus } from "@getsome/chainflip/swap-status";
 import {
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
   DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
@@ -14,12 +14,13 @@ import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import { connectChain, keypairFor, signOptionsFor } from "./shared.js";
 
 /**
- * The provider client for a job, or null when this build has none for its rail. A client has
- * one call, `status(id)`: the provider's word on the swap behind the channel.
+ * The provider client for a job, or null when this build has none for its rail. Two calls:
+ * `status(id)` is the provider's word on the swap behind the channel, and `channel(id)` is its
+ * own record of the channel, which the leg checks the withdrawal against before the key pays.
  */
 export function railFor(provider, _record) {
   if (provider !== "chainflip") return null;
-  return { status: (id) => readSwapStatus(id) };
+  return { status: (id) => readSwapStatus(id), channel: (id) => readChannelRecord(id) };
 }
 
 /**

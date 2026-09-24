@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   railFor: vi.fn(),
   payRail: vi.fn(),
   status: vi.fn(),
+  channel: vi.fn(),
 }));
 
 vi.mock("../worker/src/host.js", () => ({
@@ -116,7 +117,14 @@ describe("the worker's rail leg", () => {
     mocks.railFor.mockReset();
     mocks.payRail.mockReset();
     mocks.status.mockReset();
-    mocks.railFor.mockReturnValue({ status: mocks.status });
+    mocks.channel.mockReset();
+    // The provider's record of the channel agrees with the job unless a test says otherwise.
+    mocks.channel.mockResolvedValue({
+      depositAddress: "5Channel",
+      destinationAddress: "bc1qw508",
+      expired: false,
+    });
+    mocks.railFor.mockReturnValue({ status: mocks.status, channel: mocks.channel });
     mocks.payRail.mockResolvedValue(undefined);
     mocks.status.mockResolvedValue({ status: "swapping" });
     vi.useFakeTimers();
@@ -217,9 +225,58 @@ describe("the worker's rail leg", () => {
       leg: { handoff: { id: "ch-2", expiresAt: NOW + DAY }, paid: false },
     });
 
+    // The provider knows the fresh channel, at its own address.
+    mocks.channel.mockResolvedValue({
+      depositAddress: "5Fresh",
+      destinationAddress: "bc1qw508",
+      expired: false,
+    });
     await engine.tickAllWithdraw();
     expect(mocks.payRail).toHaveBeenCalledTimes(1);
     expect(mocks.payRail.mock.calls[0]?.[1]).toMatchObject({ id: "ch-2", address: "5Fresh" });
     expect(storedJob()).toMatchObject({ phase: "handoff", leg: { paid: true } });
+  });
+
+  it("refuses when the provider's record of the channel disagrees, and pays nothing", async () => {
+    mocks.channel.mockResolvedValue({
+      depositAddress: "5SomewhereElse",
+      destinationAddress: "bc1qw508",
+      expired: false,
+    });
+    const engine = await engineWith(landedJob());
+
+    await engine.tickAllWithdraw();
+    expect(mocks.payRail).not.toHaveBeenCalled();
+    const stored = storedJob();
+    expect(stored).toMatchObject({ phase: "failed", failure: "channel-mismatch" });
+    expect(stored.lastError).toMatch(/takes deposits at 5SomewhereElse/);
+    expect(stored.leg.paid).toBe(false);
+    expect(stored.txs).toEqual([]);
+  });
+
+  it("checks the address the user asked for, not just the one it is about to pay", async () => {
+    mocks.channel.mockResolvedValue({
+      depositAddress: "5Channel",
+      destinationAddress: "bc1qsomeoneelse",
+      expired: false,
+    });
+    const engine = await engineWith(landedJob());
+
+    await engine.tickAllWithdraw();
+    expect(mocks.payRail).not.toHaveBeenCalled();
+    expect(storedJob().lastError).toMatch(/pays out to bc1qsomeoneelse/);
+  });
+
+  it("keeps a job whose provider cannot be reached for the next tick, unpaid", async () => {
+    mocks.channel.mockRejectedValue(new Error("provider unreachable"));
+    const engine = await engineWith(landedJob());
+
+    await engine.tickAllWithdraw();
+    expect(mocks.payRail).not.toHaveBeenCalled();
+    const stored = storedJob();
+    // Transient: the job is still live and the next tick asks again.
+    expect(stored.phase).toBe("handoff");
+    expect(stored.failure).toBeUndefined();
+    expect(stored.lastError).toMatch(/provider unreachable/);
   });
 });

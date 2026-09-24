@@ -7,10 +7,12 @@ import { DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS, DEFAULT_WITHDRAW_TICK_TIMEOUT_MS } 
 import {
   CHANNEL_EXPIRY_MARGIN_MS,
   ChannelExpiredError,
+  ChannelMismatchError,
   freshRailLegState,
   RailFailedError,
   railTickOnce,
   readingFailed,
+  type RailChannelRecord,
   type RailClient,
   type RailHandoff,
   type RailLegInput,
@@ -33,6 +35,28 @@ const reading = (status: SwapStatusResult["status"], extra: Partial<SwapStatusRe
 
 /** A leg whose channel the hand-off already named. */
 const seeded = (): RailLegState => ({ ...freshRailLegState(), handoff: CHANNEL });
+
+const DESTINATION = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
+/** The provider's record of the channel, as it really has it. */
+const RECORD: RailChannelRecord = {
+  depositAddress: CHANNEL.address,
+  destinationAddress: DESTINATION,
+  expired: false,
+};
+
+/** A provider that also answers the channel read, from a fixed record. */
+function checking(record: RailChannelRecord | null, statuses: SwapStatusResult[] = []) {
+  const base = scripted(statuses);
+  const asked: string[] = [];
+  const rail: RailClient = {
+    status: base.rail.status,
+    channel: async (id) => {
+      asked.push(id);
+      return record;
+    },
+  };
+  return { rail, asked };
+}
 
 /** A provider that answers status reads from a script and records what it was asked. */
 function scripted(statuses: SwapStatusResult[]) {
@@ -57,6 +81,7 @@ function world(rail: RailClient, overrides: Partial<RailLegInput> = {}) {
     tickTimeoutMs: 1_000,
     payTimeoutMs: 1_000,
     now: () => NOW,
+    destinationAddress: DESTINATION,
     onBeforePay: (handoff) => {
       persisted.push(handoff);
     },
@@ -192,5 +217,117 @@ describe("the provider leg", () => {
     // than throwing, which the driver would otherwise retry forever as a transient error.
     const absurd = new ChannelExpiredError({ ...CHANNEL, expiresAt: 1e20 }, NOW);
     expect(absurd.message).toContain(`${1e20}ms`);
+  });
+  it("holds the channel against the provider's own record before paying", async () => {
+    const provider = checking(RECORD, [reading("swapping")]);
+    const { input, paid } = world(provider.rail);
+    const state = seeded();
+    expect((await railTickOnce(input, state)).step).toBe("handoff");
+    expect(provider.asked).toEqual(["ch-1"]);
+    expect(paid).toEqual([CHANNEL]);
+
+    // Checked before the payment only; the follow never asks again.
+    expect((await railTickOnce(input, state)).step).toBe("follow");
+    expect(provider.asked).toEqual(["ch-1"]);
+  });
+
+  it("refuses when the provider cannot name the channel, or names another deposit address", async () => {
+    const unknown = world(checking(null).rail);
+    await expect(railTickOnce(unknown.input, seeded())).rejects.toBeInstanceOf(
+      ChannelMismatchError,
+    );
+    expect(unknown.paid).toEqual([]);
+    expect(unknown.persisted).toEqual([]);
+
+    const elsewhere = world(checking({ ...RECORD, depositAddress: "5Elsewhere" }).rail);
+    await expect(railTickOnce(elsewhere.input, seeded())).rejects.toThrow(/takes deposits at/);
+    expect(elsewhere.paid).toEqual([]);
+  });
+
+  it("refuses when the provider would pay out to another address", async () => {
+    const wrong = world(checking({ ...RECORD, destinationAddress: "bc1qsomeoneelse" }).rail);
+    await expect(railTickOnce(wrong.input, seeded())).rejects.toThrow(/pays out to/);
+    expect(wrong.paid).toEqual([]);
+  });
+
+  it("takes the provider's word that a channel is closed, whatever our clock says", async () => {
+    const closed = world(checking({ ...RECORD, expired: true }).rail);
+    await expect(railTickOnce(closed.input, seeded())).rejects.toBeInstanceOf(ChannelExpiredError);
+    expect(closed.paid).toEqual([]);
+  });
+
+  it("reads the payout address back in any casing, where the format allows both", async () => {
+    // Ethereum's checksum is casing and bech32 is specified in both, so an address the user gave
+    // in one form and the provider hands back in another is the same address.
+    for (const address of [DESTINATION, "0x52908400098527886E0F7030069857D2E4169EE7"]) {
+      const cased = checking({ ...RECORD, destinationAddress: address.toUpperCase() }, [
+        reading("swapping"),
+      ]);
+      const { input, paid } = world(cased.rail, { destinationAddress: address });
+      await railTickOnce(input, seeded());
+      expect(paid).toHaveLength(1);
+    }
+  });
+
+  it("holds a base58 payout address to its exact spelling, since a case variant is another account", async () => {
+    // Solana addresses are bare public keys with no checksum, so nothing rejects a case variant
+    // for us: the comparison has to.
+    const solana = "4Nd1mYQx3sABznWXpq2mV3G7iC6nnZq6dvGnHLm2rrDF";
+    const variant = solana.toLowerCase();
+    const provider = checking({ ...RECORD, destinationAddress: variant });
+    const { input, paid } = world(provider.rail, { destinationAddress: solana });
+    await expect(railTickOnce(input, seeded())).rejects.toBeInstanceOf(ChannelMismatchError);
+    expect(paid).toEqual([]);
+  });
+
+  it("leaves a provider that cannot be reached for the next tick, unpaid", async () => {
+    const down: RailClient = {
+      status: async () => reading("waiting"),
+      channel: async () => {
+        throw new Error("provider unreachable");
+      },
+    };
+    const { input, paid } = world(down);
+    const state = seeded();
+    await expect(railTickOnce(input, state)).rejects.toThrow("provider unreachable");
+    expect(paid).toEqual([]);
+    expect(state.paid).toBe(false);
+  });
+  it("reads the channel's own address as an account, whatever prefix it is written with", async () => {
+    // The same Asset Hub account under the Polkadot, Kusama and generic prefixes. The address is
+    // issued by one Chainflip endpoint and read back from another, so the two must not have to
+    // agree on how to write it.
+    const polkadot = "1ADRXEpxCcHPze36zV1imej5DNcGZ8puqopyUhbppXyGuhP";
+    const kusama = "CjXwWKdinMji7Sxv4F4UaBaNBfCNvPsHiv6CqzCkXiwqerR";
+    const generic = "5CDvHBym6RLoxTdX9MS1acpaDbNxaFagqM5LpBiFGjWT6o1n";
+    const handoff: RailHandoff = { ...CHANNEL, address: polkadot };
+
+    for (const written of [polkadot, kusama, generic]) {
+      const provider = checking({ ...RECORD, depositAddress: written }, [reading("swapping")]);
+      const { input, paid } = world(provider.rail);
+      await railTickOnce(input, { ...freshRailLegState(), handoff });
+      expect(paid).toEqual([handoff]);
+    }
+
+    // A different account is still refused, in any prefix.
+    const other = world(checking({ ...RECORD, depositAddress: generic.replace(/.$/, "2") }).rail);
+    await expect(
+      railTickOnce(other.input, { ...freshRailLegState(), handoff }),
+    ).rejects.toBeInstanceOf(ChannelMismatchError);
+    expect(other.paid).toEqual([]);
+  });
+
+  it("refuses when either side cannot name the payout address", async () => {
+    const silentProvider = world(checking({ ...RECORD, destinationAddress: "" }).rail);
+    await expect(railTickOnce(silentProvider.input, seeded())).rejects.toBeInstanceOf(
+      ChannelMismatchError,
+    );
+    expect(silentProvider.paid).toEqual([]);
+
+    // A driver that names no destination does not get a free pass: the check is the only thing
+    // between a hand-off and an irreversible transfer.
+    const silentDriver = world(checking(RECORD).rail, { destinationAddress: "" });
+    await expect(railTickOnce(silentDriver.input, seeded())).rejects.toThrow(/cannot be checked/);
+    expect(silentDriver.paid).toEqual([]);
   });
 });
