@@ -1,6 +1,8 @@
 // The journey as five steps: started, payment received, payment processed, converted to CASH,
 // added to the balance. Their wording, and the dates beside them.
 
+import { currencyConfig } from "../funding/config";
+
 export interface StepLabel {
   /** While the step is the one in progress. */
   pending: string;
@@ -17,7 +19,10 @@ export function journeyLabels(asset: string | null): StepLabel[] {
       done: asset ? `We received your ${asset}` : "We received your payment",
     },
     { pending: "Processing your payment", done: "Payment processed" },
-    { pending: "Converting to $CASH", done: "Converted to $CASH" },
+    {
+      pending: `Converting to ${currencyConfig.name}`,
+      done: `Converted to ${currencyConfig.name}`,
+    },
     { pending: "Adding to your balance", done: "Added to your balance" },
   ];
 }

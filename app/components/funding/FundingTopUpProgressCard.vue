@@ -10,6 +10,7 @@ import type {
   SettledFundingTopUp,
 } from "../../funding/top-ups";
 import { formatWhenShort } from "../../utils/journey";
+import CashAmount from "../ui/CashAmount.vue";
 import FundingProgressRing from "./progress/FundingProgressRing.vue";
 
 type ProgressCardTopUp = InProgressFundingTopUp | SettledFundingTopUp | FailedFundingTopUp;
@@ -17,7 +18,6 @@ type ProgressCardTopUp = InProgressFundingTopUp | SettledFundingTopUp | FailedFu
 const props = withDefaults(
   defineProps<{
     topUp: ProgressCardTopUp;
-    asset: string;
     opening?: boolean;
     disabled?: boolean;
   }>(),
@@ -32,9 +32,11 @@ const failed = computed(() => (props.topUp.state.kind === "failed" ? props.topUp
 
 /** The credit is the one amount the design signs and greens; everything else is what was asked
  *  for, and a failed top-up's steps back to the muted tone. */
-const amountText = computed(() => {
+const amountParts = computed(() => {
   const done = settled.value;
-  return done ? `+${done.creditedAmount} ${props.asset}` : `${props.topUp.amount} ${props.asset}`;
+  return done
+    ? { sign: "+", amount: done.creditedAmount }
+    : { sign: "", amount: props.topUp.amount };
 });
 
 const statusText = computed(() => {
@@ -68,7 +70,7 @@ const emit = defineEmits<{ open: [topUp: ProgressCardTopUp] }>();
           class="truncate text-heading-m"
           :class="settled ? 'text-fg-success' : failed ? 'text-fg-tertiary' : 'text-fg-primary'"
         >
-          {{ amountText }}
+          <CashAmount :sign="amountParts.sign" :amount="amountParts.amount" />
         </strong>
         <span
           class="truncate text-body-m"

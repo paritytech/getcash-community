@@ -4,8 +4,8 @@ import { computed } from "vue";
 import { Plus } from "lucide-vue-next";
 import { quoteDetailRows, storedQuoteView } from "../../funding/quote-rows";
 import type { FundingTopUp } from "../../funding/top-ups";
-import { cashAmount } from "../../utils/cash";
 import { formatWhenShort } from "../../utils/journey";
+import CashAmount from "../ui/CashAmount.vue";
 import DetailRows from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
 
@@ -32,7 +32,9 @@ const rows = computed(() =>
           <Plus class="size-6 text-fg-primary" aria-hidden="true" />
         </span>
         <span>
-          <p class="text-display-m text-fg-success">+{{ cashAmount(creditedAmount) }}</p>
+          <p class="text-display-m text-fg-success">
+            <CashAmount sign="+" :amount="creditedAmount" />
+          </p>
           <p v-if="when" class="text-paragraph-l text-fg-secondary">{{ when }}</p>
         </span>
       </div>
