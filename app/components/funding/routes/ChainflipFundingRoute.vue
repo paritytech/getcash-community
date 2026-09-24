@@ -10,7 +10,6 @@ import { useVisibilityReconcile } from "../../../composables/useVisibilityReconc
 import type { FundingPackageEmits } from "../../../funding/handoff";
 import type { FundingSelection } from "../../../funding/selection";
 import { useFlowStore } from "../../../stores/flow";
-import { useOffersStore } from "../../../stores/offers";
 import { useRequestsStore } from "../../../stores/requests";
 import { useSessionStore } from "../../../stores/session";
 
@@ -24,7 +23,6 @@ if (props.selection.route !== "crypto") {
 const session = useSessionStore();
 const requests = useRequestsStore();
 const flow = useFlowStore();
-const offers = useOffersStore();
 useVisibilityReconcile();
 useStateDirector();
 const { handedOff } = useChainflipHandoff(emit);
@@ -92,10 +90,9 @@ onMounted(async () => {
   flow.step = "network";
   void import("~~/lib/host-chain").then((hostChain) => hostChain.prewarmChains());
   if (!active) return;
-  // Open requests carry on converting; none of them takes the screen.
+  // Open requests carry on converting; none of them takes the screen. The pickers learn which
+  // crypto sources can serve the amount, and keep that fresh, while they are on screen.
   void session.resumeOpenRequests();
-  // Learn which crypto sources can serve the selected amount.
-  void offers.learn();
   void session.fetchQuote(flow.srcChain.chain, flow.srcAsset);
 });
 onUnmounted(() => {
@@ -146,7 +143,6 @@ onUnmounted(() => {
         />
         <NetworkScreen
           v-else-if="flow.step === 'network' || flow.step === 'amount' || flow.step === 'method'"
-          @change-amount="emit('back')"
         />
         <TokenScreen v-else />
       </template>

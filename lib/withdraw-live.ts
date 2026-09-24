@@ -19,14 +19,28 @@ import {
   DEFAULT_WITHDRAW_SLIPPAGE_PCT,
   PASEO_PEOPLE_POOL_ACCOUNT,
   PEOPLE_NATIVE,
+  readDestinationPas,
 } from "@getsome/withdraw";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import {
   WITHDRAW_SOURCE_PREFIX,
   isWithdrawSourceId,
   type HostPaymentStatus,
+  type WithdrawalChannel,
   type WithdrawalHandoffPayload,
 } from "../app/funding/requests/model";
+import {
+  BelowMinimumSwapAmountError,
+  ChainflipRequestError,
+  formatSourceAmount,
+  openWithdrawChannel,
+  quoteOutgoing,
+  SOURCE_CONFIG_BY_ID,
+} from "@getsome/chainflip";
+import { AccountId } from "polkadot-api";
+import type { WithdrawOffer } from "../app/withdraw/offers";
+import { mainnetSdk } from "./chainflip-backend";
+import { withTimeout } from "./timeout";
 import { hostSafeEntropy, nextFreeTradeNumber, readTradeCounter, tradeCounterKey } from "./coinage";
 import {
   requestPayment as hostRequestPayment,
@@ -103,6 +117,136 @@ export async function quoteDirectReceive(amount: bigint): Promise<bigint> {
   return quoted;
 }
 
+/** The CASH a direct withdrawal must take for `native` planck to land on Asset Hub, at today's
+ *  pool price: what exactly that much native costs, plus the fees the program takes on the way. */
+export async function quoteDirectCashFor(native: bigint): Promise<bigint> {
+  const { connectChain, ASSET_HUB } = await import("./host-chain");
+  const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
+  const quoted = await api.apis.AssetConversionApi.quote_price_tokens_for_exact_tokens(
+    CASH_ON_ASSET_HUB as never,
+    PEOPLE_NATIVE as never,
+    native,
+    true,
+  );
+  if (quoted === undefined) throw new Error("Asset Hub cannot quote the purchase");
+  return quoted + DIRECT_FEES_CASH;
+}
+
+/** Headroom between the pool's answer and what the provider is asked to take: the sale on Asset
+ *  Hub may slip by up to the program's own tolerance and still go through, and the sweep's fee
+ *  comes off the deposit after that. The provider is quoted for the worst case the program
+ *  allows, so a withdrawal that passes here lands enough to swap. */
+const PROVIDER_QUOTE_HEADROOM_PCT = BigInt(DEFAULT_WITHDRAW_SLIPPAGE_PCT) + 1n;
+/** Ceiling on the wait for the offers. */
+const OFFERS_TIMEOUT_MS = 15_000;
+
+const withHeadroom = (native: bigint): bigint =>
+  native + (native * PROVIDER_QUOTE_HEADROOM_PCT) / 100n;
+const lessHeadroom = (native: bigint): bigint =>
+  native - (native * PROVIDER_QUOTE_HEADROOM_PCT) / 100n;
+
+/**
+ * What every provider destination offers for `amountCash`: the pool prices the CASH into native,
+ * the headroom comes off, and each destination is quoted for what is left. One refused quote
+ * says the amount is under the provider's minimum, priced back into CASH; a provider that is not
+ * answering marks every destination after the first, without asking the rest. Never throws.
+ */
+export async function quoteWithdrawOffers(
+  amountCash: bigint,
+  destinations: readonly { id: string; chain: string; asset: string }[],
+): Promise<{ sellable: bigint | null; offers: ReadonlyMap<string, WithdrawOffer> }> {
+  const offers = new Map<string, WithdrawOffer>();
+  const allUnavailable = (reason: string) => {
+    for (const destination of destinations)
+      offers.set(destination.id, { state: "unavailable", reason });
+    console.warn(`[withdraw] offers unavailable: ${reason}`);
+    return { sellable: null, offers };
+  };
+
+  let sellable: bigint;
+  let sdk: Awaited<ReturnType<typeof mainnetSdk>>;
+  try {
+    [sellable, sdk] = await withTimeout(
+      Promise.all([quoteDirectReceive(amountCash).then(lessHeadroom), mainnetSdk()]),
+      OFFERS_TIMEOUT_MS,
+      "withdraw offers",
+    );
+  } catch (e) {
+    return allUnavailable(messageOf(e));
+  }
+
+  // An amount the fees eat whole sells for nothing; a quote for one planck still makes Chainflip
+  // name its minimum, which is the answer such a row needs.
+  const probe = sellable > 0n ? sellable : 1n;
+  // The minimum is on the DOT sold, so every destination names the same one: priced once.
+  const minimumCashFor = new Map<bigint, Promise<bigint>>();
+  const tooSmall = async (minimum: bigint): Promise<WithdrawOffer> => {
+    let priced = minimumCashFor.get(minimum);
+    if (priced === undefined) {
+      priced = quoteDirectCashFor(withHeadroom(minimum));
+      minimumCashFor.set(minimum, priced);
+    }
+    try {
+      return { state: "too-small", minimumCash: await priced };
+    } catch (e) {
+      return { state: "unavailable", reason: messageOf(e) };
+    }
+  };
+
+  const quoteOne = async (destination: {
+    id: string;
+    chain: string;
+    asset: string;
+  }): Promise<{ offer: WithdrawOffer; outage: boolean }> => {
+    const config = providerDestination(destination);
+    try {
+      const quote = await withTimeout(
+        quoteOutgoing(sdk, probe, config),
+        OFFERS_TIMEOUT_MS,
+        `${config.asset} offer`,
+      );
+      const formatted = formatSourceAmount(config, quote.egressAmount, { maxDecimals: 6 });
+      return {
+        offer: {
+          state: "available",
+          egress: quote.egressAmount,
+          formatted: `${formatted} ${config.asset}`,
+          etaSeconds: quote.estimatedDurationSeconds,
+        },
+        outage: false,
+      };
+    } catch (e) {
+      if (e instanceof BelowMinimumSwapAmountError) {
+        return { offer: await tooSmall(e.minimumBaseUnits), outage: false };
+      }
+      return {
+        offer: { state: "unavailable", reason: messageOf(e) },
+        outage: e instanceof ChainflipRequestError && e.outage,
+      };
+    }
+  };
+
+  // The first destination is asked alone: a provider that is not answering says so once.
+  const [first, ...rest] = destinations;
+  if (first === undefined) return { sellable, offers };
+  const canary = await quoteOne(first);
+  offers.set(first.id, canary.offer);
+  if (canary.outage && canary.offer.state === "unavailable") {
+    const { reason } = canary.offer;
+    for (const destination of rest) offers.set(destination.id, { state: "unavailable", reason });
+    console.warn(`[withdraw] offers unavailable: ${reason}`);
+    return { sellable, offers };
+  }
+  await Promise.all(
+    rest.map(async (destination) => {
+      offers.set(destination.id, (await quoteOne(destination)).offer);
+    }),
+  );
+  return { sellable, offers };
+}
+
+const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
 async function hostStorageAdapter() {
   const storage = await getHostLocalStorage();
   if (!storage) throw new Error("host storage unavailable (not running inside the Polkadot App?)");
@@ -136,6 +280,46 @@ export async function advanceWithdrawCounter(sourceId: string, n: number): Promi
   }
 }
 
+/** The key's free native on Asset Hub at the current head: what a provider refunded, when the
+ *  swap could not fill, and what a fresh channel is quoted for. */
+export async function readWithdrawKeyNativeOnAssetHub(keyPublicKeyHex: string): Promise<bigint> {
+  const { connectChain, ASSET_HUB } = await import("./host-chain");
+  const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
+  return readDestinationPas(api, keyPublicKeyHex);
+}
+
+/** A provider destination's asset and chain, as Chainflip names them, with the asset's decimals
+ *  for showing what lands. */
+function providerDestination(destination: { id: string; chain: string; asset: string }) {
+  const config = SOURCE_CONFIG_BY_ID.get(destination.id as never);
+  if (config === undefined) {
+    throw new Error(`no Chainflip source for the ${destination.asset} destination`);
+  }
+  return config;
+}
+
+/** Opens the provider's channel for a withdrawal, with the key on Asset Hub as the refund. */
+export async function openWithdrawChannelFor(args: {
+  amountNative: bigint;
+  destination: { id: string; chain: string; asset: string; address: string };
+  keyPublicKeyHex: string;
+}): Promise<WithdrawalChannel> {
+  const config = providerDestination(args.destination);
+  const channel = await openWithdrawChannel({
+    sdk: await mainnetSdk(),
+    amount: args.amountNative,
+    destination: { chain: config.chain, asset: config.asset, address: args.destination.address },
+    refundAddress: AccountId(0).dec(args.keyPublicKeyHex as `0x${string}`),
+  });
+  return {
+    id: channel.id,
+    address: channel.address,
+    openedAt: Date.now(),
+    expiresAt: channel.expiresAt,
+    expectedEgress: channel.expectedEgress.toString(),
+  };
+}
+
 /** The hand-off for a withdrawal, with the chain facts this build is made for. */
 export function withdrawHandoff(args: {
   sourceId: string;
@@ -146,8 +330,10 @@ export function withdrawHandoff(args: {
   landingHex: string;
   rail: WithdrawalHandoffPayload["rail"];
   paymentExpiresAt: number;
+  channel?: WithdrawalChannel;
 }): WithdrawalHandoffPayload {
   return {
+    ...(args.channel === undefined ? {} : { channel: args.channel }),
     label: withdrawEntropyLabel(args.sourceId, args.n),
     keyAddress: args.key.address,
     keyPublicKeyHex: args.key.publicKeyHex,
@@ -195,6 +381,12 @@ export async function sendWithdrawHandoff(
 /** Tells the worker a withdrawal still waiting for its payment was cancelled. */
 export function cancelWithdrawJob(worker: WorkerLike, sessionId: string): Promise<unknown> {
   return worker.call("cancelWithdraw", { sessionId });
+}
+
+/** Dev builds only: tells the worker to take a withdrawal's swap as delivered. On a test network
+ *  the provider's channel is real but cannot be paid, so the walk ends here by hand. */
+export function skipWithdrawRail(worker: WorkerLike, sessionId: string): Promise<unknown> {
+  return worker.call("skipWithdrawRail", { sessionId });
 }
 
 /** Nudges the worker into a pass over its withdrawals. A run has stalled between wakes while the
