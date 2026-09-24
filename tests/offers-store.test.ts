@@ -15,6 +15,9 @@ vi.mock("../lib/source-floors", async (importOriginal) => ({
   learnSourceFloors: vi.fn(),
 }));
 
+const hosted = { value: false };
+vi.mock("../lib/host-account", () => ({ isHosted: () => hosted.value }));
+
 const DOT = 10_000_000_000n;
 const USDT = 1_000_000n;
 
@@ -69,7 +72,11 @@ const LEARNED = new Map<SourceId, SourceFloorResult>([
 ]);
 
 describe("offers store", () => {
-  beforeEach(() => setActivePinia(createPinia()));
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.mocked(learnSourceFloors).mockReset();
+    hosted.value = false;
+  });
 
   it("is checking everything until the floors are learned", () => {
     const session = useSessionStore();
@@ -203,6 +210,41 @@ describe("offers store", () => {
 
     sized(session, 100n * DOT); // back on the pool tier: its floors were kept
     expect(offers.floors).toBe(LEARNED);
+  });
+
+  it("asks for the tier's own asset before a quote has said, so the usual route costs one load", async () => {
+    // Guessing the pool's native spent a load on floors the PSM route never uses.
+    hosted.value = true;
+    vi.mocked(learnSourceFloors).mockResolvedValue(LEARNED);
+    await useOffersStore().learn();
+    expect(learnSourceFloors).toHaveBeenCalledWith({ egress: egressFor(TOKENS.USDT) });
+
+    setActivePinia(createPinia());
+    hosted.value = false;
+    await useOffersStore().learn();
+    expect(learnSourceFloors).toHaveBeenLastCalledWith({ egress: egressFor(TOKENS.PAS) });
+  });
+
+  it("does not let a load asked for before a retry answer the retry", async () => {
+    const session = useSessionStore();
+    const offers = useOffersStore();
+    sized(session, 100n * DOT);
+    const outage = new Map<SourceId, SourceFloorResult>([["eth", { kind: "unavailable" }]]);
+    const recovered = new Map<SourceId, SourceFloorResult>([
+      ["eth", floor("eth", 10n ** 16n, 25n)],
+    ]);
+    let answerFirst: (v: ReadonlyMap<SourceId, SourceFloorResult>) => void = () => {};
+    vi.mocked(learnSourceFloors)
+      .mockReturnValueOnce(new Promise((resolve) => (answerFirst = resolve)))
+      .mockResolvedValueOnce(recovered);
+
+    void offers.learn();
+    const retry = offers.relearn();
+    answerFirst(outage);
+    await retry;
+
+    expect(learnSourceFloors).toHaveBeenCalledTimes(2);
+    expect(offers.floors).toBe(recovered);
   });
 
   it("learns the floors for an asset the first time a quote is sized in it", async () => {

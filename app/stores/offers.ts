@@ -11,8 +11,10 @@ import {
   type SourceFloorResult,
   type SourceOffer,
 } from "@getsome/chainflip";
+import { PSM_EXTERNAL } from "@getsome/funding";
 import { SOURCE_CHAINS, sourceIdFor } from "~~/lib/config";
 import { learnSourceFloors } from "~~/lib/source-floors";
+import { isHosted } from "~~/lib/host-account";
 import { isDemoBuild } from "../utils/demo";
 import { useSessionStore } from "./session";
 
@@ -47,9 +49,15 @@ export const useOffersStore = defineStore("offers", () => {
   const session = useSessionStore();
 
   /** What the swap must deliver for the purchase on screen: the quote's deposit token, or the
-   *  pool's native before a quote has said. A floor is worth a different figure in each, so
-   *  floors are learned per egress and every egress learned is kept for the session. */
-  const egress = computed(() => egressFor(session.quoted?.depositToken ?? TOKENS.PAS));
+   *  tier's own before a quote has said. A floor is worth a different figure in each, so floors
+   *  are learned per egress and every egress learned is kept for the session.
+   *
+   *  The screen loads before a route can be chosen. Assuming the PSM's external costs a round
+   *  trip only when a quote comes back `pool`; assuming the native cost one every session.
+   *  Off-host there is no PSM. */
+  const egress = computed(() =>
+    egressFor(session.quoted?.depositToken ?? (isHosted() ? TOKENS[PSM_EXTERNAL] : TOKENS.PAS)),
+  );
   const floorsByEgress = shallowRef<ReadonlyMap<string, ReadonlyMap<SourceId, SourceFloorResult>>>(
     new Map(),
   );
@@ -74,11 +82,16 @@ export const useOffersStore = defineStore("offers", () => {
     if (floorsByEgress.value.has(asked.asset)) return Promise.resolve();
     const running = inflight.get(asked.asset);
     if (running) return running;
-    const load = learnSourceFloors({ egress: asked })
+    const load: Promise<void> = learnSourceFloors({ egress: asked })
       .then((result) => {
+        // `relearn` drops the slot along with what was learned, so an answer that no longer owns
+        // it was asked for before the refresh and is not the refresh's. Same on the way out.
+        if (inflight.get(asked.asset) !== load) return;
         floorsByEgress.value = new Map(floorsByEgress.value).set(asked.asset, result);
       })
-      .finally(() => inflight.delete(asked.asset));
+      .finally(() => {
+        if (inflight.get(asked.asset) === load) inflight.delete(asked.asset);
+      });
     inflight.set(asked.asset, load);
     return load;
   }
@@ -89,9 +102,11 @@ export const useOffersStore = defineStore("offers", () => {
     () => void learn(),
   );
 
-  /** Ask again for everything: Chainflip back from maintenance, or a buyer tapping retry. */
+  /** Ask again: Chainflip back from maintenance, or a buyer tapping retry. All are forgotten but
+   *  only the one on screen re-asked; another is learned fresh when a quote next needs it. */
   function relearn(): Promise<void> {
     floorsByEgress.value = new Map();
+    inflight.clear();
     return learn();
   }
 
