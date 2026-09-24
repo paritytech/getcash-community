@@ -43,8 +43,11 @@ import {
   settledCardRecord,
 } from "./fixtures/requests";
 
-// `enterRequest` always builds the hosted world, and outside the Polkadot App the host managers
-// are missing, so the world never gets as far as its flow slot. This world hydrates and has none.
+// A re-open builds the hosted world only when hosted; off-host it builds a mock one instead, so
+// the test that is about the hosted flow slot says so with `hosted`. This stand-in world hydrates
+// and has no slot, which is the case that test covers.
+const { hosted } = vi.hoisted(() => ({ hosted: { value: false } }));
+vi.mock("../lib/host-account", () => ({ isHosted: () => hosted.value }));
 vi.mock("../lib/coinage-live", () => ({
   DEFAULT_SOURCE_ID: "dot-assethub",
   probeTradeBurner: async () => ({ address: "", free: 0n }),
@@ -171,6 +174,7 @@ const chainFunds = (time: number): Observation => ({
 
 describe("requests store", () => {
   beforeEach(() => {
+    hosted.value = false;
     setActivePinia(createPinia());
     host = faultableStorage();
     setRecordStorage(host.storage);
@@ -515,6 +519,8 @@ describe("requests store", () => {
   });
 
   it("enterRequest with a missing slot returns false and keeps the record", async () => {
+    // The flow slot is core's, and only the hosted world holds one.
+    hosted.value = true;
     await seed([awaitingDepositCryptoRecord]);
     const requests = useRequestsStore();
     const session = useSessionStore();
