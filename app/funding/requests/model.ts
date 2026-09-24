@@ -59,8 +59,8 @@ export const PROBED_RECHECK_MS = 86_400_000;
 export const PROVISIONAL_REVERT_MS = 600_000;
 /** Failure reason for a request whose deposit window lapsed. */
 export const DEPOSIT_EXPIRED_REASON = "Channel expired";
-/** The worker holds a request after the PSM refused the mint three times (local/psm/PLAN.md
- *  §2.3): the deposit stays on the request's own address and a retry re-runs the mint. */
+/** The worker holds a request after the PSM refused the mint three times: the deposit stays on
+ *  the request's own address and a retry re-runs the mint. */
 export const FUNDING_HELD_REASON =
   "CASH can't be minted right now. Your funds are safe at this request's deposit address; try again later.";
 /** Window for the purse's payment to reach a withdrawal's key before the request expires. */
@@ -140,12 +140,16 @@ export interface WorkerHandoffPayload {
   /** Pool tier only; "0" on the PSM tier, whose batch prices its own fees live. */
   keepNativeForFees: string;
   /** The conversion tier decided at quote time and frozen here; the worker consumes it and never
-   *  re-decides (local/psm/PLAN.md §2.2). A payload from before tiers were recorded is a pool one. */
+   *  re-decides. A payload from before tiers were recorded is a pool one. */
   tier: ConversionRoute["tier"];
   /** With a psm tier: the external asset, and the Permill fee rate read at quote time that the
    *  call's `max_fee` repeats. */
   external?: PsmExternal;
   feeRate?: number;
+  /** With a psm tier: the external the buyer was asked to deposit, as the quote sized it. The
+   *  worker's gate checks for this rather than re-pricing the fees, which would move the bar under
+   *  a deposit already sized against it. Absent on a payload from before it was recorded. */
+  quotedDeposit?: string;
 }
 
 /** What the store extracts from one job in the worker's blob. */
@@ -226,8 +230,8 @@ export interface TopUpRecord {
   deadline: { depositExpiresAt: number | null; source: "rail" | "route" };
   handoff?: WorkerHandoffPayload;
   /** The conversion tier the request was quoted on, kept on the record itself so a request whose
-   *  hand-off never persisted is still recovered on it rather than re-decided (local/psm/PLAN.md
-   *  §2.2). A record from before tiers were recorded has none and is a pool one. */
+   *  hand-off never persisted is still recovered on it rather than re-decided. A record from
+   *  before tiers were recorded has none and is a pool one. */
   conversion?: ConversionRoute;
   refundAddress?: string;
   status: RequestStatus;

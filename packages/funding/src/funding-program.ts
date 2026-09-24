@@ -19,9 +19,9 @@
 // that moves between the estimate and inclusion fails the program, and the next tick re-prices and
 // retries.
 //
-// The PSM tier's PayFees allowance carries FEE_MARGIN_BPS over the estimate instead, because the
-// estimate is structurally short: the runtime quotes execution and delivery against the pool as it
-// stands, while the program's execution swap moves that pool before the delivery swap is priced.
+// The PSM tier cushions its fees with FEE_MARGIN_BPS instead, once and over all of them, because
+// the estimate is structurally short: the runtime quotes execution and delivery against the pool as
+// it stands, while the program's execution swap moves that pool before the delivery swap is priced.
 // Measured live against the shallow Paseo pool, the delivery quote came in 0.6% under the charge
 // (76,204 quoted, 76,665 charged in CASH; 28,857 against 29,032 in USDT) and the exact allowance
 // failed the transfer with NotHoldingFees. The program ends with RefundSurplus and a DepositAsset
@@ -57,8 +57,9 @@ export const FUNDING_PROGRAM_MAX_WEIGHT = { ref_time: 8_000_000_000n, proof_size
 
 /** Headroom over a measured fee before it is carried as an allowance, in basis points. About
  *  17 times the 0.6% by which the delivery quote under-reports the charge (see the header), so it
- *  also absorbs the pool moving between the estimate and inclusion, and small enough that the
- *  refund it produces is dust. Applied to the PSM program's PayFees and to the destination fee. */
+ *  also absorbs the pool moving between the quote and inclusion, and small enough that the refund
+ *  it produces is dust. The PSM tier applies it once, over its fees as a whole; the destination
+ *  fee carries it too. */
 export const FEE_MARGIN_BPS = 1_000n;
 
 /** `fee` plus FEE_MARGIN_BPS of it, rounded up, so a one-unit fee still gains a unit. */
@@ -363,7 +364,7 @@ export async function dryRunFundingProgram(args: {
   execArgs: ExecuteArgs;
   /** The call to run: the bare execute of `execArgs` unless given. The PSM tier passes its
    *  Utility.batch_all, so the mint runs too and a program that completes but misbehaves is
-   *  caught here, the one outcome batch_all does not revert (local/psm/PLAN.md §4.3). */
+   *  caught here, the one outcome batch_all does not revert. */
   call?: AssetHubCall;
   /** The burner: it signs the call and holds what it withdraws. */
   from: string;

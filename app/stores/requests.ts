@@ -361,6 +361,7 @@ type WorkerJob = {
   peopleGenesis?: string;
   remoteFeeBuffer?: string;
   keepNativeForFees?: string;
+  quotedDeposit?: string;
   tier?: unknown;
   external?: unknown;
   feeRate?: unknown;
@@ -559,6 +560,7 @@ function handoffOf(job: WorkerJob): WorkerHandoffPayload | undefined {
     peopleGenesis,
     remoteFeeBuffer,
     keepNativeForFees,
+    ...(isString(job.quotedDeposit) ? { quotedDeposit: job.quotedDeposit } : {}),
     ...route,
   };
 }
@@ -2149,7 +2151,7 @@ export const useRequestsStore = defineStore("requests", () => {
       const amount = toCashBase(record.amountHuman);
       if (amount === null) throw new Error(`'${record.amountHuman}' is not a CASH amount`);
       // The world is rebuilt on the tier the record froze at quote time; this store decides no
-      // tier, since the deposit it recovers was quoted for one already (local/psm/PLAN.md §2.2).
+      // tier, since the deposit it recovers was quoted for one already.
       const world = await createHostedCoinageWorld({
         amount,
         tradeN: ref.tradeN,

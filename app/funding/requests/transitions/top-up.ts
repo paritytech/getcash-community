@@ -358,7 +358,7 @@ function applyWorker(record: TopUpRecord, at: number, job: WorkerJobView | null)
     }
     if (job.failure === "held" && rank >= 1) {
       // The PSM refused the mint three times over and the worker stopped with the deposit still
-      // on the burner (local/psm/PLAN.md §2.3): recoverable, since a re-sent hand-off re-arms the
+      // on the burner: recoverable, since a re-sent hand-off re-arms the
       // job with a fresh refusal count. The buyer reads the app's own words, not the chain's.
       return failed(next, at, {
         kind: "mint",

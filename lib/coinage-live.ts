@@ -193,8 +193,8 @@ function toCashBase(human: string): bigint {
 
 /** The conversion tier a hosted request takes, read off the live PSM. The one place the
  *  decision is made for a hosted request: it runs before the rail is built, since the tier
- *  fixes the asset the rail delivers, and the world it is handed to freezes it into the hand-off
- *  (local/psm/PLAN.md §2.2). */
+ *  fixes the asset the rail delivers, and the world it is handed to freezes it into the
+ *  hand-off. */
 export async function chooseHostedRoute(amount: bigint): Promise<ConversionRoute> {
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
   return chooseRoute(api, { direction: "mint", internalAmount: amount });

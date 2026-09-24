@@ -547,13 +547,15 @@ function depositBudget(
 }
 
 /** The hand-off's fee fields. `keepNativeForFees` is the pool tier's; the PSM tier's batch prices
- *  its own fees live, so the field carries nothing there. */
+ *  its own fees live, so the field carries nothing there. The PSM tier sends the deposit it quoted
+ *  instead, which is what the worker's gate waits for. */
 function handoffFees(
   sizing: FundingSizing,
-): Pick<WorkerHandoffPayload, "remoteFeeBuffer" | "keepNativeForFees"> {
+): Pick<WorkerHandoffPayload, "remoteFeeBuffer" | "keepNativeForFees" | "quotedDeposit"> {
   return {
     remoteFeeBuffer: sizing.remoteFeeBuffer.toString(),
     keepNativeForFees: (sizing.tier === "pool" ? sizing.keepNativeForFees : 0n).toString(),
+    ...(sizing.tier === "psm" ? { quotedDeposit: sizing.quotedDeposit.toString() } : {}),
   };
 }
 
@@ -945,7 +947,7 @@ export async function createCoinageSession(
     /** The product's worker: the only driver of this session's funding and claim. */
     worker: WorkerLike;
     /** The conversion tier, decided once by the caller before the rail was built and frozen into
-     *  the hand-off here. This world takes no part in the decision (local/psm/PLAN.md §2.2). */
+     *  the hand-off here. This world takes no part in the decision. */
     route: ConversionRoute;
     onClaimProgress?: (stage: "prompted" | "crediting", claimed?: bigint) => void;
   },
@@ -1025,7 +1027,7 @@ export async function createCoinageSession(
   let sizing: FundingSizing;
   let budget: bigint;
   if (args.route.tier === "psm") {
-    // The PSM's rate is fixed, so the deposit is the §4.4 division over the batch's fees: no pool
+    // The PSM's rate is fixed, so the deposit is a division over the batch's fees: no pool
     // quote and no headroom, and nothing to fall back to when the reads fail.
     const psm = await stage(
       "funding sizing estimate",
@@ -1033,7 +1035,7 @@ export async function createCoinageSession(
       estimatePsmFundingSizing({ ...sizingArgs, route: args.route }),
     );
     sizing = psm;
-    budget = psmDepositNeeded(args.amount + psm.remoteFeeBuffer, args.route, psm);
+    budget = psm.quotedDeposit;
   } else {
     const pool = await stage(
       "funding sizing estimate",

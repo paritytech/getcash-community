@@ -3,7 +3,7 @@
 // the native, swap) is the fallback. The decision is four PSM reads made once at quote time and
 // then frozen into the request; the worker CONSUMES the recorded route and never decides one, so
 // a job resumed from persisted state cannot take a different tier than the one the buyer was
-// quoted against an asset that has already arrived (local/psm/PLAN.md §2).
+// quoted against an asset that has already arrived.
 
 import { TOKENS, type XcmLocation } from "@getsome/core";
 import { paseo_next_v2 } from "@polkadot-api/descriptors";

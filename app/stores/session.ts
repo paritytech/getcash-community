@@ -220,7 +220,7 @@ function feeFiat(total: number): string | null {
  * `remoteFeeBuffer` (execution on People, in CASH). On the PSM tier the Asset Hub side is all in
  * the delivered stable: the batch's dispatch fee plus what the mint keeps out for the XCM's
  * execution and delivery, the fee allowance and the asset's min_balance that keeps the burner
- * alive (local/psm/PLAN.md §4.2, M13). The min_balance and the unspent allowance stay on the
+ * alive. The min_balance and the unspent allowance stay on the
  * burner, but the buyer paid for them, so they are part of the cost shown. None has a row of its
  * own on the rail's quote, so the breakdown prices them here.
  *
@@ -321,7 +321,6 @@ export const useSessionStore = defineStore("session", () => {
   /** True when the selected card or bank method is not routed for the chosen region. Not a quote
    *  failure; nothing to retry. */
   const meldMethodUnavailable = ref(false);
-  /** Every Meld on-ramp country from the adapter's live catalog; null until loaded. */
   /** The crypto the Meld catalog is read for. `chooseQuoteRoute` sets it from the route the moment
    *  one is chosen, and that value is what every quote is placed against. This initial value only
    *  covers the window before then: the catalog loads when the pay screen mounts, before any amount
@@ -331,6 +330,7 @@ export const useSessionStore = defineStore("session", () => {
   const meldDestination = ref<string>(
     isHosted() ? TOKENS[PSM_EXTERNAL].meldCurrencyCode : DEFAULT_MELD_DESTINATION,
   );
+  /** Every Meld on-ramp country from the adapter's live catalog; null until loaded. */
   const supportedCountries = ref<SupportedCountry[] | null>(null);
   /** Bulk per-country corridors for greying the dropdown; null until loaded or when unreachable. */
   const corridorByCountry = shallowRef<Map<string, SupportedCorridor> | null>(null);
@@ -1562,10 +1562,13 @@ export const useSessionStore = defineStore("session", () => {
           : deadline.depositExpiresAt - record.startedAt;
       // Re-enter under the record's own trade and source id, on the tier the record froze at
       // quote time; a record from before tiers were recorded is a pool one. No decision here.
+      // Both places the tier can be, in the requests store's order: a request whose hand-off never
+      // persisted still froze one, and reading only the hand-off would rebuild it as pool and then
+      // read the burner in the wrong asset.
       const world = await createLiveWorld(
         epoch,
         staleFlowMs,
-        recordedRoute(record.handoff ?? {}),
+        recordedRoute(record.handoff ?? record.conversion ?? {}),
         record.tradeN,
         undefined,
         record.sourceId as SourceId | undefined,
@@ -1921,13 +1924,20 @@ export const useSessionStore = defineStore("session", () => {
   });
 
   async function loadSupportedCountries(): Promise<void> {
-    const rows = await fetchSupportedCountries(meldDestination.value);
+    const destination = meldDestination.value;
+    const rows = await fetchSupportedCountries(destination);
+    // The destination can change while this is in flight, and the fetches do not return in the
+    // order they were made. Adopting a stale one greys the dropdown by a corridor the quotes are
+    // no longer placed against.
+    if (destination !== meldDestination.value) return;
     if (rows !== null) supportedCountries.value = rows;
   }
 
   // Loads the bulk per-country corridors; only a real catalog is adopted so a cold/empty read greys nothing.
   async function loadSupportedCorridors(): Promise<void> {
-    const map = await fetchSupportedCorridors(meldDestination.value);
+    const destination = meldDestination.value;
+    const map = await fetchSupportedCorridors(destination);
+    if (destination !== meldDestination.value) return;
     if (map !== null && map.size > 0) corridorByCountry.value = map;
   }
 

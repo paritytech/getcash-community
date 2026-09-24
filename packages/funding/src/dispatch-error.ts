@@ -48,8 +48,8 @@ export function describeDispatchError(dispatchError: unknown, execArgs?: unknown
 }
 
 /** The PSM's refusals of a swap: the pair paused for minting or for everything, or the mint over
- *  its ceiling. What the funding pipeline retries a bounded number of times and then holds on
- *  (local/psm/PLAN.md §2.3). */
+ *  its ceiling. What the funding pipeline retries a bounded number of times and then holds
+ *  on. */
 const PSM_REFUSALS = new Set(["MintingStopped", "AllSwapsStopped", "ExceedsMaxPsmDebt"]);
 
 /** True when `dispatchError` is one of the PSM's refusals. A transport error, a timeout or any

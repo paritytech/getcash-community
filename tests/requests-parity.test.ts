@@ -163,8 +163,8 @@ describe("session store", () => {
 describe("requests store", () => {
   it("reads a recorded route and never chooses one", () => {
     // The tier is decided once, at quote time, in the session store. Every path in the requests
-    // store that rebuilds a hand-off or reads a burner takes the tier off what was persisted
-    // (local/psm/PLAN.md §2.2); a call site that asks the chain again is a bug this pins.
+    // store that rebuilds a hand-off or reads a burner takes the tier off what was persisted;
+    // a call site that asks the chain again is a bug this pins.
     const store = readFileSync(
       fileURLToPath(new URL("../app/stores/requests.ts", import.meta.url)),
       "utf8",

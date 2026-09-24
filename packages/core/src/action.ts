@@ -1,7 +1,7 @@
 // The domain seam. The library owns batching, signing, submission and sweep; the action
 // returns an opaque priced call and never sees the signer.
 
-// The first two are what the funding tiers ask a rail to deliver (local/psm/PLAN.md §2): the pool
+// The first two are what the funding tiers ask a rail to deliver: the pool
 // tier the relay native, the PSM tier a stablecoin it mints from.
 export type SettlementAsset =
   | { kind: "native" } // the relay native (DOT, PAS)

@@ -67,9 +67,16 @@ const ALLOWANCE = withFeeMargin(FEES_USDT);
 const MIN_BALANCE = 70_000n;
 /** Kept out of the mint beside the dispatch fee: the min_balance and the fee allowance. */
 const HELD_BACK = MIN_BALANCE + ALLOWANCE;
-/** The USDT the tier needs on the burner: the mint that pays out exactly the target, plus the
- *  dispatch fee and what stays out of the mint. */
-const PSM_DEPOSIT = sizePsmMint(BUY, ROUTE).externalIn + DISPATCH_USDT + HELD_BACK;
+/** The USDT the buyer is asked for: the mint that pays out the target, what stays out of the mint,
+ *  and the one cushion over every fee. The cushion is not held back, so it mints as extra CASH
+ *  unless the pool has moved against the dispatch fee. */
+const PSM_DEPOSIT =
+  sizePsmMint(BUY, ROUTE).externalIn +
+  MIN_BALANCE +
+  withFeeMargin(DISPATCH_USDT + LOCAL_USDT + DELIVERY_USDT);
+/** What lands on People when the pool has not moved: the mint over the whole deposit, less the
+ *  destination fee. Above the target by the part of the cushion the fees did not take. */
+const PSM_LANDED = psmMintOut(PSM_DEPOSIT - DISPATCH_USDT - HELD_BACK, ROUTE.feeRate) - BUFFER;
 
 /** The burner on People, as the program names it and as People's events show it. */
 const BENEFICIARY = new Uint8Array(32).fill(7);
@@ -440,6 +447,8 @@ function scriptedPsmWorld(
 ) {
   const remoteFee = opts.remoteFee ?? BUFFER;
   const state = {
+    /** What the pool charges in USDT for the dispatch fee; raise it to move PAS under a quote. */
+    dispatchUsdt: DISPATCH_USDT,
     usdtAh: 0n,
     underlyingPeople: 0n,
     inFlight: 0n,
@@ -525,7 +534,7 @@ function scriptedPsmWorld(
         state.txs.push({ call: "swap", mint, args, options });
         const txHash = `0x${state.txs.length.toString(16).padStart(64, "0")}`;
         // ChargeAssetTxPayment takes the dispatch fee in USDT before anything runs.
-        state.usdtAh -= DISPATCH_USDT;
+        state.usdtAh -= state.dispatchUsdt;
         const outcome = run(mint, args, false);
         if ("error" in outcome) return { ok: false, txHash, dispatchError: outcome.error };
         state.usdtAh = outcome.usdtLeft;
@@ -574,7 +583,7 @@ function scriptedPsmWorld(
         quote_price_tokens_for_exact_tokens: async (give: unknown, _want: unknown, out: bigint) => {
           expect(give).toEqual(TOKENS.USDT.location);
           expect(out).toBe(DISPATCH);
-          return DISPATCH_USDT;
+          return state.dispatchUsdt;
         },
         quote_price_exact_tokens_for_tokens: async () => {
           throw new Error("exact-in quote on the psm tier");
@@ -636,6 +645,7 @@ async function drive(
   ticks: number,
   state: TickState = freshTickState(),
   route: ConversionRoute = POOL,
+  quotedDeposit?: bigint,
 ) {
   const steps: FundingStep[] = [];
   const transients: string[] = [];
@@ -659,6 +669,7 @@ async function drive(
         remoteFeeBuffer: BUFFER,
         keepNativeForFees: KEEP,
         slippagePct: 2,
+        ...(quotedDeposit === undefined ? {} : { quotedDeposit }),
         tickTimeoutMs: 1_000,
         submitTimeoutMs: 1_000,
         signOptions: SIGN_OPTIONS,
@@ -854,22 +865,25 @@ describe("tickOnce on the PSM tier", () => {
     expect(run.steps).toEqual(["swap", "await-arrival", "done"]);
     expect(run.txs).toEqual(["swap"]);
     expect(run.state).toMatchObject({ attempts: 1, xcmSubmitted: true, psmRefusals: 0 });
-    // The destination fee took the buffer exactly, so exactly the target landed. The burner keeps
+    // The destination fee took the buffer exactly, so the target landed plus the cushion the
+    // dispatch fee did not need: it is asked for but not held back, so it mints. The burner keeps
     // USDt's min_balance, which kept its account alive through the batch, plus the unspent tenth
     // of the fee allowance the program deposited back.
-    expect(world.state.underlyingPeople).toBe(SETTLE);
+    expect(world.state.underlyingPeople).toBe(PSM_LANDED);
+    expect(PSM_LANDED).toBeGreaterThan(SETTLE);
     expect(world.state.usdtAh).toBe(MIN_BALANCE + ALLOWANCE - FEES_USDT);
 
     const [tx] = world.state.txs;
     // The mint takes everything the dispatch fee and the held-back USDT leave, at the route's fee
-    // verbatim, and pays out exactly the target.
+    // verbatim, so it covers the target and mints the unused cushion on top.
     expect(tx!.mint.external_amount).toBe(PSM_DEPOSIT - DISPATCH_USDT - HELD_BACK);
-    expect(psmMintOut(tx!.mint.external_amount, ROUTE.feeRate)).toBe(BUY);
+    expect(psmMintOut(tx!.mint.external_amount, ROUTE.feeRate)).toBeGreaterThanOrEqual(BUY);
     expect(tx!.mint.max_fee).toBe(ROUTE.feeRate);
     // The program withdraws what the mint paid out and the fee allowance in USDT, pays the fees
     // from that allowance, exchanges nothing, and ends by refunding the surplus.
     const withdrawn = instruction(tx!.args, "WithdrawAsset") as Fungible[];
-    expect(withdrawn.find(isCash)!.fun.value).toBe(BUY);
+    // Everything the mint paid out, the unused cushion included.
+    expect(withdrawn.find(isCash)!.fun.value).toBe(PSM_LANDED + BUFFER);
     expect(withdrawn.find(isUsdt)!.fun.value).toBe(ALLOWANCE);
     const payFees = (instruction(tx!.args, "PayFees") as { asset: Fungible }).asset;
     expect(isUsdt(payFees)).toBe(true);
@@ -883,6 +897,28 @@ describe("tickOnce on the PSM tier", () => {
     expect(tx!.args.max_weight).toEqual({ ref_time: 1_000_000n, proof_size: 1_000n });
     // The dispatch fee is charged in USDT, with the tick's anchor.
     expect(tx!.options).toEqual({ asset: TOKENS.USDT.location, ...SIGN_OPTIONS });
+  });
+
+  it("clears a deposit sized at the quote after PAS moves against it, and re-prices without one", async () => {
+    // The fees in the deposit are priced through the USDT/PAS pool, so re-pricing them at the tick
+    // raises the bar under a deposit that was exactly right when it was quoted. The buyer sends
+    // what the quote asked for; PAS then gains a tenth before it arrives.
+    const moved = DISPATCH_USDT + DISPATCH_USDT / 20n;
+    const world = scriptedPsmWorld();
+    world.state.usdtAh = PSM_DEPOSIT;
+    world.state.dispatchUsdt = moved;
+    const run = await drive(world, 4, freshTickState(), ROUTE, PSM_DEPOSIT);
+    expect(run.steps[0]).toBe("swap");
+    expect(run.steps.at(-1)).toBe("done");
+    // The cushion paid the rise, so the target still landed.
+    expect(world.state.underlyingPeople).toBeGreaterThanOrEqual(SETTLE);
+
+    // Without the frozen figure the same deposit waits for a reversal that may never come, which
+    // is what carrying it through the hand-off exists to prevent.
+    const bare = scriptedPsmWorld();
+    bare.state.usdtAh = PSM_DEPOSIT;
+    bare.state.dispatchUsdt = moved;
+    expect((await drive(bare, 1, freshTickState(), ROUTE)).steps).toEqual(["await-native"]);
   });
 
   it("sizes the deposit for the mint PLUS the dispatch fee, the fee allowance and min_balance: one short waits", async () => {
@@ -981,13 +1017,13 @@ describe("tickOnce on the PSM tier", () => {
     const retry = await drive(world, 4, state, ROUTE);
     expect(retry.steps).toEqual(["swap", "done"]);
     expect(state).toMatchObject({ attempts: 2, psmRefusals: 1, xcmSubmitted: true });
-    expect(world.state.underlyingPeople).toBe(SETTLE);
+    expect(world.state.underlyingPeople).toBe(PSM_LANDED);
     expect(world.state.usdtAh).toBe(MIN_BALANCE + ALLOWANCE - FEES_USDT);
   });
 });
 
 describe("psmDepositNeeded", () => {
-  it("is the mint for exactly the target, plus the dispatch fee and the held-back external", () => {
+  it("is the mint for the target, the held-back external, and one cushion over every fee", () => {
     const fees = {
       localExternal: 4_000n,
       deliveryExternal: 250n,
@@ -999,9 +1035,16 @@ describe("psmDepositNeeded", () => {
       maxWeight: { ref_time: 1n, proof_size: 1n },
     };
     const needed = psmDepositNeeded(BUY, ROUTE, fees);
-    expect(needed).toBe(sizePsmMint(BUY, ROUTE).externalIn + DISPATCH_USDT + MIN_BALANCE + 4_675n);
-    // The XCM's fees are not part of the mint: it pays out the target and nothing more.
-    expect(psmMintOut(needed - DISPATCH_USDT - fees.heldBackExternal, ROUTE.feeRate)).toBe(BUY);
+    expect(needed).toBe(
+      sizePsmMint(BUY, ROUTE).externalIn +
+        MIN_BALANCE +
+        withFeeMargin(DISPATCH_USDT + 4_000n + 250n),
+    );
+    // The mint is never short of the target: what the cushion leaves after the fees are actually
+    // charged is minted too, so the buyer is over-served rather than left waiting.
+    expect(
+      psmMintOut(needed - DISPATCH_USDT - fees.heldBackExternal, ROUTE.feeRate),
+    ).toBeGreaterThanOrEqual(BUY);
   });
 });
 

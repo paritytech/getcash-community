@@ -1,6 +1,6 @@
 // Sizes the fee allowances the deposit must carry, priced live from both chains with no funds and
 // no stand-in account. Every figure is a runtime read against our own message. The two tiers'
-// costs differ in composition, not just in value (local/psm/PLAN.md §4.2, §4.4), so each has its
+// costs differ in composition, not just in value, so each has its
 // own shape. On the pool tier, keepNativeForFees is the native the deposit carries on top of the
 // pool quote for the program's own costs on Asset Hub, and any failure returns null so the caller
 // keeps the funding package's static fallbacks. On the PSM tier the batch's dispatch fee and the
@@ -25,6 +25,7 @@ import {
   PASEO_ASSET_HUB_PARA_ID,
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
+  psmDepositNeeded,
   quoteNativeInMax,
   sizePsmMint,
   type PsmExternal,
@@ -53,11 +54,15 @@ export interface PsmFundingSizing {
   /** Also kept out of the mint, in the external: the asset's min_balance, which the burner's
    *  account must hold to survive the batch and which stays on it, plus `feeAllowanceExternal`. */
   heldBackExternal: bigint;
-  /** The allowance for the XCM's local execution and delivery, in the external: a tenth over the
-   *  estimate, the unspent part refunded to the burner on Asset Hub. */
+  /** The allowance for the XCM's local execution and delivery, in the external: what the one
+   *  cushion over the fees leaves after the dispatch fee, the unspent part refunded to the burner
+   *  on Asset Hub. */
   feeAllowanceExternal: bigint;
   /** The PSM's fee on the mint, Permill, as the route recorded it. */
   feeRate: number;
+  /** What the buyer is asked to deposit: the mint's input, the min_balance, and the cushioned
+   *  fees. The worker's gate checks for this figure rather than re-pricing it. */
+  quotedDeposit: bigint;
 }
 
 export type FundingSizing = PoolFundingSizing | PsmFundingSizing;
@@ -76,7 +81,7 @@ interface SizingArgs {
 }
 
 /** The chains' typed apis, the pool and the destination's execution fee: what both tiers' sizing
- *  starts from. The pool is on the fee path on both tiers (local/psm/PLAN.md §4.2). */
+ *  starts from. The pool is on the fee path on both tiers. */
 async function sizingReads(args: SizingArgs) {
   const api = args.ahClient.getTypedApi(paseo_next_v2);
   const peopleApi = args.peopleClient.getTypedApi(paseo_people_next);
@@ -150,6 +155,7 @@ export async function estimatePsmFundingSizing(
     heldBackExternal: fees.heldBackExternal,
     feeAllowanceExternal: fees.feeAllowanceExternal,
     feeRate: args.route.feeRate,
+    quotedDeposit: psmDepositNeeded(buyTarget, args.route, fees),
   };
 }
 

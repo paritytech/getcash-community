@@ -403,7 +403,7 @@ describe("estimatePsmBatchFees", () => {
   };
   const usdtV5 = { type: "V5", value: TOKENS.USDT.location };
 
-  it("prices the XCM's execution and delivery and the batch's dispatch all in the external, holds back min_balance plus the margined allowance", async () => {
+  it("prices the XCM's execution and delivery and the batch's dispatch all in the external, holds back min_balance plus the cushioned allowance", async () => {
     const { api, seen } = recordingApi({
       dispatchNative: 900_000_000n,
       localExternal: 4_000n,
@@ -451,12 +451,13 @@ describe("estimatePsmBatchFees", () => {
     const final = seen.execute as ExecuteArgs;
     expect((final.message.value[1]!.value as { asset: Fungible }).asset).toEqual({
       id: TOKENS.USDT.location,
-      fun: { type: "Fungible", value: 4_675n },
+      fun: { type: "Fungible", value: 4_250n },
     });
     expect(final.max_weight).toEqual(fees.maxWeight);
-    // The probe's mint is the deposit less what is held back, so its encoding is the batch's.
+    // The probe's mint is the deposit less what the exact fees hold back, within a few thousand
+    // units of the batch's own and so the same encoded length.
     expect((seen.mint as { external_amount: bigint }).external_amount).toBe(
-      input.depositExternal - fees.heldBackExternal,
+      input.depositExternal - fees.minBalanceExternal - 4_250n,
     );
     expect(seen.quote).toEqual([TOKENS.USDT.location, TOKENS.PAS.location, 900_000_000n, true]);
     // No burner given: no dry run.
@@ -487,6 +488,16 @@ describe("estimatePsmBatchFees", () => {
     const fees = await estimatePsmBatchFees({ api, ...input });
     expect(fees.feeAllowanceExternal).toBe(34_225n);
     expect(fees.feeAllowanceExternal).toBeGreaterThanOrEqual(2_256n + 29_032n);
+  });
+
+  it("holds back only what the program spends; the cushion is asked for, not held", async () => {
+    const { api } = recordingApi({ localExternal: 2_256n, deliveryExternal: 28_857n });
+    const fees = await estimatePsmBatchFees({ api, ...input });
+    // The allowance covers the XCM's own fees, which is all the program withdraws. The cushion
+    // over the dispatch fee is asked for in the deposit and left in the mint, where it becomes the
+    // buyer's CASH when the pool has not moved and absorbs the rise when it has.
+    expect(fees.heldBackExternal).toBe(fees.minBalanceExternal + fees.feeAllowanceExternal);
+    expect(fees.feeAllowanceExternal).toBe(withFeeMargin(2_256n + 28_857n));
   });
 
   it("refuses a deposit that does not cover what is held back, and an external Asset Hub does not know", async () => {

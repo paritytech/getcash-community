@@ -63,13 +63,14 @@ const saveJobs = () => store.save();
  *   burnerAddress,                           // the address the surface showed
  *   depositExpiresAt: number|null,           // the rail's deposit deadline
  *   settleAmount, remoteFeeBuffer, keepNativeForFees, slippagePct,   // bigints as strings
+ *   quotedDeposit?,                                                  // psm tier, bigint as string
  *   underlyingAssetId, peopleParaId, assetHubGenesis, peopleGenesis,
  *   tier: "pool" | "psm", external?, feeRate?, // the conversion route the surface decided at
  *                                            // quote time; consumed here, never re-decided
  *   phase: "starting" | FundingStep | "failed",  // await-native: the route's deposit asset
  *   failure?: "shortfall" | "timeout" | "expired" | "cancelled" | "claim" | "held",
  *                                            // held: the PSM refused the mint three times; the
- *                                            // deposit stays on the burner (PLAN §2.3)
+ *                                            // deposit stays on the burner
  *   done, createdAt, armedAt, lastTickAt, lastError?,
  *   state: { attempts, psmRefusals, xcmSubmitted, peopleAtXcm: string,
  *            fundsSeenAt: number|null, workedMs },
@@ -119,6 +120,9 @@ function newRecord(input, nowMs) {
     remoteFeeBuffer: asBig(input.remoteFeeBuffer, DEFAULT_REMOTE_FEE_BUFFER).toString(),
     keepNativeForFees: asBig(input.keepNativeForFees, DEFAULT_KEEP_NATIVE_FOR_FEES).toString(),
     slippagePct: Number(input.slippagePct) > 0 ? Number(input.slippagePct) : DEFAULT_SLIPPAGE_PCT,
+    // The PSM tier's gate waits for the deposit the quote asked for. Absent on a pool job and on
+    // anything quoted before it was recorded.
+    ...(typeof input.quotedDeposit === "string" ? { quotedDeposit: input.quotedDeposit } : {}),
     underlyingAssetId,
     peopleParaId,
     assetHubGenesis,
@@ -567,6 +571,9 @@ async function tickRecord(record, nowMs) {
           remoteFeeBuffer: asBig(record.remoteFeeBuffer, DEFAULT_REMOTE_FEE_BUFFER),
           keepNativeForFees: asBig(record.keepNativeForFees, DEFAULT_KEEP_NATIVE_FOR_FEES),
           slippagePct: record.slippagePct,
+          ...(typeof record.quotedDeposit === "string"
+            ? { quotedDeposit: asBig(record.quotedDeposit) }
+            : {}),
           tickTimeoutMs: DEFAULT_TICK_TIMEOUT_MS,
           submitTimeoutMs: DEFAULT_SUBMIT_TIMEOUT_MS,
           // Every submit is on Asset Hub; one anchor per tick serves them all. The PSM tier adds

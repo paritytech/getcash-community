@@ -50,6 +50,7 @@ import {
   dryRunFundingProgram,
   estimateFundingProgramFees,
   ProgramRejectedError,
+  withFeeMargin,
   type PeopleApi,
   type Pool,
 } from "./funding-program";
@@ -95,7 +96,7 @@ export const DEFAULT_KEEP_NATIVE_FOR_FEES = 200_000_000n;
  *  than the target and receives up to this much more. 5 to account for shallow liquidity in
  *  Paseo AH next v2 Pool. Pool tier only: the PSM's rate does not move. */
 export const DEFAULT_SLIPPAGE_PCT = 5;
-/** PSM refusals of the mint before the run is held (local/psm/PLAN.md §2.3). */
+/** PSM refusals of the mint before the run is held. */
 export const MAX_PSM_REFUSALS = 3;
 /** Bound on a tick's chain reads (balances, pool quote, pool discovery). A transport that
  *  dies without rejecting leaves reads pending forever; unbounded, one such tick would
@@ -329,6 +330,11 @@ export interface TickOnceInput {
   keepNativeForFees: bigint;
   /** Pool tier only. */
   slippagePct: number;
+  /** PSM tier: the deposit the buyer was asked for, frozen at quote time. The gate checks for
+   *  exactly this rather than re-pricing the fees, since re-pricing moves the bar under a deposit
+   *  that was already sized against it. Absent on a request quoted before it was recorded, which
+   *  falls back to the live figure. */
+  quotedDeposit?: bigint;
   tickTimeoutMs: number;
   submitTimeoutMs: number;
   /** Extra options merged into the signAndSubmit this tick makes, after the PSM tier's fee
@@ -425,7 +431,13 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
         input.tickTimeoutMs,
         "psm batch fee estimate",
       );
-      depositNeeded = psmDepositNeeded(buyNow, route, psmFees);
+      // Gate on what the buyer was asked for. Both figures cover the same costs, but the fees in
+      // them are priced through the pool, so re-pricing here raises the bar whenever PAS has risen
+      // since the quote and leaves a deposit that was exactly right waiting for a reversal. The
+      // live figure stands in only for a request quoted before this was recorded, and for one
+      // resumed after a partial arrival, where the frozen figure covers more than is still owed.
+      const frozen = buyNow === buyAmount ? input.quotedDeposit : undefined;
+      depositNeeded = frozen ?? psmDepositNeeded(buyNow, route, psmFees);
     }
   }
   const step = decideStep(balances, { settleAmount: input.settleAmount, depositNeeded });
@@ -572,20 +584,32 @@ const poolOf = (input: TickOnceInput): Pool => {
   return input.pool;
 };
 
-/** The external the PSM tier needs on the burner for `buyNow` CASH to reach People, per
- *  local/psm/PLAN.md §4.4 and M13: the mint that pays out exactly `buyNow`, plus what stays out of
- *  the mint. The dispatch fee is charged in the external before the mint. The XCM's local
- *  execution and delivery are paid in the external too, from the allowance the mint leaves on the
- *  burner beside the external's min_balance, which keeps the account alive for the program to
- *  withdraw from and refund into. Without the held-back part the mint reaps the account and the
- *  program fails at its first instruction; without the dispatch fee the mint finds the balance
- *  short. */
+/** The external the PSM tier asks the buyer for, so `buyNow` CASH reaches People: the mint that
+ *  pays out exactly `buyNow`, plus what stays out of the mint, plus the cushion.
+ *
+ *  The dispatch fee is charged in the external before the mint. The XCM's local execution and
+ *  delivery are paid in the external too, from the allowance the mint leaves on the burner beside
+ *  the external's min_balance, which keeps the account alive for the program to withdraw from and
+ *  refund into. Without the held-back part the mint reaps the account and the program fails at its
+ *  first instruction; without the dispatch fee the mint finds the balance short.
+ *
+ *  The cushion covers every fee at once and is taken here, once. It is asked for but not held
+ *  back, so it sits in the mint: a deposit made at this figure still mints the full `buyNow` when
+ *  the pool has moved against the dispatch fee by up to the cushion, and mints the surplus as
+ *  extra CASH when it has not. */
 export function psmDepositNeeded(
   buyNow: bigint,
   route: PsmRoute,
-  fees: Pick<PsmBatchFees, "dispatchExternal" | "heldBackExternal">,
+  fees: Pick<
+    PsmBatchFees,
+    "dispatchExternal" | "localExternal" | "deliveryExternal" | "minBalanceExternal"
+  >,
 ): bigint {
-  return sizePsmMint(buyNow, route).externalIn + fees.dispatchExternal + fees.heldBackExternal;
+  return (
+    sizePsmMint(buyNow, route).externalIn +
+    fees.minBalanceExternal +
+    withFeeMargin(fees.dispatchExternal + fees.localExternal + fees.deliveryExternal)
+  );
 }
 
 /** The PSM tier's swap step: mint everything the dispatch fee leaves and teleport the CASH to the
