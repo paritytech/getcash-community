@@ -86,7 +86,6 @@ const busy = computed(() => Boolean(props.openingTopUpId));
             <li v-for="topUp in inProgress" :key="topUp.id">
               <FundingTopUpProgressCard
                 :top-up="topUp"
-                :asset="config.asset"
                 :opening="openingTopUpId === topUp.id"
                 :disabled="busy"
                 @open="emit('open', topUp)"
@@ -103,7 +102,6 @@ const busy = computed(() => Boolean(props.openingTopUpId));
             <li v-for="topUp in past" :key="topUp.id">
               <FundingTopUpProgressCard
                 :top-up="topUp"
-                :asset="config.asset"
                 :opening="openingTopUpId === topUp.id"
                 :disabled="busy"
                 @open="emit('open', topUp)"
