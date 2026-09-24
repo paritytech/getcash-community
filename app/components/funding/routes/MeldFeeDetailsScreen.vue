@@ -7,6 +7,7 @@
 // live request, and the record's own stored quote carries the same split.
 import { computed } from "vue";
 import type { QuoteView } from "../../../funding/quote-rows";
+import { cashAmount } from "../../../utils/cash";
 import { fmtFiat, isMoneyAmount, sumMoney } from "../../../utils/money";
 import DetailRows from "../../ui/DetailRows.vue";
 import PillButton from "../../ui/PillButton.vue";
@@ -90,7 +91,7 @@ const rate = computed(() => {
   if (!q || !Number.isFinite(cash) || cash <= 0) return null;
   const net = Number(q.amount) - (totalFee.value ?? 0);
   if (!Number.isFinite(net) || net <= 0) return null;
-  return `1 $CASH ≈ ${fmtFiat((net / cash).toFixed(2), q.symbol)}`;
+  return `${cashAmount("1")} ≈ ${fmtFiat((net / cash).toFixed(2), q.symbol)}`;
 });
 </script>
 
