@@ -169,7 +169,7 @@ describe("requests store", () => {
       fileURLToPath(new URL("../app/stores/requests.ts", import.meta.url)),
       "utf8",
     );
-    expect(store).not.toMatch(/\b(choose\w*Route|readPsmRoute)\b/);
+    expect(store).not.toMatch(/\bchoose\w*Route\b/);
     expect(store).toMatch(/\brecordedRoute\(/);
   });
 });

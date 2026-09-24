@@ -13,13 +13,6 @@ type AssetHubApi = TypedApi<typeof paseo_next_v2>;
 /** PSM storage is keyed by `xcm::v5::Location`, not the `u32` ids pallet-assets calls take. */
 type PsmAssetId = Parameters<AssetHubApi["query"]["Psm"]["Psm"]["getValue"]>[0];
 
-/** Build scaffolding, NOT configuration: it is deleted, not set true, once the PSM path behind
- *  it is complete (local/psm/PLAN.md M12). The PSM is the intended route; it cannot be taken until
- *  the pipeline can execute it and the rails deliver USDT, and until then this keeps every commit
- *  in the sequence green by answering `pool` without reading the chain. Not exported from the
- *  package index: nothing outside this module chooses a tier by setting it. */
-export const PSM_ROUTE_ENABLED: boolean = true;
-
 /** Headroom demanded ABOVE the amount before the PSM tier is chosen, in basis points. A margin
  *  on the amount, not on the ceiling: the amount is what moves between quote and execution.
  *  The pipeline converts everything the burner holds and both rails over-deliver (Chainflip 5%,
@@ -89,9 +82,9 @@ export function mintHeadroom(input: {
   return headroom < 0n ? 0n : headroom;
 }
 
-/** The four checks of the routing rule against the live PSM, ungated. `chooseRoute` is the
- *  entry point; this is exported for its tests. */
-export async function readPsmRoute(api: AssetHubApi, query: RouteQuery): Promise<ConversionRoute> {
+/** The tier a request takes, decided once at quote time: the four checks of the routing rule
+ *  against the live PSM, the PSM when all of them pass and the pool when any fails. */
+export async function chooseRoute(api: AssetHubApi, query: RouteQuery): Promise<ConversionRoute> {
   const external: PsmExternal = PSM_EXTERNAL;
   const externalLocation = EXTERNAL_LOCATIONS[external];
   const [instance, approval] = await Promise.all([
@@ -132,13 +125,6 @@ export async function readPsmRoute(api: AssetHubApi, query: RouteQuery): Promise
   // 4. Not below the instance's minimum swap.
   if (query.internalAmount < instance.min_swap_amount) return POOL;
   return { tier: "psm", external, feeRate };
-}
-
-/** The tier a request takes, decided once at quote time. Resolves to the pool for every
- *  request while the scaffolding above is in place. */
-export async function chooseRoute(api: AssetHubApi, query: RouteQuery): Promise<ConversionRoute> {
-  if (!PSM_ROUTE_ENABLED) return POOL;
-  return readPsmRoute(api, query);
 }
 
 /** The route a persisted hand-off or job record carries, and the ONLY way a worker learns a

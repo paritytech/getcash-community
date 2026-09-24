@@ -1,6 +1,6 @@
 // Route selection over a scripted PSM: each of the four checks failing on its own, the margin at
-// its boundary in both directions, the build scaffolding, and a resumed job's route coming from its
-// record rather than the chain.
+// its boundary in both directions, and a resumed job's route coming from its record rather than
+// the chain.
 
 import { TOKENS } from "@getsome/core";
 import { describe, expect, it } from "vitest";
@@ -8,7 +8,6 @@ import {
   ROUTE_MARGIN_FLOOR,
   chooseRoute,
   mintHeadroom,
-  readPsmRoute,
   recordedRoute,
   withMargin,
   type ConversionRoute,
@@ -77,17 +76,17 @@ function scriptedPsm(overrides: Partial<PsmWorld> = {}) {
 const mint = (internalAmount: bigint) => ({ direction: "mint" as const, internalAmount });
 const redeem = (internalAmount: bigint) => ({ direction: "redeem" as const, internalAmount });
 
-describe("readPsmRoute", () => {
+describe("chooseRoute", () => {
   it("keys the PSM by the table's Locations and answers psm with the fee for the direction", async () => {
     const { api, reads } = scriptedPsm({ redemptionFee: 7_000 });
-    expect(await readPsmRoute(api, mint(50n * CASH))).toEqual(PSM_AT_DEFAULT_FEE);
+    expect(await chooseRoute(api, mint(50n * CASH))).toEqual(PSM_AT_DEFAULT_FEE);
     expect(reads).toEqual([
       ["Psm", TOKENS.CASH.location],
       ["ExternalAssets", TOKENS.CASH.location, TOKENS.USDT.location],
     ]);
     // Enough debt to redeem from; the redemption fee, not the minting one.
     const { api: withDebt } = scriptedPsm({ redemptionFee: 7_000, debts: [60n * CASH] });
-    expect(await readPsmRoute(withDebt, redeem(50n * CASH))).toEqual({
+    expect(await chooseRoute(withDebt, redeem(50n * CASH))).toEqual({
       tier: "psm",
       external: "USDT",
       feeRate: 7_000,
@@ -95,8 +94,8 @@ describe("readPsmRoute", () => {
   });
 
   it("check 1: no instance, or an external not approved on it, is the pool", async () => {
-    expect(await readPsmRoute(scriptedPsm({ instance: undefined }).api, mint(CASH))).toEqual(POOL);
-    expect(await readPsmRoute(scriptedPsm({ approval: undefined }).api, mint(CASH))).toEqual(POOL);
+    expect(await chooseRoute(scriptedPsm({ instance: undefined }).api, mint(CASH))).toEqual(POOL);
+    expect(await chooseRoute(scriptedPsm({ approval: undefined }).api, mint(CASH))).toEqual(POOL);
   });
 
   it("check 2: the circuit breaker stops minting first and redemption last", async () => {
@@ -105,77 +104,77 @@ describe("readPsmRoute", () => {
       approval: { status: { type: "MintingDisabled" }, decimals: 6 },
       debts,
     }).api;
-    expect(await readPsmRoute(halted, mint(CASH))).toEqual(POOL);
-    expect(await readPsmRoute(halted, redeem(CASH))).toEqual(PSM_AT_DEFAULT_FEE);
+    expect(await chooseRoute(halted, mint(CASH))).toEqual(POOL);
+    expect(await chooseRoute(halted, redeem(CASH))).toEqual(PSM_AT_DEFAULT_FEE);
     const stopped = scriptedPsm({
       approval: { status: { type: "AllDisabled" }, decimals: 6 },
       debts,
     }).api;
-    expect(await readPsmRoute(stopped, mint(CASH))).toEqual(POOL);
-    expect(await readPsmRoute(stopped, redeem(CASH))).toEqual(POOL);
+    expect(await chooseRoute(stopped, mint(CASH))).toEqual(POOL);
+    expect(await chooseRoute(stopped, redeem(CASH))).toEqual(POOL);
   });
 
   it("check 3, mint: the external's own headroom must clear the amount plus the margin", async () => {
     // Ceiling 100 CASH at 100%; 50 CASH needs 55 of headroom.
     const clears = scriptedPsm({ debts: [45n * CASH] }).api;
-    expect(await readPsmRoute(clears, mint(50n * CASH))).toEqual(PSM_AT_DEFAULT_FEE);
+    expect(await chooseRoute(clears, mint(50n * CASH))).toEqual(PSM_AT_DEFAULT_FEE);
     const oneShort = scriptedPsm({ debts: [45n * CASH + 1n] }).api;
-    expect(await readPsmRoute(oneShort, mint(50n * CASH))).toEqual(POOL);
+    expect(await chooseRoute(oneShort, mint(50n * CASH))).toEqual(POOL);
   });
 
   it("check 3, mint: the ceiling is a normalised share, so a second external halves USDT's", async () => {
     // Two externals at equal weight: USDT's ceiling is 50 CASH, not 100.
     const shared = scriptedPsm({ weights: [1_000_000, 1_000_000], debts: [0n, 0n] }).api;
-    expect(await readPsmRoute(shared, mint(50n * CASH))).toEqual(POOL);
-    expect(await readPsmRoute(shared, mint(45n * CASH))).toEqual(PSM_AT_DEFAULT_FEE);
+    expect(await chooseRoute(shared, mint(50n * CASH))).toEqual(POOL);
+    expect(await chooseRoute(shared, mint(45n * CASH))).toEqual(PSM_AT_DEFAULT_FEE);
   });
 
   it("check 3, mint: another external's debt eats the aggregate headroom", async () => {
     // USDT's own ceiling is 50 CASH and untouched; the other external already owes 60 of the
     // instance's 100, leaving 40 in aggregate. 36 CASH needs 39.6; 37 needs 40.7.
     const crowded = scriptedPsm({ weights: [500_000, 500_000], debts: [0n, 60n * CASH] }).api;
-    expect(await readPsmRoute(crowded, mint(36n * CASH))).toEqual(PSM_AT_DEFAULT_FEE);
-    expect(await readPsmRoute(crowded, mint(37n * CASH))).toEqual(POOL);
+    expect(await chooseRoute(crowded, mint(36n * CASH))).toEqual(PSM_AT_DEFAULT_FEE);
+    expect(await chooseRoute(crowded, mint(37n * CASH))).toEqual(POOL);
   });
 
   it("check 3, mint: a zero weight, or a zero total, is a zero ceiling", async () => {
     expect(
-      await readPsmRoute(scriptedPsm({ weights: [0, 1_000_000], debts: [0n, 0n] }).api, mint(CASH)),
+      await chooseRoute(scriptedPsm({ weights: [0, 1_000_000], debts: [0n, 0n] }).api, mint(CASH)),
     ).toEqual(POOL);
-    expect(await readPsmRoute(scriptedPsm({ weights: [0] }).api, mint(CASH))).toEqual(POOL);
+    expect(await chooseRoute(scriptedPsm({ weights: [0] }).api, mint(CASH))).toEqual(POOL);
   });
 
   it("check 3, redeem: only debt minted through the pair can come back out", async () => {
+    expect(await chooseRoute(scriptedPsm({ debts: [55n * CASH] }).api, redeem(50n * CASH))).toEqual(
+      PSM_AT_DEFAULT_FEE,
+    );
     expect(
-      await readPsmRoute(scriptedPsm({ debts: [55n * CASH] }).api, redeem(50n * CASH)),
-    ).toEqual(PSM_AT_DEFAULT_FEE);
-    expect(
-      await readPsmRoute(scriptedPsm({ debts: [55n * CASH - 1n] }).api, redeem(50n * CASH)),
+      await chooseRoute(scriptedPsm({ debts: [55n * CASH - 1n] }).api, redeem(50n * CASH)),
     ).toEqual(POOL);
     // Today's chain: nothing minted yet, so nothing redeemable, however open the breaker.
-    expect(await readPsmRoute(scriptedPsm().api, redeem(CASH))).toEqual(POOL);
+    expect(await chooseRoute(scriptedPsm().api, redeem(CASH))).toEqual(POOL);
   });
 
   it("the margin has a floor: a small amount still needs a whole CASH of headroom", async () => {
     // 1 CASH with a 10% margin would need 1.1; the floor makes it 2.
     const twoLeft = scriptedPsm({ debts: [98n * CASH] }).api;
-    expect(await readPsmRoute(twoLeft, mint(CASH))).toEqual(PSM_AT_DEFAULT_FEE);
+    expect(await chooseRoute(twoLeft, mint(CASH))).toEqual(PSM_AT_DEFAULT_FEE);
     const underTwo = scriptedPsm({ debts: [98n * CASH + 1n] }).api;
-    expect(await readPsmRoute(underTwo, mint(CASH))).toEqual(POOL);
-    expect(await readPsmRoute(scriptedPsm({ debts: [2n * CASH] }).api, redeem(CASH))).toEqual(
+    expect(await chooseRoute(underTwo, mint(CASH))).toEqual(POOL);
+    expect(await chooseRoute(scriptedPsm({ debts: [2n * CASH] }).api, redeem(CASH))).toEqual(
       PSM_AT_DEFAULT_FEE,
     );
-    expect(await readPsmRoute(scriptedPsm({ debts: [2n * CASH - 1n] }).api, redeem(CASH))).toEqual(
+    expect(await chooseRoute(scriptedPsm({ debts: [2n * CASH - 1n] }).api, redeem(CASH))).toEqual(
       POOL,
     );
   });
 
   it("check 4: below the instance's minimum swap is the pool, whatever the headroom", async () => {
-    expect(await readPsmRoute(scriptedPsm().api, mint(CASH - 1n))).toEqual(POOL);
-    expect(await readPsmRoute(scriptedPsm().api, mint(CASH))).toEqual(PSM_AT_DEFAULT_FEE);
+    expect(await chooseRoute(scriptedPsm().api, mint(CASH - 1n))).toEqual(POOL);
+    expect(await chooseRoute(scriptedPsm().api, mint(CASH))).toEqual(PSM_AT_DEFAULT_FEE);
     const redeemable = scriptedPsm({ debts: [10n * CASH] }).api;
-    expect(await readPsmRoute(redeemable, redeem(CASH - 1n))).toEqual(POOL);
-    expect(await readPsmRoute(redeemable, redeem(CASH))).toEqual(PSM_AT_DEFAULT_FEE);
+    expect(await chooseRoute(redeemable, redeem(CASH - 1n))).toEqual(POOL);
+    expect(await chooseRoute(redeemable, redeem(CASH))).toEqual(PSM_AT_DEFAULT_FEE);
   });
 });
 
