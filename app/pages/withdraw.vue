@@ -5,10 +5,11 @@
 // opening one lands on its journey inside the package.
 import { computed, markRaw, onMounted, ref, shallowRef, type Component } from "vue";
 import FundingSelectorScreen from "../components/funding/FundingSelectorScreen.vue";
+import WithdrawAmountScreen from "../components/withdraw/WithdrawAmountScreen.vue";
 import { usePurseBalance } from "../composables/usePurseBalance";
 import { useRoutePackageLoader } from "../composables/useRoutePackageLoader";
 import { useVisualViewportHeight } from "../composables/useVisualViewportHeight";
-import { fundingSelectorConfig } from "../funding/config";
+import { withdrawalSelectorConfig } from "../funding/config";
 import type {
   FundingHistoryReturnScreen,
   FundingShellEntryScreen,
@@ -31,7 +32,7 @@ useVisualViewportHeight();
 const requests = useRequestsStore();
 
 const routeLabel = (route: FundingRoute): string =>
-  fundingSelectorConfig.routes.find(({ id }) => id === route)?.label ?? route;
+  withdrawalSelectorConfig.routes.find(({ id }) => id === route)?.label ?? route;
 const {
   selection,
   activePackage,
@@ -44,18 +45,26 @@ const {
 } = useRoutePackageLoader(getcashWithdrawPackages, routeLabel);
 const availableRoutes = availableFundingRoutes(
   getcashWithdrawPackages,
-  fundingSelectorConfig.routes.map(({ id }) => id),
+  withdrawalSelectorConfig.routes.map(({ id }) => id),
 );
 
-// The pill offers the purse balance as an amount the keypad can take. A skeleton while the read is
-// in flight, no pill where there is no purse.
+// The pill offers the purse balance as an amount the keypad can take, each purse state mapped by
+// name to its prop reading: unknown holds the pill's skeleton (and the gate closed), no purse
+// shows no pill, and only a known balance is offered.
 const purse = usePurseBalance();
 const available = computed<string | null | undefined>(() => {
-  const balance = purse.balance.value;
-  if (balance === undefined) return null;
-  if (balance === null) return undefined;
-  return cashToAmountInput(balance, fundingSelectorConfig.amount.decimals);
+  const purseState = purse.state.value;
+  if (purseState.kind === "unknown") return null;
+  if (purseState.kind === "none") return undefined;
+  return cashToAmountInput(purseState.balance, withdrawalSelectorConfig.amount.decimals);
 });
+// A purse that stays unreadable is named in the same band the route errors take; a route error,
+// being the answer to something the user just did, speaks first. The reads keep retrying behind
+// the message, so it clears itself when one lands.
+const amountError = computed(
+  () =>
+    routeError.value ?? (purse.failed.value ? "Your balance couldn't be read. Retrying…" : null),
+);
 
 // One adapter per package with a list.
 const adapters = uniqueFundingPackages(getcashWithdrawPackages).flatMap((routePackage) =>
@@ -63,7 +72,7 @@ const adapters = uniqueFundingPackages(getcashWithdrawPackages).flatMap((routePa
 );
 const topUps = computed(() => adapters.flatMap((adapter) => adapter.topUps.value));
 const sections = computed(() =>
-  projectFundingTopUps(topUps.value, fundingSelectorConfig, WITHDRAWAL_WORDING),
+  projectFundingTopUps(topUps.value, withdrawalSelectorConfig, WITHDRAWAL_WORDING),
 );
 const topUpsReady = computed(() => requests.hydrated || requests.hostReadDone);
 
@@ -124,6 +133,9 @@ function returnFromTopUp() {
   activeTopUpId.value = null;
   openingTopUpId.value = null;
   topUpError.value = null;
+  // The withdrawal watched inside the package may have settled; the purse the pill offers must
+  // not outlive it. The last-read balance stands until the new read lands, so nothing flickers.
+  void purse.refresh();
 }
 
 /** Back from a fresh withdrawal's package lands on the pending list, where it now shows. */
@@ -131,6 +143,9 @@ function returnFromPackage() {
   loadEpoch += 1;
   shellEntry.value = "pending";
   returnToShell();
+  // The package may have just spent from the purse; re-read it so the pill and the amount gate
+  // never offer what a completed withdrawal already took.
+  void purse.refresh();
 }
 
 /** Upper bound on the permission front-load at launch. */
@@ -176,6 +191,8 @@ onMounted(async () => {
   />
   <FundingSelectorScreen
     v-else-if="topUpsReady"
+    :amount-screen="WithdrawAmountScreen"
+    :config="withdrawalSelectorConfig"
     title="Withdraw funds"
     cta="Continue"
     :available="available"
@@ -183,7 +200,7 @@ onMounted(async () => {
     :available-routes="availableRoutes"
     :initial-screen="shellEntry"
     :history-return="historyReturn"
-    :error="routeError"
+    :error="amountError"
     :loading="loading"
     :top-ups="sections.inProgress"
     :past-top-ups="sections.past"
@@ -195,5 +212,13 @@ onMounted(async () => {
     @continue="continueToPackage"
     @open-top-up="openTopUp"
   />
-  <FundingSelectorScreen v-else skeleton />
+  <!-- The purse's read state carries into the skeleton, so the pill's placeholder holds its slot
+       and the column doesn't jump when the loaded screen mounts. -->
+  <FundingSelectorScreen
+    v-else
+    :amount-screen="WithdrawAmountScreen"
+    :config="withdrawalSelectorConfig"
+    :available="available"
+    skeleton
+  />
 </template>
