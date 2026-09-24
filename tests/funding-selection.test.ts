@@ -87,6 +87,15 @@ describe("funding keypad", () => {
   it("starts decimal input from zero", () => {
     expect(reduceFundingAmount("", ".", 6)).toBe("0.");
   });
+
+  it("caps the whole part so a runaway entry cannot outgrow the display", () => {
+    const nineDigits = "999999999";
+    expect(reduceFundingAmount(nineDigits, "9", 2)).toBe(nineDigits);
+    // The cap holds the whole part only: the fraction and a delete still edit.
+    expect(reduceFundingAmount(nineDigits, ".", 2)).toBe(`${nineDigits}.`);
+    expect(reduceFundingAmount(`${nineDigits}.9`, "9", 2)).toBe(`${nineDigits}.99`);
+    expect(reduceFundingAmount(nineDigits, "delete", 2)).toBe("99999999");
+  });
 });
 
 describe("funding handoff", () => {

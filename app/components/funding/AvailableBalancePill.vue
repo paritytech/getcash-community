@@ -1,24 +1,37 @@
 <script setup lang="ts">
 // The purse offered as an amount the keypad can take: a tap fills the amount with it. Undefined
 // renders nothing (no purse to offer), null the skeleton while the balance is read; the screen's
-// launch skeleton mutes a purse it already has. Layout (margins) belongs to the call site, so the
-// screen's own class rides whichever branch renders.
+// launch skeleton mutes a purse it already has. The pill is where the balance becomes a string —
+// the base units travel to it untouched, so the gate and the pill can never read the purse apart.
+// Layout (margins) belongs to the call site, so the screen's own class rides whichever branch
+// renders.
+import { computed } from "vue";
 import CashAmount from "../ui/CashAmount.vue";
 import SkeletonBlock from "../ui/SkeletonBlock.vue";
-import { groupAmountDigits } from "../../utils/cash";
+import { cashToAmountInput, groupAmountDigits } from "../../utils/cash";
 
 defineOptions({ inheritAttrs: false });
 
 const props = withDefaults(
   defineProps<{
-    /** The purse as an amount string; null while it loads, undefined where there is none. */
-    amount?: string | null;
+    /** The purse in base units of CASH; null while it loads, undefined where there is none. */
+    amount?: bigint | null;
+    /** Decimal places the keypad edits, from the screen's config. */
+    decimals: number;
     skeleton?: boolean;
   }>(),
   { amount: undefined, skeleton: false },
 );
 
 const emit = defineEmits<{ fill: [amount: string] }>();
+
+/** The balance as the keypad would type it, rounded down so the pill never offers more than the
+ *  purse holds. */
+const fillAmount = computed(() =>
+  props.amount === null || props.amount === undefined
+    ? null
+    : cashToAmountInput(props.amount, props.decimals),
+);
 </script>
 
 <template>
@@ -28,13 +41,13 @@ const emit = defineEmits<{ fill: [amount: string] }>();
     style="width: 10.5rem; height: 1.75rem"
   />
   <button
-    v-else-if="amount !== undefined"
+    v-else-if="fillAmount !== null"
     v-bind="$attrs"
     type="button"
     class="available-pill text-label-m"
-    @click="emit('fill', amount)"
+    @click="emit('fill', fillAmount)"
   >
-    Available <CashAmount :amount="groupAmountDigits(amount)" />
+    Available <CashAmount :amount="groupAmountDigits(fillAmount)" />
   </button>
 </template>
 

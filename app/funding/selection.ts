@@ -81,6 +81,10 @@ export function fundingAmountStatus(value: string, rules: FundingAmountRules): F
   };
 }
 
+/** Keypad ceiling on whole digits. Far above any configured maximum, so it never gates a real
+ *  amount; it only keeps a runaway entry from outgrowing the row the display can shrink. */
+const MAX_WHOLE_DIGITS = 9;
+
 export function reduceFundingAmount(current: string, key: FundingKey, decimals: number): string {
   const editable = /^(?:(?:0|[1-9]\d*)(?:\.\d*)?)?$/.test(current) ? current : "";
 
@@ -92,8 +96,9 @@ export function reduceFundingAmount(current: string, key: FundingKey, decimals: 
     return editable === "" ? "0." : `${editable}.`;
   }
 
-  const fraction = editable.split(".")[1];
+  const [whole = "", fraction] = editable.split(".");
   if (fraction !== undefined && fraction.length >= decimals) return editable;
+  if (fraction === undefined && whole.length >= MAX_WHOLE_DIGITS) return editable;
   if ((editable === "" || editable === "0") && fraction === undefined) return key;
   return `${editable}${key}`;
 }

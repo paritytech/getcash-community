@@ -17,7 +17,11 @@ export interface PurseBalance {
   /** True once the quick retries are spent without a read landing, so the screen can name the
    *  failure instead of holding a bare skeleton. Cleared by the read that finally lands. */
   failed: Readonly<Ref<boolean>>;
-  refresh: () => Promise<void>;
+  /** Re-reads the purse. A known balance stands while the read is in flight — unless `spent`
+   *  says the purse may have just been drawn down, where the last-read balance must not keep
+   *  offering (or opening on) what is already gone: the state drops to unknown, closing the
+   *  gate until the new read lands. */
+  refresh: (options?: { spent?: boolean }) => Promise<void>;
 }
 
 // A failed read retries on its own: the gate fails closed on unknown, so without these a single
@@ -35,10 +39,20 @@ export function usePurseBalance(): PurseBalance {
   // Each refresh() starts a new read chain and orphans the old one's pending retry.
   let epoch = 0;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  // A retry that came due while the tab was hidden, held for visibilitychange to release.
+  let heldRetry: (() => void) | null = null;
 
   function cancelRetry(): void {
     if (retryTimer !== null) clearTimeout(retryTimer);
     retryTimer = null;
+    heldRetry = null;
+  }
+
+  function releaseHeldRetry(): void {
+    if (document.hidden || heldRetry === null) return;
+    const retry = heldRetry;
+    heldRetry = null;
+    retry();
   }
 
   async function read(run: number, attempt: number): Promise<void> {
@@ -61,29 +75,46 @@ export function usePurseBalance(): PurseBalance {
       failed.value = false;
     } catch (error: unknown) {
       // A failed read leaves the balance unknown, not absent — reporting "no purse" here would
-      // lift the withdrawal cap. The pill keeps its skeleton and the gate stays closed while the
-      // retries run.
+      // lift the withdrawal cap. A balance already read stands until a new read lands, so a
+      // transient hiccup mid-refresh never collapses the pill to its skeleton or closes the
+      // gate; only with nothing read yet does the pill hold its skeleton while the retries run.
       console.warn("[withdraw] purse balance unavailable:", error);
       if (run !== epoch) return;
-      state.value = { kind: "unknown" };
       const delay = RETRY_DELAYS_MS[attempt];
-      if (delay === undefined) failed.value = true;
+      if (state.value.kind !== "known") {
+        state.value = { kind: "unknown" };
+        if (delay === undefined) failed.value = true;
+      }
       retryTimer = setTimeout(() => {
         retryTimer = null;
+        // A hidden tab holds its retry rather than polling a dead host in the background; the
+        // visibilitychange below releases it, so recovery is immediate when the user returns
+        // instead of on the next tick of a background clock.
+        if (typeof document !== "undefined" && document.hidden) {
+          heldRetry = () => void read(run, attempt + 1);
+          return;
+        }
         void read(run, attempt + 1);
       }, delay ?? RETRY_STEADY_MS);
     }
   }
 
-  async function refresh(): Promise<void> {
+  async function refresh(options?: { spent?: boolean }): Promise<void> {
     cancelRetry();
+    // The purse may have just been drawn down: what was known is stale in the one way that
+    // matters, so the skeleton and the closed gate stand in until the new read lands.
+    if (options?.spent === true && state.value.kind === "known") state.value = { kind: "unknown" };
     await read(++epoch, 0);
   }
 
-  onMounted(() => void refresh());
+  onMounted(() => {
+    void refresh();
+    document.addEventListener("visibilitychange", releaseHeldRetry);
+  });
   onUnmounted(() => {
     cancelRetry();
     epoch += 1;
+    document.removeEventListener("visibilitychange", releaseHeldRetry);
   });
   return { state, failed, refresh };
 }

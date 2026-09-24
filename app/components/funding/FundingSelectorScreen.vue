@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, watch, type Component } from "vue";
+import { computed, ref, watch } from "vue";
 import FundingAmountScreen from "./FundingAmountScreen.vue";
+import type { AmountScreenComponent } from "../../funding/amount-screen";
 import { fundingSelectorConfig, type FundingSelectorConfig } from "../../funding/config";
 import {
   resolveFundingShellScreen,
@@ -51,14 +52,14 @@ const props = withDefaults(
     /** Passed through to the amount screen; the top-up wording by default. */
     title?: string;
     cta?: string;
-    /** Passed through to the amount screen: the balance its pill offers, null while loading,
-     *  omitted for no pill. */
-    available?: string | null;
+    /** Passed through to the amount screen: the balance its pill offers, in base units of CASH.
+     *  Null while loading, omitted for no pill. */
+    available?: bigint | null;
     /** The list screens' words around the rows; the top-up's by default. */
     wording?: FundingListWording;
     /** The screen the shell opens on. Defaults to the top-up amount screen; the withdrawal page
-     *  passes its own, which draws the same contract to the withdrawal frames. */
-    amountScreen?: Component | null;
+     *  passes its own, which draws the same AmountScreenProps contract to the withdrawal frames. */
+    amountScreen?: AmountScreenComponent | null;
   }>(),
   {
     skeleton: false,
@@ -93,7 +94,9 @@ const emit = defineEmits<{
   openTopUp: [topUp: OpenableFundingTopUp, target: FundingTopUpReturnTarget];
 }>();
 
-const amountScreen = computed<Component>(() => props.amountScreen ?? FundingAmountScreen);
+const amountScreen = computed<AmountScreenComponent>(
+  () => props.amountScreen ?? FundingAmountScreen,
+);
 const hasPendingContent = computed(() => hasFundingPendingContent(props.topUps, props.latestTopUp));
 // The clock only opens a screen that has something on it: with nothing running and nothing
 // finished, history is a dead end, so the control is not drawn at all.

@@ -1,48 +1,20 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import AvailableBalancePill from "./AvailableBalancePill.vue";
 import FundingAmountDisplay from "./FundingAmountDisplay.vue";
 import FundingAmountShell from "./FundingAmountShell.vue";
-import type { FundingSelectorConfig } from "../../funding/config";
 import CashAmount from "../ui/CashAmount.vue";
 import SkeletonBlock from "../ui/SkeletonBlock.vue";
-import {
-  fundingAmountStatus,
-  isFundingRouteAvailable,
-  type FundingRoute,
-} from "../../funding/selection";
+import type { AmountScreenEmits, AmountScreenProps } from "../../funding/amount-screen";
+import { fundingAmountStatus, isFundingRouteAvailable } from "../../funding/selection";
 import { groupAmountDigits } from "../../utils/cash";
 
-const props = withDefaults(
-  defineProps<{
-    config: FundingSelectorConfig;
-    amount: string;
-    route: FundingRoute | null;
-    /** Routes this build can run. Any other renders dimmed, marked "Soon", and unclickable. */
-    availableRoutes?: readonly FundingRoute[];
-    history: boolean;
-    error?: string | null;
-    loading?: boolean;
-    /** Launch-load placeholder: static chrome (amount, keypad) renders inert while the data-driven
-     *  parts (title, route pills, limits, presets, CTA label) show skeleton shapes. */
-    skeleton?: boolean;
-    /** The screen's title and the main action's label; the top-up wording by default. */
-    title?: string;
-    cta?: string;
-    /** The balance the amount may be drawn from, as an amount string. Shown as a pill that fills
-     *  the amount when tapped. Omit to show no pill; null shows the pill's skeleton while the
-     *  balance loads. */
-    available?: string | null;
-  }>(),
-  { title: "Top up funds", cta: "Continue to top up", available: undefined },
-);
+const props = withDefaults(defineProps<AmountScreenProps>(), {
+  title: "Top up funds",
+  cta: "Continue to top up",
+  available: undefined,
+});
 
-const emit = defineEmits<{
-  change: [amount: string];
-  route: [route: FundingRoute];
-  continue: [];
-  history: [];
-}>();
+const emit = defineEmits<AmountScreenEmits>();
 
 const amountState = computed(() => fundingAmountStatus(props.amount, props.config.amount));
 const canContinue = computed(
@@ -51,19 +23,21 @@ const canContinue = computed(
     props.route !== null &&
     isFundingRouteAvailable(props.route, props.availableRoutes),
 );
-const limitWarning = computed(
-  () => amountState.value.kind === "below-minimum" || amountState.value.kind === "above-maximum",
-);
 
-/** The limit line's pieces: a bound that was broken leads with its name; the resting form is the
- *  range, whose leading figure keeps its symbol but leaves the ticker to the last. */
-const limit = computed<{ lead: string; from: string | null; amount: string }>(() => {
+// The limit line names the bound an amount broke; inside the bounds the range stands, its leading
+// figure keeping the symbol but leaving the ticker to the last.
+const notice = computed(() => {
   const { minimum, maximum } = props.config.amount;
   if (amountState.value.kind === "below-minimum")
-    return { lead: "Minimum ", from: null, amount: groupAmountDigits(minimum) };
+    return { lead: "Minimum ", amount: groupAmountDigits(minimum), breach: true };
   if (amountState.value.kind === "above-maximum")
-    return { lead: "Maximum ", from: null, amount: groupAmountDigits(maximum) };
-  return { lead: "", from: groupAmountDigits(minimum), amount: groupAmountDigits(maximum) };
+    return { lead: "Maximum ", amount: groupAmountDigits(maximum), breach: true };
+  return {
+    lead: "",
+    from: groupAmountDigits(minimum),
+    amount: groupAmountDigits(maximum),
+    breach: false,
+  };
 });
 </script>
 
@@ -80,35 +54,18 @@ const limit = computed<{ lead: string; from: string | null; amount: string }>(()
     :title="title"
     :cta="cta"
     :can-continue="canContinue"
+    :available="available"
+    :notice="notice"
     @change="emit('change', $event)"
     @route="emit('route', $event)"
     @continue="emit('continue')"
     @history="emit('history')"
   >
     <template #default="{ displayAmount }">
-      <AvailableBalancePill
-        class="funding-available"
-        :amount="available"
-        :skeleton="skeleton"
-        @fill="emit('change', $event)"
-      />
-
       <FundingAmountDisplay class="funding-amount" :amount="displayAmount" :caret="!skeleton" />
+    </template>
 
-      <SkeletonBlock v-if="skeleton" style="width: 8.125rem; height: 1rem" />
-      <!-- The limit line names the bound an amount broke, so a breach has to be announced. -->
-      <p
-        v-else
-        class="funding-limits text-body-m"
-        :class="{ 'funding-limits-warning': limitWarning }"
-        aria-live="polite"
-      >
-        {{ limit.lead
-        }}<template v-if="limit.from !== null"
-          ><CashAmount :amount="limit.from" :ticker="false" /> to </template
-        ><CashAmount :amount="limit.amount" />
-      </p>
-
+    <template #after>
       <div v-if="skeleton" class="funding-presets" aria-hidden="true">
         <SkeletonBlock v-for="preset in config.amount.presets" :key="preset" style="height: 3rem" />
       </div>
@@ -128,29 +85,17 @@ const limit = computed<{ lead: string; from: string | null; amount: string }>(()
 </template>
 
 <style scoped>
-/* Layout only; the pill's look is AvailableBalancePill's. */
-.funding-available {
-  margin-top: 1.5rem;
-}
-
 .funding-amount {
   margin-top: 1.5rem;
 }
 
 /* The pill takes the gap the amount row would otherwise open. */
-.funding-available + .funding-amount {
+.amount-shell-available + .funding-amount {
   margin-top: 0.75rem;
 }
 
-.funding-limits {
-  min-height: 1rem;
-  color: var(--fg-secondary);
-  text-align: center;
-  transition: color 150ms ease;
-}
-
-.funding-limits-warning {
-  color: var(--fg-error);
+/* The top-up frames weight a broken bound; the withdrawal frames keep the shell's plain line. */
+:deep(.amount-shell-notice-breach) {
   font-weight: 500;
 }
 

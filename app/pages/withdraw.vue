@@ -24,7 +24,6 @@ import {
 import type { FundingRoute, FundingSelection } from "../funding/selection";
 import { projectFundingTopUps, type FundingTopUp } from "../funding/top-ups";
 import { useRequestsStore } from "../stores/requests";
-import { cashToAmountInput } from "../utils/cash";
 import { WITHDRAWAL_LIST_WORDING, WITHDRAWAL_WORDING } from "../withdraw/rows";
 import { frontloadHostPermissions } from "~~/lib/host-frontload";
 
@@ -50,13 +49,14 @@ const availableRoutes = availableFundingRoutes(
 
 // The pill offers the purse balance as an amount the keypad can take, each purse state mapped by
 // name to its prop reading: unknown holds the pill's skeleton (and the gate closed), no purse
-// shows no pill, and only a known balance is offered.
+// shows no pill, and only a known balance is offered — as the base units the host reported, so
+// the screen and the gate read the same purse the pill writes.
 const purse = usePurseBalance();
-const available = computed<string | null | undefined>(() => {
+const available = computed<bigint | null | undefined>(() => {
   const purseState = purse.state.value;
   if (purseState.kind === "unknown") return null;
   if (purseState.kind === "none") return undefined;
-  return cashToAmountInput(purseState.balance, withdrawalSelectorConfig.amount.decimals);
+  return purseState.balance;
 });
 // A purse that stays unreadable is named in the same band the route errors take; a route error,
 // being the answer to something the user just did, speaks first. The reads keep retrying behind
@@ -143,9 +143,10 @@ function returnFromPackage() {
   loadEpoch += 1;
   shellEntry.value = "pending";
   returnToShell();
-  // The package may have just spent from the purse; re-read it so the pill and the amount gate
-  // never offer what a completed withdrawal already took.
-  void purse.refresh();
+  // The package may have just spent from the purse: the balance read before it opened must not
+  // keep the pill or the gate open on what a completed withdrawal already took, so the known
+  // balance is dropped and the gate fails closed until the re-read lands.
+  void purse.refresh({ spent: true });
 }
 
 /** Upper bound on the permission front-load at launch. */

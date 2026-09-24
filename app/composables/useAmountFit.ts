@@ -16,9 +16,12 @@ export function useAmountFit(text: Ref<string>) {
     if (!rowEl || !valueEl) return;
 
     rowEl.style.setProperty("--amount-scale", "1");
+    // A row measured at zero width has not been laid out yet (hidden container, pre-layout
+    // mount); hold full size until the ResizeObserver or font-ready re-fit brings a real measure.
+    if (rowEl.clientWidth <= 0) return;
     const natural = valueEl.getBoundingClientRect().width;
     const available = rowEl.clientWidth;
-    const scale = natural > 0 && available > 0 ? Math.min(1, available / natural) : 1;
+    const scale = natural > 0 ? Math.min(1, available / natural) : 1;
     rowEl.style.setProperty("--amount-scale", scale.toFixed(4));
   }
 

@@ -32,11 +32,17 @@ export function fmtCash(base: bigint): string {
 export const cashAmount = (human: string): string =>
   `${currencyConfig.symbol}${human} ${currencyConfig.ticker}`;
 
+/** CASH base units truncated down to the keypad's `decimals` scale, as base units of that scale —
+ *  the largest amount the keypad could type without overdrawing the purse. */
+export function cashToRuleUnits(base: bigint, decimals: number): bigint {
+  const drop = CASH_DECIMALS - decimals;
+  return drop >= 0 ? base / 10n ** BigInt(drop) : base * 10n ** BigInt(-drop);
+}
+
 /** Turns CASH base units into the amount string the keypad edits, rounded down to `decimals`
  *  places, with a whole number left bare ("226.78", "5", "5.5"). */
 export function cashToAmountInput(base: bigint, decimals: number): string {
-  const drop = CASH_DECIMALS - decimals;
-  const scaled = drop >= 0 ? base / 10n ** BigInt(drop) : base * 10n ** BigInt(-drop);
+  const scaled = cashToRuleUnits(base, decimals);
   if (decimals === 0) return scaled.toString();
   const s = scaled.toString().padStart(decimals + 1, "0");
   return `${s.slice(0, -decimals)}.${s.slice(-decimals)}`.replace(/\.?0+$/, "");
