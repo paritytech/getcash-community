@@ -47,16 +47,28 @@ export function describeDispatchError(dispatchError: unknown, execArgs?: unknown
   return "unrecognised dispatch error";
 }
 
-/** The PSM's refusals of a swap: the pair paused for minting or for everything, or the mint over
- *  its ceiling. What the funding pipeline retries a bounded number of times and then holds
- *  on. */
-const PSM_REFUSALS = new Set(["MintingStopped", "AllSwapsStopped", "ExceedsMaxPsmDebt"]);
+/** The pair paused for minting or for everything, or the mint over its ceiling. Waiting clears
+ *  these: a breaker comes down, and redemptions free the ceiling. */
+const PSM_UNAVAILABLE = new Set(["MintingStopped", "AllSwapsStopped", "ExceedsMaxPsmDebt"]);
 
-/** True when `dispatchError` is one of the PSM's refusals. A transport error, a timeout or any
- *  other pallet's error is not one. */
-export function isPsmRefusal(dispatchError: unknown): boolean {
+/** The PSM will not serve this swap as it was quoted. Waiting cannot clear these: the call carries
+ *  the rate and the amount the quote froze, so every retry asks the identical question and gets
+ *  the identical answer. */
+const PSM_WILL_NOT_SERVE = new Set([
+  "FeeTooHigh",
+  "BelowMinimumSwap",
+  "AmountTooSmallAfterConversion",
+]);
+
+export type PsmRefusalKind = "unavailable" | "will-not-serve";
+
+/** Which refusal the PSM gave, or null when it did not refuse. A transport error, a timeout or
+ *  any other pallet's error is not a refusal. */
+export function psmRefusalKind(dispatchError: unknown): PsmRefusalKind | null {
   const outer = tagged(dispatchError);
   const pallet = tagged(outer?.value);
-  if (outer?.type !== "Module" || name(pallet) !== "Psm") return false;
-  return PSM_REFUSALS.has(name(pallet?.value) ?? "");
+  if (outer?.type !== "Module" || name(pallet) !== "Psm") return null;
+  const variant = name(pallet?.value) ?? "";
+  if (PSM_UNAVAILABLE.has(variant)) return "unavailable";
+  return PSM_WILL_NOT_SERVE.has(variant) ? "will-not-serve" : null;
 }

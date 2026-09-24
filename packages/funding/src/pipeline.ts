@@ -43,7 +43,7 @@
 import { TOKENS } from "@getsome/core";
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import type { PolkadotClient, PolkadotSigner, TypedApi } from "polkadot-api";
-import { describeDispatchError, isPsmRefusal } from "./dispatch-error";
+import { describeDispatchError, psmRefusalKind, type PsmRefusalKind } from "./dispatch-error";
 import {
   buildFundingProgram,
   destinationEarmark,
@@ -136,13 +136,23 @@ export class FundingShortfallError extends Error {
   }
 }
 
-/** Terminal: the PSM refused the mint MAX_PSM_REFUSALS times, paused or over its ceiling. The
- *  run stops and the deposit stays on the burner, recoverable through its secret; it is not sent
- *  through the pool instead. A resume with a fresh counter tries again, for when the ceiling has
- *  been raised. */
+/** Terminal: the PSM would not mint. The run stops and the deposit stays on the burner,
+ *  recoverable through its secret; it is not sent through the pool instead.
+ *
+ *  Either the PSM was unavailable for MAX_PSM_REFUSALS ticks — paused, or over its ceiling — where
+ *  a resume with a fresh counter tries again once the ceiling has been raised; or it refused the
+ *  swap as quoted, where a resume replays the same frozen rate and amount and fails identically,
+ *  and only a fresh quote can serve the buyer. */
 export class FundingHeldError extends Error {
-  constructor(readonly reason: string) {
-    super(`funding held: the PSM refused the mint ${MAX_PSM_REFUSALS} times, last: ${reason}`);
+  constructor(
+    readonly reason: string,
+    readonly kind: PsmRefusalKind = "unavailable",
+  ) {
+    super(
+      kind === "unavailable"
+        ? `funding held: the PSM refused the mint ${MAX_PSM_REFUSALS} times, last: ${reason}`
+        : `funding held: the PSM will not mint this swap as quoted: ${reason}`,
+    );
     this.name = "FundingHeldError";
   }
 }
@@ -625,7 +635,13 @@ async function mintThroughPsm(
 ): Promise<void> {
   const { api, address } = input;
   const refused = (dispatchError: unknown) => {
-    if (!isPsmRefusal(dispatchError)) return;
+    const kind = psmRefusalKind(dispatchError);
+    if (kind === null) return;
+    // Nothing to wait for, so hold on the first one rather than spending a retry budget on a
+    // question whose answer cannot change.
+    if (kind === "will-not-serve") {
+      throw new FundingHeldError(describeDispatchError(dispatchError), kind);
+    }
     state.psmRefusals += 1;
     if (state.psmRefusals >= MAX_PSM_REFUSALS) {
       throw new FundingHeldError(describeDispatchError(dispatchError));

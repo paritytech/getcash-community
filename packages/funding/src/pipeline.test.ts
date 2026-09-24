@@ -420,7 +420,13 @@ type World = ReturnType<typeof scriptedWorld>;
 
 type Call = { type: string; value: { type: string; value: unknown } };
 type MintArgs = { external_amount: bigint; max_fee: number };
-type PsmRefusal = "MintingStopped" | "AllSwapsStopped" | "ExceedsMaxPsmDebt";
+type PsmRefusal =
+  | "MintingStopped"
+  | "AllSwapsStopped"
+  | "ExceedsMaxPsmDebt"
+  | "FeeTooHigh"
+  | "BelowMinimumSwap"
+  | "AmountTooSmallAfterConversion";
 
 /** The pallet-assets id a location in the table names. */
 const generalIndex = (id: unknown) =>
@@ -967,6 +973,30 @@ describe("tickOnce on the PSM tier", () => {
     expect(state).toMatchObject({ attempts: 0, xcmSubmitted: false });
     expect(world.state.txs).toEqual([]);
     expect(world.state.usdtAh).toBe(PSM_DEPOSIT);
+  });
+
+  it("holds at once on a refusal no retry can clear, without spending the budget", async () => {
+    // The mint carries the rate and the amount the quote froze, so a refusal of those is the same
+    // refusal every tick. Retrying it only delays the hold by three ticks and tells the buyer
+    // nothing; worse, an unrecognised one span until the worker's deadline and failed as a
+    // timeout, naming the clock rather than the cause.
+    for (const refuse of [
+      "FeeTooHigh",
+      "BelowMinimumSwap",
+      "AmountTooSmallAfterConversion",
+    ] as const) {
+      const world = scriptedPsmWorld({ refuse });
+      world.state.usdtAh = PSM_DEPOSIT;
+      const state = freshTickState();
+      await expect(drive(world, 1, state, ROUTE)).rejects.toThrow(
+        new RegExp(`funding held: the PSM will not mint this swap as quoted: Psm.${refuse}`),
+      );
+      await expect(drive(world, 1, state, ROUTE)).rejects.toBeInstanceOf(FundingHeldError);
+      // Held on the first, not the third: the retry budget is untouched and nothing went out.
+      expect(state).toMatchObject({ psmRefusals: 0, attempts: 0, xcmSubmitted: false });
+      expect(world.state.txs).toEqual([]);
+      expect(world.state.usdtAh).toBe(PSM_DEPOSIT);
+    }
   });
 
   it("counts the PSM's refusals only: a dropped connection or another rejection burns no retry", async () => {
