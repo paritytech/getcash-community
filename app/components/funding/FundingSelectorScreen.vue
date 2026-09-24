@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref, watch, type Component } from "vue";
+import FundingAmountScreen from "./FundingAmountScreen.vue";
 import { fundingSelectorConfig, type FundingSelectorConfig } from "../../funding/config";
 import {
   resolveFundingShellScreen,
@@ -9,6 +10,7 @@ import {
 } from "../../funding/navigation";
 import {
   createFundingSelection,
+  isFundingRouteAvailable,
   type FundingRoute,
   type FundingSelection,
 } from "../../funding/selection";
@@ -54,6 +56,9 @@ const props = withDefaults(
     available?: string | null;
     /** The list screens' words around the rows; the top-up's by default. */
     wording?: FundingListWording;
+    /** The screen the shell opens on. Defaults to the top-up amount screen; the withdrawal page
+     *  passes its own, which draws the same contract to the withdrawal frames. */
+    amountScreen?: Component | null;
   }>(),
   {
     skeleton: false,
@@ -74,6 +79,7 @@ const props = withDefaults(
     cta: undefined,
     available: undefined,
     wording: () => TOP_UP_LIST_WORDING,
+    amountScreen: null,
   },
 );
 
@@ -87,6 +93,7 @@ const emit = defineEmits<{
   openTopUp: [topUp: OpenableFundingTopUp, target: FundingTopUpReturnTarget];
 }>();
 
+const amountScreen = computed<Component>(() => props.amountScreen ?? FundingAmountScreen);
 const hasPendingContent = computed(() => hasFundingPendingContent(props.topUps, props.latestTopUp));
 // The clock only opens a screen that has something on it: with nothing running and nothing
 // finished, history is a dead end, so the control is not drawn at all.
@@ -96,10 +103,8 @@ const hasTopUpInProgress = computed(() => props.topUps.length > 0);
 const entryScreen = () => resolveFundingShellScreen(props.initialScreen, hasTopUpInProgress.value);
 const screen = ref(entryScreen());
 const historyReturnScreen = ref<FundingHistoryReturnScreen>(props.historyReturn);
-const availableRouteIds = computed<readonly FundingRoute[]>(
-  () => props.availableRoutes ?? props.config.routes.map(({ id }) => id),
-);
-const isRouteAvailable = (candidate: FundingRoute) => availableRouteIds.value.includes(candidate);
+const isRouteAvailable = (candidate: FundingRoute) =>
+  isFundingRouteAvailable(candidate, props.availableRoutes);
 const amount = ref(props.initialSelection?.amount ?? props.config.amount.initial);
 // A buyer returning from a package keeps their route; a fresh entry starts on the configured
 // default. Either one starts unpicked when this build cannot run it.
@@ -173,7 +178,8 @@ watch(
       :config="config"
       @back="closeHistory"
     />
-    <FundingAmountScreen
+    <component
+      :is="amountScreen"
       v-else-if="skeleton"
       skeleton
       :config="config"
@@ -212,12 +218,13 @@ watch(
         })
       "
     />
-    <FundingAmountScreen
+    <component
+      :is="amountScreen"
       v-else
       :config="config"
       :amount="amount"
       :route="route"
-      :available-routes="availableRouteIds"
+      :available-routes="availableRoutes ?? undefined"
       :history="hasHistoryContent"
       :error="error"
       :loading="loading"

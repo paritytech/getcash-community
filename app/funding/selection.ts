@@ -21,6 +21,15 @@ export type FundingAmountStatus =
 
 export type FundingKey = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "." | "delete";
 
+/** Whether this build can run the route. An absent list (null or undefined) offers every route —
+ *  the one reading of that convention; every component takes it from here. */
+export function isFundingRouteAvailable(
+  route: FundingRoute,
+  available: readonly FundingRoute[] | null | undefined,
+): boolean {
+  return available === null || available === undefined || available.includes(route);
+}
+
 export function isFundingRoute(value: string): value is FundingRoute {
   return FUNDING_ROUTES.some((route) => route === value);
 }
