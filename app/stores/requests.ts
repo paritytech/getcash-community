@@ -5,7 +5,12 @@
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef, watch } from "vue";
 import type { FlowState, SourceId } from "@getsome/core";
-import { createMeldClient, currentNetwork, getMeldStatus, type MeldClientLike } from "@getsome/meld";
+import {
+  createMeldClient,
+  currentNetwork,
+  getMeldStatus,
+  type MeldClientLike,
+} from "@getsome/meld";
 import {
   advanceFundingProgressSnapshot,
   createFundingProgressSnapshot,

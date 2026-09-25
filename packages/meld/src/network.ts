@@ -18,16 +18,19 @@ const NETWORK_BY_TLD: Readonly<Record<string, string>> = Object.freeze({
  * opaque `UnknownRing` 401 on the adapter.
  */
 export function networkForHostname(hostname: string): string | undefined {
-  const tld = hostname.split(".").pop();
+  // Web host serves from a `.li` mirror; the network is the label before it.
+  const canonical = hostname.endsWith(".li") ? hostname.slice(0, -3) : hostname;
+  const tld = canonical.split(".").pop();
   return tld === undefined ? undefined : NETWORK_BY_TLD[tld];
 }
 
 /**
- * `override` if non-blank, else the hostname's network. Override covers hosts that name no
- * network (localhost, previews on other TLDs).
+ * The hostname's network, else `override`. Hostname wins so a build-baked override cannot mislabel
+ * a real deployment; the override only names a host that names no network (localhost).
  */
 export function currentNetwork(hostname: string, override?: string): string | undefined {
+  const fromHost = networkForHostname(hostname);
+  if (fromHost !== undefined) return fromHost;
   const named = override?.trim();
-  if (named !== undefined && named !== "") return named;
-  return networkForHostname(hostname);
+  return named ? named : undefined;
 }
