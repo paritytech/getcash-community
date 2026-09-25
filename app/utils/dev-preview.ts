@@ -1584,6 +1584,43 @@ export const SCENES: Scene[] = [
     stage: { kind: "withdraw-package", step: "token", chain: "Ethereum", skeleton: true },
     apply: (s, f) => base(s, f),
   },
+  // The address step's four states: empty, an address another network would take, one no network
+  // takes, and a valid one. The screen itself judges the seeded address.
+  {
+    name: "withdraw / address: empty",
+    stage: { kind: "withdraw-package", step: "address", chain: "Ethereum" },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    name: "withdraw / address: wrong network",
+    stage: {
+      kind: "withdraw-package",
+      step: "address",
+      chain: "Ethereum",
+      address: "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2",
+    },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    name: "withdraw / address: incorrect",
+    stage: {
+      kind: "withdraw-package",
+      step: "address",
+      chain: "Ethereum",
+      address: "1BvBMSEYstWetq",
+    },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    name: "withdraw / address: entered",
+    stage: {
+      kind: "withdraw-package",
+      step: "address",
+      chain: "Ethereum",
+      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
+    },
+    apply: (s, f) => base(s, f),
+  },
 ];
 
 /**

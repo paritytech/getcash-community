@@ -264,7 +264,12 @@ watch(
   previewStage,
   (stage) => {
     if (stage?.kind !== "withdraw-package") return;
-    network.value = withdrawNetwork(stage.chain ?? "Ethereum") ?? null;
+    const staged = withdrawNetwork(stage.chain ?? "Ethereum") ?? null;
+    network.value = staged;
+    // The address step needs a destination; the section's frames show USDC.
+    destination.value =
+      staged?.destinations.find((d) => d.asset === "USDC") ?? staged?.destinations[0] ?? null;
+    address.value = stage.address ?? "";
     step.value = stage.step;
     previewSkeleton.value = stage.skeleton === true;
   },
@@ -319,8 +324,10 @@ onUnmounted(() => {
         :skeleton="previewSkeleton"
         @pick="pickToken"
       />
+      <!-- Keyed so a staged address replaces the screen's own typing state. -->
       <WithdrawAddressScreen
         v-else-if="step === 'address' && network && destination"
+        :key="address"
         :network="network"
         :destination="destination"
         :initial="address"

@@ -115,6 +115,17 @@ export function landingAccountHex(
   return destination.rail === "direct" ? assetHubAccountHex(address) : null;
 }
 
+/** Whether some other network's rule accepts the address: picks the wrong-network error over
+ *  the plain malformed one. */
+export function matchesOtherNetwork(network: WithdrawNetwork, address: string): boolean {
+  const trimmed = address.trim();
+  return WITHDRAW_NETWORKS.some(
+    (other) =>
+      other.chain !== network.chain &&
+      other.destinations.some((destination) => destination.validateAddress(trimmed)),
+  );
+}
+
 /** The address as the summary shows it: the first and last characters around an ellipsis. */
 export function shortAddress(address: string): string {
   const trimmed = address.trim();
