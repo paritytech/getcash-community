@@ -93,12 +93,6 @@ function meldTokenOf(token: TokenSpec): Parameters<typeof createMeldRail>[0]["to
   return token as Parameters<typeof createMeldRail>[0]["token"];
 }
 
-/** Base units as a decimal string, trailing zeros trimmed. */
-function formatBase(base: bigint, decimals: number): string {
-  const s = base.toString().padStart(decimals + 1, "0");
-  return `${s.slice(0, -decimals)}.${s.slice(-decimals)}`.replace(/\.?0+$/, "") || "0";
-}
-
 /** Persisted per request; enough to re-open it. */
 export interface ActiveFlowRecord {
   amountHuman: string;
@@ -1050,34 +1044,11 @@ export const useSessionStore = defineStore("session", () => {
           loading.value = false;
           return;
         }
-        const world = await createMockCoinageSession({
-          recipient: DEV_RECIPIENT,
-          amount: amountBase.value,
-          sourceId,
-          tradeN: nextMockTradeN(sourceId),
-          route,
-          // A direct source deposits to the mock burner itself, in the token picked: the QR is
-          // that address and the quote is in that token.
-          ...(direct === null
-            ? {}
-            : {
-                rail: createManualRail({
-                  token: depositTokenOf(route),
-                  sourceId: direct as ManualSourceId,
-                }),
-              }),
-        });
-        await world.session.ready;
-        const quote = await world.session.quote();
-        if (epoch !== quoteEpoch) {
-          world.session.dispose();
-          return;
-        }
-        mock.value = world;
         // Real pricing outside the host: the pool leg is a public chain read over a standalone
         // WebSocket. Skipped in node test runs; falls back to demo rates when the RPC is
         // unreachable. A stable deposit has nothing to read, the fakes take it one to one.
         let nativeAmount: bigint | null = null;
+        let sizing: PoolFundingSizing | null = null;
         const settleForPricing = amountBase.value; // non-null: guarded at fetchQuote entry
         const pricesNative = direct === null || depositAssetFor(direct) === "native";
         if (typeof window !== "undefined" && settleForPricing !== null && pricesNative) {
@@ -1094,7 +1065,7 @@ export const useSessionStore = defineStore("session", () => {
             const client = await connectChain(ASSET_HUB);
             // Size the deposit from live public reads. Best effort; falls back to the defaults,
             // and an unreachable People chain leaves the pool quote below untouched.
-            const sizing = await step(
+            const priced = await step(
               "funding sizing estimate (public read)",
               20_000,
               estimatePublicFundingSizing({
@@ -1102,6 +1073,7 @@ export const useSessionStore = defineStore("session", () => {
                 probeAddress: DEV_RECIPIENT,
               }),
             ).catch(() => FALLBACK_FUNDING_SIZING);
+            sizing = priced;
             nativeAmount = await step(
               "pool quote (public read)",
               30_000,
@@ -1110,36 +1082,57 @@ export const useSessionStore = defineStore("session", () => {
                   client,
                   underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
                   settleAmount: settleForPricing,
-                  remoteFeeBuffer: sizing.remoteFeeBuffer,
-                  keepNativeForFees: sizing.keepNativeForFees,
+                  remoteFeeBuffer: priced.remoteFeeBuffer,
+                  keepNativeForFees: priced.keepNativeForFees,
                 }))(),
             );
           } catch (e) {
             console.warn("[coinage] live pool pricing unavailable, using demo rates:", e);
           }
         }
+        if (epoch !== quoteEpoch) return;
+        const world = await createMockCoinageSession({
+          recipient: DEV_RECIPIENT,
+          amount: amountBase.value,
+          sourceId,
+          tradeN: nextMockTradeN(sourceId),
+          route,
+          // A direct source deposits to the mock burner itself, in the token picked, and a DOT
+          // deposit is sized by the pool read when it answered: the QR, the copy row and the
+          // record then carry one figure.
+          ...(direct === null
+            ? {}
+            : {
+                rail: createManualRail({
+                  token: depositTokenOf(route),
+                  sourceId: direct as ManualSourceId,
+                }),
+                ...(nativeAmount === null || sizing === null
+                  ? {}
+                  : { nativeBudget: nativeAmount, fundingSizing: sizing }),
+              }),
+        });
+        await world.session.ready;
+        const quote = await world.session.quote();
         if (epoch !== quoteEpoch) {
           world.session.dispose();
           return;
         }
-        // The fake rail returns a fixed quote regardless of source; show a source-appropriate
-        // estimate. A direct pick shows the pool read's DOT figure when it answered, the demo
-        // rate's otherwise.
+        mock.value = world;
+        // The fake rail returns a fixed quote regardless of source, so a Chainflip pick shows a
+        // source-appropriate estimate. A direct pick shows the rail's own figure.
         const cfg = SOURCE_CONFIG_BY_ID.get(sourceId);
-        const symbol = cfg?.asset ?? (direct === null ? null : asset);
         const est =
-          symbol !== null && amountBase.value !== null
-            ? direct !== null && nativeAmount !== null && pricesNative
-              ? formatBase(nativeAmount, TOKENS.PAS.decimals)
-              : estimateSourceFromCash(amountBase.value, symbol)
+          direct === null && cfg && amountBase.value !== null
+            ? estimateSourceFromCash(amountBase.value, cfg.asset)
             : null;
         const depositToken = chainflipTokenOf(depositTokenOf(route));
         quoted.value = {
           send: est ?? quote.source.formatted,
-          symbol: est && symbol ? symbol : quote.source.assetSymbol,
+          symbol: est && cfg ? cfg.asset : quote.source.assetSymbol,
           nativeAmount,
           ...(depositToken === undefined ? {} : { depositToken }),
-          sourceAsset: est && symbol ? symbol : null,
+          sourceAsset: direct === null ? (est && cfg ? cfg.asset : null) : asset,
           sourceChain: chain,
         };
         // The swap network's quote endpoint is public; it needs the pool figure above as its
@@ -1311,9 +1304,12 @@ export const useSessionStore = defineStore("session", () => {
         sourceSymbol: priced.minimum.assetSymbol,
       };
     }
-    // A direct deposit is paid in the token the rail quoted: the figure is exact, not an estimate.
-    const world = mock.value ?? live.value;
-    if (world && isDirectSourceId(world.sourceId) && quoted.value) {
+    // A direct Polkadot pick is paid in the token the rail quoted: the figure is exact, not an
+    // estimate. A demo Chainflip pick runs under the same default source but keeps its estimate.
+    const picked = lastQuoteParams
+      ? sourceIdFor(lastQuoteParams.chain, lastQuoteParams.asset)
+      : undefined;
+    if (isDirectSourceId(picked) && quoted.value) {
       return { sourceAmount: quoted.value.send, sourceSymbol: quoted.value.symbol };
     }
     const state = lastState.value;

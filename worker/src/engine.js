@@ -10,7 +10,7 @@ import {
   FundingShortfallError,
   PASEO_ASSET_HUB_PARA_ID,
   STABLE_TOKENS,
-  discoverPool,
+  discoverPools,
   freshTickState,
   recordedRoute,
   tickOnce,
@@ -535,25 +535,22 @@ async function tickRecord(record, nowMs) {
       return;
     }
     const api = ahClient.getTypedApi(paseo_next_v2);
-    // Pool keys are re-discovered each wake and not persisted. The PSM tier has no pool to find.
-    // A pool job fed with a stable exchanges through the stable's own pool first, found under
-    // its pallet-assets id.
-    const pool =
+    // Pool keys are re-discovered each wake and not persisted, in one read of the pool table: the
+    // CASH pool, and for a pool job fed with a stable the stable's own pool too, under its
+    // pallet-assets id. The PSM tier has no pool to find.
+    const [pool, stablePool] =
       route.tier === "pool"
         ? await bounded(
-            discoverPool(api, record.underlyingAssetId),
+            discoverPools(
+              api,
+              route.external === undefined
+                ? [record.underlyingAssetId]
+                : [record.underlyingAssetId, STABLE_TOKENS[route.external].assetHubId],
+            ),
             DEFAULT_TICK_TIMEOUT_MS,
             "pool discovery",
           )
-        : undefined;
-    const stablePool =
-      route.tier === "pool" && route.external !== undefined
-        ? await bounded(
-            discoverPool(api, STABLE_TOKENS[route.external].assetHubId),
-            DEFAULT_TICK_TIMEOUT_MS,
-            "stable pool discovery",
-          )
-        : undefined;
+        : [];
 
     // Restore the persisted state into the shape tickOnce mutates. fundsSeenAt must be
     // exactly null when absent.

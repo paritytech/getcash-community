@@ -1,4 +1,12 @@
-import type { SourceId } from "@getsome/core";
+import type { SourceId, TokenSpec } from "@getsome/core";
+import {
+  isManualSourceId,
+  MANUAL_SOURCE_IDS,
+  MANUAL_SOURCES,
+  manualDepositOf,
+  type ManualSourceId,
+  type Stable,
+} from "@getsome/funding";
 
 // Chain and asset identifiers, as Chainflip and the icon set name them.
 export const CHAINS = {
@@ -74,38 +82,27 @@ export const SOURCE_ID_BY_KEY: Readonly<Record<string, SourceId>> = {
   "Tron:TRX": "trx-tron",
 };
 
-/** UI pair to direct SourceId, one id per token. The id keys the token's trade counter and
- *  burner labels. */
-export const DIRECT_SOURCE_ID_BY_KEY = {
-  "Polkadot:DOT": "dot-assethub",
-  "Polkadot:USDT": "usdt-assethub",
-  "Polkadot:USDC": "usdc-assethub",
-} as const satisfies Record<string, SourceId>;
-export type DirectSourceId = (typeof DIRECT_SOURCE_ID_BY_KEY)[keyof typeof DIRECT_SOURCE_ID_BY_KEY];
-export const DIRECT_SOURCE_IDS: readonly DirectSourceId[] = Object.values(DIRECT_SOURCE_ID_BY_KEY);
-
-export const isDirectSourceId = (sourceId: string | undefined): sourceId is DirectSourceId =>
-  sourceId !== undefined && (DIRECT_SOURCE_IDS as readonly string[]).includes(sourceId);
+/** The direct sources, one per token, as the funding package defines them. */
+export type DirectSourceId = ManualSourceId;
+export const DIRECT_SOURCE_IDS: readonly DirectSourceId[] = MANUAL_SOURCE_IDS;
+export const isDirectSourceId = isManualSourceId;
 
 /** What the buyer deposits for a direct source, as the route decision takes it. */
-export type DepositAsset = "native" | "USDT" | "USDC";
+export type DepositAsset = "native" | Stable;
+export const depositAssetFor = manualDepositOf;
 
-export function depositAssetFor(sourceId: DirectSourceId): DepositAsset {
-  switch (sourceId) {
-    case "usdt-assethub":
-      return "USDT";
-    case "usdc-assethub":
-      return "USDC";
-    default:
-      return "native";
-  }
-}
+/** UI pair to direct SourceId: each direct source under Polkadot, its token named as the rails
+ *  name it. */
+export const DIRECT_SOURCE_ID_BY_KEY: Readonly<Record<string, DirectSourceId>> = Object.fromEntries(
+  MANUAL_SOURCE_IDS.map((sourceId) => {
+    const token: TokenSpec = MANUAL_SOURCES[sourceId].token;
+    return [`${CHAINS.Polkadot}:${token.chainflipAsset ?? token.symbol}`, sourceId];
+  }),
+);
 
 export function sourceIdFor(chain: string, asset: string): SourceId | undefined {
   const key = `${chain}:${asset}`;
-  return (
-    (DIRECT_SOURCE_ID_BY_KEY as Readonly<Record<string, SourceId>>)[key] ?? SOURCE_ID_BY_KEY[key]
-  );
+  return DIRECT_SOURCE_ID_BY_KEY[key] ?? SOURCE_ID_BY_KEY[key];
 }
 
 const PAIR_BY_SOURCE_ID: ReadonlyMap<string, { chain: string; asset: string }> = new Map(

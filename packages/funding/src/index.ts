@@ -8,6 +8,7 @@ export {
   FundingShortfallError,
   MAX_PSM_REFUSALS,
   discoverPool,
+  discoverPools,
   freshTickState,
   psmDepositNeeded,
   quoteNativeInMax,
@@ -17,6 +18,7 @@ export {
   sizeNativeBudget,
   stableDepositNeeded,
   tickOnce,
+  withHeadroom,
 } from "./pipeline";
 export type { FundingStep, TickState } from "./pipeline";
 export {
@@ -56,6 +58,13 @@ export type { ConversionRoute, PsmExternal, RouteQuery, Stable, StablePoolRoute 
 export { STABLE_TOKENS, isStable, stableTxOptions } from "./stable";
 export { creditedTo, forwardedTo, siblingOrigin, signedOrigin, trappedIn } from "./xcm-dry-run";
 export { describeDispatchError, psmRefusalKind, type PsmRefusalKind } from "./dispatch-error";
-export { createManualRail, manualSourceIdOf } from "./manual-rail";
+export {
+  createManualRail,
+  isManualSourceId,
+  MANUAL_SOURCE_IDS,
+  MANUAL_SOURCES,
+  manualDepositOf,
+  manualSourceIdOf,
+} from "./manual-rail";
 export type { ManualRailOptions, ManualSourceId } from "./manual-rail";
 export { PASEO_ASSET_HUB_PARA_ID, PASEO_PEOPLE_PARA_ID, PASEO_UNDERLYING_ASSET_ID } from "./paseo";

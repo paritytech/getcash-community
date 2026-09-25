@@ -19,7 +19,7 @@ import {
   DEFAULT_REMOTE_FEE_BUFFER,
   DEFAULT_SLIPPAGE_PCT,
   destinationEarmark,
-  discoverPool,
+  discoverPools,
   estimateDestinationFeeCash,
   estimateFundingProgramFees,
   estimatePsmBatchFees,
@@ -38,6 +38,7 @@ import {
   type Pool,
   type Stable,
   type StablePoolRoute,
+  withHeadroom,
 } from "@getsome/funding";
 
 /** The pool tier's costs. */
@@ -110,12 +111,20 @@ interface SizingArgs {
   probeAddress: string;
 }
 
-/** The chains' typed apis, the pool and the destination's execution fee: what both tiers' sizing
- *  starts from. The pool is on the fee path on both tiers. */
-async function sizingReads(args: SizingArgs) {
+/** The chains' typed apis, the pool and the destination's execution fee: what every tier's sizing
+ *  starts from. The pool is on the fee path on every tier; the stable pool tier's stable pool is
+ *  found in the same read. */
+async function sizingReads(args: SizingArgs, stableAssetId?: number) {
   const api = args.ahClient.getTypedApi(paseo_next_v2);
   const peopleApi = args.peopleClient.getTypedApi(paseo_people_next);
-  const pool: Pool = await discoverPool(api, args.underlyingAssetId);
+  const pools = await discoverPools(
+    api,
+    stableAssetId === undefined
+      ? [args.underlyingAssetId]
+      : [args.underlyingAssetId, stableAssetId],
+  );
+  const pool: Pool = pools[0]!;
+  const stablePool: Pool | undefined = pools[1];
   const destinationFee = await estimateDestinationFeeCash({
     peopleApi,
     pool,
@@ -123,7 +132,7 @@ async function sizingReads(args: SizingArgs) {
     beneficiaryHex: ZERO_32,
     amount: args.settleAmount,
   });
-  return { api, pool, destinationFee };
+  return { api, pool, stablePool, destinationFee };
 }
 
 /** The pool tier's sizing. */
@@ -195,13 +204,16 @@ export async function estimatePsmFundingSizing(
 export async function estimateStableFundingSizing(
   args: SizingArgs & { route: StablePoolRoute },
 ): Promise<StablePoolFundingSizing> {
-  const { api, pool, destinationFee } = await sizingReads(args);
   const stable = args.route.external;
-  const stablePool = await discoverPool(api, STABLE_TOKENS[stable].assetHubId);
+  const { api, pool, stablePool, destinationFee } = await sizingReads(
+    args,
+    STABLE_TOKENS[stable].assetHubId,
+  );
+  if (stablePool === undefined) throw new Error(`no native pool found for ${stable}`);
   const buyTarget = args.settleAmount + destinationFee;
   // The plain two-hop quote is the gate; the ask carries the headroom once, on the stable.
   const { stableIn } = await quoteStableForUnderlying(api, pool, stablePool, buyTarget);
-  const stableInMax = (stableIn * BigInt(10_000 + DEFAULT_SLIPPAGE_PCT * 100)) / 10_000n;
+  const stableInMax = withHeadroom(stableIn, DEFAULT_SLIPPAGE_PCT);
   // At the magnitude the program will carry, as the other tiers' probes do.
   const fees = await estimateStableProgramFees({
     api,

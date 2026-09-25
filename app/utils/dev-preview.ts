@@ -4,7 +4,6 @@
 
 import type { PaymentState, SourceId } from "@getsome/core";
 import { SOURCE_CONFIG_BY_ID, type SourceFloorResult } from "@getsome/chainflip";
-import { SOURCE_CHAINS } from "~~/lib/config";
 import {
   advanceFundingProgressSnapshot,
   createFundingProgressSnapshot,

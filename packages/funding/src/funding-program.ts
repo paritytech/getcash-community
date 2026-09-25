@@ -658,7 +658,7 @@ export async function estimateStableProgramFees(args: {
   const probe = (
     feeAllowance: bigint,
     dispatchStable: bigint,
-    minNativeOut: bigint,
+    floors: { native: bigint; cash: bigint },
     maxWeight: { ref_time: bigint; proof_size: bigint },
   ) => {
     const withdraw = args.depositStable - dispatchStable - minBalance;
@@ -672,8 +672,8 @@ export async function estimateStableProgramFees(args: {
       pool: args.pool,
       withdrawStable: withdraw,
       payFeesStable: feeAllowance,
-      minNativeOut,
-      minUnderlyingOut: args.minUnderlyingOut,
+      minNativeOut: floors.native,
+      minUnderlyingOut: floors.cash,
       remoteFeesCash: args.remoteFeesCash,
       beneficiaryHex: args.beneficiaryHex,
       peopleParaId: args.peopleParaId,
@@ -683,7 +683,8 @@ export async function estimateStableProgramFees(args: {
 
   // Only the instruction list matters for the weight, and an allowance that clears, so a quarter
   // of the deposit. The placeholder ceiling is never dispatched.
-  const rough = probe(args.depositStable / 4n, 0n, 1n, FUNDING_PROGRAM_MAX_WEIGHT);
+  const noFloors = { native: 1n, cash: 1n };
+  const rough = probe(args.depositStable / 4n, 0n, noFloors, FUNDING_PROGRAM_MAX_WEIGHT);
   const weight = await args.api.apis.XcmPaymentApi.query_xcm_weight(
     (rough as { message: unknown }).message as never,
   );
@@ -699,13 +700,14 @@ export async function estimateStableProgramFees(args: {
   const maxWeight = { ref_time: weight.value.ref_time, proof_size: weight.value.proof_size };
 
   // The forwarded program sets the delivery fee through its size. The real one comes from a dry
-  // run of the program, which must reach the send: the whole balance less the fees, floors at one.
+  // run of the program, which must reach the send: the whole balance less the fees, both floors
+  // at one.
   const forwarded =
     (args.dryRunFrom === undefined
       ? null
       : await realForwardedProgram(
           args.api,
-          args.api.tx.PolkadotXcm.execute(probe(args.depositStable / 4n, 0n, 1n, maxWeight))
+          args.api.tx.PolkadotXcm.execute(probe(args.depositStable / 4n, 0n, noFloors, maxWeight))
             .decodedCall,
           args.peopleParaId,
           args.dryRunFrom,
@@ -729,7 +731,12 @@ export async function estimateStableProgramFees(args: {
   // length.
   const options = stableTxOptions(args.stable);
   const dispatchNative = await args.api.tx.PolkadotXcm.execute(
-    probe(localExternal + deliveryExternal, 0n, 1n, maxWeight),
+    probe(
+      localExternal + deliveryExternal,
+      0n,
+      { native: 1n, cash: args.minUnderlyingOut },
+      maxWeight,
+    ),
   ).getEstimatedFees(args.dryRunFrom ?? args.feeProbeAddress, options);
   // ChargeAssetTxPayment swaps exactly the native fee out of the pool, so the stable it takes is
   // the exact-out quote for it, pool fee included.

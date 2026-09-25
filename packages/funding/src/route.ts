@@ -57,7 +57,6 @@ export const isStablePoolRoute = (route: ConversionRoute): route is StablePoolRo
  *  the deposit keys off: an `assetHubId` of undefined is the native's free balance, anything
  *  else a pallet-assets holding. */
 export function depositTokenOf(route: ConversionRoute): TokenSpec {
-  if (route.tier === "psm") return STABLE_TOKENS[route.external];
   return route.external === undefined ? TOKENS.PAS : STABLE_TOKENS[route.external];
 }
 

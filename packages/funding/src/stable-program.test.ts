@@ -267,7 +267,7 @@ describe("estimateStableProgramFees", () => {
       input.depositStable - MIN_BALANCE,
     );
     expect(exchanges(weighed)[0]!.want[0]!.fun.value).toBe(1n);
-    expect(exchanges(weighed)[1]!.want[0]!.fun.value).toBe(input.minUnderlyingOut);
+    expect(exchanges(weighed)[1]!.want[0]!.fun.value).toBe(1n);
     // Every fee read is keyed by the stable.
     expect(seen.localFeeAsset).toEqual({ type: "V5", value: TOKENS.USDC.location });
     expect(seen.delivery).toEqual([
@@ -282,8 +282,9 @@ describe("estimateStableProgramFees", () => {
     expect(seen.feeFrom).toBe("5Probe");
     expect(seen.feeOptions).toEqual({ asset: TOKENS.USDC.location });
     expect(seen.quote).toEqual([TOKENS.USDC.location, TOKENS.PAS.location, 1_234n, true]);
-    // The dispatch probe carries the measured fees and the weighed weight.
+    // The dispatch probe carries the measured fees, the real CASH floor and the weighed weight.
     const dispatchProbe = seen.executed.at(-1)!;
+    expect(exchanges(dispatchProbe)[1]!.want[0]!.fun.value).toBe(input.minUnderlyingOut);
     expect((instruction(dispatchProbe, "PayFees") as { asset: Fungible }).asset.fun.value).toBe(
       2_256n + 28_857n,
     );
@@ -311,7 +312,10 @@ describe("estimateStableProgramFees", () => {
     const call = seen.dryRun![1] as { type: string; value: { type: string; value: ExecuteArgs } };
     expect(call.type).toBe("PolkadotXcm");
     expect(call.value.type).toBe("execute");
+    // Both floors at one: a real deposit is a quarter short of the target in this probe, and a
+    // floor the exchanges cannot reach would fail the dry run and lose the forwarded program.
     expect(exchanges(call.value.value)[0]!.want[0]!.fun.value).toBe(1n);
+    expect(exchanges(call.value.value)[1]!.want[0]!.fun.value).toBe(1n);
     expect(call.value.value.max_weight).toEqual({ ref_time: 1_000_000n, proof_size: 1_000n });
     expect(seen.delivery![1]).toBe(forwarded);
     expect(seen.feeFrom).toBe("5Burner");

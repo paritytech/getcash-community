@@ -211,19 +211,34 @@ const isNative = (loc: AssetLocation): boolean =>
   ((loc as { parents?: number }).parents ?? 0) <= 1 &&
   (loc as { interior?: { type?: string } }).interior?.type === "Here";
 
-/** Find the native/underlying pool and return both sides' exact Location keys. */
-export async function discoverPool(
+/** Finds the native pool of each underlying in one read of the pool table, in the order asked,
+ *  and returns both sides' exact Location keys. */
+export async function discoverPools(
   api: AssetHubApi,
-  underlyingAssetId: number,
-): Promise<{ native: AssetLocation; underlying: AssetLocation }> {
+  underlyingAssetIds: readonly number[],
+): Promise<Pool[]> {
   const pools = await api.query.AssetConversion.Pools.getEntries();
-  for (const entry of pools) {
-    const [a, b] = entry.keyArgs[0] ?? [];
-    if (a === undefined || b === undefined) continue;
-    if (isUnderlying(a, underlyingAssetId) && isNative(b)) return { native: b, underlying: a };
-    if (isUnderlying(b, underlyingAssetId) && isNative(a)) return { native: a, underlying: b };
-  }
-  throw new Error(`no native AssetConversion pool found for underlying asset ${underlyingAssetId}`);
+  return underlyingAssetIds.map((underlyingAssetId) => {
+    for (const entry of pools) {
+      const [a, b] = entry.keyArgs[0] ?? [];
+      if (a === undefined || b === undefined) continue;
+      if (isUnderlying(a, underlyingAssetId) && isNative(b)) return { native: b, underlying: a };
+      if (isUnderlying(b, underlyingAssetId) && isNative(a)) return { native: a, underlying: b };
+    }
+    throw new Error(
+      `no native AssetConversion pool found for underlying asset ${underlyingAssetId}`,
+    );
+  });
+}
+
+/** `discoverPools` for one underlying. */
+export async function discoverPool(api: AssetHubApi, underlyingAssetId: number): Promise<Pool> {
+  return (await discoverPools(api, [underlyingAssetId]))[0]!;
+}
+
+/** `amount` plus `slippagePct` of it: the headroom a deposit is asked with. */
+export function withHeadroom(amount: bigint, slippagePct: number): bigint {
+  return (amount * BigInt(Math.round((100 + slippagePct) * 100))) / 10_000n;
 }
 
 /** Fresh exact-IN quote: the underlying `nativeIn` buys right now. The funding program gives the
@@ -274,8 +289,7 @@ export async function quoteNativeInMax(
   underlyingOut: bigint,
   slippagePct: number,
 ): Promise<bigint> {
-  const quoted = await quoteNativeIn(api, pool, underlyingOut);
-  return (quoted * BigInt(Math.round((100 + slippagePct) * 100))) / 10_000n;
+  return withHeadroom(await quoteNativeIn(api, pool, underlyingOut), slippagePct);
 }
 
 /** The native budget the rail must deliver for `settleAmount` to be claimable on the pool tier:
@@ -649,7 +663,7 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
       // remains: a fresh run re-buys the deficit from that surplus, this run does not.)
       // Reported through the transient hook because it is the one observability channel for
       // a swallowed condition.
-      const target = (nativeNeeded * BigInt(Math.round((100 + input.slippagePct) * 100))) / 10_000n;
+      const target = withHeadroom(nativeNeeded, input.slippagePct);
       spend = target < spend ? target : spend;
       input.onTransientError?.(
         new Error(
@@ -781,8 +795,7 @@ async function swapThroughStablePool(
   if (quotes === null) {
     // A pool too shallow for the whole deposit: buy the target instead, as the native pool tier
     // does, and the surplus stable stays on the burner, reachable through its secret.
-    const target =
-      (stableForTarget * BigInt(Math.round((100 + input.slippagePct) * 100))) / 10_000n;
+    const target = withHeadroom(stableForTarget, input.slippagePct);
     spend = target < spend ? target : spend;
     input.onTransientError?.(
       new Error(

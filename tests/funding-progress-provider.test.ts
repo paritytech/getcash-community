@@ -33,11 +33,9 @@ describe("the direct deposit's progress", () => {
     expect(profile.routeStageCount).toBe(1);
     expect(profile.routeCompletedLabel).toBe("Payment received");
     expect(observeDirectProgress("waiting")).toEqual({ kind: "waiting" });
-    expect(observeDirectProgress("receiving")).toEqual({
-      kind: "stage",
-      stageKey: DIRECT_DEPOSIT_STAGE,
-    });
     expect(observeDirectProgress("complete")).toEqual({ kind: "route-complete" });
+    // The manual rail never reports a stage of its own; the burner sighting completes it.
+    expect(observeDirectProgress("receiving")).toEqual({ kind: "hold" });
     expect(observeDirectProgress("swapping")).toEqual({ kind: "hold" });
   });
 });

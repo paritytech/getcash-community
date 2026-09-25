@@ -38,11 +38,31 @@ function floor(
   };
 }
 
-/** A 50 CASH purchase the pool sized at 100 DOT. */
+/** A 50 CASH purchase the pool sized at 100 DOT, or could not size when `nativeAmount` is null. */
 function sized(session: ReturnType<typeof useSessionStore>, nativeAmount: bigint | null) {
   session.setAmount("50");
   session.loading = false;
-  session.quoted = { send: "", symbol: "DOT", nativeAmount, sourceAsset: null, sourceChain: null };
+  session.quoted = {
+    send: "",
+    symbol: "DOT",
+    nativeAmount,
+    depositToken: TOKENS.PAS,
+    sourceAsset: null,
+    sourceChain: null,
+  };
+}
+
+/** The same purchase quoted as a direct USDC deposit: no figure in any asset the floors know. */
+function sizedInUsdc(session: ReturnType<typeof useSessionStore>) {
+  session.setAmount("50");
+  session.loading = false;
+  session.quoted = {
+    send: "50",
+    symbol: "USDC",
+    nativeAmount: null,
+    sourceAsset: "USDC",
+    sourceChain: "Polkadot",
+  };
 }
 
 /** The same purchase on the PSM tier: 50 CASH sized at 50 USDT. */
@@ -97,6 +117,25 @@ describe("offers store", () => {
     ]);
     expect(offers.offeredTokens("Polkadot").map((t) => t.asset)).toEqual(["DOT", "USDT", "USDC"]);
     expect(offers.offeredNetworks.map((n) => n.chain)).toEqual(["Polkadot"]);
+  });
+
+  it("keeps the swap rows checking while a direct stable quote is on screen, never ungated", () => {
+    const session = useSessionStore();
+    const offers = useOffersStore();
+    sizedInUsdc(session);
+    offers.floors = LEARNED;
+    // A floor with no figure to compare against is still being answered; Chainflip's own no
+    // stays a no.
+    const swapTokens = swapNetworks(offers).flatMap((n) => n.tokens);
+    expect(swapTokens.some((t) => t.offer.state === "ungated")).toBe(false);
+    expect(offers.offeredTokens("Ethereum").map((t) => t.offer.state)).toEqual([
+      "checking",
+      "checking",
+    ]);
+    expect(offers.networks[0]!.tokens.every((t) => t.offer.state === "direct")).toBe(true);
+    // A quote back in the native prices the rows again.
+    sized(session, 100n * DOT);
+    expect(offers.offeredTokens("Ethereum").map((t) => t.asset)).toEqual(["ETH", "USDT"]);
   });
 
   it("is checking every swap network until the floors are learned", () => {

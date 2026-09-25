@@ -15,7 +15,7 @@ const mocks = vi.hoisted(() => ({
   stored: new Map<string, unknown>(),
   storageDown: false,
   tickOnce: vi.fn(),
-  discoverPool: vi.fn(),
+  discoverPools: vi.fn(),
   settlementBalance: vi.fn(),
 }));
 
@@ -41,7 +41,7 @@ vi.mock("../worker/src/host.js", () => ({
 vi.mock("@getsome/funding", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   tickOnce: mocks.tickOnce,
-  discoverPool: mocks.discoverPool,
+  discoverPools: mocks.discoverPools,
 }));
 
 vi.mock("@getsome/people", () => ({
@@ -123,14 +123,16 @@ function armSeams() {
   // Reset first: a leftover mockImplementationOnce from an earlier test must not leak.
   mocks.deriveEntropy.mockReset();
   mocks.getHostProvider.mockReset();
-  mocks.discoverPool.mockReset();
+  mocks.discoverPools.mockReset();
   mocks.tickOnce.mockReset();
   mocks.registerTopUp.mockReset();
   mocks.readTopUpStatus.mockReset();
   mocks.settlementBalance.mockReset();
   mocks.deriveEntropy.mockResolvedValue({ ok: true, value: SEED });
   mocks.getHostProvider.mockImplementation(async (genesis: string) => ({ genesis }));
-  mocks.discoverPool.mockResolvedValue({ native: "N", underlying: "U" });
+  mocks.discoverPools.mockImplementation(async (_api: unknown, ids: number[]) =>
+    ids.map(() => ({ native: "N", underlying: "U" })),
+  );
   mocks.stored.clear();
   mocks.storageDown = false;
 }
@@ -197,7 +199,7 @@ describe("worker funding engine", () => {
       route: { tier: "psm", external: "USDT", feeRate: 5_000 },
       pool: undefined,
     });
-    expect(mocks.discoverPool).not.toHaveBeenCalled();
+    expect(mocks.discoverPools).not.toHaveBeenCalled();
     expect(storedJob().phase).toBe("swap");
 
     // A restart re-sending the hand-off under another tier changes nothing: the record's stands.
@@ -207,7 +209,7 @@ describe("worker funding engine", () => {
     expect(storedJob().tier).toBe("psm");
     expect(mocks.tickOnce).toHaveBeenCalledTimes(2);
     expect(mocks.tickOnce.mock.calls[1]![0]).toMatchObject({ route: { tier: "psm" } });
-    expect(mocks.discoverPool).not.toHaveBeenCalled();
+    expect(mocks.discoverPools).not.toHaveBeenCalled();
 
     // A record from before routes were recorded is a pool one, which is what it was: the pool is
     // discovered and handed over with the route.
@@ -221,7 +223,8 @@ describe("worker funding engine", () => {
       route: { tier: "pool" },
       pool: { native: "N", underlying: "U" },
     });
-    expect(mocks.discoverPool).toHaveBeenCalledTimes(1);
+    expect(mocks.discoverPools).toHaveBeenCalledTimes(1);
+    expect(mocks.discoverPools.mock.calls[0]![1]).toEqual([50_000_413]);
     expect(storedJob().phase).toBe("swap");
 
     // A psm hand-off without the fee the buyer was quoted is refused up front.
@@ -234,10 +237,9 @@ describe("worker funding engine", () => {
 
   it("discovers both pools for a pool job fed with a stable, and refuses a stable it does not know", async () => {
     armSeams();
-    mocks.discoverPool.mockImplementation(async (_api: unknown, id: number) => ({
-      native: "N",
-      underlying: id === 1337 ? "S" : "U",
-    }));
+    mocks.discoverPools.mockImplementation(async (_api: unknown, ids: number[]) =>
+      ids.map((id) => ({ native: "N", underlying: id === 1337 ? "S" : "U" })),
+    );
     const engine = await freshEngine();
     await engine.startFunding(
       JSON.stringify({ ...HANDOFF, tier: "pool", external: "USDC", quotedDeposit: "5300000" }),
@@ -245,8 +247,8 @@ describe("worker funding engine", () => {
     expect(storedJob()).toMatchObject({ tier: "pool", external: "USDC", quotedDeposit: "5300000" });
     mocks.tickOnce.mockResolvedValue(outcome("swap"));
     await engine.tickAllFunding();
-    // The CASH pool under the underlying's id, the stable pool under USDC's.
-    expect(mocks.discoverPool.mock.calls.map((call) => call[1])).toEqual([50_000_413, 1337]);
+    // The CASH pool under the underlying's id and the stable pool under USDC's, in one read.
+    expect(mocks.discoverPools.mock.calls.map((call) => call[1])).toEqual([[50_000_413, 1337]]);
     expect(mocks.tickOnce.mock.calls[0]![0]).toMatchObject({
       route: { tier: "pool", external: "USDC" },
       pool: { underlying: "U" },

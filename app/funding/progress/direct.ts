@@ -1,6 +1,6 @@
 // A direct deposit on Asset Hub as progress: one route stage, the transfer confirming, then the
-// shared CASH stages. The manual rail reports no status of its own, so a sighting of the burner
-// completes the stage in one step; unknown statuses hold.
+// shared CASH stages. The manual rail reports only waiting, and a sighting of the burner completes
+// the stage in one step; any other status holds.
 
 import { createFundingProgressProvider } from "./registry";
 import { sharedCashProgress } from "./shared";
@@ -14,8 +14,6 @@ export function observeDirectProgress(status: string): FundingProgressObservatio
   switch (status) {
     case "waiting":
       return { kind: "waiting" };
-    case "receiving":
-      return { kind: "stage", stageKey: DIRECT_DEPOSIT_STAGE };
     case "complete":
       return { kind: "route-complete" };
     default:

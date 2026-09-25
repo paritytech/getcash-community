@@ -238,8 +238,14 @@ export const useOffersStore = defineStore("offers", () => {
    *  while unknown. */
   const target = computed(() => session.quoted?.nativeAmount ?? null);
   /** The quote has answered, or given up, for the amount on screen. */
+  /** The quote has answered, or given up, for the amount on screen, in an asset the floors are
+   *  worth something in. A direct stable quote names no such asset, so the swap rows keep
+   *  checking until a quote in one comes back. */
   const sized = computed(
-    () => !session.loading && (session.quoted !== null || session.quoteError !== null),
+    () =>
+      !session.loading &&
+      (session.quoteError !== null ||
+        (session.quoted !== null && session.quoted.depositToken !== undefined)),
   );
 
   function tokenOffer(sourceId: SourceId): TokenOffer {

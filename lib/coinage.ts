@@ -41,6 +41,7 @@ import {
   depositTokenOf,
   type FundingStep,
   isStablePoolRoute,
+  MANUAL_SOURCE_IDS,
   type ManualSourceId,
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
@@ -957,13 +958,7 @@ export async function createCoinageSession(
 ): Promise<CoinageWorld> {
   // The live world serves the sources that land the route's deposit token on the burner: the
   // manual rail, one source per token, and the Meld rails.
-  const LIVE_SOURCES = new Set<SourceId>([
-    "dot-assethub",
-    "usdt-assethub",
-    "usdc-assethub",
-    "meld-card",
-    "meld-bank",
-  ]);
+  const LIVE_SOURCES = new Set<SourceId>([...MANUAL_SOURCE_IDS, "meld-card", "meld-bank"]);
   if (!LIVE_SOURCES.has(args.sourceId)) {
     throw new Error(`live mode does not serve source '${args.sourceId}'`);
   }

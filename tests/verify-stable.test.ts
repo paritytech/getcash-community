@@ -24,6 +24,7 @@ import {
   signedOrigin,
   STABLE_TOKENS,
   stableDepositNeeded,
+  withHeadroom,
   type Stable,
 } from "@getsome/funding";
 
@@ -77,7 +78,7 @@ describe.runIf(process.env.VERIFY_STABLE === "1")("stable pool tier dry runs", (
             stablePool,
             buyTarget,
           );
-          const stableInMax = (stableIn * BigInt(10_000 + DEFAULT_SLIPPAGE_PCT * 100)) / 10_000n;
+          const stableInMax = withHeadroom(stableIn, DEFAULT_SLIPPAGE_PCT);
           const fees = await estimateStableProgramFees({
             api: ah,
             stable: name,

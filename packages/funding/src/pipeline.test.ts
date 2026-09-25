@@ -1461,7 +1461,7 @@ describe("tickOnce on the stable pool tier", () => {
     world.state.stableAh = STABLE_DEPOSIT;
     const state = freshTickState();
     await expect(drive(world, 1, state, STABLE_ROUTE, STABLE_DEPOSIT)).rejects.toThrow(
-      /stable program dispatch rejected: ExchangeAsset failed with NoDeal/,
+      /stable program dispatch rejected: ExchangeAsset #1 failed with NoDeal/,
     );
     expect(world.state.stableAh).toBe(STABLE_DEPOSIT - DISPATCH_STABLE);
     expect(state).toMatchObject({ attempts: 1, xcmSubmitted: false });
@@ -1976,6 +1976,29 @@ describe("describeDispatchError", () => {
     );
   });
 
+  it("numbers an instruction the message carries twice, so the second exchange reads apart", () => {
+    const twoHops = {
+      message: {
+        value: [
+          { type: "WithdrawAsset" },
+          { type: "PayFees" },
+          { type: "ExchangeAsset" },
+          { type: "ExchangeAsset" },
+          { type: "InitiateTransfer" },
+        ],
+      },
+    };
+    expect(describeDispatchError(incomplete(2, "NoDeal"), twoHops)).toBe(
+      "ExchangeAsset #1 failed with NoDeal",
+    );
+    expect(describeDispatchError(incomplete(3, "NoDeal"), twoHops)).toBe(
+      "ExchangeAsset #2 failed with NoDeal",
+    );
+    expect(describeDispatchError(incomplete(4, "FeesNotMet"), twoHops)).toBe(
+      "InitiateTransfer failed with FeesNotMet",
+    );
+  });
+
   it("falls back to the pallet and variant, the bare kind, or a placeholder", () => {
     expect(
       describeDispatchError({
@@ -2028,10 +2051,9 @@ describe("createManualRail", () => {
     expect(createManualRail({ token: TOKENS.USDC }).sources()[0]?.sourceId).toBe("usdc-assethub");
   });
 
-  it("refuses a source that belongs to another token, so no burner is derived under its counter", () => {
-    expect(() => createManualRail({ token: TOKENS.USDC, sourceId: "dot-assethub" })).toThrow(
-      /does not take USDC/,
-    );
+  it("keeps the source it is given: a request from before the per-token sources runs a stable under dot-assethub", () => {
+    const legacy = createManualRail({ token: TOKENS.USDT, sourceId: "dot-assethub" });
+    expect(legacy.sources()[0]).toMatchObject({ sourceId: "dot-assethub", asset: "USDT" });
     expect(
       createManualRail({ token: TOKENS.USDC, sourceId: "usdc-assethub" }).sources()[0]?.sourceId,
     ).toBe("usdc-assethub");
