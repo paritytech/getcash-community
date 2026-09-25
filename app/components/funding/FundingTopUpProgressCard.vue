@@ -3,7 +3,7 @@
 // what the rail is doing, and the route as a quiet pill on the right. Shared by the top-up screen
 // and history, which differ only in which states they can hand it.
 import { computed } from "vue";
-import { Check, X } from "lucide-vue-next";
+import { ArrowUpRight, Check, X } from "lucide-vue-next";
 import type {
   FailedFundingTopUp,
   InProgressFundingTopUp,
@@ -29,10 +29,13 @@ const props = withDefaults(
 
 const settled = computed(() => (props.topUp.state.kind === "settled" ? props.topUp.state : null));
 const failed = computed(() => (props.topUp.state.kind === "failed" ? props.topUp.state : null));
+/** Money leaving the balance: every state signs it "-" and none of them greens it. */
+const debit = computed(() => props.topUp.debit === true);
 
 /** The credit is the one amount the design signs and greens; everything else is what was asked
  *  for, and a failed top-up's steps back to the muted tone. */
 const amountParts = computed(() => {
+  if (debit.value) return { sign: "-", amount: props.topUp.amount };
   const done = settled.value;
   return done
     ? { sign: "+", amount: done.creditedAmount }
@@ -43,9 +46,12 @@ const statusText = computed(() => {
   if (props.opening) return "Opening…";
   const done = settled.value;
   if (done) return formatWhenShort(done.at);
-  // A failed top-up names the outcome before the moment; a running one is the rail's own word.
+  // A failed top-up names the outcome before the moment; a running one carries its own wording,
+  // written by its projection — the rail's word for a top-up, the design's for a withdrawal.
   const gone = failed.value;
-  return gone ? `${gone.status} · ${formatWhenShort(gone.at)}` : props.topUp.progress.view.label;
+  return gone
+    ? `${gone.status} · ${formatWhenShort(gone.at)}`
+    : (props.topUp as InProgressFundingTopUp).state.status;
 });
 
 const emit = defineEmits<{ open: [topUp: ProgressCardTopUp] }>();
@@ -61,14 +67,21 @@ const emit = defineEmits<{ open: [topUp: ProgressCardTopUp] }>();
     <span class="flex min-w-0 items-start gap-2">
       <!-- The glyph sits on the middle of the amount's 24px line, not on its cap. -->
       <span class="mt-1 flex size-4 shrink-0 items-center justify-center">
-        <Check v-if="settled" class="size-4 text-fg-success" aria-hidden="true" />
+        <ArrowUpRight v-if="settled && debit" class="size-4 text-fg-secondary" aria-hidden="true" />
+        <Check v-else-if="settled" class="size-4 text-fg-success" aria-hidden="true" />
         <X v-else-if="failed" class="size-4 text-fg-error" aria-hidden="true" />
         <FundingProgressRing v-else :progress="topUp.progress" :size="16" />
       </span>
       <span class="flex min-w-0 flex-col">
         <strong
           class="truncate text-heading-m"
-          :class="settled ? 'text-fg-success' : failed ? 'text-fg-tertiary' : 'text-fg-primary'"
+          :class="
+            settled && !debit
+              ? 'text-fg-success'
+              : failed
+                ? 'text-fg-tertiary'
+                : 'text-fg-primary'
+          "
         >
           <CashAmount :sign="amountParts.sign" :amount="amountParts.amount" />
         </strong>
