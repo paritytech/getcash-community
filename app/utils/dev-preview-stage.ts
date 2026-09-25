@@ -26,7 +26,9 @@ export type PreviewStage =
       step: "network" | "token" | "address" | "summary" | "fees";
       chain?: string;
       address?: string;
-      receive?: string;
+      /** The summary's canned estimate: a string shows it, null shows it quoting, absent hides
+       *  the row as an estimate the quote could not give. */
+      receive?: string | null;
       fees?: WithdrawFeeView;
       skeleton?: boolean;
     };

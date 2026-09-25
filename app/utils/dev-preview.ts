@@ -1660,6 +1660,27 @@ export const SCENES: Scene[] = [
     },
     apply: (s, f) => base(s, f),
   },
+  {
+    name: "withdraw / summary: quoting",
+    stage: {
+      kind: "withdraw-package",
+      step: "summary",
+      chain: "Ethereum",
+      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
+      receive: null,
+    },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    name: "withdraw / summary: no quote",
+    stage: {
+      kind: "withdraw-package",
+      step: "summary",
+      chain: "Ethereum",
+      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
+    },
+    apply: (s, f) => base(s, f),
+  },
 ];
 
 /**
