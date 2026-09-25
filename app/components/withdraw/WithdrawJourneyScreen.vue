@@ -4,7 +4,6 @@
 import { computed } from "vue";
 import { Check, RefreshCcw, X } from "lucide-vue-next";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
-import { fundingSelectorConfig } from "../../funding/config";
 import { paymentTaken, type WithdrawalRecord } from "../../funding/requests/model";
 import { formatWhenShort } from "../../utils/journey";
 import { shortAddress } from "../../withdraw/destinations";
@@ -16,6 +15,7 @@ import {
   withdrawalProgressProfile,
 } from "../../withdraw/progress";
 import FundingJourneyTimeline from "../funding/progress/FundingJourneyTimeline.vue";
+import CashAmount from "../ui/CashAmount.vue";
 import PillButton from "../ui/PillButton.vue";
 
 const props = defineProps<{
@@ -49,7 +49,6 @@ const failedLabel = computed(() => {
   return failure.value?.step === "payment" ? "Payment failed" : null;
 });
 
-const amountText = computed(() => `${props.record.amountHuman} ${fundingSelectorConfig.asset}`);
 const sentWhen = computed(() =>
   status.value.kind === "sent" ? formatWhenShort(status.value.at) : null,
 );
@@ -93,7 +92,7 @@ const canRetry = computed(() => status.value.kind === "failed" && status.value.r
         class="mt-2 text-display-m"
         :class="sent ? 'text-fg-success' : sideExit ? 'text-fg-secondary' : 'text-fg-primary'"
       >
-        {{ amountText }}
+        <CashAmount :amount="record.amountHuman" />
       </p>
       <p v-if="sentWhen" class="text-paragraph-l text-fg-secondary">{{ sentWhen }}</p>
     </div>
@@ -101,7 +100,6 @@ const canRetry = computed(() => status.value.kind === "failed" && status.value.r
     <div class="mt-6 flex flex-1 flex-col gap-6">
       <FundingJourneyTimeline
         :progress="progress"
-        :steps="3"
         :labels="WITHDRAWAL_JOURNEY_LABELS"
         :completed-steps="done"
         :message="message"

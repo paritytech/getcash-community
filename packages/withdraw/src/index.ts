@@ -35,6 +35,27 @@ export type {
   WithdrawTickState,
 } from "./tick";
 export { readDestinationPas } from "./destination";
+export {
+  CHANNEL_EXPIRY_MARGIN_MS,
+  ChannelExpiredError,
+  ChannelMismatchError,
+  describeFailure,
+  freshRailLegState,
+  RailFailedError,
+  railTickOnce,
+  readingFailed,
+} from "./rail-leg";
+export type {
+  RailChannelRecord,
+  RailClient,
+  RailHandoff,
+  RailLegInput,
+  RailLegOutcome,
+  RailLegState,
+  RailStep,
+} from "./rail-leg";
+export { buildSweep, freshSweepState, sweepOnce } from "./sweep";
+export type { SweepInput, SweepState } from "./sweep";
 export { cashInFor, pasOutFor } from "./pool";
 export type { PoolReserves } from "./pool";
 export {

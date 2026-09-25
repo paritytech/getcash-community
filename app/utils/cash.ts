@@ -1,6 +1,7 @@
 // CASH amount math.
 
 import { CASH_DECIMALS } from "@getsome/people";
+import { currencyConfig } from "../funding/config";
 
 /** Human amount -> 6-dec CASH base units. Null for invalid or zero input. */
 export function toCashBase(human: string): bigint | null {
@@ -19,6 +20,17 @@ export function fmtCash(base: bigint): string {
   const s = base.toString().padStart(CASH_DECIMALS + 1, "0");
   return `${s.slice(0, -CASH_DECIMALS)}.${s.slice(-CASH_DECIMALS)}`.replace(/\.?0+$/, "") || "0";
 }
+
+/**
+ * A CASH amount as the designs write it, wherever it can only be a string: the symbol on the
+ * number, the ticker beside it ("$50 CASH", "+$50 CASH"). Anywhere markup can render, use
+ * `<CashAmount>` instead — it carries the same form plus the ticker's small-caps treatment.
+ *
+ * The bare token in prose keeps its own form — "Converting to $CASH", "Final $CASH depends on the
+ * rate on arrival" — because there it is a name, not a sum.
+ */
+export const cashAmount = (human: string): string =>
+  `${currencyConfig.symbol}${human} ${currencyConfig.ticker}`;
 
 /** Turns CASH base units into the amount string the keypad edits, rounded down to `decimals`
  *  places, with a whole number left bare ("226.78", "5", "5.5"). */

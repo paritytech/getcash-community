@@ -1,9 +1,8 @@
 <script setup lang="ts">
 // The summary before the purse is asked: the amount leaving the balance, an estimate of what
 // arrives, and where. Confirm starts the withdrawal.
-import { computed } from "vue";
-import { fundingSelectorConfig } from "../../funding/config";
 import { shortAddress, type WithdrawDestination } from "../../withdraw/destinations";
+import CashAmount from "../ui/CashAmount.vue";
 import PillButton from "../ui/PillButton.vue";
 
 defineProps<{
@@ -18,14 +17,12 @@ defineProps<{
   error: string | null;
 }>();
 const emit = defineEmits<{ confirm: [] }>();
-
-const asset = computed(() => fundingSelectorConfig.asset);
 </script>
 
 <template>
   <div class="flex min-h-0 flex-1 flex-col">
     <div class="flex flex-col items-center text-center">
-      <p class="text-display-l text-fg-primary">{{ amount }} {{ asset }}</p>
+      <p class="text-display-l text-fg-primary"><CashAmount :amount="amount" /></p>
       <p class="mt-1 text-body-m text-fg-secondary">From your balance inc. fees</p>
     </div>
 

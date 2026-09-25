@@ -91,6 +91,19 @@ export interface MeldStatusResult {
   readonly sourceAmount?: string;
 }
 
+/*
+ * No transaction id is read back here, deliberately.
+ *
+ * The adapter holds Meld's own id as `FundingRecord.provider_transaction_id`, but
+ * `toFundingRequestDto` drops every rail join key on the way to the wire, so the DTO above is all
+ * a caller ever sees. Its `id` — the funding request's, which the app persists as
+ * `meldFundingRequestId` — is therefore the one identifier we have, and it is what the concluded
+ * journey shows the buyer as their transaction id. It is real and traceable: the adapter's
+ * `GET /funding/:id` answers on it.
+ *
+ * Should that contract open up, read the id here and prefer it in `session.meldReference`.
+ */
+
 /** The outcome of asking the adapter to withdraw a request's pay page. */
 export type MeldCancelResult =
   | { readonly outcome: "cancelled"; readonly cancelledAt?: number }
@@ -182,7 +195,8 @@ class AdapterRefusal extends Error {
   }
 }
 
-/** How many concluded attempts `createSession` walks past before giving up. */
+/** How many finished attempts — concluded or cancelled — `createSession` walks past before giving
+ *  up. */
 const MAX_ATTEMPTS = 5;
 
 /**
@@ -433,16 +447,26 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike {
               widgetUrl: "",
             };
           }
-          const concluded =
-            err instanceof AdapterRefusal && err.status === 409 && err.code === "REQUEST_CONCLUDED";
-          if (!concluded || nextKey) throw err;
-          console.info(`[meld] attempt ${attempt} already concluded; starting a new one`);
+          // A finished attempt: concluded, or cancelled. Both are dead keys with no live request
+          // and no payment behind them (a cancel is refused outright while one is on its way), so
+          // the next attempt suffix is safe to mint — and for `REQUEST_CANCELLED` it is literally
+          // what the adapter asks for: "start a new one with a new key". Matched on the code
+          // alone, not the status: the buyer meets this on every re-entry after a cancel, and it
+          // must not turn on which conflict status the adapter picks for it.
+          const finished =
+            err instanceof AdapterRefusal &&
+            ((err.status === 409 && err.code === "REQUEST_CONCLUDED") ||
+              err.code === "REQUEST_CANCELLED");
+          if (!finished || nextKey) throw err;
+          console.info(
+            `[meld] attempt ${attempt} is ${err.code?.toLowerCase()}; starting a new one`,
+          );
           lastRefusal = err;
         }
       }
       // Every attempt this walk can name has already concluded.
       throw new Error(
-        `This purchase has already been completed ${MAX_ATTEMPTS} times. If you are expecting funds that have not arrived, contact support with your wallet address. Starting another will not help.`,
+        `This purchase has already been opened and closed ${MAX_ATTEMPTS} times. If you are expecting funds that have not arrived, contact support with your wallet address. Starting another will not help.`,
         lastRefusal instanceof Error ? { cause: lastRefusal } : undefined,
       );
     },

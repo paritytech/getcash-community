@@ -111,7 +111,14 @@ const CHAIN_URI_BUILDERS: Record<string, UriBuilder> = {
   },
   // Every Tron entry (native TRX and TRC-20) gets a bare address.
   Tron: (addr) => addr,
+  // Asset Hub is a source only for a withdrawal's own key, which never scans a code.
+  Assethub: (addr) => addr,
 };
+
+/** An SS58 account in any prefix: the base58 alphabet at the lengths a 32-byte key takes. */
+function validateAssetHubAddress(addr: string): boolean {
+  return /^[1-9A-HJ-NP-Za-km-z]{46,48}$/.test(addr.trim());
+}
 
 export interface SourceConfig extends SourceDescriptor {
   /** Asset short ticker for display. */
@@ -222,6 +229,18 @@ export const SOURCE_CONFIGS: readonly SourceConfig[] = Object.freeze([
 
 export const SOURCE_CONFIG_BY_ID: ReadonlyMap<SourceId, SourceConfig> = new Map(
   SOURCE_CONFIGS.map((s) => [s.sourceId, s]),
+);
+
+/** DOT on Asset Hub as a swap's source: what a withdrawal sells. Not a deposit source, so not
+ *  in the catalog above; the reference amount is Chainflip's minimum swap out, 4 DOT. */
+export const ASSET_HUB_DOT: SourceConfig = makeSource(
+  "dot-assethub",
+  "Assethub",
+  "DOT",
+  "Polkadot",
+  10,
+  "40000000000",
+  validateAssetHubAddress,
 );
 
 /** The core-typed catalog view, without validators or URI builders. */

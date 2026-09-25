@@ -1,11 +1,30 @@
 // The rail leg: a provider's normalised swap status folded onto the generic stage the shell
-// reads, and the merge that keeps that stage monotonic.
+// reads, and the merge that keeps that stage monotonic. Shared by the deposit and the
+// withdrawal, whose rails differ only in the providers they name.
 
-import type { ChainflipFailureInfo, SwapStatusResult } from "@getsome/core";
+import type { ChainflipFailureInfo, SwapProgress, SwapStatusResult } from "@getsome/core";
 import type { RailState } from "./model";
 
 type RailStage = RailState["stage"];
 type RailFailure = NonNullable<RailState["failure"]>;
+
+/** What one provider read says, for any provider name. */
+export interface RailReading<P extends string> {
+  provider: P;
+  status: SwapProgress | "failed";
+  stage: RailStage;
+  delayed?: boolean;
+  failure?: RailFailure;
+  updatedAt: number;
+}
+
+/** What `mergeRail` needs of a rail: its stage, and the status and delay a read carries. */
+interface RailLike {
+  stage: RailStage;
+  status?: SwapProgress | "failed";
+  delayed?: boolean;
+  updatedAt: number;
+}
 
 /** waiting < received < processing < delivered; `failed` is a sink reached from any stage. */
 const STAGE_RANK: Record<RailStage, number> = {
@@ -76,12 +95,12 @@ function railFailure(result: SwapStatusResult): RailFailure {
   };
 }
 
-export function railFromSwapStatus(
-  provider: RailState["provider"],
+export function railFromSwapStatus<P extends string>(
+  provider: P,
   result: SwapStatusResult,
   at: number,
   delayed?: boolean,
-): RailState {
+): RailReading<P> {
   const stage = stageOf(result);
   return {
     provider,
@@ -96,13 +115,13 @@ export function railFromSwapStatus(
 /** `next` when it fails or moves the stage or status forward; `current` itself when the read
  *  changes nothing, since a stage never moves backwards and an unchanged rail must not look like
  *  a change; else `current` with the latest read's `delayed` and time. */
-export function mergeRail(current: RailState, next: RailState): RailState {
+export function mergeRail<R extends RailLike>(current: R, next: R): R {
   const forward = stageRank(next.stage) - stageRank(current.stage);
   if (next.stage === "failed" || forward > 0) return next;
   const sameDelay = (current.delayed ?? false) === (next.delayed ?? false);
   if (forward === 0) return sameDelay && next.status === current.status ? current : next;
   if (sameDelay) return current;
-  const merged: RailState = { ...current, updatedAt: next.updatedAt };
+  const merged: R = { ...current, updatedAt: next.updatedAt };
   if (next.delayed === undefined) delete merged.delayed;
   else merged.delayed = next.delayed;
   return merged;

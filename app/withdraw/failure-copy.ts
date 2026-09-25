@@ -10,11 +10,21 @@ export function withdrawalFailureText(failure: WithdrawalFailure): string {
     case "expired":
       return "This withdrawal expired because the payment never arrived.";
     case "rejected":
-      return "The network refused the conversion. You can try again.";
+      return "The network refused the transaction. You can try again.";
     case "timeout":
       return "The conversion is taking longer than expected. You can try again.";
     case "egress-failed":
       return "The transfer to your address could not be completed.";
+    case "deposit-rejected":
+      return "The provider did not accept the funds.";
+    case "fallback-egress":
+      return "The provider sent the funds somewhere else. Contact support.";
+    case "refunded":
+      return "The swap did not go through and the funds came back. You can try again.";
+    case "channel-expired":
+      return "This withdrawal took too long to pay for. Nothing was sent, so you can try again.";
+    case "channel-mismatch":
+      return "We could not confirm this withdrawal with the provider. Nothing was sent, so you can try again.";
     case "unknown":
       return failure.message || "Something went wrong with this withdrawal.";
   }

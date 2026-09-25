@@ -4,7 +4,7 @@
 
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef, watch } from "vue";
-import type { FlowState, SourceId } from "@getsome/core";
+import type { FlowState, SourceId, SwapStatusResult } from "@getsome/core";
 import {
   createMeldClient,
   currentNetwork,
@@ -40,7 +40,9 @@ import {
   isWithdrawSourceId,
   isWithdrawal,
   paymentTaken,
+  paymentWatchUntil,
   railProviderOf,
+  railSawPayment,
   rankOf,
   requestsNow,
   routeOf,
@@ -50,6 +52,8 @@ import {
   type RequestKey,
   type RequestRecord,
   type TopUpRecord,
+  isWithdrawalRail,
+  type WithdrawalChannel,
   type WithdrawJobView,
   type WithdrawalHandoffPayload,
   type WithdrawalRecord,
@@ -310,7 +314,7 @@ async function inParallel<T>(
 const MINUTE = 60_000;
 
 /** Rank 0–3 in the design's sense: a request the worker is still moving. A withdrawal at
- *  `sending` is the rail's to move, not the worker's. */
+ *  `sending` is on the rail leg, which the worker drives and reads for the provider. */
 const WORKER_DRIVEN_KINDS = new Set<RequestRecord["status"]["kind"]>([
   "awaiting-deposit",
   "deposit-seen",
@@ -318,6 +322,7 @@ const WORKER_DRIVEN_KINDS = new Set<RequestRecord["status"]["kind"]>([
   "claiming",
   "awaiting-payment",
   "paid",
+  "sending",
 ]);
 const isWorkerDriven = (record: RequestRecord): boolean =>
   WORKER_DRIVEN_KINDS.has(record.status.kind);
@@ -413,11 +418,13 @@ function jobView(job: WorkerJob): WorkerJobView {
 /** What this surface reads of a worker's stored withdrawal job. */
 type WithdrawJob = {
   phase?: string;
+  landed?: boolean;
   done?: boolean;
   failure?: string;
   lastError?: string;
   lastTickAt?: number | null;
   state?: { fundsSeenAt?: number | null };
+  leg?: { reading?: SwapStatusResult | null };
   txs?: WithdrawJobView["txs"];
   // The hand-off the worker keeps, read back when the surface has no record of the job.
   label?: string;
@@ -434,6 +441,13 @@ type WithdrawJob = {
   poolAccount?: string;
   slippagePct?: number;
   paymentExpiresAt?: number;
+  channel?: {
+    id?: unknown;
+    address?: unknown;
+    openedAt?: unknown;
+    expiresAt?: unknown;
+    expectedEgress?: unknown;
+  };
   createdAt?: number;
 };
 
@@ -449,9 +463,13 @@ async function readWithdrawJobs(): Promise<Record<string, WithdrawJob>> {
 
 /** The withdrawal job as the record's reducer reads it. */
 function withdrawJobView(job: WithdrawJob): WithdrawJobView {
+  const reading = job.leg?.reading;
   return {
     phase: job.phase ?? "",
+    // Jobs from before the rail leg carry no `landed`; for them the message was the whole job.
+    landed: job.landed === true || job.done === true,
     done: job.done === true,
+    ...(reading == null ? {} : { rail: reading }),
     ...(job.failure === undefined ? {} : { failure: job.failure }),
     ...(job.lastError === undefined ? {} : { lastError: job.lastError }),
     fundsSeenAt: job.state?.fundsSeenAt ?? null,
@@ -562,6 +580,7 @@ function handoffOf(job: WorkerJob): WorkerHandoffPayload | undefined {
 /** The hand-off the worker keeps on its withdrawal job, when every field is there. */
 function withdrawHandoffOf(job: WithdrawJob): WithdrawalHandoffPayload | undefined {
   const { destination, rail } = job;
+  const channel = channelOf(job);
   if (
     !isString(job.label) ||
     !isString(job.keyAddress) ||
@@ -572,7 +591,7 @@ function withdrawHandoffOf(job: WithdrawJob): WithdrawalHandoffPayload | undefin
     !isString(destination?.asset) ||
     !isString(destination?.address) ||
     !isString(job.landingHex) ||
-    (rail !== "direct" && rail !== "chainflip") ||
+    !isWithdrawalRail(rail) ||
     !isString(job.assetHubGenesis) ||
     !isString(job.peopleGenesis) ||
     !isNumber(job.peopleParaId) ||
@@ -602,6 +621,29 @@ function withdrawHandoffOf(job: WithdrawJob): WithdrawalHandoffPayload | undefin
     poolAccount: job.poolAccount,
     slippagePct: job.slippagePct,
     paymentExpiresAt: job.paymentExpiresAt,
+    ...(channel === undefined ? {} : { channel }),
+  };
+}
+
+/** The channel a job carries, when every field is there. */
+function channelOf(job: WithdrawJob): WithdrawalChannel | undefined {
+  const c = job.channel;
+  if (
+    c === undefined ||
+    !isString(c.id) ||
+    !isString(c.address) ||
+    !isNumber(c.openedAt) ||
+    !isNumber(c.expiresAt) ||
+    !isString(c.expectedEgress)
+  ) {
+    return undefined;
+  }
+  return {
+    id: c.id,
+    address: c.address,
+    openedAt: c.openedAt,
+    expiresAt: c.expiresAt,
+    expectedEgress: c.expectedEgress,
   };
 }
 
@@ -1174,6 +1216,11 @@ export const useRequestsStore = defineStore("requests", () => {
   /** The Meld payment is temporarily stuck (provider retrying its crypto delivery). Transient:
    *  the record's rail says so, never terminal on its own. */
   const meldDelayed = computed(() => foregroundRecord.value?.rail.delayed === true);
+  /** The rail has the money for the request on screen. What the buyer is still told to do, and
+   *  what they can still call off, both end here. */
+  const railSeen = computed(() =>
+    foregroundRecord.value ? railSawPayment(foregroundRecord.value) : false,
+  );
   /** The adapter's reason for a failed Meld payment. Null unless `meldStage === 'failed'`. */
   const meldFailureMessage = computed<string | null>(() => {
     const record = foregroundRecord.value;
@@ -1731,23 +1778,26 @@ export const useRequestsStore = defineStore("requests", () => {
     { immediate: true },
   );
 
-  /** The provider's word can still move the record: it awaits or has seen its deposit, or it
-   *  expired or failed without the provider's final word and a late "received" can still re-open
-   *  it, until the deposit window plus the tombstone grace is out. */
+  /**
+   * The provider's word can still move the record: it awaits or has seen its deposit, or it ended
+   * without the provider's final word and a late "received" can still re-open it, until the
+   * payment watch is out.
+   *
+   * A cancelled request is asked about for the same reason the others are. Cancelling withdraws
+   * the pay page; it does not recall a transfer already sent, and the adapter keeps watching the
+   * row precisely so it can still report where that money went. Dropping the question here is how
+   * a settled or refunded transfer went unnoticed.
+   */
   function meldCanMove(record: TopUpRecord): boolean {
-    const { status, rail, deadline } = record;
+    const { status, rail } = record;
     switch (status.kind) {
       case "awaiting-deposit":
       case "deposit-seen":
         return true;
       case "expired":
       case "failed":
-        return (
-          rail.stage !== "failed" &&
-          requestsNow() <=
-            (deadline.depositExpiresAt ?? record.startedAt + depositWindowFor(record.route)) +
-              TOMBSTONE_GRACE_MS
-        );
+      case "cancelled":
+        return rail.stage !== "failed" && requestsNow() <= paymentWatchUntil(record);
       default:
         return false;
     }
@@ -1942,10 +1992,9 @@ export const useRequestsStore = defineStore("requests", () => {
           return;
         }
         if (record.status.kind !== "cancelled") return;
-        const windowEnd =
-          (record.deadline.depositExpiresAt ??
-            (record.cancelledAt ?? 0) + depositWindowFor(record.route)) + TOMBSTONE_GRACE_MS;
-        if (windowEnd >= now) return;
+        // The same watch the rail is asked under: while the adapter could still report where a
+        // transfer went, the row it would report against has to exist.
+        if (paymentWatchUntil(record) >= now) return;
         try {
           await remove(ref);
           console.warn(
@@ -2514,6 +2563,20 @@ export const useRequestsStore = defineStore("requests", () => {
     setMeldStatusClientFactory(() => null);
   }
 
+  /**
+   * Empties the sandbox, so a preview scene starts from no records rather than inheriting the
+   * ones the scene before it seeded.
+   *
+   * A no-op until something has entered the sandbox: nothing else may drop records wholesale.
+   * Gated on the same module-level latch as the storage it swaps, not on this store's own flag —
+   * a second store over an already-sandboxed module holds the deck's records too.
+   */
+  function clearSandbox(): void {
+    if (!sandboxEntered) return;
+    entries.value = {};
+    setRecordStorage(createMemoryKeyedStorage());
+  }
+
   return {
     entries,
     records,
@@ -2524,6 +2587,7 @@ export const useRequestsStore = defineStore("requests", () => {
     openWithdrawals,
     sandboxed,
     enterSandbox,
+    clearSandbox,
     hydrated,
     hostReadDone,
     storage,
@@ -2559,6 +2623,7 @@ export const useRequestsStore = defineStore("requests", () => {
     foregroundProgress,
     meldStage,
     meldDelayed,
+    railSeen,
     meldFailureMessage,
     meldFailureCode,
     meldRefunded,

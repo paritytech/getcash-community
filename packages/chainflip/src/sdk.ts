@@ -103,10 +103,25 @@ export function normalizeQuoteRequestError(error: unknown): Error {
 }
 
 /**
+ * Sends the SDK's requests over fetch instead of XMLHttpRequest.
+ *
+ * The SDK talks to Chainflip's API through axios, which prefers XMLHttpRequest in a browser. The
+ * app's host wraps that object and opens it only after an async permission check, so axios sets
+ * its headers on a request that is not open yet and the call throws before it leaves the device.
+ * The host's fetch wrapper awaits the same check and works, which is why the limits call over
+ * fetch succeeds in the app while every quote fails. Axios shares one module instance with the
+ * SDK, so this default reaches it.
+ */
+async function sendOverFetch(): Promise<void> {
+  const { default: axios } = await import("axios");
+  axios.defaults.adapter = "fetch";
+}
+
+/**
  * Builds a SwapSdkLike over the real @chainflip/sdk, imported dynamically here.
  */
 export async function createSwapSdk(network: ChainflipNetworkId): Promise<SwapSdkLike> {
-  const { SwapSDK } = await import("@chainflip/sdk/swap");
+  const [{ SwapSDK }] = await Promise.all([import("@chainflip/sdk/swap"), sendOverFetch()]);
   const sdk = new SwapSDK({ network });
   return {
     // The SDK's request types are zod-refined asset/chain unions; the plain-string args are

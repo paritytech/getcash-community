@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { Delete } from "lucide-vue-next";
 import type { FundingSelectorConfig } from "../../funding/config";
+import CashAmount from "../ui/CashAmount.vue";
 import SkeletonBlock from "../ui/SkeletonBlock.vue";
 import {
   fundingAmountStatus,
@@ -65,23 +66,20 @@ function formatAmount(value: string): string {
 
 const displayAmount = computed(() => (props.amount === "" ? "0" : formatAmount(props.amount)));
 
-// The amount scales down with the asset label once its natural width would overflow the row. The
+// The amount scales down with its ticker once its natural width would overflow the row. The
 // scale is applied through a CSS variable.
 const amountRow = ref<HTMLElement | null>(null);
 const amountValue = ref<HTMLElement | null>(null);
-const amountAsset = ref<HTMLElement | null>(null);
 let resizeObserver: ResizeObserver | null = null;
 
 function fitAmount() {
   const row = amountRow.value;
   const value = amountValue.value;
-  const asset = amountAsset.value;
-  if (!row || !value || !asset) return;
+  if (!row || !value) return;
 
   row.style.setProperty("--amount-scale", "1");
-  const gap = Number.parseFloat(getComputedStyle(row).columnGap) || 0;
-  const natural = value.getBoundingClientRect().width + asset.getBoundingClientRect().width;
-  const available = row.clientWidth - gap;
+  const natural = value.getBoundingClientRect().width;
+  const available = row.clientWidth;
   const scale = natural > 0 && available > 0 ? Math.min(1, available / natural) : 1;
   row.style.setProperty("--amount-scale", scale.toFixed(4));
 }
@@ -102,14 +100,15 @@ onBeforeUnmount(() => {
   resizeObserver?.disconnect();
   resizeObserver = null;
 });
-const limitLabel = computed(() => {
+/** The limit line's pieces: a bound that was broken leads with its name; the resting form is the
+ *  range, whose leading figure keeps its symbol but leaves the ticker to the last. */
+const limit = computed<{ lead: string; from: string | null; amount: string }>(() => {
   const { minimum, maximum } = props.config.amount;
-  const asset = props.config.asset;
   if (amountState.value.kind === "below-minimum")
-    return `Minimum ${formatAmount(minimum)} ${asset}`;
+    return { lead: "Minimum ", from: null, amount: formatAmount(minimum) };
   if (amountState.value.kind === "above-maximum")
-    return `Maximum ${formatAmount(maximum)} ${asset}`;
-  return `${formatAmount(minimum)} to ${formatAmount(maximum)} ${asset}`;
+    return { lead: "Maximum ", from: null, amount: formatAmount(maximum) };
+  return { lead: "", from: formatAmount(minimum), amount: formatAmount(maximum) };
 });
 
 function enter(key: FundingKey) {
@@ -171,14 +170,15 @@ function enter(key: FundingKey) {
           class="funding-available text-label-m"
           @click="emit('change', available)"
         >
-          Available {{ formatAmount(available) }} {{ config.asset }}
+          Available <CashAmount :amount="formatAmount(available)" />
         </button>
 
         <div ref="amountRow" class="funding-amount" aria-live="polite">
-          <span ref="amountValue" class="text-display-xl"
-            >{{ displayAmount }}<span v-if="!skeleton" class="funding-caret" aria-hidden="true"
-          /></span>
-          <span ref="amountAsset" class="text-display-xl">{{ config.asset }}</span>
+          <span ref="amountValue" class="text-display-xl">
+            <CashAmount :amount="displayAmount">
+              <span v-if="!skeleton" class="funding-caret" aria-hidden="true" />
+            </CashAmount>
+          </span>
         </div>
 
         <SkeletonBlock v-if="skeleton" style="width: 8.125rem; height: 1rem" />
@@ -189,7 +189,10 @@ function enter(key: FundingKey) {
           :class="{ 'funding-limits-warning': limitWarning }"
           aria-live="polite"
         >
-          {{ limitLabel }}
+          {{ limit.lead
+          }}<template v-if="limit.from !== null"
+            ><CashAmount :amount="limit.from" :ticker="false" /> to </template
+          ><CashAmount :amount="limit.amount" />
         </p>
 
         <div v-if="skeleton" class="funding-presets" aria-hidden="true">
@@ -207,7 +210,7 @@ function enter(key: FundingKey) {
             class="text-label-l"
             @click="emit('change', preset)"
           >
-            {{ formatAmount(preset) }} {{ config.asset }}
+            <CashAmount :amount="formatAmount(preset)" />
           </button>
         </div>
 
@@ -352,9 +355,10 @@ function enter(key: FundingKey) {
 
 .funding-amount {
   /* Fluid display type: the amount fits itself to the row, which the fixed
-   * type scale cannot express. The spans carry text-display-xl; the only
+   * type scale cannot express. The span carries text-display-xl; the only
    * scoped override is the fluid font-size, which re-states the same 56px
-   * stop times the fit scale. */
+   * stop times the fit scale. The ticker inside is sized in em, so it rides
+   * the same scale. */
   --amount-scale: 1;
   --amount-size: 3.5rem;
   display: flex;
@@ -362,12 +366,11 @@ function enter(key: FundingKey) {
   min-width: 0;
   align-items: baseline;
   justify-content: center;
-  gap: 1rem;
   margin-top: 1.5rem;
   white-space: nowrap;
 }
 
-/* Both spans keep their natural width; fitAmount() shrinks the scale. Line heights stay fixed. */
+/* The span keeps its natural width; fitAmount() shrinks the scale. Line heights stay fixed. */
 .funding-amount > span {
   flex: none;
   font-size: calc(var(--amount-size) * var(--amount-scale));

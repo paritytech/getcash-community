@@ -3,13 +3,13 @@
 // off to the journey once funds are seen or the deposit window lapses.
 import { computed, onMounted, onUnmounted } from "vue";
 import { isDemoBuild } from "../../../utils/demo";
+import { previewStage } from "../../../utils/dev-preview-stage";
 import { useChainflipHandoff } from "../../../composables/useChainflipHandoff";
 import { useStateDirector } from "../../../composables/useStateDirector";
 import { useVisibilityReconcile } from "../../../composables/useVisibilityReconcile";
 import type { FundingPackageEmits } from "../../../funding/handoff";
 import type { FundingSelection } from "../../../funding/selection";
 import { useFlowStore } from "../../../stores/flow";
-import { useOffersStore } from "../../../stores/offers";
 import { useRequestsStore } from "../../../stores/requests";
 import { useSessionStore } from "../../../stores/session";
 
@@ -23,9 +23,8 @@ if (props.selection.route !== "crypto") {
 const session = useSessionStore();
 const requests = useRequestsStore();
 const flow = useFlowStore();
-const offers = useOffersStore();
 useVisibilityReconcile();
-const { previewLabel } = useStateDirector();
+useStateDirector();
 const { handedOff } = useChainflipHandoff(emit);
 
 const toolbar = computed<{
@@ -83,15 +82,17 @@ function onDepositSkip() {
 
 let active = true;
 onMounted(async () => {
+  // The preview deck put this package on screen for a scene that owns the store state; its own
+  // entry — a fresh flow, a re-quote, a floor sweep — would land on top of what the scene wrote.
+  if (previewStage.value?.kind === "package") return;
   flow.startOver();
   session.setAmount(props.selection.amount);
   flow.step = "network";
   void import("~~/lib/host-chain").then((hostChain) => hostChain.prewarmChains());
   if (!active) return;
-  // Open requests carry on converting; none of them takes the screen.
+  // Open requests carry on converting; none of them takes the screen. The pickers learn which
+  // crypto sources can serve the amount, and keep that fresh, while they are on screen.
   void session.resumeOpenRequests();
-  // Learn which crypto sources can serve the selected amount.
-  void offers.learn();
   void session.fetchQuote(flow.srcChain.chain, flow.srcAsset);
 });
 onUnmounted(() => {
@@ -142,18 +143,12 @@ onUnmounted(() => {
         />
         <NetworkScreen
           v-else-if="flow.step === 'network' || flow.step === 'amount' || flow.step === 'method'"
-          @change-amount="emit('back')"
         />
         <TokenScreen v-else />
       </template>
     </div>
 
     <!-- state-director scene label (dev/demo keys only) -->
-    <span
-      v-if="previewLabel"
-      class="fixed bottom-2 left-2 rounded-small bg-surface-container px-2 py-1 font-mono text-overline text-fg-secondary shadow-1"
-    >
-      {{ previewLabel }}
-    </span>
+    <PreviewSceneLabel />
   </main>
 </template>

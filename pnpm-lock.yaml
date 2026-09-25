@@ -153,6 +153,9 @@ importers:
       '@noble/hashes':
         specifier: ^2.0.1
         version: 2.3.0
+      axios:
+        specifier: ^1.15.0
+        version: 1.19.0
 
   packages/core: {}
 
@@ -261,6 +264,9 @@ importers:
 
   packages/withdraw:
     dependencies:
+      '@getsome/core':
+        specifier: workspace:*
+        version: link:../core
       '@getsome/funding':
         specifier: workspace:*
         version: link:../funding

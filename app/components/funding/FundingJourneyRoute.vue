@@ -7,10 +7,14 @@ import { useStateDirector } from "../../composables/useStateDirector";
 import { useVisibilityReconcile } from "../../composables/useVisibilityReconcile";
 import type { FundingJourneyStatus } from "../../funding/handoff";
 import type { FundingTopUp } from "../../funding/top-ups";
+import { useFlowStore } from "../../stores/flow";
 import { useRequestsStore } from "../../stores/requests";
 import { useSessionStore } from "../../stores/session";
+import CancelTopUpScreen from "../screens/CancelTopUpScreen.vue";
+import JourneySkeleton from "../screens/JourneySkeleton.vue";
 import ReturnFundsScreen from "../screens/ReturnFundsScreen.vue";
 import FundingSettledStatusScreen from "./FundingSettledStatusScreen.vue";
+import { useJourneyQuote } from "../../composables/useJourneyQuote";
 import MeldFeeDetailsScreen from "./routes/MeldFeeDetailsScreen.vue";
 
 const props = defineProps<{
@@ -28,34 +32,46 @@ const emit = defineEmits<{ back: []; startOver: [] }>();
 
 const session = useSessionStore();
 const requests = useRequestsStore();
+const flow = useFlowStore();
 // A settled top-up is read from the list only: nothing resumed, nothing reset on the way out.
 const readOnly = props.topUp?.state.kind === "settled";
 const opening = ref(!readOnly && props.topUp != null && props.open != null);
-const unavailable = ref(false);
+/** The request could not be brought to the foreground — an old top-up whose world is gone. */
+const unresumable = ref(false);
+/** Nothing left to show at all: not resumable, and no stored record to fall back on. */
+const unavailable = computed(() => unresumable.value && props.topUp == null);
+// Waiting on the record: this screen's own open, or a resume the store started under it (a
+// reconcile on return from the background brings one back the same way).
 const waiting = computed(
-  () => opening.value && requests.foregroundRecord === null && !unavailable.value,
+  () =>
+    (opening.value || session.resuming) && requests.foregroundRecord === null && !unresumable.value,
 );
 let active = true;
 
 useVisibilityReconcile();
-const { previewLabel } = useStateDirector();
+useStateDirector();
 
 /** The fee-breakdown drill-in over the journey. Back (toolbar or bottom button) returns to it. */
 const showingFees = ref(false);
-// A cleared quote leaves nothing to break down.
-watch(
-  () => session.quoted,
-  (q) => {
-    if (!q) showingFees.value = false;
-  },
+// The quote the journey's money row was built from, so the row and the breakdown behind its
+// chevron cannot disagree about what the buyer paid.
+const { quote, cashAmount } = useJourneyQuote(
+  () => props.topUp,
+  () => readOnly,
 );
+// A quote gone from both the session and the record leaves nothing to break down.
+watch(quote, (q) => {
+  if (!q) showingFees.value = false;
+});
 /** The return-funds drill-in over a refunded journey. Back (toolbar or bottom button) returns. */
 const showingRefund = ref(false);
-// A state that is no longer failed has no refund to walk through.
+// A live state that is no longer failed has no refund to walk through. A journey opened from
+// history has no live state at all, and its guide is driven by the record instead, so the guard
+// only applies while a request is actually on screen.
 watch(
   () => requests.phase,
   (phase) => {
-    if (phase !== "failed") showingRefund.value = false;
+    if (phase !== null && phase !== "failed") showingRefund.value = false;
   },
 );
 // The preview deck lands straight on the opened guide.
@@ -67,10 +83,31 @@ watch(
   { immediate: true },
 );
 
+// The cancel confirmation over the journey, asked for by the bank transfer's Cancel. It is the
+// flow store's flag, as the crypto deposit's confirmation is: one place holds "a cancel is being
+// confirmed", and the preview deck can stage it.
+// A request past the point of cancelling takes the confirmation down with it: the money arrived
+// while it was up, and the choice it offers is no longer there to make.
+watch(
+  () => requests.fundsSeen || requests.claiming,
+  (paid) => {
+    if (paid) flow.confirmingCancel = false;
+  },
+);
+
 function goBack() {
-  if (showingRefund.value) showingRefund.value = false;
+  if (flow.confirmingCancel) flow.confirmingCancel = false;
+  else if (showingRefund.value) showingRefund.value = false;
   else if (showingFees.value) showingFees.value = false;
   else emit("back");
+}
+
+/** Performs the cancel. One that went through leaves the way any other exit does — to the list the
+ *  top-up was opened from, or the shell for a purchase that had none; a declined one returns to the
+ *  journey, where the store's notice says why. */
+async function cancelTopUp() {
+  if (await session.cancelTopUp()) emit("back");
+  else flow.confirmingCancel = false;
 }
 
 onMounted(async () => {
@@ -83,7 +120,7 @@ onMounted(async () => {
     opened = false;
   } finally {
     if (active) {
-      unavailable.value = !opened;
+      unresumable.value = !opened;
       opening.value = false;
     }
   }
@@ -92,6 +129,8 @@ onMounted(async () => {
 
 onUnmounted(() => {
   active = false;
+  // The confirmation belongs to this screen; leaving must not carry it to the next one.
+  flow.confirmingCancel = false;
   if (!readOnly) session.reset();
 });
 </script>
@@ -110,20 +149,21 @@ onUnmounted(() => {
          Back stays available during the claim: leaving lands on the top-ups list, where the
          in-flight top-up remains resumable. -->
     <Toolbar
-      :title="showingFees ? 'Fees' : readOnly || waiting || unavailable ? title : ''"
-      :back="readOnly || !waiting"
+      :title="showingFees ? 'Fees' : waiting || unresumable ? title : ''"
+      :back="(readOnly || !waiting) && !session.cancelling"
       @back="goBack"
     />
 
     <div class="flex min-h-0 flex-1 flex-col px-6 pt-6">
-      <FundingSettledStatusScreen v-if="readOnly && topUp" :top-up="topUp" />
+      <FundingSettledStatusScreen
+        v-if="readOnly && topUp && !showingFees"
+        :top-up="topUp"
+        @fees="showingFees = true"
+        @close="emit('back')"
+      />
 
-      <div v-else-if="waiting" class="flex flex-col items-center gap-4 pt-16">
-        <span
-          class="inline-block size-8 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary"
-        />
-        <p class="text-body-m text-fg-secondary">Opening your top-up…</p>
-      </div>
+      <!-- The screen's own shapes while the request opens, not a spinner over an empty one. -->
+      <JourneySkeleton v-else-if="waiting" :timeline="!readOnly" />
 
       <div v-else-if="unavailable" class="flex flex-1 flex-col items-center pt-16 text-center">
         <h1 class="text-heading-l text-fg-primary">Top-up unavailable</h1>
@@ -132,26 +172,43 @@ onUnmounted(() => {
         </p>
       </div>
 
-      <ReturnFundsScreen v-else-if="showingRefund" @back="showingRefund = false" />
-      <MeldFeeDetailsScreen v-else-if="showingFees" @back="showingFees = false" />
-      <JourneyScreen
-        v-else
-        :progress="topUp?.progress ?? null"
-        :status="status ?? null"
-        :top-up="topUp ?? null"
-        @fees="showingFees = true"
-        @refund="showingRefund = true"
-        @close="emit('back')"
-        @start-over="emit('startOver')"
+      <CancelTopUpScreen
+        v-else-if="flow.confirmingCancel"
+        kind="transfer"
+        @confirm="cancelTopUp"
+        @keep="flow.confirmingCancel = false"
       />
+      <ReturnFundsScreen v-else-if="showingRefund" :top-up="topUp" @back="showingRefund = false" />
+      <MeldFeeDetailsScreen
+        v-else-if="showingFees"
+        :quote="quote"
+        :cash-amount="cashAmount"
+        @back="showingFees = false"
+      />
+      <template v-else>
+        <JourneyScreen
+          :progress="topUp?.progress ?? null"
+          :status="status ?? null"
+          :top-up="topUp ?? null"
+          @fees="showingFees = true"
+          @refund="showingRefund = true"
+          @cancel="flow.confirmingCancel = true"
+          @close="emit('back')"
+          @start-over="emit('startOver')"
+        />
+        <!-- A cancel the adapter refused: the payment is already on its way and the request
+             stands. -->
+        <p
+          v-if="session.cancelNotice"
+          class="shrink-0 pb-6 text-center text-body-m text-fg-secondary"
+          role="status"
+        >
+          {{ session.cancelNotice }}
+        </p>
+      </template>
     </div>
 
     <!-- state-director scene label (dev/demo keys only) -->
-    <span
-      v-if="previewLabel"
-      class="fixed bottom-2 left-2 rounded-small bg-surface-container px-2 py-1 font-mono text-overline text-fg-secondary shadow-1"
-    >
-      {{ previewLabel }}
-    </span>
+    <PreviewSceneLabel />
   </main>
 </template>

@@ -25,6 +25,7 @@ jobs:
         with:
           faucet-seed: ${{ secrets.VITE_FAUCET_SEED }}
           meld-base-url: ${{ secrets.VITE_MELD_BASE_URL }}
+          meld-product-id: ${{ secrets.VITE_MELD_PRODUCT_ID }}
           # Fork and Dependabot PRs cannot read repo secrets and skip the deploy job; an
           # empty URL does not fail their build.
           require-meld-base-url: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]' }}

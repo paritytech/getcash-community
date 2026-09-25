@@ -1,11 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { Check, Copy } from "lucide-vue-next";
-import {
-  demoDepositAddress,
-  estimateSourceAmount,
-  estimateSourceFromCash,
-} from "~~/lib/demo-rates";
+import { Copy } from "lucide-vue-next";
+import { estimateSourceAmount, estimateSourceFromCash } from "~~/lib/demo-rates";
 import { SOURCE_CHAINS } from "~~/lib/config";
 import { useCopyToClipboard } from "../../composables/useCopyToClipboard";
 import { shortAddress } from "../../utils/address";
@@ -26,15 +22,8 @@ const deposit = computed(() => {
   return requests.phase === "awaiting-deposit" && d ? { ...d, amount: BigInt(d.amount) } : null;
 });
 
-/** The address the QR and the copy row carry: a source-chain stand-in in the live demo, the real
- *  one in the mock.
- *  TODO(production): carry the real channel address once the Chainflip channel rail lands. */
-const address = computed(() => {
-  const d = deposit.value;
-  if (!d) return "";
-  if (!session.live) return d.address;
-  return demoDepositAddress(session.quoted?.sourceChain ?? null) ?? d.address;
-});
+/** The address the QR and the copy row carry. */
+const address = computed(() => deposit.value?.address ?? "");
 
 /** How much to send, split so the copy carries the bare number: the swap network's figure when it
  *  priced this purchase, the estimate marked ≈ otherwise, the bare native figure when no source is
@@ -90,8 +79,8 @@ const source = computed(() => {
 // Cancel is offered only while nothing has been paid.
 const showCancel = computed(() => session.faucetState === "idle" && !requests.fundsSeen);
 
-// The "Copied" pill above the buttons answers either row's copy.
-const { copied, copy: copyToClipboard } = useCopyToClipboard();
+// Either row's copy raises the shared pill above the buttons.
+const { copy: copyToClipboard } = useCopyToClipboard();
 function copy(target: "amount" | "address") {
   const text = target === "amount" ? amount.value?.value : address.value;
   if (text) void copyToClipboard(text);
@@ -158,14 +147,7 @@ function copy(target: "amount" | "address") {
     </button>
 
     <div class="mt-auto flex shrink-0 flex-col pt-6 pb-6">
-      <div v-if="copied" class="flex justify-center pb-3" aria-live="polite">
-        <span
-          class="flex items-center gap-2 rounded-full bg-surface-container px-4 py-2 text-label-m text-fg-primary shadow-1"
-        >
-          <Check class="size-4 text-fg-success" aria-hidden="true" />
-          Copied
-        </span>
-      </div>
+      <CopiedPill />
       <!-- Cancel asks the route for the confirmation screen; offered only while nothing has
            been paid. -->
       <div class="grid grid-cols-2 gap-2">
