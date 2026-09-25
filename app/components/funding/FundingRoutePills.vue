@@ -1,6 +1,5 @@
 <script setup lang="ts">
-// The route pills over the amount: one per configured route, the picked one inverted; a route
-// this build cannot run renders dimmed and marked "Soon".
+// A route this build cannot run renders dimmed and marked "Soon" rather than dropped.
 import SkeletonBlock from "../ui/SkeletonBlock.vue";
 import type { FundingRouteOption } from "../../funding/config";
 import { isFundingRouteAvailable, type FundingRoute } from "../../funding/selection";

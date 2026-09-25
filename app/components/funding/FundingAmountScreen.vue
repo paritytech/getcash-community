@@ -24,7 +24,6 @@ const canContinue = computed(
     isFundingRouteAvailable(props.route, props.availableRoutes),
 );
 
-// The limit line names the bound an amount broke; inside the bounds the range stands.
 const notice = computed(() => {
   const { minimum, maximum } = props.config.amount;
   if (amountState.value.kind === "below-minimum")

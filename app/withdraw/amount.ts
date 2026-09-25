@@ -16,7 +16,6 @@ export interface WithdrawalAmountAssessment {
   amount: string | null;
   /** A bound the amount broke; drawn in the error colour. */
   breach: boolean;
-  /** Whether the withdrawal can be opened on this amount. */
   withdrawable: boolean;
 }
 

@@ -1,5 +1,4 @@
 <script setup lang="ts">
-// The amount keypad: three columns, the fourth row a decimal point, a zero and a backspace.
 import { Delete } from "lucide-vue-next";
 import type { FundingKey } from "../../funding/selection";
 

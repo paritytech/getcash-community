@@ -76,7 +76,6 @@ function requestContinue() {
           @select="emit('route', $event)"
         />
 
-        <!-- Layout only; the pill's look is AvailableBalancePill's. -->
         <AvailableBalancePill
           class="amount-shell-available"
           :amount="available"
@@ -167,7 +166,7 @@ function requestContinue() {
   text-align: center;
 }
 
-/* Layout only; the pill's look is PillButton's. The auto margin anchors the CTA to the bottom. */
+/* The auto margin anchors the CTA to the bottom. */
 .amount-shell-primary {
   width: 100%;
   margin-top: auto;

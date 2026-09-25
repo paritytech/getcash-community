@@ -57,7 +57,6 @@ const props = withDefaults(
     available?: bigint | null;
     /** The list screens' words around the rows; the top-up's by default. */
     wording?: FundingListWording;
-    /** The amount screen the shell mounts; the top-up screen by default. */
     amountScreen?: AmountScreenComponent | null;
   }>(),
   {

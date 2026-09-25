@@ -47,8 +47,6 @@ const availableRoutes = availableFundingRoutes(
   withdrawalSelectorConfig.routes.map(({ id }) => id),
 );
 
-// Each purse state maps by name: unknown holds the pill's skeleton and the gate closed, none
-// shows no pill, and only a known balance is offered — in the base units the host reported.
 const purse = usePurseBalance();
 const available = computed<bigint | null | undefined>(() => {
   const purseState = purse.state.value;

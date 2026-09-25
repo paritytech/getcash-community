@@ -76,7 +76,6 @@ export const fundingSelectorConfig = {
   ],
 } as const satisfies FundingSelectorConfig;
 
-/** The withdrawal flow's variant: the same config with its own $2,000 ceiling. */
 export const withdrawalSelectorConfig = {
   ...fundingSelectorConfig,
   amount: {

@@ -1,6 +1,5 @@
 <script setup lang="ts">
-// The big keypad amount in CashAmount's treatment, with a caret marking live input. The row
-// fits itself to its width through useAmountFit.
+// The big keypad amount: CashAmount's treatment with a caret marking live input.
 import { toRef } from "vue";
 import CashAmount from "../ui/CashAmount.vue";
 import { useAmountFit } from "../../composables/useAmountFit";
@@ -42,7 +41,6 @@ const { row: rowEl, value: valueEl } = useAmountFit(toRef(props, "amount"));
   white-space: nowrap;
 }
 
-/* The span keeps its natural width; the fit shrinks the scale. */
 .amount-display-value {
   flex: none;
   font-size: calc(var(--amount-size) * var(--amount-scale));
