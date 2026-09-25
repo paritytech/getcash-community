@@ -413,6 +413,7 @@ async function core(request: PreviewRequest, step: number, state: PaymentState) 
 async function previewWithdrawal(
   index: number,
   state: "converting" | "sending" | "sent" | "refunded",
+  over?: { amountHuman?: string; destination?: WithdrawalRecord["destination"] },
 ): Promise<void> {
   const requests = useRequestsStore();
   const ref: RequestRef = { sourceId: "wd:usdc-eth", tradeN: 950 + index };
@@ -433,7 +434,7 @@ async function previewWithdrawal(
     address: "13cKp88mpAujXcqAxDMFEpvDACJyWLXSTbKf6cwHTn92FGGF",
     publicKeyHex: `0x${"6e".repeat(32)}`,
   };
-  const destination = {
+  const destination = over?.destination ?? {
     chain: "Ethereum",
     asset: "USDC",
     address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
@@ -445,7 +446,7 @@ async function previewWithdrawal(
     rev: 0,
     updatedAt: now,
     startedAt,
-    amountHuman: "25",
+    amountHuman: over?.amountHuman ?? "25",
     route: "crypto",
     destination,
     key,
@@ -498,6 +499,34 @@ async function previewWithdrawal(
   };
   await requests.create(ref, record);
   requests.setForeground(ref);
+}
+
+/** Which slot the summary's demo Skip plays its journey in; away from the scenes' 950..955. */
+const SKIP_SLOT = 9;
+
+/**
+ * The summary's demo Skip: a simulated withdrawal walked through the journey — conversion,
+ * sending, sent — a few seconds apart, on the sandbox. Stops early when something else takes the
+ * screen. Demo builds only; the route gates the button on `isDemoBuild()`.
+ */
+export async function simulateWithdrawalJourney(over?: {
+  amountHuman?: string;
+  destination?: WithdrawalRecord["destination"];
+}): Promise<void> {
+  const requests = useRequestsStore();
+  requests.enterSandbox();
+  const ref: RequestRef = { sourceId: "wd:usdc-eth", tradeN: 950 + SKIP_SLOT };
+  const stillUp = () =>
+    requests.foregroundWithdrawal?.ref.tradeN === ref.tradeN &&
+    requests.foregroundWithdrawal?.ref.sourceId === ref.sourceId;
+  const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  await previewWithdrawal(SKIP_SLOT, "converting", over);
+  await delay(3_000);
+  if (!stillUp()) return;
+  await previewWithdrawal(SKIP_SLOT, "sending", over);
+  await delay(3_000);
+  if (!stillUp()) return;
+  await previewWithdrawal(SKIP_SLOT, "sent", over);
 }
 
 /** A rail poll's report that the payment is seen but stuck and retrying: Meld's crypto delivery, or

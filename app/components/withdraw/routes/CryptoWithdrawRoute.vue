@@ -102,6 +102,23 @@ function onSkipRail() {
   });
 }
 
+/** Demo Skip on the summary: a simulated journey plays conversion, sending and sent, without a
+ *  purse or a provider — the walkthrough a plain browser can give. */
+const canSkipSummary = computed(() => isDemoBuild() && step.value === "summary");
+
+async function onSkipSummary() {
+  const picked = destination.value;
+  const over = {
+    ...(amount.value === "" ? {} : { amountHuman: amount.value }),
+    ...(picked === null || address.value === ""
+      ? {}
+      : { destination: { chain: picked.chainLabel, asset: picked.asset, address: address.value } }),
+  };
+  step.value = "journey";
+  const preview = await import("../../../utils/dev-preview");
+  void preview.simulateWithdrawalJourney(over);
+}
+
 const toolbar = computed<{ title?: string; back: boolean }>(() => {
   switch (step.value) {
     case "network":
@@ -340,11 +357,11 @@ onUnmounted(() => {
     "
   >
     <Toolbar :title="toolbar.title" :back="toolbar.back" @back="onBack">
-      <template v-if="canSkipRail" #trailing>
+      <template v-if="canSkipRail || canSkipSummary" #trailing>
         <button
           type="button"
           class="rounded-medium px-4 py-3 text-label-l font-normal text-fg-primary transition-colors hover:bg-action-tertiary-hover"
-          @click="onSkipRail"
+          @click="canSkipRail ? onSkipRail() : onSkipSummary()"
         >
           Skip
         </button>
