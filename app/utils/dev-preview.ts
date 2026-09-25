@@ -41,6 +41,19 @@ type Flow = ReturnType<typeof useFlowStore>;
 
 const DOT = 10_000_000_000n;
 
+/** The withdraw summary/fees scenes' canned quote, as the section's design frames draw it. */
+const WITHDRAW_PREVIEW_FEES = {
+  rows: [
+    { label: "Network fee", value: "0.31 USDC" },
+    { label: "Swap fee", value: "0.21 USDC" },
+    { label: "Service fee", value: "0.04 USDC" },
+  ],
+  total: "0.56 USDC",
+  equivalent: "≈ 24.75 USDC",
+  receive: "24.19 USDC",
+  rate: "$1 CASH ≈ 0.99 USDC",
+};
+
 function floor(sourceId: SourceId, minimumBaseUnits: bigint, worth: bigint): SourceFloorResult {
   return {
     kind: "floor",
@@ -1618,6 +1631,32 @@ export const SCENES: Scene[] = [
       step: "address",
       chain: "Ethereum",
       address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
+    },
+    apply: (s, f) => base(s, f),
+  },
+  // The summary and its fee drill-in, on the section's canned quote: the route never asks
+  // Chainflip while the stage carries the estimate.
+  {
+    name: "withdraw / summary",
+    stage: {
+      kind: "withdraw-package",
+      step: "summary",
+      chain: "Ethereum",
+      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
+      receive: "24.44 USDC",
+      fees: WITHDRAW_PREVIEW_FEES,
+    },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    name: "withdraw / fees",
+    stage: {
+      kind: "withdraw-package",
+      step: "fees",
+      chain: "Ethereum",
+      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
+      receive: "24.44 USDC",
+      fees: WITHDRAW_PREVIEW_FEES,
     },
     apply: (s, f) => base(s, f),
   },

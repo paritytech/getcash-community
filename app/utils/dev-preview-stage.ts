@@ -7,6 +7,7 @@
 
 import { shallowRef } from "vue";
 import type { FundingRoute } from "../funding/selection";
+import type { WithdrawFeeView } from "../withdraw/offers";
 
 export type PreviewStage =
   /** The shell's own screens: the top-ups list, history, the amount screen. */
@@ -16,15 +17,17 @@ export type PreviewStage =
   /** The journey. `topUpId` opens it as a top-up from the list; without one it reads as a
    *  package handoff. */
   | { kind: "journey"; route: FundingRoute; topUpId?: string }
-  /** The withdrawal package's pickers and address, on `#/withdraw` — `app/pages/withdraw.vue`
-   *  stages the package and the route reads the rest: the step on screen, the network already
-   *  picked, the address seeded into the address step, and whether the pickers show their
-   *  skeletons. */
+  /** The withdrawal package's steps, on `#/withdraw` — `app/pages/withdraw.vue` stages the
+   *  package and the route reads the rest: the step on screen, the network already picked, the
+   *  address seeded into the address step, the summary's canned estimate and fee split, and
+   *  whether the pickers show their skeletons. */
   | {
       kind: "withdraw-package";
-      step: "network" | "token" | "address";
+      step: "network" | "token" | "address" | "summary" | "fees";
       chain?: string;
       address?: string;
+      receive?: string;
+      fees?: WithdrawFeeView;
       skeleton?: boolean;
     };
 

@@ -9,6 +9,21 @@ import { wholeCashCeil } from "../funding/source-groups";
 import { cashAmount } from "../utils/cash";
 import type { WithdrawDestination } from "./destinations";
 
+/** The Fees drill-in behind the summary, every figure already formatted for its row. */
+export interface WithdrawFeeView {
+  /** The split, largest legs first; a fee the quote does not name has no row. */
+  rows: { label: string; value: string }[];
+  /** The sum of the split; absent when there is no split to sum. */
+  total?: string;
+  /** What the amount is worth before the fees ("≈ 24.75 USDC"); absent on the direct rail,
+   *  whose fee is taken in CASH before the sale. */
+  equivalent?: string;
+  /** What lands, the same figure the summary shows. */
+  receive: string;
+  /** The gross rate the equivalent implies ("$1 CASH ≈ 0.99 USDC"); null when unpriceable. */
+  rate: string | null;
+}
+
 export type WithdrawOffer =
   /** Still being quoted. */
   | { state: "checking" }
@@ -18,8 +33,15 @@ export type WithdrawOffer =
   | { state: "unavailable"; reason: string }
   /** Under the provider's minimum; `minimumCash` is the smallest withdrawal it takes. */
   | { state: "too-small"; minimumCash: bigint }
-  /** What lands on the destination, in its asset's base units, and formatted for the summary. */
-  | { state: "available"; egress: bigint; formatted: string; etaSeconds: number | null };
+  /** What lands on the destination, in its asset's base units, and formatted for the summary.
+   *  `fees` is the quote's own split, absent when a fee could not be priced. */
+  | {
+      state: "available";
+      egress: bigint;
+      formatted: string;
+      etaSeconds: number | null;
+      fees?: WithdrawFeeView;
+    };
 
 export interface RowState {
   pickable: boolean;

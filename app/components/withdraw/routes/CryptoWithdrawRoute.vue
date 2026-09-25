@@ -8,9 +8,10 @@ import { useWithdrawalRequest } from "../../../composables/useWithdrawalRequest"
 import type { FundingPackageEmits } from "../../../funding/handoff";
 import type { FundingSelection } from "../../../funding/selection";
 import type { FundingTopUp } from "../../../funding/top-ups";
+import { CASH_DECIMALS } from "@getsome/people";
 import { useRequestsStore } from "../../../stores/requests";
 import { useWithdrawOffersStore } from "../../../stores/withdraw-offers";
-import { toCashBase } from "../../../utils/cash";
+import { cashAmount, fmtCash, toCashBase } from "../../../utils/cash";
 import { previewStage } from "../../../utils/dev-preview-stage";
 import { isDemoBuild } from "../../../utils/demo";
 import {
@@ -19,10 +20,12 @@ import {
   type WithdrawDestination,
   type WithdrawNetwork,
 } from "../../../withdraw/destinations";
+import type { WithdrawFeeView } from "../../../withdraw/offers";
 import { withdrawalRequestRef } from "../../../withdraw/rows";
 import Toolbar from "../../ui/Toolbar.vue";
 import WithdrawAddressScreen from "../WithdrawAddressScreen.vue";
 import WithdrawCancelScreen from "../WithdrawCancelScreen.vue";
+import WithdrawFeesScreen from "../WithdrawFeesScreen.vue";
 import WithdrawJourneyScreen from "../WithdrawJourneyScreen.vue";
 import WithdrawNetworkScreen from "../WithdrawNetworkScreen.vue";
 import WithdrawSummaryScreen from "../WithdrawSummaryScreen.vue";
@@ -44,13 +47,15 @@ const requests = useRequestsStore();
 const withdrawal = useWithdrawalRequest();
 useStateDirector();
 
-type Step = "network" | "token" | "address" | "summary" | "journey" | "cancel";
+type Step = "network" | "token" | "address" | "summary" | "fees" | "journey" | "cancel";
 const step = ref<Step>(props.topUp ? "journey" : "network");
 const network = ref<WithdrawNetwork | null>(null);
 const destination = ref<WithdrawDestination | null>(null);
 const address = ref("");
 /** What arrives, formatted; null while quoting; undefined without a quote. */
 const receive = ref<string | null | undefined>(undefined);
+/** The quote's fee split behind the summary's caption; null when it brought none. */
+const fees = ref<WithdrawFeeView | null>(null);
 /** The native the estimate is for; what a provider's channel is quoted with at confirm. */
 const expectedNative = ref<bigint | null>(null);
 const starting = ref(false);
@@ -94,6 +99,8 @@ const toolbar = computed<{ title?: string; back: boolean }>(() => {
       return { title: "Select network", back: true };
     case "token":
       return { title: "Select token", back: true };
+    case "fees":
+      return { title: "Fees", back: true };
     case "cancel":
       return { back: true };
     case "journey":
@@ -107,6 +114,9 @@ function onBack() {
   switch (step.value) {
     case "cancel":
       step.value = "journey";
+      return;
+    case "fees":
+      step.value = "summary";
       return;
     case "summary":
       step.value = "address";
@@ -142,6 +152,13 @@ function formatNative(planck: bigint, decimals: number): string {
   return digits === "" ? whole.toString() : `${whole}.${digits}`;
 }
 
+/** "$1 CASH ≈ 0.19 DOT": the gross rate the direct estimate implies. */
+function directRate(planck: bigint, base: bigint): string | null {
+  const value = Number(planck) / 1e10 / (Number(base) / 10 ** CASH_DECIMALS);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return `${cashAmount("1")} ≈ ${value >= 0.01 ? value.toFixed(2) : value.toPrecision(2)} DOT`;
+}
+
 async function onAddress(entered: string) {
   address.value = entered;
   startError.value = null;
@@ -149,6 +166,7 @@ async function onAddress(entered: string) {
   const picked = destination.value;
   const base = toCashBase(amount.value);
   expectedNative.value = null;
+  fees.value = null;
   if (picked === null || base === null) {
     receive.value = undefined;
     return;
@@ -156,11 +174,17 @@ async function onAddress(entered: string) {
   receive.value = null;
   try {
     if (picked.rail === "direct") {
-      // What the CASH sells for on Asset Hub's pool: the direct rail lands exactly that.
+      // What the CASH sells for on Asset Hub's pool: the direct rail lands exactly that. Its one
+      // fee is taken in CASH before the sale, so the drill-in shows it as CASH.
       const live = await import("~~/lib/withdraw-live");
       const planck = await live.quoteDirectReceive(base);
       if (step.value !== "summary") return;
       receive.value = `${formatNative(planck, 10)} ${picked.asset}`;
+      fees.value = {
+        rows: [{ label: "Network fee", value: cashAmount(fmtCash(live.DIRECT_FEES_CASH)) }],
+        receive: receive.value,
+        rate: directRate(planck, base),
+      };
       return;
     }
     // A provider destination shows what its offer for this amount said would land, and the
@@ -174,6 +198,7 @@ async function onAddress(entered: string) {
     }
     expectedNative.value = offers.sellable;
     receive.value = offer.formatted;
+    fees.value = offer.fees ?? null;
   } catch (error: unknown) {
     console.warn("[withdraw] receive estimate unavailable:", error);
     receive.value = undefined;
@@ -270,6 +295,8 @@ watch(
     destination.value =
       staged?.destinations.find((d) => d.asset === "USDC") ?? staged?.destinations[0] ?? null;
     address.value = stage.address ?? "";
+    receive.value = stage.receive;
+    fees.value = stage.fees ?? null;
     step.value = stage.step;
     previewSkeleton.value = stage.skeleton === true;
   },
@@ -339,9 +366,17 @@ onUnmounted(() => {
         :destination="destination"
         :address="address"
         :receive="receive"
+        :fees="fees"
         :starting="starting"
         :error="startError"
         @confirm="confirm"
+        @fees="step = 'fees'"
+      />
+      <WithdrawFeesScreen
+        v-else-if="step === 'fees' && fees"
+        :amount="amount"
+        :fees="fees"
+        @back="step = 'summary'"
       />
       <WithdrawCancelScreen
         v-else-if="step === 'cancel'"

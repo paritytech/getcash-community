@@ -25,6 +25,7 @@ const props = defineProps<{
 const emit = defineEmits<{ next: [address: string] }>();
 
 const address = ref(props.initial ?? "");
+const field = ref<HTMLTextAreaElement | null>(null);
 /** Nothing is judged until something was typed; an address brought in is judged at once. */
 const touched = ref(address.value !== "");
 const trimmed = computed(() => address.value.trim());
@@ -43,17 +44,21 @@ function onInput(event: Event) {
   touched.value = true;
 }
 
-/** The clipboard's text, when the webview grants it; otherwise the field is left to the keyboard. */
+/** The clipboard's text, when the platform grants it. WebKit answers the tap with its own
+ *  "Paste" callout that has to be tapped too; a refusal focuses the field instead, so the
+ *  platform's native paste is one gesture away. */
 async function paste() {
   try {
     const text = await navigator.clipboard.readText();
     if (text) {
       address.value = text.trim();
       touched.value = true;
+      return;
     }
   } catch (error: unknown) {
     console.warn("[withdraw] clipboard read unavailable:", error);
   }
+  field.value?.focus();
 }
 </script>
 
@@ -71,6 +76,7 @@ async function paste() {
     <label class="mt-10 flex flex-col items-center gap-2">
       <span class="sr-only">Destination address</span>
       <textarea
+        ref="field"
         :value="address"
         rows="3"
         autocapitalize="off"
@@ -105,7 +111,7 @@ async function paste() {
 
     <div class="mt-auto mb-6 flex flex-col gap-4">
       <p v-if="valid" class="text-center text-body-s text-fg-secondary">
-        Sending to the wrong network will lose your funds
+        Funds sent to the wrong network can't be recovered.
       </p>
       <PillButton class="w-full" :disabled="!valid" @click="emit('next', trimmed)">
         {{ valid ? "Continue" : "Next" }}

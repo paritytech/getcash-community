@@ -50,12 +50,8 @@ export function assessWithdrawalAmount(
       withdrawable: false,
     };
 
-  const standing = {
-    lead: "Withdrawal minimum ",
-    amount: groupAmountDigits(rules.minimum),
-    breach: false,
-    withdrawable: true,
-  };
+  // An amount that breaks nothing needs no line: the design's Entered frame carries none.
+  const standing = { lead: "", amount: null, breach: false, withdrawable: true };
   // Provably no purse: only the configured bounds apply.
   if (available === undefined) return standing;
   // Unknown purse: no bound to name yet, but the gate stays closed until it can be seen.
