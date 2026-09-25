@@ -32,8 +32,7 @@ export function fmtCash(base: bigint): string {
 export const cashAmount = (human: string): string =>
   `${currencyConfig.symbol}${human} ${currencyConfig.ticker}`;
 
-/** CASH base units truncated down to the keypad's `decimals` scale, as base units of that scale —
- *  the largest amount the keypad could type without overdrawing the purse. */
+/** CASH base units truncated down to the keypad's `decimals` scale. */
 export function cashToRuleUnits(base: bigint, decimals: number): bigint {
   const drop = CASH_DECIMALS - decimals;
   return drop >= 0 ? base / 10n ** BigInt(drop) : base * 10n ** BigInt(-drop);
@@ -56,8 +55,7 @@ export function fmtCashDisplay(base: bigint): string {
   return `${whole}.${frac}`;
 }
 
-/** An amount string with thousands separated, the fraction left as typed ("2000" -> "2,000",
- *  "226.78" -> "226.78"). The keypad edits an ungrouped string; every screen writes a grouped one. */
+/** Thousands-separated amount string ("2000" -> "2,000"), the fraction left as typed. */
 export function groupAmountDigits(value: string): string {
   const [whole = "0", fraction] = value.split(".");
   const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");

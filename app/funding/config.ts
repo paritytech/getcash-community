@@ -76,8 +76,7 @@ export const fundingSelectorConfig = {
   ],
 } as const satisfies FundingSelectorConfig;
 
-/** The withdrawal flow's variant: the same provider, routes and minimum, but its own ceiling —
- *  the designs cap a withdrawal at $2,000 where a top-up may go to $5,000. */
+/** The withdrawal flow's variant: the same config with its own $2,000 ceiling. */
 export const withdrawalSelectorConfig = {
   ...fundingSelectorConfig,
   amount: {

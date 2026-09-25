@@ -57,8 +57,7 @@ const props = withDefaults(
     available?: bigint | null;
     /** The list screens' words around the rows; the top-up's by default. */
     wording?: FundingListWording;
-    /** The screen the shell opens on. Defaults to the top-up amount screen; the withdrawal page
-     *  passes its own, which draws the same AmountScreenProps contract to the withdrawal frames. */
+    /** The amount screen the shell mounts; the top-up screen by default. */
     amountScreen?: AmountScreenComponent | null;
   }>(),
   {

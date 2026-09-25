@@ -1,8 +1,6 @@
 <script setup lang="ts">
-// The withdrawal amount screen, at the entry to #/withdraw. The top-up screen's shape — route
-// pills, the purse pill, the amount, the keypad, the CTA — drawn to the withdrawal frames: the
-// amount in CashAmount's treatment, the line underneath naming whichever bound the amount broke,
-// and there are no preset amounts.
+// The withdrawal amount screen, at the entry to #/withdraw: the top-up screen's shape drawn to
+// the withdrawal frames, with no preset amounts.
 import { computed } from "vue";
 import FundingAmountDisplay from "../funding/FundingAmountDisplay.vue";
 import FundingAmountShell from "../funding/FundingAmountShell.vue";

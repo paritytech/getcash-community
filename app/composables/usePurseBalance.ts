@@ -4,9 +4,8 @@
 import { onMounted, onUnmounted, ref, type Ref } from "vue";
 import { isHosted } from "~~/lib/host-account";
 
-/** The purse as the page may read it, each state named so loading and no-purse can never swap:
- *  unknown is not "no purse" — the withdrawal gate fails closed on unknown and open only where
- *  there is provably nothing to cap. */
+/** Each state named so loading and no-purse can never swap: the withdrawal gate fails closed
+ *  on unknown, open only where there is provably nothing to cap. */
 export type PurseBalanceState =
   | { kind: "unknown" } // a read in flight, or a read that failed
   | { kind: "none" } // no purse at all: outside a host, or the host offers no payments
@@ -14,21 +13,17 @@ export type PurseBalanceState =
 
 export interface PurseBalance {
   state: Readonly<Ref<PurseBalanceState>>;
-  /** True once the quick retries are spent without a read landing, so the screen can name the
-   *  failure instead of holding a bare skeleton. Cleared by the read that finally lands. */
+  /** True once the quick retries are spent, so the screen can name the failure; cleared by the
+   *  read that finally lands. */
   failed: Readonly<Ref<boolean>>;
-  /** Re-reads the purse. A known balance stands while the read is in flight — unless `spent`
-   *  says the purse may have just been drawn down, where the last-read balance must not keep
-   *  offering (or opening on) what is already gone: the state drops to unknown, closing the
-   *  gate until the new read lands. */
+  /** Re-reads the purse. A known balance stands while the read is in flight, unless `spent`
+   *  says it may just have been drawn down — then the state drops to unknown until the read lands. */
   refresh: (options?: { spent?: boolean }) => Promise<void>;
 }
 
-// A failed read retries on its own: the gate fails closed on unknown, so without these a single
-// transient host hiccup would leave the pill's skeleton and a dead CTA until a full reload.
+// The gate fails closed on unknown, so a transient host hiccup must retry on its own.
 const RETRY_DELAYS_MS = [2_000, 5_000, 15_000];
-// Past the quick ladder the reads keep going at a walk, so a host that recovers while the screen
-// is up heals it without anyone reloading.
+// Past the quick ladder, a slow walk heals a host that recovers while the screen is up.
 const RETRY_STEADY_MS = 30_000;
 
 export function usePurseBalance(): PurseBalance {
@@ -74,10 +69,8 @@ export function usePurseBalance(): PurseBalance {
       state.value = next;
       failed.value = false;
     } catch (error: unknown) {
-      // A failed read leaves the balance unknown, not absent — reporting "no purse" here would
-      // lift the withdrawal cap. A balance already read stands until a new read lands, so a
-      // transient hiccup mid-refresh never collapses the pill to its skeleton or closes the
-      // gate; only with nothing read yet does the pill hold its skeleton while the retries run.
+      // Unknown, not absent — "no purse" would lift the withdrawal cap. A balance already read
+      // stands, so a hiccup mid-refresh never collapses the pill or closes the gate.
       console.warn("[withdraw] purse balance unavailable:", error);
       if (run !== epoch) return;
       const delay = RETRY_DELAYS_MS[attempt];
@@ -87,9 +80,7 @@ export function usePurseBalance(): PurseBalance {
       }
       retryTimer = setTimeout(() => {
         retryTimer = null;
-        // A hidden tab holds its retry rather than polling a dead host in the background; the
-        // visibilitychange below releases it, so recovery is immediate when the user returns
-        // instead of on the next tick of a background clock.
+        // A hidden tab holds its retry; visibilitychange releases it on return.
         if (typeof document !== "undefined" && document.hidden) {
           heldRetry = () => void read(run, attempt + 1);
           return;
@@ -101,8 +92,7 @@ export function usePurseBalance(): PurseBalance {
 
   async function refresh(options?: { spent?: boolean }): Promise<void> {
     cancelRetry();
-    // The purse may have just been drawn down: what was known is stale in the one way that
-    // matters, so the skeleton and the closed gate stand in until the new read lands.
+    // Drawn-down purse: the skeleton and the closed gate stand in until the new read lands.
     if (options?.spent === true && state.value.kind === "known") state.value = { kind: "unknown" };
     await read(++epoch, 0);
   }

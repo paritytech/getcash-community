@@ -1,7 +1,6 @@
 <script setup lang="ts">
-// The big keypad amount: the value in CashAmount's treatment — the symbol on the number, the
-// small-caps ticker beside it — and a caret that marks it as live input. The row fits itself to
-// the width it has through useAmountFit; the ticker is sized in em, so it rides the same scale.
+// The big keypad amount in CashAmount's treatment, with a caret marking live input. The row
+// fits itself to its width through useAmountFit.
 import { toRef } from "vue";
 import CashAmount from "../ui/CashAmount.vue";
 import { useAmountFit } from "../../composables/useAmountFit";
@@ -31,10 +30,8 @@ const { row: rowEl, value: valueEl } = useAmountFit(toRef(props, "amount"));
 
 <style scoped>
 .amount-display {
-  /* Fluid display type: the amount fits itself to the row, which the fixed
-   * type scale cannot express. The span carries the type utility; the only
-   * scoped override is the fluid font-size, which re-states the same stop
-   * times the fit scale. */
+  /* Fluid display type: the fit scale multiplies into the fixed stop; the ticker inside is
+   * em-sized, so it rides the same scale. */
   --amount-scale: 1;
   --amount-size: 3.5rem;
   display: flex;
@@ -45,18 +42,15 @@ const { row: rowEl, value: valueEl } = useAmountFit(toRef(props, "amount"));
   white-space: nowrap;
 }
 
-/* The span keeps its natural width; the fit shrinks the scale. Line height stays fixed. */
+/* The span keeps its natural width; the fit shrinks the scale. */
 .amount-display-value {
   flex: none;
   font-size: calc(var(--amount-size) * var(--amount-scale));
-  /* 80/56 as a unitless ratio keeps the same leading at every fluid scale
-     (the token's line-height is a fixed 80px). */
+  /* 80/56 keeps the token's fixed 80px leading at every fluid scale. */
   line-height: 1.4286;
 }
 
-/* Text-cursor caret after the digits: the keypad is live input. Sized in em so
-   it follows the fluid scale; sits inside the digits span so the fit logic
-   measures it. currentColor keeps it on fg-primary. */
+/* Caret after the digits, inside the measured span; em-sized so it follows the scale. */
 .amount-display-caret {
   display: inline-block;
   width: 0.036em;
@@ -87,7 +81,6 @@ const { row: rowEl, value: valueEl } = useAmountFit(toRef(props, "amount"));
 
 @media (max-height: 650px) {
   .amount-display {
-    /* Short-viewport adaptation of the fluid display size noted above. */
     --amount-size: 3rem;
   }
 }

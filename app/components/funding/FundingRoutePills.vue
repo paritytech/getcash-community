@@ -1,7 +1,6 @@
 <script setup lang="ts">
-// The route pills over the amount: one per configured route, the picked one inverted. A route
-// this build cannot run renders dimmed and marked "Soon" rather than being dropped, so the set
-// the design draws stays legible.
+// The route pills over the amount: one per configured route, the picked one inverted; a route
+// this build cannot run renders dimmed and marked "Soon".
 import SkeletonBlock from "../ui/SkeletonBlock.vue";
 import type { FundingRouteOption } from "../../funding/config";
 import { isFundingRouteAvailable, type FundingRoute } from "../../funding/selection";

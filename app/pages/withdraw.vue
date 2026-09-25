@@ -47,10 +47,8 @@ const availableRoutes = availableFundingRoutes(
   withdrawalSelectorConfig.routes.map(({ id }) => id),
 );
 
-// The pill offers the purse balance as an amount the keypad can take, each purse state mapped by
-// name to its prop reading: unknown holds the pill's skeleton (and the gate closed), no purse
-// shows no pill, and only a known balance is offered — as the base units the host reported, so
-// the screen and the gate read the same purse the pill writes.
+// Each purse state maps by name: unknown holds the pill's skeleton and the gate closed, none
+// shows no pill, and only a known balance is offered — in the base units the host reported.
 const purse = usePurseBalance();
 const available = computed<bigint | null | undefined>(() => {
   const purseState = purse.state.value;
@@ -58,9 +56,8 @@ const available = computed<bigint | null | undefined>(() => {
   if (purseState.kind === "none") return undefined;
   return purseState.balance;
 });
-// A purse that stays unreadable is named in the same band the route errors take; a route error,
-// being the answer to something the user just did, speaks first. The reads keep retrying behind
-// the message, so it clears itself when one lands.
+// A route error answers what the user just did, so it speaks first; the purse message clears
+// itself when a retry lands.
 const amountError = computed(
   () =>
     routeError.value ?? (purse.failed.value ? "Your balance couldn't be read. Retrying…" : null),
@@ -133,8 +130,7 @@ function returnFromTopUp() {
   activeTopUpId.value = null;
   openingTopUpId.value = null;
   topUpError.value = null;
-  // The withdrawal watched inside the package may have settled; the purse the pill offers must
-  // not outlive it. The last-read balance stands until the new read lands, so nothing flickers.
+  // The watched withdrawal may have settled; the known balance stands, so nothing flickers.
   void purse.refresh();
 }
 
@@ -143,9 +139,8 @@ function returnFromPackage() {
   loadEpoch += 1;
   shellEntry.value = "pending";
   returnToShell();
-  // The package may have just spent from the purse: the balance read before it opened must not
-  // keep the pill or the gate open on what a completed withdrawal already took, so the known
-  // balance is dropped and the gate fails closed until the re-read lands.
+  // The package may have just spent from the purse: drop the known balance and fail closed
+  // until the re-read lands.
   void purse.refresh({ spent: true });
 }
 
@@ -213,8 +208,7 @@ onMounted(async () => {
     @continue="continueToPackage"
     @open-top-up="openTopUp"
   />
-  <!-- The purse's read state carries into the skeleton, so the pill's placeholder holds its slot
-       and the column doesn't jump when the loaded screen mounts. -->
+  <!-- The purse's read state carries into the skeleton, so the column doesn't jump on mount. -->
   <FundingSelectorScreen
     v-else
     :amount-screen="WithdrawAmountScreen"

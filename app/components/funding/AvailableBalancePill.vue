@@ -1,10 +1,7 @@
 <script setup lang="ts">
-// The purse offered as an amount the keypad can take: a tap fills the amount with it. Undefined
-// renders nothing (no purse to offer), null the skeleton while the balance is read; the screen's
-// launch skeleton mutes a purse it already has. The pill is where the balance becomes a string —
-// the base units travel to it untouched, so the gate and the pill can never read the purse apart.
-// Layout (margins) belongs to the call site, so the screen's own class rides whichever branch
-// renders.
+// The purse offered as an amount the keypad can take: a tap fills the amount. Undefined renders
+// nothing, null the skeleton; the base units become a string only here, so the gate and the pill
+// can never read the purse apart.
 import { computed } from "vue";
 import CashAmount from "../ui/CashAmount.vue";
 import SkeletonBlock from "../ui/SkeletonBlock.vue";
@@ -25,8 +22,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{ fill: [amount: string] }>();
 
-/** The balance as the keypad would type it, rounded down so the pill never offers more than the
- *  purse holds. */
+/** The balance as the keypad would type it, rounded down. */
 const fillAmount = computed(() =>
   props.amount === null || props.amount === undefined
     ? null
