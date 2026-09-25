@@ -28,6 +28,7 @@ export const WITHDRAWAL_WORDING: FundingTopUpWording = { settled: "Sent" };
 /** The words the shell's list screens use on the withdrawal page. */
 export const WITHDRAWAL_LIST_WORDING: FundingListWording = {
   pendingTitle: "Withdrawal in progress",
+  pendingCta: "Withdraw",
   emptyHistory: "Nothing here yet. Your withdrawals will appear as you make them.",
 };
 
@@ -42,17 +43,18 @@ export function withdrawalRequestRef(id: string): RequestRef | null {
   return ref !== null && isWithdrawSourceId(ref.sourceId) ? ref : null;
 }
 
-/** The row's state, worded by the same projection the journey ribbon shows. A cancelled record
- *  is never listed; it reads as failed so the type has a value. */
-export function withdrawalRowStateOf(record: WithdrawalRecord, label: string): FundingTopUpState {
+/** The row's state, worded as the design's list draws it: an unpaid withdrawal is initiated, a
+ *  moving one is converting to its destination asset. A cancelled record is never listed; it
+ *  reads as failed so the type has a value. */
+export function withdrawalRowStateOf(record: WithdrawalRecord): FundingTopUpState {
   const { status } = record;
   switch (status.kind) {
     case "awaiting-payment":
-      return { kind: "awaiting-transfer", status: label };
+      return { kind: "awaiting-transfer", status: "Withdrawal initiated" };
     case "paid":
     case "converting":
     case "sending":
-      return { kind: "finishing", status: label };
+      return { kind: "finishing", status: `Converting to ${record.destination.asset}…` };
     case "sent":
       return { kind: "settled", at: status.at };
     case "failed":
@@ -82,6 +84,7 @@ export function projectWithdrawalTopUps(
     return {
       id: rowId(record.ref),
       amount: record.amountHuman,
+      debit: true,
       route: "crypto",
       startedAt: record.startedAt,
       progress,
@@ -92,7 +95,7 @@ export function projectWithdrawalTopUps(
           icon: destination === undefined ? UNKNOWN_ICON : destinationTokenIcon(destination),
         },
       },
-      state: withdrawalRowStateOf(record, progress.view.label),
+      state: withdrawalRowStateOf(record),
     };
   });
 }

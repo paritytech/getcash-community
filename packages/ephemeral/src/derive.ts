@@ -63,6 +63,22 @@ export function deriveKeypairWithSecret(entropy: Uint8Array): EphemeralKeypairWi
 }
 
 /**
+ * The 32-byte mini secret as hex: what a wallet imports as a raw seed for the same account.
+ * Throws if the seed does not control the derived public key.
+ */
+export function walletSeedHex(entropy: Uint8Array): `0x${string}` {
+  const kp = deriveKeypair(entropy); // re-validates the 32-byte entropy contract
+  const mini = entropyToMiniSecret(entropy);
+  const pub = getPublicKey(secretFromSeed(mini));
+  if (pub.length !== kp.publicKey.length || !pub.every((b, i) => b === kp.publicKey[i])) {
+    throw new Error(
+      "walletSeedHex: the seed does not control the derived account; refusing to hand it out",
+    );
+  }
+  return `0x${Array.from(mini, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+}
+
+/**
  * Converts an ed25519-expanded sr25519 secret (clamped scalar plus nonce) into schnorrkel's
  * canonical form (scalar divided by the cofactor plus nonce). The division is an exact 3-bit
  * right shift of the clamped scalar; both forms control the same account.

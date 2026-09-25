@@ -18,6 +18,8 @@ import {
   routeOf,
   type Observation,
   type RequestRecord,
+  type WithdrawalRecord,
+  type WithdrawalStatus,
 } from "../funding/requests/model";
 import { createMockCoinageSession } from "~~/lib/coinage";
 import { isDemoBuild } from "./demo";
@@ -40,6 +42,19 @@ type Session = ReturnType<typeof useSessionStore>;
 type Flow = ReturnType<typeof useFlowStore>;
 
 const DOT = 10_000_000_000n;
+
+/** The withdraw summary/fees scenes' canned quote, as the section's design frames draw it. */
+const WITHDRAW_PREVIEW_FEES = {
+  rows: [
+    { label: "Network fee", value: "0.31 USDC" },
+    { label: "Swap fee", value: "0.21 USDC" },
+    { label: "Service fee", value: "0.04 USDC" },
+  ],
+  total: "0.56 USDC",
+  equivalent: "≈ 24.75 USDC",
+  receive: "24.19 USDC",
+  rate: "$1 CASH ≈ 0.99 USDC",
+};
 
 function floor(sourceId: SourceId, minimumBaseUnits: bigint, worth: bigint): SourceFloorResult {
   return {
@@ -388,6 +403,130 @@ async function previewRequest(
 /** Core's state as the request's own observation. */
 async function core(request: PreviewRequest, step: number, state: PaymentState) {
   await request.observe({ source: "core", at: request.at(step), state });
+}
+
+/**
+ * A crypto withdrawal record in one journey state — $25 to USDC on Ethereum, as the section's
+ * frames draw it. Built by hand like the finished top-ups: the journey has to stand on the
+ * record alone, with no live run behind it.
+ */
+async function previewWithdrawal(
+  index: number,
+  state: "converting" | "sending" | "sent" | "refunded",
+  over?: { amountHuman?: string; destination?: WithdrawalRecord["destination"] },
+): Promise<void> {
+  const requests = useRequestsStore();
+  const ref: RequestRef = { sourceId: "wd:usdc-eth", tradeN: 950 + index };
+  if (requests.has(ref)) await requests.remove(ref);
+  const now = Date.now();
+  const startedAt = now - 6 * 60_000;
+  const at = now - 2 * 60_000;
+  const status: WithdrawalStatus =
+    state === "converting"
+      ? { kind: "converting", at, step: "swap" }
+      : state === "sending"
+        ? { kind: "sending", at }
+        : state === "sent"
+          ? { kind: "sent", at }
+          : { kind: "failed", at, recoverable: true };
+  const key = {
+    label: `wd:eph:usdc-eth:${ref.tradeN}`,
+    address: "13cKp88mpAujXcqAxDMFEpvDACJyWLXSTbKf6cwHTn92FGGF",
+    publicKeyHex: `0x${"6e".repeat(32)}`,
+  };
+  const destination = over?.destination ?? {
+    chain: "Ethereum",
+    asset: "USDC",
+    address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
+  };
+  const record: WithdrawalRecord = {
+    schema: 2,
+    kind: "withdrawal",
+    ref,
+    rev: 0,
+    updatedAt: now,
+    startedAt,
+    amountHuman: over?.amountHuman ?? "25",
+    route: "crypto",
+    destination,
+    key,
+    payment: { attempt: 1, requestedAt: startedAt, updatedAt: startedAt },
+    deadline: { paymentExpiresAt: now + 3_600_000 },
+    handoff: {
+      label: key.label,
+      keyAddress: key.address,
+      keyPublicKeyHex: key.publicKeyHex,
+      amount: "25000000",
+      destination,
+      landingHex: `0x${"5d".repeat(32)}`,
+      rail: "chainflip",
+      assetHubGenesis: "0xah",
+      peopleGenesis: "0xpe",
+      peopleParaId: 1004,
+      assetHubParaId: 1000,
+      poolAccount: "13UVJyLnbVp9RBZYFwFGyDvVd1y27Tt8tkntv6Q7JVPhFsTB",
+      slippagePct: 2,
+      paymentExpiresAt: now + 3_600_000,
+      channel: {
+        id: "42",
+        address: "14E5nqKAp3oAJcmzgZhUD2RcptBeUBScxKHgJKU4HPNcKVf3",
+        openedAt: startedAt,
+        expiresAt: now + 3_600_000,
+        expectedEgress: "24440000",
+      },
+    },
+    status,
+    rail: {
+      provider: "chainflip",
+      stage: state === "refunded" ? "failed" : state === "sent" ? "delivered" : "processing",
+      updatedAt: at,
+      ...(state === "refunded"
+        ? { status: "failed" as const, failure: { kind: "refunded", message: "refunded" } }
+        : {}),
+    },
+    ...(state === "refunded"
+      ? {
+          failure: {
+            kind: "refunded",
+            step: "send",
+            message: "the swap refunded",
+            recoverable: true,
+          },
+        }
+      : {}),
+    paidAmount: "25000000",
+    witnesses: {},
+  };
+  await requests.create(ref, record);
+  requests.setForeground(ref);
+}
+
+/** Which slot the summary's demo Skip plays its journey in; away from the scenes' 950..955. */
+const SKIP_SLOT = 9;
+
+/**
+ * The summary's demo Skip: a simulated withdrawal walked through the journey — conversion,
+ * sending, sent — a few seconds apart, on the sandbox. Stops early when something else takes the
+ * screen. Demo builds only; the route gates the button on `isDemoBuild()`.
+ */
+export async function simulateWithdrawalJourney(over?: {
+  amountHuman?: string;
+  destination?: WithdrawalRecord["destination"];
+}): Promise<void> {
+  const requests = useRequestsStore();
+  requests.enterSandbox();
+  const ref: RequestRef = { sourceId: "wd:usdc-eth", tradeN: 950 + SKIP_SLOT };
+  const stillUp = () =>
+    requests.foregroundWithdrawal?.ref.tradeN === ref.tradeN &&
+    requests.foregroundWithdrawal?.ref.sourceId === ref.sourceId;
+  const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  await previewWithdrawal(SKIP_SLOT, "converting", over);
+  await delay(3_000);
+  if (!stillUp()) return;
+  await previewWithdrawal(SKIP_SLOT, "sending", over);
+  await delay(3_000);
+  if (!stillUp()) return;
+  await previewWithdrawal(SKIP_SLOT, "sent", over);
 }
 
 /** A rail poll's report that the payment is seen but stuck and retrying: Meld's crypto delivery, or
@@ -1558,6 +1697,167 @@ export const SCENES: Scene[] = [
     apply: (s, f) => {
       base(s, f);
       s.resuming = true;
+    },
+  },
+
+  // ——— The withdrawal package's pickers, staged by `#/withdraw`. The stage carries everything —
+  // the step on screen and the skeletons — and the screens read static data, so `base` only
+  // clears what a neighbouring scene seeded.
+  {
+    name: "withdraw / network: loaded",
+    stage: { kind: "withdraw-package", step: "network" },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    name: "withdraw / network: skeleton",
+    stage: { kind: "withdraw-package", step: "network", skeleton: true },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    name: "withdraw / token: loaded",
+    stage: { kind: "withdraw-package", step: "token", chain: "Ethereum" },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    name: "withdraw / token: skeleton",
+    stage: { kind: "withdraw-package", step: "token", chain: "Ethereum", skeleton: true },
+    apply: (s, f) => base(s, f),
+  },
+  // The address step's four states: empty, an address another network would take, one no network
+  // takes, and a valid one. The screen itself judges the seeded address.
+  {
+    name: "withdraw / address: empty",
+    stage: { kind: "withdraw-package", step: "address", chain: "Ethereum" },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    name: "withdraw / address: wrong network",
+    stage: {
+      kind: "withdraw-package",
+      step: "address",
+      chain: "Ethereum",
+      address: "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2",
+    },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    name: "withdraw / address: incorrect",
+    stage: {
+      kind: "withdraw-package",
+      step: "address",
+      chain: "Ethereum",
+      address: "1BvBMSEYstWetq",
+    },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    name: "withdraw / address: entered",
+    stage: {
+      kind: "withdraw-package",
+      step: "address",
+      chain: "Ethereum",
+      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
+    },
+    apply: (s, f) => base(s, f),
+  },
+  // The summary and its fee drill-in, on the section's canned quote: the route never asks
+  // Chainflip while the stage carries the estimate.
+  {
+    name: "withdraw / summary",
+    stage: {
+      kind: "withdraw-package",
+      step: "summary",
+      chain: "Ethereum",
+      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
+      receive: "24.44 USDC",
+      fees: WITHDRAW_PREVIEW_FEES,
+    },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    name: "withdraw / fees",
+    stage: {
+      kind: "withdraw-package",
+      step: "fees",
+      chain: "Ethereum",
+      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
+      receive: "24.44 USDC",
+      fees: WITHDRAW_PREVIEW_FEES,
+    },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    name: "withdraw / summary: quoting",
+    stage: {
+      kind: "withdraw-package",
+      step: "summary",
+      chain: "Ethereum",
+      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
+      receive: null,
+    },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    name: "withdraw / summary: no quote",
+    stage: {
+      kind: "withdraw-package",
+      step: "summary",
+      chain: "Ethereum",
+      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
+    },
+    apply: (s, f) => base(s, f),
+  },
+  // ——— The journey and the refund guide, on a hand-made record; see `previewWithdrawal`.
+  {
+    name: "withdraw / journey: conversion",
+    stage: { kind: "withdraw-package", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewWithdrawal(0, "converting");
+    },
+  },
+  {
+    name: "withdraw / journey: sending",
+    stage: { kind: "withdraw-package", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewWithdrawal(1, "sending");
+    },
+  },
+  {
+    name: "withdraw / journey: success",
+    stage: { kind: "withdraw-package", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewWithdrawal(2, "sent");
+    },
+  },
+  {
+    name: "withdraw / journey: refunded",
+    stage: { kind: "withdraw-package", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewWithdrawal(3, "refunded");
+    },
+  },
+  {
+    name: "withdraw / return funds",
+    stage: { kind: "withdraw-package", step: "return-funds" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewWithdrawal(4, "refunded");
+    },
+  },
+  {
+    name: "withdraw / return funds: revealed",
+    stage: {
+      kind: "withdraw-package",
+      step: "return-funds",
+      secret: `0x${"6f6e".repeat(16)}`,
+    },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewWithdrawal(5, "refunded");
     },
   },
 ];

@@ -25,15 +25,11 @@ function pick(token: TokenRow) {
 <template>
   <div class="flex min-h-0 flex-1 flex-col">
     <!-- The cards bleed past the 24px content gutter to the design's 16px inset. -->
-    <div
-      class="token-summary -mx-2 flex h-10 shrink-0 items-center justify-between bg-surface-container px-3 text-body-m text-fg-primary"
-    >
-      <span>Network selected</span>
-      <span class="flex items-center gap-2">
-        {{ flow.srcChain.label }}
-        <img :src="networkIcon(flow.srcChain.chain)" alt="" class="size-6 rounded-full" />
-      </span>
-    </div>
+    <NetworkRecapBar
+      class="-mx-2"
+      :label="flow.srcChain.label"
+      :icon="networkIcon(flow.srcChain.chain)"
+    />
 
     <!-- Floors still being learned: skeleton rows stand in for the tokens. -->
     <ul
@@ -68,10 +64,3 @@ function pick(token: TokenRow) {
     </div>
   </div>
 </template>
-
-<style scoped>
-/* 24px; the radius scale has no semantic step this size. */
-.token-summary {
-  border-radius: var(--scale-radius-large);
-}
-</style>

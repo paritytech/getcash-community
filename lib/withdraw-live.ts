@@ -6,14 +6,14 @@
 
 import { PaymentRequestErr, PaymentStatusErr } from "@novasamatech/host-api";
 import { deriveEntropy, getHostLocalStorage } from "@parity/product-sdk-host";
-import { deriveKeypair } from "@getsome/ephemeral";
+import { deriveKeypair, walletSeedHex } from "@getsome/ephemeral";
 import { PASEO_ASSET_HUB_PARA_ID, PASEO_PEOPLE_PARA_ID } from "@getsome/funding";
 import {
   createHostEntropyPort,
   createHostStorageAdapter,
   type HostLocalStorageLike,
 } from "@getsome/host";
-import { CASH_LOCATION } from "@getsome/people";
+import { CASH_DECIMALS, CASH_LOCATION } from "@getsome/people";
 import {
   CASH_ON_ASSET_HUB,
   DEFAULT_WITHDRAW_SLIPPAGE_PCT,
@@ -36,9 +36,12 @@ import {
   openWithdrawChannel,
   quoteOutgoing,
   SOURCE_CONFIG_BY_ID,
+  type IncludedFee,
+  type OutgoingQuote,
 } from "@getsome/chainflip";
 import { AccountId } from "polkadot-api";
-import type { WithdrawOffer } from "../app/withdraw/offers";
+import { cashAmount } from "../app/utils/cash";
+import type { WithdrawFeeView, WithdrawOffer } from "../app/withdraw/offers";
 import { mainnetSdk } from "./chainflip-backend";
 import { withTimeout } from "./timeout";
 import { hostSafeEntropy, nextFreeTradeNumber, readTradeCounter, tradeCounterKey } from "./coinage";
@@ -81,6 +84,22 @@ export async function withdrawKeyFor(sourceId: string, n: number): Promise<Withd
   return { address: keypair.address, publicKeyHex: toHex(keypair.publicKey) };
 }
 
+export interface WithdrawRefundKey {
+  /** The key on Asset Hub, where a provider's refund lands. */
+  address: string;
+  /** The raw seed a wallet imports for the same account, hex. */
+  secret: string;
+}
+
+/** The withdrawal key re-derived from its record's entropy label, with the wallet-importable
+ *  seed. Read on tap, never on load; throws outside a host, where there is no entropy root. */
+export async function revealWithdrawKey(label: string): Promise<WithdrawRefundKey> {
+  const entropy = createHostEntropyPort(hostSafeEntropy(deriveEntropy));
+  const seed = await entropy.deriveSeed(new TextEncoder().encode(label));
+  const keypair = deriveKeypair(seed);
+  return { address: keypair.address, secret: walletSeedHex(seed) };
+}
+
 /** The key's CASH on People at the best block. */
 export async function probeWithdrawKey(
   sourceId: string,
@@ -96,8 +115,9 @@ export async function probeWithdrawKey(
 }
 
 /** The CASH the fees take from a direct withdrawal before the sale on Asset Hub, as measured on
- *  Paseo: the People swap for the fee PAS, about 0.42 CASH, and Asset Hub's execution fee. */
-const DIRECT_FEES_CASH = 450_000n;
+ *  Paseo: the People swap for the fee PAS, about 0.42 CASH, and Asset Hub's execution fee.
+ *  Exported for the fee drill-in, which shows it as the direct rail's one fee. */
+export const DIRECT_FEES_CASH = 450_000n;
 
 /** What a direct withdrawal of `amount` CASH lands on Asset Hub, in planck, at today's pool
  *  price: the amount less the fees, sold as the program sells it. An estimate for the summary,
@@ -139,6 +159,94 @@ export async function quoteDirectCashFor(native: bigint): Promise<bigint> {
 const PROVIDER_QUOTE_HEADROOM_PCT = BigInt(DEFAULT_WITHDRAW_SLIPPAGE_PCT) + 1n;
 /** Ceiling on the wait for the offers. */
 const OFFERS_TIMEOUT_MS = 15_000;
+
+/** The design's fee rows: what the networks charged, Chainflip's own cut, ours. */
+const FEE_GROUPS: readonly { label: string; types: readonly string[] }[] = [
+  { label: "Network fee", types: ["INGRESS", "EGRESS", "BOOST"] },
+  { label: "Swap fee", types: ["NETWORK"] },
+  { label: "Service fee", types: ["BROKER"] },
+];
+
+/** Stables read naturally at cents; everything else keeps the payout's own precision. */
+const feeDecimals = (config: { decimals: number }): number => (config.decimals <= 6 ? 2 : 6);
+
+/** Digits a payout is stated to, on the summary and in the drill-in alike. */
+const PAYOUT_DECIMALS = 6;
+
+/** A fee, at the cents a fee reads best in. Rounded up, which overstates the charge: the safe
+ *  direction for a fee, and the wrong one for a payout. */
+const fmtDest = (config: { asset: string; decimals: number }, planck: bigint): string =>
+  `${formatSourceAmount(config, planck, { maxDecimals: feeDecimals(config) })} ${config.asset}`;
+
+/**
+ * What lands, at the payout's own precision — the summary's figure and the drill-in's, from one
+ * place so the two cannot disagree.
+ *
+ * Not `fmtDest`: `formatSourceAmount` rounds up, so a stable capped at cents would promise a cent
+ * more than the swap pays out (24.500001 USDC reading as 24.51).
+ */
+const fmtPayout = (config: { asset: string; decimals: number }, planck: bigint): string =>
+  `${formatSourceAmount(config, planck, { maxDecimals: PAYOUT_DECIMALS })} ${config.asset}`;
+
+/** "$1 CASH ≈ 0.99 USDC": the gross rate `equivalent` implies for the CASH withdrawn. */
+function grossRate(
+  config: { asset: string; decimals: number },
+  equivalent: bigint,
+  amountCash: bigint,
+): string | null {
+  const cash = Number(amountCash) / 10 ** CASH_DECIMALS;
+  const value = Number(equivalent) / 10 ** config.decimals / cash;
+  if (!Number.isFinite(value) || value <= 0) return null;
+  const figure = value >= 0.01 ? value.toFixed(2) : value.toPrecision(2);
+  return `${cashAmount("1")} ≈ ${figure} ${config.asset}`;
+}
+
+/**
+ * The quote's fee split priced into the destination asset with the quote's own numbers: a DOT fee
+ * at the deposit-to-egress ratio, a USDC fee at the intermediate-to-egress ratio. An estimate for
+ * the drill-in, not what the swap is held to. A fee neither rule can price, or of a kind the rows
+ * don't name, drops the whole view: better no split than one that does not add up.
+ */
+function offerFees(
+  config: { asset: string; decimals: number },
+  quote: OutgoingQuote,
+  amountCash: bigint,
+): WithdrawFeeView | undefined {
+  const inDest = (fee: IncludedFee): bigint | null => {
+    if (fee.asset === config.asset) return fee.amount;
+    if (fee.asset === "DOT" && quote.depositAmount > 0n)
+      return (fee.amount * quote.egressAmount) / quote.depositAmount;
+    if (fee.asset === "USDC" && quote.intermediateAmount !== null && quote.intermediateAmount > 0n)
+      return (fee.amount * quote.egressAmount) / quote.intermediateAmount;
+    return null;
+  };
+  if (quote.includedFees.length === 0) return undefined;
+  if (quote.includedFees.some((fee) => !FEE_GROUPS.some((g) => g.types.includes(fee.type))))
+    return undefined;
+  const rows: { label: string; value: string }[] = [];
+  let total = 0n;
+  for (const group of FEE_GROUPS) {
+    let sum = 0n;
+    for (const fee of quote.includedFees) {
+      if (!group.types.includes(fee.type)) continue;
+      const priced = inDest(fee);
+      if (priced === null) return undefined;
+      sum += priced;
+    }
+    if (sum > 0n) {
+      rows.push({ label: group.label, value: fmtDest(config, sum) });
+      total += sum;
+    }
+  }
+  const equivalent = quote.egressAmount + total;
+  return {
+    rows,
+    ...(rows.length ? { total: fmtDest(config, total) } : {}),
+    equivalent: `≈ ${fmtPayout(config, equivalent)}`,
+    receive: fmtPayout(config, quote.egressAmount),
+    rate: grossRate(config, equivalent, amountCash),
+  };
+}
 
 const withHeadroom = (native: bigint): bigint =>
   native + (native * PROVIDER_QUOTE_HEADROOM_PCT) / 100n;
@@ -205,13 +313,14 @@ export async function quoteWithdrawOffers(
         OFFERS_TIMEOUT_MS,
         `${config.asset} offer`,
       );
-      const formatted = formatSourceAmount(config, quote.egressAmount, { maxDecimals: 6 });
+      const fees = offerFees(config, quote, amountCash);
       return {
         offer: {
           state: "available",
           egress: quote.egressAmount,
-          formatted: `${formatted} ${config.asset}`,
+          formatted: fmtPayout(config, quote.egressAmount),
           etaSeconds: quote.estimatedDurationSeconds,
+          ...(fees === undefined ? {} : { fees }),
         },
         outage: false,
       };
