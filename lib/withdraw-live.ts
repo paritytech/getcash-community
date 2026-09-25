@@ -6,7 +6,7 @@
 
 import { PaymentRequestErr, PaymentStatusErr } from "@novasamatech/host-api";
 import { deriveEntropy, getHostLocalStorage } from "@parity/product-sdk-host";
-import { deriveKeypair } from "@getsome/ephemeral";
+import { deriveKeypair, walletSeedHex } from "@getsome/ephemeral";
 import { PASEO_ASSET_HUB_PARA_ID, PASEO_PEOPLE_PARA_ID } from "@getsome/funding";
 import {
   createHostEntropyPort,
@@ -82,6 +82,22 @@ export async function withdrawKeyFor(sourceId: string, n: number): Promise<Withd
   );
   const keypair = deriveKeypair(seed);
   return { address: keypair.address, publicKeyHex: toHex(keypair.publicKey) };
+}
+
+export interface WithdrawRefundKey {
+  /** The key on Asset Hub, where a provider's refund lands. */
+  address: string;
+  /** The raw seed a wallet imports for the same account, hex. */
+  secret: string;
+}
+
+/** The withdrawal key re-derived from its record's entropy label, with the wallet-importable
+ *  seed. Read on tap, never on load; throws outside a host, where there is no entropy root. */
+export async function revealWithdrawKey(label: string): Promise<WithdrawRefundKey> {
+  const entropy = createHostEntropyPort(hostSafeEntropy(deriveEntropy));
+  const seed = await entropy.deriveSeed(new TextEncoder().encode(label));
+  const keypair = deriveKeypair(seed);
+  return { address: keypair.address, secret: walletSeedHex(seed) };
 }
 
 /** The key's CASH on People at the best block. */

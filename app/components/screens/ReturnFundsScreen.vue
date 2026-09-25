@@ -1,13 +1,14 @@
 <script setup lang="ts">
 // The return-funds guide behind a refunded deposit: the numbered path from gas to key to a wallet
 // the buyer controls. The key is read on tap, never on load, and can be masked again after a look.
-import { computed, ref, watch } from "vue";
+import { computed } from "vue";
 import type { SourceId } from "@getsome/core";
-import { ArrowUpRight, Check, Copy, Eye, EyeClosed } from "lucide-vue-next";
+import { ArrowUpRight, Check, Copy } from "lucide-vue-next";
 import { formatSourceAmount, SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
-import { isRefundChain, type RefundKey } from "@getsome/ephemeral";
+import { isRefundChain } from "@getsome/ephemeral";
 import { shortAddress } from "../../utils/address";
 import { useCopyToClipboard } from "../../composables/useCopyToClipboard";
+import { useRecoveryKey } from "../../composables/useRecoveryKey";
 import { effectiveSourceId, type RequestFailure } from "../../funding/requests/model";
 import type { FundingTopUp } from "../../funding/top-ups";
 import { useRequestsStore } from "../../stores/requests";
@@ -16,6 +17,8 @@ import { refundTxUrl } from "../../utils/explorer";
 import { recoveryNotes, refundStatusTail } from "../../utils/recovery";
 import CopiedPill from "../ui/CopiedPill.vue";
 import PillButton from "../ui/PillButton.vue";
+import RecoveryAddressCard from "../ui/RecoveryAddressCard.vue";
+import RecoveryKeyCard from "../ui/RecoveryKeyCard.vue";
 
 const props = defineProps<{
   /**
@@ -89,71 +92,39 @@ const subject = computed(() => {
   }
 });
 
-const revealed = ref<RefundKey | null>(null);
-const masked = ref(true);
-/**
- * The address to return to. The live world's while a request is on screen; otherwise the recovered
- * key's, which is the same address — both are the one derivation of (sourceId, tradeN).
- */
-const recovered = ref<RefundKey | null>(null);
-const address = computed(() => session.refundAddress ?? recovered.value?.address ?? null);
-
-// A refund opened from history has no world to read, so the key is re-derived from the request's
-// own identity. The address is wanted on sight (it is where the money is); the secret stays behind
-// the reveal either way.
+// The live world has the key outright; a refund opened from history has no world to read and
+// re-derives it from the request's own identity. Both give address and secret together, which is
+// what keeps the guide from pairing an address with a key that does not open it.
 //
-// Watched as `sourceId:tradeN` rather than as the object: the list rebuilds its top-ups on every
+// Identity is `sourceId:tradeN` rather than the object: the list rebuilds its top-ups on every
 // record tick, so while one is running the object's identity changes although which request this
-// is has not — and re-deriving the key on each tick drops the address the screen is showing.
-watch(
-  () => {
+// is has not — and re-deriving on each tick would drop the address the screen is showing.
+const {
+  address,
+  secret,
+  format,
+  masked,
+  material,
+  resolving: recovering,
+  toggle: toggleKey,
+} = useRecoveryKey({
+  identity: () => {
     const r = props.topUp?.request;
     return r ? `${r.sourceId}:${r.tradeN}` : null;
   },
-  async (key) => {
-    recovered.value = null;
+  known: () => session.refundAddress,
+  autoReveal: () => session.revealRefund,
+  resolve: async () => {
+    const live = session.revealRefundKey();
+    if (live) return live;
     const request = props.topUp?.request;
-    if (key === null || !request || session.refundAddress !== null) return;
-    recovering.value = true;
-    try {
-      recovered.value = await session.recoverRefundKeyFor(request.sourceId, request.tradeN);
-    } finally {
-      recovering.value = false;
-    }
+    if (!request) return null;
+    return await session.recoverRefundKeyFor(request.sourceId, request.tradeN);
   },
-  { immediate: true },
-);
-
-async function toggleKey() {
-  if (!masked.value) {
-    masked.value = true;
-    return;
-  }
-  if (!revealed.value) revealed.value = session.revealRefundKey() ?? recovered.value;
-  if (revealed.value) masked.value = false;
-}
-// The preview deck lands on the shown key without a tap; the key still comes off the request's
-// world, which the scene installs asynchronously (hence watching the address too). A changed
-// address means another request took the screen: the held key is stale and is dropped.
-watch(
-  () => [session.refundAddress, session.revealRefund] as const,
-  ([address, want], previous) => {
-    if (previous && address !== previous[0]) {
-      revealed.value = null;
-      masked.value = true;
-    }
-    if (want && masked.value) toggleKey();
-  },
-  { immediate: true },
-);
+});
 
 const notes = computed(() =>
-  chain.value ? recoveryNotes(chain.value, asset.value, revealed.value?.format) : null,
-);
-
-/** Masked, the card shows stand-in dots: the secret is not even read until the eye is tapped. */
-const keyText = computed(() =>
-  revealed.value && !masked.value ? revealed.value.secret : "•".repeat(64),
+  chain.value ? recoveryNotes(chain.value, asset.value, format.value) : null,
 );
 
 /** The gas step leads only a token refund; a native one opens on where the coins landed. */
@@ -169,26 +140,12 @@ const steps = computed(() => {
   ];
 });
 
-/**
- * Whether this request's recovery material could be reached at all.
- *
- * The live world has it outright; a refund opened from history re-derives it. Either can come up
- * empty — off-host there is no entropy root, and on-host the derivation can fail — and when it
- * does the buyer must be told, not handed a control that does nothing and a step pointing at an
- * address that was never drawn. `recovering` keeps that message off the screen while the
- * derivation is still in flight.
- */
-const recovering = ref(false);
-const material = computed(() => address.value !== null || revealed.value !== null);
-
 /** How far the refund has come, with its transaction split out so the screen can act on it. */
 const status = computed(() => refundStatusTail(refund.value));
 /** Where to watch it land. Null on a chain with no explorer mapped; the reference is still shown
  *  and still copyable, so the buyer can search for it themselves. */
 const txUrl = computed(() => refundTxUrl(chain.value, status.value.txRef));
 
-const { copied: addressCopied, copy: copyAddress } = useCopyToClipboard();
-const { copied: keyCopied, copy: copyKey } = useCopyToClipboard();
 const { copied: txCopied, copy: copyTx } = useCopyToClipboard();
 </script>
 
@@ -248,67 +205,19 @@ const { copied: txCopied, copy: copyTx } = useCopyToClipboard();
           <p class="text-body-m text-fg-primary">{{ step.text }}</p>
         </div>
 
-        <!-- The whole row copies the address; the icon confirms. -->
-        <button
+        <RecoveryAddressCard
           v-if="step.card === 'address' && address"
-          type="button"
-          class="flex items-center justify-between gap-4 rounded-container bg-surface-container py-3 pr-6 pl-4 text-left"
-          @click="copyAddress(address)"
-        >
-          <span class="min-w-0">
-            <span class="block text-body-s text-fg-secondary">Address on {{ chain }}</span>
-            <span class="mt-1 block break-all text-paragraph-l text-fg-primary">
-              {{ address }}
-            </span>
-          </span>
-          <Check v-if="addressCopied" class="size-6 shrink-0 text-fg-success" aria-hidden="true" />
-          <Copy v-else class="size-6 shrink-0 text-fg-secondary" aria-hidden="true" />
-        </button>
+          :label="`Address on ${chain}`"
+          :address="address"
+        />
 
-        <div v-else-if="step.card === 'key' && material" class="flex flex-col gap-3">
-          <div
-            class="flex items-center justify-between gap-4 rounded-container bg-surface-container py-3 pr-6 pl-4"
-          >
-            <div class="min-w-0 flex-1">
-              <p class="text-body-s text-fg-secondary">{{ notes.secretLabel }}</p>
-              <div class="relative mt-1">
-                <p class="break-all text-paragraph-l text-fg-primary" :aria-hidden="masked">
-                  {{ keyText }}
-                </p>
-                <span
-                  v-if="masked"
-                  class="key-mask absolute -inset-1 rounded-nested"
-                  aria-hidden="true"
-                />
-              </div>
-            </div>
-            <div class="flex shrink-0 items-center gap-3">
-              <button
-                v-if="!masked && revealed"
-                type="button"
-                class="-m-2 p-2"
-                aria-label="Copy the key"
-                @click="copyKey(revealed.secret)"
-              >
-                <Check v-if="keyCopied" class="size-6 text-fg-success" aria-hidden="true" />
-                <Copy v-else class="size-6 text-fg-secondary" aria-hidden="true" />
-              </button>
-              <button
-                type="button"
-                class="-m-2 p-2"
-                :aria-label="masked ? 'Show the key' : 'Hide the key'"
-                :aria-pressed="!masked"
-                @click="toggleKey"
-              >
-                <EyeClosed v-if="!masked" class="size-6 text-fg-secondary" aria-hidden="true" />
-                <Eye v-else class="size-6 text-fg-secondary" aria-hidden="true" />
-              </button>
-            </div>
-          </div>
-          <p class="text-center text-body-s text-fg-error">
-            Anyone with this key controls the funds.
-          </p>
-        </div>
+        <RecoveryKeyCard
+          v-else-if="step.card === 'key' && material"
+          :label="notes.secretLabel"
+          :secret="secret"
+          :masked="masked"
+          @toggle="toggleKey"
+        />
       </li>
     </ol>
 
@@ -325,13 +234,3 @@ const { copied: txCopied, copy: copyTx } = useCopyToClipboard();
     </div>
   </section>
 </template>
-
-<style scoped>
-/* The mask binds the black-alpha primitive: no semantic token covers a blurring scrim
- * (reported gap, like the journey hero's red). */
-.key-mask {
-  background: var(--palette-black-alpha-24);
-  -webkit-backdrop-filter: blur(5px);
-  backdrop-filter: blur(5px);
-}
-</style>

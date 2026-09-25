@@ -5,6 +5,7 @@ export {
   toEphemeralSigner,
   toHandoffKey,
   toSchnorrkelSecret,
+  walletSeedHex,
 } from "./derive";
 export type { EphemeralKeypair, EphemeralKeypairWithSecret } from "./derive";
 export { createEphemeral } from "./ephemeral";

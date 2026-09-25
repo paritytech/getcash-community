@@ -23,13 +23,15 @@ export type PreviewStage =
    *  whether the pickers show their skeletons. */
   | {
       kind: "withdraw-package";
-      step: "network" | "token" | "address" | "summary" | "fees";
+      step: "network" | "token" | "address" | "summary" | "fees" | "journey" | "return-funds";
       chain?: string;
       address?: string;
       /** The summary's canned estimate: a string shows it, null shows it quoting, absent hides
        *  the row as an estimate the quote could not give. */
       receive?: string | null;
       fees?: WithdrawFeeView;
+      /** A canned secret for the return-funds step, so the revealed frame can be staged. */
+      secret?: string;
       skeleton?: boolean;
     };
 

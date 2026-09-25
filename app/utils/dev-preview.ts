@@ -18,6 +18,8 @@ import {
   routeOf,
   type Observation,
   type RequestRecord,
+  type WithdrawalRecord,
+  type WithdrawalStatus,
 } from "../funding/requests/model";
 import { createMockCoinageSession } from "~~/lib/coinage";
 import { isDemoBuild } from "./demo";
@@ -401,6 +403,101 @@ async function previewRequest(
 /** Core's state as the request's own observation. */
 async function core(request: PreviewRequest, step: number, state: PaymentState) {
   await request.observe({ source: "core", at: request.at(step), state });
+}
+
+/**
+ * A crypto withdrawal record in one journey state — $25 to USDC on Ethereum, as the section's
+ * frames draw it. Built by hand like the finished top-ups: the journey has to stand on the
+ * record alone, with no live run behind it.
+ */
+async function previewWithdrawal(
+  index: number,
+  state: "converting" | "sending" | "sent" | "refunded",
+): Promise<void> {
+  const requests = useRequestsStore();
+  const ref: RequestRef = { sourceId: "wd:usdc-eth", tradeN: 950 + index };
+  if (requests.has(ref)) await requests.remove(ref);
+  const now = Date.now();
+  const startedAt = now - 6 * 60_000;
+  const at = now - 2 * 60_000;
+  const status: WithdrawalStatus =
+    state === "converting"
+      ? { kind: "converting", at, step: "swap" }
+      : state === "sending"
+        ? { kind: "sending", at }
+        : state === "sent"
+          ? { kind: "sent", at }
+          : { kind: "failed", at, recoverable: true };
+  const key = {
+    label: `wd:eph:usdc-eth:${ref.tradeN}`,
+    address: "13cKp88mpAujXcqAxDMFEpvDACJyWLXSTbKf6cwHTn92FGGF",
+    publicKeyHex: `0x${"6e".repeat(32)}`,
+  };
+  const destination = {
+    chain: "Ethereum",
+    asset: "USDC",
+    address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
+  };
+  const record: WithdrawalRecord = {
+    schema: 2,
+    kind: "withdrawal",
+    ref,
+    rev: 0,
+    updatedAt: now,
+    startedAt,
+    amountHuman: "25",
+    route: "crypto",
+    destination,
+    key,
+    payment: { attempt: 1, requestedAt: startedAt, updatedAt: startedAt },
+    deadline: { paymentExpiresAt: now + 3_600_000 },
+    handoff: {
+      label: key.label,
+      keyAddress: key.address,
+      keyPublicKeyHex: key.publicKeyHex,
+      amount: "25000000",
+      destination,
+      landingHex: `0x${"5d".repeat(32)}`,
+      rail: "chainflip",
+      assetHubGenesis: "0xah",
+      peopleGenesis: "0xpe",
+      peopleParaId: 1004,
+      assetHubParaId: 1000,
+      poolAccount: "13UVJyLnbVp9RBZYFwFGyDvVd1y27Tt8tkntv6Q7JVPhFsTB",
+      slippagePct: 2,
+      paymentExpiresAt: now + 3_600_000,
+      channel: {
+        id: "42",
+        address: "14E5nqKAp3oAJcmzgZhUD2RcptBeUBScxKHgJKU4HPNcKVf3",
+        openedAt: startedAt,
+        expiresAt: now + 3_600_000,
+        expectedEgress: "24440000",
+      },
+    },
+    status,
+    rail: {
+      provider: "chainflip",
+      stage: state === "refunded" ? "failed" : state === "sent" ? "delivered" : "processing",
+      updatedAt: at,
+      ...(state === "refunded"
+        ? { status: "failed" as const, failure: { kind: "refunded", message: "refunded" } }
+        : {}),
+    },
+    ...(state === "refunded"
+      ? {
+          failure: {
+            kind: "refunded",
+            step: "send",
+            message: "the swap refunded",
+            recoverable: true,
+          },
+        }
+      : {}),
+    paidAmount: "25000000",
+    witnesses: {},
+  };
+  await requests.create(ref, record);
+  requests.setForeground(ref);
 }
 
 /** A rail poll's report that the payment is seen but stuck and retrying: Meld's crypto delivery, or
@@ -1680,6 +1777,59 @@ export const SCENES: Scene[] = [
       address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
     },
     apply: (s, f) => base(s, f),
+  },
+  // ——— The journey and the refund guide, on a hand-made record; see `previewWithdrawal`.
+  {
+    name: "withdraw / journey: conversion",
+    stage: { kind: "withdraw-package", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewWithdrawal(0, "converting");
+    },
+  },
+  {
+    name: "withdraw / journey: sending",
+    stage: { kind: "withdraw-package", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewWithdrawal(1, "sending");
+    },
+  },
+  {
+    name: "withdraw / journey: success",
+    stage: { kind: "withdraw-package", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewWithdrawal(2, "sent");
+    },
+  },
+  {
+    name: "withdraw / journey: refunded",
+    stage: { kind: "withdraw-package", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewWithdrawal(3, "refunded");
+    },
+  },
+  {
+    name: "withdraw / return funds",
+    stage: { kind: "withdraw-package", step: "return-funds" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewWithdrawal(4, "refunded");
+    },
+  },
+  {
+    name: "withdraw / return funds: revealed",
+    stage: {
+      kind: "withdraw-package",
+      step: "return-funds",
+      secret: `0x${"6f6e".repeat(16)}`,
+    },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewWithdrawal(5, "refunded");
+    },
   },
 ];
 

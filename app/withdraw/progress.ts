@@ -129,6 +129,9 @@ export function withdrawalJourneyDone(record: WithdrawalRecord): number {
   if (status.kind === "sending") return 2;
   if (status.kind === "paid" || status.kind === "converting") return 1;
   if (status.kind === "awaiting-payment") return 0;
+  // A refund is the swap refusing to fill: the journey marks the conversion, whatever leg the
+  // retry machinery files the failure under.
+  if (record.failure?.kind === "refunded") return 1;
   const rank = withdrawalRankOf(record);
   return rank >= 3 ? 2 : rank >= 1 ? 1 : 0;
 }

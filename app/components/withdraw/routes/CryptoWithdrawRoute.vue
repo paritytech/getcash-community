@@ -28,6 +28,7 @@ import WithdrawCancelScreen from "../WithdrawCancelScreen.vue";
 import WithdrawFeesScreen from "../WithdrawFeesScreen.vue";
 import WithdrawJourneyScreen from "../WithdrawJourneyScreen.vue";
 import WithdrawNetworkScreen from "../WithdrawNetworkScreen.vue";
+import WithdrawReturnFundsScreen from "../WithdrawReturnFundsScreen.vue";
 import WithdrawSummaryScreen from "../WithdrawSummaryScreen.vue";
 import WithdrawTokenScreen from "../WithdrawTokenScreen.vue";
 
@@ -47,7 +48,15 @@ const requests = useRequestsStore();
 const withdrawal = useWithdrawalRequest();
 useStateDirector();
 
-type Step = "network" | "token" | "address" | "summary" | "fees" | "journey" | "cancel";
+type Step =
+  | "network"
+  | "token"
+  | "address"
+  | "summary"
+  | "fees"
+  | "journey"
+  | "cancel"
+  | "return-funds";
 const step = ref<Step>(props.topUp ? "journey" : "network");
 const network = ref<WithdrawNetwork | null>(null);
 const destination = ref<WithdrawDestination | null>(null);
@@ -102,6 +111,7 @@ const toolbar = computed<{ title?: string; back: boolean }>(() => {
     case "fees":
       return { title: "Fees", back: true };
     case "cancel":
+    case "return-funds":
       return { back: true };
     case "journey":
       return { title: props.topUp ? "Status" : "Withdraw to crypto", back: true };
@@ -113,6 +123,7 @@ const toolbar = computed<{ title?: string; back: boolean }>(() => {
 function onBack() {
   switch (step.value) {
     case "cancel":
+    case "return-funds":
       step.value = "journey";
       return;
     case "fees":
@@ -285,6 +296,7 @@ watch(
 // The preview deck drives the step and the pickers' skeletons through the stage; a production
 // build never has one. Immediate: the deck may have staged this package before it mounted.
 const previewSkeleton = ref(false);
+const previewSecret = ref<string | undefined>(undefined);
 watch(
   previewStage,
   (stage) => {
@@ -297,6 +309,7 @@ watch(
     address.value = stage.address ?? "";
     receive.value = stage.receive;
     fees.value = stage.fees ?? null;
+    previewSecret.value = stage.secret;
     step.value = stage.step;
     previewSkeleton.value = stage.skeleton === true;
   },
@@ -391,7 +404,14 @@ onUnmounted(() => {
         :busy="busy"
         @cancel="step = 'cancel'"
         @retry="retry"
+        @return-funds="step = 'return-funds'"
         @close="emit('back')"
+      />
+      <WithdrawReturnFundsScreen
+        v-else-if="step === 'return-funds' && record"
+        :record="record"
+        :preview-secret="previewSecret"
+        @back="step = 'journey'"
       />
       <div
         v-else-if="step === 'journey' && unavailable"
