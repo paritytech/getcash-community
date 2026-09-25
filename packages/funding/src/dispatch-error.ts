@@ -1,6 +1,7 @@
 // Describes a rejected PolkadotXcm.execute by naming the instruction that failed and the XCM
-// error. The decoded shape comes from the runtime's metadata, so every field is read structurally
-// and nothing here throws on a shape it has not seen.
+// error, and recognises the PSM's refusals of a mint. The decoded shape comes from the runtime's
+// metadata, so every field is read structurally and nothing here throws on a shape it has not
+// seen.
 
 type Tagged = { type?: unknown; value?: unknown };
 
@@ -44,4 +45,30 @@ export function describeDispatchError(dispatchError: unknown, execArgs?: unknown
   }
   if (typeof outer.type === "string") return outer.type;
   return "unrecognised dispatch error";
+}
+
+/** The pair paused for minting or for everything, or the mint over its ceiling. Waiting clears
+ *  these: a breaker comes down, and redemptions free the ceiling. */
+const PSM_UNAVAILABLE = new Set(["MintingStopped", "AllSwapsStopped", "ExceedsMaxPsmDebt"]);
+
+/** The PSM will not serve this swap as it was quoted. Waiting cannot clear these: the call carries
+ *  the rate and the amount the quote froze, so every retry asks the identical question and gets
+ *  the identical answer. */
+const PSM_WILL_NOT_SERVE = new Set([
+  "FeeTooHigh",
+  "BelowMinimumSwap",
+  "AmountTooSmallAfterConversion",
+]);
+
+export type PsmRefusalKind = "unavailable" | "will-not-serve";
+
+/** Which refusal the PSM gave, or null when it did not refuse. A transport error, a timeout or
+ *  any other pallet's error is not a refusal. */
+export function psmRefusalKind(dispatchError: unknown): PsmRefusalKind | null {
+  const outer = tagged(dispatchError);
+  const pallet = tagged(outer?.value);
+  if (outer?.type !== "Module" || name(pallet) !== "Psm") return null;
+  const variant = name(pallet?.value) ?? "";
+  if (PSM_UNAVAILABLE.has(variant)) return "unavailable";
+  return PSM_WILL_NOT_SERVE.has(variant) ? "will-not-serve" : null;
 }

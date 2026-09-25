@@ -11,10 +11,13 @@ import { getStorageWorkerManager } from "./worker-rpc";
 import { createFlowStore, type ChainflipRail, type FlowState, type SourceId } from "@getsome/core";
 import { deriveKeypair, type RefundKey } from "@getsome/ephemeral";
 import {
+  chooseRoute,
+  type ConversionRoute,
   DEFAULT_KEEP_NATIVE_FOR_FEES,
   DEFAULT_REMOTE_FEE_BUFFER,
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
+  recordedRoute,
   type FundingStep,
 } from "@getsome/funding";
 import {
@@ -30,14 +33,16 @@ import {
   DEFAULT_SOURCE_ID,
   hostSafeEntropy,
   nextFreeTradeNumber,
+  readDepositOnAh,
   readPurseBalance,
   readTradeCounter,
   recoverRefundKey,
   tradeEntropyLabel,
   tradeEntropyLabelString,
+  watchDepositOnAh,
   type CoinageWorld,
 } from "./coinage";
-import { ASSET_HUB_GENESIS, PEOPLE_GENESIS } from "./host-chain";
+import { ASSET_HUB, ASSET_HUB_GENESIS, connectChain, PEOPLE_GENESIS } from "./host-chain";
 
 export interface HostedCoinageWorld extends CoinageWorld {
   /** Current host purse balance (CASH base units). */
@@ -62,16 +67,17 @@ export async function burnerAddressFor(sourceId: string, tradeN: number): Promis
   return deriveKeypair(seed).address;
 }
 
-/** A trade's burner address and its native balance on Asset Hub, without building a session. */
+/** A trade's burner address and its balance on Asset Hub in the asset the trade's recorded route
+ *  delivers, without building a session. */
 export async function probeTradeBurner(
   sourceId: string,
   tradeN: number,
+  route: ConversionRoute,
 ): Promise<{ address: string; free: bigint }> {
   const address = await burnerAddressFor(sourceId, tradeN);
   const { connectChain, ASSET_HUB } = await import("./host-chain");
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
-  const account = await api.query.System.Account.getValue(address, { at: "best" });
-  return { address, free: account?.data?.free ?? 0n };
+  return { address, free: await readDepositOnAh(api, route, address) };
 }
 
 /**
@@ -89,22 +95,20 @@ export async function probeRefundKey(
   return recoverRefundKey(entropy, sourceId, tradeN);
 }
 
-/** Follows a trade's burner balance on Asset Hub at each best block until the returned function
- *  is called: every emission reaches `onValue`, a failed subscription `onError`. */
+/** Follows a trade's burner balance in its route's deposit asset on Asset Hub at each best block
+ *  until the returned function is called: every emission reaches `onValue`, a failed
+ *  subscription `onError`. */
 export async function watchTradeBurner(
   sourceId: string,
   tradeN: number,
+  route: ConversionRoute,
   onValue: (free: bigint, address: string) => void,
   onError: (e: unknown) => void,
 ): Promise<() => void> {
   const address = await burnerAddressFor(sourceId, tradeN);
   const { connectChain, ASSET_HUB } = await import("./host-chain");
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
-  const subscription = api.query.System.Account.watchValue(address, { at: "best" }).subscribe({
-    next: ({ value: account }) => onValue(account?.data?.free ?? 0n, address),
-    error: onError,
-  });
-  return () => subscription.unsubscribe();
+  return watchDepositOnAh(api, route, address, (free) => onValue(free, address), onError);
 }
 
 /** Core's storage over the host store, under the prefix `createCoinageSession` writes with. */
@@ -152,13 +156,17 @@ export async function nextHostedTradeNumber(
 }
 
 /** The hand-off for a request whose record was lost, rebuilt from its flow slot with the sizing
- *  defaults the worker itself falls back to. */
+ *  defaults the worker itself falls back to. The tier is the one the slot froze at quote time
+ *  and nothing else: this takes no route and asks no chain, so a lost request cannot be
+ *  recovered on a tier other than the one its deposit was quoted for. A slot from before routes
+ *  were recorded is a pool one. */
 export function lostRequestHandoff(
   sourceId: string,
   tradeN: number,
   address: string,
   slot: FlowState,
 ): WorkerHandoffPayload {
+  const route = recordedRoute(slot.conversion ?? {});
   return {
     label: tradeEntropyLabelString(sourceId, tradeN),
     burnerAddress: address,
@@ -169,7 +177,8 @@ export function lostRequestHandoff(
     assetHubGenesis: ASSET_HUB_GENESIS,
     peopleGenesis: PEOPLE_GENESIS,
     remoteFeeBuffer: DEFAULT_REMOTE_FEE_BUFFER.toString(),
-    keepNativeForFees: DEFAULT_KEEP_NATIVE_FOR_FEES.toString(),
+    keepNativeForFees: (route.tier === "pool" ? DEFAULT_KEEP_NATIVE_FOR_FEES : 0n).toString(),
+    ...route,
   };
 }
 
@@ -182,10 +191,21 @@ function toCashBase(human: string): bigint {
   return BigInt(whole) * 10n ** BigInt(CASH_DECIMALS) + BigInt(frac.padEnd(CASH_DECIMALS, "0"));
 }
 
-/** The pool-funded session over the real host seams; budget sized live from the pool. */
+/** The conversion tier a hosted request takes, read off the live PSM. The one place the
+ *  decision is made for a hosted request: it runs before the rail is built, since the tier
+ *  fixes the asset the rail delivers, and the world it is handed to freezes it into the
+ *  hand-off. */
+export async function chooseHostedRoute(amount: bigint): Promise<ConversionRoute> {
+  const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
+  return chooseRoute(api, { direction: "mint", internalAmount: amount });
+}
+
+/** The funded session over the real host seams; budget sized live for the route's tier. */
 export async function createHostedCoinageWorld(args: {
   /** CASH base units (6 decimals). */
   amount: bigint;
+  /** The tier already decided for this request (see createCoinageSession.route). */
+  route: ConversionRoute;
   /** Which request's burner to derive; omit for a new one (see CoinageSessionArgs.tradeN). */
   tradeN?: number;
   /** Fiat rail and its source id, when the fiat route drives this run. */
@@ -203,6 +223,7 @@ export async function createHostedCoinageWorld(args: {
     ...(args.rail ? { rail: args.rail } : {}),
     ...(args.tradeN === undefined ? {} : { tradeN: args.tradeN }),
     ...(args.staleFlowMs === undefined ? {} : { staleFlowMs: args.staleFlowMs }),
+    route: args.route,
     hostLocalStorage: storage,
     deriveEntropy,
     // The storage-backed manager stands in for the SDK's getWorkerManager(); one per page.
@@ -237,13 +258,14 @@ export async function startLiveCoinage(args: {
   /** CASH to claim, human units, e.g. "5" or "0.25". */
   amountCash: string;
 }): Promise<HostedCoinageWorld> {
-  const world = await createHostedCoinageWorld({ amount: toCashBase(args.amountCash) });
+  const amount = toCashBase(args.amountCash);
+  const world = await createHostedCoinageWorld({ amount, route: await chooseHostedRoute(amount) });
 
   world.session.subscribe((s) => {
     console.info(`[coinage] phase=${s.phase}`, s);
     if (s.phase === "awaiting-deposit") {
       console.info(
-        `[coinage] send exactly ${s.deposit.formatted} ${s.deposit.assetSymbol} (native) to ${s.deposit.address} on Asset Hub`,
+        `[coinage] send exactly ${s.deposit.formatted} ${s.deposit.assetSymbol} to ${s.deposit.address} on Asset Hub`,
       );
     }
   });

@@ -28,6 +28,8 @@ export interface FundingTopUpRecord {
   sourcePartnerFee?: string;
   /** The funding leg's own network fee, priced by the app rather than reported by the rail. */
   sourceChainFee?: string;
+  /** The PSM's fee on the mint, priced by the app; PSM tier only. */
+  sourceMintFee?: string;
   /** The Meld rail's buyer country. */
   meldCountry?: string;
   /** The Meld rail's provider (Transak, Koywe, ...) and the funding request's id, which is what
@@ -97,6 +99,7 @@ export function quoteOf(record: FundingTopUpRecord): Pick<FundingTopUp, "quote">
           ...(record.sourceNetworkFee ? { networkFee: record.sourceNetworkFee } : {}),
           ...(record.sourcePartnerFee ? { partnerFee: record.sourcePartnerFee } : {}),
           ...(record.sourceChainFee ? { chainFee: record.sourceChainFee } : {}),
+          ...(record.sourceMintFee ? { mintFee: record.sourceMintFee } : {}),
         },
       }
     : {};

@@ -16,9 +16,12 @@ export {
 } from "./withdraw-channel";
 export {
   computeQuote,
+  egressFor,
   pickRegularQuote,
   ON_CHAIN_OVERHEAD_PLANCKS,
   SourceMinimumNotMetError,
+  type ChainflipToken,
+  type EgressConfig,
   type QuoteBackend,
 } from "./quote";
 export {

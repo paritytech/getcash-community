@@ -493,6 +493,34 @@ describe("requests store: foreground, clock and user actions", () => {
     expect(requests.get(AWAITING_REF)?.failure).toBeUndefined();
   });
 
+  it("retry admits a job the worker holds after the PSM refused the mint", async () => {
+    setRequestsClock(() => FIXTURE_NOW);
+    const requests = useRequestsStore();
+    await requests.create(AWAITING_REF, migrated(awaitingDepositCryptoRecord));
+    await requests.observe(AWAITING_REF, workerSwap(at(1)));
+    const held = { phase: "failed", failure: "held", done: false, lastTickAt: at(2) };
+    await requests.observe(AWAITING_REF, {
+      source: "worker",
+      at: at(2),
+      job: { ...held, fundsSeenAt: at(1), claim: null },
+    });
+    expect(requests.get(AWAITING_REF)?.status).toEqual({
+      kind: "failed",
+      at: at(2),
+      recoverable: true,
+    });
+    await host.write(
+      WORKER_JOBS_KEY,
+      JSON.stringify({ [AWAITING_JOB_ID]: { ...held, state: { fundsSeenAt: at(1) } } }),
+    );
+
+    expect(await requests.retry(AWAITING_REF)).toBe(true);
+    expect(requests.get(AWAITING_REF)).toMatchObject({
+      status: { kind: "converting", at: FIXTURE_NOW, step: "swap" },
+    });
+    expect(requests.get(AWAITING_REF)?.failure).toBeUndefined();
+  });
+
   it("clock expires a foreground record past its deadline", async () => {
     vi.useFakeTimers();
     // Two days on: the channel's 24-hour window closed a day ago.

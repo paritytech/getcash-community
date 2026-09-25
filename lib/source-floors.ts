@@ -1,10 +1,11 @@
-// Which sources can serve the purchase on screen: every asset's floor and its worth in DOT,
-// learned from Chainflip once per session.
+// Which sources can serve the purchase on screen: every asset's floor and its worth in the egress
+// asset, learned from Chainflip once per session for each egress a purchase is sized in.
 
 import type { SourceId } from "@getsome/core";
 import {
   learnFloors,
   SOURCE_CONFIG_BY_ID,
+  type EgressConfig,
   type FloorsBackend,
   type SourceConfig,
   type SourceFloorResult,
@@ -22,16 +23,16 @@ export const OFFERED_SOURCE_IDS: readonly SourceId[] = SOURCE_CHAINS.flatMap((ch
 const DEFAULT_TIMEOUT_MS = 10_000;
 
 /**
- * Learns every offered source's floor. Never throws: a slow or unreachable network comes back
- * as every source unavailable, with the reason.
+ * Learns every offered source's floor, worth in `egress`. Never throws: a slow or unreachable
+ * network comes back as every source unavailable, with the reason.
  */
-export async function learnSourceFloors(
-  args: {
-    sourceIds?: readonly SourceId[];
-    backend?: FloorsBackend;
-    timeoutMs?: number;
-  } = {},
-): Promise<ReadonlyMap<SourceId, SourceFloorResult>> {
+export async function learnSourceFloors(args: {
+  /** What the swap delivers: the route's deposit token on Asset Hub. */
+  egress: EgressConfig;
+  sourceIds?: readonly SourceId[];
+  backend?: FloorsBackend;
+  timeoutMs?: number;
+}): Promise<ReadonlyMap<SourceId, SourceFloorResult>> {
   const sources = (args.sourceIds ?? OFFERED_SOURCE_IDS)
     .map((id) => SOURCE_CONFIG_BY_ID.get(id))
     .filter((s): s is SourceConfig => s !== undefined);
@@ -39,12 +40,12 @@ export async function learnSourceFloors(
     // One deadline for the whole call: the SDK build and the questions share it.
     const floors = await withTimeout(
       Promise.resolve(args.backend ?? mainnetSdk()).then((backend) =>
-        learnFloors(backend, sources),
+        learnFloors(backend, sources, args.egress),
       ),
       args.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       "source floors",
     );
-    console.info(`[coinage] source floors: ${describe(floors)}`);
+    console.info(`[coinage] source floors: ${describe(floors, args.egress)}`);
     return floors;
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
@@ -53,9 +54,9 @@ export async function learnSourceFloors(
   }
 }
 
-/** One log line for the catalog: each floor's worth in DOT, or why there is none. A shared
- *  failure reason is said once. */
-function describe(floors: ReadonlyMap<SourceId, SourceFloorResult>): string {
+/** One log line for the catalog: each floor's worth in the egress asset, or why there is none. A
+ *  shared failure reason is said once. */
+function describe(floors: ReadonlyMap<SourceId, SourceFloorResult>, egress: EgressConfig): string {
   const reasons = new Set(
     [...floors.values()].map((r) => (r.kind === "unavailable" ? r.reason : null)),
   );
@@ -65,7 +66,7 @@ function describe(floors: ReadonlyMap<SourceId, SourceFloorResult>): string {
   return [...floors]
     .map(([id, result]) =>
       result.kind === "floor"
-        ? `${id} from ${(Number(result.floor.minimumEgressBaseUnits) / 1e10).toFixed(2)} DOT`
+        ? `${id} from ${(Number(result.floor.minimumEgressBaseUnits) / 10 ** egress.decimals).toFixed(2)} ${egress.asset}`
         : `${id} unavailable (${result.reason})`,
     )
     .join("; ");

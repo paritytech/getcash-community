@@ -19,23 +19,14 @@
 
 import { paseo_people_next } from "@polkadot-api/descriptors";
 import type { TypedApi } from "polkadot-api";
+import { TOKENS } from "@getsome/core";
 import { CASH_LOCATION } from "@getsome/people";
-import { PASEO_UNDERLYING_ASSET_ID } from "@getsome/funding";
 import { PEOPLE_NATIVE } from "./paseo";
 
 export type PeopleApi = TypedApi<typeof paseo_people_next>;
 
 /** CASH as Asset Hub keys it: local to Asset Hub, so parents 0. The remote program filters on it. */
-export const CASH_ON_ASSET_HUB = {
-  parents: 0,
-  interior: {
-    type: "X2",
-    value: [
-      { type: "PalletInstance", value: 50 },
-      { type: "GeneralIndex", value: BigInt(PASEO_UNDERLYING_ASSET_ID) },
-    ],
-  },
-};
+export const CASH_ON_ASSET_HUB = TOKENS.CASH.location;
 
 /** Fallback weight ceiling for the XCM, used when the runtime will not weigh it. */
 export const WITHDRAW_XCM_MAX_WEIGHT = { ref_time: 5_000_000_000n, proof_size: 300_000n };

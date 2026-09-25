@@ -33,6 +33,10 @@ const emit = defineEmits<{ back: [] }>();
  * legs, but one thing to the buyer: what the networks charged to move their money. No quote has
  * been seen carrying both, the rail's part being absent from every card quote observed so far, but
  * one that did would owe the buyer a single figure rather than two rows sharing a name.
+ *
+ * The mint row is the PSM tier's alone: the flat cut the PSM takes for turning the delivered
+ * stable into CASH (`meldMintFeeFiat`). The pool tier has no such component, so the row is absent
+ * there rather than zero.
  */
 const feeRows = computed(() => {
   const q = props.quote;
@@ -41,6 +45,7 @@ const feeRows = computed(() => {
   return [
     { label: "Provider fee", amount: q.transactionFee },
     { label: "Network fee", amount: networkFee === null ? null : String(networkFee) },
+    { label: "Mint fee", amount: q.mintFee },
     { label: "Service fee", amount: q.partnerFee },
   ].flatMap(({ label, amount }) =>
     isMoneyAmount(amount) && Number(amount) > 0
@@ -52,14 +57,15 @@ const feeRows = computed(() => {
 /**
  * Everything the split adds up to: the rail's own total plus the funding leg the rail never saw.
  *
- * The rail's `fee` is taken whole rather than re-added from the three rows above. A provider that
+ * The rail's `fee` is taken whole rather than re-added from the rows above. A provider that
  * reports a total its named components do not account for has still charged that total, and
  * re-summing the rows would quietly drop the difference; the store says so instead (see
- * `warnOnFeeSplitDrift`). `chainFee` is ours to add: nothing on the rail's side contains it.
+ * `warnOnFeeSplitDrift`). `chainFee` and `mintFee` are ours to add: nothing on the rail's side
+ * contains them.
  */
 const totalFee = computed(() => {
   const q = props.quote;
-  return q ? sumMoney(q.fee, q.chainFee) : null;
+  return q ? sumMoney(q.fee, q.chainFee, q.mintFee) : null;
 });
 
 /** The sum of the split, carried in its own rule-bracketed row. */

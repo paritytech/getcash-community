@@ -3,13 +3,14 @@
 
 import type { Quote, ReverseQuoteInput } from "@getsome/core";
 import type { MeldClientLike, MeldQuoteEntry } from "./client";
-import { formatNative, NATIVE_ASSET, NATIVE_DECIMALS, toNativeUnits } from "./native";
+import { formatBaseUnits, toBaseUnits, type MeldToken } from "./units";
 
 /** The buyer and route context a Meld quote needs beyond the target. Fixed per rail instance. */
 export interface MeldQuoteContext {
   readonly country: string;
   readonly fiat: string;
-  readonly token: string;
+  /** The token Meld delivers; its `meldCurrencyCode` is the wire destination. */
+  readonly token: MeldToken;
   readonly method: string;
 }
 
@@ -18,7 +19,7 @@ export interface MeldQuoteContext {
 export interface MeldQuoteRaw {
   readonly provider: MeldQuoteEntry;
   readonly context: MeldQuoteContext;
-  /** Whole-token native amount targeted on the burner. */
+  /** Whole-token amount of `context.token` targeted on the burner. */
   readonly destinationAmount: string;
 }
 
@@ -51,12 +52,14 @@ async function forwardBest(
   const { quotes } = await client.getQuote({
     country: ctx.country,
     sourceCurrencyCode: ctx.fiat,
-    destinationCurrencyCode: ctx.token,
+    destinationCurrencyCode: ctx.token.meldCurrencyCode,
     sourceAmount,
     paymentMethodType: ctx.method,
   });
   if (!quotes || quotes.length === 0) {
-    throw new Error(`No Meld provider offers ${ctx.method} for ${ctx.token} in ${ctx.country}`);
+    throw new Error(
+      `No Meld provider offers ${ctx.method} for ${ctx.token.meldCurrencyCode} in ${ctx.country}`,
+    );
   }
   const best = pickBestQuote(quotes);
   if (!best) throw new Error("Meld returned no usable quote line");
@@ -64,16 +67,16 @@ async function forwardBest(
 }
 
 /**
- * Solves the fiat for a target native amount. Returns a core Quote whose `source` is the native
- * delivery and whose `raw` carries the chosen fiat line.
+ * Solves the fiat for a target amount of the context's token. Returns a core Quote whose `source`
+ * is that delivery and whose `raw` carries the chosen fiat line.
  */
 export async function computeMeldQuote(
   client: MeldClientLike,
   ctx: MeldQuoteContext,
   req: ReverseQuoteInput,
 ): Promise<Quote> {
-  const nativeAmount = toNativeUnits(req.target);
-  const destinationAmount = formatNative(nativeAmount); // whole-token target, e.g. "19.62"
+  const tokenAmount = toBaseUnits(ctx.token, req.target);
+  const destinationAmount = formatBaseUnits(ctx.token, tokenAmount); // whole-token target, e.g. "19.62"
   const targetTokens = Number(destinationAmount);
 
   // First guess: the target's own number as fiat. Each probe corrects it in both directions
@@ -89,7 +92,7 @@ export async function computeMeldQuote(
       // No ratio to correct from. Keep a clearing line if there is one; otherwise refuse.
       if (cleared === null) {
         throw new Error(
-          `Meld returned an unusable quote (${paid} ${ctx.fiat} for ${out} ${ctx.token}). Try again or another payment method.`,
+          `Meld returned an unusable quote (${paid} ${ctx.fiat} for ${out} ${ctx.token.meldCurrencyCode}). Try again or another payment method.`,
         );
       }
       break;
@@ -117,7 +120,7 @@ export async function computeMeldQuote(
   // Only a clearing line may be quoted.
   if (cleared === null) {
     throw new Error(
-      `Meld could not price ${destinationAmount} ${NATIVE_ASSET} in ${ctx.fiat}; the rate moved on every attempt. Please try again.`,
+      `Meld could not price ${destinationAmount} ${ctx.token.chainflipAsset} in ${ctx.fiat}; the rate moved on every attempt. Please try again.`,
     );
   }
   best = cleared;
@@ -126,10 +129,10 @@ export async function computeMeldQuote(
   return {
     sourceId: req.sourceId,
     source: {
-      amount: nativeAmount,
+      amount: tokenAmount,
       formatted: destinationAmount,
-      assetSymbol: NATIVE_ASSET,
-      decimals: NATIVE_DECIMALS,
+      assetSymbol: ctx.token.chainflipAsset,
+      decimals: ctx.token.decimals,
     },
     raw,
   };

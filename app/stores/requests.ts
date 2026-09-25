@@ -4,6 +4,7 @@
 
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef, watch } from "vue";
+import { recordedRoute, type ConversionRoute } from "@getsome/funding";
 import type { FlowState, SourceId, SwapStatusResult } from "@getsome/core";
 import { createMeldClient, getMeldStatus, type MeldClientLike } from "@getsome/meld";
 import {
@@ -363,6 +364,10 @@ type WorkerJob = {
   peopleGenesis?: string;
   remoteFeeBuffer?: string;
   keepNativeForFees?: string;
+  quotedDeposit?: string;
+  tier?: unknown;
+  external?: unknown;
+  feeRate?: unknown;
   createdAt?: number;
   armedAt?: number;
 };
@@ -553,6 +558,13 @@ function handoffOf(job: WorkerJob): WorkerHandoffPayload | undefined {
   ) {
     return undefined;
   }
+  // The route the job was quoted with; a job from before routes were recorded is a pool one.
+  let route: ConversionRoute;
+  try {
+    route = recordedRoute(job);
+  } catch {
+    return undefined;
+  }
   return {
     label,
     burnerAddress,
@@ -564,6 +576,8 @@ function handoffOf(job: WorkerJob): WorkerHandoffPayload | undefined {
     peopleGenesis,
     remoteFeeBuffer,
     keepNativeForFees,
+    ...(isString(job.quotedDeposit) ? { quotedDeposit: job.quotedDeposit } : {}),
+    ...route,
   };
 }
 
@@ -726,6 +740,12 @@ function recordFromJob(sessionId: string, job: WorkerJob): TopUpRecord | null {
 /** A flow slot that can size a record: core wrote the settle amount into it at the start. */
 const hasHandoffAmount = (slot: FlowState | null): slot is FlowState & { handoffAmount: string } =>
   slot !== null && slot.handoffAmount !== undefined;
+
+/** The tier a record was quoted on, read off what it persisted and never decided here: the
+ *  hand-off it froze at quote time, or the tier recorded beside it when the hand-off is missing.
+ *  A record with neither is from before tiers were recorded, and so a pool one. */
+const conversionRouteOf = (record: TopUpRecord): ConversionRoute =>
+  recordedRoute(record.handoff ?? record.conversion ?? {});
 
 /** A record for a funded burner the surface lost every trace of, from the core flow slot that
  *  started it: the only thing left that knows the amount. Generic labels, like a job's record. */
@@ -1261,6 +1281,12 @@ export const useRequestsStore = defineStore("requests", () => {
   } | null = null;
   const foregroundAwaiting = (): boolean =>
     foregroundRecord.value?.status.kind === "awaiting-deposit";
+  /** The tier a request's deposit arrives on, from what its record froze at quote time: it fixes
+   *  the asset the burner is read in. A number with no record is read as a pool one. */
+  const depositRouteOf = (ref: RequestRef): ConversionRoute => {
+    const record = get(ref);
+    return record !== undefined && isTopUp(record) ? conversionRouteOf(record) : { tier: "pool" };
+  };
   function startDepositWatch(): void {
     if (sandboxed.value) return;
     const record = foregroundRecord.value;
@@ -1287,6 +1313,7 @@ export const useRequestsStore = defineStore("requests", () => {
         watchTradeBurner(
           sourceId,
           ref.tradeN,
+          depositRouteOf(ref),
           (free) => {
             if (watching.stopped) return;
             void observe(ref, chainReading(free, requestsNow()));
@@ -1427,7 +1454,10 @@ export const useRequestsStore = defineStore("requests", () => {
     const confirmedByJob =
       job !== undefined &&
       job.phase === "failed" &&
-      (job.failure === "shortfall" || job.failure === "timeout" || job.failure === "claim");
+      (job.failure === "shortfall" ||
+        job.failure === "timeout" ||
+        job.failure === "claim" ||
+        job.failure === "held");
     if (!confirmedByJob && record.witnesses.core?.phase !== "failed") {
       console.warn("[requests] retry ignored: the failure is not confirmed as recoverable");
       return false;
@@ -1925,10 +1955,10 @@ export const useRequestsStore = defineStore("requests", () => {
    *  request: funds resurrect it; a cancelled one confirmed empty past its window and grace is
    *  removed (today's reap rule). (b) A waiting request whose worker is unknown, stale or not
    *  running. (c) The gap sweep: under every source this app can run, every trade number from one
-   *  to the source's counter with neither a record nor a job is read once and noted under
-   *  `getsome:probed`, re-read at most once a day while its deposit window is open; funds with a
-   *  core flow slot become a record that the hand-off step sends on this pass. (a) and (c) run on
-   *  boot and return only, (b) every time. */
+   *  to the source's counter with neither a record nor a job is read once, in the asset of the
+   *  tier its core flow slot froze, and noted under `getsome:probed`, re-read at most once a day
+   *  while its deposit window is open; funds with a slot become a record on that tier that the
+   *  hand-off step sends on this pass. (a) and (c) run on boot and return only, (b) every time. */
   async function readChain(
     reason: string,
     now: number,
@@ -1956,7 +1986,7 @@ export const useRequestsStore = defineStore("requests", () => {
     async function probe(ref: RequestRef): Promise<{ address: string; free: bigint } | null> {
       const sourceId = effectiveSourceId(ref);
       const read = await bounded(`burner read for ${sourceId}#${ref.tradeN}`, PROBE_BOUND_MS, () =>
-        probeTradeBurner(sourceId, ref.tradeN),
+        probeTradeBurner(sourceId, ref.tradeN, depositRouteOf(ref)),
       );
       if (!read.ok) {
         console.warn(`[requests] ${read.reason} (kept)`);
@@ -2055,8 +2085,20 @@ export const useRequestsStore = defineStore("requests", () => {
       }
     }
     await inParallel(gaps, CHAIN_READ_PARALLELISM, async ({ sourceId, n }) => {
+      // The slot first: the tier it froze fixes the asset the burner is read in, and it is the
+      // only thing left that knows it. A number with no slot never had a quote and so has no
+      // tier; its burner is read in the native, which is what a burner from before routes were
+      // recorded holds, and funds there are reported below, never made a record of.
+      const flow = await bounded(`flow slot read for ${sourceId}#${n}`, PROBE_BOUND_MS, () =>
+        readFlowSlot(sourceId as SourceId, n),
+      );
+      if (!flow.ok) {
+        console.warn(`[requests] ${flow.reason}`);
+        return;
+      }
+      const { address, slot } = flow.value;
       const read = await bounded(`burner read for ${sourceId}#${n}`, PROBE_BOUND_MS, () =>
-        probeTradeBurner(sourceId, n),
+        probeTradeBurner(sourceId, n, recordedRoute(slot?.conversion ?? {})),
       );
       if (!read.ok) {
         console.warn(`[requests] ${read.reason}`);
@@ -2067,14 +2109,6 @@ export const useRequestsStore = defineStore("requests", () => {
         noteProbed(sourceId, n, { firstAt, lastAt: now });
         return;
       }
-      const flow = await bounded(`flow slot read for ${sourceId}#${n}`, PROBE_BOUND_MS, () =>
-        readFlowSlot(sourceId as SourceId, n),
-      );
-      if (!flow.ok) {
-        console.warn(`[requests] ${flow.reason}`);
-        return;
-      }
-      const { address, slot } = flow.value;
       if (!hasHandoffAmount(slot)) {
         // Funds with no record, no job and no slot: only storage loss gets here, and a truthful
         // row needs an amount the app does not have.
@@ -2156,10 +2190,13 @@ export const useRequestsStore = defineStore("requests", () => {
       const { ref } = record;
       const amount = toCashBase(record.amountHuman);
       if (amount === null) throw new Error(`'${record.amountHuman}' is not a CASH amount`);
+      // The world is rebuilt on the tier the record froze at quote time; this store decides no
+      // tier, since the deposit it recovers was quoted for one already.
       const world = await createHostedCoinageWorld({
         amount,
         tradeN: ref.tradeN,
         sourceId: effectiveSourceId(ref) as SourceId,
+        route: conversionRouteOf(record),
       });
       try {
         const handoff = await world.handoffPayload();

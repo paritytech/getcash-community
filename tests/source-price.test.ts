@@ -1,9 +1,12 @@
 // Pricing the source leg: the three answers the pay card renders, none of which throws.
 
 import { describe, expect, it } from "vitest";
-import { BelowMinimumSwapAmountError, type QuoteBackend } from "@getsome/chainflip";
+import { TOKENS } from "@getsome/core";
+import { BelowMinimumSwapAmountError, egressFor, type QuoteBackend } from "@getsome/chainflip";
 import { priceSourceLeg } from "../lib/source-price";
 
+/** The pool tier's egress: the native. */
+const NATIVE = egressFor(TOKENS.PAS);
 /** 100 DOT of budget, the shape computeQuote's reference step expects. */
 const DOT_TARGET = 1_000_000_000_000n;
 
@@ -20,7 +23,8 @@ describe("priceSourceLeg", () => {
   it("returns Chainflip's amount and its own duration estimate", async () => {
     const result = await priceSourceLeg({
       sourceId: "btc",
-      targetNativeBase: DOT_TARGET,
+      targetBaseUnits: DOT_TARGET,
+      egress: NATIVE,
       backend: backend((amount) => [
         {
           type: "REGULAR",
@@ -40,7 +44,8 @@ describe("priceSourceLeg", () => {
   it("reports the floor in the asset's units and how far the ask fell short", async () => {
     const result = await priceSourceLeg({
       sourceId: "btc",
-      targetNativeBase: 1n, // a purchase far under any real floor
+      targetBaseUnits: 1n, // a purchase far under any real floor
+      egress: NATIVE,
       backend: {
         async getQuoteV2(args) {
           // The reference call succeeds; the precise call is below the floor.
@@ -63,7 +68,8 @@ describe("priceSourceLeg", () => {
   it("never throws when Chainflip is unreachable", async () => {
     const result = await priceSourceLeg({
       sourceId: "btc",
-      targetNativeBase: DOT_TARGET,
+      targetBaseUnits: DOT_TARGET,
+      egress: NATIVE,
       backend: {
         async getQuoteV2() {
           throw new Error("Chainflip quote request failed (HTTP 502): bad gateway");
@@ -80,7 +86,8 @@ describe("priceSourceLeg", () => {
     const result = await priceSourceLeg({
       // Served by the manual rail, never by Chainflip.
       sourceId: "dot-assethub",
-      targetNativeBase: DOT_TARGET,
+      targetBaseUnits: DOT_TARGET,
+      egress: NATIVE,
       backend: backend(() => []),
     });
     expect(result.kind).toBe("unavailable");
@@ -92,7 +99,8 @@ describe("priceSourceLeg deadline", () => {
     const started = Date.now();
     const result = await priceSourceLeg({
       sourceId: "btc",
-      targetNativeBase: DOT_TARGET,
+      targetBaseUnits: DOT_TARGET,
+      egress: NATIVE,
       timeoutMs: 50,
       backend: { getQuoteV2: () => new Promise(() => {}) }, // never answers
     });
