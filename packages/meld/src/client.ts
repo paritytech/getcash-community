@@ -125,6 +125,11 @@ export interface MeldEndpointConfig {
   baseUrl: string;
   /** Sent as `x-dev-product-id` for the adapter's dev auth. */
   productId?: string;
+  /**
+   * People network for personhood proofs; must match an adapter `auth.personhood.networks[].id`.
+   * Unused until the personhood handshake lands.
+   */
+  network?: string;
   /** Idempotency key per session create. Defaults to a key derived from the purchase intent. */
   idempotencyKey?: () => string;
   /** Where the embedded widget lands the buyer on completion; forwarded to Meld's redirectUrl. */
