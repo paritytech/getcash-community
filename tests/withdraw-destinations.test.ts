@@ -7,7 +7,7 @@ import {
   isAssetHubAddress,
   landingAccountHex,
   matchesOtherNetwork,
-  shortAddress,
+  shortDestinationAddress,
   WITHDRAW_NETWORKS,
   withdrawDestination,
   withdrawNetwork,
@@ -74,7 +74,9 @@ describe("withdrawal destinations", () => {
   });
 
   it("shortens an address around an ellipsis", () => {
-    expect(shortAddress(ALICE_POLKADOT)).toBe("15oF4…r6Sp5");
-    expect(shortAddress("short")).toBe("short");
+    expect(shortDestinationAddress(ALICE_POLKADOT)).toBe("15oF4…r6Sp5");
+    expect(shortDestinationAddress("short")).toBe("short");
+    // Five each end, against the six the shared `shortAddress` leads with elsewhere.
+    expect(shortDestinationAddress(`  ${ALICE_POLKADOT}  `)).toBe("15oF4…r6Sp5");
   });
 });

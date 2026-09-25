@@ -33,7 +33,9 @@ const route = {
   cadenceMs: 5_000,
   startedNodeLabel: "Started",
   waitingLabel: "Waiting for your payment",
-  routeCompletedLabel: "Converted",
+  // No `routeCompletedLabel`: the boundary it names needs a moment where the conversion is done
+  // and the send has not been confirmed, and the status goes straight from `converting` to
+  // `sending`. The ribbon reads Waiting → Converting → Sending → Sent with no gap to fill.
   settledLabel: "Sent",
   stages: [
     {

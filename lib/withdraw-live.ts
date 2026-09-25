@@ -170,8 +170,23 @@ const FEE_GROUPS: readonly { label: string; types: readonly string[] }[] = [
 /** Stables read naturally at cents; everything else keeps the payout's own precision. */
 const feeDecimals = (config: { decimals: number }): number => (config.decimals <= 6 ? 2 : 6);
 
+/** Digits a payout is stated to, on the summary and in the drill-in alike. */
+const PAYOUT_DECIMALS = 6;
+
+/** A fee, at the cents a fee reads best in. Rounded up, which overstates the charge: the safe
+ *  direction for a fee, and the wrong one for a payout. */
 const fmtDest = (config: { asset: string; decimals: number }, planck: bigint): string =>
   `${formatSourceAmount(config, planck, { maxDecimals: feeDecimals(config) })} ${config.asset}`;
+
+/**
+ * What lands, at the payout's own precision — the summary's figure and the drill-in's, from one
+ * place so the two cannot disagree.
+ *
+ * Not `fmtDest`: `formatSourceAmount` rounds up, so a stable capped at cents would promise a cent
+ * more than the swap pays out (24.500001 USDC reading as 24.51).
+ */
+const fmtPayout = (config: { asset: string; decimals: number }, planck: bigint): string =>
+  `${formatSourceAmount(config, planck, { maxDecimals: PAYOUT_DECIMALS })} ${config.asset}`;
 
 /** "$1 CASH ≈ 0.99 USDC": the gross rate `equivalent` implies for the CASH withdrawn. */
 function grossRate(
@@ -227,8 +242,8 @@ function offerFees(
   return {
     rows,
     ...(rows.length ? { total: fmtDest(config, total) } : {}),
-    equivalent: `≈ ${fmtDest(config, equivalent)}`,
-    receive: fmtDest(config, quote.egressAmount),
+    equivalent: `≈ ${fmtPayout(config, equivalent)}`,
+    receive: fmtPayout(config, quote.egressAmount),
     rate: grossRate(config, equivalent, amountCash),
   };
 }
@@ -298,13 +313,12 @@ export async function quoteWithdrawOffers(
         OFFERS_TIMEOUT_MS,
         `${config.asset} offer`,
       );
-      const formatted = formatSourceAmount(config, quote.egressAmount, { maxDecimals: 6 });
       const fees = offerFees(config, quote, amountCash);
       return {
         offer: {
           state: "available",
           egress: quote.egressAmount,
-          formatted: `${formatted} ${config.asset}`,
+          formatted: fmtPayout(config, quote.egressAmount),
           etaSeconds: quote.estimatedDurationSeconds,
           ...(fees === undefined ? {} : { fees }),
         },

@@ -123,13 +123,33 @@ describe("quoting the provider destinations for an amount", () => {
           { label: "Swap fee", value: "0.21 USDC" },
         ],
         total: "2.89 USDC",
-        equivalent: "≈ 27.08 USDC",
+        // The money figures keep the payout's own precision; only the charges read at cents.
+        equivalent: "≈ 27.079 USDC",
         receive: "24.19 USDC",
         rate: "$1 CASH ≈ 0.54 USDC",
       },
     });
     // A quote naming no fees offers no split; the summary keeps its plain caption.
     expect(offers.get("btc")).not.toHaveProperty("fees");
+  });
+
+  it("states what lands the same way on the summary and in the fee drill-in", async () => {
+    reset();
+    // A payout with more precision than cents: capped at two it would round *up*, promising a
+    // cent more than the swap pays out.
+    script.quote = (asset, amount) => ({
+      type: "REGULAR",
+      egressAmount: "24500001",
+      estimatedDurationSeconds: 600,
+      depositAmount: amount,
+      includedFees: [{ chain: "Ethereum", asset: "USDC", amount: "210000", type: "NETWORK" }],
+    });
+    const { offers } = await quoteWithdrawOffers(CASH, PROVIDERS);
+    const offer = offers.get("usdc-eth");
+    if (offer?.state !== "available") throw new Error("expected an available offer");
+
+    expect(offer.formatted).toBe("24.500001 USDC");
+    expect(offer.fees?.receive).toBe(offer.formatted);
   });
 
   it("drops the split whole when a fee cannot be priced into the destination asset", async () => {

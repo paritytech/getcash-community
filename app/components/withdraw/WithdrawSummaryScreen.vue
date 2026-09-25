@@ -3,7 +3,7 @@
 // arrives, and where. The hero's caption opens the fee drill-in when the quote brought a split.
 // Confirm starts the withdrawal.
 import { ChevronRight } from "lucide-vue-next";
-import { shortAddress, type WithdrawDestination } from "../../withdraw/destinations";
+import { shortDestinationAddress, type WithdrawDestination } from "../../withdraw/destinations";
 import type { WithdrawFeeView } from "../../withdraw/offers";
 import { groupAmountDigits } from "../../utils/cash";
 import CashAmount from "../ui/CashAmount.vue";
@@ -59,7 +59,9 @@ const emit = defineEmits<{ confirm: []; fees: [] }>();
           To this address<br />
           on <strong class="font-semibold">{{ destination.chainLabel }} Network</strong>
         </dt>
-        <dd class="text-heading-m text-fg-primary" :title="address">{{ shortAddress(address) }}</dd>
+        <dd class="text-heading-m text-fg-primary" :title="address">
+          {{ shortDestinationAddress(address) }}
+        </dd>
       </div>
     </dl>
 

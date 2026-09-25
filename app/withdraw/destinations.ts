@@ -6,6 +6,7 @@
 import { AccountId } from "polkadot-api";
 import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
 import type { WithdrawalRailState } from "../funding/requests/model";
+import { elideMiddle } from "../utils/address";
 import { networkIcon, tokenIcon } from "../utils/icons";
 import { SOURCE_CHAINS, sourceIdFor } from "~~/lib/config";
 
@@ -126,8 +127,7 @@ export function matchesOtherNetwork(network: WithdrawNetwork, address: string): 
   );
 }
 
-/** The address as the summary shows it: the first and last characters around an ellipsis. */
-export function shortAddress(address: string): string {
-  const trimmed = address.trim();
-  return trimmed.length <= 13 ? trimmed : `${trimmed.slice(0, 5)}…${trimmed.slice(-5)}`;
-}
+/** The address as the withdrawal frames elide it: five each end, against the six `shortAddress`
+ *  leads with elsewhere. Same elision underneath, so only the frame's count lives here. */
+export const shortDestinationAddress = (address: string): string =>
+  elideMiddle(address.trim(), 5, 5);

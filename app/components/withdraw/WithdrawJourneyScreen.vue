@@ -7,7 +7,7 @@ import { formatSourceAmount, SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
 import { paymentTaken, type WithdrawalRecord } from "../../funding/requests/model";
 import { formatWhenShort } from "../../utils/journey";
-import { shortAddress } from "../../withdraw/destinations";
+import { shortDestinationAddress } from "../../withdraw/destinations";
 import { sourceIdFor } from "~~/lib/config";
 import { withdrawalFailureText } from "../../withdraw/failure-copy";
 import {
@@ -129,7 +129,7 @@ const canRetry = computed(
             on <strong class="font-semibold">{{ record.destination.chain }} Network</strong>
           </dt>
           <dd class="text-heading-m text-fg-primary" :title="record.destination.address">
-            {{ shortAddress(record.destination.address) }}
+            {{ shortDestinationAddress(record.destination.address) }}
           </dd>
         </div>
       </dl>
@@ -140,6 +140,7 @@ const canRetry = computed(
         :completed-steps="done"
         :message="message"
         :failed-label="failedLabel"
+        subject="Withdrawal"
       />
 
       <PillButton v-if="refunded" class="mt-auto" @click="emit('return-funds')">
