@@ -5,7 +5,12 @@
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef, watch } from "vue";
 import type { FlowState, SourceId } from "@getsome/core";
-import { createMeldClient, getMeldStatus, type MeldClientLike } from "@getsome/meld";
+import {
+  createMeldClient,
+  getMeldStatus,
+  shareStatusReads,
+  type MeldClientLike,
+} from "@getsome/meld";
 import {
   advanceFundingProgressSnapshot,
   createFundingProgressSnapshot,
@@ -20,6 +25,7 @@ import {
   DEPOSIT_EXPIRED_REASON,
   HIDDEN_RESET_MS,
   JOB_POLL_MS,
+  MELD_POLL_MAX_MS,
   MELD_POLL_MS,
   MIRROR_SETTLED_LIMIT,
   PAYMENT_POLL_MS,
@@ -155,11 +161,15 @@ let defaultMeldStatusClient: MeldClientLike | null | undefined;
 function defaultMeldStatusClientFactory(): MeldClientLike | null {
   if (defaultMeldStatusClient === undefined) {
     const baseUrl = import.meta.env.VITE_MELD_BASE_URL as string | undefined;
+    // Shared reads, so a 429 holds back the rest of a reconcile's pass.
     defaultMeldStatusClient = baseUrl
-      ? createMeldClient({
-          baseUrl,
-          productId: (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
-        })
+      ? shareStatusReads(
+          createMeldClient({
+            baseUrl,
+            productId:
+              (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
+          }),
+        )
       : null;
   }
   return defaultMeldStatusClient;
@@ -1085,6 +1095,9 @@ export const useRequestsStore = defineStore("requests", () => {
   });
   function setForeground(ref: RequestRef | null): void {
     foreground.value = ref === null ? null : requestRefKey(ref);
+    // The Meld poll follows the request on screen; another one taking the screen ends it, and the
+    // reconcile reads the old one from then on.
+    if (meldPoll !== null && meldPoll.key !== foreground.value) stopMeldPoll();
   }
 
   /** A failure the record cannot carry: a hand-off the worker refused, or a faucet transfer that
@@ -1544,14 +1557,14 @@ export const useRequestsStore = defineStore("requests", () => {
 
   /** One read of the provider's status for `ref`, applied as the provider's observation: the
    *  result, `gone` on the `MELD_GONE_AFTER`th consecutive 404 (terminal, with today's message),
-   *  `unreachable` on an earlier 404 or any other error, logged against the `failures` the caller
-   *  has counted so far. */
+   *  `not-found` on an earlier 404, `unreachable` on any other error, logged against the
+   *  `failures` the caller has counted so far. */
   async function observeMeldStatus(
     ref: RequestRef,
     client: MeldClientLike,
     fundingRequestId: string,
     failures = 0,
-  ): Promise<"ok" | "gone" | "unreachable"> {
+  ): Promise<"ok" | "gone" | "not-found" | "unreachable"> {
     const at = requestsNow();
     const key = requestRefKey(ref);
     try {
@@ -1575,7 +1588,7 @@ export const useRequestsStore = defineStore("requests", () => {
             `[meld] status for ${fundingRequestId} not found (${String(notFound)}/${String(MELD_GONE_AFTER)})`,
           );
           await observe(ref, { source: "provider", provider: "meld", at, unreachable: true });
-          return "unreachable";
+          return "not-found";
         }
         meldNotFound.delete(key);
         console.error(
@@ -1670,7 +1683,13 @@ export const useRequestsStore = defineStore("requests", () => {
         stopMeldPoll();
         return;
       }
-      timer = setTimeout(() => void tick(), MELD_POLL_MS);
+      // Each failure in a row doubles the wait, so a 429 is not answered with more reads. A 404
+      // keeps the cadence: the count toward `gone` is timed by it.
+      const delay =
+        outcome === "not-found"
+          ? MELD_POLL_MS
+          : Math.min(MELD_POLL_MS * 2 ** failures, MELD_POLL_MAX_MS);
+      timer = setTimeout(() => void tick(), delay);
     };
     void tick();
   }

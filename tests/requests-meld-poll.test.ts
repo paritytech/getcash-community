@@ -8,11 +8,12 @@ import { nextTick } from "vue";
 import type { MeldClientLike } from "@getsome/meld";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
+  isTopUp,
   MELD_POLL_MS,
   PAYMENT_WATCH_MS,
   setRequestsClock,
   TOMBSTONE_GRACE_MS,
-  type RequestRecord,
+  type TopUpRecord,
 } from "../app/funding/requests/model";
 import {
   createMemoryKeyedStorage,
@@ -125,9 +126,10 @@ const MELD_GONE =
 const refOf = (record: ActiveFlowRecord): RequestRef =>
   requestRefOf(record.sourceId, record.tradeN!);
 
-const migrated = (record: ActiveFlowRecord, ref = refOf(record)): RequestRecord => {
+// Every fixture here is a top-up; narrowing says so, so a caller may patch top-up fields.
+const migrated = (record: ActiveFlowRecord, ref = refOf(record)): TopUpRecord => {
   const result = migrateRecord(record, ref, FIXTURE_NOW);
-  if (result === null) throw new Error("fixture did not migrate");
+  if (result === null || !isTopUp(result)) throw new Error("fixture did not migrate to a top-up");
   return result;
 };
 
@@ -140,8 +142,8 @@ const BANK_REF = requestRefOf("meld-bank", 5);
 function cardRecord(
   tradeN: number,
   fundingRequestId: string,
-  patch: Partial<RequestRecord>,
-): RequestRecord {
+  patch: Partial<TopUpRecord>,
+): TopUpRecord {
   return {
     ...migrated(unsubmittedCard, requestRefOf("meld-card", tradeN)),
     tradeN,
@@ -162,9 +164,9 @@ const realSetTimeout = setTimeout;
  *  clock does not cover. */
 const settled = () => new Promise((resolve) => realSetTimeout(resolve, 0));
 
-/** Moves the poll to its next tick and lets it land. */
-async function nextPoll(): Promise<void> {
-  await vi.advanceTimersByTimeAsync(MELD_POLL_MS);
+/** Moves the poll to its next tick and lets it land; `ms` for a tick the backoff put further out. */
+async function nextPoll(ms = MELD_POLL_MS): Promise<void> {
+  await vi.advanceTimersByTimeAsync(ms);
   await settled();
 }
 
@@ -309,6 +311,7 @@ describe("requests store: the Meld poll", () => {
     });
     expect(requests.meldDelayed).toBe(false);
     expect(notFoundWarnings()).toEqual(["[meld] status for mfr not found (1/3)"]);
+    // A miss keeps the 3s cadence; only other failures back off.
     await nextPoll();
     expect(client.reads).toEqual({ mfr: 2 });
     expect(requests.get(CARD_REF)).toMatchObject({
@@ -406,16 +409,37 @@ describe("requests store: the Meld poll", () => {
       route: "bank",
       meldFundingRequestId: "mfr-bank-5",
     });
-    // The foreground poll owns the card; foreground.value points at neither, the drift the bug needs.
+    // The foreground poll owns the card while foreground.value points at neither: the poll can
+    // start before the screen names its request.
     const fgClient = fakeMeldClient("transaction_seen");
     requests.startMeldPoll(CARD_REF, fgClient, "mfr-fixture-card-2");
-    requests.setForeground(null);
 
     await requests.reconcile("refresh");
 
     // Only the bank is read; the card is left to its foreground poll, never double-polled.
     expect(bgClient.reads).toEqual({ "mfr-bank-5": 1 });
     requests.stopMeldPoll();
+  });
+
+  it("once another request takes the screen, the reconcile reads the card instead of its poll", async () => {
+    vi.useFakeTimers();
+    const requests = useRequestsStore();
+    const bgClient = fakeMeldClient("transaction_seen");
+    setMeldStatusClientFactory(() => bgClient);
+    await requests.create(CARD_REF, migrated(submittedCardRecord));
+    requests.setForeground(CARD_REF);
+    const fgClient = fakeMeldClient("transaction_seen");
+    requests.startMeldPoll(CARD_REF, fgClient, "mfr-fixture-card-2");
+    await settled();
+    expect(fgClient.reads).toEqual({ "mfr-fixture-card-2": 1 });
+
+    // Another request takes the screen: the card's poll ends, and the reconcile picks the card up.
+    requests.setForeground(BANK_REF);
+    await requests.reconcile("refresh");
+    await nextPoll();
+
+    expect(fgClient.reads).toEqual({ "mfr-fixture-card-2": 1 });
+    expect(bgClient.reads).toEqual({ "mfr-fixture-card-2": 1 });
   });
 
   it("dead Meld requests are not re-read", async () => {
@@ -547,5 +571,57 @@ describe("requests store: the Meld poll", () => {
       "[meld] status for mfr-fixture-card-2 not found (1/3)",
       "[meld] status for mfr-fixture-card-2 not found (2/3)",
     ]);
+  });
+
+  it("backs off while reads fail, doubling the wait, and returns to the cadence on an answer", async () => {
+    vi.useFakeTimers();
+    const requests = useRequestsStore();
+    const client = fakeMeldClient("session_opened");
+    client.failure = Object.assign(new Error("rate limited"), { status: 429 });
+    await requests.create(CARD_REF, migrated(unsubmittedCard));
+    requests.setForeground(CARD_REF);
+
+    requests.startMeldPoll(CARD_REF, client, "mfr");
+    await settled();
+    expect(client.reads).toEqual({ mfr: 1 });
+    // One failure: 6s, not 3s.
+    await nextPoll();
+    expect(client.reads).toEqual({ mfr: 1 });
+    await nextPoll();
+    expect(client.reads).toEqual({ mfr: 2 });
+    // Two: 12s.
+    await nextPoll(4 * MELD_POLL_MS - 1);
+    expect(client.reads).toEqual({ mfr: 2 });
+    await nextPoll(1);
+    expect(client.reads).toEqual({ mfr: 3 });
+
+    // The adapter answers on the next read, 24s on; from there the poll is back to every 3s.
+    client.failure = null;
+    await nextPoll(8 * MELD_POLL_MS);
+    expect(client.reads).toEqual({ mfr: 4 });
+    await nextPoll();
+    expect(client.reads).toEqual({ mfr: 5 });
+  });
+
+  it("stops when another request takes the screen, and not when the same one is set again", async () => {
+    vi.useFakeTimers();
+    const requests = useRequestsStore();
+    const client = fakeMeldClient("session_opened");
+    await requests.create(CARD_REF, migrated(unsubmittedCard));
+    requests.setForeground(CARD_REF);
+
+    requests.startMeldPoll(CARD_REF, client, "mfr");
+    await settled();
+    expect(client.reads).toEqual({ mfr: 1 });
+    // The same request again (a re-render, a re-open) leaves the poll running.
+    requests.setForeground(CARD_REF);
+    await nextPoll();
+    expect(client.reads).toEqual({ mfr: 2 });
+
+    // Another request on screen: the card is no longer polled.
+    requests.setForeground(BANK_REF);
+    await nextPoll();
+    await nextPoll();
+    expect(client.reads).toEqual({ mfr: 2 });
   });
 });
