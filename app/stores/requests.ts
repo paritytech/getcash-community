@@ -1765,7 +1765,9 @@ export const useRequestsStore = defineStore("requests", () => {
       return fundingRequestId === undefined ||
         record.rail.provider !== "meld" ||
         !meldCanMove(record) ||
-        requestRefKey(ref) === foreground.value
+        requestRefKey(ref) === foreground.value ||
+        // The foreground meld poll's own id, which foreground.value can drift from (stale/null).
+        requestRefKey(ref) === meldPoll?.key
         ? []
         : [{ ref, fundingRequestId }];
     });

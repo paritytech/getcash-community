@@ -392,6 +392,32 @@ describe("requests store: the Meld poll", () => {
     expect(requests.get(refOf(settledCardRecord))?.rail.stage).toBe("waiting");
   });
 
+  it("reconcile never re-reads the id the foreground poll owns, even when foreground.value has drifted", async () => {
+    const requests = useRequestsStore();
+    const bgClient = fakeMeldClient("transaction_seen");
+    setMeldStatusClientFactory(() => bgClient);
+    await requests.create(CARD_REF, migrated(submittedCardRecord));
+    await requests.create(BANK_REF, {
+      ...migrated(unsubmittedCard, BANK_REF),
+      chain: "Meld",
+      asset: "Bank",
+      tradeN: 5,
+      sourceId: "meld-bank",
+      route: "bank",
+      meldFundingRequestId: "mfr-bank-5",
+    });
+    // The foreground poll owns the card; foreground.value points at neither, the drift the bug needs.
+    const fgClient = fakeMeldClient("transaction_seen");
+    requests.startMeldPoll(CARD_REF, fgClient, "mfr-fixture-card-2");
+    requests.setForeground(null);
+
+    await requests.reconcile("refresh");
+
+    // Only the bank is read; the card is left to its foreground poll, never double-polled.
+    expect(bgClient.reads).toEqual({ "mfr-bank-5": 1 });
+    requests.stopMeldPoll();
+  });
+
   it("dead Meld requests are not re-read", async () => {
     const requests = useRequestsStore();
     const client = fakeMeldClient("session_opened");
