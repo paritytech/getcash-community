@@ -2,11 +2,13 @@
 // returns the same object when nothing changes.
 //
 // Forward moves are money and the worker: CASH seen on the key, by anyone, completes the payment
-// leg; the worker's steps carry the conversion; the worker's done hands over to the rail, or
-// completes the request when the destination is Asset Hub itself. Side exits are the host's
-// refusal of the payment, the clock on an unpaid request, the worker's failures, and the user's
+// leg; the worker's steps carry the conversion; the worker's landing hands over to the rail, or
+// completes the request when the destination is Asset Hub itself; the provider's word, read by
+// the worker, carries the rail leg to sent. Side exits are the host's refusal of the payment, the
+// clock on an unpaid request, the worker's failures, the provider's failures, and the user's
 // cancel while nothing was paid. Money resurrects any side exit left from the payment leg.
 
+import type { FailureKind } from "@getsome/core";
 import {
   PAYMENT_EXPIRED_REASON,
   PAYMENT_WINDOW_MS,
@@ -20,9 +22,11 @@ import {
   type SendingStep,
   type WithdrawJobView,
   type WithdrawalFailure,
+  type WithdrawalFailureKind,
   type WithdrawalRecord,
   type WithdrawalStatus,
 } from "../model";
+import { mergeRail, railFromSwapStatus } from "../rail";
 
 type Witnesses = WithdrawalRecord["witnesses"];
 type ChainObservation = Extract<Observation, { source: "chain"; keyCash: string }>;
@@ -116,21 +120,62 @@ function converting(record: WithdrawalRecord, at: number, step: SendingStep): Wi
   return { ...record, status: { kind: "converting", at, step } };
 }
 
-/** The PAS is on Asset Hub: the rail's leg begins, or the request is complete when the
- *  destination is Asset Hub itself. */
+/** The request is complete: the PAS is where the user asked for it. */
+function sent(record: WithdrawalRecord, at: number): WithdrawalRecord {
+  return {
+    ...record,
+    status: { kind: "sent", at },
+    rail: { ...record.rail, stage: "delivered", updatedAt: at },
+  };
+}
+
+/** The PAS is on Asset Hub: the request is complete when the destination is Asset Hub itself;
+ *  otherwise the rail's leg begins, with nothing handed to the provider yet. */
 function arrived(record: WithdrawalRecord, at: number): WithdrawalRecord {
-  if (record.rail.provider === "direct") {
-    return {
-      ...record,
-      status: { kind: "sent", at },
-      rail: { ...record.rail, stage: "delivered", updatedAt: at },
-    };
-  }
+  if (record.rail.provider === "direct") return sent(record, at);
   return {
     ...record,
     status: { kind: "sending", at },
-    rail: { ...record.rail, stage: "delivering", updatedAt: at },
+    rail: { ...record.rail, updatedAt: at },
   };
+}
+
+/** The provider's endings, in the withdrawal's own names; anything else is unknown. */
+function railFailureKind(kind: FailureKind): WithdrawalFailureKind {
+  switch (kind) {
+    case "deposit-rejected":
+    case "egress-failed":
+    case "fallback-egress":
+    case "refunded":
+      return kind;
+    default:
+      return "unknown";
+  }
+}
+
+/** The provider's word on the swap, folded onto the rail: delivered completes the request, a
+ *  failure ends the rail leg, and only a refund can be tried again. */
+function railRead(
+  record: WithdrawalRecord,
+  reading: NonNullable<WithdrawJobView["rail"]>,
+  at: number,
+): WithdrawalRecord {
+  if (record.rail.provider === "direct") return record;
+  const rail = mergeRail(record.rail, railFromSwapStatus(record.rail.provider, reading, at));
+  if (rail === record.rail) return record;
+  const next = { ...record, rail };
+  const rank = withdrawalRankOf(next);
+  if (rail.stage === "delivered") return rank < 4 && !atSideExit(next) ? sent(next, at) : next;
+  if (rail.stage === "failed" && rail.failure !== undefined) {
+    if (rank >= 4 || atSideExit(next)) return next;
+    return failed(next, at, {
+      kind: railFailureKind(rail.failure.kind),
+      step: "send",
+      message: rail.failure.message,
+      recoverable: rail.failure.kind === "refunded",
+    });
+  }
+  return next;
 }
 
 function workerWitness(job: WithdrawJobView, at: number): Witnesses["worker"] {
@@ -159,6 +204,9 @@ function applyWorker(
     confirmedAt: at,
   };
   if (job.fundsSeenAt !== null) next = paidSeen(next, job.fundsSeenAt, "worker");
+  // The message leg is done: the PAS reached Asset Hub. Only a record short of the rail leg moves.
+  if ((job.landed || job.done) && withdrawalRankOf(next) < 3) next = arrived(next, at);
+  if (job.rail !== undefined) next = railRead(next, job.rail, at);
   const rank = withdrawalRankOf(next);
   if (job.phase === "failed") {
     if (atSideExit(next)) return next;
@@ -174,11 +222,39 @@ function applyWorker(
         });
       case "expired":
         return rank === 0 && !paymentTaken(next) ? expired(next, at) : next;
+      case "channel-expired":
+        // The provider closed the channel before the key paid it, so nothing moved. A retry
+        // opens a fresh one for what is still sitting on the key.
+        return failed(next, at, {
+          kind: "channel-expired",
+          step: "send",
+          message: job.lastError ?? "the provider closed the channel before it was paid",
+          recoverable: true,
+        });
+      case "channel-mismatch":
+        // The provider's own record of the channel disagreed with the withdrawal, so the key
+        // never paid it. A retry opens a fresh channel from the record's own details.
+        return failed(next, at, {
+          kind: "channel-mismatch",
+          step: "send",
+          message: job.lastError ?? "the provider's channel did not match this withdrawal",
+          recoverable: true,
+        });
+      case "no-rail":
+        // Nothing in this build can carry the PAS on; the provider's reading, when there is
+        // one, already spoke above.
+        return failed(next, at, {
+          kind: "unknown",
+          step: "send",
+          message: job.lastError ?? "no provider can carry this withdrawal in this build",
+          recoverable: false,
+        });
       default:
         return next;
     }
   }
-  if (job.done) return rank < 3 ? arrived(next, at) : next;
+  // The worker finished following the provider: delivered, whatever its last reading said.
+  if (job.done && rank < 4 && !atSideExit(next)) return sent(next, at);
   if (job.fundsSeenAt !== null && isSendingStep(job.phase)) {
     const { status } = next;
     const laterStep =
@@ -295,11 +371,22 @@ function applyUser(record: WithdrawalRecord, observation: UserObservation): With
           handoff: { ...record.handoff, paymentExpiresAt },
         };
       }
+      if (record.failure?.step === "send") {
+        // The PAS is back on the key: the rail leg starts over with a fresh channel.
+        return {
+          ...rest,
+          status: { kind: "sending", at },
+          rail: { provider: record.rail.provider, stage: "waiting", updatedAt: at },
+        };
+      }
       const worker = record.witnesses.worker;
       const step: SendingStep =
         worker?.known && isSendingStep(worker.phase) ? worker.phase : "swap";
       return { ...rest, status: { kind: "converting", at, step } };
     }
+    case "channel-opened":
+      // A fresh channel for the rail leg; the hand-off the worker is re-armed with carries it.
+      return { ...record, handoff: { ...record.handoff, channel: observation.channel } };
     case "meld-submitted":
     case "deposit-skipped":
       return record;

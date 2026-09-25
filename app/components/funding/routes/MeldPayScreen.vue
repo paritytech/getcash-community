@@ -5,7 +5,6 @@ import { computed, onMounted, ref, watch } from "vue";
 import { ChevronRight } from "lucide-vue-next";
 import { useSessionStore } from "../../../stores/session";
 import { namedCountry } from "~~/lib/supported";
-import { cashAmount } from "../../../utils/cash";
 import { localeCountry } from "../../../utils/locale";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import type { FundingRoute } from "../../../funding/selection";
@@ -106,7 +105,7 @@ const quoteRows = computed(() => {
   // What the money buys leads; when it lands follows. Provider and region are settings rather
   // than terms, and the picker above already names the region.
   return [
-    { label: "You’ll receive", value: cashAmount(session.amountHuman) },
+    { label: "You’ll receive", value: session.amountHuman, cash: true },
     { label: "Arrives", value: arrivesText.value },
   ];
 });

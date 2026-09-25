@@ -83,7 +83,7 @@ describe("withdrawal progress", () => {
 
     const sending = record({
       status: { kind: "sending", at: at(5) },
-      rail: { provider: "chainflip", stage: "delivering", updatedAt: at(5) },
+      rail: { provider: "chainflip", stage: "processing", updatedAt: at(5) },
     });
     expect(withdrawalProgress(sending, at(6)).view.label).toBe("Sending to your address");
     expect(withdrawalJourneyDone(sending)).toBe(2);

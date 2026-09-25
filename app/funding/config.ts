@@ -1,6 +1,18 @@
 import { DEFAULT_DEPOSIT_WINDOW_MS } from "./requests/model";
 import type { FundingAmountRules, FundingRoute } from "./selection";
 
+const symbol = "$";
+const ticker = "CASH";
+
+/** The currency as every sum and every prose mention writes it: the symbol on the figure, the
+ *  ticker after it, and the token's name where prose names it rather than counts it ("Converting
+ *  to $CASH"). The one place any of them changes with the branding. */
+export const currencyConfig = {
+  symbol,
+  ticker,
+  name: `${symbol}${ticker}`,
+} as const;
+
 export interface FundingRouteOption {
   id: FundingRoute;
   label: string;
@@ -13,7 +25,6 @@ export interface FundingRouteOption {
 
 export interface FundingSelectorConfig {
   provider: string;
-  asset: string;
   amount: FundingAmountRules & {
     initial: string;
     presets: readonly string[];
@@ -26,7 +37,6 @@ export interface FundingSelectorConfig {
 
 export const fundingSelectorConfig = {
   provider: "getcash.dot",
-  asset: "$CASH",
   amount: {
     // 0.01 CASH is the smallest unit the purse can hold.
     decimals: 2,

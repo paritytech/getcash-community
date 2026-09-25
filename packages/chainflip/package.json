@@ -8,11 +8,16 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./swap-status": {
+      "types": "./src/swap-status.ts",
+      "default": "./src/swap-status.ts"
     }
   },
   "dependencies": {
     "@chainflip/sdk": "^2.1.1",
     "@noble/hashes": "^2.0.1",
-    "@getsome/core": "workspace:*"
+    "@getsome/core": "workspace:*",
+    "axios": "^1.15.0"
   }
 }

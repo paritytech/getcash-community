@@ -594,8 +594,10 @@ function selection(session: Session, flow: Flow) {
   session.quoted = { ...QUOTED, nativeAmount: 58_694_260_960n };
   const offers = useOffersStore();
   offers.floors = FLOORS;
-  // The paused scene turns the demo fallback off; every other scene gets the build's own setting.
+  // The paused scene turns the demo fallback off and the rail-off scene turns the rail off; every
+  // other scene gets the build's own settings.
   offers.demoFallback = isDemoBuild();
+  offers.railEnabled = true;
   flow.srcChainIndex = 1; // Ethereum
   flow.srcAssetIndex = 0;
 }
@@ -1013,6 +1015,15 @@ export const SCENES: Scene[] = [
       );
       // The demo build's carry-on fallback would swallow the paused state this scene shows.
       offers.demoFallback = false;
+      f.step = "network";
+    },
+  },
+  {
+    // A build with no channel rail: every route listed, none pickable.
+    name: "crypto / network: not available yet",
+    apply: (s, f) => {
+      selection(s, f);
+      useOffersStore().railEnabled = false;
       f.step = "network";
     },
   },

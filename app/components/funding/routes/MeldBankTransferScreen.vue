@@ -15,9 +15,10 @@ import { regionForCountry } from "~~/lib/region";
 import { namedCountry } from "~~/lib/supported";
 import { useRequestsStore } from "../../../stores/requests";
 import { useSessionStore } from "../../../stores/session";
-import { cashAmount } from "../../../utils/cash";
+import { currencyConfig } from "../../../funding/config";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import type { FundingRoute } from "../../../funding/selection";
+import CashAmount from "../../ui/CashAmount.vue";
 import PillButton from "../../ui/PillButton.vue";
 import RegionRow from "../../ui/RegionRow.vue";
 import SkeletonBlock from "../../ui/SkeletonBlock.vue";
@@ -232,9 +233,11 @@ function confirmSent() {
 
         <div class="flex items-baseline justify-between gap-4">
           <span class="text-paragraph-l text-fg-primary">You’ll receive</span>
-          <span v-if="blocked" class="text-heading-m text-fg-disabled">{{ cashAmount("0") }}</span>
+          <span v-if="blocked" class="text-heading-m text-fg-disabled"
+            ><CashAmount amount="0"
+          /></span>
           <span v-else class="text-heading-m text-fg-primary">
-            {{ cashAmount(session.amountHuman) }}
+            <CashAmount :amount="session.amountHuman" />
           </span>
         </div>
 
@@ -244,7 +247,7 @@ function confirmSent() {
           <span class="flex flex-col items-end text-right">
             <span class="text-heading-m text-fg-primary">1–2 business days</span>
             <span class="text-body-s text-fg-secondary">
-              Final $CASH depends on the rate on arrival
+              Final {{ currencyConfig.name }} depends on the rate on arrival
             </span>
           </span>
         </div>

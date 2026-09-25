@@ -12,6 +12,7 @@ import {
   type FundingProgressRouteDefinition,
   type FundingProgressSnapshotOptions,
 } from "../funding/progress";
+import { currencyConfig } from "../funding/config";
 import {
   withdrawalRankOf,
   type WithdrawalRailState,
@@ -38,7 +39,7 @@ const route = {
     {
       key: CONVERSION,
       nodeLabel: "Conversion",
-      activeLabel: "Converting your $CASH",
+      activeLabel: `Converting your ${currencyConfig.name}`,
       nominalMs: 3 * MINUTE,
     },
   ],
@@ -57,6 +58,8 @@ function sendingStage(nominalMs: number) {
 const PROFILES: Record<WithdrawalRailState["provider"], FundingProgressProfile> = {
   direct: composeFundingProgressProfile(route, sendingStage(MINUTE)),
   chainflip: composeFundingProgressProfile(route, sendingStage(20 * MINUTE)),
+  // A payout the provider settles in its own time, a bank's included.
+  meld: composeFundingProgressProfile(route, sendingStage(24 * 60 * MINUTE)),
 };
 
 export const withdrawalProgressProfile = (rail: WithdrawalRailState["provider"]) => PROFILES[rail];

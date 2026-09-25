@@ -1,11 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { Copy } from "lucide-vue-next";
-import {
-  demoDepositAddress,
-  estimateSourceAmount,
-  estimateSourceFromCash,
-} from "~~/lib/demo-rates";
+import { estimateSourceAmount, estimateSourceFromCash } from "~~/lib/demo-rates";
 import { SOURCE_CHAINS } from "~~/lib/config";
 import { useCopyToClipboard } from "../../composables/useCopyToClipboard";
 import { shortAddress } from "../../utils/address";
@@ -26,15 +22,8 @@ const deposit = computed(() => {
   return requests.phase === "awaiting-deposit" && d ? { ...d, amount: BigInt(d.amount) } : null;
 });
 
-/** The address the QR and the copy row carry: a source-chain stand-in in the live demo, the real
- *  one in the mock.
- *  TODO(production): carry the real channel address once the Chainflip channel rail lands. */
-const address = computed(() => {
-  const d = deposit.value;
-  if (!d) return "";
-  if (!session.live) return d.address;
-  return demoDepositAddress(session.quoted?.sourceChain ?? null) ?? d.address;
-});
+/** The address the QR and the copy row carry. */
+const address = computed(() => deposit.value?.address ?? "");
 
 /** How much to send, split so the copy carries the bare number: the swap network's figure when it
  *  priced this purchase, the estimate marked ≈ otherwise, the bare native figure when no source is

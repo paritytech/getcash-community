@@ -1,7 +1,7 @@
 // Where a withdrawal can go: the networks the picker lists, the tokens on each, and for each
 // destination how an address is checked and where the PAS lands on Asset Hub. Asset Hub itself is
 // the direct destination, reached by the XCM alone. The Chainflip networks are listed as the
-// design shows them but stay unavailable until the reverse rail lands.
+// design shows them; whether a row can be picked for an amount is the floor store's call.
 
 import { AccountId } from "polkadot-api";
 import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
@@ -17,8 +17,6 @@ export interface WithdrawDestination {
   chainLabel: string;
   asset: string;
   rail: WithdrawalRailState["provider"];
-  /** Whether this build can run the destination. */
-  available: boolean;
   validateAddress(address: string): boolean;
 }
 
@@ -26,7 +24,6 @@ export interface WithdrawNetwork {
   chain: string;
   label: string;
   icon: string;
-  available: boolean;
   destinations: readonly WithdrawDestination[];
 }
 
@@ -55,7 +52,6 @@ const assetHub: WithdrawDestination = Object.freeze({
   chainLabel: "Asset Hub",
   asset: "DOT",
   rail: "direct",
-  available: true,
   validateAddress: isAssetHubAddress,
 });
 
@@ -73,7 +69,6 @@ function chainflipDestinations(chain: string, assets: readonly string[]): Withdr
         chainLabel: chain,
         asset,
         rail: "chainflip" as const,
-        available: false,
         validateAddress: (address: string) => config.validateRefundAddress(address.trim()),
       }),
     ];
@@ -86,19 +81,16 @@ export const WITHDRAW_NETWORKS: readonly WithdrawNetwork[] = Object.freeze([
     chain: ASSET_HUB_CHAIN,
     label: "Asset Hub",
     icon: networkIcon("Polkadot"),
-    available: true,
     destinations: Object.freeze([assetHub]),
   }),
-  ...SOURCE_CHAINS.map(({ chain, label, assets }) => {
-    const destinations = Object.freeze(chainflipDestinations(chain, assets));
-    return Object.freeze({
+  ...SOURCE_CHAINS.map(({ chain, label, assets }) =>
+    Object.freeze({
       chain,
       label,
       icon: networkIcon(chain),
-      available: destinations.some((destination) => destination.available),
-      destinations,
-    });
-  }),
+      destinations: Object.freeze(chainflipDestinations(chain, assets)),
+    }),
+  ),
 ]);
 
 export const withdrawNetwork = (chain: string): WithdrawNetwork | undefined =>
@@ -112,16 +104,14 @@ export const withdrawDestination = (id: string): WithdrawDestination | undefined
 export const destinationTokenIcon = (destination: WithdrawDestination): string =>
   tokenIcon(destination.asset);
 
-/** The Asset Hub account the PAS lands on for a destination: the address itself for Asset Hub;
- *  the rail's channel for a Chainflip network, which the reverse rail opens. */
+/** The Asset Hub account the PAS lands on for a destination: the address itself for Asset Hub.
+ *  Null for a provider destination: the PAS lands on the withdrawal's own key, which then pays
+ *  the provider and is where a refund comes back to. */
 export function landingAccountHex(
   destination: WithdrawDestination,
   address: string,
-): `0x${string}` {
-  if (destination.rail !== "direct") {
-    throw new Error(`the ${destination.chainLabel} destination has no rail in this build`);
-  }
-  return assetHubAccountHex(address);
+): `0x${string}` | null {
+  return destination.rail === "direct" ? assetHubAccountHex(address) : null;
 }
 
 /** The address as the summary shows it: the first and last characters around an ellipsis. */
