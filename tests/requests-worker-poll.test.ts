@@ -211,7 +211,7 @@ describe("requests store: the worker poll", () => {
       kind: "top-up",
       ref,
       amountHuman: "12",
-      chain: "AssetHub",
+      chain: "Polkadot",
       asset: "DOT",
       startedAt: job.createdAt,
       depositAddress: job.burnerAddress,
@@ -245,7 +245,7 @@ describe("requests store: the worker poll", () => {
       profile.expectedUserDelayMs +
       profile.stages.reduce((total, stage) => total + stage.nominalMs, 0);
     expect(record?.progress).toMatchObject({
-      profile: { id: "chainflip" },
+      profile: { id: "direct" },
       stageTimestamps: {},
       preDetectionEstimateText: "≈10 min after your transfer",
       estimatedCompletionAt: job.createdAt + journeyMs,
@@ -282,7 +282,7 @@ describe("requests store: the worker poll", () => {
       route: "crypto",
       startedAt: job.createdAt,
       details: {
-        network: { label: "AssetHub" },
+        network: { label: "Polkadot" },
         token: { label: "DOT" },
         depositAddress: job.burnerAddress,
         arrivalEstimate: "≈10 min after your transfer",

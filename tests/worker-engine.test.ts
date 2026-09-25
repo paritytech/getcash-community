@@ -232,6 +232,34 @@ describe("worker funding engine", () => {
     expect(noFee.reason).toContain("fee rate");
   });
 
+  it("discovers both pools for a pool job fed with a stable, and refuses a stable it does not know", async () => {
+    armSeams();
+    mocks.discoverPool.mockImplementation(async (_api: unknown, id: number) => ({
+      native: "N",
+      underlying: id === 1337 ? "S" : "U",
+    }));
+    const engine = await freshEngine();
+    await engine.startFunding(
+      JSON.stringify({ ...HANDOFF, tier: "pool", external: "USDC", quotedDeposit: "5300000" }),
+    );
+    expect(storedJob()).toMatchObject({ tier: "pool", external: "USDC", quotedDeposit: "5300000" });
+    mocks.tickOnce.mockResolvedValue(outcome("swap"));
+    await engine.tickAllFunding();
+    // The CASH pool under the underlying's id, the stable pool under USDC's.
+    expect(mocks.discoverPool.mock.calls.map((call) => call[1])).toEqual([50_000_413, 1337]);
+    expect(mocks.tickOnce.mock.calls[0]![0]).toMatchObject({
+      route: { tier: "pool", external: "USDC" },
+      pool: { underlying: "U" },
+      stablePool: { underlying: "S" },
+      quotedDeposit: 5_300_000n,
+    });
+    const unknown = await engine.startFunding(
+      JSON.stringify({ ...HANDOFF, sessionId: "s-2", tier: "pool", external: "DAI" }),
+    );
+    expect(unknown).toMatchObject({ error: "invalid" });
+    expect(unknown.reason).toContain("deposit asset");
+  });
+
   it("holds a job the PSM refused three times, keeps its deposit and counter, and re-arms it with a fresh counter", async () => {
     armSeams();
     const engine = await freshEngine();

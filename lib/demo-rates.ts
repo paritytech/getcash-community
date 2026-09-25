@@ -19,16 +19,16 @@ function fmtAmount(amount: number): string | null {
 }
 
 /** Estimated source-asset amount equivalent to `depositBase`, the deposit in `depositToken`'s own
- *  base units. The deposit asset follows the conversion route — the native on the pool tier, the
- *  PSM's external on the PSM tier — so its decimals and its reference rate both come from the
- *  token rather than being assumed to be DOT's. Null when either asset has no reference rate. */
+ *  base units. The deposit asset follows the conversion route, the native on the pool tier and a
+ *  stable on the stable tiers, so its decimals and its reference rate both come from the token
+ *  rather than being assumed to be DOT's. Null when either asset has no reference rate. */
 export function estimateSourceAmount(
   depositBase: bigint,
-  depositToken: { chainflipAsset: string; decimals: number },
+  depositToken: { symbol: string; chainflipAsset?: string; decimals: number },
   sourceSymbol: string,
 ): string | null {
   const src = USD_RATES[sourceSymbol];
-  const deposit = USD_RATES[depositToken.chainflipAsset];
+  const deposit = USD_RATES[depositToken.chainflipAsset ?? depositToken.symbol];
   if (!src || !deposit) return null;
   return fmtAmount(((Number(depositBase) / 10 ** depositToken.decimals) * deposit) / src);
 }

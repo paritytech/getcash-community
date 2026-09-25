@@ -113,7 +113,19 @@ describe("flow store: deep-linked source", () => {
   it("changes nothing for an unknown one, so the choosing is not skipped", () => {
     const { flow } = setUp();
     expect(flow.selectSourceId("moonbeam-glmr")).toBe(false);
-    expect(flow.srcChain.chain).toBe("Bitcoin");
+    expect(flow.srcChain.chain).toBe("Polkadot");
+  });
+
+  it("preselects a direct Polkadot source, and points at a pair by name without quoting", () => {
+    const { flow } = setUp();
+    expect(flow.selectSourceId("usdc-assethub")).toBe(true);
+    expect(flow.srcChain.chain).toBe("Polkadot");
+    expect(flow.srcAsset).toBe("USDC");
+    expect(flow.setSourceByName("Tron", "USDT")).toBe(true);
+    expect(flow.srcChain.chain).toBe("Tron");
+    expect(flow.srcAsset).toBe("USDT");
+    expect(flow.setSourceByName("Polkadot", "BTC")).toBe(false);
+    expect(flow.srcChain.chain).toBe("Tron");
   });
 });
 

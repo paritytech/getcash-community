@@ -3,7 +3,7 @@
 
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
-import { SOURCE_CHAINS, sourceIdFor } from "~~/lib/config";
+import { FUNDING_CHAINS, sourceIdFor } from "~~/lib/config";
 import { useOffersStore } from "./offers";
 import { useRequestsStore } from "./requests";
 import { useSessionStore } from "./session";
@@ -44,7 +44,7 @@ export const useFlowStore = defineStore("flow", () => {
   /** Demo deck only: the drill-in a scene wants open. See `PreviewDrillIn`. */
   const previewDrillIn = ref<PreviewDrillIn | null>(null);
 
-  const srcChain = computed(() => SOURCE_CHAINS[srcChainIndex.value] ?? SOURCE_CHAINS[0]);
+  const srcChain = computed(() => FUNDING_CHAINS[srcChainIndex.value] ?? FUNDING_CHAINS[0]);
   const srcAsset = computed(
     () => srcChain.value.assets[srcAssetIndex.value] ?? srcChain.value.assets[0],
   );
@@ -61,17 +61,33 @@ export const useFlowStore = defineStore("flow", () => {
     srcAssetIndex.value = a;
   }
 
+  /** The catalog position of a pair, or null when the catalog lacks it. */
+  function positionOf(chain: string, asset: string): { c: number; a: number } | null {
+    const c = FUNDING_CHAINS.findIndex((entry) => entry.chain === chain);
+    if (c < 0) return null;
+    const a = (FUNDING_CHAINS[c]!.assets as readonly string[]).indexOf(asset);
+    return a < 0 ? null : { c, a };
+  }
+
+  /** Points the pickers at a pair by name without quoting. False when the catalog lacks it. */
+  function setSourceByName(chain: string, asset: string): boolean {
+    const position = positionOf(chain, asset);
+    if (position === null) return false;
+    setSource(position.c, position.a);
+    return true;
+  }
+
   /** Picks network and token in one move, with a single re-quote. */
   function selectSource(chain: string, asset: string) {
-    const c = SOURCE_CHAINS.findIndex((entry) => entry.chain === chain);
-    if (c < 0) return;
-    const a = (SOURCE_CHAINS[c]!.assets as readonly string[]).indexOf(asset);
-    if (a < 0) return;
+    const position = positionOf(chain, asset);
+    if (position === null) return;
     // Re-quote unless the pickers already point here and the quote on hand is for this source.
     const quotedHere =
       session.quoted?.sourceChain === chain && session.quoted?.sourceAsset === asset;
-    if (c === srcChainIndex.value && a === srcAssetIndex.value && quotedHere) return;
-    setSource(c, a);
+    if (position.c === srcChainIndex.value && position.a === srcAssetIndex.value && quotedHere) {
+      return;
+    }
+    setSource(position.c, position.a);
     void session.fetchQuote(srcChain.value.chain, srcAsset.value);
   }
 
@@ -94,9 +110,9 @@ export const useFlowStore = defineStore("flow", () => {
    * the token step.
    */
   function pickNetwork(chain: string): Step | null {
-    const c = SOURCE_CHAINS.findIndex((entry) => entry.chain === chain);
+    const c = FUNDING_CHAINS.findIndex((entry) => entry.chain === chain);
     const tokens = offers.offeredTokens(chain);
-    if (c >= 0 && tokens.length === 1 && tokens[0]!.asset === SOURCE_CHAINS[c]!.native) {
+    if (c >= 0 && tokens.length === 1 && tokens[0]!.asset === FUNDING_CHAINS[c]!.native) {
       selectSource(chain, tokens[0]!.asset);
       void startPurchase();
       return null;
@@ -107,8 +123,8 @@ export const useFlowStore = defineStore("flow", () => {
 
   /** Preselects the source from a SourceId. False when the catalog does not know it. */
   function selectSourceId(sourceId: string): boolean {
-    for (let c = 0; c < SOURCE_CHAINS.length; c++) {
-      const chain = SOURCE_CHAINS[c]!;
+    for (let c = 0; c < FUNDING_CHAINS.length; c++) {
+      const chain = FUNDING_CHAINS[c]!;
       for (let a = 0; a < chain.assets.length; a++) {
         if (sourceIdFor(chain.chain, chain.assets[a]!) === sourceId) {
           setSource(c, a);
@@ -156,6 +172,7 @@ export const useFlowStore = defineStore("flow", () => {
     confirmingCancel,
     previewDrillIn,
     screen,
+    setSourceByName,
     selectSource,
     startPurchase,
     pickNetwork,

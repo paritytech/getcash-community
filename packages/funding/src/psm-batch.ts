@@ -30,7 +30,7 @@
 // that completes while trapping assets or landing short returns Ok. The dry run of the whole batch
 // before the submit refuses those, so the two together give all-or-nothing.
 
-import { TOKENS, type TokenSpec, type XcmLocation } from "@getsome/core";
+import { TOKENS, type TokenSpec } from "@getsome/core";
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import type { TypedApi } from "polkadot-api";
 import {
@@ -42,13 +42,13 @@ import {
   realForwardedProgram,
   withFeeMargin,
   type PeopleApi,
+  type StableLegFees,
 } from "./funding-program";
-import type { ConversionRoute, PsmExternal } from "./route";
+import type { ConversionRoute } from "./route";
+import { STABLE_TOKENS, asLocation, stableTxOptions, type Location } from "./stable";
 
 type AssetHubApi = TypedApi<typeof paseo_next_v2>;
 type Weight = { ref_time: bigint; proof_size: bigint };
-/** PSM calls and the fee-asset option take `xcm::v5::Location`, as the route's reads do. */
-type Location = Parameters<AssetHubApi["tx"]["Psm"]["mint"]>[0]["internal_asset"];
 /** The recorded route on the PSM tier: the external the burner holds and the Permill fee rate
  *  the buyer was quoted, which the call carries verbatim as `max_fee`. */
 export type PsmRoute = Extract<ConversionRoute, { tier: "psm" }>;
@@ -58,12 +58,7 @@ export const PERMILL = 1_000_000n;
 
 const INTERNAL = TOKENS.CASH;
 /** The externals with the pallet-assets id their `min_balance` is read under. */
-const EXTERNAL_TOKENS: Record<PsmExternal, TokenSpec & { assetHubId: number }> = {
-  USDT: TOKENS.USDT,
-};
-// The table's Location type admits a value-less `Here`, which papi's type spells
-// `value: undefined`; the same plain data either way.
-const asLocation = (location: XcmLocation) => location as Location;
+const EXTERNAL_TOKENS = STABLE_TOKENS;
 
 /** `Permill::mul_ceil(amount)` as the pallet computes the fee: the product rounded up. */
 export function permillMulCeil(amount: bigint, rate: number): bigint {
@@ -107,9 +102,8 @@ export function sizePsmMint(
 
 /** The signing options for the batch: the dispatch fee charged in the external, the one asset
  *  the burner holds. The same options price the dispatch fee below. */
-export function psmBatchTxOptions(external: PsmExternal): { asset: Location } {
-  return { asset: asLocation(EXTERNAL_TOKENS[external].location) };
-}
+export const psmBatchTxOptions: (external: PsmRoute["external"]) => { asset: Location } =
+  stableTxOptions;
 
 export interface PsmBatchArgs {
   route: PsmRoute;
@@ -154,26 +148,9 @@ export function buildPsmBatch(api: AssetHubApi, args: PsmBatchArgs) {
 
 export type PsmBatch = ReturnType<typeof buildPsmBatch>;
 
-export interface PsmBatchFees {
-  /** Local XCM execution fee, in the external. */
-  localExternal: bigint;
-  /** Delivery fee for the forwarded program, in the external. */
-  deliveryExternal: bigint;
-  /** What to pass as `feeAllowanceExternal`: the XCM's own fees with the cushion on top. */
-  feeAllowanceExternal: bigint;
-  /** The external's `min_balance`, as Asset Hub has it: what the burner must keep to stay alive. */
-  minBalanceExternal: bigint;
-  /** Kept out of the mint beside the dispatch fee: `minBalanceExternal` plus
-   *  `feeAllowanceExternal`. The min_balance stays on the burner; so does the unspent allowance. */
-  heldBackExternal: bigint;
-  /** The batch's dispatch fee as the runtime weighs it, native. */
-  dispatchNative: bigint;
-  /** The dispatch fee as ChargeAssetTxPayment charges it: the external the USDT/PAS pool takes
-   *  for `dispatchNative`. Keep this much of the balance out of the mint. */
-  dispatchExternal: bigint;
-  /** The weighed weight, declared as the execute() ceiling. */
-  maxWeight: Weight;
-}
+/** The batch's costs: the stable leg's shape, every figure in the external. `heldBackExternal`
+ *  is what stays out of the mint beside the dispatch fee. */
+export type PsmBatchFees = StableLegFees;
 
 /** Every cost of the batch, measured against the batch itself, all in the external. Throws when
  *  the runtime declines a read or the deposit does not cover what is held back from the mint. */

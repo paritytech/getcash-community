@@ -15,10 +15,12 @@ import {
   type ConversionRoute,
   DEFAULT_KEEP_NATIVE_FOR_FEES,
   DEFAULT_REMOTE_FEE_BUFFER,
+  depositTokenOf,
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
   recordedRoute,
   type FundingStep,
+  type Stable,
 } from "@getsome/funding";
 import {
   createHostEntropyPort,
@@ -177,7 +179,11 @@ export function lostRequestHandoff(
     assetHubGenesis: ASSET_HUB_GENESIS,
     peopleGenesis: PEOPLE_GENESIS,
     remoteFeeBuffer: DEFAULT_REMOTE_FEE_BUFFER.toString(),
-    keepNativeForFees: (route.tier === "pool" ? DEFAULT_KEEP_NATIVE_FOR_FEES : 0n).toString(),
+    // Only a native deposit carries fee native; a stable deposit prices its fees live.
+    keepNativeForFees: (depositTokenOf(route).assetHubId === undefined
+      ? DEFAULT_KEEP_NATIVE_FOR_FEES
+      : 0n
+    ).toString(),
     ...route,
   };
 }
@@ -194,10 +200,18 @@ function toCashBase(human: string): bigint {
 /** The conversion tier a hosted request takes, read off the live PSM. The one place the
  *  decision is made for a hosted request: it runs before the rail is built, since the tier
  *  fixes the asset the rail delivers, and the world it is handed to freezes it into the
- *  hand-off. */
-export async function chooseHostedRoute(amount: bigint): Promise<ConversionRoute> {
+ *  hand-off. `deposit` names the asset the buyer will send when the picker already knows it;
+ *  absent, the fiat rails' rule applies. */
+export async function chooseHostedRoute(
+  amount: bigint,
+  deposit?: "native" | Stable,
+): Promise<ConversionRoute> {
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
-  return chooseRoute(api, { direction: "mint", internalAmount: amount });
+  return chooseRoute(api, {
+    direction: "mint",
+    internalAmount: amount,
+    ...(deposit === undefined ? {} : { deposit }),
+  });
 }
 
 /** The funded session over the real host seams; budget sized live for the route's tier. */

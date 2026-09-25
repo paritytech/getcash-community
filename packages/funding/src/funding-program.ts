@@ -29,6 +29,13 @@
 // run refuses a program that would trap. Paying the fees in the external rather than in the minted
 // CASH keeps the mint at exactly the buyer's target, so no fee misestimate can land it short.
 //
+// The stable pool tier has a third shape (`buildStableFundingProgram`): the burner holds a stable
+// with no PSM to mint from, so the program exchanges it twice inside the holding, stable to native
+// and native to CASH, one hop each because the runtime's exchanger takes a single pair, and then
+// teleports the CASH as the pool tier does. Its fees follow the PSM shape: paid in the stable,
+// cushioned once with FEE_MARGIN_BPS, the unspent part refunded to a burner kept alive by its
+// min_balance.
+//
 // The destination fee allowance is generous by design: the remote RefundSurplus returns what it
 // does not consume and the DepositAsset sweeps it to the burner.
 //
@@ -40,6 +47,7 @@ import { TOKENS, type XcmJunction, type XcmLocation } from "@getsome/core";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import type { TypedApi } from "polkadot-api";
 import { describeDispatchError } from "./dispatch-error";
+import { STABLE_TOKENS, asLocation, stableTxOptions, type Stable } from "./stable";
 import { creditedTo, forwardedTo, siblingOrigin, signedOrigin, trappedIn } from "./xcm-dry-run";
 
 type AssetHubApi = TypedApi<typeof paseo_next_v2>;
@@ -238,7 +246,81 @@ export function buildPsmFundingProgram(args: {
   } as unknown as ExecuteArgs;
 }
 
-/** The InitiateTransfer both shapes carry: everything in the holding teleported to People,
+/** The stable pool tier's program: the stable in, CASH landed on the burner's People address,
+ *  every Asset Hub fee paid in the stable from an allowance the program refunds. Two exchanges,
+ *  one hop each since the runtime's exchanger takes a single pair: the stable for the native,
+ *  then the native for CASH. The second names the native and gives all of it. The refund comes
+ *  after the transfer and lands in an account its min_balance keeps alive. */
+export function buildStableFundingProgram(args: {
+  /** The stable/native pool keys, `underlying` being the stable. */
+  stablePool: Pool;
+  /** The native/CASH pool keys. */
+  pool: Pool;
+  /** Stable withdrawn into the holding: the spend plus the fee allowance. The stable's
+   *  min_balance stays on the burner. */
+  withdrawStable: bigint;
+  /** Local execution plus delivery, in the stable, with FEE_MARGIN_BPS on top. Moved whole to
+   *  the fees register. */
+  payFeesStable: bigint;
+  /** The least native the first exchange may return: the quote less the slippage headroom. */
+  minNativeOut: bigint;
+  /** The least CASH the second exchange may return: the requirement itself. Everything the
+   *  first exchange returned is given, and anything above this floor lands as extra CASH. */
+  minUnderlyingOut: bigint;
+  /** Destination fee allowance in CASH. */
+  remoteFeesCash: bigint;
+  beneficiaryHex: string;
+  peopleParaId: number;
+  /** The declared weight ceiling: the weighed weight, never a fallback. */
+  maxWeight: { ref_time: bigint; proof_size: bigint };
+}): ExecuteArgs {
+  const stable = (v: bigint) => ({
+    id: args.stablePool.underlying,
+    fun: { type: "Fungible", value: v },
+  });
+  const c = (v: bigint) => cash(args.pool, v);
+  const message = {
+    type: "V5",
+    value: [
+      { type: "WithdrawAsset", value: [stable(args.withdrawStable)] },
+      { type: "PayFees", value: { asset: stable(args.payFeesStable) } },
+      {
+        type: "ExchangeAsset",
+        value: {
+          give: { type: "Definite", value: [stable(args.withdrawStable - args.payFeesStable)] },
+          want: [native(args.minNativeOut)],
+          maximal: true,
+        },
+      },
+      {
+        type: "ExchangeAsset",
+        value: {
+          give: {
+            type: "Wild",
+            value: {
+              type: "AllOf",
+              value: { id: NATIVE_HERE, fun: { type: "Fungible", value: undefined } },
+            },
+          },
+          want: [c(args.minUnderlyingOut)],
+          maximal: true,
+        },
+      },
+      teleportHoldingToPeople(c(args.remoteFeesCash), args.beneficiaryHex, args.peopleParaId),
+      { type: "RefundSurplus" },
+      {
+        type: "DepositAsset",
+        value: {
+          assets: { type: "Wild", value: { type: "AllCounted", value: 1 } },
+          beneficiary: accountBeneficiary(args.beneficiaryHex),
+        },
+      },
+    ],
+  };
+  return { message, max_weight: args.maxWeight } as unknown as ExecuteArgs;
+}
+
+/** The InitiateTransfer every shape carries: everything in the holding teleported to People,
  *  `remoteFees` earmarked for the destination's execution. */
 function teleportHoldingToPeople(
   remoteFees: unknown,
@@ -512,6 +594,169 @@ export async function estimateFundingProgramFees(args: {
   ).getEstimatedFees(args.dryRunFrom ?? args.feeProbeAddress);
 
   return { localNative, deliveryNative, payFeesNative, dispatchNative, maxWeight };
+}
+
+/** Every cost of a program the burner pays for in a stable, all in that stable except the weighed
+ *  dispatch. The PSM batch and the stable pool program share the shape: the same fee asset, the
+ *  same refund, the same min_balance kept on the burner. */
+export interface StableLegFees {
+  /** Local XCM execution fee, in the stable. */
+  localExternal: bigint;
+  /** Delivery fee for the forwarded program, in the stable. */
+  deliveryExternal: bigint;
+  /** The allowance the program carries: the XCM's own fees with the cushion on top. */
+  feeAllowanceExternal: bigint;
+  /** The stable's `min_balance`, as Asset Hub has it: what the burner must keep to stay alive. */
+  minBalanceExternal: bigint;
+  /** Kept out of the conversion beside the dispatch fee: `minBalanceExternal` plus
+   *  `feeAllowanceExternal`. The min_balance stays on the burner; so does the unspent
+   *  allowance. */
+  heldBackExternal: bigint;
+  /** The dispatch fee as the runtime weighs it, native. */
+  dispatchNative: bigint;
+  /** The dispatch fee as ChargeAssetTxPayment charges it: the stable its pool takes for
+   *  `dispatchNative`. Keep this much of the balance out of the conversion. */
+  dispatchExternal: bigint;
+  /** The weighed weight, declared as the execute() ceiling. */
+  maxWeight: { ref_time: bigint; proof_size: bigint };
+}
+
+/** Every cost of the stable pool tier's program, measured against the program itself, all in the
+ *  stable. Throws when the runtime declines a read or the deposit does not cover what is held
+ *  back. */
+export async function estimateStableProgramFees(args: {
+  api: AssetHubApi;
+  stable: Stable;
+  stablePool: Pool;
+  pool: Pool;
+  beneficiaryHex: string;
+  peopleParaId: number;
+  /** The stable the program is carved from, at its real magnitude: the dispatch fee has a
+   *  per-byte component and compact-encoded amounts change length with magnitude. */
+  depositStable: bigint;
+  /** The CASH floor the program will carry, for the same reason. */
+  minUnderlyingOut: bigint;
+  /** The destination fee allowance the program will carry, for the same reason. */
+  remoteFeesCash: bigint;
+  /** Any valid address for the dispatch fee read; the fee does not depend on the signer's
+   *  balance. */
+  feeProbeAddress: string;
+  /** The burner, once it holds the stable. The delivery fee is then priced from the real
+   *  forwarded program instead of the stand-in. */
+  dryRunFrom?: string;
+}): Promise<StableLegFees> {
+  const token = STABLE_TOKENS[args.stable];
+  const stableAsset = { type: "V5", value: token.location };
+  const details = await args.api.query.Assets.Asset.getValue(token.assetHubId);
+  if (details === undefined) {
+    throw new Error(`stable program fee estimate: ${token.symbol} is not an asset on Asset Hub`);
+  }
+  const minBalance = details.min_balance;
+  // The program carved from the deposit with the dispatch fee and the min_balance kept back. Only
+  // the amounts' encoded lengths matter to the fees read off it, and the dry run below needs
+  // floors the exchanges cannot miss.
+  const probe = (
+    feeAllowance: bigint,
+    dispatchStable: bigint,
+    minNativeOut: bigint,
+    maxWeight: { ref_time: bigint; proof_size: bigint },
+  ) => {
+    const withdraw = args.depositStable - dispatchStable - minBalance;
+    if (withdraw <= feeAllowance) {
+      throw new Error(
+        `stable program fee estimate: ${args.depositStable} of ${token.symbol} does not cover the ${minBalance + feeAllowance} held back for fees`,
+      );
+    }
+    return buildStableFundingProgram({
+      stablePool: args.stablePool,
+      pool: args.pool,
+      withdrawStable: withdraw,
+      payFeesStable: feeAllowance,
+      minNativeOut,
+      minUnderlyingOut: args.minUnderlyingOut,
+      remoteFeesCash: args.remoteFeesCash,
+      beneficiaryHex: args.beneficiaryHex,
+      peopleParaId: args.peopleParaId,
+      maxWeight,
+    });
+  };
+
+  // Only the instruction list matters for the weight, and an allowance that clears, so a quarter
+  // of the deposit. The placeholder ceiling is never dispatched.
+  const rough = probe(args.depositStable / 4n, 0n, 1n, FUNDING_PROGRAM_MAX_WEIGHT);
+  const weight = await args.api.apis.XcmPaymentApi.query_xcm_weight(
+    (rough as { message: unknown }).message as never,
+  );
+  if (!weight.success) {
+    throw new Error("stable program fee estimate: the runtime would not weigh it");
+  }
+  const localFee = await args.api.apis.XcmPaymentApi.query_weight_to_asset_fee(
+    weight.value,
+    stableAsset as never,
+  );
+  if (!localFee.success) throw new Error("stable program fee estimate: local fee unavailable");
+  const localExternal = localFee.value;
+  const maxWeight = { ref_time: weight.value.ref_time, proof_size: weight.value.proof_size };
+
+  // The forwarded program sets the delivery fee through its size. The real one comes from a dry
+  // run of the program, which must reach the send: the whole balance less the fees, floors at one.
+  const forwarded =
+    (args.dryRunFrom === undefined
+      ? null
+      : await realForwardedProgram(
+          args.api,
+          args.api.tx.PolkadotXcm.execute(probe(args.depositStable / 4n, 0n, 1n, maxWeight))
+            .decodedCall,
+          args.peopleParaId,
+          args.dryRunFrom,
+        )) ??
+    forwardedProgramStandIn(
+      TOKENS.CASH.locationOnPeople as unknown as AssetLocation,
+      args.minUnderlyingOut,
+      args.beneficiaryHex,
+    );
+  const df = await args.api.apis.XcmPaymentApi.query_delivery_fees(
+    { type: "V5", value: peopleDest(args.peopleParaId) } as never,
+    forwarded as never,
+    stableAsset as never,
+  );
+  if (!df.success) throw new Error("stable program fee estimate: delivery fee unavailable");
+  const deliveryExternal = extractFungibleAmount(df.value);
+
+  // Price the dispatch against the program carrying the final amounts and the declared weight, so
+  // the charge it predicts is the charge the submitted call pays. The dispatch fee itself is not
+  // yet known to keep out of the probe; a few thousand units do not change a compact encoding's
+  // length.
+  const options = stableTxOptions(args.stable);
+  const dispatchNative = await args.api.tx.PolkadotXcm.execute(
+    probe(localExternal + deliveryExternal, 0n, 1n, maxWeight),
+  ).getEstimatedFees(args.dryRunFrom ?? args.feeProbeAddress, options);
+  // ChargeAssetTxPayment swaps exactly the native fee out of the pool, so the stable it takes is
+  // the exact-out quote for it, pool fee included.
+  const dispatchExternal =
+    await args.api.apis.AssetConversionApi.quote_price_tokens_for_exact_tokens(
+      options.asset,
+      asLocation(TOKENS.PAS.location),
+      dispatchNative,
+      true,
+    );
+  if (dispatchExternal === undefined) {
+    throw new Error(
+      "stable program fee estimate: the pool cannot price the dispatch fee in the stable",
+    );
+  }
+
+  const feeAllowanceExternal = withFeeMargin(localExternal + deliveryExternal);
+  return {
+    localExternal,
+    deliveryExternal,
+    feeAllowanceExternal,
+    minBalanceExternal: minBalance,
+    heldBackExternal: minBalance + feeAllowanceExternal,
+    dispatchNative,
+    dispatchExternal,
+    maxWeight,
+  };
 }
 
 /** The underlying as People keys it. An asset local to Asset Hub sits behind Asset Hub's parachain

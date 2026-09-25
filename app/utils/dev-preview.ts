@@ -227,6 +227,9 @@ function meldCatalog(session: Session) {
 const DISPLAY: Partial<Record<SourceId, { chain: string; asset: string }>> = {
   btc: { chain: "Bitcoin", asset: "BTC" },
   "usdt-tron": { chain: "Tron", asset: "USDT" },
+  "dot-assethub": { chain: "Polkadot", asset: "DOT" },
+  "usdt-assethub": { chain: "Polkadot", asset: "USDT" },
+  "usdc-assethub": { chain: "Polkadot", asset: "USDC" },
   "meld-card": { chain: "Meld", asset: "Card" },
   "meld-bank": { chain: "Meld", asset: "Bank" },
 };
@@ -530,8 +533,7 @@ function base(session: Session, flow: Flow) {
   // The shell reads the adapters again unless a top-ups scene says otherwise.
   previewTopUpScene.value = null;
   // Bitcoin, matching the canned quote.
-  flow.srcChainIndex = 0;
-  flow.srcAssetIndex = 0;
+  flow.setSourceByName("Bitcoin", "BTC");
 }
 
 /** Baseline for the card-journey scenes: the Meld quote and method the design frames show. */
@@ -598,8 +600,7 @@ function selection(session: Session, flow: Flow) {
   // other scene gets the build's own settings.
   offers.demoFallback = isDemoBuild();
   offers.railEnabled = true;
-  flow.srcChainIndex = 1; // Ethereum
-  flow.srcAssetIndex = 0;
+  flow.setSourceByName("Ethereum", "ETH");
 }
 
 /** Baseline for the bank-journey scenes: the Meld quote and method the bank frames show. */
@@ -697,15 +698,10 @@ function toBaseUnits(decimal: string, decimals: number): string {
 function refunded(sourceId: SourceId, send: string) {
   const source = SOURCE_CONFIG_BY_ID.get(sourceId);
   if (!source) throw new Error(`preview: no source config for ${sourceId}`);
-  const chainIndex = SOURCE_CHAINS.findIndex((c) => c.chain === source.chain);
-  const assetIndex = (SOURCE_CHAINS[chainIndex]?.assets as readonly string[] | undefined)?.indexOf(
-    source.asset,
-  );
   const amount = toBaseUnits(send, source.decimals);
   return async (s: Session, f: Flow, index: number) => {
     base(s, f);
-    f.srcChainIndex = Math.max(chainIndex, 0);
-    f.srcAssetIndex = Math.max(assetIndex ?? 0, 0);
+    f.setSourceByName(source.chain, source.asset);
     s.quoted = {
       ...QUOTED,
       send,
@@ -1485,8 +1481,7 @@ export const SCENES: Scene[] = [
     name: "crypto / failed: refunded",
     apply: async (s, f, i) => {
       base(s, f);
-      f.srcChainIndex = 3;
-      f.srcAssetIndex = 1; // USDT on Tron: a token refund, with the gas note
+      f.setSourceByName("Tron", "USDT"); // a token refund, with the gas note
       s.quoted = {
         ...QUOTED,
         send: "5.02",

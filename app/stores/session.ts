@@ -3,15 +3,23 @@
 
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef, watch } from "vue";
-import { TOKENS, type ChainflipRail, type PaymentState, type SourceId } from "@getsome/core";
+import {
+  TOKENS,
+  type ChainflipRail,
+  type PaymentState,
+  type SourceId,
+  type TokenSpec,
+} from "@getsome/core";
 import { egressFor, SOURCE_CONFIG_BY_ID, type ChainflipToken } from "@getsome/chainflip";
 import type { RefundKey } from "@getsome/ephemeral";
 import {
+  createManualRail,
   PERMILL,
   PSM_EXTERNAL,
   recordedRoute,
   type ConversionRoute,
   type FundingStep,
+  type ManualSourceId,
 } from "@getsome/funding";
 import {
   advanceFundingProgressSnapshot,
@@ -66,13 +74,30 @@ import { isMeldSourceId, meldSourceIdFor } from "../funding/source-ids";
 import { toCashBase } from "../utils/cash";
 import { isMoneyAmount, sumMoney } from "../utils/money";
 import { fundFromFaucet, isFaucetConfigured } from "~~/lib/faucet";
-import { sourceIdFor } from "~~/lib/config";
+import { depositAssetFor, isDirectSourceId, sourceIdFor, type DepositAsset } from "~~/lib/config";
 import { useRequestsStore } from "./requests";
 
 export { DEPOSIT_EXPIRED_REASON } from "../funding/requests/model";
 
 /** Stand-in address for the mock world, which never touches a chain. */
 const DEV_RECIPIENT = "13ENScfFZXQ8avXf6cphack516B8YCjdL4MJbodm7VxK8GE9";
+
+/** The deposit token as the Chainflip pricing and floors read it; undefined for a token Chainflip
+ *  cannot deliver, such as USDC, which prices nothing through it. */
+const chainflipTokenOf = (token: TokenSpec): ChainflipToken | undefined =>
+  token.chainflipAsset === undefined ? undefined : (token as ChainflipToken);
+
+/** The deposit token as Meld delivers it. Throws for a token Meld cannot deliver. */
+function meldTokenOf(token: TokenSpec): Parameters<typeof createMeldRail>[0]["token"] {
+  if (token.meldCurrencyCode === undefined) throw new Error(`Meld cannot deliver ${token.symbol}`);
+  return token as Parameters<typeof createMeldRail>[0]["token"];
+}
+
+/** Base units as a decimal string, trailing zeros trimmed. */
+function formatBase(base: bigint, decimals: number): string {
+  const s = base.toString().padStart(decimals + 1, "0");
+  return `${s.slice(0, -decimals)}.${s.slice(-decimals)}`.replace(/\.?0+$/, "") || "0";
+}
 
 /** Persisted per request; enough to re-open it. */
 export interface ActiveFlowRecord {
@@ -185,9 +210,10 @@ export interface QuotedView {
   /** The provider these terms came from ("TRANSAK"), not the aggregator in front of it. */
   provider?: string | null;
   /** Live world only: what the rail must deliver to the burner, in `depositToken`'s base units:
-   *  the native on the pool tier, the PSM's external on the PSM tier. */
+   *  the native on the pool tier, the stable on the stable tiers. */
   nativeAmount: bigint | null;
-  /** The token `nativeAmount` is counted in. Set with it; a quote without one is a pool one. */
+  /** The token `nativeAmount` is counted in, set with it and only when Chainflip can deliver that
+   *  token: the floors and the display price read it. A USDC deposit sets neither. */
   depositToken?: ChainflipToken;
   sourceAsset: string | null;
   sourceChain: string | null;
@@ -233,7 +259,7 @@ function meldChainFeeFiat(raw: MeldQuoteRaw, sizing: FundingSizing): string | nu
   if (rate === null) return null;
   const inCash = (amount: bigint) => Number(amount) / 10 ** CASH_DECIMALS;
   const onAssetHub =
-    sizing.tier === "pool"
+    "keepNativeForFees" in sizing
       ? (Number(sizing.keepNativeForFees) / 10 ** TOKENS.PAS.decimals) * rate.fiatPerToken
       : (Number(sizing.dispatchExternal + sizing.heldBackExternal) /
           10 ** TOKENS[sizing.external].decimals) *
@@ -466,7 +492,8 @@ export const useSessionStore = defineStore("session", () => {
     epoch: number,
   ) {
     const sourceId = sourceIdFor(chain, asset);
-    if (sourceId === undefined) return;
+    // A direct deposit has no swap to price: the manual rail's figure is the deposit itself.
+    if (sourceId === undefined || isDirectSourceId(sourceId)) return;
     sourcePrice.value = { kind: "pending" };
     const egress = egressFor(depositToken);
     void priceSourceLeg({ sourceId, targetBaseUnits, egress }).then((result) => {
@@ -645,17 +672,27 @@ export const useSessionStore = defineStore("session", () => {
   /**
    * The conversion tier a fresh quote is built on, decided once here and handed down: the rail
    * is built for the asset the tier delivers, and the world freezes the tier into the hand-off.
-   * Nothing downstream decides again. The mock world runs over fakes with no PSM to ask, so
-   * outside the host the tier is the pool.
+   * Nothing downstream decides again. `deposit` names the asset the buyer will send when the
+   * picker knows it; the fiat rails name none. The mock world runs over fakes with no PSM to
+   * ask, so outside the host the tier is the pool, fed with the stable the buyer picked.
    */
-  async function chooseQuoteRoute(amount: bigint): Promise<ConversionRoute> {
-    if (!isHosted()) return { tier: "pool" };
+  async function chooseQuoteRoute(
+    amount: bigint,
+    deposit?: DepositAsset,
+  ): Promise<ConversionRoute> {
+    if (!isHosted()) {
+      return deposit === undefined || deposit === "native"
+        ? { tier: "pool" }
+        : { tier: "pool", external: deposit };
+    }
     const { chooseHostedRoute } = await import("~~/lib/coinage-live");
-    const route = await step("route selection", 10_000, chooseHostedRoute(amount));
+    const route = await step("route selection", 10_000, chooseHostedRoute(amount, deposit));
     // The catalog is read for the crypto the rail will be asked to deliver. A region validated
     // against one destination and quoted against another is how a supported region yields an
-    // unquotable request, so the dropdown follows the route rather than a constant.
-    meldDestination.value = depositTokenOf(route).meldCurrencyCode;
+    // unquotable request, so the dropdown follows the route rather than a constant. A token Meld
+    // cannot deliver leaves it as it was.
+    const code = depositTokenOf(route).meldCurrencyCode;
+    if (code !== undefined) meldDestination.value = code;
     return route;
   }
 
@@ -756,7 +793,7 @@ export const useSessionStore = defineStore("session", () => {
       fiat: region.fiat,
       method: meldMethod,
       paymentMethodType,
-      token: depositTokenOf(route),
+      token: meldTokenOf(depositTokenOf(route)),
     });
     return { rail, sourceId, client: meldClient, region, paymentMethodType, corridor };
   }
@@ -960,16 +997,31 @@ export const useSessionStore = defineStore("session", () => {
       `[coinage] quoting in the ${isHosted() ? "LIVE (hosted)" : "MOCK (browser)"} world`,
     );
     try {
-      const route = await chooseQuoteRoute(amountBase.value);
+      // A direct Polkadot pick names the token it deposits and runs under that token's own
+      // source; a demo Chainflip pick keeps the default direct world under dot-assethub.
+      const sourceId = sourceIdFor(chain, asset);
+      const direct = isDirectSourceId(sourceId) ? sourceId : null;
+      const route = await chooseQuoteRoute(
+        amountBase.value,
+        direct === null ? undefined : depositAssetFor(direct),
+      );
       if (epoch !== quoteEpoch) return;
       if (isHosted()) {
         const { nextHostedTradeNumber } = await import("~~/lib/coinage-live");
+        const liveSourceId: SourceId = direct ?? DEFAULT_SOURCE_ID;
         const tradeN = await step(
           "trade number",
           10_000,
-          nextHostedTradeNumber(DEFAULT_SOURCE_ID, (n) => requests.hasTrace(DEFAULT_SOURCE_ID, n)),
+          nextHostedTradeNumber(liveSourceId, (n) => requests.hasTrace(liveSourceId, n)),
         );
-        const world = await createLiveWorld(epoch, depositWindowFor("crypto"), route, tradeN);
+        const world = await createLiveWorld(
+          epoch,
+          depositWindowFor("crypto"),
+          route,
+          tradeN,
+          undefined,
+          liveSourceId,
+        );
         if (!world) return; // superseded by a newer quote
         if (epoch !== quoteEpoch) {
           world.dispose();
@@ -981,18 +1033,19 @@ export const useSessionStore = defineStore("session", () => {
           return;
         }
         live.value = world;
-        const depositToken = depositTokenOf(route);
+        const depositToken = chainflipTokenOf(depositTokenOf(route));
         quoted.value = {
           send: quote.source.formatted,
           symbol: quote.source.assetSymbol,
-          nativeAmount: quote.source.amount,
-          depositToken,
+          nativeAmount: depositToken === undefined ? null : quote.source.amount,
+          ...(depositToken === undefined ? {} : { depositToken }),
           sourceAsset: asset,
           sourceChain: chain,
         };
-        priceSelectedSource(chain, asset, quote.source.amount, depositToken, epoch);
+        if (depositToken !== undefined) {
+          priceSelectedSource(chain, asset, quote.source.amount, depositToken, epoch);
+        }
       } else {
-        const sourceId = sourceIdFor(chain, asset);
         if (!sourceId) {
           loading.value = false;
           return;
@@ -1003,6 +1056,16 @@ export const useSessionStore = defineStore("session", () => {
           sourceId,
           tradeN: nextMockTradeN(sourceId),
           route,
+          // A direct source deposits to the mock burner itself, in the token picked: the QR is
+          // that address and the quote is in that token.
+          ...(direct === null
+            ? {}
+            : {
+                rail: createManualRail({
+                  token: depositTokenOf(route),
+                  sourceId: direct as ManualSourceId,
+                }),
+              }),
         });
         await world.session.ready;
         const quote = await world.session.quote();
@@ -1013,10 +1076,11 @@ export const useSessionStore = defineStore("session", () => {
         mock.value = world;
         // Real pricing outside the host: the pool leg is a public chain read over a standalone
         // WebSocket. Skipped in node test runs; falls back to demo rates when the RPC is
-        // unreachable.
+        // unreachable. A stable deposit has nothing to read, the fakes take it one to one.
         let nativeAmount: bigint | null = null;
         const settleForPricing = amountBase.value; // non-null: guarded at fetchQuote entry
-        if (typeof window !== "undefined" && settleForPricing !== null) {
+        const pricesNative = direct === null || depositAssetFor(direct) === "native";
+        if (typeof window !== "undefined" && settleForPricing !== null && pricesNative) {
           try {
             const [
               { connectChain, ASSET_HUB },
@@ -1059,23 +1123,28 @@ export const useSessionStore = defineStore("session", () => {
           return;
         }
         // The fake rail returns a fixed quote regardless of source; show a source-appropriate
-        // estimate.
+        // estimate. A direct pick shows the pool read's DOT figure when it answered, the demo
+        // rate's otherwise.
         const cfg = SOURCE_CONFIG_BY_ID.get(sourceId);
+        const symbol = cfg?.asset ?? (direct === null ? null : asset);
         const est =
-          cfg && amountBase.value !== null
-            ? estimateSourceFromCash(amountBase.value, cfg.asset)
+          symbol !== null && amountBase.value !== null
+            ? direct !== null && nativeAmount !== null && pricesNative
+              ? formatBase(nativeAmount, TOKENS.PAS.decimals)
+              : estimateSourceFromCash(amountBase.value, symbol)
             : null;
+        const depositToken = chainflipTokenOf(depositTokenOf(route));
         quoted.value = {
           send: est ?? quote.source.formatted,
-          symbol: est && cfg ? cfg.asset : quote.source.assetSymbol,
+          symbol: est && symbol ? symbol : quote.source.assetSymbol,
           nativeAmount,
-          depositToken: TOKENS.PAS,
-          sourceAsset: est && cfg ? cfg.asset : null,
+          ...(depositToken === undefined ? {} : { depositToken }),
+          sourceAsset: est && symbol ? symbol : null,
           sourceChain: chain,
         };
         // The swap network's quote endpoint is public; it needs the pool figure above as its
         // target.
-        if (nativeAmount !== null) {
+        if (nativeAmount !== null && direct === null) {
           priceSelectedSource(chain, asset, nativeAmount, TOKENS.PAS, epoch);
         }
       }
@@ -1137,10 +1206,11 @@ export const useSessionStore = defineStore("session", () => {
     void reconcileBackground();
   }
 
-  /** The source the request on screen runs under: the live world's, or in the browser the one
+  /** The source the request on screen runs under: the world's, or before there is one the one
    *  the chosen method implies. */
   function foregroundSourceId(): string | undefined {
-    if (live.value) return live.value.sourceId;
+    const world = mock.value ?? live.value;
+    if (world) return world.sourceId;
     return method.value === "crypto" ? undefined : meldSourceIdFor(method.value);
   }
 
@@ -1240,6 +1310,11 @@ export const useSessionStore = defineStore("session", () => {
         sourceAmount: `≈ ${priced.minimum.neededFormatted}`,
         sourceSymbol: priced.minimum.assetSymbol,
       };
+    }
+    // A direct deposit is paid in the token the rail quoted: the figure is exact, not an estimate.
+    const world = mock.value ?? live.value;
+    if (world && isDirectSourceId(world.sourceId) && quoted.value) {
+      return { sourceAmount: quoted.value.send, sourceSymbol: quoted.value.symbol };
     }
     const state = lastState.value;
     const deposit = state && "deposit" in state ? state.deposit : null;
@@ -1534,11 +1609,18 @@ export const useSessionStore = defineStore("session", () => {
           );
           return false;
         }
+        const sourceId = effectiveSourceId(ref) as SourceId;
+        const route = recordedRoute(record.handoff ?? record.conversion ?? {});
         const world = await createMockCoinageSession({
           recipient: DEV_RECIPIENT,
           amount,
-          sourceId: effectiveSourceId(ref) as SourceId,
+          sourceId,
           tradeN: ref.tradeN,
+          route,
+          // The direct sources deposit to the burner itself, in the recorded route's token.
+          ...(isDirectSourceId(sourceId)
+            ? { rail: createManualRail({ token: depositTokenOf(route), sourceId }) }
+            : {}),
         });
         await world.session.ready;
         if (epoch !== quoteEpoch) {

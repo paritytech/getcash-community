@@ -11,9 +11,26 @@ import {
   type ReverseQuoteInput,
   type SourceAvailability,
   type SourceDescriptor,
+  type SourceId,
   type SwapStatusResult,
   type TokenSpec,
 } from "@getsome/core";
+
+/** The sources a direct deposit runs under, one per token. The source keys the token's trade
+ *  counter and burner labels. */
+export type ManualSourceId = Extract<SourceId, "dot-assethub" | "usdt-assethub" | "usdc-assethub">;
+
+/** The source a direct deposit of `token` runs under. */
+export function manualSourceIdOf(token: TokenSpec): ManualSourceId {
+  switch (token.symbol) {
+    case "USDT":
+      return "usdt-assethub";
+    case "USDC":
+      return "usdc-assethub";
+    default:
+      return "dot-assethub";
+  }
+}
 
 /** Exact base-units -> decimal string (trailing zeros trimmed). */
 function formatUnits(base: bigint, decimals: number): string {
@@ -35,6 +52,9 @@ export interface ManualRailOptions {
   /** The token the user is asked to send: what the request's tier converts from. Default
    *  `TOKENS.PAS`, the pool tier's. */
   token?: TokenSpec;
+  /** The source the deposit runs under. Default the token's own; one that belongs to another
+   *  token is refused. */
+  sourceId?: ManualSourceId;
   /** Deposit "channel" validity window, ms. Default 24h. */
   depositExpiryMs?: number;
   /** Injectable clock (tests). */
@@ -45,8 +65,12 @@ export function createManualRail(opts: ManualRailOptions = {}): ChainflipRail {
   const expiry = opts.depositExpiryMs ?? 86_400_000;
   const now = opts.now ?? Date.now;
   const token = opts.token ?? TOKENS.PAS;
+  const sourceId = opts.sourceId ?? manualSourceIdOf(token);
+  if (sourceId !== manualSourceIdOf(token)) {
+    throw new Error(`manual rail: ${sourceId} does not take ${token.symbol}`);
+  }
   const descriptor: SourceDescriptor = Object.freeze({
-    sourceId: "dot-assethub",
+    sourceId,
     chain: "AssetHub",
     // The rails' name for the token; the native's is its Polkadot counterpart's.
     asset: token.chainflipAsset ?? token.symbol,

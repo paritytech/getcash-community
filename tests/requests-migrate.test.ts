@@ -174,7 +174,7 @@ describe("request record migration", () => {
     expect(effectiveSourceId(record.ref)).toBe(CRYPTO_SOURCE_ID);
     expect(record.route).toBe("crypto");
     expect(record.rail.provider).toBe("manual");
-    expect(record.progress.profile.id).toBe("chainflip");
+    expect(record.progress.profile.id).toBe("direct");
     expect(record.progress.stageTimestamps).toEqual({});
     expect(record.deadline).toEqual({
       depositExpiresAt: legacyBareRefRecord.startedAt + DEFAULT_DEPOSIT_WINDOW_MS,

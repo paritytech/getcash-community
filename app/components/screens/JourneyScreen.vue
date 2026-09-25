@@ -225,7 +225,8 @@ const refunded = computed(() => {
 const asset = computed(() => {
   const record = requests.foregroundRecord;
   if (!record) return "";
-  return SOURCE_CONFIG_BY_ID.get(effectiveSourceId(record.ref) as SourceId)?.asset ?? "";
+  // A direct source has no swap config; the record names the token the buyer picked.
+  return SOURCE_CONFIG_BY_ID.get(effectiveSourceId(record.ref) as SourceId)?.asset ?? record.asset;
 });
 /** The quote the rows read, resolved the same way the fee breakdown behind them resolves it. */
 const { quote: quoteView } = useJourneyQuote(() => props.topUp);

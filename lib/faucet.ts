@@ -1,13 +1,12 @@
 // TODO(production): remove; the deposit is the provider's to make, not the app's.
 //
 // Demo faucet: sends the route's deposit asset from a dedicated testnet account to the burner's
-// deposit address on Asset Hub, PAS on the pool tier and USDt on the PSM tier, so the account has
-// to hold both. Demo only: the seed ships in the client bundle via VITE_FAUCET_SEED, as either a
-// 24-word mnemonic or a 0x-prefixed 32-byte hex entropy value.
+// deposit address on Asset Hub, PAS on the native pool tier and USDt or USDC on the stable tiers,
+// so the account has to hold all three. Demo only: the seed ships in the client bundle via
+// VITE_FAUCET_SEED, as either a 24-word mnemonic or a 0x-prefixed 32-byte hex entropy value.
 
-import { TOKENS } from "@getsome/core";
 import { deriveKeypair } from "@getsome/ephemeral";
-import type { ConversionRoute } from "@getsome/funding";
+import { depositTokenOf, type ConversionRoute } from "@getsome/funding";
 import { mnemonicToEntropy } from "@polkadot-labs/hdkd-helpers";
 import { MultiAddress, paseo_next_v2 } from "@polkadot-api/descriptors";
 import type { PolkadotSigner } from "polkadot-api";
@@ -34,8 +33,8 @@ function seedBytes(): Uint8Array {
 }
 
 /** Transfers `amount` of the route's deposit asset, in that asset's base units, to `address` on
- *  Asset Hub, and resolves with what was sent once the transfer is in a block. On the PSM tier
- *  an amount under the asset's `min_balance` (70_000 for USDt, 0.07 USDT) is raised to it: a
+ *  Asset Hub, and resolves with what was sent once the transfer is in a block. On the stable
+ *  tiers an amount under the asset's `min_balance`, 70_000 for USDt and USDC, is raised to it: a
  *  smaller transfer would not create the burner's asset account, and nothing would land. */
 export async function fundFromFaucet(args: {
   address: string;
@@ -58,11 +57,14 @@ export async function fundFromFaucet(args: {
       throw new Error(`faucet transfer failed on-chain (is the faucet funded with ${symbol}?)`);
     }
   };
-  if (args.route.tier === "pool") {
-    await submit(api.tx.Balances.transfer_keep_alive({ dest: target, value: args.amount }), "PAS");
+  const token = depositTokenOf(args.route);
+  if (token.assetHubId === undefined) {
+    await submit(
+      api.tx.Balances.transfer_keep_alive({ dest: target, value: args.amount }),
+      token.symbol,
+    );
     return args.amount;
   }
-  const token = TOKENS[args.route.external];
   const minBalance = (await api.query.Assets.Asset.getValue(token.assetHubId))?.min_balance ?? 0n;
   const amount = args.amount < minBalance ? minBalance : args.amount;
   await submit(

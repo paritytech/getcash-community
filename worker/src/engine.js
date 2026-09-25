@@ -9,6 +9,7 @@ import {
   FundingHeldError,
   FundingShortfallError,
   PASEO_ASSET_HUB_PARA_ID,
+  STABLE_TOKENS,
   discoverPool,
   freshTickState,
   recordedRoute,
@@ -535,12 +536,22 @@ async function tickRecord(record, nowMs) {
     }
     const api = ahClient.getTypedApi(paseo_next_v2);
     // Pool keys are re-discovered each wake and not persisted. The PSM tier has no pool to find.
+    // A pool job fed with a stable exchanges through the stable's own pool first, found under
+    // its pallet-assets id.
     const pool =
       route.tier === "pool"
         ? await bounded(
             discoverPool(api, record.underlyingAssetId),
             DEFAULT_TICK_TIMEOUT_MS,
             "pool discovery",
+          )
+        : undefined;
+    const stablePool =
+      route.tier === "pool" && route.external !== undefined
+        ? await bounded(
+            discoverPool(api, STABLE_TOKENS[route.external].assetHubId),
+            DEFAULT_TICK_TIMEOUT_MS,
+            "stable pool discovery",
           )
         : undefined;
 
@@ -561,6 +572,7 @@ async function tickRecord(record, nowMs) {
           peopleApi: peopleClient.getTypedApi(paseo_people_next),
           route,
           pool,
+          stablePool,
           address: burner.address,
           signer: burner.signer,
           beneficiaryHex: toHex(burner.publicKey),

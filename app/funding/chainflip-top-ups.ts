@@ -1,13 +1,13 @@
 import { computed } from "vue";
-import { SOURCE_CHAINS } from "~~/lib/config";
+import { FUNDING_CHAINS } from "~~/lib/config";
 import { useFundingProgressClock } from "../composables/useFundingProgressClock";
 import { useRequestsStore } from "../stores/requests";
 import { useSessionStore } from "../stores/session";
 import { networkIcon, tokenIcon } from "../utils/icons";
 import { parseRequestRefKey, requestRefKey, type RequestRef } from "../utils/request-index";
-import { isCryptoSourceId } from "./source-ids";
+import { CRYPTO_SOURCE_ID, isCryptoSourceId } from "./source-ids";
 import { projectFundingProgress, type FundingProgressSnapshot } from "./progress";
-import { effectiveSourceId, type TopUpRecord } from "./requests/model";
+import { effectiveSourceId, railProviderOf, type TopUpRecord } from "./requests/model";
 import { journeyScaleOf, journeyStepsOf, rowStateOf } from "./requests/views";
 import type { FundingTopUpAdapter } from "./top-up-adapter";
 import { quoteOf, type FundingTopUpRecord } from "./top-up-projection";
@@ -28,15 +28,20 @@ function topUpDetails(
 ): FundingTopUpDetails {
   const network = record.chain
     ? {
-        label: SOURCE_CHAINS.find(({ chain }) => chain === record.chain)?.label ?? record.chain,
+        label: FUNDING_CHAINS.find(({ chain }) => chain === record.chain)?.label ?? record.chain,
         icon: networkIcon(record.chain),
       }
     : undefined;
   const token = record.asset ? { label: record.asset, icon: tokenIcon(record.asset) } : undefined;
+  // Only a swap through Chainflip has a provider to name; a direct deposit has none.
+  const provider =
+    railProviderOf(record.sourceId ?? CRYPTO_SOURCE_ID) === "chainflip"
+      ? { label: "Chainflip", icon: "/icons/chainflip.png" }
+      : undefined;
   return {
     ...(network === undefined ? {} : { network }),
     ...(token === undefined ? {} : { token }),
-    provider: { label: "Chainflip", icon: "/icons/chainflip.png" },
+    ...(provider === undefined ? {} : { provider }),
     ...(record.depositAddress ? { depositAddress: record.depositAddress } : {}),
     arrivalEstimate: snapshot.preDetectionEstimateText ?? "≈10 min after your transfer",
   };

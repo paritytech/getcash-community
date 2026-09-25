@@ -10,11 +10,11 @@ import type {
   SwapProgress,
   SwapStatusResult,
 } from "@getsome/core";
-import type { ConversionRoute, FundingStep, PsmExternal } from "@getsome/funding";
+import type { ConversionRoute, FundingStep, Stable } from "@getsome/funding";
 import type { WithdrawStep } from "@getsome/withdraw";
 import type { RequestRef } from "../../utils/request-index";
 import type { FundingProgressSnapshot } from "../progress";
-import { CRYPTO_SOURCE_ID, isMeldSourceId, meldMethodFor } from "../source-ids";
+import { CRYPTO_SOURCE_ID, isDirectSourceId, isMeldSourceId, meldMethodFor } from "../source-ids";
 
 /** Trailing debounce per key for non-critical host writes. */
 export const COALESCE_MS = 250;
@@ -137,16 +137,17 @@ export interface WorkerHandoffPayload {
   assetHubGenesis: string;
   peopleGenesis: string;
   remoteFeeBuffer: string;
-  /** Pool tier only; "0" on the PSM tier, whose batch prices its own fees live. */
+  /** Native pool tier only; "0" on the stable tiers, which price their own fees live. */
   keepNativeForFees: string;
   /** The conversion tier decided at quote time and frozen here; the worker consumes it and never
    *  re-decides. A payload from before tiers were recorded is a pool one. */
   tier: ConversionRoute["tier"];
-  /** With a psm tier: the external asset, and the Permill fee rate read at quote time that the
-   *  call's `max_fee` repeats. */
-  external?: PsmExternal;
+  /** The stable the buyer deposits: the PSM's external on the psm tier, the stable a pool job is
+   *  fed with, absent for a native deposit. `feeRate` is the psm tier's, the Permill read at
+   *  quote time that the call's `max_fee` repeats. */
+  external?: Stable;
   feeRate?: number;
-  /** With a psm tier: the external the buyer was asked to deposit, as the quote sized it. The
+  /** With a stable tier: the stable the buyer was asked to deposit, as the quote sized it. The
    *  worker's gate checks for this rather than re-pricing the fees, which would move the bar under
    *  a deposit already sized against it. Absent on a payload from before it was recorded. */
   quotedDeposit?: string;
@@ -524,10 +525,10 @@ export const effectiveSourceId = (ref: RequestRef): string => ref.sourceId ?? CR
 export const routeOf = (sourceId: string): RequestRecord["route"] =>
   isMeldSourceId(sourceId) ? meldMethodFor(sourceId) : "crypto";
 
-/** The rail a source runs on: Meld for a fiat source, the manual deposit for the crypto rail's
- *  own source, Chainflip for every other coin. */
+/** The rail a source runs on: Meld for a fiat source, the manual deposit for a direct Asset Hub
+ *  source, Chainflip for every other coin. */
 export const railProviderOf = (sourceId: string): RailState["provider"] =>
-  isMeldSourceId(sourceId) ? "meld" : sourceId === CRYPTO_SOURCE_ID ? "manual" : "chainflip";
+  isMeldSourceId(sourceId) ? "meld" : isDirectSourceId(sourceId) ? "manual" : "chainflip";
 
 let clock: () => number = Date.now;
 

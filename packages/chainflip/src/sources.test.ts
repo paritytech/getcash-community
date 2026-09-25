@@ -26,9 +26,12 @@ describe("source catalog", () => {
   });
 
   it("has the correct chain/asset identifiers, decimals and reference amounts", () => {
-    // 'dot-assethub', 'meld-card' and 'meld-bank' are not Chainflip sources.
+    // The direct Asset Hub sources and the Meld ones are not Chainflip sources.
     const expected: Record<
-      Exclude<SourceId, "dot-assethub" | "meld-card" | "meld-bank">,
+      Exclude<
+        SourceId,
+        "dot-assethub" | "usdt-assethub" | "usdc-assethub" | "meld-card" | "meld-bank"
+      >,
       [string, string, number, string]
     > = {
       btc: ["Bitcoin", "BTC", 8, "250000"],

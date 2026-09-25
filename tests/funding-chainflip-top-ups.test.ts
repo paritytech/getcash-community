@@ -111,12 +111,40 @@ describe("Chainflip top-up adapter", () => {
       { kind: "failed", at: now, reason: "Deposit expired" },
       { kind: "settled", at: 800, creditedAmount: "100.25" },
     ]);
+    // A direct deposit names no provider; the record's network and token are what the buyer saw.
     expect(projectChainflipTopUps(records, now)[1]?.details).toEqual({
       network: { label: "Bitcoin", icon: "/icons/bitcoin.svg" },
       token: { label: "BTC", icon: "/icons/bitcoin.svg" },
-      provider: { label: "Chainflip", icon: "/icons/chainflip.png" },
       depositAddress: "bc1q-saved-deposit",
       arrivalEstimate: "≈10 min after your transfer",
+    });
+  });
+
+  it("projects a Polkadot request under its own source, with the token it was paid in", () => {
+    const usdc = record(
+      {
+        tradeN: 9,
+        amountHuman: "50",
+        startedAt: 100,
+        sourceId: "usdc-assethub",
+        chain: "Polkadot",
+        asset: "USDC",
+        depositAddress: "5BurnerOnAssetHub",
+      },
+      200,
+    );
+    const [row] = projectChainflipTopUps([usdc], 200);
+    expect(row?.id).toBe("crypto:usdc-assethub#9");
+    expect(row?.request).toEqual({ sourceId: "usdc-assethub", tradeN: 9 });
+    expect(row?.details).toEqual({
+      network: { label: "Polkadot", icon: "/icons/polkadot.svg" },
+      token: { label: "USDC", icon: "/icons/usdc.svg" },
+      depositAddress: "5BurnerOnAssetHub",
+      arrivalEstimate: "≈10 min after your transfer",
+    });
+    expect(chainflipRequestRef("crypto:usdc-assethub#3")).toEqual({
+      sourceId: "usdc-assethub",
+      tradeN: 3,
     });
   });
 
@@ -169,7 +197,6 @@ describe("Chainflip top-up adapter", () => {
   it("keeps route details available for legacy records", () => {
     const legacy = record({ tradeN: 7, amountHuman: "25", startedAt: 100 }, 200);
     expect(projectChainflipTopUps([legacy])[0]?.details).toEqual({
-      provider: { label: "Chainflip", icon: "/icons/chainflip.png" },
       arrivalEstimate: "≈10 min after your transfer",
     });
   });

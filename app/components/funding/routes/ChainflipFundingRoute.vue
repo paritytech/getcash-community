@@ -80,6 +80,14 @@ function onDepositSkip() {
   else void session.fundFaucet();
 }
 
+/** Shows a failed quote on the pickers with a way to ask again. */
+const quoteFailed = computed(
+  () => flow.screen === "entry" && session.quoteError !== null && !session.loading,
+);
+function requote() {
+  void session.fetchQuote(flow.srcChain.chain, flow.srcAsset);
+}
+
 let active = true;
 onMounted(async () => {
   // The preview deck put this package on screen for a scene that owns the store state; its own
@@ -127,6 +135,15 @@ onUnmounted(() => {
         </button>
       </template>
     </Toolbar>
+
+    <!-- Why there is no quote, on a card. -->
+    <div
+      v-if="quoteFailed"
+      class="mx-6 mt-6 flex shrink-0 flex-col gap-3 rounded-container bg-surface-container p-4 shadow-1"
+    >
+      <p class="text-body-m text-fg-error">Couldn't price this top-up: {{ session.quoteError }}</p>
+      <SecondaryButton class="self-start" @click="requote">Try again</SecondaryButton>
+    </div>
 
     <div class="flex min-h-0 flex-1 flex-col px-6 pt-6">
       <!-- Resuming renders the deposit screen's skeleton shapes until the request is live. -->

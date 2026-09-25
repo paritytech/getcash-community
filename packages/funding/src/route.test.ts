@@ -1,12 +1,14 @@
 // Route selection over a scripted PSM: each of the four checks failing on its own, the margin at
-// its boundary in both directions, and a resumed job's route coming from its record rather than
-// the chain.
+// its boundary in both directions, the tier following the deposit the buyer named, and a resumed
+// job's route coming from its record rather than the chain.
 
 import { TOKENS } from "@getsome/core";
 import { describe, expect, it } from "vitest";
 import {
   ROUTE_MARGIN_FLOOR,
   chooseRoute,
+  depositTokenOf,
+  isStablePoolRoute,
   mintHeadroom,
   recordedRoute,
   withMargin,
@@ -16,13 +18,19 @@ import {
 const CASH = 1_000_000n; // one CASH, 6 decimals
 const POOL: ConversionRoute = { tier: "pool" };
 const PSM_AT_DEFAULT_FEE: ConversionRoute = { tier: "psm", external: "USDT", feeRate: 5_000 };
+const POOL_FED_USDT: ConversionRoute = { tier: "pool", external: "USDT" };
+const POOL_FED_USDC: ConversionRoute = { tier: "pool", external: "USDC" };
+
+type Approval = { status: { type: string }; decimals: number } | undefined;
 
 /** The PSM as it stands on Paseo Next today, scaled down: one external at 100%, no debt, the
  *  pallet's default fees. Weights and debts list every external of the instance; the first is
- *  USDT's, the rest belong to other externals. */
+ *  USDT's, the rest belong to other externals. `approval` is USDT's; USDC has none unless
+ *  `approvals` grants it one. */
 interface PsmWorld {
   instance: { max_debt: bigint; min_swap_amount: bigint; internal_decimals: number } | undefined;
-  approval: { status: { type: string }; decimals: number } | undefined;
+  approval: Approval;
+  approvals?: Partial<Record<"USDT" | "USDC", Approval>>;
   weights: number[];
   debts: bigint[];
   mintingFee: number;
@@ -38,10 +46,19 @@ const LIVE: PsmWorld = {
   redemptionFee: 5_000,
 };
 
+/** The pallet-assets id a location in the table names. */
+const generalIndex = (location: unknown) =>
+  (location as { interior: { value: Array<{ value: unknown }> } }).interior.value[1]!.value;
+
 function scriptedPsm(overrides: Partial<PsmWorld> = {}) {
   const world = { ...LIVE, ...overrides };
   const reads: unknown[][] = [];
   const entriesOf = <T>(values: T[]) => values.map((value) => ({ keyArgs: [], value }));
+  const approvalFor = (external: unknown): Approval => {
+    const symbol = generalIndex(external) === BigInt(TOKENS.USDT.assetHubId) ? "USDT" : "USDC";
+    if (world.approvals && symbol in world.approvals) return world.approvals[symbol];
+    return symbol === "USDT" ? world.approval : undefined;
+  };
   const api = {
     query: {
       Psm: {
@@ -54,7 +71,7 @@ function scriptedPsm(overrides: Partial<PsmWorld> = {}) {
         ExternalAssets: {
           getValue: async (...keys: unknown[]) => {
             reads.push(["ExternalAssets", ...keys]);
-            return world.approval;
+            return approvalFor(keys[1]);
           },
         },
         AssetCeilingWeight: {
@@ -75,6 +92,11 @@ function scriptedPsm(overrides: Partial<PsmWorld> = {}) {
 
 const mint = (internalAmount: bigint) => ({ direction: "mint" as const, internalAmount });
 const redeem = (internalAmount: bigint) => ({ direction: "redeem" as const, internalAmount });
+const mintFrom = (deposit: "native" | "USDT" | "USDC", internalAmount: bigint) => ({
+  direction: "mint" as const,
+  internalAmount,
+  deposit,
+});
 
 describe("chooseRoute", () => {
   it("keys the PSM by the table's Locations and answers psm with the fee for the direction", async () => {
@@ -178,6 +200,66 @@ describe("chooseRoute", () => {
   });
 });
 
+describe("chooseRoute with the deposit named", () => {
+  it("a native deposit is the pool, with no PSM to ask", async () => {
+    const { api, reads } = scriptedPsm();
+    expect(await chooseRoute(api, mintFrom("native", 50n * CASH))).toEqual(POOL);
+    expect(reads).toEqual([]);
+  });
+
+  it("USDC is the pool fed with USDC: the PSM approves no such external today", async () => {
+    const { api, reads } = scriptedPsm();
+    expect(await chooseRoute(api, mintFrom("USDC", 50n * CASH))).toEqual(POOL_FED_USDC);
+    expect(reads).toEqual([
+      ["Psm", TOKENS.CASH.location],
+      ["ExternalAssets", TOKENS.CASH.location, TOKENS.USDC.location],
+    ]);
+  });
+
+  it("USDC takes the PSM the day it is approved there, at USDC's own fee", async () => {
+    const { api } = scriptedPsm({ approvals: { USDC: LIVE.approval }, mintingFee: 7_000 });
+    expect(await chooseRoute(api, mintFrom("USDC", 50n * CASH))).toEqual({
+      tier: "psm",
+      external: "USDC",
+      feeRate: 7_000,
+    });
+  });
+
+  it("USDT takes the PSM when it can serve, and the pool fed with USDT when any check fails", async () => {
+    expect(await chooseRoute(scriptedPsm().api, mintFrom("USDT", 50n * CASH))).toEqual(
+      PSM_AT_DEFAULT_FEE,
+    );
+    const failing = [
+      scriptedPsm({ instance: undefined }),
+      scriptedPsm({ approval: undefined }),
+      scriptedPsm({ approval: { status: { type: "MintingDisabled" }, decimals: 6 } }),
+      scriptedPsm({ debts: [45n * CASH + 1n] }),
+    ];
+    for (const { api } of failing) {
+      expect(await chooseRoute(api, mintFrom("USDT", 50n * CASH))).toEqual(POOL_FED_USDT);
+    }
+    expect(await chooseRoute(scriptedPsm().api, mintFrom("USDT", CASH - 1n))).toEqual(
+      POOL_FED_USDT,
+    );
+  });
+
+  it("without a deposit named the fallback is still the native pool", async () => {
+    expect(await chooseRoute(scriptedPsm({ instance: undefined }).api, mint(CASH))).toEqual(POOL);
+  });
+});
+
+describe("depositTokenOf and isStablePoolRoute", () => {
+  it("is the native for a bare pool route and the stable for either stable tier", () => {
+    expect(depositTokenOf(POOL)).toBe(TOKENS.PAS);
+    expect(depositTokenOf(POOL_FED_USDC)).toBe(TOKENS.USDC);
+    expect(depositTokenOf(POOL_FED_USDT)).toBe(TOKENS.USDT);
+    expect(depositTokenOf(PSM_AT_DEFAULT_FEE)).toBe(TOKENS.USDT);
+    expect(isStablePoolRoute(POOL)).toBe(false);
+    expect(isStablePoolRoute(POOL_FED_USDC)).toBe(true);
+    expect(isStablePoolRoute(PSM_AT_DEFAULT_FEE)).toBe(false);
+  });
+});
+
 describe("withMargin and mintHeadroom", () => {
   it("adds ten percent, never less than the floor", () => {
     expect(withMargin(100n * CASH)).toBe(110n * CASH);
@@ -209,6 +291,13 @@ describe("recordedRoute", () => {
   it("reads a record from before routes were recorded as the pool, which is what it was", () => {
     expect(recordedRoute({})).toEqual(POOL);
     expect(recordedRoute({ tier: undefined })).toEqual(POOL);
+    expect(recordedRoute({ tier: "pool", external: null })).toEqual(POOL);
+  });
+
+  it("keeps the stable a pool record is fed with, and refuses one it does not know", () => {
+    expect(recordedRoute({ tier: "pool", external: "USDC" })).toEqual(POOL_FED_USDC);
+    expect(recordedRoute({ tier: "pool", external: "USDT" })).toEqual(POOL_FED_USDT);
+    expect(() => recordedRoute({ tier: "pool", external: "DAI" })).toThrow(/deposit asset/);
   });
 
   it("refuses a psm record it would have to guess about", () => {
@@ -216,7 +305,12 @@ describe("recordedRoute", () => {
     expect(() => recordedRoute({ tier: "psm", external: "USDT", feeRate: 0.5 })).toThrow(
       /fee rate/,
     );
-    expect(() => recordedRoute({ tier: "psm", external: "USDC", feeRate: 5_000 })).toThrow(
+    expect(recordedRoute({ tier: "psm", external: "USDC", feeRate: 5_000 })).toEqual({
+      tier: "psm",
+      external: "USDC",
+      feeRate: 5_000,
+    });
+    expect(() => recordedRoute({ tier: "psm", external: "DAI", feeRate: 5_000 })).toThrow(
       /external/,
     );
     expect(() => recordedRoute({ tier: "fast", external: "USDT", feeRate: 5_000 })).toThrow(/tier/);

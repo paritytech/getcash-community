@@ -433,7 +433,7 @@ describe("requests store: the chain step", () => {
       schema: 2,
       ref: LOST_REF,
       amountHuman: "12",
-      chain: "AssetHub",
+      chain: "Polkadot",
       asset: "DOT",
       startedAt,
       depositAddress: "burner-dot-assethub:6",

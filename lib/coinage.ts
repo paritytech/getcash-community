@@ -38,7 +38,10 @@ import {
   createManualRail,
   DEFAULT_KEEP_NATIVE_FOR_FEES,
   DEFAULT_REMOTE_FEE_BUFFER,
+  depositTokenOf,
   type FundingStep,
+  isStablePoolRoute,
+  type ManualSourceId,
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
   psmDepositNeeded,
@@ -486,27 +489,26 @@ export async function enumerateTradeBurners(args: {
   return out;
 }
 
-/** The token the route asks the rail to deliver to the burner: the native on the pool tier, the
- *  PSM's external on the PSM tier. */
-export function depositTokenOf(route: ConversionRoute) {
-  return route.tier === "psm" ? TOKENS[route.external] : TOKENS.PAS;
-}
+/** The token the route asks the rail to deliver to the burner, as the funding package decides
+ *  it: the native on the pool tier, the stable on the PSM and stable pool tiers. */
+export { depositTokenOf };
 
 type AssetHubApi = TypedApi<typeof paseo_next_v2>;
 
 /** A burner's balance on Asset Hub at the best block in the asset the route delivers to it: the
- *  native's free balance on the pool tier, the PSM external's holding on the PSM tier. A deposit
- *  in any other asset is not a deposit this request can use, so it is not one it sees. */
+ *  native's free balance, or the holding of the pallet-assets id the route's token names. A
+ *  deposit in any other asset is not a deposit this request can use, so it is not one it sees. */
 export async function readDepositOnAh(
   api: AssetHubApi,
   route: ConversionRoute,
   address: string,
 ): Promise<bigint> {
-  if (route.tier === "pool") {
+  const token = depositTokenOf(route);
+  if (token.assetHubId === undefined) {
     const account = await api.query.System.Account.getValue(address, { at: "best" });
     return account?.data?.free ?? 0n;
   }
-  const held = await api.query.Assets.Account.getValue(TOKENS[route.external].assetHubId, address, {
+  const held = await api.query.Assets.Account.getValue(token.assetHubId, address, {
     at: "best",
   });
   return held?.balance ?? 0n;
@@ -520,13 +522,14 @@ export function watchDepositOnAh(
   onValue: (balance: bigint) => void,
   onError: (e: unknown) => void,
 ): () => void {
+  const token = depositTokenOf(route);
   const subscription =
-    route.tier === "pool"
+    token.assetHubId === undefined
       ? api.query.System.Account.watchValue(address, { at: "best" }).subscribe({
           next: ({ value: account }) => onValue(account?.data?.free ?? 0n),
           error: onError,
         })
-      : api.query.Assets.Account.watchValue(TOKENS[route.external].assetHubId, address, {
+      : api.query.Assets.Account.watchValue(token.assetHubId, address, {
           at: "best",
         }).subscribe({
           next: ({ value: held }) => onValue(held?.balance ?? 0n),
@@ -542,20 +545,20 @@ function depositBudget(
   amount: bigint,
 ): { budget: { amount: bigint; asset: SettlementAsset }; targetDecimals: number } {
   const asset: SettlementAsset =
-    route.tier === "psm" ? { kind: "stable", asset: route.external } : { kind: "native" };
+    route.external === undefined ? { kind: "native" } : { kind: "stable", asset: route.external };
   return { budget: { amount, asset }, targetDecimals: depositTokenOf(route).decimals };
 }
 
-/** The hand-off's fee fields. `keepNativeForFees` is the pool tier's; the PSM tier's batch prices
- *  its own fees live, so the field carries nothing there. The PSM tier sends the deposit it quoted
- *  instead, which is what the worker's gate waits for. */
+/** The hand-off's fee fields. `keepNativeForFees` is the native pool tier's; the stable tiers
+ *  price their own fees live, so the field carries nothing there. They send the deposit they
+ *  quoted instead, which is what the worker's gate waits for. */
 function handoffFees(
   sizing: FundingSizing,
 ): Pick<WorkerHandoffPayload, "remoteFeeBuffer" | "keepNativeForFees" | "quotedDeposit"> {
   return {
     remoteFeeBuffer: sizing.remoteFeeBuffer.toString(),
-    keepNativeForFees: (sizing.tier === "pool" ? sizing.keepNativeForFees : 0n).toString(),
-    ...(sizing.tier === "psm" ? { quotedDeposit: sizing.quotedDeposit.toString() } : {}),
+    keepNativeForFees: ("keepNativeForFees" in sizing ? sizing.keepNativeForFees : 0n).toString(),
+    ...("quotedDeposit" in sizing ? { quotedDeposit: sizing.quotedDeposit.toString() } : {}),
   };
 }
 
@@ -953,8 +956,14 @@ export async function createCoinageSession(
   },
 ): Promise<CoinageWorld> {
   // The live world serves the sources that land the route's deposit token on the burner: the
-  // manual rail and the Meld rails.
-  const LIVE_SOURCES = new Set<SourceId>(["dot-assethub", "meld-card", "meld-bank"]);
+  // manual rail, one source per token, and the Meld rails.
+  const LIVE_SOURCES = new Set<SourceId>([
+    "dot-assethub",
+    "usdt-assethub",
+    "usdc-assethub",
+    "meld-card",
+    "meld-bank",
+  ]);
   if (!LIVE_SOURCES.has(args.sourceId)) {
     throw new Error(`live mode does not serve source '${args.sourceId}'`);
   }
@@ -968,8 +977,13 @@ export async function createCoinageSession(
     client: peopleClient,
     chain: peoplePort,
     // The Meld rail when the fiat route injected one; the manual rail (direct deposit of the
-    // route's token) otherwise.
-    chainflip: args.rail ?? createManualRail({ token: depositTokenOf(args.route) }),
+    // route's token, under the token's own source) otherwise.
+    chainflip:
+      args.rail ??
+      createManualRail({
+        token: depositTokenOf(args.route),
+        sourceId: args.sourceId as ManualSourceId,
+      }),
     // The host's storage matches the readString/writeString/clear shape createHostDeps wants.
     hostLocalStorage: args.hostLocalStorage as Parameters<
       typeof createHostDeps
@@ -1015,7 +1029,8 @@ export async function createCoinageSession(
 
   // Size the deposit from live chain reads: the CASH over-buy for People's execution fee and the
   // tier's own costs. The same figures feed the worker hand-off below.
-  const { estimateFundingSizing, estimatePsmFundingSizing } = await import("./funding-fees");
+  const { estimateFundingSizing, estimatePsmFundingSizing, estimateStableFundingSizing } =
+    await import("./funding-fees");
   const sizingArgs = {
     ahClient: await connectChain(ASSET_HUB),
     peopleClient: await connectChain(PEOPLE),
@@ -1036,6 +1051,16 @@ export async function createCoinageSession(
     );
     sizing = psm;
     budget = psm.quotedDeposit;
+  } else if (isStablePoolRoute(args.route)) {
+    // The two-hop quote with the headroom once, over the program's fees in the stable: nothing to
+    // fall back to when the reads fail, as on the PSM tier.
+    const stable = await stage(
+      "funding sizing estimate",
+      20_000,
+      estimateStableFundingSizing({ ...sizingArgs, route: args.route }),
+    );
+    sizing = stable;
+    budget = stable.askedDeposit;
   } else {
     const pool = await stage(
       "funding sizing estimate",

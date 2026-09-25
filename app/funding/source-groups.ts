@@ -48,6 +48,7 @@ export function tokenSubtitle(offer: TokenOffer): string | undefined {
         : `Minimum for this token is ${cashAmount(wholeCashCeil(offer.minimumCashBase))}`;
     case "available":
     case "ungated":
+    case "direct":
       return undefined;
   }
 }

@@ -16,8 +16,11 @@ export type SourceId =
   | "usdt-solana"
   | "trx-tron"
   | "usdt-tron"
-  /** Direct native (DOT) deposit onto the ephemeral on Asset Hub; served by @getsome/funding. */
+  /** Direct deposits onto the ephemeral on Asset Hub, one id per token: DOT, USDT and USDC. The
+   *  id keys the token's trade counter and burner labels. Served by @getsome/funding. */
   | "dot-assethub"
+  | "usdt-assethub"
+  | "usdc-assethub"
   /** Fiat on-ramp via Meld (card / bank transfer); the provider delivers native to the
    *  ephemeral. Served by @getsome/meld. */
   | "meld-card"

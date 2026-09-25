@@ -15,7 +15,7 @@ import {
   type SourceOffer,
 } from "@getsome/chainflip";
 import { PSM_EXTERNAL } from "@getsome/funding";
-import { SOURCE_CHAINS, sourceIdFor } from "~~/lib/config";
+import { FUNDING_CHAINS, isDirectSourceId, sourceIdFor } from "~~/lib/config";
 import { learnSourceFloors } from "~~/lib/source-floors";
 import { isHosted } from "~~/lib/host-account";
 import { isDemoBuild } from "../utils/demo";
@@ -35,11 +35,18 @@ export type TokenOffer =
   | { state: "ungated" }
   /** This build does not move money through Chainflip yet. Listed so the buyer knows it is
    *  coming, never pickable. */
-  | { state: "rail-off" };
+  | { state: "rail-off" }
+  /** A deposit straight to the request's own account on Asset Hub. No provider floor and no rail
+   *  switch apply; the quote after the pick is what says no. */
+  | { state: "direct" };
 
-/** A token the buyer can pick: it pays, is offered as-is, or is still being answered. */
+/** A token the buyer can pick: it pays, is offered as-is, is a direct deposit, or is still being
+ *  answered. */
 export const isPickable = (offer: TokenOffer): boolean =>
-  offer.state === "available" || offer.state === "ungated" || offer.state === "checking";
+  offer.state === "available" ||
+  offer.state === "ungated" ||
+  offer.state === "direct" ||
+  offer.state === "checking";
 
 export interface TokenRow {
   asset: string;
@@ -258,17 +265,24 @@ export const useOffersStore = defineStore("offers", () => {
     return { state: "too-small", minimumCashBase };
   }
 
-  /** Every UI network, in catalog order, with its tokens for the purchase on screen. */
+  /** Every UI network, in catalog order, with its tokens for the purchase on screen. The direct
+   *  network's tokens are offered as they are; the Chainflip networks' follow their floors. */
   const networks = computed<NetworkRow[]>(() =>
-    SOURCE_CHAINS.map((chain) => {
+    FUNDING_CHAINS.map((chain) => {
       const tokens: TokenRow[] = [];
       for (const asset of chain.assets) {
         const sourceId = sourceIdFor(chain.chain, asset);
         if (sourceId === undefined) continue; // no swap source: nothing to offer
-        tokens.push({ asset, sourceId, offer: tokenOffer(sourceId) });
+        const offer: TokenOffer = isDirectSourceId(sourceId)
+          ? { state: "direct" }
+          : tokenOffer(sourceId);
+        tokens.push({ asset, sourceId, offer });
       }
       const available = tokens.some(
-        (t) => t.offer.state === "available" || t.offer.state === "ungated",
+        (t) =>
+          t.offer.state === "available" ||
+          t.offer.state === "ungated" ||
+          t.offer.state === "direct",
       );
       return {
         chain: chain.chain,

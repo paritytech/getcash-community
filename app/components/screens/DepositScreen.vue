@@ -2,7 +2,7 @@
 import { computed } from "vue";
 import { Copy } from "lucide-vue-next";
 import { estimateSourceAmount, estimateSourceFromCash } from "~~/lib/demo-rates";
-import { SOURCE_CHAINS } from "~~/lib/config";
+import { FUNDING_CHAINS } from "~~/lib/config";
 import { useCopyToClipboard } from "../../composables/useCopyToClipboard";
 import { shortAddress } from "../../utils/address";
 import { useFlowStore } from "../../stores/flow";
@@ -46,6 +46,8 @@ const amount = computed<{ value: string; symbol: string; approx: boolean } | nul
       approx: true,
     };
   }
+  // A direct Polkadot deposit lands here: the manual rail quotes the exact deposit in the token
+  // the buyer picked.
   if (q?.send && q.symbol === q.sourceAsset) {
     const bare = q.send.endsWith(q.symbol) ? q.send.slice(0, -q.symbol.length).trim() : q.send;
     return { value: bare, symbol: q.symbol, approx: false };
@@ -71,7 +73,7 @@ const amountText = computed(() => {
 
 const source = computed(() => {
   const chainName = session.quoted?.sourceChain ?? flow.srcChain.chain;
-  const chain = SOURCE_CHAINS.find((candidate) => candidate.chain === chainName) ?? flow.srcChain;
+  const chain = FUNDING_CHAINS.find((candidate) => candidate.chain === chainName) ?? flow.srcChain;
   const asset = session.quoted?.sourceAsset ?? flow.srcAsset;
   return { chain, asset };
 });

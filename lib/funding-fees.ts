@@ -7,9 +7,10 @@
 // XCM's own fees are both charged in the external, the latter from an allowance a tenth over the
 // estimate that stays out of the mint with the external's min_balance and is refunded to the
 // burner where unspent, and the PSM takes its fee on the mint; there is no static fallback,
-// because the tier is only chosen once the chain has answered. remoteFeeBuffer is the same on
-// both: the extra underlying to over-buy for the destination's execution fee, read from a dry run
-// of the forwarded program on People, with the same tenth on top.
+// because the tier is only chosen once the chain has answered. The stable pool tier's fees have
+// the PSM tier's shape, with the two-hop pool quote in place of the mint. remoteFeeBuffer is the
+// same on every tier: the extra underlying to over-buy for the destination's execution fee, read
+// from a dry run of the forwarded program on People, with the same tenth on top.
 
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import type { PolkadotClient } from "polkadot-api";
@@ -22,15 +23,21 @@ import {
   estimateDestinationFeeCash,
   estimateFundingProgramFees,
   estimatePsmBatchFees,
+  estimateStableProgramFees,
   PASEO_ASSET_HUB_PARA_ID,
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
   psmDepositNeeded,
   quoteNativeInMax,
+  quoteStableForUnderlying,
   sizePsmMint,
+  STABLE_TOKENS,
+  stableDepositNeeded,
   type PsmExternal,
   type PsmRoute,
   type Pool,
+  type Stable,
+  type StablePoolRoute,
 } from "@getsome/funding";
 
 /** The pool tier's costs. */
@@ -65,7 +72,30 @@ export interface PsmFundingSizing {
   quotedDeposit: bigint;
 }
 
-export type FundingSizing = PoolFundingSizing | PsmFundingSizing;
+/** The stable pool tier's costs: the PSM tier's shape without the mint. */
+export interface StablePoolFundingSizing {
+  tier: "pool";
+  /** The stable the burner holds and the program's dispatch fee is charged in. */
+  external: Stable;
+  /** Extra underlying to over-buy for the destination's execution fee. */
+  remoteFeeBuffer: bigint;
+  /** The dispatch fee, in the stable, kept out of the conversion. */
+  dispatchExternal: bigint;
+  /** Also kept out of the conversion, in the stable: the asset's min_balance, which the burner's
+   *  account must hold to survive the program and which stays on it, plus
+   *  `feeAllowanceExternal`. */
+  heldBackExternal: bigint;
+  /** The allowance for the XCM's local execution and delivery, in the stable, the unspent part
+   *  refunded to the burner on Asset Hub. */
+  feeAllowanceExternal: bigint;
+  /** The gate the worker waits for, carried in the hand-off: the plain two-hop quote for the
+   *  target, the min_balance, and the cushioned fees. */
+  quotedDeposit: bigint;
+  /** What the buyer is asked to deposit: the same with DEFAULT_SLIPPAGE_PCT on the quote, once. */
+  askedDeposit: bigint;
+}
+
+export type FundingSizing = PoolFundingSizing | StablePoolFundingSizing | PsmFundingSizing;
 
 /** A throwaway 32-byte beneficiary for the fee reads; it does not affect any fee. */
 const ZERO_32 = `0x${"00".repeat(32)}`;
@@ -156,6 +186,44 @@ export async function estimatePsmFundingSizing(
     feeAllowanceExternal: fees.feeAllowanceExternal,
     feeRate: args.route.feeRate,
     quotedDeposit: psmDepositNeeded(buyTarget, args.route, fees),
+  };
+}
+
+/** The stable pool tier's sizing: the program's own fees, measured against the program that
+ *  converts the settle amount plus the destination fee. Throws when a read fails, as the PSM
+ *  tier's does. */
+export async function estimateStableFundingSizing(
+  args: SizingArgs & { route: StablePoolRoute },
+): Promise<StablePoolFundingSizing> {
+  const { api, pool, destinationFee } = await sizingReads(args);
+  const stable = args.route.external;
+  const stablePool = await discoverPool(api, STABLE_TOKENS[stable].assetHubId);
+  const buyTarget = args.settleAmount + destinationFee;
+  // The plain two-hop quote is the gate; the ask carries the headroom once, on the stable.
+  const { stableIn } = await quoteStableForUnderlying(api, pool, stablePool, buyTarget);
+  const stableInMax = (stableIn * BigInt(10_000 + DEFAULT_SLIPPAGE_PCT * 100)) / 10_000n;
+  // At the magnitude the program will carry, as the other tiers' probes do.
+  const fees = await estimateStableProgramFees({
+    api,
+    stable,
+    stablePool,
+    pool,
+    beneficiaryHex: ZERO_32,
+    peopleParaId: args.peopleParaId,
+    depositStable: stableInMax,
+    minUnderlyingOut: buyTarget,
+    remoteFeesCash: destinationEarmark(buyTarget, destinationFee),
+    feeProbeAddress: args.probeAddress,
+  });
+  return {
+    tier: "pool",
+    external: stable,
+    remoteFeeBuffer: destinationFee,
+    dispatchExternal: fees.dispatchExternal,
+    heldBackExternal: fees.heldBackExternal,
+    feeAllowanceExternal: fees.feeAllowanceExternal,
+    quotedDeposit: stableDepositNeeded(stableIn, fees),
+    askedDeposit: stableDepositNeeded(stableInMax, fees),
   };
 }
 

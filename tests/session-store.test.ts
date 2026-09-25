@@ -3,6 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import { AccountId } from "polkadot-api";
 import type { FakeRail } from "@getsome/testing";
 import { useRequestsStore } from "../app/stores/requests";
 import { useSessionStore } from "../app/stores/session";
@@ -63,6 +64,79 @@ describe("session store: mock-world quote", () => {
         confirmedStageKey: "cash-top-up",
         settledAt: expect.any(Number),
       });
+    },
+  );
+});
+
+describe("session store: Polkadot direct deposit in the mock world", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  it("quotes DOT under dot-assethub on the pool tier, in DOT", async () => {
+    const store = useSessionStore();
+    store.setAmount("1");
+    await store.fetchQuote("Polkadot", "DOT");
+    expect(store.quoteError).toBeNull();
+    expect(store.quoted).toMatchObject({
+      symbol: "DOT",
+      sourceAsset: "DOT",
+      sourceChain: "Polkadot",
+    });
+    expect(store.mock?.sourceId).toBe("dot-assethub");
+    expect(store.mock?.route).toEqual({ tier: "pool" });
+  });
+
+  it(
+    "quotes USDC under its own source, opens the deposit on the mock burner, and runs to done",
+    { timeout: 30_000 },
+    async () => {
+      const store = useSessionStore();
+      const requests = useRequestsStore();
+      store.setAmount("10");
+      await store.fetchQuote("Polkadot", "USDC");
+      expect(store.quoteError).toBeNull();
+      // One to one in the fakes: the figure is exact, in the token picked.
+      expect(store.quoted).toMatchObject({
+        send: "10",
+        symbol: "USDC",
+        sourceAsset: "USDC",
+        sourceChain: "Polkadot",
+        nativeAmount: null,
+      });
+      expect(store.quoted?.depositToken).toBeUndefined();
+      expect(store.mock?.sourceId).toBe("usdc-assethub");
+      expect(store.mock?.route).toEqual({ tier: "pool", external: "USDC" });
+
+      await store.start();
+      expect(requests.phase).toBe("awaiting-deposit");
+      const record = requests.foregroundRecord!;
+      expect(record).toMatchObject({
+        sourceId: "usdc-assethub",
+        chain: "Polkadot",
+        asset: "USDC",
+        route: "crypto",
+        rail: { provider: "manual" },
+        sourceAmount: "10",
+        sourceSymbol: "USDC",
+      });
+      expect(record.deposit?.assetSymbol).toBe("USDC");
+      // The deposit address is the mock burner itself, an Asset Hub account, not the fake rail's.
+      expect(AccountId().enc(record.deposit!.address)).toHaveLength(32);
+      expect(record.progress.profile.id).toBe("direct");
+      // A direct deposit has no refund leg.
+      expect(store.refundAddress).toBeNull();
+      expect(store.revealRefundKey()).toBeNull();
+
+      store.simulateDeposit();
+      const waitFor = async (pred: () => boolean, ms: number) => {
+        const until = Date.now() + ms;
+        while (!pred() && Date.now() < until) await new Promise((r) => setTimeout(r, 25));
+      };
+      await waitFor(() => requests.phase === "working", 15_000);
+      store.approveClaim();
+      await waitFor(() => requests.phase === "done", 10_000);
+      expect(requests.phase).toBe("done");
     },
   );
 });

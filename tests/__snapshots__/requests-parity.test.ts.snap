@@ -3678,10 +3678,6 @@ exports[`request list projection > projects the fixture records exactly as today
           "icon": "/icons/ethereum.svg",
           "label": "Ethereum",
         },
-        "provider": {
-          "icon": "/icons/chainflip.png",
-          "label": "Chainflip",
-        },
         "token": {
           "icon": "/icons/ethereum.svg",
           "label": "ETH",
@@ -3697,7 +3693,7 @@ exports[`request list projection > projects the fixture records exactly as today
           "cash-conversion": 1746553500000,
         },
         "view": {
-          "activeNodeIndex": 4,
+          "activeNodeIndex": 2,
           "activeStageKey": "cash-conversion",
           "kind": "active",
           "label": "Converting to $CASH",
@@ -3708,18 +3704,8 @@ exports[`request list projection > projects the fixture records exactly as today
               "state": "complete",
             },
             {
-              "key": "chainflip-receiving",
+              "key": "direct-confirming",
               "label": "Confirmed",
-              "state": "complete",
-            },
-            {
-              "key": "chainflip-swapping",
-              "label": "Swapped",
-              "state": "complete",
-            },
-            {
-              "key": "chainflip-sending",
-              "label": "Sent",
               "state": "complete",
             },
             {
@@ -3763,10 +3749,6 @@ exports[`request list projection > projects the fixture records exactly as today
           "icon": "/icons/bitcoin.svg",
           "label": "Bitcoin",
         },
-        "provider": {
-          "icon": "/icons/chainflip.png",
-          "label": "Chainflip",
-        },
         "token": {
           "icon": "/icons/bitcoin.svg",
           "label": "BTC",
@@ -3789,18 +3771,8 @@ exports[`request list projection > projects the fixture records exactly as today
               "state": "current",
             },
             {
-              "key": "chainflip-receiving",
+              "key": "direct-confirming",
               "label": "Confirmed",
-              "state": "upcoming",
-            },
-            {
-              "key": "chainflip-swapping",
-              "label": "Swapped",
-              "state": "upcoming",
-            },
-            {
-              "key": "chainflip-sending",
-              "label": "Sent",
               "state": "upcoming",
             },
             {
@@ -3844,10 +3816,6 @@ exports[`request list projection > projects the fixture records exactly as today
           "icon": "/icons/bitcoin.svg",
           "label": "Bitcoin",
         },
-        "provider": {
-          "icon": "/icons/chainflip.png",
-          "label": "Chainflip",
-        },
         "token": {
           "icon": "/icons/bitcoin.svg",
           "label": "BTC",
@@ -3864,7 +3832,7 @@ exports[`request list projection > projects the fixture records exactly as today
           "cash-conversion": 1746551400000,
         },
         "view": {
-          "activeNodeIndex": 4,
+          "activeNodeIndex": 2,
           "activeStageKey": "cash-conversion",
           "kind": "failed",
           "label": "Converting to $CASH",
@@ -3875,18 +3843,8 @@ exports[`request list projection > projects the fixture records exactly as today
               "state": "complete",
             },
             {
-              "key": "chainflip-receiving",
+              "key": "direct-confirming",
               "label": "Confirmed",
-              "state": "complete",
-            },
-            {
-              "key": "chainflip-swapping",
-              "label": "Swapped",
-              "state": "complete",
-            },
-            {
-              "key": "chainflip-sending",
-              "label": "Sent",
               "state": "complete",
             },
             {
@@ -3931,10 +3889,6 @@ exports[`request list projection > projects the fixture records exactly as today
           "icon": "/icons/solana.svg",
           "label": "Solana",
         },
-        "provider": {
-          "icon": "/icons/chainflip.png",
-          "label": "Chainflip",
-        },
         "token": {
           "icon": "/icons/solana.svg",
           "label": "SOL",
@@ -3957,18 +3911,8 @@ exports[`request list projection > projects the fixture records exactly as today
               "state": "current",
             },
             {
-              "key": "chainflip-receiving",
+              "key": "direct-confirming",
               "label": "Confirmed",
-              "state": "upcoming",
-            },
-            {
-              "key": "chainflip-swapping",
-              "label": "Swapped",
-              "state": "upcoming",
-            },
-            {
-              "key": "chainflip-sending",
-              "label": "Sent",
               "state": "upcoming",
             },
             {
@@ -4013,10 +3957,6 @@ exports[`request list projection > projects the fixture records exactly as today
           "icon": "/icons/bitcoin.svg",
           "label": "Bitcoin",
         },
-        "provider": {
-          "icon": "/icons/chainflip.png",
-          "label": "Chainflip",
-        },
         "token": {
           "icon": "/icons/bitcoin.svg",
           "label": "BTC",
@@ -4039,18 +3979,8 @@ exports[`request list projection > projects the fixture records exactly as today
               "state": "current",
             },
             {
-              "key": "chainflip-receiving",
+              "key": "direct-confirming",
               "label": "Confirmed",
-              "state": "upcoming",
-            },
-            {
-              "key": "chainflip-swapping",
-              "label": "Swapped",
-              "state": "upcoming",
-            },
-            {
-              "key": "chainflip-sending",
-              "label": "Sent",
               "state": "upcoming",
             },
             {
@@ -4245,10 +4175,6 @@ exports[`request list projection > projects the fixture records with live status
           "icon": "/icons/ethereum.svg",
           "label": "Ethereum",
         },
-        "provider": {
-          "icon": "/icons/chainflip.png",
-          "label": "Chainflip",
-        },
         "token": {
           "icon": "/icons/ethereum.svg",
           "label": "ETH",
@@ -4265,7 +4191,7 @@ exports[`request list projection > projects the fixture records with live status
           "cash-conversion": 1746553500000,
         },
         "view": {
-          "activeNodeIndex": 4,
+          "activeNodeIndex": 2,
           "activeStageKey": "cash-conversion",
           "kind": "failed",
           "label": "Converting to $CASH",
@@ -4276,18 +4202,8 @@ exports[`request list projection > projects the fixture records with live status
               "state": "complete",
             },
             {
-              "key": "chainflip-receiving",
+              "key": "direct-confirming",
               "label": "Confirmed",
-              "state": "complete",
-            },
-            {
-              "key": "chainflip-swapping",
-              "label": "Swapped",
-              "state": "complete",
-            },
-            {
-              "key": "chainflip-sending",
-              "label": "Sent",
               "state": "complete",
             },
             {
@@ -4332,10 +4248,6 @@ exports[`request list projection > projects the fixture records with live status
           "icon": "/icons/bitcoin.svg",
           "label": "Bitcoin",
         },
-        "provider": {
-          "icon": "/icons/chainflip.png",
-          "label": "Chainflip",
-        },
         "token": {
           "icon": "/icons/bitcoin.svg",
           "label": "BTC",
@@ -4351,7 +4263,7 @@ exports[`request list projection > projects the fixture records with live status
           "cash-conversion": 1746554400000,
         },
         "view": {
-          "activeNodeIndex": 4,
+          "activeNodeIndex": 2,
           "activeStageKey": "cash-conversion",
           "kind": "active",
           "label": "Converting to $CASH",
@@ -4362,18 +4274,8 @@ exports[`request list projection > projects the fixture records with live status
               "state": "complete",
             },
             {
-              "key": "chainflip-receiving",
+              "key": "direct-confirming",
               "label": "Confirmed",
-              "state": "complete",
-            },
-            {
-              "key": "chainflip-swapping",
-              "label": "Swapped",
-              "state": "complete",
-            },
-            {
-              "key": "chainflip-sending",
-              "label": "Sent",
               "state": "complete",
             },
             {
@@ -4417,10 +4319,6 @@ exports[`request list projection > projects the fixture records with live status
           "icon": "/icons/bitcoin.svg",
           "label": "Bitcoin",
         },
-        "provider": {
-          "icon": "/icons/chainflip.png",
-          "label": "Chainflip",
-        },
         "token": {
           "icon": "/icons/bitcoin.svg",
           "label": "BTC",
@@ -4437,7 +4335,7 @@ exports[`request list projection > projects the fixture records with live status
           "cash-conversion": 1746551400000,
         },
         "view": {
-          "activeNodeIndex": 4,
+          "activeNodeIndex": 2,
           "activeStageKey": "cash-conversion",
           "kind": "failed",
           "label": "Converting to $CASH",
@@ -4448,18 +4346,8 @@ exports[`request list projection > projects the fixture records with live status
               "state": "complete",
             },
             {
-              "key": "chainflip-receiving",
+              "key": "direct-confirming",
               "label": "Confirmed",
-              "state": "complete",
-            },
-            {
-              "key": "chainflip-swapping",
-              "label": "Swapped",
-              "state": "complete",
-            },
-            {
-              "key": "chainflip-sending",
-              "label": "Sent",
               "state": "complete",
             },
             {
@@ -4504,10 +4392,6 @@ exports[`request list projection > projects the fixture records with live status
           "icon": "/icons/solana.svg",
           "label": "Solana",
         },
-        "provider": {
-          "icon": "/icons/chainflip.png",
-          "label": "Chainflip",
-        },
         "token": {
           "icon": "/icons/solana.svg",
           "label": "SOL",
@@ -4530,18 +4414,8 @@ exports[`request list projection > projects the fixture records with live status
               "state": "current",
             },
             {
-              "key": "chainflip-receiving",
+              "key": "direct-confirming",
               "label": "Confirmed",
-              "state": "upcoming",
-            },
-            {
-              "key": "chainflip-swapping",
-              "label": "Swapped",
-              "state": "upcoming",
-            },
-            {
-              "key": "chainflip-sending",
-              "label": "Sent",
               "state": "upcoming",
             },
             {
@@ -4586,10 +4460,6 @@ exports[`request list projection > projects the fixture records with live status
           "icon": "/icons/bitcoin.svg",
           "label": "Bitcoin",
         },
-        "provider": {
-          "icon": "/icons/chainflip.png",
-          "label": "Chainflip",
-        },
         "token": {
           "icon": "/icons/bitcoin.svg",
           "label": "BTC",
@@ -4612,18 +4482,8 @@ exports[`request list projection > projects the fixture records with live status
               "state": "current",
             },
             {
-              "key": "chainflip-receiving",
+              "key": "direct-confirming",
               "label": "Confirmed",
-              "state": "upcoming",
-            },
-            {
-              "key": "chainflip-swapping",
-              "label": "Swapped",
-              "state": "upcoming",
-            },
-            {
-              "key": "chainflip-sending",
-              "label": "Sent",
               "state": "upcoming",
             },
             {

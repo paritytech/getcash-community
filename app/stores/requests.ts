@@ -96,7 +96,7 @@ import {
   type RequestRef,
 } from "../utils/request-index";
 import { sendHandoff, workerSessionId } from "~~/lib/coinage";
-import { SOURCE_CHAINS, sourceIdFor } from "~~/lib/config";
+import { FUNDING_CHAINS, sourceIdFor, sourcePairFor } from "~~/lib/config";
 import { isHosted } from "~~/lib/host-account";
 
 export interface RequestEntry {
@@ -493,17 +493,11 @@ const railExpiryOf = (job: WorkerJob): number | null =>
   isNumber(job.depositExpiresAt) && job.depositExpiresAt > 0 ? job.depositExpiresAt : null;
 
 /** Today's `lastQuoteParams` for a source id: the rail and method of a Meld source, the chain and
- *  coin of a swap source, Asset Hub's own for the crypto rail's, the id itself otherwise. */
+ *  coin of a swap or direct source, the id itself otherwise. */
 function displaySourceOf(sourceId: string): { chain: string; asset: string } {
   const route = routeOf(sourceId);
   if (route !== "crypto") return { chain: "Meld", asset: route === "bank" ? "Bank" : "Card" };
-  if (sourceId === CRYPTO_SOURCE_ID) return { chain: "AssetHub", asset: "DOT" };
-  for (const { chain, assets } of SOURCE_CHAINS) {
-    for (const asset of assets) {
-      if (sourceIdFor(chain, asset) === sourceId) return { chain, asset };
-    }
-  }
-  return { chain: sourceId, asset: sourceId };
+  return sourcePairFor(sourceId) ?? { chain: sourceId, asset: sourceId };
 }
 
 /** The snapshot a request starts with when its record is built from the worker's job: today's
@@ -2052,7 +2046,7 @@ export const useRequestsStore = defineStore("requests", () => {
     // Every source a request can run under: a total storage loss leaves no record to learn them
     // from, and a lost number can sit below the highest record.
     const sources = new Set<string>([CRYPTO_SOURCE_ID, ...MELD_SOURCE_IDS]);
-    for (const { chain, assets } of SOURCE_CHAINS) {
+    for (const { chain, assets } of FUNDING_CHAINS) {
       for (const asset of assets) {
         const sourceId = sourceIdFor(chain, asset);
         if (sourceId !== undefined) sources.add(sourceId);
