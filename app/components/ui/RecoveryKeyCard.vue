@@ -37,7 +37,11 @@ const { copied, copy } = useCopyToClipboard();
           <p class="break-all text-paragraph-l text-fg-primary" :aria-hidden="masked">
             {{ keyText }}
           </p>
-          <span v-if="masked" class="key-mask absolute -inset-1 rounded-nested" aria-hidden="true" />
+          <span
+            v-if="masked"
+            class="key-mask absolute -inset-1 rounded-nested"
+            aria-hidden="true"
+          />
         </div>
       </div>
       <div class="flex shrink-0 items-center gap-3">

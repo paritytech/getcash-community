@@ -77,7 +77,12 @@ const steps = [
           :address="address"
         />
         <template v-else-if="step.card === 'key'">
-          <RecoveryKeyCard label="Private key" :secret="secret" :masked="masked" @toggle="toggleKey" />
+          <RecoveryKeyCard
+            label="Private key"
+            :secret="secret"
+            :masked="masked"
+            @toggle="toggleKey"
+          />
           <p v-if="unavailable" class="text-center text-body-s text-fg-error" role="alert">
             The key can't be loaded on this device. Open this withdrawal in the Polkadot App to
             reach it.

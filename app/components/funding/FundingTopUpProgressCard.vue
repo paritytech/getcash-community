@@ -76,11 +76,7 @@ const emit = defineEmits<{ open: [topUp: ProgressCardTopUp] }>();
         <strong
           class="truncate text-heading-m"
           :class="
-            settled && !debit
-              ? 'text-fg-success'
-              : failed
-                ? 'text-fg-tertiary'
-                : 'text-fg-primary'
+            settled && !debit ? 'text-fg-success' : failed ? 'text-fg-tertiary' : 'text-fg-primary'
           "
         >
           <CashAmount :sign="amountParts.sign" :amount="amountParts.amount" />

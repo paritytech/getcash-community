@@ -49,14 +49,7 @@ const withdrawal = useWithdrawalRequest();
 useStateDirector();
 
 type Step =
-  | "network"
-  | "token"
-  | "address"
-  | "summary"
-  | "fees"
-  | "journey"
-  | "cancel"
-  | "return-funds";
+  "network" | "token" | "address" | "summary" | "fees" | "journey" | "cancel" | "return-funds";
 const step = ref<Step>(props.topUp ? "journey" : "network");
 const network = ref<WithdrawNetwork | null>(null);
 const destination = ref<WithdrawDestination | null>(null);

@@ -110,10 +110,7 @@ const canRetry = computed(
         <ArrowUpRight v-else-if="sent" class="size-6 text-fg-primary" aria-hidden="true" />
         <RefreshCcw v-else class="size-6 text-fg-primary" aria-hidden="true" />
       </span>
-      <p
-        class="mt-2 text-display-m"
-        :class="sideExit ? 'text-fg-secondary' : 'text-fg-primary'"
-      >
+      <p class="mt-2 text-display-m" :class="sideExit ? 'text-fg-secondary' : 'text-fg-primary'">
         <CashAmount :amount="record.amountHuman" :sign="sent ? '-' : ''" />
       </p>
       <p v-if="sentWhen" class="text-paragraph-l text-fg-secondary">{{ sentWhen }}</p>
