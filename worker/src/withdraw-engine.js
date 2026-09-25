@@ -1,14 +1,21 @@
 import { CASH_LOCATION } from "@getsome/people";
 import {
+  ChannelExpiredError,
+  ChannelMismatchError,
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
   DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+  freshRailLegState,
+  freshSweepState,
   freshWithdrawTickState,
+  RailFailedError,
+  railTickOnce,
   readDestinationPas,
   withdrawTickOnce,
   WithdrawRejectedError,
 } from "@getsome/withdraw";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import { readParams } from "./params.js";
+import { payRail, railFor } from "./providers.js";
 import {
   asBig,
   bounded,
@@ -18,7 +25,9 @@ import {
   signOptionsFor,
 } from "./shared.js";
 
-// The withdrawal engine: the only driver of withdrawTickOnce, one tick per live job per pass.
+// The withdrawal engine: the only driver of withdrawTickOnce and railTickOnce, one tick per live
+// job per pass. The message leg moves the CASH to Asset Hub as PAS; for a destination beyond
+// Asset Hub the rail leg then hands the PAS to a provider and follows its word.
 //
 // Once this engine holds a job it is the only writer for it. The surface only reads records back.
 // Each dispatch runs at most one tick per live job, persists what it learned, and exits. Records
@@ -49,13 +58,17 @@ const saveJobs = () => store.save();
  *   v: 1, sessionId, label,                  // label: the entropy label the surface used
  *   keyAddress, keyPublicKeyHex,             // the key the surface showed and the purse pays
  *   amount, destination, landingHex, rail,   // what the surface asked for; kept for its records
+ *   channel?,                                // the provider's channel the page opened
  *   assetHubGenesis, peopleGenesis, peopleParaId, assetHubParaId, poolAccount, slippagePct,
  *   paymentExpiresAt: number|null,
- *   phase: "starting" | WithdrawStep | "failed",
- *   failure?: "rejected" | "timeout" | "expired" | "cancelled",
+ *   phase: "starting" | WithdrawStep | RailStep | "failed",
+ *   failure?: "rejected" | "timeout" | "expired" | "cancelled" | "no-rail" | "rail-failed"
+ *            | "channel-expired" | "channel-mismatch",
+ *   landed,                                  // the message leg is done: PAS on Asset Hub
  *   done, createdAt, armedAt, lastTickAt, lastError?,
  *   state: { attempts, rejections, submitted, destinationPasBefore, expectedLanding,
  *            fundsSeenAt, workedMs },       // the two balances as decimal strings or null
+ *   leg: { handoff, paid, sweep, reading },  // the rail leg, for a provider rail
  *   submitting?: { call, at },               // written before a submit
  *   txs: [{ call, txHash, block? }],
  * }
@@ -93,8 +106,11 @@ function newRecord(input, nowMs) {
   ) {
     throw new Error("startWithdraw: destination needs chain, asset and address");
   }
-  if (input.rail !== "direct" && input.rail !== "chainflip") {
-    throw new Error("startWithdraw: rail must be direct or chainflip");
+  if (!RAILS.includes(input.rail)) {
+    throw new Error(`startWithdraw: rail must be one of ${RAILS.join(", ")}`);
+  }
+  if (input.rail !== "direct" && !isChannel(input.channel)) {
+    throw new Error("startWithdraw: a provider rail needs the channel the page opened");
   }
   if (!assetHubGenesis || !peopleGenesis) {
     throw new Error("startWithdraw: both chain genesis hashes are required");
@@ -125,14 +141,64 @@ function newRecord(input, nowMs) {
     poolAccount,
     slippagePct,
     paymentExpiresAt: paymentExpiryOf(input),
+    // Kept as handed over, so a surface that lost its record can rebuild the hand-off whole.
+    ...(isChannel(input.channel) ? { channel: channelOf(input.channel) } : {}),
     phase: "starting",
+    landed: false,
     done: false,
     createdAt: nowMs,
     armedAt: nowMs,
     lastTickAt: null,
     state: freshRecordState(),
+    leg: legFor(input, nowMs),
     txs: [],
   };
+}
+
+/** The rails a hand-off may name; `direct` ends with the message, the rest add the rail leg. */
+const RAILS = ["direct", "chainflip", "meld"];
+
+/** A channel as the page hands it over: the provider's id and the Asset Hub account to pay. */
+const isChannel = (channel) =>
+  typeof channel === "object" &&
+  channel !== null &&
+  typeof channel.id === "string" &&
+  channel.id !== "" &&
+  typeof channel.address === "string" &&
+  channel.address !== "";
+
+/** The channel's fields as the surface sent them, numbers and strings only. */
+function channelOf(channel) {
+  const openedAt = Number(channel.openedAt);
+  const expiresAt = Number(channel.expiresAt);
+  return {
+    id: channel.id,
+    address: channel.address,
+    openedAt: Number.isFinite(openedAt) && openedAt > 0 ? openedAt : 0,
+    expiresAt: Number.isFinite(expiresAt) && expiresAt > 0 ? expiresAt : 0,
+    expectedEgress: String(channel.expectedEgress ?? "0"),
+  };
+}
+
+/** A fresh rail leg, seeded with the hand-off's channel when it carries one. The expiry rides
+ *  along: the leg refuses to pay a channel the provider has closed. */
+function legFor(input, nowMs) {
+  const leg = freshRailLegState();
+  if (isChannel(input.channel)) {
+    const { id, address, openedAt, expiresAt } = channelOf(input.channel);
+    leg.handoff = { id, address, openedAt: openedAt || nowMs, expiresAt };
+  }
+  return leg;
+}
+
+/** The channel this job's rail leg pays. The expiry is taken from the record's own channel when
+ *  the leg does not carry one, so a job stored before the leg kept it is still held to it. */
+function handoffOf(record) {
+  const handoff = record.leg?.handoff ?? null;
+  if (handoff === null) return null;
+  if (typeof handoff.expiresAt === "number") return handoff;
+  const expiresAt = Number(record.channel?.expiresAt);
+  return { ...handoff, expiresAt: Number.isFinite(expiresAt) && expiresAt > 0 ? expiresAt : 0 };
 }
 
 const freshRecordState = () => ({ ...freshWithdrawTickState(), workedMs: 0 });
@@ -166,6 +232,11 @@ export async function startWithdraw(params) {
     // A re-sent hand-off carries the surface's current payment window: a retried payment gets a
     // fresh one, and the job must not expire on the old clock while the surface waits on the new.
     existing.paymentExpiresAt = paymentExpiryOf(input) ?? existing.paymentExpiresAt;
+    // A fresh channel, after a swap that refunded, starts the rail leg over: unpaid, unread.
+    if (isChannel(input.channel) && input.channel.id !== existing.leg?.handoff?.id) {
+      existing.channel = channelOf(input.channel);
+      existing.leg = legFor(input, Date.now());
+    }
     await saveJobs();
     return describeWithdraw(existing);
   }
@@ -186,7 +257,8 @@ export async function startWithdraw(params) {
 
 /**
  * Re-arms a failed job on a re-sent hand-off. The run clock and the payment window restart. A
- * rejected job sizes and submits afresh; a job whose XCM landed keeps following its message.
+ * rejected job sizes and submits afresh; a job whose XCM landed keeps following its message; a
+ * job whose provider failed starts the rail leg over with the fresh channel the hand-off brings.
  */
 function rearm(record, nowMs) {
   const { failure } = record;
@@ -197,6 +269,7 @@ function rearm(record, nowMs) {
   record.state.workedMs = 0;
   if (failure === "rejected" || failure === "timeout") {
     record.state.rejections = 0;
+    if (record.leg?.sweep) record.leg.sweep.rejections = 0;
   }
   if (failure === "expired" || failure === "cancelled") record.state.fundsSeenAt = null;
 }
@@ -229,7 +302,10 @@ function describeWithdraw(record) {
     v: RECORD_V,
     sessionId: record.sessionId,
     phase: record.phase,
+    // Records from before the rail leg carry no `landed`; for them the message was the whole job.
+    landed: record.landed ?? record.done,
     done: record.done,
+    ...(record.leg?.reading == null ? {} : { rail: record.leg.reading }),
     amount: record.amount,
     createdAt: record.createdAt,
     lastTickAt: record.lastTickAt,
@@ -239,6 +315,27 @@ function describeWithdraw(record) {
     txs: record.txs,
     fundsSeenAt: record.state?.fundsSeenAt ?? null,
   };
+}
+
+/**
+ * Dev builds only: takes the provider's word as delivered for a job on the rail leg, so the walk
+ * can be finished where the provider cannot be reached. On a test network the channel is real
+ * but the swap never runs, since the provider watches another chain.
+ */
+export async function skipWithdrawRail(params) {
+  const input = readParams(params);
+  const all = await loadJobs();
+  const sessionId = String(input.sessionId ?? "");
+  const record = all[sessionId];
+  if (!record) return { sessionId, known: false };
+  if (!record.landed || record.done || record.rail === "direct" || record.phase === "failed") {
+    return { error: "invalid", reason: "the job is not on the rail leg" };
+  }
+  record.leg = { ...(record.leg ?? freshRailLegState()), reading: { status: "complete" } };
+  record.phase = "done";
+  record.done = true;
+  await saveJobs();
+  return describeWithdraw(record);
 }
 
 /** Reads one job by `sessionId`, or all jobs. */
@@ -253,8 +350,11 @@ export async function withdrawStatus(params) {
   return { jobs: Object.values(all).map(describeWithdraw) };
 }
 
-/** True from the first tick that saw CASH until the XCM's message was processed. */
-const onTheClock = (record) => !record.done && record.state.fundsSeenAt !== null;
+/** True from the first tick that saw CASH until the job's own work is over: the message
+ *  processed for a direct rail, the provider paid for the rest. What the provider then takes is
+ *  its time, not this worker's. */
+const onTheClock = (record) =>
+  !record.done && record.state.fundsSeenAt !== null && !(record.landed && record.leg?.paid);
 
 /** Adds this tick's gap, capped at MAX_TICK_GAP_MS, to the job's worked time while on the clock. */
 function accountWorkedTime(record, nowMs) {
@@ -283,9 +383,88 @@ function judgeBounds(record, nowMs, read) {
   }
 }
 
-/** One tick for one record: connect, read the world, act at most once, persist, let go. */
+/**
+ * One tick on the rail leg: the provider's channel opened, then paid, then read. The worker
+ * persists the channel before paying it, so a payment whose answer is lost is never made twice.
+ * The provider's verdict ends the leg: delivered completes the job, a failure fails it with the
+ * reading kept for the surface to read.
+ */
+async function tickRailLeg(record) {
+  const rail = railFor(record.rail, record);
+  if (rail === null) {
+    fail(record, "no-rail", `no ${record.rail} provider in this build`);
+    return;
+  }
+  const state = {
+    handoff: handoffOf(record),
+    paid: record.leg?.paid === true,
+    sweep: record.leg?.sweep ?? freshSweepState(),
+    reading: record.leg?.reading ?? null,
+  };
+  const persistLeg = () => {
+    record.leg = {
+      handoff: state.handoff,
+      paid: state.paid,
+      sweep: state.sweep,
+      reading: state.reading,
+    };
+  };
+  const persistAndSave = async () => {
+    persistLeg();
+    await saveJobs();
+  };
+  let outcome;
+  try {
+    outcome = await railTickOnce(
+      {
+        rail,
+        pay: (handoff, sweep) =>
+          payRail(record, handoff, sweep, {
+            onBeforeSubmit: persistAndSave,
+            onTx: (info) => record.txs.push(info),
+          }),
+        tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+        destinationAddress: record.destination?.address,
+        // The payment reads the key and then submits, each on its own bound; this outer bound
+        // must outlast both, or it fires while the transfer is still in flight.
+        payTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS + DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
+        now: Date.now,
+        onBeforePay: persistAndSave,
+      },
+      state,
+    );
+  } catch (error) {
+    persistLeg();
+    if (error instanceof RailFailedError) {
+      fail(record, "rail-failed", error.message);
+      return;
+    }
+    // Nothing moved: the native is still on the key and a fresh channel can carry it.
+    if (error instanceof ChannelExpiredError) {
+      fail(record, "channel-expired", error.message);
+      return;
+    }
+    if (error instanceof ChannelMismatchError) {
+      fail(record, "channel-mismatch", error.message);
+      return;
+    }
+    throw error;
+  }
+  persistLeg();
+  // A cancel that landed during this tick stands.
+  if (record.phase === "failed") return;
+  record.phase = outcome.step;
+  if (outcome.step === "done") record.done = true;
+}
+
+/** One tick for one record: connect, read the world, act at most once, persist, let go. The
+ *  message leg until the PAS is on Asset Hub, the rail leg after that for a provider rail. */
 async function tickRecord(record, nowMs) {
   accountWorkedTime(record, nowMs);
+  if (record.landed && record.rail !== "direct") {
+    await tickRailLeg(record);
+    return;
+  }
   const key = await keypairFor(record.label);
   const ahClient = await connectChain(record.assetHubGenesis, "asset hub");
   let peopleClient = null;
@@ -367,7 +546,13 @@ async function tickRecord(record, nowMs) {
     record.phase = outcome.step;
     // A completed tick clears any stale submitting marker.
     delete record.submitting;
-    if (outcome.step === "done") record.done = true;
+    if (outcome.step === "done") {
+      // The PAS is on Asset Hub. That is the whole job for a direct rail; a provider rail
+      // carries on from the key on the next tick.
+      record.landed = true;
+      if (record.rail === "direct") record.done = true;
+      else record.phase = "handoff";
+    }
   } finally {
     try {
       peopleClient?.destroy();

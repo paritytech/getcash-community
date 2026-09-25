@@ -5,7 +5,7 @@
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef, watch } from "vue";
 import { recordedRoute, type ConversionRoute } from "@getsome/funding";
-import type { FlowState, SourceId } from "@getsome/core";
+import type { FlowState, SourceId, SwapStatusResult } from "@getsome/core";
 import { createMeldClient, getMeldStatus, type MeldClientLike } from "@getsome/meld";
 import {
   advanceFundingProgressSnapshot,
@@ -48,6 +48,8 @@ import {
   type RequestKey,
   type RequestRecord,
   type TopUpRecord,
+  isWithdrawalRail,
+  type WithdrawalChannel,
   type WithdrawJobView,
   type WithdrawalHandoffPayload,
   type WithdrawalRecord,
@@ -303,7 +305,7 @@ async function inParallel<T>(
 const MINUTE = 60_000;
 
 /** Rank 0–3 in the design's sense: a request the worker is still moving. A withdrawal at
- *  `sending` is the rail's to move, not the worker's. */
+ *  `sending` is on the rail leg, which the worker drives and reads for the provider. */
 const WORKER_DRIVEN_KINDS = new Set<RequestRecord["status"]["kind"]>([
   "awaiting-deposit",
   "deposit-seen",
@@ -311,6 +313,7 @@ const WORKER_DRIVEN_KINDS = new Set<RequestRecord["status"]["kind"]>([
   "claiming",
   "awaiting-payment",
   "paid",
+  "sending",
 ]);
 const isWorkerDriven = (record: RequestRecord): boolean =>
   WORKER_DRIVEN_KINDS.has(record.status.kind);
@@ -410,11 +413,13 @@ function jobView(job: WorkerJob): WorkerJobView {
 /** What this surface reads of a worker's stored withdrawal job. */
 type WithdrawJob = {
   phase?: string;
+  landed?: boolean;
   done?: boolean;
   failure?: string;
   lastError?: string;
   lastTickAt?: number | null;
   state?: { fundsSeenAt?: number | null };
+  leg?: { reading?: SwapStatusResult | null };
   txs?: WithdrawJobView["txs"];
   // The hand-off the worker keeps, read back when the surface has no record of the job.
   label?: string;
@@ -431,6 +436,13 @@ type WithdrawJob = {
   poolAccount?: string;
   slippagePct?: number;
   paymentExpiresAt?: number;
+  channel?: {
+    id?: unknown;
+    address?: unknown;
+    openedAt?: unknown;
+    expiresAt?: unknown;
+    expectedEgress?: unknown;
+  };
   createdAt?: number;
 };
 
@@ -446,9 +458,13 @@ async function readWithdrawJobs(): Promise<Record<string, WithdrawJob>> {
 
 /** The withdrawal job as the record's reducer reads it. */
 function withdrawJobView(job: WithdrawJob): WithdrawJobView {
+  const reading = job.leg?.reading;
   return {
     phase: job.phase ?? "",
+    // Jobs from before the rail leg carry no `landed`; for them the message was the whole job.
+    landed: job.landed === true || job.done === true,
     done: job.done === true,
+    ...(reading == null ? {} : { rail: reading }),
     ...(job.failure === undefined ? {} : { failure: job.failure }),
     ...(job.lastError === undefined ? {} : { lastError: job.lastError }),
     fundsSeenAt: job.state?.fundsSeenAt ?? null,
@@ -568,6 +584,7 @@ function handoffOf(job: WorkerJob): WorkerHandoffPayload | undefined {
 /** The hand-off the worker keeps on its withdrawal job, when every field is there. */
 function withdrawHandoffOf(job: WithdrawJob): WithdrawalHandoffPayload | undefined {
   const { destination, rail } = job;
+  const channel = channelOf(job);
   if (
     !isString(job.label) ||
     !isString(job.keyAddress) ||
@@ -578,7 +595,7 @@ function withdrawHandoffOf(job: WithdrawJob): WithdrawalHandoffPayload | undefin
     !isString(destination?.asset) ||
     !isString(destination?.address) ||
     !isString(job.landingHex) ||
-    (rail !== "direct" && rail !== "chainflip") ||
+    !isWithdrawalRail(rail) ||
     !isString(job.assetHubGenesis) ||
     !isString(job.peopleGenesis) ||
     !isNumber(job.peopleParaId) ||
@@ -608,6 +625,29 @@ function withdrawHandoffOf(job: WithdrawJob): WithdrawalHandoffPayload | undefin
     poolAccount: job.poolAccount,
     slippagePct: job.slippagePct,
     paymentExpiresAt: job.paymentExpiresAt,
+    ...(channel === undefined ? {} : { channel }),
+  };
+}
+
+/** The channel a job carries, when every field is there. */
+function channelOf(job: WithdrawJob): WithdrawalChannel | undefined {
+  const c = job.channel;
+  if (
+    c === undefined ||
+    !isString(c.id) ||
+    !isString(c.address) ||
+    !isNumber(c.openedAt) ||
+    !isNumber(c.expiresAt) ||
+    !isString(c.expectedEgress)
+  ) {
+    return undefined;
+  }
+  return {
+    id: c.id,
+    address: c.address,
+    openedAt: c.openedAt,
+    expiresAt: c.expiresAt,
+    expectedEgress: c.expectedEgress,
   };
 }
 

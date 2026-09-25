@@ -1,10 +1,19 @@
 export {
+  ASSET_HUB_DOT,
   SOURCES,
   SOURCE_CONFIGS,
   SOURCE_CONFIG_BY_ID,
   formatSourceAmount,
   type SourceConfig,
 } from "./sources";
+export {
+  openWithdrawChannel,
+  quoteOutgoing,
+  type OpenWithdrawChannelArgs,
+  type OutgoingDestination,
+  type OutgoingQuote,
+  type WithdrawChannel,
+} from "./withdraw-channel";
 export {
   computeQuote,
   egressFor,

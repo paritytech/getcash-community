@@ -58,6 +58,8 @@ function sendingStage(nominalMs: number) {
 const PROFILES: Record<WithdrawalRailState["provider"], FundingProgressProfile> = {
   direct: composeFundingProgressProfile(route, sendingStage(MINUTE)),
   chainflip: composeFundingProgressProfile(route, sendingStage(20 * MINUTE)),
+  // A payout the provider settles in its own time, a bank's included.
+  meld: composeFundingProgressProfile(route, sendingStage(24 * 60 * MINUTE)),
 };
 
 export const withdrawalProgressProfile = (rail: WithdrawalRailState["provider"]) => PROFILES[rail];

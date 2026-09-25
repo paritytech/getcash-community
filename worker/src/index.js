@@ -3,6 +3,7 @@ import { createKeepAlive } from "./keepalive.js";
 import { startRpcDispatcher } from "./rpc.js";
 import {
   cancelWithdraw,
+  skipWithdrawRail,
   startWithdraw,
   tickAllWithdraw,
   withdrawStatus,
@@ -16,6 +17,7 @@ import {
 export { cancelFunding, fundingStatus, startFunding, tickAllFunding } from "./engine.js";
 export {
   cancelWithdraw,
+  skipWithdrawRail,
   startWithdraw,
   tickAllWithdraw,
   withdrawStatus,
@@ -80,6 +82,7 @@ startRpcDispatcher({
     tickAllWithdraw: () => tickAllWithdraw(),
     withdrawStatus: (params) => withdrawStatus(params),
     cancelWithdraw: (params) => cancelWithdraw(params),
+    skipWithdrawRail: (params) => skipWithdrawRail(params),
   },
 });
 

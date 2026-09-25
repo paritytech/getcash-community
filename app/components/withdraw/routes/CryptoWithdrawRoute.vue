@@ -8,7 +8,9 @@ import type { FundingPackageEmits } from "../../../funding/handoff";
 import type { FundingSelection } from "../../../funding/selection";
 import type { FundingTopUp } from "../../../funding/top-ups";
 import { useRequestsStore } from "../../../stores/requests";
+import { useWithdrawOffersStore } from "../../../stores/withdraw-offers";
 import { toCashBase } from "../../../utils/cash";
+import { isDemoBuild } from "../../../utils/demo";
 import {
   landingAccountHex,
   type WithdrawDestination,
@@ -45,6 +47,8 @@ const destination = ref<WithdrawDestination | null>(null);
 const address = ref("");
 /** What arrives, formatted; null while quoting; undefined without a quote. */
 const receive = ref<string | null | undefined>(undefined);
+/** The native the estimate is for; what a provider's channel is quoted with at confirm. */
+const expectedNative = ref<bigint | null>(null);
 const starting = ref(false);
 const startError = ref<string | null>(null);
 const busy = ref(false);
@@ -52,12 +56,33 @@ const notice = ref<string | null>(null);
 
 const record = computed(() => requests.foregroundWithdrawal);
 const amount = computed(() => props.selection?.amount ?? props.topUp?.amount ?? "");
+/** The amount in base units; null while the shell's string cannot be read. */
+const amountBase = computed(() => toCashBase(amount.value));
+const offers = useWithdrawOffersStore();
 /** A withdrawal opened from the list whose record the store no longer has. */
 const unavailable = computed(() => {
   if (!props.topUp || record.value !== null) return false;
   const ref = withdrawalRequestRef(props.topUp.id);
   return ref === null || !requests.has(ref);
 });
+
+/** Demo Skip: the provider's channel is real on a test network but can never be paid there, so
+ *  the swap is taken as delivered by hand and the walk can reach its end. */
+const canSkipRail = computed(
+  () =>
+    isDemoBuild() &&
+    step.value === "journey" &&
+    record.value?.status.kind === "sending" &&
+    record.value.rail.provider !== "direct",
+);
+
+function onSkipRail() {
+  const current = record.value;
+  if (current === null || busy.value) return;
+  void withdrawal.skipRail(current.ref).catch((error: unknown) => {
+    notice.value = error instanceof Error ? error.message : String(error);
+  });
+}
 
 const toolbar = computed<{ title?: string; back: boolean }>(() => {
   switch (step.value) {
@@ -119,15 +144,32 @@ async function onAddress(entered: string) {
   step.value = "summary";
   const picked = destination.value;
   const base = toCashBase(amount.value);
-  if (picked === null || picked.rail !== "direct" || base === null) {
+  expectedNative.value = null;
+  if (picked === null || base === null) {
     receive.value = undefined;
     return;
   }
   receive.value = null;
   try {
-    const { quoteDirectReceive } = await import("~~/lib/withdraw-live");
-    const planck = await quoteDirectReceive(base);
-    if (step.value === "summary") receive.value = `${formatNative(planck, 10)} ${picked.asset}`;
+    if (picked.rail === "direct") {
+      // What the CASH sells for on Asset Hub's pool: the direct rail lands exactly that.
+      const live = await import("~~/lib/withdraw-live");
+      const planck = await live.quoteDirectReceive(base);
+      if (step.value !== "summary") return;
+      receive.value = `${formatNative(planck, 10)} ${picked.asset}`;
+      return;
+    }
+    // A provider destination shows what its offer for this amount said would land, and the
+    // channel is opened at confirm for the native that offer was quoted for.
+    await offers.learn(base);
+    if (step.value !== "summary") return;
+    const offer = offers.offerFor(picked);
+    if (offer.state !== "available" || offers.sellable === null) {
+      receive.value = undefined;
+      return;
+    }
+    expectedNative.value = offers.sellable;
+    receive.value = offer.formatted;
   } catch (error: unknown) {
     console.warn("[withdraw] receive estimate unavailable:", error);
     receive.value = undefined;
@@ -138,6 +180,13 @@ async function confirm() {
   const picked = destination.value;
   const base = toCashBase(amount.value);
   if (picked === null || base === null || starting.value) return;
+  // Judged once more here: the offer may have changed since the pick, and the channel is opened
+  // next. Under the minimum, or with the provider not answering, nothing is opened.
+  const allowed = offers.rowFor(picked);
+  if (!allowed.pickable) {
+    startError.value = allowed.subtitle ?? "This destination cannot take the amount.";
+    return;
+  }
   starting.value = true;
   startError.value = null;
   try {
@@ -147,6 +196,7 @@ async function confirm() {
       destination: { chain: picked.chainLabel, asset: picked.asset, address: address.value },
       landingHex: landingAccountHex(picked, address.value),
       rail: picked.rail,
+      ...(expectedNative.value === null ? {} : { expectedNative: expectedNative.value }),
     });
     if (outcome.ref === null) {
       startError.value = outcome.reason;
@@ -226,10 +276,20 @@ onUnmounted(() => {
       padding-bottom: env(safe-area-inset-bottom);
     "
   >
-    <Toolbar :title="toolbar.title" :back="toolbar.back" @back="onBack" />
+    <Toolbar :title="toolbar.title" :back="toolbar.back" @back="onBack">
+      <template v-if="canSkipRail" #trailing>
+        <button
+          type="button"
+          class="rounded-medium px-4 py-3 text-label-l font-normal text-fg-primary transition-colors hover:bg-action-tertiary-hover"
+          @click="onSkipRail"
+        >
+          Skip
+        </button>
+      </template>
+    </Toolbar>
 
     <div class="flex min-h-0 flex-1 flex-col px-6 pt-6">
-      <WithdrawNetworkScreen v-if="step === 'network'" @pick="pickNetwork" />
+      <WithdrawNetworkScreen v-if="step === 'network'" :amount="amountBase" @pick="pickNetwork" />
       <WithdrawTokenScreen
         v-else-if="step === 'token' && network"
         :network="network"

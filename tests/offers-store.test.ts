@@ -188,6 +188,47 @@ describe("offers store", () => {
     expect(offers.offeredTokens("Ethereum").map((t) => t.asset)).toEqual(["ETH", "USDT"]);
   });
 
+  it("still lists every token on a network, the greyed ones included", () => {
+    const session = useSessionStore();
+    const offers = useOffersStore();
+    sized(session, 100n * DOT);
+    offers.floors = LEARNED;
+    expect(offers.tokensOf("Ethereum").map((t) => t.asset)).toEqual(["ETH", "USDC", "USDT"]);
+    expect(offers.tokensOf("Bitcoin").map((t) => t.offer.state)).toEqual(["too-small"]);
+    expect(offers.tokensOf("Mars")).toEqual([]);
+  });
+
+  it("shows skeleton rows only while an answer is actually awaited", () => {
+    const offers = useOffersStore();
+    expect(offers.awaitingFloors).toBe(true); // rail on, nothing learned yet
+    offers.railEnabled = false;
+    expect(offers.awaitingFloors).toBe(false); // nothing will be asked: show the greyed rows
+    offers.railEnabled = true;
+    offers.floors = LEARNED;
+    expect(offers.awaitingFloors).toBe(false);
+  });
+
+  it("greys every route while the build does not move money through Chainflip", () => {
+    const session = useSessionStore();
+    const offers = useOffersStore();
+    offers.railEnabled = false; // a real build before the channel rail
+    sized(session, 100n * DOT);
+    // Nothing is ever learned in this build; the rows still say so.
+    expect(offers.awaitingFloors).toBe(false);
+    expect(
+      offers.networks.flatMap((n) => n.tokens).every((t) => t.offer.state === "rail-off"),
+    ).toBe(true);
+    offers.floors = LEARNED; // whatever Chainflip said, nothing is pickable
+    expect(offers.networks).toHaveLength(4);
+    expect(offers.networks.every((n) => !n.available && !n.checking)).toBe(true);
+    expect(
+      offers.networks.flatMap((n) => n.tokens).every((t) => t.offer.state === "rail-off"),
+    ).toBe(true);
+    expect(offers.offeredNetworks).toEqual([]);
+    expect(offers.offeredTokens("Ethereum")).toEqual([]);
+    expect(offers.paused).toBe(false);
+  });
+
   it("compares a PSM-tier quote against floors worth in its own asset, kept apart from the pool's", () => {
     const session = useSessionStore();
     const offers = useOffersStore();
@@ -225,26 +266,22 @@ describe("offers store", () => {
     expect(learnSourceFloors).toHaveBeenLastCalledWith({ egress: egressFor(TOKENS.PAS) });
   });
 
-  it("does not let a load asked for before a retry answer the retry", async () => {
+  it("drops an answer for floors that were seeded while it was in flight", async () => {
     const session = useSessionStore();
     const offers = useOffersStore();
     sized(session, 100n * DOT);
     const outage = new Map<SourceId, SourceFloorResult>([["eth", { kind: "unavailable" }]]);
-    const recovered = new Map<SourceId, SourceFloorResult>([
-      ["eth", floor("eth", 10n ** 16n, 25n)],
-    ]);
-    let answerFirst: (v: ReadonlyMap<SourceId, SourceFloorResult>) => void = () => {};
-    vi.mocked(learnSourceFloors)
-      .mockReturnValueOnce(new Promise((resolve) => (answerFirst = resolve)))
-      .mockResolvedValueOnce(recovered);
+    let answer: (v: ReadonlyMap<SourceId, SourceFloorResult>) => void = () => {};
+    vi.mocked(learnSourceFloors).mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
 
-    void offers.learn();
-    const retry = offers.relearn();
-    answerFirst(outage);
-    await retry;
+    const load = offers.learn();
+    expect(offers.learning).toBe(true);
+    offers.floors = LEARNED;
+    answer(outage);
+    await load;
 
-    expect(learnSourceFloors).toHaveBeenCalledTimes(2);
-    expect(offers.floors).toBe(recovered);
+    expect(offers.floors).toBe(LEARNED);
+    expect(offers.learning).toBe(false);
   });
 
   it("learns the floors for an asset the first time a quote is sized in it", async () => {

@@ -299,8 +299,21 @@ export type WithdrawalStatus =
 
 /** The leg a withdrawal left when it failed; `withdrawalRankOf` reads the rank back from it. */
 export type WithdrawalFailureStep = "payment" | "convert" | "send";
+/** The last four are the provider's endings on the rail leg, as the deposit side names them. */
 export type WithdrawalFailureKind =
-  "payment-failed" | "rejected" | "timeout" | "expired" | "egress-failed" | "unknown";
+  | "payment-failed"
+  | "rejected"
+  | "timeout"
+  | "expired"
+  | "unknown"
+  | "deposit-rejected"
+  | "egress-failed"
+  | "fallback-egress"
+  | "refunded"
+  /** The provider closed the channel before the key paid it; nothing moved. */
+  | "channel-expired"
+  /** The provider's record of the channel did not match the withdrawal; nothing moved. */
+  | "channel-mismatch";
 export interface WithdrawalFailure {
   kind: WithdrawalFailureKind;
   step: WithdrawalFailureStep;
@@ -347,24 +360,54 @@ export interface WithdrawalHandoffPayload {
   poolAccount: string;
   slippagePct: number;
   paymentExpiresAt: number;
+  /** The provider's channel, opened on the page at confirm; the worker pays it. Present for
+   *  every rail but `direct`. */
+  channel?: WithdrawalChannel;
+}
+
+/** A provider's channel for one withdrawal: where the key pays, and what the quote promised. */
+export interface WithdrawalChannel {
+  id: string;
+  /** The Asset Hub account the key pays, SS58. */
+  address: string;
+  openedAt: number;
+  /** When the provider closes the channel (ms); 0 when it gave none. */
+  expiresAt: number;
+  /** What the quote said would land, in the destination asset's base units. */
+  expectedEgress: string;
 }
 
 /** What the store extracts from one withdrawal job in the worker's blob. */
 export interface WithdrawJobView {
   phase: string;
+  /** The whole job: the PAS reached the destination, or the provider delivered. */
   done: boolean;
+  /** The message leg: the PAS is on Asset Hub, on the destination or on the key for a provider. */
+  landed: boolean;
   failure?: string;
   lastError?: string;
   fundsSeenAt: number | null;
   lastTickAt: number | null;
-  txs?: { call: "swap" | "withdraw"; txHash: string; block?: number }[];
+  txs?: { call: "swap" | "withdraw" | "sweep"; txHash: string; block?: number }[];
+  /** The provider's latest word on the swap, once the worker has paid it. */
+  rail?: SwapStatusResult;
 }
 
+/** `direct` for a destination on Asset Hub, which the PAS reaches with the XCM itself; the rest
+ *  carry it on from the key's own Asset Hub account. */
+export type WithdrawalRailProvider = "direct" | "chainflip" | "meld";
+export const WITHDRAWAL_RAILS: readonly WithdrawalRailProvider[] = ["direct", "chainflip", "meld"];
+export const isWithdrawalRail = (value: unknown): value is WithdrawalRailProvider =>
+  (WITHDRAWAL_RAILS as readonly unknown[]).includes(value);
+
+/** The rail leg of a withdrawal, in the deposit side's stages so one fold serves both. */
 export interface WithdrawalRailState {
-  /** `direct` for a destination on Asset Hub, which the PAS reaches with the XCM itself. */
-  provider: "direct" | "chainflip";
-  stage: "waiting" | "delivering" | "delivered" | "failed";
-  failure?: { message: string; code?: string };
+  provider: WithdrawalRailProvider;
+  /** The provider's own status, once it has reported. */
+  status?: SwapProgress | "failed";
+  stage: RailState["stage"];
+  delayed?: boolean;
+  failure?: RailState["failure"];
   updatedAt: number;
 }
 
@@ -377,7 +420,7 @@ export interface WithdrawalRecord {
   startedAt: number;
   /** The CASH the user asked to withdraw, human form. */
   amountHuman: string;
-  route: "crypto";
+  route: "crypto" | "card" | "bank";
   /** The network and asset the funds arrive as, and where. */
   destination: { chain: string; asset: string; address: string };
   /** The disposable key the purse pays: its entropy label, its People address, its public key. */
@@ -471,7 +514,9 @@ export type Observation =
         actualClaimed?: string;
       };
     }
-  | { source: "user"; at: number; event: "payment-requested"; attempt: number; id: string };
+  | { source: "user"; at: number; event: "payment-requested"; attempt: number; id: string }
+  /** The page opened a fresh provider channel for a retry; the hand-off carries it next. */
+  | { source: "user"; at: number; event: "channel-opened"; channel: WithdrawalChannel };
 
 /** The source a request runs under: a bare legacy ref means the crypto rail's. */
 export const effectiveSourceId = (ref: RequestRef): string => ref.sourceId ?? CRYPTO_SOURCE_ID;
