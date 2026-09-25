@@ -28,6 +28,7 @@ import {
   createMeldRail,
   NATIVE_DECIMALS,
   pickBestQuote,
+  shareStatusReads,
   type MeldClientLike,
   type MeldQuoteRaw,
 } from "@getsome/meld";
@@ -651,6 +652,8 @@ export const useSessionStore = defineStore("session", () => {
           ...(redirectUrl ? { redirectUrl } : {}),
         })
       : createFakeMeldClient();
+    // Core's status poll (the rail) and the store's poll read the same id; they share each read.
+    const statusReads = shareStatusReads(baseClient);
     // Capture the funding-request id on create so the pay sheet can poll this payment's status.
     const meldClient: MeldClientLike = {
       getQuote: (r) => baseClient.getQuote(r),
@@ -660,7 +663,7 @@ export const useSessionStore = defineStore("session", () => {
         meldServiceProvider = r.serviceProvider || null;
         return s;
       },
-      getStatus: (id) => baseClient.getStatus(id),
+      getStatus: (id) => statusReads.getStatus(id),
       cancel: (id) => baseClient.cancel(id),
     };
     meldStatusClient = meldClient;
@@ -1494,11 +1497,14 @@ export const useSessionStore = defineStore("session", () => {
           );
           meldPayUrlPending.value = false;
         } else {
-          const client = createMeldClient({
-            baseUrl: meldBaseUrl,
-            productId:
-              (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
-          });
+          // The pay-page lookup below and the poll's first tick share one read.
+          const client = shareStatusReads(
+            createMeldClient({
+              baseUrl: meldBaseUrl,
+              productId:
+                (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
+            }),
+          );
           meldStatusClient = client;
           meldFundingRequestId = record.meldFundingRequestId;
           meldServiceProvider = record.meldServiceProvider ?? null;
