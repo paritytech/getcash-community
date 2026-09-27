@@ -50,8 +50,8 @@ const amount = computed<{ value: string; symbol: string; approx: boolean } | nul
     const bare = q.send.endsWith(q.symbol) ? q.send.slice(0, -q.symbol.length).trim() : q.send;
     return { value: bare, symbol: q.symbol, approx: false };
   }
-  if (session.live && q?.sourceAsset) {
-    const estimate = estimateSourceAmount(d.amount, q.sourceAsset);
+  if (session.live && q?.sourceAsset && q.depositToken) {
+    const estimate = estimateSourceAmount(d.amount, q.depositToken, q.sourceAsset);
     if (estimate) return { value: estimate, symbol: q.sourceAsset, approx: true };
   }
   // The browser world's estimate scales from the CASH amount.

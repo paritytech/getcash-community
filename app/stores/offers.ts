@@ -1,25 +1,30 @@
-// What can pay for this purchase. Floors are learned from Chainflip and kept while they are
-// fresh; a Chainflip that answers for nothing is asked again, with a growing delay, for as long
-// as a picker is on screen. Every amount on screen is then answered locally.
+// What can pay for this purchase. Floors are learned from Chainflip for each asset a purchase is
+// sized in and kept while they are fresh; a Chainflip that answers for nothing is asked again,
+// with a growing delay, for as long as a picker is on screen. Every amount on screen is then
+// answered locally.
 
 import { defineStore } from "pinia";
-import { computed, ref, shallowRef } from "vue";
-import type { SourceId } from "@getsome/core";
+import { computed, ref, shallowReactive, shallowRef, watch } from "vue";
+import { TOKENS, type SourceId } from "@getsome/core";
 import {
+  egressFor,
   offerFor,
   SOURCE_CONFIG_BY_ID,
+  type EgressConfig,
   type SourceFloorResult,
   type SourceOffer,
 } from "@getsome/chainflip";
+import { PSM_EXTERNAL } from "@getsome/funding";
 import { SOURCE_CHAINS, sourceIdFor } from "~~/lib/config";
 import { learnSourceFloors } from "~~/lib/source-floors";
+import { isHosted } from "~~/lib/host-account";
 import { isDemoBuild } from "../utils/demo";
 import { chainflipRailOn } from "../utils/rail";
 import type { DocumentLike } from "./requests";
 import { useSessionStore } from "./session";
 
 export type TokenOffer =
-  /** Floors still being learned, or the pool still sizing the purchase. */
+  /** Floors still being learned, or the quote still sizing the purchase. */
   | { state: "checking" }
   | { state: "available"; offer: SourceOffer }
   /** Below this asset's floor. `minimumCashBase` is the smallest purchase it serves, or null. */
@@ -61,23 +66,51 @@ export const FLOORS_STALE_MS = 10 * 60_000;
 /** Waits between asks while Chainflip answers for nothing; the last one repeats. */
 export const FLOORS_RETRY_DELAYS_MS: readonly number[] = [5_000, 10_000, 20_000, 40_000, 60_000];
 
+/** What Chainflip said for one egress, and when. */
+interface Learned {
+  floors: ReadonlyMap<SourceId, SourceFloorResult>;
+  learnedAt: number;
+}
+
+/** Every source unavailable: a failed learn is still an answer, so the rows can say so. */
+const answeredForNothing = (floors: ReadonlyMap<SourceId, SourceFloorResult>): boolean =>
+  floors.size > 0 && [...floors.values()].every((r) => r.kind === "unavailable");
+
 export const useOffersStore = defineStore("offers", () => {
   const session = useSessionStore();
 
-  /** null until learned. A failed learn is still an answer here, every source unavailable, so
-   *  the rows can say so; `paused` names that case. */
-  const floors = shallowRef<ReadonlyMap<SourceId, SourceFloorResult> | null>(null);
-  /** When `floors` was learned (ms); null until then. */
-  const learnedAt = ref<number | null>(null);
-  let inflight: Promise<void> | null = null;
+  /** What the swap must deliver for the purchase on screen: the quote's deposit token, or the
+   *  tier's own before a quote has said. A floor is worth a different figure in each, so floors
+   *  are learned per egress and every egress learned is kept while fresh.
+   *
+   *  The screen loads before a route can be chosen. Assuming the PSM's external costs a round
+   *  trip only when a quote comes back `pool`; assuming the native cost one every session.
+   *  Off-host there is no PSM. */
+  const egress = computed(() =>
+    egressFor(session.quoted?.depositToken ?? (isHosted() ? TOKENS[PSM_EXTERNAL] : TOKENS.PAS)),
+  );
+  const learnedByEgress = shallowRef<ReadonlyMap<string, Learned>>(new Map());
+  const inflight = shallowReactive(new Map<string, Promise<void>>());
+
+  /** The floors for the egress on screen; null until learned. Writable so tests and previews
+   *  can seed them: a seeded answer counts as fresh and outranks a load still in flight.
+   *  `paused` names the no-answer case. */
+  const floors = computed({
+    get: () => learnedByEgress.value.get(egress.value.asset)?.floors ?? null,
+    set: (value: ReadonlyMap<SourceId, SourceFloorResult> | null) => {
+      const asset = egress.value.asset;
+      const next = new Map(learnedByEgress.value);
+      if (value === null) next.delete(asset);
+      else next.set(asset, { floors: value, learnedAt: Date.now() });
+      learnedByEgress.value = next;
+      inflight.delete(asset);
+    },
+  });
+  /** An answer for the egress on screen is on its way. */
+  const learning = computed(() => inflight.has(egress.value.asset));
 
   /** Every learned source is unavailable: Chainflip is paused or unreachable. */
-  const paused = computed(
-    () =>
-      floors.value !== null &&
-      floors.value.size > 0 &&
-      [...floors.value.values()].every((r) => r.kind === "unavailable"),
-  );
+  const paused = computed(() => floors.value !== null && answeredForNothing(floors.value));
 
   /** TODO(production): remove. Demo builds carry on with every source ungated when Chainflip
    *  answers for nothing. A ref so tests can pin it either way. */
@@ -90,32 +123,51 @@ export const useOffersStore = defineStore("offers", () => {
    *  with the rail off never asks, so its rows show at once, greyed. */
   const awaitingFloors = computed(() => railEnabled.value && floors.value === null);
 
-  const fresh = () => learnedAt.value !== null && Date.now() - learnedAt.value < FLOORS_STALE_MS;
+  const fresh = (learned: Learned) => Date.now() - learned.learnedAt < FLOORS_STALE_MS;
 
-  /** Asks Chainflip, keeping the current answer on screen until the new one lands. */
-  function ask(): Promise<void> {
-    inflight = learnSourceFloors()
+  /** Asks Chainflip for `asked`, keeping the current answer on screen until the new one lands.
+   *  Repeat calls for the same egress join the in-flight load. */
+  function ask(asked: EgressConfig): Promise<void> {
+    const running = inflight.get(asked.asset);
+    if (running) return running;
+    const load: Promise<void> = learnSourceFloors({ egress: asked })
       .then((learned) => {
-        floors.value = learned;
-        learnedAt.value = Date.now();
+        // Seeding the floors disowns the slot, so an answer that no longer holds it was asked
+        // for before the seed and must not undo it. Same on the way out.
+        if (inflight.get(asked.asset) !== load) return;
+        learnedByEgress.value = new Map(learnedByEgress.value).set(asked.asset, {
+          floors: learned,
+          learnedAt: Date.now(),
+        });
+        if (asked.asset !== egress.value.asset) return;
         if (paused.value) scheduleRetry();
         else retries = 0;
       })
       .finally(() => {
-        inflight = null;
+        if (inflight.get(asked.asset) === load) inflight.delete(asked.asset);
       });
-    return inflight;
+    inflight.set(asked.asset, load);
+    return load;
   }
 
-  /** Learns the floors when there is nothing to show, when the answer has gone stale, or when
-   *  the last answer was no answer. A good, fresh answer is reused. Repeat calls join the in-flight
-   *  load. Nothing is asked while the rail is off: the rows say "not yet" regardless. */
+  /** Learns the floors for the egress on screen when there is nothing to show, when the answer
+   *  has gone stale, or when the last answer was no answer. A good, fresh answer is reused.
+   *  Nothing is asked while the rail is off: the rows say "not yet" regardless. */
   function learn(): Promise<void> {
     if (!railEnabled.value) return Promise.resolve();
-    if (inflight) return inflight;
-    if (floors.value !== null && !paused.value && fresh()) return Promise.resolve();
-    return ask();
+    const asked = egress.value;
+    const learned = learnedByEgress.value.get(asked.asset);
+    if (learned && !answeredForNothing(learned.floors) && fresh(learned)) {
+      return Promise.resolve();
+    }
+    return ask(asked);
   }
+
+  // A quote can size the purchase in an asset no floor has been learned for yet.
+  watch(
+    () => egress.value.asset,
+    () => void learn(),
+  );
 
   // The retry loop runs only while something on screen is watching the floors, and only while
   // Chainflip answers for nothing. Anything else that sets the floors ends it.
@@ -139,7 +191,7 @@ export const useOffersStore = defineStore("offers", () => {
         retries = 0;
         return;
       }
-      void ask();
+      void ask(egress.value);
     }, delay);
   }
 
@@ -175,9 +227,10 @@ export const useOffersStore = defineStore("offers", () => {
     };
   }
 
-  /** DOT plancks this purchase needs, from the pool quote on screen; null while unknown. */
+  /** What this purchase needs delivered, in `egress` base units, from the quote on screen; null
+   *  while unknown. */
   const target = computed(() => session.quoted?.nativeAmount ?? null);
-  /** The pool has answered, or given up, for the amount on screen. */
+  /** The quote has answered, or given up, for the amount on screen. */
   const sized = computed(
     () => !session.loading && (session.quoted !== null || session.quoteError !== null),
   );
@@ -197,7 +250,7 @@ export const useOffersStore = defineStore("offers", () => {
     const offer = offerFor(source, learned.floor, target.value, 0n, { maxDecimals: 6 });
     if (offer.available) return { state: "available", offer };
     const amount = session.amountBase;
-    // Linear: CASH per planck is what the pool quote just said.
+    // Linear: CASH per egress base unit is what the quote just said.
     const minimumCashBase =
       amount === null || target.value === 0n
         ? null
@@ -243,6 +296,7 @@ export const useOffersStore = defineStore("offers", () => {
 
   return {
     floors,
+    learning,
     awaitingFloors,
     paused,
     demoFallback,

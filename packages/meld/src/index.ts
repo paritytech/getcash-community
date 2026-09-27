@@ -9,7 +9,7 @@ export {
   type MeldStatusResult,
   type MeldCancelResult,
 } from "./client";
-export { NATIVE_ASSET, NATIVE_DECIMALS, formatNative, toNativeUnits } from "./native";
+export { formatBaseUnits, toBaseUnits, type MeldToken } from "./units";
 export { computeMeldQuote, pickBestQuote, type MeldQuoteContext, type MeldQuoteRaw } from "./quote";
 export { requestMeldDeposit, type MeldDepositChannel } from "./session";
 export { getMeldStatus } from "./status";

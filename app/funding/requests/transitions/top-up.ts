@@ -12,6 +12,7 @@ import {
 import {
   CONVERTING_STEP_ORDER,
   DEPOSIT_EXPIRED_REASON,
+  FUNDING_HELD_REASON,
   PROVISIONAL_REVERT_MS,
   buyerPaid,
   paymentWatchUntil,
@@ -352,6 +353,17 @@ function applyWorker(record: TopUpRecord, at: number, job: WorkerJobView | null)
         kind: "mint",
         step: rank >= 3 ? "mint" : "swap",
         message: job.lastError ?? "funding failed in the background",
+        recoverable: true,
+      });
+    }
+    if (job.failure === "held" && rank >= 1) {
+      // The PSM refused the mint three times over and the worker stopped with the deposit still
+      // on the burner: recoverable, since a re-sent hand-off re-arms the
+      // job with a fresh refusal count. The buyer reads the app's own words, not the chain's.
+      return failed(next, at, {
+        kind: "mint",
+        step: rank >= 3 ? "mint" : "swap",
+        message: FUNDING_HELD_REASON,
         recoverable: true,
       });
     }

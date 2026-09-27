@@ -1,7 +1,7 @@
 // Reverse-quote: desired output on Asset Hub to display-ready source input, over an injected
 // backend.
 
-import type { Quote } from "@getsome/core";
+import { TOKENS, type Quote, type TokenSpec } from "@getsome/core";
 import { BelowMinimumSwapAmountError, type GetQuoteV2Args } from "./sdk";
 import { formatSourceAmount, type SourceConfig } from "./sources";
 
@@ -18,7 +18,7 @@ export const ON_CHAIN_OVERHEAD_PLANCKS = 5_000_000_000n;
 
 /**
  * What the swap egresses to. Default Assethub/DOT; a stable egress is e.g.
- * { chain: 'Assethub', asset: 'USDT', decimals: 6 }.
+ * `egressFor(TOKENS.USDT)`.
  */
 export interface EgressConfig {
   readonly chain: string;
@@ -26,11 +26,21 @@ export interface EgressConfig {
   readonly decimals: number;
 }
 
-export const DEFAULT_EGRESS: EgressConfig = Object.freeze({
-  chain: "Assethub",
-  asset: "DOT",
-  decimals: 10,
-});
+/** A token Chainflip can deliver: it must have a Chainflip asset name for the wire. */
+export type ChainflipToken = TokenSpec & Required<Pick<TokenSpec, "chainflipAsset">>;
+
+/** Chainflip's name for Asset Hub, where every token in the table is delivered. */
+const EGRESS_CHAIN = "Assethub";
+
+export function egressFor(token: ChainflipToken): EgressConfig {
+  return Object.freeze({
+    chain: EGRESS_CHAIN,
+    asset: token.chainflipAsset,
+    decimals: token.decimals,
+  });
+}
+
+export const DEFAULT_EGRESS: EgressConfig = egressFor(TOKENS.PAS);
 
 const MAX_PRECISE_ATTEMPTS = 5;
 

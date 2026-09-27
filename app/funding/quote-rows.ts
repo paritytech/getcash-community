@@ -20,6 +20,8 @@ export interface FeeSplit {
   networkFee?: string | null;
   partnerFee?: string | null;
   chainFee?: string | null;
+  /** The PSM's mint fee; absent on the pool tier, which has no equivalent row. */
+  mintFee?: string | null;
 }
 
 export interface QuoteView extends FeeSplit {
@@ -36,6 +38,7 @@ const splitOf = (q: FeeSplit): FeeSplit => ({
   networkFee: q.networkFee ?? null,
   partnerFee: q.partnerFee ?? null,
   chainFee: q.chainFee ?? null,
+  mintFee: q.mintFee ?? null,
 });
 
 /** The session's live quote as the rows and the breakdown read it; its charge is `send`. */
