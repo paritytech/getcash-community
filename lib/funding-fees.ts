@@ -15,6 +15,7 @@ import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import type { PolkadotClient } from "polkadot-api";
 import {
   DEFAULT_KEEP_NATIVE_FOR_FEES,
+  DEFAULT_LP_FEE_PPM,
   DEFAULT_REMOTE_FEE_BUFFER,
   DEFAULT_SLIPPAGE_PCT,
   destinationEarmark,
@@ -22,12 +23,16 @@ import {
   estimateDestinationFeeCash,
   estimateFundingProgramFees,
   estimatePsmBatchFees,
+  EXTERNAL_POOL_FLOOR_PCT,
   PASEO_ASSET_HUB_PARA_ID,
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
   psmDepositNeeded,
   quoteNativeInMax,
   sizePsmMint,
+  slippageFor,
+  type Exposure,
+  type OrientedReserves,
   type PsmExternal,
   type PsmRoute,
   type Pool,
@@ -40,6 +45,100 @@ export interface PoolFundingSizing {
   remoteFeeBuffer: bigint;
   /** Native the deposit carries for the program's dispatch fee and fee allowance. */
   keepNativeForFees: bigint;
+  /** Headroom the deposit is asked above the live pool quote, in percent, from the pool and the
+   *  rail (see headroomFor). `DEFAULT_SLIPPAGE_PCT` only when the pool could not be read. */
+  slippagePct: number;
+  /**
+   * The pool cannot carry this purchase within the cap. A fresh hosted quote is refused on it
+   * before the buyer pays; a re-opened request carries on, since its deposit may already be on the
+   * burner. False when the pool could not be read.
+   */
+  poolUnavailable: boolean;
+}
+
+/** How long a source's deposit takes to arrive after the quote: minutes for crypto, hours for
+ *  a card, up to days for a bank transfer. */
+export function exposureForSource(sourceId: string): Exposure {
+  if (sourceId === "meld-bank") return "days";
+  if (sourceId === "meld-card") return "hours";
+  // Chainflip's crypto rails and the direct native deposit both settle in minutes.
+  return "minutes";
+}
+
+/**
+ * A typical purchase, in CASH base units. The flow to survive is a multiple of this and not of our
+ * own purchase, since other buyers do not trade more because we did; otherwise a large purchase
+ * would ask for headroom against traffic that does not exist.
+ */
+export const TYPICAL_PURCHASE_CASH = 100_000_000n;
+
+/**
+ * The deposit headroom for this pool, purchase and rail, from `slippageFor`: counted flow for the
+ * rail's window, the market move over it, and one dispatch fee, since a rejected program still
+ * pays it out of the deposit. Never below EXTERNAL_POOL_FLOOR_PCT. Too little cannot be fixed later
+ * (the buyer already sent a fixed amount); too much only buys the buyer more CASH. `unavailable`
+ * means the pool cannot carry the purchase within MAX_SLIPPAGE_PCT.
+ */
+export function headroomFor(input: {
+  reserves: OrientedReserves;
+  buyTarget: bigint;
+  exposure: Exposure;
+  feePpm: bigint;
+  referenceTrade?: bigint;
+  /** The funding program's dispatch fee, in the native: what one rejected submit burns. */
+  dispatchNative?: bigint;
+}): { pct: number; unavailable: boolean } {
+  // The dispatch fee converted to CASH at the pool's price.
+  const dispatchCash =
+    input.dispatchNative === undefined || input.reserves.in <= 0n
+      ? 0n
+      : (input.dispatchNative * input.reserves.out) / input.reserves.in;
+  const decision = slippageFor({
+    reserves: input.reserves,
+    tradeOut: input.buyTarget,
+    exposure: input.exposure,
+    feePpm: input.feePpm,
+    referenceTrade: input.referenceTrade ?? TYPICAL_PURCHASE_CASH,
+    // One ordinary purchase landing first is always covered, whatever the policy says.
+    competingTrade: TYPICAL_PURCHASE_CASH,
+    ...(dispatchCash > 0n ? { feeTakenFromTrade: dispatchCash } : {}),
+    floorPct: EXTERNAL_POOL_FLOOR_PCT,
+  });
+  return { pct: decision.pct, unavailable: decision.cappedOut };
+}
+
+/**
+ * The pool route cannot carry this purchase within MAX_SLIPPAGE_PCT. Thrown for a fresh hosted
+ * quote before the deposit is asked for, so the buyer does not pay into a request that would only
+ * wait and expire. The message is shown on the quote screen.
+ */
+export class PoolRouteUnavailableError extends Error {
+  constructor(readonly settleAmount: bigint) {
+    // No "smaller" or "larger": which amount works depends on why the request is on the pool tier.
+    super(
+      "There is not enough liquidity to top up this amount this way right now. " +
+        "Try another amount or payment method.",
+    );
+    this.name = "PoolRouteUnavailableError";
+  }
+}
+
+/** The pool's two reserves, in the order asked for, or null when the runtime will not answer. */
+async function readReserves(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  api: any,
+  a: unknown,
+  b: unknown,
+): Promise<[bigint, bigint] | null> {
+  try {
+    const out = await api.view.AssetConversion.get_reserves(a, b);
+    const pair = (out as { value?: unknown })?.value ?? out;
+    if (!Array.isArray(pair) || pair.length < 2) return null;
+    return [BigInt(pair[0] as never), BigInt(pair[1] as never)];
+  } catch {
+    // An older runtime without the view function: the caller uses its fallback.
+    return null;
+  }
 }
 
 /** The PSM tier's costs. */
@@ -97,30 +196,70 @@ async function sizingReads(args: SizingArgs) {
 }
 
 /** The pool tier's sizing. */
-export async function estimateFundingSizing(args: SizingArgs): Promise<PoolFundingSizing | null> {
+export async function estimateFundingSizing(
+  args: SizingArgs & {
+    /** The rail's delivery window; defaults to the longest, which is the safest assumption. */
+    exposure?: Exposure;
+  },
+): Promise<PoolFundingSizing | null> {
   try {
     const { api, pool, destinationFee } = await sizingReads(args);
 
-    // The fee probes carry the amounts a real deposit would, so the measured dispatch fee matches
-    // the submitted call's length.
     const buyTarget = args.settleAmount + destinationFee;
-    const nativeInMax = await quoteNativeInMax(api, pool, buyTarget, DEFAULT_SLIPPAGE_PCT);
 
-    const fees = await estimateFundingProgramFees({
-      api,
-      pool,
-      beneficiaryHex: ZERO_32,
-      peopleParaId: args.peopleParaId,
-      nativeBalance: nativeInMax,
-      minUnderlyingOut: buyTarget,
-      remoteFeesCash: destinationEarmark(buyTarget, destinationFee),
-      feeProbeAddress: args.probeAddress,
-    });
+    // The fees first, because one dispatch fee is part of the headroom. The probe carries a deposit
+    // at the default headroom, close enough to encode to the same length as the real one. If the
+    // probe fails, the static allowance stands in for both, which errs wide.
+    const fees = await quoteNativeInMax(api, pool, buyTarget, DEFAULT_SLIPPAGE_PCT)
+      .then((probeNative) =>
+        estimateFundingProgramFees({
+          api,
+          pool,
+          beneficiaryHex: ZERO_32,
+          peopleParaId: args.peopleParaId,
+          nativeBalance: probeNative,
+          minUnderlyingOut: buyTarget,
+          remoteFeesCash: destinationEarmark(buyTarget, destinationFee),
+          feeProbeAddress: args.probeAddress,
+        }),
+      )
+      .then((f) => ({ keep: f.payFeesNative + f.dispatchNative, dispatch: f.dispatchNative }))
+      .catch((e: unknown) => {
+        console.warn("[coinage] funding fee probe failed; using the static allowance:", e);
+        return { keep: DEFAULT_KEEP_NATIVE_FOR_FEES, dispatch: DEFAULT_KEEP_NATIVE_FOR_FEES };
+      });
+
+    // Reserves and LP fee from the chain; an unreadable pool falls back to the default headroom.
+    const [reserves, feePpm] = await Promise.all([
+      readReserves(api, pool.native, pool.underlying),
+      // LPFee is a parts-per-million integer; the module takes it as a bigint.
+      api.constants.AssetConversion.LPFee()
+        .then((ppm) => BigInt(ppm))
+        .catch(() => undefined),
+    ]);
+    const headroom =
+      reserves === null
+        ? { pct: DEFAULT_SLIPPAGE_PCT, unavailable: false }
+        : headroomFor({
+            reserves: { in: reserves[0], out: reserves[1] },
+            buyTarget,
+            exposure: args.exposure ?? "days",
+            feePpm: feePpm ?? DEFAULT_LP_FEE_PPM,
+            dispatchNative: fees.dispatch,
+          });
+    if (headroom.unavailable) {
+      console.warn(
+        "[coinage] the Asset Hub pool cannot carry this purchase within the slippage cap; " +
+          "the pool route is unavailable for it",
+      );
+    }
 
     return {
       tier: "pool",
       remoteFeeBuffer: destinationFee,
-      keepNativeForFees: fees.payFeesNative + fees.dispatchNative,
+      keepNativeForFees: fees.keep,
+      slippagePct: headroom.pct,
+      poolUnavailable: headroom.unavailable,
     };
   } catch (e) {
     console.warn("[coinage] funding sizing estimate failed; using static fallbacks:", e);
@@ -164,6 +303,9 @@ export const FALLBACK_FUNDING_SIZING: PoolFundingSizing = {
   tier: "pool",
   remoteFeeBuffer: DEFAULT_REMOTE_FEE_BUFFER,
   keepNativeForFees: DEFAULT_KEEP_NATIVE_FOR_FEES,
+  slippagePct: DEFAULT_SLIPPAGE_PCT,
+  // Nothing was read, so nothing is known to be over capacity.
+  poolUnavailable: false,
 };
 
 /**
@@ -178,6 +320,7 @@ export const FALLBACK_FUNDING_SIZING: PoolFundingSizing = {
 export async function estimatePublicFundingSizing(args: {
   settleAmount: bigint;
   probeAddress: string;
+  exposure?: Exposure;
 }): Promise<PoolFundingSizing> {
   try {
     const { connectChain, ASSET_HUB, PEOPLE } = await import("./host-chain");
@@ -193,6 +336,7 @@ export async function estimatePublicFundingSizing(args: {
         peopleParaId: PASEO_PEOPLE_PARA_ID,
         settleAmount: args.settleAmount,
         probeAddress: args.probeAddress,
+        ...(args.exposure === undefined ? {} : { exposure: args.exposure }),
       })) ?? FALLBACK_FUNDING_SIZING
     );
   } catch (e) {

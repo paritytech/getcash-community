@@ -213,6 +213,8 @@ export async function createHostedCoinageWorld(args: {
   sourceId?: SourceId;
   /** Core's stale bound for the flow slot (see CoinageSessionArgs.staleFlowMs). */
   staleFlowMs?: number;
+  /** A fresh quote: refuse a pool too thin to carry it (see CoinageSessionArgs). */
+  refuseUnavailablePool?: boolean;
   /** Settle-internal claim progress (see createCoinageHandoff.onProgress). */
   onClaimProgress?: (stage: "prompted" | "crediting", claimed?: bigint) => void;
 }): Promise<HostedCoinageWorld> {
@@ -223,6 +225,7 @@ export async function createHostedCoinageWorld(args: {
     ...(args.rail ? { rail: args.rail } : {}),
     ...(args.tradeN === undefined ? {} : { tradeN: args.tradeN }),
     ...(args.staleFlowMs === undefined ? {} : { staleFlowMs: args.staleFlowMs }),
+    ...(args.refuseUnavailablePool ? { refuseUnavailablePool: true } : {}),
     route: args.route,
     hostLocalStorage: storage,
     deriveEntropy,
@@ -259,7 +262,11 @@ export async function startLiveCoinage(args: {
   amountCash: string;
 }): Promise<HostedCoinageWorld> {
   const amount = toCashBase(args.amountCash);
-  const world = await createHostedCoinageWorld({ amount, route: await chooseHostedRoute(amount) });
+  const world = await createHostedCoinageWorld({
+    amount,
+    route: await chooseHostedRoute(amount),
+    refuseUnavailablePool: true,
+  });
 
   world.session.subscribe((s) => {
     console.info(`[coinage] phase=${s.phase}`, s);

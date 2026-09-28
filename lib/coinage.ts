@@ -38,6 +38,7 @@ import {
   createManualRail,
   DEFAULT_KEEP_NATIVE_FOR_FEES,
   DEFAULT_REMOTE_FEE_BUFFER,
+  DEFAULT_SLIPPAGE_PCT,
   type FundingStep,
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
@@ -551,11 +552,17 @@ function depositBudget(
  *  instead, which is what the worker's gate waits for. */
 function handoffFees(
   sizing: FundingSizing,
-): Pick<WorkerHandoffPayload, "remoteFeeBuffer" | "keepNativeForFees" | "quotedDeposit"> {
+): Pick<
+  WorkerHandoffPayload,
+  "remoteFeeBuffer" | "keepNativeForFees" | "quotedDeposit" | "slippagePct"
+> {
   return {
     remoteFeeBuffer: sizing.remoteFeeBuffer.toString(),
     keepNativeForFees: (sizing.tier === "pool" ? sizing.keepNativeForFees : 0n).toString(),
     ...(sizing.tier === "psm" ? { quotedDeposit: sizing.quotedDeposit.toString() } : {}),
+    // The pool tier's headroom, so the worker uses the one the deposit was sized with. The PSM has
+    // a fixed rate and no headroom.
+    ...(sizing.tier === "pool" ? { slippagePct: sizing.slippagePct } : {}),
   };
 }
 
@@ -582,6 +589,12 @@ export interface CoinageSessionArgs {
    * window, so core and the request record expire together. Omitted, core's own default.
    */
   staleFlowMs?: number;
+  /**
+   * A fresh quote nobody has paid against yet: a pool too thin to carry it is refused before the
+   * deposit is asked for. Re-opened requests, rebuilt hand-offs and reconciles leave it unset,
+   * because their deposit may already be on the burner.
+   */
+  refuseUnavailablePool?: boolean;
 }
 
 export interface MockCoinageWorld extends RefundKeyHold {
@@ -662,6 +675,8 @@ export async function createMockCoinageSession(
     tier: "pool",
     remoteFeeBuffer: 0n,
     keepNativeForFees: 0n,
+    slippagePct: DEFAULT_SLIPPAGE_PCT,
+    poolUnavailable: false,
   };
   const route: ConversionRoute = args.route ?? { tier: "pool" };
   const handoff = createFakeHandoff({ manualConsent: true });
@@ -1015,7 +1030,12 @@ export async function createCoinageSession(
 
   // Size the deposit from live chain reads: the CASH over-buy for People's execution fee and the
   // tier's own costs. The same figures feed the worker hand-off below.
-  const { estimateFundingSizing, estimatePsmFundingSizing } = await import("./funding-fees");
+  const {
+    estimateFundingSizing,
+    estimatePsmFundingSizing,
+    exposureForSource,
+    PoolRouteUnavailableError,
+  } = await import("./funding-fees");
   const sizingArgs = {
     ahClient: await connectChain(ASSET_HUB),
     peopleClient: await connectChain(PEOPLE),
@@ -1040,14 +1060,24 @@ export async function createCoinageSession(
     const pool = await stage(
       "funding sizing estimate",
       20_000,
-      estimateFundingSizing(sizingArgs),
+      // The rail decides how long the deposit is exposed.
+      estimateFundingSizing({ ...sizingArgs, exposure: exposureForSource(args.sourceId) }),
     ).catch(() => null);
     const keepNativeForFees = pool?.keepNativeForFees ?? DEFAULT_KEEP_NATIVE_FOR_FEES;
     const remoteFeeBuffer = pool?.remoteFeeBuffer ?? DEFAULT_REMOTE_FEE_BUFFER;
-    sizing = { tier: "pool", remoteFeeBuffer, keepNativeForFees };
+    // An unreachable chain falls back to the default headroom, as the worker does.
+    const slippagePct = pool?.slippagePct ?? DEFAULT_SLIPPAGE_PCT;
+    // True only when the pool was read and found too thin for this purchase.
+    const poolUnavailable = pool?.poolUnavailable ?? false;
+    // Refused before the buyer pays, and only for a quote the caller marks as fresh: a missing
+    // flow slot is not proof of that, since a failed read looks the same.
+    if (poolUnavailable && args.refuseUnavailablePool === true) {
+      throw new PoolRouteUnavailableError(args.amount);
+    }
+    sizing = { tier: "pool", remoteFeeBuffer, keepNativeForFees, slippagePct, poolUnavailable };
     // Size the native budget the user must deposit from the live pool quote for the CASH
     // settle amount, plus the headroom that lets the deposit clear the worker's swap gate after
-    // the pool moves (DEFAULT_SLIPPAGE_PCT), plus the retained fee native.
+    // the pool moves, plus the retained fee native.
     budget = await stage(
       "pool budget sizing",
       15_000,
@@ -1057,6 +1087,7 @@ export async function createCoinageSession(
         settleAmount: args.amount,
         remoteFeeBuffer,
         keepNativeForFees,
+        slippagePct,
       }),
     );
   }

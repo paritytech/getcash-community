@@ -17,7 +17,6 @@ import {
 import { getPolkadotSigner } from "polkadot-api/signer";
 import { deriveKeypairWithSecret } from "@getsome/ephemeral";
 import {
-  DEFAULT_SLIPPAGE_PCT,
   DEFAULT_SUBMIT_TIMEOUT_MS,
   DEFAULT_TICK_TIMEOUT_MS,
   discoverPool,
@@ -70,7 +69,8 @@ describe.runIf(process.env.PROD_PROOF === "1")("production proof", () => {
       const burner = deriveKeypairWithSecret(entropy);
       console.log(`BURNER ${burner.address}  entropy=${toHex(entropy)}`);
 
-      // Size the deposit as the app does
+      // Size the deposit as the app does. Alice pays the burner directly, as the crypto rail does,
+      // so the headroom is the one for a deposit that arrives within minutes.
       const sizing = await estimateFundingSizing({
         ahClient: ahC,
         peopleClient: peC,
@@ -78,10 +78,13 @@ describe.runIf(process.env.PROD_PROOF === "1")("production proof", () => {
         peopleParaId: PASEO_PEOPLE_PARA_ID,
         settleAmount: SETTLE,
         probeAddress: burner.address,
+        exposure: "minutes",
       });
       if (!sizing) throw new Error("sizing failed");
+      // The app refuses a fresh quote here rather than take the deposit.
+      if (sizing.poolUnavailable) throw new Error("the pool cannot carry this purchase");
       console.log(
-        `SIZING remoteFeeBuffer=${cash(sizing.remoteFeeBuffer)} CASH  keepNative=${pas(sizing.keepNativeForFees)} PAS`,
+        `SIZING remoteFeeBuffer=${cash(sizing.remoteFeeBuffer)} CASH  keepNative=${pas(sizing.keepNativeForFees)} PAS  headroom=${sizing.slippagePct}%`,
       );
       const budget = await sizeNativeBudget({
         client: ahC,
@@ -89,6 +92,7 @@ describe.runIf(process.env.PROD_PROOF === "1")("production proof", () => {
         settleAmount: SETTLE,
         remoteFeeBuffer: sizing.remoteFeeBuffer,
         keepNativeForFees: sizing.keepNativeForFees,
+        slippagePct: sizing.slippagePct,
       });
       console.log(`DEPOSIT to send: ${pas(budget)} PAS`);
 
@@ -134,7 +138,8 @@ describe.runIf(process.env.PROD_PROOF === "1")("production proof", () => {
               assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
               remoteFeeBuffer: sizing.remoteFeeBuffer,
               keepNativeForFees: sizing.keepNativeForFees,
-              slippagePct: DEFAULT_SLIPPAGE_PCT,
+              // The worker gets the headroom the deposit was sized with, through the hand-off.
+              slippagePct: sizing.slippagePct,
               tickTimeoutMs: DEFAULT_TICK_TIMEOUT_MS,
               submitTimeoutMs: DEFAULT_SUBMIT_TIMEOUT_MS,
               signOptions: { at: best[0]?.hash },

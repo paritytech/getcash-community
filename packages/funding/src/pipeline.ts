@@ -89,12 +89,14 @@ export const DEFAULT_REMOTE_FEE_BUFFER = 1_000n;
  *  Fallback when the caller passes no live estimate; 0.02 at 10 decimals. Pool tier only: the
  *  PSM tier's fees come from its batch's live estimate. */
 export const DEFAULT_KEEP_NATIVE_FOR_FEES = 200_000_000n;
-/** Headroom the deposit is asked ABOVE the live pool quote, percent. Applied once, when the
- *  deposit is sized: the conversion gate checks the plain quote, so this is exactly how far the
- *  pool may move against the deposit between sizing and converting before it stops clearing the
- *  gate. The surplus is converted and claimed with the rest, so the buyer never receives less
- *  than the target and receives up to this much more. 5 to account for shallow liquidity in
- *  Paseo AH next v2 Pool. Pool tier only: the PSM's rate does not move. */
+/** The fallback for the headroom the deposit is asked ABOVE the live pool quote, percent. The
+ *  headroom itself is computed per request from the pool and the rail (headroomFor in the app)
+ *  and passed as `slippagePct`; this 5 is used when the pool cannot be read and for a hand-off
+ *  that carries none. Applied once, when the deposit is sized: the conversion gate checks the
+ *  plain quote, so the headroom is exactly how far the pool may move against the deposit between
+ *  sizing and converting before it stops clearing the gate. The surplus is converted and claimed
+ *  with the rest, so the buyer never receives less than the target. Pool tier only: the PSM's
+ *  rate does not move. */
 export const DEFAULT_SLIPPAGE_PCT = 5;
 /** PSM refusals of the mint before the run is held. */
 export const MAX_PSM_REFUSALS = 3;
@@ -268,9 +270,9 @@ export async function quoteNativeInMax(
 }
 
 /** The native budget the rail must deliver for `settleAmount` to be claimable on the pool tier:
- *  the pool quote for settle+buffer plus the headroom (DEFAULT_SLIPPAGE_PCT), plus the native
- *  the funding program spends on its own fees. The single source of truth for app-side budget
- *  sizing; uses the same defaults as the pipeline.
+ *  the pool quote for settle+buffer plus the headroom (`slippagePct`, DEFAULT_SLIPPAGE_PCT when
+ *  unset), plus the native the funding program spends on its own fees. The single source of
+ *  truth for app-side budget sizing; uses the same defaults as the pipeline.
  *
  *  No credit is netted off. Each request has its own burner, so there is nothing on it to
  *  net against, and a quote that shrinks itself against a balance the buyer cannot see is

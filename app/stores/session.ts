@@ -7,6 +7,7 @@ import { TOKENS, type ChainflipRail, type PaymentState, type SourceId } from "@g
 import { egressFor, SOURCE_CONFIG_BY_ID, type ChainflipToken } from "@getsome/chainflip";
 import type { RefundKey } from "@getsome/ephemeral";
 import {
+  DEFAULT_SLIPPAGE_PCT,
   PERMILL,
   PSM_EXTERNAL,
   recordedRoute,
@@ -603,6 +604,8 @@ export const useSessionStore = defineStore("session", () => {
     tradeN?: number,
     rail?: ChainflipRail,
     sourceId?: SourceId,
+    /** A fresh quote nobody has paid against: a pool too thin to carry it is refused. */
+    fresh = false,
   ): Promise<HostedCoinageWorld | null> {
     // No account lookup: the burner comes from the host's entropy root and the claim credits
     // whoever the host authenticated.
@@ -620,6 +623,7 @@ export const useSessionStore = defineStore("session", () => {
         // The fiat route injects a Meld rail and its source id; the crypto route leaves both unset.
         ...(rail ? { rail } : {}),
         ...(sourceId ? { sourceId } : {}),
+        ...(fresh ? { refuseUnavailablePool: true } : {}),
         onClaimProgress: (stage, claimed) => {
           if (foregroundRef === null) return;
           void requests.observe(foregroundRef, {
@@ -808,7 +812,13 @@ export const useSessionStore = defineStore("session", () => {
    */
   async function meldFundingSizing(settleAmount: bigint): Promise<PoolFundingSizing> {
     if (typeof window === "undefined") {
-      return { tier: "pool", remoteFeeBuffer: 0n, keepNativeForFees: 0n };
+      return {
+        tier: "pool",
+        remoteFeeBuffer: 0n,
+        keepNativeForFees: 0n,
+        slippagePct: DEFAULT_SLIPPAGE_PCT,
+        poolUnavailable: false,
+      };
     }
     const { estimatePublicFundingSizing, FALLBACK_FUNDING_SIZING } =
       await import("~~/lib/funding-fees");
@@ -912,6 +922,7 @@ export const useSessionStore = defineStore("session", () => {
         tradeN,
         built.rail,
         built.sourceId,
+        true,
       );
       if (!world) return;
       if (epoch !== quoteEpoch) {
@@ -969,7 +980,15 @@ export const useSessionStore = defineStore("session", () => {
           10_000,
           nextHostedTradeNumber(DEFAULT_SOURCE_ID, (n) => requests.hasTrace(DEFAULT_SOURCE_ID, n)),
         );
-        const world = await createLiveWorld(epoch, depositWindowFor("crypto"), route, tradeN);
+        const world = await createLiveWorld(
+          epoch,
+          depositWindowFor("crypto"),
+          route,
+          tradeN,
+          undefined,
+          undefined,
+          true,
+        );
         if (!world) return; // superseded by a newer quote
         if (epoch !== quoteEpoch) {
           world.dispose();
@@ -1021,7 +1040,7 @@ export const useSessionStore = defineStore("session", () => {
             const [
               { connectChain, ASSET_HUB },
               { sizeNativeBudget, PASEO_UNDERLYING_ASSET_ID },
-              { estimatePublicFundingSizing, FALLBACK_FUNDING_SIZING },
+              { estimatePublicFundingSizing, exposureForSource, FALLBACK_FUNDING_SIZING },
             ] = await Promise.all([
               import("~~/lib/host-chain"),
               import("@getsome/funding"),
@@ -1036,6 +1055,7 @@ export const useSessionStore = defineStore("session", () => {
               estimatePublicFundingSizing({
                 settleAmount: settleForPricing,
                 probeAddress: DEV_RECIPIENT,
+                exposure: exposureForSource(sourceId),
               }),
             ).catch(() => FALLBACK_FUNDING_SIZING);
             nativeAmount = await step(
@@ -1048,6 +1068,7 @@ export const useSessionStore = defineStore("session", () => {
                   settleAmount: settleForPricing,
                   remoteFeeBuffer: sizing.remoteFeeBuffer,
                   keepNativeForFees: sizing.keepNativeForFees,
+                  slippagePct: sizing.slippagePct,
                 }))(),
             );
           } catch (e) {
