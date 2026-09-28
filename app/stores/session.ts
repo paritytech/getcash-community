@@ -1056,7 +1056,7 @@ export const useSessionStore = defineStore("session", () => {
           try {
             const [
               { connectChain, ASSET_HUB },
-              { sizeNativeBudget, PASEO_UNDERLYING_ASSET_ID },
+              { sizeNativeBudget, PASEO_UNDERLYING_ASSET_ID, DIRECT_SLIPPAGE_PCT },
               { estimatePublicFundingSizing, FALLBACK_FUNDING_SIZING },
             ] = await Promise.all([
               import("~~/lib/host-chain"),
@@ -1085,6 +1085,8 @@ export const useSessionStore = defineStore("session", () => {
                   settleAmount: settleForPricing,
                   remoteFeeBuffer: priced.remoteFeeBuffer,
                   keepNativeForFees: priced.keepNativeForFees,
+                  // A direct deposit carries the smaller headroom, as the hosted sizing does.
+                  ...(direct === null ? {} : { slippagePct: DIRECT_SLIPPAGE_PCT }),
                 }))(),
             );
           } catch (e) {

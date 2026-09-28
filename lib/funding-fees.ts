@@ -225,7 +225,11 @@ export async function estimatePsmFundingSizing(
  *  converts the settle amount plus the destination fee. Throws when a read fails, as the PSM
  *  tier's does. */
 export async function estimateStableFundingSizing(
-  args: SizingArgs & { route: StablePoolRoute },
+  args: SizingArgs & {
+    route: StablePoolRoute;
+    /** The headroom on the ask, percent. Default DEFAULT_SLIPPAGE_PCT. */
+    slippagePct?: number;
+  },
 ): Promise<StablePoolFundingSizing> {
   const stable = args.route.external;
   const { api, pool, stablePool, destinationFee } = await sizingReads(
@@ -236,7 +240,7 @@ export async function estimateStableFundingSizing(
   const buyTarget = args.settleAmount + destinationFee;
   // The plain two-hop quote is the gate; the ask carries the headroom once, on the stable.
   const { stableIn } = await quoteStableForUnderlying(api, pool, stablePool, buyTarget);
-  const stableInMax = withHeadroom(stableIn, DEFAULT_SLIPPAGE_PCT);
+  const stableInMax = withHeadroom(stableIn, args.slippagePct ?? DEFAULT_SLIPPAGE_PCT);
   // At the magnitude the program will carry, as the other tiers' probes do.
   const fees = await estimateStableProgramFees({
     api,

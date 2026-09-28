@@ -38,8 +38,11 @@ import {
   createManualRail,
   DEFAULT_KEEP_NATIVE_FOR_FEES,
   DEFAULT_REMOTE_FEE_BUFFER,
+  DEFAULT_SLIPPAGE_PCT,
   depositTokenOf,
+  DIRECT_SLIPPAGE_PCT,
   type FundingStep,
+  isManualSourceId,
   isStablePoolRoute,
   MANUAL_SOURCE_IDS,
   PASEO_PEOPLE_PARA_ID,
@@ -1036,6 +1039,9 @@ export async function createCoinageSession(
     settleAmount: args.amount,
     probeAddress: burnerKey.address,
   };
+  // A direct deposit lands as soon as it is sent, so its ask carries less headroom than a swap or
+  // a bank transfer, which give the pool longer to move.
+  const slippagePct = isManualSourceId(args.sourceId) ? DIRECT_SLIPPAGE_PCT : DEFAULT_SLIPPAGE_PCT;
   let sizing: FundingSizing;
   let budget: bigint;
   if (args.route.tier === "psm") {
@@ -1054,7 +1060,7 @@ export async function createCoinageSession(
     const stable = await stage(
       "funding sizing estimate",
       20_000,
-      estimateStableFundingSizing({ ...sizingArgs, route: args.route }),
+      estimateStableFundingSizing({ ...sizingArgs, route: args.route, slippagePct }),
     );
     sizing = stable;
     budget = stable.askedDeposit;
@@ -1079,7 +1085,7 @@ export async function createCoinageSession(
     sizing = { tier: "pool", remoteFeeBuffer, keepNativeForFees };
     // Size the native budget the user must deposit from the live pool quote for the CASH
     // settle amount, plus the headroom that lets the deposit clear the worker's swap gate after
-    // the pool moves (DEFAULT_SLIPPAGE_PCT), plus the retained fee native.
+    // the pool moves, plus the retained fee native.
     budget = await stage(
       "pool budget sizing",
       15_000,
@@ -1089,6 +1095,7 @@ export async function createCoinageSession(
         settleAmount: args.amount,
         remoteFeeBuffer,
         keepNativeForFees,
+        slippagePct,
       }),
     );
   }
