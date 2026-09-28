@@ -39,7 +39,8 @@ export type WithdrawStep = "await-cash" | "swap" | "convert" | "await-arrival" |
 export const DEFAULT_WITHDRAW_TICK_TIMEOUT_MS = 30_000;
 /** Bound on a submitted transaction's resolution. */
 export const DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS = 180_000;
-/** Headroom below the quoted sale on Asset Hub before the program fails there. */
+/** The most the sale on Asset Hub may slip below its quote, percent. The program carries the bound
+ *  derived from the pool, cut to this; this value ships as is only when the pool cannot be read. */
 export const DEFAULT_WITHDRAW_SLIPPAGE_PCT = 5;
 /** Rejections at inclusion after a passing dry run before the run is given up. */
 export const MAX_REJECTIONS = 3;
@@ -73,6 +74,12 @@ export interface WithdrawTickState {
   destinationPasBefore: bigint | null;
   /** PAS the Asset Hub dry run credited to the destination, for the XCM that left. */
   expectedLanding: bigint | null;
+  /**
+   * The slippage the submitted XCM was built with. The arrival check has to use this value and not
+   * what a later tick would compute: a tighter later value would set the arrival floor above what
+   * the program guaranteed, and a delivered withdrawal would then never count as arrived.
+   */
+  submittedSlippagePct: number | null;
   /** When the first tick saw CASH (ms); null while the payment is still awaited. */
   fundsSeenAt: number | null;
 }
@@ -83,6 +90,7 @@ export const freshWithdrawTickState = (): WithdrawTickState => ({
   submitted: false,
   destinationPasBefore: null,
   expectedLanding: null,
+  submittedSlippagePct: null,
   fundsSeenAt: null,
 });
 
@@ -107,11 +115,16 @@ export interface WithdrawTickInput {
   signOptions?: Record<string, unknown>;
   /** The key's CASH and PAS on People. */
   readKeyOnPeople: (ss58: string) => Promise<{ cash: bigint; pas: bigint }>;
-  /** The destination's free PAS on Asset Hub at the current head. */
+  /** The destination's free PAS on Asset Hub at the best head, where the sale is sized. */
   readDestinationOnAssetHub: (destinationHex: string) => Promise<bigint>;
   now: () => number;
   onTx?: (info: { call: "swap" | "withdraw"; txHash: string; block?: number }) => void;
   onTransientError?: (error: unknown) => void;
+  /**
+   * The bound the sizing chose, reported once per submit before the transaction goes out. The
+   * submit happens even with `overCapacity` set, since the sale may well go through.
+   */
+  onSizing?: (info: { promisePct: number; safetyPct: number; overCapacity: boolean }) => void;
   onBeforeSubmit?: (call: "swap" | "withdraw") => Promise<void> | void;
 }
 
@@ -154,7 +167,7 @@ export async function withdrawTickOnce(
     const cashGone = balances.cash === 0n;
     const landed =
       destinationPas - state.destinationPasBefore >=
-      landingFloor(state.expectedLanding, input.slippagePct);
+      landingFloor(state.expectedLanding, state.submittedSlippagePct ?? input.slippagePct);
     return { step: cashGone && landed ? "done" : "await-arrival", balances, submitted: false };
   }
 
@@ -206,13 +219,40 @@ export async function withdrawTickOnce(
       const tx = buildWithdrawXcm(input.peopleApi, sizing.args);
       // Read before the submit, so what the XCM adds is measured from what was there. Set before
       // the driver persists, so a submit whose answer is lost keeps its baseline.
-      state.destinationPasBefore = await bounded(
+      const baseline = await bounded(
         input.readDestinationOnAssetHub(input.destinationHex),
         input.tickTimeoutMs,
         "destination balance read",
       );
+      // Only a submit whose answer was lost leaves these set here, and that XCM may still land.
+      // People can then still show the key funded while Asset Hub's best head already holds its
+      // landing. Only one XCM can empty the key, so the lower baseline still measures whatever
+      // lands; taking the new one would hide the arrival.
+      const earlier = {
+        destinationPasBefore: state.destinationPasBefore,
+        expectedLanding: state.expectedLanding,
+        submittedSlippagePct: state.submittedSlippagePct,
+      };
+      state.destinationPasBefore =
+        earlier.destinationPasBefore !== null && earlier.destinationPasBefore < baseline
+          ? earlier.destinationPasBefore
+          : baseline;
       state.expectedLanding = sizing.landed;
-      await input.onBeforeSubmit?.("withdraw");
+      // Saved with the landing: both describe the program about to be sent, and the arrival check
+      // uses the bound the program carries, not the caller's ceiling.
+      state.submittedSlippagePct = sizing.safetyPct;
+      input.onSizing?.({
+        promisePct: sizing.promisePct,
+        safetyPct: sizing.safetyPct,
+        overCapacity: sizing.overCapacity,
+      });
+      try {
+        await input.onBeforeSubmit?.("withdraw");
+      } catch (error) {
+        // Stopped before the broadcast: nothing left, and an earlier lost XCM is as it was.
+        Object.assign(state, earlier);
+        throw error;
+      }
       // Counted before the broadcast, so a submit whose answer is lost is still counted.
       state.attempts += 1;
       const res = await bounded(
@@ -221,12 +261,19 @@ export async function withdrawTickOnce(
         "withdrawal submit",
       );
       input.onTx?.({ call: "withdraw", txHash: res.txHash, block: res.block?.number });
+      // Included, so the key could pay this fee. An earlier lost XCM that had run would have
+      // emptied it, so unless the key was paid again since, that one never ran and cannot land.
+      // What follows is measured from this attempt's own baseline, or from nothing if it failed.
       if (!res.ok) {
+        state.destinationPasBefore = null;
+        state.expectedLanding = null;
+        state.submittedSlippagePct = null;
         rejected(
           "withdraw",
           describeDispatchError(res.dispatchError, { message: withdrawMessage(sizing.args) }),
         );
       }
+      state.destinationPasBefore = baseline;
       state.submitted = true;
       return { step: "convert", balances, submitted: true };
     } catch (error) {

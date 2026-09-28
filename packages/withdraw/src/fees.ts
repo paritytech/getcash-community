@@ -23,13 +23,17 @@ import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import type { TypedApi } from "polkadot-api";
 import { CASH_LOCATION } from "@getsome/people";
 import {
+  ADVERSE_FLOW_MULTIPLE,
   creditedTo,
+  DEFAULT_LP_FEE_PPM,
   describeDispatchError,
   destinationEarmark,
   forwardedTo,
   siblingOrigin,
   signedOrigin,
+  slippageFor,
   trappedIn,
+  withdrawalBounds,
 } from "@getsome/funding";
 import { PEOPLE_NATIVE, PEOPLE_TX_OPTIONS } from "./paseo";
 import { cashInFor, type PoolReserves } from "./pool";
@@ -49,9 +53,58 @@ export type AssetHubApi = TypedApi<typeof paseo_next_v2>;
  *  a few thousand units; the unused part is refunded into the sale. */
 export const ASSET_HUB_FEE_BUFFER_CASH = 10_000n;
 
-/** Headroom the swap may spend above the quoted CASH, percent. What it does not spend leaves
- *  with the XCM. */
-export const SWAP_HEADROOM_PCT = 2;
+/**
+ * A typical withdrawal, in CASH: the size of the other sales the bound has to survive. Other users'
+ * withdrawals do not grow with ours, so a large withdrawal is not sized against a queue of equally
+ * large ones.
+ */
+export const TYPICAL_WITHDRAWAL_CASH = 100_000_000n;
+
+/**
+ * The least headroom the fee swap ships with, in percent.
+ *
+ * The swap is exact-out, so the pallet charges the price at execution and `cashInMax` is only a
+ * limit: a wider limit costs nothing when the price has not moved. A rejected swap, on the other
+ * hand, burns a CASH fee and one of the three strikes it shares with the XCM. The computed value
+ * alone is about 1.2% on today's People pool, and a peer buying 15 PAS each tick uses up all three
+ * strikes against it. 5% survives that peer and raises the smallest possible withdrawal by under
+ * 0.02 CASH.
+ */
+export const SWAP_HEADROOM_PCT = 5;
+
+/**
+ * The fee swap's headroom for these reserves: SWAP_HEADROOM_PCT, or more when the pool asks for
+ * more, up to the cap. A pool too thin to price the fee trade gets the cap.
+ */
+export function swapHeadroomPct(reserves: PoolReserves, pasOut: bigint): number {
+  const decision = slippageFor({
+    // Buying PAS with CASH: CASH is paid, PAS is received.
+    reserves: { in: reserves.cash, out: reserves.pas },
+    tradeOut: pasOut,
+    exposure: "instant",
+    // The only flow this pool really sees is other withdrawals buying their own fees.
+    referenceTrade: pasOut,
+    competingTrade: pasOut,
+    adverseFlowMultiple: ADVERSE_FLOW_MULTIPLE.instant * 2,
+    floorPct: SWAP_HEADROOM_PCT,
+  });
+  return decision.pct;
+}
+
+/**
+ * The key's CASH cannot buy the PAS the fees need. A named error, so the worker can fail the job
+ * with a readable reason once the whole payment is on the key, instead of retrying until its time
+ * budget runs out.
+ */
+export class WithdrawUnderfundedError extends Error {
+  constructor(
+    readonly cashBalance: bigint,
+    readonly pasNeeded: bigint,
+  ) {
+    super(`withdraw sizing: ${cashBalance} CASH cannot buy the ${pasNeeded} PAS the fees need`);
+    this.name = "WithdrawUnderfundedError";
+  }
+}
 
 /** Headroom on the XCM's transaction fee estimate, percent. The unspent part is reaped dust. */
 export const XCM_TX_FEE_HEADROOM_PCT = 5;
@@ -129,11 +182,11 @@ export async function sizeSwap(input: SizeSwapInput): Promise<SwapArgs> {
   });
   const pasOut = ed + reserve;
   const quoted = cashInFor(pasOut, reserves);
-  const cashInMax = (quoted * BigInt(100 + SWAP_HEADROOM_PCT)) / 100n;
+  const headroomPct = swapHeadroomPct(reserves, pasOut);
+  const cashInMax = (quoted * BigInt(Math.round((100 + headroomPct) * 100))) / 10_000n;
   if (cashInMax >= input.cashBalance) {
-    throw new Error(
-      `withdraw sizing: ${input.cashBalance} CASH cannot buy the ${pasOut} PAS the fees need`,
-    );
+    // The worker decides whether this is final: it is once the whole payment is on the key.
+    throw new WithdrawUnderfundedError(input.cashBalance, pasOut);
   }
   return { keyAddress: input.key.address, pasOut, cashInMax };
 }
@@ -147,6 +200,15 @@ export interface XcmSizing {
   forwarded: unknown;
   /** PAS the Asset Hub dry run credited to the destination. */
   landed: bigint;
+  /** The "receive at least" for the seller, in percent below the quote. The same number as
+   *  `safetyPct`, so the promise is exactly what the chain enforces. */
+  promisePct: number;
+  /** The exchange floor written into the program, in percent below the quote. */
+  safetyPct: number;
+  /** The bound does not cover what it is sized for, because of the cap or the caller's ceiling.
+   *  The sizing is still returned, since the sale may well go through. Always false when the pool
+   *  could not be read. */
+  overCapacity: boolean;
 }
 
 export interface SizeXcmInput {
@@ -163,7 +225,8 @@ export interface SizeXcmInput {
   claimerHex?: string;
   assetHubParaId: number;
   peopleParaId: number;
-  /** How far below the quoted sale the Asset Hub price may move before the program fails there. */
+  /** The most the sale may slip below its quote, percent. The program carries the bound saleBounds
+   *  derives from the pool, cut to this; this value ships as is only when the pool cannot be read. */
   slippagePct: number;
 }
 
@@ -241,6 +304,73 @@ async function weighed(
   return w.success ? { ref_time: w.value.ref_time, proof_size: w.value.proof_size } : undefined;
 }
 
+/**
+ * The off-ramp's exchange floor for one sale: the derived bound, cut to the caller's ceiling, with
+ * `overCapacity` judged after the cut. Pure and exported, so the tests check the same selection
+ * `sizeXcm` makes. When the pool cannot be read, the ceiling ships with `overCapacity` false.
+ */
+export function saleBounds(input: {
+  reserves: { in: bigint; out: bigint } | null;
+  /** The sale's quote, PAS out for all the CASH on the key. */
+  quoted: bigint;
+  /** The CASH on the key; the fee and the typical sibling are converted to PAS through it. */
+  cashOnKey: bigint;
+  /** The most the caller will ship, percent. */
+  ceilingPct: number;
+  feePpm?: bigint;
+}): { safetyPct: number; promisePct: number; overCapacity: boolean } {
+  if (input.reserves === null || input.cashOnKey <= 0n) {
+    return { safetyPct: input.ceilingPct, promisePct: input.ceilingPct, overCapacity: false };
+  }
+  return withdrawalBounds({
+    reserves: input.reserves,
+    tradeOut: input.quoted,
+    // Asset Hub's execution fee comes out of the sale before the bound is checked.
+    feeTakenFromTrade: (input.quoted * ASSET_HUB_FEE_BUFFER_CASH) / input.cashOnKey,
+    // The siblings are ordinary withdrawals, not copies of this one.
+    referenceTrade: (input.quoted * TYPICAL_WITHDRAWAL_CASH) / input.cashOnKey,
+    ceilingPct: input.ceilingPct,
+    ...(input.feePpm === undefined ? {} : { feePpm: input.feePpm }),
+  });
+}
+
+/**
+ * Where the Asset Hub reads behind a sale are taken: the quote, the reserves, the dry run and the
+ * destination's balance. papi reads the finalized head by default, which is 12 to 60 s behind, and
+ * sales that executed in that gap were invisible to the bound. Reading at the best head takes that
+ * gap out of the window the bound has to cover; with many users withdrawing at once it cut the
+ * trapped share in simulation from 43% to under 1%. Each read takes the best block of its own
+ * moment, not one pinned block, so the dry run can see a block or two past the quote.
+ */
+export const SALE_READ_AT = { at: "best" } as const;
+
+/**
+ * The Asset Hub pool's reserves as the sale trades them: CASH in, PAS out. Null when the runtime
+ * will not answer, in which case the caller keeps its own bound. Exported for its test, since a
+ * swapped pair would price the pool upside down without failing anything else.
+ */
+export async function saleReserves(
+  assetHubApi: AssetHubApi,
+): Promise<{ in: bigint; out: bigint } | null> {
+  try {
+    const out = await (
+      assetHubApi as unknown as {
+        view: {
+          AssetConversion: {
+            get_reserves: (a: unknown, b: unknown, options?: unknown) => Promise<unknown>;
+          };
+        };
+      }
+    ).view.AssetConversion.get_reserves(PEOPLE_NATIVE, CASH_ON_ASSET_HUB, SALE_READ_AT);
+    const pair = (out as { value?: unknown })?.value ?? out;
+    if (!Array.isArray(pair) || pair.length < 2) return null;
+    // Asked native-first, so the pair comes back native-first; the sale pays CASH and takes PAS.
+    return { in: BigInt(pair[1] as never), out: BigInt(pair[0] as never) };
+  } catch {
+    return null;
+  }
+}
+
 export async function sizeXcm(input: SizeXcmInput): Promise<XcmSizing> {
   const { peopleApi, assetHubApi, key } = input;
   const claimerHex = input.claimerHex ?? key.publicKeyHex;
@@ -253,9 +383,28 @@ export async function sizeXcm(input: SizeXcmInput): Promise<XcmSizing> {
     PEOPLE_NATIVE as never,
     input.cashOnKey,
     true,
+    SALE_READ_AT,
   );
   if (quoted === undefined) throw new Error("withdraw sizing: Asset Hub cannot quote the sale");
-  const minPasOut = (quoted * BigInt(Math.round((100 - input.slippagePct) * 100))) / 10_000n;
+
+  // The bound comes from the pool; `input.slippagePct` is the ceiling, and what ships when the
+  // pool cannot be read.
+  const reserves = await saleReserves(assetHubApi);
+  const { safetyPct, promisePct, overCapacity } = saleBounds({
+    reserves,
+    quoted,
+    cashOnKey: input.cashOnKey,
+    ceilingPct: input.slippagePct,
+    ...(reserves === null
+      ? {}
+      : {
+          feePpm: await assetHubApi.constants.AssetConversion.LPFee().then(
+            (ppm) => BigInt(ppm),
+            () => DEFAULT_LP_FEE_PPM,
+          ),
+        }),
+  });
+  const minPasOut = (quoted * BigInt(Math.round((100 - safetyPct) * 100))) / 10_000n;
 
   const base = (pasToWithdraw: bigint, payFeesPas: bigint): WithdrawXcmArgs => ({
     cashToTeleport: input.cashOnKey,
@@ -337,7 +486,15 @@ export async function sizeXcm(input: SizeXcmInput): Promise<XcmSizing> {
     run.forwarded,
     input.destinationHex,
   );
-  return { args: final, txFeePasReserved, forwarded: run.forwarded, landed };
+  return {
+    args: final,
+    txFeePasReserved,
+    forwarded: run.forwarded,
+    landed,
+    promisePct,
+    safetyPct,
+    overCapacity,
+  };
 }
 
 /** Runs the forwarded program on Asset Hub as People. Throws when it fails, traps, or credits
@@ -348,9 +505,11 @@ export async function dryRunOnAssetHub(
   forwarded: unknown,
   destinationHex: string,
 ): Promise<bigint> {
+  // At best, like the quote, so the landing is priced near the floor the program carries.
   const dr = await assetHubApi.apis.DryRunApi.dry_run_xcm(
     siblingOrigin(peopleParaId) as never,
     forwarded as never,
+    SALE_READ_AT,
   );
   if (!dr.success) throw new Error("not submitted: Asset Hub would not dry-run the program");
   const outcome = dr.value.execution_result;
