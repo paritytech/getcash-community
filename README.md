@@ -173,12 +173,12 @@ pnpm format             # prettier
 
 Copy `.env.example` to `.env` and fill in what you need. Nuxt reads `.env`, not `.env.local`.
 
-| Variable               | Purpose                                                                                                                   |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Variable               | Purpose                                                                                                                     |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `VITE_FAUCET_SEED`     | demo faucet account, holding PAS, dotUSD, USDt and USDC on Asset Hub; inlined into the client bundle, use a testnet account |
-| `VITE_DEPLOYER_SEED`   | fallback for `MNEMONIC` in `deploy.sh`                                                                                    |
-| `VITE_MELD_BASE_URL`   | origin of the Meld adapter; unset, the offline fake Meld client runs instead                                              |
-| `VITE_MELD_PRODUCT_ID` | product id the adapter expects in the `x-dev-product-id` header                                                           |
+| `VITE_DEPLOYER_SEED`   | fallback for `MNEMONIC` in `deploy.sh`                                                                                      |
+| `VITE_MELD_BASE_URL`   | origin of the Meld adapter; unset, the offline fake Meld client runs instead                                                |
+| `VITE_MELD_PRODUCT_ID` | product id the adapter expects in the `x-dev-product-id` header                                                             |
 
 Two tests submit real transactions to the Paseo testnet and are skipped unless enabled:
 `PROD_PROOF=1` runs `tests/prod-proof.test.ts`, `VERIFY_AMOUNTS=1` runs
