@@ -560,8 +560,7 @@ function handoffFees(
     remoteFeeBuffer: sizing.remoteFeeBuffer.toString(),
     keepNativeForFees: (sizing.tier === "pool" ? sizing.keepNativeForFees : 0n).toString(),
     ...(sizing.tier === "psm" ? { quotedDeposit: sizing.quotedDeposit.toString() } : {}),
-    // The pool tier's headroom, so the worker uses the one the deposit was sized with. The PSM has
-    // a fixed rate and no headroom.
+    // The worker reuses the headroom the deposit was sized with. The PSM has no headroom.
     ...(sizing.tier === "pool" ? { slippagePct: sizing.slippagePct } : {}),
   };
 }
@@ -589,11 +588,8 @@ export interface CoinageSessionArgs {
    * window, so core and the request record expire together. Omitted, core's own default.
    */
   staleFlowMs?: number;
-  /**
-   * A fresh quote nobody has paid against yet: a pool too thin to carry it is refused before the
-   * deposit is asked for. Re-opened requests, rebuilt hand-offs and reconciles leave it unset,
-   * because their deposit may already be on the burner.
-   */
+  /** A fresh quote: refuse a pool too thin to carry it. Re-opened requests, rebuilt hand-offs and
+   *  reconciles leave it unset, since their deposit may already be on the burner. */
   refuseUnavailablePool?: boolean;
 }
 
@@ -1067,10 +1063,8 @@ export async function createCoinageSession(
     const remoteFeeBuffer = pool?.remoteFeeBuffer ?? DEFAULT_REMOTE_FEE_BUFFER;
     // An unreachable chain falls back to the default headroom, as the worker does.
     const slippagePct = pool?.slippagePct ?? DEFAULT_SLIPPAGE_PCT;
-    // True only when the pool was read and found too thin for this purchase.
     const poolUnavailable = pool?.poolUnavailable ?? false;
-    // Refused before the buyer pays, and only for a quote the caller marks as fresh: a missing
-    // flow slot is not proof of that, since a failed read looks the same.
+    // Refuse only a quote the caller marks fresh: a missing flow slot could also be a failed read.
     if (poolUnavailable && args.refuseUnavailablePool === true) {
       throw new PoolRouteUnavailableError(args.amount);
     }

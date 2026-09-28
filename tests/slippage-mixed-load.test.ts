@@ -1,6 +1,5 @@
-// Buys and withdrawals of mixed sizes, interleaved on a seed, all sized against one head and then
-// executed in order. Buys and sales move the Asset Hub pool in opposite directions, so they partly
-// cancel. Every withdrawal also buys its fee PAS on the People pool, about 26 times shallower.
+// Seeded mixes of buys and withdrawals, sized at one head, then executed in order. Each withdrawal
+// also buys its fee PAS on the People pool.
 //
 //   MIXED_REPORT=1 pnpm vitest run tests/slippage-mixed-load.test.ts   # prints the tables
 
@@ -35,8 +34,8 @@ const pct = (n: number) => `${(n * 100).toFixed(1)}%`;
 
 /** Asset Hub's execution fee on the sale, in CASH. */
 const AH_EXEC_FEE_CASH = ASSET_HUB_FEE_BUFFER_CASH;
-/** What sizeSwap buys for a withdrawal's fees on Paseo: the 0.1 PAS existential deposit plus 1.05 x
- *  the 0.00396 PAS XCM fee. It costs about 0.42 CASH; do not read that figure as PAS. */
+/** The fee PAS sizeSwap buys on Paseo, 0.1041559 PAS (ED plus the XCM fee). It costs about
+ *  0.42 CASH; do not read that figure as PAS. */
 const FEE_SWAP_PAS = 1_041_559_000n;
 const TYPICAL_CASH = CASH(100);
 
@@ -45,8 +44,7 @@ const scale = (r: { pas: bigint; cash: bigint }, m: number) => ({
   cash: (r.cash * BigInt(Math.round(m * 1000))) / 1000n,
 });
 
-/** A deterministic LCG. The seed is scrambled and the first eight draws are dropped, so nearby
- *  seeds do not start alike. */
+/** A deterministic LCG, scrambled and warmed up so nearby seeds do not start alike. */
 function rng(seed: number) {
   let s = (seed * 2_654_435_761) >>> 0;
   const step = () => {
@@ -63,10 +61,7 @@ function sizeFrom(r: () => number): bigint {
   return CASH(choices[Math.floor(r() * choices.length)] ?? 100);
 }
 
-/**
- * Both pools, moved by whatever the requests do to them. Asset Hub is held as the on-ramp sees it
- * (PAS in, CASH out); the off-ramp reads the same pool the other way round.
- */
+/** Both pools. Asset Hub is held as the on-ramp sees it: PAS in, CASH out. */
 class World {
   constructor(
     public ah: OrientedReserves,
@@ -110,11 +105,9 @@ type Result =
   | { kind: "buy"; outcome: "cleared" | "stalled"; overPaid: number }
   | { kind: "withdraw"; outcome: "landed" | "trapped" | "fee-rejected" };
 
-/** Every request is sized against the pools as they are now, then executed in order against pools
- *  the earlier requests already moved. */
+/** Sizes every request at the current head, then executes them in order. */
 function runPass(world: World, requests: Request[]): Result[] {
-  // 1. Size everything against the same head. Buys use slippageFor without the 2% floor that
-  // headroomFor adds, so on deep pools they get less headroom than production.
+  // Buys skip headroomFor's 2% floor, so on deep pools they get less headroom than production.
   const sized = requests.map((r) => {
     if (r.kind === "buy") {
       const quote = amountIn(r.cash, world.ah, FEE);
@@ -131,8 +124,7 @@ function runPass(world: World, requests: Request[]): Result[] {
       return { req: r, deposit };
     }
     const quoted = amountOut(r.cash, world.sale, FEE) ?? 0n;
-    // Withdrawals use the production functions: saleBounds with the 5% ceiling, and
-    // swapHeadroomPct for the fee swap.
+    // Withdrawals use the production saleBounds and swapHeadroomPct.
     const bounds = saleBounds({
       reserves: world.sale,
       quoted,
@@ -146,7 +138,7 @@ function runPass(world: World, requests: Request[]): Result[] {
     return { req: r, quoted, bounds, cashInMax };
   });
 
-  // 2. Execute in order, each against pools the earlier requests already moved.
+  // Execute in order, each against the pools the earlier ones moved.
   return sized.map((s): Result => {
     if (s.req.kind === "buy") {
       const need = amountIn(s.req.cash, world.ah, FEE);
@@ -189,7 +181,6 @@ const DEPTHS: Array<[string, number]> = [
 
 describe("mixed load across both pools", () => {
   it("buys and sells partly cancel, so a mixed queue is gentler than a one-way one", () => {
-    // Twelve 100 CASH requests on the same pools: all buys, or buys and withdrawals alternating.
     const oneWay = new World({ in: AH.pas, out: AH.cash }, { in: PE.cash, out: PE.pas });
     const mixed = new World({ in: AH.pas, out: AH.cash }, { in: PE.cash, out: PE.pas });
     const n = 12;
@@ -205,13 +196,11 @@ describe("mixed load across both pools", () => {
     );
     runPass(oneWay, allBuys);
     runPass(mixed, half);
-    // The one-way pass drags the pool's CASH side down; the mixed one barely moves it.
     const drift = (w: World) => Math.abs(Number(w.ah.out - AH.cash) / Number(AH.cash));
     expect(drift(mixed)).toBeLessThan(drift(oneWay));
   });
 
   it("a withdrawal trades on both pools: PAS leaves People and CASH enters Asset Hub", () => {
-    // Each withdrawal buys its fee PAS on People before it sells its CASH on Asset Hub.
     const w = new World({ in: AH.pas, out: AH.cash }, { in: PE.cash, out: PE.pas });
     const before = w.people.out;
     runPass(
@@ -219,13 +208,11 @@ describe("mixed load across both pools", () => {
       Array.from({ length: 10 }, () => ({ kind: "withdraw", cash: CASH(100) }) as Request),
     );
     expect(w.people.out).toBeLessThan(before);
-    // The sales add CASH to the Asset Hub pool.
     expect(w.ah.out).toBeGreaterThan(AH.cash);
   });
 
   it("no withdrawal traps under a mixed load at today's depth or deeper", () => {
-    // 40 seeds of 8 requests, mixed directions and sizes, at 1x, 4x and 24x today's pools. At
-    // 0.25x some sales trap even at the 5% ceiling, so that depth is left out.
+    // 0.25x is left out: some sales trap there even at the 5% ceiling.
     for (const [, m] of DEPTHS.filter(([n]) => n !== "0.25x")) {
       for (let seed = 1; seed <= 40; seed += 1) {
         const r = rng(seed);

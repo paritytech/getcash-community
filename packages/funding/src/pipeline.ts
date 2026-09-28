@@ -89,14 +89,10 @@ export const DEFAULT_REMOTE_FEE_BUFFER = 1_000n;
  *  Fallback when the caller passes no live estimate; 0.02 at 10 decimals. Pool tier only: the
  *  PSM tier's fees come from its batch's live estimate. */
 export const DEFAULT_KEEP_NATIVE_FOR_FEES = 200_000_000n;
-/** The fallback for the headroom the deposit is asked ABOVE the live pool quote, percent. The
- *  headroom itself is computed per request from the pool and the rail (headroomFor in the app)
- *  and passed as `slippagePct`; this 5 is used when the pool cannot be read and for a hand-off
- *  that carries none. Applied once, when the deposit is sized: the conversion gate checks the
- *  plain quote, so the headroom is exactly how far the pool may move against the deposit between
- *  sizing and converting before it stops clearing the gate. The surplus is converted and claimed
- *  with the rest, so the buyer never receives less than the target. Pool tier only: the PSM's
- *  rate does not move. */
+/** Fallback deposit headroom ABOVE the live pool quote, percent, used when the pool cannot be read
+ *  or a hand-off carries no `slippagePct` (headroomFor in the app sizes it per request). Applied
+ *  once, at sizing: the conversion gate checks the plain quote, and the surplus is claimed with
+ *  the rest. Pool tier only: the PSM's rate does not move. */
 export const DEFAULT_SLIPPAGE_PCT = 5;
 /** PSM refusals of the mint before the run is held. */
 export const MAX_PSM_REFUSALS = 3;

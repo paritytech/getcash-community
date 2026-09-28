@@ -1,9 +1,6 @@
-// Prints what each swap site's flat 5% constant absorbs on the live Paseo pools, next to the
-// bound computed from the pool. Read-only: it reads reserves and quotes and submits nothing.
-// Not part of CI:
+// Prints the flow each site's flat constant and computed bound absorb on the live Paseo pools.
+// Read-only, not in CI:
 //   SLIPPAGE_REPORT=1 pnpm vitest run tests/slippage-report.test.ts
-// Read the absorbs figure rather than the percentage: 5% is a wide margin on a deep pool and a
-// thin one on a shallow pool.
 
 import { describe, it } from "vitest";
 import { createClient } from "polkadot-api";
@@ -117,9 +114,7 @@ describe.runIf(process.env.SLIPPAGE_REPORT === "1")("slippage report", () => {
 
       console.log(`\n=== THE THREE SITES ===`);
 
-      // A: the on-ramp buys CASH with PAS on Asset Hub. The deposit is fixed before the money is
-      // sent, so the quote has to last as long as the rail takes to deliver. The computed line is
-      // headroomFor, as the hosted session calls it (without the dispatch fee, which it reads live).
+      // A: the on-ramp buy on Asset Hub, from headroomFor without the live dispatch fee.
       for (const [rail, exposure] of [
         ["crypto (DOT direct)", "minutes"],
         ["card (Meld)", "hours"],
@@ -146,9 +141,7 @@ describe.runIf(process.env.SLIPPAGE_REPORT === "1")("slippage report", () => {
         });
       }
 
-      // B: the off-ramp sells CASH for PAS on Asset Hub. The dry run reads best like the quote,
-      // so it catches a badly built program but not a price that moves afterwards. A breach traps
-      // the withdrawal on Asset Hub.
+      // B: the off-ramp sale on Asset Hub, where a breach traps the withdrawal.
       const sellCash = 100_000_000n;
       const quotedPas = await ah.apis.AssetConversionApi.quote_price_exact_tokens_for_tokens(
         pool.underlying,
@@ -156,7 +149,7 @@ describe.runIf(process.env.SLIPPAGE_REPORT === "1")("slippage report", () => {
         sellCash,
         true,
       );
-      // What sizeXcm ships: the derived bound through saleBounds, clamped to the ceiling.
+      // What sizeXcm ships: the derived bound clamped to the ceiling.
       const sale = saleBounds({
         reserves: { in: ahCash, out: ahPas },
         quoted: BigInt(quotedPas),
@@ -178,9 +171,7 @@ describe.runIf(process.env.SLIPPAGE_REPORT === "1")("slippage report", () => {
         ...(sale.overCapacity ? { flag: "over capacity: the ceiling cut the bound" } : {}),
       });
 
-      // C: the fee swap on People buys the PAS the XCM's fees need, paid in CASH. A rejected swap
-      // burns a fee and one of the three strikes it shares with the XCM, so this bound is about
-      // not failing rather than about price.
+      // C: the People fee swap, where a rejection burns a fee and one of the three shared strikes.
       compare({
         site: "C  fee swap",
         // What sizeSwap buys: the ED plus 1.05 x the XCM fee, 0.1041559 PAS (about 0.42 CASH).
@@ -189,15 +180,14 @@ describe.runIf(process.env.SLIPPAGE_REPORT === "1")("slippage report", () => {
         tradeOut: 1_041_559_000n,
         outDec: PAS_DEC,
         outSym: "PAS",
-        // The 5% floor alone, against what swapHeadroomPct ships, which is never below it.
+        // The 5% floor alone; swapHeadroomPct never ships below it.
         flat: SWAP_HEADROOM_PCT,
         exposure: "instant",
         feePpm: BigInt(peFee),
         pct: swapHeadroomPct({ cash: peCash, pas: pePas }, 1_041_559_000n),
       });
 
-      // Site B's policy knob is how many typical withdrawals may land ahead of the sale
-      // (DEFAULT_CONCURRENCY, 24). This prints the bound for a few values of it.
+      // Site B's bound for a few concurrency values: typical withdrawals landing ahead of the sale.
       console.log(`\n=== THE CONCURRENCY KNOB at site B, on the live pool ===`);
       for (const concurrency of [2, 6, 12, 24, 50]) {
         const b = withdrawalBounds({

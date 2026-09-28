@@ -122,11 +122,9 @@ export async function quoteDirectReceive(amount: bigint): Promise<bigint> {
 }
 
 /**
- * An estimate for the withdrawal summary: what a direct withdrawal of `amount` CASH should land on
- * Asset Hub at the pool's current price (`expected`), and the least it would land if the program
- * were sized now (`atLeast`, from the same saleBounds the worker uses), with the slippage between
- * them. The worker sizes again when it submits, so if the pool moves in between, the program's own
- * floor moves with it. Show `atLeast` as an estimate at today's price, not as a guarantee.
+ * What a direct withdrawal of `amount` CASH should land on Asset Hub at today's price (`expected`),
+ * and the least it would land if sized now (`atLeast`, from the same saleBounds the worker uses).
+ * `atLeast` is an estimate at today's price, not a guarantee: the worker sizes again on submit.
  */
 export async function quoteDirectMinimum(
   amount: bigint,

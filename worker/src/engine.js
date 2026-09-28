@@ -480,16 +480,11 @@ export async function fundingStatus(params) {
 
 const hostOwnsClaim = (record) => record.claim?.phase === "claiming";
 
-/**
- * A pool-tier deposit that was seen, is not in flight, and was found below the conversion gate by
- * its last completed tick, with the deposit still on the burner: it is waiting for the price. This
- * happens after a program is rejected at inclusion and burns its dispatch fee. Such a job is off
- * the 900 s clock, since the price usually comes back, and waits under the deposit window instead.
- */
+/** A seen pool deposit with no XCM submitted, waiting below the gate for the price: off the 900 s
+ *  clock, under the deposit window instead. */
 const parkedAtGate = (record) => !record.done && record.state.parkedAtGate === true;
 
-/** True from the first tick that saw funds until the claim is registered with the host, except
- *  while the deposit is parked at the gate. */
+/** True from the first tick that saw funds until the host registers the claim, unless parked. */
 const onTheClock = (record) =>
   !isFinished(record) &&
   !hostOwnsClaim(record) &&
@@ -527,8 +522,8 @@ function judgeBounds(record, nowMs, read) {
     fail(record, "expired", "no deposit arrived within the deposit window");
     return;
   }
-  // A parked deposit is on the burner, so its window ends as a timeout, not an expiry. It gets at
-  // least a full window from when it was seen: the rail's deadline is about paying, not waiting.
+  // A parked deposit is on the burner, so it ends as a timeout, not an expiry, and gets at least a
+  // full window from when it was seen.
   const parkedUntil = Math.max(expiresAt, (record.state.fundsSeenAt ?? 0) + DEPOSIT_WINDOW_MS);
   if (read && parkedAtGate(record) && nowMs > parkedUntil) {
     fail(record, "timeout", "the deposit could not be converted at the pool's price in its window");
@@ -538,8 +533,7 @@ function judgeBounds(record, nowMs, read) {
 /** One tick for one record: connect, read the world, act at most once, persist, let go. */
 async function tickRecord(record, nowMs) {
   accountWorkedTime(record, nowMs);
-  // Only a tick that completes under the gate parks the job again, so a tick that throws anywhere,
-  // even before the pipeline, puts it back on the clock.
+  // Cleared up front so a tick that throws anywhere is back on the clock.
   record.state.parkedAtGate = false;
   // The tier is an input to this worker, never a decision it makes: a job converts through the
   // route it was quoted or not at all.
@@ -616,10 +610,9 @@ async function tickRecord(record, nowMs) {
           signOptions: await signOptionsFor(ahClient),
           readUnderlyingOnPeople: (ss58) => peoplePort.settlementBalance(ss58, CASH_SETTLEMENT),
           now: Date.now,
-          // Saved before the broadcast, state included, so a cancel during the submit sees that
-          // funds were seen and is refused.
+          // State is saved before the broadcast so a cancel during the submit sees the funds.
           onBeforeSubmit: async (call) => {
-            // A cancel that landed before the broadcast stops it; nothing is signed yet.
+            // A cancel before the broadcast stops it; nothing is signed yet.
             if (record.phase === "failed") throw new Error("cancelled before the submit");
             writeState();
             record.submitting = { call, at: Date.now() };
@@ -639,8 +632,8 @@ async function tickRecord(record, nowMs) {
     // A cancel that landed during this tick stands.
     if (record.phase === "failed") return;
     record.phase = outcome.step;
-    // Parked only on the pool tier (the PSM's rate does not move) and only with the deposit still
-    // on the burner (dust means the program ran and its answer was lost).
+    // Pool tier only, since the PSM's rate does not move, and only while the deposit is above the
+    // fee allowance: dust means the program ran.
     record.state.parkedAtGate =
       route.tier === "pool" &&
       outcome.step === "await-native" &&

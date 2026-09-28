@@ -89,10 +89,7 @@ function scriptedWorld(
     loseXcmAnswer?: boolean;
     /** Asset Hub's dry run traps this much. */
     trapOnAssetHubDryRun?: bigint;
-    /**
-     * A constant-product sale pool on Asset Hub (CASH in, PAS out) that answers `get_reserves`
-     * and `LPFee`, so the sizing derives its bound from the pool instead of shipping the ceiling.
-     */
+    /** A readable CASH/PAS pool on Asset Hub, so the sizing derives its bound from it. */
     pool?: { cash: bigint; pas: bigint };
     /** CASH other people sold into that pool after the finalized head, visible only at best. */
     soldAheadAtBest?: bigint;
@@ -280,10 +277,7 @@ function scriptedWorld(
     },
   };
 
-  /**
-   * The PAS the sale returns at the finalized head, or at best after the sales ahead of it.
-   * Without a pool, a flat rate.
-   */
+  /** PAS the sale returns, after the sales ahead of it when read at best. No pool, a flat rate. */
   const pool = opts.pool;
   const reservesAt = (at?: string) => {
     const reserves = { in: pool!.cash, out: pool!.pas };
@@ -577,9 +571,8 @@ describe("withdrawTickOnce", () => {
 
 describe("withdrawTickOnce after a submit whose answer was lost", () => {
   it("keeps the first baseline when a stale People view makes it size again", async () => {
-    // People is read at its finalized head and Asset Hub at best. After a lost answer the next tick
-    // can still see the key funded on People while the destination already holds the landing. The
-    // re-size must not take that balance as the new baseline, or the arrival never counts.
+    // People is read at finalized and Asset Hub at best, so after a lost answer People can still
+    // show the key funded while the destination holds the landing. A new baseline would hide it.
     const world = scriptedWorld({ loseXcmAnswer: true });
     const state = freshWithdrawTickState();
     let stale: { cash: bigint; pas: bigint } | null = null;
@@ -638,9 +631,8 @@ describe("withdrawTickOnce after a submit whose answer was lost", () => {
 });
 
 describe("withdrawTickOnce after an XCM attempt that can no longer land", () => {
-  // Such an attempt must not leave its baseline behind. A credit from elsewhere that lands before
-  // the next attempt would then count as that attempt's arrival, here one that traps on Asset Hub
-  // and lands nothing.
+  // Such an attempt must drop its baseline, or a stranger's credit counts as the next attempt's
+  // arrival, here one that traps on Asset Hub and lands nothing.
   const STRANGER = 100n * ED;
 
   it("drops the baseline of an XCM rejected at inclusion", async () => {
@@ -677,8 +669,7 @@ describe("withdrawTickOnce after an XCM attempt that can no longer land", () => 
   };
 
   it("measures from the fresh baseline once a later XCM is included after a lost answer", async () => {
-    // A later XCM that People includes proves the lost one never ran: had it run, the key would be
-    // empty and could not pay this one's fee.
+    // A later included XCM proves the lost one never ran, or the key could not pay its fee.
     const world = scriptedWorld();
     world.state.keyPas = 3n * ED;
     dropFirstXcm(world);
@@ -731,11 +722,9 @@ describe("withdrawTickOnce after an XCM attempt that can no longer land", () => 
 });
 
 describe("withdrawTickOnce on a readable Asset Hub pool", () => {
-  // The tests above use an Asset Hub with no reserves view, so the sizing ships the caller's 5%.
-  // These give it a pool to read: the bound comes from the pool, is clamped to the ceiling,
-  // reported through onSizing and saved for the arrival check, all read at the best head.
+  // With a pool to read, the bound comes from it instead of the caller's 5% ceiling.
 
-  /** The Asset Hub pool as measured on 2026-09-25, and the same price at the 2.5M release depth. */
+  /** The live Asset Hub pool, and the same price at the 2.5M CASH release depth. */
   const LIVE = { cash: 103_995_356_467n, pas: 421_298_658_123_227n };
   const RELEASE = { cash: LIVE.cash * 24n, pas: LIVE.pas * 24n };
   /** About 156k CASH, where the bound is neither at the 2% floor nor at the 5% ceiling. */
@@ -772,8 +761,7 @@ describe("withdrawTickOnce on a readable Asset Hub pool", () => {
   });
 
   it("checks the arrival against the bound the program carried, not the caller's ceiling", async () => {
-    // On a deep pool the program carries 2%. A landing 3% short of the dry run's must then wait,
-    // though it would clear the 5% ceiling.
+    // The deep pool's bound is under 3%, so a landing 3% short waits though it clears 5%.
     const probe = scriptedWorld({ pool: RELEASE });
     await drive(probe, 4);
     const landed = probe.state.lastDryRunLanded;
@@ -793,8 +781,7 @@ describe("withdrawTickOnce on a readable Asset Hub pool", () => {
   });
 
   it("sizes at the best head: a sale executed after the finalized head is in the quote and the landing", async () => {
-    // The finalized head trails best, and a quote read there misses the sales in between. Read at
-    // best, the floor and the dry run's landing both start from the price the program will meet.
+    // A quote at the finalized head misses the sales since, so both reads happen at best.
     const ahead = CASH(10_000);
     const world = scriptedWorld({ pool: MID, soldAheadAtBest: ahead });
     const sizings: Array<{ promisePct: number; safetyPct: number; overCapacity: boolean }> = [];
@@ -813,11 +800,10 @@ describe("withdrawTickOnce on a readable Asset Hub pool", () => {
         ceilingPct: 5,
         feePpm: 3_000n,
       });
-    // The bound the tick reported is the one computed from the best head, and it differs from the
-    // one the finalized head would have given.
+    // The reported bound comes from the best head, not the finalized one.
     expect(sizings).toEqual([boundAt(atBest)]);
     expect(boundAt(atBest)).not.toEqual(boundAt(pool));
-    // The landing the arrival check is held to comes from the best head too.
+    // So does the landing the arrival check is held to.
     expect(world.state.lastDryRunLanded).toBeLessThan(amountOut(cash, pool, 3_000n)!);
   });
 });

@@ -1,9 +1,6 @@
-// An account's PAS on Asset Hub, read at the head the sale is sized at (SALE_READ_AT). Shared by
-// every withdrawal read of an Asset Hub balance: the arrival check, the Chainflip sweep of the key
-// and the key's refund read. At best, the baseline taken before a submit already includes anything
-// that landed while the finalized head lagged, so that credit is not mistaken for this withdrawal's
-// arrival. The sweep and the refund read follow the arrival, so they read the same head: at
-// finalized they would find the key empty for a landing the arrival already counted.
+// An account's PAS on Asset Hub at the best head (SALE_READ_AT), for the arrival check, the
+// Chainflip sweep and the key's refund. At best, the arrival baseline includes what landed while
+// finalized lagged; the sweep and the refund follow the arrival, so they read the same head.
 
 import { AccountId } from "polkadot-api";
 import { SALE_READ_AT, type AssetHubApi } from "./fees";

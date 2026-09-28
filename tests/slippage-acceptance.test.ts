@@ -1,7 +1,4 @@
-// Acceptance tests for dynamic slippage (issue #45). A mocked pool keeps moving while a request
-// waits, and each headroom site is run against it. A breach costs time at the on-ramp, a fee and a
-// strike at the fee swap, and traps the whole withdrawal at the off-ramp sale. The tests assert
-// behaviour like this rather than exact constants.
+// Runs each headroom site against a mocked pool that keeps moving while the request waits.
 //
 // ACCEPTANCE_REPORT=1 pnpm vitest run tests/slippage-acceptance.test.ts prints the tables.
 
@@ -36,8 +33,7 @@ const CASH = (n: number) => BigInt(Math.round(n * 1e6));
 const PAS = (n: number) => BigInt(Math.round(n * 1e10));
 const pad = (s: string | number, n: number) => String(s).padStart(n);
 
-/** Asset Hub's execution fee on the sale, in CASH, taken at the full ASSET_HUB_FEE_BUFFER_CASH.
- *  The model sells everything but this, so it is the structural gap minPasOut has to clear. */
+/** Asset Hub's execution fee on the sale, in CASH: the gap minPasOut has to clear. */
 const AH_EXEC_FEE_CASH = ASSET_HUB_FEE_BUFFER_CASH;
 
 /** A pool somebody else is trading against while we wait. */
@@ -81,11 +77,7 @@ class DriftingPool {
   }
 }
 
-/**
- * A deterministic generator, so a failing case is reproducible. The seed is scrambled and the
- * first outputs discarded: a bare LCG gives nearly the same first value for seeds 1..200, which
- * made every walk below start in the same direction.
- */
+/** A deterministic LCG, scrambled and warmed up so nearby seeds do not start alike. */
 function lcg(seed: number) {
   let s = (seed * 2_654_435_761) >>> 0;
   const step = () => {
@@ -96,10 +88,7 @@ function lcg(seed: number) {
   return step;
 }
 
-/**
- * Third-party flow per exposure class, in typical trades so it does not depend on the pool. A
- * range rather than one value, since there is no measured flow to pick one from.
- */
+/** Assumed third-party flow per exposure class, in typical 100 CASH trades. */
 const FLOW_BAND: Record<Exposure, { trades: number[]; label: string }> = {
   instant: { trades: [0, 0.5, 1, 2, 4], label: "one tick (~6s) to one block window" },
   minutes: { trades: [0, 2, 5, 10, 20], label: "a crypto deposit, minutes" },
@@ -107,22 +96,19 @@ const FLOW_BAND: Record<Exposure, { trades: number[]; label: string }> = {
   days: { trades: [0, 10, 30, 75, 150], label: "a bank transfer, up to 3 days" },
 };
 
-/** The strategies under test. `pctFor` sees the pool as it was at sizing time, which is all the
- *  real code can see. */
+/** A headroom strategy. `pctFor` sees only the pool at sizing time, like the real code. */
 type Strategy = {
   name: string;
   pctFor(r: OrientedReserves, tradeOut: bigint, e: Exposure, reference: bigint): number;
 };
 
-// Read from the real constants, not copies. SHIPPED_A is the on-ramp's headroom when the pool
-// cannot be read; SHIPPED_B is the off-ramp's 5% ceiling, which is what today's pool ships.
+// A: the on-ramp's headroom when the pool cannot be read. B: the off-ramp's 5% ceiling.
 const SHIPPED_A = DEFAULT_SLIPPAGE_PCT;
 const SHIPPED_B = DEFAULT_WITHDRAW_SLIPPAGE_PCT;
-/** What sizeSwap buys for a withdrawal's fees on Paseo, 0.1041559 PAS: the 0.1 PAS existential
- *  deposit plus the XCM fee with its 5% headroom. It costs about 0.42 CASH; read as PAS, that
- *  0.42 would be a trade four times too large. */
+/** The fee PAS sizeSwap buys on Paseo, 0.1041559 PAS (ED plus the XCM fee). It costs about
+ *  0.42 CASH; do not read that figure as PAS. */
 const FEE_SWAP_PAS = 1_041_559_000n;
-/** What the fee swap ships on the measured People pool, read through swapHeadroomPct. */
+/** What the fee swap ships on the measured People pool. */
 const SHIPPED_C = swapHeadroomPct({ cash: PE.cash, pas: PE.pas }, FEE_SWAP_PAS);
 
 const strategies = (shipped: number): Strategy[] => [
@@ -147,11 +133,9 @@ const strategies = (shipped: number): Strategy[] => [
 type SiteAOutcome = "cleared" | "waited-then-cleared" | "expired";
 
 /**
- * Site A, the on-ramp. The deposit is sized at t0, the pool drifts for the exposure window, then
- * the conversion gate is ticked until it clears or the deposit window runs out. The gate is the
- * real one (decideStep): the deposit must cover the plain quote plus the fee native, with no
- * headroom applied again. The exchange runs locally in one PolkadotXcm.execute on Asset Hub, so a
- * breach rolls back and the next tick re-prices: it costs a wait, never funds.
+ * Site A, the on-ramp. Sizes the deposit, drifts the pool for the exposure window, then ticks the
+ * gate (as decideStep: plain quote plus fee native) until it clears or runs out. A breach rolls
+ * back, so it costs a wait, never funds.
  */
 function runSiteA(input: {
   pool: DriftingPool;
@@ -159,7 +143,7 @@ function runSiteA(input: {
   keepNative: bigint;
   pct: number;
   driftDuringWindow: bigint;
-  /** Further drift per tick after delivery, signed. A random walk may or may not bring it back. */
+  /** Signed drift per tick after delivery. */
   driftPerTick: () => bigint;
   ticks: number;
 }): { outcome: SiteAOutcome; ticksWaited: number; deposit: bigint; overPaidPct: number } {
@@ -192,17 +176,13 @@ type SiteBOutcome =
   | "landed"
   /** The dry run refused before the submit: free, but the next tick recomputes the same value. */
   | "refused-at-sizing"
-  /** The worst outcome: the exchange failed on Asset Hub, nothing rolled back, and the assets are
-   *  trapped there until the claimer named in the program recovers them. */
+  /** The exchange failed on Asset Hub and the assets are trapped there for the claimer. */
   | "trapped";
 
 /**
- * Site B, the off-ramp sale. The quote and the dry run both read Asset Hub's best head
- * (SALE_READ_AT), modelled here as the same reserves, so the dry run only catches the structural
- * fee gap, never a price move. The
- * price then moves while People includes the extrinsic and the message crosses XCMP, and the
- * remote exchange meets whatever is there. A breach does not roll back: People already reported
- * success and the tick has marked the run submitted.
+ * Site B, the off-ramp sale. The dry run is modelled on the same reserves as the quote (both read
+ * the best head), so it catches only the fee gap. The price then moves during inclusion and the
+ * XCMP hop, and a breach traps with no rollback.
  */
 function runSiteB(input: {
   pool: DriftingPool;
@@ -236,9 +216,8 @@ function runSiteB(input: {
 type SiteCOutcome = "swapped" | "refused-too-small" | "rejected" | "out-of-strikes";
 
 /**
- * Site C, the People fee swap. Size, wait one tick, submit with no dry run. A breach is a
- * rejection at inclusion that burns a CASH fee and one of the three strikes the swap shares with
- * the XCM; three end the run.
+ * Site C, the People fee swap: size, wait a tick, submit with no dry run. A breach burns a CASH
+ * fee and one of the three strikes shared with the XCM.
  */
 function runSiteC(input: {
   pool: DriftingPool;
@@ -272,8 +251,7 @@ describe("site A, on-ramp: a moving pool while the rail delivers", () => {
   const exposures: Exposure[] = ["minutes", "hours", "days"];
 
   it("the shipped 5% clears the 'days' band up to the flow it absorbs", () => {
-    // 5% absorbs about 2,560 CASH of adverse flow on this pool, so up to 25 typical trades clear.
-    // The band's 30, 75 and 150 do not.
+    // 5% absorbs about 25 typical trades of adverse flow on this pool.
     const inside = [0, 10, 25];
     for (const trades of inside) {
       const pool = new DriftingPool({ in: AH.pas, out: AH.cash });
@@ -291,7 +269,7 @@ describe("site A, on-ramp: a moving pool while the rail delivers", () => {
   });
 
   it("a stalled deposit is rescued by a favourable drift inside the deposit window", () => {
-    // This is why a breach at site A is a wait and not a loss: the gate re-quotes every tick.
+    // The gate re-quotes every tick, so a breach at site A is a wait, not a loss.
     const pool = new DriftingPool({ in: AH.pas, out: AH.cash });
     const out = runSiteA({
       pool,
@@ -340,8 +318,7 @@ describe("site A, on-ramp: a moving pool while the rail delivers", () => {
 
 describe("site B, off-ramp: the dry run cannot see the move that matters", () => {
   it("the structural gap, and only it, is what the dry run refuses", () => {
-    // Asset Hub's execution fee is taken out of the sale, so a headroom below fee / cashOnKey can
-    // never pass. Small withdrawals feel it most.
+    // Asset Hub's fee comes out of the sale, so a headroom below fee / cashOnKey never passes.
     const tiny = CASH(0.5);
     const gapPct = (Number(AH_EXEC_FEE_CASH) / Number(tiny)) * 100;
     const below = new DriftingPool({ in: AH.cash, out: AH.pas });
@@ -440,8 +417,7 @@ describe("site C, People fee swap: blind submit, three shared strikes", () => {
   const balance = CASH(100);
 
   it("2% is killed by a peer buying 15 PAS each tick", () => {
-    // 2% absorbs about 9.8 PAS on the People pool, so this peer uses up all three strikes. The fee
-    // swap once shipped 2%; this keeps it from going back.
+    // 2% absorbs about 9.8 PAS on the People pool, so this peer uses up all three strikes.
     const pool = new DriftingPool({ in: PE.cash, out: PE.pas });
     const out = runSiteC({
       pool,
@@ -474,7 +450,7 @@ describe("site C, People fee swap: blind submit, three shared strikes", () => {
     const at2 = minFor(2);
     const at5 = minFor(SHIPPED_C);
     expect(at5).toBeGreaterThan(at2);
-    // Going from 2% to 5% adds about 0.013 CASH to the smallest withdrawal; the bar is 0.1 CASH.
+    // The bar: under 0.1 CASH more on the smallest withdrawal.
     expect(Number(at5 - at2) / 1e6).toBeLessThan(0.1);
   });
 
@@ -492,9 +468,7 @@ describe("site C, People fee swap: blind submit, three shared strikes", () => {
   });
 
   it("the computed value alone is too tight here, which is why it never ships below the constant", () => {
-    // Plain slippageFor (about 1.07% on this pool for this trade) is killed by the peer the
-    // shipped value survives. If the floor in swapHeadroomPct is dropped, this test and "the
-    // shipped headroom survives that same peer" disagree and show why.
+    // Plain slippageFor is killed by the same peer the shipped value survives.
     expect(SHIPPED_C).toBeGreaterThanOrEqual(SWAP_HEADROOM_PCT);
     const pool = new DriftingPool({ in: PE.cash, out: PE.pas });
     const pct = slippageFor({
@@ -551,8 +525,7 @@ describe("site C, People fee swap: blind submit, three shared strikes", () => {
 });
 
 describe("a two-sided random walk, which is what real flow looks like", () => {
-  // Monotone adverse drift is the worst case, not the normal one. Here the pool wanders both ways
-  // and each test asserts what has to hold whatever it does.
+  // The pool wanders both ways, and each test asserts what must hold whatever it does.
   const walk = (rand: () => number, scale: bigint) => () =>
     BigInt(Math.round((rand() - 0.5) * 2 * Number(scale)));
 
@@ -580,7 +553,6 @@ describe("a two-sided random walk, which is what real flow looks like", () => {
         ` ${SHIPPED_B}% -> ${(shipped * 100).toFixed(1)}%`,
     );
     expect(tight).toBeGreaterThan(shipped);
-    // The acceptance bar: the shipped headroom must not trap on most ordinary walks.
     expect(shipped).toBeLessThan(0.5);
   });
 

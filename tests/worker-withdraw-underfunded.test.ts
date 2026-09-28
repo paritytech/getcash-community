@@ -1,7 +1,5 @@
-// How the withdraw engine handles a key whose CASH cannot buy the fees' PAS. The tick is mocked
-// to throw WithdrawUnderfundedError; the engine and its stored records are real. The job fails
-// only once the whole payment is on the key. Before that the rest may still be arriving, and
-// failing early would strand it on a key nothing sizes again.
+// How the withdraw engine handles a key whose CASH cannot buy the fees' PAS, with the tick mocked.
+// It fails only once the whole payment is on the key, since the rest may still be arriving.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 

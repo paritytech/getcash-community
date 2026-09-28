@@ -486,7 +486,7 @@ async function tickRecord(record, nowMs) {
     state.submitted = !!record.state.submitted;
     state.destinationPasBefore = asBig(record.state.destinationPasBefore, null);
     state.expectedLanding = asBig(record.state.expectedLanding, null);
-    // The slippage the submitted program was built with; the arrival check uses this one.
+    // The slippage the submitted program carried; the arrival check uses it.
     state.submittedSlippagePct =
       typeof record.state.submittedSlippagePct === "number"
         ? record.state.submittedSlippagePct
@@ -544,7 +544,6 @@ async function tickRecord(record, nowMs) {
             delete record.submitting;
             record.txs.push(info);
           },
-          // The bound the program is about to carry, kept on the record.
           onSizing: (info) => {
             record.sizing = info;
           },

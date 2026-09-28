@@ -368,8 +368,7 @@ type WorkerJob = {
   tier?: unknown;
   external?: unknown;
   feeRate?: unknown;
-  /** The deposit headroom. The worker writes it on every job, DEFAULT_SLIPPAGE_PCT when the
-   *  hand-off carried none; only a pool job's value means anything. */
+  /** The deposit headroom. The worker always stores it, but only a pool job's value counts. */
   slippagePct?: number;
   createdAt?: number;
   armedAt?: number;
@@ -581,7 +580,6 @@ function handoffOf(job: WorkerJob): WorkerHandoffPayload | undefined {
     remoteFeeBuffer,
     keepNativeForFees,
     ...(isString(job.quotedDeposit) ? { quotedDeposit: job.quotedDeposit } : {}),
-    // Only the pool tier has a headroom, so only a pool job's value goes back into the hand-off.
     ...(route.tier === "pool" && isNumber(slippagePct) && slippagePct > 0 ? { slippagePct } : {}),
     ...route,
   };

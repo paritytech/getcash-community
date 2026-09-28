@@ -597,9 +597,8 @@ describe("worker funding engine", () => {
   });
 
   it("persists what the tick learned before the submit, so a cancel during it sees the funds", async () => {
-    // A cancel decides from fundsSeenAt. If the state is saved only after the tick, a cancel
-    // during the submit sees null and cancels a job whose transaction is already out, and nothing
-    // claims the CASH it lands.
+    // A cancel decides from fundsSeenAt. Saved only after the tick, a cancel during the submit
+    // would see null and strand the CASH the transaction lands.
     armSeams();
     const engine = await freshEngine();
     await engine.startFunding(JSON.stringify(HANDOFF));
@@ -618,9 +617,8 @@ describe("worker funding engine", () => {
   });
 
   it("parks a deposit back under the gate after a rejected submit: off the clock until its window ends", async () => {
-    // The gate passes on a head a few blocks old, the program is rejected at inclusion and burns
-    // its dispatch fee, and the deposit is back under the gate with fundsSeenAt set. That is a
-    // wait for the price, which usually comes back, so it must not fail on the 900 s clock.
+    // The gate passed on a stale head, the program was rejected, and the deposit is back under
+    // the gate. That is a wait for the price, so it must not fail on the 900 s clock.
     armSeams();
     vi.useFakeTimers();
     const engine = await freshEngine();
@@ -630,7 +628,7 @@ describe("worker funding engine", () => {
       state.attempts = 1;
       throw new Error("funding program dispatch rejected: NoDeal");
     });
-    // The deposit less one burned dispatch fee: still there, under the gate.
+    // The deposit less one burned dispatch fee, still under the gate.
     mocks.tickOnce.mockResolvedValue(underGate(40_000_000_000n));
     await engine.tickAllFunding();
     vi.advanceTimersByTime(30_000);
@@ -651,15 +649,14 @@ describe("worker funding engine", () => {
       phase: "await-native",
     });
 
-    // When the window ends it fails as a timeout, as the clock would have failed it, only later.
+    // It fails as a timeout once the window ends.
     vi.advanceTimersByTime(86_400_000);
     await engine.tickAllFunding();
     expect(storedJob()).toMatchObject({ phase: "failed", failure: "timeout" });
   });
 
   it("keeps a burner holding only dust on the clock: the program ran, so there is nothing to wait for", async () => {
-    // A submit whose answer was lost looks like a rejection to the tick, but the program ran and
-    // the native left. With nothing left to convert there is no price to wait for.
+    // A lost answer looks like a rejection, but the program ran and nothing is left to convert.
     armSeams();
     vi.useFakeTimers();
     const engine = await freshEngine();
@@ -677,8 +674,7 @@ describe("worker funding engine", () => {
   });
 
   it("puts a parked job back on the clock when its tick throws before the pipeline", async () => {
-    // Parking is cleared at the start of every tick, so a job that no longer reaches the pipeline
-    // (here a host routing the wrong chain) still times out on the clock.
+    // Parking clears each tick, so a job that stops reaching the pipeline still times out.
     armSeams();
     vi.useFakeTimers();
     const engine = await freshEngine();
@@ -700,8 +696,7 @@ describe("worker funding engine", () => {
   });
 
   it("gives a deposit seen just before the rail's deadline a full window to wait for the price", async () => {
-    // The rail's deadline says when the buyer may pay, not how long a deposit already on the
-    // burner may wait. Parked, it gets a full window from the sighting.
+    // The rail's deadline bounds when the buyer may pay, not how long a seen deposit may wait.
     armSeams();
     vi.useFakeTimers();
     const engine = await freshEngine();
@@ -729,7 +724,7 @@ describe("worker funding engine", () => {
     await engine.startFunding(JSON.stringify(HANDOFF));
     let broadcast = false;
     mocks.tickOnce.mockImplementationOnce(async (input) => {
-      // Sizing and dry runs happen here, before the hook; the cancel lands in that window.
+      // The cancel lands after sizing, before the hook.
       await engine.cancelFunding(JSON.stringify({ sessionId: "s-1" }));
       await input.onBeforeSubmit("swap");
       broadcast = true;
@@ -741,8 +736,7 @@ describe("worker funding engine", () => {
   });
 
   it("keeps a job that keeps throwing after the gate on the clock", async () => {
-    // Only a tick that completes under the gate parks the job. A job failing at something other
-    // than the price must still reach its run bound.
+    // Only a tick that completes under the gate parks, so any other failure still times out.
     armSeams();
     vi.useFakeTimers();
     const engine = await freshEngine();

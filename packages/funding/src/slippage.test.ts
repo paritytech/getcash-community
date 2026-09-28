@@ -16,9 +16,9 @@ import {
   type OrientedReserves,
 } from "./slippage";
 
-/** Paseo Asset Hub as measured on 2026-09-22: PAS in, CASH out. */
+/** Measured Paseo Asset Hub reserves: PAS in, CASH out. */
 const AH: OrientedReserves = { in: 411_831_067_975_701n, out: 106_378_021_598n };
-/** Paseo People as measured the same day: CASH in, PAS out. */
+/** Measured Paseo People reserves: CASH in, PAS out. */
 const PEOPLE: OrientedReserves = { in: 4_013_999_606n, out: 9_965_227_563_804n };
 const DEEP: OrientedReserves = { in: AH.in * 24n, out: AH.out * 24n };
 
@@ -81,7 +81,6 @@ describe("adverseMovePct and absorbableFlow", () => {
     const flow = absorbableFlow(CASH(50), AH, 5);
     expect(adverseMovePct(CASH(50), AH, flow) as number).toBeLessThanOrEqual(5);
     expect(adverseMovePct(CASH(50), AH, flow + 1n) as number).toBeGreaterThan(5);
-    // 5% on this pool is about 2.5k CASH, and on a pool 24 times deeper far more.
     expect(Number(flow) / 1e6).toBeGreaterThan(2_400);
     expect(Number(flow) / 1e6).toBeLessThan(2_700);
     expect(Number(absorbableFlow(CASH(50), DEEP, 5))).toBeGreaterThan(Number(flow) * 20);
@@ -91,7 +90,7 @@ describe("adverseMovePct and absorbableFlow", () => {
 
 describe("slippageFor", () => {
   it("asks for more counted-flow headroom the longer the exposure", () => {
-    // Without the market move, which is not ordered by window: it cancels on the fiat rails.
+    // Without the market move, which is not ordered by window.
     const at = (exposure: (typeof EXPOSURES)[number]) =>
       slippageFor({ reserves: DEEP, tradeOut: CASH(50), exposure, marketMovePct: 0 }).pct;
     expect(at("instant")).toBeLessThan(at("minutes"));
@@ -116,8 +115,6 @@ describe("slippageFor", () => {
   });
 
   it("never falls below the market move, however deep the pool", () => {
-    // Counted flow shrinks with depth and the market does not, so on a deep arbitraged pool the
-    // market term is what keeps the headroom above a normal price move.
     for (const m of [1n, 24n, 100n, 10_000n]) {
       const reserves = { in: AH.in * m, out: AH.out * m };
       for (const exposure of EXPOSURES) {
@@ -157,8 +154,7 @@ describe("slippageFor", () => {
   });
 
   it("keeps at least one step of movement on top of a fee, however deep the pool", () => {
-    // On a pool deep enough the flow moves the price by less than a step. Without the step, a
-    // fee of 0.5% would leave a bound of exactly 0.5% and no room for any movement at all.
+    // The flow moves the price by less than a step, so only the step leaves room above the fee.
     const huge: OrientedReserves = { in: AH.in * 10_000n, out: AH.out * 10_000n };
     const d = slippageFor({
       reserves: huge,

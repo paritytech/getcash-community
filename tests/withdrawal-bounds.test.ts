@@ -1,7 +1,5 @@
-// Checks the off-ramp's exchange floor as it ships: through `saleBounds` with the arguments
-// `sizeXcm` passes (the 5% ceiling from lib/withdraw-live.ts, a typical 100 CASH sibling, Asset
-// Hub's fee out of the sale). A sale under the floor traps on Asset Hub, so the main check is that
-// no sale traps wherever `overCapacity` is false.
+// Tests the off-ramp sale floor as sizeXcm ships it (saleBounds with the 5% ceiling). The main
+// check: no sale traps on Asset Hub wherever `overCapacity` is false.
 //
 //   BOUNDS_REPORT=1 pnpm vitest run tests/withdrawal-bounds.test.ts   # also prints the tables
 
@@ -73,10 +71,7 @@ function shipped(reserves: OrientedReserves, sellCash: bigint) {
   };
 }
 
-/**
- * The pool after the market has moved the sale's price down by `pct`, the way arbitrage moves a
- * constant-product pool: the product stays and the price ratio changes.
- */
+/** The pool after the market moves the sale's price down by `pct`, with the product unchanged. */
 function marketMoved(pool: OrientedReserves, pct: number): OrientedReserves {
   if (pct <= 0) return pool;
   const f = Math.sqrt(1 - pct / 100);
@@ -88,9 +83,8 @@ function marketMoved(pool: OrientedReserves, pct: number): OrientedReserves {
 }
 
 /**
- * Executes one withdrawal behind `siblings` typical sales, all quoted at the same head, then moves
- * the market `marketPct` against it. That is the whole window the bound is sized for. True when
- * the sale comes in under the floor, so the withdrawal traps on Asset Hub.
+ * Runs one sale behind `siblings` typical sales quoted at the same head, with the market moved
+ * `marketPct` against it. True when it comes in under the floor and traps on Asset Hub.
  */
 function traps(
   reserves: OrientedReserves,
@@ -124,8 +118,7 @@ function queueSurvived(reserves: OrientedReserves, sellCash: bigint, safetyPct: 
 
 describe("the off-ramp bound as shipped", () => {
   it("shows the seller the same number the chain enforces", () => {
-    // Keep them equal. A promise tighter than the floor leaves a band where the sale executes and
-    // still under-delivers, and in a simulated mixed queue that happened 22% of the time.
+    // A promise tighter than the floor would let a sale execute and still under-deliver.
     for (const [, depth] of DEPTHS) {
       for (const size of SIZES) {
         const b = shipped(poolAt(depth), CASH(size));
@@ -135,8 +128,7 @@ describe("the off-ramp bound as shipped", () => {
   });
 
   it("ships 5% with overCapacity on today's pool, and less than 5% from 160k up", () => {
-    // Today's 104k pool asks for about 5.7% once the market move is counted, so the ceiling ships
-    // 5% and the flag says the queue is not covered. From 160k up the derived bound ships.
+    // Today's pool asks for more than the ceiling, so 5% ships with the flag set.
     const live = shipped(poolAt(103_995), CASH(100));
     expect(live.safetyPct).toBe(DEFAULT_WITHDRAW_SLIPPAGE_PCT);
     expect(live.overCapacity).toBe(true);
@@ -168,9 +160,7 @@ describe("the off-ramp bound as shipped", () => {
   });
 
   it("never traps behind the siblings and the market move where overCapacity is false", () => {
-    // Checked on the outcome rather than the formula, since a bound can look healthy and still
-    // trap. The window is the one the bound is sized for: DEFAULT_CONCURRENCY typical sales ahead,
-    // then the market moving just under MARKET_MOVE_PCT.instant against the sale.
+    // The window the bound is sized for: DEFAULT_CONCURRENCY sales ahead, then the market move.
     const market = MARKET_MOVE_PCT.instant - 0.01;
     let checked = 0;
     for (const [, depth] of DEPTHS) {
@@ -184,13 +174,12 @@ describe("the off-ramp bound as shipped", () => {
         }
       }
     }
-    // The deep half of the grid is not over capacity, so a pass here has to have checked it.
+    // Guards against a pass that checked nothing.
     expect(checked).toBeGreaterThan(20);
   });
 
   it("overCapacity is true wherever the ceiling cut the bound below what the pool asked for", () => {
-    // A bound cut below the derived one does not cover what the derived one was sized for, so the
-    // flag has to be judged after the cut.
+    // The flag has to be judged after the ceiling cut, not before.
     for (const [, depth] of DEPTHS) {
       for (const size of SIZES) {
         const reserves = poolAt(depth);
@@ -208,8 +197,7 @@ describe("the off-ramp bound as shipped", () => {
   });
 
   it("concurrency 24 survives about 24 typical sales at every depth, and 12 survives fewer", () => {
-    // DEFAULT_CONCURRENCY counts typical 100 CASH sales, so it is really a volume of about 2,400
-    // CASH. With no market move and no floor, the queue it survives is about the same at any depth.
+    // The dial counts typical 100 CASH sales, so 24 means about 2,400 CASH at any depth.
     for (const depth of [160_000, 425_000, 2_500_000]) {
       const reserves = poolAt(depth);
       const quoted = amountOut(CASH(100), reserves, FEE) ?? 0n;
@@ -256,8 +244,7 @@ describe("the off-ramp bound as shipped", () => {
         );
       }
 
-      // The concurrency dial as it ships, with the ceiling and the market term. On today's pool
-      // the ceiling already binds at the default of 24, so a larger dial changes nothing there.
+      // The dial as shipped, with the ceiling and the market term.
       say("\n═══ THE CONCURRENCY DIAL, as shipped ═══\n");
       say(
         `  ${pad("concurrency", 14)}${pad("104k", 10)}${pad("queue", 7)}${pad("160k", 10)}${pad("queue", 7)}${pad("2.5M", 10)}${pad("queue", 7)}`,

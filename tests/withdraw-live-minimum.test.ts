@@ -1,12 +1,11 @@
-// Checks `quoteDirectMinimum`, the estimated "receive at least" for a direct withdrawal, over a
-// scripted Asset Hub pool. For the same pool read it must match the bound the worker would write
-// into the program if it sized the sale now.
+// Checks `quoteDirectMinimum`, the "receive at least" for a direct withdrawal, on a scripted
+// Asset Hub pool. It must match the bound the worker would ship for the same pool read.
 
 import { describe, expect, it, vi } from "vitest";
 import { amountOut } from "@getsome/funding";
 import { DEFAULT_WITHDRAW_SLIPPAGE_PCT, saleBounds } from "@getsome/withdraw";
 
-/** Asset Hub as measured 2026-09-25 (PAS, CASH). Times 24 gives the 2.5M release depth. */
+/** The live Asset Hub pool (PAS, CASH). Times 24 gives the 2.5M CASH release depth. */
 const LIVE = { pas: 421_298_658_123_227n, cash: 103_995_356_467n };
 const pool = { current: LIVE };
 const readAt: unknown[] = [];

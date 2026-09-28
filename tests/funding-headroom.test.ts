@@ -1,6 +1,4 @@
-// Checks the on-ramp deposit headroom (`headroomFor`): which exposure window each rail gets, that
-// the value follows the pool's depth, and when a pool is flagged as unavailable. Pure, with no
-// chain and no network.
+// Tests the on-ramp deposit headroom (`headroomFor`) and each rail's exposure window. No chain.
 
 import { describe, expect, it } from "vitest";
 import {
@@ -58,8 +56,7 @@ describe("headroomFor", () => {
   });
 
   it("falls as the pool deepens, to below the 5% default", () => {
-    // A 5% floor would win on any pool deeper than today's and hide the computation, so the
-    // value has to keep falling with depth.
+    // A 5% floor would hide the computation on any pool deeper than today's.
     const seen = [1, 4, 24].map((m) => {
       const deeper: OrientedReserves = {
         in: AH.in * BigInt(m),
@@ -69,17 +66,14 @@ describe("headroomFor", () => {
     });
     expect(seen[1]!).toBeLessThan(seen[0]!);
     expect(seen[2]!).toBeLessThan(seen[1]!);
-    // At the 2.5M release depth the counted flow has almost gone. What is left is the bank rail's
-    // market move, which does not shrink with depth, so the value sits within half a point of it.
+    // At 2.5M little is left but the bank rail's market move, which does not shrink with depth.
     expect(seen[2]!).toBeLessThan(DEFAULT_SLIPPAGE_PCT);
     expect(seen[2]!).toBeGreaterThanOrEqual(MARKET_MOVE_PCT.days);
     expect(seen[2]! - MARKET_MOVE_PCT.days).toBeLessThan(0.5);
   });
 
   it("carries one dispatch fee, so a single rejected submit does not strand the deposit", () => {
-    // A program rejected at inclusion still pays its dispatch fee out of the deposit, so the
-    // headroom carries one fee on top of the price movement. Today's pool is used because its
-    // value sits above the 2% floor, where the extra shows.
+    // Today's pool, because its value sits above the 2% floor where the extra fee shows.
     const pool: OrientedReserves = AH;
     const DISPATCH = 150_000_000n;
     for (const n of [10, 100, 500]) {
@@ -158,8 +152,7 @@ describe("headroomFor", () => {
   });
 
   it("returns a value inside the cap for every size the product sells", () => {
-    // Even a flagged pool gets a value inside the cap, since a re-opened request carries on with
-    // it. Only a fresh hosted quote is refused on the flag.
+    // A flagged pool still gets a value, since a re-opened request carries on with it.
     for (const n of [10, 50, 100, 200, 500]) {
       const d = at(AH, CASH(n), "meld-bank");
       expect(d.pct).toBeGreaterThan(0);

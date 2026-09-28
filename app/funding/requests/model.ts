@@ -150,8 +150,8 @@ export interface WorkerHandoffPayload {
    *  worker's gate checks for this rather than re-pricing the fees, which would move the bar under
    *  a deposit already sized against it. Absent on a payload from before it was recorded. */
   quotedDeposit?: string;
-  /** With a pool tier: the headroom the deposit was sized with, so the worker uses the same one.
-   *  Absent on a PSM payload and on older ones; the worker then uses DEFAULT_SLIPPAGE_PCT. */
+  /** Pool tier only: the headroom the deposit was sized with, so the worker uses the same one.
+   *  Absent means DEFAULT_SLIPPAGE_PCT. */
   slippagePct?: number;
 }
 

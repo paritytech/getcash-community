@@ -421,7 +421,6 @@ describe("withdrawal: the worker", () => {
   });
 
   it("fails an underfunded key recoverably, instead of leaving it in progress for good", () => {
-    // The whole payment is on the key and it cannot buy the PAS the fees need at the pool's price.
     // Nothing was spent, so a retry re-sizes at the price of that moment.
     const seen = at(1);
     const short = run(

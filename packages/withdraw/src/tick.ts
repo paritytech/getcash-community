@@ -39,8 +39,7 @@ export type WithdrawStep = "await-cash" | "swap" | "convert" | "await-arrival" |
 export const DEFAULT_WITHDRAW_TICK_TIMEOUT_MS = 30_000;
 /** Bound on a submitted transaction's resolution. */
 export const DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS = 180_000;
-/** The most the sale on Asset Hub may slip below its quote, percent. The program carries the bound
- *  derived from the pool, cut to this; this value ships as is only when the pool cannot be read. */
+/** Ceiling on how far the Asset Hub sale may slip below its quote, percent. */
 export const DEFAULT_WITHDRAW_SLIPPAGE_PCT = 5;
 /** Rejections at inclusion after a passing dry run before the run is given up. */
 export const MAX_REJECTIONS = 3;
@@ -74,11 +73,8 @@ export interface WithdrawTickState {
   destinationPasBefore: bigint | null;
   /** PAS the Asset Hub dry run credited to the destination, for the XCM that left. */
   expectedLanding: bigint | null;
-  /**
-   * The slippage the submitted XCM was built with. The arrival check has to use this value and not
-   * what a later tick would compute: a tighter later value would set the arrival floor above what
-   * the program guaranteed, and a delivered withdrawal would then never count as arrived.
-   */
+  /** The slippage bound the sent XCM carried. The arrival check must use it: a tighter later value
+   *  would put the floor above what the program guaranteed. */
   submittedSlippagePct: number | null;
   /** When the first tick saw CASH (ms); null while the payment is still awaited. */
   fundsSeenAt: number | null;
@@ -120,10 +116,7 @@ export interface WithdrawTickInput {
   now: () => number;
   onTx?: (info: { call: "swap" | "withdraw"; txHash: string; block?: number }) => void;
   onTransientError?: (error: unknown) => void;
-  /**
-   * The bound the sizing chose, reported once per submit before the transaction goes out. The
-   * submit happens even with `overCapacity` set, since the sale may well go through.
-   */
+  /** The bound the sizing chose, once per submit before it goes out, `overCapacity` or not. */
   onSizing?: (info: { promisePct: number; safetyPct: number; overCapacity: boolean }) => void;
   onBeforeSubmit?: (call: "swap" | "withdraw") => Promise<void> | void;
 }
@@ -224,10 +217,8 @@ export async function withdrawTickOnce(
         input.tickTimeoutMs,
         "destination balance read",
       );
-      // Only a submit whose answer was lost leaves these set here, and that XCM may still land.
-      // People can then still show the key funded while Asset Hub's best head already holds its
-      // landing. Only one XCM can empty the key, so the lower baseline still measures whatever
-      // lands; taking the new one would hide the arrival.
+      // These are still set only after a lost answer, and that XCM may still land: keep the lower
+      // baseline, since the new one may already include its landing.
       const earlier = {
         destinationPasBefore: state.destinationPasBefore,
         expectedLanding: state.expectedLanding,
@@ -238,8 +229,6 @@ export async function withdrawTickOnce(
           ? earlier.destinationPasBefore
           : baseline;
       state.expectedLanding = sizing.landed;
-      // Saved with the landing: both describe the program about to be sent, and the arrival check
-      // uses the bound the program carries, not the caller's ceiling.
       state.submittedSlippagePct = sizing.safetyPct;
       input.onSizing?.({
         promisePct: sizing.promisePct,
@@ -249,7 +238,7 @@ export async function withdrawTickOnce(
       try {
         await input.onBeforeSubmit?.("withdraw");
       } catch (error) {
-        // Stopped before the broadcast: nothing left, and an earlier lost XCM is as it was.
+        // Stopped before the broadcast: restore the earlier state.
         Object.assign(state, earlier);
         throw error;
       }
@@ -261,9 +250,8 @@ export async function withdrawTickOnce(
         "withdrawal submit",
       );
       input.onTx?.({ call: "withdraw", txHash: res.txHash, block: res.block?.number });
-      // Included, so the key could pay this fee. An earlier lost XCM that had run would have
-      // emptied it, so unless the key was paid again since, that one never ran and cannot land.
-      // What follows is measured from this attempt's own baseline, or from nothing if it failed.
+      // Included, so the key could still pay: an earlier lost XCM never ran (unless the key was paid
+      // again). Measure from this attempt's baseline, or from none if it was rejected.
       if (!res.ok) {
         state.destinationPasBefore = null;
         state.expectedLanding = null;

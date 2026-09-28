@@ -69,8 +69,7 @@ describe.runIf(process.env.PROD_PROOF === "1")("production proof", () => {
       const burner = deriveKeypairWithSecret(entropy);
       console.log(`BURNER ${burner.address}  entropy=${toHex(entropy)}`);
 
-      // Size the deposit as the app does. Alice pays the burner directly, as the crypto rail does,
-      // so the headroom is the one for a deposit that arrives within minutes.
+      // Size the deposit as the app does, for a direct payment that arrives within minutes.
       const sizing = await estimateFundingSizing({
         ahClient: ahC,
         peopleClient: peC,
@@ -138,7 +137,7 @@ describe.runIf(process.env.PROD_PROOF === "1")("production proof", () => {
               assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
               remoteFeeBuffer: sizing.remoteFeeBuffer,
               keepNativeForFees: sizing.keepNativeForFees,
-              // The worker gets the headroom the deposit was sized with, through the hand-off.
+              // The headroom the deposit was sized with, as the hand-off carries it.
               slippagePct: sizing.slippagePct,
               tickTimeoutMs: DEFAULT_TICK_TIMEOUT_MS,
               submitTimeoutMs: DEFAULT_SUBMIT_TIMEOUT_MS,

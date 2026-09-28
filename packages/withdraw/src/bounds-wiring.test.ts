@@ -1,6 +1,5 @@
-// Checks the pieces behind the sale's bound: `saleBounds`, which turns the pool into a floor under
-// the caller's ceiling, `saleReserves`, which reads the pool, and `readDestinationPas`, the read the
-// arrival check compares against. All are called directly against scripted answers.
+// Checks saleBounds, saleReserves and readDestinationPas, the pieces behind the sale's bound,
+// against scripted answers.
 
 import { describe, expect, it } from "vitest";
 import {
@@ -18,9 +17,9 @@ import {
   TYPICAL_WITHDRAWAL_CASH,
 } from "./fees";
 
-/** Asset Hub as measured 2026-09-25, oriented for the sale: CASH paid, PAS received. */
+/** The live Asset Hub pool, oriented for the sale: CASH paid, PAS received. */
 const SALE: OrientedReserves = { in: 103_995_360_000n, out: 421_298_658_000_000n };
-/** The same price at the 2.5M release depth. */
+/** The same price at the 2.5M CASH release depth. */
 const RELEASE: OrientedReserves = { in: SALE.in * 24n, out: SALE.out * 24n };
 const CASH = (n: number) => BigInt(Math.round(n * 1e6));
 const FEE = 3_000n;
@@ -40,8 +39,7 @@ const bounds = (cash: bigint, ceilingPct: number, pool: OrientedReserves = SALE)
 
 describe("sizeXcm's bound selection", () => {
   it("writes one floor into the program and shows the seller that same floor", () => {
-    // The seller's minimum is the floor the chain enforces, so it cannot be missed. On the
-    // release pool it is below the 5% ceiling.
+    // The seller's minimum is the floor the chain enforces, so it cannot be missed.
     for (const pool of [SALE, RELEASE]) {
       const b = bounds(CASH(100), 5, pool);
       expect(b.promisePct).toBe(b.safetyPct);
@@ -50,8 +48,6 @@ describe("sizeXcm's bound selection", () => {
   });
 
   it("treats the caller's slippagePct as a ceiling when the pool can be read", () => {
-    // The computed bound never exceeds the ceiling the caller passes, so a caller's existing
-    // guarantee still holds.
     const cash = CASH(100);
     for (const ceiling of [0.5, 1, 5, 10]) {
       expect(bounds(cash, ceiling).safetyPct).toBeLessThanOrEqual(ceiling);
@@ -59,8 +55,7 @@ describe("sizeXcm's bound selection", () => {
   });
 
   it("says overCapacity whenever the ceiling cut the bound", () => {
-    // The flag is judged after the cut. Judged before it, a pool that asked for 6% and got 5%
-    // reported its queue as covered.
+    // Judged after the cut: a pool that asks for 6% and gets 5% is over capacity.
     for (const size of [1, 5, 20, 100, 500, 2000]) {
       const clamped = bounds(CASH(size), 5);
       const free = bounds(CASH(size), 100);
@@ -70,8 +65,7 @@ describe("sizeXcm's bound selection", () => {
   });
 
   it("makes small withdrawals the expensive case at every depth, through Asset Hub's fee", () => {
-    // The fee comes out of the sale before the bound is checked and does not shrink with the pool,
-    // so a 1 CASH withdrawal carries far more of it, relative to its size, than a 500 CASH one.
+    // Asset Hub's fee comes out of the sale first and does not shrink with the pool.
     for (const pool of [SALE, RELEASE]) {
       const small = bounds(CASH(1), 10, pool);
       const large = bounds(CASH(500), 10, pool);
@@ -80,8 +74,7 @@ describe("sizeXcm's bound selection", () => {
   });
 
   it("keeps the market move on the release pool, under the 2% floor that also applies there", () => {
-    // Checked with the policy floor off, since the floor alone would pass a bound with no market
-    // term at all.
+    // Policy floor off, since the floor alone would pass a bound with no market term.
     const cash = CASH(100);
     const quoted = quoteFor(cash, RELEASE);
     const derived = (marketMovePct?: number) =>
@@ -100,8 +93,7 @@ describe("sizeXcm's bound selection", () => {
   });
 
   it("ships the caller's ceiling when the pool cannot be read", async () => {
-    // An Asset Hub without the view function answers null, and on null saleBounds ships the
-    // caller's slippagePct with overCapacity false.
+    // Without the view function the reserves are null and saleBounds ships the ceiling.
     const older = { view: {} } as never;
     const reserves = await saleReserves(older);
     expect(reserves).toBeNull();
@@ -113,7 +105,7 @@ describe("sizeXcm's bound selection", () => {
 
 describe("readDestinationPas", () => {
   it("reads at the best head, where the sale is sized", async () => {
-    // Every caller reads here: the arrival check, and the sweep and refund reads that follow it.
+    // The arrival check, the sweep and the refund all read here.
     const seen: unknown[][] = [];
     const api = {
       query: {
@@ -150,9 +142,8 @@ describe("saleReserves", () => {
   };
 
   it("asks native-first and reads the pair back for the sale: CASH in, PAS out", async () => {
-    // `get_reserves(a, b)` answers in the order it was asked, so asking native-first puts PAS at
-    // [0] and CASH at [1], while the sale pays CASH and takes PAS. Read straight through, the pool
-    // would be priced upside down and nothing else would fail.
+    // `get_reserves` answers in the order asked, so PAS is at [0]. Read straight through, the
+    // pool would be priced upside down and nothing else would fail.
     const { api, seen } = apiReturning(["421298658123227", "103995356467"]);
     const r = await saleReserves(api);
     expect(r).toEqual({ in: 103_995_356_467n, out: 421_298_658_123_227n });
@@ -164,14 +155,12 @@ describe("saleReserves", () => {
     ];
     expect(first).toEqual({ parents: 1, interior: { type: "Here" } });
     expect(second.parents).toBe(0);
-    // At the best head, like the quote and the dry run it is used with.
+    // At best, like the quote and the dry run.
     expect(options).toEqual({ at: "best" });
   });
 
   it("calls get_reserves directly, since papi view functions have no .getValue()", async () => {
-    // papi 2.2.2 exposes pallet view functions as plain callables. The catch in saleReserves
-    // turns a wrong call into a silent fallback, so the test counts the call instead of trusting
-    // the answer.
+    // A wrong call falls back silently, so count the call instead of trusting the answer.
     const probe = apiReturning(["1", "2"]);
     await saleReserves(probe.api);
     expect(probe.seen).toHaveLength(1);
@@ -183,8 +172,7 @@ describe("saleReserves", () => {
   });
 
   it("returns null rather than guessing, for every shape it cannot use", async () => {
-    // On null the caller ships its ceiling, so none of these may throw or invent a pool. That
-    // includes a runtime without the view function and a call that rejects.
+    // On null the caller ships its ceiling, so none of these may throw or invent a pool.
     for (const answer of [undefined, null, [], ["1"], "not a pair", { value: null }]) {
       expect(await saleReserves(apiReturning(answer).api)).toBeNull();
     }

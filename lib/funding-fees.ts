@@ -45,39 +45,27 @@ export interface PoolFundingSizing {
   remoteFeeBuffer: bigint;
   /** Native the deposit carries for the program's dispatch fee and fee allowance. */
   keepNativeForFees: bigint;
-  /** Headroom the deposit is asked above the live pool quote, in percent, from the pool and the
-   *  rail (see headroomFor). `DEFAULT_SLIPPAGE_PCT` only when the pool could not be read. */
+  /** Headroom over the pool quote, in percent. DEFAULT_SLIPPAGE_PCT if the pool was unreadable. */
   slippagePct: number;
-  /**
-   * The pool cannot carry this purchase within the cap. A fresh hosted quote is refused on it
-   * before the buyer pays; a re-opened request carries on, since its deposit may already be on the
-   * burner. False when the pool could not be read.
-   */
+  /** The pool cannot carry this purchase within the cap. False if the pool could not be read. */
   poolUnavailable: boolean;
 }
 
-/** How long a source's deposit takes to arrive after the quote: minutes for crypto, hours for
- *  a card, up to days for a bank transfer. */
+/** How long a source's deposit takes to arrive: days for a bank, hours for a card, else minutes. */
 export function exposureForSource(sourceId: string): Exposure {
   if (sourceId === "meld-bank") return "days";
   if (sourceId === "meld-card") return "hours";
-  // Chainflip's crypto rails and the direct native deposit both settle in minutes.
   return "minutes";
 }
 
-/**
- * A typical purchase, in CASH base units. The flow to survive is a multiple of this and not of our
- * own purchase, since other buyers do not trade more because we did; otherwise a large purchase
- * would ask for headroom against traffic that does not exist.
- */
+/** A typical purchase, in CASH base units. Flow is counted in these, not in our own purchase,
+ *  since other buyers do not trade more when we do. */
 export const TYPICAL_PURCHASE_CASH = 100_000_000n;
 
 /**
- * The deposit headroom for this pool, purchase and rail, from `slippageFor`: counted flow for the
- * rail's window, the market move over it, and one dispatch fee, since a rejected program still
- * pays it out of the deposit. Never below EXTERNAL_POOL_FLOOR_PCT. Too little cannot be fixed later
- * (the buyer already sent a fixed amount); too much only buys the buyer more CASH. `unavailable`
- * means the pool cannot carry the purchase within MAX_SLIPPAGE_PCT.
+ * Deposit headroom for this pool, purchase and rail. Includes one dispatch fee, since a rejected
+ * program pays it from the deposit, and never goes below EXTERNAL_POOL_FLOOR_PCT (2%).
+ * `unavailable`: the pool cannot carry the purchase within MAX_SLIPPAGE_PCT.
  */
 export function headroomFor(input: {
   reserves: OrientedReserves;
@@ -85,7 +73,7 @@ export function headroomFor(input: {
   exposure: Exposure;
   feePpm: bigint;
   referenceTrade?: bigint;
-  /** The funding program's dispatch fee, in the native: what one rejected submit burns. */
+  /** The funding program's dispatch fee, in the native. */
   dispatchNative?: bigint;
 }): { pct: number; unavailable: boolean } {
   // The dispatch fee converted to CASH at the pool's price.
@@ -99,7 +87,7 @@ export function headroomFor(input: {
     exposure: input.exposure,
     feePpm: input.feePpm,
     referenceTrade: input.referenceTrade ?? TYPICAL_PURCHASE_CASH,
-    // One ordinary purchase landing first is always covered, whatever the policy says.
+    // One ordinary purchase landing first is always covered.
     competingTrade: TYPICAL_PURCHASE_CASH,
     ...(dispatchCash > 0n ? { feeTakenFromTrade: dispatchCash } : {}),
     floorPct: EXTERNAL_POOL_FLOOR_PCT,
@@ -107,11 +95,8 @@ export function headroomFor(input: {
   return { pct: decision.pct, unavailable: decision.cappedOut };
 }
 
-/**
- * The pool route cannot carry this purchase within MAX_SLIPPAGE_PCT. Thrown for a fresh hosted
- * quote before the deposit is asked for, so the buyer does not pay into a request that would only
- * wait and expire. The message is shown on the quote screen.
- */
+/** The pool cannot carry this purchase within MAX_SLIPPAGE_PCT. Thrown only for a fresh quote,
+ *  before the deposit is asked for. The message is shown on the quote screen. */
 export class PoolRouteUnavailableError extends Error {
   constructor(readonly settleAmount: bigint) {
     // No "smaller" or "larger": which amount works depends on why the request is on the pool tier.
@@ -198,7 +183,7 @@ async function sizingReads(args: SizingArgs) {
 /** The pool tier's sizing. */
 export async function estimateFundingSizing(
   args: SizingArgs & {
-    /** The rail's delivery window; defaults to the longest, which is the safest assumption. */
+    /** The rail's delivery window. Defaults to the longest, the safest assumption. */
     exposure?: Exposure;
   },
 ): Promise<PoolFundingSizing | null> {
@@ -207,9 +192,8 @@ export async function estimateFundingSizing(
 
     const buyTarget = args.settleAmount + destinationFee;
 
-    // The fees first, because one dispatch fee is part of the headroom. The probe carries a deposit
-    // at the default headroom, close enough to encode to the same length as the real one. If the
-    // probe fails, the static allowance stands in for both, which errs wide.
+    // Fees first, since one dispatch fee is part of the headroom. The probe deposit at the default
+    // headroom encodes to the same length as the real one. A failed probe falls back wide.
     const fees = await quoteNativeInMax(api, pool, buyTarget, DEFAULT_SLIPPAGE_PCT)
       .then((probeNative) =>
         estimateFundingProgramFees({
@@ -232,7 +216,7 @@ export async function estimateFundingSizing(
     // Reserves and LP fee from the chain; an unreadable pool falls back to the default headroom.
     const [reserves, feePpm] = await Promise.all([
       readReserves(api, pool.native, pool.underlying),
-      // LPFee is a parts-per-million integer; the module takes it as a bigint.
+      // LPFee is in parts per million.
       api.constants.AssetConversion.LPFee()
         .then((ppm) => BigInt(ppm))
         .catch(() => undefined),

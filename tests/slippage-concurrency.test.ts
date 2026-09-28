@@ -1,7 +1,5 @@
-// Many of our own requests quoted against one pool head, then executed in order, so each one
-// moves the price against the ones behind it. Site A is the on-ramp buy, site B the off-ramp sale
-// on Asset Hub, site C the fee swap on People. The tests count how many fit inside a bound before
-// the first one fails; at site B that failure traps the withdrawal on Asset Hub.
+// Many of our own requests quoted at one head, then executed in order, each moving the price for
+// the next. Counts how many fit in a bound at A (on-ramp), B (off-ramp sale) and C (fee swap).
 //
 //   CONCURRENCY_REPORT=1 pnpm vitest run tests/slippage-concurrency.test.ts   # prints the tables
 
@@ -32,8 +30,8 @@ const pad = (s: string | number, n: number) => String(s).padStart(n);
 
 /** Asset Hub's execution fee on the off-ramp's remote sale, in CASH. */
 const AH_EXEC_FEE_CASH = ASSET_HUB_FEE_BUFFER_CASH;
-/** What sizeSwap buys for a withdrawal's fees on Paseo: the 0.1 PAS existential deposit plus 1.05 x
- *  the 0.00396 PAS XCM fee. It costs about 0.42 CASH; do not read that figure as PAS. */
+/** The fee PAS sizeSwap buys on Paseo, 0.1041559 PAS (ED plus the XCM fee). It costs about
+ *  0.42 CASH; do not read that figure as PAS. */
 const FEE_SWAP_PAS = 1_041_559_000n;
 
 const scale = (r: { pas: bigint; cash: bigint }, m: number) => ({
@@ -50,11 +48,7 @@ const DEPTHS: Array<[string, number]> = [
 
 // Site A: N buyers at once.
 
-/**
- * N deposits sized against one head, then converted in order. Each conversion takes CASH out of
- * the pool, so the next buyer's gate is checked against a pool the earlier buyers already moved.
- * Returns how many cleared before the first stall.
- */
+/** N deposits sized at one head, then converted in order until the first stall. */
 function concurrentBuys(
   reserves: OrientedReserves,
   buy: bigint,
@@ -79,9 +73,8 @@ function concurrentBuys(
 // Site B: N sellers at once.
 
 /**
- * N withdrawals sized against one head, then executed in order. A sale that comes in under its
- * own `minPasOut` does not get a worse price: the remote ExchangeAsset fails after the teleport
- * and the assets trap on Asset Hub.
+ * N withdrawals sized at one head, then sold in order. A sale under its `minPasOut` traps on
+ * Asset Hub rather than getting a worse price.
  */
 function concurrentSells(
   reserves: OrientedReserves,
@@ -140,8 +133,7 @@ function capacity(run: (n: number) => boolean, limit = 4096): number {
 
 describe("several of our own requests in flight at once", () => {
   it("site A: the shipped crypto headroom clears the queue it is sized for, and less stalls sooner", () => {
-    // A buyer below the gate keeps the deposit and waits for the price, so a stall is a delay,
-    // not a loss.
+    // A stall is a delay, not a loss: the buyer keeps the deposit and waits for the price.
     const reserves: OrientedReserves = { in: AH.pas, out: AH.cash };
     const queue = ADVERSE_FLOW_MULTIPLE.minutes;
     const pct = headroomFor({
@@ -155,14 +147,12 @@ describe("several of our own requests in flight at once", () => {
   });
 
   it("site B: a tighter bound traps an earlier sale in the queue", () => {
-    // Each sale is sized at the same head and executes after the sales ahead of it moved the price.
     const reserves: OrientedReserves = { in: AH.cash, out: AH.pas };
     const fits = (pct: number) =>
       capacity((n) => concurrentSells(reserves, CASH(100), pct, n).trappedAt === null);
     const tight = fits(0.5);
     const shipped = fits(5);
     expect(tight).toBeLessThan(shipped);
-    // At the 5% ceiling more than ten sales fit against one head.
     expect(shipped).toBeGreaterThan(10);
   });
 
@@ -171,7 +161,7 @@ describe("several of our own requests in flight at once", () => {
     const fits = (pct: number) =>
       capacity((n) => concurrentFeeSwaps(reserves, pct, n).rejectedAt === null);
     expect(fits(5)).toBeGreaterThan(fits(0.5));
-    // The fee swap ships at least 5% (SWAP_HEADROOM_PCT), so that is the bound checked here.
+    // The fee swap never ships below SWAP_HEADROOM_PCT, 5%.
     expect(fits(5)).toBeGreaterThan(20);
   });
 
