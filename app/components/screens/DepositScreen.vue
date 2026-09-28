@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { Copy } from "lucide-vue-next";
 import { estimateSourceAmount, estimateSourceFromCash } from "~~/lib/demo-rates";
 import { FUNDING_CHAINS } from "~~/lib/config";
@@ -8,6 +8,8 @@ import { shortAddress } from "../../utils/address";
 import { useFlowStore } from "../../stores/flow";
 import { useRequestsStore } from "../../stores/requests";
 import { useSessionStore } from "../../stores/session";
+import DepositMismatchSheet from "../funding/DepositMismatchSheet.vue";
+import RecoverDepositScreen from "./RecoverDepositScreen.vue";
 
 // Cancel is a request: the route swaps in the full-screen confirmation and performs the cancel.
 const emit = defineEmits<{ cancel: [] }>();
@@ -15,6 +17,32 @@ const emit = defineEmits<{ cancel: [] }>();
 const session = useSessionStore();
 const requests = useRequestsStore();
 const flow = useFlowStore();
+
+/**
+ * The sheet over the deposit: a preview scene's, or a Polkadot deposit that arrived short or in
+ * another token. The buyer may close it to send the rest; it comes back when what arrived changes,
+ * which is when the record stamps the mismatch again.
+ */
+const dismissedAt = ref<number | null>(null);
+const mismatchAt = computed(() => requests.foregroundRecord?.depositMismatch?.at ?? null);
+const sheet = computed(() => {
+  if (flow.previewMismatch) return flow.previewMismatch;
+  return mismatchAt.value !== null && mismatchAt.value !== dismissedAt.value
+    ? session.depositMismatch
+    : null;
+});
+function dismissSheet() {
+  if (flow.previewMismatch) flow.previewMismatch = null;
+  else dismissedAt.value = mismatchAt.value;
+}
+function acceptSheet() {
+  if (flow.previewMismatch) flow.previewMismatch = null;
+  else void session.acceptDepositMismatch();
+}
+function recoverFromSheet() {
+  if (flow.previewMismatch) flow.previewMismatch = null;
+  else flow.recoveringDeposit = true;
+}
 
 // The record keeps the amount as a decimal string; the estimate takes the bigint core gave it.
 const deposit = computed(() => {
@@ -78,8 +106,14 @@ const source = computed(() => {
   return { chain, asset };
 });
 
-// Cancel is offered only while nothing has been paid.
-const showCancel = computed(() => session.faucetState === "idle" && !requests.fundsSeen);
+// Cancel is offered only while nothing has been paid; a deposit that arrived short or in another
+// token has been, and the sheet over this screen is its way out.
+const showCancel = computed(
+  () =>
+    session.faucetState === "idle" &&
+    !requests.fundsSeen &&
+    requests.foregroundRecord?.depositMismatch === undefined,
+);
 
 // Either row's copy raises the shared pill above the buttons.
 const { copy: copyToClipboard } = useCopyToClipboard();
@@ -109,6 +143,9 @@ function copy(target: "amount" | "address") {
       <span class="h-12 animate-pulse rounded-full bg-action-disabled" />
     </div>
   </section>
+
+  <!-- The way back for a Polkadot deposit the buyer does not want converted. -->
+  <RecoverDepositScreen v-else-if="flow.recoveringDeposit" @back="flow.recoveringDeposit = false" />
 
   <section v-else class="flex min-h-0 flex-1 flex-col">
     <!-- The one flexible block on the screen. Short webviews shrink the QR to a scannable
@@ -176,6 +213,15 @@ function copy(target: "amount" | "address") {
       </div>
     </div>
   </section>
+
+  <DepositMismatchSheet
+    :mismatch="flow.recoveringDeposit ? null : sheet"
+    :busy="session.acceptingMismatch"
+    :error="session.mismatchError"
+    @accept="acceptSheet"
+    @recover="recoverFromSheet"
+    @dismiss="dismissSheet"
+  />
 </template>
 
 <style scoped>

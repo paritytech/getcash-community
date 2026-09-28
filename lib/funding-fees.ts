@@ -31,15 +31,21 @@ import {
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
   psmDepositNeeded,
+  psmMintOut,
   quoteNativeInMax,
+  quoteNativeOut,
   quoteStableForUnderlying,
+  quoteUnderlyingOut,
   sizePsmMint,
   STABLE_TOKENS,
   stableDepositNeeded,
+  withFeeMargin,
+  type ConversionRoute,
   type PsmExternal,
   type PsmRoute,
   type Pool,
   type Stable,
+  type StableLegFees,
   type StablePoolRoute,
   withHeadroom,
 } from "@getsome/funding";
@@ -289,6 +295,105 @@ export async function estimateTeleportFundingSizing(
     heldBackExternal: fees.heldBackExternal,
     feeAllowanceExternal: fees.feeAllowanceExternal,
     quotedDeposit: stableDepositNeeded(buyTarget, fees),
+  };
+}
+
+/** The CASH a deposit already on the burner converts to on a route, and the figures a hand-off
+ *  for exactly that deposit carries. */
+export interface DepositValue {
+  /** CASH that reaches the burner on People, base units, floored to the claim unit. */
+  receive: bigint;
+  remoteFeeBuffer: bigint;
+  keepNativeForFees: bigint;
+  /** The gate for the fixed-rate and fee-priced tiers: the deposit itself. */
+  quotedDeposit?: bigint;
+}
+
+/** Claims are made in hundredths of a CASH, so a figure is floored to that before it is promised. */
+const CLAIM_UNIT = 10_000n;
+
+/** The stable a deposit leaves for the conversion once the fees and the min_balance come out of
+ *  it: the reverse of `stableDepositNeeded`. */
+const leftAfterFees = (deposit: bigint, fees: StableLegFees): bigint =>
+  deposit -
+  fees.minBalanceExternal -
+  withFeeMargin(fees.dispatchExternal + fees.localExternal + fees.deliveryExternal);
+
+/**
+ * What a deposit that has already landed converts to on `route`: the reverse of each tier's
+ * sizing, priced live. A short deposit or one in another token is continued at this figure, so it
+ * is the gate's own arithmetic run backwards. The tiers that swap through a pool keep
+ * `slippagePct` back from the quote, so the figure still clears when the pool moves a little
+ * before the worker converts; anything above it lands as extra CASH. Null when the deposit does
+ * not cover its own fees or the pool cannot price it.
+ */
+export async function quoteDepositValue(
+  args: Omit<SizingArgs, "settleAmount"> & {
+    route: ConversionRoute;
+    deposit: bigint;
+    slippagePct: number;
+  },
+): Promise<DepositValue | null> {
+  const { route, deposit } = args;
+  // The destination fee does not depend on the amount; the deposit stands in for it.
+  const stableAssetId =
+    route.tier === "pool" && route.external !== undefined
+      ? STABLE_TOKENS[route.external].assetHubId
+      : undefined;
+  const { api, pool, stablePool, destinationFee } = await sizingReads(
+    { ...args, settleAmount: deposit },
+    stableAssetId,
+  );
+  const keepBack = (cash: bigint) => (cash * BigInt(100 - args.slippagePct)) / 100n;
+  const earmark = destinationEarmark(deposit, destinationFee);
+  const common = {
+    api,
+    beneficiaryHex: ZERO_32,
+    peopleParaId: args.peopleParaId,
+    remoteFeesCash: earmark,
+    feeProbeAddress: args.probeAddress,
+  };
+  let reaches: bigint | null;
+  let keepNativeForFees = 0n;
+  let fixedGate = true;
+  if (route.tier === "teleport") {
+    const fees = await estimateTeleportProgramFees({ ...common, depositUnderlying: deposit });
+    reaches = leftAfterFees(deposit, fees);
+  } else if (route.tier === "psm") {
+    const fees = await estimatePsmBatchFees({ ...common, route, depositExternal: deposit });
+    reaches = psmMintOut(leftAfterFees(deposit, fees), route.feeRate);
+  } else if (stablePool !== undefined && route.external !== undefined) {
+    const fees = await estimateStableProgramFees({
+      ...common,
+      stable: route.external,
+      stablePool,
+      pool,
+      depositStable: deposit,
+      minUnderlyingOut: deposit,
+    });
+    const native = await quoteNativeOut(api, stablePool, leftAfterFees(deposit, fees));
+    const cash = native === null ? null : await quoteUnderlyingOut(api, pool, native);
+    reaches = cash === null ? null : keepBack(cash);
+  } else {
+    const fees = await estimateFundingProgramFees({
+      ...common,
+      pool,
+      nativeBalance: deposit,
+      minUnderlyingOut: 1n,
+    });
+    keepNativeForFees = fees.payFeesNative + fees.dispatchNative;
+    const cash = await quoteUnderlyingOut(api, pool, deposit - keepNativeForFees);
+    reaches = cash === null ? null : keepBack(cash);
+    fixedGate = false;
+  }
+  if (reaches === null) return null;
+  const receive = ((reaches - destinationFee) / CLAIM_UNIT) * CLAIM_UNIT;
+  if (receive < CLAIM_UNIT) return null;
+  return {
+    receive,
+    remoteFeeBuffer: destinationFee,
+    keepNativeForFees,
+    ...(fixedGate ? { quotedDeposit: deposit } : {}),
   };
 }
 

@@ -29,13 +29,16 @@ import {
   type FundingProgressSnapshot,
 } from "../funding/progress";
 import { depositWindowFor } from "../funding/config";
+import { formatFundingAmount } from "../funding/selection";
 import {
   effectiveSourceId,
   isTopUp,
   railProviderOf,
   routeOf,
   type TopUpRecord,
+  type WorkerHandoffPayload,
 } from "../funding/requests/model";
+import type { DepositMismatch } from "../funding/deposit-mismatch";
 import {
   createFakeMeldClient,
   createMeldClient,
@@ -55,7 +58,7 @@ import {
   type SupportedCorridor,
   type SupportedCountry,
 } from "~~/lib/supported";
-import { requestRefOf, type RequestRef } from "../utils/request-index";
+import { requestRefKey, requestRefOf, type RequestRef } from "../utils/request-index";
 import { journeyScaleOf, type JourneyScale } from "../funding/requests/views";
 import { estimateSourceAmount, estimateSourceFromCash } from "~~/lib/demo-rates";
 import { priceSourceLeg, type SourcePriceResult } from "~~/lib/source-price";
@@ -67,13 +70,24 @@ import {
 } from "~~/lib/coinage";
 import type { HostedCoinageWorld } from "~~/lib/coinage-live";
 import { isHosted } from "~~/lib/host-account";
-import type { FundingSizing, PoolFundingSizing, PsmFundingSizing } from "~~/lib/funding-fees";
+import type {
+  DepositValue,
+  FundingSizing,
+  PoolFundingSizing,
+  PsmFundingSizing,
+} from "~~/lib/funding-fees";
 import { isDemoBuild } from "../utils/demo";
 import { isMeldSourceId, meldSourceIdFor } from "../funding/source-ids";
-import { toCashBase } from "../utils/cash";
+import { fmtCash, toCashBase } from "../utils/cash";
 import { isMoneyAmount, sumMoney } from "../utils/money";
 import { fundFromFaucet, isFaucetConfigured } from "~~/lib/faucet";
-import { depositAssetFor, isDirectSourceId, sourceIdFor, type DepositAsset } from "~~/lib/config";
+import {
+  depositAssetFor,
+  directTokenNamed,
+  isDirectSourceId,
+  sourceIdFor,
+  type DepositAsset,
+} from "~~/lib/config";
 import { useRequestsStore } from "./requests";
 
 export { DEPOSIT_EXPIRED_REASON } from "../funding/requests/model";
@@ -1786,6 +1800,223 @@ export const useSessionStore = defineStore("session", () => {
       mock.value.harness.setSettlementBalance(amountBase.value);
   }
 
+  // A direct deposit that is not the one asked: the sheet's figures, Continue, and the key.
+
+  /** What the mismatch on screen converts to, and when it was priced; `route` is the route the
+   *  deposit takes if the buyer continues, and a null `value` means it cannot be converted. */
+  const mismatchPrice = shallowRef<{
+    key: string;
+    at: number;
+    route: ConversionRoute | null;
+    value: DepositValue | null;
+  } | null>(null);
+  /** How long a price stays good for Continue; an older one is taken again first. */
+  const MISMATCH_PRICE_FRESH_MS = 120_000;
+  const priceIsFresh = (key: string): boolean =>
+    mismatchPrice.value?.key === key &&
+    Date.now() - mismatchPrice.value.at < MISMATCH_PRICE_FRESH_MS;
+  /** Continue is on its way. */
+  const acceptingMismatch = ref(false);
+  /** Why the last Continue did not go through. */
+  const mismatchError = ref<string | null>(null);
+
+  /** The mismatch on the request on screen, while it still waits for its deposit. */
+  const foregroundMismatch = computed(() => {
+    const record = requests.foregroundRecord;
+    const m = record?.depositMismatch;
+    if (!record || !m || requests.phase !== "awaiting-deposit" || !record.deposit) return null;
+    const key = `${requestRefKey(record.ref)}|${m.kind}|${m.asset}|${m.amount}`;
+    return { record, key, mismatch: m };
+  });
+
+  /** A base-unit figure in a direct token, as the deposit screen writes it. */
+  const formatDirect = (amount: string, asset: string): string =>
+    formatFundingAmount(BigInt(amount), directTokenNamed(asset)?.token.decimals ?? CASH_DECIMALS);
+
+  /** What arrived on the request on screen that did not match, in any phase; the recovery guide
+   *  names it after the request has ended too. */
+  const depositLanded = computed(() => {
+    const m = requests.foregroundRecord?.depositMismatch;
+    return m ? { amount: formatDirect(m.amount, m.asset), symbol: m.asset } : null;
+  });
+
+  /** The sheet's figures for the mismatch on screen, or null when there is none. */
+  const depositMismatch = computed<DepositMismatch | null>(() => {
+    const current = foregroundMismatch.value;
+    if (current === null || depositLanded.value === null) return null;
+    const { record, key, mismatch } = current;
+    const price = mismatchPrice.value?.key === key ? mismatchPrice.value : null;
+    return {
+      kind: mismatch.kind,
+      asked: { amount: record.deposit!.formatted, symbol: record.deposit!.assetSymbol },
+      landed: depositLanded.value,
+      target: record.amountHuman,
+      receive: price?.value ? fmtCash(price.value.receive) : null,
+      pending: price === null,
+    };
+  });
+
+  /** The route a mismatched deposit takes if the buyer continues: the request's own for less of
+   *  the picked token, the one a fresh quote would give the token that arrived otherwise. */
+  async function routeForMismatch(record: TopUpRecord): Promise<ConversionRoute | null> {
+    const mismatch = record.depositMismatch!;
+    if (mismatch.kind === "short") return recordedRoute(record.handoff ?? record.conversion ?? {});
+    const named = directTokenNamed(mismatch.asset);
+    if (named === undefined) return null;
+    const { chooseHostedRoute } = await import("~~/lib/coinage-live");
+    // The PSM reads the amount in CASH units, which a stable's base units match; the other
+    // tokens take their route without reading it.
+    return chooseHostedRoute(BigInt(mismatch.amount), named.deposit);
+  }
+
+  /** How long a failed pricing waits before it is tried again. */
+  const MISMATCH_REPRICE_MS = 10_000;
+
+  /**
+   * Prices the mismatch on screen and leaves the answer for the sheet. A read that fails is not
+   * an answer: nothing is stored, so the sheet keeps checking, and it is tried again while the
+   * same mismatch is on screen. Only the hosted app records a mismatch.
+   */
+  async function priceMismatch(record: TopUpRecord, key: string): Promise<void> {
+    try {
+      const route = await routeForMismatch(record);
+      let value: DepositValue | null = null;
+      if (route !== null) {
+        const [{ quoteDepositValue }, { connectChain, ASSET_HUB, PEOPLE }, funding] =
+          await Promise.all([
+            import("~~/lib/funding-fees"),
+            import("~~/lib/host-chain"),
+            import("@getsome/funding"),
+          ]);
+        value = await quoteDepositValue({
+          ahClient: await connectChain(ASSET_HUB),
+          peopleClient: await connectChain(PEOPLE),
+          underlyingAssetId: funding.PASEO_UNDERLYING_ASSET_ID,
+          peopleParaId: funding.PASEO_PEOPLE_PARA_ID,
+          probeAddress: record.deposit!.address,
+          route,
+          deposit: BigInt(record.depositMismatch!.amount),
+          slippagePct: funding.DIRECT_SLIPPAGE_PCT,
+        });
+      }
+      if (foregroundMismatch.value?.key === key) {
+        mismatchPrice.value = { key, at: Date.now(), route, value };
+      }
+    } catch (e) {
+      console.warn("[coinage] could not price the deposit that arrived; trying again:", e);
+      setTimeout(() => {
+        const current = foregroundMismatch.value;
+        if (current?.key === key && mismatchPrice.value?.key !== key) {
+          void priceMismatch(current.record, key);
+        }
+      }, MISMATCH_REPRICE_MS);
+    }
+  }
+
+  watch(
+    () => foregroundMismatch.value?.key ?? null,
+    (key) => {
+      mismatchError.value = null;
+      const current = foregroundMismatch.value;
+      if (key === null || current === null || priceIsFresh(key)) return;
+      mismatchPrice.value = null;
+      void priceMismatch(current.record, key);
+    },
+    { immediate: true },
+  );
+
+  /** The hand-off the worker converts a continued deposit with: the request's own, with the new
+   *  target, the new route, and the figures its gate reads. */
+  function continuedHandoff(
+    handoff: WorkerHandoffPayload,
+    route: ConversionRoute,
+    value: DepositValue,
+  ): WorkerHandoffPayload {
+    const { external: _e, feeRate: _f, quotedDeposit: _q, tier: _t, ...rest } = handoff;
+    return {
+      ...rest,
+      settleAmount: value.receive.toString(),
+      remoteFeeBuffer: value.remoteFeeBuffer.toString(),
+      keepNativeForFees: value.keepNativeForFees.toString(),
+      ...route,
+      ...(value.quotedDeposit === undefined
+        ? {}
+        : { quotedDeposit: value.quotedDeposit.toString() }),
+    };
+  }
+
+  /**
+   * Continues the request on screen with what arrived: the worker's job takes the new target and
+   * route, then the record does, and the deposit watch starts over in the token that arrived.
+   * The next reading covers the new ask, so the request moves on from there as any deposit does.
+   * A price that has aged is taken again first and shown, so the buyer continues on the figure
+   * they see. False, with the reason on `mismatchError` when there is one, when it did not go.
+   */
+  async function acceptDepositMismatch(): Promise<boolean> {
+    const current = foregroundMismatch.value;
+    if (current === null) return false;
+    if (!priceIsFresh(current.key)) {
+      mismatchPrice.value = null;
+      void priceMismatch(current.record, current.key);
+      return false;
+    }
+    const price = mismatchPrice.value;
+    if (!price?.value || !price.route) return false;
+    const { record, mismatch } = current;
+    if (record.handoff === undefined) {
+      mismatchError.value = "This top-up can't be changed from here.";
+      return false;
+    }
+    acceptingMismatch.value = true;
+    mismatchError.value = null;
+    try {
+      const next = continuedHandoff(record.handoff, price.route, price.value);
+      // The worker's refusal comes back as a thrown error.
+      const { getStorageWorkerManager } = await import("~~/lib/worker-rpc");
+      await getStorageWorkerManager().call("amendFunding", {
+        sessionId: workerSessionId(record.ref.sourceId, record.ref.tradeN),
+        ...next,
+      });
+      const amountHuman = fmtCash(price.value.receive);
+      await requests.observe(record.ref, {
+        source: "user",
+        at: Date.now(),
+        event: "deposit-accepted",
+        terms: {
+          amountHuman,
+          asset: mismatch.asset,
+          deposit: {
+            amount: mismatch.amount,
+            formatted: formatDirect(mismatch.amount, mismatch.asset),
+            assetSymbol: mismatch.asset,
+          },
+          conversion: price.route,
+          handoff: next,
+        },
+      });
+      setAmount(amountHuman);
+      requests.restartDepositWatch();
+      return true;
+    } catch (e) {
+      console.warn("[coinage] could not continue with the deposit that arrived:", e);
+      mismatchError.value = "Couldn't continue with this deposit. Try again in a moment.";
+      return false;
+    } finally {
+      acceptingMismatch.value = false;
+    }
+  }
+
+  /** The key of the account a Polkadot deposit landed on, as a raw seed, for the buyer to move
+   *  what arrived: the live world's, or derived again for a request reopened without one. Null
+   *  off-host, where there is nothing to derive it from. */
+  async function revealDepositSecret(): Promise<string | null> {
+    if (live.value) return live.value.exportBurnerSecret();
+    const ref = requests.foregroundRecord?.ref;
+    if (!isHosted() || ref === undefined) return null;
+    const { probeBurnerSecret } = await import("~~/lib/coinage-live");
+    return probeBurnerSecret(effectiveSourceId(ref), ref.tradeN).catch(() => null);
+  }
+
   /** Demo Skip was pressed: record it on the request so a re-open never offers Skip again.
    *  Stamped through the central store, persisted before it resolves. */
   async function markDepositSkipped(): Promise<void> {
@@ -2069,6 +2300,12 @@ export const useSessionStore = defineStore("session", () => {
     journeyScale,
     fundFaucet,
     simulateDeposit,
+    depositMismatch,
+    depositLanded,
+    acceptingMismatch,
+    mismatchError,
+    acceptDepositMismatch,
+    revealDepositSecret,
     simulateMeldPayment,
     pollMeldStatus,
     markMeldSubmitted,

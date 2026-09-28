@@ -10,7 +10,12 @@ import type {
   SwapProgress,
   SwapStatusResult,
 } from "@getsome/core";
-import type { ConversionRoute, FundingStep, Stable } from "@getsome/funding";
+import {
+  DIRECT_SLIPPAGE_PCT,
+  type ConversionRoute,
+  type FundingStep,
+  type Stable,
+} from "@getsome/funding";
 import type { WithdrawStep } from "@getsome/withdraw";
 import type { RequestRef } from "../../utils/request-index";
 import type { FundingProgressSnapshot } from "../progress";
@@ -126,6 +131,34 @@ export interface RequestFailure {
   refund?: RefundProgress;
 }
 
+/** A direct deposit that is not the one asked: less of the picked token, or a balance in another
+ *  of the direct tokens. `asset` is the token's symbol as the deposit screen names it and
+ *  `amount` its base units. */
+export interface DepositMismatchState {
+  kind: "short" | "token";
+  asset: string;
+  amount: string;
+  at: number;
+}
+
+/** What a request becomes when the buyer continues with a mismatched deposit: the CASH that
+ *  arrived converts to, the token and amount that arrived as its new deposit, and the route and
+ *  hand-off that convert it. */
+export interface AcceptedDepositTerms {
+  amountHuman: string;
+  asset: string;
+  deposit: { amount: string; formatted: string; assetSymbol: string };
+  conversion: ConversionRoute;
+  handoff: WorkerHandoffPayload;
+}
+
+/** A balance in one of the direct tokens the request did not pick, as the deposit watch reads
+ *  it. */
+export interface StrayDeposit {
+  asset: string;
+  amount: string;
+}
+
 /** The object `runFundingViaWorker` sends today, verbatim. */
 export interface WorkerHandoffPayload {
   label: string;
@@ -235,6 +268,10 @@ export interface TopUpRecord {
    *  before tiers were recorded has none and is a pool one. */
   conversion?: ConversionRoute;
   refundAddress?: string;
+  /** Direct deposits only: what landed on the request's account when it is not what was asked,
+   *  less of the picked token or some of another. The request stays on its deposit while this is
+   *  set, and the buyer chooses to continue with what arrived or to take it back. */
+  depositMismatch?: DepositMismatchState;
   status: RequestStatus;
   rail: RailState;
   failure?: RequestFailure;
@@ -487,6 +524,9 @@ export type Observation =
       finality: "best" | "finalized";
       block?: number;
       via: "probe" | "pre-cancel" | "faucet";
+      /** Polkadot deposits, from the deposit watch only: a balance in a direct token the request
+       *  did not pick, or null when there is none. Absent from every other reading. */
+      stray?: StrayDeposit | null;
     }
   | { source: "clock"; at: number }
   /** A withdrawal's cancel carries no deadline: `depositExpiresAt` is 0. */
@@ -494,6 +534,9 @@ export type Observation =
   | { source: "user"; at: number; event: "retry" }
   | { source: "user"; at: number; event: "meld-submitted" }
   | { source: "user"; at: number; event: "deposit-skipped" }
+  /** The buyer took the mismatch sheet's offer: the request now asks for what arrived and pays
+   *  out what that converts to. */
+  | { source: "user"; at: number; event: "deposit-accepted"; terms: AcceptedDepositTerms }
   // Withdrawal observations. The worker's withdrawal job, the key's CASH on People, the host's
   // word on the payment, and the surface's own prompt, stamped with its id before it goes out.
   | { source: "worker"; at: number; withdrawJob: WithdrawJobView | null }
@@ -521,6 +564,27 @@ export type Observation =
 
 /** The source a request runs under: a bare legacy ref means the crypto rail's. */
 export const effectiveSourceId = (ref: RequestRef): string => ref.sourceId ?? CRYPTO_SOURCE_ID;
+
+/** A top-up the buyer pays by sending a Polkadot token straight to its account. Decided from the
+ *  network the buyer picked, since other crypto picks can run under the same source ids. */
+export const isDirectDeposit = (record: Pick<TopUpRecord, "chain" | "ref">): boolean =>
+  record.chain === "Polkadot" && isDirectSourceId(effectiveSourceId(record.ref));
+
+/**
+ * The balance at which a direct deposit counts as arrived: the figure the worker converts at, not
+ * the ask. The fixed-rate tiers and the stable pool carry it on the hand-off. The native pool's
+ * gate is the live quote plus the fee native, so it is the ask with its headroom taken back out.
+ */
+export function directDepositGate(record: Pick<TopUpRecord, "deposit" | "handoff">): bigint {
+  const asked = BigInt(record.deposit?.amount ?? "0");
+  const handoff = record.handoff;
+  if (handoff?.quotedDeposit !== undefined) return BigInt(handoff.quotedDeposit);
+  if (handoff !== undefined && handoff.tier === "pool" && handoff.external === undefined) {
+    const keep = BigInt(handoff.keepNativeForFees);
+    if (asked > keep) return keep + ((asked - keep) * 100n) / BigInt(100 + DIRECT_SLIPPAGE_PCT);
+  }
+  return asked;
+}
 
 export const routeOf = (sourceId: string): RequestRecord["route"] =>
   isMeldSourceId(sourceId) ? meldMethodFor(sourceId) : "crypto";

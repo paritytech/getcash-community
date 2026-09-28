@@ -12,6 +12,7 @@ import { useRequestsStore } from "../../stores/requests";
 import { useSessionStore } from "../../stores/session";
 import CancelTopUpScreen from "../screens/CancelTopUpScreen.vue";
 import JourneySkeleton from "../screens/JourneySkeleton.vue";
+import RecoverDepositScreen from "../screens/RecoverDepositScreen.vue";
 import ReturnFundsScreen from "../screens/ReturnFundsScreen.vue";
 import FundingSettledStatusScreen from "./FundingSettledStatusScreen.vue";
 import { useJourneyQuote } from "../../composables/useJourneyQuote";
@@ -74,6 +75,9 @@ watch(
     if (phase !== null && phase !== "failed") showingRefund.value = false;
   },
 );
+/** The recovery guide over an ended Polkadot top-up, whose funds, if any, are on its own
+ *  account. */
+const showingRecovery = ref(false);
 // The preview deck lands straight on the opened guide.
 watch(
   () => session.revealRefund,
@@ -98,6 +102,7 @@ watch(
 function goBack() {
   if (flow.confirmingCancel) flow.confirmingCancel = false;
   else if (showingRefund.value) showingRefund.value = false;
+  else if (showingRecovery.value) showingRecovery.value = false;
   else if (showingFees.value) showingFees.value = false;
   else emit("back");
 }
@@ -179,6 +184,7 @@ onUnmounted(() => {
         @keep="flow.confirmingCancel = false"
       />
       <ReturnFundsScreen v-else-if="showingRefund" :top-up="topUp" @back="showingRefund = false" />
+      <RecoverDepositScreen v-else-if="showingRecovery" @back="showingRecovery = false" />
       <MeldFeeDetailsScreen
         v-else-if="showingFees"
         :quote="quote"
@@ -192,6 +198,7 @@ onUnmounted(() => {
           :top-up="topUp ?? null"
           @fees="showingFees = true"
           @refund="showingRefund = true"
+          @recover="showingRecovery = true"
           @cancel="flow.confirmingCancel = true"
           @close="emit('back')"
           @start-over="emit('startOver')"

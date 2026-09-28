@@ -31,6 +31,7 @@ import {
   WORKER_STALE_MS,
   buyerPaid,
   effectiveSourceId,
+  isDirectDeposit,
   isFinished,
   isTopUp,
   isWithdrawSourceId,
@@ -45,6 +46,7 @@ import {
   type Freshness,
   type HostPaymentStatus,
   type Observation,
+  type StrayDeposit,
   type RequestKey,
   type RequestRecord,
   type TopUpRecord,
@@ -1303,8 +1305,34 @@ export const useRequestsStore = defineStore("requests", () => {
       stopDepositWatch();
     };
     void import("~~/lib/coinage-live")
-      .then(({ watchTradeBurner }) =>
-        watchTradeBurner(
+      .then((live) => {
+        if (isDirectDeposit(record)) {
+          // A Polkadot deposit is read in every direct token and followed until the request moves
+          // on: a short or wrong-token deposit keeps it waiting, and the rest can still arrive.
+          // Only a change is observed, since the watch emits at every best block.
+          let last = "";
+          return live.watchDirectTradeBurner(
+            sourceId,
+            ref.tradeN,
+            depositRouteOf(ref),
+            ({ held, stray }) => {
+              if (watching.stopped) return;
+              const key = `${held}|${stray?.asset ?? ""}|${stray?.amount ?? ""}`;
+              if (key === last) return;
+              last = key;
+              void observe(
+                ref,
+                chainReading(
+                  held,
+                  requestsNow(),
+                  stray === null ? null : { asset: stray.asset, amount: stray.amount.toString() },
+                ),
+              );
+            },
+            failed,
+          );
+        }
+        return live.watchTradeBurner(
           sourceId,
           ref.tradeN,
           depositRouteOf(ref),
@@ -1314,12 +1342,18 @@ export const useRequestsStore = defineStore("requests", () => {
             if (free > 0n) stopDepositWatch();
           },
           failed,
-        ),
-      )
+        );
+      })
       .then((unsubscribe) => {
         if (watching.stopped) unsubscribe();
         else watching.unsubscribe = unsubscribe;
       }, failed);
+  }
+  /** Starts the watch over again after a request took new terms: its token may have changed, and
+   *  the balance it already read has to be read again against the new gate. */
+  function restartDepositWatch(): void {
+    stopDepositWatch();
+    syncDepositWatch();
   }
   function stopDepositWatch(): void {
     if (depositWatch === null) return;
@@ -1392,6 +1426,9 @@ export const useRequestsStore = defineStore("requests", () => {
     const record = get(ref);
     // A withdrawal's last look is its own: the key and the host's payment.
     if (record !== undefined && (!isTopUp(record) || rankOf(record) >= 1)) return "refused";
+    // A direct deposit that arrived short or in another token is on the account already; the
+    // burner read below only sees the picked token, so it would call the account empty.
+    if (record?.depositMismatch !== undefined) return "refused";
     const at = requestsNow();
     const [burner, jobs] = await Promise.all([
       bounded("the burner read", CANCEL_CONFIRM_MS, opts.readBurner),
@@ -1838,13 +1875,15 @@ export const useRequestsStore = defineStore("requests", () => {
     });
   }
 
-  /** A burner's balance as the chain's own sighting of the request. */
-  const chainReading = (free: bigint, at: number): Observation => ({
+  /** A burner's balance as the chain's own sighting of the request. A direct deposit's watch
+   *  passes what it found in the other direct tokens too. */
+  const chainReading = (free: bigint, at: number, stray?: StrayDeposit | null): Observation => ({
     source: "chain",
     at,
     burnerNative: free.toString(),
     finality: "best",
     via: "probe",
+    ...(stray === undefined ? {} : { stray }),
   });
   /** A withdrawal key's CASH as the chain's own sighting of the request. */
   const keyReading = (cash: bigint, at: number): Observation => ({
@@ -2634,6 +2673,7 @@ export const useRequestsStore = defineStore("requests", () => {
     fundingNotice,
     phase,
     fundsSeen,
+    restartDepositWatch,
     fundingStep,
     fundingError,
     claimStage,

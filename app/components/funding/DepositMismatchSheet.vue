@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // The sheet a direct deposit raises when what arrived is not what was asked: the two figures side
 // by side under their tokens, what the arrival converts to now, and the two ways on. Accept carries
-// on with the new figure, recover leads to the funds return path. An overlay tap only asks the
-// parent to close it.
+// on with the new figure, recover leads to the account's key. An overlay tap only asks the parent
+// to close it.
 import { computed } from "vue";
 import { describeMismatch, type DepositMismatch } from "../../funding/deposit-mismatch";
 import { cashAmount } from "../../utils/cash";
@@ -11,7 +11,13 @@ import BottomSheet from "../ui/BottomSheet.vue";
 import CashAmount from "../ui/CashAmount.vue";
 import PillButton from "../ui/PillButton.vue";
 
-const props = defineProps<{ mismatch: DepositMismatch | null }>();
+const props = defineProps<{
+  mismatch: DepositMismatch | null;
+  /** Continue is on its way; both pills wait for it. */
+  busy?: boolean;
+  /** Why Continue did not go through, when it did not. */
+  error?: string | null;
+}>();
 const emit = defineEmits<{ accept: []; recover: []; dismiss: [] }>();
 
 const text = computed(() => (props.mismatch ? describeMismatch(props.mismatch) : null));
@@ -51,19 +57,30 @@ const figures = computed(() => {
         </div>
       </div>
 
-      <div class="flex flex-col gap-1">
+      <div v-if="mismatch.receive !== null || mismatch.pending" class="flex flex-col gap-1">
         <span class="text-body-s text-fg-secondary">You'll get</span>
-        <span class="text-display-s text-fg-primary"
+        <span v-if="mismatch.receive !== null" class="text-display-s text-fg-primary"
           ><CashAmount :amount="mismatch.receive"
         /></span>
+        <span v-else class="h-12 w-40 animate-pulse rounded-full bg-action-disabled" />
         <span class="text-body-m text-fg-secondary"
           >instead of {{ cashAmount(mismatch.target) }}</span
         >
       </div>
 
+      <p v-if="error" class="text-body-m text-fg-error">{{ error }}</p>
+
       <div class="flex flex-col gap-3">
-        <PillButton @click="emit('accept')">{{ text.accept }}</PillButton>
-        <PillButton variant="tertiary" @click="emit('recover')">Recover my funds</PillButton>
+        <PillButton
+          v-if="text.accept !== null || mismatch.pending"
+          :disabled="busy || text.accept === null"
+          @click="emit('accept')"
+        >
+          {{ busy ? "Continuing…" : (text.accept ?? "Checking the rate…") }}
+        </PillButton>
+        <PillButton variant="tertiary" :disabled="busy" @click="emit('recover')">
+          Recover my funds
+        </PillButton>
       </div>
     </div>
   </BottomSheet>

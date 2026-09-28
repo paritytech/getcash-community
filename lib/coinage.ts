@@ -18,6 +18,7 @@ import {
   type SourceId,
   type StorageAdapter,
   type Subscription,
+  type TokenSpec,
 } from "@getsome/core";
 import { blake2b } from "@noble/hashes/blake2.js";
 import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
@@ -41,10 +42,12 @@ import {
   DEFAULT_SLIPPAGE_PCT,
   depositTokenOf,
   DIRECT_SLIPPAGE_PCT,
+  directAssetName,
   type FundingStep,
   isManualSourceId,
   isStablePoolRoute,
   MANUAL_SOURCE_IDS,
+  MANUAL_SOURCES,
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
   psmDepositNeeded,
@@ -525,7 +528,18 @@ export function watchDepositOnAh(
   onValue: (balance: bigint) => void,
   onError: (e: unknown) => void,
 ): () => void {
-  const token = depositTokenOf(route);
+  return watchTokenOnAh(api, depositTokenOf(route), address, onValue, onError);
+}
+
+/** One token's balance on an account at every best block: the native's free balance, or the
+ *  pallet-assets holding the token names. */
+function watchTokenOnAh(
+  api: AssetHubApi,
+  token: TokenSpec,
+  address: string,
+  onValue: (balance: bigint) => void,
+  onError: (e: unknown) => void,
+): () => void {
   const subscription =
     token.assetHubId === undefined
       ? api.query.System.Account.watchValue(address, { at: "best" }).subscribe({
@@ -539,6 +553,60 @@ export function watchDepositOnAh(
           error: onError,
         });
   return () => subscription.unsubscribe();
+}
+
+/** A Polkadot deposit account's balances at a best block: the token the route asks for, and
+ *  another direct token found on it, named as the deposit screen names it. */
+export interface DirectDepositReading {
+  held: bigint;
+  stray: { asset: string; amount: bigint } | null;
+}
+
+/**
+ * Every direct token's balance on a burner at each best block, until the returned function is
+ * called. A buyer can send any of them from any wallet, so a Polkadot deposit is followed in all
+ * of them: the route's own token is the deposit, any other is one it was not asked for. Emits
+ * once every balance has been read, then on every change.
+ */
+export function watchDirectDepositOnAh(
+  api: AssetHubApi,
+  route: ConversionRoute,
+  address: string,
+  onValue: (reading: DirectDepositReading) => void,
+  onError: (e: unknown) => void,
+): () => void {
+  const picked = depositTokenOf(route);
+  // The native last: a little DOT sent to pay a fee must not stand in for a stable that arrived.
+  const tokens = MANUAL_SOURCE_IDS.map((id) => MANUAL_SOURCES[id].token as TokenSpec).sort(
+    (a, b) => Number(a.assetHubId === undefined) - Number(b.assetHubId === undefined),
+  );
+  const balances = new Map<TokenSpec, bigint>();
+  const emit = () => {
+    if (balances.size < tokens.length) return;
+    const other = tokens.find((token) => token !== picked && (balances.get(token) ?? 0n) > 0n);
+    onValue({
+      held: balances.get(picked) ?? 0n,
+      stray:
+        other === undefined
+          ? null
+          : { asset: directAssetName(other), amount: balances.get(other) ?? 0n },
+    });
+  };
+  const unsubscribes = tokens.map((token) =>
+    watchTokenOnAh(
+      api,
+      token,
+      address,
+      (value) => {
+        balances.set(token, value);
+        emit();
+      },
+      onError,
+    ),
+  );
+  return () => {
+    for (const unsubscribe of unsubscribes) unsubscribe();
+  };
 }
 
 /** Core's budget for `amount` of the route's deposit token: what the rail is asked to deliver,
@@ -734,6 +802,13 @@ export async function createMockCoinageSession(
     route,
     async advanceTrade() {},
   };
+}
+
+/** A burner's recovery secret from its entropy seed: the 0x hex mini secret, which Polkadot
+ *  wallets import as a raw seed. */
+export function burnerSecretOf(seed: Uint8Array): string {
+  const mini = entropyToMiniSecret(seed);
+  return `0x${Array.from(mini, (b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
 export interface CoinageWorld extends RefundKeyHold {
@@ -1006,8 +1081,7 @@ export async function createCoinageSession(
   // Host loggers may forward only warn and error.
   console.warn(`[coinage] ephemeral (burner): ${burnerKey.address}`);
 
-  const burnerMini = entropyToMiniSecret(seed);
-  const burnerHex = `0x${Array.from(burnerMini, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+  const burnerHex = burnerSecretOf(seed);
 
   // A re-opened request whose deposit has landed gets no refund key.
   const stored = await stage(

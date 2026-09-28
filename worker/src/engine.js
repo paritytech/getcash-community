@@ -264,6 +264,47 @@ export async function cancelFunding(params) {
   return describeFunding(record);
 }
 
+/**
+ * New terms for a job still waiting for its deposit, from a re-sent hand-off: the settle amount,
+ * the route and the figures the gate reads. A direct deposit that arrived short or in another
+ * token is continued this way. Refused once the worker has seen funds or submitted anything, for
+ * another burner, and for a job that has ended; the burner, the label and the run's own state
+ * stay as they were.
+ */
+export async function amendFunding(params) {
+  const input = readParams(params);
+  const all = await loadJobs();
+  const record = all[String(input.sessionId ?? "")];
+  if (!record) return { error: "invalid", reason: "no such job to amend" };
+  const mismatch = await burnerMismatch(record, String(input.burnerAddress ?? ""));
+  if (mismatch) return { error: "invalid", reason: mismatch };
+  const waiting =
+    !record.done &&
+    record.phase !== "failed" &&
+    record.state.fundsSeenAt === null &&
+    !record.state.xcmSubmitted &&
+    record.submitting === undefined;
+  if (!waiting) return { error: "invalid", reason: "the job is no longer waiting for its deposit" };
+  let terms;
+  try {
+    // The same checks a new hand-off gets, route included.
+    terms = newRecord({ ...input, label: record.label }, Date.now());
+  } catch (error) {
+    return { error: "invalid", reason: String(error?.message ?? error) };
+  }
+  for (const field of ["tier", "external", "feeRate", "quotedDeposit"]) delete record[field];
+  Object.assign(record, {
+    settleAmount: terms.settleAmount,
+    remoteFeeBuffer: terms.remoteFeeBuffer,
+    keepNativeForFees: terms.keepNativeForFees,
+    slippagePct: terms.slippagePct,
+    ...(terms.quotedDeposit === undefined ? {} : { quotedDeposit: terms.quotedDeposit }),
+    ...recordedRoute(terms),
+  });
+  await saveJobs();
+  return describeFunding(record);
+}
+
 /** True once the CASH has landed and been claimed; `done` alone means the funding leg is over. */
 const isFinished = (record) => record.done === true && record.claim?.phase === "claimed";
 

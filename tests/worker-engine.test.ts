@@ -571,6 +571,64 @@ describe("worker funding engine", () => {
     expect(storedJob().phase).toBe("await-native");
   });
 
+  it("amends a job still waiting for its deposit with new terms, and refuses once funds are seen", async () => {
+    armSeams();
+    const engine = await freshEngine();
+    await engine.startFunding(
+      JSON.stringify({ ...HANDOFF, tier: "pool", external: "USDC", quotedDeposit: "10300000" }),
+    );
+    const amended = await engine.amendFunding(
+      JSON.stringify({
+        ...HANDOFF,
+        settleAmount: "7900000",
+        tier: "teleport",
+        quotedDeposit: "8000000",
+      }),
+    );
+    expect(amended.error).toBeUndefined();
+    const job = storedJob();
+    expect(job).toMatchObject({
+      settleAmount: "7900000",
+      tier: "teleport",
+      quotedDeposit: "8000000",
+    });
+    // The old route's stable is gone with it, and the job's identity is kept.
+    expect(job.external).toBeUndefined();
+    expect(job).toMatchObject({ sessionId: "s-1", label: HANDOFF.label, phase: "starting" });
+
+    // Once the worker has seen funds the job is no longer amended.
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.fundsSeenAt = Date.now();
+      return outcome("await-native");
+    });
+    await engine.tickAllFunding();
+    const refused = await engine.amendFunding(
+      JSON.stringify({ ...HANDOFF, settleAmount: "5000000" }),
+    );
+    expect(refused).toMatchObject({ error: "invalid" });
+    expect(refused.reason).toContain("no longer waiting");
+    expect(storedJob().settleAmount).toBe("7900000");
+
+    // Nor is a job that does not exist, or one for another burner.
+    expect(
+      await engine.amendFunding(JSON.stringify({ ...HANDOFF, sessionId: "s-9" })),
+    ).toMatchObject({ error: "invalid" });
+  });
+
+  it("refuses to amend a job whose deposit window closed", async () => {
+    armSeams();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify({ ...HANDOFF, depositExpiresAt: 1 }));
+    mocks.tickOnce.mockResolvedValue(outcome("await-native"));
+    await engine.tickAllFunding();
+    expect(storedJob()).toMatchObject({ phase: "failed", failure: "expired" });
+    const expired = await engine.amendFunding(
+      JSON.stringify({ ...HANDOFF, settleAmount: "7900000", tier: "teleport" }),
+    );
+    expect(expired).toMatchObject({ error: "invalid" });
+    expect(storedJob().settleAmount).toBe(HANDOFF.settleAmount);
+  });
+
   it("cancels a job still waiting for its deposit, and answers known:false for one it never had", async () => {
     armSeams();
     const engine = await freshEngine();

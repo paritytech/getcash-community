@@ -1,5 +1,6 @@
 import type { SourceId, TokenSpec } from "@getsome/core";
 import {
+  directAssetName,
   isManualSourceId,
   MANUAL_SOURCE_IDS,
   MANUAL_SOURCES,
@@ -95,11 +96,22 @@ export const depositAssetFor = manualDepositOf;
 /** UI pair to direct SourceId: each direct source under Polkadot, its token named as the rails
  *  name it. */
 export const DIRECT_SOURCE_ID_BY_KEY: Readonly<Record<string, DirectSourceId>> = Object.fromEntries(
-  MANUAL_SOURCE_IDS.map((sourceId) => {
-    const token: TokenSpec = MANUAL_SOURCES[sourceId].token;
-    return [`${CHAINS.Polkadot}:${token.chainflipAsset ?? token.symbol}`, sourceId];
-  }),
+  MANUAL_SOURCE_IDS.map((sourceId) => [
+    `${CHAINS.Polkadot}:${directAssetName(MANUAL_SOURCES[sourceId].token)}`,
+    sourceId,
+  ]),
 );
+
+/** A direct token by the name the deposit screen gives it ("DOT", "dotUSD", "USDT", "USDC"):
+ *  the token itself and what the route decision calls a deposit of it. */
+export function directTokenNamed(
+  asset: string,
+): { token: TokenSpec; deposit: DepositAsset } | undefined {
+  const sourceId = DIRECT_SOURCE_ID_BY_KEY[`${CHAINS.Polkadot}:${asset}`];
+  return sourceId === undefined
+    ? undefined
+    : { token: MANUAL_SOURCES[sourceId].token, deposit: manualDepositOf(sourceId) };
+}
 
 export function sourceIdFor(chain: string, asset: string): SourceId | undefined {
   const key = `${chain}:${asset}`;

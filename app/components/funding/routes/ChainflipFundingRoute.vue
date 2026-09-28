@@ -33,8 +33,8 @@ const toolbar = computed<{
   trailing: "skip" | null;
 }>(() => {
   if (session.resuming) return { back: false, title: "Add funds via Crypto", trailing: null };
-  // The confirmation carries only the way back to the deposit.
-  if (flow.confirmingCancel) return { back: true, trailing: null };
+  // The confirmation and the recovery guide carry only the way back to the deposit.
+  if (flow.confirmingCancel || flow.recoveringDeposit) return { back: true, trailing: null };
   // "journey" here is the deposit stage: the request exists and funds are still to be seen.
   if (flow.screen === "journey") {
     return {
@@ -51,8 +51,9 @@ const toolbar = computed<{
 });
 
 function onBack() {
-  if (flow.confirmingCancel) {
+  if (flow.confirmingCancel || flow.recoveringDeposit) {
     flow.confirmingCancel = false;
+    flow.recoveringDeposit = false;
     return;
   }
   if (
@@ -164,16 +165,6 @@ onUnmounted(() => {
         <TokenScreen v-else />
       </template>
     </div>
-
-    <!-- Demo deck only: the sheet a deposit that differs from the one asked raises. Its buttons
-         only close it here. -->
-    <DepositMismatchSheet
-      v-if="isDemoBuild()"
-      :mismatch="flow.previewMismatch"
-      @accept="flow.previewMismatch = null"
-      @recover="flow.previewMismatch = null"
-      @dismiss="flow.previewMismatch = null"
-    />
 
     <!-- state-director scene label (dev/demo keys only) -->
     <PreviewSceneLabel />

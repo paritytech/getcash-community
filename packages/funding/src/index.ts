@@ -16,6 +16,7 @@ export {
   quoteNativeOut,
   quoteStableForUnderlying,
   quoteStableIn,
+  quoteUnderlyingOut,
   sizeNativeBudget,
   stableDepositNeeded,
   tickOnce,
@@ -72,6 +73,7 @@ export { creditedTo, forwardedTo, siblingOrigin, signedOrigin, trappedIn } from 
 export { describeDispatchError, psmRefusalKind, type PsmRefusalKind } from "./dispatch-error";
 export {
   createManualRail,
+  directAssetName,
   isManualSourceId,
   MANUAL_SOURCE_IDS,
   MANUAL_SOURCES,

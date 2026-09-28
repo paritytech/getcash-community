@@ -12,31 +12,41 @@ export interface DepositMismatch {
   landed: { amount: string; symbol: string };
   /** The CASH asked for, as a human figure. */
   target: string;
-  /** The CASH the deposit converts to now, as a human figure. */
-  receive: string;
+  /** The CASH the deposit converts to now, as a human figure. Null while it is being priced, or
+   *  when it cannot be converted at all (`pending` says which). */
+  receive: string | null;
+  /** The figure is still being priced. */
+  pending?: boolean;
 }
 
 export interface MismatchText {
   title: string;
   /** What can still be done; the figures themselves are drawn, not said. */
   body: string;
-  /** The primary pill's label, with the CASH sum written out. */
-  accept: string;
+  /** The primary pill's label, with the CASH sum written out, or null when there is no offer. */
+  accept: string | null;
 }
 
 /** The sheet's words for a mismatch: what happened and what can still be done with it. */
 export function describeMismatch(mismatch: DepositMismatch): MismatchText {
-  const accept = `Continue with ${cashAmount(mismatch.receive)}`;
+  const title =
+    mismatch.kind === "token"
+      ? `${mismatch.landed.symbol} arrived instead of ${mismatch.asked.symbol}`
+      : "Less arrived than asked";
+  if (mismatch.receive === null && !mismatch.pending) {
+    return { title, body: "This can't be converted to CASH. You can take it back.", accept: null };
+  }
+  const accept = mismatch.receive === null ? null : `Continue with ${cashAmount(mismatch.receive)}`;
   if (mismatch.kind === "token") {
     return {
-      title: `${mismatch.landed.symbol} arrived instead of ${mismatch.asked.symbol}`,
+      title,
       body: `We can convert ${mismatch.landed.symbol} too, at its own rate, or you can take it back.`,
       accept,
     };
   }
   return {
-    title: "Less arrived than asked",
-    body: "We can convert what arrived instead, or you can take it back.",
+    title,
+    body: "We can convert what arrived instead, or you can take it back. You can also send the rest.",
     accept,
   };
 }

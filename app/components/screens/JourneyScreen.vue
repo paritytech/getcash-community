@@ -9,7 +9,7 @@ import { useFundingProgressClock } from "../../composables/useFundingProgressClo
 import { useJourneyQuote } from "../../composables/useJourneyQuote";
 import type { FundingJourneyStatus } from "../../funding/handoff";
 import { projectFundingProgress, type FundingProgressProjection } from "../../funding/progress";
-import { effectiveSourceId } from "../../funding/requests/model";
+import { effectiveSourceId, isDirectDeposit } from "../../funding/requests/model";
 import { bankEndingText, endingLabel, isExpiredEnding } from "../../funding/journey-endings";
 import {
   journeyMoneyRows,
@@ -46,7 +46,14 @@ const props = defineProps<{
 // fees and refund ask the host to swap in their drill-ins; cancel asks it for the cancel
 // confirmation; close leaves the finished journey; startOver asks it to re-enter this route for a
 // fresh attempt at the same top-up.
-const emit = defineEmits<{ fees: []; refund: []; cancel: []; close: []; startOver: [] }>();
+const emit = defineEmits<{
+  fees: [];
+  refund: [];
+  recover: [];
+  cancel: [];
+  close: [];
+  startOver: [];
+}>();
 const session = useSessionStore();
 const requests = useRequestsStore();
 
@@ -221,6 +228,12 @@ const refunded = computed(() => {
   if (!crypto.value) return false;
   if (failure.value !== null && refundedFailure(failure.value.kind)) return true;
   return storedFailure.value?.refunded === true && props.topUp?.request !== undefined;
+});
+/** An expired Polkadot top-up: whatever the buyer sent sits on its own account, short or in the
+ *  wrong token, and the recovery guide hands over that account's key. */
+const recoverable = computed(() => {
+  const record = requests.foregroundRecord;
+  return expired.value && record !== null && isDirectDeposit(record);
 });
 const asset = computed(() => {
   const record = requests.foregroundRecord;
@@ -443,6 +456,9 @@ const message = computed(() => {
       <!-- The way back to a refunded deposit drills into the recovery guide, which carries the
            refund's own status line and the key that moves it. -->
       <PillButton v-if="refunded" class="mt-auto" @click="emit('refund')"> Refund info </PillButton>
+      <PillButton v-else-if="recoverable" class="mt-auto" @click="emit('recover')">
+        Recover funds
+      </PillButton>
 
       <!-- A recoverable failure comes first on either rail: the payment landed and only the credit
            is outstanding, so re-entering it is the fix. Starting a second payment there would

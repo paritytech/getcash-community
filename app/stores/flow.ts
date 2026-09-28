@@ -46,6 +46,8 @@ export const useFlowStore = defineStore("flow", () => {
   const previewDrillIn = ref<PreviewDrillIn | null>(null);
   /** Demo deck only: the deposit mismatch a scene wants the sheet to show over the deposit. */
   const previewMismatch = ref<DepositMismatch | null>(null);
+  /** The recovery screen for a mismatched direct deposit has taken the deposit screen. */
+  const recoveringDeposit = ref(false);
 
   const srcChain = computed(() => FUNDING_CHAINS[srcChainIndex.value] ?? FUNDING_CHAINS[0]);
   const srcAsset = computed(
@@ -158,6 +160,7 @@ export const useFlowStore = defineStore("flow", () => {
     step.value = "amount";
     confirmingCancel.value = false;
     previewMismatch.value = null;
+    recoveringDeposit.value = false;
   }
 
   function startOver() {
@@ -176,6 +179,7 @@ export const useFlowStore = defineStore("flow", () => {
     confirmingCancel,
     previewDrillIn,
     previewMismatch,
+    recoveringDeposit,
     screen,
     setSourceByName,
     selectSource,

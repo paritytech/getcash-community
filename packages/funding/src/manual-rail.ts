@@ -44,6 +44,10 @@ export function manualSourceIdOf(token: TokenSpec): ManualSourceId {
 export const manualDepositOf = (sourceId: ManualSourceId): DepositAsset =>
   MANUAL_SOURCES[sourceId].deposit;
 
+/** The name a direct token goes by on the deposit screen: the rails' name for it, so the native
+ *  is named after its Polkadot counterpart. */
+export const directAssetName = (token: TokenSpec): string => token.chainflipAsset ?? token.symbol;
+
 /** Exact base-units -> decimal string (trailing zeros trimmed). */
 function formatUnits(base: bigint, decimals: number): string {
   const s = base.toString().padStart(decimals + 1, "0");
@@ -79,8 +83,7 @@ export function createManualRail(opts: ManualRailOptions = {}): ChainflipRail {
   const descriptor: SourceDescriptor = Object.freeze({
     sourceId,
     chain: "AssetHub",
-    // The rails' name for the token; the native's is its Polkadot counterpart's.
-    asset: token.chainflipAsset ?? token.symbol,
+    asset: directAssetName(token),
     displayName: "Direct deposit",
     decimals: token.decimals,
   });

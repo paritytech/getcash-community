@@ -31,6 +31,7 @@ import { CASH_DECIMALS } from "@getsome/people";
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import type { WorkerHandoffPayload } from "../app/funding/requests/model";
 import {
+  burnerSecretOf,
   createCoinageSession,
   DEFAULT_SOURCE_ID,
   hostSafeEntropy,
@@ -42,7 +43,9 @@ import {
   tradeEntropyLabel,
   tradeEntropyLabelString,
   watchDepositOnAh,
+  watchDirectDepositOnAh,
   type CoinageWorld,
+  type DirectDepositReading,
 } from "./coinage";
 import { ASSET_HUB, ASSET_HUB_GENESIS, connectChain, PEOPLE_GENESIS } from "./host-chain";
 
@@ -64,9 +67,17 @@ export { DEFAULT_SOURCE_ID };
 
 /** A trade's burner address, derived from the host's entropy root without building a session. */
 export async function burnerAddressFor(sourceId: string, tradeN: number): Promise<string> {
+  return deriveKeypair(await burnerSeedFor(sourceId, tradeN)).address;
+}
+
+/** A trade's burner secret as the live world exports it, for a request reopened without one. */
+export async function probeBurnerSecret(sourceId: string, tradeN: number): Promise<string> {
+  return burnerSecretOf(await burnerSeedFor(sourceId, tradeN));
+}
+
+function burnerSeedFor(sourceId: string, tradeN: number): Promise<Uint8Array> {
   const entropy = createHostEntropyPort(hostSafeEntropy(deriveEntropy));
-  const seed = await entropy.deriveSeed(tradeEntropyLabel(sourceId, tradeN));
-  return deriveKeypair(seed).address;
+  return entropy.deriveSeed(tradeEntropyLabel(sourceId, tradeN));
 }
 
 /** A trade's burner address and its balance on Asset Hub in the asset the trade's recorded route
@@ -107,10 +118,27 @@ export async function watchTradeBurner(
   onValue: (free: bigint, address: string) => void,
   onError: (e: unknown) => void,
 ): Promise<() => void> {
+  const { api, address } = await burnerOnAssetHub(sourceId, tradeN);
+  return watchDepositOnAh(api, route, address, (free) => onValue(free, address), onError);
+}
+
+/** `watchTradeBurner` for a Polkadot deposit: the route's own token and the first other direct
+ *  token found, at each best block. */
+export async function watchDirectTradeBurner(
+  sourceId: string,
+  tradeN: number,
+  route: ConversionRoute,
+  onValue: (reading: DirectDepositReading) => void,
+  onError: (e: unknown) => void,
+): Promise<() => void> {
+  const { api, address } = await burnerOnAssetHub(sourceId, tradeN);
+  return watchDirectDepositOnAh(api, route, address, onValue, onError);
+}
+
+async function burnerOnAssetHub(sourceId: string, tradeN: number) {
   const address = await burnerAddressFor(sourceId, tradeN);
   const { connectChain, ASSET_HUB } = await import("./host-chain");
-  const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
-  return watchDepositOnAh(api, route, address, (free) => onValue(free, address), onError);
+  return { address, api: (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2) };
 }
 
 /** Core's storage over the host store, under the prefix `createCoinageSession` writes with. */
