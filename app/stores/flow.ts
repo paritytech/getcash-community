@@ -4,6 +4,7 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import { FUNDING_CHAINS, sourceIdFor } from "~~/lib/config";
+import type { DepositMismatch } from "../funding/deposit-mismatch";
 import { useOffersStore } from "./offers";
 import { useRequestsStore } from "./requests";
 import { useSessionStore } from "./session";
@@ -43,6 +44,8 @@ export const useFlowStore = defineStore("flow", () => {
   const confirmingCancel = ref(false);
   /** Demo deck only: the drill-in a scene wants open. See `PreviewDrillIn`. */
   const previewDrillIn = ref<PreviewDrillIn | null>(null);
+  /** Demo deck only: the deposit mismatch a scene wants the sheet to show over the deposit. */
+  const previewMismatch = ref<DepositMismatch | null>(null);
 
   const srcChain = computed(() => FUNDING_CHAINS[srcChainIndex.value] ?? FUNDING_CHAINS[0]);
   const srcAsset = computed(
@@ -154,6 +157,7 @@ export const useFlowStore = defineStore("flow", () => {
   function resetEntry() {
     step.value = "amount";
     confirmingCancel.value = false;
+    previewMismatch.value = null;
   }
 
   function startOver() {
@@ -171,6 +175,7 @@ export const useFlowStore = defineStore("flow", () => {
     starting,
     confirmingCancel,
     previewDrillIn,
+    previewMismatch,
     screen,
     setSourceByName,
     selectSource,

@@ -527,12 +527,34 @@ function base(session: Session, flow: Flow) {
   flow.step = "amount";
   flow.confirmingCancel = false;
   flow.previewDrillIn = null;
+  flow.previewMismatch = null;
   session.supportedCountries = null;
   session.corridorByCountry = null;
   // The shell reads the adapters again unless a top-ups scene says otherwise.
   previewTopUpScene.value = null;
   // Bitcoin, matching the canned quote.
   flow.setSourceByName("Bitcoin", "BTC");
+}
+
+/** Baseline for the direct deposit scenes: 10 CASH from a Polkadot token, quoted as the manual
+ *  rail quotes it, the exact figure in the token itself. */
+function polkadotDeposit(
+  session: Session,
+  flow: Flow,
+  asset: "DOT" | "USDT" | "USDC",
+  send: string,
+) {
+  base(session, flow);
+  session.setAmount("10");
+  flow.setSourceByName("Polkadot", asset);
+  session.quoted = {
+    ...QUOTED,
+    send: `${send} ${asset}`,
+    symbol: asset,
+    nativeAmount: null,
+    sourceAsset: asset,
+    sourceChain: "Polkadot",
+  };
 }
 
 /** Baseline for the card-journey scenes: the Meld quote and method the design frames show. */
@@ -1053,6 +1075,38 @@ export const SCENES: Scene[] = [
       const r = await previewRequest(s, { sourceId: "btc", index: i });
       await core(r, 0, awaitingDeposit());
       f.confirmingCancel = true;
+    },
+  },
+  {
+    // A direct deposit short of the figure asked: the sheet with what arrived and what it gives.
+    name: "crypto / deposit: less than asked",
+    apply: async (s, f, i) => {
+      polkadotDeposit(s, f, "USDC", "10");
+      const r = await previewRequest(s, { sourceId: "usdc-assethub", index: i });
+      await core(r, 0, awaitingDeposit(0, "usdc-assethub"));
+      f.previewMismatch = {
+        kind: "short",
+        asked: { amount: "10", symbol: "USDC" },
+        landed: { amount: "8", symbol: "USDC" },
+        target: "10",
+        receive: "7.94",
+      };
+    },
+  },
+  {
+    // A direct deposit in the wrong token: the same sheet, worded for the token.
+    name: "crypto / deposit: different token",
+    apply: async (s, f, i) => {
+      polkadotDeposit(s, f, "USDC", "10");
+      const r = await previewRequest(s, { sourceId: "usdc-assethub", index: i });
+      await core(r, 0, awaitingDeposit(0, "usdc-assethub"));
+      f.previewMismatch = {
+        kind: "token",
+        asked: { amount: "10", symbol: "USDC" },
+        landed: { amount: "10", symbol: "USDT" },
+        target: "10",
+        receive: "9.85",
+      };
     },
   },
   {

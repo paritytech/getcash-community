@@ -165,6 +165,16 @@ onUnmounted(() => {
       </template>
     </div>
 
+    <!-- Demo deck only: the sheet a deposit that differs from the one asked raises. Its buttons
+         only close it here. -->
+    <DepositMismatchSheet
+      v-if="isDemoBuild()"
+      :mismatch="flow.previewMismatch"
+      @accept="flow.previewMismatch = null"
+      @recover="flow.previewMismatch = null"
+      @dismiss="flow.previewMismatch = null"
+    />
+
     <!-- state-director scene label (dev/demo keys only) -->
     <PreviewSceneLabel />
   </main>
