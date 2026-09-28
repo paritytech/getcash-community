@@ -25,6 +25,8 @@ export function withdrawalFailureText(failure: WithdrawalFailure): string {
       return "This withdrawal took too long to pay for. Nothing was sent, so you can try again.";
     case "channel-mismatch":
       return "We could not confirm this withdrawal with the provider. Nothing was sent, so you can try again.";
+    case "underfunded":
+      return "The amount does not cover the network fees right now. Nothing was sent, so you can try again.";
     case "unknown":
       return failure.message || "Something went wrong with this withdrawal.";
   }

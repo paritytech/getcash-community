@@ -420,6 +420,20 @@ describe("withdrawal: the worker", () => {
     expect(rejected.failure?.step).toBe("convert");
   });
 
+  it("fails an underfunded key recoverably, instead of leaving it in progress for good", () => {
+    // The whole payment is on the key and it cannot buy the PAS the fees need at the pool's price.
+    // Nothing was spent, so a retry re-sizes at the price of that moment.
+    const seen = at(1);
+    const short = run(
+      prompted(),
+      worker(at(3), job({ phase: "failed", failure: "underfunded", fundsSeenAt: seen })),
+    );
+    expect(short.status).toEqual({ kind: "failed", at: at(3), recoverable: true });
+    expect(short.failure).toMatchObject({ kind: "underfunded", step: "convert" });
+    const again = run(short, { source: "user", at: at(4), event: "retry" });
+    expect(again.failure).toBeUndefined();
+  });
+
   it("expires an unpaid request on the worker's word, but not one the host took", () => {
     const expired = run(prompted(), worker(at(40), job({ phase: "failed", failure: "expired" })));
     expect(expired.status).toEqual({ kind: "expired", at: at(40) });
