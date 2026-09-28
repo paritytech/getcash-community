@@ -28,6 +28,7 @@ export {
   buildPsmFundingProgram,
   buildStableFundingProgram,
   buildTeleportFundingProgram,
+  DepositBelowFeesError,
   destinationEarmark,
   dryRunFundingProgram,
   estimateDestinationFeeCash,

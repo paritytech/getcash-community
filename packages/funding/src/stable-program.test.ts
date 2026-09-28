@@ -6,6 +6,7 @@ import { TOKENS } from "@getsome/core";
 import { describe, expect, it } from "vitest";
 import {
   buildStableFundingProgram,
+  DepositBelowFeesError,
   estimateStableProgramFees,
   forwardedProgramStandIn,
   FUNDING_PROGRAM_MAX_WEIGHT,
@@ -347,6 +348,9 @@ describe("estimateStableProgramFees", () => {
     await expect(
       estimateStableProgramFees({ api: recordingApi().api, ...input, depositStable: 90_000n }),
     ).rejects.toThrow(/does not cover/);
+    await expect(
+      estimateStableProgramFees({ api: recordingApi().api, ...input, depositStable: 90_000n }),
+    ).rejects.toBeInstanceOf(DepositBelowFeesError);
     await expect(
       estimateStableProgramFees({ api: recordingApi({ minBalance: undefined }).api, ...input }),
     ).rejects.toThrow(/not an asset/);

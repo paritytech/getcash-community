@@ -6,6 +6,7 @@ import { TOKENS } from "@getsome/core";
 import { describe, expect, it } from "vitest";
 import {
   buildTeleportFundingProgram,
+  DepositBelowFeesError,
   estimateTeleportProgramFees,
   peopleDest,
   teleportTxOptions,
@@ -172,6 +173,9 @@ describe("estimateTeleportProgramFees", () => {
     await expect(
       estimateTeleportProgramFees({ api: recordingApi().api, ...input, depositUnderlying: 1n }),
     ).rejects.toThrow(/does not cover/);
+    await expect(
+      estimateTeleportProgramFees({ api: recordingApi().api, ...input, depositUnderlying: 1n }),
+    ).rejects.toBeInstanceOf(DepositBelowFeesError);
     await expect(
       estimateTeleportProgramFees({ api: recordingApi({ minBalance: undefined }).api, ...input }),
     ).rejects.toThrow(/not an asset/);

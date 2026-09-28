@@ -1856,11 +1856,11 @@ export const useSessionStore = defineStore("session", () => {
     };
   });
 
-  /** The route a mismatched deposit takes if the buyer continues: the request's own for less of
-   *  the picked token, the one a fresh quote would give the token that arrived otherwise. */
+  /** The route a mismatched deposit takes if the buyer continues: the one a fresh quote gives
+   *  the token and amount that arrived. Chosen again even for less of the picked token, since the
+   *  PSM does not serve a sum under its minimum and the pool takes it instead. */
   async function routeForMismatch(record: TopUpRecord): Promise<ConversionRoute | null> {
     const mismatch = record.depositMismatch!;
-    if (mismatch.kind === "short") return recordedRoute(record.handoff ?? record.conversion ?? {});
     const named = directTokenNamed(mismatch.asset);
     if (named === undefined) return null;
     const { chooseHostedRoute } = await import("~~/lib/coinage-live");

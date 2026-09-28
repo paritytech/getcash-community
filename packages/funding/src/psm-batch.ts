@@ -35,6 +35,7 @@ import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import type { TypedApi } from "polkadot-api";
 import {
   buildPsmFundingProgram,
+  DepositBelowFeesError,
   dryRunFundingProgram,
   extractFungibleAmount,
   forwardedProgramStandIn,
@@ -183,7 +184,7 @@ export async function estimatePsmBatchFees(args: {
   const probe = (feeAllowance: bigint, dispatchExternal: bigint, maxWeight?: Weight) => {
     const externalIn = args.depositExternal - dispatchExternal - minBalance - feeAllowance;
     if (externalIn <= 0n) {
-      throw new Error(
+      throw new DepositBelowFeesError(
         `psm batch fee estimate: ${args.depositExternal} of the external does not cover the ${minBalance + feeAllowance} held back for fees`,
       );
     }

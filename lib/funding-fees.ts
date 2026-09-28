@@ -20,6 +20,7 @@ import {
   DEFAULT_KEEP_NATIVE_FOR_FEES,
   DEFAULT_REMOTE_FEE_BUFFER,
   DEFAULT_SLIPPAGE_PCT,
+  DepositBelowFeesError,
   destinationEarmark,
   discoverPools,
   estimateDestinationFeeCash,
@@ -353,38 +354,47 @@ export async function quoteDepositValue(
     remoteFeesCash: earmark,
     feeProbeAddress: args.probeAddress,
   };
-  let reaches: bigint | null;
+  let reaches: bigint | null = null;
   let keepNativeForFees = 0n;
   let fixedGate = true;
-  if (route.tier === "teleport") {
-    const fees = await estimateTeleportProgramFees({ ...common, depositUnderlying: deposit });
-    reaches = leftAfterFees(deposit, fees);
-  } else if (route.tier === "psm") {
-    const fees = await estimatePsmBatchFees({ ...common, route, depositExternal: deposit });
-    reaches = psmMintOut(leftAfterFees(deposit, fees), route.feeRate);
-  } else if (stablePool !== undefined && route.external !== undefined) {
-    const fees = await estimateStableProgramFees({
-      ...common,
-      stable: route.external,
-      stablePool,
-      pool,
-      depositStable: deposit,
-      minUnderlyingOut: deposit,
-    });
-    const native = await quoteNativeOut(api, stablePool, leftAfterFees(deposit, fees));
-    const cash = native === null ? null : await quoteUnderlyingOut(api, pool, native);
-    reaches = cash === null ? null : keepBack(cash);
-  } else {
-    const fees = await estimateFundingProgramFees({
-      ...common,
-      pool,
-      nativeBalance: deposit,
-      minUnderlyingOut: 1n,
-    });
-    keepNativeForFees = fees.payFeesNative + fees.dispatchNative;
-    const cash = await quoteUnderlyingOut(api, pool, deposit - keepNativeForFees);
-    reaches = cash === null ? null : keepBack(cash);
-    fixedGate = false;
+  // A deposit under what the program keeps out for its own fees has nothing to convert.
+  try {
+    if (route.tier === "teleport") {
+      const fees = await estimateTeleportProgramFees({ ...common, depositUnderlying: deposit });
+      reaches = leftAfterFees(deposit, fees);
+    } else if (route.tier === "psm") {
+      const fees = await estimatePsmBatchFees({ ...common, route, depositExternal: deposit });
+      const left = leftAfterFees(deposit, fees);
+      reaches = left <= 0n ? null : psmMintOut(left, route.feeRate);
+    } else if (stablePool !== undefined && route.external !== undefined) {
+      const fees = await estimateStableProgramFees({
+        ...common,
+        stable: route.external,
+        stablePool,
+        pool,
+        depositStable: deposit,
+        minUnderlyingOut: deposit,
+      });
+      const left = leftAfterFees(deposit, fees);
+      const native = left <= 0n ? null : await quoteNativeOut(api, stablePool, left);
+      const cash = native === null ? null : await quoteUnderlyingOut(api, pool, native);
+      reaches = cash === null ? null : keepBack(cash);
+    } else {
+      const fees = await estimateFundingProgramFees({
+        ...common,
+        pool,
+        nativeBalance: deposit,
+        minUnderlyingOut: 1n,
+      });
+      keepNativeForFees = fees.payFeesNative + fees.dispatchNative;
+      fixedGate = false;
+      const spend = deposit - keepNativeForFees;
+      const cash = spend <= 0n ? null : await quoteUnderlyingOut(api, pool, spend);
+      reaches = cash === null ? null : keepBack(cash);
+    }
+  } catch (e) {
+    if (e instanceof DepositBelowFeesError) return null;
+    throw e;
   }
   if (reaches === null) return null;
   const receive = ((reaches - destinationFee) / CLAIM_UNIT) * CLAIM_UNIT;

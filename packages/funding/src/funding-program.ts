@@ -475,6 +475,15 @@ async function dryRunOnPeople(args: {
   return { landed: creditedTo(events, args.beneficiaryHex, "asset"), trapped: trappedIn(events) };
 }
 
+/** The deposit does not cover what a program keeps out of the conversion for its own fees. A
+ *  caller pricing a deposit already on the burner reads it as nothing to convert. */
+export class DepositBelowFeesError extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = "DepositBelowFeesError";
+  }
+}
+
 /** Asset Hub's dry run rejected the call. Carries the dispatch error so a caller can act on its
  *  kind, as the pipeline does for the PSM's refusals of a mint. */
 export class ProgramRejectedError extends Error {
@@ -632,7 +641,7 @@ export async function estimateFundingProgramFees(args: {
   const deliveryNative = extractFungibleAmount(df.value);
   const payFeesNative = localNative + deliveryNative;
   if (payFeesNative >= args.nativeBalance) {
-    throw new Error(
+    throw new DepositBelowFeesError(
       `funding program fee estimate: ${args.nativeBalance} native does not cover the program's own fees ${payFeesNative}`,
     );
   }
@@ -714,7 +723,7 @@ export async function estimateStableProgramFees(args: {
   ) => {
     const withdraw = args.depositStable - dispatchStable - minBalance;
     if (withdraw <= feeAllowance) {
-      throw new Error(
+      throw new DepositBelowFeesError(
         `stable program fee estimate: ${args.depositStable} of ${token.symbol} does not cover the ${minBalance + feeAllowance} held back for fees`,
       );
     }
@@ -852,7 +861,7 @@ export async function estimateTeleportProgramFees(args: {
   ) => {
     const withdraw = args.depositUnderlying - dispatchUnderlying - minBalance;
     if (withdraw <= feeAllowance) {
-      throw new Error(
+      throw new DepositBelowFeesError(
         `teleport program fee estimate: ${args.depositUnderlying} of ${token.symbol} does not cover the ${minBalance + feeAllowance} held back for fees`,
       );
     }
