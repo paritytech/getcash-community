@@ -227,6 +227,7 @@ const DISPLAY: Partial<Record<SourceId, { chain: string; asset: string }>> = {
   btc: { chain: "Bitcoin", asset: "BTC" },
   "usdt-tron": { chain: "Tron", asset: "USDT" },
   "dot-assethub": { chain: "Polkadot", asset: "DOT" },
+  "dotusd-assethub": { chain: "Polkadot", asset: "dotUSD" },
   "usdt-assethub": { chain: "Polkadot", asset: "USDT" },
   "usdc-assethub": { chain: "Polkadot", asset: "USDC" },
   "meld-card": { chain: "Meld", asset: "Card" },

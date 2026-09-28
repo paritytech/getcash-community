@@ -112,10 +112,16 @@ describe("offers store", () => {
     expect(polkadot.checking).toBe(false);
     expect(polkadot.tokens).toEqual([
       { asset: "DOT", sourceId: "dot-assethub", offer: { state: "direct" } },
+      { asset: "dotUSD", sourceId: "dotusd-assethub", offer: { state: "direct" } },
       { asset: "USDT", sourceId: "usdt-assethub", offer: { state: "direct" } },
       { asset: "USDC", sourceId: "usdc-assethub", offer: { state: "direct" } },
     ]);
-    expect(offers.offeredTokens("Polkadot").map((t) => t.asset)).toEqual(["DOT", "USDT", "USDC"]);
+    expect(offers.offeredTokens("Polkadot").map((t) => t.asset)).toEqual([
+      "DOT",
+      "dotUSD",
+      "USDT",
+      "USDC",
+    ]);
     expect(offers.offeredNetworks.map((n) => n.chain)).toEqual(["Polkadot"]);
   });
 

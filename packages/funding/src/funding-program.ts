@@ -36,6 +36,11 @@
 // cushioned once with FEE_MARGIN_BPS, the unspent part refunded to a burner kept alive by its
 // min_balance.
 //
+// The teleport tier has a fourth shape (`buildTeleportFundingProgram`): the burner holds the
+// underlying itself, deposited as dotUSD, so the program moves it to People with no exchange and
+// no mint. Its fees follow the PSM shape too: paid in the underlying from an allowance the program
+// refunds, cushioned once with FEE_MARGIN_BPS, the min_balance kept on the burner.
+//
 // The destination fee allowance is generous by design: the remote RefundSurplus returns what it
 // does not consume and the DepositAsset sweeps it to the burner.
 //
@@ -47,7 +52,7 @@ import { TOKENS, type XcmJunction, type XcmLocation } from "@getsome/core";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import type { TypedApi } from "polkadot-api";
 import { describeDispatchError } from "./dispatch-error";
-import { STABLE_TOKENS, asLocation, stableTxOptions, type Stable } from "./stable";
+import { STABLE_TOKENS, asLocation, stableTxOptions, type Location, type Stable } from "./stable";
 import { creditedTo, forwardedTo, siblingOrigin, signedOrigin, trappedIn } from "./xcm-dry-run";
 
 type AssetHubApi = TypedApi<typeof paseo_next_v2>;
@@ -318,6 +323,52 @@ export function buildStableFundingProgram(args: {
     ],
   };
   return { message, max_weight: args.maxWeight } as unknown as ExecuteArgs;
+}
+
+/** The teleport tier's program: the underlying the buyer deposited as dotUSD, landed on the
+ *  burner's People address as it is, every Asset Hub fee paid in it from an allowance the program
+ *  refunds. The PSM shape without the mint before it: one asset in the holding and in the fees
+ *  register alike, the fees register filled first, so the teleport's `AllCounted(1)` takes what
+ *  the allowance leaves. The refund comes after the transfer and lands in an account its
+ *  min_balance keeps alive. */
+export function buildTeleportFundingProgram(args: {
+  /** Underlying withdrawn into the holding: what is sent plus the fee allowance. The asset's
+   *  min_balance stays on the burner. */
+  withdrawUnderlying: bigint;
+  /** Local execution plus delivery, in the underlying, with FEE_MARGIN_BPS on top. Moved whole
+   *  to the fees register. */
+  payFeesUnderlying: bigint;
+  /** Destination fee allowance in CASH. */
+  remoteFeesCash: bigint;
+  beneficiaryHex: string;
+  peopleParaId: number;
+  /** The declared weight ceiling: the weighed weight, never a fallback. */
+  maxWeight: { ref_time: bigint; proof_size: bigint };
+}): ExecuteArgs {
+  const c = (v: bigint) => fungible(TOKENS.CASH.location, v);
+  const message = {
+    type: "V5",
+    value: [
+      { type: "WithdrawAsset", value: [c(args.withdrawUnderlying)] },
+      { type: "PayFees", value: { asset: c(args.payFeesUnderlying) } },
+      teleportHoldingToPeople(c(args.remoteFeesCash), args.beneficiaryHex, args.peopleParaId),
+      { type: "RefundSurplus" },
+      {
+        type: "DepositAsset",
+        value: {
+          assets: { type: "Wild", value: { type: "AllCounted", value: 1 } },
+          beneficiary: accountBeneficiary(args.beneficiaryHex),
+        },
+      },
+    ],
+  };
+  return { message, max_weight: args.maxWeight } as unknown as ExecuteArgs;
+}
+
+/** The signing options that charge the teleport tier's dispatch fee in the underlying, the one
+ *  asset the burner holds. The same options price the fee. */
+export function teleportTxOptions(): { asset: Location } {
+  return { asset: asLocation(TOKENS.DOTUSD.location) };
 }
 
 /** The InitiateTransfer every shape carries: everything in the holding teleported to People,
@@ -750,6 +801,133 @@ export async function estimateStableProgramFees(args: {
   if (dispatchExternal === undefined) {
     throw new Error(
       "stable program fee estimate: the pool cannot price the dispatch fee in the stable",
+    );
+  }
+
+  const feeAllowanceExternal = withFeeMargin(localExternal + deliveryExternal);
+  return {
+    localExternal,
+    deliveryExternal,
+    feeAllowanceExternal,
+    minBalanceExternal: minBalance,
+    heldBackExternal: minBalance + feeAllowanceExternal,
+    dispatchNative,
+    dispatchExternal,
+    maxWeight,
+  };
+}
+
+/** Every cost of the teleport tier's program, measured against the program itself, all in the
+ *  underlying. Throws when the runtime declines a read or the deposit does not cover what is held
+ *  back. */
+export async function estimateTeleportProgramFees(args: {
+  api: AssetHubApi;
+  beneficiaryHex: string;
+  peopleParaId: number;
+  /** The underlying the program is carved from, at its real magnitude: the dispatch fee has a
+   *  per-byte component and compact-encoded amounts change length with magnitude. */
+  depositUnderlying: bigint;
+  /** The destination fee allowance the program will carry, for the same reason. */
+  remoteFeesCash: bigint;
+  /** Any valid address for the dispatch fee read; the fee does not depend on the signer's
+   *  balance. */
+  feeProbeAddress: string;
+  /** The burner, once it holds the underlying. The delivery fee is then priced from the real
+   *  forwarded program instead of the stand-in. */
+  dryRunFrom?: string;
+}): Promise<StableLegFees> {
+  const token = TOKENS.DOTUSD;
+  const underlyingAsset = { type: "V5", value: token.location };
+  const details = await args.api.query.Assets.Asset.getValue(token.assetHubId);
+  if (details === undefined) {
+    throw new Error(`teleport program fee estimate: ${token.symbol} is not an asset on Asset Hub`);
+  }
+  const minBalance = details.min_balance;
+  // The program carved from the deposit with the dispatch fee and the min_balance kept back. Only
+  // the amounts' encoded lengths matter to the fees read off it.
+  const probe = (
+    feeAllowance: bigint,
+    dispatchUnderlying: bigint,
+    maxWeight: { ref_time: bigint; proof_size: bigint },
+  ) => {
+    const withdraw = args.depositUnderlying - dispatchUnderlying - minBalance;
+    if (withdraw <= feeAllowance) {
+      throw new Error(
+        `teleport program fee estimate: ${args.depositUnderlying} of ${token.symbol} does not cover the ${minBalance + feeAllowance} held back for fees`,
+      );
+    }
+    return buildTeleportFundingProgram({
+      withdrawUnderlying: withdraw,
+      payFeesUnderlying: feeAllowance,
+      remoteFeesCash: args.remoteFeesCash,
+      beneficiaryHex: args.beneficiaryHex,
+      peopleParaId: args.peopleParaId,
+      maxWeight,
+    });
+  };
+
+  // Only the instruction list matters for the weight, and an allowance that clears, so a quarter
+  // of the deposit. The placeholder ceiling is never dispatched.
+  const rough = probe(args.depositUnderlying / 4n, 0n, FUNDING_PROGRAM_MAX_WEIGHT);
+  const weight = await args.api.apis.XcmPaymentApi.query_xcm_weight(
+    (rough as { message: unknown }).message as never,
+  );
+  if (!weight.success) {
+    throw new Error("teleport program fee estimate: the runtime would not weigh it");
+  }
+  const localFee = await args.api.apis.XcmPaymentApi.query_weight_to_asset_fee(
+    weight.value,
+    underlyingAsset as never,
+  );
+  if (!localFee.success) throw new Error("teleport program fee estimate: local fee unavailable");
+  const localExternal = localFee.value;
+  const maxWeight = { ref_time: weight.value.ref_time, proof_size: weight.value.proof_size };
+
+  // The forwarded program sets the delivery fee through its size. The real one comes from a dry
+  // run of the program, which must reach the send: the whole balance less the fees.
+  const forwarded =
+    (args.dryRunFrom === undefined
+      ? null
+      : await realForwardedProgram(
+          args.api,
+          args.api.tx.PolkadotXcm.execute(probe(args.depositUnderlying / 4n, 0n, maxWeight))
+            .decodedCall,
+          args.peopleParaId,
+          args.dryRunFrom,
+        )) ??
+    forwardedProgramStandIn(
+      TOKENS.CASH.locationOnPeople as unknown as AssetLocation,
+      args.depositUnderlying,
+      args.beneficiaryHex,
+    );
+  const df = await args.api.apis.XcmPaymentApi.query_delivery_fees(
+    { type: "V5", value: peopleDest(args.peopleParaId) } as never,
+    forwarded as never,
+    underlyingAsset as never,
+  );
+  if (!df.success) throw new Error("teleport program fee estimate: delivery fee unavailable");
+  const deliveryExternal = extractFungibleAmount(df.value);
+
+  // Price the dispatch against the program carrying the final amounts and the declared weight, so
+  // the charge it predicts is the charge the submitted call pays. The dispatch fee itself is not
+  // yet known to keep out of the probe; a few thousand units do not change a compact encoding's
+  // length.
+  const options = teleportTxOptions();
+  const dispatchNative = await args.api.tx.PolkadotXcm.execute(
+    probe(localExternal + deliveryExternal, 0n, maxWeight),
+  ).getEstimatedFees(args.dryRunFrom ?? args.feeProbeAddress, options);
+  // ChargeAssetTxPayment swaps exactly the native fee out of the pool, so the underlying it takes
+  // is the exact-out quote for it, pool fee included.
+  const dispatchExternal =
+    await args.api.apis.AssetConversionApi.quote_price_tokens_for_exact_tokens(
+      options.asset,
+      asLocation(TOKENS.PAS.location),
+      dispatchNative,
+      true,
+    );
+  if (dispatchExternal === undefined) {
+    throw new Error(
+      "teleport program fee estimate: the pool cannot price the dispatch fee in the underlying",
     );
   }
 

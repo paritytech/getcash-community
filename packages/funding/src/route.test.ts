@@ -20,6 +20,7 @@ const POOL: ConversionRoute = { tier: "pool" };
 const PSM_AT_DEFAULT_FEE: ConversionRoute = { tier: "psm", external: "USDT", feeRate: 5_000 };
 const POOL_FED_USDT: ConversionRoute = { tier: "pool", external: "USDT" };
 const POOL_FED_USDC: ConversionRoute = { tier: "pool", external: "USDC" };
+const TELEPORT: ConversionRoute = { tier: "teleport" };
 
 type Approval = { status: { type: string }; decimals: number } | undefined;
 
@@ -92,7 +93,7 @@ function scriptedPsm(overrides: Partial<PsmWorld> = {}) {
 
 const mint = (internalAmount: bigint) => ({ direction: "mint" as const, internalAmount });
 const redeem = (internalAmount: bigint) => ({ direction: "redeem" as const, internalAmount });
-const mintFrom = (deposit: "native" | "USDT" | "USDC", internalAmount: bigint) => ({
+const mintFrom = (deposit: "native" | "dotUSD" | "USDT" | "USDC", internalAmount: bigint) => ({
   direction: "mint" as const,
   internalAmount,
   deposit,
@@ -207,6 +208,12 @@ describe("chooseRoute with the deposit named", () => {
     expect(reads).toEqual([]);
   });
 
+  it("a dotUSD deposit is the teleport, with no PSM to ask", async () => {
+    const { api, reads } = scriptedPsm();
+    expect(await chooseRoute(api, mintFrom("dotUSD", 50n * CASH))).toEqual(TELEPORT);
+    expect(reads).toEqual([]);
+  });
+
   it("USDC is the pool fed with USDC: the PSM approves no such external today", async () => {
     const { api, reads } = scriptedPsm();
     expect(await chooseRoute(api, mintFrom("USDC", 50n * CASH))).toEqual(POOL_FED_USDC);
@@ -249,14 +256,19 @@ describe("chooseRoute with the deposit named", () => {
 });
 
 describe("depositTokenOf and isStablePoolRoute", () => {
-  it("is the native for a bare pool route and the stable for either stable tier", () => {
+  it("is the native for a bare pool route, the stable for either stable tier, dotUSD for the teleport", () => {
     expect(depositTokenOf(POOL)).toBe(TOKENS.PAS);
     expect(depositTokenOf(POOL_FED_USDC)).toBe(TOKENS.USDC);
     expect(depositTokenOf(POOL_FED_USDT)).toBe(TOKENS.USDT);
     expect(depositTokenOf(PSM_AT_DEFAULT_FEE)).toBe(TOKENS.USDT);
+    expect(depositTokenOf(TELEPORT)).toBe(TOKENS.DOTUSD);
+    // The deposit token and the underlying are one asset under two names.
+    expect(TOKENS.DOTUSD.assetHubId).toBe(TOKENS.CASH.assetHubId);
+    expect(TOKENS.DOTUSD.location).toEqual(TOKENS.CASH.location);
     expect(isStablePoolRoute(POOL)).toBe(false);
     expect(isStablePoolRoute(POOL_FED_USDC)).toBe(true);
     expect(isStablePoolRoute(PSM_AT_DEFAULT_FEE)).toBe(false);
+    expect(isStablePoolRoute(TELEPORT)).toBe(false);
   });
 });
 
@@ -286,6 +298,7 @@ describe("recordedRoute", () => {
       PSM_AT_DEFAULT_FEE,
     );
     expect(recordedRoute({ tier: "pool" })).toEqual(POOL);
+    expect(recordedRoute({ tier: "teleport" })).toEqual(TELEPORT);
   });
 
   it("reads a record from before routes were recorded as the pool, which is what it was", () => {

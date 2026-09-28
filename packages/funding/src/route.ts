@@ -1,7 +1,8 @@
-// Route selection: which conversion tier a request takes. Two tiers, one decision point. The PSM
-// (deliver a stable it approves, mint 1:1 minus the fee) is preferred and the AssetConversion
+// Route selection: which conversion tier a request takes. Three tiers, one decision point. The
+// PSM (deliver a stable it approves, mint 1:1 minus the fee) is preferred and the AssetConversion
 // pool is the fallback: fed with the native it swaps once, fed with a stable it swaps twice,
-// stable to native to CASH. A caller that knows what the buyer will deposit names it and the tier
+// stable to native to CASH. The teleport tier takes the underlying itself, dotUSD, and moves it
+// with no conversion at all. A caller that knows what the buyer will deposit names it and the tier
 // follows the token; a caller that does not, the fiat rails, gets the PSM's external when the PSM
 // can serve and the native otherwise. The decision is four PSM reads made once at quote time and
 // then frozen into the request; the worker CONSUMES the recorded route and never decides one, so
@@ -29,6 +30,10 @@ export const ROUTE_MARGIN_FLOOR = 1_000_000n;
 
 export type { Stable } from "./stable";
 
+/** What a buyer can deposit on the burner, as a route decision takes it: the native, the
+ *  underlying itself, or a stable by its token-table symbol. */
+export type DepositAsset = "native" | "dotUSD" | Stable;
+
 /** An external the PSM may swap against, by its token-table symbol. Every stable is a candidate;
  *  the PSM's own approval table, read by Location, says which it serves today. */
 export type PsmExternal = Stable;
@@ -43,12 +48,18 @@ export const PSM_EXTERNAL = "USDT" satisfies PsmExternal;
  *  quote time; it travels with the request so the eventual call's `max_fee` is the rate the
  *  buyer was quoted and a governance change in between fails the call instead of costing more.
  *  A pool route with an `external` is fed with that stable and swaps it through the native; one
- *  without is fed with the native. */
+ *  without is fed with the native. A teleport route is fed with the underlying itself and moves
+ *  it with no conversion. */
 export type ConversionRoute =
-  { tier: "psm"; external: PsmExternal; feeRate: number } | { tier: "pool"; external?: Stable };
+  | { tier: "psm"; external: PsmExternal; feeRate: number }
+  | { tier: "pool"; external?: Stable }
+  | TeleportRoute;
 
 /** The pool tier fed with a stable: two exchanges, stable to native to CASH, in one program. */
 export type StablePoolRoute = { tier: "pool"; external: Stable };
+
+/** The teleport tier: the underlying deposited as dotUSD and teleported to People as it is. */
+export type TeleportRoute = { tier: "teleport" };
 
 export const isStablePoolRoute = (route: ConversionRoute): route is StablePoolRoute =>
   route.tier === "pool" && route.external !== undefined;
@@ -57,6 +68,7 @@ export const isStablePoolRoute = (route: ConversionRoute): route is StablePoolRo
  *  the deposit keys off: an `assetHubId` of undefined is the native's free balance, anything
  *  else a pallet-assets holding. */
 export function depositTokenOf(route: ConversionRoute): TokenSpec {
+  if (route.tier === "teleport") return TOKENS.DOTUSD;
   return route.external === undefined ? TOKENS.PAS : STABLE_TOKENS[route.external];
 }
 
@@ -68,13 +80,14 @@ export interface RouteQuery {
   direction: "mint" | "redeem";
   internalAmount: bigint;
   /** The asset the buyer will deposit, when the caller already knows it. The native takes the
-   *  pool with no PSM read; a stable takes the PSM when it is approved and can serve, the pool
-   *  fed with that stable otherwise. Absent, the fiat rails' rule: the PSM's external when the
-   *  PSM can serve, the native otherwise. */
-  deposit?: "native" | Stable;
+   *  pool and the underlying the teleport, neither with a PSM read; a stable takes the PSM when
+   *  it is approved and can serve, the pool fed with that stable otherwise. Absent, the fiat
+   *  rails' rule: the PSM's external when the PSM can serve, the native otherwise. */
+  deposit?: DepositAsset;
 }
 
 const POOL: ConversionRoute = { tier: "pool" };
+const TELEPORT: ConversionRoute = { tier: "teleport" };
 // The table's Location type admits a value-less `Here`, which papi's key type spells
 // `value: undefined`; the same plain data either way.
 const asPsmAssetId = (location: XcmLocation) => location as PsmAssetId;
@@ -114,6 +127,7 @@ export function mintHeadroom(input: {
  *  against the live PSM, the PSM when all of them pass and the pool when any fails. */
 export async function chooseRoute(api: AssetHubApi, query: RouteQuery): Promise<ConversionRoute> {
   if (query.deposit === "native") return POOL;
+  if (query.deposit === "dotUSD") return TELEPORT;
   const external: PsmExternal = query.deposit ?? PSM_EXTERNAL;
   // Where the request goes when the PSM will not serve it: the pool fed with the stable the
   // buyer named, or the native when nobody named one.
@@ -171,6 +185,7 @@ export function recordedRoute(record: {
 }): ConversionRoute {
   const tier = record.tier ?? "pool";
   const { external, feeRate } = record;
+  if (tier === "teleport") return TELEPORT;
   if (tier === "pool") {
     if (external === undefined || external === null) return POOL;
     if (!isStable(external)) {

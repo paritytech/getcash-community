@@ -37,9 +37,10 @@ delivers the native token and one XCM swaps and teleports it instead. Which tier
 is decided at quote time, before the provider is told what to send, and recorded on the request
 with the fee rate it was quoted; the worker runs the tier it is handed and never chooses one.
 On the Polkadot route the token the buyer picks decides: DOT takes the pool, USDT the PSM (the
-pool through PAS when the PSM cannot serve), and USDC a stable pool leg, one XCM that exchanges
-USDC for PAS and PAS for CASH inside the holding and teleports the CASH, every fee paid in the
-stable. `@getsome/funding` holds the three programs, the routing rule and the tick.
+pool through PAS when the PSM cannot serve), USDC a stable pool leg, one XCM that exchanges USDC
+for PAS and PAS for CASH inside the holding and teleports the CASH, every fee paid in the stable,
+and dotUSD, the underlying itself, a teleport with no conversion, its fees paid in dotUSD.
+`@getsome/funding` holds the four programs, the routing rule and the tick.
 
 The two talk over host storage. `lib/worker-rpc.ts` (surface side) and `worker/src/rpc.js`
 (worker side) implement a polled request/response channel: the surface writes a request under
@@ -87,9 +88,9 @@ probe liquidity, and list its sources. Two packages implement it, and one source
   USDC and the other Chainflip assets.
 - `@getsome/meld` for card and bank sources, over a Meld adapter service. Meld delivers the
   route's deposit asset to the ephemeral; from there the flow is identical to a crypto deposit.
-- Polkadot directly: the buyer sends DOT, USDT or USDC from any wallet to the ephemeral on Asset
-  Hub. `createManualRail` in `@getsome/funding` stands in for the rail port, one source id per
-  token, and the deposit screen shows the account as a QR at once.
+- Polkadot directly: the buyer sends DOT, dotUSD, USDT or USDC from any wallet to the ephemeral
+  on Asset Hub. `createManualRail` in `@getsome/funding` stands in for the rail port, one source
+  id per token, and the deposit screen shows the account as a QR at once.
 
 The core session does not know which rail it is running. The surface picks one per route.
 
@@ -172,17 +173,18 @@ pnpm format             # prettier
 
 Copy `.env.example` to `.env` and fill in what you need. Nuxt reads `.env`, not `.env.local`.
 
-| Variable               | Purpose                                                                                                             |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `VITE_FAUCET_SEED`     | demo faucet account, holding PAS, USDt and USDC on Asset Hub; inlined into the client bundle, use a testnet account |
-| `VITE_DEPLOYER_SEED`   | fallback for `MNEMONIC` in `deploy.sh`                                                                              |
-| `VITE_MELD_BASE_URL`   | origin of the Meld adapter; unset, the offline fake Meld client runs instead                                        |
-| `VITE_MELD_PRODUCT_ID` | product id the adapter expects in the `x-dev-product-id` header                                                     |
+| Variable               | Purpose                                                                                                                   |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `VITE_FAUCET_SEED`     | demo faucet account, holding PAS, dotUSD, USDt and USDC on Asset Hub; inlined into the client bundle, use a testnet account |
+| `VITE_DEPLOYER_SEED`   | fallback for `MNEMONIC` in `deploy.sh`                                                                                    |
+| `VITE_MELD_BASE_URL`   | origin of the Meld adapter; unset, the offline fake Meld client runs instead                                              |
+| `VITE_MELD_PRODUCT_ID` | product id the adapter expects in the `x-dev-product-id` header                                                           |
 
 Two tests submit real transactions to the Paseo testnet and are skipped unless enabled:
 `PROD_PROOF=1` runs `tests/prod-proof.test.ts`, `VERIFY_AMOUNTS=1` runs
 `tests/verify-amounts.test.ts`. `VERIFY_STABLE=1` runs `tests/verify-stable.test.ts`, which
-dry-runs the USDC and USDT programs from a rich account on Paseo and spends nothing.
+dry-runs the USDC and USDT programs from a rich account on Paseo and spends nothing, and
+`VERIFY_DOTUSD=1` runs `tests/verify-dotusd.test.ts`, the same for the dotUSD teleport.
 
 ### Demo-only paths
 

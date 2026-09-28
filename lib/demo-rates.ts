@@ -6,6 +6,7 @@ const USD_RATES: Record<string, number> = {
   TRX: 0.34,
   USDC: 1,
   USDT: 1,
+  dotUSD: 1,
   DOT: 1.1,
 };
 

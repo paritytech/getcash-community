@@ -8,8 +8,10 @@
 // allowance the mint leaves on the burner and the program refunds the unspent part of
 // (psm-batch.ts). The pool tier fed with a stable, USDC or USDT the PSM will not serve, is the
 // stable pool tier: one program pays its fees in the stable as the PSM tier does, exchanges the
-// stable for the native and the native for CASH inside the holding, and teleports the CASH. The
-// handoff session's funded gate takes over from there; this pipeline never touches the settle.
+// stable for the native and the native for CASH inside the holding, and teleports the CASH. On the
+// teleport tier the deposit is the underlying itself, dotUSD: one program pays its fees in it and
+// teleports the rest, with nothing to exchange and so nothing to quote. The handoff session's
+// funded gate takes over from there; this pipeline never touches the settle.
 //
 // EVERYTHING THE BURNER HOLDS IS CONVERTED AND MOVED. The burner serves one request and the claim
 // sweeps its whole balance, so anything left behind is stranded. The program withdraws the full
@@ -57,6 +59,9 @@ import {
   withFeeMargin,
   type PeopleApi,
   type Pool,
+  buildTeleportFundingProgram,
+  estimateTeleportProgramFees,
+  teleportTxOptions,
   type StableLegFees,
 } from "./funding-program";
 import {
@@ -433,10 +438,10 @@ export interface TickOnceInput {
   keepNativeForFees: bigint;
   /** Pool tiers only. On the stable pool tier it also bounds the first exchange's floor. */
   slippagePct: number;
-  /** PSM and stable pool tiers: the deposit the buyer was asked for, frozen at quote time. The
-   *  gate checks for exactly this rather than re-pricing the fees, since re-pricing moves the bar
-   *  under a deposit that was already sized against it. Absent on a request quoted before it was
-   *  recorded, which falls back to the live figure. */
+  /** PSM, stable pool and teleport tiers: the deposit the buyer was asked for, frozen at quote
+   *  time. The gate checks for exactly this rather than re-pricing the fees, since re-pricing
+   *  moves the bar under a deposit that was already sized against it. Absent on a request quoted
+   *  before it was recorded, which falls back to the live figure. */
   quotedDeposit?: bigint;
   tickTimeoutMs: number;
   submitTimeoutMs: number;
@@ -507,7 +512,34 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
   let psmFees: PsmBatchFees | null = null;
   let stableIn = 0n;
   let stableFees: StableLegFees | null = null;
-  if (needsGate && isStablePoolRoute(route)) {
+  let teleportFees: StableLegFees | null = null;
+  if (needsGate && route.tier === "teleport") {
+    // The deposit is the underlying itself, so there is no quote: a deposit short of the bare
+    // target waits without the fee reads, and past it the gate is the target plus the program's
+    // own fees.
+    if (balances.depositAh < buyNow) {
+      depositNeeded = buyNow;
+    } else {
+      teleportFees = await bounded(
+        estimateTeleportProgramFees({
+          api,
+          beneficiaryHex: input.beneficiaryHex,
+          peopleParaId: input.peopleParaId,
+          // At the magnitude the program will carry: everything the burner holds.
+          depositUnderlying: balances.depositAh,
+          remoteFeesCash: earmark,
+          feeProbeAddress: address,
+          dryRunFrom: address,
+        }),
+        input.tickTimeoutMs,
+        "teleport program fee estimate",
+      );
+      // The figure the buyer was asked against, frozen at quote time; the live figure stands in
+      // where it is missing or no longer owed whole.
+      const frozen = buyNow === buyAmount ? input.quotedDeposit : undefined;
+      depositNeeded = frozen ?? stableDepositNeeded(buyNow, teleportFees);
+    }
+  } else if (needsGate && isStablePoolRoute(route)) {
     // The plain two-hop quote first, as the native pool tier's gate is plain; a deposit short of
     // even the bare swap waits without the fee reads.
     const pool = poolOf(input);
@@ -594,6 +626,13 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
 
   if (effective === "done") {
     return { step: "done", balances, submitted: false };
+  }
+
+  if (effective === "swap" && route.tier === "teleport") {
+    // The gate priced the program this very tick: a deposit past the bare target always did.
+    if (teleportFees === null) throw new Error("teleport tier: the swap step has no fee estimate");
+    await teleportToPeople(input, state, balances, earmark, teleportFees);
+    return { step: effective, balances, submitted: true };
   }
 
   if (effective === "swap" && isStablePoolRoute(route)) {
@@ -859,6 +898,72 @@ async function swapThroughStablePool(
   if (!res.ok) {
     throw new Error(
       `stable program dispatch rejected: ${describeDispatchError(res.dispatchError, execArgs)}`,
+    );
+  }
+  state.xcmSubmitted = true;
+  state.peopleAtXcm = balances.underlyingPeople;
+}
+
+/** The teleport tier's swap step: send everything the fees leave, not just the target, to the
+ *  burner on People, after the dry run. Nothing is exchanged, so there is no quote to take and no
+ *  price to wait for; a surplus lands as extra CASH. */
+async function teleportToPeople(
+  input: TickOnceInput,
+  state: TickState,
+  balances: FundingBalances,
+  remoteFeesCash: bigint,
+  fees: StableLegFees,
+): Promise<void> {
+  const { api, address } = input;
+  // The dispatch fee, the min_balance and the fee allowance stay out, as on the stable tiers, and
+  // the cushion the deposit was asked with goes along to People.
+  const send = balances.depositAh - fees.dispatchExternal - fees.heldBackExternal;
+  if (send <= 0n) {
+    throw new Error(
+      `deposit ${balances.depositAh} cannot cover the teleport program's own fees ` +
+        `(dispatch ${fees.dispatchExternal} + held back ${fees.heldBackExternal})`,
+    );
+  }
+  const execArgs = buildTeleportFundingProgram({
+    withdrawUnderlying: send + fees.feeAllowanceExternal,
+    payFeesUnderlying: fees.feeAllowanceExternal,
+    remoteFeesCash,
+    beneficiaryHex: input.beneficiaryHex,
+    peopleParaId: input.peopleParaId,
+    maxWeight: fees.maxWeight,
+  });
+  // Both chains run the program before it is paid for; one that would fail, trap assets or land
+  // short of what People still lacks is not submitted, and the next tick re-prices.
+  await bounded(
+    dryRunFundingProgram({
+      api,
+      peopleApi: input.peopleApi,
+      execArgs,
+      from: address,
+      beneficiaryHex: input.beneficiaryHex,
+      peopleParaId: input.peopleParaId,
+      assetHubParaId: input.assetHubParaId,
+      mustLand: input.settleAmount - balances.underlyingPeople,
+    }),
+    input.tickTimeoutMs,
+    "teleport program dry run",
+  );
+  const tx = api.tx.PolkadotXcm.execute(execArgs);
+  await input.onBeforeSubmit?.("swap");
+  // Counted before the broadcast, so a submit whose answer is lost is still counted.
+  state.attempts += 1;
+  const res = await bounded(
+    // The dispatch fee is charged in the underlying, the one asset the burner holds.
+    tx.signAndSubmit(input.signer, { ...teleportTxOptions(), ...input.signOptions }),
+    input.submitTimeoutMs,
+    "teleport program submit",
+  );
+  input.onTx?.({ call: "swap", txHash: res.txHash, block: res.block?.number });
+  // A rejected program rolls back whole: the deposit stays on the burner minus the dispatch fee,
+  // and the next tick re-prices and retries.
+  if (!res.ok) {
+    throw new Error(
+      `teleport program dispatch rejected: ${describeDispatchError(res.dispatchError, execArgs)}`,
     );
   }
   state.xcmSubmitted = true;

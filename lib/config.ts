@@ -4,8 +4,8 @@ import {
   MANUAL_SOURCE_IDS,
   MANUAL_SOURCES,
   manualDepositOf,
+  type DepositAsset,
   type ManualSourceId,
-  type Stable,
 } from "@getsome/funding";
 
 // Chain and asset identifiers, as Chainflip and the icon set name them.
@@ -25,6 +25,7 @@ export const ASSETS = {
   SOL: "SOL",
   TRX: "TRX",
   DOT: "DOT",
+  DOTUSD: "dotUSD",
   CASH: "CASH",
 } as const;
 
@@ -48,12 +49,12 @@ export const SOURCE_CHAINS = [
 ] as const;
 
 /** The direct network: the buyer sends the token from any wallet to the request's own account
- *  on Asset Hub. The token picks the tier: DOT the pool, USDT the PSM with the pool through PAS
- *  as the fallback, USDC the pool through PAS. */
+ *  on Asset Hub. The token picks the tier: DOT the pool, dotUSD the teleport with no conversion,
+ *  USDT the PSM with the pool through PAS as the fallback, USDC the pool through PAS. */
 export const POLKADOT_CHAIN = {
   chain: CHAINS.Polkadot,
   native: ASSETS.DOT,
-  assets: [ASSETS.DOT, ASSETS.USDT, ASSETS.USDC],
+  assets: [ASSETS.DOT, ASSETS.DOTUSD, ASSETS.USDT, ASSETS.USDC],
   label: "Polkadot",
 } as const;
 
@@ -88,7 +89,7 @@ export const DIRECT_SOURCE_IDS: readonly DirectSourceId[] = MANUAL_SOURCE_IDS;
 export const isDirectSourceId = isManualSourceId;
 
 /** What the buyer deposits for a direct source, as the route decision takes it. */
-export type DepositAsset = "native" | Stable;
+export type { DepositAsset };
 export const depositAssetFor = manualDepositOf;
 
 /** UI pair to direct SourceId: each direct source under Polkadot, its token named as the rails

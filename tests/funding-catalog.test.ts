@@ -16,12 +16,12 @@ import { isCryptoSourceId } from "~~/app/funding/source-ids";
 import { railProviderOf, routeOf } from "~~/app/funding/requests/model";
 
 describe("the funding catalog", () => {
-  it("lists Polkadot first with DOT, USDT and USDC, then the Chainflip networks", () => {
+  it("lists Polkadot first with DOT, dotUSD, USDT and USDC, then the Chainflip networks", () => {
     expect(FUNDING_CHAINS[0]).toBe(POLKADOT_CHAIN);
     expect(POLKADOT_CHAIN).toMatchObject({
       chain: "Polkadot",
       native: "DOT",
-      assets: ["DOT", "USDT", "USDC"],
+      assets: ["DOT", "dotUSD", "USDT", "USDC"],
       label: "Polkadot",
     });
     expect(FUNDING_CHAINS.slice(1)).toEqual(SOURCE_CHAINS);
@@ -39,19 +39,27 @@ describe("the funding catalog", () => {
 
   it("maps a pair to its source in either catalog, and back", () => {
     expect(sourceIdFor("Polkadot", "DOT")).toBe("dot-assethub");
+    expect(sourceIdFor("Polkadot", "dotUSD")).toBe("dotusd-assethub");
     expect(sourceIdFor("Polkadot", "USDT")).toBe("usdt-assethub");
     expect(sourceIdFor("Polkadot", "USDC")).toBe("usdc-assethub");
     expect(sourceIdFor("Ethereum", "USDC")).toBe("usdc-eth");
     expect(sourceIdFor("Polkadot", "BTC")).toBeUndefined();
     expect(sourcePairFor("usdc-assethub")).toEqual({ chain: "Polkadot", asset: "USDC" });
+    expect(sourcePairFor("dotusd-assethub")).toEqual({ chain: "Polkadot", asset: "dotUSD" });
     expect(sourcePairFor("dot-assethub")).toEqual({ chain: "Polkadot", asset: "DOT" });
     expect(sourcePairFor("usdt-tron")).toEqual({ chain: "Tron", asset: "USDT" });
     expect(sourcePairFor("meld-card")).toBeUndefined();
   });
 
   it("names what each direct source deposits, and which ids are direct", () => {
-    expect(DIRECT_SOURCE_IDS).toEqual(["dot-assethub", "usdt-assethub", "usdc-assethub"]);
+    expect(DIRECT_SOURCE_IDS).toEqual([
+      "dot-assethub",
+      "dotusd-assethub",
+      "usdt-assethub",
+      "usdc-assethub",
+    ]);
     expect(depositAssetFor("dot-assethub")).toBe("native");
+    expect(depositAssetFor("dotusd-assethub")).toBe("dotUSD");
     expect(depositAssetFor("usdt-assethub")).toBe("USDT");
     expect(depositAssetFor("usdc-assethub")).toBe("USDC");
     expect(isDirectSourceId("usdc-assethub")).toBe(true);

@@ -88,6 +88,47 @@ describe("session store: Polkadot direct deposit in the mock world", () => {
   });
 
   it(
+    "quotes dotUSD under its own source on the teleport tier, and runs to done",
+    { timeout: 30_000 },
+    async () => {
+      const store = useSessionStore();
+      const requests = useRequestsStore();
+      store.setAmount("10");
+      await store.fetchQuote("Polkadot", "dotUSD");
+      expect(store.quoteError).toBeNull();
+      expect(store.quoted).toMatchObject({
+        send: "10",
+        symbol: "dotUSD",
+        sourceAsset: "dotUSD",
+        sourceChain: "Polkadot",
+        nativeAmount: null,
+      });
+      expect(store.mock?.sourceId).toBe("dotusd-assethub");
+      expect(store.mock?.route).toEqual({ tier: "teleport" });
+
+      await store.start();
+      expect(requests.phase).toBe("awaiting-deposit");
+      expect(requests.foregroundRecord).toMatchObject({
+        sourceId: "dotusd-assethub",
+        chain: "Polkadot",
+        asset: "dotUSD",
+        rail: { provider: "manual" },
+      });
+      expect(requests.foregroundRecord?.deposit?.assetSymbol).toBe("dotUSD");
+
+      store.simulateDeposit();
+      const waitFor = async (pred: () => boolean, ms: number) => {
+        const until = Date.now() + ms;
+        while (!pred() && Date.now() < until) await new Promise((r) => setTimeout(r, 25));
+      };
+      await waitFor(() => requests.phase === "working", 15_000);
+      store.approveClaim();
+      await waitFor(() => requests.phase === "done", 10_000);
+      expect(requests.phase).toBe("done");
+    },
+  );
+
+  it(
     "quotes USDC under its own source, opens the deposit on the mock burner, and runs to done",
     { timeout: 30_000 },
     async () => {

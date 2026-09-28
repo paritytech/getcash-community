@@ -15,15 +15,16 @@ import {
   type SwapStatusResult,
   type TokenSpec,
 } from "@getsome/core";
-import type { Stable } from "./stable";
+import type { DepositAsset } from "./route";
 
 /** The sources a direct deposit runs under, one per token: the token each takes and what the
  *  route decision calls it. The source keys the token's trade counter and burner labels. */
 export const MANUAL_SOURCES = {
   "dot-assethub": { token: TOKENS.PAS, deposit: "native" },
+  "dotusd-assethub": { token: TOKENS.DOTUSD, deposit: "dotUSD" },
   "usdt-assethub": { token: TOKENS.USDT, deposit: "USDT" },
   "usdc-assethub": { token: TOKENS.USDC, deposit: "USDC" },
-} as const satisfies Partial<Record<SourceId, { token: TokenSpec; deposit: "native" | Stable }>>;
+} as const satisfies Partial<Record<SourceId, { token: TokenSpec; deposit: DepositAsset }>>;
 
 export type ManualSourceId = keyof typeof MANUAL_SOURCES;
 
@@ -40,7 +41,7 @@ export function manualSourceIdOf(token: TokenSpec): ManualSourceId {
 }
 
 /** What the buyer deposits under a direct source, as the route decision takes it. */
-export const manualDepositOf = (sourceId: ManualSourceId): "native" | Stable =>
+export const manualDepositOf = (sourceId: ManualSourceId): DepositAsset =>
   MANUAL_SOURCES[sourceId].deposit;
 
 /** Exact base-units -> decimal string (trailing zeros trimmed). */

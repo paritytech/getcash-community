@@ -262,6 +262,24 @@ describe("worker funding engine", () => {
     expect(unknown.reason).toContain("deposit asset");
   });
 
+  it("hands a teleport job its route and frozen deposit with no pool to find", async () => {
+    armSeams();
+    const engine = await freshEngine();
+    await engine.startFunding(
+      JSON.stringify({ ...HANDOFF, tier: "teleport", quotedDeposit: "5143041" }),
+    );
+    expect(storedJob()).toMatchObject({ tier: "teleport", quotedDeposit: "5143041" });
+    mocks.tickOnce.mockResolvedValue(outcome("swap"));
+    await engine.tickAllFunding();
+    expect(mocks.discoverPools).not.toHaveBeenCalled();
+    expect(mocks.tickOnce.mock.calls[0]![0]).toMatchObject({
+      route: { tier: "teleport" },
+      pool: undefined,
+      stablePool: undefined,
+      quotedDeposit: 5_143_041n,
+    });
+  });
+
   it("holds a job the PSM refused three times, keeps its deposit and counter, and re-arms it with a fresh counter", async () => {
     armSeams();
     const engine = await freshEngine();

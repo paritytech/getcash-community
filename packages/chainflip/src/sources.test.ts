@@ -30,7 +30,12 @@ describe("source catalog", () => {
     const expected: Record<
       Exclude<
         SourceId,
-        "dot-assethub" | "usdt-assethub" | "usdc-assethub" | "meld-card" | "meld-bank"
+        | "dot-assethub"
+        | "dotusd-assethub"
+        | "usdt-assethub"
+        | "usdc-assethub"
+        | "meld-card"
+        | "meld-bank"
       >,
       [string, string, number, string]
     > = {

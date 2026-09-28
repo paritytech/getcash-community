@@ -255,7 +255,7 @@ function meldChainFeeFiat(raw: MeldQuoteRaw, sizing: FundingSizing): string | nu
     "keepNativeForFees" in sizing
       ? (Number(sizing.keepNativeForFees) / 10 ** TOKENS.PAS.decimals) * rate.fiatPerToken
       : (Number(sizing.dispatchExternal + sizing.heldBackExternal) /
-          10 ** TOKENS[sizing.external].decimals) *
+          10 ** ("external" in sizing ? TOKENS[sizing.external] : TOKENS.DOTUSD).decimals) *
         rate.fiatPerToken;
   return feeFiat(onAssetHub + inCash(sizing.remoteFeeBuffer));
 }
@@ -674,6 +674,7 @@ export const useSessionStore = defineStore("session", () => {
     deposit?: DepositAsset,
   ): Promise<ConversionRoute> {
     if (!isHosted()) {
+      if (deposit === "dotUSD") return { tier: "teleport" };
       return deposit === undefined || deposit === "native"
         ? { tier: "pool" }
         : { tier: "pool", external: deposit };

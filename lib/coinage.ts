@@ -545,7 +545,11 @@ function depositBudget(
   amount: bigint,
 ): { budget: { amount: bigint; asset: SettlementAsset }; targetDecimals: number } {
   const asset: SettlementAsset =
-    route.external === undefined ? { kind: "native" } : { kind: "stable", asset: route.external };
+    route.tier === "teleport"
+      ? { kind: "pooled", assetId: TOKENS.DOTUSD.assetHubId }
+      : route.external === undefined
+        ? { kind: "native" }
+        : { kind: "stable", asset: route.external };
   return { budget: { amount, asset }, targetDecimals: depositTokenOf(route).decimals };
 }
 
@@ -1018,8 +1022,12 @@ export async function createCoinageSession(
 
   // Size the deposit from live chain reads: the CASH over-buy for People's execution fee and the
   // tier's own costs. The same figures feed the worker hand-off below.
-  const { estimateFundingSizing, estimatePsmFundingSizing, estimateStableFundingSizing } =
-    await import("./funding-fees");
+  const {
+    estimateFundingSizing,
+    estimatePsmFundingSizing,
+    estimateStableFundingSizing,
+    estimateTeleportFundingSizing,
+  } = await import("./funding-fees");
   const sizingArgs = {
     ahClient: await connectChain(ASSET_HUB),
     peopleClient: await connectChain(PEOPLE),
@@ -1050,6 +1058,16 @@ export async function createCoinageSession(
     );
     sizing = stable;
     budget = stable.askedDeposit;
+  } else if (args.route.tier === "teleport") {
+    // The deposit is the underlying itself: the target over the program's fees, no quote and no
+    // headroom, and nothing to fall back to when the reads fail.
+    const teleport = await stage(
+      "funding sizing estimate",
+      20_000,
+      estimateTeleportFundingSizing(sizingArgs),
+    );
+    sizing = teleport;
+    budget = teleport.quotedDeposit;
   } else {
     const pool = await stage(
       "funding sizing estimate",

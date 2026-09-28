@@ -19,8 +19,8 @@ import {
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
   recordedRoute,
+  type DepositAsset,
   type FundingStep,
-  type Stable,
 } from "@getsome/funding";
 import {
   createHostEntropyPort,
@@ -204,7 +204,7 @@ function toCashBase(human: string): bigint {
  *  absent, the fiat rails' rule applies. */
 export async function chooseHostedRoute(
   amount: bigint,
-  deposit?: "native" | Stable,
+  deposit?: DepositAsset,
 ): Promise<ConversionRoute> {
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
   return chooseRoute(api, {

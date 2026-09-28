@@ -25,14 +25,17 @@ export {
   buildFundingProgram,
   buildPsmFundingProgram,
   buildStableFundingProgram,
+  buildTeleportFundingProgram,
   destinationEarmark,
   dryRunFundingProgram,
   estimateDestinationFeeCash,
   estimateFundingProgramFees,
   estimateStableProgramFees,
+  estimateTeleportProgramFees,
   FEE_MARGIN_BPS,
   FUNDING_PROGRAM_MAX_WEIGHT,
   ProgramRejectedError,
+  teleportTxOptions,
   withFeeMargin,
 } from "./funding-program";
 export type { FundingProgramFees, PeopleApi, Pool, StableLegFees } from "./funding-program";
@@ -54,7 +57,15 @@ export {
   isStablePoolRoute,
   recordedRoute,
 } from "./route";
-export type { ConversionRoute, PsmExternal, RouteQuery, Stable, StablePoolRoute } from "./route";
+export type {
+  ConversionRoute,
+  DepositAsset,
+  PsmExternal,
+  RouteQuery,
+  Stable,
+  StablePoolRoute,
+  TeleportRoute,
+} from "./route";
 export { STABLE_TOKENS, isStable, stableTxOptions } from "./stable";
 export { creditedTo, forwardedTo, siblingOrigin, signedOrigin, trappedIn } from "./xcm-dry-run";
 export { describeDispatchError, psmRefusalKind, type PsmRefusalKind } from "./dispatch-error";

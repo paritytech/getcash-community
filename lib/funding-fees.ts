@@ -8,9 +8,11 @@
 // estimate that stays out of the mint with the external's min_balance and is refunded to the
 // burner where unspent, and the PSM takes its fee on the mint; there is no static fallback,
 // because the tier is only chosen once the chain has answered. The stable pool tier's fees have
-// the PSM tier's shape, with the two-hop pool quote in place of the mint. remoteFeeBuffer is the
-// same on every tier: the extra underlying to over-buy for the destination's execution fee, read
-// from a dry run of the forwarded program on People, with the same tenth on top.
+// the PSM tier's shape, with the two-hop pool quote in place of the mint; the teleport tier's
+// have it too, with nothing in place of the mint, since the deposit is the underlying itself.
+// remoteFeeBuffer is the same on every tier: the extra underlying to over-buy for the
+// destination's execution fee, read from a dry run of the forwarded program on People, with the
+// same tenth on top.
 
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import type { PolkadotClient } from "polkadot-api";
@@ -24,6 +26,7 @@ import {
   estimateFundingProgramFees,
   estimatePsmBatchFees,
   estimateStableProgramFees,
+  estimateTeleportProgramFees,
   PASEO_ASSET_HUB_PARA_ID,
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
@@ -96,7 +99,27 @@ export interface StablePoolFundingSizing {
   askedDeposit: bigint;
 }
 
-export type FundingSizing = PoolFundingSizing | StablePoolFundingSizing | PsmFundingSizing;
+/** The teleport tier's costs: the PSM tier's shape without the mint, the deposit being the
+ *  underlying itself. */
+export interface TeleportFundingSizing {
+  tier: "teleport";
+  /** Extra underlying to send along for the destination's execution fee. */
+  remoteFeeBuffer: bigint;
+  /** The dispatch fee, in the underlying, kept out of the send. */
+  dispatchExternal: bigint;
+  /** Also kept out of the send: the asset's min_balance, which the burner's account must hold to
+   *  survive the program and which stays on it, plus `feeAllowanceExternal`. */
+  heldBackExternal: bigint;
+  /** The allowance for the XCM's local execution and delivery, in the underlying, the unspent
+   *  part refunded to the burner on Asset Hub. */
+  feeAllowanceExternal: bigint;
+  /** What the buyer is asked to deposit: the target, the min_balance and the cushioned fees.
+   *  The worker's gate checks for this figure rather than re-pricing it. */
+  quotedDeposit: bigint;
+}
+
+export type FundingSizing =
+  PoolFundingSizing | StablePoolFundingSizing | PsmFundingSizing | TeleportFundingSizing;
 
 /** A throwaway 32-byte beneficiary for the fee reads; it does not affect any fee. */
 const ZERO_32 = `0x${"00".repeat(32)}`;
@@ -236,6 +259,32 @@ export async function estimateStableFundingSizing(
     feeAllowanceExternal: fees.feeAllowanceExternal,
     quotedDeposit: stableDepositNeeded(stableIn, fees),
     askedDeposit: stableDepositNeeded(stableInMax, fees),
+  };
+}
+
+/** The teleport tier's sizing: the program's own fees, measured against the program that sends
+ *  the settle amount plus the destination fee. Throws when a read fails, as the PSM tier's does. */
+export async function estimateTeleportFundingSizing(
+  args: SizingArgs,
+): Promise<TeleportFundingSizing> {
+  const { api, destinationFee } = await sizingReads(args);
+  const buyTarget = args.settleAmount + destinationFee;
+  // At the magnitude the program will carry, as the other tiers' probes do.
+  const fees = await estimateTeleportProgramFees({
+    api,
+    beneficiaryHex: ZERO_32,
+    peopleParaId: args.peopleParaId,
+    depositUnderlying: buyTarget,
+    remoteFeesCash: destinationEarmark(buyTarget, destinationFee),
+    feeProbeAddress: args.probeAddress,
+  });
+  return {
+    tier: "teleport",
+    remoteFeeBuffer: destinationFee,
+    dispatchExternal: fees.dispatchExternal,
+    heldBackExternal: fees.heldBackExternal,
+    feeAllowanceExternal: fees.feeAllowanceExternal,
+    quotedDeposit: stableDepositNeeded(buyTarget, fees),
   };
 }
 
