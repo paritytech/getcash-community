@@ -2152,7 +2152,7 @@ export const useRequestsStore = defineStore("requests", () => {
         return;
       }
       const ref = requestRefOf(sourceId, n);
-      const handoff = lostRequestHandoff(sourceId, n, address, slot);
+      const handoff = await lostRequestHandoff(sourceId, n, address, slot);
       try {
         await create(ref, recordFromFlowSlot(ref, address, slot, handoff, now));
       } catch (e) {

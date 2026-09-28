@@ -83,7 +83,7 @@ interface PaymentsLike {
 }
 
 /** Awaits `work` with a timeout and prefixes any failure with the stage label. */
-function stage<T>(label: string, ms: number, work: Promise<T>): Promise<T> {
+export function stage<T>(label: string, ms: number, work: Promise<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms);
     work.then(
@@ -627,7 +627,7 @@ function depositBudget(
 /** The hand-off's fee fields. `keepNativeForFees` is the native pool tier's; the stable tiers
  *  price their own fees live, so the field carries nothing there. They send the deposit they
  *  quoted instead, which is what the worker's gate waits for. */
-function handoffFees(
+export function handoffFees(
   sizing: FundingSizing,
 ): Pick<WorkerHandoffPayload, "remoteFeeBuffer" | "keepNativeForFees" | "quotedDeposit"> {
   return {

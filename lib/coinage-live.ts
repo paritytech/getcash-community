@@ -16,6 +16,7 @@ import {
   DEFAULT_KEEP_NATIVE_FOR_FEES,
   DEFAULT_REMOTE_FEE_BUFFER,
   depositTokenOf,
+  isStablePoolRoute,
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
   recordedRoute,
@@ -34,12 +35,14 @@ import {
   burnerSecretOf,
   createCoinageSession,
   DEFAULT_SOURCE_ID,
+  handoffFees,
   hostSafeEntropy,
   nextFreeTradeNumber,
   readDepositOnAh,
   readPurseBalance,
   readTradeCounter,
   recoverRefundKey,
+  stage,
   tradeEntropyLabel,
   tradeEntropyLabelString,
   watchDepositOnAh,
@@ -47,7 +50,8 @@ import {
   type CoinageWorld,
   type DirectDepositReading,
 } from "./coinage";
-import { ASSET_HUB, ASSET_HUB_GENESIS, connectChain, PEOPLE_GENESIS } from "./host-chain";
+import { ASSET_HUB, ASSET_HUB_GENESIS, connectChain, PEOPLE, PEOPLE_GENESIS } from "./host-chain";
+import type { FundingSizing } from "./funding-fees";
 
 export interface HostedCoinageWorld extends CoinageWorld {
   /** Current host purse balance (CASH base units). */
@@ -185,35 +189,82 @@ export async function nextHostedTradeNumber(
   );
 }
 
-/** The hand-off for a request whose record was lost, rebuilt from its flow slot with the sizing
- *  defaults the worker itself falls back to. The tier is the one the slot froze at quote time
- *  and nothing else: this takes no route and asks no chain, so a lost request cannot be
- *  recovered on a tier other than the one its deposit was quoted for. A slot from before routes
- *  were recorded is a pool one. */
-export function lostRequestHandoff(
+/** The hand-off for a request whose record was lost, rebuilt from its flow slot. The tier is the
+ *  one the slot froze at quote time and nothing else, so a lost request cannot be recovered on a
+ *  tier other than the one its deposit was quoted for; a slot from before routes were recorded
+ *  is a pool one. The fee figures are sized live for that tier, as a fresh hand-off's are, and
+ *  the worker's own defaults stand in when the reads fail. */
+export async function lostRequestHandoff(
   sourceId: string,
   tradeN: number,
   address: string,
   slot: FlowState,
-): WorkerHandoffPayload {
+): Promise<WorkerHandoffPayload> {
   const route = recordedRoute(slot.conversion ?? {});
+  const settleAmount = BigInt(slot.handoffAmount ?? "0");
   return {
     label: tradeEntropyLabelString(sourceId, tradeN),
     burnerAddress: address,
     depositExpiresAt: slot.depositExpiresAt ?? 0,
-    settleAmount: slot.handoffAmount ?? "0",
+    settleAmount: settleAmount.toString(),
     underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
     peopleParaId: PASEO_PEOPLE_PARA_ID,
     assetHubGenesis: ASSET_HUB_GENESIS,
     peopleGenesis: PEOPLE_GENESIS,
+    ...(await lostRequestFees(sourceId, tradeN, address, route, settleAmount)),
+    ...route,
+  };
+}
+
+/** The fee figures of a lost request's hand-off: the tier's live sizing for its settle amount,
+ *  probed from the burner itself, which gives the worker the frozen gate a fresh hand-off
+ *  carries. The defaults the worker falls back to stand in when there is nothing to size or a
+ *  read fails. */
+async function lostRequestFees(
+  sourceId: string,
+  tradeN: number,
+  address: string,
+  route: ConversionRoute,
+  settleAmount: bigint,
+): Promise<Pick<WorkerHandoffPayload, "remoteFeeBuffer" | "keepNativeForFees" | "quotedDeposit">> {
+  const defaults = {
     remoteFeeBuffer: DEFAULT_REMOTE_FEE_BUFFER.toString(),
-    // Only a native deposit carries fee native; a stable deposit prices its fees live.
+    // Only a native deposit carries fee native; the other tiers price their fees live.
     keepNativeForFees: (depositTokenOf(route).assetHubId === undefined
       ? DEFAULT_KEEP_NATIVE_FOR_FEES
       : 0n
     ).toString(),
-    ...route,
   };
+  if (settleAmount <= 0n) return defaults;
+  try {
+    const fees = await import("./funding-fees");
+    const args = {
+      ahClient: await connectChain(ASSET_HUB),
+      peopleClient: await connectChain(PEOPLE),
+      underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
+      peopleParaId: PASEO_PEOPLE_PARA_ID,
+      settleAmount,
+      probeAddress: address,
+    };
+    const sizing = await stage<FundingSizing | null>(
+      `lost request ${sourceId}#${tradeN} sizing`,
+      20_000,
+      route.tier === "psm"
+        ? fees.estimatePsmFundingSizing({ ...args, route })
+        : isStablePoolRoute(route)
+          ? fees.estimateStableFundingSizing({ ...args, route })
+          : route.tier === "teleport"
+            ? fees.estimateTeleportFundingSizing(args)
+            : fees.estimateFundingSizing(args),
+    );
+    return sizing === null ? defaults : handoffFees(sizing);
+  } catch (e) {
+    console.warn(
+      `[coinage] lost request ${sourceId}#${tradeN}: sizing failed, the defaults stand in:`,
+      e,
+    );
+    return defaults;
+  }
 }
 
 /** Human CASH amount to 6-decimal base units. */
