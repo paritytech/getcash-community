@@ -63,9 +63,6 @@ export interface ManualRailOptions {
   /** The token the user is asked to send: what the request's tier converts from. Default
    *  `TOKENS.PAS`, the pool tier's. */
   token?: TokenSpec;
-  /** The source the deposit runs under. Default the token's own. A request from before the
-   *  per-token sources runs a stable under dot-assethub, so a given source stands as it is. */
-  sourceId?: ManualSourceId;
   /** Deposit "channel" validity window, ms. Default 24h. */
   depositExpiryMs?: number;
   /** Injectable clock (tests). */
@@ -76,7 +73,8 @@ export function createManualRail(opts: ManualRailOptions = {}): ChainflipRail {
   const expiry = opts.depositExpiryMs ?? 86_400_000;
   const now = opts.now ?? Date.now;
   const token = opts.token ?? TOKENS.PAS;
-  const sourceId = opts.sourceId ?? manualSourceIdOf(token);
+  // The token's own source: one token, one source, nowhere for the two to disagree.
+  const sourceId = manualSourceIdOf(token);
   const descriptor: SourceDescriptor = Object.freeze({
     sourceId,
     chain: "AssetHub",

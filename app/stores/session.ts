@@ -14,12 +14,12 @@ import { egressFor, SOURCE_CONFIG_BY_ID, type ChainflipToken } from "@getsome/ch
 import type { RefundKey } from "@getsome/ephemeral";
 import {
   createManualRail,
+  manualSourceIdOf,
   PERMILL,
   PSM_EXTERNAL,
   recordedRoute,
   type ConversionRoute,
   type FundingStep,
-  type ManualSourceId,
 } from "@getsome/funding";
 import {
   advanceFundingProgressSnapshot,
@@ -61,7 +61,6 @@ import { estimateSourceAmount, estimateSourceFromCash } from "~~/lib/demo-rates"
 import { priceSourceLeg, type SourcePriceResult } from "~~/lib/source-price";
 import {
   createMockCoinageSession,
-  DEFAULT_SOURCE_ID,
   depositTokenOf,
   workerSessionId,
   type MockCoinageWorld,
@@ -991,8 +990,9 @@ export const useSessionStore = defineStore("session", () => {
       `[coinage] quoting in the ${isHosted() ? "LIVE (hosted)" : "MOCK (browser)"} world`,
     );
     try {
-      // A direct Polkadot pick names the token it deposits and runs under that token's own
-      // source; a demo Chainflip pick keeps the default direct world under dot-assethub.
+      // A direct Polkadot pick names the token it deposits; a demo Chainflip pick leaves the
+      // route to the amount. Either way the world runs under the source of the token the route
+      // has the buyer deposit.
       const sourceId = sourceIdFor(chain, asset);
       const direct = isDirectSourceId(sourceId) ? sourceId : null;
       const route = await chooseQuoteRoute(
@@ -1002,7 +1002,7 @@ export const useSessionStore = defineStore("session", () => {
       if (epoch !== quoteEpoch) return;
       if (isHosted()) {
         const { nextHostedTradeNumber } = await import("~~/lib/coinage-live");
-        const liveSourceId: SourceId = direct ?? DEFAULT_SOURCE_ID;
+        const liveSourceId: SourceId = manualSourceIdOf(depositTokenOf(route));
         const tradeN = await step(
           "trade number",
           10_000,
@@ -1103,10 +1103,7 @@ export const useSessionStore = defineStore("session", () => {
           ...(direct === null
             ? {}
             : {
-                rail: createManualRail({
-                  token: depositTokenOf(route),
-                  sourceId: direct as ManualSourceId,
-                }),
+                rail: createManualRail({ token: depositTokenOf(route) }),
                 ...(nativeAmount === null || sizing === null
                   ? {}
                   : { nativeBudget: nativeAmount, fundingSizing: sizing }),
@@ -1615,7 +1612,7 @@ export const useSessionStore = defineStore("session", () => {
           route,
           // The direct sources deposit to the burner itself, in the recorded route's token.
           ...(isDirectSourceId(sourceId)
-            ? { rail: createManualRail({ token: depositTokenOf(route), sourceId }) }
+            ? { rail: createManualRail({ token: depositTokenOf(route) }) }
             : {}),
         });
         await world.session.ready;

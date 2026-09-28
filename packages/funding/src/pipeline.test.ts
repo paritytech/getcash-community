@@ -2050,12 +2050,4 @@ describe("createManualRail", () => {
     expect(rail.sources()[0]?.sourceId).toBe("usdt-assethub");
     expect(createManualRail({ token: TOKENS.USDC }).sources()[0]?.sourceId).toBe("usdc-assethub");
   });
-
-  it("keeps the source it is given: a request from before the per-token sources runs a stable under dot-assethub", () => {
-    const legacy = createManualRail({ token: TOKENS.USDT, sourceId: "dot-assethub" });
-    expect(legacy.sources()[0]).toMatchObject({ sourceId: "dot-assethub", asset: "USDT" });
-    expect(
-      createManualRail({ token: TOKENS.USDC, sourceId: "usdc-assethub" }).sources()[0]?.sourceId,
-    ).toBe("usdc-assethub");
-  });
 });

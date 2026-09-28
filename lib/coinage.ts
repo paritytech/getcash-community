@@ -42,7 +42,6 @@ import {
   type FundingStep,
   isStablePoolRoute,
   MANUAL_SOURCE_IDS,
-  type ManualSourceId,
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
   psmDepositNeeded,
@@ -973,12 +972,7 @@ export async function createCoinageSession(
     chain: peoplePort,
     // The Meld rail when the fiat route injected one; the manual rail (direct deposit of the
     // route's token, under the token's own source) otherwise.
-    chainflip:
-      args.rail ??
-      createManualRail({
-        token: depositTokenOf(args.route),
-        sourceId: args.sourceId as ManualSourceId,
-      }),
+    chainflip: args.rail ?? createManualRail({ token: depositTokenOf(args.route) }),
     // The host's storage matches the readString/writeString/clear shape createHostDeps wants.
     hostLocalStorage: args.hostLocalStorage as Parameters<
       typeof createHostDeps

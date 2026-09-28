@@ -195,8 +195,8 @@ deployment would do. Each is marked `TODO(production)` at its definition:
 - `demoFallback` in `app/stores/offers.ts`, which offers every source ungated when Chainflip
   answers for nothing
 - `DEMO_MAX_CASH` in `app/stores/session.ts`, a 200 CASH cap on a purchase
-- the demo Chainflip picks, which run the Polkadot direct deposit under `dot-assethub` until the
-  Chainflip channel rail lands
+- the demo Chainflip picks, which run the Polkadot direct deposit under the source of the token
+  the route delivers until the Chainflip channel rail lands
 
 ## Deploy
 
