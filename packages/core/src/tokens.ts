@@ -39,7 +39,7 @@ export interface TokenSpec {
   meldCurrencyCode?: string;
 }
 
-export type TokenTable = Readonly<Record<"PAS" | "CASH" | "USDT" | "USDC", TokenSpec>>;
+export type TokenTable = Readonly<Record<"PAS" | "CASH" | "DOTUSD" | "USDT" | "USDC", TokenSpec>>;
 
 /** The relay native as any parachain keys it: one hop up. */
 const RELAY_NATIVE: XcmLocation = { parents: 1, interior: { type: "Here" } };
@@ -58,6 +58,22 @@ function assetHubLocal(assetId: number): XcmLocation {
   };
 }
 
+/** The coinage underlying as Asset Hub keys it, and as People holds it: a foreign asset keyed by
+ *  its Asset Hub Next (para 1500) reserve Location. */
+const UNDERLYING_ASSET_ID = 50_000_413;
+// `satisfies` keeps the literal shape, which the People port's key type relies on.
+const UNDERLYING_ON_PEOPLE = {
+  parents: 1,
+  interior: {
+    type: "X3",
+    value: [
+      { type: "Parachain", value: 1500 },
+      { type: "PalletInstance", value: 50 },
+      { type: "GeneralIndex", value: 50_000_413n },
+    ],
+  },
+} satisfies XcmLocation;
+
 // `satisfies` rather than a `TokenTable` annotation: each entry keeps its literal shape, so the
 // constants derived from it keep types the descriptors accept without a cast.
 export const TOKENS = {
@@ -73,20 +89,19 @@ export const TOKENS = {
   CASH: {
     symbol: "CASH",
     decimals: 6,
-    assetHubId: 50_000_413,
-    location: assetHubLocal(50_000_413),
-    // Held on People as a foreign asset keyed by its Asset Hub Next (para 1500) reserve Location.
-    locationOnPeople: {
-      parents: 1,
-      interior: {
-        type: "X3",
-        value: [
-          { type: "Parachain", value: 1500 },
-          { type: "PalletInstance", value: 50 },
-          { type: "GeneralIndex", value: 50_000_413n },
-        ],
-      },
-    },
+    assetHubId: UNDERLYING_ASSET_ID,
+    location: assetHubLocal(UNDERLYING_ASSET_ID),
+    locationOnPeople: UNDERLYING_ON_PEOPLE,
+  },
+  // The same asset seen from the deposit side: what a buyer sends to the burner on Asset Hub,
+  // named as a Polkadot wallet names it. Paseo's own symbol for it is dotUSD; the app names Paseo's
+  // assets after their Polkadot counterparts, as it does the native.
+  DOTUSD: {
+    symbol: "dotUSD",
+    decimals: 6,
+    assetHubId: UNDERLYING_ASSET_ID,
+    location: assetHubLocal(UNDERLYING_ASSET_ID),
+    locationOnPeople: UNDERLYING_ON_PEOPLE,
   },
   USDT: {
     symbol: "USDT",

@@ -36,6 +36,7 @@ async function cancelTopUp() {
 
 function onBack() {
   if (flow.confirmingCancel) flow.confirmingCancel = false;
+  else if (flow.recoveringDeposit) flow.recoveringDeposit = false;
   else emit("back");
 }
 
@@ -64,6 +65,7 @@ onMounted(async () => {
 onUnmounted(() => {
   active = false;
   flow.confirmingCancel = false;
+  flow.recoveringDeposit = false;
   // After a handoff the journey owns the request and resets it on its way out.
   if (!handedOff()) session.reset();
 });
@@ -81,7 +83,7 @@ onUnmounted(() => {
   >
     <Toolbar
       :back="!waiting && !requests.claiming"
-      :title="flow.confirmingCancel ? undefined : 'Add funds via Crypto'"
+      :title="flow.confirmingCancel || flow.recoveringDeposit ? undefined : 'Add funds via Crypto'"
       @back="onBack"
     >
       <template
@@ -89,6 +91,7 @@ onUnmounted(() => {
           !waiting &&
           !unavailable &&
           !flow.confirmingCancel &&
+          !flow.recoveringDeposit &&
           session.canSkipDeposit &&
           isDemoBuild()
         "

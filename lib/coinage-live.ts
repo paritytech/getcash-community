@@ -15,9 +15,12 @@ import {
   type ConversionRoute,
   DEFAULT_KEEP_NATIVE_FOR_FEES,
   DEFAULT_REMOTE_FEE_BUFFER,
+  depositTokenOf,
+  isStablePoolRoute,
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
   recordedRoute,
+  type DepositAsset,
   type FundingStep,
 } from "@getsome/funding";
 import {
@@ -29,20 +32,26 @@ import { CASH_DECIMALS } from "@getsome/people";
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import type { WorkerHandoffPayload } from "../app/funding/requests/model";
 import {
+  burnerSecretOf,
   createCoinageSession,
   DEFAULT_SOURCE_ID,
+  handoffFees,
   hostSafeEntropy,
   nextFreeTradeNumber,
   readDepositOnAh,
   readPurseBalance,
   readTradeCounter,
   recoverRefundKey,
+  stage,
   tradeEntropyLabel,
   tradeEntropyLabelString,
   watchDepositOnAh,
+  watchDirectDepositOnAh,
   type CoinageWorld,
+  type DirectDepositReading,
 } from "./coinage";
-import { ASSET_HUB, ASSET_HUB_GENESIS, connectChain, PEOPLE_GENESIS } from "./host-chain";
+import { ASSET_HUB, ASSET_HUB_GENESIS, connectChain, PEOPLE, PEOPLE_GENESIS } from "./host-chain";
+import type { FundingSizing } from "./funding-fees";
 
 export interface HostedCoinageWorld extends CoinageWorld {
   /** Current host purse balance (CASH base units). */
@@ -62,9 +71,17 @@ export { DEFAULT_SOURCE_ID };
 
 /** A trade's burner address, derived from the host's entropy root without building a session. */
 export async function burnerAddressFor(sourceId: string, tradeN: number): Promise<string> {
+  return deriveKeypair(await burnerSeedFor(sourceId, tradeN)).address;
+}
+
+/** A trade's burner secret as the live world exports it, for a request reopened without one. */
+export async function probeBurnerSecret(sourceId: string, tradeN: number): Promise<string> {
+  return burnerSecretOf(await burnerSeedFor(sourceId, tradeN));
+}
+
+function burnerSeedFor(sourceId: string, tradeN: number): Promise<Uint8Array> {
   const entropy = createHostEntropyPort(hostSafeEntropy(deriveEntropy));
-  const seed = await entropy.deriveSeed(tradeEntropyLabel(sourceId, tradeN));
-  return deriveKeypair(seed).address;
+  return entropy.deriveSeed(tradeEntropyLabel(sourceId, tradeN));
 }
 
 /** A trade's burner address and its balance on Asset Hub in the asset the trade's recorded route
@@ -105,10 +122,27 @@ export async function watchTradeBurner(
   onValue: (free: bigint, address: string) => void,
   onError: (e: unknown) => void,
 ): Promise<() => void> {
+  const { api, address } = await burnerOnAssetHub(sourceId, tradeN);
+  return watchDepositOnAh(api, route, address, (free) => onValue(free, address), onError);
+}
+
+/** `watchTradeBurner` for a Polkadot deposit: the route's own token and the first other direct
+ *  token found, at each best block. */
+export async function watchDirectTradeBurner(
+  sourceId: string,
+  tradeN: number,
+  route: ConversionRoute,
+  onValue: (reading: DirectDepositReading) => void,
+  onError: (e: unknown) => void,
+): Promise<() => void> {
+  const { api, address } = await burnerOnAssetHub(sourceId, tradeN);
+  return watchDirectDepositOnAh(api, route, address, onValue, onError);
+}
+
+async function burnerOnAssetHub(sourceId: string, tradeN: number) {
   const address = await burnerAddressFor(sourceId, tradeN);
   const { connectChain, ASSET_HUB } = await import("./host-chain");
-  const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
-  return watchDepositOnAh(api, route, address, (free) => onValue(free, address), onError);
+  return { address, api: (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2) };
 }
 
 /** Core's storage over the host store, under the prefix `createCoinageSession` writes with. */
@@ -155,31 +189,82 @@ export async function nextHostedTradeNumber(
   );
 }
 
-/** The hand-off for a request whose record was lost, rebuilt from its flow slot with the sizing
- *  defaults the worker itself falls back to. The tier is the one the slot froze at quote time
- *  and nothing else: this takes no route and asks no chain, so a lost request cannot be
- *  recovered on a tier other than the one its deposit was quoted for. A slot from before routes
- *  were recorded is a pool one. */
-export function lostRequestHandoff(
+/** The hand-off for a request whose record was lost, rebuilt from its flow slot. The tier is the
+ *  one the slot froze at quote time and nothing else, so a lost request cannot be recovered on a
+ *  tier other than the one its deposit was quoted for; a slot from before routes were recorded
+ *  is a pool one. The fee figures are sized live for that tier, as a fresh hand-off's are, and
+ *  the worker's own defaults stand in when the reads fail. */
+export async function lostRequestHandoff(
   sourceId: string,
   tradeN: number,
   address: string,
   slot: FlowState,
-): WorkerHandoffPayload {
+): Promise<WorkerHandoffPayload> {
   const route = recordedRoute(slot.conversion ?? {});
+  const settleAmount = BigInt(slot.handoffAmount ?? "0");
   return {
     label: tradeEntropyLabelString(sourceId, tradeN),
     burnerAddress: address,
     depositExpiresAt: slot.depositExpiresAt ?? 0,
-    settleAmount: slot.handoffAmount ?? "0",
+    settleAmount: settleAmount.toString(),
     underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
     peopleParaId: PASEO_PEOPLE_PARA_ID,
     assetHubGenesis: ASSET_HUB_GENESIS,
     peopleGenesis: PEOPLE_GENESIS,
-    remoteFeeBuffer: DEFAULT_REMOTE_FEE_BUFFER.toString(),
-    keepNativeForFees: (route.tier === "pool" ? DEFAULT_KEEP_NATIVE_FOR_FEES : 0n).toString(),
+    ...(await lostRequestFees(sourceId, tradeN, address, route, settleAmount)),
     ...route,
   };
+}
+
+/** The fee figures of a lost request's hand-off: the tier's live sizing for its settle amount,
+ *  probed from the burner itself, which gives the worker the frozen gate a fresh hand-off
+ *  carries. The defaults the worker falls back to stand in when there is nothing to size or a
+ *  read fails. */
+async function lostRequestFees(
+  sourceId: string,
+  tradeN: number,
+  address: string,
+  route: ConversionRoute,
+  settleAmount: bigint,
+): Promise<Pick<WorkerHandoffPayload, "remoteFeeBuffer" | "keepNativeForFees" | "quotedDeposit">> {
+  const defaults = {
+    remoteFeeBuffer: DEFAULT_REMOTE_FEE_BUFFER.toString(),
+    // Only a native deposit carries fee native; the other tiers price their fees live.
+    keepNativeForFees: (depositTokenOf(route).assetHubId === undefined
+      ? DEFAULT_KEEP_NATIVE_FOR_FEES
+      : 0n
+    ).toString(),
+  };
+  if (settleAmount <= 0n) return defaults;
+  try {
+    const fees = await import("./funding-fees");
+    const args = {
+      ahClient: await connectChain(ASSET_HUB),
+      peopleClient: await connectChain(PEOPLE),
+      underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
+      peopleParaId: PASEO_PEOPLE_PARA_ID,
+      settleAmount,
+      probeAddress: address,
+    };
+    const sizing = await stage<FundingSizing | null>(
+      `lost request ${sourceId}#${tradeN} sizing`,
+      20_000,
+      route.tier === "psm"
+        ? fees.estimatePsmFundingSizing({ ...args, route })
+        : isStablePoolRoute(route)
+          ? fees.estimateStableFundingSizing({ ...args, route })
+          : route.tier === "teleport"
+            ? fees.estimateTeleportFundingSizing(args)
+            : fees.estimateFundingSizing(args),
+    );
+    return sizing === null ? defaults : handoffFees(sizing);
+  } catch (e) {
+    console.warn(
+      `[coinage] lost request ${sourceId}#${tradeN}: sizing failed, the defaults stand in:`,
+      e,
+    );
+    return defaults;
+  }
 }
 
 /** Human CASH amount to 6-decimal base units. */
@@ -194,10 +279,18 @@ function toCashBase(human: string): bigint {
 /** The conversion tier a hosted request takes, read off the live PSM. The one place the
  *  decision is made for a hosted request: it runs before the rail is built, since the tier
  *  fixes the asset the rail delivers, and the world it is handed to freezes it into the
- *  hand-off. */
-export async function chooseHostedRoute(amount: bigint): Promise<ConversionRoute> {
+ *  hand-off. `deposit` names the asset the buyer will send when the picker already knows it;
+ *  absent, the fiat rails' rule applies. */
+export async function chooseHostedRoute(
+  amount: bigint,
+  deposit?: DepositAsset,
+): Promise<ConversionRoute> {
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
-  return chooseRoute(api, { direction: "mint", internalAmount: amount });
+  return chooseRoute(api, {
+    direction: "mint",
+    internalAmount: amount,
+    ...(deposit === undefined ? {} : { deposit }),
+  });
 }
 
 /** The funded session over the real host seams; budget sized live for the route's tier. */
