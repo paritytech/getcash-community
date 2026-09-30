@@ -30,7 +30,7 @@ const NETWORK_FIELDS = [
 const CHAIN_FIELDS = ["paraId", "genesis", "rpc"] satisfies (keyof ChainConfig)[];
 const PEOPLE_FIELDS = [...CHAIN_FIELDS, "poolAccount"] satisfies (keyof Network["people"])[];
 
-const HASH = /^0x[0-9a-fA-F]{64}$/;
+const HASH = /^0x[0-9a-f]{64}$/;
 const SS58_ACCOUNT = /^[1-9A-HJ-NP-Za-km-z]{46,48}$/;
 const WS_URL = /^wss?:\/\/\S+$/;
 
@@ -64,7 +64,9 @@ function chainOf(fields: Record<string, unknown>, path: string): ChainConfig {
   const { paraId, genesis, rpc } = fields;
   return {
     paraId: isParaId(paraId) ? paraId : fail(`${path}.paraId`, "a positive integer"),
-    genesis: isHash(genesis) ? genesis : fail(`${path}.genesis`, "a 0x-prefixed 32-byte hash"),
+    genesis: isHash(genesis)
+      ? genesis
+      : fail(`${path}.genesis`, "a 0x-prefixed 32-byte lowercase hex hash"),
     rpc: matches(rpc, WS_URL) ? rpc : fail(`${path}.rpc`, "a ws:// or wss:// URL"),
   };
 }

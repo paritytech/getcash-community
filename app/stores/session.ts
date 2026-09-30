@@ -4,6 +4,7 @@
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef, watch } from "vue";
 import {
+  NETWORK,
   TOKENS,
   type ChainflipRail,
   type PaymentState,
@@ -70,7 +71,6 @@ import {
 } from "~~/lib/coinage";
 import type { HostedCoinageWorld } from "~~/lib/coinage-live";
 import { isHosted } from "~~/lib/host-account";
-import { ASSET_HUB_WS } from "~~/lib/host-chain";
 import type {
   DepositValue,
   FundingSizing,
@@ -194,7 +194,7 @@ async function step<T>(label: string, ms: number, work: Promise<T>): Promise<T> 
 const ahBlockLink = (block?: number) =>
   block === undefined
     ? ""
-    : ` https://polkadot.js.org/apps/?rpc=${encodeURIComponent(ASSET_HUB_WS)}#/explorer/query/${block}`;
+    : ` https://polkadot.js.org/apps/?rpc=${encodeURIComponent(NETWORK.assetHub.rpc)}#/explorer/query/${block}`;
 
 export interface QuotedView {
   send: string;

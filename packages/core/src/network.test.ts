@@ -43,6 +43,7 @@ describe("parseNetwork", () => {
     ["assetHub.paraId", { assetHub: { ...VALID.assetHub, paraId: 0 } }],
     ["assetHub.paraId", { assetHub: { ...VALID.assetHub, paraId: 1.5 } }],
     ["assetHub.genesis", { assetHub: { ...VALID.assetHub, genesis: "0x1234" } }],
+    ["people.genesis", { people: { ...VALID.people, genesis: `0x${"AB".repeat(32)}` } }],
     ["assetHub.rpc", { assetHub: { ...VALID.assetHub, rpc: "https://chain.example" } }],
     ["people.paraId", { people: { ...VALID.people, paraId: "1004" } }],
     ["people.poolAccount", { people: { ...VALID.people, poolAccount: "not-an-account" } }],

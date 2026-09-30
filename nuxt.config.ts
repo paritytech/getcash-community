@@ -16,7 +16,7 @@ for (const [chain, papiGenesis] of [
   ["assetHub", papiConfig.entries.paseo_next_v2.genesis],
   ["people", papiConfig.entries.paseo_people_next.genesis],
 ] as const) {
-  if (NETWORK[chain].genesis.toLowerCase() !== papiGenesis.toLowerCase()) {
+  if (NETWORK[chain].genesis !== papiGenesis) {
     throw new Error(
       `packages/core/src/network.json and .papi/polkadot-api.json name different ${chain} genesis hashes`,
     );
