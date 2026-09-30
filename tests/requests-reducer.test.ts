@@ -5,6 +5,7 @@ import type { SwapStatusResult } from "@getsome/core";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
   DEPOSIT_EXPIRED_REASON,
+  FUNDING_HELD_REASON,
   paymentWatchUntil,
   PROVISIONAL_REVERT_MS,
   type Observation,
@@ -536,6 +537,31 @@ describe("request reducer: top-up transitions", () => {
     expect(retried.failureReason).toBeUndefined();
     expect(retried.progress.failedAt).toBeUndefined();
     expect(retried.progress.confirmedStageKey).toBe("cash-conversion");
+  });
+
+  it("worker held at converting → failed(recoverable) in the app's words; user retry → converting(swap)", () => {
+    const held = job({
+      phase: "failed",
+      failure: "held",
+      lastError: "funding held: the PSM refused the mint 3 times, last: Psm.MintingStopped",
+      fundsSeenAt: at(1),
+      lastTickAt: at(5),
+    });
+    const failed = reduce(converting(), worker(at(5), held));
+    expect(failed.status).toEqual({ kind: "failed", at: at(5), recoverable: true });
+    expect(failed.failure).toEqual({
+      kind: "mint",
+      step: "swap",
+      message: FUNDING_HELD_REASON,
+      recoverable: true,
+    });
+    expect(failed.failureReason).toBe(FUNDING_HELD_REASON);
+    expect(failed.witnesses.worker).toMatchObject({ known: true, failure: "held" });
+
+    const retried = reduce(failed, { source: "user", at: at(6), event: "retry" });
+    expect(retried.status).toEqual({ kind: "converting", at: at(6), step: "swap" });
+    expect(retried.failure).toBeUndefined();
+    expect(retried.failureReason).toBeUndefined();
   });
 
   it("worker expired at rank 1 → ignored", () => {

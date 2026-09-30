@@ -4,6 +4,7 @@
 
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef, watch } from "vue";
+import { recordedRoute, type ConversionRoute } from "@getsome/funding";
 import type { FlowState, SourceId, SwapStatusResult } from "@getsome/core";
 import { createMeldClient, getMeldStatus, type MeldClientLike } from "@getsome/meld";
 import {
@@ -30,6 +31,7 @@ import {
   WORKER_STALE_MS,
   buyerPaid,
   effectiveSourceId,
+  isDirectDeposit,
   isFinished,
   isTopUp,
   isWithdrawSourceId,
@@ -44,6 +46,7 @@ import {
   type Freshness,
   type HostPaymentStatus,
   type Observation,
+  type StrayDeposit,
   type RequestKey,
   type RequestRecord,
   type TopUpRecord,
@@ -95,7 +98,7 @@ import {
   type RequestRef,
 } from "../utils/request-index";
 import { sendHandoff, workerSessionId } from "~~/lib/coinage";
-import { SOURCE_CHAINS, sourceIdFor } from "~~/lib/config";
+import { FUNDING_CHAINS, sourceIdFor, sourcePairFor } from "~~/lib/config";
 import { isHosted } from "~~/lib/host-account";
 
 export interface RequestEntry {
@@ -363,6 +366,10 @@ type WorkerJob = {
   peopleGenesis?: string;
   remoteFeeBuffer?: string;
   keepNativeForFees?: string;
+  quotedDeposit?: string;
+  tier?: unknown;
+  external?: unknown;
+  feeRate?: unknown;
   createdAt?: number;
   armedAt?: number;
 };
@@ -488,17 +495,11 @@ const railExpiryOf = (job: WorkerJob): number | null =>
   isNumber(job.depositExpiresAt) && job.depositExpiresAt > 0 ? job.depositExpiresAt : null;
 
 /** Today's `lastQuoteParams` for a source id: the rail and method of a Meld source, the chain and
- *  coin of a swap source, Asset Hub's own for the crypto rail's, the id itself otherwise. */
+ *  coin of a swap or direct source, the id itself otherwise. */
 function displaySourceOf(sourceId: string): { chain: string; asset: string } {
   const route = routeOf(sourceId);
   if (route !== "crypto") return { chain: "Meld", asset: route === "bank" ? "Bank" : "Card" };
-  if (sourceId === CRYPTO_SOURCE_ID) return { chain: "AssetHub", asset: "DOT" };
-  for (const { chain, assets } of SOURCE_CHAINS) {
-    for (const asset of assets) {
-      if (sourceIdFor(chain, asset) === sourceId) return { chain, asset };
-    }
-  }
-  return { chain: sourceId, asset: sourceId };
+  return sourcePairFor(sourceId) ?? { chain: sourceId, asset: sourceId };
 }
 
 /** The snapshot a request starts with when its record is built from the worker's job: today's
@@ -553,6 +554,13 @@ function handoffOf(job: WorkerJob): WorkerHandoffPayload | undefined {
   ) {
     return undefined;
   }
+  // The route the job was quoted with; a job from before routes were recorded is a pool one.
+  let route: ConversionRoute;
+  try {
+    route = recordedRoute(job);
+  } catch {
+    return undefined;
+  }
   return {
     label,
     burnerAddress,
@@ -564,6 +572,8 @@ function handoffOf(job: WorkerJob): WorkerHandoffPayload | undefined {
     peopleGenesis,
     remoteFeeBuffer,
     keepNativeForFees,
+    ...(isString(job.quotedDeposit) ? { quotedDeposit: job.quotedDeposit } : {}),
+    ...route,
   };
 }
 
@@ -726,6 +736,12 @@ function recordFromJob(sessionId: string, job: WorkerJob): TopUpRecord | null {
 /** A flow slot that can size a record: core wrote the settle amount into it at the start. */
 const hasHandoffAmount = (slot: FlowState | null): slot is FlowState & { handoffAmount: string } =>
   slot !== null && slot.handoffAmount !== undefined;
+
+/** The tier a record was quoted on, read off what it persisted and never decided here: the
+ *  hand-off it froze at quote time, or the tier recorded beside it when the hand-off is missing.
+ *  A record with neither is from before tiers were recorded, and so a pool one. */
+const conversionRouteOf = (record: TopUpRecord): ConversionRoute =>
+  recordedRoute(record.handoff ?? record.conversion ?? {});
 
 /** A record for a funded burner the surface lost every trace of, from the core flow slot that
  *  started it: the only thing left that knows the amount. Generic labels, like a job's record. */
@@ -1261,6 +1277,12 @@ export const useRequestsStore = defineStore("requests", () => {
   } | null = null;
   const foregroundAwaiting = (): boolean =>
     foregroundRecord.value?.status.kind === "awaiting-deposit";
+  /** The tier a request's deposit arrives on, from what its record froze at quote time: it fixes
+   *  the asset the burner is read in. A number with no record is read as a pool one. */
+  const depositRouteOf = (ref: RequestRef): ConversionRoute => {
+    const record = get(ref);
+    return record !== undefined && isTopUp(record) ? conversionRouteOf(record) : { tier: "pool" };
+  };
   function startDepositWatch(): void {
     if (sandboxed.value) return;
     const record = foregroundRecord.value;
@@ -1283,22 +1305,55 @@ export const useRequestsStore = defineStore("requests", () => {
       stopDepositWatch();
     };
     void import("~~/lib/coinage-live")
-      .then(({ watchTradeBurner }) =>
-        watchTradeBurner(
+      .then((live) => {
+        if (isDirectDeposit(record)) {
+          // A Polkadot deposit is read in every direct token and followed until the request moves
+          // on: a short or wrong-token deposit keeps it waiting, and the rest can still arrive.
+          // Only a change is observed, since the watch emits at every best block.
+          let last = "";
+          return live.watchDirectTradeBurner(
+            sourceId,
+            ref.tradeN,
+            depositRouteOf(ref),
+            ({ held, stray }) => {
+              if (watching.stopped) return;
+              const key = `${held}|${stray?.asset ?? ""}|${stray?.amount ?? ""}`;
+              if (key === last) return;
+              last = key;
+              void observe(
+                ref,
+                chainReading(
+                  held,
+                  requestsNow(),
+                  stray === null ? null : { asset: stray.asset, amount: stray.amount.toString() },
+                ),
+              );
+            },
+            failed,
+          );
+        }
+        return live.watchTradeBurner(
           sourceId,
           ref.tradeN,
+          depositRouteOf(ref),
           (free) => {
             if (watching.stopped) return;
             void observe(ref, chainReading(free, requestsNow()));
             if (free > 0n) stopDepositWatch();
           },
           failed,
-        ),
-      )
+        );
+      })
       .then((unsubscribe) => {
         if (watching.stopped) unsubscribe();
         else watching.unsubscribe = unsubscribe;
       }, failed);
+  }
+  /** Starts the watch over again after a request took new terms: its token may have changed, and
+   *  the balance it already read has to be read again against the new gate. */
+  function restartDepositWatch(): void {
+    stopDepositWatch();
+    syncDepositWatch();
   }
   function stopDepositWatch(): void {
     if (depositWatch === null) return;
@@ -1371,6 +1426,9 @@ export const useRequestsStore = defineStore("requests", () => {
     const record = get(ref);
     // A withdrawal's last look is its own: the key and the host's payment.
     if (record !== undefined && (!isTopUp(record) || rankOf(record) >= 1)) return "refused";
+    // A direct deposit that arrived short or in another token is on the account already; the
+    // burner read below only sees the picked token, so it would call the account empty.
+    if (record?.depositMismatch !== undefined) return "refused";
     const at = requestsNow();
     const [burner, jobs] = await Promise.all([
       bounded("the burner read", CANCEL_CONFIRM_MS, opts.readBurner),
@@ -1427,7 +1485,10 @@ export const useRequestsStore = defineStore("requests", () => {
     const confirmedByJob =
       job !== undefined &&
       job.phase === "failed" &&
-      (job.failure === "shortfall" || job.failure === "timeout" || job.failure === "claim");
+      (job.failure === "shortfall" ||
+        job.failure === "timeout" ||
+        job.failure === "claim" ||
+        job.failure === "held");
     if (!confirmedByJob && record.witnesses.core?.phase !== "failed") {
       console.warn("[requests] retry ignored: the failure is not confirmed as recoverable");
       return false;
@@ -1814,13 +1875,15 @@ export const useRequestsStore = defineStore("requests", () => {
     });
   }
 
-  /** A burner's balance as the chain's own sighting of the request. */
-  const chainReading = (free: bigint, at: number): Observation => ({
+  /** A burner's balance as the chain's own sighting of the request. A direct deposit's watch
+   *  passes what it found in the other direct tokens too. */
+  const chainReading = (free: bigint, at: number, stray?: StrayDeposit | null): Observation => ({
     source: "chain",
     at,
     burnerNative: free.toString(),
     finality: "best",
     via: "probe",
+    ...(stray === undefined ? {} : { stray }),
   });
   /** A withdrawal key's CASH as the chain's own sighting of the request. */
   const keyReading = (cash: bigint, at: number): Observation => ({
@@ -1925,10 +1988,10 @@ export const useRequestsStore = defineStore("requests", () => {
    *  request: funds resurrect it; a cancelled one confirmed empty past its window and grace is
    *  removed (today's reap rule). (b) A waiting request whose worker is unknown, stale or not
    *  running. (c) The gap sweep: under every source this app can run, every trade number from one
-   *  to the source's counter with neither a record nor a job is read once and noted under
-   *  `getsome:probed`, re-read at most once a day while its deposit window is open; funds with a
-   *  core flow slot become a record that the hand-off step sends on this pass. (a) and (c) run on
-   *  boot and return only, (b) every time. */
+   *  to the source's counter with neither a record nor a job is read once, in the asset of the
+   *  tier its core flow slot froze, and noted under `getsome:probed`, re-read at most once a day
+   *  while its deposit window is open; funds with a slot become a record on that tier that the
+   *  hand-off step sends on this pass. (a) and (c) run on boot and return only, (b) every time. */
   async function readChain(
     reason: string,
     now: number,
@@ -1956,7 +2019,7 @@ export const useRequestsStore = defineStore("requests", () => {
     async function probe(ref: RequestRef): Promise<{ address: string; free: bigint } | null> {
       const sourceId = effectiveSourceId(ref);
       const read = await bounded(`burner read for ${sourceId}#${ref.tradeN}`, PROBE_BOUND_MS, () =>
-        probeTradeBurner(sourceId, ref.tradeN),
+        probeTradeBurner(sourceId, ref.tradeN, depositRouteOf(ref)),
       );
       if (!read.ok) {
         console.warn(`[requests] ${read.reason} (kept)`);
@@ -2022,7 +2085,7 @@ export const useRequestsStore = defineStore("requests", () => {
     // Every source a request can run under: a total storage loss leaves no record to learn them
     // from, and a lost number can sit below the highest record.
     const sources = new Set<string>([CRYPTO_SOURCE_ID, ...MELD_SOURCE_IDS]);
-    for (const { chain, assets } of SOURCE_CHAINS) {
+    for (const { chain, assets } of FUNDING_CHAINS) {
       for (const asset of assets) {
         const sourceId = sourceIdFor(chain, asset);
         if (sourceId !== undefined) sources.add(sourceId);
@@ -2055,8 +2118,20 @@ export const useRequestsStore = defineStore("requests", () => {
       }
     }
     await inParallel(gaps, CHAIN_READ_PARALLELISM, async ({ sourceId, n }) => {
+      // The slot first: the tier it froze fixes the asset the burner is read in, and it is the
+      // only thing left that knows it. A number with no slot never had a quote and so has no
+      // tier; its burner is read in the native, which is what a burner from before routes were
+      // recorded holds, and funds there are reported below, never made a record of.
+      const flow = await bounded(`flow slot read for ${sourceId}#${n}`, PROBE_BOUND_MS, () =>
+        readFlowSlot(sourceId as SourceId, n),
+      );
+      if (!flow.ok) {
+        console.warn(`[requests] ${flow.reason}`);
+        return;
+      }
+      const { address, slot } = flow.value;
       const read = await bounded(`burner read for ${sourceId}#${n}`, PROBE_BOUND_MS, () =>
-        probeTradeBurner(sourceId, n),
+        probeTradeBurner(sourceId, n, recordedRoute(slot?.conversion ?? {})),
       );
       if (!read.ok) {
         console.warn(`[requests] ${read.reason}`);
@@ -2067,14 +2142,6 @@ export const useRequestsStore = defineStore("requests", () => {
         noteProbed(sourceId, n, { firstAt, lastAt: now });
         return;
       }
-      const flow = await bounded(`flow slot read for ${sourceId}#${n}`, PROBE_BOUND_MS, () =>
-        readFlowSlot(sourceId as SourceId, n),
-      );
-      if (!flow.ok) {
-        console.warn(`[requests] ${flow.reason}`);
-        return;
-      }
-      const { address, slot } = flow.value;
       if (!hasHandoffAmount(slot)) {
         // Funds with no record, no job and no slot: only storage loss gets here, and a truthful
         // row needs an amount the app does not have.
@@ -2085,7 +2152,7 @@ export const useRequestsStore = defineStore("requests", () => {
         return;
       }
       const ref = requestRefOf(sourceId, n);
-      const handoff = lostRequestHandoff(sourceId, n, address, slot);
+      const handoff = await lostRequestHandoff(sourceId, n, address, slot);
       try {
         await create(ref, recordFromFlowSlot(ref, address, slot, handoff, now));
       } catch (e) {
@@ -2156,10 +2223,13 @@ export const useRequestsStore = defineStore("requests", () => {
       const { ref } = record;
       const amount = toCashBase(record.amountHuman);
       if (amount === null) throw new Error(`'${record.amountHuman}' is not a CASH amount`);
+      // The world is rebuilt on the tier the record froze at quote time; this store decides no
+      // tier, since the deposit it recovers was quoted for one already.
       const world = await createHostedCoinageWorld({
         amount,
         tradeN: ref.tradeN,
         sourceId: effectiveSourceId(ref) as SourceId,
+        route: conversionRouteOf(record),
       });
       try {
         const handoff = await world.handoffPayload();
@@ -2603,6 +2673,7 @@ export const useRequestsStore = defineStore("requests", () => {
     fundingNotice,
     phase,
     fundsSeen,
+    restartDepositWatch,
     fundingStep,
     fundingError,
     claimStage,

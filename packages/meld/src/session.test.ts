@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { OpenChannelArgs, Quote } from "@getsome/core";
+import { TOKENS, type OpenChannelArgs, type Quote } from "@getsome/core";
 import type { MeldClientLike, MeldSessionRequest } from "./client";
 import type { MeldQuoteRaw } from "./quote";
 import { requestMeldDeposit } from "./session";
@@ -9,7 +9,7 @@ const BURNER = "5EphemeralBurnerAddressxxxxxxxxxxxxxxxxxxxxxxxxxxx";
 function meldQuote(): Quote {
   const raw: MeldQuoteRaw = {
     provider: { serviceProvider: "TRANSAK", sourceAmount: "141.89", destinationAmount: "20.63" },
-    context: { country: "US", fiat: "USD", token: "DOT_ASSETHUB", method: "CARD" },
+    context: { country: "US", fiat: "USD", token: TOKENS.PAS, method: "CARD" },
     destinationAmount: "20",
   };
   return {

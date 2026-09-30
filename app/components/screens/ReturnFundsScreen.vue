@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// The return-funds guide behind a refunded deposit: the numbered path from gas to key to a wallet
-// the buyer controls. The key is read on tap, never on load, and can be masked again after a look.
+// The return-funds guide behind a refunded deposit: how far the refund has come, then the numbered
+// path from gas to key to a wallet the buyer controls.
 import { computed } from "vue";
 import type { SourceId } from "@getsome/core";
 import { ArrowUpRight, Check, Copy } from "lucide-vue-next";
@@ -15,10 +15,7 @@ import { useRequestsStore } from "../../stores/requests";
 import { useSessionStore } from "../../stores/session";
 import { refundTxUrl } from "../../utils/explorer";
 import { recoveryNotes, refundStatusTail } from "../../utils/recovery";
-import CopiedPill from "../ui/CopiedPill.vue";
-import PillButton from "../ui/PillButton.vue";
-import RecoveryAddressCard from "../ui/RecoveryAddressCard.vue";
-import RecoveryKeyCard from "../ui/RecoveryKeyCard.vue";
+import RecoveryGuide, { type RecoveryStep } from "../ui/RecoveryGuide.vue";
 
 const props = defineProps<{
   /**
@@ -128,14 +125,14 @@ const notes = computed(() =>
 );
 
 /** The gas step leads only a token refund; a native one opens on where the coins landed. */
-const steps = computed(() => {
+const steps = computed<RecoveryStep[]>(() => {
   const n = notes.value;
   if (!n) return [];
   return [
     n.gasNote
-      ? { text: n.gasNote, card: "address" as const }
-      : { text: `Your ${asset.value} returns to this address.`, card: "address" as const },
-    { text: n.importNote, card: "key" as const },
+      ? { text: n.gasNote, card: "address" }
+      : { text: `Your ${asset.value} returns to this address.`, card: "address" },
+    { text: n.importNote, card: "key" },
     { text: n.transferNote, card: null },
   ];
 });
@@ -150,87 +147,53 @@ const { copied: txCopied, copy: copyTx } = useCopyToClipboard();
 </script>
 
 <template>
-  <section
+  <RecoveryGuide
     v-if="failure && notes"
-    class="flex min-h-0 flex-1 flex-col overflow-y-auto pb-6"
-    aria-label="Refund info"
+    title="Refund info"
+    :steps="steps"
+    :address="address"
+    :address-label="`Address on ${chain}`"
+    :secret-label="notes.secretLabel"
+    :secret="secret"
+    :masked="masked"
+    :material="material"
+    :loading="recovering"
+    @toggle="toggleKey"
+    @back="emit('back')"
   >
-    <div class="flex shrink-0 flex-col gap-2 text-center">
-      <h1 class="text-display-s text-fg-primary">Refund info</h1>
-      <p class="text-paragraph-l text-fg-primary">
-        <template v-if="failure.kind === 'refund-failed'">{{ failure.message }}</template>
-        <template v-else>
-          Your <span class="font-semibold">{{ subject }}</span> {{ status.text }}
-          <!-- The reference is the buyer's handle on the money in flight: it opens on the chain's
-               explorer, and copies whether or not one is mapped. -->
-          <template v-if="status.txRef">
-            <!-- The arrow sits inside the underline, as the design draws it: one target, not a
-                 word with a symbol loose beside it. -->
-            <a
-              v-if="txUrl"
-              :href="txUrl"
-              target="_blank"
-              rel="noopener noreferrer"
-              class="whitespace-nowrap underline decoration-1 underline-offset-4"
-            >
-              {{ shortAddress(status.txRef)
-              }}<ArrowUpRight class="ml-0.5 inline size-[1em] align-baseline" aria-hidden="true" />
-            </a>
-            <span v-else>{{ shortAddress(status.txRef) }}</span>
-            <!-- Padded to a thumb, with the padding pulled back out of the line box so it does
-                 not open up the sentence's leading. -->
-            <button
-              type="button"
-              class="-my-2 ml-1 inline-flex items-center p-2 align-middle"
-              aria-label="Copy the transaction"
-              @click="copyTx(status.txRef)"
-            >
-              <Check v-if="txCopied" class="size-5 text-fg-success" aria-hidden="true" />
-              <Copy v-else class="size-5 text-fg-secondary" aria-hidden="true" />
-            </button>
-          </template>
-        </template>
-      </p>
-    </div>
-
-    <ol class="mt-8 flex shrink-0 flex-col gap-6">
-      <li v-for="(step, index) in steps" :key="index" class="flex flex-col gap-3">
-        <div class="flex items-center gap-3">
-          <span
-            class="flex size-8 shrink-0 items-center justify-center rounded-full bg-fg-primary text-heading-l text-fg-primary-inverted"
-            aria-hidden="true"
+    <template #status>
+      <template v-if="failure.kind === 'refund-failed'">{{ failure.message }}</template>
+      <template v-else>
+        Your <span class="font-semibold">{{ subject }}</span> {{ status.text }}
+        <!-- The reference is the buyer's handle on the money in flight: it opens on the chain's
+             explorer, and copies whether or not one is mapped. -->
+        <template v-if="status.txRef">
+          <!-- The arrow sits inside the underline, as the design draws it: one target, not a
+               word with a symbol loose beside it. -->
+          <a
+            v-if="txUrl"
+            :href="txUrl"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="whitespace-nowrap underline decoration-1 underline-offset-4"
           >
-            {{ index + 1 }}
-          </span>
-          <p class="text-body-m text-fg-primary">{{ step.text }}</p>
-        </div>
-
-        <RecoveryAddressCard
-          v-if="step.card === 'address' && address"
-          :label="`Address on ${chain}`"
-          :address="address"
-        />
-
-        <RecoveryKeyCard
-          v-else-if="step.card === 'key' && material"
-          :label="notes.secretLabel"
-          :secret="secret"
-          :masked="masked"
-          @toggle="toggleKey"
-        />
-      </li>
-    </ol>
-
-    <!-- Nothing to hand over. Said once, under the steps, rather than leaving each of them to
-         trail off into a card that never appears. -->
-    <p v-if="!material && !recovering" class="mt-6 shrink-0 text-center text-body-m text-fg-error">
-      Your recovery address and key can't be loaded on this device. Open this top-up in the Polkadot
-      App to reach them.
-    </p>
-
-    <div class="mt-auto shrink-0 pt-8">
-      <CopiedPill />
-      <PillButton variant="tertiary" class="w-full" @click="emit('back')">Back</PillButton>
-    </div>
-  </section>
+            {{ shortAddress(status.txRef)
+            }}<ArrowUpRight class="ml-0.5 inline size-[1em] align-baseline" aria-hidden="true" />
+          </a>
+          <span v-else>{{ shortAddress(status.txRef) }}</span>
+          <!-- Padded to a thumb, with the padding pulled back out of the line box so it does
+               not open up the sentence's leading. -->
+          <button
+            type="button"
+            class="-my-2 ml-1 inline-flex items-center p-2 align-middle"
+            aria-label="Copy the transaction"
+            @click="copyTx(status.txRef)"
+          >
+            <Check v-if="txCopied" class="size-5 text-fg-success" aria-hidden="true" />
+            <Copy v-else class="size-5 text-fg-secondary" aria-hidden="true" />
+          </button>
+        </template>
+      </template>
+    </template>
+  </RecoveryGuide>
 </template>

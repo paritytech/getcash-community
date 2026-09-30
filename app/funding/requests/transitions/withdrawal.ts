@@ -389,6 +389,7 @@ function applyUser(record: WithdrawalRecord, observation: UserObservation): With
       return { ...record, handoff: { ...record.handoff, channel: observation.channel } };
     case "meld-submitted":
     case "deposit-skipped":
+    case "deposit-accepted":
       return record;
   }
 }

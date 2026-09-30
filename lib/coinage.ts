@@ -5,6 +5,7 @@
 import {
   createFlowStore,
   createPayment,
+  TOKENS,
   type ActionCall,
   type ChainflipRail,
   type ChainPort,
@@ -17,6 +18,7 @@ import {
   type SourceId,
   type StorageAdapter,
   type Subscription,
+  type TokenSpec,
 } from "@getsome/core";
 import { blake2b } from "@noble/hashes/blake2.js";
 import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
@@ -31,13 +33,24 @@ import {
 } from "@getsome/ephemeral";
 import { entropyToMiniSecret } from "@polkadot-labs/hdkd-helpers";
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
+import type { TypedApi } from "polkadot-api";
 import {
+  type ConversionRoute,
   createManualRail,
   DEFAULT_KEEP_NATIVE_FOR_FEES,
   DEFAULT_REMOTE_FEE_BUFFER,
+  DEFAULT_SLIPPAGE_PCT,
+  depositTokenOf,
+  DIRECT_SLIPPAGE_PCT,
+  directAssetName,
   type FundingStep,
+  isManualSourceId,
+  isStablePoolRoute,
+  MANUAL_SOURCE_IDS,
+  MANUAL_SOURCES,
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
+  psmDepositNeeded,
   sizeNativeBudget,
 } from "@getsome/funding";
 import { createHostDeps } from "@getsome/host";
@@ -59,7 +72,6 @@ import {
 import { NETWORK } from "./chainflip-backend";
 import type { WorkerHandoffPayload } from "../app/funding/requests/model";
 
-const NATIVE_DECIMALS = 10;
 const BITCOIN_NETWORK: BitcoinNetwork = NETWORK === "mainnet" ? "mainnet" : "testnet";
 const PURSE_BALANCE_TIMEOUT_MS = 10_000;
 
@@ -71,7 +83,7 @@ interface PaymentsLike {
 }
 
 /** Awaits `work` with a timeout and prefixes any failure with the stage label. */
-function stage<T>(label: string, ms: number, work: Promise<T>): Promise<T> {
+export function stage<T>(label: string, ms: number, work: Promise<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms);
     work.then(
@@ -483,6 +495,148 @@ export async function enumerateTradeBurners(args: {
   return out;
 }
 
+/** The token the route asks the rail to deliver to the burner, as the funding package decides
+ *  it: the native on the pool tier, the stable on the PSM and stable pool tiers. */
+export { depositTokenOf };
+
+type AssetHubApi = TypedApi<typeof paseo_next_v2>;
+
+/** A burner's balance on Asset Hub at the best block in the asset the route delivers to it: the
+ *  native's free balance, or the holding of the pallet-assets id the route's token names. A
+ *  deposit in any other asset is not a deposit this request can use, so it is not one it sees. */
+export async function readDepositOnAh(
+  api: AssetHubApi,
+  route: ConversionRoute,
+  address: string,
+): Promise<bigint> {
+  const token = depositTokenOf(route);
+  if (token.assetHubId === undefined) {
+    const account = await api.query.System.Account.getValue(address, { at: "best" });
+    return account?.data?.free ?? 0n;
+  }
+  const held = await api.query.Assets.Account.getValue(token.assetHubId, address, {
+    at: "best",
+  });
+  return held?.balance ?? 0n;
+}
+
+/** `readDepositOnAh` at every best block until the returned function is called. */
+export function watchDepositOnAh(
+  api: AssetHubApi,
+  route: ConversionRoute,
+  address: string,
+  onValue: (balance: bigint) => void,
+  onError: (e: unknown) => void,
+): () => void {
+  return watchTokenOnAh(api, depositTokenOf(route), address, onValue, onError);
+}
+
+/** One token's balance on an account at every best block: the native's free balance, or the
+ *  pallet-assets holding the token names. */
+function watchTokenOnAh(
+  api: AssetHubApi,
+  token: TokenSpec,
+  address: string,
+  onValue: (balance: bigint) => void,
+  onError: (e: unknown) => void,
+): () => void {
+  const subscription =
+    token.assetHubId === undefined
+      ? api.query.System.Account.watchValue(address, { at: "best" }).subscribe({
+          next: ({ value: account }) => onValue(account?.data?.free ?? 0n),
+          error: onError,
+        })
+      : api.query.Assets.Account.watchValue(token.assetHubId, address, {
+          at: "best",
+        }).subscribe({
+          next: ({ value: held }) => onValue(held?.balance ?? 0n),
+          error: onError,
+        });
+  return () => subscription.unsubscribe();
+}
+
+/** A Polkadot deposit account's balances at a best block: the token the route asks for, and
+ *  another direct token found on it, named as the deposit screen names it. */
+export interface DirectDepositReading {
+  held: bigint;
+  stray: { asset: string; amount: bigint } | null;
+}
+
+/**
+ * Every direct token's balance on a burner at each best block, until the returned function is
+ * called. A buyer can send any of them from any wallet, so a Polkadot deposit is followed in all
+ * of them: the route's own token is the deposit, any other is one it was not asked for. Emits
+ * once every balance has been read, then on every change.
+ */
+export function watchDirectDepositOnAh(
+  api: AssetHubApi,
+  route: ConversionRoute,
+  address: string,
+  onValue: (reading: DirectDepositReading) => void,
+  onError: (e: unknown) => void,
+): () => void {
+  const picked = depositTokenOf(route);
+  // The native last: a little DOT sent to pay a fee must not stand in for a stable that arrived.
+  const tokens = MANUAL_SOURCE_IDS.map((id) => MANUAL_SOURCES[id].token as TokenSpec).sort(
+    (a, b) => Number(a.assetHubId === undefined) - Number(b.assetHubId === undefined),
+  );
+  const balances = new Map<TokenSpec, bigint>();
+  const emit = () => {
+    if (balances.size < tokens.length) return;
+    const other = tokens.find((token) => token !== picked && (balances.get(token) ?? 0n) > 0n);
+    onValue({
+      held: balances.get(picked) ?? 0n,
+      stray:
+        other === undefined
+          ? null
+          : { asset: directAssetName(other), amount: balances.get(other) ?? 0n },
+    });
+  };
+  const unsubscribes = tokens.map((token) =>
+    watchTokenOnAh(
+      api,
+      token,
+      address,
+      (value) => {
+        balances.set(token, value);
+        emit();
+      },
+      onError,
+    ),
+  );
+  return () => {
+    for (const unsubscribe of unsubscribes) unsubscribe();
+  };
+}
+
+/** Core's budget for `amount` of the route's deposit token: what the rail is asked to deliver,
+ *  in that token's own denomination. */
+function depositBudget(
+  route: ConversionRoute,
+  amount: bigint,
+): { budget: { amount: bigint; asset: SettlementAsset }; targetDecimals: number } {
+  const asset: SettlementAsset =
+    route.tier === "teleport"
+      ? { kind: "pooled", assetId: TOKENS.DOTUSD.assetHubId }
+      : route.external === undefined
+        ? { kind: "native" }
+        : { kind: "stable", asset: route.external };
+  return { budget: { amount, asset }, targetDecimals: depositTokenOf(route).decimals };
+}
+
+/** The hand-off's fee fields. `keepNativeForFees` is the native pool tier's; the stable tiers
+ *  price their own fees live, so the field carries nothing there. They send the deposit they
+ *  quoted instead, which is what the worker's gate waits for. */
+export function handoffFees(
+  sizing: FundingSizing,
+): Pick<WorkerHandoffPayload, "remoteFeeBuffer" | "keepNativeForFees" | "quotedDeposit"> {
+  return {
+    remoteFeeBuffer: sizing.remoteFeeBuffer.toString(),
+    keepNativeForFees: ("keepNativeForFees" in sizing ? sizing.keepNativeForFees : 0n).toString(),
+    ...("quotedDeposit" in sizing ? { quotedDeposit: sizing.quotedDeposit.toString() } : {}),
+  };
+}
+
 export interface CoinageSessionArgs {
   /** Settle amount in CASH base units (6 decimals). */
   amount: bigint;
@@ -490,8 +644,9 @@ export interface CoinageSessionArgs {
   /** Override the funding rail. Omitted, the mock world uses the scriptable fake rail. */
   rail?: ChainflipRail;
   /**
-   * Budget in native base units (10 decimals), for a rail whose egress is the native token.
-   * Omitted, the budget is the CASH settle amount itself.
+   * Budget in the route's deposit token (the native, 10 decimals, on the pool tier), for a rail
+   * that delivers that token rather than CASH. Omitted, the budget is the CASH settle amount
+   * itself.
    */
   nativeBudget?: bigint;
   /**
@@ -520,6 +675,8 @@ export interface MockCoinageWorld extends RefundKeyHold {
   tradeN: number;
   /** The hand-off a worker would get for this request; the chain fields are blank offline. */
   handoffPayload(): Promise<WorkerHandoffPayload>;
+  /** The tier this request was quoted on (see CoinageWorld.route). */
+  route: ConversionRoute;
   /** The mock world has no counter to move. */
   advanceTrade(): Promise<void>;
 }
@@ -575,9 +732,16 @@ export async function createMockCoinageSession(
     recipient: string;
     /** The live sizing the caller quoted against, when it had one to quote against. */
     fundingSizing?: FundingSizing;
+    /** The conversion tier the caller decided on. Omitted, the pool: the fakes have no PSM. */
+    route?: ConversionRoute;
   },
 ): Promise<MockCoinageWorld> {
-  const fundingSizing = args.fundingSizing ?? { remoteFeeBuffer: 0n, keepNativeForFees: 0n };
+  const fundingSizing: FundingSizing = args.fundingSizing ?? {
+    tier: "pool",
+    remoteFeeBuffer: 0n,
+    keepNativeForFees: 0n,
+  };
+  const route: ConversionRoute = args.route ?? { tier: "pool" };
   const handoff = createFakeHandoff({ manualConsent: true });
   const harness = createFakeHarness();
   const rail = args.rail ?? createFakeRail();
@@ -596,15 +760,16 @@ export async function createMockCoinageSession(
     deriveKey: (seed) => toHandoffKey(deriveKeypairWithSecret(seed)),
     deps: { chain: harness.chain, chainflip: rail, storage, entropy },
     // A rail that egresses CASH takes the settle amount as its budget; one that egresses the
-    // native token needs a native budget and an explicit CASH settle leg. See `nativeBudget`.
+    // route's deposit token needs a budget in it and an explicit CASH settle leg. See
+    // `nativeBudget`.
     ...(args.nativeBudget === undefined
       ? { budget: { amount: args.amount, asset: CASH_SETTLEMENT }, targetDecimals: CASH_DECIMALS }
       : {
-          budget: { amount: args.nativeBudget, asset: { kind: "native" as const } },
-          targetDecimals: NATIVE_DECIMALS,
+          ...depositBudget(route, args.nativeBudget),
           settlement: CASH_SETTLEMENT,
           settleAmount: args.amount,
         }),
+    conversion: route,
     sourceId: args.sourceId,
   });
   const refund = holdRefundKey(session, storage, args.sourceId, tradeN, refundKey);
@@ -620,8 +785,8 @@ export async function createMockCoinageSession(
     peopleParaId: 0,
     assetHubGenesis: "",
     peopleGenesis: "",
-    remoteFeeBuffer: fundingSizing.remoteFeeBuffer.toString(),
-    keepNativeForFees: fundingSizing.keepNativeForFees.toString(),
+    ...handoffFees(fundingSizing),
+    ...route,
   }));
   return {
     session,
@@ -634,14 +799,22 @@ export async function createMockCoinageSession(
     tradeN,
     ...refund,
     handoffPayload,
+    route,
     async advanceTrade() {},
   };
 }
 
+/** A burner's recovery secret from its entropy seed: the 0x hex mini secret, which Polkadot
+ *  wallets import as a raw seed. */
+export function burnerSecretOf(seed: Uint8Array): string {
+  const mini = entropyToMiniSecret(seed);
+  return `0x${Array.from(mini, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+}
+
 export interface CoinageWorld extends RefundKeyHold {
   session: PaymentSession<never>;
-  /** The live sizing the deposit was built on: the destination's execution fee and the native the
-   *  burner keeps for the funding program. The quote prices its network-fee row off these. */
+  /** The live sizing the deposit was built on: the funding leg's costs in the tier's own
+   *  composition. The quote prices its fee rows off these. */
   fundingSizing: FundingSizing;
   /** This request's burner (SS58). It receives the deposit and holds the CASH until the claim. */
   burnerAddress: string;
@@ -669,8 +842,11 @@ export interface CoinageWorld extends RefundKeyHold {
   /** Moves the source's trade counter past this request's number, once the request has started
    *  and its number is taken for good. Idempotent; a failed write leaves it callable again. */
   advanceTrade(): Promise<void>;
-  /** The burner's native balance on Asset Hub at the best block. */
-  readBurnerNativeOnAh(): Promise<bigint>;
+  /** The tier this request was quoted on, frozen at quote time; the hand-off carries the same
+   *  one to the worker. It fixes the asset the burner is funded in and read for. */
+  route: ConversionRoute;
+  /** The burner's balance on Asset Hub at the best block, in the route's deposit asset. */
+  readBurnerDepositOnAh(): Promise<bigint>;
   /** The burner's recovery secret (0x hex mini-secret), importable into a wallet as a raw seed. */
   exportBurnerSecret(): Promise<string>;
   /** Stops this session's work; the shared chain clients stay connected. */
@@ -855,12 +1031,15 @@ export async function createCoinageSession(
     deriveEntropy: ParityDeriveEntropy;
     /** The product's worker: the only driver of this session's funding and claim. */
     worker: WorkerLike;
+    /** The conversion tier, decided once by the caller before the rail was built and frozen into
+     *  the hand-off here. This world takes no part in the decision. */
+    route: ConversionRoute;
     onClaimProgress?: (stage: "prompted" | "crediting", claimed?: bigint) => void;
   },
 ): Promise<CoinageWorld> {
-  // The live world serves the sources that land native DOT on the burner: the manual rail and
-  // the Meld rails.
-  const LIVE_SOURCES = new Set<SourceId>(["dot-assethub", "meld-card", "meld-bank"]);
+  // The live world serves the sources that land the route's deposit token on the burner: the
+  // manual rail, one source per token, and the Meld rails.
+  const LIVE_SOURCES = new Set<SourceId>([...MANUAL_SOURCE_IDS, "meld-card", "meld-bank"]);
   if (!LIVE_SOURCES.has(args.sourceId)) {
     throw new Error(`live mode does not serve source '${args.sourceId}'`);
   }
@@ -873,8 +1052,9 @@ export async function createCoinageSession(
     // Required by the input type but unread: `chain` below supplies the port.
     client: peopleClient,
     chain: peoplePort,
-    // The Meld rail when the fiat route injected one; the manual rail (direct deposit) otherwise.
-    chainflip: args.rail ?? createManualRail(),
+    // The Meld rail when the fiat route injected one; the manual rail (direct deposit of the
+    // route's token, under the token's own source) otherwise.
+    chainflip: args.rail ?? createManualRail({ token: depositTokenOf(args.route) }),
     // The host's storage matches the readString/writeString/clear shape createHostDeps wants.
     hostLocalStorage: args.hostLocalStorage as Parameters<
       typeof createHostDeps
@@ -901,8 +1081,7 @@ export async function createCoinageSession(
   // Host loggers may forward only warn and error.
   console.warn(`[coinage] ephemeral (burner): ${burnerKey.address}`);
 
-  const burnerMini = entropyToMiniSecret(seed);
-  const burnerHex = `0x${Array.from(burnerMini, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+  const burnerHex = burnerSecretOf(seed);
 
   // A re-opened request whose deposit has landed gets no refund key.
   const stored = await stage(
@@ -919,38 +1098,81 @@ export async function createCoinageSession(
       );
 
   // Size the deposit from live chain reads: the CASH over-buy for People's execution fee and the
-  // native the burner keeps for the funding program. The same figures feed the worker hand-off
-  // below.
-  const { estimateFundingSizing } = await import("./funding-fees");
-  const sizing = await stage(
-    "funding sizing estimate",
-    20_000,
-    estimateFundingSizing({
-      ahClient: await connectChain(ASSET_HUB),
-      peopleClient: await connectChain(PEOPLE),
-      underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
-      peopleParaId: PASEO_PEOPLE_PARA_ID,
-      settleAmount: args.amount,
-      probeAddress: burnerKey.address,
-    }),
-  ).catch(() => null);
-  const keepNativeForFees = sizing?.keepNativeForFees ?? DEFAULT_KEEP_NATIVE_FOR_FEES;
-  const remoteFeeBuffer = sizing?.remoteFeeBuffer ?? DEFAULT_REMOTE_FEE_BUFFER;
-
-  // Size the native budget the user must deposit from the live pool quote for the CASH
-  // settle amount, plus the headroom that lets the deposit clear the worker's swap gate after
-  // the pool moves (DEFAULT_SLIPPAGE_PCT), plus the retained fee native.
-  const budget = await stage(
-    "pool budget sizing",
-    15_000,
-    sizeNativeBudget({
-      client: await connectChain(ASSET_HUB),
-      underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
-      settleAmount: args.amount,
-      remoteFeeBuffer,
-      keepNativeForFees,
-    }),
-  );
+  // tier's own costs. The same figures feed the worker hand-off below.
+  const {
+    estimateFundingSizing,
+    estimatePsmFundingSizing,
+    estimateStableFundingSizing,
+    estimateTeleportFundingSizing,
+  } = await import("./funding-fees");
+  const sizingArgs = {
+    ahClient: await connectChain(ASSET_HUB),
+    peopleClient: await connectChain(PEOPLE),
+    underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
+    peopleParaId: PASEO_PEOPLE_PARA_ID,
+    settleAmount: args.amount,
+    probeAddress: burnerKey.address,
+  };
+  // A direct deposit lands as soon as it is sent, so its ask carries less headroom than a swap or
+  // a bank transfer, which give the pool longer to move.
+  const slippagePct = isManualSourceId(args.sourceId) ? DIRECT_SLIPPAGE_PCT : DEFAULT_SLIPPAGE_PCT;
+  let sizing: FundingSizing;
+  let budget: bigint;
+  if (args.route.tier === "psm") {
+    // The PSM's rate is fixed, so the deposit is a division over the batch's fees: no pool
+    // quote and no headroom, and nothing to fall back to when the reads fail.
+    const psm = await stage(
+      "funding sizing estimate",
+      20_000,
+      estimatePsmFundingSizing({ ...sizingArgs, route: args.route }),
+    );
+    sizing = psm;
+    budget = psm.quotedDeposit;
+  } else if (isStablePoolRoute(args.route)) {
+    // The two-hop quote with the headroom once, over the program's fees in the stable: nothing to
+    // fall back to when the reads fail, as on the PSM tier.
+    const stable = await stage(
+      "funding sizing estimate",
+      20_000,
+      estimateStableFundingSizing({ ...sizingArgs, route: args.route, slippagePct }),
+    );
+    sizing = stable;
+    budget = stable.askedDeposit;
+  } else if (args.route.tier === "teleport") {
+    // The deposit is the underlying itself: the target over the program's fees, no quote and no
+    // headroom, and nothing to fall back to when the reads fail.
+    const teleport = await stage(
+      "funding sizing estimate",
+      20_000,
+      estimateTeleportFundingSizing(sizingArgs),
+    );
+    sizing = teleport;
+    budget = teleport.quotedDeposit;
+  } else {
+    const pool = await stage(
+      "funding sizing estimate",
+      20_000,
+      estimateFundingSizing(sizingArgs),
+    ).catch(() => null);
+    const keepNativeForFees = pool?.keepNativeForFees ?? DEFAULT_KEEP_NATIVE_FOR_FEES;
+    const remoteFeeBuffer = pool?.remoteFeeBuffer ?? DEFAULT_REMOTE_FEE_BUFFER;
+    sizing = { tier: "pool", remoteFeeBuffer, keepNativeForFees };
+    // Size the native budget the user must deposit from the live pool quote for the CASH
+    // settle amount, plus the headroom that lets the deposit clear the worker's swap gate after
+    // the pool moves, plus the retained fee native.
+    budget = await stage(
+      "pool budget sizing",
+      15_000,
+      sizeNativeBudget({
+        client: await connectChain(ASSET_HUB),
+        underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
+        settleAmount: args.amount,
+        remoteFeeBuffer,
+        keepNativeForFees,
+        slippagePct,
+      }),
+    );
+  }
 
   const session = createPayment({
     // The burner is its own recipient; core uses this only to key the flow slot and the claim
@@ -970,9 +1192,11 @@ export async function createCoinageSession(
     entropyLabel,
     settlement: CASH_SETTLEMENT,
     settleAmount: args.amount,
+    // Into the flow slot, so a request that loses its record is recovered on this tier.
+    conversion: args.route,
     deps,
-    budget: { amount: budget, asset: { kind: "native" } },
-    targetDecimals: NATIVE_DECIMALS, // the manual rail quotes the native budget
+    // The rail quotes the budget in the route's deposit token.
+    ...depositBudget(args.route, budget),
     sourceId: args.sourceId,
     ...(args.staleFlowMs === undefined ? {} : { staleFlowMs: args.staleFlowMs }),
   });
@@ -1007,8 +1231,9 @@ export async function createCoinageSession(
       assetHubGenesis: ASSET_HUB_GENESIS,
       peopleGenesis: PEOPLE_GENESIS,
       // The same live estimates that sized the deposit.
-      remoteFeeBuffer: remoteFeeBuffer.toString(),
-      keepNativeForFees: keepNativeForFees.toString(),
+      ...handoffFees(sizing),
+      // The worker consumes the recorded tier and never re-decides.
+      ...args.route,
     };
   });
 
@@ -1039,7 +1264,7 @@ export async function createCoinageSession(
 
   return {
     session,
-    fundingSizing: { remoteFeeBuffer, keepNativeForFees },
+    fundingSizing: sizing,
     burnerAddress: burnerKey.address,
     ...holdRefundKey(session, deps.storage, args.sourceId, tradeN, refundKey),
     sourceId: args.sourceId,
@@ -1047,10 +1272,9 @@ export async function createCoinageSession(
     runFunding,
     handoffPayload,
     advanceTrade,
-    async readBurnerNativeOnAh() {
-      const api = await assetHubApi();
-      const account = await api.query.System.Account.getValue(burnerKey.address, { at: "best" });
-      return account?.data?.free ?? 0n;
+    route: args.route,
+    async readBurnerDepositOnAh() {
+      return readDepositOnAh(await assetHubApi(), args.route, burnerKey.address);
     },
     async exportBurnerSecret() {
       return burnerHex;

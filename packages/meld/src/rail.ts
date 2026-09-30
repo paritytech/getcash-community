@@ -1,19 +1,20 @@
 // The Meld rail: core's ChainflipRail port over the Meld quote, session and status pieces.
-// Meld delivers the native token to the burner on Asset Hub; the rest of the pipeline is unchanged.
+// Meld delivers the rail's token to the burner on Asset Hub; the rest of the pipeline is unchanged.
 // SourceId is 'meld-card' or 'meld-bank'.
 
-import type {
-  ChainflipRail,
-  DepositChannel,
-  OpenChannelArgs,
-  Quote,
-  ReverseQuoteInput,
-  SourceAvailability,
-  SourceDescriptor,
-  SourceId,
+import {
+  TOKENS,
+  type ChainflipRail,
+  type DepositChannel,
+  type OpenChannelArgs,
+  type Quote,
+  type ReverseQuoteInput,
+  type SourceAvailability,
+  type SourceDescriptor,
+  type SourceId,
 } from "@getsome/core";
 import type { MeldClientLike } from "./client";
-import { NATIVE_ASSET, NATIVE_DECIMALS } from "./native";
+import type { MeldToken } from "./units";
 import { computeMeldQuote, type MeldQuoteContext } from "./quote";
 import { requestMeldDeposit } from "./session";
 import { getMeldStatus } from "./status";
@@ -34,8 +35,11 @@ export interface MeldRailOptions {
    * from `method`.
    */
   paymentMethodType?: string;
-  /** Meld destination currency code. Default 'DOT_ASSETHUB'. */
-  token?: string;
+  /**
+   * The token Meld delivers to the burner. Its `meldCurrencyCode` goes on the wire and its
+   * decimals size the quote. Default `TOKENS.PAS` (Meld code 'DOT_ASSETHUB').
+   */
+  token?: MeldToken;
 }
 
 /** Default Meld payment-method code per UI category. Bank codes are region-specific. */
@@ -66,7 +70,7 @@ const METHOD_SOURCE_ID: Record<MeldMethod, SourceId> = {
 export function createMeldRail(opts: MeldRailOptions): MeldRail {
   const fiat = opts.fiat ?? "USD";
   const method: MeldMethod = opts.method ?? "CARD";
-  const token = opts.token ?? "DOT_ASSETHUB";
+  const token: MeldToken = opts.token ?? TOKENS.PAS;
   const paymentMethodType = opts.paymentMethodType ?? DEFAULT_PAYMENT_METHOD[method];
   const context: MeldQuoteContext = {
     country: opts.country,
@@ -81,9 +85,9 @@ export function createMeldRail(opts: MeldRailOptions): MeldRail {
   const descriptor: SourceDescriptor = Object.freeze({
     sourceId: METHOD_SOURCE_ID[method],
     chain: "AssetHub",
-    asset: NATIVE_ASSET,
+    asset: token.chainflipAsset,
     displayName: `${METHOD_LABEL[method]} · Meld`,
-    decimals: NATIVE_DECIMALS,
+    decimals: token.decimals,
   });
 
   return {

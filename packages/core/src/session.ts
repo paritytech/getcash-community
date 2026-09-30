@@ -10,6 +10,7 @@ import {
   type FlowMode,
   type FlowState,
   type FlowStore,
+  type HandoffConversion,
 } from "./flow-store";
 import type { HandoffAction, HandoffKey } from "./handoff";
 import { fnv1a32Hex } from "./hash";
@@ -138,6 +139,9 @@ export interface HandoffPaymentConfig extends PaymentConfigBase {
    */
   settlement?: SettlementAsset;
   settleAmount?: bigint;
+  /** The conversion route the caller decided for this request, written into the flow slot at
+   *  start so a recovery reads the tier instead of deciding one. Not read by core. */
+  conversion?: HandoffConversion;
 }
 
 export type PaymentConfig<T> = SpendPaymentConfig<T> | DeliverPaymentConfig | HandoffPaymentConfig;
@@ -939,6 +943,7 @@ export function createPayment<T>(config: PaymentConfig<T>): PaymentSession<T> {
         payload: "null",
         priceEvm: "0",
         handoffAmount: settleAmount.toString(),
+        ...(handoffCfg.conversion === undefined ? {} : { conversion: handoffCfg.conversion }),
         settlement,
         depositAddress: channel.deposit.address,
         depositChannelId: channel.depositChannelId,

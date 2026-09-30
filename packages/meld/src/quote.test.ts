@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { ReverseQuoteInput } from "@getsome/core";
+import { TOKENS, type ReverseQuoteInput } from "@getsome/core";
 import type { MeldClientLike, MeldQuoteEntry, MeldQuoteRequest } from "./client";
 import { computeMeldQuote, pickBestQuote, type MeldQuoteContext, type MeldQuoteRaw } from "./quote";
 
 const CTX: MeldQuoteContext = {
   country: "US",
   fiat: "USD",
-  token: "DOT_ASSETHUB",
+  token: TOKENS.PAS,
   method: "CREDIT_DEBIT_CARD",
 };
 
