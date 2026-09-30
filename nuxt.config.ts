@@ -1,6 +1,27 @@
 import tailwindcss from "@tailwindcss/vite";
 import { nodePolyfills } from "vite-plugin-node-polyfills";
 import { DEFAULT_THEME, THEMES } from "./app/theme/theme";
+import papiConfig from "./.papi/polkadot-api.json";
+import { NETWORK } from "./packages/core/src/network";
+
+// The faucet seed is inlined into the bundle, so a network with real funds must never get one.
+if (!NETWORK.testnet && process.env.VITE_FAUCET_SEED?.trim()) {
+  throw new Error(
+    "VITE_FAUCET_SEED is set, but packages/core/src/network.json does not mark the network as a testnet",
+  );
+}
+
+// The app dials the chains network.json names, with calls typed from the metadata in .papi/.
+for (const [chain, papiGenesis] of [
+  ["assetHub", papiConfig.entries.paseo_next_v2.genesis],
+  ["people", papiConfig.entries.paseo_people_next.genesis],
+] as const) {
+  if (NETWORK[chain].genesis.toLowerCase() !== papiGenesis.toLowerCase()) {
+    throw new Error(
+      `packages/core/src/network.json and .papi/polkadot-api.json name different ${chain} genesis hashes`,
+    );
+  }
+}
 
 export default defineNuxtConfig({
   // Static SPA; there is no server.
