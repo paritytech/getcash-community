@@ -3,15 +3,14 @@
 // and liveness-checked.
 
 import type { PolkadotClient } from "polkadot-api";
+import { NETWORK } from "@getsome/core";
 import { withTimeout } from "./timeout";
-// The genesis hashes come from the file papi regenerates with the descriptors.
-import papiConfig from "../.papi/polkadot-api.json";
 
-export const ASSET_HUB_WS = "wss://paseo-asset-hub-next-rpc.polkadot.io";
-export const PEOPLE_WS = "wss://paseo-people-next-system-rpc.polkadot.io";
+export const ASSET_HUB_WS = NETWORK.assetHub.rpc;
+export const PEOPLE_WS = NETWORK.people.rpc;
 
-export const ASSET_HUB_GENESIS = papiConfig.entries.paseo_next_v2.genesis as `0x${string}`;
-export const PEOPLE_GENESIS = papiConfig.entries.paseo_people_next.genesis as `0x${string}`;
+export const ASSET_HUB_GENESIS = NETWORK.assetHub.genesis;
+export const PEOPLE_GENESIS = NETWORK.people.genesis;
 
 export interface ChainTarget {
   /** Short name for logs and errors, e.g. "asset-hub". */

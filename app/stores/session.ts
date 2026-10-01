@@ -4,6 +4,7 @@
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef, watch } from "vue";
 import {
+  NETWORK,
   TOKENS,
   type ChainflipRail,
   type PaymentState,
@@ -193,7 +194,7 @@ async function step<T>(label: string, ms: number, work: Promise<T>): Promise<T> 
 const ahBlockLink = (block?: number) =>
   block === undefined
     ? ""
-    : ` https://polkadot.js.org/apps/?rpc=wss%3A%2F%2Fpaseo-asset-hub-next-rpc.polkadot.io#/explorer/query/${block}`;
+    : ` https://polkadot.js.org/apps/?rpc=${encodeURIComponent(NETWORK.assetHub.rpc)}#/explorer/query/${block}`;
 
 export interface QuotedView {
   send: string;
