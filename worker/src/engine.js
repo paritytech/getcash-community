@@ -67,6 +67,9 @@ const saveJobs = () => store.save();
  *   underlyingAssetId, peopleParaId, assetHubGenesis, peopleGenesis,
  *   tier: "pool" | "psm", external?, feeRate?, // the conversion route the surface decided at
  *                                            // quote time; consumed here, never re-decided
+ *   quoteFloorPct?, claimIdOffset?,          // a burner that is another job's key, sent home
+ *                                            // whole: its exchange held to the pool's quote,
+ *                                            // its claims under ids that key never used
  *   phase: "starting" | FundingStep | "failed",  // await-native: the route's deposit asset
  *   failure?: "shortfall" | "timeout" | "expired" | "cancelled" | "claim" | "held",
  *                                            // held: the PSM refused the mint three times; the
@@ -111,6 +114,20 @@ function newRecord(input, nowMs) {
   // The route is the surface's decision, taken once at quote time; a hand-off whose psm route
   // lacks its fee is refused here rather than guessed at.
   const route = recordedRoute(input);
+  const quoteFloorPct = input.quoteFloorPct === undefined ? undefined : Number(input.quoteFloorPct);
+  if (quoteFloorPct !== undefined && !(quoteFloorPct >= 0 && quoteFloorPct < 100)) {
+    throw new Error("startFunding: quoteFloorPct must be a percentage below 100");
+  }
+  const claimIdOffset = input.claimIdOffset === undefined ? 0 : Number(input.claimIdOffset);
+  if (
+    !Number.isInteger(claimIdOffset) ||
+    claimIdOffset < 0 ||
+    claimIdOffset > MAX_CLAIM_ID_OFFSET
+  ) {
+    throw new Error(
+      `startFunding: claimIdOffset must be a whole number up to ${MAX_CLAIM_ID_OFFSET}`,
+    );
+  }
   return {
     v: RECORD_V,
     sessionId,
@@ -129,6 +146,8 @@ function newRecord(input, nowMs) {
     assetHubGenesis,
     peopleGenesis,
     ...route,
+    ...(quoteFloorPct === undefined ? {} : { quoteFloorPct }),
+    ...(claimIdOffset === 0 ? {} : { claimIdOffset }),
     phase: "starting",
     done: false,
     createdAt: nowMs,
@@ -290,6 +309,14 @@ const CLAIM_RETRY_MS = 180_000;
 const CLAIM_TRACK_WINDOW_MS = 5_400_000;
 /** Registrations a job makes on its own before it settles for what the host credited. */
 const MAX_CLAIM_ATTEMPTS = 3;
+/** The largest `claimIdOffset`: it leaves room above for every attempt a job can make, inside
+ *  the 32-bit counter an attempt's id is derived with. */
+const MAX_CLAIM_ID_OFFSET = 2 ** 31;
+
+/** The id claim attempt `attempt` is registered under. A burner that is another job's key starts
+ *  its attempts at an offset, so no claim takes an id that key was already paid under. */
+const claimIdFor = (record, burner, attempt) =>
+  topUpIdFor(burner.publicKey, (record.claimIdOffset ?? 0) + attempt);
 
 /**
  * Claims the burner's CASH into the purse once the funding leg is done. Each attempt sizes the
@@ -322,7 +349,7 @@ async function claimFor(record, burner, peoplePort) {
     phase: "registering",
     attempt,
     credited: claim?.credited ?? "0",
-    id: toHex(topUpIdFor(burner.publicKey, attempt)),
+    id: toHex(claimIdFor(record, burner, attempt)),
     amount: amount.toString(),
     at: 0,
     attempts: 0,
@@ -341,7 +368,7 @@ async function registerClaim(record, burner) {
       registerTopUp(
         asBig(record.claim.amount),
         hostSecret,
-        topUpIdFor(burner.publicKey, record.claim.attempt),
+        claimIdFor(record, burner, record.claim.attempt),
       ),
       CLAIM_TIMEOUT_MS,
       "topUp",
@@ -364,7 +391,7 @@ async function followClaim(record, burner) {
   let status;
   try {
     status = await readTopUpStatus(
-      topUpIdFor(burner.publicKey, record.claim.attempt),
+      claimIdFor(record, burner, record.claim.attempt),
       CLAIM_TIMEOUT_MS,
     );
   } catch (error) {
@@ -602,6 +629,9 @@ async function tickRecord(record, nowMs) {
           slippagePct: record.slippagePct,
           ...(typeof record.quotedDeposit === "string"
             ? { quotedDeposit: asBig(record.quotedDeposit) }
+            : {}),
+          ...(typeof record.quoteFloorPct === "number"
+            ? { quoteFloorPct: record.quoteFloorPct }
             : {}),
           tickTimeoutMs: DEFAULT_TICK_TIMEOUT_MS,
           submitTimeoutMs: DEFAULT_SUBMIT_TIMEOUT_MS,
