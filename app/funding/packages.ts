@@ -5,7 +5,7 @@ import type { FundingJourneyStatus } from "./handoff";
 import { useMeldJourneyStatus } from "../composables/useMeldJourneyStatus";
 import { useChainflipTopUpAdapter } from "./chainflip-top-ups";
 import { useMeldTopUpAdapter } from "./meld-top-ups";
-import { useWithdrawalTopUpAdapter } from "../withdraw/rows";
+import { useCryptoWithdrawalTopUpAdapter, useFiatWithdrawalTopUpAdapter } from "../withdraw/rows";
 import type { FundingRoute, FundingSelection } from "./selection";
 import type { FundingTopUpAdapter } from "./top-up-adapter";
 import type { FundingTopUp } from "./top-ups";
@@ -122,17 +122,35 @@ const loadCryptoWithdrawRoute = () =>
     ({ default: component }) => component,
   );
 
-/** The withdrawal routes. Only crypto has a package; card and bank resolve to unavailable. The
- *  package hosts its own journey, so a withdrawal opened from the list loads the same route. */
+const loadMeldWithdrawRoute = () =>
+  import("../components/withdraw/routes/MeldWithdrawRoute.vue").then(
+    ({ default: component }) => component,
+  );
+
+/** The fiat sale, shared by the card and bank routes, as the buy side shares its package. */
+const meldWithdrawPackage = {
+  packageId: "@getsome/withdraw-meld",
+  load: loadMeldWithdrawRoute,
+  topUps: {
+    useAdapter: useFiatWithdrawalTopUpAdapter,
+    loadStatus: loadMeldWithdrawRoute,
+  },
+} satisfies FundingRoutePackage;
+
+/** The withdrawal routes: crypto through Chainflip or to Asset Hub, card and bank through a Meld
+ *  sale. Each package hosts its own journey, so a withdrawal opened from the list loads the same
+ *  route. */
 export const getcashWithdrawPackages = {
   crypto: {
     packageId: "@getsome/withdraw-crypto",
     load: loadCryptoWithdrawRoute,
     topUps: {
-      useAdapter: useWithdrawalTopUpAdapter,
+      useAdapter: useCryptoWithdrawalTopUpAdapter,
       loadStatus: loadCryptoWithdrawRoute,
     },
   },
+  card: meldWithdrawPackage,
+  bank: meldWithdrawPackage,
 } satisfies FundingRoutePackages;
 
 export const getcashRoutePackages = {

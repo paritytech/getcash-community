@@ -70,37 +70,58 @@ export function withdrawalRowStateOf(record: WithdrawalRecord, label: string): F
 /** The icon for a destination this build no longer knows. */
 const UNKNOWN_ICON = "/icons/crypto.svg";
 
+/** What a row says a withdrawal went out as: the network and token for crypto, the payout
+ *  method and its currency for a fiat sale. */
+function detailsOf(record: WithdrawalRecord): FundingTopUp["details"] {
+  if (record.route !== "crypto") {
+    const icon = record.route === "bank" ? "/icons/bank.svg" : "/icons/card.svg";
+    return {
+      network: { label: record.destination.chain, icon },
+      token: { label: record.destination.asset, icon },
+    };
+  }
+  const destinationId = record.ref.sourceId?.slice(WITHDRAW_SOURCE_PREFIX.length) ?? "";
+  const destination = withdrawDestination(destinationId);
+  const network = destination === undefined ? undefined : withdrawNetwork(destination.chain);
+  return {
+    network: { label: record.destination.chain, icon: network?.icon ?? UNKNOWN_ICON },
+    token: {
+      label: record.destination.asset,
+      icon: destination === undefined ? UNKNOWN_ICON : destinationTokenIcon(destination),
+    },
+  };
+}
+
 export function projectWithdrawalTopUps(
   records: readonly WithdrawalRecord[],
   now = Date.now(),
 ): FundingTopUp[] {
   return records.map((record) => {
     const progress = withdrawalProgress(record, now);
-    const destinationId = record.ref.sourceId?.slice(WITHDRAW_SOURCE_PREFIX.length) ?? "";
-    const destination = withdrawDestination(destinationId);
-    const network = destination === undefined ? undefined : withdrawNetwork(destination.chain);
     return {
       id: rowId(record.ref),
       amount: record.amountHuman,
-      route: "crypto",
+      // The route opens the package the withdrawal came from: crypto's, or the fiat sale's.
+      route: record.route,
       startedAt: record.startedAt,
       progress,
-      details: {
-        network: { label: record.destination.chain, icon: network?.icon ?? UNKNOWN_ICON },
-        token: {
-          label: record.destination.asset,
-          icon: destination === undefined ? UNKNOWN_ICON : destinationTokenIcon(destination),
-        },
-      },
+      details: detailsOf(record),
       state: withdrawalRowStateOf(record, progress.view.label),
     };
   });
 }
 
-export function useWithdrawalTopUpAdapter(): FundingTopUpAdapter {
+/** The list adapter for the withdrawals on `routes`. Each package lists its own, so the page's
+ *  one-adapter-per-package lists every withdrawal once. */
+function useWithdrawalTopUpAdapterFor(
+  routes: readonly WithdrawalRecord["route"][],
+): FundingTopUpAdapter {
   const requests = useRequestsStore();
+  const mine = computed(() =>
+    requests.openWithdrawals.filter((record) => routes.includes(record.route)),
+  );
   const cadence = computed(() => {
-    const moving = requests.openWithdrawals.filter((record) => !isFinished(record));
+    const moving = mine.value.filter((record) => !isFinished(record));
     return moving.length === 0
       ? null
       : Math.min(
@@ -109,7 +130,7 @@ export function useWithdrawalTopUpAdapter(): FundingTopUpAdapter {
   });
   const now = useFundingProgressClock(cadence);
   return {
-    topUps: computed(() => projectWithdrawalTopUps(requests.openWithdrawals, now.value)),
+    topUps: computed(() => projectWithdrawalTopUps(mine.value, now.value)),
     refresh: () => requests.reconcile("refresh"),
     // A withdrawal has no world to rebuild: bringing it to the front is the record itself.
     open: async (topUp) => {
@@ -120,3 +141,11 @@ export function useWithdrawalTopUpAdapter(): FundingTopUpAdapter {
     },
   };
 }
+
+/** The crypto withdrawals: Asset Hub and the Chainflip networks. */
+export const useCryptoWithdrawalTopUpAdapter = (): FundingTopUpAdapter =>
+  useWithdrawalTopUpAdapterFor(["crypto"]);
+
+/** The fiat sales, by card or bank. */
+export const useFiatWithdrawalTopUpAdapter = (): FundingTopUpAdapter =>
+  useWithdrawalTopUpAdapterFor(["card", "bank"]);
