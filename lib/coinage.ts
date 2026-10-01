@@ -18,6 +18,7 @@ import {
   type SourceId,
   type StorageAdapter,
   type Subscription,
+  type TokenSpec,
 } from "@getsome/core";
 import { blake2b } from "@noble/hashes/blake2.js";
 import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
@@ -39,7 +40,14 @@ import {
   DEFAULT_KEEP_NATIVE_FOR_FEES,
   DEFAULT_REMOTE_FEE_BUFFER,
   DEFAULT_SLIPPAGE_PCT,
+  depositTokenOf,
+  DIRECT_SLIPPAGE_PCT,
+  directAssetName,
   type FundingStep,
+  isManualSourceId,
+  isStablePoolRoute,
+  MANUAL_SOURCE_IDS,
+  MANUAL_SOURCES,
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
   psmDepositNeeded,
@@ -75,7 +83,7 @@ interface PaymentsLike {
 }
 
 /** Awaits `work` with a timeout and prefixes any failure with the stage label. */
-function stage<T>(label: string, ms: number, work: Promise<T>): Promise<T> {
+export function stage<T>(label: string, ms: number, work: Promise<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms);
     work.then(
@@ -487,27 +495,26 @@ export async function enumerateTradeBurners(args: {
   return out;
 }
 
-/** The token the route asks the rail to deliver to the burner: the native on the pool tier, the
- *  PSM's external on the PSM tier. */
-export function depositTokenOf(route: ConversionRoute) {
-  return route.tier === "psm" ? TOKENS[route.external] : TOKENS.PAS;
-}
+/** The token the route asks the rail to deliver to the burner, as the funding package decides
+ *  it: the native on the pool tier, the stable on the PSM and stable pool tiers. */
+export { depositTokenOf };
 
 type AssetHubApi = TypedApi<typeof paseo_next_v2>;
 
 /** A burner's balance on Asset Hub at the best block in the asset the route delivers to it: the
- *  native's free balance on the pool tier, the PSM external's holding on the PSM tier. A deposit
- *  in any other asset is not a deposit this request can use, so it is not one it sees. */
+ *  native's free balance, or the holding of the pallet-assets id the route's token names. A
+ *  deposit in any other asset is not a deposit this request can use, so it is not one it sees. */
 export async function readDepositOnAh(
   api: AssetHubApi,
   route: ConversionRoute,
   address: string,
 ): Promise<bigint> {
-  if (route.tier === "pool") {
+  const token = depositTokenOf(route);
+  if (token.assetHubId === undefined) {
     const account = await api.query.System.Account.getValue(address, { at: "best" });
     return account?.data?.free ?? 0n;
   }
-  const held = await api.query.Assets.Account.getValue(TOKENS[route.external].assetHubId, address, {
+  const held = await api.query.Assets.Account.getValue(token.assetHubId, address, {
     at: "best",
   });
   return held?.balance ?? 0n;
@@ -521,19 +528,85 @@ export function watchDepositOnAh(
   onValue: (balance: bigint) => void,
   onError: (e: unknown) => void,
 ): () => void {
+  return watchTokenOnAh(api, depositTokenOf(route), address, onValue, onError);
+}
+
+/** One token's balance on an account at every best block: the native's free balance, or the
+ *  pallet-assets holding the token names. */
+function watchTokenOnAh(
+  api: AssetHubApi,
+  token: TokenSpec,
+  address: string,
+  onValue: (balance: bigint) => void,
+  onError: (e: unknown) => void,
+): () => void {
   const subscription =
-    route.tier === "pool"
+    token.assetHubId === undefined
       ? api.query.System.Account.watchValue(address, { at: "best" }).subscribe({
           next: ({ value: account }) => onValue(account?.data?.free ?? 0n),
           error: onError,
         })
-      : api.query.Assets.Account.watchValue(TOKENS[route.external].assetHubId, address, {
+      : api.query.Assets.Account.watchValue(token.assetHubId, address, {
           at: "best",
         }).subscribe({
           next: ({ value: held }) => onValue(held?.balance ?? 0n),
           error: onError,
         });
   return () => subscription.unsubscribe();
+}
+
+/** A Polkadot deposit account's balances at a best block: the token the route asks for, and
+ *  another direct token found on it, named as the deposit screen names it. */
+export interface DirectDepositReading {
+  held: bigint;
+  stray: { asset: string; amount: bigint } | null;
+}
+
+/**
+ * Every direct token's balance on a burner at each best block, until the returned function is
+ * called. A buyer can send any of them from any wallet, so a Polkadot deposit is followed in all
+ * of them: the route's own token is the deposit, any other is one it was not asked for. Emits
+ * once every balance has been read, then on every change.
+ */
+export function watchDirectDepositOnAh(
+  api: AssetHubApi,
+  route: ConversionRoute,
+  address: string,
+  onValue: (reading: DirectDepositReading) => void,
+  onError: (e: unknown) => void,
+): () => void {
+  const picked = depositTokenOf(route);
+  // The native last: a little DOT sent to pay a fee must not stand in for a stable that arrived.
+  const tokens = MANUAL_SOURCE_IDS.map((id) => MANUAL_SOURCES[id].token as TokenSpec).sort(
+    (a, b) => Number(a.assetHubId === undefined) - Number(b.assetHubId === undefined),
+  );
+  const balances = new Map<TokenSpec, bigint>();
+  const emit = () => {
+    if (balances.size < tokens.length) return;
+    const other = tokens.find((token) => token !== picked && (balances.get(token) ?? 0n) > 0n);
+    onValue({
+      held: balances.get(picked) ?? 0n,
+      stray:
+        other === undefined
+          ? null
+          : { asset: directAssetName(other), amount: balances.get(other) ?? 0n },
+    });
+  };
+  const unsubscribes = tokens.map((token) =>
+    watchTokenOnAh(
+      api,
+      token,
+      address,
+      (value) => {
+        balances.set(token, value);
+        emit();
+      },
+      onError,
+    ),
+  );
+  return () => {
+    for (const unsubscribe of unsubscribes) unsubscribe();
+  };
 }
 
 /** Core's budget for `amount` of the route's deposit token: what the rail is asked to deliver,
@@ -543,14 +616,18 @@ function depositBudget(
   amount: bigint,
 ): { budget: { amount: bigint; asset: SettlementAsset }; targetDecimals: number } {
   const asset: SettlementAsset =
-    route.tier === "psm" ? { kind: "stable", asset: route.external } : { kind: "native" };
+    route.tier === "teleport"
+      ? { kind: "pooled", assetId: TOKENS.DOTUSD.assetHubId }
+      : route.external === undefined
+        ? { kind: "native" }
+        : { kind: "stable", asset: route.external };
   return { budget: { amount, asset }, targetDecimals: depositTokenOf(route).decimals };
 }
 
-/** The hand-off's fee fields. `keepNativeForFees` is the pool tier's; the PSM tier's batch prices
- *  its own fees live, so the field carries nothing there. The PSM tier sends the deposit it quoted
- *  instead, which is what the worker's gate waits for. */
-function handoffFees(
+/** The hand-off's fee fields. `keepNativeForFees` is the native pool tier's; the stable tiers
+ *  price their own fees live, so the field carries nothing there. They send the deposit they
+ *  quoted instead, which is what the worker's gate waits for. */
+export function handoffFees(
   sizing: FundingSizing,
 ): Pick<
   WorkerHandoffPayload,
@@ -558,10 +635,10 @@ function handoffFees(
 > {
   return {
     remoteFeeBuffer: sizing.remoteFeeBuffer.toString(),
-    keepNativeForFees: (sizing.tier === "pool" ? sizing.keepNativeForFees : 0n).toString(),
-    ...(sizing.tier === "psm" ? { quotedDeposit: sizing.quotedDeposit.toString() } : {}),
-    // The worker reuses the headroom the deposit was sized with. The PSM has no headroom.
-    ...(sizing.tier === "pool" ? { slippagePct: sizing.slippagePct } : {}),
+    keepNativeForFees: ("keepNativeForFees" in sizing ? sizing.keepNativeForFees : 0n).toString(),
+    ...("quotedDeposit" in sizing ? { quotedDeposit: sizing.quotedDeposit.toString() } : {}),
+    // The worker reuses the headroom the native pool's deposit was sized with.
+    ...("slippagePct" in sizing ? { slippagePct: sizing.slippagePct } : {}),
   };
 }
 
@@ -735,6 +812,13 @@ export async function createMockCoinageSession(
     route,
     async advanceTrade() {},
   };
+}
+
+/** A burner's recovery secret from its entropy seed: the 0x hex mini secret, which Polkadot
+ *  wallets import as a raw seed. */
+export function burnerSecretOf(seed: Uint8Array): string {
+  const mini = entropyToMiniSecret(seed);
+  return `0x${Array.from(mini, (b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
 export interface CoinageWorld extends RefundKeyHold {
@@ -964,8 +1048,8 @@ export async function createCoinageSession(
   },
 ): Promise<CoinageWorld> {
   // The live world serves the sources that land the route's deposit token on the burner: the
-  // manual rail and the Meld rails.
-  const LIVE_SOURCES = new Set<SourceId>(["dot-assethub", "meld-card", "meld-bank"]);
+  // manual rail, one source per token, and the Meld rails.
+  const LIVE_SOURCES = new Set<SourceId>([...MANUAL_SOURCE_IDS, "meld-card", "meld-bank"]);
   if (!LIVE_SOURCES.has(args.sourceId)) {
     throw new Error(`live mode does not serve source '${args.sourceId}'`);
   }
@@ -979,7 +1063,7 @@ export async function createCoinageSession(
     client: peopleClient,
     chain: peoplePort,
     // The Meld rail when the fiat route injected one; the manual rail (direct deposit of the
-    // route's token) otherwise.
+    // route's token, under the token's own source) otherwise.
     chainflip: args.rail ?? createManualRail({ token: depositTokenOf(args.route) }),
     // The host's storage matches the readString/writeString/clear shape createHostDeps wants.
     hostLocalStorage: args.hostLocalStorage as Parameters<
@@ -1007,8 +1091,7 @@ export async function createCoinageSession(
   // Host loggers may forward only warn and error.
   console.warn(`[coinage] ephemeral (burner): ${burnerKey.address}`);
 
-  const burnerMini = entropyToMiniSecret(seed);
-  const burnerHex = `0x${Array.from(burnerMini, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+  const burnerHex = burnerSecretOf(seed);
 
   // A re-opened request whose deposit has landed gets no refund key.
   const stored = await stage(
@@ -1029,6 +1112,8 @@ export async function createCoinageSession(
   const {
     estimateFundingSizing,
     estimatePsmFundingSizing,
+    estimateStableFundingSizing,
+    estimateTeleportFundingSizing,
     exposureForSource,
     PoolRouteUnavailableError,
   } = await import("./funding-fees");
@@ -1040,6 +1125,9 @@ export async function createCoinageSession(
     settleAmount: args.amount,
     probeAddress: burnerKey.address,
   };
+  // A direct deposit lands as soon as it is sent, so its ask carries less headroom than a swap or
+  // a bank transfer, which give the pool longer to move.
+  const slippagePct = isManualSourceId(args.sourceId) ? DIRECT_SLIPPAGE_PCT : DEFAULT_SLIPPAGE_PCT;
   let sizing: FundingSizing;
   let budget: bigint;
   if (args.route.tier === "psm") {
@@ -1052,6 +1140,26 @@ export async function createCoinageSession(
     );
     sizing = psm;
     budget = psm.quotedDeposit;
+  } else if (isStablePoolRoute(args.route)) {
+    // The two-hop quote with the headroom once, over the program's fees in the stable: nothing to
+    // fall back to when the reads fail, as on the PSM tier.
+    const stable = await stage(
+      "funding sizing estimate",
+      20_000,
+      estimateStableFundingSizing({ ...sizingArgs, route: args.route, slippagePct }),
+    );
+    sizing = stable;
+    budget = stable.askedDeposit;
+  } else if (args.route.tier === "teleport") {
+    // The deposit is the underlying itself: the target over the program's fees, no quote and no
+    // headroom, and nothing to fall back to when the reads fail.
+    const teleport = await stage(
+      "funding sizing estimate",
+      20_000,
+      estimateTeleportFundingSizing(sizingArgs),
+    );
+    sizing = teleport;
+    budget = teleport.quotedDeposit;
   } else {
     const pool = await stage(
       "funding sizing estimate",
@@ -1061,14 +1169,23 @@ export async function createCoinageSession(
     ).catch(() => null);
     const keepNativeForFees = pool?.keepNativeForFees ?? DEFAULT_KEEP_NATIVE_FOR_FEES;
     const remoteFeeBuffer = pool?.remoteFeeBuffer ?? DEFAULT_REMOTE_FEE_BUFFER;
-    // An unreachable chain falls back to the default headroom, as the worker does.
-    const slippagePct = pool?.slippagePct ?? DEFAULT_SLIPPAGE_PCT;
+    // A direct deposit keeps its fixed headroom; the other rails take the pool's, and the default
+    // when the chain cannot be read, as the worker does.
+    const poolSlippagePct = isManualSourceId(args.sourceId)
+      ? slippagePct
+      : (pool?.slippagePct ?? DEFAULT_SLIPPAGE_PCT);
     const poolUnavailable = pool?.poolUnavailable ?? false;
     // Refuse only a quote the caller marks fresh: a missing flow slot could also be a failed read.
     if (poolUnavailable && args.refuseUnavailablePool === true) {
       throw new PoolRouteUnavailableError(args.amount);
     }
-    sizing = { tier: "pool", remoteFeeBuffer, keepNativeForFees, slippagePct, poolUnavailable };
+    sizing = {
+      tier: "pool",
+      remoteFeeBuffer,
+      keepNativeForFees,
+      slippagePct: poolSlippagePct,
+      poolUnavailable,
+    };
     // Size the native budget the user must deposit from the live pool quote for the CASH
     // settle amount, plus the headroom that lets the deposit clear the worker's swap gate after
     // the pool moves, plus the retained fee native.
@@ -1081,7 +1198,7 @@ export async function createCoinageSession(
         settleAmount: args.amount,
         remoteFeeBuffer,
         keepNativeForFees,
-        slippagePct,
+        slippagePct: poolSlippagePct,
       }),
     );
   }

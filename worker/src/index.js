@@ -1,4 +1,10 @@
-import { cancelFunding, fundingStatus, startFunding, tickAllFunding } from "./engine.js";
+import {
+  amendFunding,
+  cancelFunding,
+  fundingStatus,
+  startFunding,
+  tickAllFunding,
+} from "./engine.js";
 import { createKeepAlive } from "./keepalive.js";
 import { startRpcDispatcher } from "./rpc.js";
 import {
@@ -14,7 +20,13 @@ import {
 // host entropy on every wake. Bundled into a single `worker/index.js` before publishing
 // (`pnpm build:worker`).
 
-export { cancelFunding, fundingStatus, startFunding, tickAllFunding } from "./engine.js";
+export {
+  amendFunding,
+  cancelFunding,
+  fundingStatus,
+  startFunding,
+  tickAllFunding,
+} from "./engine.js";
 export {
   cancelWithdraw,
   skipWithdrawRail,
@@ -78,6 +90,7 @@ startRpcDispatcher({
     tickAllFunding: () => tickAllFunding(),
     fundingStatus: (params) => fundingStatus(params),
     cancelFunding: (params) => cancelFunding(params),
+    amendFunding: (params) => amendFunding(params),
     startWithdraw: handoff(startWithdraw),
     tickAllWithdraw: () => tickAllWithdraw(),
     withdrawStatus: (params) => withdrawStatus(params),

@@ -8,6 +8,7 @@ import { TOKENS, type XcmLocation } from "@getsome/core";
 import { describe, expect, it } from "vitest";
 import {
   buildPsmFundingProgram,
+  DepositBelowFeesError,
   FEE_MARGIN_BPS,
   FUNDING_PROGRAM_MAX_WEIGHT,
   sortedAssets,
@@ -504,6 +505,9 @@ describe("estimatePsmBatchFees", () => {
     await expect(
       estimatePsmBatchFees({ api: recordingApi().api, ...input, depositExternal: 80_000n }),
     ).rejects.toThrow(/does not cover the .* held back for fees/);
+    await expect(
+      estimatePsmBatchFees({ api: recordingApi().api, ...input, depositExternal: 80_000n }),
+    ).rejects.toBeInstanceOf(DepositBelowFeesError);
     await expect(
       estimatePsmBatchFees({ api: recordingApi({ minBalance: undefined }).api, ...input }),
     ).rejects.toThrow(/USDT is not an asset on Asset Hub/);

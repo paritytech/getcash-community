@@ -9,7 +9,8 @@ import {
   FundingHeldError,
   FundingShortfallError,
   PASEO_ASSET_HUB_PARA_ID,
-  discoverPool,
+  STABLE_TOKENS,
+  discoverPools,
   freshTickState,
   recordedRoute,
   tickOnce,
@@ -63,10 +64,11 @@ const saveJobs = () => store.save();
  *   burnerAddress,                           // the address the surface showed
  *   depositExpiresAt: number|null,           // the rail's deposit deadline
  *   settleAmount, remoteFeeBuffer, keepNativeForFees, slippagePct,   // bigints as strings
- *   quotedDeposit?,                                                  // psm tier, bigint as string
+ *   quotedDeposit?,                                    // psm, stable pool and teleport tiers
  *   underlyingAssetId, peopleParaId, assetHubGenesis, peopleGenesis,
- *   tier: "pool" | "psm", external?, feeRate?, // the conversion route the surface decided at
- *                                            // quote time; consumed here, never re-decided
+ *   tier: "pool" | "psm" | "teleport", external?, feeRate?, // the conversion route the surface
+ *                                            // decided at quote time; consumed here, never
+ *                                            // re-decided
  *   phase: "starting" | FundingStep | "failed",  // await-native: the route's deposit asset
  *   failure?: "shortfall" | "timeout" | "expired" | "cancelled" | "claim" | "held",
  *                                            // held: the PSM refused the mint three times; the
@@ -261,6 +263,47 @@ export async function cancelFunding(params) {
     fail(record, "cancelled", "cancelled by the surface");
     await saveJobs();
   }
+  return describeFunding(record);
+}
+
+/**
+ * New terms for a job still waiting for its deposit, from a re-sent hand-off: the settle amount,
+ * the route and the figures the gate reads. A direct deposit that arrived short or in another
+ * token is continued this way. Refused once the worker has seen funds or submitted anything, for
+ * another burner, and for a job that has ended; the burner, the label and the run's own state
+ * stay as they were.
+ */
+export async function amendFunding(params) {
+  const input = readParams(params);
+  const all = await loadJobs();
+  const record = all[String(input.sessionId ?? "")];
+  if (!record) return { error: "invalid", reason: "no such job to amend" };
+  const mismatch = await burnerMismatch(record, String(input.burnerAddress ?? ""));
+  if (mismatch) return { error: "invalid", reason: mismatch };
+  const waiting =
+    !record.done &&
+    record.phase !== "failed" &&
+    record.state.fundsSeenAt === null &&
+    !record.state.xcmSubmitted &&
+    record.submitting === undefined;
+  if (!waiting) return { error: "invalid", reason: "the job is no longer waiting for its deposit" };
+  let terms;
+  try {
+    // The same checks a new hand-off gets, route included.
+    terms = newRecord({ ...input, label: record.label }, Date.now());
+  } catch (error) {
+    return { error: "invalid", reason: String(error?.message ?? error) };
+  }
+  for (const field of ["tier", "external", "feeRate", "quotedDeposit"]) delete record[field];
+  Object.assign(record, {
+    settleAmount: terms.settleAmount,
+    remoteFeeBuffer: terms.remoteFeeBuffer,
+    keepNativeForFees: terms.keepNativeForFees,
+    slippagePct: terms.slippagePct,
+    ...(terms.quotedDeposit === undefined ? {} : { quotedDeposit: terms.quotedDeposit }),
+    ...recordedRoute(terms),
+  });
+  await saveJobs();
   return describeFunding(record);
 }
 
@@ -549,15 +592,22 @@ async function tickRecord(record, nowMs) {
       return;
     }
     const api = ahClient.getTypedApi(paseo_next_v2);
-    // Pool keys are re-discovered each wake and not persisted. The PSM tier has no pool to find.
-    const pool =
+    // Pool keys are re-discovered each wake and not persisted, in one read of the pool table: the
+    // CASH pool, and for a pool job fed with a stable the stable's own pool too, under its
+    // pallet-assets id. The PSM and teleport tiers have no pool to find.
+    const [pool, stablePool] =
       route.tier === "pool"
         ? await bounded(
-            discoverPool(api, record.underlyingAssetId),
+            discoverPools(
+              api,
+              route.external === undefined
+                ? [record.underlyingAssetId]
+                : [record.underlyingAssetId, STABLE_TOKENS[route.external].assetHubId],
+            ),
             DEFAULT_TICK_TIMEOUT_MS,
             "pool discovery",
           )
-        : undefined;
+        : [];
 
     // Restore the persisted state into the shape tickOnce mutates. fundsSeenAt must be
     // exactly null when absent.
@@ -590,6 +640,7 @@ async function tickRecord(record, nowMs) {
           peopleApi: peopleClient.getTypedApi(paseo_people_next),
           route,
           pool,
+          stablePool,
           address: burner.address,
           signer: burner.signer,
           beneficiaryHex: toHex(burner.publicKey),
@@ -632,10 +683,12 @@ async function tickRecord(record, nowMs) {
     // A cancel that landed during this tick stands.
     if (record.phase === "failed") return;
     record.phase = outcome.step;
-    // Pool tier only, since the PSM's rate does not move, and only while the deposit is above the
-    // fee allowance: dust means the program ran.
+    // Native pool tier only, and only while the deposit is above the fee allowance: dust means the
+    // program ran. The PSM's rate does not move, and the stable tiers carry no native allowance to
+    // tell dust by, so they stay on the clock.
     record.state.parkedAtGate =
       route.tier === "pool" &&
+      route.external === undefined &&
       outcome.step === "await-native" &&
       state.fundsSeenAt !== null &&
       !state.xcmSubmitted &&

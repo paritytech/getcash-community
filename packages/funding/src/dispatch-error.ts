@@ -13,12 +13,24 @@ const name = (v: unknown): string | null => {
   return t && typeof t.type === "string" ? t.type : null;
 };
 
-/** The instruction names of an execute() argument, in order, when it carries a message. */
+/** The instruction names of an execute() argument, in order, when it carries a message. An
+ *  instruction the message carries more than once is numbered, so a failed second exchange reads
+ *  apart from the first. */
 function instructionNames(execArgs: unknown): string[] {
   const carrier =
     execArgs !== null && typeof execArgs === "object" ? (execArgs as { message?: unknown }) : null;
   const list = tagged(carrier?.message)?.value;
-  return Array.isArray(list) ? list.map((i) => name(i) ?? "?") : [];
+  if (!Array.isArray(list)) return [];
+  const names = list.map((i) => name(i) ?? "?");
+  const seen = new Map<string, number>();
+  for (const n of names) seen.set(n, (seen.get(n) ?? 0) + 1);
+  const ordinal = new Map<string, number>();
+  return names.map((n) => {
+    if ((seen.get(n) ?? 0) < 2) return n;
+    const k = (ordinal.get(n) ?? 0) + 1;
+    ordinal.set(n, k);
+    return `${n} #${k}`;
+  });
 }
 
 /**

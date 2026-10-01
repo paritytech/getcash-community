@@ -128,6 +128,7 @@ describe.runIf(process.env.PROD_PROOF === "1")("production proof", () => {
             {
               api: ah,
               peopleApi: pe,
+              route: { tier: "pool" },
               pool,
               address: burner.address,
               signer: burner.signer,
