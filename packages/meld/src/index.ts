@@ -1,15 +1,29 @@
 export {
   createMeldClient,
   type MeldClientLike,
+  type MeldDepositDisclosure,
   type MeldEndpointConfig,
   type MeldQuoteRequest,
   type MeldQuoteEntry,
+  type MeldSellClientLike,
+  type MeldSellQuoteRequest,
+  type MeldSellSessionRequest,
   type MeldSessionRequest,
   type MeldSessionResult,
   type MeldStatusResult,
   type MeldCancelResult,
 } from "./client";
-export { formatBaseUnits, toBaseUnits, type MeldToken } from "./units";
+export { formatBaseUnits, parseBaseUnits, toBaseUnits, type MeldToken } from "./units";
+export {
+  formatSellAmount,
+  readSaleChannel,
+  readSaleStatus,
+  saleChannelOf,
+  saleStatusView,
+  sellAmountOf,
+  SELL_TOKEN,
+  type SaleChannelRecord,
+} from "./sell";
 export { computeMeldQuote, pickBestQuote, type MeldQuoteContext, type MeldQuoteRaw } from "./quote";
 export { requestMeldDeposit, type MeldDepositChannel } from "./session";
 export { getMeldStatus } from "./status";
