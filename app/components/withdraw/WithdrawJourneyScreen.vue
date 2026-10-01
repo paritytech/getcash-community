@@ -89,7 +89,7 @@ const residueNote = computed(() => {
   if (residue.whole === true || residue.amount === undefined) {
     return residue.returned ? "Your funds came back to your balance as CASH." : null;
   }
-  const amount = `${formatBaseUnits(SELL_TOKEN, (BigInt(residue.amount) / 1_000_000n) * 1_000_000n)} DOT`;
+  const amount = `${formatBaseUnits(SELL_TOKEN, (BigInt(residue.amount) / 1_000_000n) * 1_000_000n)} ${SELL_TOKEN.symbol}`;
   return residue.returned
     ? `The ${amount} left over came back to your balance as CASH.`
     : `The ${amount} left over is on its way back to your balance.`;
