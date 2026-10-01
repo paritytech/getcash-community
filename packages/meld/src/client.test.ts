@@ -565,3 +565,30 @@ describe("createMeldClient cancel", () => {
     await expect(client.cancel("funding-1")).rejects.toThrow();
   });
 });
+
+describe("createMeldClient: a 429's retry-after", () => {
+  const rateLimited = (headers: Record<string, string>) =>
+    (async () =>
+      new Response(
+        JSON.stringify({ error: { tag: "Other", value: { code: "RATE_LIMITED", message: "x" } } }),
+        { status: 429, headers: { "content-type": "application/json", ...headers } },
+      )) as unknown as typeof fetch;
+  const refusalOf = (fetchImpl: typeof fetch) =>
+    createMeldClient({ baseUrl: "https://adapter.test", fetchImpl })
+      .getStatus("mfr")
+      .then(
+        () => null,
+        (e: unknown) => e as { status: number; retryAfterMs?: number },
+      );
+
+  it("carries the header's delta-seconds as milliseconds", async () => {
+    const refusal = await refusalOf(rateLimited({ "retry-after": "12" }));
+    expect(refusal).toMatchObject({ status: 429, retryAfterMs: 12_000 });
+  });
+
+  it("leaves it undefined when the browser cannot read the header", async () => {
+    const refusal = await refusalOf(rateLimited({}));
+    expect(refusal?.status).toBe(429);
+    expect(refusal?.retryAfterMs).toBeUndefined();
+  });
+});

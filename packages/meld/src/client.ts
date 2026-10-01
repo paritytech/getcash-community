@@ -184,10 +184,23 @@ class AdapterRefusal extends Error {
     readonly code: string | undefined,
     readonly fundingRequestId?: string,
     options?: { cause?: unknown },
+    /** From a 429's `retry-after`, when the response lets the browser read it. */
+    readonly retryAfterMs?: number,
   ) {
     super(message, options);
     this.name = "AdapterRefusal";
   }
+}
+
+/** `retry-after` in milliseconds: delta-seconds or an HTTP date. Undefined when absent or unreadable
+ *  (a cross-origin response hides it unless the adapter exposes the header). */
+function retryAfterMsOf(res: Response): number | undefined {
+  const raw = res.headers?.get("retry-after");
+  if (raw == null || raw.trim() === "") return undefined;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds)) return seconds >= 0 ? seconds * 1_000 : undefined;
+  const at = Date.parse(raw);
+  return Number.isNaN(at) ? undefined : Math.max(0, at - Date.now());
 }
 
 /** How many finished attempts — concluded or cancelled — `createSession` walks past before giving
@@ -243,6 +256,8 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike {
           ? String(value.code)
           : undefined,
         typeof value?.fundingRequestId === "string" ? value.fundingRequestId : undefined,
+        undefined,
+        res.status === 429 ? retryAfterMsOf(res) : undefined,
       );
     }
     return data;
