@@ -7,7 +7,8 @@
 import { PaymentRequestErr, PaymentStatusErr } from "@novasamatech/host-api";
 import { deriveEntropy, getHostLocalStorage } from "@parity/product-sdk-host";
 import { deriveKeypair } from "@getsome/ephemeral";
-import { PASEO_ASSET_HUB_PARA_ID, PASEO_PEOPLE_PARA_ID } from "@getsome/funding";
+import { MARKET_MOVE_PCT, PASEO_ASSET_HUB_PARA_ID, PASEO_PEOPLE_PARA_ID } from "@getsome/funding";
+import { sellAmountOf } from "@getsome/meld";
 import {
   createHostEntropyPort,
   createHostStorageAdapter,
@@ -17,6 +18,7 @@ import { CASH_LOCATION } from "@getsome/people";
 import {
   CASH_ON_ASSET_HUB,
   DEFAULT_WITHDRAW_SLIPPAGE_PCT,
+  exactPaymentFloor,
   PASEO_PEOPLE_POOL_ACCOUNT,
   PEOPLE_NATIVE,
   readDestinationPas,
@@ -41,6 +43,7 @@ import {
   SOURCE_CONFIG_BY_ID,
 } from "@getsome/chainflip";
 import { AccountId } from "polkadot-api";
+import { isDemoBuild } from "../app/utils/demo";
 import type { WithdrawOffer } from "../app/withdraw/offers";
 import { mainnetSdk } from "./chainflip-backend";
 import { withTimeout } from "./timeout";
@@ -162,6 +165,87 @@ export async function quoteDirectCashFor(native: bigint): Promise<bigint> {
   );
   if (quoted === undefined) throw new Error("Asset Hub cannot quote the purchase");
   return quoted + DIRECT_FEES_CASH;
+}
+
+// A fiat sale promises its provider an exact figure before the seller's KYC and pays it after,
+// out of a pool sale that only runs then. So the figure sits below what the sale lands today by
+// the floor the worker will ship at the sale plus the market move a KYC window has to survive,
+// less what the payment itself costs the key. What the sale lands above it is the residue, which
+// the worker sends home once the provider is paid. Before the purse is asked, the figure is
+// checked again against the pool as it is then, so a price that moved too far during KYC ends the
+// sale with nothing taken.
+
+/** The market move a commitment survives between its quote and its sale: the seller's KYC sits
+ *  in between, which the minutes exposure covers. */
+const SALE_KYC_MOVE_PCT = MARKET_MOVE_PCT.minutes;
+
+/** Stands in for the key and the provider in the payment's fee estimate before either is known:
+ *  the fee depends on the call, not on who makes it. */
+const FEE_ESTIMATE_ACCOUNT = "13ENScfFZXQ8avXf6cphack516B8YCjdL4MJbodm7VxK8GE9";
+
+const below = (amount: bigint, pct: number): bigint =>
+  (amount * BigInt(Math.round((100 - pct) * 100))) / 10_000n;
+
+/** What a sale of `amount` CASH lands today and the floor the worker would ship for it now; null
+ *  when the fees take the whole amount. */
+async function saleNow(amount: bigint) {
+  const sold = amount - DIRECT_FEES_CASH;
+  if (sold <= 0n) return null;
+  const { connectChain, ASSET_HUB } = await import("./host-chain");
+  const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
+  const [expected, reserves, lpFee] = await Promise.all([
+    quoteDirectReceive(amount),
+    saleReserves(api),
+    api.constants.AssetConversion.LPFee().catch(() => 3_000),
+  ]);
+  const { safetyPct } = saleBounds({
+    reserves,
+    quoted: expected,
+    cashOnKey: sold,
+    ceilingPct: DEFAULT_WITHDRAW_SLIPPAGE_PCT,
+    feePpm: BigInt(lpFee),
+  });
+  return { api, expected, safetyPct };
+}
+
+/** The figure a sale of `amount` CASH promises its provider, planck, cut to the sale's decimals.
+ *  Throws when nothing is left for it. */
+export async function sizeMeldCommitment(amount: bigint): Promise<bigint> {
+  const now = await saleNow(amount);
+  if (now === null) throw new Error("The amount does not cover the network fees.");
+  const headroomPct = now.safetyPct + SALE_KYC_MOVE_PCT;
+  const cost =
+    (await exactPaymentFloor(now.api, FEE_ESTIMATE_ACCOUNT, FEE_ESTIMATE_ACCOUNT, now.expected)) -
+    now.expected;
+  const planck = sellAmountOf(below(now.expected, headroomPct) - cost);
+  if (planck <= 0n) throw new Error("The amount does not cover the network fees.");
+  return planck;
+}
+
+/** Whether `amount` CASH still covers a sale's `planck` at today's price: the floor the worker
+ *  would ship covers the payment to `depositAddress`, its fee and the key's existential deposit,
+ *  as the worker itself will require. Asked before the purse is. */
+export async function meldCommitmentFundable(
+  amount: bigint,
+  planck: bigint,
+  depositAddress: string,
+): Promise<boolean> {
+  const now = await saleNow(amount);
+  if (now === null) return false;
+  const needed = await exactPaymentFloor(now.api, FEE_ESTIMATE_ACCOUNT, depositAddress, planck);
+  return below(now.expected, now.safetyPct) >= needed;
+}
+
+/** Where the worker reads a fiat sale from: the adapter this build names, or the stand-in sale in
+ *  a demo build that names none. Null in any other build: the worker trusts a stand-in sale as the
+ *  hand-off describes it, and its deposit address is made up. */
+export function meldHandoffConfig(): NonNullable<WithdrawalHandoffPayload["meld"]> | null {
+  const baseUrl = import.meta.env.VITE_MELD_BASE_URL as string | undefined;
+  if (!baseUrl) return isDemoBuild() ? { offline: true } : null;
+  return {
+    baseUrl,
+    productId: (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
+  };
 }
 
 /** Headroom between the pool's answer and what the provider is asked to take: the sale on Asset
@@ -363,9 +447,11 @@ export function withdrawHandoff(args: {
   rail: WithdrawalHandoffPayload["rail"];
   paymentExpiresAt: number;
   channel?: WithdrawalChannel;
+  meld?: WithdrawalHandoffPayload["meld"];
 }): WithdrawalHandoffPayload {
   return {
     ...(args.channel === undefined ? {} : { channel: args.channel }),
+    ...(args.meld === undefined ? {} : { meld: args.meld }),
     label: withdrawEntropyLabel(args.sourceId, args.n),
     keyAddress: args.key.address,
     keyPublicKeyHex: args.key.publicKeyHex,
