@@ -22,9 +22,10 @@ opens the provider's widget, and tracks the request. The **worker** (`worker/`) 
 background inside the host. Once a deposit has landed, the surface hands the job to the
 worker, which converts it to CASH and teleports it to the People chain in one transaction on
 Asset Hub, then claims the CASH through the host's top-up call. The top-up is registered under
-the ephemeral account's public key and driven by the host from there; the worker follows its
-status until the claim is final, and registers a further top-up for whatever a short claim left
-on the account. The worker keeps going after the surface is closed.
+the ephemeral account's public key and driven by the host from there. The surface shows the
+top-up done as soon as the host reports the claim in a block; the worker keeps
+following its status until the claim is final, and registers a further top-up for whatever a
+short claim left on the account. The worker keeps going after the surface is closed.
 
 The conversion has two tiers, and the PSM is the default. Asset Hub's Peg Stability Module swaps
 an approved token for CASH at a given rate less its own fee, so what a purchase buys

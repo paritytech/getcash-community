@@ -1176,7 +1176,7 @@ export const useRequestsStore = defineStore("requests", () => {
   );
   const claimStage = computed<"prompted" | "crediting" | null>(() => {
     const record = foregroundRecord.value;
-    if (record?.status.kind !== "claiming") return null;
+    if (record === null || !claimingOf(record)) return null;
     return record.claimed !== undefined ? "crediting" : "prompted";
   });
   /** The claimed amount; a full burner sweep, so it may exceed the typed amount. */

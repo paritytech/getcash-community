@@ -272,6 +272,9 @@ export interface TopUpRecord {
    *  less of the picked token or some of another. The request stays on its deposit while this is
    *  set, and the buyer chooses to continue with what arrived or to take it back. */
   depositMismatch?: DepositMismatchState;
+  /** When the host first reported the claim in a block with the full amount, before finality.
+   *  Set once and never cleared; the screens show a `claiming` record done from here. */
+  creditedAt?: number;
   status: RequestStatus;
   rail: RailState;
   failure?: RequestFailure;
