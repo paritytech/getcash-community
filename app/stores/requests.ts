@@ -6,7 +6,12 @@ import { defineStore } from "pinia";
 import { computed, ref, shallowRef, watch } from "vue";
 import { recordedRoute, type ConversionRoute } from "@getsome/funding";
 import type { FlowState, SourceId, SwapStatusResult } from "@getsome/core";
-import { createMeldClient, getMeldStatus, type MeldClientLike } from "@getsome/meld";
+import {
+  createMeldClient,
+  currentNetwork,
+  getMeldStatus,
+  type MeldClientLike,
+} from "@getsome/meld";
 import {
   advanceFundingProgressSnapshot,
   createFundingProgressSnapshot,
@@ -164,6 +169,11 @@ function defaultMeldStatusClientFactory(): MeldClientLike | null {
       ? createMeldClient({
           baseUrl,
           productId: (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
+          // Derived from the hostname; one build artifact is deployed to every network.
+          network: currentNetwork(
+            globalThis.location?.hostname ?? "",
+            import.meta.env.VITE_PERSONHOOD_NETWORK as string | undefined,
+          ),
         })
       : null;
   }
