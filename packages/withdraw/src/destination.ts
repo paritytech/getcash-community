@@ -12,7 +12,16 @@ export async function readDestinationPas(
   api: AssetHubApi,
   destinationHex: string,
 ): Promise<bigint> {
-  const address = accountId.dec(destinationHex);
+  return (await readAssetHubAccount(api, destinationHex)).free;
+}
+
+/** The account's free PAS and nonce on Asset Hub at the best head; both 0 for an account the chain
+ *  does not know. The exact payment reads the nonce to tell whether it already went out. */
+export async function readAssetHubAccount(
+  api: AssetHubApi,
+  accountHex: string,
+): Promise<{ free: bigint; nonce: number }> {
+  const address = accountId.dec(accountHex);
   const account = await api.query.System.Account.getValue(address, SALE_READ_AT);
-  return account?.data?.free ?? 0n;
+  return { free: account?.data?.free ?? 0n, nonce: account?.nonce ?? 0 };
 }
