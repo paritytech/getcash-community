@@ -1,0 +1,15 @@
+{
+  "testnet": true,
+  "nativeSymbol": "PAS",
+  "assetHub": {
+    "paraId": 1500,
+    "genesis": "0x4349b00e54897e21196fd331015fc5be0f14e118beb0375ed2bb1793737bb57a",
+    "rpc": "wss://paseo-asset-hub-next-rpc.polkadot.io"
+  },
+  "people": {
+    "paraId": 1502,
+    "genesis": "0x4a2b5b737de1da59e209b0000a876ec2fa20035dc34fd292a848da32d255ad48",
+    "rpc": "wss://paseo-people-next-system-rpc.polkadot.io",
+    "poolAccount": "5Di1GihZ1G2dYzfD7gv2DLEzFvRMBLas3jXGLeicVCFFtr8B"
+  }
+}

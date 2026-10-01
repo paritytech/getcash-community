@@ -1,8 +1,8 @@
 // The token table: what each asset is called, its decimals, how each chain keys it and what the
 // rails call it, in one place. Every asset constant the other packages export derives from here,
 // so the wire code and the arithmetic cannot disagree about which asset is in flight.
-//
-// Paseo Next only. A second network is a second table, not a second mechanism.
+
+import { NETWORK } from "./network";
 
 // XCM v5 asset locations as plain data, no papi Enum. Papi's Enum values are plain `{type, value}`
 // objects, so a precisely typed literal in this shape is accepted wherever the descriptors expect
@@ -59,7 +59,7 @@ function assetHubLocal(assetId: number): XcmLocation {
 }
 
 /** The coinage underlying as Asset Hub keys it, and as People holds it: a foreign asset keyed by
- *  its Asset Hub Next (para 1500) reserve Location. */
+ *  its Asset Hub reserve Location. */
 const UNDERLYING_ASSET_ID = 50_000_413;
 // `satisfies` keeps the literal shape, which the People port's key type relies on.
 const UNDERLYING_ON_PEOPLE = {
@@ -67,7 +67,7 @@ const UNDERLYING_ON_PEOPLE = {
   interior: {
     type: "X3",
     value: [
-      { type: "Parachain", value: 1500 },
+      { type: "Parachain", value: NETWORK.assetHub.paraId },
       { type: "PalletInstance", value: 50 },
       { type: "GeneralIndex", value: 50_000_413n },
     ],
@@ -78,11 +78,11 @@ const UNDERLYING_ON_PEOPLE = {
 // constants derived from it keep types the descriptors accept without a cast.
 export const TOKENS = {
   PAS: {
-    symbol: "PAS",
+    symbol: NETWORK.nativeSymbol,
     decimals: 10,
     location: RELAY_NATIVE,
     locationOnPeople: RELAY_NATIVE,
-    // Both rails name Paseo's native after its Polkadot counterpart.
+    // Both rails name the native after its Polkadot counterpart.
     chainflipAsset: "DOT",
     meldCurrencyCode: "DOT_ASSETHUB",
   },

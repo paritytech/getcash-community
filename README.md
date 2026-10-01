@@ -171,6 +171,12 @@ pnpm typecheck:packages # the engine (tsc)
 pnpm format             # prettier
 ```
 
+A build targets the network `packages/core/src/network.json` describes: whether it is a testnet,
+the native symbol and, for Asset Hub and People, the para id, genesis hash and endpoint, plus
+People's pool account. `.papi/` holds the metadata the calls are typed from and must name the same
+genesis hashes; the build refuses a mismatch. Both describe Paseo Next. Demo builds, and with them
+the faucet and Skip, need `"testnet": true`; the build refuses `VITE_FAUCET_SEED` otherwise.
+
 Copy `.env.example` to `.env` and fill in what you need. Nuxt reads `.env`, not `.env.local`.
 
 | Variable               | Purpose                                                                                                                     |

@@ -8,6 +8,7 @@ import { CASH_DECIMALS, CASH_LOCATION } from "../../people/src/cash";
 import { USDC_ASSET_ID, USDT_ASSET_ID } from "../../revive/src/constants";
 import { PEOPLE_NATIVE } from "../../withdraw/src/paseo";
 import { CASH_ON_ASSET_HUB } from "../../withdraw/src/program";
+import { NETWORK } from "./network";
 import { TOKENS, type TokenSpec } from "./tokens";
 
 describe("re-exported asset constants", () => {
@@ -18,7 +19,7 @@ describe("re-exported asset constants", () => {
       interior: {
         type: "X3",
         value: [
-          { type: "Parachain", value: 1500 },
+          { type: "Parachain", value: NETWORK.assetHub.paraId },
           { type: "PalletInstance", value: 50 },
           { type: "GeneralIndex", value: 50_000_413n },
         ],
