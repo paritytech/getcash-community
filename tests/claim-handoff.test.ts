@@ -13,6 +13,7 @@ function surface(claims: (WorkerClaim | null)[] = [null]) {
   const store = new Map<string, string>();
   let reads = 0;
   const onProgress = vi.fn();
+  const stop = { aborted: false };
   const handoff = createCoinageHandoff({
     storage: {
       read: async (k: string) => store.get(k) ?? null,
@@ -26,12 +27,13 @@ function surface(claims: (WorkerClaim | null)[] = [null]) {
       return next;
     },
     onProgress,
+    stop,
   });
   const record = () => {
     const raw = store.get(RECORD);
     return raw === undefined ? null : (JSON.parse(raw) as Record<string, unknown>);
   };
-  return { handoff, store, record, onProgress, readCount: () => reads };
+  return { handoff, store, record, onProgress, stop, readCount: () => reads };
 }
 
 const CLAIMED: WorkerClaim = { phase: "claimed", amount: "1020000", at: 1 };
@@ -55,6 +57,24 @@ describe("settle", () => {
     await settled;
     expect(s.record()).toMatchObject({ settled: true });
     expect(s.readCount()).toBe(3);
+  });
+
+  it("stops waiting once the session is disposed, leaving the claim to the worker", async () => {
+    // Issue #62: a disposed session's settle kept polling and reported the eventual claim
+    // against whichever request was foreground by then.
+    const s = surface([CLAIMING, CLAIMING, CLAIMED]);
+    const settled = s.handoff.settle(CTX, KEY);
+    const outcome = settled.then(
+      () => "resolved",
+      (e: Error) => e.message,
+    );
+    // Dispose during the first sleep: the next wake-up must end the wait, not read the claim.
+    await vi.advanceTimersByTimeAsync(100);
+    s.stop.aborted = true;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(await outcome).toContain("disposed");
+    expect(s.record()).toBeNull();
+    expect(s.onProgress).not.toHaveBeenCalledWith("crediting", expect.anything());
   });
 
   it("throws recoverably when the worker has not claimed within the wait", async () => {
