@@ -3,7 +3,7 @@
 // decoder, and the manual rail.
 
 import { TOKENS } from "@getsome/core";
-import { AccountId, type PolkadotClient } from "polkadot-api";
+import { AccountId, InvalidTxError, type PolkadotClient } from "polkadot-api";
 import { describe, expect, it } from "vitest";
 import { describeDispatchError } from "./dispatch-error";
 import { createManualRail } from "./manual-rail";
@@ -23,6 +23,7 @@ import {
   stableDepositNeeded,
   tickOnce,
   type FundingStep,
+  type TickOnceInput,
   type TickState,
 } from "./pipeline";
 import { psmMintOut, sizePsmMint, type PsmRoute } from "./psm-batch";
@@ -254,11 +255,81 @@ const xcmPaymentApi = {
   }),
 };
 
+type Outcome = { ok: true } | { ok: false; dispatchError: unknown };
+/** What became of a submit's watch: let go, and whether it got as far as reporting finality. */
+type WatchLog = { open: boolean; finalityReported: boolean };
+type Observer = {
+  next: (event: unknown) => void;
+  error: (error: unknown) => void;
+  complete: () => void;
+};
+type LoseAnswer = "dropped" | "included";
+
+/** polkadot-api's watch as the fakes script it. `land` runs the program on the chain, and its
+ *  outcome is reported in a best block one turn after the subscribe; finality follows a turn
+ *  later, on a watch still open. Without `land` the watch stays silent, as one whose answer is
+ *  lost; with `error` it fails as an invalid transaction does. */
+function scriptedWatch(txHash: string, log: WatchLog, land?: () => Outcome, error?: Error) {
+  const block = { hash: "0xb10c", number: 42, index: 1 };
+  return {
+    subscribe(observer: Observer) {
+      log.open = true;
+      queueMicrotask(() => {
+        if (!log.open) return;
+        if (error) return observer.error(error);
+        observer.next({ type: "signed", txHash });
+        observer.next({ type: "broadcasted", txHash });
+        if (!land) return;
+        const outcome = land();
+        observer.next({
+          type: "txBestBlocksState",
+          txHash,
+          found: true,
+          events: [],
+          block,
+          ...outcome,
+        });
+        queueMicrotask(() => {
+          if (!log.open) return;
+          log.finalityReported = true;
+          observer.next({ type: "finalized", txHash, events: [], block, ...outcome });
+          observer.complete();
+        });
+      });
+      return {
+        unsubscribe() {
+          log.open = false;
+        },
+      };
+    },
+  };
+}
+
+/** The burner's Asset Hub nonce as the fakes script it: raised at every inclusion, and only ever
+ *  asked for at the latest block. */
+function scriptedNonce() {
+  const nonce = { latest: 0 };
+  return {
+    nonce,
+    raise() {
+      nonce.latest += 1;
+    },
+    AccountNonceApi: {
+      account_nonce: async (_who: unknown, options?: { at?: string }) => {
+        expect(options?.at).toBe("best");
+        return nonce.latest;
+      },
+    },
+  };
+}
+
 /** Scripted Asset Hub + People. XCM arrival is counted in People reads, not wall-clock. */
 function scriptedWorld(
   opts: {
     /** What People's execution takes from the arrival. */
     remoteFee?: bigint;
+    /** Finalized People reads until the in-flight CASH is final there; the latest block shows it
+     *  as soon as it is in flight. */
     arrivalAfterReads?: number;
     /** Delay the funding program's native debit by N AH balance reads (a stale-read window). */
     staleDebitReads?: number;
@@ -281,9 +352,15 @@ function scriptedWorld(
     trapOnAssetHub?: bigint;
     /** Underlying the People dry run reports trapped. */
     trapOnPeople?: bigint;
+    /** The submit's watch never answers: the program is dropped, or included on a chain that
+     *  moves on without telling. Lifted by the tests through `state.loseAnswer`. */
+    loseAnswer?: LoseAnswer;
+    /** The submit fails validation instead of reaching a block. */
+    invalidTx?: boolean;
   } = {},
 ) {
   const remoteFee = opts.remoteFee ?? 50_000n;
+  const chain = scriptedNonce();
   const state = {
     /** The pool's native price for the underlying, in basis points of the sizing-time rate:
      *  10_000 is the rate the deposit was sized at, 10_300 is 3% dearer. */
@@ -297,7 +374,10 @@ function scriptedWorld(
     xcmLanded: false, // a SUCCESSFUL send; a rejected submit leaves the run still quoting
     priceAtSubmitBps: opts.priceAtSubmitBps,
     quoteCalls: 0,
-    txs: [] as Array<{ call: string; args: ExecuteArgs; options: unknown }>,
+    loseAnswer: (opts.loseAnswer ?? null) as LoseAnswer | null,
+    /** A dropped program, for the test to land when it chooses. */
+    lost: null as (() => Outcome) | null,
+    txs: [] as Array<{ call: string; args: ExecuteArgs; options: unknown; watch: WatchLog }>,
   };
   let rejectLeft = opts.rejectSubmits ?? 0;
   /** Native for `out` underlying at the current price. */
@@ -343,35 +423,49 @@ function scriptedWorld(
   const execute = (args: ExecuteArgs) => ({
     decodedCall: { type: "PolkadotXcm", value: { type: "execute", value: args } },
     getEstimatedFees: async () => DISPATCH,
-    signAndSubmit: async (_signer: unknown, options: unknown) => {
-      state.txs.push({ call: "swap", args, options });
+    signSubmitAndWatch: (_signer: unknown, options: unknown) => {
+      const watch: WatchLog = { open: false, finalityReported: false };
+      state.txs.push({ call: "swap", args, options, watch });
       const txHash = `0x${state.txs.length.toString(16).padStart(64, "0")}`;
       const withdraw = (instruction(args, "WithdrawAsset") as Fungible[])[0]!.fun.value;
       const exchange = exchangeOf(args);
       const give = exchange.give.value[0]!.fun.value;
       const want = exchange.want[0]!.fun.value;
-      if (rejectLeft > 0) {
-        rejectLeft -= 1;
-        state.nativeAh -= DISPATCH;
-        return { ok: false, txHash, dispatchError: incomplete(3, "FeesNotMet") };
-      }
-      if (state.priceAtSubmitBps !== undefined) state.priceBps = state.priceAtSubmitBps;
-      const out = underlyingFor(give);
-      if (out < want) {
-        state.nativeAh -= DISPATCH;
-        return { ok: false, txHash, dispatchError: incomplete(2, "NoDeal") };
-      }
-      const debit = withdraw + DISPATCH;
-      if (opts.staleDebitReads) {
-        state.pendingDebit += debit;
-        state.debitIn = opts.staleDebitReads;
-      } else {
-        state.nativeAh -= debit;
-      }
-      state.inFlight = out - remoteFee;
-      state.arrivalIn = opts.arrivalAfterReads ?? 3;
-      state.xcmLanded = true;
-      return { ok: true, txHash };
+      const land = (): Outcome => {
+        chain.raise();
+        if (rejectLeft > 0) {
+          rejectLeft -= 1;
+          state.nativeAh -= DISPATCH;
+          return { ok: false, dispatchError: incomplete(3, "FeesNotMet") };
+        }
+        if (state.priceAtSubmitBps !== undefined) state.priceBps = state.priceAtSubmitBps;
+        const out = underlyingFor(give);
+        if (out < want) {
+          state.nativeAh -= DISPATCH;
+          return { ok: false, dispatchError: incomplete(2, "NoDeal") };
+        }
+        const debit = withdraw + DISPATCH;
+        if (opts.staleDebitReads) {
+          state.pendingDebit += debit;
+          state.debitIn = opts.staleDebitReads;
+        } else {
+          state.nativeAh -= debit;
+        }
+        state.inFlight = out - remoteFee;
+        state.arrivalIn = opts.arrivalAfterReads ?? 3;
+        state.xcmLanded = true;
+        return { ok: true };
+      };
+      if (state.loseAnswer === "included") land();
+      if (state.loseAnswer === "dropped") state.lost = land;
+      return scriptedWatch(
+        txHash,
+        watch,
+        state.loseAnswer === null ? land : undefined,
+        opts.invalidTx
+          ? new InvalidTxError({ type: "Invalid", value: { type: "Stale" } })
+          : undefined,
+      );
     },
   });
   const api = {
@@ -386,12 +480,13 @@ function scriptedWorld(
               state.nativeAh -= state.pendingDebit;
               state.pendingDebit = 0n;
             }
-            return { data: { free: state.nativeAh }, nonce: 0 };
+            return { data: { free: state.nativeAh }, nonce: chain.nonce.latest };
           },
         },
       },
     },
     apis: {
+      AccountNonceApi: chain.AccountNonceApi,
       AssetConversionApi: {
         // Exact-out, both directions at the same rate.
         quote_price_tokens_for_exact_tokens: async (
@@ -423,7 +518,7 @@ function scriptedWorld(
       PolkadotXcm: { execute },
     },
   };
-  const readPeople = async () => {
+  const readFinalizedPeople = async () => {
     if (state.arrivalIn > 0 && --state.arrivalIn === 0) {
       state.underlyingPeople += state.inFlight;
       state.inFlight = 0n;
@@ -432,7 +527,10 @@ function scriptedWorld(
   };
   return {
     state,
-    readPeople,
+    nonce: chain.nonce,
+    readFinalizedPeople,
+    /** What the latest People block shows: the in-flight CASH too. */
+    latestPeople: () => state.underlyingPeople + state.inFlight,
     peopleApi,
     client: { getTypedApi: () => api } as unknown as PolkadotClient,
   };
@@ -474,6 +572,7 @@ function scriptedPsmWorld(
   } = {},
 ) {
   const remoteFee = opts.remoteFee ?? BUFFER;
+  const chain = scriptedNonce();
   const state = {
     /** What the pool charges in USDT for the dispatch fee; raise it to move PAS under a quote. */
     dispatchUsdt: DISPATCH_USDT,
@@ -486,7 +585,13 @@ function scriptedPsmWorld(
     /** Every chain read and dry run throws while set: a transport error, not a refusal. */
     transportDown: false,
     peopleError: undefined as string | undefined,
-    txs: [] as Array<{ call: string; mint: MintArgs; args: ExecuteArgs; options: unknown }>,
+    txs: [] as Array<{
+      call: string;
+      mint: MintArgs;
+      args: ExecuteArgs;
+      options: unknown;
+      watch: WatchLog;
+    }>,
   };
   const psmError = (variant: PsmRefusal) => ({
     type: "Module",
@@ -558,17 +663,21 @@ function scriptedPsmWorld(
     return {
       decodedCall: call,
       getEstimatedFees: async () => DISPATCH,
-      signAndSubmit: async (_signer: unknown, options: unknown) => {
-        state.txs.push({ call: "swap", mint, args, options });
+      signSubmitAndWatch: (_signer: unknown, options: unknown) => {
+        const watch: WatchLog = { open: false, finalityReported: false };
+        state.txs.push({ call: "swap", mint, args, options, watch });
         const txHash = `0x${state.txs.length.toString(16).padStart(64, "0")}`;
-        // ChargeAssetTxPayment takes the dispatch fee in USDT before anything runs.
-        state.usdtAh -= state.dispatchUsdt;
-        const outcome = run(mint, args, false);
-        if ("error" in outcome) return { ok: false, txHash, dispatchError: outcome.error };
-        state.usdtAh = outcome.usdtLeft;
-        state.inFlight = outcome.teleported - remoteFee;
-        state.arrivalIn = opts.arrivalAfterReads ?? 3;
-        return { ok: true, txHash };
+        return scriptedWatch(txHash, watch, () => {
+          chain.raise();
+          // ChargeAssetTxPayment takes the dispatch fee in USDT before anything runs.
+          state.usdtAh -= state.dispatchUsdt;
+          const outcome = run(mint, args, false);
+          if ("error" in outcome) return { ok: false, dispatchError: outcome.error };
+          state.usdtAh = outcome.usdtLeft;
+          state.inFlight = outcome.teleported - remoteFee;
+          state.arrivalIn = opts.arrivalAfterReads ?? 3;
+          return { ok: true };
+        });
       },
     };
   };
@@ -606,6 +715,7 @@ function scriptedPsmWorld(
       },
     },
     apis: {
+      AccountNonceApi: chain.AccountNonceApi,
       AssetConversionApi: {
         // The one pool read the tier makes: the dispatch fee priced in USDT.
         quote_price_tokens_for_exact_tokens: async (give: unknown, _want: unknown, out: bigint) => {
@@ -648,7 +758,7 @@ function scriptedPsmWorld(
       Utility: { batch_all: batchAll },
     },
   };
-  const readPeople = async () => {
+  const readFinalizedPeople = async () => {
     if (state.arrivalIn > 0 && --state.arrivalIn === 0) {
       state.underlyingPeople += state.inFlight;
       state.inFlight = 0n;
@@ -657,7 +767,8 @@ function scriptedPsmWorld(
   };
   return {
     state,
-    readPeople,
+    nonce: chain.nonce,
+    readFinalizedPeople,
     peopleApi: scriptedPeople({ fee: () => remoteFee, error: () => state.peopleError }),
     client: { getTypedApi: () => api } as unknown as PolkadotClient,
   };
@@ -697,6 +808,7 @@ function scriptedStableWorld(
 ) {
   const token = opts.stable === "USDT" ? TOKENS.USDT : TOKENS.USDC;
   const remoteFee = opts.remoteFee ?? BUFFER;
+  const chain = scriptedNonce();
   const state = {
     /** The CASH pool's native price for CASH, in bps of the sizing-time rate. */
     priceBps: 10_000n,
@@ -712,7 +824,7 @@ function scriptedStableWorld(
     arrivalIn: 0,
     assetReads: 0,
     peopleError: undefined as string | undefined,
-    txs: [] as Array<{ call: string; args: ExecuteArgs; options: unknown }>,
+    txs: [] as Array<{ call: string; args: ExecuteArgs; options: unknown; watch: WatchLog }>,
   };
   const isStable = (a: Fungible) => generalIndex(a.id) === BigInt(token.assetHubId);
   const nativeFor = (out: bigint) => (((out * QUOTED) / BUY) * state.priceBps) / 10_000n;
@@ -785,17 +897,21 @@ function scriptedStableWorld(
       expect(options).toEqual({ asset: token.location });
       return DISPATCH;
     },
-    signAndSubmit: async (_signer: unknown, options: unknown) => {
-      state.txs.push({ call: "swap", args, options });
+    signSubmitAndWatch: (_signer: unknown, options: unknown) => {
+      const watch: WatchLog = { open: false, finalityReported: false };
+      state.txs.push({ call: "swap", args, options, watch });
       const txHash = `0x${state.txs.length.toString(16).padStart(64, "0")}`;
-      // ChargeAssetTxPayment takes the dispatch fee in the stable before anything runs.
-      state.stableAh -= state.dispatchStable;
-      const outcome = run(args, false);
-      if ("error" in outcome) return { ok: false, txHash, dispatchError: outcome.error };
-      state.stableAh = outcome.stableLeft;
-      state.inFlight = outcome.teleported - remoteFee;
-      state.arrivalIn = opts.arrivalAfterReads ?? 3;
-      return { ok: true, txHash };
+      return scriptedWatch(txHash, watch, () => {
+        chain.raise();
+        // ChargeAssetTxPayment takes the dispatch fee in the stable before anything runs.
+        state.stableAh -= state.dispatchStable;
+        const outcome = run(args, false);
+        if ("error" in outcome) return { ok: false, dispatchError: outcome.error };
+        state.stableAh = outcome.stableLeft;
+        state.inFlight = outcome.teleported - remoteFee;
+        state.arrivalIn = opts.arrivalAfterReads ?? 3;
+        return { ok: true };
+      });
     },
   });
   const api = {
@@ -832,6 +948,7 @@ function scriptedStableWorld(
       },
     },
     apis: {
+      AccountNonceApi: chain.AccountNonceApi,
       AssetConversionApi: {
         // Exact-out on either pool: the native for CASH, or the stable for the native. The dispatch
         // fee is the one native amount priced in the stable.
@@ -878,7 +995,7 @@ function scriptedStableWorld(
     },
     tx: { PolkadotXcm: { execute } },
   };
-  const readPeople = async () => {
+  const readFinalizedPeople = async () => {
     if (state.arrivalIn > 0 && --state.arrivalIn === 0) {
       state.underlyingPeople += state.inFlight;
       state.inFlight = 0n;
@@ -887,7 +1004,8 @@ function scriptedStableWorld(
   };
   return {
     state,
-    readPeople,
+    nonce: chain.nonce,
+    readFinalizedPeople,
     peopleApi: scriptedPeople({
       fee: () => remoteFee,
       error: () => opts.peopleDryRunError ?? state.peopleError,
@@ -897,8 +1015,8 @@ function scriptedStableWorld(
   };
 }
 
-type Driveable = Pick<World, "client" | "peopleApi" | "readPeople"> & {
-  state: { txs: Array<{ call: string }> };
+type Driveable = Pick<World, "client" | "peopleApi" | "readFinalizedPeople" | "nonce"> & {
+  state: { txs: Array<{ call: string; watch: WatchLog }> };
 };
 
 /** Drives `world` one tick at a time until done or `ticks` ticks. */
@@ -908,6 +1026,7 @@ async function drive(
   state: TickState = freshTickState(),
   route: ConversionRoute = POOL,
   quotedDeposit?: bigint,
+  overrides: Partial<Pick<TickOnceInput, "inclusionTimeoutMs" | "onBeforeSubmit">> = {},
 ) {
   const steps: FundingStep[] = [];
   const transients: string[] = [];
@@ -941,11 +1060,12 @@ async function drive(
         slippagePct: 2,
         ...(quotedDeposit === undefined ? {} : { quotedDeposit }),
         tickTimeoutMs: 1_000,
-        submitTimeoutMs: 1_000,
+        inclusionTimeoutMs: 1_000,
         signOptions: SIGN_OPTIONS,
-        readUnderlyingOnPeople: world.readPeople,
+        readFinalizedUnderlyingOnPeople: world.readFinalizedPeople,
         now: () => now,
         onTransientError: (e) => transients.push(e instanceof Error ? e.message : String(e)),
+        ...overrides,
       },
       state,
     );
@@ -1085,7 +1205,8 @@ describe("tickOnce", () => {
       /funding program dispatch rejected: InitiateTransfer failed with FeesNotMet/,
     );
     expect(world.state.nativeAh).toBe(ASK + KEEP - DISPATCH);
-    expect(state).toMatchObject({ attempts: 1, xcmSubmitted: false });
+    // The answer is known, so no submit is owed one.
+    expect(state).toMatchObject({ attempts: 1, xcmSubmitted: false, nonceAtSubmit: null });
 
     const retry = await drive(world, 1, state);
     expect(retry.steps).toEqual(["swap"]);
@@ -1301,7 +1422,12 @@ describe("tickOnce on the PSM tier", () => {
     await expect(drive(world, 1, state, ROUTE)).rejects.toThrow(
       /psm batch dispatch rejected: Psm.MintingStopped/,
     );
-    expect(state).toMatchObject({ attempts: 1, psmRefusals: 1, xcmSubmitted: false });
+    expect(state).toMatchObject({
+      attempts: 1,
+      psmRefusals: 1,
+      xcmSubmitted: false,
+      nonceAtSubmit: null,
+    });
     // The batch rolled back whole: the deposit is still USDT, the dispatch fee lighter.
     expect(world.state.usdtAh).toBe(PSM_DEPOSIT - DISPATCH_USDT);
 
@@ -1535,6 +1661,7 @@ function scriptedTeleportWorld(
 ) {
   const remoteFee = opts.remoteFee ?? BUFFER;
   const token = TOKENS.DOTUSD;
+  const chain = scriptedNonce();
   const state = {
     dispatchUnderlying: DISPATCH_TELEPORT,
     underlyingAh: 0n,
@@ -1542,7 +1669,7 @@ function scriptedTeleportWorld(
     inFlight: 0n,
     arrivalIn: 0,
     assetReads: 0,
-    txs: [] as Array<{ call: string; args: ExecuteArgs; options: unknown }>,
+    txs: [] as Array<{ call: string; args: ExecuteArgs; options: unknown; watch: WatchLog }>,
   };
   const isUnderlying = (a: Fungible) => generalIndex(a.id) === BigInt(token.assetHubId);
   const run = (args: ExecuteArgs) => {
@@ -1580,16 +1707,20 @@ function scriptedTeleportWorld(
       expect(options).toEqual({ asset: token.location });
       return DISPATCH;
     },
-    signAndSubmit: async (_signer: unknown, options: unknown) => {
-      state.txs.push({ call: "swap", args, options });
+    signSubmitAndWatch: (_signer: unknown, options: unknown) => {
+      const watch: WatchLog = { open: false, finalityReported: false };
+      state.txs.push({ call: "swap", args, options, watch });
       const txHash = `0x${state.txs.length.toString(16).padStart(64, "0")}`;
-      state.underlyingAh -= state.dispatchUnderlying;
-      const outcome = run(args);
-      if ("error" in outcome) return { ok: false, txHash, dispatchError: outcome.error };
-      state.underlyingAh = outcome.left;
-      state.inFlight = outcome.teleported - remoteFee;
-      state.arrivalIn = opts.arrivalAfterReads ?? 3;
-      return { ok: true, txHash };
+      return scriptedWatch(txHash, watch, () => {
+        chain.raise();
+        state.underlyingAh -= state.dispatchUnderlying;
+        const outcome = run(args);
+        if ("error" in outcome) return { ok: false, dispatchError: outcome.error };
+        state.underlyingAh = outcome.left;
+        state.inFlight = outcome.teleported - remoteFee;
+        state.arrivalIn = opts.arrivalAfterReads ?? 3;
+        return { ok: true };
+      });
     },
   });
   const api = {
@@ -1618,6 +1749,7 @@ function scriptedTeleportWorld(
       },
     },
     apis: {
+      AccountNonceApi: chain.AccountNonceApi,
       AssetConversionApi: {
         // The one price the tier asks for: the dispatch fee in dotUSD.
         quote_price_tokens_for_exact_tokens: async (give: unknown, _want: unknown, out: bigint) => {
@@ -1659,7 +1791,7 @@ function scriptedTeleportWorld(
     },
     tx: { PolkadotXcm: { execute } },
   };
-  const readPeople = async () => {
+  const readFinalizedPeople = async () => {
     if (state.arrivalIn > 0 && --state.arrivalIn === 0) {
       state.underlyingPeople += state.inFlight;
       state.inFlight = 0n;
@@ -1668,7 +1800,8 @@ function scriptedTeleportWorld(
   };
   return {
     state,
-    readPeople,
+    nonce: chain.nonce,
+    readFinalizedPeople,
     peopleApi: scriptedPeople({ fee: () => remoteFee, error: () => opts.peopleDryRunError }),
     client: { getTypedApi: () => api } as unknown as PolkadotClient,
   };
@@ -1773,6 +1906,164 @@ describe("tickOnce on the teleport tier", () => {
       expect(world.state.underlyingAh).toBe(TELEPORT_DEPOSIT);
       expect(state).toMatchObject({ attempts: 0, xcmSubmitted: false });
     }
+  });
+});
+
+describe("the submit, and the CASH read final on People", () => {
+  /** The pool world set to convert on its first tick. */
+  function funded(opts: Parameters<typeof scriptedWorld>[0] = {}) {
+    const world = scriptedWorld({ arrivalAfterReads: 1, ...opts });
+    world.state.nativeAh = MAX_IN + KEEP;
+    return world;
+  }
+  /** Drives one tick whose submit never hears back, bounded short, and expects the bound. */
+  async function lostTick(world: Driveable, state: TickState) {
+    await expect(
+      drive(world, 1, state, POOL, undefined, { inclusionTimeoutMs: 20 }),
+    ).rejects.toThrow(/funding program submit not in a block after 0.02s/);
+    expect(world.state.txs.at(-1)!.watch).toEqual({ open: false, finalityReported: false });
+  }
+
+  it("resolves every tier's submit at inclusion and lets the watch go before finality", async () => {
+    const psm = scriptedPsmWorld({ arrivalAfterReads: 1 });
+    psm.state.usdtAh = PSM_DEPOSIT;
+    const stable = scriptedStableWorld({ arrivalAfterReads: 1 });
+    stable.state.stableAh = STABLE_DEPOSIT;
+    const teleport = scriptedTeleportWorld({ arrivalAfterReads: 1 });
+    teleport.state.underlyingAh = TELEPORT_DEPOSIT;
+    const tiers: Array<[Driveable, ConversionRoute]> = [
+      [funded(), POOL],
+      [psm, ROUTE],
+      [stable, STABLE_ROUTE],
+      [teleport, TELEPORT_ROUTE],
+    ];
+    for (const [world, route] of tiers) {
+      const run = await drive(world, 3, freshTickState(), route);
+      expect(run.steps).toEqual(["swap", "done"]);
+      expect(run.state).toMatchObject({ xcmSubmitted: true, nonceAtSubmit: null });
+      expect(world.state.txs.map((tx) => tx.watch)).toEqual([
+        { open: false, finalityReported: false },
+      ]);
+      expect(world.nonce.latest).toBe(1);
+    }
+  });
+
+  it("stays in await-arrival while only the latest People block shows the CASH, and is done once the finalized one does", async () => {
+    const world = funded({ arrivalAfterReads: 2 });
+    const state = freshTickState();
+    expect((await drive(world, 2, state)).steps).toEqual(["swap", "await-arrival"]);
+    // The latest block already shows the CASH; the finalized block the tick reads does not yet.
+    expect(world.latestPeople()).toBeGreaterThanOrEqual(SETTLE);
+    expect(world.state.underlyingPeople).toBe(0n);
+    expect((await drive(world, 2, state)).steps).toEqual(["done"]);
+  });
+
+  it("records the nonce and the People balance before the submit leaves", async () => {
+    const world = funded();
+    world.state.underlyingPeople = 3n;
+    const state = freshTickState();
+    const seen: TickState[] = [];
+    await drive(world, 1, state, POOL, undefined, {
+      onBeforeSubmit: () => {
+        seen.push({ ...state });
+      },
+    });
+    expect(seen).toEqual([
+      { ...freshTickState(), attempts: 1, fundsSeenAt: 2_000, nonceAtSubmit: 0, peopleAtXcm: 3n },
+    ]);
+    expect(state).toMatchObject({ xcmSubmitted: true, peopleAtXcm: 3n, nonceAtSubmit: null });
+  });
+
+  it("rejects an invalid transaction as before, leaving the submit owed an answer", async () => {
+    const world = funded({ invalidTx: true });
+    const state = freshTickState();
+    await expect(drive(world, 1, state)).rejects.toBeInstanceOf(InvalidTxError);
+    expect(world.nonce.latest).toBe(0);
+    expect(world.state.txs[0]!.watch.open).toBe(false);
+    expect(state).toMatchObject({ attempts: 1, xcmSubmitted: false, nonceAtSubmit: 0 });
+  });
+
+  it("sends again under the same nonce when a lost submit never landed", async () => {
+    const world = funded({ loseAnswer: "dropped" });
+    const state = freshTickState();
+    const sentAt: Array<number | null> = [];
+    const onBeforeSubmit = () => {
+      sentAt.push(state.nonceAtSubmit);
+    };
+    await expect(
+      drive(world, 1, state, POOL, undefined, { inclusionTimeoutMs: 20, onBeforeSubmit }),
+    ).rejects.toThrow(/funding program submit not in a block after 0.02s/);
+    expect(world.state.txs[0]!.watch).toEqual({ open: false, finalityReported: false });
+    expect(state).toMatchObject({ attempts: 1, xcmSubmitted: false, nonceAtSubmit: 0 });
+
+    world.state.loseAnswer = null;
+    const retry = await drive(world, 3, state, POOL, undefined, { onBeforeSubmit });
+    expect(retry.steps).toEqual(["swap", "done"]);
+    expect(retry.txs).toEqual(["swap", "swap"]);
+    // Both went out under nonce 0, so at most one of them could ever be included.
+    expect(sentAt).toEqual([0, 0]);
+    expect(world.nonce.latest).toBe(1);
+    expect(state).toMatchObject({ attempts: 2, xcmSubmitted: true });
+  });
+
+  it("takes a lost submit as landed when the nonce moved and the deposit is gone, and waits for the CASH", async () => {
+    // The CASH is not final on People yet when the tick looks: the spent deposit is the tell.
+    const world = funded({ loseAnswer: "included", quoteAfterXcm: true, arrivalAfterReads: 2 });
+    const state = freshTickState();
+    await lostTick(world, state);
+    expect(world.nonce.latest).toBe(1);
+    expect(world.state.nativeAh).toBe(0n);
+
+    world.state.loseAnswer = null;
+    const run = await drive(world, 3, state);
+    expect(run.steps).toEqual(["await-arrival", "done"]);
+    expect(run.txs).toEqual(["swap"]);
+    expect(state).toMatchObject({ attempts: 1, xcmSubmitted: true, nonceAtSubmit: null });
+  });
+
+  it("retries a lost submit that failed at dispatch: the nonce moved and the deposit is still there", async () => {
+    const world = funded({ loseAnswer: "included", rejectSubmits: 1 });
+    world.state.nativeAh = ASK + KEEP;
+    const state = freshTickState();
+    await lostTick(world, state);
+    expect(world.nonce.latest).toBe(1);
+    expect(world.state.nativeAh).toBe(ASK + KEEP - DISPATCH);
+
+    world.state.loseAnswer = null;
+    const run = await drive(world, 3, state);
+    expect(run.steps).toEqual(["swap", "done"]);
+    expect(run.txs).toEqual(["swap", "swap"]);
+    expect(world.nonce.latest).toBe(2);
+    expect(state).toMatchObject({ attempts: 2, xcmSubmitted: true });
+  });
+
+  it("does not send while a lost submit lands under the tick, and settles it as landed next tick", async () => {
+    const world = funded({ loseAnswer: "dropped", quoteAfterXcm: true });
+    const state = freshTickState();
+    await lostTick(world, state);
+    world.state.loseAnswer = null;
+
+    // The dropped program lands between the tick's look at the nonce and its send.
+    const api = (world.client as unknown as { getTypedApi: () => never }).getTypedApi() as {
+      apis: { AccountNonceApi: { account_nonce: (...a: never[]) => Promise<number> } };
+    };
+    const readNonce = api.apis.AccountNonceApi.account_nonce;
+    let reads = 0;
+    api.apis.AccountNonceApi.account_nonce = async (...args: never[]) => {
+      if (++reads === 2) world.state.lost!();
+      return readNonce(...args);
+    };
+    await expect(drive(world, 1, state)).rejects.toThrow(
+      /funding program not sent: the nonce moved during the tick/,
+    );
+    expect(world.state.txs).toHaveLength(1);
+    expect(state).toMatchObject({ attempts: 1, xcmSubmitted: false, nonceAtSubmit: 0 });
+
+    api.apis.AccountNonceApi.account_nonce = readNonce;
+    const run = await drive(world, 2, state);
+    expect(run.steps).toEqual(["done"]);
+    expect(run.txs).toEqual(["swap"]);
+    expect(state).toMatchObject({ attempts: 1, xcmSubmitted: true });
   });
 });
 

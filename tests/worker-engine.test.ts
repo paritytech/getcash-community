@@ -117,8 +117,8 @@ async function freshEngine(): Promise<Engine> {
   return await import("../worker/src/engine.js");
 }
 
-const storedJob = (): StoredJob =>
-  (mocks.stored.get("getsome.funding.jobs") as { [id: string]: StoredJob })["s-1"];
+const storedJob = (sessionId = "s-1"): StoredJob =>
+  (mocks.stored.get("getsome.funding.jobs") as { [id: string]: StoredJob })[sessionId];
 
 const outcome = (step: string) => ({ step, balances: {}, submitted: false });
 
@@ -462,20 +462,127 @@ describe("worker funding engine", () => {
     });
   });
 
-  it("persists the submitting marker before the submit, and the tx after it", async () => {
+  it("persists the submitting marker and the pre-send state before the submit, and the tx after it", async () => {
     armSeams();
     const engine = await freshEngine();
     await engine.startFunding(JSON.stringify(HANDOFF));
-    mocks.tickOnce.mockImplementationOnce(async (input) => {
+    mocks.tickOnce.mockImplementationOnce(async (input, state) => {
+      state.attempts = 1;
+      state.nonceAtSubmit = 5;
+      state.peopleAtXcm = 100n;
       await input.onBeforeSubmit("swap");
-      // The marker is durable before a broadcast could leave.
+      // The marker and the state are durable before a broadcast could leave.
       expect(storedJob().submitting).toMatchObject({ call: "swap" });
+      expect(storedJob().state).toMatchObject({
+        attempts: 1,
+        nonceAtSubmit: 5,
+        peopleAtXcm: "100",
+      });
       input.onTx({ call: "swap", txHash: SWAP_TX, block: 42 });
+      state.nonceAtSubmit = null;
+      state.xcmSubmitted = true;
       return { ...outcome("await-arrival"), submitted: true };
     });
     await engine.tickAllFunding();
     expect(storedJob().submitting).toBeUndefined();
     expect(storedJob().txs).toEqual([{ call: "swap", txHash: SWAP_TX, block: 42 }]);
+    expect(storedJob().state).toMatchObject({ nonceAtSubmit: null, xcmSubmitted: true });
+  });
+
+  it("resumes a job killed mid-send knowing a conversion may be in flight", async () => {
+    armSeams();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    mocks.tickOnce.mockImplementationOnce(async (input, state) => {
+      state.attempts = 1;
+      state.nonceAtSubmit = 5;
+      state.peopleAtXcm = 100n;
+      state.fundsSeenAt = Date.now();
+      await input.onBeforeSubmit("swap");
+      throw new Error("funding program submit not in a block after 60s");
+    });
+    await engine.tickAllFunding();
+    expect(storedJob()).toMatchObject({
+      submitting: { call: "swap" },
+      state: { attempts: 1, nonceAtSubmit: 5, peopleAtXcm: "100", xcmSubmitted: false },
+      lastError: expect.stringContaining("not in a block"),
+    });
+
+    // A restarted worker hands the tick what it recorded; the tick settles it from the chain.
+    const revived = await freshEngine();
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      expect(state).toMatchObject({ attempts: 1, nonceAtSubmit: 5, peopleAtXcm: 100n });
+      state.nonceAtSubmit = null;
+      state.xcmSubmitted = true;
+      return outcome("await-arrival");
+    });
+    await revived.tickAllFunding();
+    expect(storedJob().submitting).toBeUndefined();
+    expect(storedJob()).toMatchObject({
+      phase: "await-arrival",
+      state: { attempts: 1, nonceAtSubmit: null, xcmSubmitted: true },
+    });
+
+    // A record from before the field existed is handed to the tick without a submit owed.
+    delete storedJob().state.nonceAtSubmit;
+    const legacy = await freshEngine();
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      expect(state.nonceAtSubmit).toBeNull();
+      return outcome("await-arrival");
+    });
+    await legacy.tickAllFunding();
+    expect(storedJob().state.nonceAtSubmit).toBeNull();
+  });
+
+  it("reads the CASH behind done, and behind sizing every claim attempt, from the finalized People block", async () => {
+    armSeams();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    mocks.tickOnce.mockImplementationOnce(async (input) => {
+      expect(await input.readFinalizedUnderlyingOnPeople(BURNER.address)).toBe(SETTLE);
+      return outcome("done");
+    });
+    mocks.settlementBalance.mockResolvedValue(SETTLE);
+    mocks.registerTopUp.mockResolvedValue(undefined);
+    await engine.tickAllFunding();
+    expect(storedJob().claim).toMatchObject({ phase: "claiming", attempt: 0 });
+    // The tick's own read, then the one that sized the claim.
+    expect(mocks.settlementBalance).toHaveBeenCalledTimes(2);
+
+    // A short verdict sizes the next attempt the same way.
+    pushStatus(partially(SETTLE / 2n));
+    mocks.settlementBalance.mockResolvedValue(SETTLE / 2n);
+    await engine.tickAllFunding();
+    expect(storedJob().claim).toMatchObject({ phase: "claiming", attempt: 1 });
+    expect(mocks.settlementBalance).toHaveBeenCalledTimes(3);
+    for (const call of mocks.settlementBalance.mock.calls) {
+      expect(call).toEqual([BURNER.address, { kind: "foreign", id: "cash" }, { at: "finalized" }]);
+    }
+  });
+
+  it("ticks the next job while the first one waits for its CASH to be final", async () => {
+    armSeams();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    const second = { ...HANDOFF, sessionId: "s-2", settleAmount: "30000000" };
+    await engine.startFunding(JSON.stringify(second));
+    mocks.tickOnce.mockImplementation(async (input, state) => {
+      if (input.settleAmount === 30_000_000n) return outcome("await-native");
+      if (!state.xcmSubmitted) {
+        state.xcmSubmitted = true;
+        return outcome("await-arrival");
+      }
+      return outcome("done");
+    });
+    expect(await engine.tickAllFunding()).toEqual({ ticked: 2, busy: false });
+    expect(mocks.tickOnce).toHaveBeenCalledTimes(2);
+    expect(storedJob()).toMatchObject({ phase: "await-arrival", state: { xcmSubmitted: true } });
+    expect(storedJob("s-2")).toMatchObject({ phase: "await-native" });
+
+    mocks.settlementBalance.mockResolvedValueOnce(0n);
+    expect(await engine.tickAllFunding()).toEqual({ ticked: 2, busy: false });
+    expect(storedJob()).toMatchObject({ done: true });
+    expect(storedJob("s-2")).toMatchObject({ phase: "await-native" });
   });
 
   it("keeps transient errors retryable, makes shortfall terminal, and survives a restart", async () => {
@@ -592,6 +699,7 @@ describe("worker funding engine", () => {
       attempts: 0,
       xcmSubmitted: false,
       peopleAtXcm: "0",
+      nonceAtSubmit: null,
       fundsSeenAt: null,
     });
     mocks.tickOnce.mockImplementationOnce(async (_input, state) => {

@@ -1,10 +1,10 @@
 import { followTopUpStatus, registerTopUp } from "./host.js";
 import { toSchnorrkelSecret } from "@getsome/ephemeral";
 import {
+  DEFAULT_INCLUSION_TIMEOUT_MS,
   DEFAULT_KEEP_NATIVE_FOR_FEES,
   DEFAULT_REMOTE_FEE_BUFFER,
   DEFAULT_SLIPPAGE_PCT,
-  DEFAULT_SUBMIT_TIMEOUT_MS,
   DEFAULT_TICK_TIMEOUT_MS,
   FundingHeldError,
   FundingShortfallError,
@@ -76,10 +76,11 @@ const saveJobs = () => store.save();
  *                                            // deposit stays on the burner
  *   done, createdAt, armedAt, lastTickAt, lastError?,
  *   state: { attempts, psmRefusals, xcmSubmitted, peopleAtXcm: string,
- *            fundsSeenAt: number|null, workedMs },
+ *            fundsSeenAt: number|null, nonceAtSubmit: number|null, workedMs },
  *                                            // attempts: submits so far
  *                                            // psmRefusals: PSM refusals so far, not transport
- *   submitting?: { call: "swap", at },        // written before a submit
+ *                                            // nonceAtSubmit: set while a submit's answer is owed
+ *   submitting?: { call: "swap", at },        // written before a submit, with the state
  *   txs: [{ call, txHash, block? }],
  *   claim?: { phase: "sizing"|"registering"|"claiming"|"claimed", attempt, credited,
  *             id?, amount?, at, attempts, registeredAt?, status?, partial?, error? },
@@ -147,6 +148,7 @@ const freshRecordState = () => ({
   xcmSubmitted: false,
   peopleAtXcm: "0",
   fundsSeenAt: null,
+  nonceAtSubmit: null,
   workedMs: 0,
 });
 
@@ -231,6 +233,7 @@ function rearm(record, nowMs) {
     record.state.attempts = 0;
     record.state.xcmSubmitted = false;
     record.state.peopleAtXcm = "0";
+    record.state.nonceAtSubmit = null;
   }
   if (failure === "held") record.state.psmRefusals = 0;
   if (record.claim?.phase === "registering") {
@@ -310,10 +313,10 @@ export async function amendFunding(params) {
 /** True once the CASH has landed and been claimed; `done` alone means the funding leg is over. */
 const isFinished = (record) => record.done === true && record.claim?.phase === "claimed";
 
-/** The burner's CASH on People, floored to the claim unit. */
+/** The burner's CASH on People in the finalized block, floored to the claim unit. */
 async function claimableOn(peoplePort, burner, what) {
   const held = await bounded(
-    peoplePort.settlementBalance(burner.address, CASH_SETTLEMENT),
+    peoplePort.settlementBalance(burner.address, CASH_SETTLEMENT, { at: "finalized" }),
     DEFAULT_TICK_TIMEOUT_MS,
     what,
   );
@@ -646,6 +649,20 @@ async function tickRecord(record, nowMs) {
     state.xcmSubmitted = !!record.state.xcmSubmitted;
     state.peopleAtXcm = asBig(record.state.peopleAtXcm);
     state.fundsSeenAt = record.state.fundsSeenAt ?? null;
+    state.nonceAtSubmit = record.state.nonceAtSubmit ?? null;
+    // tickOnce mutates the state as it works; it is written back before a submit leaves and
+    // after the tick, thrown or not.
+    const persistState = () => {
+      record.state = {
+        attempts: state.attempts,
+        psmRefusals: state.psmRefusals,
+        xcmSubmitted: state.xcmSubmitted,
+        peopleAtXcm: state.peopleAtXcm.toString(),
+        fundsSeenAt: state.fundsSeenAt,
+        nonceAtSubmit: state.nonceAtSubmit,
+        workedMs: record.state.workedMs ?? 0,
+      };
+    };
 
     let outcome;
     try {
@@ -670,14 +687,17 @@ async function tickRecord(record, nowMs) {
             ? { quotedDeposit: asBig(record.quotedDeposit) }
             : {}),
           tickTimeoutMs: DEFAULT_TICK_TIMEOUT_MS,
-          submitTimeoutMs: DEFAULT_SUBMIT_TIMEOUT_MS,
+          inclusionTimeoutMs: DEFAULT_INCLUSION_TIMEOUT_MS,
           // Every submit is on Asset Hub; one anchor per tick serves them all. The PSM tier adds
           // its fee asset itself.
           signOptions: await signOptionsFor(ahClient),
-          readUnderlyingOnPeople: (ss58) => peoplePort.settlementBalance(ss58, CASH_SETTLEMENT),
+          readFinalizedUnderlyingOnPeople: (ss58) =>
+            peoplePort.settlementBalance(ss58, CASH_SETTLEMENT, { at: "finalized" }),
           now: Date.now,
-          // Persisted before the broadcast leaves.
+          // Persisted before the broadcast leaves, so a wake mid-send knows a conversion may be
+          // in flight.
           onBeforeSubmit: async (call) => {
+            persistState();
             record.submitting = { call, at: Date.now() };
             await saveJobs();
           },
@@ -689,15 +709,7 @@ async function tickRecord(record, nowMs) {
         state,
       );
     } finally {
-      // Write the state back even when the tick threw; tickOnce mutates it as it works.
-      record.state = {
-        attempts: state.attempts,
-        psmRefusals: state.psmRefusals,
-        xcmSubmitted: state.xcmSubmitted,
-        peopleAtXcm: state.peopleAtXcm.toString(),
-        fundsSeenAt: state.fundsSeenAt,
-        workedMs: record.state.workedMs ?? 0,
-      };
+      persistState();
     }
     // A cancel that landed during this tick stands.
     if (record.phase === "failed") return;
