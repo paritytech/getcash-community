@@ -1,22 +1,29 @@
+import { PASEO_UNDERLYING_ASSET_ID } from "@getsome/funding";
 import { CASH_LOCATION } from "@getsome/people";
 import {
   ChannelExpiredError,
   ChannelMismatchError,
+  CommitmentUnfundableError,
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
   DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+  exactPaymentFloor,
+  freshExactPayState,
   freshRailLegState,
   freshSweepState,
   freshWithdrawTickState,
+  PaymentUnresolvedError,
   RailFailedError,
   railTickOnce,
+  readAssetHubAccount,
   readDestinationPas,
   withdrawTickOnce,
   WithdrawRejectedError,
   WithdrawUnderfundedError,
 } from "@getsome/withdraw";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
+import { startFunding } from "./engine.js";
 import { readParams } from "./params.js";
-import { payRail, railFor } from "./providers.js";
+import { exactPaymentOut, PAY_TIMEOUT_MS, payRail, payRailExact, railFor } from "./providers.js";
 import {
   asBig,
   bounded,
@@ -47,6 +54,20 @@ const RUN_TIMEOUT_MS = 900_000;
 const MAX_TICK_GAP_MS = 30_000;
 /** A job whose payment never arrives is retired after this when the hand-off names no window. */
 const PAYMENT_WINDOW_MS = 1_800_000;
+/** The least left on a sale's key that is worth sending home, planck: 0.1 PAS. Below it the fees
+ *  of the way back take most of it. */
+const RESIDUE_RETURN_FLOOR = 1_000_000_000n;
+/** The funding job's target for a key sent home: one claim unit of CASH. The pipeline converts
+ *  everything the key holds whatever the target, so the target only has to be reachable; the
+ *  price is held by `quoteFloorPct` instead, and CASH already on People is claimed as it is. */
+const RESIDUE_SETTLE_AMOUNT = "10000";
+/** Where the claims of a key sent home start counting their ids. The purse's payments to the key
+ *  are registered under ids derived from its public key and the attempt, as the claims are, so the
+ *  claims start far past any attempt a withdrawal makes. */
+const RESIDUE_CLAIM_ID_OFFSET = 1_000_000;
+/** The failures before the provider is paid that end a sale for good: the price moved past what it
+ *  promised, or the provider closed the order or no longer knows it. The key goes home whole. */
+const ENDED_UNPAID = new Set(["unfundable", "channel-expired", "channel-mismatch"]);
 
 const store = createJobStore(WITHDRAW_KEY, "withdraw");
 const loadJobs = () => store.load();
@@ -59,19 +80,28 @@ const saveJobs = () => store.save();
  *   v: 1, sessionId, label,                  // label: the entropy label the surface used
  *   keyAddress, keyPublicKeyHex,             // the key the surface showed and the purse pays
  *   amount, destination, landingHex, rail,   // what the surface asked for; kept for its records
- *   channel?,                                // the provider's channel the page opened
+ *   channel?,                                // the provider's channel the page opened; for Meld
+ *                                            // its `amount` is the exact planck the key pays
+ *   meld?: { baseUrl?, productId?, offline? }, // Meld only: the adapter the sale is read from
  *   assetHubGenesis, peopleGenesis, peopleParaId, assetHubParaId, poolAccount, slippagePct,
  *   paymentExpiresAt: number|null,
  *   phase: "starting" | WithdrawStep | RailStep | "failed",
  *   failure?: "rejected" | "timeout" | "expired" | "cancelled" | "no-rail" | "rail-failed"
- *            | "channel-expired" | "channel-mismatch" | "underfunded",
+ *            | "channel-expired" | "channel-mismatch" | "underfunded" | "unfundable"
+ *            | "unresolved",
  *   landed,                                  // the message leg is done: PAS on Asset Hub
  *   done, createdAt, armedAt, lastTickAt, lastError?,
  *   state: { attempts, rejections, submitted, destinationPasBefore, expectedLanding,
  *            submittedSlippagePct, fundsSeenAt, workedMs },
  *                                            // the two balances as decimal strings or null
  *                                            // submittedSlippagePct: the bound the XCM carried
- *   leg: { handoff, paid, sweep, reading },  // the rail leg, for a provider rail
+ *   leg: { handoff, paid, sweep, exact?, reading },  // the rail leg, for a provider rail;
+ *                                            // exact: the Meld payment's nonce and attempts
+ *   residue?: { amount?, returning, whole?, sessionId?, startedAt? },
+ *                                            // Meld only: what the sale left on the key once
+ *                                            // the provider was paid, and its way home; whole:
+ *                                            // the sale ended unpaid and all of it goes home
+ *   residueError?,                           // why the way home has not started yet
  *   sizing?: { promisePct, safetyPct, overCapacity },  // the bound the last submit carried
  *   submitting?: { call, at },               // written before a submit
  *   txs: [{ call, txHash, block? }],
@@ -116,6 +146,12 @@ function newRecord(input, nowMs) {
   if (input.rail !== "direct" && !isChannel(input.channel)) {
     throw new Error("startWithdraw: a provider rail needs the channel the page opened");
   }
+  if (input.rail === "meld" && channelOf(input.channel).amount === undefined) {
+    throw new Error("startWithdraw: a Meld sale needs the exact amount its provider expects");
+  }
+  if (input.rail === "meld" && meldOf(input.meld) === null) {
+    throw new Error("startWithdraw: a Meld sale needs the adapter it is read from");
+  }
   if (!assetHubGenesis || !peopleGenesis) {
     throw new Error("startWithdraw: both chain genesis hashes are required");
   }
@@ -147,6 +183,7 @@ function newRecord(input, nowMs) {
     paymentExpiresAt: paymentExpiryOf(input),
     // Kept as handed over, so a surface that lost its record can rebuild the hand-off whole.
     ...(isChannel(input.channel) ? { channel: channelOf(input.channel) } : {}),
+    ...(input.rail === "meld" ? { meld: meldOf(input.meld) } : {}),
     phase: "starting",
     landed: false,
     done: false,
@@ -171,27 +208,44 @@ const isChannel = (channel) =>
   typeof channel.address === "string" &&
   channel.address !== "";
 
-/** The channel's fields as the surface sent them, numbers and strings only. */
+/** The channel's fields as the surface sent them, numbers and strings only. `amount` is kept only
+ *  as a positive whole number of planck. */
 function channelOf(channel) {
   const openedAt = Number(channel.openedAt);
   const expiresAt = Number(channel.expiresAt);
+  const amount = /^\d+$/.test(String(channel.amount ?? "")) ? String(channel.amount) : undefined;
   return {
     id: channel.id,
     address: channel.address,
     openedAt: Number.isFinite(openedAt) && openedAt > 0 ? openedAt : 0,
     expiresAt: Number.isFinite(expiresAt) && expiresAt > 0 ? expiresAt : 0,
     expectedEgress: String(channel.expectedEgress ?? "0"),
+    ...(amount !== undefined && asBig(amount) > 0n ? { amount } : {}),
+  };
+}
+
+/** The adapter a Meld sale is read from, or the page's word that it ran the offline sale. Null
+ *  when the hand-off says neither. */
+function meldOf(meld) {
+  if (typeof meld !== "object" || meld === null) return null;
+  if (meld.offline === true) return { offline: true };
+  if (typeof meld.baseUrl !== "string" || meld.baseUrl === "") return null;
+  return {
+    baseUrl: meld.baseUrl,
+    ...(typeof meld.productId === "string" && meld.productId ? { productId: meld.productId } : {}),
   };
 }
 
 /** A fresh rail leg, seeded with the hand-off's channel when it carries one. The expiry rides
- *  along: the leg refuses to pay a channel the provider has closed. */
+ *  along: the leg refuses to pay a channel the provider has closed. An exact payment starts at the
+ *  key's first nonce on Asset Hub. */
 function legFor(input, nowMs) {
   const leg = freshRailLegState();
   if (isChannel(input.channel)) {
     const { id, address, openedAt, expiresAt } = channelOf(input.channel);
     leg.handoff = { id, address, openedAt: openedAt || nowMs, expiresAt };
   }
+  if (input.rail === "meld") leg.exact = freshExactPayState();
   return leg;
 }
 
@@ -232,7 +286,8 @@ export async function startWithdraw(params) {
     if (shown && shown !== existing.keyAddress) {
       return { error: "invalid", reason: mismatchReason(existing.keyAddress, shown) };
     }
-    if (existing.phase === "failed") rearm(existing, Date.now());
+    // A sale whose key goes home whole never pays its provider again, whatever is re-sent.
+    if (existing.phase === "failed" && !goesHomeWhole(existing)) rearm(existing, Date.now());
     // A re-sent hand-off carries the surface's current payment window: a retried payment gets a
     // fresh one, and the job must not expire on the old clock while the surface waits on the new.
     existing.paymentExpiresAt = paymentExpiryOf(input) ?? existing.paymentExpiresAt;
@@ -274,6 +329,8 @@ function rearm(record, nowMs) {
   if (failure === "rejected" || failure === "timeout") {
     record.state.rejections = 0;
     if (record.leg?.sweep) record.leg.sweep.rejections = 0;
+    // The nonce stays where the refusals left it: nothing went out at the ones they spent.
+    if (record.leg?.exact) record.leg.exact.rejections = 0;
   }
   if (failure === "expired" || failure === "cancelled") record.state.fundsSeenAt = null;
 }
@@ -320,6 +377,7 @@ function describeWithdraw(record) {
     sizing: record.sizing ?? null,
     txs: record.txs,
     fundsSeenAt: record.state?.fundsSeenAt ?? null,
+    residue: record.residue ?? null,
   };
 }
 
@@ -401,17 +459,25 @@ async function tickRailLeg(record) {
     fail(record, "no-rail", `no ${record.rail} provider in this build`);
     return;
   }
+  // A Meld sale pays the exact figure its provider quoted, never everything the key holds.
+  const exactAmount = record.rail === "meld" ? asBig(record.channel?.amount, 0n) : null;
+  if (exactAmount !== null && exactAmount <= 0n) {
+    fail(record, "channel-mismatch", "the sale carries no amount to pay its provider");
+    return;
+  }
   const state = {
     handoff: handoffOf(record),
     paid: record.leg?.paid === true,
     sweep: record.leg?.sweep ?? freshSweepState(),
     reading: record.leg?.reading ?? null,
   };
+  const exact = record.leg?.exact ?? freshExactPayState();
   const persistLeg = () => {
     record.leg = {
       handoff: state.handoff,
       paid: state.paid,
       sweep: state.sweep,
+      ...(exactAmount === null ? {} : { exact }),
       reading: state.reading,
     };
   };
@@ -419,21 +485,29 @@ async function tickRailLeg(record) {
     persistLeg();
     await saveJobs();
   };
+  const hooks = { onBeforeSubmit: persistAndSave, onTx: (info) => record.txs.push(info) };
   let outcome;
   try {
     outcome = await railTickOnce(
       {
         rail,
         pay: (handoff, sweep) =>
-          payRail(record, handoff, sweep, {
-            onBeforeSubmit: persistAndSave,
-            onTx: (info) => record.txs.push(info),
-          }),
+          exactAmount === null
+            ? payRail(record, handoff, sweep, hooks)
+            : payRailExact(record, handoff, exactAmount, exact, hooks),
         tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
         destinationAddress: record.destination?.address,
-        // The payment reads the key and then submits, each on its own bound; this outer bound
-        // must outlast both, or it fires while the transfer is still in flight.
-        payTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS + DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
+        ...(exactAmount === null
+          ? {}
+          : {
+              payout: "off-chain",
+              amount: exactAmount,
+              // A payment whose answer was lost is read off the chain before the adapter, whose
+              // record of an order that got its funds may already read as closed.
+              landed: () => exactPaymentOut(record, exactAmount, exact),
+            }),
+        // Outlasts every bound inside the hand that pays, so it never fires mid transfer.
+        payTimeoutMs: PAY_TIMEOUT_MS,
         now: Date.now,
         onBeforePay: persistAndSave,
       },
@@ -445,13 +519,31 @@ async function tickRailLeg(record) {
       fail(record, "rail-failed", error.message);
       return;
     }
-    // Nothing moved: the native is still on the key and a fresh channel can carry it.
+    const refused = error instanceof ChannelExpiredError || error instanceof ChannelMismatchError;
+    // A sale's earlier attempt may still land even though the chain does not show it yet, so the
+    // provider's refusal does not say nothing was sent.
+    if (refused && exactAmount !== null && exact.inFlight) {
+      fail(
+        record,
+        "unresolved",
+        `the provider refused the sale while a payment to it may still be in flight: ${error.message}`,
+      );
+      return;
+    }
+    // Nothing moved: the native is still on the key. A fresh Chainflip channel can carry it; a
+    // sale's key goes home whole (see `returnDue`).
     if (error instanceof ChannelExpiredError) {
       fail(record, "channel-expired", error.message);
       return;
     }
     if (error instanceof ChannelMismatchError) {
       fail(record, "channel-mismatch", error.message);
+      return;
+    }
+    // Whether the provider was paid cannot be told: nothing more leaves the key until a human
+    // has looked.
+    if (error instanceof PaymentUnresolvedError) {
+      fail(record, "unresolved", error.message);
       return;
     }
     throw error;
@@ -461,6 +553,79 @@ async function tickRailLeg(record) {
   if (record.phase === "failed") return;
   record.phase = outcome.step;
   if (outcome.step === "done") record.done = true;
+}
+
+/** The funding job that brings what a sale left on its key home. Not a `<source>:<n>` id, so the
+ *  surface never mistakes it for a top-up of its own. */
+const residueSessionId = (record) => `${record.sessionId}/residue`;
+
+/**
+ * What a Meld sale still owes the purse: `residue`, what the key holds once the provider is paid,
+ * or `whole`, everything it holds when the sale ended before the provider could be paid. Null
+ * when nothing is owed, once the way home has started, and while a payment may still be in
+ * flight, since a key that may have paid moves nothing more until a human has looked.
+ */
+function returnDue(record) {
+  if (record.rail !== "meld" || record.residue !== undefined) return null;
+  if (record.leg?.paid === true) return "residue";
+  if (record.phase !== "failed" || !ENDED_UNPAID.has(record.failure)) return null;
+  return record.leg?.exact?.inFlight === true ? null : "whole";
+}
+
+/** The sale's key goes home whole, or already is on its way. */
+const goesHomeWhole = (record) => record.residue?.whole === true || returnDue(record) === "whole";
+
+/**
+ * Sends what a Meld sale left on its key home as CASH, through the funding engine, as it does an
+ * on-ramp: everything the key holds on Asset Hub is converted, teleported to the key on People
+ * and claimed into the purse, and CASH already on People is claimed as it is. So a residue starts
+ * strictly after the payment is on chain, or that conversion would take the provider's figure too,
+ * and one below RESIDUE_RETURN_FLOOR stays on the key. A sale that ended unpaid sends everything,
+ * wherever it is: the CASH still on People when the price moved, the PAS on Asset Hub when the
+ * provider closed the order. The exchange is held to the bound the sale itself went out under.
+ */
+async function sendHome(record, kind) {
+  let amount = null;
+  if (kind === "residue") {
+    const client = await connectChain(record.assetHubGenesis, "asset hub");
+    try {
+      const assetHubApi = client.getTypedApi(paseo_next_v2);
+      amount = (
+        await bounded(
+          readAssetHubAccount(assetHubApi, record.keyPublicKeyHex),
+          DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+          "residue read",
+        )
+      ).free;
+    } finally {
+      client.destroy();
+    }
+    if (amount < RESIDUE_RETURN_FLOOR) {
+      record.residue = { amount: amount.toString(), returning: false };
+      return;
+    }
+  }
+  const sessionId = residueSessionId(record);
+  const started = await startFunding({
+    sessionId,
+    label: record.label,
+    burnerAddress: record.keyAddress,
+    settleAmount: RESIDUE_SETTLE_AMOUNT,
+    underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
+    peopleParaId: record.peopleParaId,
+    assetHubGenesis: record.assetHubGenesis,
+    peopleGenesis: record.peopleGenesis,
+    tier: "pool",
+    quoteFloorPct: record.state?.submittedSlippagePct ?? record.slippagePct,
+    claimIdOffset: RESIDUE_CLAIM_ID_OFFSET,
+  });
+  if (started?.error) throw new Error(started.reason ?? started.error);
+  record.residue = {
+    ...(amount === null ? { whole: true } : { amount: amount.toString() }),
+    returning: true,
+    sessionId,
+    startedAt: Date.now(),
+  };
 }
 
 /** One tick for one record: connect, read the world, act at most once, persist, let go. The
@@ -521,6 +686,19 @@ async function tickRecord(record, nowMs) {
           peopleParaId: record.peopleParaId,
           poolAccount: record.poolAccount,
           slippagePct: record.slippagePct,
+          // A Meld sale promised its provider an exact figure out of what lands: the sale must
+          // cover it, its fee and the key's existential deposit, or nothing leaves People.
+          ...(record.rail === "meld"
+            ? {
+                minLanding: () =>
+                  exactPaymentFloor(
+                    assetHubApi,
+                    key.address,
+                    record.channel.address,
+                    asBig(record.channel.amount, 0n),
+                  ),
+              }
+            : {}),
           tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
           submitTimeoutMs: DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
           // Every submit is on People; one anchor per tick serves them all.
@@ -580,41 +758,63 @@ async function tickRecord(record, nowMs) {
 // A pass already running answers a second entry with "busy".
 let ticking = false;
 
+const isLive = (record) => !record.done && record.phase !== "failed";
+
 /**
- * Drives every live job one tick. Per-job errors are recorded on the job and contained. A job
- * ends only through `fail` or its message's processing; a re-sent hand-off re-arms a failed one.
+ * Drives every live job one tick, and sends home what a sale's key still owes the purse, done or
+ * failed. Per-job errors are recorded on the job and contained. A job ends only through `fail` or
+ * its message's processing; a re-sent hand-off re-arms a failed one.
  */
 export async function tickAllWithdraw() {
   if (ticking) return { ticked: 0, busy: true };
   ticking = true;
   try {
     const all = await loadJobs();
-    const live = Object.values(all).filter(
-      (record) => record?.v === RECORD_V && !record.done && record.phase !== "failed",
+    const due = Object.values(all).filter(
+      (record) => record?.v === RECORD_V && (isLive(record) || returnDue(record) !== null),
     );
     let ticked = 0;
-    for (const record of live) {
-      if (record.phase === "failed") continue; // cancelled since this pass began
-      const nowMs = Date.now();
-      let read = false;
-      try {
-        await tickRecord(record, nowMs);
-        read = true;
-      } catch (error) {
-        if (error instanceof WithdrawRejectedError) {
-          fail(record, "rejected", error.message);
-        } else if (
-          error instanceof WithdrawUnderfundedError &&
-          error.cashBalance >= asBig(record.amount, 0n)
-        ) {
-          // Final only once the whole payment is on the key; before that the rest may still arrive.
-          fail(record, "underfunded", error.message);
-        } else {
-          // Other errors are transient; the next wake retries.
-          record.lastError = String(error?.message ?? error);
+    for (const record of due) {
+      // Cancelled since this pass began, with nothing owed.
+      if (!isLive(record) && returnDue(record) === null) continue;
+      if (isLive(record)) {
+        const nowMs = Date.now();
+        let read = false;
+        try {
+          await tickRecord(record, nowMs);
+          read = true;
+        } catch (error) {
+          if (error instanceof WithdrawRejectedError) {
+            fail(record, "rejected", error.message);
+          } else if (error instanceof CommitmentUnfundableError) {
+            // The price moved past what the sale promised its provider before anything left
+            // People. The CASH goes home (see `returnDue`).
+            fail(record, "unfundable", error.message);
+          } else if (
+            error instanceof WithdrawUnderfundedError &&
+            error.cashBalance >= asBig(record.amount, 0n)
+          ) {
+            // Final only once the whole payment is on the key; before that the rest may still
+            // arrive.
+            fail(record, "underfunded", error.message);
+          } else {
+            // Other errors are transient; the next wake retries.
+            record.lastError = String(error?.message ?? error);
+          }
+        }
+        judgeBounds(record, nowMs, read);
+      }
+      // Off the payment's path, and tried again on every pass until it starts, whatever became of
+      // the job meanwhile: a sale done or failed is not ticked again, but its key still goes home.
+      const kind = returnDue(record);
+      if (kind !== null) {
+        try {
+          await sendHome(record, kind);
+          delete record.residueError;
+        } catch (error) {
+          record.residueError = String(error?.message ?? error);
         }
       }
-      judgeBounds(record, nowMs, read);
       ticked += 1;
       await saveJobs();
     }
