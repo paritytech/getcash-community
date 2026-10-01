@@ -36,6 +36,7 @@ import {
   WORKER_STALE_MS,
   buyerPaid,
   effectiveSourceId,
+  isDirectDeposit,
   isFinished,
   isTopUp,
   isWithdrawSourceId,
@@ -53,6 +54,7 @@ import {
   type HostPaymentStatus,
   type MeldSaleReading,
   type Observation,
+  type StrayDeposit,
   type RequestKey,
   type RequestRecord,
   type TopUpRecord,
@@ -104,7 +106,7 @@ import {
   type RequestRef,
 } from "../utils/request-index";
 import { sendHandoff, workerSessionId } from "~~/lib/coinage";
-import { SOURCE_CHAINS, sourceIdFor } from "~~/lib/config";
+import { FUNDING_CHAINS, sourceIdFor, sourcePairFor } from "~~/lib/config";
 import { isHosted } from "~~/lib/host-account";
 
 export interface RequestEntry {
@@ -553,17 +555,11 @@ const railExpiryOf = (job: WorkerJob): number | null =>
   isNumber(job.depositExpiresAt) && job.depositExpiresAt > 0 ? job.depositExpiresAt : null;
 
 /** Today's `lastQuoteParams` for a source id: the rail and method of a Meld source, the chain and
- *  coin of a swap source, Asset Hub's own for the crypto rail's, the id itself otherwise. */
+ *  coin of a swap or direct source, the id itself otherwise. */
 function displaySourceOf(sourceId: string): { chain: string; asset: string } {
   const route = routeOf(sourceId);
   if (route !== "crypto") return { chain: "Meld", asset: route === "bank" ? "Bank" : "Card" };
-  if (sourceId === CRYPTO_SOURCE_ID) return { chain: "AssetHub", asset: "DOT" };
-  for (const { chain, assets } of SOURCE_CHAINS) {
-    for (const asset of assets) {
-      if (sourceIdFor(chain, asset) === sourceId) return { chain, asset };
-    }
-  }
-  return { chain: sourceId, asset: sourceId };
+  return sourcePairFor(sourceId) ?? { chain: sourceId, asset: sourceId };
 }
 
 /** The snapshot a request starts with when its record is built from the worker's job: today's
@@ -1387,8 +1383,34 @@ export const useRequestsStore = defineStore("requests", () => {
       stopDepositWatch();
     };
     void import("~~/lib/coinage-live")
-      .then(({ watchTradeBurner }) =>
-        watchTradeBurner(
+      .then((live) => {
+        if (isDirectDeposit(record)) {
+          // A Polkadot deposit is read in every direct token and followed until the request moves
+          // on: a short or wrong-token deposit keeps it waiting, and the rest can still arrive.
+          // Only a change is observed, since the watch emits at every best block.
+          let last = "";
+          return live.watchDirectTradeBurner(
+            sourceId,
+            ref.tradeN,
+            depositRouteOf(ref),
+            ({ held, stray }) => {
+              if (watching.stopped) return;
+              const key = `${held}|${stray?.asset ?? ""}|${stray?.amount ?? ""}`;
+              if (key === last) return;
+              last = key;
+              void observe(
+                ref,
+                chainReading(
+                  held,
+                  requestsNow(),
+                  stray === null ? null : { asset: stray.asset, amount: stray.amount.toString() },
+                ),
+              );
+            },
+            failed,
+          );
+        }
+        return live.watchTradeBurner(
           sourceId,
           ref.tradeN,
           depositRouteOf(ref),
@@ -1398,12 +1420,18 @@ export const useRequestsStore = defineStore("requests", () => {
             if (free > 0n) stopDepositWatch();
           },
           failed,
-        ),
-      )
+        );
+      })
       .then((unsubscribe) => {
         if (watching.stopped) unsubscribe();
         else watching.unsubscribe = unsubscribe;
       }, failed);
+  }
+  /** Starts the watch over again after a request took new terms: its token may have changed, and
+   *  the balance it already read has to be read again against the new gate. */
+  function restartDepositWatch(): void {
+    stopDepositWatch();
+    syncDepositWatch();
   }
   function stopDepositWatch(): void {
     if (depositWatch === null) return;
@@ -1477,6 +1505,9 @@ export const useRequestsStore = defineStore("requests", () => {
     const record = get(ref);
     // A withdrawal's last look is its own: the key and the host's payment.
     if (record !== undefined && (!isTopUp(record) || rankOf(record) >= 1)) return "refused";
+    // A direct deposit that arrived short or in another token is on the account already; the
+    // burner read below only sees the picked token, so it would call the account empty.
+    if (record?.depositMismatch !== undefined) return "refused";
     const at = requestsNow();
     const [burner, jobs] = await Promise.all([
       bounded("the burner read", CANCEL_CONFIRM_MS, opts.readBurner),
@@ -2042,13 +2073,15 @@ export const useRequestsStore = defineStore("requests", () => {
     });
   }
 
-  /** A burner's balance as the chain's own sighting of the request. */
-  const chainReading = (free: bigint, at: number): Observation => ({
+  /** A burner's balance as the chain's own sighting of the request. A direct deposit's watch
+   *  passes what it found in the other direct tokens too. */
+  const chainReading = (free: bigint, at: number, stray?: StrayDeposit | null): Observation => ({
     source: "chain",
     at,
     burnerNative: free.toString(),
     finality: "best",
     via: "probe",
+    ...(stray === undefined ? {} : { stray }),
   });
   /** A withdrawal key's CASH as the chain's own sighting of the request. */
   const keyReading = (cash: bigint, at: number): Observation => ({
@@ -2250,7 +2283,7 @@ export const useRequestsStore = defineStore("requests", () => {
     // Every source a request can run under: a total storage loss leaves no record to learn them
     // from, and a lost number can sit below the highest record.
     const sources = new Set<string>([CRYPTO_SOURCE_ID, ...MELD_SOURCE_IDS]);
-    for (const { chain, assets } of SOURCE_CHAINS) {
+    for (const { chain, assets } of FUNDING_CHAINS) {
       for (const asset of assets) {
         const sourceId = sourceIdFor(chain, asset);
         if (sourceId !== undefined) sources.add(sourceId);
@@ -2317,7 +2350,7 @@ export const useRequestsStore = defineStore("requests", () => {
         return;
       }
       const ref = requestRefOf(sourceId, n);
-      const handoff = lostRequestHandoff(sourceId, n, address, slot);
+      const handoff = await lostRequestHandoff(sourceId, n, address, slot);
       try {
         await create(ref, recordFromFlowSlot(ref, address, slot, handoff, now));
       } catch (e) {
@@ -2847,6 +2880,7 @@ export const useRequestsStore = defineStore("requests", () => {
     fundingNotice,
     phase,
     fundsSeen,
+    restartDepositWatch,
     fundingStep,
     fundingError,
     claimStage,

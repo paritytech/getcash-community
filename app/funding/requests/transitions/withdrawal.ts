@@ -578,6 +578,7 @@ function applyUser(record: WithdrawalRecord, observation: UserObservation): With
       });
     case "meld-submitted":
     case "deposit-skipped":
+    case "deposit-accepted":
       return record;
   }
 }

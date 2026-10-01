@@ -53,6 +53,23 @@ export function recoveryNotes(
   };
 }
 
+/** The same notes for a Polkadot deposit still on the top-up's own account, whose key is the
+ *  account's raw seed. Asset Hub can charge a token's fee in the token itself, so DOT is only a
+ *  fallback there. */
+export function directRecoveryNotes(asset: string): RecoveryNotes {
+  return {
+    secretLabel: "Raw seed",
+    gasNote:
+      asset === "DOT"
+        ? null
+        : `Moving ${asset} on Polkadot needs a small fee. Pay it in ${asset} if your wallet ` +
+          `offers that, or send a little DOT to this address first.`,
+    importNote:
+      "Import this key as a raw seed into a Polkadot wallet, such as Talisman, SubWallet or the Polkadot.js extension.",
+    transferNote: `Transfer your ${asset} to any Polkadot address you control`,
+  };
+}
+
 /**
  * The status line's tail after "Your 50 USDT": how far the refund has come.
  *

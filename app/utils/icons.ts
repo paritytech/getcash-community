@@ -15,6 +15,7 @@ const TOKEN_ICONS: Record<string, string> = {
   SOL: NETWORK_ICONS.Solana!,
   TRX: NETWORK_ICONS.Tron!,
   DOT: NETWORK_ICONS.Polkadot!,
+  dotUSD: "/icons/dotusd.svg",
   USDC: "/icons/usdc.svg",
   USDT: "/icons/usdt.svg",
 };

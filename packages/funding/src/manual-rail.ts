@@ -11,9 +11,42 @@ import {
   type ReverseQuoteInput,
   type SourceAvailability,
   type SourceDescriptor,
+  type SourceId,
   type SwapStatusResult,
   type TokenSpec,
 } from "@getsome/core";
+import type { DepositAsset } from "./route";
+
+/** The sources a direct deposit runs under, one per token: the token each takes and what the
+ *  route decision calls it. The source keys the token's trade counter and burner labels. */
+export const MANUAL_SOURCES = {
+  "dot-assethub": { token: TOKENS.PAS, deposit: "native" },
+  "dotusd-assethub": { token: TOKENS.DOTUSD, deposit: "dotUSD" },
+  "usdt-assethub": { token: TOKENS.USDT, deposit: "USDT" },
+  "usdc-assethub": { token: TOKENS.USDC, deposit: "USDC" },
+} as const satisfies Partial<Record<SourceId, { token: TokenSpec; deposit: DepositAsset }>>;
+
+export type ManualSourceId = keyof typeof MANUAL_SOURCES;
+
+export const MANUAL_SOURCE_IDS = Object.keys(MANUAL_SOURCES) as readonly ManualSourceId[];
+
+export const isManualSourceId = (sourceId: string | undefined): sourceId is ManualSourceId =>
+  sourceId !== undefined && Object.prototype.hasOwnProperty.call(MANUAL_SOURCES, sourceId);
+
+/** The source a direct deposit of `token` runs under. */
+export function manualSourceIdOf(token: TokenSpec): ManualSourceId {
+  const sourceId = MANUAL_SOURCE_IDS.find((id) => MANUAL_SOURCES[id].token.symbol === token.symbol);
+  if (sourceId === undefined) throw new Error(`no direct source takes ${token.symbol}`);
+  return sourceId;
+}
+
+/** What the buyer deposits under a direct source, as the route decision takes it. */
+export const manualDepositOf = (sourceId: ManualSourceId): DepositAsset =>
+  MANUAL_SOURCES[sourceId].deposit;
+
+/** The name a direct token goes by on the deposit screen: the rails' name for it, so the native
+ *  is named after its Polkadot counterpart. */
+export const directAssetName = (token: TokenSpec): string => token.chainflipAsset ?? token.symbol;
 
 /** Exact base-units -> decimal string (trailing zeros trimmed). */
 function formatUnits(base: bigint, decimals: number): string {
@@ -45,11 +78,12 @@ export function createManualRail(opts: ManualRailOptions = {}): ChainflipRail {
   const expiry = opts.depositExpiryMs ?? 86_400_000;
   const now = opts.now ?? Date.now;
   const token = opts.token ?? TOKENS.PAS;
+  // The token's own source: one token, one source, nowhere for the two to disagree.
+  const sourceId = manualSourceIdOf(token);
   const descriptor: SourceDescriptor = Object.freeze({
-    sourceId: "dot-assethub",
+    sourceId,
     chain: "AssetHub",
-    // The rails' name for the token; the native's is its Polkadot counterpart's.
-    asset: token.chainflipAsset ?? token.symbol,
+    asset: directAssetName(token),
     displayName: "Direct deposit",
     decimals: token.decimals,
   });

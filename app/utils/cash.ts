@@ -32,11 +32,16 @@ export function fmtCash(base: bigint): string {
 export const cashAmount = (human: string): string =>
   `${currencyConfig.symbol}${human} ${currencyConfig.ticker}`;
 
+/** CASH base units truncated down to the keypad's `decimals` scale. */
+export function cashToRuleUnits(base: bigint, decimals: number): bigint {
+  const drop = CASH_DECIMALS - decimals;
+  return drop >= 0 ? base / 10n ** BigInt(drop) : base * 10n ** BigInt(-drop);
+}
+
 /** Turns CASH base units into the amount string the keypad edits, rounded down to `decimals`
  *  places, with a whole number left bare ("226.78", "5", "5.5"). */
 export function cashToAmountInput(base: bigint, decimals: number): string {
-  const drop = CASH_DECIMALS - decimals;
-  const scaled = drop >= 0 ? base / 10n ** BigInt(drop) : base * 10n ** BigInt(-drop);
+  const scaled = cashToRuleUnits(base, decimals);
   if (decimals === 0) return scaled.toString();
   const s = scaled.toString().padStart(decimals + 1, "0");
   return `${s.slice(0, -decimals)}.${s.slice(-decimals)}`.replace(/\.?0+$/, "");
@@ -48,4 +53,11 @@ export function fmtCashDisplay(base: bigint): string {
   const whole = s.slice(0, -CASH_DECIMALS);
   const frac = s.slice(-CASH_DECIMALS).replace(/0+$/, "").padEnd(2, "0");
   return `${whole}.${frac}`;
+}
+
+/** Thousands-separated amount string ("2000" -> "2,000"), the fraction left as typed. */
+export function groupAmountDigits(value: string): string {
+  const [whole = "0", fraction] = value.split(".");
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return fraction === undefined ? grouped : `${grouped}.${fraction}`;
 }
