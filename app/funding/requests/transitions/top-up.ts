@@ -73,6 +73,8 @@ function apply(record: TopUpRecord, observation: Observation): TopUpRecord {
       if ("gone" in observation) {
         return applyProviderGone(record, observation.at, observation.message);
       }
+      // A sale's order belongs to a withdrawal.
+      if ("sale" in observation) return record;
       return applyProviderUnreachable(record, observation.at);
     case "chain":
       return "burnerNative" in observation ? applyChain(record, observation) : record;
@@ -550,6 +552,7 @@ function applyUser(record: TopUpRecord, observation: UserObservation): TopUpReco
       return record.depositSkippedAt === undefined ? { ...record, depositSkippedAt: at } : record;
     case "payment-requested":
     case "channel-opened":
+    case "sale-unfundable":
       return record;
   }
 }
