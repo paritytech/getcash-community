@@ -84,6 +84,10 @@ const rejectedExecution = (error: unknown) => ({
     forwarded_xcms: [],
   },
 });
+/** A hop that gives the native, which only the teleport tier's dust sale does first. */
+const givesNative = (hop: Instruction | undefined) =>
+  (hop?.value as { give: { value: { value: { id: { parents: number } } } } } | undefined)?.give
+    .value.value.id.parents === 1;
 /** Asset Hub crediting the destination: the native's Deposit, or a token's Deposited. */
 const deposited = (assetId: number | null, amount: bigint) => ({
   type: assetId === null ? "Balances" : "Assets",
@@ -338,9 +342,10 @@ function scriptedWorld(
             )[0]!.fun.value;
             state.lastDryRunLanded = out + ((cash - held) * AH_RATE + pas) / STABLE_PLANCK;
             events = [deposited(1984, state.lastDryRunLanded)];
-          } else if (hops.length === 0) {
-            state.lastDryRunLanded = cash;
-            events = [deposited(TOKENS.CASH.assetHubId, cash), deposited(null, pas)];
+          } else if (givesNative(hops[0])) {
+            // The teleport tier: the PAS is sold for CASH and the CASH lands as dotUSD.
+            state.lastDryRunLanded = cash + pas / AH_RATE;
+            events = [deposited(TOKENS.CASH.assetHubId, state.lastDryRunLanded)];
           } else if (hops.length === 1) {
             state.lastDryRunLanded = native;
             events = [deposited(null, native)];
@@ -431,8 +436,11 @@ function sentXcm(world: World) {
     preserve_origin: boolean;
     remote_xcm: Instruction[];
   };
+  const [pasWithdrawn, cashWithdrawn] = message.value[0]!.value as Fungible[];
+  const payFees = (message.value[1]!.value as { asset: Fungible }).asset.fun.value;
   return {
-    cashSold: (message.value[0]!.value as Fungible[])[1]!.fun.value,
+    cashSold: cashWithdrawn!.fun.value,
+    pasTravelling: pasWithdrawn!.fun.value - payFees,
     earmark: transfer.remote_fees.value.value[0]!.fun.value,
     preserveOrigin: transfer.preserve_origin,
     program: transfer.remote_xcm,
@@ -522,15 +530,20 @@ describe("withdrawTickOnce", () => {
     expect(run.state.expectedLanding).toBeLessThan(out + out / 10n);
   });
 
-  it("lands the CASH as dotUSD with no sale on the teleport tier, and reads only that deposit", async () => {
+  it("lands the CASH as dotUSD on the teleport tier, with the PAS that travelled sold for it", async () => {
     const world = scriptedWorld();
     const run = await drive(world, 3, freshWithdrawTickState(), { tier: "teleport" });
     expect(run.steps).toEqual(["swap", "convert", "done"]);
-    const { cashSold, program } = sentXcm(world);
-    expect(program.map((i) => i.type)).toEqual(["SetHints", "RefundSurplus", "DepositAsset"]);
-    // The landing is the CASH itself less Asset Hub's fee, the earmark's unspent part back in;
-    // the PAS that travels lands too and is not counted.
-    expect(run.state.expectedLanding).toBe(cashSold - AH_FEE_CASH);
+    const { cashSold, pasTravelling, program } = sentXcm(world);
+    expect(program.map((i) => i.type)).toEqual([
+      "SetHints",
+      "RefundSurplus",
+      "ExchangeAsset",
+      "DepositAsset",
+    ]);
+    // The landing is the CASH itself less Asset Hub's fee, the earmark's unspent part back in,
+    // plus what the PAS sold for; nothing lands as PAS.
+    expect(run.state.expectedLanding).toBe(cashSold - AH_FEE_CASH + pasTravelling / AH_RATE);
     expect(world.state.keyCash).toBe(0n);
   });
 

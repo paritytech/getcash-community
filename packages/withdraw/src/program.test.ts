@@ -7,6 +7,7 @@ import { PEOPLE_NATIVE } from "./paseo";
 import {
   buildSwap,
   buildWithdrawXcm,
+  CASH_ON_ASSET_HUB,
   forwardedStandIn,
   originOnAssetHub,
   psmRedeemOut,
@@ -196,10 +197,19 @@ describe("withdrawal transactions", () => {
     expect(depositCount(deposit!)).toBe(3);
   });
 
-  it("makes no sale on the teleport tier: the CASH is deposited as it is", () => {
+  it("keeps the CASH on the teleport tier and sells only the PAS that travelled for it", () => {
     const program = remoteProgramFor({ tier: "teleport" });
-    expect(program.map((i) => i.type)).toEqual(["SetHints", "RefundSurplus", "DepositAsset"]);
-    expect(depositCount(program[2]!)).toBe(2);
+    expect(program.map((i) => i.type)).toEqual([
+      "SetHints",
+      "RefundSurplus",
+      "ExchangeAsset",
+      "DepositAsset",
+    ]);
+    const hop = program[2]!.value as Exchange;
+    expect(hop.give.value.value.id).toEqual({ parents: 1, interior: { type: "Here" } });
+    expect(hop.want[0]!.id).toEqual(CASH_ON_ASSET_HUB);
+    expect(hop.want[0]!.fun.value).toBe(1n);
+    expect(depositCount(program[3]!)).toBe(2);
   });
 
   it("redeems through the PSM as the key's own account, then sells the surplus and the PAS for the stable", () => {

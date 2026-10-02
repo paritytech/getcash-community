@@ -76,6 +76,8 @@ with the pool as the fallback when the PSM cannot serve; the pool sells the CASH
 a stable sells that DOT again on the stable's pool; dotUSD is the CASH teleported as it is. The
 PSM redeem runs inside the same XCM: the key's origin travels with it, the redeem runs as the
 key's account on Asset Hub, and the fee refund and the PAS that travelled are sold for USDT too.
+Whatever the tier, the fee PAS that travels with the CASH ends up in the landing token, so the
+destination is credited one asset.
 The sale is decided from the token picked at quote time with the on-ramp's own rule and frozen on
 the hand-off, so the worker never re-decides it. Arrival is a
 balance read at the head, like every other read in the engine: the destination's balance in that

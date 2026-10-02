@@ -14,8 +14,9 @@
 // deposits everything to the destination account. The sale follows the on-ramp's tiers the other
 // way round: the pool sells the CASH for PAS, and for a stable sells that PAS again on the
 // stable's pool; the PSM redeems the CASH for its stable one to one less the redemption fee; the
-// teleport tier makes no sale and lands the CASH as dotUSD. The program names an asset claimer
-// so a trap on Asset Hub is recoverable.
+// teleport tier keeps the CASH and lands it as dotUSD. Whatever the tier, the PAS that travelled
+// with the CASH ends up in the landing asset too, so one asset is deposited. The program names
+// an asset claimer so a trap on Asset Hub is recoverable.
 //
 // The PSM redeem is a signed call, so the XCM keeps the key's origin across the hop: on Asset Hub
 // the origin is the key's account under People, which has an account of its own there. The CASH
@@ -64,7 +65,7 @@ export type Sale =
       holderHex: string;
       call: Uint8Array;
     }
-  /** No sale: the CASH lands as it is. */
+  /** No sale of the CASH: it lands as it is, with the PAS that travelled sold for it. */
   | { tier: "teleport" };
 
 /** The stable a redeem of `cashIn` CASH pays out: the amount less the fee the PSM rounds up. */
@@ -180,9 +181,11 @@ function remoteProgram(destinationHex: string, claimerHex: string, sale: Sale) {
       deposit(allCounted(2), destinationHex),
     ];
   }
+  // The teleport tier keeps the CASH and sells only the PAS that travelled, dust at any price,
+  // so the destination gets dotUSD alone and never a native deposit it may be too small for.
   const hops =
     sale.tier === "teleport"
-      ? []
+      ? [exchange(allOf(NATIVE_ON_ASSET_HUB), fungible(CASH_ON_ASSET_HUB, 1n))]
       : [
           exchange(allOf(CASH_ON_ASSET_HUB), fungible(NATIVE_ON_ASSET_HUB, sale.minNativeOut)),
           ...(sale.external === undefined
