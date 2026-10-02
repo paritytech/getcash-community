@@ -186,6 +186,9 @@ export interface WorkerHandoffPayload {
    *  worker's gate checks for this rather than re-pricing the fees, which would move the bar under
    *  a deposit already sized against it. Absent on a payload from before it was recorded. */
   quotedDeposit?: string;
+  /** Pool tier only: the headroom the deposit was sized with, so the worker uses the same one.
+   *  Absent means DEFAULT_SLIPPAGE_PCT. */
+  slippagePct?: number;
 }
 
 /** What the store extracts from one job in the worker's blob. */
@@ -356,7 +359,9 @@ export type WithdrawalFailureKind =
   /** The provider closed the channel before the key paid it; nothing moved. */
   | "channel-expired"
   /** The provider's record of the channel did not match the withdrawal; nothing moved. */
-  | "channel-mismatch";
+  | "channel-mismatch"
+  /** The CASH on the key cannot buy the PAS the network fees need; nothing moved. */
+  | "underfunded";
 export interface WithdrawalFailure {
   kind: WithdrawalFailureKind;
   step: WithdrawalFailureStep;

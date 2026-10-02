@@ -121,6 +121,12 @@ const storedJob = (sessionId = "s-1"): StoredJob =>
   (mocks.stored.get("getsome.funding.jobs") as { [id: string]: StoredJob })[sessionId];
 
 const outcome = (step: string) => ({ step, balances: {}, submitted: false });
+/** A tick that completed under the conversion gate, with `depositAh` native still on the burner. */
+const underGate = (depositAh: bigint) => ({
+  step: "await-native",
+  balances: { depositAh, underlyingPeople: 0n },
+  submitted: false,
+});
 
 const toHex = (bytes: Uint8Array) =>
   `0x${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
@@ -897,6 +903,217 @@ describe("worker funding engine", () => {
     }
     expect(storedJob()).toMatchObject({ phase: "failed", failure: "timeout" });
     expect(mocks.tickOnce).toHaveBeenCalledTimes(ticks + 2);
+  });
+
+  it("persists what the tick learned before the submit, so a cancel during it sees the funds", async () => {
+    // A cancel decides from fundsSeenAt. Saved only after the tick, a cancel during the submit
+    // would see null and strand the CASH the transaction lands.
+    armSeams();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    mocks.tickOnce.mockImplementationOnce(async (input, state) => {
+      state.fundsSeenAt = Date.now();
+      await input.onBeforeSubmit("swap");
+      expect(storedJob().state.fundsSeenAt).toBe(state.fundsSeenAt);
+      const answer = await engine.cancelFunding(JSON.stringify({ sessionId: "s-1" }));
+      expect(answer).not.toMatchObject({ phase: "failed" });
+      state.xcmSubmitted = true;
+      return { ...outcome("await-arrival"), submitted: true };
+    });
+    await engine.tickAllFunding();
+    expect(storedJob().phase).toBe("await-arrival");
+    expect(storedJob().failure).toBeUndefined();
+  });
+
+  it("parks a deposit back under the gate after a rejected submit: off the clock until its window ends", async () => {
+    // The gate passed on a stale head, the program was rejected, and the deposit is back under
+    // the gate. That is a wait for the price, so it must not fail on the 900 s clock.
+    armSeams();
+    vi.useFakeTimers();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.fundsSeenAt = Date.now();
+      state.attempts = 1;
+      throw new Error("funding program dispatch rejected: NoDeal");
+    });
+    // The deposit less one burned dispatch fee, still under the gate.
+    mocks.tickOnce.mockResolvedValue(underGate(40_000_000_000n));
+    await engine.tickAllFunding();
+    vi.advanceTimersByTime(30_000);
+    await engine.tickAllFunding();
+    expect(storedJob().state).toMatchObject({ parkedAtGate: true });
+    const worked = storedJob().state.workedMs;
+
+    // Well past the 900 s run bound, all of it parked.
+    for (let i = 0; i < 60; i += 1) {
+      vi.advanceTimersByTime(30_000);
+      await engine.tickAllFunding();
+    }
+    expect(storedJob().phase).toBe("await-native");
+    expect(storedJob().failure).toBeUndefined();
+    expect(storedJob().state.workedMs).toBe(worked);
+    // Funds were seen, so it cannot be cancelled away from under them.
+    expect(await engine.cancelFunding(JSON.stringify({ sessionId: "s-1" }))).toMatchObject({
+      phase: "await-native",
+    });
+
+    // It fails as a timeout once the window ends.
+    vi.advanceTimersByTime(86_400_000);
+    await engine.tickAllFunding();
+    expect(storedJob()).toMatchObject({ phase: "failed", failure: "timeout" });
+  });
+
+  it("keeps a burner holding only dust on the clock: the program ran, so there is nothing to wait for", async () => {
+    // A lost answer looks like a rejection, but the program ran and nothing is left to convert.
+    armSeams();
+    vi.useFakeTimers();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    mocks.tickOnce.mockImplementation(async (_input, state) => {
+      if (state.fundsSeenAt === null) state.fundsSeenAt = Date.now();
+      return underGate(1_000n);
+    });
+    for (let i = 0; i < 40; i += 1) {
+      await engine.tickAllFunding();
+      vi.advanceTimersByTime(30_000);
+    }
+    expect(storedJob().state.parkedAtGate).toBe(false);
+    expect(storedJob()).toMatchObject({ phase: "failed", failure: "timeout" });
+  });
+
+  it("puts a parked job back on the clock when its tick throws before the pipeline", async () => {
+    // Parking clears each tick, so a job that stops reaching the pipeline still times out.
+    armSeams();
+    vi.useFakeTimers();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    mocks.tickOnce.mockImplementation(async (_input, state) => {
+      if (state.fundsSeenAt === null) state.fundsSeenAt = Date.now();
+      return underGate(40_000_000_000n);
+    });
+    await engine.tickAllFunding();
+    vi.advanceTimersByTime(30_000);
+    await engine.tickAllFunding();
+    expect(storedJob().state.parkedAtGate).toBe(true);
+    mocks.getHostProvider.mockImplementation(async () => ({ genesis: OTHER_GENESIS }));
+    for (let i = 0; i < 40; i += 1) {
+      vi.advanceTimersByTime(30_000);
+      await engine.tickAllFunding();
+    }
+    expect(storedJob()).toMatchObject({ phase: "failed", failure: "timeout" });
+  });
+
+  it("gives a deposit seen just before the rail's deadline a full window to wait for the price", async () => {
+    // The rail's deadline bounds when the buyer may pay, not how long a seen deposit may wait.
+    armSeams();
+    vi.useFakeTimers();
+    const engine = await freshEngine();
+    await engine.startFunding(
+      JSON.stringify({ ...HANDOFF, depositExpiresAt: Date.now() + 60_000 }),
+    );
+    mocks.tickOnce.mockImplementation(async (_input, state) => {
+      if (state.fundsSeenAt === null) state.fundsSeenAt = Date.now();
+      return underGate(40_000_000_000n);
+    });
+    await engine.tickAllFunding();
+    vi.advanceTimersByTime(30_000);
+    await engine.tickAllFunding();
+    vi.advanceTimersByTime(3_600_000);
+    await engine.tickAllFunding();
+    expect(storedJob().failure).toBeUndefined();
+    vi.advanceTimersByTime(86_400_000);
+    await engine.tickAllFunding();
+    expect(storedJob()).toMatchObject({ phase: "failed", failure: "timeout" });
+  });
+
+  it("stops the broadcast when a cancel lands between the gate and the submit", async () => {
+    armSeams();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    let broadcast = false;
+    mocks.tickOnce.mockImplementationOnce(async (input) => {
+      // The cancel lands after sizing, before the hook.
+      await engine.cancelFunding(JSON.stringify({ sessionId: "s-1" }));
+      await input.onBeforeSubmit("swap");
+      broadcast = true;
+      return { ...outcome("await-arrival"), submitted: true };
+    });
+    await engine.tickAllFunding();
+    expect(broadcast).toBe(false);
+    expect(storedJob()).toMatchObject({ phase: "failed", failure: "cancelled" });
+  });
+
+  it("keeps a job that keeps throwing after the gate on the clock", async () => {
+    // Only a tick that completes under the gate parks, so any other failure still times out.
+    armSeams();
+    vi.useFakeTimers();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    mocks.tickOnce.mockImplementation(async (_input, state) => {
+      if (state.fundsSeenAt === null) state.fundsSeenAt = Date.now();
+      throw new Error("deposit cannot cover the funding program's own fees");
+    });
+    for (let i = 0; i < 40; i += 1) {
+      await engine.tickAllFunding();
+      vi.advanceTimersByTime(30_000);
+    }
+    expect(storedJob()).toMatchObject({ phase: "failed", failure: "timeout" });
+  });
+
+  it("keeps a PSM deposit under its gate on the clock, since the PSM's rate does not move", async () => {
+    armSeams();
+    vi.useFakeTimers();
+    const engine = await freshEngine();
+    // A PSM hand-off carries no native allowance, and the deposit is USDT (6 decimals).
+    await engine.startFunding(
+      JSON.stringify({
+        ...HANDOFF,
+        tier: "psm",
+        external: "USDT",
+        feeRate: 5_000,
+        keepNativeForFees: "0",
+      }),
+    );
+    mocks.tickOnce.mockImplementation(async (_input, state) => {
+      if (state.fundsSeenAt === null) state.fundsSeenAt = Date.now();
+      return underGate(20_150_000n);
+    });
+    for (let i = 0; i < 40; i += 1) {
+      await engine.tickAllFunding();
+      vi.advanceTimersByTime(30_000);
+    }
+    expect(storedJob().state.parkedAtGate).toBe(false);
+    expect(storedJob()).toMatchObject({ phase: "failed", failure: "timeout" });
+  });
+
+  it("keeps a stable pool deposit under its gate on the clock, as before parking existed", async () => {
+    armSeams();
+    vi.useFakeTimers();
+    mocks.discoverPools.mockImplementation(async (_api: unknown, ids: number[]) =>
+      ids.map((id) => ({ native: "N", underlying: id === 1337 ? "S" : "U" })),
+    );
+    const engine = await freshEngine();
+    // As handoffFees sends it: a stable tier carries no native allowance.
+    await engine.startFunding(
+      JSON.stringify({
+        ...HANDOFF,
+        tier: "pool",
+        external: "USDC",
+        quotedDeposit: "5300000",
+        keepNativeForFees: "0",
+      }),
+    );
+    mocks.tickOnce.mockImplementation(async (_input, state) => {
+      if (state.fundsSeenAt === null) state.fundsSeenAt = Date.now();
+      return underGate(5_000_000n);
+    });
+    for (let i = 0; i < 40; i += 1) {
+      await engine.tickAllFunding();
+      vi.advanceTimersByTime(30_000);
+    }
+    expect(storedJob().state.parkedAtGate).toBe(false);
+    expect(storedJob()).toMatchObject({ phase: "failed", failure: "timeout" });
   });
 
   it("reads the chain before judging the bound: a conversion finished while frozen is done", async () => {

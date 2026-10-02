@@ -371,6 +371,8 @@ type WorkerJob = {
   tier?: unknown;
   external?: unknown;
   feeRate?: unknown;
+  /** The deposit headroom. The worker always stores it, but only a pool job's value counts. */
+  slippagePct?: number;
   createdAt?: number;
   armedAt?: number;
 };
@@ -541,6 +543,7 @@ function handoffOf(job: WorkerJob): WorkerHandoffPayload | undefined {
     peopleGenesis,
     remoteFeeBuffer,
     keepNativeForFees,
+    slippagePct,
   } = job;
   if (
     !isString(label) ||
@@ -574,6 +577,7 @@ function handoffOf(job: WorkerJob): WorkerHandoffPayload | undefined {
     remoteFeeBuffer,
     keepNativeForFees,
     ...(isString(job.quotedDeposit) ? { quotedDeposit: job.quotedDeposit } : {}),
+    ...(route.tier === "pool" && isNumber(slippagePct) && slippagePct > 0 ? { slippagePct } : {}),
     ...route,
   };
 }

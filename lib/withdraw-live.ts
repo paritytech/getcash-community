@@ -20,6 +20,9 @@ import {
   PASEO_PEOPLE_POOL_ACCOUNT,
   PEOPLE_NATIVE,
   readDestinationPas,
+  SALE_READ_AT,
+  saleBounds,
+  saleReserves,
 } from "@getsome/withdraw";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import {
@@ -112,9 +115,38 @@ export async function quoteDirectReceive(amount: bigint): Promise<bigint> {
     PEOPLE_NATIVE as never,
     sold,
     true,
+    SALE_READ_AT,
   );
   if (quoted === undefined) throw new Error("Asset Hub cannot quote the sale");
   return quoted;
+}
+
+/**
+ * What a direct withdrawal of `amount` CASH should land on Asset Hub at today's price (`expected`),
+ * and the least it would land if sized now (`atLeast`, from the same saleBounds the worker uses).
+ * `atLeast` is an estimate at today's price, not a guarantee: the worker sizes again on submit.
+ */
+export async function quoteDirectMinimum(
+  amount: bigint,
+): Promise<{ expected: bigint; atLeast: bigint; slippagePct: number }> {
+  const sold = amount - DIRECT_FEES_CASH;
+  if (sold <= 0n) return { expected: 0n, atLeast: 0n, slippagePct: DEFAULT_WITHDRAW_SLIPPAGE_PCT };
+  const { connectChain, ASSET_HUB } = await import("./host-chain");
+  const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
+  const [expected, reserves, lpFee] = await Promise.all([
+    quoteDirectReceive(amount),
+    saleReserves(api),
+    api.constants.AssetConversion.LPFee().catch(() => 3_000),
+  ]);
+  const { safetyPct } = saleBounds({
+    reserves,
+    quoted: expected,
+    cashOnKey: sold,
+    ceilingPct: DEFAULT_WITHDRAW_SLIPPAGE_PCT,
+    feePpm: BigInt(lpFee),
+  });
+  const atLeast = (expected * BigInt(Math.round((100 - safetyPct) * 100))) / 10_000n;
+  return { expected, atLeast, slippagePct: safetyPct };
 }
 
 /** The CASH a direct withdrawal must take for `native` planck to land on Asset Hub, at today's
@@ -280,7 +312,7 @@ export async function advanceWithdrawCounter(sourceId: string, n: number): Promi
   }
 }
 
-/** The key's free native on Asset Hub at the current head: what a provider refunded, when the
+/** The key's free native on Asset Hub at the best head: what a provider refunded, when the
  *  swap could not fill, and what a fresh channel is quoted for. */
 export async function readWithdrawKeyNativeOnAssetHub(keyPublicKeyHex: string): Promise<bigint> {
   const { connectChain, ASSET_HUB } = await import("./host-chain");

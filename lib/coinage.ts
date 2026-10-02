@@ -44,7 +44,6 @@ import {
   DIRECT_SLIPPAGE_PCT,
   directAssetName,
   type FundingStep,
-  isManualSourceId,
   isStablePoolRoute,
   MANUAL_SOURCE_IDS,
   MANUAL_SOURCES,
@@ -629,11 +628,16 @@ function depositBudget(
  *  quoted instead, which is what the worker's gate waits for. */
 export function handoffFees(
   sizing: FundingSizing,
-): Pick<WorkerHandoffPayload, "remoteFeeBuffer" | "keepNativeForFees" | "quotedDeposit"> {
+): Pick<
+  WorkerHandoffPayload,
+  "remoteFeeBuffer" | "keepNativeForFees" | "quotedDeposit" | "slippagePct"
+> {
   return {
     remoteFeeBuffer: sizing.remoteFeeBuffer.toString(),
     keepNativeForFees: ("keepNativeForFees" in sizing ? sizing.keepNativeForFees : 0n).toString(),
     ...("quotedDeposit" in sizing ? { quotedDeposit: sizing.quotedDeposit.toString() } : {}),
+    // The worker reuses the headroom the native pool's deposit was sized with.
+    ...("slippagePct" in sizing ? { slippagePct: sizing.slippagePct } : {}),
   };
 }
 
@@ -660,6 +664,9 @@ export interface CoinageSessionArgs {
    * window, so core and the request record expire together. Omitted, core's own default.
    */
   staleFlowMs?: number;
+  /** A fresh quote: refuse a pool too thin to carry it. Re-opened requests, rebuilt hand-offs and
+   *  reconciles leave it unset, since their deposit may already be on the burner. */
+  refuseUnavailablePool?: boolean;
 }
 
 export interface MockCoinageWorld extends RefundKeyHold {
@@ -740,6 +747,8 @@ export async function createMockCoinageSession(
     tier: "pool",
     remoteFeeBuffer: 0n,
     keepNativeForFees: 0n,
+    slippagePct: DEFAULT_SLIPPAGE_PCT,
+    poolUnavailable: false,
   };
   const route: ConversionRoute = args.route ?? { tier: "pool" };
   const handoff = createFakeHandoff({ manualConsent: true });
@@ -1104,6 +1113,8 @@ export async function createCoinageSession(
     estimatePsmFundingSizing,
     estimateStableFundingSizing,
     estimateTeleportFundingSizing,
+    exposureForSource,
+    PoolRouteUnavailableError,
   } = await import("./funding-fees");
   const sizingArgs = {
     ahClient: await connectChain(ASSET_HUB),
@@ -1113,9 +1124,10 @@ export async function createCoinageSession(
     settleAmount: args.amount,
     probeAddress: burnerKey.address,
   };
-  // A direct deposit lands as soon as it is sent, so its ask carries less headroom than a swap or
-  // a bank transfer, which give the pool longer to move.
-  const slippagePct = isManualSourceId(args.sourceId) ? DIRECT_SLIPPAGE_PCT : DEFAULT_SLIPPAGE_PCT;
+  // Crypto, direct or through Chainflip, keeps the fixed headroom on either pool tier. Card and
+  // bank take the pool's on the native tier, and the default where it is not computed.
+  const exposure = exposureForSource(args.sourceId);
+  const slippagePct = exposure === null ? DIRECT_SLIPPAGE_PCT : DEFAULT_SLIPPAGE_PCT;
   let sizing: FundingSizing;
   let budget: bigint;
   if (args.route.tier === "psm") {
@@ -1152,11 +1164,24 @@ export async function createCoinageSession(
     const pool = await stage(
       "funding sizing estimate",
       20_000,
-      estimateFundingSizing(sizingArgs),
+      estimateFundingSizing({ ...sizingArgs, exposure }),
     ).catch(() => null);
     const keepNativeForFees = pool?.keepNativeForFees ?? DEFAULT_KEEP_NATIVE_FOR_FEES;
     const remoteFeeBuffer = pool?.remoteFeeBuffer ?? DEFAULT_REMOTE_FEE_BUFFER;
-    sizing = { tier: "pool", remoteFeeBuffer, keepNativeForFees };
+    // A failed read falls back to the headroom above, as the worker does.
+    const poolSlippagePct = pool?.slippagePct ?? slippagePct;
+    const poolUnavailable = pool?.poolUnavailable ?? false;
+    // Refuse only a quote the caller marks fresh: a missing flow slot could also be a failed read.
+    if (poolUnavailable && args.refuseUnavailablePool === true) {
+      throw new PoolRouteUnavailableError(args.amount);
+    }
+    sizing = {
+      tier: "pool",
+      remoteFeeBuffer,
+      keepNativeForFees,
+      slippagePct: poolSlippagePct,
+      poolUnavailable,
+    };
     // Size the native budget the user must deposit from the live pool quote for the CASH
     // settle amount, plus the headroom that lets the deposit clear the worker's swap gate after
     // the pool moves, plus the retained fee native.
@@ -1169,7 +1194,7 @@ export async function createCoinageSession(
         settleAmount: args.amount,
         remoteFeeBuffer,
         keepNativeForFees,
-        slippagePct,
+        slippagePct: poolSlippagePct,
       }),
     );
   }

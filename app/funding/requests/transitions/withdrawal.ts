@@ -213,6 +213,8 @@ function applyWorker(
     switch (job.failure) {
       case "rejected":
       case "timeout":
+      // The key's CASH could not buy the fee PAS. Nothing was spent, so a retry sizes again.
+      case "underfunded":
         if (rank < 1) return next;
         return failed(next, at, {
           kind: job.failure,

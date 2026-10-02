@@ -4,7 +4,8 @@
 
 import { AccountId } from "polkadot-api";
 import { describe, expect, it } from "vitest";
-import { SWAP_HEADROOM_PCT, XCM_TX_FEE_HEADROOM_PCT } from "./fees";
+import { amountOut } from "@getsome/funding";
+import { saleBounds, swapHeadroomPct, XCM_TX_FEE_HEADROOM_PCT } from "./fees";
 import { PASEO_PEOPLE_POOL_ACCOUNT } from "./paseo";
 import { cashInFor } from "./pool";
 import {
@@ -14,6 +15,7 @@ import {
   withdrawTickOnce,
   WithdrawRejectedError,
   type WithdrawStep,
+  type WithdrawTickInput,
   type WithdrawTickState,
 } from "./tick";
 
@@ -87,6 +89,10 @@ function scriptedWorld(
     loseXcmAnswer?: boolean;
     /** Asset Hub's dry run traps this much. */
     trapOnAssetHubDryRun?: bigint;
+    /** A readable CASH/PAS pool on Asset Hub, so the sizing derives its bound from it. */
+    pool?: { cash: bigint; pas: bigint };
+    /** CASH other people sold into that pool after the finalized head, visible only at best. */
+    soldAheadAtBest?: bigint;
   } = {},
 ) {
   const state = {
@@ -271,26 +277,57 @@ function scriptedWorld(
     },
   };
 
+  /** PAS the sale returns, after the sales ahead of it when read at best. No pool, a flat rate. */
+  const pool = opts.pool;
+  const reservesAt = (at?: string) => {
+    const reserves = { in: pool!.cash, out: pool!.pas };
+    const ahead = at === "best" ? (opts.soldAheadAtBest ?? 0n) : 0n;
+    if (ahead <= 0n) return reserves;
+    const got = amountOut(ahead, reserves, 3_000n) ?? 0n;
+    return { in: reserves.in + ahead, out: reserves.out - got };
+  };
+  const sell = (cashIn: bigint, at?: string) =>
+    pool === undefined ? cashIn * AH_RATE : (amountOut(cashIn, reservesAt(at), 3_000n) ?? 0n);
+
   const assetHubApi = {
+    ...(pool === undefined
+      ? {}
+      : {
+          // Asked native-first, answered in the order asked, as the pallet does.
+          view: {
+            AssetConversion: {
+              get_reserves: async (_a: unknown, _b: unknown, options?: { at?: string }) => {
+                const r = reservesAt(options?.at);
+                return [r.out, r.in];
+              },
+            },
+          },
+          constants: { AssetConversion: { LPFee: async () => 3_000 } },
+        }),
     apis: {
       AssetConversionApi: {
-        quote_price_exact_tokens_for_tokens: async (_a: unknown, _b: unknown, cashIn: bigint) =>
-          cashIn * AH_RATE,
+        quote_price_exact_tokens_for_tokens: async (
+          _a: unknown,
+          _b: unknown,
+          cashIn: bigint,
+          _includeFee?: boolean,
+          options?: { at?: string },
+        ) => sell(cashIn, options?.at),
       },
       DryRunApi: {
         // Asset Hub sells every CASH it receives and deposits all the PAS to the destination.
-        dry_run_xcm: async (_origin: unknown, forwarded: Message) => {
+        dry_run_xcm: async (_origin: unknown, forwarded: Message, options?: { at?: string }) => {
           const travelling = forwarded.value[2]!.value as Fungible[];
           const earmark = (forwarded.value[0]!.value as Fungible[])[0]!.fun.value;
           const pas = travelling.length === 2 ? travelling[0]!.fun.value : 0n;
           const cash = travelling[travelling.length - 1]!.fun.value + earmark - 3_546n;
-          state.lastDryRunLanded = pas + cash * AH_RATE;
+          state.lastDryRunLanded = pas + sell(cash, options?.at);
           const events: unknown[] = [
             {
               type: "Balances",
               value: {
                 type: "Deposit",
-                value: { who: DESTINATION_SS58, amount: pas + cash * AH_RATE },
+                value: { who: DESTINATION_SS58, amount: pas + sell(cash, options?.at) },
               },
             },
           ];
@@ -328,6 +365,8 @@ async function drive(
   world: World,
   ticks: number,
   state: WithdrawTickState = freshWithdrawTickState(),
+  sizings: Array<{ promisePct: number; safetyPct: number; overCapacity: boolean }> = [],
+  extra: Partial<WithdrawTickInput> = {},
 ) {
   const steps: WithdrawStep[] = [];
   const transients: string[] = [];
@@ -350,6 +389,8 @@ async function drive(
         readDestinationOnAssetHub: world.readDestinationOnAssetHub,
         now: () => now,
         onTransientError: (e) => transients.push(e instanceof Error ? e.message : String(e)),
+        onSizing: (info) => sizings.push(info),
+        ...extra,
       },
       state,
     );
@@ -409,7 +450,9 @@ describe("withdrawTickOnce", () => {
     // over the quote.
     expect(swapArgs.amount_out).toBe(ED + RESERVE);
     expect(swapArgs.amount_in_max).toBe(
-      (cashInFor(ED + RESERVE, RESERVES) * BigInt(100 + SWAP_HEADROOM_PCT)) / 100n,
+      (cashInFor(ED + RESERVE, RESERVES) *
+        BigInt(Math.round((100 + swapHeadroomPct(RESERVES, ED + RESERVE)) * 100))) /
+        10_000n,
     );
     // The XCM took every CASH left after the swap and its fee.
     expect(cashWithdrawn!.fun.value).toBe(
@@ -523,5 +566,244 @@ describe("withdrawTickOnce", () => {
     await expect(drive(world, 1, state)).rejects.toThrow(/would trap 7 on Asset Hub/);
     expect(world.state.submits.map((s) => s.call)).toEqual(["swap"]);
     expect(world.state.keyPas).toBe(ED + RESERVE);
+  });
+});
+
+describe("withdrawTickOnce after a submit whose answer was lost", () => {
+  it("keeps the first baseline when a stale People view makes it size again", async () => {
+    // People is read at finalized and Asset Hub at best, so after a lost answer People can still
+    // show the key funded while the destination holds the landing. A new baseline would hide it.
+    const world = scriptedWorld({ loseXcmAnswer: true });
+    const state = freshWithdrawTickState();
+    let stale: { cash: bigint; pas: bigint } | null = null;
+    const dryRun = world.peopleApi.apis.DryRunApi.dry_run_call;
+    world.peopleApi.apis.DryRunApi.dry_run_call = (async (...args: Parameters<typeof dryRun>) => {
+      if (stale === null) return dryRun(...args);
+      const live = { cash: world.state.keyCash, pas: world.state.keyPas };
+      world.state.keyCash = stale.cash;
+      world.state.keyPas = stale.pas;
+      try {
+        return await dryRun(...args);
+      } finally {
+        world.state.keyCash = live.cash;
+        world.state.keyPas = live.pas;
+      }
+    }) as typeof dryRun;
+    const tick = async () => {
+      try {
+        const out = await withdrawTickOnce(
+          {
+            peopleApi: world.peopleApi as never,
+            assetHubApi: world.assetHubApi as never,
+            key: KEY,
+            destinationHex: DESTINATION_HEX,
+            assetHubParaId: 1500,
+            peopleParaId: 1502,
+            poolAccount: PASEO_PEOPLE_POOL_ACCOUNT,
+            slippagePct: 5,
+            tickTimeoutMs: 1_000,
+            submitTimeoutMs: 1_000,
+            readKeyOnPeople: async () =>
+              stale ?? { cash: world.state.keyCash, pas: world.state.keyPas },
+            readDestinationOnAssetHub: world.readDestinationOnAssetHub,
+            now: () => 5_000,
+          },
+          state,
+        );
+        return out.step;
+      } catch {
+        return "threw";
+      }
+    };
+
+    expect(await tick()).toBe("swap");
+    const funded = { cash: world.state.keyCash, pas: world.state.keyPas };
+    expect(await tick()).toBe("threw"); // the XCM runs on People, its answer is lost
+    const firstBaseline = state.destinationPasBefore;
+    stale = funded; // People's finalized head still shows the key funded
+    await tick(); // sizes again and reads the destination, which already holds the landing
+    expect(state.destinationPasBefore).toBe(firstBaseline);
+    stale = null; // People finalizes
+    const steps: string[] = [];
+    for (let i = 0; i < 4; i += 1) steps.push(await tick());
+    expect(steps).toContain("done");
+  });
+});
+
+describe("withdrawTickOnce after an XCM attempt that can no longer land", () => {
+  // Such an attempt must drop its baseline, or a stranger's credit counts as the next attempt's
+  // arrival, here one that traps on Asset Hub and lands nothing.
+  const STRANGER = 100n * ED;
+
+  it("drops the baseline of an XCM rejected at inclusion", async () => {
+    const opts: { rejectXcm?: string } = { rejectXcm: "NoDeal" };
+    const world = scriptedWorld(opts);
+    // Enough PAS that the rejection does not send the run back to the swap.
+    world.state.keyPas = 3n * ED;
+    const state = freshWithdrawTickState();
+    await expect(drive(world, 1, state)).rejects.toThrow(/withdraw rejected/);
+    expect(state.destinationPasBefore).toBeNull();
+    delete opts.rejectXcm;
+    world.state.destinationPas += STRANGER;
+    world.state.pasLanded = true; // the next XCM traps on Asset Hub
+    const run = await drive(world, 4, state);
+    expect(run.steps[0]).toBe("convert");
+    expect(run.steps).not.toContain("done");
+  });
+
+  /** The first XCM submit's answer is lost and the transaction never ran. */
+  const dropFirstXcm = (world: World) => {
+    let drop = true;
+    const execute = world.peopleApi.tx.PolkadotXcm.execute;
+    world.peopleApi.tx.PolkadotXcm.execute = ((args: ExecuteArgs) => {
+      const tx = execute(args);
+      return {
+        ...tx,
+        signAndSubmit: async (...submit: Parameters<typeof tx.signAndSubmit>) => {
+          if (!drop) return tx.signAndSubmit(...submit);
+          drop = false;
+          throw new Error("withdrawal submit timed out after 1s");
+        },
+      };
+    }) as typeof execute;
+  };
+
+  it("measures from the fresh baseline once a later XCM is included after a lost answer", async () => {
+    // A later included XCM proves the lost one never ran, or the key could not pay its fee.
+    const world = scriptedWorld();
+    world.state.keyPas = 3n * ED;
+    dropFirstXcm(world);
+    const state = freshWithdrawTickState();
+    await expect(drive(world, 1, state)).rejects.toThrow(/timed out/);
+    expect(state.destinationPasBefore).toBe(DESTINATION_PAS);
+    world.state.destinationPas += STRANGER;
+    world.state.pasLanded = true; // the next XCM traps on Asset Hub
+    const run = await drive(world, 4, state);
+    expect(run.steps[0]).toBe("convert");
+    expect(run.steps).not.toContain("done");
+  });
+
+  it("drops a lost answer's baseline when a later XCM is rejected at inclusion", async () => {
+    const opts: { rejectXcm?: string } = {};
+    const world = scriptedWorld(opts);
+    world.state.keyPas = 3n * ED;
+    dropFirstXcm(world);
+    const state = freshWithdrawTickState();
+    await expect(drive(world, 1, state)).rejects.toThrow(/timed out/);
+    world.state.destinationPas += STRANGER;
+    opts.rejectXcm = "NoDeal";
+    await expect(drive(world, 1, state)).rejects.toThrow(/withdraw rejected/);
+    expect(state.destinationPasBefore).toBeNull();
+    delete opts.rejectXcm;
+    world.state.pasLanded = true;
+    const run = await drive(world, 4, state);
+    expect(run.steps[0]).toBe("convert");
+    expect(run.steps).not.toContain("done");
+  });
+
+  it("drops the baseline when the driver stops the submit before the broadcast", async () => {
+    const world = scriptedWorld();
+    world.state.keyPas = 3n * ED;
+    const state = freshWithdrawTickState();
+    const stopOnce = {
+      onBeforeSubmit: () => {
+        throw new Error("cancelled before the submit");
+      },
+    };
+    await expect(drive(world, 1, state, [], stopOnce)).rejects.toThrow(/cancelled/);
+    expect(state.destinationPasBefore).toBeNull();
+    expect(world.state.submits).toHaveLength(0);
+    world.state.destinationPas += STRANGER;
+    world.state.pasLanded = true;
+    const run = await drive(world, 4, state);
+    expect(run.steps[0]).toBe("convert");
+    expect(run.steps).not.toContain("done");
+  });
+});
+
+describe("withdrawTickOnce on a readable Asset Hub pool", () => {
+  // With a pool to read, the bound comes from it instead of the caller's 5% ceiling.
+
+  /** The live Asset Hub pool, and the same price at the 2.5M CASH release depth. */
+  const LIVE = { cash: 103_995_356_467n, pas: 421_298_658_123_227n };
+  const RELEASE = { cash: LIVE.cash * 24n, pas: LIVE.pas * 24n };
+  /** About 156k CASH, where the bound is neither at the 2% floor nor at the 5% ceiling. */
+  const MID = { cash: (LIVE.cash * 3n) / 2n, pas: (LIVE.pas * 3n) / 2n };
+  const CASH = (n: number) => BigInt(Math.round(n * 1e6));
+
+  /** The CASH the XCM sold, read back out of the program that was submitted. */
+  const soldBy = (world: World) => {
+    const execute = submitsOf(world).execute!;
+    const message = (execute.args as ExecuteArgs).message;
+    return (message.value[0]!.value as Fungible[])[1]!.fun.value;
+  };
+
+  it("ships the derived bound on a deep pool, reports it, and keeps it for the arrival check", async () => {
+    const world = scriptedWorld({ pool: RELEASE });
+    const sizings: Array<{ promisePct: number; safetyPct: number; overCapacity: boolean }> = [];
+    const run = await drive(world, 4, freshWithdrawTickState(), sizings);
+    expect(run.steps.slice(0, 2)).toEqual(["swap", "convert"]);
+
+    const cash = soldBy(world);
+    const expected = saleBounds({
+      reserves: { in: RELEASE.cash, out: RELEASE.pas },
+      quoted: amountOut(cash, { in: RELEASE.cash, out: RELEASE.pas }, 3_000n)!,
+      cashOnKey: cash,
+      ceilingPct: 5,
+      feePpm: 3_000n,
+    });
+    expect(sizings).toHaveLength(1);
+    expect(sizings[0]).toEqual(expected);
+    expect(sizings[0]!.safetyPct).toBeLessThan(5);
+    expect(sizings[0]!.overCapacity).toBe(false);
+    // The arrival check reads the bound the program carried, not the caller's ceiling.
+    expect(run.state.submittedSlippagePct).toBe(expected.safetyPct);
+  });
+
+  it("checks the arrival against the bound the program carried, not the caller's ceiling", async () => {
+    // The deep pool's bound is under 3%, so a landing 3% short waits though it clears 5%.
+    const probe = scriptedWorld({ pool: RELEASE });
+    await drive(probe, 4);
+    const landed = probe.state.lastDryRunLanded;
+    const world = scriptedWorld({ pool: RELEASE, landShort: (landed * 3n) / 100n });
+    const sizings: Array<{ promisePct: number; safetyPct: number; overCapacity: boolean }> = [];
+    const run = await drive(world, 5, freshWithdrawTickState(), sizings);
+    expect(sizings[0]!.safetyPct).toBeLessThan(3);
+    expect(run.steps).not.toContain("done");
+    expect(run.steps.at(-1)).toBe("await-arrival");
+  });
+
+  it("ships the 5% ceiling on today's pool, which asks for more, and reports it over capacity", async () => {
+    const world = scriptedWorld({ pool: LIVE });
+    const sizings: Array<{ promisePct: number; safetyPct: number; overCapacity: boolean }> = [];
+    await drive(world, 2, freshWithdrawTickState(), sizings);
+    expect(sizings[0]).toEqual({ promisePct: 5, safetyPct: 5, overCapacity: true });
+  });
+
+  it("sizes at the best head: a sale executed after the finalized head is in the quote and the landing", async () => {
+    // A quote at the finalized head misses the sales since, so both reads happen at best.
+    const ahead = CASH(10_000);
+    const world = scriptedWorld({ pool: MID, soldAheadAtBest: ahead });
+    const sizings: Array<{ promisePct: number; safetyPct: number; overCapacity: boolean }> = [];
+    const run = await drive(world, 4, freshWithdrawTickState(), sizings);
+    expect(run.steps.slice(0, 2)).toEqual(["swap", "convert"]);
+
+    const cash = soldBy(world);
+    const pool = { in: MID.cash, out: MID.pas };
+    const movedOut = amountOut(ahead, pool, 3_000n)!;
+    const atBest = { in: pool.in + ahead, out: pool.out - movedOut };
+    const boundAt = (reserves: typeof pool) =>
+      saleBounds({
+        reserves,
+        quoted: amountOut(cash, reserves, 3_000n)!,
+        cashOnKey: cash,
+        ceilingPct: 5,
+        feePpm: 3_000n,
+      });
+    // The reported bound comes from the best head, not the finalized one.
+    expect(sizings).toEqual([boundAt(atBest)]);
+    expect(boundAt(atBest)).not.toEqual(boundAt(pool));
+    // So does the landing the arrival check is held to.
+    expect(world.state.lastDryRunLanded).toBeLessThan(amountOut(cash, pool, 3_000n)!);
   });
 });

@@ -12,6 +12,7 @@ import {
   readDestinationPas,
   withdrawTickOnce,
   WithdrawRejectedError,
+  WithdrawUnderfundedError,
 } from "@getsome/withdraw";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import { readParams } from "./params.js";
@@ -63,12 +64,15 @@ const saveJobs = () => store.save();
  *   paymentExpiresAt: number|null,
  *   phase: "starting" | WithdrawStep | RailStep | "failed",
  *   failure?: "rejected" | "timeout" | "expired" | "cancelled" | "no-rail" | "rail-failed"
- *            | "channel-expired" | "channel-mismatch",
+ *            | "channel-expired" | "channel-mismatch" | "underfunded",
  *   landed,                                  // the message leg is done: PAS on Asset Hub
  *   done, createdAt, armedAt, lastTickAt, lastError?,
  *   state: { attempts, rejections, submitted, destinationPasBefore, expectedLanding,
- *            fundsSeenAt, workedMs },       // the two balances as decimal strings or null
+ *            submittedSlippagePct, fundsSeenAt, workedMs },
+ *                                            // the two balances as decimal strings or null
+ *                                            // submittedSlippagePct: the bound the XCM carried
  *   leg: { handoff, paid, sweep, reading },  // the rail leg, for a provider rail
+ *   sizing?: { promisePct, safetyPct, overCapacity },  // the bound the last submit carried
  *   submitting?: { call, at },               // written before a submit
  *   txs: [{ call, txHash, block? }],
  * }
@@ -312,6 +316,8 @@ function describeWithdraw(record) {
     lastError: record.lastError,
     failure: record.failure,
     submitting: record.submitting,
+    // The bound the live program carries, not the ceiling the request was created with.
+    sizing: record.sizing ?? null,
     txs: record.txs,
     fundsSeenAt: record.state?.fundsSeenAt ?? null,
   };
@@ -480,6 +486,11 @@ async function tickRecord(record, nowMs) {
     state.submitted = !!record.state.submitted;
     state.destinationPasBefore = asBig(record.state.destinationPasBefore, null);
     state.expectedLanding = asBig(record.state.expectedLanding, null);
+    // The slippage the submitted program carried; the arrival check uses it.
+    state.submittedSlippagePct =
+      typeof record.state.submittedSlippagePct === "number"
+        ? record.state.submittedSlippagePct
+        : null;
     state.fundsSeenAt = record.state.fundsSeenAt ?? null;
 
     // Written before a submit and after every tick, thrown ones included; withdrawTickOnce
@@ -492,6 +503,7 @@ async function tickRecord(record, nowMs) {
         destinationPasBefore:
           state.destinationPasBefore === null ? null : String(state.destinationPasBefore),
         expectedLanding: state.expectedLanding === null ? null : String(state.expectedLanding),
+        submittedSlippagePct: state.submittedSlippagePct,
         fundsSeenAt: state.fundsSeenAt,
         workedMs: record.state.workedMs ?? 0,
       };
@@ -531,6 +543,9 @@ async function tickRecord(record, nowMs) {
           onTx: (info) => {
             delete record.submitting;
             record.txs.push(info);
+          },
+          onSizing: (info) => {
+            record.sizing = info;
           },
           onTransientError: (error) => {
             record.lastError = String(error?.message ?? error);
@@ -588,6 +603,12 @@ export async function tickAllWithdraw() {
       } catch (error) {
         if (error instanceof WithdrawRejectedError) {
           fail(record, "rejected", error.message);
+        } else if (
+          error instanceof WithdrawUnderfundedError &&
+          error.cashBalance >= asBig(record.amount, 0n)
+        ) {
+          // Final only once the whole payment is on the key; before that the rest may still arrive.
+          fail(record, "underfunded", error.message);
         } else {
           // Other errors are transient; the next wake retries.
           record.lastError = String(error?.message ?? error);

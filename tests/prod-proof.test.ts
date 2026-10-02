@@ -18,7 +18,6 @@ import { getPolkadotSigner } from "polkadot-api/signer";
 import { deriveKeypairWithSecret } from "@getsome/ephemeral";
 import {
   DEFAULT_INCLUSION_TIMEOUT_MS,
-  DEFAULT_SLIPPAGE_PCT,
   DEFAULT_TICK_TIMEOUT_MS,
   discoverPool,
   freshTickState,
@@ -70,7 +69,7 @@ describe.runIf(process.env.PROD_PROOF === "1")("production proof", () => {
       const burner = deriveKeypairWithSecret(entropy);
       console.log(`BURNER ${burner.address}  entropy=${toHex(entropy)}`);
 
-      // Size the deposit as the app does
+      // Size the deposit as the app does for a direct payment, with the fixed crypto headroom.
       const sizing = await estimateFundingSizing({
         ahClient: ahC,
         peopleClient: peC,
@@ -78,10 +77,11 @@ describe.runIf(process.env.PROD_PROOF === "1")("production proof", () => {
         peopleParaId: PASEO_PEOPLE_PARA_ID,
         settleAmount: SETTLE,
         probeAddress: burner.address,
+        exposure: null,
       });
       if (!sizing) throw new Error("sizing failed");
       console.log(
-        `SIZING remoteFeeBuffer=${cash(sizing.remoteFeeBuffer)} CASH  keepNative=${pas(sizing.keepNativeForFees)} PAS`,
+        `SIZING remoteFeeBuffer=${cash(sizing.remoteFeeBuffer)} CASH  keepNative=${pas(sizing.keepNativeForFees)} PAS  headroom=${sizing.slippagePct}%`,
       );
       const budget = await sizeNativeBudget({
         client: ahC,
@@ -89,6 +89,7 @@ describe.runIf(process.env.PROD_PROOF === "1")("production proof", () => {
         settleAmount: SETTLE,
         remoteFeeBuffer: sizing.remoteFeeBuffer,
         keepNativeForFees: sizing.keepNativeForFees,
+        slippagePct: sizing.slippagePct,
       });
       console.log(`DEPOSIT to send: ${pas(budget)} PAS`);
 
@@ -135,7 +136,8 @@ describe.runIf(process.env.PROD_PROOF === "1")("production proof", () => {
               assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
               remoteFeeBuffer: sizing.remoteFeeBuffer,
               keepNativeForFees: sizing.keepNativeForFees,
-              slippagePct: DEFAULT_SLIPPAGE_PCT,
+              // The headroom the deposit was sized with, as the hand-off carries it.
+              slippagePct: sizing.slippagePct,
               tickTimeoutMs: DEFAULT_TICK_TIMEOUT_MS,
               inclusionTimeoutMs: DEFAULT_INCLUSION_TIMEOUT_MS,
               signOptions: { at: best[0]?.hash },

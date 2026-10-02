@@ -15,6 +15,7 @@ import { egressFor, SOURCE_CONFIG_BY_ID, type ChainflipToken } from "@getsome/ch
 import type { RefundKey } from "@getsome/ephemeral";
 import {
   createManualRail,
+  DEFAULT_SLIPPAGE_PCT,
   manualSourceIdOf,
   PERMILL,
   PSM_EXTERNAL,
@@ -638,6 +639,8 @@ export const useSessionStore = defineStore("session", () => {
     tradeN?: number,
     rail?: ChainflipRail,
     sourceId?: SourceId,
+    /** A fresh quote nobody has paid against: a pool too thin to carry it is refused. */
+    fresh = false,
   ): Promise<HostedCoinageWorld | null> {
     // No account lookup: the burner comes from the host's entropy root and the claim credits
     // whoever the host authenticated.
@@ -655,6 +658,7 @@ export const useSessionStore = defineStore("session", () => {
         // The fiat route injects a Meld rail and its source id; the crypto route leaves both unset.
         ...(rail ? { rail } : {}),
         ...(sourceId ? { sourceId } : {}),
+        ...(fresh ? { refuseUnavailablePool: true } : {}),
         onClaimProgress: (stage, claimed) => {
           if (foregroundRef === null) return;
           void requests.observe(foregroundRef, {
@@ -854,7 +858,13 @@ export const useSessionStore = defineStore("session", () => {
    */
   async function meldFundingSizing(settleAmount: bigint): Promise<PoolFundingSizing> {
     if (typeof window === "undefined") {
-      return { tier: "pool", remoteFeeBuffer: 0n, keepNativeForFees: 0n };
+      return {
+        tier: "pool",
+        remoteFeeBuffer: 0n,
+        keepNativeForFees: 0n,
+        slippagePct: DEFAULT_SLIPPAGE_PCT,
+        poolUnavailable: false,
+      };
     }
     const { estimatePublicFundingSizing, FALLBACK_FUNDING_SIZING } =
       await import("~~/lib/funding-fees");
@@ -958,6 +968,7 @@ export const useSessionStore = defineStore("session", () => {
         tradeN,
         built.rail,
         built.sourceId,
+        true,
       );
       if (!world) return;
       if (epoch !== quoteEpoch) {
@@ -1031,6 +1042,7 @@ export const useSessionStore = defineStore("session", () => {
           tradeN,
           undefined,
           liveSourceId,
+          true,
         );
         if (!world) return; // superseded by a newer quote
         if (epoch !== quoteEpoch) {
@@ -1100,8 +1112,8 @@ export const useSessionStore = defineStore("session", () => {
                   settleAmount: settleForPricing,
                   remoteFeeBuffer: priced.remoteFeeBuffer,
                   keepNativeForFees: priced.keepNativeForFees,
-                  // A direct deposit carries the smaller headroom, as the hosted sizing does.
-                  ...(direct === null ? {} : { slippagePct: DIRECT_SLIPPAGE_PCT }),
+                  // Crypto keeps the fixed headroom, direct or not, as the hosted sizing does.
+                  slippagePct: DIRECT_SLIPPAGE_PCT,
                 }))(),
             );
           } catch (e) {

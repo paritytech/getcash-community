@@ -47,7 +47,9 @@ describe.runIf(process.env.PROD_PROOF_WITHDRAW === "1")("withdrawal production p
         0n;
       const readPas = async (ss58: string) =>
         (await peopleApi.query.System.Account.getValue(ss58))?.data?.free ?? 0n;
-      const aliceBefore = (await assetHubApi.query.System.Account.getValue(ALICE)).data.free;
+      // Read at the head the arrival check reads, so the printed gain agrees with its "done".
+      const aliceHex = toHex(AccountId().enc(ALICE));
+      const aliceBefore = await readDestinationPas(assetHubApi, aliceHex);
       console.log(
         `KEY ${key.address}: ${cash(await readCash(key.address))} CASH, ${pas(await readPas(key.address))} PAS on People`,
       );
@@ -66,7 +68,7 @@ describe.runIf(process.env.PROD_PROOF_WITHDRAW === "1")("withdrawal production p
               peopleApi,
               assetHubApi,
               key: { address: key.address, publicKeyHex: toHex(key.publicKey), signer: key.signer },
-              destinationHex: toHex(AccountId().enc(ALICE)),
+              destinationHex: aliceHex,
               assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
               peopleParaId: PASEO_PEOPLE_PARA_ID,
               poolAccount: PASEO_PEOPLE_POOL_ACCOUNT,
@@ -98,7 +100,7 @@ describe.runIf(process.env.PROD_PROOF_WITHDRAW === "1")("withdrawal production p
         if (step !== "done" && !submitted) await sleep(POLL_MS);
       }
 
-      const aliceAfter = (await assetHubApi.query.System.Account.getValue(ALICE)).data.free;
+      const aliceAfter = await readDestinationPas(assetHubApi, aliceHex);
       const keyCash = await readCash(key.address);
       const keyPas = await readPas(key.address);
       console.log("RESULT");

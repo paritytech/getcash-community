@@ -12,9 +12,15 @@ export {
   dryRunOnAssetHub,
   NeedsSwapError,
   readPoolReserves,
+  SALE_READ_AT,
+  saleBounds,
+  saleReserves,
   sizeSwap,
   sizeXcm,
   SWAP_HEADROOM_PCT,
+  swapHeadroomPct,
+  TYPICAL_WITHDRAWAL_CASH,
+  WithdrawUnderfundedError,
   XCM_TX_FEE_HEADROOM_PCT,
 } from "./fees";
 export type { AssetHubApi, SizeSwapInput, SizeXcmInput, XcmSizing } from "./fees";

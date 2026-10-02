@@ -24,6 +24,29 @@ export {
 } from "./pipeline";
 export type { FundingStep, TickState } from "./pipeline";
 export {
+  absorbableFlow,
+  ADVERSE_FLOW_MULTIPLE,
+  amountIn,
+  amountOut,
+  DEFAULT_CONCURRENCY,
+  DEFAULT_LP_FEE_PPM,
+  derivedFloorPct,
+  EXTERNAL_POOL_FLOOR_PCT,
+  MARKET_MOVE_PCT,
+  MAX_SLIPPAGE_PCT,
+  slippageFor,
+  withdrawalBounds,
+} from "./slippage";
+export type {
+  DerivedFloorInput,
+  Exposure,
+  FloorTerms,
+  OrientedReserves,
+  SlippageDecision,
+  SlippageInput,
+  WithdrawalBounds,
+} from "./slippage";
+export {
   buildFundingProgram,
   buildPsmFundingProgram,
   buildStableFundingProgram,

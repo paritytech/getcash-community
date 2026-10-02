@@ -18,9 +18,11 @@ import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import type { PolkadotClient } from "polkadot-api";
 import {
   DEFAULT_KEEP_NATIVE_FOR_FEES,
+  DEFAULT_LP_FEE_PPM,
   DEFAULT_REMOTE_FEE_BUFFER,
   DEFAULT_SLIPPAGE_PCT,
   DepositBelowFeesError,
+  DIRECT_SLIPPAGE_PCT,
   destinationEarmark,
   discoverPools,
   estimateDestinationFeeCash,
@@ -28,6 +30,7 @@ import {
   estimatePsmBatchFees,
   estimateStableProgramFees,
   estimateTeleportProgramFees,
+  EXTERNAL_POOL_FLOOR_PCT,
   PASEO_ASSET_HUB_PARA_ID,
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
@@ -38,10 +41,13 @@ import {
   quoteStableForUnderlying,
   quoteUnderlyingOut,
   sizePsmMint,
+  slippageFor,
   STABLE_TOKENS,
   stableDepositNeeded,
   withFeeMargin,
   type ConversionRoute,
+  type Exposure,
+  type OrientedReserves,
   type PsmExternal,
   type PsmRoute,
   type Pool,
@@ -58,6 +64,89 @@ export interface PoolFundingSizing {
   remoteFeeBuffer: bigint;
   /** Native the deposit carries for the program's dispatch fee and fee allowance. */
   keepNativeForFees: bigint;
+  /** Headroom over the pool quote, in percent: DIRECT_SLIPPAGE_PCT for crypto, computed for card
+   *  and bank, DEFAULT_SLIPPAGE_PCT if the pool was unreadable. */
+  slippagePct: number;
+  /** The pool cannot carry this purchase within the cap. False for crypto and if the pool could
+   *  not be read. */
+  poolUnavailable: boolean;
+}
+
+/** How long a fiat deposit takes to arrive: days for a bank, hours for a card. Null for crypto,
+ *  direct or through Chainflip, which takes the fixed DIRECT_SLIPPAGE_PCT: its deposit lands on
+ *  the burner either way, so a short one is handled there rather than over-asked up front. */
+export function exposureForSource(sourceId: string): Exposure | null {
+  if (sourceId === "meld-bank") return "days";
+  if (sourceId === "meld-card") return "hours";
+  return null;
+}
+
+/** A typical purchase, in CASH base units. Flow is counted in these, not in our own purchase,
+ *  since other buyers do not trade more when we do. */
+export const TYPICAL_PURCHASE_CASH = 100_000_000n;
+
+/**
+ * Deposit headroom for a card or bank purchase on this pool. Includes one dispatch fee, since a
+ * rejected program pays it from the deposit, and never goes below EXTERNAL_POOL_FLOOR_PCT (2%).
+ * `unavailable`: the pool cannot carry the purchase within MAX_SLIPPAGE_PCT.
+ */
+export function headroomFor(input: {
+  reserves: OrientedReserves;
+  buyTarget: bigint;
+  exposure: Exposure;
+  feePpm: bigint;
+  referenceTrade?: bigint;
+  /** The funding program's dispatch fee, in the native. */
+  dispatchNative?: bigint;
+}): { pct: number; unavailable: boolean } {
+  // The dispatch fee converted to CASH at the pool's price.
+  const dispatchCash =
+    input.dispatchNative === undefined || input.reserves.in <= 0n
+      ? 0n
+      : (input.dispatchNative * input.reserves.out) / input.reserves.in;
+  const decision = slippageFor({
+    reserves: input.reserves,
+    tradeOut: input.buyTarget,
+    exposure: input.exposure,
+    feePpm: input.feePpm,
+    referenceTrade: input.referenceTrade ?? TYPICAL_PURCHASE_CASH,
+    // One ordinary purchase landing first is always covered.
+    competingTrade: TYPICAL_PURCHASE_CASH,
+    ...(dispatchCash > 0n ? { feeTakenFromTrade: dispatchCash } : {}),
+    floorPct: EXTERNAL_POOL_FLOOR_PCT,
+  });
+  return { pct: decision.pct, unavailable: decision.cappedOut };
+}
+
+/** The pool cannot carry this purchase within MAX_SLIPPAGE_PCT. Thrown only for a fresh quote,
+ *  before the deposit is asked for. The message is shown on the quote screen. */
+export class PoolRouteUnavailableError extends Error {
+  constructor(readonly settleAmount: bigint) {
+    // No "smaller" or "larger": which amount works depends on why the request is on the pool tier.
+    super(
+      "There is not enough liquidity to top up this amount this way right now. " +
+        "Try another amount or payment method.",
+    );
+    this.name = "PoolRouteUnavailableError";
+  }
+}
+
+/** The pool's two reserves, in the order asked for, or null when the runtime will not answer. */
+async function readReserves(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  api: any,
+  a: unknown,
+  b: unknown,
+): Promise<[bigint, bigint] | null> {
+  try {
+    const out = await api.view.AssetConversion.get_reserves(a, b);
+    const pair = (out as { value?: unknown })?.value ?? out;
+    if (!Array.isArray(pair) || pair.length < 2) return null;
+    return [BigInt(pair[0] as never), BigInt(pair[1] as never)];
+  } catch {
+    // An older runtime without the view function: the caller uses its fallback.
+    return null;
+  }
 }
 
 /** The PSM tier's costs. */
@@ -166,30 +255,74 @@ async function sizingReads(args: SizingArgs, stableAssetId?: number) {
 }
 
 /** The pool tier's sizing. */
-export async function estimateFundingSizing(args: SizingArgs): Promise<PoolFundingSizing | null> {
+export async function estimateFundingSizing(
+  args: SizingArgs & {
+    /** A fiat rail's delivery window, from `exposureForSource`. Null for crypto, which takes the
+     *  fixed DIRECT_SLIPPAGE_PCT and is never refused here. */
+    exposure: Exposure | null;
+  },
+): Promise<PoolFundingSizing | null> {
   try {
     const { api, pool, destinationFee } = await sizingReads(args);
 
-    // The fee probes carry the amounts a real deposit would, so the measured dispatch fee matches
-    // the submitted call's length.
     const buyTarget = args.settleAmount + destinationFee;
-    const nativeInMax = await quoteNativeInMax(api, pool, buyTarget, DEFAULT_SLIPPAGE_PCT);
 
-    const fees = await estimateFundingProgramFees({
-      api,
-      pool,
-      beneficiaryHex: ZERO_32,
-      peopleParaId: args.peopleParaId,
-      nativeBalance: nativeInMax,
-      minUnderlyingOut: buyTarget,
-      remoteFeesCash: destinationEarmark(buyTarget, destinationFee),
-      feeProbeAddress: args.probeAddress,
-    });
+    // Fees first, since one dispatch fee is part of the headroom. The probe deposit at the default
+    // headroom encodes to the same length as the real one. A failed probe falls back wide.
+    const fees = await quoteNativeInMax(api, pool, buyTarget, DEFAULT_SLIPPAGE_PCT)
+      .then((probeNative) =>
+        estimateFundingProgramFees({
+          api,
+          pool,
+          beneficiaryHex: ZERO_32,
+          peopleParaId: args.peopleParaId,
+          nativeBalance: probeNative,
+          minUnderlyingOut: buyTarget,
+          remoteFeesCash: destinationEarmark(buyTarget, destinationFee),
+          feeProbeAddress: args.probeAddress,
+        }),
+      )
+      .then((f) => ({ keep: f.payFeesNative + f.dispatchNative, dispatch: f.dispatchNative }))
+      .catch((e: unknown) => {
+        console.warn("[coinage] funding fee probe failed; using the static allowance:", e);
+        return { keep: DEFAULT_KEEP_NATIVE_FOR_FEES, dispatch: DEFAULT_KEEP_NATIVE_FOR_FEES };
+      });
+
+    // Crypto keeps the fixed headroom. A fiat rail's comes from the reserves and LP fee, and an
+    // unreadable pool falls back to the default.
+    let headroom = { pct: DIRECT_SLIPPAGE_PCT, unavailable: false };
+    if (args.exposure !== null) {
+      const [reserves, feePpm] = await Promise.all([
+        readReserves(api, pool.native, pool.underlying),
+        // LPFee is in parts per million.
+        api.constants.AssetConversion.LPFee()
+          .then((ppm) => BigInt(ppm))
+          .catch(() => undefined),
+      ]);
+      headroom =
+        reserves === null
+          ? { pct: DEFAULT_SLIPPAGE_PCT, unavailable: false }
+          : headroomFor({
+              reserves: { in: reserves[0], out: reserves[1] },
+              buyTarget,
+              exposure: args.exposure,
+              feePpm: feePpm ?? DEFAULT_LP_FEE_PPM,
+              dispatchNative: fees.dispatch,
+            });
+    }
+    if (headroom.unavailable) {
+      console.warn(
+        "[coinage] the Asset Hub pool cannot carry this purchase within the slippage cap; " +
+          "the pool route is unavailable for it",
+      );
+    }
 
     return {
       tier: "pool",
       remoteFeeBuffer: destinationFee,
-      keepNativeForFees: fees.payFeesNative + fees.dispatchNative,
+      keepNativeForFees: fees.keep,
+      slippagePct: headroom.pct,
+      poolUnavailable: headroom.unavailable,
     };
   } catch (e) {
     console.warn("[coinage] funding sizing estimate failed; using static fallbacks:", e);
@@ -412,6 +545,9 @@ export const FALLBACK_FUNDING_SIZING: PoolFundingSizing = {
   tier: "pool",
   remoteFeeBuffer: DEFAULT_REMOTE_FEE_BUFFER,
   keepNativeForFees: DEFAULT_KEEP_NATIVE_FOR_FEES,
+  slippagePct: DEFAULT_SLIPPAGE_PCT,
+  // Nothing was read, so nothing is known to be over capacity.
+  poolUnavailable: false,
 };
 
 /**
@@ -441,6 +577,9 @@ export async function estimatePublicFundingSizing(args: {
         peopleParaId: PASEO_PEOPLE_PARA_ID,
         settleAmount: args.settleAmount,
         probeAddress: args.probeAddress,
+        // Only the fees are read: the crypto quote asks the fixed headroom and the Meld quote
+        // prices from Meld's rate.
+        exposure: null,
       })) ?? FALLBACK_FUNDING_SIZING
     );
   } catch (e) {
