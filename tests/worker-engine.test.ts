@@ -534,6 +534,47 @@ describe("worker funding engine", () => {
     expect(storedJob().state.nonceAtSubmit).toBeNull();
   });
 
+  it("persists the block the conversion was seen in, and restores a record from before it without one", async () => {
+    armSeams();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.attempts = 1;
+      state.xcmSubmitted = true;
+      state.nonceAtSubmit = 5;
+      state.inclusionBlock = 1_234;
+      return { ...outcome("await-arrival"), submitted: true };
+    });
+    await engine.tickAllFunding();
+    expect(storedJob()).toMatchObject({
+      phase: "await-arrival",
+      state: { xcmSubmitted: true, nonceAtSubmit: 5, inclusionBlock: 1_234 },
+    });
+
+    const revived = await freshEngine();
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      expect(state).toMatchObject({ xcmSubmitted: true, nonceAtSubmit: 5, inclusionBlock: 1_234 });
+      return outcome("await-arrival");
+    });
+    await revived.tickAllFunding();
+    expect(storedJob()).toMatchObject({
+      phase: "await-arrival",
+      state: { nonceAtSubmit: 5, inclusionBlock: 1_234 },
+    });
+
+    delete storedJob().state.inclusionBlock;
+    const legacy = await freshEngine();
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      expect(state).toMatchObject({ nonceAtSubmit: 5, inclusionBlock: null });
+      return outcome("await-arrival");
+    });
+    await legacy.tickAllFunding();
+    expect(storedJob()).toMatchObject({
+      phase: "await-arrival",
+      state: { nonceAtSubmit: 5, inclusionBlock: null },
+    });
+  });
+
   it("reads the CASH behind done, and behind sizing every claim attempt, from the finalized People block", async () => {
     armSeams();
     const engine = await freshEngine();
@@ -684,6 +725,8 @@ describe("worker funding engine", () => {
       state.attempts = 1;
       state.xcmSubmitted = true;
       state.peopleAtXcm = 100n;
+      state.nonceAtSubmit = 5;
+      state.inclusionBlock = 1_234;
       state.fundsSeenAt = Date.now();
       throw new funding.FundingShortfallError(SETTLE - 5_000n, SETTLE);
     });
@@ -691,7 +734,7 @@ describe("worker funding engine", () => {
     expect(storedJob()).toMatchObject({
       phase: "failed",
       failure: "shortfall",
-      state: { xcmSubmitted: true, peopleAtXcm: "100" },
+      state: { xcmSubmitted: true, peopleAtXcm: "100", nonceAtSubmit: 5, inclusionBlock: 1_234 },
     });
 
     await engine.startFunding(JSON.stringify(HANDOFF));
@@ -700,6 +743,7 @@ describe("worker funding engine", () => {
       xcmSubmitted: false,
       peopleAtXcm: "0",
       nonceAtSubmit: null,
+      inclusionBlock: null,
       fundsSeenAt: null,
     });
     mocks.tickOnce.mockImplementationOnce(async (_input, state) => {

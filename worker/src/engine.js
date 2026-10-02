@@ -76,10 +76,14 @@ const saveJobs = () => store.save();
  *                                            // deposit stays on the burner
  *   done, createdAt, armedAt, lastTickAt, lastError?,
  *   state: { attempts, psmRefusals, xcmSubmitted, peopleAtXcm: string,
- *            fundsSeenAt: number|null, nonceAtSubmit: number|null, workedMs },
+ *            fundsSeenAt: number|null, nonceAtSubmit: number|null,
+ *            inclusionBlock: number|null, workedMs },
  *                                            // attempts: submits so far
  *                                            // psmRefusals: PSM refusals so far, not transport
- *                                            // nonceAtSubmit: set while a submit's answer is owed
+ *                                            // nonceAtSubmit: set from before a submit until
+ *                                            // the conversion is final
+ *                                            // inclusionBlock: the block the conversion was
+ *                                            // seen in, while it is not final
  *   submitting?: { call: "swap", at },        // written before a submit, with the state
  *   txs: [{ call, txHash, block? }],
  *   claim?: { phase: "sizing"|"registering"|"claiming"|"claimed", attempt, credited,
@@ -149,6 +153,7 @@ const freshRecordState = () => ({
   peopleAtXcm: "0",
   fundsSeenAt: null,
   nonceAtSubmit: null,
+  inclusionBlock: null,
   workedMs: 0,
 });
 
@@ -234,6 +239,7 @@ function rearm(record, nowMs) {
     record.state.xcmSubmitted = false;
     record.state.peopleAtXcm = "0";
     record.state.nonceAtSubmit = null;
+    record.state.inclusionBlock = null;
   }
   if (failure === "held") record.state.psmRefusals = 0;
   if (record.claim?.phase === "registering") {
@@ -650,6 +656,7 @@ async function tickRecord(record, nowMs) {
     state.peopleAtXcm = asBig(record.state.peopleAtXcm);
     state.fundsSeenAt = record.state.fundsSeenAt ?? null;
     state.nonceAtSubmit = record.state.nonceAtSubmit ?? null;
+    state.inclusionBlock = record.state.inclusionBlock ?? null;
     // tickOnce mutates the state as it works; it is written back before a submit leaves and
     // after the tick, thrown or not.
     const persistState = () => {
@@ -660,6 +667,7 @@ async function tickRecord(record, nowMs) {
         peopleAtXcm: state.peopleAtXcm.toString(),
         fundsSeenAt: state.fundsSeenAt,
         nonceAtSubmit: state.nonceAtSubmit,
+        inclusionBlock: state.inclusionBlock,
         workedMs: record.state.workedMs ?? 0,
       };
     };

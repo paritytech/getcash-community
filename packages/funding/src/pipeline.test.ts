@@ -265,12 +265,15 @@ type Observer = {
 };
 type LoseAnswer = "dropped" | "included";
 
+/** The block every inclusion is reported in. */
+const INCLUSION_BLOCK = 42;
+
 /** polkadot-api's watch as the fakes script it. `land` runs the program on the chain, and its
  *  outcome is reported in a best block one turn after the subscribe; finality follows a turn
  *  later, on a watch still open. Without `land` the watch stays silent, as one whose answer is
  *  lost; with `error` it fails as an invalid transaction does. */
 function scriptedWatch(txHash: string, log: WatchLog, land?: () => Outcome, error?: Error) {
-  const block = { hash: "0xb10c", number: 42, index: 1 };
+  const block = { hash: "0xb10c", number: INCLUSION_BLOCK, index: 1 };
   return {
     subscribe(observer: Observer) {
       log.open = true;
@@ -305,22 +308,48 @@ function scriptedWatch(txHash: string, log: WatchLog, land?: () => Outcome, erro
   };
 }
 
-/** The burner's Asset Hub nonce as the fakes script it: raised at every inclusion, and only ever
- *  asked for at the latest block. */
-function scriptedNonce() {
-  const nonce = { latest: 0 };
-  return {
+/** Asset Hub's height and the burner's nonce as the fakes script it. An inclusion raises the
+ *  nonce at the latest block, and the finalized block follows at once, nonce and height, unless
+ *  finality is held, where `finalize` brings it up when the test says. Until then the finalized
+ *  height is one block short of INCLUSION_BLOCK; a test that moves it past without `finalize`
+ *  replaces the block the program was in. */
+function scriptedChain() {
+  const nonce = { latest: 0, finalized: 0 };
+  const tagOf = (options?: { at?: string }) => {
+    const at = options?.at;
+    if (at !== "best" && at !== "finalized") throw new Error(`read at ${String(at)}`);
+    return at;
+  };
+  const chain = {
     nonce,
+    finalizedBlock: INCLUSION_BLOCK - 1,
+    finalityHeld: false,
+    /** Every nonce and height read, as `what@at`. */
+    reads: [] as string[],
     raise() {
       nonce.latest += 1;
+      if (!chain.finalityHeld) chain.finalize();
+    },
+    finalize() {
+      nonce.finalized = nonce.latest;
+      chain.finalizedBlock = INCLUSION_BLOCK;
     },
     AccountNonceApi: {
       account_nonce: async (_who: unknown, options?: { at?: string }) => {
-        expect(options?.at).toBe("best");
-        return nonce.latest;
+        const at = tagOf(options);
+        chain.reads.push(`nonce@${at}`);
+        return at === "finalized" ? nonce.finalized : nonce.latest;
+      },
+    },
+    Number: {
+      getValue: async (options?: { at?: string }) => {
+        const at = tagOf(options);
+        chain.reads.push(`number@${at}`);
+        return at === "finalized" ? chain.finalizedBlock : INCLUSION_BLOCK;
       },
     },
   };
+  return chain;
 }
 
 /** Scripted Asset Hub + People. XCM arrival is counted in People reads, not wall-clock. */
@@ -355,12 +384,16 @@ function scriptedWorld(
     /** The submit's watch never answers: the program is dropped, or included on a chain that
      *  moves on without telling. Lifted by the tests through `state.loseAnswer`. */
     loseAnswer?: LoseAnswer;
+    /** The first N submits are seen in a best block the chain then replaces: the watch reports
+     *  them ok, the chain keeps nothing of them, and the program is left for the test to
+     *  re-include through `state.lost`. */
+    replacedInclusions?: number;
     /** The submit fails validation instead of reaching a block. */
     invalidTx?: boolean;
   } = {},
 ) {
   const remoteFee = opts.remoteFee ?? 50_000n;
-  const chain = scriptedNonce();
+  const chain = scriptedChain();
   const state = {
     /** The pool's native price for the underlying, in basis points of the sizing-time rate:
      *  10_000 is the rate the deposit was sized at, 10_300 is 3% dearer. */
@@ -380,6 +413,7 @@ function scriptedWorld(
     txs: [] as Array<{ call: string; args: ExecuteArgs; options: unknown; watch: WatchLog }>,
   };
   let rejectLeft = opts.rejectSubmits ?? 0;
+  let replacedLeft = opts.replacedInclusions ?? 0;
   /** Native for `out` underlying at the current price. */
   const nativeFor = (out: bigint) => (((out * QUOTED) / BUY) * state.priceBps) / 10_000n;
   /** Underlying `nativeIn` buys at the current price. */
@@ -458,6 +492,11 @@ function scriptedWorld(
       };
       if (state.loseAnswer === "included") land();
       if (state.loseAnswer === "dropped") state.lost = land;
+      if (replacedLeft > 0) {
+        replacedLeft -= 1;
+        state.lost = land;
+        return scriptedWatch(txHash, watch, () => ({ ok: true }));
+      }
       return scriptedWatch(
         txHash,
         watch,
@@ -474,6 +513,7 @@ function scriptedWorld(
         Pools: { getEntries: async () => [{ keyArgs: [[NATIVE_LOC, UNDERLYING_LOC]] }] },
       },
       System: {
+        Number: chain.Number,
         Account: {
           getValue: async () => {
             if (state.debitIn > 0 && --state.debitIn === 0) {
@@ -527,6 +567,7 @@ function scriptedWorld(
   };
   return {
     state,
+    chain,
     nonce: chain.nonce,
     readFinalizedPeople,
     /** What the latest People block shows: the in-flight CASH too. */
@@ -572,7 +613,7 @@ function scriptedPsmWorld(
   } = {},
 ) {
   const remoteFee = opts.remoteFee ?? BUFFER;
-  const chain = scriptedNonce();
+  const chain = scriptedChain();
   const state = {
     /** What the pool charges in USDT for the dispatch fee; raise it to move PAS under a quote. */
     dispatchUsdt: DISPATCH_USDT,
@@ -691,6 +732,7 @@ function scriptedPsmWorld(
         },
       },
       System: {
+        Number: chain.Number,
         Account: {
           getValue: async () => {
             throw new Error("native read on the psm tier");
@@ -808,7 +850,7 @@ function scriptedStableWorld(
 ) {
   const token = opts.stable === "USDT" ? TOKENS.USDT : TOKENS.USDC;
   const remoteFee = opts.remoteFee ?? BUFFER;
-  const chain = scriptedNonce();
+  const chain = scriptedChain();
   const state = {
     /** The CASH pool's native price for CASH, in bps of the sizing-time rate. */
     priceBps: 10_000n,
@@ -925,6 +967,7 @@ function scriptedStableWorld(
         },
       },
       System: {
+        Number: chain.Number,
         Account: {
           getValue: async () => {
             throw new Error("native read on the stable pool tier");
@@ -1661,7 +1704,7 @@ function scriptedTeleportWorld(
 ) {
   const remoteFee = opts.remoteFee ?? BUFFER;
   const token = TOKENS.DOTUSD;
-  const chain = scriptedNonce();
+  const chain = scriptedChain();
   const state = {
     dispatchUnderlying: DISPATCH_TELEPORT,
     underlyingAh: 0n,
@@ -1726,6 +1769,7 @@ function scriptedTeleportWorld(
   const api = {
     query: {
       System: {
+        Number: chain.Number,
         Account: {
           getValue: async () => {
             throw new Error("native read on the teleport tier");
@@ -1940,7 +1984,11 @@ describe("the submit, and the CASH read final on People", () => {
     for (const [world, route] of tiers) {
       const run = await drive(world, 3, freshTickState(), route);
       expect(run.steps).toEqual(["swap", "done"]);
-      expect(run.state).toMatchObject({ xcmSubmitted: true, nonceAtSubmit: null });
+      expect(run.state).toMatchObject({
+        xcmSubmitted: true,
+        nonceAtSubmit: null,
+        inclusionBlock: null,
+      });
       expect(world.state.txs.map((tx) => tx.watch)).toEqual([
         { open: false, finalityReported: false },
       ]);
@@ -1958,7 +2006,7 @@ describe("the submit, and the CASH read final on People", () => {
     expect((await drive(world, 2, state)).steps).toEqual(["done"]);
   });
 
-  it("records the nonce and the People balance before the submit leaves", async () => {
+  it("records the nonce and the People balance before the submit leaves, and keeps them with the block it landed in", async () => {
     const world = funded();
     world.state.underlyingPeople = 3n;
     const state = freshTickState();
@@ -1971,7 +2019,12 @@ describe("the submit, and the CASH read final on People", () => {
     expect(seen).toEqual([
       { ...freshTickState(), attempts: 1, fundsSeenAt: 2_000, nonceAtSubmit: 0, peopleAtXcm: 3n },
     ]);
-    expect(state).toMatchObject({ xcmSubmitted: true, peopleAtXcm: 3n, nonceAtSubmit: null });
+    expect(state).toMatchObject({
+      xcmSubmitted: true,
+      peopleAtXcm: 3n,
+      nonceAtSubmit: 0,
+      inclusionBlock: INCLUSION_BLOCK,
+    });
   });
 
   it("rejects an invalid transaction as before, leaving the submit owed an answer", async () => {
@@ -2064,6 +2117,191 @@ describe("the submit, and the CASH read final on People", () => {
     expect(run.steps).toEqual(["done"]);
     expect(run.txs).toEqual(["swap"]);
     expect(state).toMatchObject({ attempts: 1, xcmSubmitted: true });
+  });
+
+  /** The pool world one tick in: the program is in a best block the chain has not finalized. */
+  async function includedUnfinalized(opts: Parameters<typeof scriptedWorld>[0] = {}) {
+    const world = funded({ arrivalAfterReads: 4, ...opts });
+    world.chain.finalityHeld = true;
+    const state = freshTickState();
+    expect((await drive(world, 1, state)).steps).toEqual(["swap"]);
+    expect(state).toMatchObject({
+      xcmSubmitted: true,
+      nonceAtSubmit: 0,
+      inclusionBlock: INCLUSION_BLOCK,
+    });
+    return { world, state };
+  }
+
+  it("sends the program again under the same nonce once the chain is final past a block that dropped it", async () => {
+    const world = funded({ replacedInclusions: 1 });
+    const state = freshTickState();
+    const sentAt: Array<number | null> = [];
+    const onBeforeSubmit = () => {
+      sentAt.push(state.nonceAtSubmit);
+    };
+    const first = await drive(world, 1, state, POOL, undefined, { onBeforeSubmit });
+    expect(first.steps).toEqual(["swap"]);
+    expect(state).toMatchObject({
+      xcmSubmitted: true,
+      nonceAtSubmit: 0,
+      inclusionBlock: INCLUSION_BLOCK,
+    });
+    // The chain kept nothing of it: the deposit is there and the nonce never moved.
+    expect(world.state.nativeAh).toBe(MAX_IN + KEEP);
+    expect(world.nonce).toEqual({ latest: 0, finalized: 0 });
+
+    // Final past the block the program was seen in, with the nonce unmoved: it was dropped.
+    world.chain.finalizedBlock = INCLUSION_BLOCK;
+    const again = await drive(world, 3, state, POOL, undefined, { onBeforeSubmit });
+    expect(again.steps).toEqual(["swap", "done"]);
+    expect(again.txs).toEqual(["swap", "swap"]);
+    expect(sentAt).toEqual([0, 0]);
+    expect(world.nonce).toEqual({ latest: 1, finalized: 1 });
+    expect(state).toMatchObject({
+      attempts: 2,
+      xcmSubmitted: true,
+      nonceAtSubmit: null,
+      inclusionBlock: null,
+    });
+  });
+
+  it("waits without sending again while the finalized chain is short of the block the program was seen in", async () => {
+    const { world, state } = await includedUnfinalized();
+    world.chain.reads.length = 0;
+    const waiting = await drive(world, 3, state);
+    expect(waiting.steps).toEqual(["await-arrival", "await-arrival", "await-arrival"]);
+    expect(waiting.txs).toEqual(["swap"]);
+    expect(world.nonce).toEqual({ latest: 1, finalized: 0 });
+    expect(state).toMatchObject({
+      xcmSubmitted: true,
+      nonceAtSubmit: 0,
+      inclusionBlock: INCLUSION_BLOCK,
+    });
+    // The height before the nonce: a nonce unmoved at a later block is unmoved at that height.
+    expect(world.chain.reads).toEqual(
+      Array<string[]>(3).fill(["number@finalized", "nonce@finalized"]).flat(),
+    );
+  });
+
+  it("lets the pre-send record go once the finalized nonce moved past it, and reads finality no more", async () => {
+    const { world, state } = await includedUnfinalized();
+    expect((await drive(world, 1, state)).steps).toEqual(["await-arrival"]);
+    world.chain.finalize();
+    world.chain.reads.length = 0;
+    expect((await drive(world, 1, state)).steps).toEqual(["await-arrival"]);
+    expect(state).toMatchObject({ xcmSubmitted: true, nonceAtSubmit: null, inclusionBlock: null });
+    expect(world.chain.reads).toEqual(["number@finalized", "nonce@finalized"]);
+    const rest = await drive(world, 3, state);
+    expect(rest.steps).toEqual(["await-arrival", "done"]);
+    expect(rest.txs).toEqual(["swap"]);
+    expect(world.chain.reads).toEqual(["number@finalized", "nonce@finalized"]);
+  });
+
+  it("takes a dropped program the chain re-included as landed, and does not send it twice", async () => {
+    const { world, state } = await includedUnfinalized({
+      replacedInclusions: 1,
+      quoteAfterXcm: true,
+    });
+    // Final past the block it was seen in without it, and back in a later best block when the
+    // tick looks.
+    world.chain.finalizedBlock = INCLUSION_BLOCK;
+    world.state.lost!();
+    expect(world.nonce).toEqual({ latest: 1, finalized: 0 });
+    world.chain.reads.length = 0;
+    const run = await drive(world, 1, state);
+    expect(run.steps).toEqual(["await-arrival"]);
+    expect(run.txs).toEqual(["swap"]);
+    // The latch released on the finalized view, then taken again on the latest one.
+    expect(world.chain.reads).toEqual([
+      "number@finalized",
+      "nonce@finalized",
+      "nonce@best",
+      "number@best",
+    ]);
+    expect(state).toMatchObject({
+      attempts: 1,
+      xcmSubmitted: true,
+      nonceAtSubmit: 0,
+      inclusionBlock: INCLUSION_BLOCK,
+    });
+
+    world.chain.finalize();
+    const rest = await drive(world, 4, state);
+    expect(rest.steps).toEqual(["await-arrival", "await-arrival", "done"]);
+    expect(rest.txs).toEqual(["swap"]);
+  });
+
+  it("does not send while a dropped program is re-included under the tick, and settles it as landed next tick", async () => {
+    const { world, state } = await includedUnfinalized({
+      replacedInclusions: 1,
+      quoteAfterXcm: true,
+    });
+    world.chain.finalizedBlock = INCLUSION_BLOCK;
+    // The program is back in a best block between the tick's look at the nonce and its send: the
+    // tick's third nonce read is the send's own.
+    const api = (world.client as unknown as { getTypedApi: () => never }).getTypedApi() as {
+      apis: { AccountNonceApi: { account_nonce: (...a: never[]) => Promise<number> } };
+    };
+    const readNonce = api.apis.AccountNonceApi.account_nonce;
+    let reads = 0;
+    api.apis.AccountNonceApi.account_nonce = async (...args: never[]) => {
+      if (++reads === 3) world.state.lost!();
+      return readNonce(...args);
+    };
+    await expect(drive(world, 1, state)).rejects.toThrow(
+      /funding program not sent: the nonce moved during the tick/,
+    );
+    expect(world.state.txs).toHaveLength(1);
+    expect(state).toMatchObject({
+      attempts: 1,
+      xcmSubmitted: false,
+      nonceAtSubmit: 0,
+      inclusionBlock: null,
+    });
+
+    api.apis.AccountNonceApi.account_nonce = readNonce;
+    const run = await drive(world, 1, state);
+    expect(run.steps).toEqual(["await-arrival"]);
+    expect(run.txs).toEqual(["swap"]);
+    expect(state).toMatchObject({
+      attempts: 1,
+      xcmSubmitted: true,
+      nonceAtSubmit: 0,
+      inclusionBlock: INCLUSION_BLOCK,
+    });
+  });
+
+  it("gives a lost submit settled as landed the latest block to check finality against, and the same treatment", async () => {
+    const world = funded({ loseAnswer: "included", quoteAfterXcm: true, arrivalAfterReads: 4 });
+    world.chain.finalityHeld = true;
+    const state = freshTickState();
+    await lostTick(world, state);
+    expect(world.nonce).toEqual({ latest: 1, finalized: 0 });
+
+    world.state.loseAnswer = null;
+    world.chain.reads.length = 0;
+    expect((await drive(world, 1, state)).steps).toEqual(["await-arrival"]);
+    expect(state).toMatchObject({
+      attempts: 1,
+      xcmSubmitted: true,
+      nonceAtSubmit: 0,
+      inclusionBlock: INCLUSION_BLOCK,
+    });
+    expect(world.chain.reads).toEqual(["nonce@best", "number@best"]);
+
+    expect((await drive(world, 1, state)).steps).toEqual(["await-arrival"]);
+    expect(state).toMatchObject({
+      xcmSubmitted: true,
+      nonceAtSubmit: 0,
+      inclusionBlock: INCLUSION_BLOCK,
+    });
+    world.chain.finalize();
+    expect((await drive(world, 1, state)).steps).toEqual(["await-arrival"]);
+    expect(state).toMatchObject({ xcmSubmitted: true, nonceAtSubmit: null, inclusionBlock: null });
+    const rest = await drive(world, 2, state);
+    expect(rest.steps).toEqual(["done"]);
+    expect(rest.txs).toEqual(["swap"]);
   });
 });
 
