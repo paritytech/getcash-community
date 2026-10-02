@@ -7,7 +7,7 @@
 import { PaymentRequestErr, PaymentStatusErr } from "@novasamatech/host-api";
 import { deriveEntropy, getHostLocalStorage } from "@parity/product-sdk-host";
 import { deriveKeypair } from "@getsome/ephemeral";
-import { PASEO_ASSET_HUB_PARA_ID, PASEO_PEOPLE_PARA_ID } from "@getsome/funding";
+import { PASEO_ASSET_HUB_PARA_ID, PASEO_PEOPLE_PARA_ID, STABLE_TOKENS } from "@getsome/funding";
 import {
   createHostEntropyPort,
   createHostStorageAdapter,
@@ -19,7 +19,8 @@ import {
   DEFAULT_WITHDRAW_SLIPPAGE_PCT,
   PASEO_PEOPLE_POOL_ACCOUNT,
   PEOPLE_NATIVE,
-  readDestinationPas,
+  readDestinationBalance,
+  type SaleRoute,
 } from "@getsome/withdraw";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import {
@@ -99,22 +100,32 @@ export async function probeWithdrawKey(
  *  Paseo: the People swap for the fee PAS, about 0.42 CASH, and Asset Hub's execution fee. */
 const DIRECT_FEES_CASH = 450_000n;
 
-/** What a direct withdrawal of `amount` CASH lands on Asset Hub, in planck, at today's pool
- *  price: the amount less the fees, sold as the program sells it. An estimate for the summary,
- *  not what the program is held to. */
-export async function quoteDirectReceive(amount: bigint): Promise<bigint> {
+/** What a direct withdrawal of `amount` CASH lands on Asset Hub in the asset `sale` ends in,
+ *  base units, at today's pool prices: the amount less the fees, sold as the program sells it,
+ *  or landed as it is on the teleport tier. An estimate for the summary, not what the program is
+ *  held to. */
+export async function quoteDirectReceive(amount: bigint, sale: SaleRoute): Promise<bigint> {
   const sold = amount - DIRECT_FEES_CASH;
   if (sold <= 0n) return 0n;
+  if (sale.tier === "teleport") return sold;
   const { connectChain, ASSET_HUB } = await import("./host-chain");
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
-  const quoted = await api.apis.AssetConversionApi.quote_price_exact_tokens_for_tokens(
+  const native = await api.apis.AssetConversionApi.quote_price_exact_tokens_for_tokens(
     CASH_ON_ASSET_HUB as never,
     PEOPLE_NATIVE as never,
     sold,
     true,
   );
-  if (quoted === undefined) throw new Error("Asset Hub cannot quote the sale");
-  return quoted;
+  if (native === undefined) throw new Error("Asset Hub cannot quote the sale");
+  if (sale.external === undefined) return native;
+  const stable = await api.apis.AssetConversionApi.quote_price_exact_tokens_for_tokens(
+    PEOPLE_NATIVE as never,
+    STABLE_TOKENS[sale.external].location as never,
+    native,
+    true,
+  );
+  if (stable === undefined) throw new Error(`Asset Hub cannot quote the ${sale.external} sale`);
+  return stable;
 }
 
 /** The CASH a direct withdrawal must take for `native` planck to land on Asset Hub, at today's
@@ -167,7 +178,10 @@ export async function quoteWithdrawOffers(
   let sdk: Awaited<ReturnType<typeof mainnetSdk>>;
   try {
     [sellable, sdk] = await withTimeout(
-      Promise.all([quoteDirectReceive(amountCash).then(lessHeadroom), mainnetSdk()]),
+      Promise.all([
+        quoteDirectReceive(amountCash, { tier: "pool" }).then(lessHeadroom),
+        mainnetSdk(),
+      ]),
       OFFERS_TIMEOUT_MS,
       "withdraw offers",
     );
@@ -285,7 +299,7 @@ export async function advanceWithdrawCounter(sourceId: string, n: number): Promi
 export async function readWithdrawKeyNativeOnAssetHub(keyPublicKeyHex: string): Promise<bigint> {
   const { connectChain, ASSET_HUB } = await import("./host-chain");
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
-  return readDestinationPas(api, keyPublicKeyHex);
+  return readDestinationBalance(api, keyPublicKeyHex);
 }
 
 /** A provider destination's asset and chain, as Chainflip names them, with the asset's decimals
@@ -320,7 +334,8 @@ export async function openWithdrawChannelFor(args: {
   };
 }
 
-/** The hand-off for a withdrawal, with the chain facts this build is made for. */
+/** The hand-off for a withdrawal, with the chain facts this build is made for. The sale rides
+ *  on it the way the on-ramp's tier does: the tier, and the stable a pool sale ends in. */
 export function withdrawHandoff(args: {
   sourceId: string;
   n: number;
@@ -329,9 +344,11 @@ export function withdrawHandoff(args: {
   destination: WithdrawalHandoffPayload["destination"];
   landingHex: string;
   rail: WithdrawalHandoffPayload["rail"];
+  sale: SaleRoute;
   paymentExpiresAt: number;
   channel?: WithdrawalChannel;
 }): WithdrawalHandoffPayload {
+  const { sale } = args;
   return {
     ...(args.channel === undefined ? {} : { channel: args.channel }),
     label: withdrawEntropyLabel(args.sourceId, args.n),
@@ -341,6 +358,8 @@ export function withdrawHandoff(args: {
     destination: args.destination,
     landingHex: args.landingHex,
     rail: args.rail,
+    tier: sale.tier,
+    ...(sale.tier === "pool" && sale.external !== undefined ? { external: sale.external } : {}),
     assetHubGenesis: ASSET_HUB_GENESIS,
     peopleGenesis: PEOPLE_GENESIS,
     peopleParaId: PASEO_PEOPLE_PARA_ID,

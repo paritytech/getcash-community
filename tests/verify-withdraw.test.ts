@@ -4,24 +4,39 @@
 // against the swap's expected outcome only when the key already holds PAS. Needs network, a
 // burner label the on-ramp production proof printed, and is not part of CI:
 //   VERIFY_WITHDRAW=1 WITHDRAW_BURNER=getcash-prod-proof-<ms> pnpm vitest run tests/verify-withdraw.test.ts
+// WITHDRAW_ASSET picks what lands: dot (the default), dotusd, usdt or usdc.
 
 import { describe, expect, it } from "vitest";
 import { AccountId, createClient } from "polkadot-api";
 import { getWsProvider } from "polkadot-api/ws";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import { deriveKeypairWithSecret } from "@getsome/ephemeral";
-import { PASEO_ASSET_HUB_PARA_ID, PASEO_PEOPLE_PARA_ID } from "@getsome/funding";
+import { depositTokenOf, PASEO_ASSET_HUB_PARA_ID, PASEO_PEOPLE_PARA_ID } from "@getsome/funding";
 import { CASH_LOCATION } from "@getsome/people";
-import { NeedsSwapError, PASEO_PEOPLE_POOL_ACCOUNT, sizeSwap, sizeXcm } from "@getsome/withdraw";
+import {
+  NeedsSwapError,
+  PASEO_PEOPLE_POOL_ACCOUNT,
+  sizeSwap,
+  sizeXcm,
+  type SaleRoute,
+} from "@getsome/withdraw";
 
 const fmtCash = (v: bigint) => (Number(v) / 1e6).toFixed(6);
 const fmtPas = (v: bigint) => (Number(v) / 1e10).toFixed(6);
+const fmtUnits = (v: bigint, decimals: number) => (Number(v) / 10 ** decimals).toFixed(6);
 const toHex = (b: Uint8Array) =>
   `0x${Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("")}`;
 /** Alice on Asset Hub: a funded account, so the deposit clears the existential deposit. */
 const DESTINATION = "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5";
 /** The burner's entropy label, as the on-ramp production proof derives it. */
 const BURNER_LABEL = process.env.WITHDRAW_BURNER;
+const SALES: Record<string, SaleRoute> = {
+  dot: { tier: "pool" },
+  dotusd: { tier: "teleport" },
+  usdt: { tier: "pool", external: "USDT" },
+  usdc: { tier: "pool", external: "USDC" },
+};
+const SALE = SALES[process.env.WITHDRAW_ASSET ?? "dot"];
 
 describe.runIf(process.env.VERIFY_WITHDRAW === "1")("live withdrawal sizing", () => {
   it("sizes the swap, and the XCM when the key holds PAS, and proves the XCM on both chains", async () => {
@@ -31,6 +46,8 @@ describe.runIf(process.env.VERIFY_WITHDRAW === "1")("live withdrawal sizing", ()
     const peopleApi = peC.getTypedApi(paseo_people_next);
     try {
       if (!BURNER_LABEL) throw new Error("set WITHDRAW_BURNER to a burner label holding CASH");
+      if (SALE === undefined) throw new Error("WITHDRAW_ASSET must be dot, dotusd, usdt or usdc");
+      const token = depositTokenOf(SALE);
       const entropy = new Uint8Array(32);
       new TextEncoder().encodeInto(BURNER_LABEL, entropy);
       const key = deriveKeypairWithSecret(entropy);
@@ -40,7 +57,7 @@ describe.runIf(process.env.VERIFY_WITHDRAW === "1")("live withdrawal sizing", ()
       const pasOnKey =
         (await peopleApi.query.System.Account.getValue(key.address))?.data?.free ?? 0n;
       console.log(
-        `key ${key.address} holds ${fmtCash(cashOnKey)} CASH and ${fmtPas(pasOnKey)} PAS on People`,
+        `key ${key.address} holds ${fmtCash(cashOnKey)} CASH and ${fmtPas(pasOnKey)} PAS on People; lands ${token.symbol}`,
       );
       expect(cashOnKey).toBeGreaterThan(0n);
 
@@ -51,6 +68,7 @@ describe.runIf(process.env.VERIFY_WITHDRAW === "1")("live withdrawal sizing", ()
         cashBalance: cashOnKey,
         destinationHex: toHex(AccountId().enc(DESTINATION)),
         assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
+        sale: SALE,
       });
       console.log(`swap: at most ${fmtCash(swap.cashInMax)} CASH -> ${fmtPas(swap.pasOut)} PAS`);
       expect(swap.cashInMax).toBeLessThan(cashOnKey);
@@ -69,6 +87,7 @@ describe.runIf(process.env.VERIFY_WITHDRAW === "1")("live withdrawal sizing", ()
         destinationHex: toHex(AccountId().enc(DESTINATION)),
         assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
         peopleParaId: PASEO_PEOPLE_PARA_ID,
+        sale: SALE,
         slippagePct: 5,
       }).catch((e: unknown) => {
         if (e instanceof NeedsSwapError) return null;
@@ -79,21 +98,37 @@ describe.runIf(process.env.VERIFY_WITHDRAW === "1")("live withdrawal sizing", ()
         return;
       }
       const { args } = sizing;
+      const { sale } = args;
       console.log(`XCM sized in ${Date.now() - started}ms`);
       console.log(`  tx fee reserve: ${fmtPas(sizing.txFeePasReserved)} PAS, reaped as dust`);
       console.log(`  People XCM:     ${fmtPas(args.payFeesPas)} PAS exact allowance`);
       console.log(
         `  teleports:      ${fmtCash(args.cashToTeleport)} CASH + ${fmtPas(args.pasToWithdraw - args.payFeesPas)} PAS`,
       );
+      console.log(`  AH earmark:     ${fmtCash(args.remoteFeesCash)} CASH`);
+      if (sale.tier === "pool") {
+        console.log(`  price floor:    ${fmtPas(sale.minNativeOut)} PAS`);
+        if (sale.external !== undefined) {
+          console.log(`  then at least:  ${fmtUnits(sale.minOut, 6)} ${sale.external}`);
+        }
+      } else {
+        console.log("  no sale: the CASH lands as dotUSD");
+      }
       console.log(
-        `  AH earmark:     ${fmtCash(args.remoteFeesCash)} CASH, price floor ${fmtPas(args.minPasOut)} PAS`,
+        `  lands:          ${fmtUnits(sizing.landed, token.decimals)} ${token.symbol} at the destination`,
       );
-      console.log(`  lands:          ${fmtPas(sizing.landed)} PAS at the destination`);
       console.log(`  max weight:     ${JSON.stringify(args.maxWeight, (_k, v) => String(v))}`);
       // Every unit of CASH leaves, and every PAS but the fee reserve.
       expect(args.cashToTeleport).toBe(cashOnKey);
       expect(args.pasToWithdraw + sizing.txFeePasReserved).toBe(pasOnKey);
-      expect(sizing.landed).toBeGreaterThanOrEqual(args.minPasOut);
+      // What lands clears the floor the program holds the sale to.
+      const floor =
+        sale.tier === "teleport"
+          ? 1n
+          : sale.external === undefined
+            ? sale.minNativeOut
+            : sale.minOut;
+      expect(sizing.landed).toBeGreaterThanOrEqual(floor);
     } finally {
       ahC.destroy();
       peC.destroy();

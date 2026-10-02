@@ -16,7 +16,7 @@ import {
   type FundingStep,
   type Stable,
 } from "@getsome/funding";
-import type { WithdrawStep } from "@getsome/withdraw";
+import type { SaleRoute, WithdrawStep } from "@getsome/withdraw";
 import type { RequestRef } from "../../utils/request-index";
 import type { FundingProgressSnapshot } from "../progress";
 import { CRYPTO_SOURCE_ID, isDirectSourceId, isMeldSourceId, meldMethodFor } from "../source-ids";
@@ -308,7 +308,7 @@ export interface TopUpRecord {
 }
 
 // The withdrawal: the purse pays CASH to a disposable key on People, the worker moves it to Asset
-// Hub as PAS, and a rail carries the PAS to the destination the user named.
+// Hub as the token the user picked, or as PAS that a rail carries on to the destination they named.
 
 /** Every withdrawal runs under a source id of this shape: the prefix and the destination's id. */
 export const WITHDRAW_SOURCE_PREFIX = "wd:";
@@ -393,9 +393,14 @@ export interface WithdrawalHandoffPayload {
   /** The CASH the user asked to withdraw, base units. */
   amount: string;
   destination: { chain: string; asset: string; address: string };
-  /** The Asset Hub account the PAS lands on: the rail's channel, or the destination itself. */
+  /** The Asset Hub account the funds land on: the rail's channel, or the destination itself. */
   landingHex: string;
   rail: WithdrawalRailState["provider"];
+  /** The sale on Asset Hub, decided from the destination at confirm and frozen here; the worker
+   *  consumes it and never re-decides. The pool sells for the native, and for `external` sells
+   *  that again for the stable; the teleport lands the CASH as dotUSD. */
+  tier: SaleRoute["tier"];
+  external?: Stable;
   assetHubGenesis: string;
   peopleGenesis: string;
   peopleParaId: number;
@@ -423,9 +428,10 @@ export interface WithdrawalChannel {
 /** What the store extracts from one withdrawal job in the worker's blob. */
 export interface WithdrawJobView {
   phase: string;
-  /** The whole job: the PAS reached the destination, or the provider delivered. */
+  /** The whole job: the funds reached the destination, or the provider delivered. */
   done: boolean;
-  /** The message leg: the PAS is on Asset Hub, on the destination or on the key for a provider. */
+  /** The message leg: the funds are on Asset Hub, on the destination or on the key for a
+   *  provider. */
   landed: boolean;
   failure?: string;
   lastError?: string;
@@ -436,8 +442,8 @@ export interface WithdrawJobView {
   rail?: SwapStatusResult;
 }
 
-/** `direct` for a destination on Asset Hub, which the PAS reaches with the XCM itself; the rest
- *  carry it on from the key's own Asset Hub account. */
+/** `direct` for a destination on Asset Hub, which the funds reach with the XCM itself; the rest
+ *  carry the PAS on from the key's own Asset Hub account. */
 export type WithdrawalRailProvider = "direct" | "chainflip" | "meld";
 export const WITHDRAWAL_RAILS: readonly WithdrawalRailProvider[] = ["direct", "chainflip", "meld"];
 export const isWithdrawalRail = (value: unknown): value is WithdrawalRailProvider =>

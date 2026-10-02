@@ -60,7 +60,7 @@ vi.mock("../lib/chainflip-backend", () => ({
   }),
 }));
 
-import { quoteWithdrawOffers } from "../lib/withdraw-live";
+import { quoteDirectReceive, quoteWithdrawOffers } from "../lib/withdraw-live";
 
 const PROVIDERS = WITHDRAW_NETWORKS.flatMap((n) => n.destinations).filter(
   (d) => d.rail !== "direct",
@@ -73,6 +73,18 @@ function reset() {
   asked.length = 0;
   poolReverseQuotes.count = 0;
 }
+
+describe("what a direct withdrawal lands per token", () => {
+  it("sells once for the native, twice for a stable, and not at all for dotUSD", async () => {
+    const amount = 21_000_000n;
+    const sold = amount - 450_000n;
+    expect(await quoteDirectReceive(amount, { tier: "pool" })).toBe(sold * 2n);
+    expect(await quoteDirectReceive(amount, { tier: "pool", external: "USDC" })).toBe(sold * 4n);
+    expect(await quoteDirectReceive(amount, { tier: "teleport" })).toBe(sold);
+    // An amount the fees eat whole lands nothing on any tier.
+    expect(await quoteDirectReceive(400_000n, { tier: "teleport" })).toBe(0n);
+  });
+});
 
 describe("quoting the provider destinations for an amount", () => {
   it("asks every destination for the sellable native and formats what lands", async () => {

@@ -1,5 +1,5 @@
 // The two withdrawal transactions' shapes, checked against a recording People api: what each call
-// carries, and how CASH is keyed on each side.
+// carries, how CASH is keyed on each side, and the sale per tier inside the remote program.
 
 import { describe, expect, it } from "vitest";
 import { CASH_LOCATION } from "@getsome/people";
@@ -8,12 +8,24 @@ import {
   buildSwap,
   buildWithdrawXcm,
   forwardedStandIn,
+  saleRouteOf,
   WITHDRAW_XCM_MAX_WEIGHT,
+  withdrawMessage,
   type PeopleApi,
+  type Sale,
 } from "./program";
 
 type Instruction = { type: string; value: unknown };
 type Fungible = { id: unknown; fun: { type: string; value: bigint } };
+type Exchange = {
+  give: { type: string; value: { type: string; value: { id: AssetLocation } } };
+  want: Fungible[];
+  maximal: boolean;
+};
+type AssetLocation = {
+  parents: number;
+  interior: { type: string; value?: Array<{ type: string; value: unknown }> };
+};
 
 /** A People api that records the arguments of the two calls. */
 function recordingApi() {
@@ -37,16 +49,28 @@ function recordingApi() {
   return { api, seen };
 }
 
+const SALE: Sale = { tier: "pool", minNativeOut: 700_000_000n };
 const XCM = {
   cashToTeleport: 2_000_000n,
   pasToWithdraw: 958_441_000n,
   payFeesPas: 319_110_000n,
   remoteFeesCash: 300_000n,
-  minPasOut: 700_000_000n,
+  sale: SALE,
   destinationHex: `0x${"aa".repeat(32)}`,
   claimerHex: `0x${"07".repeat(32)}`,
   assetHubParaId: 1500,
 };
+
+/** The remote program of the message for `sale`. */
+function remoteProgramFor(sale: Sale): Instruction[] {
+  const transfer = withdrawMessage({ ...XCM, sale }).value[2]!.value as {
+    remote_xcm: Instruction[];
+  };
+  return transfer.remote_xcm;
+}
+
+const depositCount = (deposit: Instruction) =>
+  (deposit.value as { assets: { value: { value: number } } }).assets.value.value;
 
 describe("withdrawal transactions", () => {
   it("swaps CASH, within a cap, for exactly the PAS the fees need, credited to the key without keeping it alive", () => {
@@ -122,21 +146,65 @@ describe("withdrawal transactions", () => {
       }
     ).hints[0]!.value.location.interior.value.value.id;
     expect(claimer).toBe(XCM.claimerHex);
-    const give = (
-      exchange!.value as {
-        give: { value: { value: { id: { parents: number; interior: { type: string } } } } };
-      }
-    ).give.value.value.id;
+    const give = (exchange!.value as Exchange).give.value.value.id;
     // Local to Asset Hub: parents 0, the pallet and the asset index.
     expect(give.parents).toBe(0);
     expect(give.interior.type).toBe("X2");
-    const want = (exchange!.value as { want: Fungible[]; maximal: boolean }).want[0]!;
-    expect(want.fun.value).toBe(XCM.minPasOut);
-    expect((exchange!.value as { maximal: boolean }).maximal).toBe(true);
+    const want = (exchange!.value as Exchange).want[0]!;
+    expect(want.fun.value).toBe(SALE.minNativeOut);
+    expect((exchange!.value as Exchange).maximal).toBe(true);
     const beneficiary = (
       deposit!.value as { beneficiary: { interior: { value: { value: { id: string } } } } }
     ).beneficiary.interior.value.value.id;
     expect(beneficiary).toBe(XCM.destinationHex);
+    expect(depositCount(deposit!)).toBe(2);
+  });
+
+  it("sells the native again for a stable on its pool, then deposits the three assets the holding can carry", () => {
+    const program = remoteProgramFor({
+      tier: "pool",
+      external: "USDC",
+      minNativeOut: 700_000_000n,
+      minOut: 68_000n,
+    });
+    expect(program.map((i) => i.type)).toEqual([
+      "SetHints",
+      "RefundSurplus",
+      "ExchangeAsset",
+      "ExchangeAsset",
+      "DepositAsset",
+    ]);
+    const [, , first, second, deposit] = program;
+    expect((first!.value as Exchange).want[0]!.fun.value).toBe(700_000_000n);
+    // The second hop gives every unit of the native the first bought, named so stable dust in
+    // the holding cannot be picked, and wants USDC as Asset Hub keys it.
+    const give = (second!.value as Exchange).give;
+    expect(give.type).toBe("Wild");
+    expect(give.value.type).toBe("AllOf");
+    expect(give.value.value.id).toEqual({ parents: 1, interior: { type: "Here" } });
+    const want = (second!.value as Exchange).want[0]!;
+    expect(want.fun.value).toBe(68_000n);
+    const index = (want.id as AssetLocation).interior.value![1]!;
+    expect(index).toEqual({ type: "GeneralIndex", value: 1337n });
+    expect((second!.value as Exchange).maximal).toBe(true);
+    expect(depositCount(deposit!)).toBe(3);
+  });
+
+  it("makes no sale on the teleport tier: the CASH is deposited as it is", () => {
+    const program = remoteProgramFor({ tier: "teleport" });
+    expect(program.map((i) => i.type)).toEqual(["SetHints", "RefundSurplus", "DepositAsset"]);
+    expect(depositCount(program[2]!)).toBe(2);
+  });
+
+  it("refuses the psm tier, which has no sale built yet", () => {
+    expect(saleRouteOf({ tier: "pool", external: "USDT" })).toEqual({
+      tier: "pool",
+      external: "USDT",
+    });
+    expect(saleRouteOf({ tier: "teleport" })).toEqual({ tier: "teleport" });
+    expect(() => saleRouteOf({ tier: "psm", external: "USDT", feeRate: 5_000 })).toThrow(
+      /psm tier/,
+    );
   });
 
   it("stands in for the forwarded message with the fee remainder travelling as PAS", () => {

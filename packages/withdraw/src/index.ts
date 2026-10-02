@@ -3,10 +3,11 @@ export {
   buildWithdrawXcm,
   CASH_ON_ASSET_HUB,
   forwardedStandIn,
+  saleRouteOf,
   withdrawMessage,
   WITHDRAW_XCM_MAX_WEIGHT,
 } from "./program";
-export type { PeopleApi, SwapArgs, WithdrawXcmArgs } from "./program";
+export type { PeopleApi, Sale, SaleRoute, SwapArgs, WithdrawXcmArgs } from "./program";
 export {
   ASSET_HUB_FEE_BUFFER_CASH,
   dryRunOnAssetHub,
@@ -34,7 +35,7 @@ export type {
   WithdrawTickOutcome,
   WithdrawTickState,
 } from "./tick";
-export { readDestinationPas } from "./destination";
+export { readDestinationBalance } from "./destination";
 export {
   CHANNEL_EXPIRY_MARGIN_MS,
   ChannelExpiredError,

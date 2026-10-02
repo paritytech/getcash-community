@@ -54,21 +54,24 @@ const isAccount = (who: string, hex: string): boolean =>
   `0x${toHex(AccountId().enc(who))}` === hex.toLowerCase();
 
 /** What a dry run credited to the account `beneficiaryHex`: the fungible asset's Deposited
- *  events for `asset`, the native's Deposit events for `native`. */
+ *  events for `asset`, only those of `assetId` when one is named, the native's Deposit events
+ *  for `native`. */
 export function creditedTo(
   events: readonly unknown[],
   beneficiaryHex: string,
   kind: "asset" | "native",
+  assetId?: number,
 ): bigint {
   const [pallet, name] = kind === "asset" ? ["Assets", "Deposited"] : ["Balances", "Deposit"];
   let total = 0n;
   for (const ev of events) {
     const e = ev as {
       type?: string;
-      value?: { type?: string; value?: { who?: string; amount?: bigint } };
+      value?: { type?: string; value?: { asset_id?: unknown; who?: string; amount?: bigint } };
     };
     if (e.type !== pallet || e.value?.type !== name) continue;
-    const { who, amount } = e.value.value ?? {};
+    const { asset_id, who, amount } = e.value.value ?? {};
+    if (assetId !== undefined && asset_id !== assetId) continue;
     if (who !== undefined && amount !== undefined && isAccount(who, beneficiaryHex)) {
       total += BigInt(amount);
     }

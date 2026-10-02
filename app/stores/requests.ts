@@ -432,6 +432,8 @@ type WithdrawJob = {
   destination?: { chain?: unknown; asset?: unknown; address?: unknown };
   landingHex?: string;
   rail?: string;
+  tier?: unknown;
+  external?: unknown;
   assetHubGenesis?: string;
   peopleGenesis?: string;
   peopleParaId?: number;
@@ -593,6 +595,7 @@ function withdrawHandoffOf(job: WithdrawJob): WithdrawalHandoffPayload | undefin
     !isString(destination?.address) ||
     !isString(job.landingHex) ||
     !isWithdrawalRail(rail) ||
+    !isString(job.tier) ||
     !isString(job.assetHubGenesis) ||
     !isString(job.peopleGenesis) ||
     !isNumber(job.peopleParaId) ||
@@ -603,6 +606,14 @@ function withdrawHandoffOf(job: WithdrawJob): WithdrawalHandoffPayload | undefin
   ) {
     return undefined;
   }
+  // The sale as the worker keeps it.
+  let sale: ConversionRoute;
+  try {
+    sale = recordedRoute({ tier: job.tier, external: job.external });
+  } catch {
+    return undefined;
+  }
+  if (sale.tier === "psm") return undefined;
   return {
     label: job.label,
     keyAddress: job.keyAddress,
@@ -615,6 +626,8 @@ function withdrawHandoffOf(job: WithdrawJob): WithdrawalHandoffPayload | undefin
     },
     landingHex: job.landingHex,
     rail,
+    tier: sale.tier,
+    ...(sale.tier === "pool" && sale.external !== undefined ? { external: sale.external } : {}),
     assetHubGenesis: job.assetHubGenesis,
     peopleGenesis: job.peopleGenesis,
     peopleParaId: job.peopleParaId,

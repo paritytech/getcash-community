@@ -10,9 +10,11 @@
 //
 // The XCM withdraws the PAS and the CASH, pays People's execution and delivery fees in PAS with an
 // exact allowance, and teleports both to Asset Hub. The program Asset Hub receives pays its own
-// fees in CASH through the pool, exchanges the rest of the CASH for PAS in the holding, and
-// deposits all the PAS to the destination account. It names an asset claimer so a trap on Asset
-// Hub is recoverable.
+// fees in CASH through the pool, makes the sale the destination asks for in the holding, and
+// deposits everything to the destination account. The sale follows the on-ramp's tiers the other
+// way round: the pool sells the CASH for PAS, and for a stable sells that PAS again on the
+// stable's pool; the teleport tier makes no sale and lands the CASH as dotUSD. The program names
+// an asset claimer so a trap on Asset Hub is recoverable.
 //
 // CASH is keyed two ways: as People holds it for the calls that run on People, and as Asset Hub
 // holds it for the remote program, which is forwarded verbatim and so must speak Asset Hub's view.
@@ -20,6 +22,7 @@
 import { paseo_people_next } from "@polkadot-api/descriptors";
 import type { TypedApi } from "polkadot-api";
 import { TOKENS } from "@getsome/core";
+import { STABLE_TOKENS, type ConversionRoute, type Stable } from "@getsome/funding";
 import { CASH_LOCATION } from "@getsome/people";
 import { PEOPLE_NATIVE } from "./paseo";
 
@@ -28,8 +31,32 @@ export type PeopleApi = TypedApi<typeof paseo_people_next>;
 /** CASH as Asset Hub keys it: local to Asset Hub, so parents 0. The remote program filters on it. */
 export const CASH_ON_ASSET_HUB = TOKENS.CASH.location;
 
+/** The native as Asset Hub keys it: the relay token, one hop up. */
+const NATIVE_ON_ASSET_HUB = TOKENS.PAS.location;
+
 /** Fallback weight ceiling for the XCM, used when the runtime will not weigh it. */
 export const WITHDRAW_XCM_MAX_WEIGHT = { ref_time: 5_000_000_000n, proof_size: 300_000n };
+
+/**
+ * The sale the forwarded program makes on Asset Hub, with the floors it is held to. A worse
+ * price than a floor fails the program there, and nothing lands.
+ */
+export type Sale =
+  /** All the CASH for the native, at least `minNativeOut`. */
+  | { tier: "pool"; external?: undefined; minNativeOut: bigint }
+  /** All the CASH for the native, then all the native for the stable, at least `minOut`. */
+  | { tier: "pool"; external: Stable; minNativeOut: bigint; minOut: bigint }
+  /** No sale: the CASH lands as it is. */
+  | { tier: "teleport" };
+
+/** The tiers a withdrawal can sell through today. The psm tier's redeem is not built yet. */
+export type SaleRoute = Exclude<ConversionRoute, { tier: "psm" }>;
+
+/** The sale route a hand-off names, or a throw for a tier this package cannot sell through. */
+export function saleRouteOf(route: ConversionRoute): SaleRoute {
+  if (route.tier === "psm") throw new Error("withdraw: the psm tier cannot be sold through yet");
+  return route;
+}
 
 const fungible = (id: unknown, value: bigint) => ({ id, fun: { type: "Fungible", value } });
 const cash = (v: bigint) => fungible(CASH_LOCATION, v);
@@ -47,6 +74,18 @@ const account = (hex: string) => ({
 const assetHubDest = (assetHubParaId: number) => ({
   parents: 1,
   interior: { type: "X1", value: { type: "Parachain", value: assetHubParaId } },
+});
+
+/** Every unit of one asset in the holding. */
+const allOf = (id: unknown) => ({
+  type: "Wild",
+  value: { type: "AllOf", value: { id, fun: { type: "Fungible" } } },
+});
+
+/** One hop on a pool: give every unit of one asset, take at least the floor of another. */
+const exchange = (give: unknown, want: unknown) => ({
+  type: "ExchangeAsset",
+  value: { give, want: [want], maximal: true },
 });
 
 export interface SwapArgs {
@@ -69,30 +108,35 @@ export function buildSwap(peopleApi: PeopleApi, args: SwapArgs) {
   } as never);
 }
 
-/** The program Asset Hub runs on arrival: claim hint, refund, sell all the CASH for at least
- *  `minPasOut`, deposit everything to the destination. Keyed as Asset Hub sees CASH. */
-function remoteProgram(destinationHex: string, claimerHex: string, minPasOut: bigint) {
+/** The program Asset Hub runs on arrival: claim hint, refund, the sale, deposit everything to the
+ *  destination. Keyed as Asset Hub sees the assets. The deposit counts what the holding can carry
+ *  by then: the PAS and CASH that travelled, plus the stable a second hop bought. */
+function remoteProgram(destinationHex: string, claimerHex: string, sale: Sale) {
+  const hops =
+    sale.tier === "teleport"
+      ? []
+      : [
+          exchange(allOf(CASH_ON_ASSET_HUB), fungible(NATIVE_ON_ASSET_HUB, sale.minNativeOut)),
+          ...(sale.external === undefined
+            ? []
+            : [
+                exchange(
+                  allOf(NATIVE_ON_ASSET_HUB),
+                  fungible(STABLE_TOKENS[sale.external].location, sale.minOut),
+                ),
+              ]),
+        ];
   return [
     {
       type: "SetHints",
       value: { hints: [{ type: "AssetClaimer", value: { location: account(claimerHex) } }] },
     },
     { type: "RefundSurplus" },
-    {
-      type: "ExchangeAsset",
-      value: {
-        give: {
-          type: "Wild",
-          value: { type: "AllOf", value: { id: CASH_ON_ASSET_HUB, fun: { type: "Fungible" } } },
-        },
-        want: [fungible({ parents: 1, interior: { type: "Here" } }, minPasOut)],
-        maximal: true,
-      },
-    },
+    ...hops,
     {
       type: "DepositAsset",
       value: {
-        assets: { type: "Wild", value: { type: "AllCounted", value: 2 } },
+        assets: { type: "Wild", value: { type: "AllCounted", value: hops.length === 2 ? 3 : 2 } },
         beneficiary: account(destinationHex),
       },
     },
@@ -108,9 +152,9 @@ export interface WithdrawXcmArgs {
   payFeesPas: bigint;
   /** The CASH the destination fee earmark carries on Asset Hub. */
   remoteFeesCash: bigint;
-  /** The least PAS the sale on Asset Hub may return; a worse price fails the program there. */
-  minPasOut: bigint;
-  /** The account the PAS lands on, Asset Hub public key hex. */
+  /** The sale on Asset Hub and its floors. */
+  sale: Sale;
+  /** The account the funds land on, Asset Hub public key hex. */
   destinationHex: string;
   /** The account that may claim a trap on Asset Hub, public key hex. */
   claimerHex: string;
@@ -139,7 +183,7 @@ export function withdrawMessage(args: WithdrawXcmArgs) {
           assets: [
             { type: "Teleport", value: { type: "Wild", value: { type: "AllCounted", value: 2 } } },
           ],
-          remote_xcm: remoteProgram(args.destinationHex, args.claimerHex, args.minPasOut),
+          remote_xcm: remoteProgram(args.destinationHex, args.claimerHex, args.sale),
         },
       },
     ],
@@ -170,7 +214,7 @@ export function forwardedStandIn(args: WithdrawXcmArgs) {
           pasLeft > 0n ? [pas(pasLeft), cash(args.cashToTeleport)] : [cash(args.cashToTeleport)],
       },
       { type: "ClearOrigin" },
-      ...remoteProgram(args.destinationHex, args.claimerHex, args.minPasOut),
+      ...remoteProgram(args.destinationHex, args.claimerHex, args.sale),
       { type: "SetTopic", value: `0x${"00".repeat(32)}` },
     ],
   };

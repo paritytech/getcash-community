@@ -1,12 +1,14 @@
 // Offline coverage over a scripted People and Asset Hub: the two transactions in order, the fee
-// measurement converging on an exact allowance, the CASH leaving to the unit, arrival by the
-// destination's balance, and every refusal.
+// measurement converging on an exact allowance, the CASH leaving to the unit, the sale per tier,
+// arrival by the destination's balance in the landing asset, and every refusal.
 
 import { AccountId } from "polkadot-api";
 import { describe, expect, it } from "vitest";
+import { TOKENS } from "@getsome/core";
 import { SWAP_HEADROOM_PCT, XCM_TX_FEE_HEADROOM_PCT } from "./fees";
 import { PASEO_PEOPLE_POOL_ACCOUNT } from "./paseo";
 import { cashInFor } from "./pool";
+import type { SaleRoute } from "./program";
 import {
   freshWithdrawTickState,
   landingFloor,
@@ -31,6 +33,10 @@ const DELIVERY = { 1: 318_000_000n, 2: 319_700_000n } as const;
 const WEIGHED = { ref_time: 2_358_560_232n, proof_size: 61_000n };
 /** Asset Hub's sale price: planck per CASH unit. */
 const AH_RATE = 3_780n;
+/** The stable pools' price: planck per stable unit, one PAS to one USDC on a 10 to 6 decimal pair. */
+const STABLE_PLANCK = 10_000n;
+/** What the scripted Asset Hub charges the program in CASH. */
+const AH_FEE_CASH = 3_546n;
 const KEY_CASH = 20_999_683n;
 const KEY = { address: "5Key", publicKeyHex: `0x${"07".repeat(32)}`, signer: {} as never };
 const DESTINATION = new Uint8Array(32).fill(0xaa);
@@ -41,6 +47,8 @@ const DESTINATION_PAS = 3n * ED;
 
 type Instruction = { type: string; value?: unknown };
 type Fungible = { id: unknown; fun: { type: string; value: bigint } };
+type Exchange = { want: Fungible[] };
+type AssetLocation = { parents: number; interior: { value: Array<{ value: unknown }> } };
 type Message = { type: string; value: Instruction[] };
 type ExecuteArgs = { message: Message; max_weight: unknown };
 type SwapArgs = { amount_out: bigint; amount_in_max: bigint };
@@ -70,6 +78,18 @@ const rejectedExecution = (error: unknown) => ({
     execution_result: { success: false, value: { error } },
     emitted_events: [],
     forwarded_xcms: [],
+  },
+});
+/** Asset Hub crediting the destination: the native's Deposit, or a token's Deposited. */
+const deposited = (assetId: number | null, amount: bigint) => ({
+  type: assetId === null ? "Balances" : "Assets",
+  value: {
+    type: assetId === null ? "Deposit" : "Deposited",
+    value: {
+      ...(assetId === null ? {} : { asset_id: assetId }),
+      who: DESTINATION_SS58,
+      amount,
+    },
   },
 });
 
@@ -274,26 +294,35 @@ function scriptedWorld(
   const assetHubApi = {
     apis: {
       AssetConversionApi: {
-        quote_price_exact_tokens_for_tokens: async (_a: unknown, _b: unknown, cashIn: bigint) =>
-          cashIn * AH_RATE,
+        // CASH, local to Asset Hub, sells for the native; the native sells for a stable.
+        quote_price_exact_tokens_for_tokens: async (
+          give: { parents: number },
+          _want: unknown,
+          amountIn: bigint,
+        ) => (give.parents === 0 ? amountIn * AH_RATE : amountIn / STABLE_PLANCK),
       },
       DryRunApi: {
-        // Asset Hub sells every CASH it receives and deposits all the PAS to the destination.
+        // Asset Hub runs the sale the program asks: every CASH for PAS on one hop, every PAS for
+        // the stable on two, nothing sold on none; then deposits the holding to the destination.
         dry_run_xcm: async (_origin: unknown, forwarded: Message) => {
           const travelling = forwarded.value[2]!.value as Fungible[];
           const earmark = (forwarded.value[0]!.value as Fungible[])[0]!.fun.value;
           const pas = travelling.length === 2 ? travelling[0]!.fun.value : 0n;
-          const cash = travelling[travelling.length - 1]!.fun.value + earmark - 3_546n;
-          state.lastDryRunLanded = pas + cash * AH_RATE;
-          const events: unknown[] = [
-            {
-              type: "Balances",
-              value: {
-                type: "Deposit",
-                value: { who: DESTINATION_SS58, amount: pas + cash * AH_RATE },
-              },
-            },
-          ];
+          const cash = travelling[travelling.length - 1]!.fun.value + earmark - AH_FEE_CASH;
+          const hops = forwarded.value.filter((i) => i.type === "ExchangeAsset");
+          const native = pas + cash * AH_RATE;
+          let events: unknown[];
+          if (hops.length === 0) {
+            state.lastDryRunLanded = cash;
+            events = [deposited(TOKENS.CASH.assetHubId, cash), deposited(null, pas)];
+          } else if (hops.length === 1) {
+            state.lastDryRunLanded = native;
+            events = [deposited(null, native)];
+          } else {
+            const want = (hops[1]!.value as Exchange).want[0]!.id as AssetLocation;
+            state.lastDryRunLanded = native / STABLE_PLANCK;
+            events = [deposited(Number(want.interior.value[1]!.value), state.lastDryRunLanded)];
+          }
           if (opts.trapOnAssetHubDryRun) events.push(trappedEvent(opts.trapOnAssetHubDryRun));
           return {
             success: true,
@@ -307,7 +336,8 @@ function scriptedWorld(
     },
   };
 
-  /** The destination's PAS at the head: the XCM's PAS shows after `arrivalAfterReads` reads. */
+  /** The destination's balance in the landing asset at the head: what the XCM lands shows after
+   *  `arrivalAfterReads` reads. */
   const readDestinationOnAssetHub = async () => {
     if (state.xcmLanded && !state.pasLanded) {
       state.destinationReads += 1;
@@ -328,6 +358,7 @@ async function drive(
   world: World,
   ticks: number,
   state: WithdrawTickState = freshWithdrawTickState(),
+  sale: SaleRoute = { tier: "pool" },
 ) {
   const steps: WithdrawStep[] = [];
   const transients: string[] = [];
@@ -343,6 +374,7 @@ async function drive(
         assetHubParaId: 1500,
         peopleParaId: 1502,
         poolAccount: PASEO_PEOPLE_POOL_ACCOUNT,
+        sale,
         slippagePct: 5,
         tickTimeoutMs: 1_000,
         submitTimeoutMs: 1_000,
@@ -364,6 +396,20 @@ const submitsOf = (world: World) => ({
   execute: world.state.submits.find((s) => s.call === "execute"),
 });
 
+/** The XCM that went out: the CASH it withdrew, its earmark, and the program Asset Hub runs. */
+function sentXcm(world: World) {
+  const message = (submitsOf(world).execute!.args as ExecuteArgs).message;
+  const transfer = message.value[2]!.value as {
+    remote_fees: { value: { value: Fungible[] } };
+    remote_xcm: Instruction[];
+  };
+  return {
+    cashSold: (message.value[0]!.value as Fungible[])[1]!.fun.value,
+    earmark: transfer.remote_fees.value.value[0]!.fun.value,
+    program: transfer.remote_xcm,
+  };
+}
+
 describe("withdrawTickOnce", () => {
   it("waits for CASH, swaps, then sizes, proves and submits the XCM, then reads the destination to done", async () => {
     const world = scriptedWorld({ arrivalAfterReads: 2 });
@@ -380,12 +426,48 @@ describe("withdrawTickOnce", () => {
       rejections: 0,
       submitted: true,
       // The baseline is what the destination held before the XCM; the landing is the dry run's.
-      destinationPasBefore: DESTINATION_PAS,
+      destinationBefore: DESTINATION_PAS,
       expectedLanding: world.state.lastDryRunLanded,
     });
     expect(run.state.fundsSeenAt).toBe(2_000);
     expect(run.transients).toEqual([]);
     expect(world.state.destinationPas).toBe(DESTINATION_PAS + world.state.lastDryRunLanded);
+  });
+
+  it("sells for a stable in two hops, each held to its floor, and reads the arrival in that asset", async () => {
+    const world = scriptedWorld();
+    const run = await drive(world, 3, freshWithdrawTickState(), {
+      tier: "pool",
+      external: "USDC",
+    });
+    expect(run.steps).toEqual(["swap", "convert", "done"]);
+    const { cashSold, program } = sentXcm(world);
+    const hops = program.filter((i) => i.type === "ExchangeAsset");
+    expect(hops).toHaveLength(2);
+    // The native floor is the sale's quote less the headroom; the stable's is the two hop quote
+    // less the same headroom, so the hops share it.
+    const nativeQuote = cashSold * AH_RATE;
+    expect((hops[0]!.value as Exchange).want[0]!.fun.value).toBe((nativeQuote * 95n) / 100n);
+    expect((hops[1]!.value as Exchange).want[0]!.fun.value).toBe(
+      ((nativeQuote / STABLE_PLANCK) * 95n) / 100n,
+    );
+    // What the dry run said lands is in USDC units, read from the USDC deposit, and the
+    // destination's USDC holding is what grew by it.
+    expect(run.state.expectedLanding).toBe(world.state.lastDryRunLanded);
+    expect(run.state.expectedLanding).toBeLessThan(nativeQuote / 1_000n);
+    expect(world.state.destinationPas).toBe(DESTINATION_PAS + world.state.lastDryRunLanded);
+  });
+
+  it("lands the CASH as dotUSD with no sale on the teleport tier, and reads only that deposit", async () => {
+    const world = scriptedWorld();
+    const run = await drive(world, 3, freshWithdrawTickState(), { tier: "teleport" });
+    expect(run.steps).toEqual(["swap", "convert", "done"]);
+    const { cashSold, earmark, program } = sentXcm(world);
+    expect(program.map((i) => i.type)).toEqual(["SetHints", "RefundSurplus", "DepositAsset"]);
+    // The landing is the CASH itself less Asset Hub's fee; the PAS that travels lands too and is
+    // not counted.
+    expect(run.state.expectedLanding).toBe(cashSold + earmark - AH_FEE_CASH);
+    expect(world.state.keyCash).toBe(0n);
   });
 
   it("keeps waiting while the destination gained less than the landing floor", async () => {
@@ -478,7 +560,7 @@ describe("withdrawTickOnce", () => {
     expect(state).toMatchObject({
       attempts: 2,
       submitted: false,
-      destinationPasBefore: DESTINATION_PAS,
+      destinationBefore: DESTINATION_PAS,
       expectedLanding: world.state.lastDryRunLanded,
     });
     expect(world.state.keyCash).toBe(0n);
@@ -492,7 +574,7 @@ describe("withdrawTickOnce", () => {
     const world = scriptedWorld();
     const state = freshWithdrawTickState();
     await drive(world, 2, state);
-    state.destinationPasBefore = null;
+    state.destinationBefore = null;
     const later = await drive(world, 2, state);
     expect(later.steps).toEqual(["await-arrival", "await-arrival"]);
     expect(world.state.destinationReads).toBe(0);
@@ -503,7 +585,7 @@ describe("withdrawTickOnce", () => {
     const state = freshWithdrawTickState();
     state.submitted = true;
     state.fundsSeenAt = 1_000;
-    state.destinationPasBefore = DESTINATION_PAS;
+    state.destinationBefore = DESTINATION_PAS;
     state.expectedLanding = 5n * ED;
     // A stranger pays the destination while the key, unspent, still holds its CASH.
     world.state.destinationPas = DESTINATION_PAS + 5n * ED;

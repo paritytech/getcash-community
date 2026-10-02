@@ -6,6 +6,7 @@
 // its own wake, so a cancelled record cannot cause a payment.
 
 import { computed } from "vue";
+import type { SaleRoute } from "@getsome/withdraw";
 import {
   PAYMENT_WINDOW_MS,
   WITHDRAW_SOURCE_PREFIX,
@@ -22,15 +23,17 @@ import { workerSessionId } from "~~/lib/coinage";
 import { isHosted } from "~~/lib/host-account";
 
 export interface WithdrawalStart {
-  /** The destination's id, the tail of the source id: `pas-assethub`, `btc-bitcoin`. */
+  /** The destination's id, the tail of the source id: `usdc-assethub`, `btc`. */
   destinationId: string;
   /** The CASH to withdraw, base units. */
   amount: bigint;
   destination: WithdrawalRecord["destination"];
-  /** The Asset Hub account the native lands on: the destination itself, or null for the
-   *  withdrawal's own key when a provider carries it on. */
+  /** The Asset Hub account the funds land on: the destination itself, or null for the
+   *  withdrawal's own key when a provider carries the native on. */
   landingHex: string | null;
   rail: WithdrawalRailState["provider"];
+  /** The sale the worker makes on Asset Hub, the destination's. */
+  sale: SaleRoute;
   /** The native the summary estimated will land, base units: what a provider's channel is
    *  quoted for. Required for every rail but `direct`. */
   expectedNative?: bigint;
@@ -96,6 +99,7 @@ export function useWithdrawalRequest() {
       destination: input.destination,
       landingHex: input.landingHex ?? key.publicKeyHex,
       rail: input.rail,
+      sale: input.sale,
       paymentExpiresAt,
       ...(channel === undefined ? {} : { channel }),
     });

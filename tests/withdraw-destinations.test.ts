@@ -1,5 +1,5 @@
-// The withdrawal destinations: what the picker lists, how an address is checked, and where the
-// PAS lands for a direct destination.
+// The withdrawal destinations: what the picker lists, how an address is checked, what each sells
+// the CASH for, and where the funds land for a direct destination.
 
 import { describe, expect, it } from "vitest";
 import {
@@ -18,9 +18,22 @@ const ALICE_GENERIC = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY";
 const ALICE_HEX = "0xd43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d";
 
 describe("withdrawal destinations", () => {
-  it("lists Asset Hub first on the direct rail, then the Chainflip networks", () => {
+  it("lists Asset Hub first on the direct rail, with the Polkadot tokens, then the Chainflip networks", () => {
     expect(WITHDRAW_NETWORKS[0]).toMatchObject({ chain: "AssetHub", label: "Asset Hub" });
-    expect(WITHDRAW_NETWORKS[0]!.destinations.map((d) => d.rail)).toEqual(["direct"]);
+    const assetHub = WITHDRAW_NETWORKS[0]!.destinations;
+    expect(assetHub.map((d) => [d.id, d.asset, d.rail])).toEqual([
+      ["dot-assethub", "DOT", "direct"],
+      ["dotusd-assethub", "dotUSD", "direct"],
+      ["usdt-assethub", "USDT", "direct"],
+      ["usdc-assethub", "USDC", "direct"],
+    ]);
+    // Each token sells through the tier the on-ramp converts it on the other way.
+    expect(assetHub.map((d) => d.sale)).toEqual([
+      { tier: "pool" },
+      { tier: "teleport" },
+      { tier: "pool", external: "USDT" },
+      { tier: "pool", external: "USDC" },
+    ]);
     const others = WITHDRAW_NETWORKS.slice(1);
     expect(others.map((network) => network.label)).toEqual([
       "Bitcoin",
@@ -28,9 +41,12 @@ describe("withdrawal destinations", () => {
       "Solana",
       "Tron",
     ]);
-    expect(
-      others.flatMap((network) => network.destinations).every((d) => d.rail === "chainflip"),
-    ).toBe(true);
+    const provided = others.flatMap((network) => network.destinations);
+    expect(provided.every((d) => d.rail === "chainflip")).toBe(true);
+    // A provider takes the native from the key, whatever it delivers.
+    expect(provided.every((d) => d.sale.tier === "pool" && d.sale.external === undefined)).toBe(
+      true,
+    );
   });
 
   it("finds a network and a destination by id", () => {
@@ -51,6 +67,7 @@ describe("withdrawal destinations", () => {
     expect(isAssetHubAddress("15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp6")).toBe(false);
     expect(assetHubAccountHex(ALICE_GENERIC)).toBe(ALICE_HEX);
     expect(landingAccountHex(withdrawDestination("dot-assethub")!, ALICE_POLKADOT)).toBe(ALICE_HEX);
+    expect(landingAccountHex(withdrawDestination("usdc-assethub")!, ALICE_GENERIC)).toBe(ALICE_HEX);
   });
 
   it("checks a Chainflip destination's address with that chain's rule, and lands on the key", () => {

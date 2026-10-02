@@ -121,7 +121,7 @@ export function withdrawalProgress(
 }
 
 /** How many of the journey's three markers are complete, 0..3. Started: the payment reached the
- *  key. Conversion: the PAS reached Asset Hub. Sent: the request is complete. A side exit reports
+ *  key. Conversion: the funds reached Asset Hub. Sent: the request is complete. A side exit reports
  *  the leg it left. */
 export function withdrawalJourneyDone(record: WithdrawalRecord): number {
   const { status } = record;

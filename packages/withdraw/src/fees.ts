@@ -11,7 +11,8 @@
 // part of that charge depends on the message People forwards, which changes once the leftover PAS
 // travels along, so the delivery fee is quoted again on a stand-in of the final message. A last
 // dry run confirms the exact allowance: the program completes and traps nothing. Asset Hub then
-// runs the forwarded program and the PAS credited to the destination is read back.
+// runs the forwarded program and what it credits the destination, in the asset the sale lands,
+// is read back.
 //
 // The XCM's transaction fee is paid in PAS and estimated with a margin. People withdraws a fee
 // while keeping the account alive, so the key must hold the existential deposit on top of the
@@ -24,11 +25,13 @@ import type { TypedApi } from "polkadot-api";
 import { CASH_LOCATION } from "@getsome/people";
 import {
   creditedTo,
+  depositTokenOf,
   describeDispatchError,
   destinationEarmark,
   forwardedTo,
   siblingOrigin,
   signedOrigin,
+  STABLE_TOKENS,
   trappedIn,
 } from "@getsome/funding";
 import { PEOPLE_NATIVE, PEOPLE_TX_OPTIONS } from "./paseo";
@@ -39,6 +42,8 @@ import {
   forwardedStandIn,
   withdrawMessage,
   type PeopleApi,
+  type Sale,
+  type SaleRoute,
   type SwapArgs,
   type WithdrawXcmArgs,
 } from "./program";
@@ -96,6 +101,19 @@ async function xcmTxFeeReserve(peopleApi: PeopleApi, keyAddress: string, args: W
   return { maxWeight, reserve: (estimate * BigInt(100 + XCM_TX_FEE_HEADROOM_PCT)) / 100n };
 }
 
+/** The sale with every floor at the longest amount: a stand-in for the fee estimate, whose
+ *  charge grows with the call's length and not with the figures. */
+function longestSale(route: SaleRoute): Sale {
+  if (route.tier === "teleport") return { tier: "teleport" };
+  if (route.external === undefined) return { tier: "pool", minNativeOut: LONGEST_AMOUNT };
+  return {
+    tier: "pool",
+    external: route.external,
+    minNativeOut: LONGEST_AMOUNT,
+    minOut: LONGEST_AMOUNT,
+  };
+}
+
 export interface SizeSwapInput {
   peopleApi: PeopleApi;
   key: { address: string; publicKeyHex: string };
@@ -106,6 +124,8 @@ export interface SizeSwapInput {
   destinationHex: string;
   claimerHex?: string;
   assetHubParaId: number;
+  /** The sale on Asset Hub, whose shape the XCM's fee depends on. */
+  sale: SaleRoute;
 }
 
 /** The swap that buys the PAS the XCM needs on the key: the existential deposit, which must
@@ -122,7 +142,7 @@ export async function sizeSwap(input: SizeSwapInput): Promise<SwapArgs> {
     pasToWithdraw: LONGEST_AMOUNT,
     payFeesPas: LONGEST_AMOUNT,
     remoteFeesCash: destinationEarmark(input.cashBalance, ASSET_HUB_FEE_BUFFER_CASH),
-    minPasOut: LONGEST_AMOUNT,
+    sale: longestSale(input.sale),
     destinationHex: input.destinationHex,
     claimerHex: input.claimerHex ?? input.key.publicKeyHex,
     assetHubParaId: input.assetHubParaId,
@@ -145,7 +165,7 @@ export interface XcmSizing {
   txFeePasReserved: bigint;
   /** The message People forwards to Asset Hub for the final transaction. */
   forwarded: unknown;
-  /** PAS the Asset Hub dry run credited to the destination. */
+  /** What the Asset Hub dry run credited to the destination, in the asset the sale lands. */
   landed: bigint;
 }
 
@@ -157,12 +177,14 @@ export interface SizeXcmInput {
   /** What the key holds after the swap; all the CASH and all the PAS leave. */
   cashOnKey: bigint;
   pasOnKey: bigint;
-  /** The Asset Hub account that receives the PAS, 32-byte public key hex. */
+  /** The Asset Hub account that receives the funds, 32-byte public key hex. */
   destinationHex: string;
   /** The Asset Hub account that may claim a trapped program; defaults to the key. */
   claimerHex?: string;
   assetHubParaId: number;
   peopleParaId: number;
+  /** The sale on Asset Hub, as the hand-off froze it. */
+  sale: SaleRoute;
   /** How far below the quoted sale the Asset Hub price may move before the program fails there. */
   slippagePct: number;
 }
@@ -241,28 +263,68 @@ async function weighed(
   return w.success ? { ref_time: w.value.ref_time, proof_size: w.value.proof_size } : undefined;
 }
 
+/** What `amountIn` of one asset sells for in another on Asset Hub's pools, now. */
+async function quoted(
+  assetHubApi: AssetHubApi,
+  give: unknown,
+  want: unknown,
+  amountIn: bigint,
+  what: string,
+): Promise<bigint> {
+  const out = await assetHubApi.apis.AssetConversionApi.quote_price_exact_tokens_for_tokens(
+    give as never,
+    want as never,
+    amountIn,
+    true,
+  );
+  if (out === undefined) throw new Error(`withdraw sizing: Asset Hub cannot quote ${what}`);
+  return out;
+}
+
+const lessHeadroom = (amount: bigint, slippagePct: number): bigint =>
+  (amount * BigInt(Math.round((100 - slippagePct) * 100))) / 10_000n;
+
+/** The sale and its floors: each hop quoted now, less the headroom. All the CASH is sold but
+ *  Asset Hub's execution fee, a few thousand units the earmark's refund covers. One headroom for
+ *  the whole sale: a stable's floor is the two hop quote less it, so the hops share it and the
+ *  arrival floor is the same figure. The teleport tier has no price to hold. */
+async function quoteSale(
+  assetHubApi: AssetHubApi,
+  route: SaleRoute,
+  cashOnKey: bigint,
+  slippagePct: number,
+): Promise<Sale> {
+  if (route.tier === "teleport") return { tier: "teleport" };
+  const native = await quoted(assetHubApi, CASH_ON_ASSET_HUB, PEOPLE_NATIVE, cashOnKey, "the sale");
+  const minNativeOut = lessHeadroom(native, slippagePct);
+  if (route.external === undefined) return { tier: "pool", minNativeOut };
+  const stable = await quoted(
+    assetHubApi,
+    PEOPLE_NATIVE,
+    STABLE_TOKENS[route.external].location,
+    native,
+    `the ${route.external} sale`,
+  );
+  return {
+    tier: "pool",
+    external: route.external,
+    minNativeOut,
+    minOut: lessHeadroom(stable, slippagePct),
+  };
+}
+
 export async function sizeXcm(input: SizeXcmInput): Promise<XcmSizing> {
   const { peopleApi, assetHubApi, key } = input;
   const claimerHex = input.claimerHex ?? key.publicKeyHex;
   const remoteFeesCash = destinationEarmark(input.cashOnKey, ASSET_HUB_FEE_BUFFER_CASH);
-
-  // The price floor on Asset Hub: the sale quoted now, less the headroom. All the CASH is sold
-  // there but Asset Hub's execution fee, a few thousand units the earmark's refund covers.
-  const quoted = await assetHubApi.apis.AssetConversionApi.quote_price_exact_tokens_for_tokens(
-    CASH_ON_ASSET_HUB as never,
-    PEOPLE_NATIVE as never,
-    input.cashOnKey,
-    true,
-  );
-  if (quoted === undefined) throw new Error("withdraw sizing: Asset Hub cannot quote the sale");
-  const minPasOut = (quoted * BigInt(Math.round((100 - input.slippagePct) * 100))) / 10_000n;
+  const sale = await quoteSale(assetHubApi, input.sale, input.cashOnKey, input.slippagePct);
 
   const base = (pasToWithdraw: bigint, payFeesPas: bigint): WithdrawXcmArgs => ({
     cashToTeleport: input.cashOnKey,
     pasToWithdraw,
     payFeesPas,
     remoteFeesCash,
-    minPasOut,
+    sale,
     destinationHex: input.destinationHex,
     claimerHex,
     assetHubParaId: input.assetHubParaId,
@@ -336,17 +398,20 @@ export async function sizeXcm(input: SizeXcmInput): Promise<XcmSizing> {
     input.peopleParaId,
     run.forwarded,
     input.destinationHex,
+    input.sale,
   );
   return { args: final, txFeePasReserved, forwarded: run.forwarded, landed };
 }
 
 /** Runs the forwarded program on Asset Hub as People. Throws when it fails, traps, or credits
- *  the destination nothing. Returns the PAS credited. */
+ *  the destination nothing. Returns what it credits in the asset the sale lands: the native's
+ *  deposit for the pool, the token's for a stable and for dotUSD. */
 export async function dryRunOnAssetHub(
   assetHubApi: AssetHubApi,
   peopleParaId: number,
   forwarded: unknown,
   destinationHex: string,
+  sale: SaleRoute,
 ): Promise<bigint> {
   const dr = await assetHubApi.apis.DryRunApi.dry_run_xcm(
     siblingOrigin(peopleParaId) as never,
@@ -355,13 +420,23 @@ export async function dryRunOnAssetHub(
   if (!dr.success) throw new Error("not submitted: Asset Hub would not dry-run the program");
   const outcome = dr.value.execution_result;
   if (outcome.type !== "Complete") {
-    const error = (outcome.value as { error?: { type?: string } }).error?.type ?? outcome.type;
-    throw new Error(`not submitted: the program fails on Asset Hub with ${error}`);
+    // An incomplete run names the instruction and its error; an older runtime the error alone.
+    const failed = (outcome.value as { error?: { index?: number; error?: { type?: string } } })
+      .error;
+    const error = failed?.error?.type ?? (failed as { type?: string } | undefined)?.type;
+    const where = failed?.index === undefined ? "" : ` at instruction ${failed.index}`;
+    throw new Error(
+      `not submitted: the program fails on Asset Hub${where} with ${error ?? outcome.type}`,
+    );
   }
   const trapped = trappedIn(dr.value.emitted_events);
   if (trapped > 0n)
     throw new Error(`not submitted: the program would trap ${trapped} on Asset Hub`);
-  const landed = creditedTo(dr.value.emitted_events, destinationHex, "native");
+  const { assetHubId } = depositTokenOf(sale);
+  const landed =
+    assetHubId === undefined
+      ? creditedTo(dr.value.emitted_events, destinationHex, "native")
+      : creditedTo(dr.value.emitted_events, destinationHex, "asset", assetHubId);
   if (landed === 0n) {
     throw new Error("not submitted: nothing would reach the destination on Asset Hub");
   }

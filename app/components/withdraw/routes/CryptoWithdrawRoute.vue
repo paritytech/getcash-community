@@ -3,6 +3,7 @@
 // purse was asked. Opened from the list with `topUp`, it goes straight to the journey of that
 // record. The record and the worker carry on when this screen is left.
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { depositTokenOf } from "@getsome/funding";
 import { useWithdrawalRequest } from "../../../composables/useWithdrawalRequest";
 import type { FundingPackageEmits } from "../../../funding/handoff";
 import type { FundingSelection } from "../../../funding/selection";
@@ -129,11 +130,11 @@ function pickToken(picked: WithdrawDestination) {
   step.value = "address";
 }
 
-/** Four decimals of the destination's native, the trailing zeros dropped. */
-function formatNative(planck: bigint, decimals: number): string {
+/** Four decimals of the landing asset, the trailing zeros dropped. */
+function formatLanding(units: bigint, decimals: number): string {
   const unit = 10n ** BigInt(decimals);
-  const whole = planck / unit;
-  const fraction = ((planck % unit) * 10_000n) / unit;
+  const whole = units / unit;
+  const fraction = ((units % unit) * 10_000n) / unit;
   const digits = fraction.toString().padStart(4, "0").replace(/0+$/, "");
   return digits === "" ? whole.toString() : `${whole}.${digits}`;
 }
@@ -152,11 +153,12 @@ async function onAddress(entered: string) {
   receive.value = null;
   try {
     if (picked.rail === "direct") {
-      // What the CASH sells for on Asset Hub's pool: the direct rail lands exactly that.
+      // What the CASH lands as on Asset Hub in the token picked: the direct rail lands exactly
+      // that, in that token's decimals.
       const live = await import("~~/lib/withdraw-live");
-      const planck = await live.quoteDirectReceive(base);
+      const units = await live.quoteDirectReceive(base, picked.sale);
       if (step.value !== "summary") return;
-      receive.value = `${formatNative(planck, 10)} ${picked.asset}`;
+      receive.value = `${formatLanding(units, depositTokenOf(picked.sale).decimals)} ${picked.asset}`;
       return;
     }
     // A provider destination shows what its offer for this amount said would land, and the
@@ -196,6 +198,7 @@ async function confirm() {
       destination: { chain: picked.chainLabel, asset: picked.asset, address: address.value },
       landingHex: landingAccountHex(picked, address.value),
       rail: picked.rail,
+      sale: picked.sale,
       ...(expectedNative.value === null ? {} : { expectedNative: expectedNative.value }),
     });
     if (outcome.ref === null) {
