@@ -207,6 +207,27 @@ export interface SizeXcmInput {
   /** Ceiling on how far the sale may slip below its quote, percent. Ships as is only when the pool
    *  cannot be read. */
   slippagePct: number;
+  /** The least the sale must land, for a withdrawal that promised a provider an exact figure.
+   *  A floor below it is refused rather than raised: a tighter floor than the pool supports fails
+   *  the program on Asset Hub and traps the funds there. */
+  minLanding?: bigint;
+}
+
+/**
+ * The sale cannot land what the withdrawal promised its provider: at today's price its floor is
+ * below the payment, its fee and the key's existential deposit. Nothing has moved; the CASH is
+ * still on the key on People. Terminal for this attempt, and worth a retry once the price is back.
+ */
+export class CommitmentUnfundableError extends Error {
+  constructor(
+    readonly floor: bigint,
+    readonly needed: bigint,
+  ) {
+    super(
+      `withdraw sizing: the sale's floor of ${floor} PAS is below the ${needed} the promised payment needs`,
+    );
+    this.name = "CommitmentUnfundableError";
+  }
 }
 
 /** What a dry run of the XCM on People reports. */
@@ -369,6 +390,9 @@ export async function sizeXcm(input: SizeXcmInput): Promise<XcmSizing> {
         }),
   });
   const minPasOut = (quoted * BigInt(Math.round((100 - safetyPct) * 100))) / 10_000n;
+  if (input.minLanding !== undefined && minPasOut < input.minLanding) {
+    throw new CommitmentUnfundableError(minPasOut, input.minLanding);
+  }
 
   const base = (pasToWithdraw: bigint, payFeesPas: bigint): WithdrawXcmArgs => ({
     cashToTeleport: input.cashOnKey,

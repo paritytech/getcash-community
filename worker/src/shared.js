@@ -70,16 +70,32 @@ export function bounded(promise, ms, what) {
   });
 }
 
+/** Bounds on the host's provider and on the chain spec read that verifies it. */
+const PROVIDER_TIMEOUT_MS = 8_000;
+const CHAIN_SPEC_TIMEOUT_MS = 10_000;
+/** The longest `connectChain` waits before it gives up. */
+export const CONNECT_TIMEOUT_MS = PROVIDER_TIMEOUT_MS + CHAIN_SPEC_TIMEOUT_MS;
+/** The longest `signOptionsFor` waits for the tip. */
+export const ANCHOR_TIMEOUT_MS = 8_000;
+
 /**
  * Creates a papi client for `genesisHash` through the host and verifies the chain it serves.
  * Clients live for one tick and are destroyed when it ends.
  */
 export async function connectChain(genesisHash, what) {
-  const provider = await bounded(getHostProvider(genesisHash), 8_000, `${what} provider`);
+  const provider = await bounded(
+    getHostProvider(genesisHash),
+    PROVIDER_TIMEOUT_MS,
+    `${what} provider`,
+  );
   if (!provider) throw new Error(`${what}: no host provider (not in a container?)`);
   const client = createClient(provider);
   try {
-    const spec = await bounded(client.getChainSpecData(), 10_000, `${what} chainSpec`);
+    const spec = await bounded(
+      client.getChainSpecData(),
+      CHAIN_SPEC_TIMEOUT_MS,
+      `${what} chainSpec`,
+    );
     if (spec.genesisHash !== genesisHash) {
       throw new Error(`${what}: genesis mismatch: host routed ${spec.genesisHash}`);
     }
@@ -95,7 +111,7 @@ export async function connectChain(genesisHash, what) {
  * cannot be read.
  */
 export async function signOptionsFor(client) {
-  const best = await bounded(client.getBestBlocks(), 8_000, "best block");
+  const best = await bounded(client.getBestBlocks(), ANCHOR_TIMEOUT_MS, "best block");
   const hash = best?.[0]?.hash;
   if (!hash) throw new Error("no best block to anchor the submit against");
   return { at: hash };

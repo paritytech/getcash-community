@@ -25,6 +25,16 @@ export function toBaseUnits(
   return (target.amount + scale - 1n) / scale;
 }
 
+/** A whole-token decimal string in `token` base units, exactly; null for anything that is not a
+ *  plain non-negative decimal or carries more fraction digits than the token has. */
+export function parseBaseUnits(token: TokenSpec, text: string): bigint | null {
+  const match = /^(\d+)(?:\.(\d*))?$/.exec(text.trim());
+  if (match === null) return null;
+  const fraction = match[2] ?? "";
+  if (fraction.length > token.decimals) return null;
+  return BigInt(match[1]! + fraction.padEnd(token.decimals, "0"));
+}
+
 /** `token` base units to a whole-token decimal string, trailing zeros trimmed. */
 export function formatBaseUnits(token: TokenSpec, base: bigint): string {
   const s = base.toString().padStart(token.decimals + 1, "0");

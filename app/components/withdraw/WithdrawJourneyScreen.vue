@@ -3,8 +3,13 @@
 // Everything shown is read from the record; the actions go back to the route.
 import { computed } from "vue";
 import { Check, RefreshCcw, X } from "lucide-vue-next";
+import { formatBaseUnits, SELL_TOKEN } from "@getsome/meld";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
-import { paymentTaken, type WithdrawalRecord } from "../../funding/requests/model";
+import {
+  paymentTaken,
+  saleAwaitingDeposit,
+  type WithdrawalRecord,
+} from "../../funding/requests/model";
 import { formatWhenShort } from "../../utils/journey";
 import { shortAddress } from "../../withdraw/destinations";
 import { withdrawalFailureText } from "../../withdraw/failure-copy";
@@ -60,14 +65,34 @@ const message = computed(() => {
   if (failure.value) return withdrawalFailureText(failure.value);
   // The funding product is approved without a sheet, so a requested payment is processing.
   if (status.value.kind === "awaiting-payment") {
+    // A sale asks the balance only once the provider knows where the funds go.
+    if (saleAwaitingDeposit(props.record)) return "Waiting for you to finish with the provider";
     return props.record.payment.requestedAt === undefined
       ? "Waiting for your payment"
       : "Your payment is being processed";
   }
   if (status.value.kind === "sent") {
+    if (props.record.route !== "crypto") {
+      return props.record.route === "bank" ? "Paid out to your bank" : "Paid out to your card";
+    }
     return `Sent to ${shortAddress(props.record.destination.address)}`;
   }
   return progress.value.view.label;
+});
+
+/** What a sale left over once the provider was paid, and where it is. Silent for a remainder too
+ *  small to send back, which stays with the withdrawal. A sale that ended unpaid sends everything
+ *  back, which its failure already says, so only the arrival is added. */
+const residueNote = computed(() => {
+  const residue = props.record.residue;
+  if (residue === undefined || !residue.returning) return null;
+  if (residue.whole === true || residue.amount === undefined) {
+    return residue.returned ? "Your funds came back to your balance as CASH." : null;
+  }
+  const amount = `${formatBaseUnits(SELL_TOKEN, (BigInt(residue.amount) / 1_000_000n) * 1_000_000n)} ${SELL_TOKEN.symbol}`;
+  return residue.returned
+    ? `The ${amount} left over came back to your balance as CASH.`
+    : `The ${amount} left over is on its way back to your balance.`;
 });
 
 /** Cancel is offered only while nothing was paid and the host has nothing in hand. */
@@ -105,6 +130,7 @@ const canRetry = computed(() => status.value.kind === "failed" && status.value.r
         :message="message"
         :failed-label="failedLabel"
       />
+      <p v-if="residueNote" class="text-body-s text-fg-secondary">{{ residueNote }}</p>
 
       <PillButton v-if="canRetry" class="mt-auto" :disabled="busy" @click="emit('retry')">
         Try again
