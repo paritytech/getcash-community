@@ -10,6 +10,7 @@ import {
   toEphemeralSigner,
   toHandoffKey,
   toSchnorrkelSecret,
+  walletSeedHex,
 } from "./derive";
 import { createEphemeral } from "./ephemeral";
 
@@ -41,6 +42,22 @@ describe("deriveKeypair", () => {
     expect(() => deriveKeypair(new Uint8Array(len))).toThrow(
       new RegExp(`exactly 32 bytes, got ${len}`),
     );
+  });
+
+  it("hands out a raw seed a wallet imports to the same account", () => {
+    const seed = walletSeedHex(entropyA);
+    expect(seed).toMatch(/^0x[0-9a-f]{64}$/);
+    // A wallet treats the raw seed as the mini secret and derives with an empty path: the same
+    // construction deriveKeypair uses, so the accounts must match.
+    const mini = Uint8Array.from(
+      seed
+        .slice(2)
+        .match(/../g)!
+        .map((b) => parseInt(b, 16)),
+    );
+    const { publicKey } = sr25519CreateDerive(mini)("");
+    expect(publicKey).toEqual(deriveKeypair(entropyA).publicKey);
+    expect(walletSeedHex(entropyB)).not.toBe(seed);
   });
 
   it("produces a signer whose publicKey matches the keypair and that signs", async () => {

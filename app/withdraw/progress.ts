@@ -33,7 +33,9 @@ const route = {
   cadenceMs: 5_000,
   startedNodeLabel: "Started",
   waitingLabel: "Waiting for your payment",
-  routeCompletedLabel: "Converted",
+  // No `routeCompletedLabel`: the boundary it names needs a moment where the conversion is done
+  // and the send has not been confirmed, and the status goes straight from `converting` to
+  // `sending`. The ribbon reads Waiting → Converting → Sending → Sent with no gap to fill.
   settledLabel: "Sent",
   stages: [
     {
@@ -129,6 +131,9 @@ export function withdrawalJourneyDone(record: WithdrawalRecord): number {
   if (status.kind === "sending") return 2;
   if (status.kind === "paid" || status.kind === "converting") return 1;
   if (status.kind === "awaiting-payment") return 0;
+  // A refund is the swap refusing to fill: the journey marks the conversion, whatever leg the
+  // retry machinery files the failure under.
+  if (record.failure?.kind === "refunded") return 1;
   const rank = withdrawalRankOf(record);
   return rank >= 3 ? 2 : rank >= 1 ? 1 : 0;
 }

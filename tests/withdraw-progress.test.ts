@@ -127,7 +127,7 @@ describe("withdrawal rows", () => {
         network: { label: "Asset Hub", icon: "/icons/polkadot.svg" },
         token: { label: "DOT", icon: "/icons/polkadot.svg" },
       },
-      state: { kind: "finishing", status: "Converting your $CASH" },
+      state: { kind: "finishing", status: "Converting to DOT…" },
     });
     expect(withdrawalRequestRef(row!.id)).toEqual(REF);
     expect(withdrawalRequestRef("crypto:dot-assethub#3")).toBeNull();

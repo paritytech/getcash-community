@@ -64,13 +64,8 @@ describe("the line under the withdrawal amount", () => {
     expect(assess("3000").lead).toBe("Maximum ");
   });
 
-  it("returns the standing minimum line for an amount that breaks nothing", () => {
-    expect(assess("24")).toEqual({
-      lead: "Withdrawal minimum ",
-      amount: "10",
-      breach: false,
-      withdrawable: true,
-    });
+  it("carries no line for an amount that breaks nothing", () => {
+    expect(assess("24")).toEqual({ lead: "", amount: null, breach: false, withdrawable: true });
     expect(assess("226.78").withdrawable).toBe(true);
   });
 });
@@ -92,15 +87,15 @@ describe("the amount a withdrawal can open on", () => {
   it("fails closed while the purse is unknown, open only where there is provably none", () => {
     // Null: the balance read is still in flight — no bound to name, nothing may open.
     expect(assess("24", null)).toEqual({
-      lead: "Withdrawal minimum ",
-      amount: "10",
+      lead: "",
+      amount: null,
       breach: false,
       withdrawable: false,
     });
     // Undefined: there is no purse (outside a host) — only the configured bounds apply.
     expect(assess("24", undefined)).toEqual({
-      lead: "Withdrawal minimum ",
-      amount: "10",
+      lead: "",
+      amount: null,
       breach: false,
       withdrawable: true,
     });

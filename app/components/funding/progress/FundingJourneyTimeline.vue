@@ -23,6 +23,8 @@ const props = withDefaults(
     failedLabel?: string | null;
     /** The markers' labels, one per step; the top-up's by default. */
     labels?: readonly string[] | null;
+    /** What is on its way, for the parts only a screen reader hears. */
+    subject?: string;
   }>(),
   {
     scale: "card",
@@ -30,6 +32,7 @@ const props = withDefaults(
     delayed: false,
     failedLabel: null,
     labels: null,
+    subject: "Top-up",
   },
 );
 
@@ -70,7 +73,7 @@ function stageLabel(index: number): string {
  *  do not announce. */
 const announcement = computed(() => {
   const stage = settled.value
-    ? "Top-up complete"
+    ? `${props.subject} complete`
     : failed.value
       ? stageLabel(activeIndex.value)
       : `Step ${activeIndex.value + 1} of ${stages.value.length}: ${stages.value[activeIndex.value]!}`;
@@ -79,7 +82,7 @@ const announcement = computed(() => {
 </script>
 
 <template>
-  <section class="funding-journey" aria-label="Top-up progress">
+  <section class="funding-journey" :aria-label="`${subject} progress`">
     <div class="funding-journey-card" :style="{ '--funding-journey-gaps': stages.length - 1 }">
       <ol class="funding-journey-steps">
         <!-- Connectors run centre to centre behind the markers; each takes the colour of the
