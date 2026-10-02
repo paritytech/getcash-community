@@ -170,6 +170,9 @@ function remoteProgram(destinationHex: string, claimerHex: string, sale: Sale) {
           call: sale.call,
         },
       },
+      // A refused redeem fails the program here, named as such, rather than at the withdrawal
+      // of a stable the account never received.
+      { type: "ExpectTransactStatus", value: { type: "Success" } },
       { type: "WithdrawAsset", value: [fungible(stable, sale.externalOut)] },
       { type: "RefundSurplus" },
       exchange(allOf(CASH_ON_ASSET_HUB), fungible(NATIVE_ON_ASSET_HUB, 1n)),

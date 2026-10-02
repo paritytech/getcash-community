@@ -496,6 +496,7 @@ describe("withdrawTickOnce", () => {
       "SetHints",
       "DepositAsset",
       "Transact",
+      "ExpectTransactStatus",
       "WithdrawAsset",
       "RefundSurplus",
       "ExchangeAsset",
@@ -508,7 +509,7 @@ describe("withdrawTickOnce", () => {
     const held = (program[1]!.value as { assets: { value: Fungible[] } }).assets.value[0]!;
     expect(held.fun.value).toBe(redeemAmount);
     expect((program[2]!.value as { call: Uint8Array }).call).toBe(REDEEM_CALL);
-    const out = (program[3]!.value as Fungible[])[0]!.fun.value;
+    const out = (program[4]!.value as Fungible[])[0]!.fun.value;
     expect(out).toBe(redeemAmount - permillMulCeil(redeemAmount, PSM_FEE_RATE));
     // The landing is in USDT units: the redeem plus the dust sold on top.
     expect(run.state.expectedLanding).toBe(world.state.lastDryRunLanded);

@@ -9,6 +9,7 @@ import { deriveEntropy, getHostLocalStorage } from "@parity/product-sdk-host";
 import { deriveKeypair } from "@getsome/ephemeral";
 import {
   chooseRoute,
+  destinationEarmark,
   PASEO_ASSET_HUB_PARA_ID,
   PASEO_PEOPLE_PARA_ID,
   STABLE_TOKENS,
@@ -22,6 +23,7 @@ import {
 } from "@getsome/host";
 import { CASH_LOCATION } from "@getsome/people";
 import {
+  ASSET_HUB_FEE_BUFFER_CASH,
   CASH_ON_ASSET_HUB,
   DEFAULT_WITHDRAW_SLIPPAGE_PCT,
   PASEO_PEOPLE_POOL_ACCOUNT,
@@ -120,7 +122,10 @@ export async function chooseWithdrawRoute(
   if (landing === "dotUSD") return { tier: "teleport" };
   const { connectChain, ASSET_HUB } = await import("./host-chain");
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
-  return chooseRoute(api, { direction: "redeem", internalAmount: amount, deposit: landing });
+  // Judged on what the redeem will take: the amount less the fees and Asset Hub's earmark.
+  const sold = amount - DIRECT_FEES_CASH;
+  const redeemed = sold - destinationEarmark(sold, ASSET_HUB_FEE_BUFFER_CASH);
+  return chooseRoute(api, { direction: "redeem", internalAmount: redeemed, deposit: landing });
 }
 
 /** What a direct withdrawal of `amount` CASH lands on Asset Hub in the asset `sale` ends in,

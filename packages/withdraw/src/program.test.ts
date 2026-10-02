@@ -223,13 +223,15 @@ describe("withdrawal transactions", () => {
       "SetHints",
       "DepositAsset",
       "Transact",
+      "ExpectTransactStatus",
       "WithdrawAsset",
       "RefundSurplus",
       "ExchangeAsset",
       "ExchangeAsset",
       "DepositAsset",
     ]);
-    const [, held, transact, withdraw, , first, second, deposit] = transfer.remote_xcm;
+    const [, held, transact, status, withdraw, , first, second, deposit] = transfer.remote_xcm;
+    expect(status!.value).toEqual({ type: "Success" });
     const holding = held!.value as { assets: { type: string; value: Fungible[] } };
     expect(holding.assets.type).toBe("Definite");
     expect(holding.assets.value[0]!.fun.value).toBe(sale.redeemAmount);

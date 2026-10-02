@@ -52,9 +52,10 @@ import {
 
 export type AssetHubApi = TypedApi<typeof paseo_next_v2>;
 
-/** CASH set aside for Asset Hub's execution fee, above the one percent floor. The measured fee is
- *  a few thousand units; the unused part is refunded into the sale. */
-export const ASSET_HUB_FEE_BUFFER_CASH = 10_000n;
+/** CASH set aside for Asset Hub's execution fee, above the one percent floor. The pool programs
+ *  measure a few thousand units and the PSM one about eight thousand, priced through the pool,
+ *  so this leaves room for the price to move; the unused part is refunded into the sale. */
+export const ASSET_HUB_FEE_BUFFER_CASH = 30_000n;
 
 /** Headroom the swap may spend above the quoted CASH, percent. What it does not spend leaves
  *  with the XCM. */
@@ -499,9 +500,13 @@ export async function dryRunOnAssetHub(
       .error;
     const error = failed?.error?.type ?? (failed as { type?: string } | undefined)?.type;
     const where = failed?.index === undefined ? "" : ` at instruction ${failed.index}`;
-    throw new Error(
-      `not submitted: the program fails on Asset Hub${where} with ${error ?? outcome.type}`,
-    );
+    // The PSM tier checks the redeem went through right after it; a false expectation there is
+    // the PSM refusing, which the dry run cannot name further.
+    const reason =
+      sale.tier === "psm" && error === "ExpectationFalse"
+        ? "the PSM refused the redeem"
+        : `the program fails on Asset Hub${where} with ${error ?? outcome.type}`;
+    throw new Error(`not submitted: ${reason}`);
   }
   const trapped = trappedIn(dr.value.emitted_events);
   if (trapped > 0n)
