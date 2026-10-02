@@ -25,17 +25,11 @@
 // same transaction will not pass on the fourth try.
 
 import type { PolkadotSigner } from "polkadot-api";
-import { describeDispatchError } from "@getsome/funding";
+import { describeDispatchError, type ConversionRoute } from "@getsome/funding";
 import { bounded } from "./bounded";
 import { PEOPLE_TX_OPTIONS } from "./paseo";
 import { NeedsSwapError, sizeSwap, sizeXcm, type AssetHubApi } from "./fees";
-import {
-  buildSwap,
-  buildWithdrawXcm,
-  withdrawMessage,
-  type PeopleApi,
-  type SaleRoute,
-} from "./program";
+import { buildSwap, buildWithdrawXcm, withdrawMessage, type PeopleApi } from "./program";
 
 /** 'swap' buys the PAS the fees need; 'convert' submits the XCM; 'await-arrival' holds while the
  *  funds have not shown on the destination. */
@@ -109,7 +103,7 @@ export interface WithdrawTickInput {
   /** The People pool's account, whose balances are the reserves. */
   poolAccount: string;
   /** The sale on Asset Hub, as the hand-off froze it: what the destination receives. */
-  sale: SaleRoute;
+  sale: ConversionRoute;
   slippagePct: number;
   tickTimeoutMs: number;
   submitTimeoutMs: number;
@@ -256,6 +250,7 @@ export async function withdrawTickOnce(
       destinationHex: input.destinationHex,
       claimerHex: input.claimerHex,
       assetHubParaId: input.assetHubParaId,
+      peopleParaId: input.peopleParaId,
       sale: input.sale,
     }),
     input.tickTimeoutMs,

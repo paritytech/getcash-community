@@ -3,14 +3,21 @@
 // production proof funds such a burner and prints its label. Spends testnet funds and never runs
 // in CI:
 //   PROD_PROOF_WITHDRAW=1 WITHDRAW_BURNER=getcash-prod-proof-<ms> pnpm vitest run tests/prod-proof-withdraw.test.ts
-// WITHDRAW_ASSET picks what lands: dot (the default), dotusd, usdt or usdc.
+// WITHDRAW_ASSET picks what lands: dot (the default), dotusd, usdt or usdc. A stable's sale is
+// decided as the page decides it, the PSM when it can serve and the pool otherwise.
 
 import { describe, it } from "vitest";
 import { AccountId, createClient } from "polkadot-api";
 import { getWsProvider } from "polkadot-api/ws";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import { deriveKeypairWithSecret } from "@getsome/ephemeral";
-import { depositTokenOf, PASEO_ASSET_HUB_PARA_ID, PASEO_PEOPLE_PARA_ID } from "@getsome/funding";
+import {
+  chooseRoute,
+  depositTokenOf,
+  PASEO_ASSET_HUB_PARA_ID,
+  PASEO_PEOPLE_PARA_ID,
+  type DepositAsset,
+} from "@getsome/funding";
 import { CASH_LOCATION } from "@getsome/people";
 import {
   readDestinationBalance,
@@ -21,7 +28,6 @@ import {
   PASEO_PEOPLE_POOL_ACCOUNT,
   withdrawTickOnce,
   WithdrawRejectedError,
-  type SaleRoute,
 } from "@getsome/withdraw";
 
 const cash = (v: bigint) => (Number(v) / 1e6).toFixed(6);
@@ -35,13 +41,13 @@ const ALICE_HEX = toHex(AccountId().enc(ALICE));
 const BURNER_LABEL = process.env.WITHDRAW_BURNER;
 const RUN_TIMEOUT_MS = 300_000;
 const POLL_MS = 4_000;
-const SALES: Record<string, SaleRoute> = {
-  dot: { tier: "pool" },
-  dotusd: { tier: "teleport" },
-  usdt: { tier: "pool", external: "USDT" },
-  usdc: { tier: "pool", external: "USDC" },
+const LANDINGS: Record<string, DepositAsset> = {
+  dot: "native",
+  dotusd: "dotUSD",
+  usdt: "USDT",
+  usdc: "USDC",
 };
-const SALE = SALES[process.env.WITHDRAW_ASSET ?? "dot"];
+const LANDING = LANDINGS[process.env.WITHDRAW_ASSET ?? "dot"];
 
 describe.runIf(process.env.PROD_PROOF_WITHDRAW === "1")("withdrawal production proof", () => {
   it("moves a burner's CASH on People to Alice on Asset Hub as the token picked", async () => {
@@ -51,8 +57,9 @@ describe.runIf(process.env.PROD_PROOF_WITHDRAW === "1")("withdrawal production p
     const peopleApi = peC.getTypedApi(paseo_people_next);
     try {
       if (!BURNER_LABEL) throw new Error("set WITHDRAW_BURNER to a burner label holding CASH");
-      if (SALE === undefined) throw new Error("WITHDRAW_ASSET must be dot, dotusd, usdt or usdc");
-      const token = depositTokenOf(SALE);
+      if (LANDING === undefined) {
+        throw new Error("WITHDRAW_ASSET must be dot, dotusd, usdt or usdc");
+      }
       const entropy = new Uint8Array(32);
       new TextEncoder().encodeInto(BURNER_LABEL, entropy);
       const key = deriveKeypairWithSecret(entropy);
@@ -61,10 +68,22 @@ describe.runIf(process.env.PROD_PROOF_WITHDRAW === "1")("withdrawal production p
         0n;
       const readPas = async (ss58: string) =>
         (await peopleApi.query.System.Account.getValue(ss58))?.data?.free ?? 0n;
+      const cashOnKey = await readCash(key.address);
+      const route =
+        LANDING === "native"
+          ? { tier: "pool" as const }
+          : LANDING === "dotUSD"
+            ? { tier: "teleport" as const }
+            : await chooseRoute(assetHubApi, {
+                direction: "redeem",
+                internalAmount: cashOnKey,
+                deposit: LANDING,
+              });
+      const token = depositTokenOf(route);
       const readAlice = () => readDestinationBalance(assetHubApi, ALICE_HEX, token.assetHubId);
       const aliceBefore = await readAlice();
       console.log(
-        `KEY ${key.address}: ${cash(await readCash(key.address))} CASH, ${pas(await readPas(key.address))} PAS on People`,
+        `KEY ${key.address}: ${cash(cashOnKey)} CASH, ${pas(await readPas(key.address))} PAS on People; sale ${JSON.stringify(route)}`,
       );
       console.log(
         `ALICE on Asset Hub before: ${units(aliceBefore, token.decimals)} ${token.symbol}`,
@@ -87,7 +106,7 @@ describe.runIf(process.env.PROD_PROOF_WITHDRAW === "1")("withdrawal production p
               assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
               peopleParaId: PASEO_PEOPLE_PARA_ID,
               poolAccount: PASEO_PEOPLE_POOL_ACCOUNT,
-              sale: SALE,
+              sale: route,
               slippagePct: DEFAULT_WITHDRAW_SLIPPAGE_PCT,
               tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
               submitTimeoutMs: DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,

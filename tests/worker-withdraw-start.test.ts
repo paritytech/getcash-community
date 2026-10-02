@@ -1,6 +1,6 @@
 // The worker's intake of a withdrawal hand-off: the sale it names is kept on the job as the
-// surface froze it, and a hand-off without one, or with a tier this engine cannot sell through,
-// is refused before anything is stored.
+// surface froze it, and a hand-off without one, or with a psm route missing its fee rate, is
+// refused before anything is stored.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { deriveKeypairWithSecret } from "@getsome/ephemeral";
@@ -78,17 +78,23 @@ describe("the worker's intake of a withdrawal", () => {
     expect(storedJobs()["s-1"]).toMatchObject({ tier: "pool", external: "USDC", rail: "direct" });
   });
 
-  it("refuses a hand-off without a sale, a tier it cannot sell through and a stable it does not know, storing nothing", async () => {
+  it("keeps a psm sale with the fee rate the surface was quoted", async () => {
+    const engine = await freshEngine();
+    await engine.startWithdraw(
+      JSON.stringify(handoff({ tier: "psm", external: "USDT", feeRate: 5_000 })),
+    );
+    expect(storedJobs()["s-1"]).toMatchObject({ tier: "psm", external: "USDT", feeRate: 5_000 });
+  });
+
+  it("refuses a hand-off without a sale, a psm sale without its fee rate and a stable it does not know, storing nothing", async () => {
     const engine = await freshEngine();
     expect(await engine.startWithdraw(JSON.stringify(handoff({})))).toMatchObject({
       error: "invalid",
       reason: expect.stringMatching(/sale tier is required/),
     });
     expect(
-      await engine.startWithdraw(
-        JSON.stringify(handoff({ tier: "psm", external: "USDT", feeRate: 5_000 })),
-      ),
-    ).toMatchObject({ error: "invalid", reason: expect.stringMatching(/psm tier/) });
+      await engine.startWithdraw(JSON.stringify(handoff({ tier: "psm", external: "USDT" }))),
+    ).toMatchObject({ error: "invalid", reason: expect.stringMatching(/Permill fee rate/) });
     expect(
       await engine.startWithdraw(JSON.stringify(handoff({ tier: "pool", external: "EUR" }))),
     ).toMatchObject({ error: "invalid", reason: expect.stringMatching(/unknown deposit asset/) });

@@ -6,7 +6,7 @@
 // its own wake, so a cancelled record cannot cause a payment.
 
 import { computed } from "vue";
-import type { SaleRoute } from "@getsome/withdraw";
+import type { ConversionRoute } from "@getsome/funding";
 import {
   PAYMENT_WINDOW_MS,
   WITHDRAW_SOURCE_PREFIX,
@@ -32,8 +32,8 @@ export interface WithdrawalStart {
    *  withdrawal's own key when a provider carries the native on. */
   landingHex: string | null;
   rail: WithdrawalRailState["provider"];
-  /** The sale the worker makes on Asset Hub, the destination's. */
-  sale: SaleRoute;
+  /** The sale the worker makes on Asset Hub, as the quote decided it for the destination. */
+  sale: ConversionRoute;
   /** The native the summary estimated will land, base units: what a provider's channel is
    *  quoted for. Required for every rail but `direct`. */
   expectedNative?: bigint;

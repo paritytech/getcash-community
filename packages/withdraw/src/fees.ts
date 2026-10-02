@@ -21,7 +21,7 @@
 // existential deposit and the chain reaps it with the account.
 
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
-import type { TypedApi } from "polkadot-api";
+import { AccountId, type TypedApi } from "polkadot-api";
 import { CASH_LOCATION } from "@getsome/people";
 import {
   creditedTo,
@@ -33,6 +33,7 @@ import {
   signedOrigin,
   STABLE_TOKENS,
   trappedIn,
+  type ConversionRoute,
 } from "@getsome/funding";
 import { PEOPLE_NATIVE, PEOPLE_TX_OPTIONS } from "./paseo";
 import { cashInFor, type PoolReserves } from "./pool";
@@ -40,10 +41,11 @@ import {
   buildWithdrawXcm,
   CASH_ON_ASSET_HUB,
   forwardedStandIn,
+  originOnAssetHub,
+  psmRedeemOut,
   withdrawMessage,
   type PeopleApi,
   type Sale,
-  type SaleRoute,
   type SwapArgs,
   type WithdrawXcmArgs,
 } from "./program";
@@ -66,6 +68,12 @@ const FEE_ROUNDS = 3;
 
 /** An amount whose compact encoding is the longest any amount below 2^64 gets: nine bytes. */
 const LONGEST_AMOUNT = 2n ** 63n;
+
+/** More bytes than the redeem call encodes to, for the fee estimate on the call's length. */
+const LONGEST_CALL = new Uint8Array(64);
+
+const toHex = (bytes: Uint8Array): string =>
+  `0x${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
 
 /** The key needs more PAS than it holds to send the XCM: swap again. */
 export class NeedsSwapError extends Error {
@@ -101,10 +109,21 @@ async function xcmTxFeeReserve(peopleApi: PeopleApi, keyAddress: string, args: W
   return { maxWeight, reserve: (estimate * BigInt(100 + XCM_TX_FEE_HEADROOM_PCT)) / 100n };
 }
 
-/** The sale with every floor at the longest amount: a stand-in for the fee estimate, whose
- *  charge grows with the call's length and not with the figures. */
-function longestSale(route: SaleRoute): Sale {
+/** The sale with every figure at its longest: a stand-in for the fee estimate, whose charge
+ *  grows with the call's length and not with the figures. */
+function longestSale(route: ConversionRoute): Sale {
   if (route.tier === "teleport") return { tier: "teleport" };
+  if (route.tier === "psm") {
+    return {
+      tier: "psm",
+      external: route.external,
+      feeRate: route.feeRate,
+      redeemAmount: LONGEST_AMOUNT,
+      externalOut: LONGEST_AMOUNT,
+      holderHex: `0x${"00".repeat(32)}`,
+      call: LONGEST_CALL,
+    };
+  }
   if (route.external === undefined) return { tier: "pool", minNativeOut: LONGEST_AMOUNT };
   return {
     tier: "pool",
@@ -124,8 +143,9 @@ export interface SizeSwapInput {
   destinationHex: string;
   claimerHex?: string;
   assetHubParaId: number;
+  peopleParaId: number;
   /** The sale on Asset Hub, whose shape the XCM's fee depends on. */
-  sale: SaleRoute;
+  sale: ConversionRoute;
 }
 
 /** The swap that buys the PAS the XCM needs on the key: the existential deposit, which must
@@ -145,7 +165,9 @@ export async function sizeSwap(input: SizeSwapInput): Promise<SwapArgs> {
     sale: longestSale(input.sale),
     destinationHex: input.destinationHex,
     claimerHex: input.claimerHex ?? input.key.publicKeyHex,
+    originHex: input.key.publicKeyHex,
     assetHubParaId: input.assetHubParaId,
+    peopleParaId: input.peopleParaId,
   });
   const pasOut = ed + reserve;
   const quoted = cashInFor(pasOut, reserves);
@@ -184,7 +206,7 @@ export interface SizeXcmInput {
   assetHubParaId: number;
   peopleParaId: number;
   /** The sale on Asset Hub, as the hand-off froze it. */
-  sale: SaleRoute;
+  sale: ConversionRoute;
   /** How far below the quoted sale the Asset Hub price may move before the program fails there. */
   slippagePct: number;
 }
@@ -284,18 +306,60 @@ async function quoted(
 const lessHeadroom = (amount: bigint, slippagePct: number): bigint =>
   (amount * BigInt(Math.round((100 - slippagePct) * 100))) / 10_000n;
 
-/** The sale and its floors: each hop quoted now, less the headroom. All the CASH is sold but
- *  Asset Hub's execution fee, a few thousand units the earmark's refund covers. One headroom for
- *  the whole sale: a stable's floor is the two hop quote less it, so the hops share it and the
- *  arrival floor is the same figure. The teleport tier has no price to hold. */
-async function quoteSale(
-  assetHubApi: AssetHubApi,
-  route: SaleRoute,
-  cashOnKey: bigint,
-  slippagePct: number,
-): Promise<Sale> {
+export interface PriceSaleInput {
+  assetHubApi: AssetHubApi;
+  route: ConversionRoute;
+  /** All the CASH the XCM teleports. */
+  cashOnKey: bigint;
+  /** The CASH earmarked for Asset Hub's fees out of it. */
+  remoteFeesCash: bigint;
+  slippagePct: number;
+  /** The key's public key, whose account under People the PSM tier redeems as. */
+  originHex: string;
+  peopleParaId: number;
+}
+
+/** The sale and its figures, priced now. The pool tiers hold each hop to its quote less the
+ *  headroom; all the CASH is sold there but Asset Hub's execution fee, a few thousand units the
+ *  earmark's refund covers. One headroom for the whole sale: a stable's floor is the two hop
+ *  quote less it, so the hops share it and the arrival floor is the same figure. The PSM tier
+ *  redeems what travels less the earmark, at the fee rate the hand-off froze, as the key's own
+ *  account on Asset Hub. The teleport tier has no price to hold. */
+export async function priceSale(input: PriceSaleInput): Promise<Sale> {
+  const { assetHubApi, route, slippagePct } = input;
   if (route.tier === "teleport") return { tier: "teleport" };
-  const native = await quoted(assetHubApi, CASH_ON_ASSET_HUB, PEOPLE_NATIVE, cashOnKey, "the sale");
+  if (route.tier === "psm") {
+    const holder = await assetHubApi.apis.LocationToAccountApi.convert_location({
+      type: "V5",
+      value: originOnAssetHub(input.peopleParaId, input.originHex),
+    } as never);
+    if (!holder.success) {
+      throw new Error("withdraw sizing: Asset Hub cannot name the key's account");
+    }
+    const redeemAmount = input.cashOnKey - input.remoteFeesCash;
+    const call = await assetHubApi.tx.Psm.redeem({
+      internal_asset: CASH_ON_ASSET_HUB as never,
+      external_asset: STABLE_TOKENS[route.external].location as never,
+      internal_amount: redeemAmount,
+      max_fee: route.feeRate,
+    }).getEncodedData();
+    return {
+      tier: "psm",
+      external: route.external,
+      feeRate: route.feeRate,
+      redeemAmount,
+      externalOut: psmRedeemOut(redeemAmount, route.feeRate),
+      holderHex: toHex(AccountId().enc(holder.value as string)),
+      call,
+    };
+  }
+  const native = await quoted(
+    assetHubApi,
+    CASH_ON_ASSET_HUB,
+    PEOPLE_NATIVE,
+    input.cashOnKey,
+    "the sale",
+  );
   const minNativeOut = lessHeadroom(native, slippagePct);
   if (route.external === undefined) return { tier: "pool", minNativeOut };
   const stable = await quoted(
@@ -317,7 +381,15 @@ export async function sizeXcm(input: SizeXcmInput): Promise<XcmSizing> {
   const { peopleApi, assetHubApi, key } = input;
   const claimerHex = input.claimerHex ?? key.publicKeyHex;
   const remoteFeesCash = destinationEarmark(input.cashOnKey, ASSET_HUB_FEE_BUFFER_CASH);
-  const sale = await quoteSale(assetHubApi, input.sale, input.cashOnKey, input.slippagePct);
+  const sale = await priceSale({
+    assetHubApi,
+    route: input.sale,
+    cashOnKey: input.cashOnKey,
+    remoteFeesCash,
+    slippagePct: input.slippagePct,
+    originHex: key.publicKeyHex,
+    peopleParaId: input.peopleParaId,
+  });
 
   const base = (pasToWithdraw: bigint, payFeesPas: bigint): WithdrawXcmArgs => ({
     cashToTeleport: input.cashOnKey,
@@ -327,7 +399,9 @@ export async function sizeXcm(input: SizeXcmInput): Promise<XcmSizing> {
     sale,
     destinationHex: input.destinationHex,
     claimerHex,
+    originHex: key.publicKeyHex,
     assetHubParaId: input.assetHubParaId,
+    peopleParaId: input.peopleParaId,
   });
 
   // The transaction fee in PAS, for the exact call, with headroom. Left on the key for the
@@ -411,7 +485,7 @@ export async function dryRunOnAssetHub(
   peopleParaId: number,
   forwarded: unknown,
   destinationHex: string,
-  sale: SaleRoute,
+  sale: ConversionRoute,
 ): Promise<bigint> {
   const dr = await assetHubApi.apis.DryRunApi.dry_run_xcm(
     siblingOrigin(peopleParaId) as never,

@@ -13,8 +13,15 @@
 // fees in CASH through the pool, makes the sale the destination asks for in the holding, and
 // deposits everything to the destination account. The sale follows the on-ramp's tiers the other
 // way round: the pool sells the CASH for PAS, and for a stable sells that PAS again on the
-// stable's pool; the teleport tier makes no sale and lands the CASH as dotUSD. The program names
-// an asset claimer so a trap on Asset Hub is recoverable.
+// stable's pool; the PSM redeems the CASH for its stable one to one less the redemption fee; the
+// teleport tier makes no sale and lands the CASH as dotUSD. The program names an asset claimer
+// so a trap on Asset Hub is recoverable.
+//
+// The PSM redeem is a signed call, so the XCM keeps the key's origin across the hop: on Asset Hub
+// the origin is the key's account under People, which has an account of its own there. The CASH
+// to redeem is deposited to that account, the redeem runs as it, and the stable it receives is
+// withdrawn back into the holding. The fee refund and the PAS that travelled are then sold for the
+// stable too, so everything lands in one asset.
 //
 // CASH is keyed two ways: as People holds it for the calls that run on People, and as Asset Hub
 // holds it for the remote program, which is forwarded verbatim and so must speak Asset Hub's view.
@@ -22,7 +29,7 @@
 import { paseo_people_next } from "@polkadot-api/descriptors";
 import type { TypedApi } from "polkadot-api";
 import { TOKENS } from "@getsome/core";
-import { STABLE_TOKENS, type ConversionRoute, type Stable } from "@getsome/funding";
+import { permillMulCeil, STABLE_TOKENS, type ConversionRoute, type Stable } from "@getsome/funding";
 import { CASH_LOCATION } from "@getsome/people";
 import { PEOPLE_NATIVE } from "./paseo";
 
@@ -46,16 +53,23 @@ export type Sale =
   | { tier: "pool"; external?: undefined; minNativeOut: bigint }
   /** All the CASH for the native, then all the native for the stable, at least `minOut`. */
   | { tier: "pool"; external: Stable; minNativeOut: bigint; minOut: bigint }
+  /** `redeemAmount` of CASH through the PSM for `externalOut` of the stable, as the key's own
+   *  account on Asset Hub, `holderHex`, with the redeem call encoded for that chain. */
+  | {
+      tier: "psm";
+      external: Stable;
+      feeRate: number;
+      redeemAmount: bigint;
+      externalOut: bigint;
+      holderHex: string;
+      call: Uint8Array;
+    }
   /** No sale: the CASH lands as it is. */
   | { tier: "teleport" };
 
-/** The tiers a withdrawal can sell through today. The psm tier's redeem is not built yet. */
-export type SaleRoute = Exclude<ConversionRoute, { tier: "psm" }>;
-
-/** The sale route a hand-off names, or a throw for a tier this package cannot sell through. */
-export function saleRouteOf(route: ConversionRoute): SaleRoute {
-  if (route.tier === "psm") throw new Error("withdraw: the psm tier cannot be sold through yet");
-  return route;
+/** The stable a redeem of `cashIn` CASH pays out: the amount less the fee the PSM rounds up. */
+export function psmRedeemOut(cashIn: bigint, feeRate: number): bigint {
+  return cashIn - permillMulCeil(cashIn, feeRate);
 }
 
 const fungible = (id: unknown, value: bigint) => ({ id, fun: { type: "Fungible", value } });
@@ -76,6 +90,18 @@ const assetHubDest = (assetHubParaId: number) => ({
   interior: { type: "X1", value: { type: "Parachain", value: assetHubParaId } },
 });
 
+/** The key's origin as Asset Hub sees it: its account under People. */
+export const originOnAssetHub = (peopleParaId: number, originHex: string) => ({
+  parents: 1,
+  interior: {
+    type: "X2",
+    value: [
+      { type: "Parachain", value: peopleParaId },
+      { type: "AccountId32", value: { network: undefined, id: originHex } },
+    ],
+  },
+});
+
 /** Every unit of one asset in the holding. */
 const allOf = (id: unknown) => ({
   type: "Wild",
@@ -86,6 +112,16 @@ const allOf = (id: unknown) => ({
 const exchange = (give: unknown, want: unknown) => ({
   type: "ExchangeAsset",
   value: { give, want: [want], maximal: true },
+});
+
+const deposit = (assets: unknown, beneficiaryHex: string) => ({
+  type: "DepositAsset",
+  value: { assets, beneficiary: account(beneficiaryHex) },
+});
+
+const allCounted = (count: number) => ({
+  type: "Wild",
+  value: { type: "AllCounted", value: count },
 });
 
 export interface SwapArgs {
@@ -108,10 +144,39 @@ export function buildSwap(peopleApi: PeopleApi, args: SwapArgs) {
   } as never);
 }
 
-/** The program Asset Hub runs on arrival: claim hint, refund, the sale, deposit everything to the
- *  destination. Keyed as Asset Hub sees the assets. The deposit counts what the holding can carry
- *  by then: the PAS and CASH that travelled, plus the stable a second hop bought. */
+/** The program Asset Hub runs on arrival: claim hint, the sale, deposit everything to the
+ *  destination. Keyed as Asset Hub sees the assets. The pool tiers refund the fee surplus into
+ *  the sale; the PSM tier redeems a fixed amount as the key's account, then sells the surplus
+ *  and the PAS that travelled for the stable, so the deposit is one asset. Each deposit counts
+ *  what the holding can carry by then. */
 function remoteProgram(destinationHex: string, claimerHex: string, sale: Sale) {
+  const hints = {
+    type: "SetHints",
+    value: { hints: [{ type: "AssetClaimer", value: { location: account(claimerHex) } }] },
+  };
+  if (sale.tier === "psm") {
+    const stable = STABLE_TOKENS[sale.external].location;
+    return [
+      hints,
+      deposit(
+        { type: "Definite", value: [fungible(CASH_ON_ASSET_HUB, sale.redeemAmount)] },
+        sale.holderHex,
+      ),
+      {
+        type: "Transact",
+        value: {
+          origin_kind: { type: "SovereignAccount" },
+          fallback_max_weight: undefined,
+          call: sale.call,
+        },
+      },
+      { type: "WithdrawAsset", value: [fungible(stable, sale.externalOut)] },
+      { type: "RefundSurplus" },
+      exchange(allOf(CASH_ON_ASSET_HUB), fungible(NATIVE_ON_ASSET_HUB, 1n)),
+      exchange(allOf(NATIVE_ON_ASSET_HUB), fungible(stable, 1n)),
+      deposit(allCounted(2), destinationHex),
+    ];
+  }
   const hops =
     sale.tier === "teleport"
       ? []
@@ -127,19 +192,10 @@ function remoteProgram(destinationHex: string, claimerHex: string, sale: Sale) {
               ]),
         ];
   return [
-    {
-      type: "SetHints",
-      value: { hints: [{ type: "AssetClaimer", value: { location: account(claimerHex) } }] },
-    },
+    hints,
     { type: "RefundSurplus" },
     ...hops,
-    {
-      type: "DepositAsset",
-      value: {
-        assets: { type: "Wild", value: { type: "AllCounted", value: hops.length === 2 ? 3 : 2 } },
-        beneficiary: account(destinationHex),
-      },
-    },
+    deposit(allCounted(hops.length === 2 ? 3 : 2), destinationHex),
   ];
 }
 
@@ -158,7 +214,10 @@ export interface WithdrawXcmArgs {
   destinationHex: string;
   /** The account that may claim a trap on Asset Hub, public key hex. */
   claimerHex: string;
+  /** The key that signs the XCM, public key hex: the origin the PSM tier keeps across the hop. */
+  originHex: string;
   assetHubParaId: number;
+  peopleParaId: number;
   /** The XCM weight ceiling; defaults to WITHDRAW_XCM_MAX_WEIGHT. */
   maxWeight?: { ref_time: bigint; proof_size: bigint };
 }
@@ -178,11 +237,10 @@ export function withdrawMessage(args: WithdrawXcmArgs) {
             type: "Teleport",
             value: { type: "Definite", value: [cash(args.remoteFeesCash)] },
           },
-          preserve_origin: false,
+          // The PSM tier redeems as the key, so its origin travels; the others need none.
+          preserve_origin: args.sale.tier === "psm",
           // Both assets teleport: the PAS the fees leave and all the CASH.
-          assets: [
-            { type: "Teleport", value: { type: "Wild", value: { type: "AllCounted", value: 2 } } },
-          ],
+          assets: [{ type: "Teleport", value: allCounted(2) }],
           remote_xcm: remoteProgram(args.destinationHex, args.claimerHex, args.sale),
         },
       },
@@ -213,7 +271,9 @@ export function forwardedStandIn(args: WithdrawXcmArgs) {
         value:
           pasLeft > 0n ? [pas(pasLeft), cash(args.cashToTeleport)] : [cash(args.cashToTeleport)],
       },
-      { type: "ClearOrigin" },
+      args.sale.tier === "psm"
+        ? { type: "AliasOrigin", value: originOnAssetHub(args.peopleParaId, args.originHex) }
+        : { type: "ClearOrigin" },
       ...remoteProgram(args.destinationHex, args.claimerHex, args.sale),
       { type: "SetTopic", value: `0x${"00".repeat(32)}` },
     ],

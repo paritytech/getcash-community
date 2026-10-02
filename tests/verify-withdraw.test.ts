@@ -4,22 +4,23 @@
 // against the swap's expected outcome only when the key already holds PAS. Needs network, a
 // burner label the on-ramp production proof printed, and is not part of CI:
 //   VERIFY_WITHDRAW=1 WITHDRAW_BURNER=getcash-prod-proof-<ms> pnpm vitest run tests/verify-withdraw.test.ts
-// WITHDRAW_ASSET picks what lands: dot (the default), dotusd, usdt or usdc.
+// WITHDRAW_ASSET picks what lands: dot (the default), dotusd, usdt or usdc. A stable's sale is
+// decided as the page decides it, the PSM when it can serve and the pool otherwise.
 
 import { describe, expect, it } from "vitest";
 import { AccountId, createClient } from "polkadot-api";
 import { getWsProvider } from "polkadot-api/ws";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import { deriveKeypairWithSecret } from "@getsome/ephemeral";
-import { depositTokenOf, PASEO_ASSET_HUB_PARA_ID, PASEO_PEOPLE_PARA_ID } from "@getsome/funding";
-import { CASH_LOCATION } from "@getsome/people";
 import {
-  NeedsSwapError,
-  PASEO_PEOPLE_POOL_ACCOUNT,
-  sizeSwap,
-  sizeXcm,
-  type SaleRoute,
-} from "@getsome/withdraw";
+  chooseRoute,
+  depositTokenOf,
+  PASEO_ASSET_HUB_PARA_ID,
+  PASEO_PEOPLE_PARA_ID,
+  type DepositAsset,
+} from "@getsome/funding";
+import { CASH_LOCATION } from "@getsome/people";
+import { NeedsSwapError, PASEO_PEOPLE_POOL_ACCOUNT, sizeSwap, sizeXcm } from "@getsome/withdraw";
 
 const fmtCash = (v: bigint) => (Number(v) / 1e6).toFixed(6);
 const fmtPas = (v: bigint) => (Number(v) / 1e10).toFixed(6);
@@ -30,13 +31,13 @@ const toHex = (b: Uint8Array) =>
 const DESTINATION = "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5";
 /** The burner's entropy label, as the on-ramp production proof derives it. */
 const BURNER_LABEL = process.env.WITHDRAW_BURNER;
-const SALES: Record<string, SaleRoute> = {
-  dot: { tier: "pool" },
-  dotusd: { tier: "teleport" },
-  usdt: { tier: "pool", external: "USDT" },
-  usdc: { tier: "pool", external: "USDC" },
+const LANDINGS: Record<string, DepositAsset> = {
+  dot: "native",
+  dotusd: "dotUSD",
+  usdt: "USDT",
+  usdc: "USDC",
 };
-const SALE = SALES[process.env.WITHDRAW_ASSET ?? "dot"];
+const LANDING = LANDINGS[process.env.WITHDRAW_ASSET ?? "dot"];
 
 describe.runIf(process.env.VERIFY_WITHDRAW === "1")("live withdrawal sizing", () => {
   it("sizes the swap, and the XCM when the key holds PAS, and proves the XCM on both chains", async () => {
@@ -46,8 +47,9 @@ describe.runIf(process.env.VERIFY_WITHDRAW === "1")("live withdrawal sizing", ()
     const peopleApi = peC.getTypedApi(paseo_people_next);
     try {
       if (!BURNER_LABEL) throw new Error("set WITHDRAW_BURNER to a burner label holding CASH");
-      if (SALE === undefined) throw new Error("WITHDRAW_ASSET must be dot, dotusd, usdt or usdc");
-      const token = depositTokenOf(SALE);
+      if (LANDING === undefined) {
+        throw new Error("WITHDRAW_ASSET must be dot, dotusd, usdt or usdc");
+      }
       const entropy = new Uint8Array(32);
       new TextEncoder().encodeInto(BURNER_LABEL, entropy);
       const key = deriveKeypairWithSecret(entropy);
@@ -56,10 +58,21 @@ describe.runIf(process.env.VERIFY_WITHDRAW === "1")("live withdrawal sizing", ()
           ?.balance ?? 0n;
       const pasOnKey =
         (await peopleApi.query.System.Account.getValue(key.address))?.data?.free ?? 0n;
-      console.log(
-        `key ${key.address} holds ${fmtCash(cashOnKey)} CASH and ${fmtPas(pasOnKey)} PAS on People; lands ${token.symbol}`,
-      );
       expect(cashOnKey).toBeGreaterThan(0n);
+      const route =
+        LANDING === "native"
+          ? { tier: "pool" as const }
+          : LANDING === "dotUSD"
+            ? { tier: "teleport" as const }
+            : await chooseRoute(assetHubApi, {
+                direction: "redeem",
+                internalAmount: cashOnKey,
+                deposit: LANDING,
+              });
+      const token = depositTokenOf(route);
+      console.log(
+        `key ${key.address} holds ${fmtCash(cashOnKey)} CASH and ${fmtPas(pasOnKey)} PAS on People; lands ${token.symbol} through ${JSON.stringify(route)}`,
+      );
 
       const swap = await sizeSwap({
         peopleApi,
@@ -68,7 +81,8 @@ describe.runIf(process.env.VERIFY_WITHDRAW === "1")("live withdrawal sizing", ()
         cashBalance: cashOnKey,
         destinationHex: toHex(AccountId().enc(DESTINATION)),
         assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
-        sale: SALE,
+        peopleParaId: PASEO_PEOPLE_PARA_ID,
+        sale: route,
       });
       console.log(`swap: at most ${fmtCash(swap.cashInMax)} CASH -> ${fmtPas(swap.pasOut)} PAS`);
       expect(swap.cashInMax).toBeLessThan(cashOnKey);
@@ -87,7 +101,7 @@ describe.runIf(process.env.VERIFY_WITHDRAW === "1")("live withdrawal sizing", ()
         destinationHex: toHex(AccountId().enc(DESTINATION)),
         assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
         peopleParaId: PASEO_PEOPLE_PARA_ID,
-        sale: SALE,
+        sale: route,
         slippagePct: 5,
       }).catch((e: unknown) => {
         if (e instanceof NeedsSwapError) return null;
@@ -106,11 +120,19 @@ describe.runIf(process.env.VERIFY_WITHDRAW === "1")("live withdrawal sizing", ()
         `  teleports:      ${fmtCash(args.cashToTeleport)} CASH + ${fmtPas(args.pasToWithdraw - args.payFeesPas)} PAS`,
       );
       console.log(`  AH earmark:     ${fmtCash(args.remoteFeesCash)} CASH`);
+      let floor = 1n;
       if (sale.tier === "pool") {
         console.log(`  price floor:    ${fmtPas(sale.minNativeOut)} PAS`);
+        floor = sale.minNativeOut;
         if (sale.external !== undefined) {
           console.log(`  then at least:  ${fmtUnits(sale.minOut, 6)} ${sale.external}`);
+          floor = sale.minOut;
         }
+      } else if (sale.tier === "psm") {
+        console.log(
+          `  PSM redeem:     ${fmtCash(sale.redeemAmount)} CASH -> ${fmtUnits(sale.externalOut, 6)} ${sale.external} at ${sale.feeRate} ppm`,
+        );
+        floor = sale.externalOut;
       } else {
         console.log("  no sale: the CASH lands as dotUSD");
       }
@@ -122,12 +144,6 @@ describe.runIf(process.env.VERIFY_WITHDRAW === "1")("live withdrawal sizing", ()
       expect(args.cashToTeleport).toBe(cashOnKey);
       expect(args.pasToWithdraw + sizing.txFeePasReserved).toBe(pasOnKey);
       // What lands clears the floor the program holds the sale to.
-      const floor =
-        sale.tier === "teleport"
-          ? 1n
-          : sale.external === undefined
-            ? sale.minNativeOut
-            : sale.minOut;
       expect(sizing.landed).toBeGreaterThanOrEqual(floor);
     } finally {
       ahC.destroy();

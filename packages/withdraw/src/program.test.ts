@@ -8,7 +8,8 @@ import {
   buildSwap,
   buildWithdrawXcm,
   forwardedStandIn,
-  saleRouteOf,
+  originOnAssetHub,
+  psmRedeemOut,
   WITHDRAW_XCM_MAX_WEIGHT,
   withdrawMessage,
   type PeopleApi,
@@ -58,7 +59,9 @@ const XCM = {
   sale: SALE,
   destinationHex: `0x${"aa".repeat(32)}`,
   claimerHex: `0x${"07".repeat(32)}`,
+  originHex: `0x${"0b".repeat(32)}`,
   assetHubParaId: 1500,
+  peopleParaId: 1502,
 };
 
 /** The remote program of the message for `sale`. */
@@ -71,6 +74,9 @@ function remoteProgramFor(sale: Sale): Instruction[] {
 
 const depositCount = (deposit: Instruction) =>
   (deposit.value as { assets: { value: { value: number } } }).assets.value.value;
+const beneficiaryOf = (deposit: Instruction) =>
+  (deposit.value as { beneficiary: { interior: { value: { value: { id: string } } } } }).beneficiary
+    .interior.value.value.id;
 
 describe("withdrawal transactions", () => {
   it("swaps CASH, within a cap, for exactly the PAS the fees need, credited to the key without keeping it alive", () => {
@@ -196,15 +202,65 @@ describe("withdrawal transactions", () => {
     expect(depositCount(program[2]!)).toBe(2);
   });
 
-  it("refuses the psm tier, which has no sale built yet", () => {
-    expect(saleRouteOf({ tier: "pool", external: "USDT" })).toEqual({
-      tier: "pool",
+  it("redeems through the PSM as the key's own account, then sells the surplus and the PAS for the stable", () => {
+    const call = Uint8Array.from([0x3b, 0x01, 0xaa]);
+    const sale: Sale = {
+      tier: "psm",
       external: "USDT",
+      feeRate: 5_000,
+      redeemAmount: 4_950_000n,
+      externalOut: 4_925_250n,
+      holderHex: `0x${"0d".repeat(32)}`,
+      call,
+    };
+    const transfer = withdrawMessage({ ...XCM, sale }).value[2]!.value as {
+      preserve_origin: boolean;
+      remote_xcm: Instruction[];
+    };
+    // The key's origin travels, so Asset Hub runs the redeem as its account there.
+    expect(transfer.preserve_origin).toBe(true);
+    expect(transfer.remote_xcm.map((i) => i.type)).toEqual([
+      "SetHints",
+      "DepositAsset",
+      "Transact",
+      "WithdrawAsset",
+      "RefundSurplus",
+      "ExchangeAsset",
+      "ExchangeAsset",
+      "DepositAsset",
+    ]);
+    const [, held, transact, withdraw, , first, second, deposit] = transfer.remote_xcm;
+    const holding = held!.value as { assets: { type: string; value: Fungible[] } };
+    expect(holding.assets.type).toBe("Definite");
+    expect(holding.assets.value[0]!.fun.value).toBe(sale.redeemAmount);
+    expect(beneficiaryOf(held!)).toBe(sale.holderHex);
+    expect(transact!.value).toEqual({
+      origin_kind: { type: "SovereignAccount" },
+      fallback_max_weight: undefined,
+      call,
     });
-    expect(saleRouteOf({ tier: "teleport" })).toEqual({ tier: "teleport" });
-    expect(() => saleRouteOf({ tier: "psm", external: "USDT", feeRate: 5_000 })).toThrow(
-      /psm tier/,
-    );
+    const withdrawn = (withdraw!.value as Fungible[])[0]!;
+    expect(withdrawn.fun.value).toBe(sale.externalOut);
+    expect((withdrawn.id as AssetLocation).interior.value![1]).toEqual({
+      type: "GeneralIndex",
+      value: 1984n,
+    });
+    // The surplus and the PAS are dust, sold at any price.
+    expect((first!.value as Exchange).want[0]!.fun.value).toBe(1n);
+    expect((second!.value as Exchange).want[0]!.fun.value).toBe(1n);
+    expect(beneficiaryOf(deposit!)).toBe(XCM.destinationHex);
+    expect(depositCount(deposit!)).toBe(2);
+    // The stand-in keeps the origin the way People forwards it, and clears it for the rest.
+    expect(forwardedStandIn({ ...XCM, sale }).value[3]).toEqual({
+      type: "AliasOrigin",
+      value: originOnAssetHub(XCM.peopleParaId, XCM.originHex),
+    });
+    expect(forwardedStandIn(XCM).value[3]).toEqual({ type: "ClearOrigin" });
+  });
+
+  it("pays a redeem out less the fee the PSM rounds up", () => {
+    expect(psmRedeemOut(4_950_000n, 5_000)).toBe(4_925_250n);
+    expect(psmRedeemOut(1_000_001n, 5_000)).toBe(1_000_001n - 5_001n);
   });
 
   it("stands in for the forwarded message with the fee remainder travelling as PAS", () => {

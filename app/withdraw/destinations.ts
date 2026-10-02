@@ -1,12 +1,12 @@
 // Where a withdrawal can go: the networks the picker lists, the tokens on each, and for each
-// destination how an address is checked, what the worker sells the CASH for on Asset Hub, and
-// where that lands. Asset Hub itself is the direct destination, reached by the XCM alone, in any
-// of the tokens the on-ramp takes from Polkadot. The Chainflip networks are listed as the design
-// shows them; whether a row can be picked for an amount is the floor store's call.
+// destination how an address is checked, what the CASH lands as on Asset Hub, and where. Asset
+// Hub itself is the direct destination, reached by the XCM alone, in any of the tokens the
+// on-ramp takes from Polkadot. The Chainflip networks are listed as the design shows them;
+// whether a row can be picked for an amount is the floor store's call.
 
 import { AccountId } from "polkadot-api";
 import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
-import type { SaleRoute } from "@getsome/withdraw";
+import type { DepositAsset } from "@getsome/funding";
 import type { WithdrawalRailState } from "../funding/requests/model";
 import { networkIcon, tokenIcon } from "../utils/icons";
 import { SOURCE_CHAINS, sourceIdFor } from "~~/lib/config";
@@ -19,10 +19,10 @@ export interface WithdrawDestination {
   chainLabel: string;
   asset: string;
   rail: WithdrawalRailState["provider"];
-  /** The sale the worker makes on Asset Hub: for Asset Hub itself the token picked, through
-   *  the tier the on-ramp converts it on the other way; the native for a provider, which takes
-   *  PAS from the key. */
-  sale: SaleRoute;
+  /** What the CASH lands as on Asset Hub, named as the on-ramp names a deposit: the token picked
+   *  for Asset Hub itself, the native for a provider, which takes PAS from the key. The sale that
+   *  gets there is decided at quote time from it. */
+  landing: DepositAsset;
   validateAddress(address: string): boolean;
 }
 
@@ -52,24 +52,28 @@ export function assetHubAccountHex(address: string): `0x${string}` {
   return `0x${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
-const assetHubDestination = (id: string, asset: string, sale: SaleRoute): WithdrawDestination =>
+const assetHubDestination = (
+  id: string,
+  asset: string,
+  landing: DepositAsset,
+): WithdrawDestination =>
   Object.freeze({
     id,
     chain: ASSET_HUB_CHAIN,
     chainLabel: "Asset Hub",
     asset,
     rail: "direct",
-    sale,
+    landing,
     validateAddress: isAssetHubAddress,
   });
 
 /** Asset Hub's own destinations, the tokens the on-ramp takes from Polkadot in its order, each
  *  under the direct source id of that token. */
 const ASSET_HUB_DESTINATIONS: readonly WithdrawDestination[] = Object.freeze([
-  assetHubDestination("dot-assethub", "DOT", { tier: "pool" }),
-  assetHubDestination("dotusd-assethub", "dotUSD", { tier: "teleport" }),
-  assetHubDestination("usdt-assethub", "USDT", { tier: "pool", external: "USDT" }),
-  assetHubDestination("usdc-assethub", "USDC", { tier: "pool", external: "USDC" }),
+  assetHubDestination("dot-assethub", "DOT", "native"),
+  assetHubDestination("dotusd-assethub", "dotUSD", "dotUSD"),
+  assetHubDestination("usdt-assethub", "USDT", "USDT"),
+  assetHubDestination("usdc-assethub", "USDC", "USDC"),
 ]);
 
 /** The Chainflip destinations, one per source the on-ramp knows, each checked with the same
@@ -86,7 +90,7 @@ function chainflipDestinations(chain: string, assets: readonly string[]): Withdr
         chainLabel: chain,
         asset,
         rail: "chainflip" as const,
-        sale: { tier: "pool" as const },
+        landing: "native" as const,
         validateAddress: (address: string) => config.validateRefundAddress(address.trim()),
       }),
     ];

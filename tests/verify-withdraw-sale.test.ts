@@ -1,7 +1,7 @@
 // Live check of the sale per token on Paseo Asset Hub next: the program People forwards for a
-// withdrawal is built from a stand-in, as the sizing prices it, and dry run on Asset Hub for each
-// token the destination can take. Nothing is signed and no key is needed. Prints what lands in
-// each token. Needs network and is not part of CI:
+// withdrawal is priced and built as the sizing does it, and dry run on Asset Hub for each token
+// the destination can take, the PSM redeem included. Nothing is signed and no key is needed.
+// Prints what lands in each token. Needs network and is not part of CI:
 //   VERIFY_WITHDRAW_SALE=1 pnpm vitest run tests/verify-withdraw-sale.test.ts
 
 import { describe, expect, it } from "vitest";
@@ -9,11 +9,12 @@ import { AccountId, createClient } from "polkadot-api";
 import { getWsProvider } from "polkadot-api/ws";
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import {
+  chooseRoute,
   depositTokenOf,
   destinationEarmark,
   PASEO_ASSET_HUB_PARA_ID,
   PASEO_PEOPLE_PARA_ID,
-  STABLE_TOKENS,
+  type ConversionRoute,
 } from "@getsome/funding";
 import {
   ASSET_HUB_FEE_BUFFER_CASH,
@@ -21,8 +22,8 @@ import {
   dryRunOnAssetHub,
   forwardedStandIn,
   PEOPLE_NATIVE,
+  priceSale,
   type Sale,
-  type SaleRoute,
 } from "@getsome/withdraw";
 
 const fmtUnits = (v: bigint, decimals: number) => (Number(v) / 10 ** decimals).toFixed(6);
@@ -30,18 +31,12 @@ const toHex = (b: Uint8Array) =>
   `0x${Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("")}`;
 /** A funded Asset Hub account, so a native deposit clears the existential deposit. */
 const DESTINATION = "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5";
+/** The key the XCM is signed by; only its origin matters here. */
+const KEY_HEX = `0x${"07".repeat(32)}`;
 /** What a 5 CASH withdrawal carries by the time it reaches Asset Hub. */
 const CASH_TO_TELEPORT = 5_000_000n;
 const PAS_TRAVELLING = 700_000_000n;
 const SLIPPAGE_PCT = 5;
-const SALES: Array<[string, SaleRoute]> = [
-  ["DOT", { tier: "pool" }],
-  ["dotUSD", { tier: "teleport" }],
-  ["USDT", { tier: "pool", external: "USDT" }],
-  ["USDC", { tier: "pool", external: "USDC" }],
-];
-
-const lessHeadroom = (amount: bigint) => (amount * BigInt(100 - SLIPPAGE_PCT)) / 100n;
 
 const fungible = (id: unknown, value: bigint) => ({ id, fun: { type: "Fungible", value } });
 const cash = (v: bigint) => fungible(CASH_ON_ASSET_HUB, v);
@@ -62,46 +57,44 @@ function asAssetHubSeesIt(standIn: ReturnType<typeof forwardedStandIn>, earmark:
   };
 }
 
+/** The floor the program holds the sale to, in the landing asset. */
+const floorOf = (sale: Sale): bigint => {
+  if (sale.tier === "teleport") return 1n;
+  if (sale.tier === "psm") return sale.externalOut;
+  return sale.external === undefined ? sale.minNativeOut : sale.minOut;
+};
+
 describe.runIf(process.env.VERIFY_WITHDRAW_SALE === "1")("the sale per token on Asset Hub", () => {
   it("completes the forwarded program for every token and credits the destination in it", async () => {
     const client = createClient(getWsProvider("wss://paseo-asset-hub-next-rpc.polkadot.io"));
     const api = client.getTypedApi(paseo_next_v2);
     const destinationHex = toHex(AccountId().enc(DESTINATION));
-    const quote = async (give: unknown, want: unknown, amountIn: bigint) => {
-      const out = await api.apis.AssetConversionApi.quote_price_exact_tokens_for_tokens(
-        give as never,
-        want as never,
-        amountIn,
-        true,
-      );
-      if (out === undefined) throw new Error("Asset Hub cannot quote the sale");
-      return out;
-    };
     try {
-      for (const [name, route] of SALES) {
-        // The floors as the sizing sets them: each hop's quote on the whole CASH less the headroom.
-        let sale: Sale;
-        if (route.tier === "teleport") {
-          sale = { tier: "teleport" };
-        } else {
-          const native = await quote(CASH_ON_ASSET_HUB, PEOPLE_NATIVE, CASH_TO_TELEPORT);
-          if (route.external === undefined) {
-            sale = { tier: "pool", minNativeOut: lessHeadroom(native) };
-          } else {
-            const stable = await quote(
-              PEOPLE_NATIVE,
-              STABLE_TOKENS[route.external].location,
-              native,
-            );
-            sale = {
-              tier: "pool",
-              external: route.external,
-              minNativeOut: lessHeadroom(native),
-              minOut: lessHeadroom(stable),
-            };
-          }
-        }
+      // The routes as the page decides them: USDT through the PSM when it can serve, and the
+      // pool for the same token so both sales are proven.
+      const usdt = await chooseRoute(api, {
+        direction: "redeem",
+        internalAmount: CASH_TO_TELEPORT,
+        deposit: "USDT",
+      });
+      const routes: Array<[string, ConversionRoute]> = [
+        ["DOT", { tier: "pool" }],
+        ["dotUSD", { tier: "teleport" }],
+        [`USDT ${usdt.tier}`, usdt],
+        ["USDT pool", { tier: "pool", external: "USDT" }],
+        ["USDC", { tier: "pool", external: "USDC" }],
+      ];
+      for (const [name, route] of routes) {
         const earmark = destinationEarmark(CASH_TO_TELEPORT, ASSET_HUB_FEE_BUFFER_CASH);
+        const sale = await priceSale({
+          assetHubApi: api,
+          route,
+          cashOnKey: CASH_TO_TELEPORT,
+          remoteFeesCash: earmark,
+          slippagePct: SLIPPAGE_PCT,
+          originHex: KEY_HEX,
+          peopleParaId: PASEO_PEOPLE_PARA_ID,
+        });
         const forwarded = asAssetHubSeesIt(
           forwardedStandIn({
             cashToTeleport: CASH_TO_TELEPORT,
@@ -111,7 +104,9 @@ describe.runIf(process.env.VERIFY_WITHDRAW_SALE === "1")("the sale per token on 
             sale,
             destinationHex,
             claimerHex: destinationHex,
+            originHex: KEY_HEX,
             assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
+            peopleParaId: PASEO_PEOPLE_PARA_ID,
           }),
           earmark,
         );
@@ -123,14 +118,9 @@ describe.runIf(process.env.VERIFY_WITHDRAW_SALE === "1")("the sale per token on 
           route,
         );
         const token = depositTokenOf(route);
-        const floor =
-          sale.tier === "teleport"
-            ? 1n
-            : sale.external === undefined
-              ? sale.minNativeOut
-              : sale.minOut;
+        const floor = floorOf(sale);
         console.log(
-          `${name.padEnd(6)} ${fmtUnits(CASH_TO_TELEPORT, 6)} CASH lands ${fmtUnits(landed, token.decimals)} ${token.symbol}, floor ${fmtUnits(floor, token.decimals)}`,
+          `${name.padEnd(10)} ${fmtUnits(CASH_TO_TELEPORT, 6)} CASH lands ${fmtUnits(landed, token.decimals)} ${token.symbol}, floor ${fmtUnits(floor, token.decimals)}`,
         );
         expect(landed).toBeGreaterThanOrEqual(floor);
       }

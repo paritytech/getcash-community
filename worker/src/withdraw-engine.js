@@ -11,7 +11,6 @@ import {
   RailFailedError,
   railTickOnce,
   readDestinationBalance,
-  saleRouteOf,
   withdrawTickOnce,
   WithdrawRejectedError,
 } from "@getsome/withdraw";
@@ -61,7 +60,7 @@ const saveJobs = () => store.save();
  *   v: 1, sessionId, label,                  // label: the entropy label the surface used
  *   keyAddress, keyPublicKeyHex,             // the key the surface showed and the purse pays
  *   amount, destination, landingHex, rail,   // what the surface asked for; kept for its records
- *   tier, external?,                         // the sale on Asset Hub the surface froze
+ *   tier, external?, feeRate?,               // the sale on Asset Hub the surface froze
  *   channel?,                                // the provider's channel the page opened
  *   assetHubGenesis, peopleGenesis, peopleParaId, assetHubParaId, poolAccount, slippagePct,
  *   paymentExpiresAt: number|null,
@@ -124,10 +123,10 @@ function newRecord(input, nowMs) {
   }
   if (!poolAccount) throw new Error("startWithdraw: the pool account is required");
   if (!(slippagePct > 0)) throw new Error("startWithdraw: slippagePct must be positive");
-  // The sale is the surface's decision, taken at confirm; a hand-off without one, or naming a
-  // tier this engine cannot sell through, is refused here rather than guessed at.
+  // The sale is the surface's decision, taken at confirm; a hand-off without one, or with a psm
+  // route missing its fee rate, is refused here rather than guessed at.
   if (typeof input.tier !== "string") throw new Error("startWithdraw: the sale tier is required");
-  const sale = saleRouteOf(recordedRoute(input));
+  const sale = recordedRoute(input);
   return {
     v: RECORD_V,
     sessionId,
@@ -476,7 +475,7 @@ async function tickRecord(record, nowMs) {
   }
   // The sale is an input to this engine, never a decision it makes: a job sells through the tier
   // the surface froze on it, and lands the asset that tier ends in.
-  const sale = saleRouteOf(recordedRoute(record));
+  const sale = recordedRoute(record);
   const landingAssetId = depositTokenOf(sale).assetHubId;
   const key = await keypairFor(record.label);
   const ahClient = await connectChain(record.assetHubGenesis, "asset hub");

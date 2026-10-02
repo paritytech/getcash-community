@@ -16,7 +16,7 @@ import {
   type FundingStep,
   type Stable,
 } from "@getsome/funding";
-import type { SaleRoute, WithdrawStep } from "@getsome/withdraw";
+import type { WithdrawStep } from "@getsome/withdraw";
 import type { RequestRef } from "../../utils/request-index";
 import type { FundingProgressSnapshot } from "../progress";
 import { CRYPTO_SOURCE_ID, isDirectSourceId, isMeldSourceId, meldMethodFor } from "../source-ids";
@@ -396,11 +396,13 @@ export interface WithdrawalHandoffPayload {
   /** The Asset Hub account the funds land on: the rail's channel, or the destination itself. */
   landingHex: string;
   rail: WithdrawalRailState["provider"];
-  /** The sale on Asset Hub, decided from the destination at confirm and frozen here; the worker
-   *  consumes it and never re-decides. The pool sells for the native, and for `external` sells
-   *  that again for the stable; the teleport lands the CASH as dotUSD. */
-  tier: SaleRoute["tier"];
+  /** The sale on Asset Hub, decided from the destination at quote time and frozen here; the
+   *  worker consumes it and never re-decides. The pool sells for the native, and for `external`
+   *  sells that again for the stable; the psm redeems for `external` at `feeRate`, the Permill
+   *  read at quote time that the call's `max_fee` repeats; the teleport lands the CASH as dotUSD. */
+  tier: ConversionRoute["tier"];
   external?: Stable;
+  feeRate?: number;
   assetHubGenesis: string;
   peopleGenesis: string;
   peopleParaId: number;
@@ -411,6 +413,19 @@ export interface WithdrawalHandoffPayload {
   /** The provider's channel, opened on the page at confirm; the worker pays it. Present for
    *  every rail but `direct`. */
   channel?: WithdrawalChannel;
+}
+
+/** The sale's fields as the hand-off carries them, spread from the route decided at quote time. */
+export function handoffSaleOf(
+  route: ConversionRoute,
+): Pick<WithdrawalHandoffPayload, "tier" | "external" | "feeRate"> {
+  if (route.tier === "psm") {
+    return { tier: "psm", external: route.external, feeRate: route.feeRate };
+  }
+  if (route.tier === "pool" && route.external !== undefined) {
+    return { tier: "pool", external: route.external };
+  }
+  return { tier: route.tier };
 }
 
 /** A provider's channel for one withdrawal: where the key pays, and what the quote promised. */

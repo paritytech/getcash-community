@@ -27,13 +27,9 @@ describe("withdrawal destinations", () => {
       ["usdt-assethub", "USDT", "direct"],
       ["usdc-assethub", "USDC", "direct"],
     ]);
-    // Each token sells through the tier the on-ramp converts it on the other way.
-    expect(assetHub.map((d) => d.sale)).toEqual([
-      { tier: "pool" },
-      { tier: "teleport" },
-      { tier: "pool", external: "USDT" },
-      { tier: "pool", external: "USDC" },
-    ]);
+    // Each lands its token, named the way the on-ramp names a deposit, so the quote decides the
+    // sale with the on-ramp's own rule.
+    expect(assetHub.map((d) => d.landing)).toEqual(["native", "dotUSD", "USDT", "USDC"]);
     const others = WITHDRAW_NETWORKS.slice(1);
     expect(others.map((network) => network.label)).toEqual([
       "Bitcoin",
@@ -44,9 +40,7 @@ describe("withdrawal destinations", () => {
     const provided = others.flatMap((network) => network.destinations);
     expect(provided.every((d) => d.rail === "chainflip")).toBe(true);
     // A provider takes the native from the key, whatever it delivers.
-    expect(provided.every((d) => d.sale.tier === "pool" && d.sale.external === undefined)).toBe(
-      true,
-    );
+    expect(provided.every((d) => d.landing === "native")).toBe(true);
   });
 
   it("finds a network and a destination by id", () => {

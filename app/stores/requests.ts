@@ -32,6 +32,7 @@ import {
   WORKER_STALE_MS,
   buyerPaid,
   effectiveSourceId,
+  handoffSaleOf,
   isDirectDeposit,
   isFinished,
   isTopUp,
@@ -434,6 +435,7 @@ type WithdrawJob = {
   rail?: string;
   tier?: unknown;
   external?: unknown;
+  feeRate?: unknown;
   assetHubGenesis?: string;
   peopleGenesis?: string;
   peopleParaId?: number;
@@ -609,11 +611,10 @@ function withdrawHandoffOf(job: WithdrawJob): WithdrawalHandoffPayload | undefin
   // The sale as the worker keeps it.
   let sale: ConversionRoute;
   try {
-    sale = recordedRoute({ tier: job.tier, external: job.external });
+    sale = recordedRoute({ tier: job.tier, external: job.external, feeRate: job.feeRate });
   } catch {
     return undefined;
   }
-  if (sale.tier === "psm") return undefined;
   return {
     label: job.label,
     keyAddress: job.keyAddress,
@@ -626,8 +627,7 @@ function withdrawHandoffOf(job: WithdrawJob): WithdrawalHandoffPayload | undefin
     },
     landingHex: job.landingHex,
     rail,
-    tier: sale.tier,
-    ...(sale.tier === "pool" && sale.external !== undefined ? { external: sale.external } : {}),
+    ...handoffSaleOf(sale),
     assetHubGenesis: job.assetHubGenesis,
     peopleGenesis: job.peopleGenesis,
     peopleParaId: job.peopleParaId,

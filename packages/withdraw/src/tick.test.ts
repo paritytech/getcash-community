@@ -5,10 +5,10 @@
 import { AccountId } from "polkadot-api";
 import { describe, expect, it } from "vitest";
 import { TOKENS } from "@getsome/core";
+import { permillMulCeil, type ConversionRoute } from "@getsome/funding";
 import { SWAP_HEADROOM_PCT, XCM_TX_FEE_HEADROOM_PCT } from "./fees";
 import { PASEO_PEOPLE_POOL_ACCOUNT } from "./paseo";
 import { cashInFor } from "./pool";
-import type { SaleRoute } from "./program";
 import {
   freshWithdrawTickState,
   landingFloor,
@@ -44,6 +44,10 @@ const DESTINATION_HEX = `0x${"aa".repeat(32)}`;
 const DESTINATION_SS58 = AccountId(42).dec(DESTINATION);
 /** What the destination holds before any withdrawal reaches it. */
 const DESTINATION_PAS = 3n * ED;
+/** The key's account under People as Asset Hub names it, and the redeem call encoded there. */
+const HOLDER_SS58 = AccountId(42).dec(new Uint8Array(32).fill(0x0d));
+const REDEEM_CALL = Uint8Array.from([0x3b, 0x01, 0xaa]);
+const PSM_FEE_RATE = 5_000;
 
 type Instruction = { type: string; value?: unknown };
 type Fungible = { id: unknown; fun: { type: string; value: bigint } };
@@ -292,7 +296,11 @@ function scriptedWorld(
   };
 
   const assetHubApi = {
+    tx: { Psm: { redeem: () => ({ getEncodedData: async () => REDEEM_CALL }) } },
     apis: {
+      LocationToAccountApi: {
+        convert_location: async () => ({ success: true, value: HOLDER_SS58 }),
+      },
       AssetConversionApi: {
         // CASH, local to Asset Hub, sells for the native; the native sells for a stable.
         quote_price_exact_tokens_for_tokens: async (
@@ -312,7 +320,20 @@ function scriptedWorld(
           const hops = forwarded.value.filter((i) => i.type === "ExchangeAsset");
           const native = pas + cash * AH_RATE;
           let events: unknown[];
-          if (hops.length === 0) {
+          if (forwarded.value.some((i) => i.type === "Transact")) {
+            // The PSM tier: the amount deposited to the holder is redeemed for what the program
+            // withdraws back, and the surplus and the PAS are sold for the stable on top.
+            const held = (
+              forwarded.value.find((i) => i.type === "DepositAsset")!.value as {
+                assets: { value: Fungible[] };
+              }
+            ).assets.value[0]!.fun.value;
+            const out = (
+              forwarded.value.find((i) => i.type === "WithdrawAsset")!.value as Fungible[]
+            )[0]!.fun.value;
+            state.lastDryRunLanded = out + ((cash - held) * AH_RATE + pas) / STABLE_PLANCK;
+            events = [deposited(1984, state.lastDryRunLanded)];
+          } else if (hops.length === 0) {
             state.lastDryRunLanded = cash;
             events = [deposited(TOKENS.CASH.assetHubId, cash), deposited(null, pas)];
           } else if (hops.length === 1) {
@@ -358,7 +379,7 @@ async function drive(
   world: World,
   ticks: number,
   state: WithdrawTickState = freshWithdrawTickState(),
-  sale: SaleRoute = { tier: "pool" },
+  sale: ConversionRoute = { tier: "pool" },
 ) {
   const steps: WithdrawStep[] = [];
   const transients: string[] = [];
@@ -396,16 +417,19 @@ const submitsOf = (world: World) => ({
   execute: world.state.submits.find((s) => s.call === "execute"),
 });
 
-/** The XCM that went out: the CASH it withdrew, its earmark, and the program Asset Hub runs. */
+/** The XCM that went out: the CASH it withdrew, its earmark, whether the key's origin travels,
+ *  and the program Asset Hub runs. */
 function sentXcm(world: World) {
   const message = (submitsOf(world).execute!.args as ExecuteArgs).message;
   const transfer = message.value[2]!.value as {
     remote_fees: { value: { value: Fungible[] } };
+    preserve_origin: boolean;
     remote_xcm: Instruction[];
   };
   return {
     cashSold: (message.value[0]!.value as Fungible[])[1]!.fun.value,
     earmark: transfer.remote_fees.value.value[0]!.fun.value,
+    preserveOrigin: transfer.preserve_origin,
     program: transfer.remote_xcm,
   };
 }
@@ -456,6 +480,40 @@ describe("withdrawTickOnce", () => {
     expect(run.state.expectedLanding).toBe(world.state.lastDryRunLanded);
     expect(run.state.expectedLanding).toBeLessThan(nativeQuote / 1_000n);
     expect(world.state.destinationPas).toBe(DESTINATION_PAS + world.state.lastDryRunLanded);
+  });
+
+  it("redeems through the PSM as the key's account on Asset Hub, and reads the arrival in the stable", async () => {
+    const world = scriptedWorld();
+    const run = await drive(world, 3, freshWithdrawTickState(), {
+      tier: "psm",
+      external: "USDT",
+      feeRate: PSM_FEE_RATE,
+    });
+    expect(run.steps).toEqual(["swap", "convert", "done"]);
+    const { cashSold, earmark, preserveOrigin, program } = sentXcm(world);
+    expect(preserveOrigin).toBe(true);
+    expect(program.map((i) => i.type)).toEqual([
+      "SetHints",
+      "DepositAsset",
+      "Transact",
+      "WithdrawAsset",
+      "RefundSurplus",
+      "ExchangeAsset",
+      "ExchangeAsset",
+      "DepositAsset",
+    ]);
+    // What travels less the earmark is redeemed, at the fee rate the hand-off froze, as the
+    // account Asset Hub named for the key; the call is the one Asset Hub encoded.
+    const redeemAmount = cashSold - earmark;
+    const held = (program[1]!.value as { assets: { value: Fungible[] } }).assets.value[0]!;
+    expect(held.fun.value).toBe(redeemAmount);
+    expect((program[2]!.value as { call: Uint8Array }).call).toBe(REDEEM_CALL);
+    const out = (program[3]!.value as Fungible[])[0]!.fun.value;
+    expect(out).toBe(redeemAmount - permillMulCeil(redeemAmount, PSM_FEE_RATE));
+    // The landing is in USDT units: the redeem plus the dust sold on top.
+    expect(run.state.expectedLanding).toBe(world.state.lastDryRunLanded);
+    expect(run.state.expectedLanding).toBeGreaterThan(out);
+    expect(run.state.expectedLanding).toBeLessThan(out + out / 10n);
   });
 
   it("lands the CASH as dotUSD with no sale on the teleport tier, and reads only that deposit", async () => {

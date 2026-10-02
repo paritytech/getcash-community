@@ -60,7 +60,7 @@ vi.mock("../lib/chainflip-backend", () => ({
   }),
 }));
 
-import { quoteDirectReceive, quoteWithdrawOffers } from "../lib/withdraw-live";
+import { chooseWithdrawRoute, quoteDirectReceive, quoteWithdrawOffers } from "../lib/withdraw-live";
 
 const PROVIDERS = WITHDRAW_NETWORKS.flatMap((n) => n.destinations).filter(
   (d) => d.rail !== "direct",
@@ -75,14 +75,22 @@ function reset() {
 }
 
 describe("what a direct withdrawal lands per token", () => {
-  it("sells once for the native, twice for a stable, and not at all for dotUSD", async () => {
+  it("sells once for the native, twice for a stable, redeems at the PSM's rate, and lands dotUSD as it is", async () => {
     const amount = 21_000_000n;
     const sold = amount - 450_000n;
     expect(await quoteDirectReceive(amount, { tier: "pool" })).toBe(sold * 2n);
     expect(await quoteDirectReceive(amount, { tier: "pool", external: "USDC" })).toBe(sold * 4n);
+    expect(
+      await quoteDirectReceive(amount, { tier: "psm", external: "USDT", feeRate: 5_000 }),
+    ).toBe(sold - (sold * 5_000n + 999_999n) / 1_000_000n);
     expect(await quoteDirectReceive(amount, { tier: "teleport" })).toBe(sold);
     // An amount the fees eat whole lands nothing on any tier.
     expect(await quoteDirectReceive(400_000n, { tier: "teleport" })).toBe(0n);
+  });
+
+  it("decides the native and dotUSD without a chain read", async () => {
+    expect(await chooseWithdrawRoute(21_000_000n, "native")).toEqual({ tier: "pool" });
+    expect(await chooseWithdrawRoute(21_000_000n, "dotUSD")).toEqual({ tier: "teleport" });
   });
 });
 
