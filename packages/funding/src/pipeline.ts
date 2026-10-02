@@ -105,15 +105,15 @@ export const DEFAULT_REMOTE_FEE_BUFFER = 1_000n;
  *  Fallback when the caller passes no live estimate; 0.02 at 10 decimals. Pool tier only: the
  *  PSM tier's fees come from its batch's live estimate. */
 export const DEFAULT_KEEP_NATIVE_FOR_FEES = 200_000_000n;
-/** Deposit headroom ABOVE the live quote, percent, where it is not computed: the stable pool
- *  tier's ask, and the native pool tier when the pool cannot be read or a hand-off carries no
- *  `slippagePct` (headroomFor in the app sizes the native pool's per request). Applied once, at
- *  sizing: the gate checks the plain quote, and the surplus is claimed with the rest. The PSM's
- *  rate does not move. */
+/** Deposit headroom ABOVE the live quote, percent, for a card or bank deposit where it is not
+ *  computed: the stable pool tier, and the native pool tier when the pool cannot be read
+ *  (headroomFor in the app sizes the native pool's per request). Also what the worker applies
+ *  when a hand-off carries no `slippagePct`. Applied once, at sizing: the gate checks the plain
+ *  quote, and the surplus is claimed with the rest. The PSM's rate does not move. */
 export const DEFAULT_SLIPPAGE_PCT = 5;
-/** The fixed headroom for a deposit the buyer sends straight to the burner on Asset Hub, on either
- *  pool tier. The funds land as soon as they are sent, so the pool has only that long to move, not
- *  the minutes or hours a swap or a bank transfer takes. */
+/** The fixed headroom for a crypto deposit, direct or through Chainflip, on either pool tier. Its
+ *  funds land on the burner either way, so one that arrives short is handled there rather than
+ *  over-asked up front. */
 export const DIRECT_SLIPPAGE_PCT = 2;
 /** PSM refusals of the mint before the run is held. */
 export const MAX_PSM_REFUSALS = 3;

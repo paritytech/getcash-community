@@ -8,6 +8,7 @@ import { getWsProvider } from "polkadot-api/ws";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import {
   DEFAULT_SLIPPAGE_PCT,
+  DIRECT_SLIPPAGE_PCT,
   absorbableFlow,
   discoverPool,
   withdrawalBounds,
@@ -114,9 +115,12 @@ describe.runIf(process.env.SLIPPAGE_REPORT === "1")("slippage report", () => {
 
       console.log(`\n=== THE THREE SITES ===`);
 
-      // A: the on-ramp buy on Asset Hub, from headroomFor without the live dispatch fee.
+      // A: the on-ramp buy on Asset Hub, from headroomFor without the live dispatch fee. Crypto is
+      // not computed: it takes the fixed DIRECT_SLIPPAGE_PCT.
+      console.log(
+        `\n  A  on-ramp:  crypto, direct or through Chainflip: fixed ${DIRECT_SLIPPAGE_PCT}%`,
+      );
       for (const [rail, exposure] of [
-        ["crypto (DOT direct)", "minutes"],
         ["card (Meld)", "hours"],
         ["bank transfer (Meld)", "days"],
       ] as Array<[string, Exposure]>) {

@@ -1084,7 +1084,7 @@ export const useSessionStore = defineStore("session", () => {
             const [
               { connectChain, ASSET_HUB },
               { sizeNativeBudget, PASEO_UNDERLYING_ASSET_ID, DIRECT_SLIPPAGE_PCT },
-              { estimatePublicFundingSizing, exposureForSource, FALLBACK_FUNDING_SIZING },
+              { estimatePublicFundingSizing, FALLBACK_FUNDING_SIZING },
             ] = await Promise.all([
               import("~~/lib/host-chain"),
               import("@getsome/funding"),
@@ -1099,7 +1099,6 @@ export const useSessionStore = defineStore("session", () => {
               estimatePublicFundingSizing({
                 settleAmount: settleForPricing,
                 probeAddress: DEV_RECIPIENT,
-                exposure: exposureForSource(sourceId),
               }),
             ).catch(() => FALLBACK_FUNDING_SIZING);
             sizing = priced;
@@ -1113,9 +1112,8 @@ export const useSessionStore = defineStore("session", () => {
                   settleAmount: settleForPricing,
                   remoteFeeBuffer: priced.remoteFeeBuffer,
                   keepNativeForFees: priced.keepNativeForFees,
-                  // A direct deposit keeps its fixed headroom and the other rails take the pool's,
-                  // as the hosted sizing does.
-                  slippagePct: direct === null ? priced.slippagePct : DIRECT_SLIPPAGE_PCT,
+                  // Crypto keeps the fixed headroom, direct or not, as the hosted sizing does.
+                  slippagePct: DIRECT_SLIPPAGE_PCT,
                 }))(),
             );
           } catch (e) {

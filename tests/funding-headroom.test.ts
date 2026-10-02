@@ -15,34 +15,25 @@ const AH: OrientedReserves = { in: 411_831_067_975_701n, out: 106_378_021_598n }
 const CASH = (n: number) => BigInt(Math.round(n * 1e6));
 const FEE = 3_000n;
 
-const at = (reserves: OrientedReserves, buy: bigint, sourceId: string) =>
-  headroomFor({ reserves, buyTarget: buy, exposure: exposureForSource(sourceId), feePpm: FEE });
+const at = (reserves: OrientedReserves, buy: bigint, sourceId: "meld-card" | "meld-bank") =>
+  headroomFor({ reserves, buyTarget: buy, exposure: exposureForSource(sourceId)!, feePpm: FEE });
 
 describe("exposureForSource", () => {
-  it("maps each rail to how long its deposit is in flight", () => {
+  it("maps each fiat rail to how long its deposit is in flight", () => {
     expect(exposureForSource("meld-bank")).toBe("days");
     expect(exposureForSource("meld-card")).toBe("hours");
-    expect(exposureForSource("btc")).toBe("minutes");
-    expect(exposureForSource("eth")).toBe("minutes");
-    expect(exposureForSource("dot-assethub")).toBe("minutes");
   });
 
-  it("treats an unknown source as a fast rail, still no lower than the pool's floor", () => {
-    expect(exposureForSource("something-new")).toBe("minutes");
-    const decision = at(AH, CASH(100), "something-new");
-    const floor = derivedFloorPct({
-      reserves: AH,
-      tradeOut: CASH(100),
-      competingTrade: CASH(100),
-      feePpm: FEE,
-    });
-    expect(decision.pct).toBeGreaterThanOrEqual(floor.pct);
+  it("leaves every crypto source, and any unknown one, to the fixed headroom", () => {
+    for (const source of ["dot-assethub", "usdt-assethub", "btc", "eth", "something-new"]) {
+      expect(exposureForSource(source)).toBeNull();
+    }
   });
 });
 
 describe("headroomFor", () => {
   it("never returns less than the pool's own floor", () => {
-    for (const source of ["btc", "meld-card", "meld-bank"]) {
+    for (const source of ["meld-card", "meld-bank"] as const) {
       for (const n of [10, 50, 100, 500, 1000]) {
         const floor = derivedFloorPct({
           reserves: AH,
@@ -80,13 +71,13 @@ describe("headroomFor", () => {
       const bare = headroomFor({
         reserves: pool,
         buyTarget: CASH(n),
-        exposure: "minutes",
+        exposure: "hours",
         feePpm: FEE,
       });
       const cushioned = headroomFor({
         reserves: pool,
         buyTarget: CASH(n),
-        exposure: "minutes",
+        exposure: "hours",
         feePpm: FEE,
         dispatchNative: DISPATCH,
       });
@@ -116,7 +107,7 @@ describe("headroomFor", () => {
 
   it("asks more for a longer window", () => {
     // On today's pool, where neither value is at the cap or the floor.
-    const fast = at(AH, CASH(100), "btc").pct;
+    const fast = at(AH, CASH(100), "meld-card").pct;
     const slow = at(AH, CASH(100), "meld-bank").pct;
     expect(fast).toBeGreaterThan(2);
     expect(slow).toBeLessThan(10);
@@ -158,13 +149,13 @@ describe("headroomFor", () => {
       expect(d.pct).toBeGreaterThan(0);
       expect(d.pct).toBeLessThanOrEqual(MAX_SLIPPAGE_PCT);
     }
-    // A fast rail at an ordinary size is comfortably inside the pool's capacity.
-    expect(at(AH, CASH(100), "btc").unavailable).toBe(false);
+    // A card at an ordinary size is comfortably inside the pool's capacity.
+    expect(at(AH, CASH(100), "meld-card").unavailable).toBe(false);
   });
 
   it("takes the LP fee it is given rather than assuming one", () => {
     const withFee = (feePpm: bigint) =>
-      headroomFor({ reserves: AH, buyTarget: CASH(100), exposure: "minutes", feePpm }).pct;
+      headroomFor({ reserves: AH, buyTarget: CASH(100), exposure: "hours", feePpm }).pct;
     expect(withFee(30_000n)).toBeGreaterThan(withFee(0n));
     expect(withFee(30_000n)).toBeLessThan(10);
   });

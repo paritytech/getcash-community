@@ -4,13 +4,7 @@
 //   MIXED_REPORT=1 pnpm vitest run tests/slippage-mixed-load.test.ts   # prints the tables
 
 import { describe, expect, it } from "vitest";
-import {
-  amountIn,
-  amountOut,
-  slippageFor,
-  type Exposure,
-  type OrientedReserves,
-} from "@getsome/funding";
+import { amountIn, amountOut, DIRECT_SLIPPAGE_PCT, type OrientedReserves } from "@getsome/funding";
 import {
   ASSET_HUB_FEE_BUFFER_CASH,
   DEFAULT_WITHDRAW_SLIPPAGE_PCT,
@@ -37,7 +31,6 @@ const AH_EXEC_FEE_CASH = ASSET_HUB_FEE_BUFFER_CASH;
 /** The fee PAS sizeSwap buys on Paseo, 0.1041559 PAS (ED plus the XCM fee). It costs about
  *  0.42 CASH; do not read that figure as PAS. */
 const FEE_SWAP_PAS = 1_041_559_000n;
-const TYPICAL_CASH = CASH(100);
 
 const scale = (r: { pas: bigint; cash: bigint }, m: number) => ({
   pas: (r.pas * BigInt(Math.round(m * 1000))) / 1000n,
@@ -98,8 +91,7 @@ class World {
   }
 }
 
-type Request =
-  { kind: "buy"; cash: bigint; exposure: Exposure } | { kind: "withdraw"; cash: bigint };
+type Request = { kind: "buy"; cash: bigint } | { kind: "withdraw"; cash: bigint };
 
 type Result =
   | { kind: "buy"; outcome: "cleared" | "stalled"; overPaid: number }
@@ -107,20 +99,14 @@ type Result =
 
 /** Sizes every request at the current head, then executes them in order. */
 function runPass(world: World, requests: Request[]): Result[] {
-  // Buys skip headroomFor's 2% floor, so on deep pools they get less headroom than production.
   const sized = requests.map((r) => {
     if (r.kind === "buy") {
+      // Buys are crypto deposits, asked with the fixed headroom as production does.
       const quote = amountIn(r.cash, world.ah, FEE);
-      const pctFor = slippageFor({
-        reserves: world.ah,
-        tradeOut: r.cash,
-        exposure: r.exposure,
-        referenceTrade: TYPICAL_CASH,
-        competingTrade: TYPICAL_CASH,
-        feePpm: FEE,
-      });
       const deposit =
-        quote === null ? 0n : (quote * BigInt(Math.round((100 + pctFor.pct) * 100))) / 10_000n;
+        quote === null
+          ? 0n
+          : (quote * BigInt(Math.round((100 + DIRECT_SLIPPAGE_PCT) * 100))) / 10_000n;
       return { req: r, deposit };
     }
     const quoted = amountOut(r.cash, world.sale, FEE) ?? 0n;
@@ -187,12 +173,9 @@ describe("mixed load across both pools", () => {
     const allBuys: Request[] = Array.from({ length: n }, () => ({
       kind: "buy",
       cash: CASH(100),
-      exposure: "minutes",
     }));
     const half: Request[] = Array.from({ length: n }, (_, i) =>
-      i % 2 === 0
-        ? { kind: "buy", cash: CASH(100), exposure: "minutes" }
-        : { kind: "withdraw", cash: CASH(100) },
+      i % 2 === 0 ? { kind: "buy", cash: CASH(100) } : { kind: "withdraw", cash: CASH(100) },
     );
     runPass(oneWay, allBuys);
     runPass(mixed, half);
@@ -220,9 +203,7 @@ describe("mixed load across both pools", () => {
         const p = scale(PE, m);
         const w = new World({ in: a.pas, out: a.cash }, { in: p.cash, out: p.pas });
         const reqs: Request[] = Array.from({ length: 8 }, () =>
-          r() < 0.5
-            ? { kind: "buy", cash: sizeFrom(r), exposure: "minutes" }
-            : { kind: "withdraw", cash: sizeFrom(r) },
+          r() < 0.5 ? { kind: "buy", cash: sizeFrom(r) } : { kind: "withdraw", cash: sizeFrom(r) },
         );
         const out = runPass(w, reqs);
         expect(count(out, "trapped")).toBe(0);
@@ -264,7 +245,7 @@ describe("mixed load across both pools", () => {
           const w = new World({ in: a.pas, out: a.cash }, { in: p.cash, out: p.pas });
           const reqs: Request[] = Array.from({ length: 8 }, () =>
             r() < 0.5
-              ? { kind: "buy", cash: sizeFrom(r), exposure: "minutes" }
+              ? { kind: "buy", cash: sizeFrom(r) }
               : { kind: "withdraw", cash: sizeFrom(r) },
           );
           for (const o of runPass(w, reqs)) {
@@ -284,11 +265,7 @@ describe("mixed load across both pools", () => {
       for (const [label, build] of [
         [
           "12 buys",
-          () =>
-            Array.from(
-              { length: 12 },
-              () => ({ kind: "buy", cash: CASH(100), exposure: "minutes" }) as Request,
-            ),
+          () => Array.from({ length: 12 }, () => ({ kind: "buy", cash: CASH(100) }) as Request),
         ],
         [
           "12 withdrawals",
@@ -302,7 +279,7 @@ describe("mixed load across both pools", () => {
               { length: 12 },
               (_, i) =>
                 (i % 2 === 0
-                  ? { kind: "buy", cash: CASH(100), exposure: "minutes" }
+                  ? { kind: "buy", cash: CASH(100) }
                   : { kind: "withdraw", cash: CASH(100) }) as Request,
             ),
         ],

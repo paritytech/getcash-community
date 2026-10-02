@@ -44,7 +44,6 @@ import {
   DIRECT_SLIPPAGE_PCT,
   directAssetName,
   type FundingStep,
-  isManualSourceId,
   isStablePoolRoute,
   MANUAL_SOURCE_IDS,
   MANUAL_SOURCES,
@@ -1125,9 +1124,10 @@ export async function createCoinageSession(
     settleAmount: args.amount,
     probeAddress: burnerKey.address,
   };
-  // A direct deposit lands as soon as it is sent, so its ask carries less headroom than a swap or
-  // a bank transfer, which give the pool longer to move.
-  const slippagePct = isManualSourceId(args.sourceId) ? DIRECT_SLIPPAGE_PCT : DEFAULT_SLIPPAGE_PCT;
+  // Crypto, direct or through Chainflip, keeps the fixed headroom on either pool tier. Card and
+  // bank take the pool's on the native tier, and the default where it is not computed.
+  const exposure = exposureForSource(args.sourceId);
+  const slippagePct = exposure === null ? DIRECT_SLIPPAGE_PCT : DEFAULT_SLIPPAGE_PCT;
   let sizing: FundingSizing;
   let budget: bigint;
   if (args.route.tier === "psm") {
@@ -1164,16 +1164,12 @@ export async function createCoinageSession(
     const pool = await stage(
       "funding sizing estimate",
       20_000,
-      // The rail decides how long the deposit is exposed.
-      estimateFundingSizing({ ...sizingArgs, exposure: exposureForSource(args.sourceId) }),
+      estimateFundingSizing({ ...sizingArgs, exposure }),
     ).catch(() => null);
     const keepNativeForFees = pool?.keepNativeForFees ?? DEFAULT_KEEP_NATIVE_FOR_FEES;
     const remoteFeeBuffer = pool?.remoteFeeBuffer ?? DEFAULT_REMOTE_FEE_BUFFER;
-    // A direct deposit keeps its fixed headroom; the other rails take the pool's, and the default
-    // when the chain cannot be read, as the worker does.
-    const poolSlippagePct = isManualSourceId(args.sourceId)
-      ? slippagePct
-      : (pool?.slippagePct ?? DEFAULT_SLIPPAGE_PCT);
+    // A failed read falls back to the headroom above, as the worker does.
+    const poolSlippagePct = pool?.slippagePct ?? slippagePct;
     const poolUnavailable = pool?.poolUnavailable ?? false;
     // Refuse only a quote the caller marks fresh: a missing flow slot could also be a failed read.
     if (poolUnavailable && args.refuseUnavailablePool === true) {

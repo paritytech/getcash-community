@@ -11,6 +11,7 @@ import {
   amountIn,
   amountOut,
   derivedFloorPct,
+  DIRECT_SLIPPAGE_PCT,
   type OrientedReserves,
 } from "@getsome/funding";
 
@@ -132,18 +133,23 @@ function capacity(run: (n: number) => boolean, limit = 4096): number {
 }
 
 describe("several of our own requests in flight at once", () => {
-  it("site A: the shipped crypto headroom clears the queue it is sized for, and less stalls sooner", () => {
+  it("site A: the shipped card headroom clears the queue it is sized for, and less stalls sooner", () => {
     // A stall is a delay, not a loss: the buyer keeps the deposit and waits for the price.
     const reserves: OrientedReserves = { in: AH.pas, out: AH.cash };
-    const queue = ADVERSE_FLOW_MULTIPLE.minutes;
+    const queue = ADVERSE_FLOW_MULTIPLE.hours;
     const pct = headroomFor({
       reserves,
       buyTarget: CASH(100),
-      exposure: "minutes",
+      exposure: "hours",
       feePpm: FEE,
     }).pct;
     expect(concurrentBuys(reserves, CASH(100), pct, queue).stalledAt).toBeNull();
     expect(concurrentBuys(reserves, CASH(100), 0.5, queue).stalledAt).not.toBeNull();
+    // Crypto's fixed 2% fits a shorter queue on today's pool: a deposit behind it waits on the
+    // burner for the price instead of being over-asked up front.
+    expect(
+      concurrentBuys(reserves, CASH(100), DIRECT_SLIPPAGE_PCT, queue).stalledAt,
+    ).not.toBeNull();
   });
 
   it("site B: a tighter bound traps an earlier sale in the queue", () => {

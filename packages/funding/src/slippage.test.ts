@@ -23,7 +23,7 @@ const PEOPLE: OrientedReserves = { in: 4_013_999_606n, out: 9_965_227_563_804n }
 const DEEP: OrientedReserves = { in: AH.in * 24n, out: AH.out * 24n };
 
 const CASH = (n: number) => BigInt(Math.round(n * 1e6));
-const EXPOSURES = ["instant", "minutes", "hours", "days"] as const;
+const EXPOSURES = ["instant", "hours", "days"] as const;
 
 describe("the pallet's curve", () => {
   it("matches the chain's own quote on the People pool", () => {
@@ -93,8 +93,7 @@ describe("slippageFor", () => {
     // Without the market move, which is not ordered by window.
     const at = (exposure: (typeof EXPOSURES)[number]) =>
       slippageFor({ reserves: DEEP, tradeOut: CASH(50), exposure, marketMovePct: 0 }).pct;
-    expect(at("instant")).toBeLessThan(at("minutes"));
-    expect(at("minutes")).toBeLessThan(at("hours"));
+    expect(at("instant")).toBeLessThan(at("hours"));
     expect(at("hours")).toBeLessThan(at("days"));
   });
 

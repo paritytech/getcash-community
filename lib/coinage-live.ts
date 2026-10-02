@@ -255,7 +255,7 @@ async function lostRequestFees(
           ? fees.estimateStableFundingSizing({ ...args, route })
           : route.tier === "teleport"
             ? fees.estimateTeleportFundingSizing(args)
-            : fees.estimateFundingSizing(args),
+            : fees.estimateFundingSizing({ ...args, exposure: fees.exposureForSource(sourceId) }),
     );
     return sizing === null ? defaults : handoffFees(sizing);
   } catch (e) {

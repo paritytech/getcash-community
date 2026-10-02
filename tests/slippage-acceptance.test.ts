@@ -91,7 +91,6 @@ function lcg(seed: number) {
 /** Assumed third-party flow per exposure class, in typical 100 CASH trades. */
 const FLOW_BAND: Record<Exposure, { trades: number[]; label: string }> = {
   instant: { trades: [0, 0.5, 1, 2, 4], label: "one tick (~6s) to one block window" },
-  minutes: { trades: [0, 2, 5, 10, 20], label: "a crypto deposit, minutes" },
   hours: { trades: [0, 5, 15, 30, 60], label: "a card purchase, hours" },
   days: { trades: [0, 10, 30, 75, 150], label: "a bank transfer, up to 3 days" },
 };
@@ -248,7 +247,8 @@ function runSiteC(input: {
 const typical = CASH(100);
 
 describe("site A, on-ramp: a moving pool while the rail delivers", () => {
-  const exposures: Exposure[] = ["minutes", "hours", "days"];
+  // Card and bank: crypto takes the fixed DIRECT_SLIPPAGE_PCT, not a computed headroom.
+  const exposures: Exposure[] = ["hours", "days"];
 
   it("the shipped 5% clears the 'days' band up to the flow it absorbs", () => {
     // 5% absorbs about 25 typical trades of adverse flow on this pool.

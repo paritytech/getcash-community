@@ -69,7 +69,7 @@ describe.runIf(process.env.PROD_PROOF === "1")("production proof", () => {
       const burner = deriveKeypairWithSecret(entropy);
       console.log(`BURNER ${burner.address}  entropy=${toHex(entropy)}`);
 
-      // Size the deposit as the app does, for a direct payment that arrives within minutes.
+      // Size the deposit as the app does for a direct payment, with the fixed crypto headroom.
       const sizing = await estimateFundingSizing({
         ahClient: ahC,
         peopleClient: peC,
@@ -77,11 +77,9 @@ describe.runIf(process.env.PROD_PROOF === "1")("production proof", () => {
         peopleParaId: PASEO_PEOPLE_PARA_ID,
         settleAmount: SETTLE,
         probeAddress: burner.address,
-        exposure: "minutes",
+        exposure: null,
       });
       if (!sizing) throw new Error("sizing failed");
-      // The app refuses a fresh quote here rather than take the deposit.
-      if (sizing.poolUnavailable) throw new Error("the pool cannot carry this purchase");
       console.log(
         `SIZING remoteFeeBuffer=${cash(sizing.remoteFeeBuffer)} CASH  keepNative=${pas(sizing.keepNativeForFees)} PAS  headroom=${sizing.slippagePct}%`,
       );

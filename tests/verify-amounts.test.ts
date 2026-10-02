@@ -59,6 +59,8 @@ describe.runIf(process.env.VERIFY_AMOUNTS === "1")("live amount check", () => {
           peopleParaId: PASEO_PEOPLE_PARA_ID,
           settleAmount: settle,
           probeAddress: from,
+          // Only the fees are used here; the headroom is swept below.
+          exposure: null,
         });
         if (!sizing) throw new Error("sizing failed");
         const buyTarget = settle + sizing.remoteFeeBuffer;

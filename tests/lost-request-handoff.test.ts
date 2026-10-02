@@ -11,7 +11,11 @@ const fees = vi.hoisted(() => ({
   estimateStableFundingSizing: vi.fn(),
   estimateTeleportFundingSizing: vi.fn(),
 }));
-vi.mock("../lib/funding-fees", () => fees);
+vi.mock("../lib/funding-fees", async (importOriginal) => ({
+  ...fees,
+  exposureForSource: (await importOriginal<typeof import("../lib/funding-fees")>())
+    .exposureForSource,
+}));
 vi.mock("../lib/host-chain", () => ({
   ASSET_HUB: { id: "ah" },
   PEOPLE: { id: "people" },
@@ -126,6 +130,10 @@ describe("lostRequestHandoff", () => {
       keepNativeForFees: "150000000",
     });
     expect(native.quotedDeposit).toBeUndefined();
+    // Crypto is sized with the fixed headroom, not the pool's.
+    expect(fees.estimateFundingSizing).toHaveBeenCalledWith(
+      expect.objectContaining({ exposure: null }),
+    );
   });
 
   it("falls back to the worker's defaults when a read fails, the pool sizing gives up, or there is nothing to size", async () => {

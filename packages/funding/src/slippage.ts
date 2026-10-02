@@ -8,12 +8,11 @@ export interface OrientedReserves {
   out: bigint;
 }
 
-/** How long a quote has to survive before it executes. */
+/** How long a quote has to survive before it executes. A crypto deposit has none: it takes the
+ *  fixed DIRECT_SLIPPAGE_PCT instead. */
 export type Exposure =
   /** Sized and submitted in the same tick: the off-ramp sale and the fee swap. */
   | "instant"
-  /** A direct crypto deposit, usually sent within minutes of the quote. */
-  | "minutes"
   /** A card purchase through a fiat provider. */
   | "hours"
   /** A bank transfer through a fiat provider, up to a few days. */
@@ -21,11 +20,11 @@ export type Exposure =
 
 /**
  * How many typical trades may land ahead of ours in each exposure window. A multiple of a typical
- * trade, not a share of the pool, so the percentage shrinks as the pool deepens.
+ * trade, not a share of the pool, so the percentage shrinks as the pool deepens. A judgement of
+ * how many requests can share the window, checked in the offline simulations, not measured.
  */
 export const ADVERSE_FLOW_MULTIPLE: Record<Exposure, number> = {
   instant: 6,
-  minutes: 12,
   hours: 20,
   days: 32,
 };
@@ -60,13 +59,11 @@ const BAND_SHIFT_PCT = 1.25;
  * with it, and it does not shrink with depth.
  *
  *   instant: 150% a year over 13 blocks at 4 sigma, since a failed sale traps the withdrawal.
- *   minutes: 80% a year over 30 minutes at 2.5 sigma, since a failed deposit only waits.
  *   hours: the band drift, since the market move cancels on a card purchase.
  *   days: the band drift plus EUR and GBP against the dollar, 8% a year over 3 days at 2.5 sigma.
  */
 export const MARKET_MOVE_PCT: Record<Exposure, number> = {
   instant: marketMovePct({ sigmaPerYear: 1.5, windowSeconds: 13 * 6, z: 4 }),
-  minutes: marketMovePct({ sigmaPerYear: 0.8, windowSeconds: 30 * 60, z: 2.5 }),
   hours: BAND_SHIFT_PCT,
   days: BAND_SHIFT_PCT + marketMovePct({ sigmaPerYear: 0.08, windowSeconds: 3 * 86_400, z: 2.5 }),
 };
