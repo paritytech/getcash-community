@@ -19,6 +19,12 @@ vi.mock("../lib/host-payments", () => ({
   subscribePaymentStatus: vi.fn(),
 }));
 
+// The fee estimate reads People's pool; here it is the 0.45 CASH the figures below assume.
+vi.mock("@getsome/withdraw", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@getsome/withdraw")>()),
+  estimateDirectFeesCash: async () => 450_000n,
+}));
+
 /** A pool where one CASH unit sells for two planck, and the reverse. Counts its reverse quotes. */
 const poolReverseQuotes = { count: 0 };
 vi.mock("../lib/host-chain", () => ({
@@ -66,7 +72,7 @@ const PROVIDERS = WITHDRAW_NETWORKS.flatMap((n) => n.destinations).filter(
   (d) => d.rail !== "direct",
 );
 const CASH = 50_000_000n; // 50 CASH
-/** 50 CASH less the 0.45 CASH of fees sells for twice as many planck, less 6% headroom. */
+/** 50 CASH less the scripted 0.45 CASH of fees sells for twice as many planck, less 6% headroom. */
 const SELLABLE = (49_550_000n * 2n * 94n) / 100n;
 
 function reset() {

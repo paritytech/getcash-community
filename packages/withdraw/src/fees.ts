@@ -38,6 +38,7 @@ import {
 import { PEOPLE_NATIVE, PEOPLE_TX_OPTIONS } from "./paseo";
 import { cashInFor, type PoolReserves } from "./pool";
 import {
+  buildSwap,
   buildWithdrawXcm,
   CASH_ON_ASSET_HUB,
   forwardedStandIn,
@@ -179,6 +180,50 @@ export async function sizeSwap(input: SizeSwapInput): Promise<SwapArgs> {
     );
   }
   return { keyAddress: input.key.address, pasOut, cashInMax };
+}
+
+export interface EstimateDirectFeesInput {
+  peopleApi: PeopleApi;
+  /** Any account on People; the fee estimates need one to be asked for. */
+  address: string;
+  /** The People pool's account, whose balances are the reserves. */
+  poolAccount: string;
+  assetHubParaId: number;
+  peopleParaId: number;
+  /** The sale on Asset Hub, whose shape the XCM's fee depends on. */
+  sale: ConversionRoute;
+}
+
+/** What a direct withdrawal costs in CASH before the sale, priced now for the summary: the swap
+ *  that buys the fee PAS, the existential deposit plus the XCM's fee reserve at the pool's price,
+ *  the swap's own fee at that price, and Asset Hub's fee buffer. On the safe side: the buffer is
+ *  mostly refunded and the PAS left after People's fees ends up in the landing asset, which only
+ *  a funded key's dry run can measure. */
+export async function estimateDirectFeesCash(input: EstimateDirectFeesInput): Promise<bigint> {
+  const { peopleApi, address } = input;
+  const [ed, reserves] = await Promise.all([
+    peopleApi.constants.Balances.ExistentialDeposit(),
+    readPoolReserves(peopleApi, input.poolAccount),
+  ]);
+  const { reserve } = await xcmTxFeeReserve(peopleApi, address, {
+    cashToTeleport: LONGEST_AMOUNT,
+    pasToWithdraw: LONGEST_AMOUNT,
+    payFeesPas: LONGEST_AMOUNT,
+    remoteFeesCash: LONGEST_AMOUNT,
+    sale: longestSale(input.sale),
+    destinationHex: `0x${"00".repeat(32)}`,
+    claimerHex: `0x${"00".repeat(32)}`,
+    originHex: `0x${"00".repeat(32)}`,
+    assetHubParaId: input.assetHubParaId,
+    peopleParaId: input.peopleParaId,
+  });
+  const pasOut = ed + reserve;
+  const swapFee = await buildSwap(peopleApi, {
+    keyAddress: address,
+    pasOut,
+    cashInMax: LONGEST_AMOUNT,
+  }).getEstimatedFees(address, PEOPLE_TX_OPTIONS as never);
+  return cashInFor(pasOut, reserves) + cashInFor(swapFee, reserves) + ASSET_HUB_FEE_BUFFER_CASH;
 }
 
 /** One sizing of the XCM: the transaction to submit and what it will do. */

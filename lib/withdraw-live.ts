@@ -26,6 +26,7 @@ import {
   ASSET_HUB_FEE_BUFFER_CASH,
   CASH_ON_ASSET_HUB,
   DEFAULT_WITHDRAW_SLIPPAGE_PCT,
+  estimateDirectFeesCash,
   PASEO_PEOPLE_POOL_ACCOUNT,
   PEOPLE_NATIVE,
   psmRedeemOut,
@@ -106,9 +107,33 @@ export async function probeWithdrawKey(
   return { address, cash: account?.balance ?? 0n };
 }
 
-/** The CASH the fees take from a direct withdrawal before the sale on Asset Hub, as measured on
- *  Paseo: the People swap for the fee PAS, about 0.42 CASH, and Asset Hub's execution fee. */
-const DIRECT_FEES_CASH = 450_000n;
+/** How long a fee estimate serves before People is read again. */
+const FEES_FRESH_MS = 60_000;
+const feesByTier = new Map<ConversionRoute["tier"], { at: number; fees: Promise<bigint> }>();
+
+/** The CASH the fees take from a direct withdrawal before the sale on Asset Hub, priced now on
+ *  People and kept for a minute: the swap that buys the fee PAS, its own fee and Asset Hub's
+ *  buffer, as the worker will size them. An estimate for the summary, on the safe side. */
+export async function directFeesCash(sale: ConversionRoute): Promise<bigint> {
+  const cached = feesByTier.get(sale.tier);
+  if (cached !== undefined && Date.now() - cached.at < FEES_FRESH_MS) return cached.fees;
+  const fees = (async () => {
+    const { connectChain, PEOPLE } = await import("./host-chain");
+    const api = (await connectChain(PEOPLE)).getTypedApi(paseo_people_next);
+    return estimateDirectFeesCash({
+      peopleApi: api,
+      address: PASEO_PEOPLE_POOL_ACCOUNT,
+      poolAccount: PASEO_PEOPLE_POOL_ACCOUNT,
+      assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
+      peopleParaId: PASEO_PEOPLE_PARA_ID,
+      sale,
+    });
+  })();
+  feesByTier.set(sale.tier, { at: Date.now(), fees });
+  // A read that failed is not kept; the next quote asks again.
+  fees.catch(() => feesByTier.delete(sale.tier));
+  return fees;
+}
 
 /** The sale a direct withdrawal of `amount` CASH makes for the token it lands, decided the way
  *  the on-ramp decides a deposit's tier the other way round: the native takes the pool and
@@ -123,7 +148,7 @@ export async function chooseWithdrawRoute(
   const { connectChain, ASSET_HUB } = await import("./host-chain");
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
   // Judged on what the redeem will take: the amount less the fees and Asset Hub's earmark.
-  const sold = amount - DIRECT_FEES_CASH;
+  const sold = amount - (await directFeesCash({ tier: "pool" }));
   const redeemed = sold - destinationEarmark(sold, ASSET_HUB_FEE_BUFFER_CASH);
   return chooseRoute(api, { direction: "redeem", internalAmount: redeemed, deposit: landing });
 }
@@ -133,7 +158,7 @@ export async function chooseWithdrawRoute(
  *  redeemed at the PSM's fee rate, or landed as it is on the teleport tier. An estimate for the
  *  summary, not what the program is held to. */
 export async function quoteDirectReceive(amount: bigint, sale: ConversionRoute): Promise<bigint> {
-  const sold = amount - DIRECT_FEES_CASH;
+  const sold = amount - (await directFeesCash(sale));
   if (sold <= 0n) return 0n;
   if (sale.tier === "teleport") return sold;
   if (sale.tier === "psm") return psmRedeemOut(sold, sale.feeRate);
@@ -169,7 +194,7 @@ export async function quoteDirectCashFor(native: bigint): Promise<bigint> {
     true,
   );
   if (quoted === undefined) throw new Error("Asset Hub cannot quote the purchase");
-  return quoted + DIRECT_FEES_CASH;
+  return quoted + (await directFeesCash({ tier: "pool" }));
 }
 
 /** Headroom between the pool's answer and what the provider is asked to take: the sale on Asset

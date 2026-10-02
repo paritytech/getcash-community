@@ -12,6 +12,7 @@ export type { PeopleApi, Sale, SwapArgs, WithdrawXcmArgs } from "./program";
 export {
   ASSET_HUB_FEE_BUFFER_CASH,
   dryRunOnAssetHub,
+  estimateDirectFeesCash,
   NeedsSwapError,
   priceSale,
   readPoolReserves,
@@ -20,7 +21,14 @@ export {
   SWAP_HEADROOM_PCT,
   XCM_TX_FEE_HEADROOM_PCT,
 } from "./fees";
-export type { AssetHubApi, PriceSaleInput, SizeSwapInput, SizeXcmInput, XcmSizing } from "./fees";
+export type {
+  AssetHubApi,
+  EstimateDirectFeesInput,
+  PriceSaleInput,
+  SizeSwapInput,
+  SizeXcmInput,
+  XcmSizing,
+} from "./fees";
 export {
   DEFAULT_WITHDRAW_SLIPPAGE_PCT,
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,

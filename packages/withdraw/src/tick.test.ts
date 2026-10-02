@@ -6,7 +6,12 @@ import { AccountId } from "polkadot-api";
 import { describe, expect, it } from "vitest";
 import { TOKENS } from "@getsome/core";
 import { permillMulCeil, type ConversionRoute } from "@getsome/funding";
-import { SWAP_HEADROOM_PCT, XCM_TX_FEE_HEADROOM_PCT } from "./fees";
+import {
+  ASSET_HUB_FEE_BUFFER_CASH,
+  estimateDirectFeesCash,
+  SWAP_HEADROOM_PCT,
+  XCM_TX_FEE_HEADROOM_PCT,
+} from "./fees";
 import { PASEO_PEOPLE_POOL_ACCOUNT } from "./paseo";
 import { cashInFor } from "./pool";
 import {
@@ -23,6 +28,8 @@ const ED = 1_000_000_000n; // 0.1 PAS
 const RESERVES = { cash: 4_004_853_413n, pas: 9_987_917_550_000n };
 /** What People charged the swap in CASH on Paseo: the pre-charge less the refund. */
 const SWAP_FEE_CASH = 16_031n - 18n;
+/** The swap's fee as People estimates it, in PAS, before the charge is priced in CASH. */
+const SWAP_TX_FEE_PAS = 40_000_000n;
 /** What People charges the XCM transaction in PAS, and the reserve the sizing keeps for it. */
 const XCM_TX_FEE_PAS = 39_580_000n;
 const RESERVE = (XCM_TX_FEE_PAS * BigInt(100 + XCM_TX_FEE_HEADROOM_PCT)) / 100n;
@@ -175,6 +182,7 @@ function scriptedWorld(
    *  PAS for what its reserves ask, within the cap. */
   const swapTx = (args: SwapArgs) => ({
     decodedCall: { type: "AssetConversion", value: { type: "swap", value: args } },
+    getEstimatedFees: async () => SWAP_TX_FEE_PAS,
     signAndSubmit: async (_signer: unknown, options: Record<string, unknown>) => {
       state.submits.push({ call: "swap", args, options });
       state.keyCash -= SWAP_FEE_CASH;
@@ -545,6 +553,26 @@ describe("withdrawTickOnce", () => {
     // plus what the PAS sold for; nothing lands as PAS.
     expect(run.state.expectedLanding).toBe(cashSold - AH_FEE_CASH + pasTravelling / AH_RATE);
     expect(world.state.keyCash).toBe(0n);
+  });
+
+  it("prices the fees a direct withdrawal takes before the sale from People's pool, for the summary", async () => {
+    const world = scriptedWorld();
+    const fees = await estimateDirectFeesCash({
+      peopleApi: world.peopleApi as never,
+      address: KEY.address,
+      poolAccount: PASEO_PEOPLE_POOL_ACCOUNT,
+      assetHubParaId: 1500,
+      peopleParaId: 1502,
+      sale: { tier: "pool" },
+    });
+    // The swap for the deposit and the reserve, the swap's own fee, and Asset Hub's buffer, the
+    // first two priced in CASH through the pool. Nothing was submitted to learn it.
+    expect(fees).toBe(
+      cashInFor(ED + RESERVE, RESERVES) +
+        cashInFor(SWAP_TX_FEE_PAS, RESERVES) +
+        ASSET_HUB_FEE_BUFFER_CASH,
+    );
+    expect(world.state.submits).toEqual([]);
   });
 
   it("keeps waiting while the destination gained less than the landing floor", async () => {
