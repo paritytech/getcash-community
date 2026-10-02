@@ -20,6 +20,7 @@ import {
   COALESCE_MS,
   DEPOSIT_EXPIRED_REASON,
   HIDDEN_RESET_MS,
+  JOB_POLL_CLAIMING_MS,
   JOB_POLL_MS,
   MELD_POLL_MS,
   MIRROR_SETTLED_LIMIT,
@@ -1180,7 +1181,7 @@ export const useRequestsStore = defineStore("requests", () => {
   );
   const claimStage = computed<"prompted" | "crediting" | null>(() => {
     const record = foregroundRecord.value;
-    if (record?.status.kind !== "claiming") return null;
+    if (record === null || !claimingOf(record)) return null;
     return record.claimed !== undefined ? "crediting" : "prompted";
   });
   /** The claimed amount; a full burner sweep, so it may exceed the typed amount. */
@@ -2284,21 +2285,28 @@ export const useRequestsStore = defineStore("requests", () => {
     );
   }
 
-  // The job poll: one blob read every JOB_POLL_MS while the page is visible and a request is at
-  // rank 0–3.
-  let jobPollTimer: ReturnType<typeof setInterval> | null = null;
+  // The job poll: one read of the worker's blobs while the page is visible and a request is at
+  // rank 0–3, every JOB_POLL_MS, or every JOB_POLL_CLAIMING_MS while a top-up's claim is in flight.
+  let jobPollTimer: { handle: ReturnType<typeof setInterval>; everyMs: number } | null = null;
   let jobPollTick: Promise<void> | null = null;
   const anyWorkerDriven = (): boolean => records.value.some(isWorkerDriven);
+  const anyClaiming = (): boolean =>
+    records.value.some((record) => isTopUp(record) && claimingOf(record));
+  const jobPollEveryMs = (): number => (anyClaiming() ? JOB_POLL_CLAIMING_MS : JOB_POLL_MS);
   const pageVisible = (): boolean =>
     typeof document === "undefined" || document.visibilityState !== "hidden";
 
+  /** Runs the poll at the interval the records call for, replacing one running at another. */
   function startJobPoll(): void {
-    if (sandboxed.value || jobPollTimer !== null) return;
-    jobPollTimer = setInterval(() => void pollJobs(), JOB_POLL_MS);
+    if (sandboxed.value) return;
+    const everyMs = jobPollEveryMs();
+    if (jobPollTimer?.everyMs === everyMs) return;
+    stopJobPoll();
+    jobPollTimer = { handle: setInterval(() => void pollJobs(), everyMs), everyMs };
   }
   function stopJobPoll(): void {
     if (jobPollTimer === null) return;
-    clearInterval(jobPollTimer);
+    clearInterval(jobPollTimer.handle);
     jobPollTimer = null;
   }
   /** While a withdrawal is the worker's to move, each poll round first nudges the worker into a
@@ -2361,8 +2369,9 @@ export const useRequestsStore = defineStore("requests", () => {
   // The last open record can finish between the sync points, as when the poll settles it.
   watch(anyUnfinished, () => syncTick());
   // A record the worker moves can appear between the sync points too, as when a withdrawal is
-  // created: the poll starts with it, and stops itself once nothing is left to follow.
-  watch(anyWorkerDriven, () => syncJobPoll());
+  // created: the poll starts with it, and stops itself once nothing is left to follow. A claim
+  // starts or is credited between them as well, and the poll's interval follows.
+  watch([anyWorkerDriven, jobPollEveryMs], () => syncJobPoll());
 
   /** Hidden: the job poll, the deposit watch, the provider and payment polls and the second hand
    *  stop. The foreground clock keeps running so the deposit still expires on time. */
