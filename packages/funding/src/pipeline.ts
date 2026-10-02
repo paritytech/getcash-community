@@ -38,6 +38,17 @@
 // and the next tick re-prices and retries. Chain reads are lazy: the gating quote or fee estimate
 // only when the decision needs it, the dry run only at the submitting step.
 //
+// THE SUBMIT WAITS FOR INCLUSION; PEOPLE IS READ FINAL. The submit resolves once the program is
+// in a best block with its outcome, so a conversion holds the tick for one inclusion at most.
+// Every People read is of the finalized block, and People can process the program's message only
+// once the Asset Hub block that sent it is in the relay chain, so CASH final on People proves the
+// conversion final too: the run is done, and the claim registered, on nothing less. A submit whose
+// answer was lost is settled from the chain: the nonce unmoved means nothing landed and the same
+// nonce may go out again. A best block can be replaced, so the nonce recorded before the send is
+// kept until the finalized nonce moves past it: the chain final past the block the program was
+// seen in with that nonce unmoved means the program was dropped, and it goes out again the same
+// way.
+//
 // A PSM REFUSAL IS RETRIED THREE TIMES, THEN HELD. A mint the PSM refuses (the pair paused, or the
 // mint over its ceiling) is tried again on the next tick, and the third refusal stops the run with
 // FundingHeldError: the deposit stays on the burner, recoverable through its secret, until a
@@ -46,7 +57,13 @@
 // refusals count; a transport error or a timeout is retried as any other, without limit.
 
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
-import type { PolkadotClient, PolkadotSigner, TypedApi } from "polkadot-api";
+import type {
+  PolkadotClient,
+  PolkadotSigner,
+  Transaction,
+  TxEventsPayload,
+  TypedApi,
+} from "polkadot-api";
 import { describeDispatchError, psmRefusalKind, type PsmRefusalKind } from "./dispatch-error";
 import {
   buildFundingProgram,
@@ -88,9 +105,9 @@ type AssetLocation = Parameters<AssetHubApi["query"]["AssetConversion"]["Pools"]
 /** The step a tick performs or waits in. 'await-native' waits for the deposit the route expects,
  *  the native on the pool tier and the external on the PSM tier; 'swap' submits the one
  *  transaction that converts it and teleports the result, an exchange or a mint; 'await-arrival'
- *  holds while that XCM has not yet credited People. The two names predate the PSM tier and are
- *  persisted in TopUpRecord and the worker's job blob, so they keep their names and widen their
- *  meaning. */
+ *  holds while that XCM has not yet credited People in a finalized block. The two names predate
+ *  the PSM tier and are persisted in TopUpRecord and the worker's job blob, so they keep their
+ *  names and widen their meaning. */
 export type FundingStep = "await-native" | "swap" | "await-arrival" | "done";
 
 /** Extra underlying bought to cover the destination's execution fee, the one fee paid in the
@@ -122,8 +139,9 @@ export const MAX_PSM_REFUSALS = 3;
  *  dies without rejecting leaves reads pending forever; unbounded, one such tick would
  *  freeze the loop silently, with no transient ever reported. */
 export const DEFAULT_TICK_TIMEOUT_MS = 20_000;
-/** Bound on a submitted extrinsic's resolution. */
-export const DEFAULT_SUBMIT_TIMEOUT_MS = 180_000;
+/** Bound on a submitted extrinsic reaching a best block. Later ticks read the CASH final on
+ *  People, so this is the longest a conversion holds the tick. */
+export const DEFAULT_INCLUSION_TIMEOUT_MS = 60_000;
 
 function bounded<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -403,12 +421,22 @@ export interface TickState {
   /** PSM refusals of the mint so far, at the dry run or at inclusion; MAX_PSM_REFUSALS hold the
    *  run. A transport error or a timeout does not count. */
   psmRefusals: number;
-  /** Set once the program landed; holds the run in await-arrival. */
+  /** Set while the program is in a best block; holds the run in await-arrival. Released when
+   *  that block is replaced. */
   xcmSubmitted: boolean;
-  /** People balance when the XCM left; arrival = growth above this. */
+  /** People balance before the submit left; arrival = growth above this. */
   peopleAtXcm: bigint;
   /** When the first tick saw funds (ms); null while the deposit is still awaited. */
   fundsSeenAt: number | null;
+  /** The burner's nonce at the latest block before the last submit, kept until the chain's final
+   *  word on it: with `xcmSubmitted` unset the answer is owed and a tick settles from the chain
+   *  what became of the submit; set, the finalized nonce moving past it makes the conversion
+   *  final. */
+  nonceAtSubmit: number | null;
+  /** The block the program was seen in, or the latest block when a lost answer was settled as
+   *  landed; the chain final at or past it with the nonce unmoved means that block was replaced.
+   *  Null once the conversion is final or the block was replaced. */
+  inclusionBlock: number | null;
 }
 
 export const freshTickState = (): TickState => ({
@@ -417,6 +445,8 @@ export const freshTickState = (): TickState => ({
   xcmSubmitted: false,
   peopleAtXcm: 0n,
   fundsSeenAt: null,
+  nonceAtSubmit: null,
+  inclusionBlock: null,
 });
 
 export interface TickOnceInput {
@@ -448,15 +478,21 @@ export interface TickOnceInput {
    *  before it was recorded, which falls back to the live figure. */
   quotedDeposit?: bigint;
   tickTimeoutMs: number;
-  submitTimeoutMs: number;
-  /** Extra options merged into the signAndSubmit this tick makes, after the PSM tier's fee
-   *  asset. */
+  /** Bound on the submit reaching a best block; past it the tick throws and a later tick settles
+   *  from the chain what became of the submit. */
+  inclusionTimeoutMs: number;
+  /** Extra options merged into the submit this tick makes, after the PSM tier's fee asset. */
   signOptions?: Record<string, unknown>;
-  readUnderlyingOnPeople: (ss58: string) => Promise<bigint>;
+  /** The burner's CASH on People in the FINALIZED block. The one People read the tick makes, for
+   *  the arrival, the shortfall and the gate alike: the claim is registered on what it returns,
+   *  and a final arrival is also the proof that the conversion is final on Asset Hub. */
+  readFinalizedUnderlyingOnPeople: (ss58: string) => Promise<bigint>;
   now: () => number;
+  /** The submit's hash and block, reported at inclusion. */
   onTx?: (info: { call: "swap"; txHash: string; block?: number }) => void;
   /** Reports swallowed in-tick conditions such as the shallow-pool fallback. */
   onTransientError?: (error: unknown) => void;
+  /** Runs right before the broadcast, once `state` holds what a wake mid-send needs. */
   onBeforeSubmit?: (call: "swap") => Promise<void> | void;
 }
 
@@ -468,16 +504,171 @@ export interface TickOutcome {
   submitted: boolean;
 }
 
+type BlockTag = "best" | "finalized";
+
 /** The burner's deposit on Asset Hub in the asset the route expects: the native's free balance,
  *  or the holding of the pallet-assets id the route's token names. */
-async function readDeposit(api: AssetHubApi, route: ConversionRoute, address: string) {
+async function readDeposit(
+  api: AssetHubApi,
+  route: ConversionRoute,
+  address: string,
+  at: BlockTag,
+) {
   const token = depositTokenOf(route);
   if (token.assetHubId === undefined) {
-    const account = await api.query.System.Account.getValue(address);
+    const account = await api.query.System.Account.getValue(address, { at });
     return account?.data.free ?? 0n;
   }
-  const held = await api.query.Assets.Account.getValue(token.assetHubId, address);
+  const held = await api.query.Assets.Account.getValue(token.assetHubId, address, { at });
   return held?.balance ?? 0n;
+}
+
+/** The burner's nonce, from the runtime call the signer takes its own nonce from. */
+const readNonce = (api: AssetHubApi, address: string, at: BlockTag) =>
+  api.apis.AccountNonceApi.account_nonce(address, { at });
+
+const readBlockNumber = (api: AssetHubApi, at: BlockTag) =>
+  api.query.System.Number.getValue({ at });
+
+/** A submit's outcome in the first block it was seen in. */
+type Inclusion = { txHash: string } & TxEventsPayload;
+
+type Watch = ReturnType<Transaction["signSubmitAndWatch"]>;
+
+/** Resolves at the first event that places the transaction in a block, with its outcome there,
+ *  and lets the watch go; past `timeoutMs` it rejects and lets the watch go too. */
+function includedInBlock(watch: Watch, timeoutMs: number, what: string): Promise<Inclusion> {
+  return new Promise<Inclusion>((resolve, reject) => {
+    let subscription: { unsubscribe: () => void } | null = null;
+    let settled = false;
+    const settle = (outcome: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      subscription?.unsubscribe();
+      outcome();
+    };
+    const timer = setTimeout(
+      () => settle(() => reject(new Error(`${what} not in a block after ${timeoutMs / 1000}s`))),
+      timeoutMs,
+    );
+    subscription = watch.subscribe({
+      next: (event) => {
+        if (event.type === "finalized" || (event.type === "txBestBlocksState" && event.found)) {
+          settle(() => resolve(event));
+        }
+      },
+      error: (error: unknown) =>
+        settle(() => reject(error instanceof Error ? error : new Error(String(error)))),
+      complete: () => settle(() => reject(new Error(`${what} watch ended before any block`))),
+    });
+    // The watch may have settled before the subscription could be held.
+    if (settled) subscription.unsubscribe();
+  });
+}
+
+/** Signs and broadcasts the tier's one transaction and resolves with its outcome at inclusion.
+ *  Before the broadcast, `state` records what a tick that never hears the answer needs; a program
+ *  that landed keeps it, with the block it was seen in, until finality settles it. A rejection is
+ *  the caller's to describe. */
+async function submitConversion<Options>(
+  input: TickOnceInput,
+  state: TickState,
+  balances: FundingBalances,
+  tx: { signSubmitAndWatch: (from: PolkadotSigner, txOptions?: Options) => Watch },
+  options: NoInfer<Options> | undefined,
+  what: string,
+): Promise<Inclusion> {
+  const { api, address } = input;
+  const nonce = await bounded(readNonce(api, address, "best"), input.tickTimeoutMs, "nonce read");
+  // A lost submit found unmoved earlier this tick landed since; the next tick settles it.
+  if (state.nonceAtSubmit !== null && nonce !== state.nonceAtSubmit) {
+    throw new Error(`${what} not sent: the nonce moved during the tick, an earlier submit landed`);
+  }
+  state.nonceAtSubmit = nonce;
+  state.peopleAtXcm = balances.underlyingPeople;
+  // Counted before the broadcast, so a submit whose answer is lost is still counted.
+  state.attempts += 1;
+  await input.onBeforeSubmit?.("swap");
+  const included = await includedInBlock(
+    tx.signSubmitAndWatch(input.signer, options),
+    input.inclusionTimeoutMs,
+    `${what} submit`,
+  );
+  input.onTx?.({ call: "swap", txHash: included.txHash, block: included.block.number });
+  if (included.ok) {
+    state.xcmSubmitted = true;
+    state.inclusionBlock = included.block.number;
+  } else {
+    state.nonceAtSubmit = null;
+  }
+  return included;
+}
+
+/** The last submit's answer was lost, to a worker killed mid-send or to the inclusion bound. The
+ *  chain says what became of it: the nonce unmoved, nothing landed and the same nonce may go out
+ *  again; moved, it landed unless the deposit can still be converted, in which case it failed at
+ *  dispatch and the tick goes on to re-gate and retry. A program that landed is in the latest
+ *  block or an earlier one, so that is the block finality is then checked against. */
+async function settleLostSubmit(
+  input: TickOnceInput,
+  state: TickState,
+  balances: FundingBalances,
+  depositNeeded: bigint,
+  nonceAtSubmit: number,
+): Promise<void> {
+  const { api, route, address } = input;
+  const nonce = await bounded(readNonce(api, address, "best"), input.tickTimeoutMs, "nonce read");
+  if (nonce <= nonceAtSubmit) return;
+  const landed =
+    balances.underlyingPeople > state.peopleAtXcm ||
+    (await bounded(
+      readDeposit(api, route, address, "best"),
+      input.tickTimeoutMs,
+      "deposit read (latest)",
+    )) < depositNeeded;
+  if (!landed) {
+    state.nonceAtSubmit = null;
+    return;
+  }
+  state.inclusionBlock = await bounded(
+    readBlockNumber(api, "best"),
+    input.tickTimeoutMs,
+    "block number read (latest)",
+  );
+  state.xcmSubmitted = true;
+}
+
+/** The program is in a best block the chain may yet replace, so the finalized block has the last
+ *  word: the nonce moved there, the conversion is final and the pre-send record is let go; the
+ *  chain final past the block the program was seen in with the nonce unmoved, that block was
+ *  replaced, and the latch is released so the tick re-gates and sends again under the same
+ *  nonce. */
+async function settleInclusion(
+  input: TickOnceInput,
+  state: TickState,
+  nonceAtSubmit: number,
+  inclusionBlock: number,
+): Promise<void> {
+  const { api, address } = input;
+  const finalizedBlock = await bounded(
+    readBlockNumber(api, "finalized"),
+    input.tickTimeoutMs,
+    "block number read (finalized)",
+  );
+  // After the block number: a nonce unmoved at a later finalized block is unmoved at this one.
+  const nonce = await bounded(
+    readNonce(api, address, "finalized"),
+    input.tickTimeoutMs,
+    "nonce read (finalized)",
+  );
+  if (nonce > nonceAtSubmit) {
+    state.nonceAtSubmit = null;
+    state.inclusionBlock = null;
+  } else if (finalizedBlock >= inclusionBlock) {
+    state.xcmSubmitted = false;
+    state.inclusionBlock = null;
+  }
 }
 
 /**
@@ -489,7 +680,10 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
   const { api, route, address } = input;
   const buyAmount = input.settleAmount + input.remoteFeeBuffer;
   const [depositAh, underlyingPeople] = await bounded(
-    Promise.all([readDeposit(api, route, address), input.readUnderlyingOnPeople(address)]),
+    Promise.all([
+      readDeposit(api, route, address, "finalized"),
+      input.readFinalizedUnderlyingOnPeople(address),
+    ]),
     input.tickTimeoutMs,
     "tick balance reads",
   );
@@ -502,6 +696,10 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
   ) {
     // The transfer arrived yet the target is missed: the destination fee ate past the buffer.
     throw new FundingShortfallError(balances.underlyingPeople, input.settleAmount);
+  }
+
+  if (state.xcmSubmitted && state.nonceAtSubmit !== null && state.inclusionBlock !== null) {
+    await settleInclusion(input, state, state.nonceAtSubmit, state.inclusionBlock);
   }
 
   // Only the convert-vs-await-native decision needs the pool price or the PSM batch's fees.
@@ -621,6 +819,9 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
       depositNeeded = frozen ?? psmDepositNeeded(buyNow, route, psmFees);
     }
   }
+  if (!state.xcmSubmitted && state.nonceAtSubmit !== null) {
+    await settleLostSubmit(input, state, balances, depositNeeded, state.nonceAtSubmit);
+  }
   const step = decideStep(balances, { settleAmount: input.settleAmount, depositNeeded });
   // Hold in await-arrival while the submitted XCM has not yet credited People. A stale read right
   // after the submit still shows the native, and without this latch it would be converted twice.
@@ -629,6 +830,8 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
   if (state.fundsSeenAt === null && effective !== "await-native") state.fundsSeenAt = input.now();
 
   if (effective === "done") {
+    state.nonceAtSubmit = null;
+    state.inclusionBlock = null;
     return { step: "done", balances, submitted: false };
   }
 
@@ -757,16 +960,15 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
       "funding program dry run",
     );
     const tx = api.tx.PolkadotXcm.execute(execArgs);
-    await input.onBeforeSubmit?.("swap");
-    // Counted before the broadcast, so a submit whose answer is lost is still counted.
-    state.attempts += 1;
-    const res = await bounded(
-      // The dispatch fee is paid in native.
-      tx.signAndSubmit(input.signer, input.signOptions),
-      input.submitTimeoutMs,
-      "funding program submit",
+    // The dispatch fee is paid in native.
+    const res = await submitConversion(
+      input,
+      state,
+      balances,
+      tx,
+      input.signOptions,
+      "funding program",
     );
-    input.onTx?.({ call: "swap", txHash: res.txHash, block: res.block?.number });
     // A rejected program rolls back whole: the deposit stays native and the next tick re-prices
     // and retries. It happens when the pool moved past the floor, a fee allowance fell short, or
     // the balance was already spent by an earlier run.
@@ -775,8 +977,6 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
         `funding program dispatch rejected: ${describeDispatchError(res.dispatchError, execArgs)}`,
       );
     }
-    state.xcmSubmitted = true;
-    state.peopleAtXcm = balances.underlyingPeople;
     return { step: effective, balances, submitted: true };
   }
 
@@ -887,16 +1087,15 @@ async function swapThroughStablePool(
     "stable program dry run",
   );
   const tx = api.tx.PolkadotXcm.execute(execArgs);
-  await input.onBeforeSubmit?.("swap");
-  // Counted before the broadcast, so a submit whose answer is lost is still counted.
-  state.attempts += 1;
-  const res = await bounded(
-    // The dispatch fee is charged in the stable, the one asset the burner holds.
-    tx.signAndSubmit(input.signer, { ...stableTxOptions(route.external), ...input.signOptions }),
-    input.submitTimeoutMs,
-    "stable program submit",
+  // The dispatch fee is charged in the stable, the one asset the burner holds.
+  const res = await submitConversion(
+    input,
+    state,
+    balances,
+    tx,
+    { ...stableTxOptions(route.external), ...input.signOptions },
+    "stable program",
   );
-  input.onTx?.({ call: "swap", txHash: res.txHash, block: res.block?.number });
   // A rejected program rolls back whole: the deposit stays in the stable minus the dispatch fee,
   // and the next tick re-prices and retries.
   if (!res.ok) {
@@ -904,8 +1103,6 @@ async function swapThroughStablePool(
       `stable program dispatch rejected: ${describeDispatchError(res.dispatchError, execArgs)}`,
     );
   }
-  state.xcmSubmitted = true;
-  state.peopleAtXcm = balances.underlyingPeople;
 }
 
 /** The teleport tier's swap step: send everything the fees leave, not just the target, to the
@@ -953,16 +1150,15 @@ async function teleportToPeople(
     "teleport program dry run",
   );
   const tx = api.tx.PolkadotXcm.execute(execArgs);
-  await input.onBeforeSubmit?.("swap");
-  // Counted before the broadcast, so a submit whose answer is lost is still counted.
-  state.attempts += 1;
-  const res = await bounded(
-    // The dispatch fee is charged in the underlying, the one asset the burner holds.
-    tx.signAndSubmit(input.signer, { ...teleportTxOptions(), ...input.signOptions }),
-    input.submitTimeoutMs,
-    "teleport program submit",
+  // The dispatch fee is charged in the underlying, the one asset the burner holds.
+  const res = await submitConversion(
+    input,
+    state,
+    balances,
+    tx,
+    { ...teleportTxOptions(), ...input.signOptions },
+    "teleport program",
   );
-  input.onTx?.({ call: "swap", txHash: res.txHash, block: res.block?.number });
   // A rejected program rolls back whole: the deposit stays on the burner minus the dispatch fee,
   // and the next tick re-prices and retries.
   if (!res.ok) {
@@ -970,8 +1166,6 @@ async function teleportToPeople(
       `teleport program dispatch rejected: ${describeDispatchError(res.dispatchError, execArgs)}`,
     );
   }
-  state.xcmSubmitted = true;
-  state.peopleAtXcm = balances.underlyingPeople;
 }
 
 /** The external the PSM tier asks the buyer for, so `buyNow` CASH reaches People: the mint that
@@ -1061,19 +1255,15 @@ async function mintThroughPsm(
     if (error instanceof ProgramRejectedError) refused(error.dispatchError);
     throw error;
   }
-  await input.onBeforeSubmit?.("swap");
-  // Counted before the broadcast, so a submit whose answer is lost is still counted.
-  state.attempts += 1;
-  const res = await bounded(
-    // The dispatch fee is charged in the external, the one asset the burner holds.
-    batch.signAndSubmit(input.signer, {
-      ...psmBatchTxOptions(route.external),
-      ...input.signOptions,
-    }),
-    input.submitTimeoutMs,
-    "psm batch submit",
+  // The dispatch fee is charged in the external, the one asset the burner holds.
+  const res = await submitConversion(
+    input,
+    state,
+    balances,
+    batch,
+    { ...psmBatchTxOptions(route.external), ...input.signOptions },
+    "psm batch",
   );
-  input.onTx?.({ call: "swap", txHash: res.txHash, block: res.block?.number });
   // A rejected batch rolls back whole, the mint included: the deposit stays in the external
   // minus the dispatch fee, and the next tick re-prices and retries.
   if (!res.ok) {
@@ -1082,6 +1272,4 @@ async function mintThroughPsm(
       `psm batch dispatch rejected: ${describeDispatchError(res.dispatchError, execArgs)}`,
     );
   }
-  state.xcmSubmitted = true;
-  state.peopleAtXcm = balances.underlyingPeople;
 }
