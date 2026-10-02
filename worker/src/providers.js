@@ -7,7 +7,7 @@ import { readChannelRecord, readSwapStatus } from "@getsome/chainflip/swap-statu
 import {
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
   DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
-  readDestinationPas,
+  readDestinationBalance,
   sweepOnce,
 } from "@getsome/withdraw";
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
@@ -41,7 +41,7 @@ export async function payRail(record, handoff, sweep, hooks = {}) {
         tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
         submitTimeoutMs: DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
         signOptions: await signOptionsFor(client),
-        readKeyOnAssetHub: () => readDestinationPas(assetHubApi, record.keyPublicKeyHex),
+        readKeyOnAssetHub: () => readDestinationBalance(assetHubApi, record.keyPublicKeyHex),
         onBeforeSubmit: hooks.onBeforeSubmit,
         onTx: hooks.onTx,
       },

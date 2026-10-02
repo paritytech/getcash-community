@@ -308,7 +308,7 @@ export interface TopUpRecord {
 }
 
 // The withdrawal: the purse pays CASH to a disposable key on People, the worker moves it to Asset
-// Hub as PAS, and a rail carries the PAS to the destination the user named.
+// Hub as the token the user picked, or as PAS that a rail carries on to the destination they named.
 
 /** Every withdrawal runs under a source id of this shape: the prefix and the destination's id. */
 export const WITHDRAW_SOURCE_PREFIX = "wd:";
@@ -393,9 +393,16 @@ export interface WithdrawalHandoffPayload {
   /** The CASH the user asked to withdraw, base units. */
   amount: string;
   destination: { chain: string; asset: string; address: string };
-  /** The Asset Hub account the PAS lands on: the rail's channel, or the destination itself. */
+  /** The Asset Hub account the funds land on: the rail's channel, or the destination itself. */
   landingHex: string;
   rail: WithdrawalRailState["provider"];
+  /** The sale on Asset Hub, decided from the destination at quote time and frozen here; the
+   *  worker consumes it and never re-decides. The pool sells for the native, and for `external`
+   *  sells that again for the stable; the psm redeems for `external` at `feeRate`, the Permill
+   *  read at quote time that the call's `max_fee` repeats; the teleport lands the CASH as dotUSD. */
+  tier: ConversionRoute["tier"];
+  external?: Stable;
+  feeRate?: number;
   assetHubGenesis: string;
   peopleGenesis: string;
   peopleParaId: number;
@@ -406,6 +413,19 @@ export interface WithdrawalHandoffPayload {
   /** The provider's channel, opened on the page at confirm; the worker pays it. Present for
    *  every rail but `direct`. */
   channel?: WithdrawalChannel;
+}
+
+/** The sale's fields as the hand-off carries them, spread from the route decided at quote time. */
+export function handoffSaleOf(
+  route: ConversionRoute,
+): Pick<WithdrawalHandoffPayload, "tier" | "external" | "feeRate"> {
+  if (route.tier === "psm") {
+    return { tier: "psm", external: route.external, feeRate: route.feeRate };
+  }
+  if (route.tier === "pool" && route.external !== undefined) {
+    return { tier: "pool", external: route.external };
+  }
+  return { tier: route.tier };
 }
 
 /** A provider's channel for one withdrawal: where the key pays, and what the quote promised. */
@@ -423,9 +443,10 @@ export interface WithdrawalChannel {
 /** What the store extracts from one withdrawal job in the worker's blob. */
 export interface WithdrawJobView {
   phase: string;
-  /** The whole job: the PAS reached the destination, or the provider delivered. */
+  /** The whole job: the funds reached the destination, or the provider delivered. */
   done: boolean;
-  /** The message leg: the PAS is on Asset Hub, on the destination or on the key for a provider. */
+  /** The message leg: the funds are on Asset Hub, on the destination or on the key for a
+   *  provider. */
   landed: boolean;
   failure?: string;
   lastError?: string;
@@ -436,8 +457,8 @@ export interface WithdrawJobView {
   rail?: SwapStatusResult;
 }
 
-/** `direct` for a destination on Asset Hub, which the PAS reaches with the XCM itself; the rest
- *  carry it on from the key's own Asset Hub account. */
+/** `direct` for a destination on Asset Hub, which the funds reach with the XCM itself; the rest
+ *  carry the PAS on from the key's own Asset Hub account. */
 export type WithdrawalRailProvider = "direct" | "chainflip" | "meld";
 export const WITHDRAWAL_RAILS: readonly WithdrawalRailProvider[] = ["direct", "chainflip", "meld"];
 export const isWithdrawalRail = (value: unknown): value is WithdrawalRailProvider =>

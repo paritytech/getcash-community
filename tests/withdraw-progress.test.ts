@@ -45,6 +45,7 @@ function record(overrides: Partial<WithdrawalRecord> = {}): WithdrawalRecord {
       },
       landingHex: `0x${"aa".repeat(32)}`,
       rail: "direct",
+      tier: "pool",
       assetHubGenesis: "0xah",
       peopleGenesis: "0xpe",
       peopleParaId: 1004,
