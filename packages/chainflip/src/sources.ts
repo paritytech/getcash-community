@@ -92,24 +92,54 @@ type UriBuilder = (
   decimals: number,
 ) => string;
 
+/** The token contracts a payment URI names, on mainnet, as the Chainflip SDK lists them. */
+const TOKEN_CONTRACTS: Record<string, Record<string, string>> = {
+  Ethereum: {
+    USDC: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    USDT: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+  },
+  Arbitrum: {
+    USDC: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+    USDT: "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9",
+  },
+  Solana: {
+    USDC: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    USDT: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+  },
+};
+
+/**
+ * EIP 681 on an EVM chain. The native coin names the recipient and a value. A token takes the
+ * transfer form, which names the contract first and the recipient as a parameter: a wallet that
+ * reads only the simple form would take the contract for the recipient, a risk accepted so that a
+ * token send comes prefilled. A token the table does not know gets the bare address.
+ */
+function evmUri(
+  addr: string,
+  asset: string,
+  amount: string | bigint,
+  chainId: number,
+  contracts: Record<string, string>,
+): string {
+  if (asset === "ETH") return `ethereum:${addr}@${chainId}?value=${amount.toString()}`;
+  const contract = contracts[asset];
+  if (contract === undefined) return addr;
+  return `ethereum:${contract}@${chainId}/transfer?address=${addr}&uint256=${amount.toString()}`;
+}
+
 const CHAIN_URI_BUILDERS: Record<string, UriBuilder> = {
   Bitcoin: (addr, _asset, amount, decimals) =>
     `bitcoin:${addr}?amount=${formatBaseUnits(amount, decimals)}`,
-  Ethereum: (addr, asset, amount) => {
-    // Native ETH: EIP-681 with chain id 1. ERC-20 tokens: bare address.
-    if (asset === "ETH") return `ethereum:${addr}@1?value=${amount.toString()}`;
-    return addr;
-  },
-  Arbitrum: (addr, asset, amount) => {
-    if (asset === "ETH") return `ethereum:${addr}@42161?value=${amount.toString()}`;
-    return addr;
-  },
+  Ethereum: (addr, asset, amount) => evmUri(addr, asset, amount, 1, TOKEN_CONTRACTS.Ethereum!),
+  Arbitrum: (addr, asset, amount) => evmUri(addr, asset, amount, 42161, TOKEN_CONTRACTS.Arbitrum!),
   Solana: (addr, asset, amount, decimals) => {
-    // Native SOL: Solana Pay. SPL tokens: bare address.
-    if (asset === "SOL") return `solana:${addr}?amount=${formatBaseUnits(amount, decimals)}`;
-    return addr;
+    // Solana Pay names the recipient first on every asset; a token adds its mint.
+    const base = `solana:${addr}?amount=${formatBaseUnits(amount, decimals)}`;
+    if (asset === "SOL") return base;
+    const mint = TOKEN_CONTRACTS.Solana![asset];
+    return mint === undefined ? addr : `${base}&spl-token=${mint}`;
   },
-  // Every Tron entry (native TRX and TRC-20) gets a bare address.
+  // Tron has no payment URI: native TRX and TRC-20 alike get the bare address.
   Tron: (addr) => addr,
   // Asset Hub is a source only for a withdrawal's own key, which never scans a code.
   Assethub: (addr) => addr,
