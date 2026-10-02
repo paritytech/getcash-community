@@ -141,6 +141,11 @@ function scriptedWorld(
       remote_xcm: Instruction[];
     };
     const earmark = transfer.remote_fees.value.value[0]!;
+    // The earmark comes out of the CASH withdrawn; the rest travels.
+    const cashLeft = {
+      ...cashWithdrawn!,
+      fun: { type: "Fungible", value: cashWithdrawn!.fun.value - earmark.fun.value },
+    };
     return {
       type: "V5",
       value: [
@@ -150,8 +155,8 @@ function scriptedWorld(
           type: "ReceiveTeleportedAsset",
           value:
             pasLeft > 0n
-              ? [{ ...pasWithdrawn!, fun: { type: "Fungible", value: pasLeft } }, cashWithdrawn!]
-              : [cashWithdrawn!],
+              ? [{ ...pasWithdrawn!, fun: { type: "Fungible", value: pasLeft } }, cashLeft]
+              : [cashLeft],
         },
         { type: "ClearOrigin" },
         ...transfer.remote_xcm,
@@ -521,11 +526,11 @@ describe("withdrawTickOnce", () => {
     const world = scriptedWorld();
     const run = await drive(world, 3, freshWithdrawTickState(), { tier: "teleport" });
     expect(run.steps).toEqual(["swap", "convert", "done"]);
-    const { cashSold, earmark, program } = sentXcm(world);
+    const { cashSold, program } = sentXcm(world);
     expect(program.map((i) => i.type)).toEqual(["SetHints", "RefundSurplus", "DepositAsset"]);
-    // The landing is the CASH itself less Asset Hub's fee; the PAS that travels lands too and is
-    // not counted.
-    expect(run.state.expectedLanding).toBe(cashSold + earmark - AH_FEE_CASH);
+    // The landing is the CASH itself less Asset Hub's fee, the earmark's unspent part back in;
+    // the PAS that travels lands too and is not counted.
+    expect(run.state.expectedLanding).toBe(cashSold - AH_FEE_CASH);
     expect(world.state.keyCash).toBe(0n);
   });
 

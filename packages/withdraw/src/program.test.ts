@@ -279,9 +279,10 @@ describe("withdrawal transactions", () => {
       "SetTopic",
     ]);
     const travelling = standIn.value[2]!.value as Fungible[];
+    // The earmark comes out of the CASH, so less of it travels.
     expect(travelling.map((a) => a.fun.value)).toEqual([
       XCM.pasToWithdraw - XCM.payFeesPas,
-      XCM.cashToTeleport,
+      XCM.cashToTeleport - XCM.remoteFeesCash,
     ]);
     // An allowance that takes every PAS leaves only the CASH travelling.
     const allSpent = forwardedStandIn({ ...XCM, payFeesPas: XCM.pasToWithdraw });

@@ -44,14 +44,18 @@ const pas = (v: bigint) => fungible(PEOPLE_NATIVE, v);
 
 /** The message as Asset Hub receives it: the stand-in's own program after a prefix that keys
  *  the teleported assets the way Asset Hub does, which People's forwarding does on the way. The
- *  list is sorted as the runtime demands, and CASH keyed local sorts before the native. */
+ *  earmark comes out of the CASH teleported and the rest travels. The list is sorted as the
+ *  runtime demands, and CASH keyed local sorts before the native. */
 function asAssetHubSeesIt(standIn: ReturnType<typeof forwardedStandIn>, earmark: bigint) {
   return {
     type: "V5",
     value: [
       { type: "ReceiveTeleportedAsset", value: [cash(earmark)] },
       { type: "PayFees", value: { asset: cash(earmark) } },
-      { type: "ReceiveTeleportedAsset", value: [cash(CASH_TO_TELEPORT), pas(PAS_TRAVELLING)] },
+      {
+        type: "ReceiveTeleportedAsset",
+        value: [cash(CASH_TO_TELEPORT - earmark), pas(PAS_TRAVELLING)],
+      },
       ...standIn.value.slice(3),
     ],
   };
@@ -120,7 +124,7 @@ describe.runIf(process.env.VERIFY_WITHDRAW_SALE === "1")("the sale per token on 
         const token = depositTokenOf(route);
         const floor = floorOf(sale);
         console.log(
-          `${name.padEnd(10)} ${fmtUnits(CASH_TO_TELEPORT, 6)} CASH lands ${fmtUnits(landed, token.decimals)} ${token.symbol}, floor ${fmtUnits(floor, token.decimals)}`,
+          `${name.padEnd(10)} ${fmtUnits(CASH_TO_TELEPORT, 6)} CASH teleported with ${fmtUnits(PAS_TRAVELLING, 10)} PAS lands ${fmtUnits(landed, token.decimals)} ${token.symbol}, floor ${fmtUnits(floor, token.decimals)}`,
         );
         expect(landed).toBeGreaterThanOrEqual(floor);
       }

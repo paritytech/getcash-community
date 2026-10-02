@@ -260,10 +260,11 @@ export function buildWithdrawXcm(peopleApi: PeopleApi, args: WithdrawXcmArgs) {
 }
 
 /** The message People forwards to Asset Hub for `args`, as the runtime would build it, with the
- *  fee allowance's remainder as the PAS that travels. Used to price the delivery before the
- *  runtime produces the real one. */
+ *  fee allowance's remainder as the PAS that travels and the CASH less its earmark. Used to price
+ *  the delivery before the runtime produces the real one. */
 export function forwardedStandIn(args: WithdrawXcmArgs) {
   const pasLeft = args.pasToWithdraw - args.payFeesPas;
+  const cashLeft = cash(args.cashToTeleport - args.remoteFeesCash);
   return {
     type: "V5",
     value: [
@@ -271,8 +272,7 @@ export function forwardedStandIn(args: WithdrawXcmArgs) {
       { type: "PayFees", value: { asset: cash(args.remoteFeesCash) } },
       {
         type: "ReceiveTeleportedAsset",
-        value:
-          pasLeft > 0n ? [pas(pasLeft), cash(args.cashToTeleport)] : [cash(args.cashToTeleport)],
+        value: pasLeft > 0n ? [pas(pasLeft), cashLeft] : [cashLeft],
       },
       args.sale.tier === "psm"
         ? { type: "AliasOrigin", value: originOnAssetHub(args.peopleParaId, args.originHex) }
