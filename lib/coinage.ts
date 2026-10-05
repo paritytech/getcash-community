@@ -48,6 +48,7 @@ import {
   isStablePoolRoute,
   MANUAL_SOURCE_IDS,
   MANUAL_SOURCES,
+  NoCashTransferError,
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
   psmDepositNeeded,
@@ -1153,7 +1154,10 @@ export async function createCoinageSession(
       "funding sizing estimate",
       20_000,
       estimateFundingSizing(sizingArgs),
-    ).catch(() => null);
+    ).catch((e: unknown) => {
+      if (e instanceof NoCashTransferError) throw e;
+      return null;
+    });
     const keepNativeForFees = pool?.keepNativeForFees ?? DEFAULT_KEEP_NATIVE_FOR_FEES;
     const remoteFeeBuffer = pool?.remoteFeeBuffer ?? DEFAULT_REMOTE_FEE_BUFFER;
     sizing = { tier: "pool", remoteFeeBuffer, keepNativeForFees };

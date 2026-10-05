@@ -10,6 +10,7 @@ import {
   FundingShortfallError,
   PASEO_ASSET_HUB_PARA_ID,
   STABLE_TOKENS,
+  chooseCashTransfer,
   discoverPools,
   freshTickState,
   recordedRoute,
@@ -646,6 +647,18 @@ async function tickRecord(record, nowMs) {
             "pool discovery",
           )
         : [];
+    // Asked on every dispatch, so a runtime upgrade between ticks is picked up before the next
+    // submit; a network with no transfer fails the tick like any other read.
+    const transfer = await bounded(
+      chooseCashTransfer({
+        assetHub: ahClient,
+        people: peopleClient,
+        assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
+        peopleParaId: record.peopleParaId,
+      }),
+      DEFAULT_TICK_TIMEOUT_MS,
+      "cash transfer choice",
+    );
 
     // Restore the persisted state into the shape tickOnce mutates. fundsSeenAt must be
     // exactly null when absent.
@@ -679,7 +692,7 @@ async function tickRecord(record, nowMs) {
           api,
           peopleApi: peopleClient.getTypedApi(paseo_people_next),
           route,
-          transfer: "teleport",
+          transfer,
           pool,
           stablePool,
           address: burner.address,

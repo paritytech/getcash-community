@@ -11,6 +11,7 @@ import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import { TOKENS } from "@getsome/core";
 import {
   buildTeleportFundingProgram,
+  chooseCashTransfer,
   destinationEarmark,
   discoverPool,
   dryRunFundingProgram,
@@ -38,6 +39,13 @@ describe.runIf(process.env.VERIFY_DOTUSD === "1")("teleport tier dry runs", () =
     const pe: any = peC.getTypedApi(paseo_people_next);
     try {
       const pool = await discoverPool(ah, PASEO_UNDERLYING_ASSET_ID);
+      const transfer = await chooseCashTransfer({
+        assetHub: ahC,
+        people: peC,
+        assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
+        peopleParaId: PASEO_PEOPLE_PARA_ID,
+      });
+      console.log(`CASH moves to People by ${transfer}`);
       const token = TOKENS.DOTUSD;
       const holders = await ah.query.Assets.Account.getEntries(token.assetHubId);
       holders.sort((a: { value: { balance: bigint } }, b: { value: { balance: bigint } }) =>
@@ -55,7 +63,7 @@ describe.runIf(process.env.VERIFY_DOTUSD === "1")("teleport tier dry runs", () =
           assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
           beneficiaryHex: holderHex,
           amount: settle,
-          transfer: "teleport",
+          transfer,
         });
         const buyTarget = settle + destinationFee;
         const earmark = destinationEarmark(buyTarget, destinationFee);
@@ -65,7 +73,7 @@ describe.runIf(process.env.VERIFY_DOTUSD === "1")("teleport tier dry runs", () =
           peopleParaId: PASEO_PEOPLE_PARA_ID,
           depositUnderlying: buyTarget,
           remoteFeesCash: earmark,
-          transfer: "teleport",
+          transfer,
           feeProbeAddress: holder,
           dryRunFrom: holder,
         });
@@ -78,7 +86,7 @@ describe.runIf(process.env.VERIFY_DOTUSD === "1")("teleport tier dry runs", () =
           remoteFeesCash: earmark,
           beneficiaryHex: holderHex,
           peopleParaId: PASEO_PEOPLE_PARA_ID,
-          transfer: "teleport",
+          transfer,
           maxWeight: fees.maxWeight,
         });
         const { landed } = await dryRunFundingProgram({

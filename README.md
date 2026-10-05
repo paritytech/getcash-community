@@ -20,9 +20,10 @@ a static Nuxt 4 single-page app plus a background worker, both published to bull
 The **surface** (`app/`, `lib/`) is what the user sees. It quotes, shows a deposit address or
 opens the provider's widget, and tracks the request. The **worker** (`worker/`) runs in the
 background inside the host. Once a deposit has landed, the surface hands the job to the
-worker, which converts it to CASH and teleports it to the People chain in one transaction on
-Asset Hub, then, once that CASH is final on People, claims it through the host's top-up call. The
-top-up is registered under the ephemeral account's public key and driven by the host from there.
+worker, which converts it to CASH and sends it to the People chain in one transaction on Asset
+Hub (by teleport, or by reserve transfer where the chains do not trust the teleport), then, once
+that CASH is final on People, claims it through the host's top-up call. The top-up is registered
+under the ephemeral account's public key and driven by the host from there.
 The surface shows the top-up done as soon as the host reports the claim in a block; the worker
 follows the host's status over a subscription it holds open until the claim is final, and
 registers a further top-up for whatever a short claim left on the account. The worker keeps going
@@ -31,16 +32,16 @@ after the surface is closed.
 The conversion has two tiers, and the PSM is the default. Asset Hub's Peg Stability Module swaps
 an approved token for CASH at a given rate less its own fee, so what a purchase buys
 is known before it is quoted and cannot move before it settles: the provider delivers that
-token and the worker signs one `Utility.batch_all` that mints the CASH and teleports it to
-People. The AssetConversion pool is the fallback, priced at whatever it quotes at the time. It
+token and the worker signs one `Utility.batch_all` that mints the CASH and sends it to People.
+The AssetConversion pool is the fallback, priced at whatever it quotes at the time. It
 takes over whenever the PSM cannot serve a request (i.e.: no instance open for the pair, minting
 paused, the amount over the instance's debt ceiling or under its minimum) and then the provider
-delivers the native token and one XCM swaps and teleports it instead. Which tier a request takes
+delivers the native token and one XCM swaps and sends it instead. Which tier a request takes
 is decided at quote time, before the provider is told what to send, and recorded on the request
 with the fee rate it was quoted; the worker runs the tier it is handed and never chooses one.
 On the Polkadot route the token the buyer picks decides: DOT takes the pool, USDT the PSM (the
 pool through PAS when the PSM cannot serve), USDC a stable pool leg, one XCM that exchanges USDC
-for PAS and PAS for CASH inside the holding and teleports the CASH, every fee paid in the stable,
+for PAS and PAS for CASH inside the holding and sends the CASH on, every fee paid in the stable,
 and dotUSD, the underlying itself, a teleport with no conversion, its fees paid in dotUSD.
 `@getsome/funding` holds the four programs, the routing rule and the tick.
 

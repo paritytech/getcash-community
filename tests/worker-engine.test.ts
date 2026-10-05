@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   heldWrites: [] as Array<() => void>,
   tickOnce: vi.fn(),
   discoverPools: vi.fn(),
+  chooseCashTransfer: vi.fn(),
   settlementBalance: vi.fn(),
 }));
 
@@ -64,6 +65,7 @@ vi.mock("@getsome/funding", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   tickOnce: mocks.tickOnce,
   discoverPools: mocks.discoverPools,
+  chooseCashTransfer: mocks.chooseCashTransfer,
 }));
 
 vi.mock("@getsome/people", () => ({
@@ -174,6 +176,7 @@ function armSeams() {
   mocks.getHostProvider.mockReset();
   mocks.discoverPools.mockReset();
   mocks.tickOnce.mockReset();
+  mocks.chooseCashTransfer.mockReset();
   mocks.registerTopUp.mockReset();
   mocks.settlementBalance.mockReset();
   mocks.deriveEntropy.mockResolvedValue({ ok: true, value: SEED });
@@ -181,6 +184,7 @@ function armSeams() {
   mocks.discoverPools.mockImplementation(async (_api: unknown, ids: number[]) =>
     ids.map(() => ({ native: "N", underlying: "U" })),
   );
+  mocks.chooseCashTransfer.mockResolvedValue("teleport");
   mocks.watches.length = 0;
   mocks.stored.clear();
   mocks.storageDown = false;

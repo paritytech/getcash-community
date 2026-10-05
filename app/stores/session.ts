@@ -16,6 +16,7 @@ import type { RefundKey } from "@getsome/ephemeral";
 import {
   createManualRail,
   manualSourceIdOf,
+  NoCashTransferError,
   PERMILL,
   PSM_EXTERNAL,
   recordedRoute,
@@ -862,7 +863,10 @@ export const useSessionStore = defineStore("session", () => {
       "funding sizing estimate (public read)",
       20_000,
       estimatePublicFundingSizing({ settleAmount, probeAddress: DEV_RECIPIENT }),
-    ).catch(() => FALLBACK_FUNDING_SIZING);
+    ).catch((e: unknown) => {
+      if (e instanceof NoCashTransferError) throw e;
+      return FALLBACK_FUNDING_SIZING;
+    });
   }
 
   /** (Re)quotes the Meld rail for the current CASH amount and region. The mock world simulates

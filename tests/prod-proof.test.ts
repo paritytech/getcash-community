@@ -17,6 +17,7 @@ import {
 import { getPolkadotSigner } from "polkadot-api/signer";
 import { deriveKeypairWithSecret } from "@getsome/ephemeral";
 import {
+  chooseCashTransfer,
   DEFAULT_INCLUSION_TIMEOUT_MS,
   DEFAULT_SLIPPAGE_PCT,
   DEFAULT_TICK_TIMEOUT_MS,
@@ -69,6 +70,14 @@ describe.runIf(process.env.PROD_PROOF === "1")("production proof", () => {
       new TextEncoder().encodeInto(`getcash-prod-proof-${Date.now()}`, entropy);
       const burner = deriveKeypairWithSecret(entropy);
       console.log(`BURNER ${burner.address}  entropy=${toHex(entropy)}`);
+
+      const transfer = await chooseCashTransfer({
+        assetHub: ahC,
+        people: peC,
+        assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
+        peopleParaId: PASEO_PEOPLE_PARA_ID,
+      });
+      console.log(`CASH moves to People by ${transfer}`);
 
       // Size the deposit as the app does
       const sizing = await estimateFundingSizing({
@@ -126,7 +135,7 @@ describe.runIf(process.env.PROD_PROOF === "1")("production proof", () => {
               api: ah,
               peopleApi: pe,
               route: { tier: "pool" },
-              transfer: "teleport",
+              transfer,
               pool,
               address: burner.address,
               signer: burner.signer,
