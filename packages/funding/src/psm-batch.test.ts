@@ -645,7 +645,7 @@ describe("dryRunPsmBatch", () => {
                 value: {
                   execution_result: {
                     type: "Incomplete",
-                    value: { used: {}, error: { type: opts.peopleError } },
+                    value: { used: {}, error: { index: 1, error: { type: opts.peopleError } } },
                   },
                   emitted_events: [],
                 },

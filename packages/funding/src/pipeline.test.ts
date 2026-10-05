@@ -214,7 +214,10 @@ const scriptedPeople = (opts: {
           return {
             success: true,
             value: {
-              execution_result: { type: "Incomplete", value: { used: {}, error: { type: error } } },
+              execution_result: {
+                type: "Incomplete",
+                value: { used: {}, error: { index: 1, error: { type: error } } },
+              },
               emitted_events: [],
             },
           };
@@ -2697,7 +2700,7 @@ describe("estimateDestinationFeeCash", () => {
             value: {
               execution_result: {
                 type: "Incomplete",
-                value: { used: {}, error: { type: "TooExpensive" } },
+                value: { used: {}, error: { index: 1, error: { type: "TooExpensive" } } },
               },
               emitted_events: [],
             },

@@ -55,7 +55,14 @@ import type { TypedApi } from "polkadot-api";
 import type { CashTransfer } from "./cash-transfer";
 import { describeDispatchError } from "./dispatch-error";
 import { STABLE_TOKENS, asLocation, stableTxOptions, type Location, type Stable } from "./stable";
-import { creditedTo, forwardedTo, siblingOrigin, signedOrigin, trappedIn } from "./xcm-dry-run";
+import {
+  creditedTo,
+  forwardedTo,
+  siblingOrigin,
+  signedOrigin,
+  trappedIn,
+  xcmErrorName,
+} from "./xcm-dry-run";
 
 type AssetHubApi = TypedApi<typeof paseo_next_v2>;
 export type PeopleApi = TypedApi<typeof paseo_people_next>;
@@ -500,8 +507,7 @@ async function dryRunOnPeople(args: {
   if (!dr.success) return { failed: "People would not dry-run the forwarded program" };
   const outcome = dr.value.execution_result;
   if (outcome.type !== "Complete") {
-    const error = (outcome.value as { error?: { type?: string } }).error?.type ?? outcome.type;
-    return { failed: `the forwarded program fails on People with ${error}` };
+    return { failed: `the forwarded program fails on People with ${xcmErrorName(outcome)}` };
   }
   const events = dr.value.emitted_events;
   return { landed: creditedTo(events, args.beneficiaryHex, "asset"), trapped: trappedIn(events) };

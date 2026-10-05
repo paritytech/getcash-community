@@ -219,4 +219,36 @@ describe("withdrawal transactions", () => {
       { id: CASH_LOCATION, fun: { type: "Fungible", value: XCM.cashToSend } },
     ]);
   });
+
+  it("keeps the reserve withdrawal's shape when the allowance takes every PAS, the PAS arriving empty", () => {
+    const allSpent = { ...XCM, transfer: "reserve" as const, payFeesPas: XCM.pasToWithdraw };
+    const { api, seen } = recordingApi();
+    buildWithdrawXcm(api, allSpent);
+    const execute = seen.execute as { message: { value: Instruction[] } };
+    const t = execute.message.value[2]!.value as { assets: unknown };
+    expect(t.assets).toEqual([
+      {
+        type: "Teleport",
+        value: {
+          type: "Wild",
+          value: { type: "AllOf", value: { id: PEOPLE_NATIVE, fun: { type: "Fungible" } } },
+        },
+      },
+      {
+        type: "ReserveWithdraw",
+        value: {
+          type: "Wild",
+          value: { type: "AllOf", value: { id: CASH_LOCATION, fun: { type: "Fungible" } } },
+        },
+      },
+    ]);
+    const standIn = forwardedStandIn(allSpent);
+    expect(standIn.value.slice(0, 4).map((i) => i.type)).toEqual([
+      "WithdrawAsset",
+      "PayFees",
+      "ReceiveTeleportedAsset",
+      "WithdrawAsset",
+    ]);
+    expect(standIn.value[2]!.value).toEqual([]);
+  });
 });

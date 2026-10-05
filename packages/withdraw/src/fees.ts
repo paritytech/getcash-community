@@ -30,6 +30,7 @@ import {
   siblingOrigin,
   signedOrigin,
   trappedIn,
+  xcmErrorName,
   type CashTransfer,
 } from "@getsome/funding";
 import { PEOPLE_NATIVE, PEOPLE_TX_OPTIONS } from "./paseo";
@@ -362,8 +363,7 @@ export async function dryRunOnAssetHub(
   if (!dr.success) throw new Error("not submitted: Asset Hub would not dry-run the program");
   const outcome = dr.value.execution_result;
   if (outcome.type !== "Complete") {
-    const error = (outcome.value as { error?: { type?: string } }).error?.type ?? outcome.type;
-    throw new Error(`not submitted: the program fails on Asset Hub with ${error}`);
+    throw new Error(`not submitted: the program fails on Asset Hub with ${xcmErrorName(outcome)}`);
   }
   const trapped = trappedIn(dr.value.emitted_events);
   if (trapped > 0n)

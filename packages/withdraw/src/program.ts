@@ -130,14 +130,14 @@ export interface WithdrawXcmArgs {
 /** The transfer's asset filters: the PAS the fees leave and all the CASH. The PAS always
  *  teleports, since the relay token moves between system chains by teleport everywhere; only the
  *  CASH follows `transfer`. A teleport takes both in one filter. A reserve withdrawal names each,
- *  the PAS only when the allowance leaves some. */
+ *  the PAS filter present even when the allowance leaves none: the message is weighed once,
+ *  before the PAS left over is known, so its shape must not depend on the amounts. */
 function transferFilters(args: WithdrawXcmArgs) {
   if (args.transfer === "teleport") {
     return [{ type: "Teleport", value: { type: "Wild", value: { type: "AllCounted", value: 2 } } }];
   }
-  const pasLeft = args.pasToWithdraw - args.payFeesPas;
   return [
-    ...(pasLeft > 0n ? [{ type: "Teleport", value: allOf(PEOPLE_NATIVE) }] : []),
+    { type: "Teleport", value: allOf(PEOPLE_NATIVE) },
     { type: "ReserveWithdraw", value: allOf(CASH_LOCATION) },
   ];
 }
@@ -176,7 +176,8 @@ export function buildWithdrawXcm(peopleApi: PeopleApi, args: WithdrawXcmArgs) {
 
 /** The instructions that land the assets on Asset Hub, one per filter of the transfer in filter
  *  order, the fee's first with its PayFees: teleported assets arrive by ReceiveTeleportedAsset,
- *  reserve-withdrawn CASH by WithdrawAsset from People's account there. */
+ *  reserve-withdrawn CASH by WithdrawAsset from People's account there. A reserve withdrawal's
+ *  PAS filter stays when no PAS is left, so its ReceiveTeleportedAsset arrives empty. */
 function arrivals(args: WithdrawXcmArgs) {
   const pasLeft = args.pasToWithdraw - args.payFeesPas;
   if (args.transfer === "teleport") {
@@ -192,7 +193,7 @@ function arrivals(args: WithdrawXcmArgs) {
   return [
     { type: "WithdrawAsset", value: [cash(args.remoteFeesCash)] },
     { type: "PayFees", value: { asset: cash(args.remoteFeesCash) } },
-    ...(pasLeft > 0n ? [{ type: "ReceiveTeleportedAsset", value: [pas(pasLeft)] }] : []),
+    { type: "ReceiveTeleportedAsset", value: pasLeft > 0n ? [pas(pasLeft)] : [] },
     { type: "WithdrawAsset", value: [cash(args.cashToSend)] },
   ];
 }
