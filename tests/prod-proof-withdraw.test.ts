@@ -71,6 +71,7 @@ describe.runIf(process.env.PROD_PROOF_WITHDRAW === "1")("withdrawal production p
               peopleParaId: PASEO_PEOPLE_PARA_ID,
               poolAccount: PASEO_PEOPLE_POOL_ACCOUNT,
               slippagePct: DEFAULT_WITHDRAW_SLIPPAGE_PCT,
+              transfer: "teleport",
               tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
               submitTimeoutMs: DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
               readKeyOnPeople: async (ss58) => ({

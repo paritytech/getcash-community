@@ -509,6 +509,7 @@ async function tickRecord(record, nowMs) {
           peopleParaId: record.peopleParaId,
           poolAccount: record.poolAccount,
           slippagePct: record.slippagePct,
+          transfer: "teleport",
           tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
           submitTimeoutMs: DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
           // Every submit is on People; one anchor per tick serves them all.

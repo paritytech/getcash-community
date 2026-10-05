@@ -30,6 +30,7 @@ import {
   siblingOrigin,
   signedOrigin,
   trappedIn,
+  type CashTransfer,
 } from "@getsome/funding";
 import { PEOPLE_NATIVE, PEOPLE_TX_OPTIONS } from "./paseo";
 import { cashInFor, type PoolReserves } from "./pool";
@@ -106,6 +107,8 @@ export interface SizeSwapInput {
   destinationHex: string;
   claimerHex?: string;
   assetHubParaId: number;
+  /** How the CASH moves to Asset Hub; the XCM's length, and so its fee, depends on it. */
+  transfer: CashTransfer;
 }
 
 /** The swap that buys the PAS the XCM needs on the key: the existential deposit, which must
@@ -126,6 +129,7 @@ export async function sizeSwap(input: SizeSwapInput): Promise<SwapArgs> {
     destinationHex: input.destinationHex,
     claimerHex: input.claimerHex ?? input.key.publicKeyHex,
     assetHubParaId: input.assetHubParaId,
+    transfer: input.transfer,
   });
   const pasOut = ed + reserve;
   const quoted = cashInFor(pasOut, reserves);
@@ -165,6 +169,8 @@ export interface SizeXcmInput {
   peopleParaId: number;
   /** How far below the quoted sale the Asset Hub price may move before the program fails there. */
   slippagePct: number;
+  /** How the CASH moves to Asset Hub. */
+  transfer: CashTransfer;
 }
 
 /** What a dry run of the XCM on People reports. */
@@ -266,6 +272,7 @@ export async function sizeXcm(input: SizeXcmInput): Promise<XcmSizing> {
     destinationHex: input.destinationHex,
     claimerHex,
     assetHubParaId: input.assetHubParaId,
+    transfer: input.transfer,
   });
 
   // The transaction fee in PAS, for the exact call, with headroom. Left on the key for the

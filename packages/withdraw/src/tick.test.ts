@@ -344,6 +344,7 @@ async function drive(
         peopleParaId: 1502,
         poolAccount: PASEO_PEOPLE_POOL_ACCOUNT,
         slippagePct: 5,
+        transfer: "teleport",
         tickTimeoutMs: 1_000,
         submitTimeoutMs: 1_000,
         readKeyOnPeople: async () => ({ cash: world.state.keyCash, pas: world.state.keyPas }),

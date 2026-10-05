@@ -51,6 +51,7 @@ describe.runIf(process.env.VERIFY_WITHDRAW === "1")("live withdrawal sizing", ()
         cashBalance: cashOnKey,
         destinationHex: toHex(AccountId().enc(DESTINATION)),
         assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
+        transfer: "teleport",
       });
       console.log(`swap: at most ${fmtCash(swap.cashInMax)} CASH -> ${fmtPas(swap.pasOut)} PAS`);
       expect(swap.cashInMax).toBeLessThan(cashOnKey);
@@ -70,6 +71,7 @@ describe.runIf(process.env.VERIFY_WITHDRAW === "1")("live withdrawal sizing", ()
         assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
         peopleParaId: PASEO_PEOPLE_PARA_ID,
         slippagePct: 5,
+        transfer: "teleport",
       }).catch((e: unknown) => {
         if (e instanceof NeedsSwapError) return null;
         throw e;
