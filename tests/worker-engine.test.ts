@@ -985,6 +985,50 @@ describe("worker funding engine", () => {
     expect((await engine.tickAllFunding()).ticked).toBe(0);
   });
 
+  it("claims a key sent home whole under ids past the ones it was paid under, held to the quote", async () => {
+    armSeams();
+    const engine = await freshEngine();
+    const OFFSET = 1_000_000;
+    // Refused up front: an offset the id's counter cannot hold, and a floor that is not a share.
+    for (const bad of [{ claimIdOffset: -1 }, { claimIdOffset: 2.5 }, { claimIdOffset: 2 ** 32 }]) {
+      const refused = await engine.startFunding(JSON.stringify({ ...HANDOFF, ...bad }));
+      expect(refused).toMatchObject({ error: "invalid" });
+      expect(refused.reason).toContain("claimIdOffset");
+    }
+    const noShare = await engine.startFunding(JSON.stringify({ ...HANDOFF, quoteFloorPct: 100 }));
+    expect(noShare.reason).toContain("quoteFloorPct");
+
+    await engine.startFunding(
+      JSON.stringify({
+        ...HANDOFF,
+        settleAmount: "10000",
+        claimIdOffset: OFFSET,
+        quoteFloorPct: 2.5,
+      }),
+    );
+    expect(storedJob()).toMatchObject({ claimIdOffset: OFFSET, quoteFloorPct: 2.5 });
+    mocks.tickOnce.mockResolvedValueOnce(outcome("done"));
+    mocks.settlementBalance.mockResolvedValueOnce(SETTLE);
+    mocks.registerTopUp.mockResolvedValue(undefined);
+    await engine.tickAllFunding();
+    expect(mocks.tickOnce.mock.calls[0]![0]).toMatchObject({ quoteFloorPct: 2.5 });
+    // Never the key's own public key, which its first payment was registered under.
+    const firstId = topUpIdFor(BURNER.publicKey, OFFSET);
+    expect(firstId).not.toEqual(BURNER.publicKey);
+    expect(mocks.registerTopUp.mock.calls[0]![2]).toEqual(firstId);
+    expect(storedJob().claim).toMatchObject({ phase: "claiming", attempt: 0, id: toHex(firstId) });
+
+    // The subscription follows the same id, and a short settle moves on to the next one past it.
+    expect(openWatch().id).toEqual(firstId);
+    pushStatus(partially(SETTLE / 2n));
+    expect((await sessionStatus(engine)).claim).toMatchObject({ phase: "sizing", attempt: 1 });
+    mocks.settlementBalance.mockResolvedValueOnce(SETTLE / 2n);
+    await engine.tickAllFunding();
+    const nextId = topUpIdFor(BURNER.publicKey, OFFSET + 1);
+    expect(mocks.registerTopUp.mock.calls[1]![2]).toEqual(nextId);
+    expect(openWatch().id).toEqual(nextId);
+  });
+
   it("keeps the registering marker across a failed call and takes AlreadyExists as registered", async () => {
     armSeams();
     vi.useFakeTimers();
