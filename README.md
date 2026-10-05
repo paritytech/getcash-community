@@ -42,7 +42,7 @@ with the fee rate it was quoted; the worker runs the tier it is handed and never
 On the Polkadot route the token the buyer picks decides: DOT takes the pool, USDT the PSM (the
 pool through PAS when the PSM cannot serve), USDC a stable pool leg, one XCM that exchanges USDC
 for PAS and PAS for CASH inside the holding and sends the CASH on, every fee paid in the stable,
-and dotUSD, the underlying itself, a teleport with no conversion, its fees paid in dotUSD.
+and dotUSD, the underlying itself, sent as it is with no conversion, its fees paid in dotUSD.
 `@getsome/funding` holds the four programs, the routing rule and the tick.
 
 The two talk over host storage. `lib/worker-rpc.ts` (surface side) and `worker/src/rpc.js`
@@ -193,7 +193,7 @@ Two tests submit real transactions to the Paseo testnet and are skipped unless e
 `PROD_PROOF=1` runs `tests/prod-proof.test.ts`, `VERIFY_AMOUNTS=1` runs
 `tests/verify-amounts.test.ts`. `VERIFY_STABLE=1` runs `tests/verify-stable.test.ts`, which
 dry-runs the USDC and USDT programs from a rich account on Paseo and spends nothing, and
-`VERIFY_DOTUSD=1` runs `tests/verify-dotusd.test.ts`, the same for the dotUSD teleport.
+`VERIFY_DOTUSD=1` runs `tests/verify-dotusd.test.ts`, the same for the dotUSD tier.
 
 ### Demo-only paths
 

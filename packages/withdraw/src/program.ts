@@ -107,7 +107,7 @@ function remoteProgram(destinationHex: string, claimerHex: string, minPasOut: bi
 
 export interface WithdrawXcmArgs {
   /** All the CASH the key holds after the swap. */
-  cashToTeleport: bigint;
+  cashToSend: bigint;
   /** The PAS the XCM withdraws: what the key holds less the transaction fee and its margin. */
   pasToWithdraw: bigint;
   /** People's XCM fee allowance, in PAS. The unspent part travels on with the rest. */
@@ -147,7 +147,7 @@ export function withdrawMessage(args: WithdrawXcmArgs) {
   return {
     type: "V5",
     value: [
-      { type: "WithdrawAsset", value: [pas(args.pasToWithdraw), cash(args.cashToTeleport)] },
+      { type: "WithdrawAsset", value: [pas(args.pasToWithdraw), cash(args.cashToSend)] },
       { type: "PayFees", value: { asset: pas(args.payFeesPas) } },
       {
         type: "InitiateTransfer",
@@ -185,8 +185,7 @@ function arrivals(args: WithdrawXcmArgs) {
       { type: "PayFees", value: { asset: cash(args.remoteFeesCash) } },
       {
         type: "ReceiveTeleportedAsset",
-        value:
-          pasLeft > 0n ? [pas(pasLeft), cash(args.cashToTeleport)] : [cash(args.cashToTeleport)],
+        value: pasLeft > 0n ? [pas(pasLeft), cash(args.cashToSend)] : [cash(args.cashToSend)],
       },
     ];
   }
@@ -194,7 +193,7 @@ function arrivals(args: WithdrawXcmArgs) {
     { type: "WithdrawAsset", value: [cash(args.remoteFeesCash)] },
     { type: "PayFees", value: { asset: cash(args.remoteFeesCash) } },
     ...(pasLeft > 0n ? [{ type: "ReceiveTeleportedAsset", value: [pas(pasLeft)] }] : []),
-    { type: "WithdrawAsset", value: [cash(args.cashToTeleport)] },
+    { type: "WithdrawAsset", value: [cash(args.cashToSend)] },
   ];
 }
 

@@ -37,7 +37,7 @@
 // cushioned once with FEE_MARGIN_BPS, the unspent part refunded to a burner kept alive by its
 // min_balance.
 //
-// The teleport tier has a fourth shape (`buildTeleportFundingProgram`): the burner holds the
+// The dotUSD tier has a fourth shape (`buildDotUsdFundingProgram`): the burner holds the
 // underlying itself, deposited as dotUSD, so the program moves it to People with no exchange and
 // no mint. Its fees follow the PSM shape too: paid in the underlying from an allowance the program
 // refunds, cushioned once with FEE_MARGIN_BPS, the min_balance kept on the burner.
@@ -348,13 +348,13 @@ export function buildStableFundingProgram(args: {
   return { message, max_weight: args.maxWeight } as unknown as ExecuteArgs;
 }
 
-/** The teleport tier's program: the underlying the buyer deposited as dotUSD, landed on the
+/** The dotUSD tier's program: the underlying the buyer deposited as dotUSD, landed on the
  *  burner's People address as it is, every Asset Hub fee paid in it from an allowance the program
  *  refunds. The PSM shape without the mint before it: one asset in the holding and in the fees
  *  register alike, the fees register filled first, so the transfer's `AllCounted(1)` takes what
  *  the allowance leaves. The refund comes after the transfer and lands in an account its
  *  min_balance keeps alive. */
-export function buildTeleportFundingProgram(args: {
+export function buildDotUsdFundingProgram(args: {
   /** Underlying withdrawn into the holding: what is sent plus the fee allowance. The asset's
    *  min_balance stays on the burner. */
   withdrawUnderlying: bigint;
@@ -395,9 +395,9 @@ export function buildTeleportFundingProgram(args: {
   return { message, max_weight: args.maxWeight } as unknown as ExecuteArgs;
 }
 
-/** The signing options that charge the teleport tier's dispatch fee in the underlying, the one
+/** The signing options that charge the dotUSD tier's dispatch fee in the underlying, the one
  *  asset the burner holds. The same options price the fee. */
-export function teleportTxOptions(): { asset: Location } {
+export function dotUsdTxOptions(): { asset: Location } {
   return { asset: asLocation(TOKENS.DOTUSD.location) };
 }
 
@@ -870,10 +870,10 @@ export async function estimateStableProgramFees(args: {
   };
 }
 
-/** Every cost of the teleport tier's program, measured against the program itself, all in the
+/** Every cost of the dotUSD tier's program, measured against the program itself, all in the
  *  underlying. Throws when the runtime declines a read or the deposit does not cover what is held
  *  back. */
-export async function estimateTeleportProgramFees(args: {
+export async function estimateDotUsdProgramFees(args: {
   api: AssetHubApi;
   beneficiaryHex: string;
   peopleParaId: number;
@@ -895,7 +895,7 @@ export async function estimateTeleportProgramFees(args: {
   const underlyingAsset = { type: "V5", value: token.location };
   const details = await args.api.query.Assets.Asset.getValue(token.assetHubId);
   if (details === undefined) {
-    throw new Error(`teleport program fee estimate: ${token.symbol} is not an asset on Asset Hub`);
+    throw new Error(`dotUSD program fee estimate: ${token.symbol} is not an asset on Asset Hub`);
   }
   const minBalance = details.min_balance;
   // The program carved from the deposit with the dispatch fee and the min_balance kept back. Only
@@ -908,10 +908,10 @@ export async function estimateTeleportProgramFees(args: {
     const withdraw = args.depositUnderlying - dispatchUnderlying - minBalance;
     if (withdraw <= feeAllowance) {
       throw new DepositBelowFeesError(
-        `teleport program fee estimate: ${args.depositUnderlying} of ${token.symbol} does not cover the ${minBalance + feeAllowance} held back for fees`,
+        `dotUSD program fee estimate: ${args.depositUnderlying} of ${token.symbol} does not cover the ${minBalance + feeAllowance} held back for fees`,
       );
     }
-    return buildTeleportFundingProgram({
+    return buildDotUsdFundingProgram({
       withdrawUnderlying: withdraw,
       payFeesUnderlying: feeAllowance,
       remoteFeesCash: args.remoteFeesCash,
@@ -929,13 +929,13 @@ export async function estimateTeleportProgramFees(args: {
     (rough as { message: unknown }).message as never,
   );
   if (!weight.success) {
-    throw new Error("teleport program fee estimate: the runtime would not weigh it");
+    throw new Error("dotUSD program fee estimate: the runtime would not weigh it");
   }
   const localFee = await args.api.apis.XcmPaymentApi.query_weight_to_asset_fee(
     weight.value,
     underlyingAsset as never,
   );
-  if (!localFee.success) throw new Error("teleport program fee estimate: local fee unavailable");
+  if (!localFee.success) throw new Error("dotUSD program fee estimate: local fee unavailable");
   const localExternal = localFee.value;
   const maxWeight = { ref_time: weight.value.ref_time, proof_size: weight.value.proof_size };
 
@@ -962,14 +962,14 @@ export async function estimateTeleportProgramFees(args: {
     forwarded as never,
     underlyingAsset as never,
   );
-  if (!df.success) throw new Error("teleport program fee estimate: delivery fee unavailable");
+  if (!df.success) throw new Error("dotUSD program fee estimate: delivery fee unavailable");
   const deliveryExternal = extractFungibleAmount(df.value);
 
   // Price the dispatch against the program carrying the final amounts and the declared weight, so
   // the charge it predicts is the charge the submitted call pays. The dispatch fee itself is not
   // yet known to keep out of the probe; a few thousand units do not change a compact encoding's
   // length.
-  const options = teleportTxOptions();
+  const options = dotUsdTxOptions();
   const dispatchNative = await args.api.tx.PolkadotXcm.execute(
     probe(localExternal + deliveryExternal, 0n, maxWeight),
   ).getEstimatedFees(args.dryRunFrom ?? args.feeProbeAddress, options);
@@ -984,7 +984,7 @@ export async function estimateTeleportProgramFees(args: {
     );
   if (dispatchExternal === undefined) {
     throw new Error(
-      "teleport program fee estimate: the pool cannot price the dispatch fee in the underlying",
+      "dotUSD program fee estimate: the pool cannot price the dispatch fee in the underlying",
     );
   }
 

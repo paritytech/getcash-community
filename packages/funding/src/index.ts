@@ -27,18 +27,18 @@ export {
   buildFundingProgram,
   buildPsmFundingProgram,
   buildStableFundingProgram,
-  buildTeleportFundingProgram,
+  buildDotUsdFundingProgram,
   DepositBelowFeesError,
   destinationEarmark,
   dryRunFundingProgram,
   estimateDestinationFeeCash,
   estimateFundingProgramFees,
   estimateStableProgramFees,
-  estimateTeleportProgramFees,
+  estimateDotUsdProgramFees,
   FEE_MARGIN_BPS,
   FUNDING_PROGRAM_MAX_WEIGHT,
   ProgramRejectedError,
-  teleportTxOptions,
+  dotUsdTxOptions,
   withFeeMargin,
 } from "./funding-program";
 export type { FundingProgramFees, PeopleApi, Pool, StableLegFees } from "./funding-program";
@@ -67,7 +67,7 @@ export type {
   RouteQuery,
   Stable,
   StablePoolRoute,
-  TeleportRoute,
+  DotUsdRoute,
 } from "./route";
 export { chooseCashTransfer, NoCashTransferError } from "./cash-transfer";
 export type { CashTransfer } from "./cash-transfer";

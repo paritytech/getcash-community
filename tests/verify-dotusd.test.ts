@@ -1,4 +1,4 @@
-// Dry runs of the teleport tier's program on Paseo Asset Hub next, from the account richest in
+// Dry runs of the dotUSD tier's program on Paseo Asset Hub next, from the account richest in
 // dotUSD and as its own beneficiary: nothing is submitted and nothing is spent. Sizes the deposit
 // as the app does, builds the program the worker would submit, runs it on both chains, and prints
 // the fees, what would land on People and the refund, for a few purchase sizes.
@@ -10,13 +10,13 @@ import { getWsProvider } from "polkadot-api/ws";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import { TOKENS } from "@getsome/core";
 import {
-  buildTeleportFundingProgram,
+  buildDotUsdFundingProgram,
   chooseCashTransfer,
   destinationEarmark,
   discoverPool,
   dryRunFundingProgram,
   estimateDestinationFeeCash,
-  estimateTeleportProgramFees,
+  estimateDotUsdProgramFees,
   PASEO_ASSET_HUB_PARA_ID,
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
@@ -29,8 +29,8 @@ const units = (v: bigint) => (Number(v) / 1e6).toFixed(6);
 const toHex = (bytes: Uint8Array) =>
   `0x${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
 
-describe.runIf(process.env.VERIFY_DOTUSD === "1")("teleport tier dry runs", () => {
-  it("dry-runs the dotUSD teleport from a rich holder as its own beneficiary", async () => {
+describe.runIf(process.env.VERIFY_DOTUSD === "1")("dotUSD tier dry runs", () => {
+  it("dry-runs the dotUSD program from a rich holder as its own beneficiary", async () => {
     const ahC = createClient(getWsProvider("wss://paseo-asset-hub-next-rpc.polkadot.io"));
     const peC = createClient(getWsProvider("wss://paseo-people-next-system-rpc.polkadot.io"));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -67,7 +67,7 @@ describe.runIf(process.env.VERIFY_DOTUSD === "1")("teleport tier dry runs", () =
         });
         const buyTarget = settle + destinationFee;
         const earmark = destinationEarmark(buyTarget, destinationFee);
-        const fees = await estimateTeleportProgramFees({
+        const fees = await estimateDotUsdProgramFees({
           api: ah,
           beneficiaryHex: holderHex,
           peopleParaId: PASEO_PEOPLE_PARA_ID,
@@ -80,7 +80,7 @@ describe.runIf(process.env.VERIFY_DOTUSD === "1")("teleport tier dry runs", () =
         // Sized as the app does, then the program as the worker builds it once that has arrived.
         const asked = stableDepositNeeded(buyTarget, fees);
         const send = asked - fees.dispatchExternal - fees.heldBackExternal;
-        const execArgs = buildTeleportFundingProgram({
+        const execArgs = buildDotUsdFundingProgram({
           withdrawUnderlying: send + fees.feeAllowanceExternal,
           payFeesUnderlying: fees.feeAllowanceExternal,
           remoteFeesCash: earmark,

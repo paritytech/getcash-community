@@ -10,7 +10,7 @@
 // and is refunded to the burner where unspent, and the PSM takes its fee on the mint; there is no
 // static fallback, because the tier is only chosen once the chain has answered. The stable pool
 // tier's fees have the PSM tier's shape, with the two-hop pool quote in place of the mint; the
-// teleport tier's have it too, with nothing in place of the mint, since the deposit is the
+// dotUSD tier's have it too, with nothing in place of the mint, since the deposit is the
 // underlying itself. remoteFeeBuffer is the same on every tier: the extra underlying to over-buy
 // for the destination's execution fee, read from a dry run of the forwarded program on People, with
 // the same tenth on top.
@@ -29,7 +29,7 @@ import {
   estimateFundingProgramFees,
   estimatePsmBatchFees,
   estimateStableProgramFees,
-  estimateTeleportProgramFees,
+  estimateDotUsdProgramFees,
   NoCashTransferError,
   PASEO_ASSET_HUB_PARA_ID,
   PASEO_PEOPLE_PARA_ID,
@@ -109,10 +109,10 @@ export interface StablePoolFundingSizing {
   askedDeposit: bigint;
 }
 
-/** The teleport tier's costs: the PSM tier's shape without the mint, the deposit being the
+/** The dotUSD tier's costs: the PSM tier's shape without the mint, the deposit being the
  *  underlying itself. */
-export interface TeleportFundingSizing {
-  tier: "teleport";
+export interface DotUsdFundingSizing {
+  tier: "dotusd";
   /** Extra underlying to send along for the destination's execution fee. */
   remoteFeeBuffer: bigint;
   /** The dispatch fee, in the underlying, kept out of the send. */
@@ -129,7 +129,7 @@ export interface TeleportFundingSizing {
 }
 
 export type FundingSizing =
-  PoolFundingSizing | StablePoolFundingSizing | PsmFundingSizing | TeleportFundingSizing;
+  PoolFundingSizing | StablePoolFundingSizing | PsmFundingSizing | DotUsdFundingSizing;
 
 /** A throwaway 32-byte beneficiary for the fee reads; it does not affect any fee. */
 const ZERO_32 = `0x${"00".repeat(32)}`;
@@ -289,15 +289,13 @@ export async function estimateStableFundingSizing(
   };
 }
 
-/** The teleport tier's sizing: the program's own fees, measured against the program that sends
+/** The dotUSD tier's sizing: the program's own fees, measured against the program that sends
  *  the settle amount plus the destination fee. Throws when a read fails, as the PSM tier's does. */
-export async function estimateTeleportFundingSizing(
-  args: SizingArgs,
-): Promise<TeleportFundingSizing> {
+export async function estimateDotUsdFundingSizing(args: SizingArgs): Promise<DotUsdFundingSizing> {
   const { api, transfer, destinationFee } = await sizingReads(args);
   const buyTarget = args.settleAmount + destinationFee;
   // At the magnitude the program will carry, as the other tiers' probes do.
-  const fees = await estimateTeleportProgramFees({
+  const fees = await estimateDotUsdProgramFees({
     api,
     beneficiaryHex: ZERO_32,
     peopleParaId: args.peopleParaId,
@@ -307,7 +305,7 @@ export async function estimateTeleportFundingSizing(
     feeProbeAddress: args.probeAddress,
   });
   return {
-    tier: "teleport",
+    tier: "dotusd",
     remoteFeeBuffer: destinationFee,
     dispatchExternal: fees.dispatchExternal,
     heldBackExternal: fees.heldBackExternal,
@@ -377,8 +375,8 @@ export async function quoteDepositValue(
   let fixedGate = true;
   // A deposit under what the program keeps out for its own fees has nothing to convert.
   try {
-    if (route.tier === "teleport") {
-      const fees = await estimateTeleportProgramFees({ ...common, depositUnderlying: deposit });
+    if (route.tier === "dotusd") {
+      const fees = await estimateDotUsdProgramFees({ ...common, depositUnderlying: deposit });
       reaches = leftAfterFees(deposit, fees);
     } else if (route.tier === "psm") {
       const fees = await estimatePsmBatchFees({ ...common, route, depositExternal: deposit });

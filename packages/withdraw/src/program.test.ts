@@ -38,7 +38,7 @@ function recordingApi() {
 }
 
 const XCM = {
-  cashToTeleport: 2_000_000n,
+  cashToSend: 2_000_000n,
   pasToWithdraw: 958_441_000n,
   payFeesPas: 319_110_000n,
   remoteFeesCash: 300_000n,
@@ -74,7 +74,7 @@ describe("withdrawal transactions", () => {
       "InitiateTransfer",
     ]);
     const withdrawn = withdraw!.value as Fungible[];
-    expect(withdrawn.map((a) => a.fun.value)).toEqual([XCM.pasToWithdraw, XCM.cashToTeleport]);
+    expect(withdrawn.map((a) => a.fun.value)).toEqual([XCM.pasToWithdraw, XCM.cashToSend]);
     expect(withdrawn[0]!.id).toEqual(PEOPLE_NATIVE);
     expect(withdrawn[1]!.id).toEqual(CASH_LOCATION);
     expect((payFees!.value as { asset: Fungible }).asset).toEqual({
@@ -187,7 +187,7 @@ describe("withdrawal transactions", () => {
     const travelling = standIn.value[2]!.value as Fungible[];
     expect(travelling.map((a) => a.fun.value)).toEqual([
       XCM.pasToWithdraw - XCM.payFeesPas,
-      XCM.cashToTeleport,
+      XCM.cashToSend,
     ]);
     // An allowance that takes every PAS leaves only the CASH travelling.
     const allSpent = forwardedStandIn({ ...XCM, payFeesPas: XCM.pasToWithdraw });
@@ -216,7 +216,7 @@ describe("withdrawal transactions", () => {
       { id: PEOPLE_NATIVE, fun: { type: "Fungible", value: XCM.pasToWithdraw - XCM.payFeesPas } },
     ]);
     expect(travellingCash!.value).toEqual([
-      { id: CASH_LOCATION, fun: { type: "Fungible", value: XCM.cashToTeleport } },
+      { id: CASH_LOCATION, fun: { type: "Fungible", value: XCM.cashToSend } },
     ]);
   });
 });

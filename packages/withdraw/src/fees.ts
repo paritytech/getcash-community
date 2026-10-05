@@ -121,7 +121,7 @@ export async function sizeSwap(input: SizeSwapInput): Promise<SwapArgs> {
   // A stand-in for the XCM. The fee grows with the call's length, and the amounts still unknown
   // encode to as many bytes as any real one will, so the reserve is not below the real fee.
   const { reserve } = await xcmTxFeeReserve(input.peopleApi, input.key.address, {
-    cashToTeleport: input.cashBalance,
+    cashToSend: input.cashBalance,
     pasToWithdraw: LONGEST_AMOUNT,
     payFeesPas: LONGEST_AMOUNT,
     remoteFeesCash: destinationEarmark(input.cashBalance, ASSET_HUB_FEE_BUFFER_CASH),
@@ -264,7 +264,7 @@ export async function sizeXcm(input: SizeXcmInput): Promise<XcmSizing> {
   const minPasOut = (quoted * BigInt(Math.round((100 - input.slippagePct) * 100))) / 10_000n;
 
   const base = (pasToWithdraw: bigint, payFeesPas: bigint): WithdrawXcmArgs => ({
-    cashToTeleport: input.cashOnKey,
+    cashToSend: input.cashOnKey,
     pasToWithdraw,
     payFeesPas,
     remoteFeesCash,

@@ -208,7 +208,7 @@ export interface QuotedView {
   transactionFee?: string | null;
   networkFee?: string | null;
   partnerFee?: string | null;
-  /** The funding leg's own network fee, in `symbol` units: what the swap and the teleport up to
+  /** The funding leg's own network fee, in `symbol` units: what the swap and the send up to
    *  CASH on People cost, which the rail's quote knows nothing about. Priced by the app, not
    *  reported by the rail. */
   chainFee?: string | null;
@@ -690,7 +690,7 @@ export const useSessionStore = defineStore("session", () => {
     deposit?: DepositAsset,
   ): Promise<ConversionRoute> {
     if (!isHosted()) {
-      if (deposit === "dotUSD") return { tier: "teleport" };
+      if (deposit === "dotUSD") return { tier: "dotusd" };
       return deposit === undefined || deposit === "native"
         ? { tier: "pool" }
         : { tier: "pool", external: deposit };

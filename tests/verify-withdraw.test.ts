@@ -96,7 +96,7 @@ describe.runIf(process.env.VERIFY_WITHDRAW === "1")("live withdrawal sizing", ()
       console.log(`  tx fee reserve: ${fmtPas(sizing.txFeePasReserved)} PAS, reaped as dust`);
       console.log(`  People XCM:     ${fmtPas(args.payFeesPas)} PAS exact allowance`);
       console.log(
-        `  teleports:      ${fmtCash(args.cashToTeleport)} CASH + ${fmtPas(args.pasToWithdraw - args.payFeesPas)} PAS`,
+        `  sends:          ${fmtCash(args.cashToSend)} CASH + ${fmtPas(args.pasToWithdraw - args.payFeesPas)} PAS`,
       );
       console.log(
         `  AH earmark:     ${fmtCash(args.remoteFeesCash)} CASH, price floor ${fmtPas(args.minPasOut)} PAS`,
@@ -104,7 +104,7 @@ describe.runIf(process.env.VERIFY_WITHDRAW === "1")("live withdrawal sizing", ()
       console.log(`  lands:          ${fmtPas(sizing.landed)} PAS at the destination`);
       console.log(`  max weight:     ${JSON.stringify(args.maxWeight, (_k, v) => String(v))}`);
       // Every unit of CASH leaves, and every PAS but the fee reserve.
-      expect(args.cashToTeleport).toBe(cashOnKey);
+      expect(args.cashToSend).toBe(cashOnKey);
       expect(args.pasToWithdraw + sizing.txFeePasReserved).toBe(pasOnKey);
       expect(sizing.landed).toBeGreaterThanOrEqual(args.minPasOut);
     } finally {

@@ -88,7 +88,7 @@ describe("session store: Polkadot direct deposit in the mock world", () => {
   });
 
   it(
-    "quotes dotUSD under its own source on the teleport tier, and runs to done",
+    "quotes dotUSD under its own source on the dotUSD tier, and runs to done",
     { timeout: 30_000 },
     async () => {
       const store = useSessionStore();
@@ -104,7 +104,7 @@ describe("session store: Polkadot direct deposit in the mock world", () => {
         nativeAmount: null,
       });
       expect(store.mock?.sourceId).toBe("dotusd-assethub");
-      expect(store.mock?.route).toEqual({ tier: "teleport" });
+      expect(store.mock?.route).toEqual({ tier: "dotusd" });
 
       await store.start();
       expect(requests.phase).toBe("awaiting-deposit");

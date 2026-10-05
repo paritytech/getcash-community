@@ -66,9 +66,9 @@ const saveJobs = () => store.save();
  *   burnerAddress,                           // the address the surface showed
  *   depositExpiresAt: number|null,           // the rail's deposit deadline
  *   settleAmount, remoteFeeBuffer, keepNativeForFees, slippagePct,   // bigints as strings
- *   quotedDeposit?,                                    // psm, stable pool and teleport tiers
+ *   quotedDeposit?,                                    // psm, stable pool and dotUSD tiers
  *   underlyingAssetId, peopleParaId, assetHubGenesis, peopleGenesis,
- *   tier: "pool" | "psm" | "teleport", external?, feeRate?, // the conversion route the surface
+ *   tier: "pool" | "psm" | "dotusd", external?, feeRate?, // the conversion route the surface
  *                                            // decided at quote time; consumed here, never
  *                                            // re-decided
  *   phase: "starting" | FundingStep | "failed",  // await-native: the route's deposit asset
@@ -633,7 +633,7 @@ async function tickRecord(record, nowMs) {
     const api = ahClient.getTypedApi(paseo_next_v2);
     // Pool keys are re-discovered each wake and not persisted, in one read of the pool table: the
     // CASH pool, and for a pool job fed with a stable the stable's own pool too, under its
-    // pallet-assets id. The PSM and teleport tiers have no pool to find.
+    // pallet-assets id. The PSM and dotUSD tiers have no pool to find.
     const [pool, stablePool] =
       route.tier === "pool"
         ? await bounded(
