@@ -55,6 +55,7 @@ describe.runIf(process.env.VERIFY_DOTUSD === "1")("teleport tier dry runs", () =
           assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
           beneficiaryHex: holderHex,
           amount: settle,
+          transfer: "teleport",
         });
         const buyTarget = settle + destinationFee;
         const earmark = destinationEarmark(buyTarget, destinationFee);
@@ -64,6 +65,7 @@ describe.runIf(process.env.VERIFY_DOTUSD === "1")("teleport tier dry runs", () =
           peopleParaId: PASEO_PEOPLE_PARA_ID,
           depositUnderlying: buyTarget,
           remoteFeesCash: earmark,
+          transfer: "teleport",
           feeProbeAddress: holder,
           dryRunFrom: holder,
         });
@@ -76,6 +78,7 @@ describe.runIf(process.env.VERIFY_DOTUSD === "1")("teleport tier dry runs", () =
           remoteFeesCash: earmark,
           beneficiaryHex: holderHex,
           peopleParaId: PASEO_PEOPLE_PARA_ID,
+          transfer: "teleport",
           maxWeight: fees.maxWeight,
         });
         const { landed } = await dryRunFundingProgram({

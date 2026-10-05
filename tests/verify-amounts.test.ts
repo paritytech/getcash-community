@@ -79,6 +79,7 @@ describe.runIf(process.env.VERIFY_AMOUNTS === "1")("live amount check", () => {
             nativeBalance: deposit,
             minUnderlyingOut: buyTarget,
             remoteFeesCash: earmark,
+            transfer: "teleport",
             feeProbeAddress: from,
             dryRunFrom: from,
           });
@@ -90,6 +91,7 @@ describe.runIf(process.env.VERIFY_AMOUNTS === "1")("live amount check", () => {
             remoteFeesCash: earmark,
             beneficiaryHex: ZERO_32,
             peopleParaId: PASEO_PEOPLE_PARA_ID,
+            transfer: "teleport",
             maxWeight: fees.maxWeight,
           });
           // The worker's gate: both chains run the program, and it throws on a failure, a trap or

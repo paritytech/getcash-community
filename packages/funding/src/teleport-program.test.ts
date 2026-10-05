@@ -25,6 +25,7 @@ const PROGRAM = {
   remoteFeesCash: 50_000n,
   beneficiaryHex: BENEFICIARY_HEX,
   peopleParaId: PEOPLE_PARA,
+  transfer: "teleport" as const,
   maxWeight: { ref_time: 5n, proof_size: 6n },
 };
 
@@ -141,6 +142,7 @@ describe("estimateTeleportProgramFees", () => {
     peopleParaId: PEOPLE_PARA,
     depositUnderlying: 5_143_041n,
     remoteFeesCash: 50_000n,
+    transfer: "teleport" as const,
     feeProbeAddress: "5Probe",
   };
 

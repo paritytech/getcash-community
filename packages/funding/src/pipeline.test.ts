@@ -1081,6 +1081,7 @@ async function drive(
         api: (world.client as unknown as { getTypedApi: () => never }).getTypedApi(),
         peopleApi: world.peopleApi as never,
         route,
+        transfer: "teleport",
         ...(route.tier === "pool"
           ? { pool: { native: NATIVE_LOC as never, underlying: UNDERLYING_LOC as never } }
           : {}),
@@ -2659,6 +2660,7 @@ describe("estimateDestinationFeeCash", () => {
       assetHubParaId: 1500,
       beneficiaryHex: BENEFICIARY_HEX,
       amount: BUY,
+      transfer: "teleport",
     });
     expect(fee).toBe(48n);
     expect(calls.origin).toEqual({
@@ -2690,6 +2692,7 @@ describe("estimateDestinationFeeCash", () => {
       assetHubParaId: 1500,
       beneficiaryHex: BENEFICIARY_HEX,
       amount: BUY,
+      transfer: "teleport",
     });
     const program = calls.program as { value: Array<{ type: string; value?: unknown }> };
     expect((program.value[0]!.value as Array<{ id: unknown }>)[0]!.id).toEqual(relayKeyed);
@@ -2712,7 +2715,13 @@ describe("estimateDestinationFeeCash", () => {
         },
       },
     } as never;
-    const common = { pool, assetHubParaId: 1500, beneficiaryHex: BENEFICIARY_HEX, amount: BUY };
+    const common = {
+      pool,
+      assetHubParaId: 1500,
+      beneficiaryHex: BENEFICIARY_HEX,
+      amount: BUY,
+      transfer: "teleport" as const,
+    };
     await expect(estimateDestinationFeeCash({ peopleApi: failing, ...common })).rejects.toThrow(
       /fails on People with TooExpensive/,
     );

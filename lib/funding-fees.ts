@@ -161,6 +161,7 @@ async function sizingReads(args: SizingArgs, stableAssetId?: number) {
     assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
     beneficiaryHex: ZERO_32,
     amount: args.settleAmount,
+    transfer: "teleport",
   });
   return { api, pool, stablePool, destinationFee };
 }
@@ -183,6 +184,7 @@ export async function estimateFundingSizing(args: SizingArgs): Promise<PoolFundi
       nativeBalance: nativeInMax,
       minUnderlyingOut: buyTarget,
       remoteFeesCash: destinationEarmark(buyTarget, destinationFee),
+      transfer: "teleport",
       feeProbeAddress: args.probeAddress,
     });
 
@@ -214,6 +216,7 @@ export async function estimatePsmFundingSizing(
     peopleParaId: args.peopleParaId,
     depositExternal: sizePsmMint(buyTarget, args.route).externalIn,
     remoteFeesCash: destinationEarmark(buyTarget, destinationFee),
+    transfer: "teleport",
     feeProbeAddress: args.probeAddress,
   });
   return {
@@ -259,6 +262,7 @@ export async function estimateStableFundingSizing(
     depositStable: stableInMax,
     minUnderlyingOut: buyTarget,
     remoteFeesCash: destinationEarmark(buyTarget, destinationFee),
+    transfer: "teleport",
     feeProbeAddress: args.probeAddress,
   });
   return {
@@ -287,6 +291,7 @@ export async function estimateTeleportFundingSizing(
     peopleParaId: args.peopleParaId,
     depositUnderlying: buyTarget,
     remoteFeesCash: destinationEarmark(buyTarget, destinationFee),
+    transfer: "teleport",
     feeProbeAddress: args.probeAddress,
   });
   return {
@@ -352,6 +357,7 @@ export async function quoteDepositValue(
     beneficiaryHex: ZERO_32,
     peopleParaId: args.peopleParaId,
     remoteFeesCash: earmark,
+    transfer: "teleport" as const,
     feeProbeAddress: args.probeAddress,
   };
   let reaches: bigint | null = null;

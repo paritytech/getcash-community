@@ -679,6 +679,7 @@ async function tickRecord(record, nowMs) {
           api,
           peopleApi: peopleClient.getTypedApi(paseo_people_next),
           route,
+          transfer: "teleport",
           pool,
           stablePool,
           address: burner.address,
