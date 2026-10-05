@@ -69,6 +69,8 @@ export type {
   StablePoolRoute,
   TeleportRoute,
 } from "./route";
+export { chooseCashTransfer, NoCashTransferError } from "./cash-transfer";
+export type { CashTransfer } from "./cash-transfer";
 export { STABLE_TOKENS, isStable, stableTxOptions } from "./stable";
 export { creditedTo, forwardedTo, siblingOrigin, signedOrigin, trappedIn } from "./xcm-dry-run";
 export { describeDispatchError, psmRefusalKind, type PsmRefusalKind } from "./dispatch-error";
