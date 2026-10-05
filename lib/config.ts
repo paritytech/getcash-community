@@ -1,4 +1,4 @@
-import type { SourceId, TokenSpec } from "@getsome/core";
+import { NETWORK, type SourceId, type TokenSpec } from "@getsome/core";
 import {
   directAssetName,
   isManualSourceId,
@@ -69,6 +69,12 @@ export type FundingChain = (typeof FUNDING_CHAINS)[number];
  *  pickers keep listing the Chainflip routes, greyed and named as not yet available, so nothing
  *  can reach a deposit or a withdrawal that would have nowhere to go. */
 export const CHAINFLIP_RAIL_ENABLED = false;
+
+/** Whether this build sells CASH for fiat through Meld, the card and bank withdrawals. On a test
+ *  network the sale only ever moves test funds. On a live one it stays off until a small real sale
+ *  has been watched end to end: Meld settles a sell only in production, so the sandbox never
+ *  proves the payout. */
+export const MELD_SELL_ENABLED = NETWORK.testnet;
 
 /** UI pair to Chainflip SourceId, also the `?source=` deep-link vocabulary. A pair with no
  *  entry has no swap source. */
