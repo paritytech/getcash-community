@@ -53,7 +53,7 @@ export const landingFloor = (landed: bigint, slippagePct: number): bigint =>
  *  passed each time. Something the dry run cannot see differs at inclusion. */
 export class WithdrawRejectedError extends Error {
   constructor(
-    readonly call: "swap" | "withdraw" | "sweep",
+    readonly call: "swap" | "withdraw" | "sweep" | "pay",
     readonly reason: string,
   ) {
     super(`withdrawal given up: ${call} rejected ${MAX_REJECTIONS} times, last: ${reason}`);
@@ -100,6 +100,10 @@ export interface WithdrawTickInput {
   /** The People pool's account, whose balances are the reserves. */
   poolAccount: string;
   slippagePct: number;
+  /** The least the sale must land on the destination, for a withdrawal that has promised a
+   *  provider an exact figure out of it. Read before each sizing; a sale whose floor is below it
+   *  is refused with CommitmentUnfundableError and nothing leaves People. */
+  minLanding?: () => Promise<bigint>;
   tickTimeoutMs: number;
   submitTimeoutMs: number;
   /** Extra options merged into every submit, after People's signed extension and, for the
@@ -107,7 +111,7 @@ export interface WithdrawTickInput {
   signOptions?: Record<string, unknown>;
   /** The key's CASH and PAS on People. */
   readKeyOnPeople: (ss58: string) => Promise<{ cash: bigint; pas: bigint }>;
-  /** The destination's free PAS on Asset Hub at the current head. */
+  /** The destination's free PAS on Asset Hub at the finalized head (`readDestinationPas`). */
   readDestinationOnAssetHub: (destinationHex: string) => Promise<bigint>;
   now: () => number;
   onTx?: (info: { call: "swap" | "withdraw"; txHash: string; block?: number }) => void;
@@ -187,6 +191,10 @@ export async function withdrawTickOnce(
   const needsSwap = balances.pas === 0n;
   if (!needsSwap) {
     try {
+      const minLanding =
+        input.minLanding === undefined
+          ? undefined
+          : await bounded(input.minLanding(), input.tickTimeoutMs, "payment floor read");
       const sizing = await bounded(
         sizeXcm({
           peopleApi: input.peopleApi,
@@ -199,6 +207,7 @@ export async function withdrawTickOnce(
           assetHubParaId: input.assetHubParaId,
           peopleParaId: input.peopleParaId,
           slippagePct: input.slippagePct,
+          ...(minLanding === undefined ? {} : { minLanding }),
         }),
         input.tickTimeoutMs,
         "withdrawal sizing",
