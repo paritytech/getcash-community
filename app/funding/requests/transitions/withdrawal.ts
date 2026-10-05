@@ -7,20 +7,30 @@
 // the worker, carries the rail leg to sent. Side exits are the host's refusal of the payment, the
 // clock on an unpaid request, the worker's failures, the provider's failures, and the user's
 // cancel while nothing was paid. Money resurrects any side exit left from the payment leg.
+//
+// A fiat sale has one step before all of that: the page reads the provider's order until the
+// purse is asked. The deposit address it names, checked against the amount and asset the sale
+// agreed, becomes the hand-off's channel; an order that ends first ends the record, and the
+// payment window starts when the purse is asked, not when the address is named.
 
 import type { FailureKind } from "@getsome/core";
+import { parseBaseUnits, SELL_TOKEN } from "@getsome/meld";
 import {
   PAYMENT_EXPIRED_REASON,
   PAYMENT_WINDOW_MS,
+  SALE_PAY_WINDOW_MS,
   SENDING_STEP_ORDER,
   isSendingStep,
   paymentTaken,
+  saleBeforePurse,
   withdrawalRankOf,
   type HostPayment,
+  type MeldSaleReading,
   type Observation,
   type PaidVia,
   type SendingStep,
   type WithdrawJobView,
+  type WithdrawalChannel,
   type WithdrawalFailure,
   type WithdrawalFailureKind,
   type WithdrawalRecord,
@@ -32,11 +42,19 @@ type Witnesses = WithdrawalRecord["witnesses"];
 type ChainObservation = Extract<Observation, { source: "chain"; keyCash: string }>;
 type HostObservation = Extract<Observation, { source: "host" }>;
 type UserObservation = Extract<Observation, { source: "user" }>;
+type SaleObservation = Extract<Observation, { source: "provider"; sale: MeldSaleReading }>;
 
 const EXPIRED_FAILURE: WithdrawalFailure = {
   kind: "expired",
   step: "payment",
   message: PAYMENT_EXPIRED_REASON,
+  recoverable: false,
+};
+
+const SALE_EXPIRED_FAILURE: WithdrawalFailure = {
+  kind: "sale-expired",
+  step: "payment",
+  message: "The sale expired before it was completed",
   recoverable: false,
 };
 
@@ -64,19 +82,21 @@ function apply(record: WithdrawalRecord, observation: Observation): WithdrawalRe
       return applyClock(record, observation.at);
     case "user":
       return applyUser(record, observation);
-    case "core":
     case "provider":
+      return "sale" in observation ? applySale(record, observation) : record;
+    case "core":
       return record;
   }
 }
 
-/** Sent is terminal: of what an observation changed, only the witnesses, the rail and
- *  `confirmedAt` are kept. */
+/** Sent is terminal: of what an observation changed, only the witnesses, the rail, a sale's
+ *  residue on its way home and `confirmedAt` are kept. */
 function sentOnly(record: WithdrawalRecord, next: WithdrawalRecord): WithdrawalRecord {
   return {
     ...record,
     witnesses: next.witnesses,
     rail: next.rail,
+    ...(next.residue === undefined ? {} : { residue: next.residue }),
     ...(next.confirmedAt === undefined ? {} : { confirmedAt: next.confirmedAt }),
   };
 }
@@ -203,6 +223,9 @@ function applyWorker(
     ...witnessed(record, { worker: workerWitness(job, witnessAt) }),
     confirmedAt: at,
   };
+  if (job.residue !== undefined && !sameResidue(record.residue, job.residue)) {
+    next = { ...next, residue: job.residue };
+  }
   if (job.fundsSeenAt !== null) next = paidSeen(next, job.fundsSeenAt, "worker");
   // The message leg is done: the PAS reached Asset Hub. Only a record short of the rail leg moves.
   if ((job.landed || job.done) && withdrawalRankOf(next) < 3) next = arrived(next, at);
@@ -210,6 +233,19 @@ function applyWorker(
   const rank = withdrawalRankOf(next);
   if (job.phase === "failed") {
     if (atSideExit(next)) return next;
+    // A sale's order cannot be opened again once the provider closed it or lost it: the worker
+    // sends the key's funds home rather than trying the same order again.
+    if (
+      next.rail.provider === "meld" &&
+      (job.failure === "channel-expired" || job.failure === "channel-mismatch")
+    ) {
+      return failed(next, at, {
+        kind: "sale-closed",
+        step: "send",
+        message: job.lastError ?? "the provider closed the sale before it was paid",
+        recoverable: false,
+      });
+    }
     switch (job.failure) {
       case "rejected":
       case "timeout":
@@ -249,6 +285,24 @@ function applyWorker(
           message: job.lastError ?? "no provider can carry this withdrawal in this build",
           recoverable: false,
         });
+      case "unfundable":
+        // The price moved past what the sale promised its provider before anything left People.
+        // The worker sends the CASH home.
+        if (rank < 1) return next;
+        return failed(next, at, {
+          kind: "unfundable",
+          step: "convert",
+          message: job.lastError ?? "the sale can no longer pay what it promised the provider",
+          recoverable: false,
+        });
+      case "unresolved":
+        // Whether the provider was paid cannot be told, so nothing more is sent from the key.
+        return failed(next, at, {
+          kind: "unresolved",
+          step: "send",
+          message: job.lastError ?? "the payment to the provider could not be confirmed",
+          recoverable: false,
+        });
       default:
         return next;
     }
@@ -277,6 +331,131 @@ function applyChain(record: WithdrawalRecord, observation: ChainObservation): Wi
     return witnessed(next, { conflict: { source: "chain", note: "CASH on a sent key", at } });
   }
   return paidSeen(next, at, via === "probe" ? "chain" : via, keyCash);
+}
+
+const sameResidue = (
+  a: WithdrawalRecord["residue"],
+  b: NonNullable<WithdrawalRecord["residue"]>,
+): boolean =>
+  a !== undefined &&
+  a.amount === b.amount &&
+  a.returning === b.returning &&
+  a.whole === b.whole &&
+  a.returned === b.returned &&
+  a.stuck === b.stuck;
+
+/** The adapter's endings for a sale the purse was not asked for. */
+const SALE_ENDINGS: Readonly<Record<string, string>> = Object.freeze({
+  failed: "The provider ended the sale.",
+  refused: "The provider did not accept the sale.",
+  unobserved: "The provider did not confirm the sale.",
+});
+
+/**
+ * The provider's order, read by the page until the purse is asked. The first deposit address it
+ * names becomes the channel; an order that ends before the purse is asked ends the record, and
+ * nothing was taken, as does one that no longer names that address and those terms. Once the
+ * purse is asked the worker follows the sale, and these reads only keep its status.
+ */
+function applySale(record: WithdrawalRecord, observation: SaleObservation): WithdrawalRecord {
+  const { sale } = record;
+  if (sale === undefined || record.rail.provider !== "meld") return record;
+  const { at, sale: reading } = observation;
+  const status = { status: reading.status, providerStatus: reading.providerStatus };
+  const unchanged = sale.status === status.status && sale.providerStatus === status.providerStatus;
+  const next: WithdrawalRecord = unchanged
+    ? record
+    : {
+        ...record,
+        sale: {
+          ...sale,
+          status: reading.status,
+          ...(reading.providerStatus === undefined
+            ? {}
+            : { providerStatus: reading.providerStatus }),
+        },
+      };
+  if (!saleBeforePurse(next)) return next;
+  // The provider named another address after the one it disclosed: the sale cannot be paid as
+  // agreed, whether or not this page took the first one.
+  if (reading.depositConflictAt !== undefined) {
+    return failed(next, at, {
+      kind: "sale-mismatch",
+      step: "payment",
+      message: "The provider named another deposit address.",
+      recoverable: false,
+    });
+  }
+  const { channel } = next.handoff;
+  if (reading.deposit !== undefined && channel === undefined) {
+    return depositKnown(next, reading.deposit, at);
+  }
+  if (reading.status === "expired") return expired(next, at);
+  const ending = SALE_ENDINGS[reading.status];
+  if (ending !== undefined) {
+    return failed(next, at, {
+      kind: "sale-ended",
+      step: "payment",
+      message: ending,
+      recoverable: false,
+    });
+  }
+  // The address taken must still be the provider's word. The adapter stops naming one the
+  // provider moved away from and shows the terms the provider states now, so a deposit that is
+  // gone or changed ends the sale before anything is asked of the purse.
+  if (channel !== undefined && !sameDeposit(channel, reading.deposit)) {
+    return failed(next, at, {
+      kind: "sale-mismatch",
+      step: "payment",
+      message: "The provider no longer names the deposit address and terms the sale took.",
+      recoverable: false,
+    });
+  }
+  return next;
+}
+
+/** Whether `deposit` is the channel's address, for the sale's asset and its exact amount. */
+function sameDeposit(channel: WithdrawalChannel, deposit: MeldSaleReading["deposit"]): boolean {
+  return (
+    deposit !== undefined &&
+    deposit.address === channel.address &&
+    deposit.currency === SELL_TOKEN.meldCurrencyCode &&
+    parseBaseUnits(SELL_TOKEN, deposit.amount) === BigInt(channel.amount ?? "0")
+  );
+}
+
+/**
+ * The provider named where the crypto goes. It must be for the asset and the exact amount the
+ * sale agreed, or the key never pays it. The sale's own window stands: the seller may come back to
+ * it later, and the payment window starts when the purse is asked.
+ */
+function depositKnown(
+  record: WithdrawalRecord,
+  deposit: NonNullable<MeldSaleReading["deposit"]>,
+  at: number,
+): WithdrawalRecord {
+  const sale = record.sale!;
+  const expected = BigInt(sale.cryptoAmount);
+  const asked = parseBaseUnits(SELL_TOKEN, deposit.amount);
+  if (deposit.currency !== SELL_TOKEN.meldCurrencyCode || asked !== expected) {
+    return failed(record, at, {
+      kind: "sale-mismatch",
+      step: "payment",
+      message: `The provider asked for ${deposit.amount} ${deposit.currency}, not the agreed amount.`,
+      recoverable: false,
+    });
+  }
+  const channel: WithdrawalChannel = {
+    id: sale.fundingRequestId,
+    address: deposit.address,
+    openedAt: at,
+    // Set when the purse is asked: from then on the key has SALE_PAY_WINDOW_MS to pay.
+    expiresAt: 0,
+    // The payout is fiat, paid off chain: nothing on chain checks it.
+    expectedEgress: "0",
+    amount: sale.cryptoAmount,
+  };
+  return { ...record, handoff: { ...record.handoff, channel } };
 }
 
 function applyHost(record: WithdrawalRecord, observation: HostObservation): WithdrawalRecord {
@@ -317,8 +496,12 @@ function applyHost(record: WithdrawalRecord, observation: HostObservation): With
   }
 }
 
+/** The payment window closed with nothing on the key. A sale whose purse was never asked says so
+ *  instead. */
 function expired(record: WithdrawalRecord, at: number): WithdrawalRecord {
-  return { ...record, status: { kind: "expired", at }, failure: EXPIRED_FAILURE };
+  const unasked = record.sale !== undefined && record.payment.requestedAt === undefined;
+  const failure = unasked ? SALE_EXPIRED_FAILURE : EXPIRED_FAILURE;
+  return { ...record, status: { kind: "expired", at }, failure };
 }
 
 function applyClock(record: WithdrawalRecord, at: number): WithdrawalRecord {
@@ -344,7 +527,24 @@ function applyUser(record: WithdrawalRecord, observation: UserObservation): With
       if (attempt === record.payment.attempt && record.payment.requestedAt !== undefined) {
         return record;
       }
-      return { ...record, payment: { attempt, requestedAt: at, id } };
+      const asked: WithdrawalRecord = { ...record, payment: { attempt, requestedAt: at, id } };
+      if (record.sale === undefined) return asked;
+      // A sale's payment window starts here, on the record's clock and on the hand-off the worker
+      // is sent next: the seller may have come back to the provider's address long after it was
+      // named. So does the time the key has to pay the provider, since Meld names none.
+      const paymentExpiresAt = at + PAYMENT_WINDOW_MS;
+      const { channel } = record.handoff;
+      return {
+        ...asked,
+        deadline: { paymentExpiresAt },
+        handoff: {
+          ...record.handoff,
+          paymentExpiresAt,
+          ...(channel === undefined
+            ? {}
+            : { channel: { ...channel, expiresAt: at + SALE_PAY_WINDOW_MS } }),
+        },
+      };
     }
     case "cancelled":
       if (
@@ -387,6 +587,22 @@ function applyUser(record: WithdrawalRecord, observation: UserObservation): With
     case "channel-opened":
       // A fresh channel for the rail leg; the hand-off the worker is re-armed with carries it.
       return { ...record, handoff: { ...record.handoff, channel: observation.channel } };
+    case "sale-unfundable":
+      // Only before the purse was asked: after that the worker's own floor decides.
+      if (
+        record.sale === undefined ||
+        record.status.kind !== "awaiting-payment" ||
+        record.payment.requestedAt !== undefined ||
+        paymentTaken(record)
+      ) {
+        return record;
+      }
+      return failed(record, at, {
+        kind: "unfundable",
+        step: "payment",
+        message: "the price moved past what the sale promised its provider",
+        recoverable: false,
+      });
     case "meld-submitted":
     case "deposit-skipped":
     case "deposit-accepted":
