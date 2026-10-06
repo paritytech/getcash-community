@@ -60,7 +60,7 @@ function assetHubLocal(assetId: number): XcmLocation {
 
 /** The coinage underlying as Asset Hub keys it, and as People holds it: a foreign asset keyed by
  *  its Asset Hub reserve Location. */
-const UNDERLYING_ASSET_ID = 50_000_413;
+const UNDERLYING_ASSET_ID = NETWORK.assetHub.cashAssetId;
 // `satisfies` keeps the literal shape, which the People port's key type relies on.
 const UNDERLYING_ON_PEOPLE = {
   parents: 1,
@@ -69,7 +69,7 @@ const UNDERLYING_ON_PEOPLE = {
     value: [
       { type: "Parachain", value: NETWORK.assetHub.paraId },
       { type: "PalletInstance", value: 50 },
-      { type: "GeneralIndex", value: 50_000_413n },
+      { type: "GeneralIndex", value: BigInt(UNDERLYING_ASSET_ID) },
     ],
   },
 } satisfies XcmLocation;

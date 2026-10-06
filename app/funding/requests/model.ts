@@ -29,6 +29,8 @@ export const CONFIRMED_TTL_MS = 60_000;
 export const HIDDEN_RESET_MS = 5_000;
 /** Worker job blob poll while visible and any record is at rank 0–3. */
 export const JOB_POLL_MS = 6_000;
+/** The same poll while a top-up's claim is in flight and the host's word on it is due. */
+export const JOB_POLL_CLAIMING_MS = 1_000;
 /** Foreground Meld status poll. */
 export const MELD_POLL_MS = 3_000;
 /** Foreground host payment status poll, while a withdrawal awaits its payment. */
@@ -79,8 +81,8 @@ export type Kind = "top-up" | "withdrawal";
  *  still within its TTL, waiting on a running reconcile, or the cache as it was left. */
 export type Freshness = "confirmed" | "reconciling" | "cached";
 /** The pipeline's steps between the deposit and the claim, derived from `FundingStep`: `swap` is
- *  the one program that swaps and teleports together, `await-arrival` waits for the teleported
- *  $CASH to be credited on People. */
+ *  the one program that swaps and sends together, `await-arrival` waits for the CASH sent to be
+ *  credited on People. */
 export type ConvertingStep = Exclude<FundingStep, "await-native" | "done">;
 export type DepositSeenVia = "worker" | "chain" | "rail" | "core" | "faucet" | "pre-cancel";
 /** The worker's claim as it moves: sized, registered with the host, claiming, claimed. */
@@ -272,6 +274,9 @@ export interface TopUpRecord {
    *  less of the picked token or some of another. The request stays on its deposit while this is
    *  set, and the buyer chooses to continue with what arrived or to take it back. */
   depositMismatch?: DepositMismatchState;
+  /** When the host first reported the claim in a block with the full amount, before finality.
+   *  Set once and never cleared; the screens show a `claiming` record done from here. */
+  creditedAt?: number;
   status: RequestStatus;
   rail: RailState;
   failure?: RequestFailure;

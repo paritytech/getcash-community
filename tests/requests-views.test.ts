@@ -2,6 +2,8 @@
 // the list row's state, and the values the session store exposed before them.
 
 import { describe, expect, it } from "vitest";
+import { projectChainflipTopUps } from "../app/funding/chainflip-top-ups";
+import { fundingSelectorConfig } from "../app/funding/config";
 import { projectFundingProgress } from "../app/funding/progress";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
@@ -17,12 +19,16 @@ import {
 } from "../app/funding/requests/model";
 import { reduce } from "../app/funding/requests/reducer";
 import {
+  claimingOf,
   completedMarkers,
   journeyStepsOf,
   meldHandedOffOf,
   meldStageOf,
+  milestonesOf,
+  phaseLike,
   rowStateOf,
 } from "../app/funding/requests/views";
+import { projectFundingTopUps } from "../app/funding/top-ups";
 import { requestRefOf } from "../app/utils/request-index";
 import { awaitingDepositCryptoRecord, FIXTURE_NOW, submittedCardRecord } from "./fixtures/requests";
 
@@ -95,7 +101,7 @@ describe("request views", () => {
       // "Started" is the deposit seen at a best block, whatever confirmed it.
       ["deposit-seen provisional via chain", at(seen("chain")), 1],
       ["deposit-seen finalized via worker", at(seen("worker", "finalized")), 1],
-      // One program swaps and teleports, so both steps sit inside "Conversion".
+      // One program swaps and sends to People, so both steps sit inside "Conversion".
       ["converting at the swap", at({ kind: "converting", at: AT, step: "swap" }), 1],
       [
         "converting, awaiting arrival",
@@ -151,7 +157,7 @@ describe("request views", () => {
         at(seen("rail"), { rail: rail("chainflip", "delivered", "complete") }),
         2,
       ],
-      // One program swaps and teleports, so both steps sit inside "Conversion".
+      // One program swaps and sends to People, so both steps sit inside "Conversion".
       ["converting at the swap", at({ kind: "converting", at: AT, step: "swap" }), 3],
       [
         "converting, awaiting arrival",
@@ -339,6 +345,75 @@ describe("request views", () => {
       at: AT,
       reason: shortfall.message,
     });
+  });
+
+  it("a claiming record the host reported in a block reads as settled; a failed one ignores the stamp", () => {
+    const CREDITED_AT = AT + 3_000;
+    const now = AT + 60_000;
+    const projection = (record: RequestRecord) =>
+      projectFundingProgress({ snapshot: record.progress, createdAt: record.startedAt, now });
+    const scales = ["crypto", "card", "bank"] as const;
+    const claiming = at({ kind: "claiming", at: AT });
+    const credited: RequestRecord = { ...claiming, creditedAt: CREDITED_AT, claimed: "25250000" };
+    const settled: RequestRecord = {
+      ...crypto(),
+      status: { kind: "settled", at: CREDITED_AT },
+      settledAt: CREDITED_AT,
+      claimed: "25250000",
+    };
+
+    // Until the host's word the claim is in flight.
+    expect(rowStateOf(claiming, projection(claiming)).kind).toBe("finishing");
+    expect(phaseLike(claiming)).toBe("working");
+    expect(claimingOf(claiming)).toBe(true);
+    expect(milestonesOf(claiming)[5]).toBeUndefined();
+
+    // From it, every view reads as the settled record's: the row and its section, the journey's
+    // steps and milestones, the phase and the claim spinner.
+    const row = rowStateOf(credited, projection(credited));
+    expect(row).toEqual({ kind: "settled", at: CREDITED_AT, creditedAmount: "25.25" });
+    expect(row).toEqual(rowStateOf(settled, projection(settled)));
+    for (const scale of scales) {
+      expect(journeyStepsOf(credited, scale), scale).toBe(journeyStepsOf(settled, scale));
+    }
+    expect(milestonesOf(credited)[5]).toBe(CREDITED_AT);
+    expect(phaseLike(credited)).toBe("done");
+    expect(claimingOf(credited)).toBe(false);
+    const sections = projectFundingTopUps(
+      projectChainflipTopUps([credited], now),
+      fundingSelectorConfig,
+    );
+    expect(sections.inProgress).toEqual([]);
+    expect(sections.latestSettled?.state).toEqual({
+      kind: "settled",
+      status: "Added",
+      at: CREDITED_AT,
+      creditedAmount: "25.25",
+    });
+
+    // A record that failed after the host's word shows the failure, the stamp notwithstanding.
+    const failedAt = AT + 9_000;
+    const failed: RequestRecord = {
+      ...credited,
+      status: { kind: "failed", at: failedAt, recoverable: true },
+      failure: mintFailure,
+      failureReason: mintFailure.message,
+    };
+    const unstamped = at(
+      { kind: "failed", at: failedAt, recoverable: true },
+      { failure: mintFailure },
+    );
+    expect(rowStateOf(failed, projection(failed))).toEqual({
+      kind: "failed",
+      at: failedAt,
+      reason: mintFailure.message,
+    });
+    for (const scale of scales) {
+      expect(journeyStepsOf(failed, scale), scale).toBe(journeyStepsOf(unstamped, scale));
+    }
+    expect(phaseLike(failed)).toBe("failed");
+    expect(claimingOf(failed)).toBe(false);
+    expect(milestonesOf(failed)[5]).toBeUndefined();
   });
 
   it("meldStageOf and meldHandedOffOf reproduce today's values", () => {

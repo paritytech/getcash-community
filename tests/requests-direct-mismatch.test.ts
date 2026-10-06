@@ -173,10 +173,10 @@ describe("a Polkadot deposit", () => {
       amountHuman: "7.9",
       asset: "dotUSD",
       deposit: { amount: "8000000", formatted: "8", assetSymbol: "dotUSD" },
-      conversion: { tier: "teleport" },
+      conversion: { tier: "dotusd" },
       handoff: {
         settleAmount: "7900000",
-        tier: "teleport",
+        tier: "dotusd",
         quotedDeposit: "8000000",
       } as AcceptedDepositTerms["handoff"],
     };
@@ -184,7 +184,7 @@ describe("a Polkadot deposit", () => {
     expect(accepted).toMatchObject({
       amountHuman: "7.9",
       sourceAmount: "8",
-      conversion: { tier: "teleport" },
+      conversion: { tier: "dotusd" },
       deposit: { amount: "8000000", address: "5Burner" },
     });
     expect(accepted.depositMismatch).toBeUndefined();

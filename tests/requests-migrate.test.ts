@@ -199,6 +199,17 @@ describe("request record migration", () => {
     );
   });
 
+  it("keeps creditedAt on a schema-2 record", () => {
+    const credited: RequestRecord = {
+      ...migrated(submittedCardRecord),
+      status: { kind: "claiming", at: FIXTURE_NOW },
+      creditedAt: FIXTURE_NOW - 30_000,
+    };
+    const reloaded = migrateRecord(credited, credited.ref, FIXTURE_NOW);
+    expect(reloaded?.creditedAt).toBe(FIXTURE_NOW - 30_000);
+    expect(reloaded?.status).toEqual(credited.status);
+  });
+
   it("rejects a record without a parseable amount", () => {
     const ref = refOf(awaitingDepositCryptoRecord);
     for (const amountHuman of ["abc", "0", "", "1.2345678"]) {

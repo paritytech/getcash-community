@@ -2,6 +2,7 @@ export {
   ASSET_HUB_SS58_PREFIX,
   deriveKeypair,
   deriveKeypairWithSecret,
+  deriveSeedKeypair,
   toEphemeralSigner,
   toHandoffKey,
   toSchnorrkelSecret,

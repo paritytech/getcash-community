@@ -6,12 +6,14 @@ import { deriveEntropy, getHostLocalStorage, getHostProvider } from "./host.js";
 // wait, a chain client for one tick, the anchor of a submit, and the key a label derives.
 
 /**
- * A job map under `storageKey`, loaded once and single-flight, saved after every change. A
- * failed load throws and caches nothing; a failed save keeps answering from memory.
+ * A job map under `storageKey`, loaded once and single-flight, saved after every change, one
+ * write at a time in the order asked. A failed load throws and caches nothing; a failed save
+ * keeps answering from memory.
  */
 export function createJobStore(storageKey, label) {
   let jobs = null;
   let loading = null;
+  let saving = Promise.resolve();
 
   async function read() {
     const store = await getHostLocalStorage();
@@ -19,6 +21,15 @@ export function createJobStore(storageKey, label) {
     const stored = await store.readJSON(storageKey);
     jobs = stored && typeof stored === "object" ? stored : {};
     return jobs;
+  }
+
+  async function write() {
+    try {
+      const store = await getHostLocalStorage();
+      await store?.writeJSON(storageKey, jobs);
+    } catch (error) {
+      console.warn(`[${label}] jobs write failed: ${String(error?.message ?? error)}`);
+    }
   }
 
   return {
@@ -29,14 +40,10 @@ export function createJobStore(storageKey, label) {
       });
       return loading;
     },
-    async save() {
-      if (!jobs) return;
-      try {
-        const store = await getHostLocalStorage();
-        await store?.writeJSON(storageKey, jobs);
-      } catch (error) {
-        console.warn(`[${label}] jobs write failed: ${String(error?.message ?? error)}`);
-      }
+    save() {
+      if (!jobs) return Promise.resolve();
+      saving = saving.then(write);
+      return saving;
     },
   };
 }
@@ -52,6 +59,9 @@ export const asBig = (value, fallback = 0n) => {
 
 export const toHex = (bytes) =>
   `0x${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+
+export const fromHex = (hex) =>
+  Uint8Array.from(hex.slice(2).match(/.{2}/g) ?? [], (byte) => parseInt(byte, 16));
 
 /** Rejects with a timeout error when `promise` takes longer than `ms`. */
 export function bounded(promise, ms, what) {

@@ -4,7 +4,8 @@
   "assetHub": {
     "paraId": 1500,
     "genesis": "0x4349b00e54897e21196fd331015fc5be0f14e118beb0375ed2bb1793737bb57a",
-    "rpc": "wss://paseo-asset-hub-next-rpc.polkadot.io"
+    "rpc": "wss://paseo-asset-hub-next-rpc.polkadot.io",
+    "cashAssetId": 50000413
   },
   "people": {
     "paraId": 1502,
