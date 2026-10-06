@@ -91,7 +91,7 @@ const rejectedExecution = (error: unknown) => ({
     forwarded_xcms: [],
   },
 });
-/** A hop that gives the native, which only the teleport tier's dust sale does first. */
+/** A hop that gives the native, which only the dotUSD tier's dust sale does first. */
 const givesNative = (hop: Instruction | undefined) =>
   (hop?.value as { give: { value: { value: { id: { parents: number } } } } } | undefined)?.give
     .value.value.id.parents === 1;
@@ -351,7 +351,7 @@ function scriptedWorld(
             state.lastDryRunLanded = out + ((cash - held) * AH_RATE + pas) / STABLE_PLANCK;
             events = [deposited(1984, state.lastDryRunLanded)];
           } else if (givesNative(hops[0])) {
-            // The teleport tier: the PAS is sold for CASH and the CASH lands as dotUSD.
+            // The dotUSD tier: the PAS is sold for CASH and the CASH lands as dotUSD.
             state.lastDryRunLanded = cash + pas / AH_RATE;
             events = [deposited(TOKENS.CASH.assetHubId, state.lastDryRunLanded)];
           } else if (hops.length === 1) {
@@ -539,7 +539,7 @@ describe("withdrawTickOnce", () => {
     expect(run.state.expectedLanding).toBeLessThan(out + out / 10n);
   });
 
-  it("lands the CASH as dotUSD on the teleport tier, with the PAS that travelled sold for it", async () => {
+  it("lands the CASH as dotUSD on the dotUSD tier, with the PAS that travelled sold for it", async () => {
     const world = scriptedWorld();
     const run = await drive(world, 3, freshWithdrawTickState(), { tier: "dotusd" });
     expect(run.steps).toEqual(["swap", "convert", "done"]);

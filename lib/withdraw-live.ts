@@ -185,7 +185,7 @@ export async function chooseWithdrawRoute(
 
 /** What a direct withdrawal of `amount` CASH lands on Asset Hub in the asset `sale` ends in,
  *  base units, at today's prices: the amount less the fees, sold as the program sells it,
- *  redeemed at the PSM's fee rate, or landed as it is on the teleport tier. An estimate for the
+ *  redeemed at the PSM's fee rate, or landed as it is on the dotUSD tier. An estimate for the
  *  summary, not what the program is held to. */
 export async function quoteDirectReceive(amount: bigint, sale: ConversionRoute): Promise<bigint> {
   const sold = amount - (await directFeesCash(sale));

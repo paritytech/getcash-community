@@ -45,7 +45,7 @@ export const DEFAULT_WITHDRAW_SLIPPAGE_PCT = 5;
 export const MAX_REJECTIONS = 3;
 /** The least the destination must gain for the funds to count as arrived: the dry run's landing
  *  less the slippage the program allows the sale, since a sale that slips further fails the
- *  program on Asset Hub and lands nothing. The teleport tier makes no sale, and the same margin
+ *  program on Asset Hub and lands nothing. The dotUSD tier makes no sale, and the same margin
  *  covers Asset Hub's fee moving between the dry run and inclusion. */
 export const landingFloor = (landed: bigint, slippagePct: number): bigint =>
   landed - (landed * BigInt(Math.round(slippagePct * 100))) / 10_000n;

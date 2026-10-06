@@ -81,7 +81,7 @@ describe.runIf(process.env.PROD_PROOF_WITHDRAW === "1")("withdrawal production p
         LANDING === "native"
           ? { tier: "pool" as const }
           : LANDING === "dotUSD"
-            ? { tier: "teleport" as const }
+            ? { tier: "dotusd" as const }
             : await chooseRoute(assetHubApi, {
                 direction: "redeem",
                 internalAmount: cashOnKey,

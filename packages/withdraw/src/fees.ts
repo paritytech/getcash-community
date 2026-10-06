@@ -380,7 +380,7 @@ export interface PriceSaleInput {
  *  earmark's refund covers. One headroom for the whole sale: a stable's floor is the two hop
  *  quote less it, so the hops share it and the arrival floor is the same figure. The PSM tier
  *  redeems what travels less the earmark, at the fee rate the hand-off froze, as the key's own
- *  account on Asset Hub. The teleport tier has no price to hold. */
+ *  account on Asset Hub. The dotUSD tier has no price to hold. */
 export async function priceSale(input: PriceSaleInput): Promise<Sale> {
   const { assetHubApi, route, slippagePct } = input;
   if (route.tier === "dotusd") return { tier: "dotusd" };
