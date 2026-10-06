@@ -186,6 +186,11 @@ export function useWithdrawalRequest() {
     if (client === null || meld === null) {
       return { ok: false, reason: "Card and bank withdrawals are not available right now." };
     }
+    // As for any withdrawal: the sale's CASH must be able to reach Asset Hub, or the seller would
+    // pass KYC and pay for a sale the worker cannot run.
+    if (!(await live.cashCanMove())) {
+      return { ok: false, reason: "This network does not let CASH move from People to Asset Hub." };
+    }
     const destinationId = MELD_WITHDRAW_DESTINATIONS[input.method];
     const sourceId = `${WITHDRAW_SOURCE_PREFIX}${destinationId}`;
     const n = await live.nextWithdrawNumber(sourceId, (candidate) =>

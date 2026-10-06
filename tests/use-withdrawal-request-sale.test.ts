@@ -38,6 +38,7 @@ vi.mock("../lib/worker-rpc", () => ({
 }));
 vi.mock("../lib/withdraw-live", () => ({
   PaymentRefusedError: class PaymentRefusedError extends Error {},
+  cashCanMove: vi.fn(async () => true),
   nextWithdrawNumber: async () => counter.next,
   withdrawKeyFor: async (_sourceId: string, n: number) => ({
     address: n === 1 ? KEY_ADDRESS : NEXT_KEY_ADDRESS,
@@ -464,6 +465,29 @@ describe("a fiat sale in a build that cannot run one", () => {
       ok: false,
       reason: "Card and bank withdrawals are not available right now.",
     });
+    expect(advanced).not.toHaveBeenCalled();
+    expect(useRequestsStore().withdrawals).toEqual([]);
+  });
+
+  it("refuses before taking a number on a network where CASH cannot reach Asset Hub", async () => {
+    const meld = createFakeMeldClient();
+    const opened = vi.spyOn(meld, "createSellSession");
+    setMeldSellClient(meld);
+    vi.mocked(live.cashCanMove).mockResolvedValueOnce(false);
+    const outcome = await useWithdrawalRequest().startSale({
+      method: "bank",
+      amount: 100_000_000n,
+      country: "DE",
+      fiat: "EUR",
+      paymentMethodType: "SEPA",
+      quote: QUOTE,
+      cryptoAmount: COMMITTED,
+    });
+    expect(outcome).toEqual({
+      ok: false,
+      reason: "This network does not let CASH move from People to Asset Hub.",
+    });
+    expect(opened).not.toHaveBeenCalled();
     expect(advanced).not.toHaveBeenCalled();
     expect(useRequestsStore().withdrawals).toEqual([]);
   });
