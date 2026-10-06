@@ -135,13 +135,19 @@ export async function cashCanMove(): Promise<boolean> {
 
 /** How long a fee estimate serves before People is read again. */
 const FEES_FRESH_MS = 60_000;
-const feesByTier = new Map<ConversionRoute["tier"], { at: number; fees: Promise<bigint> }>();
+const feesBySale = new Map<string, { at: number; fees: Promise<bigint> }>();
+
+/** The sales whose XCM has one shape, and so one fee: a pool sale fed through a stable has a hop
+ *  more than one for the native, so the two are kept apart. */
+const feesKeyOf = (sale: ConversionRoute): string =>
+  sale.tier === "dotusd" ? sale.tier : `${sale.tier}:${sale.external ?? "native"}`;
 
 /** The CASH the fees take from a direct withdrawal before the sale on Asset Hub, priced now on
  *  People and kept for a minute: the swap that buys the fee PAS, its own fee and Asset Hub's
  *  buffer, as the worker will size them. An estimate for the summary, on the safe side. */
 export async function directFeesCash(sale: ConversionRoute): Promise<bigint> {
-  const cached = feesByTier.get(sale.tier);
+  const key = feesKeyOf(sale);
+  const cached = feesBySale.get(key);
   if (cached !== undefined && Date.now() - cached.at < FEES_FRESH_MS) return cached.fees;
   const fees = (async () => {
     const { connectChain, ASSET_HUB, PEOPLE } = await import("./host-chain");
@@ -163,9 +169,9 @@ export async function directFeesCash(sale: ConversionRoute): Promise<bigint> {
       transfer,
     });
   })();
-  feesByTier.set(sale.tier, { at: Date.now(), fees });
+  feesBySale.set(key, { at: Date.now(), fees });
   // A read that failed is not kept; the next quote asks again.
-  fees.catch(() => feesByTier.delete(sale.tier));
+  fees.catch(() => feesBySale.delete(key));
   return fees;
 }
 
