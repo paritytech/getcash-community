@@ -12,6 +12,7 @@ import {
   decideStep,
   DEFAULT_SLIPPAGE_PCT,
   discoverPool,
+  exchangeFloor,
   freshTickState,
   FundingHeldError,
   FundingShortfallError,
@@ -1072,7 +1073,7 @@ async function drive(
   state: TickState = freshTickState(),
   route: ConversionRoute = POOL,
   quotedDeposit?: bigint,
-  overrides: Partial<Pick<TickOnceInput, "inclusionTimeoutMs" | "onBeforeSubmit">> = {},
+  overrides: Partial<TickOnceInput> = {},
 ) {
   const steps: FundingStep[] = [];
   const transients: string[] = [];
@@ -2603,6 +2604,51 @@ describe("the headroom survives a price move", () => {
     const retry = await drive(world, 1, state);
     expect(retry.steps).toEqual(["swap"]);
     expect(state.xcmSubmitted).toBe(true);
+  });
+});
+
+describe("a burner held to the pool's quote", () => {
+  // A withdrawal's key sent home whole: its target is one claim unit, which bounds nothing, so the
+  // exchange is held to a share of the quote for what it converts instead.
+  const TOKEN_TARGET = 10_000n;
+  const heldTo = (quoteFloorPct: number) =>
+    ({ settleAmount: TOKEN_TARGET, quoteFloorPct }) satisfies Partial<TickOnceInput>;
+
+  it("is the target, or the share of the quote when that is more", () => {
+    expect(exchangeFloor(BUY, 10_000_000n, undefined)).toBe(BUY);
+    expect(exchangeFloor(BUY, 10_000_000n, 2)).toBe(9_800_000n);
+    expect(exchangeFloor(BUY, 5_000_000n, 2)).toBe(BUY);
+    // Nothing that is not a share below the whole: the target alone.
+    for (const pct of [Number.NaN, -1, 100]) expect(exchangeFloor(BUY, 10_000_000n, pct)).toBe(BUY);
+  });
+
+  it("converts everything, with the floor that share below the quote for the spend", async () => {
+    const world = scriptedWorld();
+    world.state.nativeAh = FUND;
+    const run = await drive(world, 1, freshTickState(), POOL, undefined, heldTo(2));
+    expect(run.steps).toEqual(["swap"]);
+    const exchange = exchangeOf(world.state.txs[0]!.args);
+    const spend = FUND - OVERHEAD;
+    expect(exchange.give.value[0]!.fun.value).toBe(spend);
+    const quoted = (spend * BUY) / QUOTED;
+    expect(exchange.want[0]!.fun.value).toBe((quoted * 9_800n) / 10_000n);
+  });
+
+  it("lets a move past that share fail at inclusion, where the token target alone would fill", async () => {
+    const held = scriptedWorld({ priceAtSubmitBps: 10_300n });
+    held.state.nativeAh = FUND;
+    await expect(drive(held, 1, freshTickState(), POOL, undefined, heldTo(2))).rejects.toThrow(
+      /NoDeal/,
+    );
+    // Rolled back whole: only the dispatch fee left the burner.
+    expect(held.state.nativeAh).toBe(FUND - DISPATCH);
+
+    const unheld = scriptedWorld({ priceAtSubmitBps: 10_300n });
+    unheld.state.nativeAh = FUND;
+    const run = await drive(unheld, 1, freshTickState(), POOL, undefined, {
+      settleAmount: TOKEN_TARGET,
+    });
+    expect(run.steps).toEqual(["swap"]);
   });
 });
 
