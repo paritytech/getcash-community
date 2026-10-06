@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   fundingStatus: vi.fn(),
   withdrawTickOnce: vi.fn(),
   keyFree: 0n,
+  keyCash: 0n,
   keyReadHangs: false,
 }));
 
@@ -69,6 +70,9 @@ vi.mock("../worker/src/shared.js", async (importOriginal) => {
       getBestBlocks: async () => [{ hash: "0xbest", number: 1 }],
       getTypedApi: () => ({
         query: {
+          Assets: {
+            Account: { getValue: () => Promise.resolve({ balance: mocks.keyCash }) },
+          },
           System: {
             Account: {
               getValue: () =>
@@ -815,5 +819,178 @@ describe("a sale's way to the provider and back", () => {
       error: "invalid",
       reason: expect.stringMatching(/test network/),
     });
+  });
+});
+
+describe("a sale that fails before its provider is paid", () => {
+  beforeEach(() => {
+    mocks.stored.clear();
+    for (const fn of [
+      mocks.railFor,
+      mocks.payRailExact,
+      mocks.exactPaymentOut,
+      mocks.status,
+      mocks.channel,
+      mocks.startFunding,
+      mocks.withdrawTickOnce,
+    ]) {
+      fn.mockReset();
+    }
+    mocks.railFor.mockReturnValue({ status: mocks.status, channel: mocks.channel });
+    mocks.exactPaymentOut.mockResolvedValue(false);
+    mocks.startFunding.mockResolvedValue({ sessionId: "s-1/residue" });
+    mocks.keyFree = 21_000_000_000n;
+    mocks.keyCash = 0n;
+    mocks.keyReadHangs = false;
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.doUnmock("@getsome/core");
+  });
+
+  /** A sale's job the worker failed with `failure`, its funds on the key and nothing paid. */
+  const failedWith = (failure: string): StoredJob => ({ ...landedJob(), phase: "failed", failure });
+
+  it("sends the whole key home after any failure but a missed payment, a cancel or an unconfirmed one", async () => {
+    for (const failure of [
+      "rejected",
+      "timeout",
+      "no-rail",
+      "rail-failed",
+      "channel-expired",
+      "unfundable",
+    ]) {
+      mocks.startFunding.mockClear();
+      const engine = await engineWith({ "s-1": failedWith(failure) });
+      await engine.tickAllWithdraw();
+      expect(mocks.startFunding, failure).toHaveBeenCalledTimes(1);
+      expect(storedJob().residue, failure).toMatchObject({ whole: true, returning: true });
+    }
+    for (const failure of ["expired", "cancelled", "unresolved"]) {
+      mocks.startFunding.mockClear();
+      const engine = await engineWith({ "s-1": failedWith(failure) });
+      await engine.tickAllWithdraw();
+      expect(mocks.startFunding, failure).not.toHaveBeenCalled();
+      expect(storedJob().residue, failure).toBeUndefined();
+    }
+  });
+
+  it("starts no way home for a key that holds nothing", async () => {
+    mocks.keyFree = 0n;
+    mocks.keyCash = 0n;
+    const engine = await engineWith({ "s-1": failedWith("rejected") });
+    await engine.tickAllWithdraw();
+    expect(mocks.startFunding).not.toHaveBeenCalled();
+    expect(storedJob().residue).toEqual({ whole: true, returning: false });
+  });
+
+  it("sends the CASH home from People when nothing reached Asset Hub", async () => {
+    mocks.keyFree = 0n;
+    mocks.keyCash = 99_000_000n;
+    const engine = await engineWith({ "s-1": failedWith("rejected") });
+    await engine.tickAllWithdraw();
+    expect(mocks.startFunding).toHaveBeenCalledTimes(1);
+    expect(storedJob().residue).toMatchObject({ whole: true, returning: true });
+  });
+
+  it("keeps a sale off the fifteen-minute clock once its PAS has landed", async () => {
+    // The adapter is not answering; the sale is held to its own deadline, not to worker time.
+    mocks.channel.mockRejectedValue(new Error("adapter down"));
+    const job = landedJob();
+    job.state.workedMs = 3_600_000;
+    job.lastTickAt = NOW - 1_000;
+    const engine = await engineWith({ "s-1": job });
+    await engine.tickAllWithdraw();
+    expect(storedJob().phase).not.toBe("failed");
+    expect(storedJob().state.workedMs).toBe(3_600_000);
+  });
+
+  it("still times a sale out before its PAS has landed, and sends its funds home", async () => {
+    const job = landedJob();
+    Object.assign(job, { landed: false, phase: "convert" });
+    job.state.workedMs = 3_600_000;
+    mocks.withdrawTickOnce.mockResolvedValue({ step: "deliver" });
+    const engine = await engineWith({ "s-1": job });
+    await engine.tickAllWithdraw();
+    expect(storedJob()).toMatchObject({ phase: "failed", failure: "timeout" });
+    expect(mocks.startFunding).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a sale with a real adapter where the build does not sell for fiat", async () => {
+    vi.doMock("@getsome/core", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("@getsome/core")>();
+      return { ...actual, NETWORK: { ...actual.NETWORK, testnet: false } };
+    });
+    const engine = await engineWith({});
+    expect(await engine.startWithdraw(handoff())).toMatchObject({
+      error: "invalid",
+      reason: expect.stringMatching(/not open on this network/),
+    });
+  });
+});
+
+describe("a failed sale whose payment may still land", () => {
+  beforeEach(() => {
+    mocks.stored.clear();
+    for (const fn of [mocks.railFor, mocks.exactPaymentOut, mocks.startFunding]) fn.mockReset();
+    mocks.startFunding.mockResolvedValue({ sessionId: "s-1/residue" });
+    mocks.keyFree = 7_000_000_000n;
+    mocks.keyCash = 0n;
+    mocks.keyReadHangs = false;
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Failed while its payment was in flight: nothing knows yet whether the provider was paid. */
+  const inFlight = (): StoredJob => {
+    const job = { ...landedJob(), phase: "failed", failure: "no-rail" };
+    job.leg = {
+      ...job.leg,
+      exact: { ...job.leg.exact, inFlight: true, balanceBefore: "28000000000" },
+    };
+    return job;
+  };
+
+  it("takes a payment the chain shows landed as paid, and sends only what is left home", async () => {
+    mocks.exactPaymentOut.mockResolvedValue(true);
+    const engine = await engineWith({ "s-1": inFlight() });
+    await engine.tickAllWithdraw();
+    expect(storedJob().leg.paid).toBe(true);
+    expect(storedJob().residue).toMatchObject({ amount: "7000000000", returning: true });
+  });
+
+  it("sends the whole key home once the attempt outlived its mortality unlanded", async () => {
+    mocks.exactPaymentOut.mockImplementation(async (_record, _amount, exact) => {
+      exact.inFlight = false;
+      return false;
+    });
+    const engine = await engineWith({ "s-1": inFlight() });
+    await engine.tickAllWithdraw();
+    expect(storedJob().leg.paid).toBe(false);
+    expect(storedJob().residue).toMatchObject({ whole: true, returning: true });
+  });
+
+  it("waits while the attempt may still land, sending nothing", async () => {
+    const engine = await engineWith({ "s-1": inFlight() });
+    await engine.tickAllWithdraw();
+    expect(mocks.exactPaymentOut).toHaveBeenCalledTimes(1);
+    expect(mocks.startFunding).not.toHaveBeenCalled();
+    expect(storedJob().residue).toBeUndefined();
+  });
+
+  it("stops for a person when the chain contradicts the payment", async () => {
+    const { PaymentUnresolvedError } = await import("@getsome/withdraw");
+    mocks.exactPaymentOut.mockRejectedValue(
+      new PaymentUnresolvedError("nonce moved, balance did not"),
+    );
+    const engine = await engineWith({ "s-1": inFlight() });
+    await engine.tickAllWithdraw();
+    expect(storedJob().failure).toBe("unresolved");
+    expect(mocks.startFunding).not.toHaveBeenCalled();
   });
 });

@@ -16,14 +16,15 @@ export {
 export { formatBaseUnits, parseBaseUnits, toBaseUnits, type MeldToken } from "./units";
 export {
   formatSellAmount,
+  MELD_SELL_ENABLED,
   SALE_GONE_AFTER,
   SALE_GONE_FOR_MS,
+  type SaleChannelRecord,
   saleRail,
+  type SaleReadMemory,
+  SELL_TOKEN,
   sellAmountOf,
   sellQuoteUsable,
-  SELL_TOKEN,
-  type SaleChannelRecord,
-  type SaleReadMemory,
 } from "./sell";
 export { computeMeldQuote, pickBestQuote, type MeldQuoteContext, type MeldQuoteRaw } from "./quote";
 export { requestMeldDeposit, type MeldDepositChannel } from "./session";

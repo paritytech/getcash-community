@@ -212,6 +212,15 @@ function workerWitness(job: WithdrawJobView, at: number): Witnesses["worker"] {
   };
 }
 
+/** The worker's failures that end a sale before its provider is paid, with the key going home. */
+const SALE_ENDING_FAILURES: ReadonlySet<string> = new Set([
+  "channel-expired",
+  "channel-mismatch",
+  "rejected",
+  "timeout",
+  "no-rail",
+]);
+
 function applyWorker(
   record: WithdrawalRecord,
   at: number,
@@ -233,16 +242,13 @@ function applyWorker(
   const rank = withdrawalRankOf(next);
   if (job.phase === "failed") {
     if (atSideExit(next)) return next;
-    // A sale's order cannot be opened again once the provider closed it or lost it: the worker
-    // sends the key's funds home rather than trying the same order again.
-    if (
-      next.rail.provider === "meld" &&
-      (job.failure === "channel-expired" || job.failure === "channel-mismatch")
-    ) {
+    // A sale has one order, opened once: a failure before its provider is paid ends it, and the
+    // worker sends the key's funds home rather than trying the same order again.
+    if (next.rail.provider === "meld" && SALE_ENDING_FAILURES.has(job.failure ?? "")) {
       return failed(next, at, {
         kind: "sale-closed",
-        step: "send",
-        message: job.lastError ?? "the provider closed the sale before it was paid",
+        step: rank >= 3 ? "send" : "convert",
+        message: job.lastError ?? "the sale could not be completed before its provider was paid",
         recoverable: false,
       });
     }
@@ -376,13 +382,13 @@ function applySale(record: WithdrawalRecord, observation: SaleObservation): With
         },
       };
   if (!saleBeforePurse(next)) return next;
-  // The provider named another address after the one it disclosed: the sale cannot be paid as
-  // agreed, whether or not this page took the first one.
+  // The provider changed the deposit after it disclosed it, its address or its terms: the sale
+  // cannot be paid as agreed, whether or not this page took the first one.
   if (reading.depositConflictAt !== undefined) {
     return failed(next, at, {
       kind: "sale-mismatch",
       step: "payment",
-      message: "The provider named another deposit address.",
+      message: "The provider changed the deposit after showing it.",
       recoverable: false,
     });
   }

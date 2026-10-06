@@ -128,7 +128,8 @@ export interface MeldDepositDisclosure {
 export interface MeldStatusResult {
   /**
    * The adapter's lifecycle state: `created`, `session_opened`, `transaction_seen`, `settled`,
-   * `failed`, `expired`, `refused`, `declined`, `refunded` or `unobserved`.
+   * `failed`, `expired`, `refused` or `unobserved`. A provider's decline or refund arrives as
+   * `failed`, with its own word in `providerStatus`.
    */
   readonly status: string;
   /** The provider's own last status verbatim (e.g. Meld `REFUNDED`), for distinctions the coarse
@@ -147,8 +148,9 @@ export interface MeldStatusResult {
   readonly cryptoAmount?: string;
   /** Sell only: the provider's deposit terms, on the polls the adapter discloses them. */
   readonly deposit?: MeldDepositDisclosure;
-  /** Sell only: when the provider named another address after the one it disclosed, which the
-   *  adapter then stops disclosing. The sale cannot be paid as agreed. */
+  /** Sell only: when the provider named another address, or restated the amount or asset, after
+   *  the deposit it disclosed, which the adapter then stops disclosing. Before the key pays, the
+   *  sale cannot be paid as agreed; after, it is no longer the sale the key paid. */
   readonly depositConflictAt?: number;
 }
 

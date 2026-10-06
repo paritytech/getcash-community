@@ -2,9 +2,16 @@
 // provider's channel before the key pays and as its status after. The worker asks both through
 // the same `GET /funding/:id` the page polls during KYC.
 
-import { TOKENS, type SwapStatusResult } from "@getsome/core";
+import { NETWORK, TOKENS, type SwapStatusResult } from "@getsome/core";
 import type { MeldClientLike, MeldQuoteEntry, MeldStatusResult } from "./client";
 import { formatBaseUnits, parseBaseUnits } from "./units";
+
+/** Whether this build sells CASH for fiat through Meld, the card and bank withdrawals. On a test
+ *  network the sale only ever moves test funds. On a live one it stays off until a small real sale
+ *  has been watched end to end: Meld settles a sell only in production, so the sandbox never
+ *  proves the payout. The page offers card and bank by it and the worker refuses a sale without
+ *  it, so neither trusts the other to hold the line. */
+export const MELD_SELL_ENABLED = NETWORK.testnet;
 
 /** What a sale sells: the native on Asset Hub, which Meld names DOT_ASSETHUB. */
 export const SELL_TOKEN = TOKENS.PAS;
@@ -80,11 +87,21 @@ const ENDINGS: Readonly<Record<string, string>> = Object.freeze({
   refunded: "The provider returned the funds instead of paying out. Contact support.",
   unobserved:
     "We could not confirm the payout with the provider. Contact support with your reference.",
+  changed: "The provider changed the sale after your payment. Contact support with your reference.",
 });
 
-/** The sale's status as the rail leg follows it once the key has paid. */
+/** The sale's status as the rail leg follows it once the key has paid. A deposit the provider
+ *  changed after showing it ends the follow: the key paid what was shown, so the sale is no longer
+ *  the one the provider expects, whatever its status says. */
 export function saleStatusView(result: MeldStatusResult): SwapStatusResult {
   const { status, providerStatus } = result;
+  if (result.depositConflictAt !== undefined && status !== "settled") {
+    return {
+      status: "failed",
+      depositFailure: { reason: { code: "changed", message: ENDINGS.changed! }, kind: "unknown" },
+      raw: status,
+    };
+  }
   if (status === "settled") return { status: "complete", raw: status };
   // A REFUNDED provider ending rides on the adapter's coarse `failed`.
   const refunded = providerStatus?.trim().toUpperCase() === "REFUNDED";

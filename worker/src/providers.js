@@ -5,7 +5,7 @@
 
 import { readChannelRecord, readSwapStatus } from "@getsome/chainflip/swap-status";
 import { NETWORK } from "@getsome/core";
-import { createMeldClient, saleRail } from "@getsome/meld";
+import { createMeldClient, MELD_SELL_ENABLED, saleRail } from "@getsome/meld";
 import {
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
   DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
@@ -56,6 +56,8 @@ export function railFor(provider, record) {
     return { status: (id) => readSwapStatus(id), channel: (id) => readChannelRecord(id) };
   }
   if (provider === "meld") {
+    // Where the build does not sell for fiat, no sale is read or paid, whatever a hand-off says.
+    if (!MELD_SELL_ENABLED) return null;
     const meld = record?.meld;
     if (meld?.offline === true) {
       return NETWORK.testnet ? { status: async () => ({ status: "receiving" }) } : null;

@@ -1,5 +1,6 @@
 import { NETWORK } from "@getsome/core";
 import { PASEO_UNDERLYING_ASSET_ID } from "@getsome/funding";
+import { MELD_SELL_ENABLED } from "@getsome/meld";
 import { CASH_LOCATION } from "@getsome/people";
 import {
   CHANNEL_EXPIRY_MARGIN_MS,
@@ -64,10 +65,11 @@ const RESIDUE_SETTLE_AMOUNT = CLAIM_UNIT.toString();
  *  are registered under ids derived from its public key and the attempt, as the claims are, so the
  *  claims start far past any attempt a withdrawal makes. */
 const RESIDUE_CLAIM_ID_OFFSET = 1_000_000;
-/** The failures before the provider is paid that end a sale for good: the price moved past what it
- *  promised, the provider closed the order or no longer knows it, or this build cannot read it. The
- *  key goes home whole. */
-const ENDED_UNPAID = new Set(["unfundable", "channel-expired", "channel-mismatch", "no-rail"]);
+/** The failures before the provider is paid that do not send a sale's key home: a job whose
+ *  payment never came and one the page cancelled hold nothing, and a re-sent hand-off may still
+ *  revive them; a payment that cannot be confirmed waits for a person. Any other failure ends the
+ *  sale, and the key goes home whole. */
+const KEPT_ON_FAILURE = new Set(["expired", "cancelled", "unresolved"]);
 /** How long a submit whose answer was lost may still land: past its mortality, with room. Until
  *  then a sale is not called unfundable, since the CASH it would send home may be on its way. */
 const SUBMIT_SETTLE_MS = 600_000;
@@ -160,6 +162,11 @@ function newRecord(input, nowMs) {
   }
   if (input.rail === "meld" && meldOf(input.meld)?.offline === true && !NETWORK.testnet) {
     throw new Error("startWithdraw: the stand-in sale runs only on a test network");
+  }
+  // The page offers card and bank only where the build sells for fiat; the worker holds the same
+  // line rather than trusting the page not to ask.
+  if (input.rail === "meld" && !MELD_SELL_ENABLED) {
+    throw new Error("startWithdraw: card and bank withdrawals are not open on this network");
   }
   if (!assetHubGenesis || !peopleGenesis) {
     throw new Error("startWithdraw: both chain genesis hashes are required");
@@ -457,7 +464,11 @@ export async function withdrawStatus(params) {
  *  processed for a direct rail, the provider paid for the rest. What the provider then takes is
  *  its time, not this worker's. */
 const onTheClock = (record) =>
-  !record.done && record.state.fundsSeenAt !== null && !(record.landed && record.leg?.paid);
+  !record.done &&
+  record.state.fundsSeenAt !== null &&
+  // A sale stops the clock once its PAS has landed: paying its provider is held to the sale's own
+  // deadline and to the payment's mortality, not to worker time.
+  !(record.rail === "meld" ? record.landed : record.landed && record.leg?.paid);
 
 /** Adds this tick's gap, capped at MAX_TICK_GAP_MS, to the job's worked time while on the clock. */
 function accountWorkedTime(record, nowMs) {
@@ -599,16 +610,75 @@ const residueSessionId = (record) => `${record.sessionId}/residue`;
 
 /**
  * What a Meld sale still owes the purse: `residue`, what the key holds once the provider is paid,
- * or `whole`, everything it holds when the sale ended before the provider could be paid. Null
- * when nothing is owed, once the way home is on the job, and while a payment may still be in
- * flight: a key that may have paid moves nothing more. A live job learns from the chain whether it
- * did (`exactPaymentLanded`); a failed one waits for a person.
+ * or `whole`, everything it holds when the sale failed before the provider could be paid. Null
+ * when nothing is owed, once the way home is on the job, and while a payment or a message may
+ * still land: a key that may have paid moves nothing more until the chain has settled it
+ * (`settleInFlight`).
  */
-function returnDue(record) {
+function returnDue(record, nowMs = Date.now()) {
   if (record.rail !== "meld" || record.residue !== undefined) return null;
   if (record.leg?.paid === true) return "residue";
-  if (record.phase !== "failed" || !ENDED_UNPAID.has(record.failure)) return null;
-  return record.leg?.exact?.inFlight === true ? null : "whole";
+  if (record.phase !== "failed" || KEPT_ON_FAILURE.has(record.failure)) return null;
+  if (record.leg?.exact?.inFlight === true || submitMayLand(record, nowMs)) return null;
+  return "whole";
+}
+
+/** A failed sale whose payment to its provider may still land: the chain settles it before
+ *  anything goes home. */
+const inFlightAfterFailure = (record) =>
+  record.rail === "meld" &&
+  record.phase === "failed" &&
+  record.failure !== "unresolved" &&
+  record.residue === undefined &&
+  record.leg?.paid !== true &&
+  record.leg?.exact?.inFlight === true;
+
+/**
+ * Asks the chain whether a failed sale's in-flight payment landed. Landed, the provider was paid
+ * and only what is left goes home; past its mortality unlanded, the key goes home whole; otherwise
+ * the next pass asks again. A chain that contradicts the payment stops the job for a person.
+ */
+async function settleInFlight(record) {
+  try {
+    const landed = await exactPaymentOut(
+      record,
+      asBig(record.channel?.amount, 0n),
+      record.leg.exact,
+    );
+    if (landed) record.leg = { ...record.leg, paid: true };
+  } catch (error) {
+    if (!(error instanceof PaymentUnresolvedError)) throw error;
+    fail(record, "unresolved", error.message);
+  }
+}
+
+/** Whether a sale's key holds anything worth the way home: CASH on People, or PAS on Asset Hub at
+ *  or above the floor a residue is sent home at. */
+async function keyHoldsAnything(record) {
+  const assetHub = await connectChain(record.assetHubGenesis, "asset hub");
+  try {
+    const account = await bounded(
+      readAssetHubAccount(assetHub.getTypedApi(paseo_next_v2), record.keyPublicKeyHex),
+      DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+      "key read on asset hub",
+    );
+    if (account.free >= SALE_RESIDUE_RETURN_FLOOR) return true;
+  } finally {
+    assetHub.destroy();
+  }
+  const people = await connectChain(record.peopleGenesis, "people");
+  try {
+    const cash = await bounded(
+      people
+        .getTypedApi(paseo_people_next)
+        .query.Assets.Account.getValue(CASH_LOCATION, record.keyAddress),
+      DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+      "key read on people",
+    );
+    return (cash?.balance ?? 0n) > 0n;
+  } finally {
+    people.destroy();
+  }
 }
 
 /** A submit whose answer was lost may still land until SUBMIT_SETTLE_MS after it left. */
@@ -667,6 +737,10 @@ async function sendHome(record, kind) {
       record.residue = { amount: amount.toString(), returning: false };
       return;
     }
+  } else if (!(await keyHoldsAnything(record))) {
+    // A sale that failed before anything reached its key: no way home to start.
+    record.residue = { whole: true, returning: false };
+    return;
   }
   // The way home is on the job, and stored, before its funding job exists: a worker stopped in
   // between finds the sale over and its way home open, and follows it (`keepWayHome`), rather than
@@ -878,12 +952,22 @@ export async function tickAllWithdraw() {
     const due = Object.values(all).filter(
       (record) =>
         record?.v === RECORD_V &&
-        (isLive(record) || returnDue(record) !== null || wayHomeOpen(record)),
+        (isLive(record) ||
+          returnDue(record) !== null ||
+          wayHomeOpen(record) ||
+          inFlightAfterFailure(record)),
     );
     let ticked = 0;
     for (const record of due) {
       // Cancelled since this pass began, with nothing owed.
-      if (!isLive(record) && returnDue(record) === null && !wayHomeOpen(record)) continue;
+      if (
+        !isLive(record) &&
+        returnDue(record) === null &&
+        !wayHomeOpen(record) &&
+        !inFlightAfterFailure(record)
+      ) {
+        continue;
+      }
       if (isLive(record)) {
         const nowMs = Date.now();
         let read = false;
@@ -907,6 +991,15 @@ export async function tickAllWithdraw() {
       }
       // Off the payment's path, and tried again on every pass until it is over, whatever became of
       // the job meanwhile: a sale done or failed is not ticked again, but its key still goes home.
+      // A failed sale's payment that may still land is settled by the chain first.
+      if (inFlightAfterFailure(record)) {
+        try {
+          await settleInFlight(record);
+          delete record.residueError;
+        } catch (error) {
+          record.residueError = String(error?.message ?? error);
+        }
+      }
       const kind = returnDue(record);
       if (kind !== null || wayHomeOpen(record)) {
         try {

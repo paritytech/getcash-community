@@ -39,7 +39,7 @@ export function withdrawalFailureText(failure: WithdrawalFailure): string {
     case "sale-mismatch":
       return "The provider changed the terms of the sale, so nothing was sent.";
     case "sale-closed":
-      return "The sale could not be paid before it closed, so nothing was sent to the provider. Your funds are coming back to your balance.";
+      return "The sale could not be completed, so nothing was sent to the provider. Your funds are coming back to your balance.";
     case "unknown":
       return failure.message || "Something went wrong with this withdrawal.";
   }

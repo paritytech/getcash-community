@@ -355,6 +355,32 @@ describe("the worker's words for a sale", () => {
     }
   });
 
+  it("ends the sale for good on any failure before its provider is paid, the key going home", () => {
+    const converting = moving();
+    const landed = reduce(
+      converting,
+      worker(at(10), { fundsSeenAt: at(7), landed: true, phase: "handoff" }),
+    ) as WithdrawalRecord;
+    for (const [record, failure, step] of [
+      [converting, "rejected", "convert"],
+      [converting, "timeout", "convert"],
+      [landed, "no-rail", "send"],
+    ] as const) {
+      const next = reduce(
+        record,
+        worker(at(11), { fundsSeenAt: at(7), landed: step === "send", phase: "failed", failure }),
+      ) as WithdrawalRecord;
+      expect(next.failure, failure).toMatchObject({
+        kind: "sale-closed",
+        step,
+        recoverable: false,
+      });
+      expect(withdrawalFailureText(next.failure!)).toBe(
+        "The sale could not be completed, so nothing was sent to the provider. Your funds are coming back to your balance.",
+      );
+    }
+  });
+
   it("keeps the whole key's way home on the failed record, to its arrival", () => {
     const closed = reduce(
       moving(),

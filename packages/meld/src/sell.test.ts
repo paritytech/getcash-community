@@ -360,6 +360,17 @@ describe("the sale as the rail leg reads it", () => {
     ).toBeNull();
   });
 
+  it("ends the follow when the provider changed the deposit after the key paid", () => {
+    const changed = saleStatusView({ status: "transaction_seen", depositConflictAt: 1_900 });
+    expect(changed.status).toBe("failed");
+    expect(changed.depositFailure?.reason).toMatchObject({
+      code: "changed",
+      message: expect.stringMatching(/changed the sale after your payment/),
+    });
+    // A payout already settled stands.
+    expect(saleStatusView({ status: "settled", depositConflictAt: 1_900 }).status).toBe("complete");
+  });
+
   it("follows the payout to its end in the seller's words", () => {
     expect(saleStatusView({ status: "settled" }).status).toBe("complete");
     expect(saleStatusView({ status: "transaction_seen" }).status).toBe("receiving");

@@ -492,7 +492,8 @@ export interface MeldSaleReading {
   status: string;
   providerStatus?: string;
   deposit?: { address: string; amount: string; currency: string };
-  /** The provider named another address after the one it disclosed. */
+  /** The provider named another address, or restated the amount or asset, after the deposit it
+   *  disclosed. */
   depositConflictAt?: number;
 }
 
