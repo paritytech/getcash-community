@@ -1,5 +1,5 @@
 import { NETWORK } from "@getsome/core";
-import { PASEO_UNDERLYING_ASSET_ID } from "@getsome/funding";
+import { chooseCashTransfer, PASEO_UNDERLYING_ASSET_ID } from "@getsome/funding";
 import { MELD_SELL_ENABLED } from "@getsome/meld";
 import { CASH_LOCATION } from "@getsome/people";
 import {
@@ -830,6 +830,18 @@ async function tickRecord(record, nowMs) {
     peopleClient = await connectChain(record.peopleGenesis, "people");
     const assetHubApi = ahClient.getTypedApi(paseo_next_v2);
     const peopleApi = peopleClient.getTypedApi(paseo_people_next);
+    // Asked on every dispatch, so a runtime upgrade between ticks is picked up before the next
+    // submit; a network with no transfer fails the tick like any other read.
+    const transfer = await bounded(
+      chooseCashTransfer({
+        assetHub: ahClient,
+        people: peopleClient,
+        assetHubParaId: record.assetHubParaId,
+        peopleParaId: record.peopleParaId,
+      }),
+      DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+      "cash transfer choice",
+    );
 
     // Restore the persisted state into the shape withdrawTickOnce mutates.
     const state = freshWithdrawTickState();
@@ -867,6 +879,7 @@ async function tickRecord(record, nowMs) {
           peopleParaId: record.peopleParaId,
           poolAccount: record.poolAccount,
           slippagePct: record.slippagePct,
+          transfer,
           // A Meld sale promised its provider an exact figure out of what lands: the sale must
           // cover it, its fee and the key's existential deposit, or nothing leaves People.
           ...(record.rail === "meld"

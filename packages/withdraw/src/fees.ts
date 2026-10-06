@@ -30,6 +30,8 @@ import {
   siblingOrigin,
   signedOrigin,
   trappedIn,
+  xcmErrorName,
+  type CashTransfer,
 } from "@getsome/funding";
 import { PEOPLE_NATIVE, PEOPLE_TX_OPTIONS } from "./paseo";
 import { cashInFor, type PoolReserves } from "./pool";
@@ -106,6 +108,8 @@ export interface SizeSwapInput {
   destinationHex: string;
   claimerHex?: string;
   assetHubParaId: number;
+  /** How the CASH moves to Asset Hub; the XCM's length, and so its fee, depends on it. */
+  transfer: CashTransfer;
 }
 
 /** The swap that buys the PAS the XCM needs on the key: the existential deposit, which must
@@ -118,7 +122,7 @@ export async function sizeSwap(input: SizeSwapInput): Promise<SwapArgs> {
   // A stand-in for the XCM. The fee grows with the call's length, and the amounts still unknown
   // encode to as many bytes as any real one will, so the reserve is not below the real fee.
   const { reserve } = await xcmTxFeeReserve(input.peopleApi, input.key.address, {
-    cashToTeleport: input.cashBalance,
+    cashToSend: input.cashBalance,
     pasToWithdraw: LONGEST_AMOUNT,
     payFeesPas: LONGEST_AMOUNT,
     remoteFeesCash: destinationEarmark(input.cashBalance, ASSET_HUB_FEE_BUFFER_CASH),
@@ -126,6 +130,7 @@ export async function sizeSwap(input: SizeSwapInput): Promise<SwapArgs> {
     destinationHex: input.destinationHex,
     claimerHex: input.claimerHex ?? input.key.publicKeyHex,
     assetHubParaId: input.assetHubParaId,
+    transfer: input.transfer,
   });
   const pasOut = ed + reserve;
   const quoted = cashInFor(pasOut, reserves);
@@ -165,6 +170,8 @@ export interface SizeXcmInput {
   peopleParaId: number;
   /** How far below the quoted sale the Asset Hub price may move before the program fails there. */
   slippagePct: number;
+  /** How the CASH moves to Asset Hub. */
+  transfer: CashTransfer;
   /** The least the sale must land, for a withdrawal that promised a provider an exact figure.
    *  A floor below it is refused rather than raised: a tighter floor than the pool supports fails
    *  the program on Asset Hub and traps the funds there. */
@@ -283,7 +290,7 @@ export async function sizeXcm(input: SizeXcmInput): Promise<XcmSizing> {
   }
 
   const base = (pasToWithdraw: bigint, payFeesPas: bigint): WithdrawXcmArgs => ({
-    cashToTeleport: input.cashOnKey,
+    cashToSend: input.cashOnKey,
     pasToWithdraw,
     payFeesPas,
     remoteFeesCash,
@@ -291,6 +298,7 @@ export async function sizeXcm(input: SizeXcmInput): Promise<XcmSizing> {
     destinationHex: input.destinationHex,
     claimerHex,
     assetHubParaId: input.assetHubParaId,
+    transfer: input.transfer,
   });
 
   // The transaction fee in PAS, for the exact call, with headroom. Left on the key for the
@@ -380,8 +388,7 @@ export async function dryRunOnAssetHub(
   if (!dr.success) throw new Error("not submitted: Asset Hub would not dry-run the program");
   const outcome = dr.value.execution_result;
   if (outcome.type !== "Complete") {
-    const error = (outcome.value as { error?: { type?: string } }).error?.type ?? outcome.type;
-    throw new Error(`not submitted: the program fails on Asset Hub with ${error}`);
+    throw new Error(`not submitted: the program fails on Asset Hub with ${xcmErrorName(outcome)}`);
   }
   const trapped = trappedIn(dr.value.emitted_events);
   if (trapped > 0n)

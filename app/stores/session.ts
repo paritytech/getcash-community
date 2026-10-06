@@ -16,6 +16,7 @@ import type { RefundKey } from "@getsome/ephemeral";
 import {
   createManualRail,
   manualSourceIdOf,
+  NoCashTransferError,
   PERMILL,
   PSM_EXTERNAL,
   recordedRoute,
@@ -207,7 +208,7 @@ export interface QuotedView {
   transactionFee?: string | null;
   networkFee?: string | null;
   partnerFee?: string | null;
-  /** The funding leg's own network fee, in `symbol` units: what the swap and the teleport up to
+  /** The funding leg's own network fee, in `symbol` units: what the swap and the send up to
    *  CASH on People cost, which the rail's quote knows nothing about. Priced by the app, not
    *  reported by the rail. */
   chainFee?: string | null;
@@ -689,7 +690,7 @@ export const useSessionStore = defineStore("session", () => {
     deposit?: DepositAsset,
   ): Promise<ConversionRoute> {
     if (!isHosted()) {
-      if (deposit === "dotUSD") return { tier: "teleport" };
+      if (deposit === "dotUSD") return { tier: "dotusd" };
       return deposit === undefined || deposit === "native"
         ? { tier: "pool" }
         : { tier: "pool", external: deposit };
@@ -862,7 +863,10 @@ export const useSessionStore = defineStore("session", () => {
       "funding sizing estimate (public read)",
       20_000,
       estimatePublicFundingSizing({ settleAmount, probeAddress: DEV_RECIPIENT }),
-    ).catch(() => FALLBACK_FUNDING_SIZING);
+    ).catch((e: unknown) => {
+      if (e instanceof NoCashTransferError) throw e;
+      return FALLBACK_FUNDING_SIZING;
+    });
   }
 
   /** (Re)quotes the Meld rail for the current CASH amount and region. The mock world simulates

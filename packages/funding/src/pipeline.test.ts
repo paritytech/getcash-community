@@ -215,7 +215,10 @@ const scriptedPeople = (opts: {
           return {
             success: true,
             value: {
-              execution_result: { type: "Incomplete", value: { used: {}, error: { type: error } } },
+              execution_result: {
+                type: "Incomplete",
+                value: { used: {}, error: { index: 1, error: { type: error } } },
+              },
               emitted_events: [],
             },
           };
@@ -1082,6 +1085,7 @@ async function drive(
         api: (world.client as unknown as { getTypedApi: () => never }).getTypedApi(),
         peopleApi: world.peopleApi as never,
         route,
+        transfer: "teleport",
         ...(route.tier === "pool"
           ? { pool: { native: NATIVE_LOC as never, underlying: UNDERLYING_LOC as never } }
           : {}),
@@ -1680,34 +1684,32 @@ describe("tickOnce on the stable pool tier", () => {
   });
 });
 
-// The teleport tier: the same target from a dotUSD deposit, the underlying itself, every fee in it.
-const TELEPORT_ROUTE: ConversionRoute = { tier: "teleport" };
-const DISPATCH_TELEPORT = 4_000n;
-const LOCAL_TELEPORT = 90n;
-const DELIVERY_TELEPORT = 10n;
-const FEES_TELEPORT = LOCAL_TELEPORT + DELIVERY_TELEPORT;
-const ALLOWANCE_TELEPORT = withFeeMargin(FEES_TELEPORT);
+// The dotUSD tier: the same target from a dotUSD deposit, the underlying itself, every fee in it.
+const DOTUSD_ROUTE: ConversionRoute = { tier: "dotusd" };
+const DISPATCH_DOTUSD = 4_000n;
+const LOCAL_DOTUSD = 90n;
+const DELIVERY_DOTUSD = 10n;
+const FEES_DOTUSD = LOCAL_DOTUSD + DELIVERY_DOTUSD;
+const ALLOWANCE_DOTUSD = withFeeMargin(FEES_DOTUSD);
 /** dotUSD's min_balance on Paseo Asset Hub Next. */
-const MIN_BALANCE_TELEPORT = 1n;
-const HELD_BACK_TELEPORT = MIN_BALANCE_TELEPORT + ALLOWANCE_TELEPORT;
+const MIN_BALANCE_DOTUSD = 1n;
+const HELD_BACK_DOTUSD = MIN_BALANCE_DOTUSD + ALLOWANCE_DOTUSD;
 /** What the buyer is asked for: the target itself, the min_balance and one cushion over every
  *  fee. No quote: nothing is exchanged. */
-const TELEPORT_DEPOSIT =
-  BUY +
-  MIN_BALANCE_TELEPORT +
-  withFeeMargin(DISPATCH_TELEPORT + LOCAL_TELEPORT + DELIVERY_TELEPORT);
+const DOTUSD_DEPOSIT =
+  BUY + MIN_BALANCE_DOTUSD + withFeeMargin(DISPATCH_DOTUSD + LOCAL_DOTUSD + DELIVERY_DOTUSD);
 
-/** Scripted Asset Hub + People for the teleport tier: a dotUSD holding, its fee reads, the
+/** Scripted Asset Hub + People for the dotUSD tier: a dotUSD holding, its fee reads, the
  *  program as the runtime runs it. There is no pool quote to answer: an exchange asked for fails
  *  the test. */
-function scriptedTeleportWorld(
+function scriptedDotUsdWorld(
   opts: { arrivalAfterReads?: number; peopleDryRunError?: string; remoteFee?: bigint } = {},
 ) {
   const remoteFee = opts.remoteFee ?? BUFFER;
   const token = TOKENS.DOTUSD;
   const chain = scriptedChain();
   const state = {
-    dispatchUnderlying: DISPATCH_TELEPORT,
+    dispatchUnderlying: DISPATCH_DOTUSD,
     underlyingAh: 0n,
     underlyingPeople: 0n,
     inFlight: 0n,
@@ -1725,16 +1727,16 @@ function scriptedTeleportWorld(
       return { error: incomplete(0, "FailedToTransactAsset") };
     }
     const withdraw = withdrawn[0]!.fun.value;
-    if (withdraw > state.underlyingAh - MIN_BALANCE_TELEPORT) {
+    if (withdraw > state.underlyingAh - MIN_BALANCE_DOTUSD) {
       return { error: incomplete(0, "FailedToTransactAsset") };
     }
     const payFees = (instruction(args, "PayFees") as { asset: Fungible }).asset;
-    if (!isUnderlying(payFees) || payFees.fun.value < FEES_TELEPORT) {
+    if (!isUnderlying(payFees) || payFees.fun.value < FEES_DOTUSD) {
       return { error: incomplete(2, "NotHoldingFees") };
     }
     return {
       teleported: withdraw - payFees.fun.value,
-      left: state.underlyingAh - withdraw + payFees.fun.value - FEES_TELEPORT,
+      left: state.underlyingAh - withdraw + payFees.fun.value - FEES_DOTUSD,
     };
   };
   const rejected = (error: unknown) => ({
@@ -1773,7 +1775,7 @@ function scriptedTeleportWorld(
         Number: chain.Number,
         Account: {
           getValue: async () => {
-            throw new Error("native read on the teleport tier");
+            throw new Error("native read on the dotUSD tier");
           },
         },
       },
@@ -1782,7 +1784,7 @@ function scriptedTeleportWorld(
           getValue: async (assetId: number) => {
             expect(assetId).toBe(token.assetHubId);
             state.assetReads += 1;
-            return { min_balance: MIN_BALANCE_TELEPORT };
+            return { min_balance: MIN_BALANCE_DOTUSD };
           },
         },
         Account: {
@@ -1823,13 +1825,13 @@ function scriptedTeleportWorld(
         query_xcm_weight: xcmPaymentApi.query_xcm_weight,
         query_weight_to_asset_fee: async (_weight: unknown, asset: unknown) => {
           expect(asset).toEqual({ type: "V5", value: token.location });
-          return { success: true, value: LOCAL_TELEPORT };
+          return { success: true, value: LOCAL_DOTUSD };
         },
         query_delivery_fees: async (_dest: unknown, _message: unknown, asset: unknown) => {
           expect(asset).toEqual({ type: "V5", value: token.location });
           return {
             success: true,
-            value: { value: [{ fun: { type: "Fungible", value: DELIVERY_TELEPORT } }] },
+            value: { value: [{ fun: { type: "Fungible", value: DELIVERY_DOTUSD } }] },
           };
         },
       },
@@ -1852,22 +1854,20 @@ function scriptedTeleportWorld(
   };
 }
 
-describe("tickOnce on the teleport tier", () => {
+describe("tickOnce on the dotUSD tier", () => {
   it("teleports the dotUSD with no exchange one tick at a time: program, arrival, done", async () => {
-    const world = scriptedTeleportWorld({ arrivalAfterReads: 2 });
-    const idle = await drive(world, 1, freshTickState(), TELEPORT_ROUTE);
+    const world = scriptedDotUsdWorld({ arrivalAfterReads: 2 });
+    const idle = await drive(world, 1, freshTickState(), DOTUSD_ROUTE);
     expect(idle.steps).toEqual(["await-native"]);
     expect(idle.state.fundsSeenAt).toBeNull();
 
-    world.state.underlyingAh = TELEPORT_DEPOSIT;
-    const run = await drive(world, 6, idle.state, TELEPORT_ROUTE);
+    world.state.underlyingAh = DOTUSD_DEPOSIT;
+    const run = await drive(world, 6, idle.state, DOTUSD_ROUTE);
     expect(run.steps).toEqual(["swap", "await-arrival", "done"]);
     expect(run.state).toMatchObject({ attempts: 1, xcmSubmitted: true });
     expect(world.state.underlyingPeople).toBeGreaterThanOrEqual(SETTLE);
     // The burner keeps the min_balance and the unspent tenth of the fee allowance.
-    expect(world.state.underlyingAh).toBe(
-      MIN_BALANCE_TELEPORT + ALLOWANCE_TELEPORT - FEES_TELEPORT,
-    );
+    expect(world.state.underlyingAh).toBe(MIN_BALANCE_DOTUSD + ALLOWANCE_DOTUSD - FEES_DOTUSD);
 
     const [tx] = world.state.txs;
     const args = tx!.args;
@@ -1879,13 +1879,13 @@ describe("tickOnce on the teleport tier", () => {
       "DepositAsset",
     ]);
     // Everything the dispatch fee and the held-back part leave is sent, the cushion included.
-    const send = TELEPORT_DEPOSIT - DISPATCH_TELEPORT - HELD_BACK_TELEPORT;
+    const send = DOTUSD_DEPOSIT - DISPATCH_DOTUSD - HELD_BACK_DOTUSD;
     expect(send).toBeGreaterThan(BUY);
     expect((instruction(args, "WithdrawAsset") as Fungible[])[0]!.fun.value).toBe(
-      send + ALLOWANCE_TELEPORT,
+      send + ALLOWANCE_DOTUSD,
     );
     expect((instruction(args, "PayFees") as { asset: Fungible }).asset.fun.value).toBe(
-      ALLOWANCE_TELEPORT,
+      ALLOWANCE_DOTUSD,
     );
     expect(transferOf(args).remote_fees.value.value[0]!.fun.value).toBe(EARMARK);
     expect(args.max_weight).toEqual({ ref_time: 1_000_000n, proof_size: 1_000n });
@@ -1893,49 +1893,43 @@ describe("tickOnce on the teleport tier", () => {
   });
 
   it("gates on the target, then the fees: short of the bare target waits without the fee reads", async () => {
-    const world = scriptedTeleportWorld();
+    const world = scriptedDotUsdWorld();
     world.state.underlyingAh = BUY - 1n;
-    expect((await drive(world, 1, freshTickState(), TELEPORT_ROUTE)).steps).toEqual([
-      "await-native",
-    ]);
+    expect((await drive(world, 1, freshTickState(), DOTUSD_ROUTE)).steps).toEqual(["await-native"]);
     expect(world.state.assetReads).toBe(0);
-    world.state.underlyingAh = TELEPORT_DEPOSIT - 1n;
-    expect((await drive(world, 1, freshTickState(), TELEPORT_ROUTE)).steps).toEqual([
-      "await-native",
-    ]);
+    world.state.underlyingAh = DOTUSD_DEPOSIT - 1n;
+    expect((await drive(world, 1, freshTickState(), DOTUSD_ROUTE)).steps).toEqual(["await-native"]);
     expect(world.state.assetReads).toBeGreaterThan(0);
     expect(world.state.txs).toEqual([]);
-    world.state.underlyingAh = TELEPORT_DEPOSIT;
-    expect((await drive(world, 1, freshTickState(), TELEPORT_ROUTE)).steps).toEqual(["swap"]);
+    world.state.underlyingAh = DOTUSD_DEPOSIT;
+    expect((await drive(world, 1, freshTickState(), DOTUSD_ROUTE)).steps).toEqual(["swap"]);
   });
 
   it("clears a deposit sized at the quote after PAS moves against the dispatch fee, and re-prices without the frozen figure", async () => {
-    const moved = DISPATCH_TELEPORT + DISPATCH_TELEPORT / 20n;
-    const world = scriptedTeleportWorld({ arrivalAfterReads: 1 });
-    world.state.underlyingAh = TELEPORT_DEPOSIT;
+    const moved = DISPATCH_DOTUSD + DISPATCH_DOTUSD / 20n;
+    const world = scriptedDotUsdWorld({ arrivalAfterReads: 1 });
+    world.state.underlyingAh = DOTUSD_DEPOSIT;
     world.state.dispatchUnderlying = moved;
-    const run = await drive(world, 4, freshTickState(), TELEPORT_ROUTE, TELEPORT_DEPOSIT);
+    const run = await drive(world, 4, freshTickState(), DOTUSD_ROUTE, DOTUSD_DEPOSIT);
     expect(run.steps).toEqual(["swap", "done"]);
     expect(world.state.underlyingPeople).toBeGreaterThanOrEqual(SETTLE);
 
-    const bare = scriptedTeleportWorld();
-    bare.state.underlyingAh = TELEPORT_DEPOSIT;
+    const bare = scriptedDotUsdWorld();
+    bare.state.underlyingAh = DOTUSD_DEPOSIT;
     bare.state.dispatchUnderlying = moved;
-    expect((await drive(bare, 1, freshTickState(), TELEPORT_ROUTE)).steps).toEqual([
-      "await-native",
-    ]);
+    expect((await drive(bare, 1, freshTickState(), DOTUSD_ROUTE)).steps).toEqual(["await-native"]);
   });
 
   it("sends everything the burner holds; the surplus lands as extra CASH", async () => {
-    const world = scriptedTeleportWorld({ arrivalAfterReads: 1 });
-    world.state.underlyingAh = TELEPORT_DEPOSIT + 1_000_000n;
-    const run = await drive(world, 4, freshTickState(), TELEPORT_ROUTE);
+    const world = scriptedDotUsdWorld({ arrivalAfterReads: 1 });
+    world.state.underlyingAh = DOTUSD_DEPOSIT + 1_000_000n;
+    const run = await drive(world, 4, freshTickState(), DOTUSD_ROUTE);
     expect(run.steps).toEqual(["swap", "done"]);
     expect(world.state.underlyingPeople).toBeGreaterThan(SETTLE + 1_000_000n - BUFFER);
   });
 
   it("does not submit a program People refuses or that would land short, with nothing spent", async () => {
-    const refusals: Array<[Parameters<typeof scriptedTeleportWorld>[0], RegExp]> = [
+    const refusals: Array<[Parameters<typeof scriptedDotUsdWorld>[0], RegExp]> = [
       [
         { peopleDryRunError: "TooExpensive" },
         /not submitted: the forwarded program fails on People with TooExpensive/,
@@ -1943,12 +1937,12 @@ describe("tickOnce on the teleport tier", () => {
       [{ remoteFee: BUFFER * 3n }, /would reach the beneficiary on People/],
     ];
     for (const [opts, reason] of refusals) {
-      const world = scriptedTeleportWorld(opts);
-      world.state.underlyingAh = TELEPORT_DEPOSIT;
+      const world = scriptedDotUsdWorld(opts);
+      world.state.underlyingAh = DOTUSD_DEPOSIT;
       const state = freshTickState();
-      await expect(drive(world, 1, state, TELEPORT_ROUTE)).rejects.toThrow(reason);
+      await expect(drive(world, 1, state, DOTUSD_ROUTE)).rejects.toThrow(reason);
       expect(world.state.txs).toEqual([]);
-      expect(world.state.underlyingAh).toBe(TELEPORT_DEPOSIT);
+      expect(world.state.underlyingAh).toBe(DOTUSD_DEPOSIT);
       expect(state).toMatchObject({ attempts: 0, xcmSubmitted: false });
     }
   });
@@ -1974,13 +1968,13 @@ describe("the submit, and the CASH read final on People", () => {
     psm.state.usdtAh = PSM_DEPOSIT;
     const stable = scriptedStableWorld({ arrivalAfterReads: 1 });
     stable.state.stableAh = STABLE_DEPOSIT;
-    const teleport = scriptedTeleportWorld({ arrivalAfterReads: 1 });
-    teleport.state.underlyingAh = TELEPORT_DEPOSIT;
+    const dotUsd = scriptedDotUsdWorld({ arrivalAfterReads: 1 });
+    dotUsd.state.underlyingAh = DOTUSD_DEPOSIT;
     const tiers: Array<[Driveable, ConversionRoute]> = [
       [funded(), POOL],
       [psm, ROUTE],
       [stable, STABLE_ROUTE],
-      [teleport, TELEPORT_ROUTE],
+      [dotUsd, DOTUSD_ROUTE],
     ];
     for (const [world, route] of tiers) {
       const run = await drive(world, 3, freshTickState(), route);
@@ -2705,6 +2699,7 @@ describe("estimateDestinationFeeCash", () => {
       assetHubParaId: 1500,
       beneficiaryHex: BENEFICIARY_HEX,
       amount: BUY,
+      transfer: "teleport",
     });
     expect(fee).toBe(48n);
     expect(calls.origin).toEqual({
@@ -2736,6 +2731,7 @@ describe("estimateDestinationFeeCash", () => {
       assetHubParaId: 1500,
       beneficiaryHex: BENEFICIARY_HEX,
       amount: BUY,
+      transfer: "teleport",
     });
     const program = calls.program as { value: Array<{ type: string; value?: unknown }> };
     expect((program.value[0]!.value as Array<{ id: unknown }>)[0]!.id).toEqual(relayKeyed);
@@ -2750,7 +2746,7 @@ describe("estimateDestinationFeeCash", () => {
             value: {
               execution_result: {
                 type: "Incomplete",
-                value: { used: {}, error: { type: "TooExpensive" } },
+                value: { used: {}, error: { index: 1, error: { type: "TooExpensive" } } },
               },
               emitted_events: [],
             },
@@ -2758,7 +2754,13 @@ describe("estimateDestinationFeeCash", () => {
         },
       },
     } as never;
-    const common = { pool, assetHubParaId: 1500, beneficiaryHex: BENEFICIARY_HEX, amount: BUY };
+    const common = {
+      pool,
+      assetHubParaId: 1500,
+      beneficiaryHex: BENEFICIARY_HEX,
+      amount: BUY,
+      transfer: "teleport" as const,
+    };
     await expect(estimateDestinationFeeCash({ peopleApi: failing, ...common })).rejects.toThrow(
       /fails on People with TooExpensive/,
     );

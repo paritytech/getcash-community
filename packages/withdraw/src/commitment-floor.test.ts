@@ -35,6 +35,7 @@ const input = (minLanding?: bigint): SizeXcmInput => ({
   assetHubParaId: 1500,
   peopleParaId: 1004,
   slippagePct: 5,
+  transfer: "teleport",
   ...(minLanding === undefined ? {} : { minLanding }),
 });
 

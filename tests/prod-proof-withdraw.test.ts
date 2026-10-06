@@ -8,7 +8,11 @@ import { AccountId, createClient } from "polkadot-api";
 import { getWsProvider } from "polkadot-api/ws";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import { deriveKeypairWithSecret } from "@getsome/ephemeral";
-import { PASEO_ASSET_HUB_PARA_ID, PASEO_PEOPLE_PARA_ID } from "@getsome/funding";
+import {
+  chooseCashTransfer,
+  PASEO_ASSET_HUB_PARA_ID,
+  PASEO_PEOPLE_PARA_ID,
+} from "@getsome/funding";
 import { CASH_LOCATION } from "@getsome/people";
 import {
   readDestinationPas,
@@ -39,6 +43,13 @@ describe.runIf(process.env.PROD_PROOF_WITHDRAW === "1")("withdrawal production p
     const peopleApi = peC.getTypedApi(paseo_people_next);
     try {
       if (!BURNER_LABEL) throw new Error("set WITHDRAW_BURNER to a burner label holding CASH");
+      const transfer = await chooseCashTransfer({
+        assetHub: ahC,
+        people: peC,
+        assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
+        peopleParaId: PASEO_PEOPLE_PARA_ID,
+      });
+      console.log(`CASH moves to Asset Hub by ${transfer}`);
       const entropy = new Uint8Array(32);
       new TextEncoder().encodeInto(BURNER_LABEL, entropy);
       const key = deriveKeypairWithSecret(entropy);
@@ -71,6 +82,7 @@ describe.runIf(process.env.PROD_PROOF_WITHDRAW === "1")("withdrawal production p
               peopleParaId: PASEO_PEOPLE_PARA_ID,
               poolAccount: PASEO_PEOPLE_POOL_ACCOUNT,
               slippagePct: DEFAULT_WITHDRAW_SLIPPAGE_PCT,
+              transfer,
               tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
               submitTimeoutMs: DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
               readKeyOnPeople: async (ss58) => ({

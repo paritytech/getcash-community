@@ -25,7 +25,7 @@
 // same transaction will not pass on the fourth try.
 
 import type { PolkadotSigner } from "polkadot-api";
-import { describeDispatchError } from "@getsome/funding";
+import { describeDispatchError, type CashTransfer } from "@getsome/funding";
 import { bounded } from "./bounded";
 import { PEOPLE_TX_OPTIONS } from "./paseo";
 import { NeedsSwapError, sizeSwap, sizeXcm, type AssetHubApi } from "./fees";
@@ -100,6 +100,9 @@ export interface WithdrawTickInput {
   /** The People pool's account, whose balances are the reserves. */
   poolAccount: string;
   slippagePct: number;
+  /** How the CASH moves to Asset Hub, as the chains answered through `chooseCashTransfer`; never
+   *  decided here. */
+  transfer: CashTransfer;
   /** The least the sale must land on the destination, for a withdrawal that has promised a
    *  provider an exact figure out of it. Read before each sizing; a sale whose floor is below it
    *  is refused with CommitmentUnfundableError and nothing leaves People. */
@@ -207,6 +210,7 @@ export async function withdrawTickOnce(
           assetHubParaId: input.assetHubParaId,
           peopleParaId: input.peopleParaId,
           slippagePct: input.slippagePct,
+          transfer: input.transfer,
           ...(minLanding === undefined ? {} : { minLanding }),
         }),
         input.tickTimeoutMs,
@@ -253,6 +257,7 @@ export async function withdrawTickOnce(
       destinationHex: input.destinationHex,
       claimerHex: input.claimerHex,
       assetHubParaId: input.assetHubParaId,
+      transfer: input.transfer,
     }),
     input.tickTimeoutMs,
     "swap sizing",

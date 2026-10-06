@@ -87,6 +87,13 @@ export function useWithdrawalRequest() {
       };
     }
     const live = await import("~~/lib/withdraw-live");
+    if (!(await live.cashCanMove())) {
+      return {
+        ok: false,
+        ref: null,
+        reason: "This network does not let CASH move from People to Asset Hub.",
+      };
+    }
     const sourceId = `${WITHDRAW_SOURCE_PREFIX}${input.destinationId}`;
     const n = await live.nextWithdrawNumber(sourceId, (candidate) =>
       requests.hasTrace(sourceId, candidate),

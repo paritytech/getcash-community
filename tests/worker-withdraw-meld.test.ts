@@ -60,6 +60,12 @@ vi.mock("@getsome/withdraw", async (importOriginal) => ({
   withdrawTickOnce: mocks.withdrawTickOnce,
 }));
 
+// How the CASH moves to Asset Hub is the chains' answer, and the scripted leg does not read it.
+vi.mock("@getsome/funding", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  chooseCashTransfer: async () => "teleport",
+}));
+
 // The residue is read off the key on Asset Hub through a client the engine opens for it.
 vi.mock("../worker/src/shared.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../worker/src/shared.js")>();
@@ -732,6 +738,16 @@ describe("a sale's way to the provider and back", () => {
     const engine = await engineWith({ "s-1": job });
     await engine.tickAllWithdraw();
     expect(mocks.withdrawTickOnce).toHaveBeenCalledTimes(1);
+  });
+
+  it("hands the message leg the chains' way to move the CASH and the payment's floor", async () => {
+    mocks.withdrawTickOnce.mockResolvedValue({ step: "deliver" });
+    const engine = await engineWith({ "s-1": unsold(NOW + 3_600_000) });
+    await engine.tickAllWithdraw();
+    expect(mocks.withdrawTickOnce.mock.calls[0]![0]).toMatchObject({
+      transfer: "teleport",
+      minLanding: expect.any(Function),
+    });
   });
 
   it("does not call a sale unfundable while an earlier submit may still land", async () => {

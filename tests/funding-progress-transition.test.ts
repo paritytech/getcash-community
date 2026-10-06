@@ -104,7 +104,7 @@ describe("funding progress transitions", () => {
       routeCompletedAt: 300,
       stageTimestamps: { "chainflip-sending": 100, "cash-conversion": 300 },
     });
-    // The swap and the teleport are the one program, so awaiting the arrival is still the
+    // The swap and the send are the one program, so awaiting the arrival is still the
     // conversion: the stage keeps the timestamp the swap gave it.
     expect(arriving).toBe(conversion);
     expect(topUp.confirmedStageKey).toBe("cash-top-up");
