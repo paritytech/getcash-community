@@ -9,10 +9,21 @@ export const RATE_LIMIT_COOLDOWN_MS = 10_000;
  *  would leave the funding screen unreachable with no way out. The adapter's window is 60s. */
 export const MAX_RATE_LIMIT_COOLDOWN_MS = 60_000;
 
+/** When status reads may go out again after a 429, and the 429 to refuse them with until then. */
+export interface RateLimitCooldown {
+  until: number;
+  error: unknown;
+}
+
+/** The adapter's limit is one budget per caller, so a 429 holds back every wrapper on the page. */
+const pageCooldown: RateLimitCooldown = { until: 0, error: null };
+
 export interface SharedStatusOptions {
   ttlMs?: number;
   cooldownMs?: number;
   maxCooldownMs?: number;
+  /** The cooldown to share; defaults to the page's. Tests pass their own. */
+  cooldown?: RateLimitCooldown;
   /** Injectable clock for tests. */
   now?: () => number;
 }
@@ -23,8 +34,9 @@ export interface SharedStatusOptions {
  * the store's poll and a resume's pay-page lookup read the same id, and the adapter's rate limit is
  * one budget per caller across every route.
  *
- * After a 429 no status read goes out until the adapter's `retry-after` (or `cooldownMs`) passes,
- * capped at `maxCooldownMs`; each read in that window is refused with the 429 itself. Failures are never cached otherwise.
+ * After a 429 no status read goes out, through this wrapper or any other sharing its cooldown,
+ * until the adapter's `retry-after` (or `cooldownMs`) passes, capped at `maxCooldownMs`; each read
+ * in that window is refused with the 429 itself. Failures are never cached otherwise.
  */
 export function shareStatusReads(
   client: MeldClientLike,
@@ -36,12 +48,11 @@ export function shareStatusReads(
   const now = opts.now ?? Date.now;
   const inFlight = new Map<string, Promise<MeldStatusResult>>();
   const recent = new Map<string, { at: number; result: MeldStatusResult }>();
-  let coolUntil = 0;
-  let coolError: unknown = null;
+  const cool = opts.cooldown ?? pageCooldown;
 
   function getStatus(fundingRequestId: string): Promise<MeldStatusResult> {
     const t = now();
-    if (t < coolUntil) return Promise.reject(coolError);
+    if (t < cool.until) return Promise.reject(cool.error);
     const hit = recent.get(fundingRequestId);
     if (hit !== undefined && t - hit.at < ttlMs) return Promise.resolve(hit.result);
     const pending = inFlight.get(fundingRequestId);
@@ -56,8 +67,8 @@ export function shareStatusReads(
         (e: unknown) => {
           const refusal = e as { status?: number; retryAfterMs?: number } | null;
           if (refusal?.status === 429) {
-            coolUntil = now() + Math.min(refusal.retryAfterMs ?? cooldownMs, maxCooldownMs);
-            coolError = e;
+            cool.until = now() + Math.min(refusal.retryAfterMs ?? cooldownMs, maxCooldownMs);
+            cool.error = e;
           }
           throw e;
         },

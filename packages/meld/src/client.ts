@@ -203,6 +203,9 @@ function retryAfterMsOf(res: Response): number | undefined {
   return Number.isNaN(at) ? undefined : Math.max(0, at - Date.now());
 }
 
+/** How long a status read may take before it fails: every poller of an id waits on the same read. */
+const STATUS_TIMEOUT_MS = 10_000;
+
 /** How many finished attempts — concluded or cancelled — `createSession` walks past before giving
  *  up. */
 const MAX_ATTEMPTS = 5;
@@ -276,6 +279,7 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike {
   async function getFundingStatus(fundingRequestId: string): Promise<MeldStatusResult> {
     const res = await doFetch(`${base}/funding/${encodeURIComponent(fundingRequestId)}`, {
       headers: headers(),
+      signal: AbortSignal.timeout(STATUS_TIMEOUT_MS),
     });
     const data = await read(res, "the payment status");
     const funding = (data.funding as Record<string, unknown> | undefined) ?? {};

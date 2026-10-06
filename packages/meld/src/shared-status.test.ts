@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { MeldClientLike, MeldStatusResult } from "./client";
-import { shareStatusReads } from "./shared-status";
+import { shareStatusReads, type RateLimitCooldown } from "./shared-status";
 
 /** A client counting status reads per id; `answer` is what the next read settles with. */
 function countingClient() {
@@ -23,6 +23,9 @@ function countingClient() {
   };
   return { client, reads, state };
 }
+
+/** A cooldown of the test's own, so a 429 here never leaks into the page's. */
+const fresh = (): RateLimitCooldown => ({ until: 0, error: null });
 
 const rateLimited = (retryAfterMs?: number) =>
   Object.assign(new Error("Too many requests"), {
@@ -74,7 +77,7 @@ describe("shareStatusReads", () => {
   it("sends no read for any id until a 429's retry-after has passed", async () => {
     let t = 0;
     const { client, reads, state } = countingClient();
-    const shared = shareStatusReads(client, { now: () => t });
+    const shared = shareStatusReads(client, { now: () => t, cooldown: fresh() });
     const refusal = rateLimited(20_000);
     state.answer = async () => {
       throw refusal;
@@ -93,7 +96,11 @@ describe("shareStatusReads", () => {
   it("falls back to its own cooldown when the 429 carries no retry-after", async () => {
     let t = 0;
     const { client, reads, state } = countingClient();
-    const shared = shareStatusReads(client, { cooldownMs: 10_000, now: () => t });
+    const shared = shareStatusReads(client, {
+      cooldownMs: 10_000,
+      now: () => t,
+      cooldown: fresh(),
+    });
     state.answer = async () => {
       throw rateLimited();
     };
@@ -109,7 +116,11 @@ describe("shareStatusReads", () => {
   it("caps a far-off retry-after, so a 429 never holds the reads back past the limit", async () => {
     let t = 0;
     const { client, reads, state } = countingClient();
-    const shared = shareStatusReads(client, { maxCooldownMs: 60_000, now: () => t });
+    const shared = shareStatusReads(client, {
+      maxCooldownMs: 60_000,
+      now: () => t,
+      cooldown: fresh(),
+    });
     state.answer = async () => {
       throw rateLimited(3_600_000);
     };
@@ -120,5 +131,22 @@ describe("shareStatusReads", () => {
     t = 60_000;
     await expect(shared.getStatus("mfr")).resolves.toEqual({ status: "session_opened" });
     expect(reads).toEqual({ mfr: 2 });
+  });
+
+  it("holds back every wrapper on the page after a 429 on one of them", async () => {
+    let t = 0;
+    const a = countingClient();
+    const b = countingClient();
+    a.state.answer = async () => {
+      throw rateLimited(10_000);
+    };
+    await expect(shareStatusReads(a.client, { now: () => t }).getStatus("x")).rejects.toMatchObject(
+      { status: 429 },
+    );
+    const other = shareStatusReads(b.client, { now: () => t });
+    await expect(other.getStatus("y")).rejects.toMatchObject({ status: 429 });
+    expect(b.reads).toEqual({});
+    t = 10_000;
+    await expect(other.getStatus("y")).resolves.toEqual({ status: "session_opened" });
   });
 });

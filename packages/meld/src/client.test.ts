@@ -188,6 +188,15 @@ describe("createMeldClient quote mapping", () => {
   });
 });
 
+describe("createMeldClient status read", () => {
+  it("bounds the read with a timeout, so one stalled request cannot hold every poller", async () => {
+    const { impl, calls } = stubFetch(200, { funding: { status: "session_opened" } });
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+    await client.getStatus("mfr");
+    expect(calls[0]?.init?.signal).toBeInstanceOf(AbortSignal);
+  });
+});
+
 describe("createMeldClient error mapping", () => {
   it("carries the adapter's own code through the `Other` catch-all", async () => {
     const { impl } = stubFetch(400, {
