@@ -34,10 +34,10 @@ export function smallestMinimumCash(tokens: readonly { offer: TokenOffer }[]): b
   return smallest;
 }
 
+/** The line under a token row: why it cannot be picked, nothing when it can. A token still being
+ *  answered says nothing either, since the picker draws a skeleton row in its place. */
 export function tokenSubtitle(offer: TokenOffer): string | undefined {
   switch (offer.state) {
-    case "checking":
-      return "Checking…";
     case "rail-off":
       return "Not available yet";
     case "unavailable":
@@ -49,14 +49,15 @@ export function tokenSubtitle(offer: TokenOffer): string | undefined {
     case "available":
     case "ungated":
     case "direct":
+    case "checking":
       return undefined;
   }
 }
 
-/** A network that can be picked says nothing; one that cannot says why, by its tokens. */
+/** A network that can be picked says nothing, as does one still being answered; one that cannot
+ *  says why, by its tokens. */
 export function networkSubtitle(network: NetworkRow): string | undefined {
-  if (network.available) return undefined;
-  if (network.checking) return "Checking…";
+  if (network.available || network.checking) return undefined;
   const states = new Set(network.tokens.map((t) => t.offer.state));
   if (states.has("rail-off")) return "Not available yet";
   const minimum = smallestMinimumCash(network.tokens);

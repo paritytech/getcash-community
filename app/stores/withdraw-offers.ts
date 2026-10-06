@@ -2,7 +2,7 @@
 // while fresh, and the rows of the withdraw pickers read off them.
 
 import { defineStore } from "pinia";
-import { ref, shallowRef } from "vue";
+import { computed, ref, shallowRef } from "vue";
 import { quoteWithdrawOffers } from "~~/lib/withdraw-live";
 import { chainflipRailOn } from "../utils/rail";
 import {
@@ -80,5 +80,26 @@ export const useWithdrawOffersStore = defineStore("withdraw-offers", () => {
   const networkRowFor = (network: WithdrawNetwork): RowState =>
     networkRow(network.destinations.map(rowFor));
 
-  return { offers, amount, sellable, railOn, learn, offerFor, rowFor, networkRowFor };
+  /** A destination still being quoted is never drawn: a picker with one shows skeleton rows, one
+   *  per row it will list, until every row on it has its answer. Asset Hub's own destinations
+   *  are never quoted, so a picker of those alone never waits. */
+  const awaiting = (destinations: readonly WithdrawDestination[]): boolean =>
+    destinations.some(
+      (destination) => destination.rail !== "direct" && offerFor(destination).state === "checking",
+    );
+  const awaitingNetworks = computed(() => awaiting(PROVIDER_DESTINATIONS));
+  const awaitingTokens = (network: WithdrawNetwork): boolean => awaiting(network.destinations);
+
+  return {
+    offers,
+    amount,
+    sellable,
+    railOn,
+    learn,
+    offerFor,
+    rowFor,
+    networkRowFor,
+    awaitingNetworks,
+    awaitingTokens,
+  };
 });

@@ -125,18 +125,18 @@ describe("offers store", () => {
     expect(offers.offeredNetworks.map((n) => n.chain)).toEqual(["Polkadot"]);
   });
 
-  it("keeps the swap rows checking while a direct stable quote is on screen, never ungated", () => {
+  it("offers the swap rows as they are while a direct stable quote is on screen", () => {
     const session = useSessionStore();
     const offers = useOffersStore();
     sizedInUsdc(session);
     offers.floors = LEARNED;
-    // A floor with no figure to compare against is still being answered; Chainflip's own no
-    // stays a no.
-    const swapTokens = swapNetworks(offers).flatMap((n) => n.tokens);
-    expect(swapTokens.some((t) => t.offer.state === "ungated")).toBe(false);
-    expect(offers.offeredTokens("Ethereum").map((t) => t.offer.state)).toEqual([
-      "checking",
-      "checking",
+    // The quote names no figure the floors can be held against, so nothing is awaited: the rows
+    // are open, and the quote after a pick is what judges them. Chainflip's own no stays a no.
+    expect(offers.awaitingNetworks).toBe(false);
+    expect(offers.tokensOf("Ethereum").map((t) => t.offer.state)).toEqual([
+      "ungated",
+      "unavailable",
+      "ungated",
     ]);
     expect(offers.networks[0]!.tokens.every((t) => t.offer.state === "direct")).toBe(true);
     // A quote back in the native prices the rows again.
@@ -150,6 +150,7 @@ describe("offers store", () => {
     sized(session, 100n * DOT);
     expect(swapNetworks(offers).every((n) => n.checking && !n.available)).toBe(true);
     expect(offers.offeredNetworks).toHaveLength(5); // still worth showing, as pending
+    expect(offers.awaitingNetworks).toBe(true);
     expect(offers.paused).toBe(false);
   });
 
@@ -271,14 +272,28 @@ describe("offers store", () => {
     expect(offers.tokensOf("Mars")).toEqual([]);
   });
 
-  it("shows skeleton rows only while an answer is actually awaited", () => {
+  it("has the pickers wait while the floors are being learned or the quote is sizing", () => {
+    const session = useSessionStore();
     const offers = useOffersStore();
-    expect(offers.awaitingFloors).toBe(true); // rail on, nothing learned yet
+    expect(offers.awaitingNetworks).toBe(true); // rail on, nothing learned yet
     offers.railEnabled = false;
-    expect(offers.awaitingFloors).toBe(false); // nothing will be asked: show the greyed rows
+    expect(offers.awaitingNetworks).toBe(false); // nothing will be asked: show the greyed rows
     offers.railEnabled = true;
     offers.floors = LEARNED;
-    expect(offers.awaitingFloors).toBe(false);
+    expect(offers.awaitingNetworks).toBe(true); // learned, but no quote has sized the amount
+    expect(offers.awaitingTokens("Polkadot")).toBe(false); // the direct rows never wait
+    expect(offers.awaitingTokens("Ethereum")).toBe(true);
+    sized(session, 100n * DOT);
+    expect(offers.awaitingNetworks).toBe(false);
+    expect(offers.awaitingTokens("Ethereum")).toBe(false);
+    // A re-quote clears the quote on hand: the rows wait for the new one.
+    session.quoted = null;
+    session.loading = true;
+    expect(offers.awaitingNetworks).toBe(true);
+    // A quote that failed is an answer: the rows show, as they are.
+    session.loading = false;
+    session.quoteError = "down";
+    expect(offers.awaitingNetworks).toBe(false);
   });
 
   it("greys every route while the build does not move money through Chainflip", () => {
@@ -287,7 +302,7 @@ describe("offers store", () => {
     offers.railEnabled = false; // a real build before the channel rail
     sized(session, 100n * DOT);
     // Nothing is ever learned in this build; the swap rows still say so.
-    expect(offers.awaitingFloors).toBe(false);
+    expect(offers.awaitingNetworks).toBe(false);
     expect(
       swapNetworks(offers)
         .flatMap((n) => n.tokens)

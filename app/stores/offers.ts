@@ -24,7 +24,8 @@ import type { DocumentLike } from "./requests";
 import { useSessionStore } from "./session";
 
 export type TokenOffer =
-  /** Floors still being learned, or the quote still sizing the purchase. */
+  /** Floors still being learned, or the quote still sizing the purchase. Never drawn as a row:
+   *  a picker with one shows skeleton rows instead. */
   | { state: "checking" }
   | { state: "available"; offer: SourceOffer }
   /** Below this asset's floor. `minimumCashBase` is the smallest purchase it serves, or null. */
@@ -125,10 +126,6 @@ export const useOffersStore = defineStore("offers", () => {
 
   /** Whether a pick can lead anywhere; see `chainflipRailOn`. A ref so tests can pin it. */
   const railEnabled = ref(chainflipRailOn());
-
-  /** Nothing to show yet and an answer is on its way: the pickers show skeleton rows. A build
-   *  with the rail off never asks, so its rows show at once, greyed. */
-  const awaitingFloors = computed(() => railEnabled.value && floors.value === null);
 
   const fresh = (learned: Learned) => Date.now() - learned.learnedAt < FLOORS_STALE_MS;
 
@@ -235,17 +232,12 @@ export const useOffersStore = defineStore("offers", () => {
   }
 
   /** What this purchase needs delivered, in `egress` base units, from the quote on screen; null
-   *  while unknown. */
+   *  while unknown, and null when the quote names no figure in an asset the floors are worth
+   *  something in, as a direct stable deposit's does not. */
   const target = computed(() => session.quoted?.nativeAmount ?? null);
   /** The quote has answered, or given up, for the amount on screen. */
-  /** The quote has answered, or given up, for the amount on screen, in an asset the floors are
-   *  worth something in. A direct stable quote names no such asset, so the swap rows keep
-   *  checking until a quote in one comes back. */
   const sized = computed(
-    () =>
-      !session.loading &&
-      (session.quoteError !== null ||
-        (session.quoted !== null && session.quoted.depositToken !== undefined)),
+    () => !session.loading && (session.quoteError !== null || session.quoted !== null),
   );
 
   function tokenOffer(sourceId: SourceId): TokenOffer {
@@ -257,6 +249,8 @@ export const useOffersStore = defineStore("offers", () => {
       if (paused.value && demoFallback.value) return { state: "ungated" };
       return { state: "unavailable", reason: learned.reason };
     }
+    // No figure to hold the floor against once the quote is in: the row is open as it is, and
+    // the quote after a pick, sized in this source's own egress, is what says no.
     if (target.value === null) return sized.value ? { state: "ungated" } : { state: "checking" };
     const source = SOURCE_CONFIG_BY_ID.get(sourceId);
     if (!source) return { state: "unavailable", reason: `no Chainflip source for ${sourceId}` };
@@ -314,10 +308,19 @@ export const useOffersStore = defineStore("offers", () => {
     return networks.value.find((n) => n.chain === chain)?.tokens ?? [];
   }
 
+  /** A token still being answered is never drawn: a picker with one shows skeleton rows, one per
+   *  row it will list, until every row on it has its answer. A build with the rail off never
+   *  asks, so its rows show at once, greyed; the direct network's rows never wait. */
+  const pending = (tokens: readonly TokenRow[]): boolean =>
+    tokens.some((t) => t.offer.state === "checking");
+  const awaitingNetworks = computed(() => networks.value.some((n) => pending(n.tokens)));
+  const awaitingTokens = (chain: string): boolean => pending(tokensOf(chain));
+
   return {
     floors,
     learning,
-    awaitingFloors,
+    awaitingNetworks,
+    awaitingTokens,
     paused,
     demoFallback,
     railEnabled,
