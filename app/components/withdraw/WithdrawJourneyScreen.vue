@@ -3,12 +3,20 @@
 // Everything shown is read from the record; the actions go back to the route.
 import { computed } from "vue";
 import { Check, RefreshCcw, X } from "lucide-vue-next";
+import { formatBaseUnits, sellAmountOf, SELL_TOKEN } from "@getsome/meld";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
-import { paymentTaken, type WithdrawalRecord } from "../../funding/requests/model";
-import { formatWhenShort } from "../../utils/journey";
+import {
+  paymentTaken,
+  saleAwaitingDeposit,
+  type WithdrawalRecord,
+} from "../../funding/requests/model";
+import { asName } from "../../funding/top-up-projection";
+import { formatWhenShort, shortRef } from "../../utils/journey";
+import { fmtFiat } from "../../utils/money";
 import { shortAddress } from "../../withdraw/destinations";
 import { withdrawalFailureText } from "../../withdraw/failure-copy";
 import {
+  SALE_KYC_LABEL,
   WITHDRAWAL_JOURNEY_LABELS,
   withdrawalJourneyDone,
   withdrawalProgress,
@@ -16,6 +24,7 @@ import {
 } from "../../withdraw/progress";
 import FundingJourneyTimeline from "../funding/progress/FundingJourneyTimeline.vue";
 import CashAmount from "../ui/CashAmount.vue";
+import DetailRows, { type DetailRow } from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
 
 const props = defineProps<{
@@ -46,7 +55,10 @@ const sideExit = computed(
 const failedLabel = computed(() => {
   if (status.value.kind === "expired") return "Expired";
   if (status.value.kind === "cancelled") return "Cancelled";
-  return failure.value?.step === "payment" ? "Payment failed" : null;
+  if (failure.value?.step !== "payment") return null;
+  // A sale that ended before its balance was asked had no payment to fail.
+  const unasked = props.record.sale !== undefined && props.record.payment.requestedAt === undefined;
+  return unasked ? "Sale ended" : "Payment failed";
 });
 
 const sentWhen = computed(() =>
@@ -60,14 +72,58 @@ const message = computed(() => {
   if (failure.value) return withdrawalFailureText(failure.value);
   // The funding product is approved without a sheet, so a requested payment is processing.
   if (status.value.kind === "awaiting-payment") {
+    // A sale asks the balance only once the provider knows where the funds go.
+    if (saleAwaitingDeposit(props.record)) return SALE_KYC_LABEL;
     return props.record.payment.requestedAt === undefined
       ? "Waiting for your payment"
       : "Your payment is being processed";
   }
   if (status.value.kind === "sent") {
+    if (props.record.route !== "crypto") {
+      return props.record.route === "bank" ? "Paid out to your bank" : "Paid out to your card";
+    }
     return `Sent to ${shortAddress(props.record.destination.address)}`;
   }
   return progress.value.view.label;
+});
+
+/** What a sale left over once the provider was paid, and where it is. A sale that ended unpaid
+ *  sends everything back, which its failure already says, so only the arrival is added. A way
+ *  home that failed past the worker's retries says so, for support. */
+const residueNote = computed(() => {
+  const residue = props.record.residue;
+  if (residue === undefined) return null;
+  if (residue.stuck === true) {
+    return "What was left could not come back to your balance on its own. Contact support with your reference.";
+  }
+  // Shown to the sale's decimals; a remainder below them is not worth a line.
+  const shown = residue.amount === undefined ? 0n : sellAmountOf(BigInt(residue.amount));
+  const amount = shown === 0n ? null : `${formatBaseUnits(SELL_TOKEN, shown)} ${SELL_TOKEN.symbol}`;
+  if (!residue.returning) {
+    return amount === null
+      ? null
+      : `The ${amount} left over was too little to send back, and stays with this withdrawal.`;
+  }
+  if (residue.whole === true || amount === null) {
+    return residue.returned ? "Your funds came back to your balance as CASH." : null;
+  }
+  return residue.returned
+    ? `The ${amount} left over came back to your balance as CASH.`
+    : `The ${amount} left over is on its way back to your balance.`;
+});
+
+/** A sale's payout as quoted and its reference, the id support finds the order by on both sides:
+ *  the adapter files it with Meld as the session's external id. */
+const saleRows = computed<DetailRow[]>(() => {
+  const sale = props.record.sale;
+  if (sale === undefined) return [];
+  return [
+    {
+      label: "Payout",
+      value: `≈ ${fmtFiat(sale.quotedPayout, sale.fiat)} via ${asName(sale.serviceProvider)}`,
+    },
+    { label: "Reference", value: shortRef(sale.fundingRequestId), copy: sale.fundingRequestId },
+  ];
 });
 
 /** Cancel is offered only while nothing was paid and the host has nothing in hand. */
@@ -105,6 +161,8 @@ const canRetry = computed(() => status.value.kind === "failed" && status.value.r
         :message="message"
         :failed-label="failedLabel"
       />
+      <p v-if="residueNote" class="text-body-s text-fg-secondary">{{ residueNote }}</p>
+      <DetailRows v-if="saleRows.length > 0" :rows="saleRows" muted />
 
       <PillButton v-if="canRetry" class="mt-auto" :disabled="busy" @click="emit('retry')">
         Try again

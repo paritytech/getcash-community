@@ -54,7 +54,7 @@ export interface FundingTopUpRecord {
  * names. Only an all-caps value is re-cased: anything carrying a lowercase letter already arrived
  * spelled the way somebody meant it, and re-casing it would be us overruling them.
  */
-function asName(provider: string): string {
+export function asName(provider: string): string {
   if (/[a-z]/.test(provider)) return provider;
   return provider
     .toLowerCase()

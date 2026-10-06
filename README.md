@@ -80,6 +80,23 @@ block history. `@getsome/withdraw` holds the program, the sizing and the tick;
 Withdrawals are a second record kind in the same request store as the top-ups, moved by the
 same observations and the same reconcile.
 
+A withdrawal to a bank or a card is a sale through Meld. The page quotes it for an exact PAS
+figure, sized from the pool with room for the seller's KYC, and opens the provider's SELL session
+for that figure; the seller does KYC on the provider's page. Nothing is asked of the purse until
+the provider names its deposit address, which the page reads off the adapter and checks against
+the figure agreed, and until the order and the price are checked once more. Then the purse pays
+the key, the worker's message leg lands the sale's PAS on the key's own Asset Hub account, and the
+rail leg pays the provider exactly that figure, once, at a nonce it pins, after the adapter
+confirms the address, the asset and the amount, and within an hour of the purse being asked. What
+the sale landed above the figure goes home as CASH when it is worth the way back (0.1 PAS or more;
+less stays on the key), and the quote says about how much: the worker hands the key to the funding
+engine, which converts and claims it into the purse as it does an on-ramp, and starts that job
+again if it fails, up to three times. A sale that ends before the provider is paid, because the
+price moved past the figure, the provider closed or changed the order, or the hour ran out, sends
+everything on the key home the same way. A payment whose answer was lost holds the job until the
+chain shows it landed or outlived its mortality; only a key whose chain state contradicts the
+payment stops the job for a person.
+
 ### Rails as packages
 
 `@getsome/core` owns the session state machine and defines the ports it needs. The rail port

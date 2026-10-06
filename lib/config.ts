@@ -70,6 +70,10 @@ export type FundingChain = (typeof FUNDING_CHAINS)[number];
  *  can reach a deposit or a withdrawal that would have nowhere to go. */
 export const CHAINFLIP_RAIL_ENABLED = false;
 
+/** Whether this build sells CASH for fiat through Meld. Owned by the Meld package so the worker
+ *  holds the same line the page does. */
+export { MELD_SELL_ENABLED } from "@getsome/meld";
+
 /** UI pair to Chainflip SourceId, also the `?source=` deep-link vocabulary. A pair with no
  *  entry has no swap source. */
 export const SOURCE_ID_BY_KEY: Readonly<Record<string, SourceId>> = {

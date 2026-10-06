@@ -17,7 +17,25 @@ export interface MeldQuoteRequest {
   paymentMethodType: string;
 }
 
-/** One provider's quote line (Transak, Koywe, ...). Field names are Meld's, verbatim. */
+/** Sell-quote request, the reverse of a buy: the seller names the crypto they send and Meld
+ *  returns the fiat paid out. The names read source to destination as the trade runs; on the
+ *  adapter's wire the crypto leg is `destinationCurrencyCode` either way (see `getSellQuote`). */
+export interface MeldSellQuoteRequest {
+  /** ISO country of the seller, e.g. 'DE'. */
+  country: string;
+  /** The crypto sold, e.g. 'DOT_ASSETHUB'. */
+  sourceCurrencyCode: string;
+  /** The crypto the seller sends, whole-token decimal string, e.g. '23.4521'. */
+  sourceAmount: string;
+  /** The fiat paid out, e.g. 'EUR'. */
+  destinationCurrencyCode: string;
+  /** Meld payout-method code, as the sell catalog names it. */
+  paymentMethodType: string;
+}
+
+/** One provider's quote line (Transak, Koywe, ...). Field names are Meld's, verbatim. On a buy
+ *  `sourceAmount` is fiat and `destinationAmount` crypto; on a sell the two swap, and the fees are
+ *  still fiat, taken off the payout. */
 export interface MeldQuoteEntry {
   readonly serviceProvider: string;
   /** Fiat charged (decimal string). */
@@ -71,10 +89,47 @@ export interface MeldSessionResult {
   readonly expiresAt?: number;
 }
 
+/**
+ * Sell-session request, Meld's sessionType SELL. The provider issues the deposit address after
+ * KYC, so none is named here; it comes back later on the status.
+ */
+export interface MeldSellSessionRequest {
+  readonly serviceProvider: string;
+  /** What makes this sale this sale, for the idempotency key: the withdrawal key's Asset Hub
+   *  address. Without it two sales in one corridor would share a key and the second would resume
+   *  into the first. Sent only inside that key, never as a field of its own. */
+  readonly orderRef: string;
+  readonly country: string;
+  /** The crypto sold, e.g. 'DOT_ASSETHUB'. */
+  readonly sourceCurrencyCode: string;
+  /** The exact crypto committed, whole-token decimal string. The key pays exactly this. */
+  readonly sourceAmount: string;
+  /** The fiat paid out, e.g. 'EUR'. */
+  readonly destinationCurrencyCode: string;
+  readonly paymentMethodType: string;
+}
+
+/**
+ * Sell only: where the provider wants the crypto, once it has issued an address. The adapter
+ * shows it only while the request is live and only with every part known, so it appears after
+ * KYC and disappears when the request concludes. Both absences are normal.
+ */
+export interface MeldDepositDisclosure {
+  /** Where the crypto goes: Meld's `cryptoDetails.destinationWalletAddress`. */
+  readonly address: string;
+  /** The crypto the provider expects, decimal string as disclosed. */
+  readonly amount: string;
+  /** Meld's code for the asset, e.g. 'DOT_ASSETHUB'. */
+  readonly currency: string;
+  /** When the adapter first read these terms, epoch ms. */
+  readonly observedAt: number;
+}
+
 export interface MeldStatusResult {
   /**
    * The adapter's lifecycle state: `created`, `session_opened`, `transaction_seen`, `settled`,
-   * `failed`, `expired`, `refused`, `declined`, `refunded` or `unobserved`.
+   * `failed`, `expired`, `refused` or `unobserved`. A provider's decline or refund arrives as
+   * `failed`, with its own word in `providerStatus`.
    */
   readonly status: string;
   /** The provider's own last status verbatim (e.g. Meld `REFUNDED`), for distinctions the coarse
@@ -89,6 +144,14 @@ export interface MeldStatusResult {
   readonly fiat?: string;
   readonly destinationCurrencyCode?: string;
   readonly sourceAmount?: string;
+  /** Sell only: the crypto the request was opened for, verbatim. */
+  readonly cryptoAmount?: string;
+  /** Sell only: the provider's deposit terms, on the polls the adapter discloses them. */
+  readonly deposit?: MeldDepositDisclosure;
+  /** Sell only: when the provider named another address, or restated the amount or asset, after
+   *  the deposit it disclosed, which the adapter then stops disclosing. Before the key pays, the
+   *  sale cannot be paid as agreed; after, it is no longer the sale the key paid. */
+  readonly depositConflictAt?: number;
 }
 
 /*
@@ -112,7 +175,15 @@ export type MeldCancelResult =
   /** The adapter does not know this request (unknown id, or it belongs to another caller). */
   | { readonly outcome: "not-found" };
 
-export interface MeldClientLike {
+/** The sell half of the boundary. Optional on `MeldClientLike`, since the buy half is also
+ *  implemented by hand (the session store's capturing wrapper, test doubles); the clients here
+ *  return both. A sell is polled on the same `getStatus` as a buy. */
+export interface MeldSellClientLike {
+  getSellQuote(req: MeldSellQuoteRequest): Promise<{ quotes: MeldQuoteEntry[] }>;
+  createSellSession(req: MeldSellSessionRequest): Promise<MeldSessionResult>;
+}
+
+export interface MeldClientLike extends Partial<MeldSellClientLike> {
   getQuote(req: MeldQuoteRequest): Promise<{ quotes: MeldQuoteEntry[] }>;
   createSession(req: MeldSessionRequest): Promise<MeldSessionResult>;
   getStatus(fundingRequestId: string): Promise<MeldStatusResult>;
@@ -206,16 +277,83 @@ function retryAfterMsOf(res: Response): number | undefined {
 /** How long a status read may take before it fails: every poller of an id waits on the same read. */
 const STATUS_TIMEOUT_MS = 10_000;
 
-/** How many finished attempts — concluded or cancelled — `createSession` walks past before giving
- *  up. */
+/** How many finished attempts, concluded or cancelled, a session create walks past before
+ *  giving up. */
 const MAX_ATTEMPTS = 5;
+
+/**
+ * What a session create needs that differs between a buy and a sell. The walk around the
+ * idempotency key (resume a live row, tolerate a lapsed surface, step past a finished one, stop
+ * after MAX_ATTEMPTS) is the same for both and is written once, in `openSession`.
+ */
+interface SessionWalk {
+  /** Names the failing call in the refusal copy. */
+  readonly what: string;
+  /** The default idempotency key for an attempt. A caller-supplied key bypasses it. */
+  readonly key: (attempt: number) => string;
+  /** The create body, without the key the walk adds. */
+  readonly body: () => Record<string, unknown>;
+  /** The terms a resumed row must agree with, as `[label, stored, asked]`. */
+  readonly terms: (found: MeldStatusResult) => readonly (readonly [string, unknown, string])[];
+  /** The fiat just quoted, compared with a resumed row's own; a difference only logs. */
+  readonly askedAmount?: string;
+  readonly mismatchMessage: string;
+  readonly reopenedMessage: string;
+  readonly noSurfaceMessage: (fundingRequestId: string) => string;
+  readonly exhaustedMessage: string;
+}
+
+/** Normalizes an adapter quote list to decimal strings, dropping offers with no serviceProvider.
+ *  Both directions share it: only the denomination of the two amounts flips. */
+function toQuoteEntries(raw: Record<string, unknown>[]): MeldQuoteEntry[] {
+  return raw
+    .filter((q) => q.serviceProvider != null && String(q.serviceProvider) !== "")
+    .map((q) => ({
+      serviceProvider: String(q.serviceProvider),
+      sourceAmount: String(q.sourceAmount ?? ""),
+      destinationAmount: String(q.destinationAmount ?? ""),
+      ...(q.totalFee != null ? { totalFee: String(q.totalFee) } : {}),
+      ...(q.transactionFee != null ? { transactionFee: String(q.transactionFee) } : {}),
+      ...(q.networkFee != null ? { networkFee: String(q.networkFee) } : {}),
+      ...(q.partnerFee != null ? { partnerFee: String(q.partnerFee) } : {}),
+      // Meld returns customerScore as a string. Coerce it and keep it only when finite.
+      ...((): { customerScore?: number } => {
+        // A blank score is unscored, not 0.
+        const text = typeof q.customerScore === "string" ? q.customerScore.trim() : q.customerScore;
+        const cs = Number(text);
+        return text != null && text !== "" && Number.isFinite(cs) ? { customerScore: cs } : {};
+      })(),
+    }));
+}
+
+/**
+ * The deposit terms on a funding record, all required parts or nothing. Half a disclosure is
+ * worse than none: an empty address is somewhere to send real funds, and a made-up `observedAt`
+ * would make a stale address look fresh.
+ */
+function depositOf(raw: unknown): MeldDepositDisclosure | undefined {
+  if (raw == null || typeof raw !== "object") return undefined;
+  const deposit = raw as Record<string, unknown>;
+  const text = (v: unknown) => (v == null ? "" : String(v));
+  const address = text(deposit.address).trim();
+  const amount = text(deposit.amount).trim();
+  const currency = text(deposit.currency).trim();
+  if (!address || !amount || !currency || typeof deposit.observedAt !== "number") return undefined;
+  return {
+    address,
+    amount,
+    currency,
+    observedAt: deposit.observedAt,
+  };
+}
 
 /**
  * Builds a MeldClientLike over the Meld adapter service, which holds the Meld key and adds the
  * Meld auth headers server-side. This side speaks the adapter's JSON routes: `POST /quote`,
- * `POST /session` and `GET /funding/:fundingRequestId`.
+ * `POST /session` and `GET /funding/:fundingRequestId`. A sell rides the same routes with
+ * `direction: "sell"` in the body; absent means buy.
  */
-export function createMeldClient(config: MeldEndpointConfig): MeldClientLike {
+export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & MeldSellClientLike {
   const doFetch = config.fetchImpl ?? fetch;
   const base = config.baseUrl.replace(/\/$/, "");
   /**
@@ -226,6 +364,19 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike {
     [
       "getcash",
       req.walletAddress,
+      req.sourceCurrencyCode,
+      req.destinationCurrencyCode,
+      req.paymentMethodType,
+      req.country,
+      attempt,
+    ].join("-");
+  /** The same for a sale. `sell` keeps a buy and a sale of one pair apart; `orderRef` sits where
+   *  the buy has its burner address, so one sale is told from the next in the same corridor. */
+  const sellIntentKey = (req: MeldSellSessionRequest, attempt: number) =>
+    [
+      "getcash",
+      "sell",
+      req.orderRef,
       req.sourceCurrencyCode,
       req.destinationCurrencyCode,
       req.paymentMethodType,
@@ -283,6 +434,7 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike {
     });
     const data = await read(res, "the payment status");
     const funding = (data.funding as Record<string, unknown> | undefined) ?? {};
+    const deposit = depositOf(funding.deposit);
     return {
       status: String(funding.status ?? ""),
       ...(funding.providerStatus != null ? { providerStatus: String(funding.providerStatus) } : {}),
@@ -299,40 +451,45 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike {
         ? { destinationCurrencyCode: String(funding.destinationCurrencyCode) }
         : {}),
       ...(funding.sourceAmount != null ? { sourceAmount: String(funding.sourceAmount) } : {}),
+      ...(funding.cryptoAmount != null ? { cryptoAmount: String(funding.cryptoAmount) } : {}),
+      ...(deposit === undefined ? {} : { deposit }),
+      ...(typeof funding.depositConflictAt === "number"
+        ? { depositConflictAt: funding.depositConflictAt }
+        : {}),
     };
   }
 
   /**
    * Re-attaches to an existing funding request. Returns null when the adapter withholds the pay
-   * page (the row concluded or its surface closed). Throws when the stored wallet, fiat or
-   * destination asset differs from the request; a differing `sourceAmount` only logs.
+   * page (the row concluded or its surface closed). Throws when a term the walk names differs
+   * from the request; a differing `sourceAmount` only logs.
    */
   async function resume(
+    walk: SessionWalk,
     fundingRequestId: string,
     externalSessionId: string,
-    req: MeldSessionRequest,
   ): Promise<MeldSessionResult | null> {
     const status = await getFundingStatus(fundingRequestId);
     if (!status.serviceProviderWidgetUrl) return null;
-    const mismatched = (
-      [
-        ["walletAddress", status.walletAddress, req.walletAddress],
-        ["fiat", status.fiat, req.sourceCurrencyCode],
-        ["destinationCurrencyCode", status.destinationCurrencyCode, req.destinationCurrencyCode],
-      ] as const
-    ).filter(([, stored, asked]) => stored !== undefined && stored !== asked);
+    const mismatched = walk
+      .terms(status)
+      .filter(([, stored, asked]) => stored !== undefined && stored !== asked);
     if (mismatched.length > 0) {
-      // The row is for a different purchase. Do not resume into it or open a new session.
+      // The row is for a different order. Do not resume into it or open a new session.
       throw new AdapterRefusal(
-        "We found a payment for a different order. Contact support before starting another.",
+        walk.mismatchMessage,
         409,
         "RESUMED_REQUEST_MISMATCH",
         fundingRequestId,
       );
     }
-    if (status.sourceAmount !== undefined && status.sourceAmount !== req.sourceAmount) {
+    if (
+      walk.askedAmount !== undefined &&
+      status.sourceAmount !== undefined &&
+      status.sourceAmount !== walk.askedAmount
+    ) {
       console.warn(
-        `[meld] resuming ${fundingRequestId} priced at ${status.sourceAmount} ${status.fiat ?? ""}, not the ${req.sourceAmount} just quoted; the rate moved since it was opened`,
+        `[meld] resuming ${fundingRequestId} priced at ${status.sourceAmount} ${status.fiat ?? ""}, not the ${walk.askedAmount} just quoted; the rate moved since it was opened`,
       );
     }
     return {
@@ -344,6 +501,95 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike {
       ...(status.widgetUrl ? { meldWidgetUrl: status.widgetUrl } : {}),
       ...(status.expiresAt !== undefined ? { expiresAt: status.expiresAt } : {}),
     };
+  }
+
+  /**
+   * Opens a session, walking the attempt forward past concluded and cancelled ones only. A
+   * caller-supplied key is used verbatim and never walked. `REQUEST_OUTCOME_UNKNOWN`,
+   * `REQUEST_IN_FLIGHT` and `REQUEST_ALREADY_SETTLED` are rethrown.
+   */
+  async function openSession(walk: SessionWalk): Promise<MeldSessionResult> {
+    let lastRefusal: unknown;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+      const externalSessionId = nextKey?.() ?? walk.key(attempt);
+      try {
+        const data = await post(
+          "/session",
+          { idempotencyKey: externalSessionId, ...walk.body() },
+          walk.what,
+        );
+        const fundingRequestId = String(data.fundingRequestId ?? "");
+        if (!fundingRequestId) {
+          throw new Error(
+            "[meld] the adapter returned no fundingRequestId; status could not be polled",
+          );
+        }
+        const widgetUrl = String(data.serviceProviderWidgetUrl ?? "");
+        const meldWidgetUrl = data.widgetUrl != null ? String(data.widgetUrl) : undefined;
+        if (!widgetUrl && !meldWidgetUrl) throw new Error(walk.noSurfaceMessage(fundingRequestId));
+        return {
+          fundingRequestId,
+          sessionId: String(data.sessionId ?? ""),
+          externalSessionId,
+          widgetUrl,
+          ...(meldWidgetUrl !== undefined ? { meldWidgetUrl } : {}),
+          ...(typeof data.expiresAt === "number" ? { expiresAt: data.expiresAt } : {}),
+        };
+      } catch (err) {
+        // `IDEMPOTENCY_KEY_REUSED` names a live request opened under this key. Resume it.
+        if (
+          err instanceof AdapterRefusal &&
+          err.status === 409 &&
+          err.code === "IDEMPOTENCY_KEY_REUSED" &&
+          err.fundingRequestId !== undefined
+        ) {
+          const resumed = await resume(walk, err.fundingRequestId, externalSessionId);
+          if (resumed) return resumed;
+          // The row exists but has no pay page left: it concluded or its capture page closed.
+          throw new AdapterRefusal(
+            walk.reopenedMessage,
+            err.status,
+            err.code,
+            err.fundingRequestId,
+            { cause: err },
+          );
+        }
+        // `REQUEST_SURFACE_EXPIRED`: the pay page lapsed but the row is live. Return a
+        // surface-less result and let status polling conclude it.
+        if (
+          err instanceof AdapterRefusal &&
+          err.status === 409 &&
+          err.code === "REQUEST_SURFACE_EXPIRED" &&
+          err.fundingRequestId !== undefined
+        ) {
+          return {
+            fundingRequestId: err.fundingRequestId,
+            sessionId: "",
+            externalSessionId,
+            widgetUrl: "",
+          };
+        }
+        // A finished attempt: concluded, or cancelled. Both are dead keys with no live request
+        // and no payment behind them (a cancel is refused outright while one is on its way, and a
+        // sale's once its deposit address is out), so the next attempt suffix is safe to mint. For
+        // `REQUEST_CANCELLED` it is literally what the adapter asks for: "start a new one with a
+        // new key". Matched on the code alone, not the status: the buyer meets this on
+        // every re-entry after a cancel, and it must not turn on which conflict status the
+        // adapter picks for it.
+        const finished =
+          err instanceof AdapterRefusal &&
+          ((err.status === 409 && err.code === "REQUEST_CONCLUDED") ||
+            err.code === "REQUEST_CANCELLED");
+        if (!finished || nextKey) throw err;
+        console.info(`[meld] attempt ${attempt} is ${err.code?.toLowerCase()}; starting a new one`);
+        lastRefusal = err;
+      }
+    }
+    // Every attempt this walk can name has already concluded.
+    throw new Error(
+      walk.exhaustedMessage,
+      lastRefusal instanceof Error ? { cause: lastRefusal } : undefined,
+    );
   }
 
   return {
@@ -360,129 +606,91 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike {
         "The quote",
       );
       const raw = (data.quotes as Record<string, unknown>[] | undefined) ?? [];
-      // Normalize to decimal strings and drop offers with no serviceProvider.
-      const quotes: MeldQuoteEntry[] = raw
-        .filter((q) => q.serviceProvider != null && String(q.serviceProvider) !== "")
-        .map((q) => ({
-          serviceProvider: String(q.serviceProvider),
-          sourceAmount: String(q.sourceAmount ?? ""),
-          destinationAmount: String(q.destinationAmount ?? ""),
-          ...(q.totalFee != null ? { totalFee: String(q.totalFee) } : {}),
-          ...(q.transactionFee != null ? { transactionFee: String(q.transactionFee) } : {}),
-          ...(q.networkFee != null ? { networkFee: String(q.networkFee) } : {}),
-          ...(q.partnerFee != null ? { partnerFee: String(q.partnerFee) } : {}),
-          // Meld returns customerScore as a string. Coerce it and keep it only when finite.
-          ...((): { customerScore?: number } => {
-            // A blank score is unscored, not 0.
-            const text =
-              typeof q.customerScore === "string" ? q.customerScore.trim() : q.customerScore;
-            const cs = Number(text);
-            return text != null && text !== "" && Number.isFinite(cs) ? { customerScore: cs } : {};
-          })(),
-        }));
-      return { quotes };
+      return { quotes: toQuoteEntries(raw) };
     },
-    async createSession(req) {
-      // Walk the attempt forward past concluded ones only. A caller-supplied key is used verbatim
-      // and never walked. `REQUEST_OUTCOME_UNKNOWN`, `REQUEST_IN_FLIGHT` and
-      // `REQUEST_ALREADY_SETTLED` are rethrown.
-      let lastRefusal: unknown;
-      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
-        const externalSessionId = nextKey?.() ?? intentKey(req, attempt);
-        try {
-          const data = await post(
-            "/session",
-            {
-              idempotencyKey: externalSessionId,
-              country: req.country,
-              fiat: req.sourceCurrencyCode,
-              destinationCurrencyCode: req.destinationCurrencyCode,
-              sourceAmount: req.sourceAmount,
-              walletAddress: req.walletAddress,
-              paymentMethodType: req.paymentMethodType,
-              // Required by the adapter, sent unconditionally.
-              serviceProvider: req.serviceProvider,
-              ...(config.redirectUrl ? { redirectUrl: config.redirectUrl } : {}),
-            },
-            "Starting the payment",
-          );
-          const fundingRequestId = String(data.fundingRequestId ?? "");
-          if (!fundingRequestId) {
-            throw new Error(
-              "[meld] the adapter returned no fundingRequestId; status could not be polled",
-            );
-          }
-          const widgetUrl = String(data.serviceProviderWidgetUrl ?? "");
-          const meldWidgetUrl = data.widgetUrl != null ? String(data.widgetUrl) : undefined;
-          if (!widgetUrl && !meldWidgetUrl) {
-            throw new Error(
-              `[meld] the adapter returned no pay page for funding request ${fundingRequestId}; there is nothing for the buyer to pay on`,
-            );
-          }
-          return {
-            fundingRequestId,
-            sessionId: String(data.sessionId ?? ""),
-            externalSessionId,
-            widgetUrl,
-            ...(meldWidgetUrl !== undefined ? { meldWidgetUrl } : {}),
-            ...(typeof data.expiresAt === "number" ? { expiresAt: data.expiresAt } : {}),
-          };
-        } catch (err) {
-          // `IDEMPOTENCY_KEY_REUSED` names a live request opened under this key. Resume it.
-          if (
-            err instanceof AdapterRefusal &&
-            err.status === 409 &&
-            err.code === "IDEMPOTENCY_KEY_REUSED" &&
-            err.fundingRequestId !== undefined
-          ) {
-            const resumed = await resume(err.fundingRequestId, externalSessionId, req);
-            if (resumed) return resumed;
-            // The row exists but has no pay page left: it concluded or its capture page closed.
-            throw new AdapterRefusal(
-              "This purchase is already open and can no longer be paid here. Contact support with your reference. Do not start another.",
-              err.status,
-              err.code,
-              err.fundingRequestId,
-              { cause: err },
-            );
-          }
-          // `REQUEST_SURFACE_EXPIRED`: the pay page lapsed but the row is live. Return a
-          // surface-less result and let status polling conclude it.
-          if (
-            err instanceof AdapterRefusal &&
-            err.status === 409 &&
-            err.code === "REQUEST_SURFACE_EXPIRED" &&
-            err.fundingRequestId !== undefined
-          ) {
-            return {
-              fundingRequestId: err.fundingRequestId,
-              sessionId: "",
-              externalSessionId,
-              widgetUrl: "",
-            };
-          }
-          // A finished attempt: concluded, or cancelled. Both are dead keys with no live request
-          // and no payment behind them (a cancel is refused outright while one is on its way), so
-          // the next attempt suffix is safe to mint — and for `REQUEST_CANCELLED` it is literally
-          // what the adapter asks for: "start a new one with a new key". Matched on the code
-          // alone, not the status: the buyer meets this on every re-entry after a cancel, and it
-          // must not turn on which conflict status the adapter picks for it.
-          const finished =
-            err instanceof AdapterRefusal &&
-            ((err.status === 409 && err.code === "REQUEST_CONCLUDED") ||
-              err.code === "REQUEST_CANCELLED");
-          if (!finished || nextKey) throw err;
-          console.info(
-            `[meld] attempt ${attempt} is ${err.code?.toLowerCase()}; starting a new one`,
-          );
-          lastRefusal = err;
-        }
-      }
-      // Every attempt this walk can name has already concluded.
-      throw new Error(
-        `This purchase has already been opened and closed ${MAX_ATTEMPTS} times. If you are expecting funds that have not arrived, contact support with your wallet address. Starting another will not help.`,
-        lastRefusal instanceof Error ? { cause: lastRefusal } : undefined,
+
+    async getSellQuote(req) {
+      // Crypto-denominated, the reverse of `getQuote`: the seller names the crypto and the
+      // provider answers with the fiat. The adapter keeps one naming for both directions, so the
+      // crypto leg is `destinationCurrencyCode` here too, and the amount travels as
+      // `cryptoAmount`: `sourceAmount` is validated as fiat, two decimals at most.
+      const data = await post(
+        "/quote",
+        {
+          direction: "sell",
+          country: req.country,
+          fiat: req.destinationCurrencyCode,
+          destinationCurrencyCode: req.sourceCurrencyCode,
+          cryptoAmount: req.sourceAmount,
+          paymentMethodType: req.paymentMethodType,
+        },
+        "The quote",
       );
+      const raw = (data.quotes as Record<string, unknown>[] | undefined) ?? [];
+      return { quotes: toQuoteEntries(raw) };
+    },
+
+    async createSession(req) {
+      return openSession({
+        what: "Starting the payment",
+        key: (attempt) => intentKey(req, attempt),
+        body: () => ({
+          country: req.country,
+          fiat: req.sourceCurrencyCode,
+          destinationCurrencyCode: req.destinationCurrencyCode,
+          sourceAmount: req.sourceAmount,
+          walletAddress: req.walletAddress,
+          paymentMethodType: req.paymentMethodType,
+          // Required by the adapter, sent unconditionally.
+          serviceProvider: req.serviceProvider,
+          ...(config.redirectUrl ? { redirectUrl: config.redirectUrl } : {}),
+        }),
+        terms: (found) => [
+          ["walletAddress", found.walletAddress, req.walletAddress],
+          ["fiat", found.fiat, req.sourceCurrencyCode],
+          ["destinationCurrencyCode", found.destinationCurrencyCode, req.destinationCurrencyCode],
+        ],
+        askedAmount: req.sourceAmount,
+        mismatchMessage:
+          "We found a payment for a different order. Contact support before starting another.",
+        reopenedMessage:
+          "This purchase is already open and can no longer be paid here. Contact support with your reference. Do not start another.",
+        noSurfaceMessage: (fundingRequestId) =>
+          `[meld] the adapter returned no pay page for funding request ${fundingRequestId}; there is nothing for the buyer to pay on`,
+        exhaustedMessage: `This purchase has already been opened and closed ${MAX_ATTEMPTS} times. If you are expecting funds that have not arrived, contact support with your wallet address. Starting another will not help.`,
+      });
+    },
+
+    async createSellSession(req) {
+      return openSession({
+        what: "Starting the sale",
+        key: (attempt) => sellIntentKey(req, attempt),
+        body: () => ({
+          direction: "sell",
+          country: req.country,
+          fiat: req.destinationCurrencyCode,
+          // The crypto leg, named as on the buy; see `getSellQuote`.
+          destinationCurrencyCode: req.sourceCurrencyCode,
+          cryptoAmount: req.sourceAmount,
+          paymentMethodType: req.paymentMethodType,
+          serviceProvider: req.serviceProvider,
+          ...(config.redirectUrl ? { redirectUrl: config.redirectUrl } : {}),
+        }),
+        // The committed crypto is a hard term here, where the buy's fiat only warns: a sale
+        // resumed at another amount is a seller about to send what they did not agree to.
+        terms: (found) => [
+          ["fiat", found.fiat, req.destinationCurrencyCode],
+          ["destinationCurrencyCode", found.destinationCurrencyCode, req.sourceCurrencyCode],
+          ["cryptoAmount", found.cryptoAmount, req.sourceAmount],
+        ],
+        mismatchMessage:
+          "We found a sale for a different order. Contact support before starting another.",
+        reopenedMessage:
+          "This sale is already open and can no longer be continued here. Nothing was sent. Start a new withdrawal.",
+        noSurfaceMessage: (fundingRequestId) =>
+          `[meld] the adapter returned no hosted page for funding request ${fundingRequestId}; there is nothing for the seller to continue on`,
+        exhaustedMessage: `This sale has already been opened and closed ${MAX_ATTEMPTS} times. Nothing was sent. Start a new withdrawal later.`,
+      });
     },
 
     getStatus: getFundingStatus,
