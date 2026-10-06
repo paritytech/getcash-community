@@ -278,6 +278,44 @@ describe("requests store: foreground, clock and user actions", () => {
     expect(requests.fundingError).toBeNull();
   });
 
+  it("the host's early word reads as done on screen while the record stays claiming", async () => {
+    setRequestsClock(() => FIXTURE_NOW);
+    const requests = useRequestsStore();
+    await requests.create(AWAITING_REF, migrated(awaitingDepositCryptoRecord));
+    requests.setForeground(AWAITING_REF);
+    await requests.observe(AWAITING_REF, workerSwap(at(2)));
+    await requests.observe(AWAITING_REF, workerDone(at(3), at(2)));
+    expect(requests.claiming).toBe(true);
+    expect(requests.claimStage).toBe("prompted");
+
+    await requests.observe(AWAITING_REF, {
+      source: "worker",
+      at: at(4),
+      job: {
+        phase: "done",
+        done: true,
+        fundsSeenAt: at(2),
+        lastTickAt: at(4),
+        claim: {
+          phase: "claiming",
+          amount: "25000000",
+          credited: "0",
+          status: "claimed",
+          at: at(3),
+        },
+      },
+    });
+    expect(requests.get(AWAITING_REF)?.status).toEqual({ kind: "claiming", at: at(3) });
+    expect(requests.phase).toBe("done");
+    expect(requests.claiming).toBe(false);
+    expect(requests.claimStage).toBeNull();
+    expect(requests.journeyDone).toBe(3);
+    expect(requests.milestones[5]).toBe(at(3));
+    // The snapshot settles on the final word only: a settled one is terminal and would hide a
+    // failure that followed.
+    expect(requests.foregroundProgress?.snapshot.settledAt).toBeUndefined();
+  });
+
   it("cancel refuses on funds in the burner read", async () => {
     setRequestsClock(() => FIXTURE_NOW);
     const requests = useRequestsStore();
@@ -413,6 +451,22 @@ describe("requests store: foreground, clock and user actions", () => {
     });
   });
 
+  it("cancel refuses a direct deposit that arrived in another token, without asking the burner", async () => {
+    setRequestsClock(() => FIXTURE_NOW);
+    const requests = useRequestsStore();
+    await requests.create(AWAITING_REF, {
+      ...migrated(awaitingDepositCryptoRecord),
+      chain: "Polkadot",
+      asset: "USDC",
+      depositMismatch: { kind: "token", asset: "USDT", amount: "10000000", at: FIXTURE_NOW },
+    });
+    // The picked token reads empty, which is exactly why the read cannot be trusted here.
+    const readBurner = vi.fn(async () => 0n);
+    expect(await requests.cancel(AWAITING_REF, { readBurner })).toBe("refused");
+    expect(readBurner).not.toHaveBeenCalled();
+    expect(requests.get(AWAITING_REF)?.status).toEqual({ kind: "awaiting-deposit" });
+  });
+
   it("cancel proceeds and the record becomes cancelled", async () => {
     setRequestsClock(() => FIXTURE_NOW);
     const requests = useRequestsStore();
@@ -486,6 +540,34 @@ describe("requests store: foreground, clock and user actions", () => {
         },
       }),
     );
+    expect(await requests.retry(AWAITING_REF)).toBe(true);
+    expect(requests.get(AWAITING_REF)).toMatchObject({
+      status: { kind: "converting", at: FIXTURE_NOW, step: "swap" },
+    });
+    expect(requests.get(AWAITING_REF)?.failure).toBeUndefined();
+  });
+
+  it("retry admits a job the worker holds after the PSM refused the mint", async () => {
+    setRequestsClock(() => FIXTURE_NOW);
+    const requests = useRequestsStore();
+    await requests.create(AWAITING_REF, migrated(awaitingDepositCryptoRecord));
+    await requests.observe(AWAITING_REF, workerSwap(at(1)));
+    const held = { phase: "failed", failure: "held", done: false, lastTickAt: at(2) };
+    await requests.observe(AWAITING_REF, {
+      source: "worker",
+      at: at(2),
+      job: { ...held, fundsSeenAt: at(1), claim: null },
+    });
+    expect(requests.get(AWAITING_REF)?.status).toEqual({
+      kind: "failed",
+      at: at(2),
+      recoverable: true,
+    });
+    await host.write(
+      WORKER_JOBS_KEY,
+      JSON.stringify({ [AWAITING_JOB_ID]: { ...held, state: { fundsSeenAt: at(1) } } }),
+    );
+
     expect(await requests.retry(AWAITING_REF)).toBe(true);
     expect(requests.get(AWAITING_REF)).toMatchObject({
       status: { kind: "converting", at: FIXTURE_NOW, step: "swap" },

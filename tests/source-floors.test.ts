@@ -2,8 +2,12 @@
 // nothing here throws.
 
 import { describe, expect, it } from "vitest";
-import type { FloorsBackend } from "@getsome/chainflip";
+import { TOKENS } from "@getsome/core";
+import { egressFor, type FloorsBackend } from "@getsome/chainflip";
 import { learnSourceFloors, OFFERED_SOURCE_IDS } from "../lib/source-floors";
+
+/** The pool tier's egress: the native. */
+const NATIVE = egressFor(TOKENS.PAS);
 
 const backend: FloorsBackend = {
   async getSwapLimits() {
@@ -39,7 +43,7 @@ describe("learnSourceFloors", () => {
   });
 
   it("answers for every offered source", async () => {
-    const floors = await learnSourceFloors({ backend });
+    const floors = await learnSourceFloors({ egress: NATIVE, backend });
     expect([...floors.keys()].sort()).toEqual([...OFFERED_SOURCE_IDS].sort());
     for (const result of floors.values()) expect(result.kind).toBe("floor");
   });
@@ -47,6 +51,7 @@ describe("learnSourceFloors", () => {
   it("gives up rather than holding the network screen open forever", async () => {
     const started = Date.now();
     const floors = await learnSourceFloors({
+      egress: NATIVE,
       timeoutMs: 50,
       backend: { ...backend, getSwapLimits: () => new Promise(() => {}) }, // never answers
     });
@@ -61,7 +66,11 @@ describe("learnSourceFloors", () => {
   });
 
   it("learns only the sources asked for", async () => {
-    const floors = await learnSourceFloors({ backend, sourceIds: ["btc", "usdt-tron"] });
+    const floors = await learnSourceFloors({
+      egress: NATIVE,
+      backend,
+      sourceIds: ["btc", "usdt-tron"],
+    });
     expect([...floors.keys()].sort()).toEqual(["btc", "usdt-tron"]);
   });
 });

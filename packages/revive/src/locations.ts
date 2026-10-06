@@ -1,15 +1,9 @@
-// XCM v5 asset locations as plain data, no papi Enum. The papi binding maps these onto
-// papi's XcmVersionedLocation.
+// XCM v5 asset locations as plain data, no papi Enum; the type lives in core beside the token
+// table. The papi binding maps these onto papi's XcmVersionedLocation.
 
-export type XcmJunction =
-  { type: "PalletInstance"; value: number } | { type: "GeneralIndex"; value: bigint };
+import type { XcmLocation } from "@getsome/core";
 
-export type XcmInterior = { type: "Here" } | { type: "X2"; value: [XcmJunction, XcmJunction] };
-
-export interface XcmLocation {
-  parents: number;
-  interior: XcmInterior;
-}
+export type { XcmInterior, XcmJunction, XcmLocation } from "@getsome/core";
 
 /** Relay native (DOT) as seen from Asset Hub: one hop up. */
 export function nativeAssetLocation(): XcmLocation {

@@ -24,7 +24,7 @@ describe("funding selection configuration", () => {
       decimals: 2,
       initial: "",
       minimum: "10",
-      maximum: "2000",
+      maximum: "5000",
       presets: ["10", "50", "100"],
     });
     expect(fundingSelectorConfig.routes).toMatchObject([
@@ -61,8 +61,8 @@ describe("funding amount", () => {
   it("applies inclusive configured bounds", () => {
     expect(fundingAmountStatus("9.99", rules).kind).toBe("below-minimum");
     expect(fundingAmountStatus("10", rules).kind).toBe("valid");
-    expect(fundingAmountStatus("2000", rules).kind).toBe("valid");
-    expect(fundingAmountStatus("2000.01", rules).kind).toBe("above-maximum");
+    expect(fundingAmountStatus("5000", rules).kind).toBe("valid");
+    expect(fundingAmountStatus("5000.01", rules).kind).toBe("above-maximum");
     // Finer than the smallest coin: not an amount the purse could hold.
     expect(fundingAmountStatus("10.001", rules).kind).toBe("invalid");
   });
@@ -86,6 +86,15 @@ describe("funding keypad", () => {
 
   it("starts decimal input from zero", () => {
     expect(reduceFundingAmount("", ".", 6)).toBe("0.");
+  });
+
+  it("caps the whole part so a runaway entry cannot outgrow the display", () => {
+    const nineDigits = "999999999";
+    expect(reduceFundingAmount(nineDigits, "9", 2)).toBe(nineDigits);
+    // The cap holds the whole part only: the fraction and a delete still edit.
+    expect(reduceFundingAmount(nineDigits, ".", 2)).toBe(`${nineDigits}.`);
+    expect(reduceFundingAmount(`${nineDigits}.9`, "9", 2)).toBe(`${nineDigits}.99`);
+    expect(reduceFundingAmount(nineDigits, "delete", 2)).toBe("99999999");
   });
 });
 

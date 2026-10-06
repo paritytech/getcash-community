@@ -12,14 +12,18 @@ import {
 import {
   CONVERTING_STEP_ORDER,
   DEPOSIT_EXPIRED_REASON,
+  FUNDING_HELD_REASON,
   PROVISIONAL_REVERT_MS,
   buyerPaid,
+  directDepositGate,
   paymentWatchUntil,
   effectiveSourceId,
   isConvertingStep,
+  isDirectDeposit,
   isTerminal,
   rankOf,
   type ConvertingStep,
+  type DepositMismatchState,
   type DepositSeenVia,
   type Observation,
   type RailState,
@@ -35,8 +39,11 @@ type Assurance = Extract<RequestStatus, { kind: "deposit-seen" }>["assurance"];
 type ChainObservation = Extract<Observation, { source: "chain"; burnerNative: string }>;
 type UserObservation = Extract<Observation, { source: "user" }>;
 type ProviderResult = Extract<Observation, { source: "provider"; result: unknown }>;
-/** The fields a positive money observation clears from a record it resurrects. */
-type ClearedField = "cancelledAt" | "failureReason" | "refunded" | "failure";
+/** The fields a positive money observation clears from a record it resurrects, the mismatch a
+ *  Polkadot deposit drops once it is settled one way or the other, and the early claim word a
+ *  retry drops. */
+type ClearedField =
+  "cancelledAt" | "failureReason" | "refunded" | "failure" | "depositMismatch" | "creditedAt";
 
 const FAILED: FundingProgressSignal = { observation: { kind: "failed" } };
 const SETTLED: FundingProgressSignal = { observation: { kind: "settled" } };
@@ -326,6 +333,17 @@ function applyWorker(record: TopUpRecord, at: number, job: WorkerJobView | null)
   };
   // A job that saw funds is a money observation whatever its phase says (3.2, rule 3).
   if (job.fundsSeenAt !== null) next = moneySeen(next, job.fundsSeenAt, "finalized", "worker");
+  // The host's early word: every mint is in a block. Kept through a reorg or a further attempt;
+  // only a retry after a failure drops it.
+  const { claim } = job;
+  if (
+    job.phase !== "failed" &&
+    claim?.phase === "claiming" &&
+    claim.status === "claimed" &&
+    next.creditedAt === undefined
+  ) {
+    next = { ...next, creditedAt: claim.at };
+  }
   const rank = rankOf(next);
   if (job.claim?.phase === "claimed") {
     const claimed = claimedAmount(job.claim.amount ?? job.claim.credited);
@@ -352,6 +370,17 @@ function applyWorker(record: TopUpRecord, at: number, job: WorkerJobView | null)
         kind: "mint",
         step: rank >= 3 ? "mint" : "swap",
         message: job.lastError ?? "funding failed in the background",
+        recoverable: true,
+      });
+    }
+    if (job.failure === "held" && rank >= 1) {
+      // The PSM refused the mint three times over and the worker stopped with the deposit still
+      // on the burner: recoverable, since a re-sent hand-off re-arms the
+      // job with a fresh refusal count. The buyer reads the app's own words, not the chain's.
+      return failed(next, at, {
+        kind: "mint",
+        step: rank >= 3 ? "mint" : "swap",
+        message: FUNDING_HELD_REASON,
         recoverable: true,
       });
     }
@@ -458,6 +487,13 @@ function applyChain(record: TopUpRecord, observation: ChainObservation): TopUpRe
     ...witnessed(record, { chain: { ...record.witnesses.chain, [finality]: reading } }),
     confirmedAt: at,
   };
+  if (isDirectDeposit(next) && next.deposit !== undefined) {
+    if (next.status.kind === "awaiting-deposit") return applyDirectReading(next, observation);
+    // An ended one is not brought back by a balance short of the gate: the worker would not
+    // convert it, and the journey offers the way to take it back.
+    const ended = next.status.kind === "expired" || next.status.kind === "cancelled";
+    if (ended && BigInt(burnerNative) < directDepositGate(next)) return next;
+  }
   if (BigInt(burnerNative) > 0n) {
     if (next.status.kind === "settled") {
       return witnessed(next, {
@@ -481,6 +517,37 @@ function applyChain(record: TopUpRecord, observation: ChainObservation): TopUpRe
     return { ...next, status: { kind: "awaiting-deposit" } };
   }
   return next;
+}
+
+/**
+ * A reading of a Polkadot deposit's account while the request waits. The buyer sends it from any
+ * wallet, so nothing but the amount says whether it is the deposit: the request moves on once the
+ * picked token reaches what the worker converts at, and not before. A balance in another token
+ * is recorded first, since that is the one the buyer has to act on; less of the picked token is
+ * recorded when there is nothing else. A reading from the deposit watch that finds nothing at
+ * all clears a mismatch, since the buyer took the funds back; any other reading leaves it.
+ */
+function applyDirectReading(record: TopUpRecord, observation: ChainObservation): TopUpRecord {
+  const { at, burnerNative, finality, via, stray } = observation;
+  const held = BigInt(burnerNative);
+  if (held > 0n && held >= directDepositGate(record)) {
+    const assurance: Assurance = finality === "finalized" ? "finalized" : "provisional";
+    const seen = moneySeen(record, at, assurance, via === "probe" ? "chain" : via);
+    return without(seen, ["depositMismatch"]);
+  }
+  const found: Omit<DepositMismatchState, "at"> | null =
+    stray && BigInt(stray.amount) > 0n
+      ? { kind: "token", asset: stray.asset, amount: stray.amount }
+      : held > 0n
+        ? { kind: "short", asset: record.deposit!.assetSymbol, amount: held.toString() }
+        : null;
+  if (found === null) return stray === undefined ? record : without(record, ["depositMismatch"]);
+  const current = record.depositMismatch;
+  const same =
+    current?.kind === found.kind &&
+    current.asset === found.asset &&
+    current.amount === found.amount;
+  return same ? record : { ...record, depositMismatch: { ...found, at } };
 }
 
 function applyClock(record: TopUpRecord, at: number): TopUpRecord {
@@ -530,12 +597,34 @@ function applyUser(record: TopUpRecord, observation: UserObservation): TopUpReco
         record.failure?.step === "mint"
           ? { kind: "claiming", at }
           : { kind: "converting", at, step };
-      return advanced({ ...without(record, ["failure", "failureReason"]), status }, HOLD, at);
+      return advanced(
+        { ...without(record, ["failure", "failureReason", "creditedAt"]), status },
+        HOLD,
+        at,
+      );
     }
     case "meld-submitted":
       return record.meldSubmittedAt === undefined ? { ...record, meldSubmittedAt: at } : record;
     case "deposit-skipped":
       return record.depositSkippedAt === undefined ? { ...record, depositSkippedAt: at } : record;
+    case "deposit-accepted": {
+      // Only a request still on its deposit takes new terms; one that has moved on keeps its own.
+      if (record.status.kind !== "awaiting-deposit" || record.deposit === undefined) return record;
+      const { terms } = observation;
+      return without(
+        {
+          ...record,
+          amountHuman: terms.amountHuman,
+          asset: terms.asset,
+          sourceAmount: terms.deposit.formatted,
+          sourceSymbol: terms.deposit.assetSymbol,
+          deposit: { ...record.deposit, ...terms.deposit },
+          conversion: terms.conversion,
+          handoff: terms.handoff,
+        },
+        ["depositMismatch"],
+      );
+    }
     case "payment-requested":
     case "channel-opened":
       return record;

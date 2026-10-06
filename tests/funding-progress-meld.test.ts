@@ -11,13 +11,13 @@ import {
 import type { PaymentState } from "@getsome/core";
 
 describe("Meld progress provider", () => {
-  it("is registered next to the crypto rail's", () => {
+  it("is registered next to the crypto rails'", () => {
     expect(
       fundingProgressRegistry
         .list()
         .map(({ id }) => id)
         .sort(),
-    ).toEqual(["chainflip", "meld"]);
+    ).toEqual(["chainflip", "direct", "meld"]);
   });
 
   it("composes one payment stage ahead of the shared CASH stages, in the buyer's words", () => {

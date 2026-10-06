@@ -1,25 +1,33 @@
-// Offline coverage over a scripted chain: the step decision, single ticks of the funding program,
-// pool discovery, the quote headroom, the deposit sizing, the dispatch-error decoder, and the
-// manual rail.
+// Offline coverage over a scripted chain: the step decision, single ticks of the funding program
+// on every tier, pool discovery, the quote headroom, the deposit sizing, the dispatch-error
+// decoder, and the manual rail.
 
-import { AccountId, type PolkadotClient } from "polkadot-api";
+import { TOKENS } from "@getsome/core";
+import { AccountId, InvalidTxError, type PolkadotClient } from "polkadot-api";
 import { describe, expect, it } from "vitest";
 import { describeDispatchError } from "./dispatch-error";
 import { createManualRail } from "./manual-rail";
-import { destinationEarmark, estimateDestinationFeeCash } from "./funding-program";
+import { destinationEarmark, estimateDestinationFeeCash, withFeeMargin } from "./funding-program";
 import {
   decideStep,
   DEFAULT_SLIPPAGE_PCT,
   discoverPool,
   freshTickState,
+  FundingHeldError,
   FundingShortfallError,
+  MAX_PSM_REFUSALS,
+  psmDepositNeeded,
   quoteNativeIn,
   quoteNativeInMax,
   sizeNativeBudget,
+  stableDepositNeeded,
   tickOnce,
   type FundingStep,
+  type TickOnceInput,
   type TickState,
 } from "./pipeline";
+import { psmMintOut, sizePsmMint, type PsmRoute } from "./psm-batch";
+import type { ConversionRoute } from "./route";
 
 const SETTLE = 5_000_000n; // 5 underlying at 6 decimals
 const BUFFER = 100_000n;
@@ -33,7 +41,7 @@ const ASK = (QUOTED * BigInt(10_000 + DEFAULT_SLIPPAGE_PCT * 100)) / 10_000n;
 const DISPATCH = 1_000n; // the execute() dispatch fee, native
 const LOCAL_FEE = 100n; // query_weight_to_asset_fee for the measured weight
 const DELIVERY = 0n; // query_delivery_fees
-const PAYFEES = LOCAL_FEE + DELIVERY; // the earmark is exact
+const PAYFEES = LOCAL_FEE + DELIVERY; // the pool tier's allowance is exact
 /** Native the funding program spends on itself. */
 const OVERHEAD = DISPATCH + PAYFEES;
 /** The sizing's fee native: what a live estimate reports, exactly the funding program's own costs.
@@ -45,6 +53,53 @@ const EARMARK = destinationEarmark(BUY, BUFFER);
 const SIGN_OPTIONS = { at: "0xbest" };
 const ASSET_HUB_PARA = 1500;
 const PEOPLE_PARA = 1004;
+const POOL: ConversionRoute = { tier: "pool" };
+
+// The PSM tier: the same target from a USDT deposit, at 0.5%.
+const ROUTE: PsmRoute = { tier: "psm", external: "USDT", feeRate: 5_000 };
+/** The batch's dispatch fee as ChargeAssetTxPayment charges it: the pool's USDT price for DISPATCH. */
+const DISPATCH_USDT = 7_000n;
+/** The scripted runtime's answers for the PSM program's own fees, in USDT. */
+const LOCAL_USDT = 90n;
+const DELIVERY_USDT = 10n;
+const FEES_USDT = LOCAL_USDT + DELIVERY_USDT;
+/** The PSM tier's fee allowance: the measured fees and the margin the program refunds. */
+const ALLOWANCE = withFeeMargin(FEES_USDT);
+/** USDt's min_balance as the scripted chain has it; the burner keeps this much through the batch. */
+const MIN_BALANCE = 70_000n;
+/** Kept out of the mint beside the dispatch fee: the min_balance and the fee allowance. */
+const HELD_BACK = MIN_BALANCE + ALLOWANCE;
+/** The USDT the buyer is asked for: the mint that pays out the target, what stays out of the mint,
+ *  and the one cushion over every fee. The cushion is not held back, so it mints as extra CASH
+ *  unless the pool has moved against the dispatch fee. */
+const PSM_DEPOSIT =
+  sizePsmMint(BUY, ROUTE).externalIn +
+  MIN_BALANCE +
+  withFeeMargin(DISPATCH_USDT + LOCAL_USDT + DELIVERY_USDT);
+/** What lands on People when the pool has not moved: the mint over the whole deposit, less the
+ *  destination fee. Above the target by the part of the cushion the fees did not take. */
+const PSM_LANDED = psmMintOut(PSM_DEPOSIT - DISPATCH_USDT - HELD_BACK, ROUTE.feeRate) - BUFFER;
+
+// The stable pool tier: the same target from a USDC deposit, through the USDC/PAS pool and then
+// the PAS/CASH pool, every fee in USDC.
+const STABLE_ROUTE: ConversionRoute = { tier: "pool", external: "USDC" };
+/** The USDC the stable pool quotes for QUOTED native on the scripted chain. */
+const STABLE_QUOTED = 1_300_000n;
+/** The program's dispatch fee as ChargeAssetTxPayment charges it: the pool's USDC price for DISPATCH. */
+const DISPATCH_STABLE = 7_000n;
+/** The scripted runtime's answers for the program's own fees, in USDC. */
+const LOCAL_STABLE = 90n;
+const DELIVERY_STABLE = 10n;
+const FEES_STABLE = LOCAL_STABLE + DELIVERY_STABLE;
+/** The fee allowance the program carries and refunds the unspent part of. */
+const ALLOWANCE_STABLE = withFeeMargin(FEES_STABLE);
+/** Kept out of the exchange beside the dispatch fee: the min_balance and the fee allowance. */
+const HELD_BACK_STABLE = MIN_BALANCE + ALLOWANCE_STABLE;
+/** The gate the worker waits for: the plain two-hop quote, the min_balance and one cushion over
+ *  every fee. The cushion is not held back, so it is exchanged too unless the pool has moved
+ *  against the dispatch fee. */
+const STABLE_DEPOSIT =
+  STABLE_QUOTED + MIN_BALANCE + withFeeMargin(DISPATCH_STABLE + LOCAL_STABLE + DELIVERY_STABLE);
 
 /** The burner on People, as the program names it and as People's events show it. */
 const BENEFICIARY = new Uint8Array(32).fill(7);
@@ -65,29 +120,24 @@ const UNDERLYING_LOC = {
 };
 
 describe("decideStep", () => {
-  const targets = {
-    settleAmount: SETTLE,
-    remoteFeeBuffer: BUFFER,
-    keepNativeForFees: KEEP,
-    nativeNeeded: QUOTED,
-  };
+  const targets = { settleAmount: SETTLE, depositNeeded: QUOTED + KEEP };
   it("done once the underlying reached People, and not one base unit sooner", () => {
-    expect(decideStep({ nativeAh: 0n, underlyingPeople: SETTLE }, targets)).toBe("done");
+    expect(decideStep({ depositAh: 0n, underlyingPeople: SETTLE }, targets)).toBe("done");
     // the partial-arrival world: the destination fee ate past the buffer
-    expect(decideStep({ nativeAh: 0n, underlyingPeople: SETTLE - 1n }, targets)).toBe(
+    expect(decideStep({ depositAh: 0n, underlyingPeople: SETTLE - 1n }, targets)).toBe(
       "await-native",
     );
   });
-  it("converts once native covers the plain quote plus the fee native, no headroom demanded", () => {
-    expect(decideStep({ nativeAh: QUOTED + KEEP, underlyingPeople: 0n }, targets)).toBe("swap");
-    expect(decideStep({ nativeAh: QUOTED + KEEP - 1n, underlyingPeople: 0n }, targets)).toBe(
+  it("converts once the deposit covers what the conversion needs, fees included, and not sooner", () => {
+    expect(decideStep({ depositAh: QUOTED + KEEP, underlyingPeople: 0n }, targets)).toBe("swap");
+    expect(decideStep({ depositAh: QUOTED + KEEP - 1n, underlyingPeople: 0n }, targets)).toBe(
       "await-native",
     );
   });
 });
 
 type Instruction = { type: string; value: never };
-type Fungible = { fun: { value: bigint } };
+type Fungible = { id?: unknown; fun: { value: bigint } };
 type ExecuteArgs = { message: { value: Instruction[] }; max_weight: unknown };
 
 const instruction = (args: ExecuteArgs, type: string) =>
@@ -98,12 +148,217 @@ const exchangeOf = (args: ExecuteArgs) =>
     want: Fungible[];
     maximal: boolean;
   };
+type Transfer = { remote_fees: { value: { value: Fungible[] } }; remote_xcm: Instruction[] };
+const transferOf = (args: ExecuteArgs) => instruction(args, "InitiateTransfer") as Transfer;
+
+const incomplete = (index: number, error: string) => ({
+  type: "Module",
+  value: {
+    type: "PolkadotXcm",
+    value: {
+      type: "LocalExecutionIncompleteWithError",
+      value: { index, error: { type: error } },
+    },
+  },
+});
+const trapped = (amount: bigint | undefined) =>
+  amount
+    ? [
+        {
+          type: "PolkadotXcm",
+          value: {
+            type: "AssetsTrapped",
+            value: {
+              assets: { type: "V5", value: [{ fun: { type: "Fungible", value: amount } }] },
+            },
+          },
+        },
+      ]
+    : [];
+const fungible = (value: bigint) => ({ fun: { type: "Fungible", value } });
+const toPeople = {
+  type: "V5",
+  value: {
+    parents: 1,
+    interior: { type: "X1", value: { type: "Parachain", value: PEOPLE_PARA } },
+  },
+};
+/** What the runtime forwards for `teleported` in the holding: the fee teleport, the asset
+ *  teleport, then the remote program. */
+const forwardedProgram = (transfer: Transfer, teleported: bigint) => {
+  const earmark = transfer.remote_fees.value.value[0]!.fun.value;
+  return {
+    type: "V5",
+    value: [
+      { type: "ReceiveTeleportedAsset", value: [fungible(earmark)] },
+      { type: "PayFees", value: { asset: fungible(earmark) } },
+      { type: "ReceiveTeleportedAsset", value: [fungible(teleported - earmark)] },
+      { type: "ClearOrigin" },
+      ...transfer.remote_xcm,
+      { type: "SetTopic", value: `0x${"00".repeat(32)}` },
+    ],
+  };
+};
+/** People's side of the dry run: the teleported amounts minus the fee reach the beneficiary, or
+ *  the program fails with `error()`. */
+const scriptedPeople = (opts: {
+  fee: () => bigint;
+  error: () => string | undefined;
+  trap?: bigint;
+}) => ({
+  apis: {
+    DryRunApi: {
+      dry_run_xcm: async (_origin: unknown, program: { value: Instruction[] }) => {
+        const error = opts.error();
+        if (error) {
+          return {
+            success: true,
+            value: {
+              execution_result: { type: "Incomplete", value: { used: {}, error: { type: error } } },
+              emitted_events: [],
+            },
+          };
+        }
+        const teleported = program.value
+          .filter((i) => i.type === "ReceiveTeleportedAsset")
+          .reduce((sum, i) => sum + (i.value as Fungible[])[0]!.fun.value, 0n);
+        const fee = opts.fee();
+        const deposited = (who: string, amount: bigint) => ({
+          type: "Assets",
+          value: { type: "Deposited", value: { who, amount } },
+        });
+        return {
+          success: true,
+          value: {
+            execution_result: { type: "Complete", value: { used: {} } },
+            emitted_events: [
+              deposited(BENEFICIARY_SS58, teleported - fee),
+              deposited(FEE_RECEIVER_SS58, fee),
+              ...trapped(opts.trap),
+            ],
+          },
+        };
+      },
+    },
+  },
+});
+/** The funding program's fee reads, scripted small. */
+const xcmPaymentApi = {
+  query_xcm_weight: async () => ({
+    success: true,
+    value: { ref_time: 1_000_000n, proof_size: 1_000n },
+  }),
+  query_weight_to_asset_fee: async () => ({ success: true, value: LOCAL_FEE }),
+  query_delivery_fees: async () => ({
+    success: true,
+    value: { value: [{ fun: { type: "Fungible", value: DELIVERY } }] },
+  }),
+};
+
+type Outcome = { ok: true } | { ok: false; dispatchError: unknown };
+/** What became of a submit's watch: let go, and whether it got as far as reporting finality. */
+type WatchLog = { open: boolean; finalityReported: boolean };
+type Observer = {
+  next: (event: unknown) => void;
+  error: (error: unknown) => void;
+  complete: () => void;
+};
+type LoseAnswer = "dropped" | "included";
+
+/** The block every inclusion is reported in. */
+const INCLUSION_BLOCK = 42;
+
+/** polkadot-api's watch as the fakes script it. `land` runs the program on the chain, and its
+ *  outcome is reported in a best block one turn after the subscribe; finality follows a turn
+ *  later, on a watch still open. Without `land` the watch stays silent, as one whose answer is
+ *  lost; with `error` it fails as an invalid transaction does. */
+function scriptedWatch(txHash: string, log: WatchLog, land?: () => Outcome, error?: Error) {
+  const block = { hash: "0xb10c", number: INCLUSION_BLOCK, index: 1 };
+  return {
+    subscribe(observer: Observer) {
+      log.open = true;
+      queueMicrotask(() => {
+        if (!log.open) return;
+        if (error) return observer.error(error);
+        observer.next({ type: "signed", txHash });
+        observer.next({ type: "broadcasted", txHash });
+        if (!land) return;
+        const outcome = land();
+        observer.next({
+          type: "txBestBlocksState",
+          txHash,
+          found: true,
+          events: [],
+          block,
+          ...outcome,
+        });
+        queueMicrotask(() => {
+          if (!log.open) return;
+          log.finalityReported = true;
+          observer.next({ type: "finalized", txHash, events: [], block, ...outcome });
+          observer.complete();
+        });
+      });
+      return {
+        unsubscribe() {
+          log.open = false;
+        },
+      };
+    },
+  };
+}
+
+/** Asset Hub's height and the burner's nonce as the fakes script it. An inclusion raises the
+ *  nonce at the latest block, and the finalized block follows at once, nonce and height, unless
+ *  finality is held, where `finalize` brings it up when the test says. Until then the finalized
+ *  height is one block short of INCLUSION_BLOCK; a test that moves it past without `finalize`
+ *  replaces the block the program was in. */
+function scriptedChain() {
+  const nonce = { latest: 0, finalized: 0 };
+  const tagOf = (options?: { at?: string }) => {
+    const at = options?.at;
+    if (at !== "best" && at !== "finalized") throw new Error(`read at ${String(at)}`);
+    return at;
+  };
+  const chain = {
+    nonce,
+    finalizedBlock: INCLUSION_BLOCK - 1,
+    finalityHeld: false,
+    /** Every nonce and height read, as `what@at`. */
+    reads: [] as string[],
+    raise() {
+      nonce.latest += 1;
+      if (!chain.finalityHeld) chain.finalize();
+    },
+    finalize() {
+      nonce.finalized = nonce.latest;
+      chain.finalizedBlock = INCLUSION_BLOCK;
+    },
+    AccountNonceApi: {
+      account_nonce: async (_who: unknown, options?: { at?: string }) => {
+        const at = tagOf(options);
+        chain.reads.push(`nonce@${at}`);
+        return at === "finalized" ? nonce.finalized : nonce.latest;
+      },
+    },
+    Number: {
+      getValue: async (options?: { at?: string }) => {
+        const at = tagOf(options);
+        chain.reads.push(`number@${at}`);
+        return at === "finalized" ? chain.finalizedBlock : INCLUSION_BLOCK;
+      },
+    },
+  };
+  return chain;
+}
 
 /** Scripted Asset Hub + People. XCM arrival is counted in People reads, not wall-clock. */
 function scriptedWorld(
   opts: {
     /** What People's execution takes from the arrival. */
     remoteFee?: bigint;
+    /** Finalized People reads until the in-flight CASH is final there; the latest block shows it
+     *  as soon as it is in flight. */
     arrivalAfterReads?: number;
     /** Delay the funding program's native debit by N AH balance reads (a stale-read window). */
     staleDebitReads?: number;
@@ -126,9 +381,19 @@ function scriptedWorld(
     trapOnAssetHub?: bigint;
     /** Underlying the People dry run reports trapped. */
     trapOnPeople?: bigint;
+    /** The submit's watch never answers: the program is dropped, or included on a chain that
+     *  moves on without telling. Lifted by the tests through `state.loseAnswer`. */
+    loseAnswer?: LoseAnswer;
+    /** The first N submits are seen in a best block the chain then replaces: the watch reports
+     *  them ok, the chain keeps nothing of them, and the program is left for the test to
+     *  re-include through `state.lost`. */
+    replacedInclusions?: number;
+    /** The submit fails validation instead of reaching a block. */
+    invalidTx?: boolean;
   } = {},
 ) {
   const remoteFee = opts.remoteFee ?? 50_000n;
+  const chain = scriptedChain();
   const state = {
     /** The pool's native price for the underlying, in basis points of the sizing-time rate:
      *  10_000 is the rate the deposit was sized at, 10_300 is 3% dearer. */
@@ -142,39 +407,18 @@ function scriptedWorld(
     xcmLanded: false, // a SUCCESSFUL send; a rejected submit leaves the run still quoting
     priceAtSubmitBps: opts.priceAtSubmitBps,
     quoteCalls: 0,
-    txs: [] as Array<{ call: string; args: ExecuteArgs; options: unknown }>,
+    loseAnswer: (opts.loseAnswer ?? null) as LoseAnswer | null,
+    /** A dropped program, for the test to land when it chooses. */
+    lost: null as (() => Outcome) | null,
+    txs: [] as Array<{ call: string; args: ExecuteArgs; options: unknown; watch: WatchLog }>,
   };
   let rejectLeft = opts.rejectSubmits ?? 0;
+  let replacedLeft = opts.replacedInclusions ?? 0;
   /** Native for `out` underlying at the current price. */
   const nativeFor = (out: bigint) => (((out * QUOTED) / BUY) * state.priceBps) / 10_000n;
   /** Underlying `nativeIn` buys at the current price. */
   const underlyingFor = (nativeIn: bigint) =>
     (((nativeIn * BUY) / QUOTED) * 10_000n) / state.priceBps;
-  const incomplete = (index: number, error: string) => ({
-    type: "Module",
-    value: {
-      type: "PolkadotXcm",
-      value: {
-        type: "LocalExecutionIncompleteWithError",
-        value: { index, error: { type: error } },
-      },
-    },
-  });
-  const trapped = (amount: bigint | undefined) =>
-    amount
-      ? [
-          {
-            type: "PolkadotXcm",
-            value: {
-              type: "AssetsTrapped",
-              value: {
-                assets: { type: "V5", value: [{ fun: { type: "Fungible", value: amount } }] },
-              },
-            },
-          },
-        ]
-      : [];
-  const fungible = (value: bigint) => ({ fun: { type: "Fungible", value } });
   // The program as a dry run sees it: at the current price, without the debit, and without the
   // scripted rejection or the price move at inclusion, which only the real submit meets.
   const dryRunCall = (args: ExecuteArgs) => {
@@ -192,79 +436,20 @@ function scriptedWorld(
     if (opts.assetHubDryRunError) return rejected(3, opts.assetHubDryRunError);
     const out = underlyingFor(give);
     if (out < want) return rejected(2, "NoDeal");
-    const transfer = instruction(args, "InitiateTransfer") as {
-      remote_fees: { value: { value: Fungible[] } };
-      remote_xcm: Instruction[];
-    };
-    const earmark = transfer.remote_fees.value.value[0]!.fun.value;
-    // What the runtime forwards: the fee teleport, the asset teleport, then the remote program.
-    const forwarded = {
-      type: "V5",
-      value: [
-        { type: "ReceiveTeleportedAsset", value: [fungible(earmark)] },
-        { type: "PayFees", value: { asset: fungible(earmark) } },
-        { type: "ReceiveTeleportedAsset", value: [fungible(out - earmark)] },
-        { type: "ClearOrigin" },
-        ...transfer.remote_xcm,
-        { type: "SetTopic", value: `0x${"00".repeat(32)}` },
-      ],
-    };
-    const toPeople = {
-      type: "V5",
-      value: {
-        parents: 1,
-        interior: { type: "X1", value: { type: "Parachain", value: PEOPLE_PARA } },
-      },
-    };
     return {
       success: true,
       value: {
         execution_result: { success: true, value: {} },
         emitted_events: trapped(opts.trapOnAssetHub),
-        forwarded_xcms: [[toPeople, [forwarded]]],
+        forwarded_xcms: [[toPeople, [forwardedProgram(transferOf(args), out)]]],
       },
     };
   };
-  // People's side of the dry run: the teleported amounts minus the fee reach the beneficiary.
-  const peopleApi = {
-    apis: {
-      DryRunApi: {
-        dry_run_xcm: async (_origin: unknown, program: { value: Instruction[] }) => {
-          if (opts.peopleDryRunError) {
-            return {
-              success: true,
-              value: {
-                execution_result: {
-                  type: "Incomplete",
-                  value: { used: {}, error: { type: opts.peopleDryRunError } },
-                },
-                emitted_events: [],
-              },
-            };
-          }
-          const teleported = program.value
-            .filter((i) => i.type === "ReceiveTeleportedAsset")
-            .reduce((sum, i) => sum + (i.value as Fungible[])[0]!.fun.value, 0n);
-          const fee = opts.remoteFeeAtDryRun ?? remoteFee;
-          const deposited = (who: string, amount: bigint) => ({
-            type: "Assets",
-            value: { type: "Deposited", value: { who, amount } },
-          });
-          return {
-            success: true,
-            value: {
-              execution_result: { type: "Complete", value: { used: {} } },
-              emitted_events: [
-                deposited(BENEFICIARY_SS58, teleported - fee),
-                deposited(FEE_RECEIVER_SS58, fee),
-                ...trapped(opts.trapOnPeople),
-              ],
-            },
-          };
-        },
-      },
-    },
-  };
+  const peopleApi = scriptedPeople({
+    fee: () => opts.remoteFeeAtDryRun ?? remoteFee,
+    error: () => opts.peopleDryRunError,
+    trap: opts.trapOnPeople,
+  });
   // The program as the runtime runs it. The dispatch fee is charged whatever happens. On success
   // the withdrawn native leaves in full, the exchange fills at the pool rate and the result goes in
   // flight to People minus the destination fee. A rejection rolls the program back and only the
@@ -272,35 +457,54 @@ function scriptedWorld(
   const execute = (args: ExecuteArgs) => ({
     decodedCall: { type: "PolkadotXcm", value: { type: "execute", value: args } },
     getEstimatedFees: async () => DISPATCH,
-    signAndSubmit: async (_signer: unknown, options: unknown) => {
-      state.txs.push({ call: "swap", args, options });
+    signSubmitAndWatch: (_signer: unknown, options: unknown) => {
+      const watch: WatchLog = { open: false, finalityReported: false };
+      state.txs.push({ call: "swap", args, options, watch });
       const txHash = `0x${state.txs.length.toString(16).padStart(64, "0")}`;
       const withdraw = (instruction(args, "WithdrawAsset") as Fungible[])[0]!.fun.value;
       const exchange = exchangeOf(args);
       const give = exchange.give.value[0]!.fun.value;
       const want = exchange.want[0]!.fun.value;
-      if (rejectLeft > 0) {
-        rejectLeft -= 1;
-        state.nativeAh -= DISPATCH;
-        return { ok: false, txHash, dispatchError: incomplete(3, "FeesNotMet") };
+      const land = (): Outcome => {
+        chain.raise();
+        if (rejectLeft > 0) {
+          rejectLeft -= 1;
+          state.nativeAh -= DISPATCH;
+          return { ok: false, dispatchError: incomplete(3, "FeesNotMet") };
+        }
+        if (state.priceAtSubmitBps !== undefined) state.priceBps = state.priceAtSubmitBps;
+        const out = underlyingFor(give);
+        if (out < want) {
+          state.nativeAh -= DISPATCH;
+          return { ok: false, dispatchError: incomplete(2, "NoDeal") };
+        }
+        const debit = withdraw + DISPATCH;
+        if (opts.staleDebitReads) {
+          state.pendingDebit += debit;
+          state.debitIn = opts.staleDebitReads;
+        } else {
+          state.nativeAh -= debit;
+        }
+        state.inFlight = out - remoteFee;
+        state.arrivalIn = opts.arrivalAfterReads ?? 3;
+        state.xcmLanded = true;
+        return { ok: true };
+      };
+      if (state.loseAnswer === "included") land();
+      if (state.loseAnswer === "dropped") state.lost = land;
+      if (replacedLeft > 0) {
+        replacedLeft -= 1;
+        state.lost = land;
+        return scriptedWatch(txHash, watch, () => ({ ok: true }));
       }
-      if (state.priceAtSubmitBps !== undefined) state.priceBps = state.priceAtSubmitBps;
-      const out = underlyingFor(give);
-      if (out < want) {
-        state.nativeAh -= DISPATCH;
-        return { ok: false, txHash, dispatchError: incomplete(2, "NoDeal") };
-      }
-      const debit = withdraw + DISPATCH;
-      if (opts.staleDebitReads) {
-        state.pendingDebit += debit;
-        state.debitIn = opts.staleDebitReads;
-      } else {
-        state.nativeAh -= debit;
-      }
-      state.inFlight = out - remoteFee;
-      state.arrivalIn = opts.arrivalAfterReads ?? 3;
-      state.xcmLanded = true;
-      return { ok: true, txHash };
+      return scriptedWatch(
+        txHash,
+        watch,
+        state.loseAnswer === null ? land : undefined,
+        opts.invalidTx
+          ? new InvalidTxError({ type: "Invalid", value: { type: "Stale" } })
+          : undefined,
+      );
     },
   });
   const api = {
@@ -309,18 +513,20 @@ function scriptedWorld(
         Pools: { getEntries: async () => [{ keyArgs: [[NATIVE_LOC, UNDERLYING_LOC]] }] },
       },
       System: {
+        Number: chain.Number,
         Account: {
           getValue: async () => {
             if (state.debitIn > 0 && --state.debitIn === 0) {
               state.nativeAh -= state.pendingDebit;
               state.pendingDebit = 0n;
             }
-            return { data: { free: state.nativeAh }, nonce: 0 };
+            return { data: { free: state.nativeAh }, nonce: chain.nonce.latest };
           },
         },
       },
     },
     apis: {
+      AccountNonceApi: chain.AccountNonceApi,
       AssetConversionApi: {
         // Exact-out, both directions at the same rate.
         quote_price_tokens_for_exact_tokens: async (
@@ -345,25 +551,14 @@ function scriptedWorld(
         dry_run_call: async (_origin: unknown, call: { value: { value: ExecuteArgs } }) =>
           dryRunCall(call.value.value),
       },
-      // The funding program's fee reads, scripted small; the landing shortfall is driven by
-      // `remoteFee`.
-      XcmPaymentApi: {
-        query_xcm_weight: async () => ({
-          success: true,
-          value: { ref_time: 1_000_000n, proof_size: 1_000n },
-        }),
-        query_weight_to_asset_fee: async () => ({ success: true, value: LOCAL_FEE }),
-        query_delivery_fees: async () => ({
-          success: true,
-          value: { value: [{ fun: { type: "Fungible", value: DELIVERY } }] },
-        }),
-      },
+      // The landing shortfall is driven by `remoteFee`, not by these.
+      XcmPaymentApi: xcmPaymentApi,
     },
     tx: {
       PolkadotXcm: { execute },
     },
   };
-  const readPeople = async () => {
+  const readFinalizedPeople = async () => {
     if (state.arrivalIn > 0 && --state.arrivalIn === 0) {
       state.underlyingPeople += state.inFlight;
       state.inFlight = 0n;
@@ -372,7 +567,11 @@ function scriptedWorld(
   };
   return {
     state,
-    readPeople,
+    chain,
+    nonce: chain.nonce,
+    readFinalizedPeople,
+    /** What the latest People block shows: the in-flight CASH too. */
+    latestPeople: () => state.underlyingPeople + state.inFlight,
     peopleApi,
     client: { getTypedApi: () => api } as unknown as PolkadotClient,
   };
@@ -380,8 +579,498 @@ function scriptedWorld(
 
 type World = ReturnType<typeof scriptedWorld>;
 
+type Call = { type: string; value: { type: string; value: unknown } };
+type MintArgs = { external_amount: bigint; max_fee: number };
+type PsmRefusal =
+  | "MintingStopped"
+  | "AllSwapsStopped"
+  | "ExceedsMaxPsmDebt"
+  | "FeeTooHigh"
+  | "BelowMinimumSwap"
+  | "AmountTooSmallAfterConversion";
+
+/** The pallet-assets id a location in the table names. */
+const generalIndex = (id: unknown) =>
+  (id as { interior: { value: Array<{ value: unknown }> } }).interior.value[1]!.value;
+const isCash = (a: Fungible) => generalIndex(a.id) === BigInt(TOKENS.CASH.assetHubId);
+const isUsdt = (a: Fungible) => generalIndex(a.id) === BigInt(TOKENS.USDT.assetHubId);
+
+/** Scripted Asset Hub + People for the PSM tier. The burner holds USDT and nothing else: a read of
+ *  its native, of the pool's keys or an exact-in quote throws, so a tick that touches the pool
+ *  tier's reads fails the test. The default destination fee is the buffer exactly, so what lands
+ *  is exactly what the mint was sized for. The program's fees charge exactly the measured figures
+ *  in USDT and the rest of the allowance comes back to the burner. pallet-assets is modelled where
+ *  it bites: an account left below min_balance by the mint or by the withdrawal is reaped, and the
+ *  program then fails to withdraw or to deposit. */
+function scriptedPsmWorld(
+  opts: {
+    remoteFee?: bigint;
+    arrivalAfterReads?: number;
+    /** The PSM refuses the mint with this error, at the dry run and at inclusion alike. */
+    refuse?: PsmRefusal;
+    /** The dry run passes anyway, so the refusal is met at inclusion. */
+    refuseAtInclusion?: boolean;
+  } = {},
+) {
+  const remoteFee = opts.remoteFee ?? BUFFER;
+  const chain = scriptedChain();
+  const state = {
+    /** What the pool charges in USDT for the dispatch fee; raise it to move PAS under a quote. */
+    dispatchUsdt: DISPATCH_USDT,
+    usdtAh: 0n,
+    underlyingPeople: 0n,
+    inFlight: 0n,
+    arrivalIn: 0,
+    /** Lifted by the tests, as an operator raising the ceiling would. */
+    refuse: (opts.refuse ?? null) as PsmRefusal | null,
+    /** Every chain read and dry run throws while set: a transport error, not a refusal. */
+    transportDown: false,
+    peopleError: undefined as string | undefined,
+    txs: [] as Array<{
+      call: string;
+      mint: MintArgs;
+      args: ExecuteArgs;
+      options: unknown;
+      watch: WatchLog;
+    }>,
+  };
+  const psmError = (variant: PsmRefusal) => ({
+    type: "Module",
+    value: { type: "Psm", value: { type: variant } },
+  });
+  const balanceLow = { type: "Module", value: { type: "Assets", value: { type: "BalanceLow" } } };
+  const unwrap = (call: Call) => {
+    if (call.type !== "Utility" || call.value.type !== "batch_all") {
+      throw new Error(`expected Utility.batch_all, got ${call.type}.${call.value.type}`);
+    }
+    const calls = (call.value.value as { calls: Call[] }).calls;
+    return { mint: calls[0]!.value.value as MintArgs, args: calls[1]!.value.value as ExecuteArgs };
+  };
+  const rejected = (error: unknown) => ({
+    success: true,
+    value: {
+      execution_result: { success: false, value: { error } },
+      emitted_events: [],
+      forwarded_xcms: [],
+    },
+  });
+  // The batch as the runtime runs it: the mint pays out the external minus the PSM's fee and
+  // leaves the rest of the USDT on the burner; the program withdraws the minted CASH and the fee
+  // allowance in USDT, moves the allowance to the fees register, teleports the CASH and deposits
+  // what the fees did not spend back on the burner.
+  const run = (mint: MintArgs, args: ExecuteArgs, atDryRun: boolean) => {
+    if (state.refuse && !(atDryRun && opts.refuseAtInclusion)) {
+      return { error: psmError(state.refuse) };
+    }
+    if (mint.external_amount > state.usdtAh) return { error: balanceLow };
+    let usdt = state.usdtAh - mint.external_amount;
+    // A mint that leaves the account below min_balance reaps it and sweeps the remainder: there is
+    // no USDT left for the program to withdraw.
+    if (usdt < MIN_BALANCE) return { error: incomplete(0, "FailedToTransactAsset") };
+    const withdrawn = instruction(args, "WithdrawAsset") as Fungible[];
+    const withdrawnCash = withdrawn.find(isCash)?.fun.value ?? 0n;
+    const withdrawnUsdt = withdrawn.find(isUsdt)?.fun.value ?? 0n;
+    if (withdrawnCash > psmMintOut(mint.external_amount, ROUTE.feeRate) || withdrawnUsdt > usdt) {
+      return { error: incomplete(0, "FailedToTransactAsset") };
+    }
+    usdt -= withdrawnUsdt;
+    // A withdrawal that leaves the account below min_balance reaps it too, and the refund then has
+    // no live account to land in.
+    if (usdt < MIN_BALANCE) return { error: incomplete(4, "FailedToTransactAsset") };
+    const payFees = (instruction(args, "PayFees") as { asset: Fungible }).asset;
+    if (!isUsdt(payFees) || payFees.fun.value > withdrawnUsdt) {
+      return { error: incomplete(1, "NotHoldingFees") };
+    }
+    if (payFees.fun.value < FEES_USDT) return { error: incomplete(2, "NotHoldingFees") };
+    return { teleported: withdrawnCash, usdtLeft: usdt + payFees.fun.value - FEES_USDT };
+  };
+  const dryRunCall = (call: Call) => {
+    if (state.transportDown) throw new Error("connection dropped");
+    const { mint, args } = unwrap(call);
+    const outcome = run(mint, args, true);
+    if ("error" in outcome) return rejected(outcome.error);
+    return {
+      success: true,
+      value: {
+        execution_result: { success: true, value: {} },
+        emitted_events: [],
+        forwarded_xcms: [[toPeople, [forwardedProgram(transferOf(args), outcome.teleported)]]],
+      },
+    };
+  };
+  const batchAll = ({ calls }: { calls: Call[] }) => {
+    const call: Call = { type: "Utility", value: { type: "batch_all", value: { calls } } };
+    const { mint, args } = unwrap(call);
+    return {
+      decodedCall: call,
+      getEstimatedFees: async () => DISPATCH,
+      signSubmitAndWatch: (_signer: unknown, options: unknown) => {
+        const watch: WatchLog = { open: false, finalityReported: false };
+        state.txs.push({ call: "swap", mint, args, options, watch });
+        const txHash = `0x${state.txs.length.toString(16).padStart(64, "0")}`;
+        return scriptedWatch(txHash, watch, () => {
+          chain.raise();
+          // ChargeAssetTxPayment takes the dispatch fee in USDT before anything runs.
+          state.usdtAh -= state.dispatchUsdt;
+          const outcome = run(mint, args, false);
+          if ("error" in outcome) return { ok: false, dispatchError: outcome.error };
+          state.usdtAh = outcome.usdtLeft;
+          state.inFlight = outcome.teleported - remoteFee;
+          state.arrivalIn = opts.arrivalAfterReads ?? 3;
+          return { ok: true };
+        });
+      },
+    };
+  };
+  const api = {
+    query: {
+      AssetConversion: {
+        Pools: {
+          getEntries: async () => {
+            throw new Error("pool discovery on the psm tier");
+          },
+        },
+      },
+      System: {
+        Number: chain.Number,
+        Account: {
+          getValue: async () => {
+            throw new Error("native read on the psm tier");
+          },
+        },
+      },
+      Assets: {
+        Asset: {
+          getValue: async (assetId: number) => {
+            if (state.transportDown) throw new Error("connection dropped");
+            expect(assetId).toBe(TOKENS.USDT.assetHubId);
+            return { min_balance: MIN_BALANCE };
+          },
+        },
+        Account: {
+          getValue: async (assetId: number) => {
+            if (state.transportDown) throw new Error("connection dropped");
+            if (assetId !== TOKENS.USDT.assetHubId) throw new Error(`asset ${assetId} read`);
+            return state.usdtAh === 0n ? undefined : { balance: state.usdtAh };
+          },
+        },
+      },
+    },
+    apis: {
+      AccountNonceApi: chain.AccountNonceApi,
+      AssetConversionApi: {
+        // The one pool read the tier makes: the dispatch fee priced in USDT.
+        quote_price_tokens_for_exact_tokens: async (give: unknown, _want: unknown, out: bigint) => {
+          expect(give).toEqual(TOKENS.USDT.location);
+          expect(out).toBe(DISPATCH);
+          return state.dispatchUsdt;
+        },
+        quote_price_exact_tokens_for_tokens: async () => {
+          throw new Error("exact-in quote on the psm tier");
+        },
+      },
+      DryRunApi: { dry_run_call: async (_origin: unknown, call: Call) => dryRunCall(call) },
+      // The program's own fees, priced in USDT and nothing else.
+      XcmPaymentApi: {
+        query_xcm_weight: xcmPaymentApi.query_xcm_weight,
+        query_weight_to_asset_fee: async (_weight: unknown, asset: unknown) => {
+          expect(asset).toEqual({ type: "V5", value: TOKENS.USDT.location });
+          return { success: true, value: LOCAL_USDT };
+        },
+        query_delivery_fees: async (_dest: unknown, _message: unknown, asset: unknown) => {
+          expect(asset).toEqual({ type: "V5", value: TOKENS.USDT.location });
+          return {
+            success: true,
+            value: { value: [{ fun: { type: "Fungible", value: DELIVERY_USDT } }] },
+          };
+        },
+      },
+    },
+    tx: {
+      Psm: {
+        mint: (args: MintArgs) => ({
+          decodedCall: { type: "Psm", value: { type: "mint", value: args } },
+        }),
+      },
+      PolkadotXcm: {
+        execute: (args: ExecuteArgs) => ({
+          decodedCall: { type: "PolkadotXcm", value: { type: "execute", value: args } },
+        }),
+      },
+      Utility: { batch_all: batchAll },
+    },
+  };
+  const readFinalizedPeople = async () => {
+    if (state.arrivalIn > 0 && --state.arrivalIn === 0) {
+      state.underlyingPeople += state.inFlight;
+      state.inFlight = 0n;
+    }
+    return state.underlyingPeople;
+  };
+  return {
+    state,
+    nonce: chain.nonce,
+    readFinalizedPeople,
+    peopleApi: scriptedPeople({ fee: () => remoteFee, error: () => state.peopleError }),
+    client: { getTypedApi: () => api } as unknown as PolkadotClient,
+  };
+}
+
+type Exchange = {
+  give: { type: string; value: Fungible[] | { type: string; value: { id: unknown } } };
+  want: Fungible[];
+  maximal: boolean;
+};
+const exchangesOf = (args: ExecuteArgs) =>
+  args.message.value.filter((i) => i.type === "ExchangeAsset").map((i) => i.value as Exchange);
+const isNativeLoc = (location: unknown) => (location as { parents: number }).parents === 1;
+
+/** Scripted Asset Hub + People for the stable pool tier. The burner holds the stable and nothing
+ *  else: a read of its native throws. Two pools at scripted rates, the stable's to the native and
+ *  the native's to CASH. The program's fees charge exactly the measured figures in the stable and
+ *  the rest of the allowance comes back to the burner; pallet-assets reaps an account a withdrawal
+ *  leaves below min_balance, as on the PSM tier. */
+function scriptedStableWorld(
+  opts: {
+    stable?: "USDC" | "USDT";
+    remoteFee?: bigint;
+    arrivalAfterReads?: number;
+    /** The most stable the stable pool can price in one exchange. */
+    stablePoolDepth?: bigint;
+    /** The most native the CASH pool can price in one exchange. */
+    poolDepth?: bigint;
+    /** The stable pool's rate at inclusion, in bps of the sizing rate, when it differs. */
+    stableAtSubmitBps?: bigint;
+    /** Asset Hub's dry run rejects the program at InitiateTransfer with this XCM error. */
+    assetHubDryRunError?: string;
+    peopleDryRunError?: string;
+    trapOnAssetHub?: bigint;
+    trapOnPeople?: bigint;
+  } = {},
+) {
+  const token = opts.stable === "USDT" ? TOKENS.USDT : TOKENS.USDC;
+  const remoteFee = opts.remoteFee ?? BUFFER;
+  const chain = scriptedChain();
+  const state = {
+    /** The CASH pool's native price for CASH, in bps of the sizing-time rate. */
+    priceBps: 10_000n,
+    /** The stable pool's stable price for the native, in bps of the sizing-time rate. */
+    stableBps: 10_000n,
+    /** What the pool charges in the stable for the dispatch fee; raise it to move PAS. */
+    dispatchStable: DISPATCH_STABLE,
+    /** The stable pool's rate at inclusion, applied on every real submit while set. */
+    stableAtSubmitBps: opts.stableAtSubmitBps,
+    stableAh: 0n,
+    underlyingPeople: 0n,
+    inFlight: 0n,
+    arrivalIn: 0,
+    assetReads: 0,
+    peopleError: undefined as string | undefined,
+    txs: [] as Array<{ call: string; args: ExecuteArgs; options: unknown; watch: WatchLog }>,
+  };
+  const isStable = (a: Fungible) => generalIndex(a.id) === BigInt(token.assetHubId);
+  const nativeFor = (out: bigint) => (((out * QUOTED) / BUY) * state.priceBps) / 10_000n;
+  const underlyingFor = (nativeIn: bigint) =>
+    (((nativeIn * BUY) / QUOTED) * 10_000n) / state.priceBps;
+  const stableFor = (nativeOut: bigint) =>
+    (((nativeOut * STABLE_QUOTED) / QUOTED) * state.stableBps) / 10_000n;
+  const nativeOutFor = (stableIn: bigint) =>
+    (((stableIn * QUOTED) / STABLE_QUOTED) * 10_000n) / state.stableBps;
+  // The program as the runtime runs it: the stable withdrawn and the allowance moved to the fees
+  // register, the first exchange at the stable pool's rate, the second at the CASH pool's, the
+  // CASH teleported and the unspent allowance deposited back.
+  const run = (args: ExecuteArgs, atDryRun: boolean) => {
+    const withdrawn = instruction(args, "WithdrawAsset") as Fungible[];
+    if (withdrawn.length !== 1 || !isStable(withdrawn[0]!)) {
+      return { error: incomplete(0, "FailedToTransactAsset") };
+    }
+    const withdraw = withdrawn[0]!.fun.value;
+    if (withdraw > state.stableAh - MIN_BALANCE) {
+      return { error: incomplete(0, "FailedToTransactAsset") };
+    }
+    const payFees = (instruction(args, "PayFees") as { asset: Fungible }).asset;
+    if (!isStable(payFees) || payFees.fun.value > withdraw) {
+      return { error: incomplete(1, "NotHoldingFees") };
+    }
+    if (payFees.fun.value < FEES_STABLE) return { error: incomplete(4, "NotHoldingFees") };
+    const [first, second] = exchangesOf(args);
+    const give = (first!.give.value as Fungible[])[0]!.fun.value;
+    if (give !== withdraw - payFees.fun.value) return { error: incomplete(2, "NoDeal") };
+    if (!atDryRun && state.stableAtSubmitBps !== undefined) {
+      state.stableBps = state.stableAtSubmitBps;
+    }
+    const nativeOut = nativeOutFor(give);
+    if (nativeOut < first!.want[0]!.fun.value) return { error: incomplete(2, "NoDeal") };
+    const named = (second!.give.value as { type: string; value: { id: unknown } }).value.id;
+    if (second!.give.type !== "Wild" || !isNativeLoc(named)) {
+      return { error: incomplete(3, "NoDeal") };
+    }
+    const cashOut = underlyingFor(nativeOut);
+    if (cashOut < second!.want[0]!.fun.value) return { error: incomplete(3, "NoDeal") };
+    return {
+      teleported: cashOut,
+      stableLeft: state.stableAh - withdraw + payFees.fun.value - FEES_STABLE,
+    };
+  };
+  const rejected = (error: unknown) => ({
+    success: true,
+    value: {
+      execution_result: { success: false, value: { error } },
+      emitted_events: [],
+      forwarded_xcms: [],
+    },
+  });
+  const dryRunCall = (args: ExecuteArgs) => {
+    if (opts.assetHubDryRunError) return rejected(incomplete(4, opts.assetHubDryRunError));
+    const outcome = run(args, true);
+    if ("error" in outcome) return rejected(outcome.error);
+    return {
+      success: true,
+      value: {
+        execution_result: { success: true, value: {} },
+        emitted_events: trapped(opts.trapOnAssetHub),
+        forwarded_xcms: [[toPeople, [forwardedProgram(transferOf(args), outcome.teleported)]]],
+      },
+    };
+  };
+  const execute = (args: ExecuteArgs) => ({
+    decodedCall: { type: "PolkadotXcm", value: { type: "execute", value: args } },
+    getEstimatedFees: async (_from: unknown, options: unknown) => {
+      expect(options).toEqual({ asset: token.location });
+      return DISPATCH;
+    },
+    signSubmitAndWatch: (_signer: unknown, options: unknown) => {
+      const watch: WatchLog = { open: false, finalityReported: false };
+      state.txs.push({ call: "swap", args, options, watch });
+      const txHash = `0x${state.txs.length.toString(16).padStart(64, "0")}`;
+      return scriptedWatch(txHash, watch, () => {
+        chain.raise();
+        // ChargeAssetTxPayment takes the dispatch fee in the stable before anything runs.
+        state.stableAh -= state.dispatchStable;
+        const outcome = run(args, false);
+        if ("error" in outcome) return { ok: false, dispatchError: outcome.error };
+        state.stableAh = outcome.stableLeft;
+        state.inFlight = outcome.teleported - remoteFee;
+        state.arrivalIn = opts.arrivalAfterReads ?? 3;
+        return { ok: true };
+      });
+    },
+  });
+  const api = {
+    query: {
+      AssetConversion: {
+        Pools: {
+          getEntries: async () => [
+            { keyArgs: [[NATIVE_LOC, UNDERLYING_LOC]] },
+            { keyArgs: [[NATIVE_LOC, token.location]] },
+          ],
+        },
+      },
+      System: {
+        Number: chain.Number,
+        Account: {
+          getValue: async () => {
+            throw new Error("native read on the stable pool tier");
+          },
+        },
+      },
+      Assets: {
+        Asset: {
+          getValue: async (assetId: number) => {
+            expect(assetId).toBe(token.assetHubId);
+            state.assetReads += 1;
+            return { min_balance: MIN_BALANCE };
+          },
+        },
+        Account: {
+          getValue: async (assetId: number) => {
+            if (assetId !== token.assetHubId) throw new Error(`asset ${assetId} read`);
+            return state.stableAh === 0n ? undefined : { balance: state.stableAh };
+          },
+        },
+      },
+    },
+    apis: {
+      AccountNonceApi: chain.AccountNonceApi,
+      AssetConversionApi: {
+        // Exact-out on either pool: the native for CASH, or the stable for the native. The dispatch
+        // fee is the one native amount priced in the stable.
+        quote_price_tokens_for_exact_tokens: async (give: unknown, _want: unknown, out: bigint) => {
+          if (isNativeLoc(give)) return nativeFor(out);
+          expect(give).toEqual(token.location);
+          return out === DISPATCH ? state.dispatchStable : stableFor(out);
+        },
+        // Exact-in on either pool, undefined above the pool's depth.
+        quote_price_exact_tokens_for_tokens: async (
+          give: unknown,
+          _want: unknown,
+          amount: bigint,
+        ) => {
+          if (isNativeLoc(give)) {
+            return opts.poolDepth !== undefined && amount > opts.poolDepth
+              ? undefined
+              : underlyingFor(amount);
+          }
+          return opts.stablePoolDepth !== undefined && amount > opts.stablePoolDepth
+            ? undefined
+            : nativeOutFor(amount);
+        },
+      },
+      DryRunApi: {
+        dry_run_call: async (_origin: unknown, call: { value: { value: ExecuteArgs } }) =>
+          dryRunCall(call.value.value),
+      },
+      // The program's own fees, priced in the stable and nothing else.
+      XcmPaymentApi: {
+        query_xcm_weight: xcmPaymentApi.query_xcm_weight,
+        query_weight_to_asset_fee: async (_weight: unknown, asset: unknown) => {
+          expect(asset).toEqual({ type: "V5", value: token.location });
+          return { success: true, value: LOCAL_STABLE };
+        },
+        query_delivery_fees: async (_dest: unknown, _message: unknown, asset: unknown) => {
+          expect(asset).toEqual({ type: "V5", value: token.location });
+          return {
+            success: true,
+            value: { value: [{ fun: { type: "Fungible", value: DELIVERY_STABLE } }] },
+          };
+        },
+      },
+    },
+    tx: { PolkadotXcm: { execute } },
+  };
+  const readFinalizedPeople = async () => {
+    if (state.arrivalIn > 0 && --state.arrivalIn === 0) {
+      state.underlyingPeople += state.inFlight;
+      state.inFlight = 0n;
+    }
+    return state.underlyingPeople;
+  };
+  return {
+    state,
+    nonce: chain.nonce,
+    readFinalizedPeople,
+    peopleApi: scriptedPeople({
+      fee: () => remoteFee,
+      error: () => opts.peopleDryRunError ?? state.peopleError,
+      trap: opts.trapOnPeople,
+    }),
+    client: { getTypedApi: () => api } as unknown as PolkadotClient,
+  };
+}
+
+type Driveable = Pick<World, "client" | "peopleApi" | "readFinalizedPeople" | "nonce"> & {
+  state: { txs: Array<{ call: string; watch: WatchLog }> };
+};
+
 /** Drives `world` one tick at a time until done or `ticks` ticks. */
-async function drive(world: World, ticks: number, state: TickState = freshTickState()) {
+async function drive(
+  world: Driveable,
+  ticks: number,
+  state: TickState = freshTickState(),
+  route: ConversionRoute = POOL,
+  quotedDeposit?: bigint,
+  overrides: Partial<Pick<TickOnceInput, "inclusionTimeoutMs" | "onBeforeSubmit">> = {},
+) {
   const steps: FundingStep[] = [];
   const transients: string[] = [];
   let now = 1_000;
@@ -391,7 +1080,18 @@ async function drive(world: World, ticks: number, state: TickState = freshTickSt
       {
         api: (world.client as unknown as { getTypedApi: () => never }).getTypedApi(),
         peopleApi: world.peopleApi as never,
-        pool: { native: NATIVE_LOC as never, underlying: UNDERLYING_LOC as never },
+        route,
+        ...(route.tier === "pool"
+          ? { pool: { native: NATIVE_LOC as never, underlying: UNDERLYING_LOC as never } }
+          : {}),
+        ...(route.tier === "pool" && route.external !== undefined
+          ? {
+              stablePool: {
+                native: NATIVE_LOC as never,
+                underlying: TOKENS[route.external].location as never,
+              },
+            }
+          : {}),
         address: "5Burner",
         signer: {} as never,
         beneficiaryHex: BENEFICIARY_HEX,
@@ -401,12 +1101,14 @@ async function drive(world: World, ticks: number, state: TickState = freshTickSt
         remoteFeeBuffer: BUFFER,
         keepNativeForFees: KEEP,
         slippagePct: 2,
+        ...(quotedDeposit === undefined ? {} : { quotedDeposit }),
         tickTimeoutMs: 1_000,
-        submitTimeoutMs: 1_000,
+        inclusionTimeoutMs: 1_000,
         signOptions: SIGN_OPTIONS,
-        readUnderlyingOnPeople: world.readPeople,
+        readFinalizedUnderlyingOnPeople: world.readFinalizedPeople,
         now: () => now,
         onTransientError: (e) => transients.push(e instanceof Error ? e.message : String(e)),
+        ...overrides,
       },
       state,
     );
@@ -546,7 +1248,8 @@ describe("tickOnce", () => {
       /funding program dispatch rejected: InitiateTransfer failed with FeesNotMet/,
     );
     expect(world.state.nativeAh).toBe(ASK + KEEP - DISPATCH);
-    expect(state).toMatchObject({ attempts: 1, xcmSubmitted: false });
+    // The answer is known, so no submit is owed one.
+    expect(state).toMatchObject({ attempts: 1, xcmSubmitted: false, nonceAtSubmit: null });
 
     const retry = await drive(world, 1, state);
     expect(retry.steps).toEqual(["swap"]);
@@ -581,6 +1284,1062 @@ describe("tickOnce", () => {
     expect(retry.steps).toEqual(["swap"]);
     expect(state.xcmSubmitted).toBe(true);
     expect(world.state.nativeAh).toBe(0n);
+  });
+});
+
+describe("tickOnce on the PSM tier", () => {
+  it("mints the USDT through the PSM and teleports the CASH one tick at a time: batch, arrival, done", async () => {
+    const world = scriptedPsmWorld({ arrivalAfterReads: 2 });
+    const idle = await drive(world, 1, freshTickState(), ROUTE);
+    expect(idle.steps).toEqual(["await-native"]);
+    expect(idle.state.fundsSeenAt).toBeNull();
+
+    world.state.usdtAh = PSM_DEPOSIT;
+    const run = await drive(world, 6, idle.state, ROUTE);
+    expect(run.steps).toEqual(["swap", "await-arrival", "done"]);
+    expect(run.txs).toEqual(["swap"]);
+    expect(run.state).toMatchObject({ attempts: 1, xcmSubmitted: true, psmRefusals: 0 });
+    // The destination fee took the buffer exactly, so the target landed plus the cushion the
+    // dispatch fee did not need: it is asked for but not held back, so it mints. The burner keeps
+    // USDt's min_balance, which kept its account alive through the batch, plus the unspent tenth
+    // of the fee allowance the program deposited back.
+    expect(world.state.underlyingPeople).toBe(PSM_LANDED);
+    expect(PSM_LANDED).toBeGreaterThan(SETTLE);
+    expect(world.state.usdtAh).toBe(MIN_BALANCE + ALLOWANCE - FEES_USDT);
+
+    const [tx] = world.state.txs;
+    // The mint takes everything the dispatch fee and the held-back USDT leave, at the route's fee
+    // verbatim, so it covers the target and mints the unused cushion on top.
+    expect(tx!.mint.external_amount).toBe(PSM_DEPOSIT - DISPATCH_USDT - HELD_BACK);
+    expect(psmMintOut(tx!.mint.external_amount, ROUTE.feeRate)).toBeGreaterThanOrEqual(BUY);
+    expect(tx!.mint.max_fee).toBe(ROUTE.feeRate);
+    // The program withdraws what the mint paid out and the fee allowance in USDT, pays the fees
+    // from that allowance, exchanges nothing, and ends by refunding the surplus.
+    const withdrawn = instruction(tx!.args, "WithdrawAsset") as Fungible[];
+    // Everything the mint paid out, the unused cushion included.
+    expect(withdrawn.find(isCash)!.fun.value).toBe(PSM_LANDED + BUFFER);
+    expect(withdrawn.find(isUsdt)!.fun.value).toBe(ALLOWANCE);
+    const payFees = (instruction(tx!.args, "PayFees") as { asset: Fungible }).asset;
+    expect(isUsdt(payFees)).toBe(true);
+    expect(payFees.fun.value).toBe(ALLOWANCE);
+    expect(instruction(tx!.args, "ExchangeAsset")).toBeUndefined();
+    expect(tx!.args.message.value.slice(-2).map((i) => i.type)).toEqual([
+      "RefundSurplus",
+      "DepositAsset",
+    ]);
+    expect(transferOf(tx!.args).remote_fees.value.value[0]!.fun.value).toBe(EARMARK);
+    expect(tx!.args.max_weight).toEqual({ ref_time: 1_000_000n, proof_size: 1_000n });
+    // The dispatch fee is charged in USDT, with the tick's anchor.
+    expect(tx!.options).toEqual({ asset: TOKENS.USDT.location, ...SIGN_OPTIONS });
+  });
+
+  it("clears a deposit sized at the quote after PAS moves against it, and re-prices without one", async () => {
+    // The fees in the deposit are priced through the USDT/PAS pool, so re-pricing them at the tick
+    // raises the bar under a deposit that was exactly right when it was quoted. The buyer sends
+    // what the quote asked for; PAS then gains a tenth before it arrives.
+    const moved = DISPATCH_USDT + DISPATCH_USDT / 20n;
+    const world = scriptedPsmWorld();
+    world.state.usdtAh = PSM_DEPOSIT;
+    world.state.dispatchUsdt = moved;
+    const run = await drive(world, 4, freshTickState(), ROUTE, PSM_DEPOSIT);
+    expect(run.steps[0]).toBe("swap");
+    expect(run.steps.at(-1)).toBe("done");
+    // The cushion paid the rise, so the target still landed.
+    expect(world.state.underlyingPeople).toBeGreaterThanOrEqual(SETTLE);
+
+    // Without the frozen figure the same deposit waits for a reversal that may never come, which
+    // is what carrying it through the hand-off exists to prevent.
+    const bare = scriptedPsmWorld();
+    bare.state.usdtAh = PSM_DEPOSIT;
+    bare.state.dispatchUsdt = moved;
+    expect((await drive(bare, 1, freshTickState(), ROUTE)).steps).toEqual(["await-native"]);
+  });
+
+  it("sizes the deposit for the mint PLUS the dispatch fee, the fee allowance and min_balance: one short waits", async () => {
+    // Without the held-back USDT the mint would reap the burner's account and the program would
+    // fail at its first instruction on every tick; without min_balance in it the withdrawal would.
+    const world = scriptedPsmWorld();
+    world.state.usdtAh = sizePsmMint(BUY, ROUTE).externalIn + DISPATCH_USDT;
+    expect((await drive(world, 1, freshTickState(), ROUTE)).steps).toEqual(["await-native"]);
+    world.state.usdtAh = sizePsmMint(BUY, ROUTE).externalIn + DISPATCH_USDT + ALLOWANCE;
+    expect((await drive(world, 1, freshTickState(), ROUTE)).steps).toEqual(["await-native"]);
+    world.state.usdtAh = PSM_DEPOSIT - 1n;
+    expect((await drive(world, 1, freshTickState(), ROUTE)).steps).toEqual(["await-native"]);
+    expect(world.state.txs).toEqual([]);
+    world.state.usdtAh = PSM_DEPOSIT;
+    expect((await drive(world, 1, freshTickState(), ROUTE)).steps).toEqual(["swap"]);
+  });
+
+  it("converts everything the burner holds; the surplus lands as extra CASH", async () => {
+    const world = scriptedPsmWorld({ arrivalAfterReads: 1 });
+    world.state.usdtAh = PSM_DEPOSIT + 1_000_000n;
+    const run = await drive(world, 4, freshTickState(), ROUTE);
+    expect(run.steps).toEqual(["swap", "done"]);
+    expect(world.state.txs[0]!.mint.external_amount).toBe(
+      PSM_DEPOSIT + 1_000_000n - DISPATCH_USDT - HELD_BACK,
+    );
+    expect(world.state.usdtAh).toBe(MIN_BALANCE + ALLOWANCE - FEES_USDT);
+    expect(world.state.underlyingPeople).toBeGreaterThan(SETTLE);
+    expect(run.transients).toEqual([]);
+  });
+
+  it("retries a mint the PSM refuses at the dry run, and holds on the third refusal with nothing spent", async () => {
+    const world = scriptedPsmWorld({ refuse: "ExceedsMaxPsmDebt" });
+    world.state.usdtAh = PSM_DEPOSIT;
+    const state = freshTickState();
+    for (let refusals = 1; refusals < MAX_PSM_REFUSALS; refusals += 1) {
+      await expect(drive(world, 1, state, ROUTE)).rejects.toThrow(
+        /not submitted: Asset Hub rejects the program: Psm.ExceedsMaxPsmDebt/,
+      );
+      expect(state.psmRefusals).toBe(refusals);
+    }
+    await expect(drive(world, 1, state, ROUTE)).rejects.toThrow(
+      /funding held: the PSM refused the mint 3 times, last: Psm.ExceedsMaxPsmDebt/,
+    );
+    await expect(drive(world, 1, state, ROUTE)).rejects.toBeInstanceOf(FundingHeldError);
+    // Nothing went out and the deposit stays on the burner, in USDT.
+    expect(state).toMatchObject({ attempts: 0, xcmSubmitted: false });
+    expect(world.state.txs).toEqual([]);
+    expect(world.state.usdtAh).toBe(PSM_DEPOSIT);
+  });
+
+  it("holds at once on a refusal no retry can clear, without spending the budget", async () => {
+    // The mint carries the rate and the amount the quote froze, so a refusal of those is the same
+    // refusal every tick. Retrying it only delays the hold by three ticks and tells the buyer
+    // nothing; worse, an unrecognised one span until the worker's deadline and failed as a
+    // timeout, naming the clock rather than the cause.
+    for (const refuse of [
+      "FeeTooHigh",
+      "BelowMinimumSwap",
+      "AmountTooSmallAfterConversion",
+    ] as const) {
+      const world = scriptedPsmWorld({ refuse });
+      world.state.usdtAh = PSM_DEPOSIT;
+      const state = freshTickState();
+      await expect(drive(world, 1, state, ROUTE)).rejects.toThrow(
+        new RegExp(`funding held: the PSM will not mint this swap as quoted: Psm.${refuse}`),
+      );
+      await expect(drive(world, 1, state, ROUTE)).rejects.toBeInstanceOf(FundingHeldError);
+      // Held on the first, not the third: the retry budget is untouched and nothing went out.
+      expect(state).toMatchObject({ psmRefusals: 0, attempts: 0, xcmSubmitted: false });
+      expect(world.state.txs).toEqual([]);
+      expect(world.state.usdtAh).toBe(PSM_DEPOSIT);
+    }
+  });
+
+  it("counts the PSM's refusals only: a dropped connection or another rejection burns no retry", async () => {
+    const world = scriptedPsmWorld({ refuse: "MintingStopped" });
+    world.state.usdtAh = PSM_DEPOSIT;
+    const state = freshTickState();
+    await expect(drive(world, 1, state, ROUTE)).rejects.toThrow(/Psm.MintingStopped/);
+    expect(state.psmRefusals).toBe(1);
+    // The connection drops: a transport error, retried without limit.
+    world.state.transportDown = true;
+    await expect(drive(world, 1, state, ROUTE)).rejects.toThrow(/connection dropped/);
+    world.state.transportDown = false;
+    expect(state.psmRefusals).toBe(1);
+    // People fails the forwarded program: a rejection, but not the PSM's.
+    world.state.refuse = null;
+    world.state.peopleError = "TooExpensive";
+    await expect(drive(world, 1, state, ROUTE)).rejects.toThrow(
+      /not submitted: the forwarded program fails on People with TooExpensive/,
+    );
+    expect(state.psmRefusals).toBe(1);
+    world.state.peopleError = undefined;
+    // Two more refusals of the PSM's own reach the hold.
+    world.state.refuse = "AllSwapsStopped";
+    await expect(drive(world, 1, state, ROUTE)).rejects.toThrow(/Psm.AllSwapsStopped/);
+    expect(state.psmRefusals).toBe(2);
+    await expect(drive(world, 1, state, ROUTE)).rejects.toBeInstanceOf(FundingHeldError);
+    expect(world.state.txs).toEqual([]);
+  });
+
+  it("a refusal at inclusion costs the dispatch fee in USDT and counts; the run goes on once the PSM takes the mint", async () => {
+    const world = scriptedPsmWorld({
+      refuse: "MintingStopped",
+      refuseAtInclusion: true,
+      arrivalAfterReads: 1,
+    });
+    world.state.usdtAh = PSM_DEPOSIT;
+    const state = freshTickState();
+    await expect(drive(world, 1, state, ROUTE)).rejects.toThrow(
+      /psm batch dispatch rejected: Psm.MintingStopped/,
+    );
+    expect(state).toMatchObject({
+      attempts: 1,
+      psmRefusals: 1,
+      xcmSubmitted: false,
+      nonceAtSubmit: null,
+    });
+    // The batch rolled back whole: the deposit is still USDT, the dispatch fee lighter.
+    expect(world.state.usdtAh).toBe(PSM_DEPOSIT - DISPATCH_USDT);
+
+    // The PSM reopens and the fee is made up: the next tick mints, priced afresh.
+    world.state.refuse = null;
+    world.state.usdtAh += DISPATCH_USDT;
+    const retry = await drive(world, 4, state, ROUTE);
+    expect(retry.steps).toEqual(["swap", "done"]);
+    expect(state).toMatchObject({ attempts: 2, psmRefusals: 1, xcmSubmitted: true });
+    expect(world.state.underlyingPeople).toBe(PSM_LANDED);
+    expect(world.state.usdtAh).toBe(MIN_BALANCE + ALLOWANCE - FEES_USDT);
+  });
+});
+
+describe("tickOnce on the stable pool tier", () => {
+  it("exchanges the USDC twice and teleports the CASH one tick at a time: program, arrival, done", async () => {
+    const world = scriptedStableWorld({ arrivalAfterReads: 2 });
+    const idle = await drive(world, 1, freshTickState(), STABLE_ROUTE);
+    expect(idle.steps).toEqual(["await-native"]);
+    expect(idle.state.fundsSeenAt).toBeNull();
+
+    world.state.stableAh = STABLE_DEPOSIT;
+    const run = await drive(world, 6, idle.state, STABLE_ROUTE);
+    expect(run.steps).toEqual(["swap", "await-arrival", "done"]);
+    expect(run.txs).toEqual(["swap"]);
+    expect(run.state).toMatchObject({ attempts: 1, xcmSubmitted: true });
+    expect(world.state.underlyingPeople).toBeGreaterThanOrEqual(SETTLE);
+    // The burner keeps the stable's min_balance, which kept its account alive, plus the unspent
+    // tenth of the fee allowance the program deposited back.
+    expect(world.state.stableAh).toBe(MIN_BALANCE + ALLOWANCE_STABLE - FEES_STABLE);
+    expect(run.transients).toEqual([]);
+
+    const [tx] = world.state.txs;
+    const args = tx!.args;
+    // Everything the dispatch fee and the held-back stable leave is exchanged: the plain quote
+    // plus the cushion the fees did not take.
+    const spend = STABLE_DEPOSIT - DISPATCH_STABLE - HELD_BACK_STABLE;
+    expect(spend).toBeGreaterThan(STABLE_QUOTED);
+    const withdrawn = instruction(args, "WithdrawAsset") as Fungible[];
+    expect(withdrawn).toHaveLength(1);
+    expect(withdrawn[0]!.fun.value).toBe(spend + ALLOWANCE_STABLE);
+    const payFees = (instruction(args, "PayFees") as { asset: Fungible }).asset;
+    expect(generalIndex(payFees.id)).toBe(BigInt(TOKENS.USDC.assetHubId));
+    expect(payFees.fun.value).toBe(ALLOWANCE_STABLE);
+    const [first, second] = exchangesOf(args);
+    expect((first!.give.value as Fungible[])[0]!.fun.value).toBe(spend);
+    // The first floor is the quote less the headroom `drive` passes, the second the requirement.
+    expect(first!.want[0]!.fun.value).toBe((((spend * QUOTED) / STABLE_QUOTED) * 9_800n) / 10_000n);
+    expect(second!.give.type).toBe("Wild");
+    expect(second!.want[0]!.fun.value).toBe(BUY);
+    expect(args.message.value.map((i) => i.type)).toEqual([
+      "WithdrawAsset",
+      "PayFees",
+      "ExchangeAsset",
+      "ExchangeAsset",
+      "InitiateTransfer",
+      "RefundSurplus",
+      "DepositAsset",
+    ]);
+    expect(transferOf(args).remote_fees.value.value[0]!.fun.value).toBe(EARMARK);
+    expect(args.max_weight).toEqual({ ref_time: 1_000_000n, proof_size: 1_000n });
+    // The dispatch fee is charged in the stable, with the tick's anchor.
+    expect(tx!.options).toEqual({ asset: TOKENS.USDC.location, ...SIGN_OPTIONS });
+  });
+
+  it("gates on the two-hop quote, then the fees: short of the bare swap waits without the fee reads", async () => {
+    const world = scriptedStableWorld();
+    world.state.stableAh = STABLE_QUOTED - 1n;
+    expect((await drive(world, 1, freshTickState(), STABLE_ROUTE)).steps).toEqual(["await-native"]);
+    expect(world.state.assetReads).toBe(0);
+    world.state.stableAh = STABLE_DEPOSIT - 1n;
+    expect((await drive(world, 1, freshTickState(), STABLE_ROUTE)).steps).toEqual(["await-native"]);
+    expect(world.state.assetReads).toBeGreaterThan(0);
+    expect(world.state.txs).toEqual([]);
+    world.state.stableAh = STABLE_DEPOSIT;
+    expect((await drive(world, 1, freshTickState(), STABLE_ROUTE)).steps).toEqual(["swap"]);
+  });
+
+  it("clears a deposit sized at the quote after PAS moves against it, and re-prices without the frozen figure", async () => {
+    const moved = DISPATCH_STABLE + DISPATCH_STABLE / 20n;
+    const world = scriptedStableWorld();
+    world.state.stableAh = STABLE_DEPOSIT;
+    world.state.dispatchStable = moved;
+    const run = await drive(world, 4, freshTickState(), STABLE_ROUTE, STABLE_DEPOSIT);
+    expect(run.steps[0]).toBe("swap");
+    expect(run.steps.at(-1)).toBe("done");
+    expect(world.state.underlyingPeople).toBeGreaterThanOrEqual(SETTLE);
+
+    const bare = scriptedStableWorld();
+    bare.state.stableAh = STABLE_DEPOSIT;
+    bare.state.dispatchStable = moved;
+    expect((await drive(bare, 1, freshTickState(), STABLE_ROUTE)).steps).toEqual(["await-native"]);
+  });
+
+  it("converts everything the burner holds; the surplus lands as extra CASH", async () => {
+    const world = scriptedStableWorld({ arrivalAfterReads: 1 });
+    world.state.stableAh = STABLE_DEPOSIT + 1_000_000n;
+    const run = await drive(world, 4, freshTickState(), STABLE_ROUTE);
+    expect(run.steps).toEqual(["swap", "done"]);
+    const [first] = exchangesOf(world.state.txs[0]!.args);
+    expect((first!.give.value as Fungible[])[0]!.fun.value).toBe(
+      STABLE_DEPOSIT + 1_000_000n - DISPATCH_STABLE - HELD_BACK_STABLE,
+    );
+    expect(world.state.stableAh).toBe(MIN_BALANCE + ALLOWANCE_STABLE - FEES_STABLE);
+    expect(world.state.underlyingPeople).toBeGreaterThan(SETTLE);
+  });
+
+  it("falls back to buying the target when either pool cannot absorb the whole deposit", async () => {
+    const target = (STABLE_QUOTED * 10_200n) / 10_000n;
+    for (const shallow of [{ stablePoolDepth: target }, { poolDepth: MAX_IN }]) {
+      const world = scriptedStableWorld(shallow);
+      const deposit = STABLE_DEPOSIT + 5_000_000n;
+      world.state.stableAh = deposit;
+      const run = await drive(world, 1, freshTickState(), STABLE_ROUTE);
+      expect(run.steps).toEqual(["swap"]);
+      const [first] = exchangesOf(world.state.txs[0]!.args);
+      expect((first!.give.value as Fungible[])[0]!.fun.value).toBe(target);
+      expect(run.transients[0]).toContain("cannot absorb");
+      // The surplus stays on the burner, reachable through its secret.
+      expect(world.state.stableAh).toBe(deposit - DISPATCH_STABLE - target - FEES_STABLE);
+    }
+  });
+
+  it("waits without submitting when the CASH pool moves past the floor between the gate and the submit", async () => {
+    // The gate admits the deposit, then the pool moves; the spend quote comes back under the
+    // floor, so the tick throws before submitting and nothing is spent.
+    const world = scriptedStableWorld();
+    world.state.stableAh = STABLE_DEPOSIT;
+    const state = freshTickState();
+    const api = (world.client as unknown as { getTypedApi: () => never }).getTypedApi() as {
+      apis: {
+        AssetConversionApi: {
+          quote_price_tokens_for_exact_tokens: (...a: never[]) => Promise<bigint>;
+        };
+      };
+    };
+    const quoteAtFlatPrice = api.apis.AssetConversionApi.quote_price_tokens_for_exact_tokens;
+    api.apis.AssetConversionApi.quote_price_tokens_for_exact_tokens = async (...args: never[]) => {
+      const quoted = await quoteAtFlatPrice(...args);
+      world.state.priceBps = 10_600n; // moves past the headroom right after the gate was judged
+      return quoted;
+    };
+    await expect(drive(world, 1, state, STABLE_ROUTE)).rejects.toThrow(/below the target/);
+    expect(world.state.txs).toEqual([]);
+    expect(world.state.stableAh).toBe(STABLE_DEPOSIT);
+    expect(state).toMatchObject({ attempts: 0, xcmSubmitted: false });
+
+    api.apis.AssetConversionApi.quote_price_tokens_for_exact_tokens = quoteAtFlatPrice;
+    world.state.priceBps = 10_000n;
+    const retry = await drive(world, 1, state, STABLE_ROUTE);
+    expect(retry.steps).toEqual(["swap"]);
+  });
+
+  it("a program rejected at inclusion leaves the stable minus the dispatch fee, and retries next tick", async () => {
+    // The stable grows dearer past the first floor inside the program's own block.
+    const world = scriptedStableWorld({ stableAtSubmitBps: 10_600n, arrivalAfterReads: 1 });
+    world.state.stableAh = STABLE_DEPOSIT;
+    const state = freshTickState();
+    await expect(drive(world, 1, state, STABLE_ROUTE, STABLE_DEPOSIT)).rejects.toThrow(
+      /stable program dispatch rejected: ExchangeAsset #1 failed with NoDeal/,
+    );
+    expect(world.state.stableAh).toBe(STABLE_DEPOSIT - DISPATCH_STABLE);
+    expect(state).toMatchObject({ attempts: 1, xcmSubmitted: false });
+
+    // Back at the sizing rate with the fee made up, the next tick converts.
+    world.state.stableAtSubmitBps = undefined;
+    world.state.stableBps = 10_000n;
+    world.state.stableAh += DISPATCH_STABLE;
+    const retry = await drive(world, 4, state, STABLE_ROUTE, STABLE_DEPOSIT);
+    expect(retry.steps).toEqual(["swap", "done"]);
+    expect(state).toMatchObject({ attempts: 2, xcmSubmitted: true });
+  });
+
+  it("does not submit a program either chain refuses or that would trap or land short, with nothing spent", async () => {
+    const refusals: Array<[Parameters<typeof scriptedStableWorld>[0], RegExp]> = [
+      [
+        { assetHubDryRunError: "FeesNotMet" },
+        /not submitted: Asset Hub rejects the program: InitiateTransfer failed with FeesNotMet/,
+      ],
+      [
+        { peopleDryRunError: "TooExpensive" },
+        /not submitted: the forwarded program fails on People with TooExpensive/,
+      ],
+      [{ trapOnAssetHub: 7n }, /would trap 7 on Asset Hub/],
+      [{ trapOnPeople: 9n }, /would trap 9 on People/],
+      [{ remoteFee: BUFFER * 3n }, /would reach the beneficiary on People/],
+    ];
+    for (const [opts, reason] of refusals) {
+      const world = scriptedStableWorld(opts);
+      world.state.stableAh = STABLE_DEPOSIT;
+      const state = freshTickState();
+      await expect(drive(world, 1, state, STABLE_ROUTE)).rejects.toThrow(reason);
+      expect(world.state.txs).toEqual([]);
+      expect(world.state.stableAh).toBe(STABLE_DEPOSIT);
+      expect(state).toMatchObject({ attempts: 0, xcmSubmitted: false });
+    }
+  });
+
+  it("runs the same leg from USDT, reading and paying under USDT's own id", async () => {
+    const world = scriptedStableWorld({ stable: "USDT", arrivalAfterReads: 1 });
+    world.state.stableAh = STABLE_DEPOSIT;
+    const run = await drive(world, 4, freshTickState(), { tier: "pool", external: "USDT" });
+    expect(run.steps).toEqual(["swap", "done"]);
+    expect(world.state.txs[0]!.options).toEqual({ asset: TOKENS.USDT.location, ...SIGN_OPTIONS });
+    expect(world.state.underlyingPeople).toBeGreaterThanOrEqual(SETTLE);
+  });
+});
+
+// The teleport tier: the same target from a dotUSD deposit, the underlying itself, every fee in it.
+const TELEPORT_ROUTE: ConversionRoute = { tier: "teleport" };
+const DISPATCH_TELEPORT = 4_000n;
+const LOCAL_TELEPORT = 90n;
+const DELIVERY_TELEPORT = 10n;
+const FEES_TELEPORT = LOCAL_TELEPORT + DELIVERY_TELEPORT;
+const ALLOWANCE_TELEPORT = withFeeMargin(FEES_TELEPORT);
+/** dotUSD's min_balance on Paseo Asset Hub Next. */
+const MIN_BALANCE_TELEPORT = 1n;
+const HELD_BACK_TELEPORT = MIN_BALANCE_TELEPORT + ALLOWANCE_TELEPORT;
+/** What the buyer is asked for: the target itself, the min_balance and one cushion over every
+ *  fee. No quote: nothing is exchanged. */
+const TELEPORT_DEPOSIT =
+  BUY +
+  MIN_BALANCE_TELEPORT +
+  withFeeMargin(DISPATCH_TELEPORT + LOCAL_TELEPORT + DELIVERY_TELEPORT);
+
+/** Scripted Asset Hub + People for the teleport tier: a dotUSD holding, its fee reads, the
+ *  program as the runtime runs it. There is no pool quote to answer: an exchange asked for fails
+ *  the test. */
+function scriptedTeleportWorld(
+  opts: { arrivalAfterReads?: number; peopleDryRunError?: string; remoteFee?: bigint } = {},
+) {
+  const remoteFee = opts.remoteFee ?? BUFFER;
+  const token = TOKENS.DOTUSD;
+  const chain = scriptedChain();
+  const state = {
+    dispatchUnderlying: DISPATCH_TELEPORT,
+    underlyingAh: 0n,
+    underlyingPeople: 0n,
+    inFlight: 0n,
+    arrivalIn: 0,
+    assetReads: 0,
+    txs: [] as Array<{ call: string; args: ExecuteArgs; options: unknown; watch: WatchLog }>,
+  };
+  const isUnderlying = (a: Fungible) => generalIndex(a.id) === BigInt(token.assetHubId);
+  const run = (args: ExecuteArgs) => {
+    if (args.message.value.some((i) => i.type === "ExchangeAsset")) {
+      return { error: incomplete(2, "NoDeal") };
+    }
+    const withdrawn = instruction(args, "WithdrawAsset") as Fungible[];
+    if (withdrawn.length !== 1 || !isUnderlying(withdrawn[0]!)) {
+      return { error: incomplete(0, "FailedToTransactAsset") };
+    }
+    const withdraw = withdrawn[0]!.fun.value;
+    if (withdraw > state.underlyingAh - MIN_BALANCE_TELEPORT) {
+      return { error: incomplete(0, "FailedToTransactAsset") };
+    }
+    const payFees = (instruction(args, "PayFees") as { asset: Fungible }).asset;
+    if (!isUnderlying(payFees) || payFees.fun.value < FEES_TELEPORT) {
+      return { error: incomplete(2, "NotHoldingFees") };
+    }
+    return {
+      teleported: withdraw - payFees.fun.value,
+      left: state.underlyingAh - withdraw + payFees.fun.value - FEES_TELEPORT,
+    };
+  };
+  const rejected = (error: unknown) => ({
+    success: true,
+    value: {
+      execution_result: { success: false, value: { error } },
+      emitted_events: [],
+      forwarded_xcms: [],
+    },
+  });
+  const execute = (args: ExecuteArgs) => ({
+    decodedCall: { type: "PolkadotXcm", value: { type: "execute", value: args } },
+    getEstimatedFees: async (_from: unknown, options: unknown) => {
+      expect(options).toEqual({ asset: token.location });
+      return DISPATCH;
+    },
+    signSubmitAndWatch: (_signer: unknown, options: unknown) => {
+      const watch: WatchLog = { open: false, finalityReported: false };
+      state.txs.push({ call: "swap", args, options, watch });
+      const txHash = `0x${state.txs.length.toString(16).padStart(64, "0")}`;
+      return scriptedWatch(txHash, watch, () => {
+        chain.raise();
+        state.underlyingAh -= state.dispatchUnderlying;
+        const outcome = run(args);
+        if ("error" in outcome) return { ok: false, dispatchError: outcome.error };
+        state.underlyingAh = outcome.left;
+        state.inFlight = outcome.teleported - remoteFee;
+        state.arrivalIn = opts.arrivalAfterReads ?? 3;
+        return { ok: true };
+      });
+    },
+  });
+  const api = {
+    query: {
+      System: {
+        Number: chain.Number,
+        Account: {
+          getValue: async () => {
+            throw new Error("native read on the teleport tier");
+          },
+        },
+      },
+      Assets: {
+        Asset: {
+          getValue: async (assetId: number) => {
+            expect(assetId).toBe(token.assetHubId);
+            state.assetReads += 1;
+            return { min_balance: MIN_BALANCE_TELEPORT };
+          },
+        },
+        Account: {
+          getValue: async (assetId: number) => {
+            if (assetId !== token.assetHubId) throw new Error(`asset ${assetId} read`);
+            return state.underlyingAh === 0n ? undefined : { balance: state.underlyingAh };
+          },
+        },
+      },
+    },
+    apis: {
+      AccountNonceApi: chain.AccountNonceApi,
+      AssetConversionApi: {
+        // The one price the tier asks for: the dispatch fee in dotUSD.
+        quote_price_tokens_for_exact_tokens: async (give: unknown, _want: unknown, out: bigint) => {
+          expect(give).toEqual(token.location);
+          expect(out).toBe(DISPATCH);
+          return state.dispatchUnderlying;
+        },
+      },
+      DryRunApi: {
+        dry_run_call: async (_origin: unknown, call: { value: { value: ExecuteArgs } }) => {
+          const outcome = run(call.value.value);
+          if ("error" in outcome) return rejected(outcome.error);
+          return {
+            success: true,
+            value: {
+              execution_result: { success: true, value: {} },
+              emitted_events: [],
+              forwarded_xcms: [
+                [toPeople, [forwardedProgram(transferOf(call.value.value), outcome.teleported)]],
+              ],
+            },
+          };
+        },
+      },
+      XcmPaymentApi: {
+        query_xcm_weight: xcmPaymentApi.query_xcm_weight,
+        query_weight_to_asset_fee: async (_weight: unknown, asset: unknown) => {
+          expect(asset).toEqual({ type: "V5", value: token.location });
+          return { success: true, value: LOCAL_TELEPORT };
+        },
+        query_delivery_fees: async (_dest: unknown, _message: unknown, asset: unknown) => {
+          expect(asset).toEqual({ type: "V5", value: token.location });
+          return {
+            success: true,
+            value: { value: [{ fun: { type: "Fungible", value: DELIVERY_TELEPORT } }] },
+          };
+        },
+      },
+    },
+    tx: { PolkadotXcm: { execute } },
+  };
+  const readFinalizedPeople = async () => {
+    if (state.arrivalIn > 0 && --state.arrivalIn === 0) {
+      state.underlyingPeople += state.inFlight;
+      state.inFlight = 0n;
+    }
+    return state.underlyingPeople;
+  };
+  return {
+    state,
+    nonce: chain.nonce,
+    readFinalizedPeople,
+    peopleApi: scriptedPeople({ fee: () => remoteFee, error: () => opts.peopleDryRunError }),
+    client: { getTypedApi: () => api } as unknown as PolkadotClient,
+  };
+}
+
+describe("tickOnce on the teleport tier", () => {
+  it("teleports the dotUSD with no exchange one tick at a time: program, arrival, done", async () => {
+    const world = scriptedTeleportWorld({ arrivalAfterReads: 2 });
+    const idle = await drive(world, 1, freshTickState(), TELEPORT_ROUTE);
+    expect(idle.steps).toEqual(["await-native"]);
+    expect(idle.state.fundsSeenAt).toBeNull();
+
+    world.state.underlyingAh = TELEPORT_DEPOSIT;
+    const run = await drive(world, 6, idle.state, TELEPORT_ROUTE);
+    expect(run.steps).toEqual(["swap", "await-arrival", "done"]);
+    expect(run.state).toMatchObject({ attempts: 1, xcmSubmitted: true });
+    expect(world.state.underlyingPeople).toBeGreaterThanOrEqual(SETTLE);
+    // The burner keeps the min_balance and the unspent tenth of the fee allowance.
+    expect(world.state.underlyingAh).toBe(
+      MIN_BALANCE_TELEPORT + ALLOWANCE_TELEPORT - FEES_TELEPORT,
+    );
+
+    const [tx] = world.state.txs;
+    const args = tx!.args;
+    expect(args.message.value.map((i) => i.type)).toEqual([
+      "WithdrawAsset",
+      "PayFees",
+      "InitiateTransfer",
+      "RefundSurplus",
+      "DepositAsset",
+    ]);
+    // Everything the dispatch fee and the held-back part leave is sent, the cushion included.
+    const send = TELEPORT_DEPOSIT - DISPATCH_TELEPORT - HELD_BACK_TELEPORT;
+    expect(send).toBeGreaterThan(BUY);
+    expect((instruction(args, "WithdrawAsset") as Fungible[])[0]!.fun.value).toBe(
+      send + ALLOWANCE_TELEPORT,
+    );
+    expect((instruction(args, "PayFees") as { asset: Fungible }).asset.fun.value).toBe(
+      ALLOWANCE_TELEPORT,
+    );
+    expect(transferOf(args).remote_fees.value.value[0]!.fun.value).toBe(EARMARK);
+    expect(args.max_weight).toEqual({ ref_time: 1_000_000n, proof_size: 1_000n });
+    expect(tx!.options).toEqual({ asset: TOKENS.DOTUSD.location, ...SIGN_OPTIONS });
+  });
+
+  it("gates on the target, then the fees: short of the bare target waits without the fee reads", async () => {
+    const world = scriptedTeleportWorld();
+    world.state.underlyingAh = BUY - 1n;
+    expect((await drive(world, 1, freshTickState(), TELEPORT_ROUTE)).steps).toEqual([
+      "await-native",
+    ]);
+    expect(world.state.assetReads).toBe(0);
+    world.state.underlyingAh = TELEPORT_DEPOSIT - 1n;
+    expect((await drive(world, 1, freshTickState(), TELEPORT_ROUTE)).steps).toEqual([
+      "await-native",
+    ]);
+    expect(world.state.assetReads).toBeGreaterThan(0);
+    expect(world.state.txs).toEqual([]);
+    world.state.underlyingAh = TELEPORT_DEPOSIT;
+    expect((await drive(world, 1, freshTickState(), TELEPORT_ROUTE)).steps).toEqual(["swap"]);
+  });
+
+  it("clears a deposit sized at the quote after PAS moves against the dispatch fee, and re-prices without the frozen figure", async () => {
+    const moved = DISPATCH_TELEPORT + DISPATCH_TELEPORT / 20n;
+    const world = scriptedTeleportWorld({ arrivalAfterReads: 1 });
+    world.state.underlyingAh = TELEPORT_DEPOSIT;
+    world.state.dispatchUnderlying = moved;
+    const run = await drive(world, 4, freshTickState(), TELEPORT_ROUTE, TELEPORT_DEPOSIT);
+    expect(run.steps).toEqual(["swap", "done"]);
+    expect(world.state.underlyingPeople).toBeGreaterThanOrEqual(SETTLE);
+
+    const bare = scriptedTeleportWorld();
+    bare.state.underlyingAh = TELEPORT_DEPOSIT;
+    bare.state.dispatchUnderlying = moved;
+    expect((await drive(bare, 1, freshTickState(), TELEPORT_ROUTE)).steps).toEqual([
+      "await-native",
+    ]);
+  });
+
+  it("sends everything the burner holds; the surplus lands as extra CASH", async () => {
+    const world = scriptedTeleportWorld({ arrivalAfterReads: 1 });
+    world.state.underlyingAh = TELEPORT_DEPOSIT + 1_000_000n;
+    const run = await drive(world, 4, freshTickState(), TELEPORT_ROUTE);
+    expect(run.steps).toEqual(["swap", "done"]);
+    expect(world.state.underlyingPeople).toBeGreaterThan(SETTLE + 1_000_000n - BUFFER);
+  });
+
+  it("does not submit a program People refuses or that would land short, with nothing spent", async () => {
+    const refusals: Array<[Parameters<typeof scriptedTeleportWorld>[0], RegExp]> = [
+      [
+        { peopleDryRunError: "TooExpensive" },
+        /not submitted: the forwarded program fails on People with TooExpensive/,
+      ],
+      [{ remoteFee: BUFFER * 3n }, /would reach the beneficiary on People/],
+    ];
+    for (const [opts, reason] of refusals) {
+      const world = scriptedTeleportWorld(opts);
+      world.state.underlyingAh = TELEPORT_DEPOSIT;
+      const state = freshTickState();
+      await expect(drive(world, 1, state, TELEPORT_ROUTE)).rejects.toThrow(reason);
+      expect(world.state.txs).toEqual([]);
+      expect(world.state.underlyingAh).toBe(TELEPORT_DEPOSIT);
+      expect(state).toMatchObject({ attempts: 0, xcmSubmitted: false });
+    }
+  });
+});
+
+describe("the submit, and the CASH read final on People", () => {
+  /** The pool world set to convert on its first tick. */
+  function funded(opts: Parameters<typeof scriptedWorld>[0] = {}) {
+    const world = scriptedWorld({ arrivalAfterReads: 1, ...opts });
+    world.state.nativeAh = MAX_IN + KEEP;
+    return world;
+  }
+  /** Drives one tick whose submit never hears back, bounded short, and expects the bound. */
+  async function lostTick(world: Driveable, state: TickState) {
+    await expect(
+      drive(world, 1, state, POOL, undefined, { inclusionTimeoutMs: 20 }),
+    ).rejects.toThrow(/funding program submit not in a block after 0.02s/);
+    expect(world.state.txs.at(-1)!.watch).toEqual({ open: false, finalityReported: false });
+  }
+
+  it("resolves every tier's submit at inclusion and lets the watch go before finality", async () => {
+    const psm = scriptedPsmWorld({ arrivalAfterReads: 1 });
+    psm.state.usdtAh = PSM_DEPOSIT;
+    const stable = scriptedStableWorld({ arrivalAfterReads: 1 });
+    stable.state.stableAh = STABLE_DEPOSIT;
+    const teleport = scriptedTeleportWorld({ arrivalAfterReads: 1 });
+    teleport.state.underlyingAh = TELEPORT_DEPOSIT;
+    const tiers: Array<[Driveable, ConversionRoute]> = [
+      [funded(), POOL],
+      [psm, ROUTE],
+      [stable, STABLE_ROUTE],
+      [teleport, TELEPORT_ROUTE],
+    ];
+    for (const [world, route] of tiers) {
+      const run = await drive(world, 3, freshTickState(), route);
+      expect(run.steps).toEqual(["swap", "done"]);
+      expect(run.state).toMatchObject({
+        xcmSubmitted: true,
+        nonceAtSubmit: null,
+        inclusionBlock: null,
+      });
+      expect(world.state.txs.map((tx) => tx.watch)).toEqual([
+        { open: false, finalityReported: false },
+      ]);
+      expect(world.nonce.latest).toBe(1);
+    }
+  });
+
+  it("stays in await-arrival while only the latest People block shows the CASH, and is done once the finalized one does", async () => {
+    const world = funded({ arrivalAfterReads: 2 });
+    const state = freshTickState();
+    expect((await drive(world, 2, state)).steps).toEqual(["swap", "await-arrival"]);
+    // The latest block already shows the CASH; the finalized block the tick reads does not yet.
+    expect(world.latestPeople()).toBeGreaterThanOrEqual(SETTLE);
+    expect(world.state.underlyingPeople).toBe(0n);
+    expect((await drive(world, 2, state)).steps).toEqual(["done"]);
+  });
+
+  it("records the nonce and the People balance before the submit leaves, and keeps them with the block it landed in", async () => {
+    const world = funded();
+    world.state.underlyingPeople = 3n;
+    const state = freshTickState();
+    const seen: TickState[] = [];
+    await drive(world, 1, state, POOL, undefined, {
+      onBeforeSubmit: () => {
+        seen.push({ ...state });
+      },
+    });
+    expect(seen).toEqual([
+      { ...freshTickState(), attempts: 1, fundsSeenAt: 2_000, nonceAtSubmit: 0, peopleAtXcm: 3n },
+    ]);
+    expect(state).toMatchObject({
+      xcmSubmitted: true,
+      peopleAtXcm: 3n,
+      nonceAtSubmit: 0,
+      inclusionBlock: INCLUSION_BLOCK,
+    });
+  });
+
+  it("rejects an invalid transaction as before, leaving the submit owed an answer", async () => {
+    const world = funded({ invalidTx: true });
+    const state = freshTickState();
+    await expect(drive(world, 1, state)).rejects.toBeInstanceOf(InvalidTxError);
+    expect(world.nonce.latest).toBe(0);
+    expect(world.state.txs[0]!.watch.open).toBe(false);
+    expect(state).toMatchObject({ attempts: 1, xcmSubmitted: false, nonceAtSubmit: 0 });
+  });
+
+  it("sends again under the same nonce when a lost submit never landed", async () => {
+    const world = funded({ loseAnswer: "dropped" });
+    const state = freshTickState();
+    const sentAt: Array<number | null> = [];
+    const onBeforeSubmit = () => {
+      sentAt.push(state.nonceAtSubmit);
+    };
+    await expect(
+      drive(world, 1, state, POOL, undefined, { inclusionTimeoutMs: 20, onBeforeSubmit }),
+    ).rejects.toThrow(/funding program submit not in a block after 0.02s/);
+    expect(world.state.txs[0]!.watch).toEqual({ open: false, finalityReported: false });
+    expect(state).toMatchObject({ attempts: 1, xcmSubmitted: false, nonceAtSubmit: 0 });
+
+    world.state.loseAnswer = null;
+    const retry = await drive(world, 3, state, POOL, undefined, { onBeforeSubmit });
+    expect(retry.steps).toEqual(["swap", "done"]);
+    expect(retry.txs).toEqual(["swap", "swap"]);
+    // Both went out under nonce 0, so at most one of them could ever be included.
+    expect(sentAt).toEqual([0, 0]);
+    expect(world.nonce.latest).toBe(1);
+    expect(state).toMatchObject({ attempts: 2, xcmSubmitted: true });
+  });
+
+  it("takes a lost submit as landed when the nonce moved and the deposit is gone, and waits for the CASH", async () => {
+    // The CASH is not final on People yet when the tick looks: the spent deposit is the tell.
+    const world = funded({ loseAnswer: "included", quoteAfterXcm: true, arrivalAfterReads: 2 });
+    const state = freshTickState();
+    await lostTick(world, state);
+    expect(world.nonce.latest).toBe(1);
+    expect(world.state.nativeAh).toBe(0n);
+
+    world.state.loseAnswer = null;
+    const run = await drive(world, 3, state);
+    expect(run.steps).toEqual(["await-arrival", "done"]);
+    expect(run.txs).toEqual(["swap"]);
+    expect(state).toMatchObject({ attempts: 1, xcmSubmitted: true, nonceAtSubmit: null });
+  });
+
+  it("retries a lost submit that failed at dispatch: the nonce moved and the deposit is still there", async () => {
+    const world = funded({ loseAnswer: "included", rejectSubmits: 1 });
+    world.state.nativeAh = ASK + KEEP;
+    const state = freshTickState();
+    await lostTick(world, state);
+    expect(world.nonce.latest).toBe(1);
+    expect(world.state.nativeAh).toBe(ASK + KEEP - DISPATCH);
+
+    world.state.loseAnswer = null;
+    const run = await drive(world, 3, state);
+    expect(run.steps).toEqual(["swap", "done"]);
+    expect(run.txs).toEqual(["swap", "swap"]);
+    expect(world.nonce.latest).toBe(2);
+    expect(state).toMatchObject({ attempts: 2, xcmSubmitted: true });
+  });
+
+  it("does not send while a lost submit lands under the tick, and settles it as landed next tick", async () => {
+    const world = funded({ loseAnswer: "dropped", quoteAfterXcm: true });
+    const state = freshTickState();
+    await lostTick(world, state);
+    world.state.loseAnswer = null;
+
+    // The dropped program lands between the tick's look at the nonce and its send.
+    const api = (world.client as unknown as { getTypedApi: () => never }).getTypedApi() as {
+      apis: { AccountNonceApi: { account_nonce: (...a: never[]) => Promise<number> } };
+    };
+    const readNonce = api.apis.AccountNonceApi.account_nonce;
+    let reads = 0;
+    api.apis.AccountNonceApi.account_nonce = async (...args: never[]) => {
+      if (++reads === 2) world.state.lost!();
+      return readNonce(...args);
+    };
+    await expect(drive(world, 1, state)).rejects.toThrow(
+      /funding program not sent: the nonce moved during the tick/,
+    );
+    expect(world.state.txs).toHaveLength(1);
+    expect(state).toMatchObject({ attempts: 1, xcmSubmitted: false, nonceAtSubmit: 0 });
+
+    api.apis.AccountNonceApi.account_nonce = readNonce;
+    const run = await drive(world, 2, state);
+    expect(run.steps).toEqual(["done"]);
+    expect(run.txs).toEqual(["swap"]);
+    expect(state).toMatchObject({ attempts: 1, xcmSubmitted: true });
+  });
+
+  /** The pool world one tick in: the program is in a best block the chain has not finalized. */
+  async function includedUnfinalized(opts: Parameters<typeof scriptedWorld>[0] = {}) {
+    const world = funded({ arrivalAfterReads: 4, ...opts });
+    world.chain.finalityHeld = true;
+    const state = freshTickState();
+    expect((await drive(world, 1, state)).steps).toEqual(["swap"]);
+    expect(state).toMatchObject({
+      xcmSubmitted: true,
+      nonceAtSubmit: 0,
+      inclusionBlock: INCLUSION_BLOCK,
+    });
+    return { world, state };
+  }
+
+  it("sends the program again under the same nonce once the chain is final past a block that dropped it", async () => {
+    const world = funded({ replacedInclusions: 1 });
+    const state = freshTickState();
+    const sentAt: Array<number | null> = [];
+    const onBeforeSubmit = () => {
+      sentAt.push(state.nonceAtSubmit);
+    };
+    const first = await drive(world, 1, state, POOL, undefined, { onBeforeSubmit });
+    expect(first.steps).toEqual(["swap"]);
+    expect(state).toMatchObject({
+      xcmSubmitted: true,
+      nonceAtSubmit: 0,
+      inclusionBlock: INCLUSION_BLOCK,
+    });
+    // The chain kept nothing of it: the deposit is there and the nonce never moved.
+    expect(world.state.nativeAh).toBe(MAX_IN + KEEP);
+    expect(world.nonce).toEqual({ latest: 0, finalized: 0 });
+
+    // Final past the block the program was seen in, with the nonce unmoved: it was dropped.
+    world.chain.finalizedBlock = INCLUSION_BLOCK;
+    const again = await drive(world, 3, state, POOL, undefined, { onBeforeSubmit });
+    expect(again.steps).toEqual(["swap", "done"]);
+    expect(again.txs).toEqual(["swap", "swap"]);
+    expect(sentAt).toEqual([0, 0]);
+    expect(world.nonce).toEqual({ latest: 1, finalized: 1 });
+    expect(state).toMatchObject({
+      attempts: 2,
+      xcmSubmitted: true,
+      nonceAtSubmit: null,
+      inclusionBlock: null,
+    });
+  });
+
+  it("waits without sending again while the finalized chain is short of the block the program was seen in", async () => {
+    const { world, state } = await includedUnfinalized();
+    world.chain.reads.length = 0;
+    const waiting = await drive(world, 3, state);
+    expect(waiting.steps).toEqual(["await-arrival", "await-arrival", "await-arrival"]);
+    expect(waiting.txs).toEqual(["swap"]);
+    expect(world.nonce).toEqual({ latest: 1, finalized: 0 });
+    expect(state).toMatchObject({
+      xcmSubmitted: true,
+      nonceAtSubmit: 0,
+      inclusionBlock: INCLUSION_BLOCK,
+    });
+    // The height before the nonce: a nonce unmoved at a later block is unmoved at that height.
+    expect(world.chain.reads).toEqual(
+      Array<string[]>(3).fill(["number@finalized", "nonce@finalized"]).flat(),
+    );
+  });
+
+  it("lets the pre-send record go once the finalized nonce moved past it, and reads finality no more", async () => {
+    const { world, state } = await includedUnfinalized();
+    expect((await drive(world, 1, state)).steps).toEqual(["await-arrival"]);
+    world.chain.finalize();
+    world.chain.reads.length = 0;
+    expect((await drive(world, 1, state)).steps).toEqual(["await-arrival"]);
+    expect(state).toMatchObject({ xcmSubmitted: true, nonceAtSubmit: null, inclusionBlock: null });
+    expect(world.chain.reads).toEqual(["number@finalized", "nonce@finalized"]);
+    const rest = await drive(world, 3, state);
+    expect(rest.steps).toEqual(["await-arrival", "done"]);
+    expect(rest.txs).toEqual(["swap"]);
+    expect(world.chain.reads).toEqual(["number@finalized", "nonce@finalized"]);
+  });
+
+  it("takes a dropped program the chain re-included as landed, and does not send it twice", async () => {
+    const { world, state } = await includedUnfinalized({
+      replacedInclusions: 1,
+      quoteAfterXcm: true,
+    });
+    // Final past the block it was seen in without it, and back in a later best block when the
+    // tick looks.
+    world.chain.finalizedBlock = INCLUSION_BLOCK;
+    world.state.lost!();
+    expect(world.nonce).toEqual({ latest: 1, finalized: 0 });
+    world.chain.reads.length = 0;
+    const run = await drive(world, 1, state);
+    expect(run.steps).toEqual(["await-arrival"]);
+    expect(run.txs).toEqual(["swap"]);
+    // The latch released on the finalized view, then taken again on the latest one.
+    expect(world.chain.reads).toEqual([
+      "number@finalized",
+      "nonce@finalized",
+      "nonce@best",
+      "number@best",
+    ]);
+    expect(state).toMatchObject({
+      attempts: 1,
+      xcmSubmitted: true,
+      nonceAtSubmit: 0,
+      inclusionBlock: INCLUSION_BLOCK,
+    });
+
+    world.chain.finalize();
+    const rest = await drive(world, 4, state);
+    expect(rest.steps).toEqual(["await-arrival", "await-arrival", "done"]);
+    expect(rest.txs).toEqual(["swap"]);
+  });
+
+  it("does not send while a dropped program is re-included under the tick, and settles it as landed next tick", async () => {
+    const { world, state } = await includedUnfinalized({
+      replacedInclusions: 1,
+      quoteAfterXcm: true,
+    });
+    world.chain.finalizedBlock = INCLUSION_BLOCK;
+    // The program is back in a best block between the tick's look at the nonce and its send: the
+    // tick's third nonce read is the send's own.
+    const api = (world.client as unknown as { getTypedApi: () => never }).getTypedApi() as {
+      apis: { AccountNonceApi: { account_nonce: (...a: never[]) => Promise<number> } };
+    };
+    const readNonce = api.apis.AccountNonceApi.account_nonce;
+    let reads = 0;
+    api.apis.AccountNonceApi.account_nonce = async (...args: never[]) => {
+      if (++reads === 3) world.state.lost!();
+      return readNonce(...args);
+    };
+    await expect(drive(world, 1, state)).rejects.toThrow(
+      /funding program not sent: the nonce moved during the tick/,
+    );
+    expect(world.state.txs).toHaveLength(1);
+    expect(state).toMatchObject({
+      attempts: 1,
+      xcmSubmitted: false,
+      nonceAtSubmit: 0,
+      inclusionBlock: null,
+    });
+
+    api.apis.AccountNonceApi.account_nonce = readNonce;
+    const run = await drive(world, 1, state);
+    expect(run.steps).toEqual(["await-arrival"]);
+    expect(run.txs).toEqual(["swap"]);
+    expect(state).toMatchObject({
+      attempts: 1,
+      xcmSubmitted: true,
+      nonceAtSubmit: 0,
+      inclusionBlock: INCLUSION_BLOCK,
+    });
+  });
+
+  it("gives a lost submit settled as landed the latest block to check finality against, and the same treatment", async () => {
+    const world = funded({ loseAnswer: "included", quoteAfterXcm: true, arrivalAfterReads: 4 });
+    world.chain.finalityHeld = true;
+    const state = freshTickState();
+    await lostTick(world, state);
+    expect(world.nonce).toEqual({ latest: 1, finalized: 0 });
+
+    world.state.loseAnswer = null;
+    world.chain.reads.length = 0;
+    expect((await drive(world, 1, state)).steps).toEqual(["await-arrival"]);
+    expect(state).toMatchObject({
+      attempts: 1,
+      xcmSubmitted: true,
+      nonceAtSubmit: 0,
+      inclusionBlock: INCLUSION_BLOCK,
+    });
+    expect(world.chain.reads).toEqual(["nonce@best", "number@best"]);
+
+    expect((await drive(world, 1, state)).steps).toEqual(["await-arrival"]);
+    expect(state).toMatchObject({
+      xcmSubmitted: true,
+      nonceAtSubmit: 0,
+      inclusionBlock: INCLUSION_BLOCK,
+    });
+    world.chain.finalize();
+    expect((await drive(world, 1, state)).steps).toEqual(["await-arrival"]);
+    expect(state).toMatchObject({ xcmSubmitted: true, nonceAtSubmit: null, inclusionBlock: null });
+    const rest = await drive(world, 2, state);
+    expect(rest.steps).toEqual(["done"]);
+    expect(rest.txs).toEqual(["swap"]);
+  });
+});
+
+describe("stableDepositNeeded", () => {
+  it("is the two-hop quote, the held-back min_balance, and one cushion over every fee", () => {
+    const fees = {
+      localExternal: LOCAL_STABLE,
+      deliveryExternal: DELIVERY_STABLE,
+      minBalanceExternal: MIN_BALANCE,
+      dispatchExternal: DISPATCH_STABLE,
+    };
+    expect(stableDepositNeeded(STABLE_QUOTED, fees)).toBe(STABLE_DEPOSIT);
+  });
+});
+
+describe("psmDepositNeeded", () => {
+  it("is the mint for the target, the held-back external, and one cushion over every fee", () => {
+    const fees = {
+      localExternal: 4_000n,
+      deliveryExternal: 250n,
+      feeAllowanceExternal: 4_675n,
+      minBalanceExternal: MIN_BALANCE,
+      heldBackExternal: MIN_BALANCE + 4_675n,
+      dispatchNative: DISPATCH,
+      dispatchExternal: DISPATCH_USDT,
+      maxWeight: { ref_time: 1n, proof_size: 1n },
+    };
+    const needed = psmDepositNeeded(BUY, ROUTE, fees);
+    expect(needed).toBe(
+      sizePsmMint(BUY, ROUTE).externalIn +
+        MIN_BALANCE +
+        withFeeMargin(DISPATCH_USDT + 4_000n + 250n),
+    );
+    // The mint is never short of the target: what the cushion leaves after the fees are actually
+    // charged is minted too, so the buyer is over-served rather than left waiting.
+    expect(
+      psmMintOut(needed - DISPATCH_USDT - fees.heldBackExternal, ROUTE.feeRate),
+    ).toBeGreaterThanOrEqual(BUY);
   });
 });
 
@@ -886,9 +2645,10 @@ describe("estimateDestinationFeeCash", () => {
       },
     }) as never;
 
-  it("dry-runs the forwarded program on People as Asset Hub and reads the fee the beneficiary loses", async () => {
+  it("dry-runs the forwarded program on People as Asset Hub and reads the fee the beneficiary loses, a tenth on top", async () => {
     const calls: { origin?: unknown; program?: unknown } = {};
     // Two teleports of BUY reach People; 43 goes to the fee receiver, the rest to the beneficiary.
+    // 43 is what People charges today at every amount; the estimate carries 48.
     const events = [
       deposited(AccountId(42).dec(BENEFICIARY), 2n * BUY - 43n),
       deposited(AccountId(42).dec(new Uint8Array(32).fill(9)), 43n),
@@ -900,7 +2660,7 @@ describe("estimateDestinationFeeCash", () => {
       beneficiaryHex: BENEFICIARY_HEX,
       amount: BUY,
     });
-    expect(fee).toBe(43n);
+    expect(fee).toBe(48n);
     expect(calls.origin).toEqual({
       type: "V5",
       value: { parents: 1, interior: { type: "X1", value: { type: "Parachain", value: 1500 } } },
@@ -1011,6 +2771,29 @@ describe("describeDispatchError", () => {
     );
   });
 
+  it("numbers an instruction the message carries twice, so the second exchange reads apart", () => {
+    const twoHops = {
+      message: {
+        value: [
+          { type: "WithdrawAsset" },
+          { type: "PayFees" },
+          { type: "ExchangeAsset" },
+          { type: "ExchangeAsset" },
+          { type: "InitiateTransfer" },
+        ],
+      },
+    };
+    expect(describeDispatchError(incomplete(2, "NoDeal"), twoHops)).toBe(
+      "ExchangeAsset #1 failed with NoDeal",
+    );
+    expect(describeDispatchError(incomplete(3, "NoDeal"), twoHops)).toBe(
+      "ExchangeAsset #2 failed with NoDeal",
+    );
+    expect(describeDispatchError(incomplete(4, "FeesNotMet"), twoHops)).toBe(
+      "InitiateTransfer failed with FeesNotMet",
+    );
+  });
+
   it("falls back to the pallet and variant, the bare kind, or a placeholder", () => {
     expect(
       describeDispatchError({
@@ -1044,5 +2827,22 @@ describe("createManualRail", () => {
     expect((await rail.getStatus("manual")).status).toBe("waiting");
     expect((await rail.probeLiquidity("dot-assethub")).status).toBe("available");
     expect(rail.sources()[0]?.sourceId).toBe("dot-assethub");
+  });
+
+  it("built for a stable, quotes and names the deposit in it, under the token's own source", async () => {
+    const rail = createManualRail({ token: TOKENS.USDT });
+    const quote = await rail.getQuote({
+      sourceId: "usdt-assethub",
+      target: { amount: 5_000_000n, decimals: 6 },
+    });
+    expect(quote.source).toEqual({
+      amount: 5_000_000n,
+      formatted: "5",
+      assetSymbol: "USDT",
+      decimals: 6,
+    });
+    expect(rail.sources()[0]?.asset).toBe("USDT");
+    expect(rail.sources()[0]?.sourceId).toBe("usdt-assethub");
+    expect(createManualRail({ token: TOKENS.USDC }).sources()[0]?.sourceId).toBe("usdc-assethub");
   });
 });

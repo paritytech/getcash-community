@@ -1,14 +1,27 @@
-// The pool funding pipeline: converts the native token delivered to the ephemeral on Asset Hub
-// into the coinage underlying on the People chain with one extrinsic signed by the ephemeral. The
-// program pays its own fees in native, exchanges the rest through the AssetConversion pool inside
-// the XCM holding, and teleports the result to the ephemeral's People address. The handoff
-// session's funded gate takes over from there; this pipeline never touches the settle.
+// The funding pipeline: converts the deposit delivered to the ephemeral on Asset Hub into the
+// coinage underlying on the People chain with one extrinsic signed by the ephemeral, through the
+// tier the request was quoted (route.ts) and never another. On the pool tier the deposit is the
+// native: one program pays its own fees in native, exchanges the rest through the AssetConversion
+// pool inside the XCM holding, and teleports the result to the ephemeral's People address. On the
+// PSM tier the deposit is the external (USDT): one batch mints CASH through the PSM and teleports
+// it, the dispatch fee and the XCM's own fees both paid in the external, the latter from an
+// allowance the mint leaves on the burner and the program refunds the unspent part of
+// (psm-batch.ts). The pool tier fed with a stable, USDC or USDT the PSM will not serve, is the
+// stable pool tier: one program pays its fees in the stable as the PSM tier does, exchanges the
+// stable for the native and the native for CASH inside the holding, and teleports the CASH. On the
+// teleport tier the deposit is the underlying itself, dotUSD: one program pays its fees in it and
+// teleports the rest, with nothing to exchange and so nothing to quote. The handoff session's
+// funded gate takes over from there; this pipeline never touches the settle.
 //
 // EVERYTHING THE BURNER HOLDS IS CONVERTED AND MOVED. The burner serves one request and the claim
 // sweeps its whole balance, so anything left behind is stranded. The program withdraws the full
-// native balance minus its dispatch fee and converts everything the fees leave. The target decides
-// when to convert, never how much. One exception: a deposit the pool cannot absorb whole falls
-// back to buying the target, and the surplus stays on the burner, recoverable with its secret.
+// deposit minus its dispatch fee and converts everything the fees leave. The target decides when
+// to convert, never how much. One exception, on the pool tier: a deposit the pool cannot absorb
+// whole falls back to buying the target, and the surplus stays on the burner, recoverable with its
+// secret. The PSM's rate is fixed, so on its tier the surplus simply lands as extra CASH; what its
+// tier keeps back is the external's min_balance, which the burner's account must hold to survive
+// the batch, and it stays there with the unspent fee allowance (psm-batch.ts). The stable pool
+// tier keeps back the same, and falls back to the target as the native pool tier does.
 //
 // THE CLOCK STARTS WHEN FUNDS ARE SEEN, not when the run does. Waiting for a deposit has no
 // natural bound, while the conversion after it does: a submitted program that never credits
@@ -18,53 +31,117 @@
 // reload resumes from chain state, never from memory. A cold re-entry during the XCM flight reads
 // as await-native until the arrival; nothing is bought twice because no native is left behind.
 //
-// FAILURE CONTAINMENT: a tick that throws is retried on the next tick; only the overall timeout
-// and a detected arrival shortfall are terminal. Before the program is paid for, both chains run
-// it in a dry run, and one that would fail, trap assets or land short is not submitted. A program
-// rejected at inclusion anyway rolls back whole and costs its dispatch fee, and the next tick
-// re-prices and retries. Pool reads are lazy: the gating quote only when the decision needs it,
-// the fee pricing and the dry run only at the submitting step.
+// FAILURE CONTAINMENT: a tick that throws is retried on the next tick; only the overall timeout, a
+// detected arrival shortfall and the PSM's third refusal are terminal. Before the program is paid
+// for, both chains run it in a dry run, and one that would fail, trap assets or land short is not
+// submitted. A program rejected at inclusion anyway rolls back whole and costs its dispatch fee,
+// and the next tick re-prices and retries. Chain reads are lazy: the gating quote or fee estimate
+// only when the decision needs it, the dry run only at the submitting step.
+//
+// THE SUBMIT WAITS FOR INCLUSION; PEOPLE IS READ FINAL. The submit resolves once the program is
+// in a best block with its outcome, so a conversion holds the tick for one inclusion at most.
+// Every People read is of the finalized block, and People can process the program's message only
+// once the Asset Hub block that sent it is in the relay chain, so CASH final on People proves the
+// conversion final too: the run is done, and the claim registered, on nothing less. A submit whose
+// answer was lost is settled from the chain: the nonce unmoved means nothing landed and the same
+// nonce may go out again. A best block can be replaced, so the nonce recorded before the send is
+// kept until the finalized nonce moves past it: the chain final past the block the program was
+// seen in with that nonce unmoved means the program was dropped, and it goes out again the same
+// way.
+//
+// A PSM REFUSAL IS RETRIED THREE TIMES, THEN HELD. A mint the PSM refuses (the pair paused, or the
+// mint over its ceiling) is tried again on the next tick, and the third refusal stops the run with
+// FundingHeldError: the deposit stays on the burner, recoverable through its secret, until a
+// resume with a fresh counter. Never the pool instead: the tier was quoted and committed, and
+// converting at a rate the buyer did not agree to is worse than waiting. Only the PSM's own
+// refusals count; a transport error or a timeout is retried as any other, without limit.
 
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
-import type { PolkadotClient, PolkadotSigner, TypedApi } from "polkadot-api";
-import { describeDispatchError } from "./dispatch-error";
+import type {
+  PolkadotClient,
+  PolkadotSigner,
+  Transaction,
+  TxEventsPayload,
+  TypedApi,
+} from "polkadot-api";
+import { describeDispatchError, psmRefusalKind, type PsmRefusalKind } from "./dispatch-error";
 import {
   buildFundingProgram,
+  buildStableFundingProgram,
   destinationEarmark,
   dryRunFundingProgram,
   estimateFundingProgramFees,
+  estimateStableProgramFees,
+  ProgramRejectedError,
+  withFeeMargin,
   type PeopleApi,
+  type Pool,
+  buildTeleportFundingProgram,
+  estimateTeleportProgramFees,
+  teleportTxOptions,
+  type StableLegFees,
 } from "./funding-program";
+import {
+  buildPsmBatch,
+  dryRunPsmBatch,
+  estimatePsmBatchFees,
+  psmBatchTxOptions,
+  psmMintOut,
+  sizePsmMint,
+  type PsmBatchFees,
+  type PsmRoute,
+} from "./psm-batch";
+import {
+  depositTokenOf,
+  isStablePoolRoute,
+  type ConversionRoute,
+  type StablePoolRoute,
+} from "./route";
+import { stableTxOptions } from "./stable";
 
 type AssetHubApi = TypedApi<typeof paseo_next_v2>;
 type AssetLocation = Parameters<AssetHubApi["query"]["AssetConversion"]["Pools"]["getValue"]>[0][0];
 
-/** The step a tick performs or waits in. 'swap' submits the program that exchanges the native and
- *  teleports the result in one XCM. 'await-arrival' holds while that XCM has not yet credited
- *  People. */
+/** The step a tick performs or waits in. 'await-native' waits for the deposit the route expects,
+ *  the native on the pool tier and the external on the PSM tier; 'swap' submits the one
+ *  transaction that converts it and teleports the result, an exchange or a mint; 'await-arrival'
+ *  holds while that XCM has not yet credited People in a finalized block. The two names predate
+ *  the PSM tier and are persisted in TopUpRecord and the worker's job blob, so they keep their
+ *  names and widen their meaning. */
 export type FundingStep = "await-native" | "swap" | "await-arrival" | "done";
 
 /** Extra underlying bought to cover the destination's execution fee, the one fee paid in the
  *  underlying. The remote RefundSurplus returns what it does not consume, so an over-buy lands as
- *  extra underlying. Fallback when the caller passes no live estimate; 0.3 at 6 decimals. */
-export const DEFAULT_REMOTE_FEE_BUFFER = 300_000n;
+ *  extra underlying. Fallback when the caller passes no live estimate (estimateDestinationFeeCash),
+ *  which is the primary source; 0.001 at 6 decimals, some twenty times the 43 base units People
+ *  charges today at every amount, so it survives People's fee constants moving by an order of
+ *  magnitude while over-buying a thousandth of a CASH when it does fire. */
+export const DEFAULT_REMOTE_FEE_BUFFER = 1_000n;
 /** Native the deposit carries beyond the pool quote for the program's own fees: dispatch, local
  *  execution and delivery. A sizing figure, not a reserve: everything the fees leave is converted.
- *  Fallback when the caller passes no live estimate; 0.02 at 10 decimals. */
+ *  Fallback when the caller passes no live estimate; 0.02 at 10 decimals. Pool tier only: the
+ *  PSM tier's fees come from its batch's live estimate. */
 export const DEFAULT_KEEP_NATIVE_FOR_FEES = 200_000_000n;
 /** Headroom the deposit is asked ABOVE the live pool quote, percent. Applied once, when the
  *  deposit is sized: the conversion gate checks the plain quote, so this is exactly how far the
  *  pool may move against the deposit between sizing and converting before it stops clearing the
  *  gate. The surplus is converted and claimed with the rest, so the buyer never receives less
  *  than the target and receives up to this much more. 5 to account for shallow liquidity in
- *  Paseo AH next v2 Pool. */
+ *  Paseo AH next v2 Pool. Pool tier only: the PSM's rate does not move. */
 export const DEFAULT_SLIPPAGE_PCT = 5;
+/** The same headroom for a deposit the buyer sends straight to the burner on Asset Hub. The funds
+ *  land as soon as they are sent, so the pool has only that long to move, not the minutes or hours
+ *  a swap or a bank transfer takes. */
+export const DIRECT_SLIPPAGE_PCT = 2;
+/** PSM refusals of the mint before the run is held. */
+export const MAX_PSM_REFUSALS = 3;
 /** Bound on a tick's chain reads (balances, pool quote, pool discovery). A transport that
  *  dies without rejecting leaves reads pending forever; unbounded, one such tick would
  *  freeze the loop silently, with no transient ever reported. */
 export const DEFAULT_TICK_TIMEOUT_MS = 20_000;
-/** Bound on a submitted extrinsic's resolution. */
-export const DEFAULT_SUBMIT_TIMEOUT_MS = 180_000;
+/** Bound on a submitted extrinsic reaching a best block. Later ticks read the CASH final on
+ *  People, so this is the longest a conversion holds the tick. */
+export const DEFAULT_INCLUSION_TIMEOUT_MS = 60_000;
 
 function bounded<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -97,26 +174,48 @@ export class FundingShortfallError extends Error {
   }
 }
 
+/** Terminal: the PSM would not mint. The run stops and the deposit stays on the burner,
+ *  recoverable through its secret; it is not sent through the pool instead.
+ *
+ *  Either the PSM was unavailable for MAX_PSM_REFUSALS ticks — paused, or over its ceiling — where
+ *  a resume with a fresh counter tries again once the ceiling has been raised; or it refused the
+ *  swap as quoted, where a resume replays the same frozen rate and amount and fails identically,
+ *  and only a fresh quote can serve the buyer. */
+export class FundingHeldError extends Error {
+  constructor(
+    readonly reason: string,
+    readonly kind: PsmRefusalKind = "unavailable",
+  ) {
+    super(
+      kind === "unavailable"
+        ? `funding held: the PSM refused the mint ${MAX_PSM_REFUSALS} times, last: ${reason}`
+        : `funding held: the PSM will not mint this swap as quoted: ${reason}`,
+    );
+    this.name = "FundingHeldError";
+  }
+}
+
 export interface FundingBalances {
-  nativeAh: bigint;
+  /** The deposit on Asset Hub in the asset the route expects: the native on the pool tier, the
+   *  external on the PSM tier, the stable on the stable pool tier. */
+  depositAh: bigint;
   underlyingPeople: bigint;
 }
 
 export interface FundingTargets {
   /** What the settle claims (base units); the pipeline must land ≥ this on People. */
   settleAmount: bigint;
-  /** See DEFAULT_REMOTE_FEE_BUFFER. */
-  remoteFeeBuffer: bigint;
-  /** See DEFAULT_KEEP_NATIVE_FOR_FEES. */
-  keepNativeForFees: bigint;
-  /** Native the pool quotes RIGHT NOW for settle+buffer: the conversion gate, no headroom. */
-  nativeNeeded: bigint;
+  /** The deposit the conversion needs RIGHT NOW, its own fees included: the conversion gate. On
+   *  the pool tier the plain quote for settle+buffer plus keepNativeForFees, no headroom; on the
+   *  PSM tier the mint that pays out settle+buffer and the XCM's fees, plus the dispatch fee in
+   *  the external; on the stable pool tier the plain two-hop quote plus the same fees. */
+  depositNeeded: bigint;
 }
 
 /** Pure next-step decision from observed balances. */
 export function decideStep(b: FundingBalances, t: FundingTargets): FundingStep {
   if (b.underlyingPeople >= t.settleAmount) return "done";
-  if (b.nativeAh >= t.nativeNeeded + t.keepNativeForFees) return "swap";
+  if (b.depositAh >= t.depositNeeded) return "swap";
   return "await-native";
 }
 
@@ -139,19 +238,34 @@ const isNative = (loc: AssetLocation): boolean =>
   ((loc as { parents?: number }).parents ?? 0) <= 1 &&
   (loc as { interior?: { type?: string } }).interior?.type === "Here";
 
-/** Find the native/underlying pool and return both sides' exact Location keys. */
-export async function discoverPool(
+/** Finds the native pool of each underlying in one read of the pool table, in the order asked,
+ *  and returns both sides' exact Location keys. */
+export async function discoverPools(
   api: AssetHubApi,
-  underlyingAssetId: number,
-): Promise<{ native: AssetLocation; underlying: AssetLocation }> {
+  underlyingAssetIds: readonly number[],
+): Promise<Pool[]> {
   const pools = await api.query.AssetConversion.Pools.getEntries();
-  for (const entry of pools) {
-    const [a, b] = entry.keyArgs[0] ?? [];
-    if (a === undefined || b === undefined) continue;
-    if (isUnderlying(a, underlyingAssetId) && isNative(b)) return { native: b, underlying: a };
-    if (isUnderlying(b, underlyingAssetId) && isNative(a)) return { native: a, underlying: b };
-  }
-  throw new Error(`no native AssetConversion pool found for underlying asset ${underlyingAssetId}`);
+  return underlyingAssetIds.map((underlyingAssetId) => {
+    for (const entry of pools) {
+      const [a, b] = entry.keyArgs[0] ?? [];
+      if (a === undefined || b === undefined) continue;
+      if (isUnderlying(a, underlyingAssetId) && isNative(b)) return { native: b, underlying: a };
+      if (isUnderlying(b, underlyingAssetId) && isNative(a)) return { native: a, underlying: b };
+    }
+    throw new Error(
+      `no native AssetConversion pool found for underlying asset ${underlyingAssetId}`,
+    );
+  });
+}
+
+/** `discoverPools` for one underlying. */
+export async function discoverPool(api: AssetHubApi, underlyingAssetId: number): Promise<Pool> {
+  return (await discoverPools(api, [underlyingAssetId]))[0]!;
+}
+
+/** `amount` plus `slippagePct` of it: the headroom a deposit is asked with. */
+export function withHeadroom(amount: bigint, slippagePct: number): bigint {
+  return (amount * BigInt(Math.round((100 + slippagePct) * 100))) / 10_000n;
 }
 
 /** Fresh exact-IN quote: the underlying `nativeIn` buys right now. The funding program gives the
@@ -202,13 +316,12 @@ export async function quoteNativeInMax(
   underlyingOut: bigint,
   slippagePct: number,
 ): Promise<bigint> {
-  const quoted = await quoteNativeIn(api, pool, underlyingOut);
-  return (quoted * BigInt(Math.round((100 + slippagePct) * 100))) / 10_000n;
+  return withHeadroom(await quoteNativeIn(api, pool, underlyingOut), slippagePct);
 }
 
-/** The native budget the rail must deliver for `settleAmount` to be claimable: the pool
- *  quote for settle+buffer plus the headroom (DEFAULT_SLIPPAGE_PCT), plus the native the
- *  funding program spends on its own fees. The single source of truth for app-side budget
+/** The native budget the rail must deliver for `settleAmount` to be claimable on the pool tier:
+ *  the pool quote for settle+buffer plus the headroom (DEFAULT_SLIPPAGE_PCT), plus the native
+ *  the funding program spends on its own fees. The single source of truth for app-side budget
  *  sizing; uses the same defaults as the pipeline.
  *
  *  No credit is netted off. Each request has its own burner, so there is nothing on it to
@@ -235,32 +348,118 @@ export async function sizeNativeBudget(input: {
   return nativeInMax + keep;
 }
 
+/** Fresh exact-out quote on the stable/native pool: the stable that buys `nativeOut` right now.
+ *  `stablePool.underlying` is the stable. */
+export async function quoteStableIn(
+  api: AssetHubApi,
+  stablePool: Pool,
+  nativeOut: bigint,
+): Promise<bigint> {
+  const quoted = await api.apis.AssetConversionApi.quote_price_tokens_for_exact_tokens(
+    stablePool.underlying,
+    stablePool.native,
+    nativeOut,
+    true,
+  );
+  if (quoted === undefined) {
+    throw new Error("stable pool cannot quote this amount: insufficient liquidity");
+  }
+  return quoted;
+}
+
+/** Fresh exact-in quote on the stable/native pool: the native `stableIn` buys right now, or null
+ *  when the pool cannot price that much, as `quoteUnderlyingOut` answers. */
+export async function quoteNativeOut(
+  api: AssetHubApi,
+  stablePool: Pool,
+  stableIn: bigint,
+): Promise<bigint | null> {
+  const quoted = await api.apis.AssetConversionApi.quote_price_exact_tokens_for_tokens(
+    stablePool.underlying,
+    stablePool.native,
+    stableIn,
+    true,
+  );
+  return quoted === undefined ? null : quoted;
+}
+
+/** The plain two-hop exact-out quote: the native that buys `underlyingOut`, and the stable that
+ *  buys that native. No headroom: the stable pool tier's gate compares the deposit against it. */
+export async function quoteStableForUnderlying(
+  api: AssetHubApi,
+  pool: Pool,
+  stablePool: Pool,
+  underlyingOut: bigint,
+): Promise<{ nativeIn: bigint; stableIn: bigint }> {
+  const nativeIn = await quoteNativeIn(api, pool, underlyingOut);
+  const stableIn = await quoteStableIn(api, stablePool, nativeIn);
+  return { nativeIn, stableIn };
+}
+
+/** The stable the burner must hold so `stableIn` reaches the first exchange: the min_balance that
+ *  stays on the burner and one cushion over every fee, asked for and not held back, as
+ *  `psmDepositNeeded` does. */
+export function stableDepositNeeded(
+  stableIn: bigint,
+  fees: Pick<
+    StableLegFees,
+    "dispatchExternal" | "localExternal" | "deliveryExternal" | "minBalanceExternal"
+  >,
+): bigint {
+  return (
+    stableIn +
+    fees.minBalanceExternal +
+    withFeeMargin(fees.dispatchExternal + fees.localExternal + fees.deliveryExternal)
+  );
+}
+
 /** Cross-tick memory for one conversion. The driver persists it between ticks; `tickOnce`
  *  mutates it in place. */
 export interface TickState {
   /** Submits so far, rejected ones included. */
   attempts: number;
-  /** Set once the program landed; holds the run in await-arrival. */
+  /** PSM refusals of the mint so far, at the dry run or at inclusion; MAX_PSM_REFUSALS hold the
+   *  run. A transport error or a timeout does not count. */
+  psmRefusals: number;
+  /** Set while the program is in a best block; holds the run in await-arrival. Released when
+   *  that block is replaced. */
   xcmSubmitted: boolean;
-  /** People balance when the XCM left; arrival = growth above this. */
+  /** People balance before the submit left; arrival = growth above this. */
   peopleAtXcm: bigint;
   /** When the first tick saw funds (ms); null while the deposit is still awaited. */
   fundsSeenAt: number | null;
+  /** The burner's nonce at the latest block before the last submit, kept until the chain's final
+   *  word on it: with `xcmSubmitted` unset the answer is owed and a tick settles from the chain
+   *  what became of the submit; set, the finalized nonce moving past it makes the conversion
+   *  final. */
+  nonceAtSubmit: number | null;
+  /** The block the program was seen in, or the latest block when a lost answer was settled as
+   *  landed; the chain final at or past it with the nonce unmoved means that block was replaced.
+   *  Null once the conversion is final or the block was replaced. */
+  inclusionBlock: number | null;
 }
 
 export const freshTickState = (): TickState => ({
   attempts: 0,
+  psmRefusals: 0,
   xcmSubmitted: false,
   peopleAtXcm: 0n,
   fundsSeenAt: null,
+  nonceAtSubmit: null,
+  inclusionBlock: null,
 });
 
 export interface TickOnceInput {
   api: AssetHubApi;
   /** People's api, for the dry run of the forwarded program before the submit. */
   peopleApi: PeopleApi;
-  /** Pool keys; discovered once and passed in. */
-  pool: { native: AssetLocation; underlying: AssetLocation };
+  /** The tier the request was quoted, as recorded on it (recordedRoute); never decided here. */
+  route: ConversionRoute;
+  /** The native/CASH pool keys; discovered once and passed in. The pool tiers only. */
+  pool?: Pool;
+  /** The stable/native pool keys, `underlying` being the stable; discovered once and passed in.
+   *  The stable pool tier only. */
+  stablePool?: Pool;
   /** The burner, passed as address and signer. */
   address: string;
   signer: PolkadotSigner;
@@ -269,17 +468,31 @@ export interface TickOnceInput {
   peopleParaId: number;
   assetHubParaId: number;
   remoteFeeBuffer: bigint;
+  /** Native pool tier only; the stable tiers price their fees live in the stable. */
   keepNativeForFees: bigint;
+  /** Pool tiers only. On the stable pool tier it also bounds the first exchange's floor. */
   slippagePct: number;
+  /** PSM, stable pool and teleport tiers: the deposit the buyer was asked for, frozen at quote
+   *  time. The gate checks for exactly this rather than re-pricing the fees, since re-pricing
+   *  moves the bar under a deposit that was already sized against it. Absent on a request quoted
+   *  before it was recorded, which falls back to the live figure. */
+  quotedDeposit?: bigint;
   tickTimeoutMs: number;
-  submitTimeoutMs: number;
-  /** Extra options merged into the signAndSubmit this tick makes. */
+  /** Bound on the submit reaching a best block; past it the tick throws and a later tick settles
+   *  from the chain what became of the submit. */
+  inclusionTimeoutMs: number;
+  /** Extra options merged into the submit this tick makes, after the PSM tier's fee asset. */
   signOptions?: Record<string, unknown>;
-  readUnderlyingOnPeople: (ss58: string) => Promise<bigint>;
+  /** The burner's CASH on People in the FINALIZED block. The one People read the tick makes, for
+   *  the arrival, the shortfall and the gate alike: the claim is registered on what it returns,
+   *  and a final arrival is also the proof that the conversion is final on Asset Hub. */
+  readFinalizedUnderlyingOnPeople: (ss58: string) => Promise<bigint>;
   now: () => number;
+  /** The submit's hash and block, reported at inclusion. */
   onTx?: (info: { call: "swap"; txHash: string; block?: number }) => void;
   /** Reports swallowed in-tick conditions such as the shallow-pool fallback. */
   onTransientError?: (error: unknown) => void;
+  /** Runs right before the broadcast, once `state` holds what a wake mid-send needs. */
   onBeforeSubmit?: (call: "swap") => Promise<void> | void;
 }
 
@@ -291,25 +504,190 @@ export interface TickOutcome {
   submitted: boolean;
 }
 
+type BlockTag = "best" | "finalized";
+
+/** The burner's deposit on Asset Hub in the asset the route expects: the native's free balance,
+ *  or the holding of the pallet-assets id the route's token names. */
+async function readDeposit(
+  api: AssetHubApi,
+  route: ConversionRoute,
+  address: string,
+  at: BlockTag,
+) {
+  const token = depositTokenOf(route);
+  if (token.assetHubId === undefined) {
+    const account = await api.query.System.Account.getValue(address, { at });
+    return account?.data.free ?? 0n;
+  }
+  const held = await api.query.Assets.Account.getValue(token.assetHubId, address, { at });
+  return held?.balance ?? 0n;
+}
+
+/** The burner's nonce, from the runtime call the signer takes its own nonce from. */
+const readNonce = (api: AssetHubApi, address: string, at: BlockTag) =>
+  api.apis.AccountNonceApi.account_nonce(address, { at });
+
+const readBlockNumber = (api: AssetHubApi, at: BlockTag) =>
+  api.query.System.Number.getValue({ at });
+
+/** A submit's outcome in the first block it was seen in. */
+type Inclusion = { txHash: string } & TxEventsPayload;
+
+type Watch = ReturnType<Transaction["signSubmitAndWatch"]>;
+
+/** Resolves at the first event that places the transaction in a block, with its outcome there,
+ *  and lets the watch go; past `timeoutMs` it rejects and lets the watch go too. */
+function includedInBlock(watch: Watch, timeoutMs: number, what: string): Promise<Inclusion> {
+  return new Promise<Inclusion>((resolve, reject) => {
+    let subscription: { unsubscribe: () => void } | null = null;
+    let settled = false;
+    const settle = (outcome: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      subscription?.unsubscribe();
+      outcome();
+    };
+    const timer = setTimeout(
+      () => settle(() => reject(new Error(`${what} not in a block after ${timeoutMs / 1000}s`))),
+      timeoutMs,
+    );
+    subscription = watch.subscribe({
+      next: (event) => {
+        if (event.type === "finalized" || (event.type === "txBestBlocksState" && event.found)) {
+          settle(() => resolve(event));
+        }
+      },
+      error: (error: unknown) =>
+        settle(() => reject(error instanceof Error ? error : new Error(String(error)))),
+      complete: () => settle(() => reject(new Error(`${what} watch ended before any block`))),
+    });
+    // The watch may have settled before the subscription could be held.
+    if (settled) subscription.unsubscribe();
+  });
+}
+
+/** Signs and broadcasts the tier's one transaction and resolves with its outcome at inclusion.
+ *  Before the broadcast, `state` records what a tick that never hears the answer needs; a program
+ *  that landed keeps it, with the block it was seen in, until finality settles it. A rejection is
+ *  the caller's to describe. */
+async function submitConversion<Options>(
+  input: TickOnceInput,
+  state: TickState,
+  balances: FundingBalances,
+  tx: { signSubmitAndWatch: (from: PolkadotSigner, txOptions?: Options) => Watch },
+  options: NoInfer<Options> | undefined,
+  what: string,
+): Promise<Inclusion> {
+  const { api, address } = input;
+  const nonce = await bounded(readNonce(api, address, "best"), input.tickTimeoutMs, "nonce read");
+  // A lost submit found unmoved earlier this tick landed since; the next tick settles it.
+  if (state.nonceAtSubmit !== null && nonce !== state.nonceAtSubmit) {
+    throw new Error(`${what} not sent: the nonce moved during the tick, an earlier submit landed`);
+  }
+  state.nonceAtSubmit = nonce;
+  state.peopleAtXcm = balances.underlyingPeople;
+  // Counted before the broadcast, so a submit whose answer is lost is still counted.
+  state.attempts += 1;
+  await input.onBeforeSubmit?.("swap");
+  const included = await includedInBlock(
+    tx.signSubmitAndWatch(input.signer, options),
+    input.inclusionTimeoutMs,
+    `${what} submit`,
+  );
+  input.onTx?.({ call: "swap", txHash: included.txHash, block: included.block.number });
+  if (included.ok) {
+    state.xcmSubmitted = true;
+    state.inclusionBlock = included.block.number;
+  } else {
+    state.nonceAtSubmit = null;
+  }
+  return included;
+}
+
+/** The last submit's answer was lost, to a worker killed mid-send or to the inclusion bound. The
+ *  chain says what became of it: the nonce unmoved, nothing landed and the same nonce may go out
+ *  again; moved, it landed unless the deposit can still be converted, in which case it failed at
+ *  dispatch and the tick goes on to re-gate and retry. A program that landed is in the latest
+ *  block or an earlier one, so that is the block finality is then checked against. */
+async function settleLostSubmit(
+  input: TickOnceInput,
+  state: TickState,
+  balances: FundingBalances,
+  depositNeeded: bigint,
+  nonceAtSubmit: number,
+): Promise<void> {
+  const { api, route, address } = input;
+  const nonce = await bounded(readNonce(api, address, "best"), input.tickTimeoutMs, "nonce read");
+  if (nonce <= nonceAtSubmit) return;
+  const landed =
+    balances.underlyingPeople > state.peopleAtXcm ||
+    (await bounded(
+      readDeposit(api, route, address, "best"),
+      input.tickTimeoutMs,
+      "deposit read (latest)",
+    )) < depositNeeded;
+  if (!landed) {
+    state.nonceAtSubmit = null;
+    return;
+  }
+  state.inclusionBlock = await bounded(
+    readBlockNumber(api, "best"),
+    input.tickTimeoutMs,
+    "block number read (latest)",
+  );
+  state.xcmSubmitted = true;
+}
+
+/** The program is in a best block the chain may yet replace, so the finalized block has the last
+ *  word: the nonce moved there, the conversion is final and the pre-send record is let go; the
+ *  chain final past the block the program was seen in with the nonce unmoved, that block was
+ *  replaced, and the latch is released so the tick re-gates and sends again under the same
+ *  nonce. */
+async function settleInclusion(
+  input: TickOnceInput,
+  state: TickState,
+  nonceAtSubmit: number,
+  inclusionBlock: number,
+): Promise<void> {
+  const { api, address } = input;
+  const finalizedBlock = await bounded(
+    readBlockNumber(api, "finalized"),
+    input.tickTimeoutMs,
+    "block number read (finalized)",
+  );
+  // After the block number: a nonce unmoved at a later finalized block is unmoved at this one.
+  const nonce = await bounded(
+    readNonce(api, address, "finalized"),
+    input.tickTimeoutMs,
+    "nonce read (finalized)",
+  );
+  if (nonce > nonceAtSubmit) {
+    state.nonceAtSubmit = null;
+    state.inclusionBlock = null;
+  } else if (finalizedBlock >= inclusionBlock) {
+    state.xcmSubmitted = false;
+    state.inclusionBlock = null;
+  }
+}
+
 /**
  * One reading of the balances and at most one action on them. Retryable by calling again;
- * the only terminal signals are the returned "done" and a thrown FundingShortfallError.
+ * the only terminal signals are the returned "done" and a thrown FundingShortfallError or
+ * FundingHeldError.
  */
 export async function tickOnce(input: TickOnceInput, state: TickState): Promise<TickOutcome> {
-  const { api, pool, address } = input;
+  const { api, route, address } = input;
   const buyAmount = input.settleAmount + input.remoteFeeBuffer;
-  const [account, underlyingPeople] = await bounded(
+  const [depositAh, underlyingPeople] = await bounded(
     Promise.all([
-      api.query.System.Account.getValue(address),
-      input.readUnderlyingOnPeople(address),
+      readDeposit(api, route, address, "finalized"),
+      input.readFinalizedUnderlyingOnPeople(address),
     ]),
     input.tickTimeoutMs,
     "tick balance reads",
   );
-  const balances: FundingBalances = {
-    nativeAh: account?.data.free ?? 0n,
-    underlyingPeople,
-  };
+  const balances: FundingBalances = { depositAh, underlyingPeople };
 
   if (
     state.xcmSubmitted &&
@@ -320,23 +698,131 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
     throw new FundingShortfallError(balances.underlyingPeople, input.settleAmount);
   }
 
-  // Only the convert-vs-await-native decision needs the pool price.
-  const needsQuote = !state.xcmSubmitted && balances.underlyingPeople < input.settleAmount;
-  // The quote GATES the conversion (does what arrived buy the target right now?), it does not
-  // bound the spend. The PLAIN quote: the deposit was asked with headroom on top, and
-  // re-applying it here would demand that headroom twice and strand a deposit on any move.
-  // Net of what People already holds, so a run resumed after a partial arrival does not
-  // demand the whole deposit a second time.
+  if (state.xcmSubmitted && state.nonceAtSubmit !== null && state.inclusionBlock !== null) {
+    await settleInclusion(input, state, state.nonceAtSubmit, state.inclusionBlock);
+  }
+
+  // Only the convert-vs-await-native decision needs the pool price or the PSM batch's fees.
+  const needsGate = !state.xcmSubmitted && balances.underlyingPeople < input.settleAmount;
+  // The gate asks whether what arrived buys the target right now; it does not bound the spend.
+  // Net of what People already holds, so a run resumed after a partial arrival does not demand
+  // the whole deposit a second time.
   const buyNow = buyAmount > balances.underlyingPeople ? buyAmount - balances.underlyingPeople : 0n;
-  const nativeNeeded = needsQuote
-    ? await bounded(quoteNativeIn(api, pool, buyNow), input.tickTimeoutMs, "pool quote")
-    : 0n;
-  const step = decideStep(balances, {
-    settleAmount: input.settleAmount,
-    remoteFeeBuffer: input.remoteFeeBuffer,
-    keepNativeForFees: input.keepNativeForFees,
-    nativeNeeded,
-  });
+  const earmark = destinationEarmark(buyNow, input.remoteFeeBuffer);
+  let depositNeeded = 0n;
+  let nativeNeeded = 0n;
+  let psmFees: PsmBatchFees | null = null;
+  let stableIn = 0n;
+  let stableFees: StableLegFees | null = null;
+  let teleportFees: StableLegFees | null = null;
+  if (needsGate && route.tier === "teleport") {
+    // The deposit is the underlying itself, so there is no quote: a deposit short of the bare
+    // target waits without the fee reads, and past it the gate is the target plus the program's
+    // own fees.
+    if (balances.depositAh < buyNow) {
+      depositNeeded = buyNow;
+    } else {
+      teleportFees = await bounded(
+        estimateTeleportProgramFees({
+          api,
+          beneficiaryHex: input.beneficiaryHex,
+          peopleParaId: input.peopleParaId,
+          // At the magnitude the program will carry: everything the burner holds.
+          depositUnderlying: balances.depositAh,
+          remoteFeesCash: earmark,
+          feeProbeAddress: address,
+          dryRunFrom: address,
+        }),
+        input.tickTimeoutMs,
+        "teleport program fee estimate",
+      );
+      // The figure the buyer was asked against, frozen at quote time; the live figure stands in
+      // where it is missing or no longer owed whole.
+      const frozen = buyNow === buyAmount ? input.quotedDeposit : undefined;
+      depositNeeded = frozen ?? stableDepositNeeded(buyNow, teleportFees);
+    }
+  } else if (needsGate && isStablePoolRoute(route)) {
+    // The plain two-hop quote first, as the native pool tier's gate is plain; a deposit short of
+    // even the bare swap waits without the fee reads.
+    const pool = poolOf(input);
+    const stablePool = stablePoolOf(input);
+    stableIn = (
+      await bounded(
+        quoteStableForUnderlying(api, pool, stablePool, buyNow),
+        input.tickTimeoutMs,
+        "stable pool quote",
+      )
+    ).stableIn;
+    if (balances.depositAh < stableIn) {
+      depositNeeded = stableIn;
+    } else {
+      stableFees = await bounded(
+        estimateStableProgramFees({
+          api,
+          stable: route.external,
+          stablePool,
+          pool,
+          beneficiaryHex: input.beneficiaryHex,
+          peopleParaId: input.peopleParaId,
+          // At the magnitude the program will carry: everything the burner holds.
+          depositStable: balances.depositAh,
+          minUnderlyingOut: buyNow,
+          remoteFeesCash: earmark,
+          feeProbeAddress: address,
+          dryRunFrom: address,
+        }),
+        input.tickTimeoutMs,
+        "stable program fee estimate",
+      );
+      // The figure the buyer was asked against, frozen at quote time; the live figure stands in
+      // where it is missing or no longer owed whole.
+      const frozen = buyNow === buyAmount ? input.quotedDeposit : undefined;
+      depositNeeded = frozen ?? stableDepositNeeded(stableIn, stableFees);
+    }
+  } else if (needsGate && route.tier === "pool") {
+    // The PLAIN quote: the deposit was asked with headroom on top, and re-applying it here would
+    // demand that headroom twice and strand a deposit on any move.
+    nativeNeeded = await bounded(
+      quoteNativeIn(api, poolOf(input), buyNow),
+      input.tickTimeoutMs,
+      "pool quote",
+    );
+    depositNeeded = nativeNeeded + input.keepNativeForFees;
+  } else if (needsGate && route.tier === "psm") {
+    // The PSM's rate is fixed, so the gate is arithmetic on the batch's own fees. Those take
+    // several reads, and a deposit short of even the bare mint waits without them.
+    const floor = sizePsmMint(buyNow, route).externalIn;
+    if (balances.depositAh < floor) {
+      depositNeeded = floor;
+    } else {
+      psmFees = await bounded(
+        estimatePsmBatchFees({
+          api,
+          route,
+          beneficiaryHex: input.beneficiaryHex,
+          peopleParaId: input.peopleParaId,
+          // At the magnitude the batch will carry: everything the burner holds.
+          depositExternal: balances.depositAh,
+          remoteFeesCash: earmark,
+          feeProbeAddress: address,
+          dryRunFrom: address,
+        }),
+        input.tickTimeoutMs,
+        "psm batch fee estimate",
+      );
+      // Gate on what the buyer was asked for. Both figures cover the same costs, but the fees in
+      // them are priced through the pool, so re-pricing here raises the bar whenever PAS has risen
+      // since the quote and leaves a deposit that was exactly right waiting for a reversal. The
+      // live figure stands in only for a request quoted before this was recorded, and for one
+      // resumed after a partial arrival, where the frozen figure covers more than is still owed.
+      const frozen = buyNow === buyAmount ? input.quotedDeposit : undefined;
+      depositNeeded = frozen ?? psmDepositNeeded(buyNow, route, psmFees);
+    }
+  }
+  if (!state.xcmSubmitted && state.nonceAtSubmit !== null) {
+    await settleLostSubmit(input, state, balances, depositNeeded, state.nonceAtSubmit);
+  }
+  const step = decideStep(balances, { settleAmount: input.settleAmount, depositNeeded });
   // Hold in await-arrival while the submitted XCM has not yet credited People. A stale read right
   // after the submit still shows the native, and without this latch it would be converted twice.
   const effective = state.xcmSubmitted && step !== "done" ? "await-arrival" : step;
@@ -344,20 +830,52 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
   if (state.fundsSeenAt === null && effective !== "await-native") state.fundsSeenAt = input.now();
 
   if (effective === "done") {
+    state.nonceAtSubmit = null;
+    state.inclusionBlock = null;
     return { step: "done", balances, submitted: false };
   }
 
+  if (effective === "swap" && route.tier === "teleport") {
+    // The gate priced the program this very tick: a deposit past the bare target always did.
+    if (teleportFees === null) throw new Error("teleport tier: the swap step has no fee estimate");
+    await teleportToPeople(input, state, balances, earmark, teleportFees);
+    return { step: effective, balances, submitted: true };
+  }
+
+  if (effective === "swap" && isStablePoolRoute(route)) {
+    // The gate priced the program this very tick: a deposit past the bare swap always did.
+    if (stableFees === null) throw new Error("stable pool tier: the swap step has no fee estimate");
+    await swapThroughStablePool(
+      input,
+      state,
+      route,
+      balances,
+      buyNow,
+      earmark,
+      stableFees,
+      stableIn,
+    );
+    return { step: effective, balances, submitted: true };
+  }
+
+  if (effective === "swap" && route.tier === "psm") {
+    // The gate priced the batch this very tick: a deposit past the floor always did.
+    if (psmFees === null) throw new Error("psm tier: the swap step has no fee estimate");
+    await mintThroughPsm(input, state, route, balances, earmark, psmFees);
+    return { step: effective, balances, submitted: true };
+  }
+
   if (effective === "swap") {
+    const pool = poolOf(input);
     // Withdraw the whole native balance minus the dispatch fee, pay the XCM's fees in native,
     // exchange the rest inside the holding, and teleport the result to the burner on People.
-    const earmark = destinationEarmark(buyNow, input.remoteFeeBuffer);
     const fees = await bounded(
       estimateFundingProgramFees({
         api,
         pool,
         beneficiaryHex: input.beneficiaryHex,
         peopleParaId: input.peopleParaId,
-        nativeBalance: balances.nativeAh,
+        nativeBalance: balances.depositAh,
         minUnderlyingOut: buyNow,
         remoteFeesCash: earmark,
         feeProbeAddress: address,
@@ -370,10 +888,10 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
     );
     const payFeesNative = fees.payFeesNative;
     // Convert everything the fees leave, not just enough for the target.
-    let spend = balances.nativeAh - fees.dispatchNative - payFeesNative;
+    let spend = balances.depositAh - fees.dispatchNative - payFeesNative;
     if (spend <= 0n) {
       throw new Error(
-        `deposit ${balances.nativeAh} cannot cover the funding program's own fees ` +
+        `deposit ${balances.depositAh} cannot cover the funding program's own fees ` +
           `(dispatch ${fees.dispatchNative} + PayFees ${payFeesNative})`,
       );
     }
@@ -391,7 +909,7 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
       // remains: a fresh run re-buys the deficit from that surplus, this run does not.)
       // Reported through the transient hook because it is the one observability channel for
       // a swallowed condition.
-      const target = (nativeNeeded * BigInt(Math.round((100 + input.slippagePct) * 100))) / 10_000n;
+      const target = withHeadroom(nativeNeeded, input.slippagePct);
       spend = target < spend ? target : spend;
       input.onTransientError?.(
         new Error(
@@ -442,16 +960,15 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
       "funding program dry run",
     );
     const tx = api.tx.PolkadotXcm.execute(execArgs);
-    await input.onBeforeSubmit?.("swap");
-    // Counted before the broadcast, so a submit whose answer is lost is still counted.
-    state.attempts += 1;
-    const res = await bounded(
-      // The dispatch fee is paid in native.
-      tx.signAndSubmit(input.signer, input.signOptions),
-      input.submitTimeoutMs,
-      "funding program submit",
+    // The dispatch fee is paid in native.
+    const res = await submitConversion(
+      input,
+      state,
+      balances,
+      tx,
+      input.signOptions,
+      "funding program",
     );
-    input.onTx?.({ call: "swap", txHash: res.txHash, block: res.block?.number });
     // A rejected program rolls back whole: the deposit stays native and the next tick re-prices
     // and retries. It happens when the pool moved past the floor, a fee allowance fell short, or
     // the balance was already spent by an earlier run.
@@ -460,10 +977,299 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
         `funding program dispatch rejected: ${describeDispatchError(res.dispatchError, execArgs)}`,
       );
     }
-    state.xcmSubmitted = true;
-    state.peopleAtXcm = balances.underlyingPeople;
     return { step: effective, balances, submitted: true };
   }
 
   return { step: effective, balances, submitted: false };
+}
+
+const poolOf = (input: TickOnceInput): Pool => {
+  if (input.pool === undefined) throw new Error("pool tier: the tick was given no pool keys");
+  return input.pool;
+};
+
+const stablePoolOf = (input: TickOnceInput): Pool => {
+  if (input.stablePool === undefined) {
+    throw new Error("stable pool tier: the tick was given no stable pool keys");
+  }
+  return input.stablePool;
+};
+
+/** The stable pool tier's swap step: everything the fees leave, through both pools, to the burner
+ *  on People, after the dry run of the program. Every failure is the next tick's to retry. */
+async function swapThroughStablePool(
+  input: TickOnceInput,
+  state: TickState,
+  route: StablePoolRoute,
+  balances: FundingBalances,
+  buyNow: bigint,
+  remoteFeesCash: bigint,
+  fees: StableLegFees,
+  stableForTarget: bigint,
+): Promise<void> {
+  const { api, address } = input;
+  const pool = poolOf(input);
+  const stablePool = stablePoolOf(input);
+  // Convert everything the fees leave, not just enough for the target: the dispatch fee, the
+  // min_balance and the fee allowance stay out, as on the PSM tier, and the cushion the deposit
+  // was asked with reaches the exchange.
+  let spend = balances.depositAh - fees.dispatchExternal - fees.heldBackExternal;
+  if (spend <= 0n) {
+    throw new Error(
+      `deposit ${balances.depositAh} cannot cover the stable program's own fees ` +
+        `(dispatch ${fees.dispatchExternal} + held back ${fees.heldBackExternal})`,
+    );
+  }
+  const twoHop = async (stableIn: bigint) => {
+    const nativeOut = await bounded(
+      quoteNativeOut(api, stablePool, stableIn),
+      input.tickTimeoutMs,
+      "stable pool quote (whole balance)",
+    );
+    if (nativeOut === null) return null;
+    const cashOut = await bounded(
+      quoteUnderlyingOut(api, pool, nativeOut),
+      input.tickTimeoutMs,
+      "pool quote (whole balance)",
+    );
+    return cashOut === null ? null : { nativeOut, cashOut };
+  };
+  let quotes = await twoHop(spend);
+  if (quotes === null) {
+    // A pool too shallow for the whole deposit: buy the target instead, as the native pool tier
+    // does, and the surplus stable stays on the burner, reachable through its secret.
+    const target = withHeadroom(stableForTarget, input.slippagePct);
+    spend = target < spend ? target : spend;
+    input.onTransientError?.(
+      new Error(
+        `a pool cannot absorb the whole balance in one exchange; buying the target with ${spend} instead`,
+      ),
+    );
+    quotes = await twoHop(spend);
+    if (quotes === null) throw new Error("the pools cannot quote even the target amount");
+  }
+  // The second exchange's floor is the requirement itself, as on the native pool tier: a quote
+  // already under it waits for the next tick instead of submitting.
+  if (quotes.cashOut < buyNow) {
+    throw new Error(
+      `pool quote ${quotes.cashOut} for the spend is below the target ${buyNow}; waiting for the price`,
+    );
+  }
+  // The first exchange's floor is its quote less the headroom.
+  const minNativeOut =
+    (quotes.nativeOut * BigInt(Math.round((100 - input.slippagePct) * 100))) / 10_000n;
+  const execArgs = buildStableFundingProgram({
+    stablePool,
+    pool,
+    withdrawStable: spend + fees.feeAllowanceExternal,
+    payFeesStable: fees.feeAllowanceExternal,
+    minNativeOut,
+    minUnderlyingOut: buyNow,
+    remoteFeesCash,
+    beneficiaryHex: input.beneficiaryHex,
+    peopleParaId: input.peopleParaId,
+    maxWeight: fees.maxWeight,
+  });
+  // Both chains run the program before it is paid for; one that would fail, trap assets or land
+  // short of what People still lacks is not submitted, and the next tick re-prices.
+  await bounded(
+    dryRunFundingProgram({
+      api,
+      peopleApi: input.peopleApi,
+      execArgs,
+      from: address,
+      beneficiaryHex: input.beneficiaryHex,
+      peopleParaId: input.peopleParaId,
+      assetHubParaId: input.assetHubParaId,
+      mustLand: input.settleAmount - balances.underlyingPeople,
+    }),
+    input.tickTimeoutMs,
+    "stable program dry run",
+  );
+  const tx = api.tx.PolkadotXcm.execute(execArgs);
+  // The dispatch fee is charged in the stable, the one asset the burner holds.
+  const res = await submitConversion(
+    input,
+    state,
+    balances,
+    tx,
+    { ...stableTxOptions(route.external), ...input.signOptions },
+    "stable program",
+  );
+  // A rejected program rolls back whole: the deposit stays in the stable minus the dispatch fee,
+  // and the next tick re-prices and retries.
+  if (!res.ok) {
+    throw new Error(
+      `stable program dispatch rejected: ${describeDispatchError(res.dispatchError, execArgs)}`,
+    );
+  }
+}
+
+/** The teleport tier's swap step: send everything the fees leave, not just the target, to the
+ *  burner on People, after the dry run. Nothing is exchanged, so there is no quote to take and no
+ *  price to wait for; a surplus lands as extra CASH. */
+async function teleportToPeople(
+  input: TickOnceInput,
+  state: TickState,
+  balances: FundingBalances,
+  remoteFeesCash: bigint,
+  fees: StableLegFees,
+): Promise<void> {
+  const { api, address } = input;
+  // The dispatch fee, the min_balance and the fee allowance stay out, as on the stable tiers, and
+  // the cushion the deposit was asked with goes along to People.
+  const send = balances.depositAh - fees.dispatchExternal - fees.heldBackExternal;
+  if (send <= 0n) {
+    throw new Error(
+      `deposit ${balances.depositAh} cannot cover the teleport program's own fees ` +
+        `(dispatch ${fees.dispatchExternal} + held back ${fees.heldBackExternal})`,
+    );
+  }
+  const execArgs = buildTeleportFundingProgram({
+    withdrawUnderlying: send + fees.feeAllowanceExternal,
+    payFeesUnderlying: fees.feeAllowanceExternal,
+    remoteFeesCash,
+    beneficiaryHex: input.beneficiaryHex,
+    peopleParaId: input.peopleParaId,
+    maxWeight: fees.maxWeight,
+  });
+  // Both chains run the program before it is paid for; one that would fail, trap assets or land
+  // short of what People still lacks is not submitted, and the next tick re-prices.
+  await bounded(
+    dryRunFundingProgram({
+      api,
+      peopleApi: input.peopleApi,
+      execArgs,
+      from: address,
+      beneficiaryHex: input.beneficiaryHex,
+      peopleParaId: input.peopleParaId,
+      assetHubParaId: input.assetHubParaId,
+      mustLand: input.settleAmount - balances.underlyingPeople,
+    }),
+    input.tickTimeoutMs,
+    "teleport program dry run",
+  );
+  const tx = api.tx.PolkadotXcm.execute(execArgs);
+  // The dispatch fee is charged in the underlying, the one asset the burner holds.
+  const res = await submitConversion(
+    input,
+    state,
+    balances,
+    tx,
+    { ...teleportTxOptions(), ...input.signOptions },
+    "teleport program",
+  );
+  // A rejected program rolls back whole: the deposit stays on the burner minus the dispatch fee,
+  // and the next tick re-prices and retries.
+  if (!res.ok) {
+    throw new Error(
+      `teleport program dispatch rejected: ${describeDispatchError(res.dispatchError, execArgs)}`,
+    );
+  }
+}
+
+/** The external the PSM tier asks the buyer for, so `buyNow` CASH reaches People: the mint that
+ *  pays out exactly `buyNow`, plus what stays out of the mint, plus the cushion.
+ *
+ *  The dispatch fee is charged in the external before the mint. The XCM's local execution and
+ *  delivery are paid in the external too, from the allowance the mint leaves on the burner beside
+ *  the external's min_balance, which keeps the account alive for the program to withdraw from and
+ *  refund into. Without the held-back part the mint reaps the account and the program fails at its
+ *  first instruction; without the dispatch fee the mint finds the balance short.
+ *
+ *  The cushion covers every fee at once and is taken here, once. It is asked for but not held
+ *  back, so it sits in the mint: a deposit made at this figure still mints the full `buyNow` when
+ *  the pool has moved against the dispatch fee by up to the cushion, and mints the surplus as
+ *  extra CASH when it has not. */
+export function psmDepositNeeded(
+  buyNow: bigint,
+  route: PsmRoute,
+  fees: Pick<
+    PsmBatchFees,
+    "dispatchExternal" | "localExternal" | "deliveryExternal" | "minBalanceExternal"
+  >,
+): bigint {
+  return (
+    sizePsmMint(buyNow, route).externalIn +
+    fees.minBalanceExternal +
+    withFeeMargin(fees.dispatchExternal + fees.localExternal + fees.deliveryExternal)
+  );
+}
+
+/** The PSM tier's swap step: mint everything the dispatch fee leaves and teleport the CASH to the
+ *  burner on People, in one batch, after the dry run of the whole batch. Counts the PSM's
+ *  refusals towards the hold; every other failure is the next tick's to retry. */
+async function mintThroughPsm(
+  input: TickOnceInput,
+  state: TickState,
+  route: PsmRoute,
+  balances: FundingBalances,
+  remoteFeesCash: bigint,
+  fees: PsmBatchFees,
+): Promise<void> {
+  const { api, address } = input;
+  const refused = (dispatchError: unknown) => {
+    const kind = psmRefusalKind(dispatchError);
+    if (kind === null) return;
+    // Nothing to wait for, so hold on the first one rather than spending a retry budget on a
+    // question whose answer cannot change.
+    if (kind === "will-not-serve") {
+      throw new FundingHeldError(describeDispatchError(dispatchError), kind);
+    }
+    state.psmRefusals += 1;
+    if (state.psmRefusals >= MAX_PSM_REFUSALS) {
+      throw new FundingHeldError(describeDispatchError(dispatchError));
+    }
+  };
+  // Mint everything the dispatch fee and the held-back external leave, not just enough for the
+  // target; the gate already saw that this pays out the target.
+  const externalIn = balances.depositAh - fees.dispatchExternal - fees.heldBackExternal;
+  const { batch, execArgs } = buildPsmBatch(api, {
+    route,
+    externalIn,
+    cashMinted: psmMintOut(externalIn, route.feeRate),
+    feeAllowanceExternal: fees.feeAllowanceExternal,
+    remoteFeesCash,
+    beneficiaryHex: input.beneficiaryHex,
+    peopleParaId: input.peopleParaId,
+    maxWeight: fees.maxWeight,
+  });
+  // The whole batch on both chains before paying for it, the mint included: a PSM refusal
+  // surfaces here, with nothing spent, rather than at inclusion.
+  try {
+    await bounded(
+      dryRunPsmBatch({
+        api,
+        peopleApi: input.peopleApi,
+        batch: { batch, execArgs },
+        from: address,
+        beneficiaryHex: input.beneficiaryHex,
+        peopleParaId: input.peopleParaId,
+        assetHubParaId: input.assetHubParaId,
+        mustLand: input.settleAmount - balances.underlyingPeople,
+      }),
+      input.tickTimeoutMs,
+      "psm batch dry run",
+    );
+  } catch (error) {
+    if (error instanceof ProgramRejectedError) refused(error.dispatchError);
+    throw error;
+  }
+  // The dispatch fee is charged in the external, the one asset the burner holds.
+  const res = await submitConversion(
+    input,
+    state,
+    balances,
+    batch,
+    { ...psmBatchTxOptions(route.external), ...input.signOptions },
+    "psm batch",
+  );
+  // A rejected batch rolls back whole, the mint included: the deposit stays in the external
+  // minus the dispatch fee, and the next tick re-prices and retries.
+  if (!res.ok) {
+    refused(res.dispatchError);
+    throw new Error(
+      `psm batch dispatch rejected: ${describeDispatchError(res.dispatchError, execArgs)}`,
+    );
+  }
 }
