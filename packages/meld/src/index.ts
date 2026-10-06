@@ -22,3 +22,4 @@ export {
 } from "./shared-status";
 export { createMeldRail, type MeldMethod, type MeldRail, type MeldRailOptions } from "./rail";
 export { createFakeMeldClient, type FakeMeldOptions } from "./fake";
+export { currentNetwork, networkForHostname } from "./network";
