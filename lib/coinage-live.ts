@@ -253,8 +253,8 @@ async function lostRequestFees(
         ? fees.estimatePsmFundingSizing({ ...args, route })
         : isStablePoolRoute(route)
           ? fees.estimateStableFundingSizing({ ...args, route })
-          : route.tier === "teleport"
-            ? fees.estimateTeleportFundingSizing(args)
+          : route.tier === "dotusd"
+            ? fees.estimateDotUsdFundingSizing(args)
             : fees.estimateFundingSizing(args),
     );
     return sizing === null ? defaults : handoffFees(sizing);

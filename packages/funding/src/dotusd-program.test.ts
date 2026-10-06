@@ -1,15 +1,15 @@
-// The teleport tier's program over a recording Asset Hub api: the five instructions, every fee
+// The dotUSD tier's program over a recording Asset Hub api: the five instructions, every fee
 // read keyed by dotUSD, the margin it carries and the min_balance it holds back, and the reasons
 // it refuses.
 
 import { TOKENS } from "@getsome/core";
 import { describe, expect, it } from "vitest";
 import {
-  buildTeleportFundingProgram,
+  buildDotUsdFundingProgram,
   DepositBelowFeesError,
-  estimateTeleportProgramFees,
+  estimateDotUsdProgramFees,
   peopleDest,
-  teleportTxOptions,
+  dotUsdTxOptions,
   withFeeMargin,
 } from "./funding-program";
 
@@ -25,14 +25,15 @@ const PROGRAM = {
   remoteFeesCash: 50_000n,
   beneficiaryHex: BENEFICIARY_HEX,
   peopleParaId: PEOPLE_PARA,
+  transfer: "teleport" as const,
   maxWeight: { ref_time: 5n, proof_size: 6n },
 };
 
 const instruction = (args: ExecuteArgs, type: string) =>
   args.message.value.find((i) => i.type === type)?.value as never;
 
-describe("buildTeleportFundingProgram", () => {
-  const args = buildTeleportFundingProgram(PROGRAM) as unknown as ExecuteArgs;
+describe("buildDotUsdFundingProgram", () => {
+  const args = buildDotUsdFundingProgram(PROGRAM) as unknown as ExecuteArgs;
 
   it("withdraws dotUSD, pays the fees in it, teleports the rest, refunds the surplus, with no exchange", () => {
     expect(args.message.value.map((i) => i.type)).toEqual([
@@ -64,7 +65,7 @@ describe("buildTeleportFundingProgram", () => {
   });
 
   it("charges the dispatch fee in dotUSD", () => {
-    expect(teleportTxOptions()).toEqual({ asset: TOKENS.DOTUSD.location });
+    expect(dotUsdTxOptions()).toEqual({ asset: TOKENS.DOTUSD.location });
   });
 });
 
@@ -135,18 +136,19 @@ function recordingApi(
   return { api: api as never, seen };
 }
 
-describe("estimateTeleportProgramFees", () => {
+describe("estimateDotUsdProgramFees", () => {
   const input = {
     beneficiaryHex: BENEFICIARY_HEX,
     peopleParaId: PEOPLE_PARA,
     depositUnderlying: 5_143_041n,
     remoteFeesCash: 50_000n,
+    transfer: "teleport" as const,
     feeProbeAddress: "5Probe",
   };
 
   it("prices execution, delivery and the dispatch in dotUSD, as measured on Paseo, and holds back min_balance plus the cushioned allowance", async () => {
     const { api, seen } = recordingApi();
-    const fees = await estimateTeleportProgramFees({ api, ...input });
+    const fees = await estimateDotUsdProgramFees({ api, ...input });
     expect(seen.assetRead).toBe(TOKENS.DOTUSD.assetHubId);
     const asset = { type: "V5", value: TOKENS.DOTUSD.location };
     expect(seen.localFeeAsset).toEqual(asset);
@@ -171,16 +173,16 @@ describe("estimateTeleportProgramFees", () => {
 
   it("refuses a deposit that does not cover what is held back, an asset Asset Hub does not know, and an unpriceable dispatch", async () => {
     await expect(
-      estimateTeleportProgramFees({ api: recordingApi().api, ...input, depositUnderlying: 1n }),
+      estimateDotUsdProgramFees({ api: recordingApi().api, ...input, depositUnderlying: 1n }),
     ).rejects.toThrow(/does not cover/);
     await expect(
-      estimateTeleportProgramFees({ api: recordingApi().api, ...input, depositUnderlying: 1n }),
+      estimateDotUsdProgramFees({ api: recordingApi().api, ...input, depositUnderlying: 1n }),
     ).rejects.toBeInstanceOf(DepositBelowFeesError);
     await expect(
-      estimateTeleportProgramFees({ api: recordingApi({ minBalance: undefined }).api, ...input }),
+      estimateDotUsdProgramFees({ api: recordingApi({ minBalance: undefined }).api, ...input }),
     ).rejects.toThrow(/not an asset/);
     await expect(
-      estimateTeleportProgramFees({
+      estimateDotUsdProgramFees({
         api: recordingApi({ dispatchExternal: undefined }).api,
         ...input,
       }),

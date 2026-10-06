@@ -7,7 +7,12 @@
 import { PaymentRequestErr, PaymentStatusErr } from "@novasamatech/host-api";
 import { deriveEntropy, getHostLocalStorage } from "@parity/product-sdk-host";
 import { deriveKeypair } from "@getsome/ephemeral";
-import { PASEO_ASSET_HUB_PARA_ID, PASEO_PEOPLE_PARA_ID } from "@getsome/funding";
+import {
+  chooseCashTransfer,
+  NoCashTransferError,
+  PASEO_ASSET_HUB_PARA_ID,
+  PASEO_PEOPLE_PARA_ID,
+} from "@getsome/funding";
 import {
   createHostEntropyPort,
   createHostStorageAdapter,
@@ -93,6 +98,26 @@ export async function probeWithdrawKey(
     at: "best",
   });
   return { address, cash: account?.balance ?? 0n };
+}
+
+/** Whether this network lets CASH move from People to Asset Hub. False only when the chains say
+ *  so; a read that fails answers true, since the worker asks again before it moves anything. */
+export async function cashCanMove(): Promise<boolean> {
+  try {
+    const { connectChain, ASSET_HUB, PEOPLE } = await import("./host-chain");
+    const [assetHub, people] = await Promise.all([connectChain(ASSET_HUB), connectChain(PEOPLE)]);
+    await chooseCashTransfer({
+      assetHub,
+      people,
+      assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
+      peopleParaId: PASEO_PEOPLE_PARA_ID,
+    });
+    return true;
+  } catch (e) {
+    if (e instanceof NoCashTransferError) return false;
+    console.warn("[withdraw] the CASH transfer could not be read (the worker asks again):", e);
+    return true;
+  }
 }
 
 /** The CASH the fees take from a direct withdrawal before the sale on Asset Hub, as measured on

@@ -15,7 +15,7 @@ import {
 import {
   estimatePsmFundingSizing,
   estimateStableFundingSizing,
-  estimateTeleportFundingSizing,
+  estimateDotUsdFundingSizing,
   quoteDepositValue,
 } from "../lib/funding-fees";
 
@@ -24,7 +24,7 @@ const PROBE = "14TSnbZch5jFAqDvp3szNt6qyTPw5BAeEQ4VgJ6w5qjmYSos";
 const units = (v: bigint, d = 6) => (Number(v) / 10 ** d).toFixed(d);
 
 const CASES: Array<{ name: string; route: ConversionRoute; deposit: bigint; decimals: number }> = [
-  { name: "dotUSD teleport", route: { tier: "teleport" }, deposit: 8_000_000n, decimals: 6 },
+  { name: "dotUSD tier", route: { tier: "dotusd" }, deposit: 8_000_000n, decimals: 6 },
   {
     name: "USDT through the PSM",
     route: { tier: "psm", external: "USDT", feeRate: 5_000 },
@@ -66,8 +66,8 @@ describe.runIf(process.env.VERIFY_DEPOSIT_VALUE === "1")("deposit value on Paseo
         // Sized back the way a fresh quote for that much CASH would be, the ask stays within
         // what arrived.
         let asked: bigint | null = null;
-        if (c.route.tier === "teleport") {
-          asked = (await estimateTeleportFundingSizing({ ...base, settleAmount: receive }))
+        if (c.route.tier === "dotusd") {
+          asked = (await estimateDotUsdFundingSizing({ ...base, settleAmount: receive }))
             .quotedDeposit;
         } else if (c.route.tier === "psm") {
           asked = (

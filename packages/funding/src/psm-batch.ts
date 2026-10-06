@@ -1,6 +1,6 @@
 // The PSM tier's funding call: one Utility.batch_all that mints CASH from the burner's USDT
-// through the PSM and teleports it to the burner's People address, with its sizing, its fee
-// estimate and its dry run.
+// through the PSM and sends it to the burner's People address, by teleport or by reserve transfer
+// as the network allows, with its sizing, its fee estimate and its dry run.
 //
 // A batch of two calls rather than one XCM with a Transact: no XCM instruction swaps through the
 // PSM (ExchangeAsset resolves to the pool), and a batch says what it means where a Transact
@@ -33,6 +33,7 @@
 import { TOKENS, type TokenSpec } from "@getsome/core";
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import type { TypedApi } from "polkadot-api";
+import type { CashTransfer } from "./cash-transfer";
 import {
   buildPsmFundingProgram,
   DepositBelowFeesError,
@@ -120,6 +121,8 @@ export interface PsmBatchArgs {
   remoteFeesCash: bigint;
   beneficiaryHex: string;
   peopleParaId: number;
+  /** How the CASH moves to People. */
+  transfer: CashTransfer;
   /** The declared weight ceiling of the execute. Defaults to FUNDING_PROGRAM_MAX_WEIGHT. */
   maxWeight?: Weight;
 }
@@ -134,6 +137,7 @@ export function buildPsmBatch(api: AssetHubApi, args: PsmBatchArgs) {
     remoteFeesCash: args.remoteFeesCash,
     beneficiaryHex: args.beneficiaryHex,
     peopleParaId: args.peopleParaId,
+    transfer: args.transfer,
     maxWeight: args.maxWeight,
   });
   const mint = api.tx.Psm.mint({
@@ -165,6 +169,8 @@ export async function estimatePsmBatchFees(args: {
   depositExternal: bigint;
   /** The destination fee allowance the program will carry, for the same reason. */
   remoteFeesCash: bigint;
+  /** How the CASH moves to People. */
+  transfer: CashTransfer;
   /** Any valid address for the dispatch fee read; the fee does not depend on the signer's
    *  balance. */
   feeProbeAddress: string;
@@ -196,6 +202,7 @@ export async function estimatePsmBatchFees(args: {
       remoteFeesCash: args.remoteFeesCash,
       beneficiaryHex: args.beneficiaryHex,
       peopleParaId: args.peopleParaId,
+      transfer: args.transfer,
       maxWeight,
     });
   };
@@ -229,6 +236,7 @@ export async function estimatePsmBatchFees(args: {
       INTERNAL.locationOnPeople,
       psmMintOut(args.depositExternal, args.route.feeRate),
       args.beneficiaryHex,
+      args.transfer,
     );
   const df = await args.api.apis.XcmPaymentApi.query_delivery_fees(
     { type: "V5", value: peopleDest(args.peopleParaId) } as never,

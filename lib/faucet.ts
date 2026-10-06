@@ -3,9 +3,9 @@
 // Demo faucet: sends the route's deposit asset from a dedicated testnet account to the burner's
 // deposit address on Asset Hub, PAS on the native pool tier and USDt or USDC on the stable tiers,
 // so the account has to hold all three. Demo only: the seed ships in the client bundle via
-// VITE_FAUCET_SEED, as either a 24-word mnemonic or a 0x-prefixed 32-byte hex entropy value.
+// VITE_FAUCET_SEED, as a 12- or 24-word mnemonic or a 0x-prefixed 32-byte hex entropy value.
 
-import { deriveKeypair } from "@getsome/ephemeral";
+import { deriveSeedKeypair } from "@getsome/ephemeral";
 import { depositTokenOf, type ConversionRoute } from "@getsome/funding";
 import { mnemonicToEntropy } from "@polkadot-labs/hdkd-helpers";
 import { MultiAddress, paseo_next_v2 } from "@polkadot-api/descriptors";
@@ -17,7 +17,8 @@ const RAW_SEED: string | undefined = import.meta.env.VITE_FAUCET_SEED;
 export function isFaucetConfigured(): boolean {
   if (typeof RAW_SEED !== "string") return false;
   const raw = RAW_SEED.trim();
-  return /^0x[0-9a-fA-F]{64}$/.test(raw) || raw.split(/\s+/).length === 24;
+  const words = raw.split(/\s+/).length;
+  return /^0x[0-9a-fA-F]{64}$/.test(raw) || words === 12 || words === 24;
 }
 
 function seedBytes(): Uint8Array {
@@ -44,7 +45,7 @@ export async function fundFromFaucet(args: {
   if (!isFaucetConfigured()) {
     throw new Error("faucet not configured: set VITE_FAUCET_SEED (mnemonic or 0x hex entropy)");
   }
-  const faucet = deriveKeypair(seedBytes());
+  const faucet = deriveSeedKeypair(seedBytes());
   // connectChain returns the shared cached client; never destroy it.
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
   const target = MultiAddress.Id(args.address);

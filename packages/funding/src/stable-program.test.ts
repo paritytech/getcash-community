@@ -36,6 +36,7 @@ const PROGRAM = {
   remoteFeesCash: 300_000n,
   beneficiaryHex: BENEFICIARY_HEX,
   peopleParaId: PEOPLE_PARA,
+  transfer: "teleport" as const,
   maxWeight: { ref_time: 5n, proof_size: 6n },
 };
 
@@ -230,6 +231,26 @@ function recordingApi(
   return { api: api as never, seen };
 }
 
+describe("forwardedProgramStandIn", () => {
+  it("mirrors the reserve program People receives: the CASH deposited twice as a reserve asset", () => {
+    const standIn = forwardedProgramStandIn(
+      TOKENS.CASH.locationOnPeople as never,
+      5_100_000n,
+      BENEFICIARY_HEX,
+      "reserve",
+    );
+    expect(standIn.value.map((i) => i.type)).toEqual([
+      "ReserveAssetDeposited",
+      "PayFees",
+      "ReserveAssetDeposited",
+      "ClearOrigin",
+      "RefundSurplus",
+      "DepositAsset",
+      "SetTopic",
+    ]);
+  });
+});
+
 describe("estimateStableProgramFees", () => {
   const input = {
     stable: "USDC" as const,
@@ -240,6 +261,7 @@ describe("estimateStableProgramFees", () => {
     depositStable: 5_400_000n,
     minUnderlyingOut: 5_100_000n,
     remoteFeesCash: 300_000n,
+    transfer: "teleport" as const,
     feeProbeAddress: "5Probe",
   };
 
@@ -277,6 +299,7 @@ describe("estimateStableProgramFees", () => {
         TOKENS.CASH.locationOnPeople as never,
         input.minUnderlyingOut,
         BENEFICIARY_HEX,
+        "teleport",
       ),
       { type: "V5", value: TOKENS.USDC.location },
     ]);

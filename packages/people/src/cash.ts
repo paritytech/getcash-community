@@ -1,5 +1,5 @@
-// The coinage underlying: asset 50000413 on Asset Hub, held on People as a foreign asset keyed by
-// its reserve Location.
+// The coinage underlying: the asset `network.json` names on Asset Hub, held on People as a foreign
+// asset keyed by its reserve Location.
 
 import { TOKENS } from "@getsome/core";
 

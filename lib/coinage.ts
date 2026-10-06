@@ -48,6 +48,7 @@ import {
   isStablePoolRoute,
   MANUAL_SOURCE_IDS,
   MANUAL_SOURCES,
+  NoCashTransferError,
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
   psmDepositNeeded,
@@ -621,7 +622,7 @@ function depositBudget(
   amount: bigint,
 ): { budget: { amount: bigint; asset: SettlementAsset }; targetDecimals: number } {
   const asset: SettlementAsset =
-    route.tier === "teleport"
+    route.tier === "dotusd"
       ? { kind: "pooled", assetId: TOKENS.DOTUSD.assetHubId }
       : route.external === undefined
         ? { kind: "native" }
@@ -832,7 +833,7 @@ export interface CoinageWorld extends RefundKeyHold {
   tradeN: number;
   /**
    * Runs the pool funding leg in the worker: native deposit on Asset Hub, converted to CASH and
-   * teleported to People in one XCM, claim into the purse. Single-flight; resolves when the
+   * sent to People in one XCM, claim into the purse. Single-flight; resolves when the
    * worker reports the claim.
    */
   runFunding(hooks?: {
@@ -1108,7 +1109,7 @@ export async function createCoinageSession(
     estimateFundingSizing,
     estimatePsmFundingSizing,
     estimateStableFundingSizing,
-    estimateTeleportFundingSizing,
+    estimateDotUsdFundingSizing,
   } = await import("./funding-fees");
   const sizingArgs = {
     ahClient: await connectChain(ASSET_HUB),
@@ -1143,22 +1144,25 @@ export async function createCoinageSession(
     );
     sizing = stable;
     budget = stable.askedDeposit;
-  } else if (args.route.tier === "teleport") {
+  } else if (args.route.tier === "dotusd") {
     // The deposit is the underlying itself: the target over the program's fees, no quote and no
     // headroom, and nothing to fall back to when the reads fail.
-    const teleport = await stage(
+    const dotUsd = await stage(
       "funding sizing estimate",
       20_000,
-      estimateTeleportFundingSizing(sizingArgs),
+      estimateDotUsdFundingSizing(sizingArgs),
     );
-    sizing = teleport;
-    budget = teleport.quotedDeposit;
+    sizing = dotUsd;
+    budget = dotUsd.quotedDeposit;
   } else {
     const pool = await stage(
       "funding sizing estimate",
       20_000,
       estimateFundingSizing(sizingArgs),
-    ).catch(() => null);
+    ).catch((e: unknown) => {
+      if (e instanceof NoCashTransferError) throw e;
+      return null;
+    });
     const keepNativeForFees = pool?.keepNativeForFees ?? DEFAULT_KEEP_NATIVE_FOR_FEES;
     const remoteFeeBuffer = pool?.remoteFeeBuffer ?? DEFAULT_REMOTE_FEE_BUFFER;
     sizing = { tier: "pool", remoteFeeBuffer, keepNativeForFees };

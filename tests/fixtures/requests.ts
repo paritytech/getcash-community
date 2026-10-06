@@ -274,6 +274,8 @@ export interface WorkerJobRecord {
     amount: string;
     at: number;
     attempts: number;
+    /** The host's last word on the top-up, once it has given one. */
+    status?: string;
   };
 }
 
