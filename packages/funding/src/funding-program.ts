@@ -1,13 +1,14 @@
 // The funding program the burner submits with PolkadotXcm.execute, and its fee estimator.
 //
 // The program withdraws the deposit's native, pays the XCM's own fees in native, exchanges the
-// rest for the underlying through the AssetConversion pool inside the holding, and teleports the
-// result to the burner's People address. The underlying never touches the Asset Hub account. The
+// rest for the underlying through the AssetConversion pool inside the holding, and sends the
+// result to the burner's People address, by teleport or by reserve transfer as the network's XCM
+// trust allows (cash-transfer.ts). The underlying never touches the Asset Hub account. The
 // extrinsic is atomic: a failed exchange rolls the whole program back and the deposit stays native,
 // minus the dispatch fee.
 //
 // The PSM tier has a second shape (`buildPsmFundingProgram`): the CASH a Psm.mint has just paid
-// onto the burner is withdrawn whole and teleported, the XCM's own fees are paid in the external
+// onto the burner is withdrawn whole and sent, the XCM's own fees are paid in the external
 // (USDT) the mint left on the burner for them, and what the fees did not spend is deposited back
 // there. No exchange, since the mint did the conversion. It runs after the mint inside a
 // Utility.batch_all (psm-batch.ts), and the dry run below runs the whole batch.
@@ -32,11 +33,11 @@
 // The stable pool tier has a third shape (`buildStableFundingProgram`): the burner holds a stable
 // with no PSM to mint from, so the program exchanges it twice inside the holding, stable to native
 // and native to CASH, one hop each because the runtime's exchanger takes a single pair, and then
-// teleports the CASH as the pool tier does. Its fees follow the PSM shape: paid in the stable,
+// sends the CASH as the pool tier does. Its fees follow the PSM shape: paid in the stable,
 // cushioned once with FEE_MARGIN_BPS, the unspent part refunded to a burner kept alive by its
 // min_balance.
 //
-// The teleport tier has a fourth shape (`buildTeleportFundingProgram`): the burner holds the
+// The dotUSD tier has a fourth shape (`buildDotUsdFundingProgram`): the burner holds the
 // underlying itself, deposited as dotUSD, so the program moves it to People with no exchange and
 // no mint. Its fees follow the PSM shape too: paid in the underlying from an allowance the program
 // refunds, cushioned once with FEE_MARGIN_BPS, the min_balance kept on the burner.
@@ -51,9 +52,17 @@
 import { TOKENS, type XcmJunction, type XcmLocation } from "@getsome/core";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import type { TypedApi } from "polkadot-api";
+import type { CashTransfer } from "./cash-transfer";
 import { describeDispatchError } from "./dispatch-error";
 import { STABLE_TOKENS, asLocation, stableTxOptions, type Location, type Stable } from "./stable";
-import { creditedTo, forwardedTo, siblingOrigin, signedOrigin, trappedIn } from "./xcm-dry-run";
+import {
+  creditedTo,
+  forwardedTo,
+  siblingOrigin,
+  signedOrigin,
+  trappedIn,
+  xcmErrorName,
+} from "./xcm-dry-run";
 
 type AssetHubApi = TypedApi<typeof paseo_next_v2>;
 export type PeopleApi = TypedApi<typeof paseo_people_next>;
@@ -152,7 +161,7 @@ export type AssetHubCall = ReturnType<AssetHubApi["tx"]["PolkadotXcm"]["execute"
 
 /** The destination fee allowance: the sized over-buy, or 1% of the target when that is more. The
  *  remote RefundSurplus returns the unused part, while an allowance too small to execute on traps
- *  the teleport at the destination. */
+ *  the transfer at the destination. */
 export function destinationEarmark(underlyingOut: bigint, remoteFeeBuffer: bigint): bigint {
   const onePercent = underlyingOut / 100n;
   const floor = onePercent > remoteFeeBuffer ? onePercent : remoteFeeBuffer;
@@ -174,6 +183,8 @@ export function buildFundingProgram(args: {
   remoteFeesCash: bigint;
   beneficiaryHex: string;
   peopleParaId: number;
+  /** How the CASH moves to People. */
+  transfer: CashTransfer;
   /** The declared weight ceiling. Defaults to FUNDING_PROGRAM_MAX_WEIGHT. */
   maxWeight?: { ref_time: bigint; proof_size: bigint };
 }): ExecuteArgs {
@@ -192,7 +203,12 @@ export function buildFundingProgram(args: {
           maximal: true,
         },
       },
-      teleportHoldingToPeople(c(args.remoteFeesCash), args.beneficiaryHex, args.peopleParaId),
+      holdingToPeople(
+        c(args.remoteFeesCash),
+        args.beneficiaryHex,
+        args.peopleParaId,
+        args.transfer,
+      ),
     ],
   };
   return {
@@ -207,8 +223,8 @@ export function buildFundingProgram(args: {
  *
  *  The refund comes AFTER the transfer: delivery is charged from the fees register inside
  *  InitiateTransfer, and a RefundSurplus before it would empty that register and leave delivery
- *  to be taken from a holding the transfer has already teleported. When the transfer runs the
- *  external sits in the fees register and the holding is CASH alone, so the teleport's
+ *  to be taken from a holding the transfer has already sent. When the transfer runs the
+ *  external sits in the fees register and the holding is CASH alone, so the transfer's
  *  `AllCounted(1)` is unambiguous; after RefundSurplus the holding is the external alone, so the
  *  refund's is too. It counts one asset rather than `Wild(All)`, which is weighed as
  *  MaxAssetsIntoHolding deposits and costs twenty times the fee. The refund lands in an account the
@@ -224,6 +240,8 @@ export function buildPsmFundingProgram(args: {
   remoteFeesCash: bigint;
   beneficiaryHex: string;
   peopleParaId: number;
+  /** How the CASH moves to People. */
+  transfer: CashTransfer;
   /** The declared weight ceiling. Defaults to FUNDING_PROGRAM_MAX_WEIGHT. */
   maxWeight?: { ref_time: bigint; proof_size: bigint };
 }): ExecuteArgs {
@@ -234,7 +252,12 @@ export function buildPsmFundingProgram(args: {
     value: [
       { type: "WithdrawAsset", value: sortedAssets([fees, c(args.withdrawCash)]) },
       { type: "PayFees", value: { asset: fees } },
-      teleportHoldingToPeople(c(args.remoteFeesCash), args.beneficiaryHex, args.peopleParaId),
+      holdingToPeople(
+        c(args.remoteFeesCash),
+        args.beneficiaryHex,
+        args.peopleParaId,
+        args.transfer,
+      ),
       { type: "RefundSurplus" },
       {
         type: "DepositAsset",
@@ -276,6 +299,8 @@ export function buildStableFundingProgram(args: {
   remoteFeesCash: bigint;
   beneficiaryHex: string;
   peopleParaId: number;
+  /** How the CASH moves to People. */
+  transfer: CashTransfer;
   /** The declared weight ceiling: the weighed weight, never a fallback. */
   maxWeight: { ref_time: bigint; proof_size: bigint };
 }): ExecuteArgs {
@@ -311,7 +336,12 @@ export function buildStableFundingProgram(args: {
           maximal: true,
         },
       },
-      teleportHoldingToPeople(c(args.remoteFeesCash), args.beneficiaryHex, args.peopleParaId),
+      holdingToPeople(
+        c(args.remoteFeesCash),
+        args.beneficiaryHex,
+        args.peopleParaId,
+        args.transfer,
+      ),
       { type: "RefundSurplus" },
       {
         type: "DepositAsset",
@@ -325,13 +355,13 @@ export function buildStableFundingProgram(args: {
   return { message, max_weight: args.maxWeight } as unknown as ExecuteArgs;
 }
 
-/** The teleport tier's program: the underlying the buyer deposited as dotUSD, landed on the
+/** The dotUSD tier's program: the underlying the buyer deposited as dotUSD, landed on the
  *  burner's People address as it is, every Asset Hub fee paid in it from an allowance the program
  *  refunds. The PSM shape without the mint before it: one asset in the holding and in the fees
- *  register alike, the fees register filled first, so the teleport's `AllCounted(1)` takes what
+ *  register alike, the fees register filled first, so the transfer's `AllCounted(1)` takes what
  *  the allowance leaves. The refund comes after the transfer and lands in an account its
  *  min_balance keeps alive. */
-export function buildTeleportFundingProgram(args: {
+export function buildDotUsdFundingProgram(args: {
   /** Underlying withdrawn into the holding: what is sent plus the fee allowance. The asset's
    *  min_balance stays on the burner. */
   withdrawUnderlying: bigint;
@@ -342,6 +372,8 @@ export function buildTeleportFundingProgram(args: {
   remoteFeesCash: bigint;
   beneficiaryHex: string;
   peopleParaId: number;
+  /** How the CASH moves to People. */
+  transfer: CashTransfer;
   /** The declared weight ceiling: the weighed weight, never a fallback. */
   maxWeight: { ref_time: bigint; proof_size: bigint };
 }): ExecuteArgs {
@@ -351,7 +383,12 @@ export function buildTeleportFundingProgram(args: {
     value: [
       { type: "WithdrawAsset", value: [c(args.withdrawUnderlying)] },
       { type: "PayFees", value: { asset: c(args.payFeesUnderlying) } },
-      teleportHoldingToPeople(c(args.remoteFeesCash), args.beneficiaryHex, args.peopleParaId),
+      holdingToPeople(
+        c(args.remoteFeesCash),
+        args.beneficiaryHex,
+        args.peopleParaId,
+        args.transfer,
+      ),
       { type: "RefundSurplus" },
       {
         type: "DepositAsset",
@@ -365,28 +402,28 @@ export function buildTeleportFundingProgram(args: {
   return { message, max_weight: args.maxWeight } as unknown as ExecuteArgs;
 }
 
-/** The signing options that charge the teleport tier's dispatch fee in the underlying, the one
+/** The signing options that charge the dotUSD tier's dispatch fee in the underlying, the one
  *  asset the burner holds. The same options price the fee. */
-export function teleportTxOptions(): { asset: Location } {
+export function dotUsdTxOptions(): { asset: Location } {
   return { asset: asLocation(TOKENS.DOTUSD.location) };
 }
 
-/** The InitiateTransfer every shape carries: everything in the holding teleported to People,
- *  `remoteFees` earmarked for the destination's execution. */
-function teleportHoldingToPeople(
+/** The InitiateTransfer every shape carries: everything in the holding sent to People by
+ *  `transfer`, `remoteFees` earmarked for the destination's execution. */
+function holdingToPeople(
   remoteFees: unknown,
   beneficiaryHex: string,
   peopleParaId: number,
+  transfer: CashTransfer,
 ) {
+  const kind = transfer === "teleport" ? "Teleport" : "ReserveDeposit";
   return {
     type: "InitiateTransfer",
     value: {
       destination: peopleDest(peopleParaId),
-      remote_fees: { type: "Teleport", value: { type: "Definite", value: [remoteFees] } },
+      remote_fees: { type: kind, value: { type: "Definite", value: [remoteFees] } },
       preserve_origin: false,
-      assets: [
-        { type: "Teleport", value: { type: "Wild", value: { type: "AllCounted", value: 1 } } },
-      ],
+      assets: [{ type: kind, value: { type: "Wild", value: { type: "AllCounted", value: 1 } } }],
       remote_xcm: [
         // Return the unused destination allowance to the holding, then sweep everything to the
         // burner.
@@ -404,20 +441,22 @@ function teleportHoldingToPeople(
 }
 
 /** A stand-in for the program People receives, with the underlying keyed as `assetId`. Mirrors
- *  the instruction list the runtime forwards, which is what its weight and delivery fee depend
- *  on. */
+ *  the instruction list the runtime forwards for `transfer`, which is what its weight and
+ *  delivery fee depend on. */
 export function forwardedProgramStandIn(
   assetId: AssetLocation,
   amount: bigint,
   beneficiaryHex: string,
+  transfer: CashTransfer,
 ) {
   const c = (v: bigint) => ({ id: assetId, fun: { type: "Fungible", value: v } });
+  const received = transfer === "teleport" ? "ReceiveTeleportedAsset" : "ReserveAssetDeposited";
   return {
     type: "V5",
     value: [
-      { type: "ReceiveTeleportedAsset", value: [c(amount)] },
+      { type: received, value: [c(amount)] },
       { type: "PayFees", value: { asset: c(amount) } },
-      { type: "ReceiveTeleportedAsset", value: [c(amount)] },
+      { type: received, value: [c(amount)] },
       { type: "ClearOrigin" },
       { type: "RefundSurplus" },
       {
@@ -468,8 +507,7 @@ async function dryRunOnPeople(args: {
   if (!dr.success) return { failed: "People would not dry-run the forwarded program" };
   const outcome = dr.value.execution_result;
   if (outcome.type !== "Complete") {
-    const error = (outcome.value as { error?: { type?: string } }).error?.type ?? outcome.type;
-    return { failed: `the forwarded program fails on People with ${error}` };
+    return { failed: `the forwarded program fails on People with ${xcmErrorName(outcome)}` };
   }
   const events = dr.value.emitted_events;
   return { landed: creditedTo(events, args.beneficiaryHex, "asset"), trapped: trappedIn(events) };
@@ -583,6 +621,8 @@ export async function estimateFundingProgramFees(args: {
   minUnderlyingOut: bigint;
   /** The destination fee allowance the program will carry, for the same reason. */
   remoteFeesCash: bigint;
+  /** How the CASH moves to People. */
+  transfer: CashTransfer;
   /** Any valid address for the dispatch fee read; the fee does not depend on the signer's
    *  balance. */
   feeProbeAddress: string;
@@ -603,6 +643,7 @@ export async function estimateFundingProgramFees(args: {
       remoteFeesCash: args.remoteFeesCash,
       beneficiaryHex: args.beneficiaryHex,
       peopleParaId: args.peopleParaId,
+      transfer: args.transfer,
       maxWeight,
     });
 
@@ -631,7 +672,12 @@ export async function estimateFundingProgramFees(args: {
           args.peopleParaId,
           args.dryRunFrom,
         )) ??
-    forwardedProgramStandIn(args.pool.underlying, args.minUnderlyingOut, args.beneficiaryHex);
+    forwardedProgramStandIn(
+      args.pool.underlying,
+      args.minUnderlyingOut,
+      args.beneficiaryHex,
+      args.transfer,
+    );
   const df = await args.api.apis.XcmPaymentApi.query_delivery_fees(
     { type: "V5", value: peopleDest(args.peopleParaId) } as never,
     forwarded as never,
@@ -698,6 +744,8 @@ export async function estimateStableProgramFees(args: {
   minUnderlyingOut: bigint;
   /** The destination fee allowance the program will carry, for the same reason. */
   remoteFeesCash: bigint;
+  /** How the CASH moves to People. */
+  transfer: CashTransfer;
   /** Any valid address for the dispatch fee read; the fee does not depend on the signer's
    *  balance. */
   feeProbeAddress: string;
@@ -737,6 +785,7 @@ export async function estimateStableProgramFees(args: {
       remoteFeesCash: args.remoteFeesCash,
       beneficiaryHex: args.beneficiaryHex,
       peopleParaId: args.peopleParaId,
+      transfer: args.transfer,
       maxWeight,
     });
   };
@@ -776,6 +825,7 @@ export async function estimateStableProgramFees(args: {
       TOKENS.CASH.locationOnPeople as unknown as AssetLocation,
       args.minUnderlyingOut,
       args.beneficiaryHex,
+      args.transfer,
     );
   const df = await args.api.apis.XcmPaymentApi.query_delivery_fees(
     { type: "V5", value: peopleDest(args.peopleParaId) } as never,
@@ -826,10 +876,10 @@ export async function estimateStableProgramFees(args: {
   };
 }
 
-/** Every cost of the teleport tier's program, measured against the program itself, all in the
+/** Every cost of the dotUSD tier's program, measured against the program itself, all in the
  *  underlying. Throws when the runtime declines a read or the deposit does not cover what is held
  *  back. */
-export async function estimateTeleportProgramFees(args: {
+export async function estimateDotUsdProgramFees(args: {
   api: AssetHubApi;
   beneficiaryHex: string;
   peopleParaId: number;
@@ -838,6 +888,8 @@ export async function estimateTeleportProgramFees(args: {
   depositUnderlying: bigint;
   /** The destination fee allowance the program will carry, for the same reason. */
   remoteFeesCash: bigint;
+  /** How the CASH moves to People. */
+  transfer: CashTransfer;
   /** Any valid address for the dispatch fee read; the fee does not depend on the signer's
    *  balance. */
   feeProbeAddress: string;
@@ -849,7 +901,7 @@ export async function estimateTeleportProgramFees(args: {
   const underlyingAsset = { type: "V5", value: token.location };
   const details = await args.api.query.Assets.Asset.getValue(token.assetHubId);
   if (details === undefined) {
-    throw new Error(`teleport program fee estimate: ${token.symbol} is not an asset on Asset Hub`);
+    throw new Error(`dotUSD program fee estimate: ${token.symbol} is not an asset on Asset Hub`);
   }
   const minBalance = details.min_balance;
   // The program carved from the deposit with the dispatch fee and the min_balance kept back. Only
@@ -862,15 +914,16 @@ export async function estimateTeleportProgramFees(args: {
     const withdraw = args.depositUnderlying - dispatchUnderlying - minBalance;
     if (withdraw <= feeAllowance) {
       throw new DepositBelowFeesError(
-        `teleport program fee estimate: ${args.depositUnderlying} of ${token.symbol} does not cover the ${minBalance + feeAllowance} held back for fees`,
+        `dotUSD program fee estimate: ${args.depositUnderlying} of ${token.symbol} does not cover the ${minBalance + feeAllowance} held back for fees`,
       );
     }
-    return buildTeleportFundingProgram({
+    return buildDotUsdFundingProgram({
       withdrawUnderlying: withdraw,
       payFeesUnderlying: feeAllowance,
       remoteFeesCash: args.remoteFeesCash,
       beneficiaryHex: args.beneficiaryHex,
       peopleParaId: args.peopleParaId,
+      transfer: args.transfer,
       maxWeight,
     });
   };
@@ -882,13 +935,13 @@ export async function estimateTeleportProgramFees(args: {
     (rough as { message: unknown }).message as never,
   );
   if (!weight.success) {
-    throw new Error("teleport program fee estimate: the runtime would not weigh it");
+    throw new Error("dotUSD program fee estimate: the runtime would not weigh it");
   }
   const localFee = await args.api.apis.XcmPaymentApi.query_weight_to_asset_fee(
     weight.value,
     underlyingAsset as never,
   );
-  if (!localFee.success) throw new Error("teleport program fee estimate: local fee unavailable");
+  if (!localFee.success) throw new Error("dotUSD program fee estimate: local fee unavailable");
   const localExternal = localFee.value;
   const maxWeight = { ref_time: weight.value.ref_time, proof_size: weight.value.proof_size };
 
@@ -908,20 +961,21 @@ export async function estimateTeleportProgramFees(args: {
       TOKENS.CASH.locationOnPeople as unknown as AssetLocation,
       args.depositUnderlying,
       args.beneficiaryHex,
+      args.transfer,
     );
   const df = await args.api.apis.XcmPaymentApi.query_delivery_fees(
     { type: "V5", value: peopleDest(args.peopleParaId) } as never,
     forwarded as never,
     underlyingAsset as never,
   );
-  if (!df.success) throw new Error("teleport program fee estimate: delivery fee unavailable");
+  if (!df.success) throw new Error("dotUSD program fee estimate: delivery fee unavailable");
   const deliveryExternal = extractFungibleAmount(df.value);
 
   // Price the dispatch against the program carrying the final amounts and the declared weight, so
   // the charge it predicts is the charge the submitted call pays. The dispatch fee itself is not
   // yet known to keep out of the probe; a few thousand units do not change a compact encoding's
   // length.
-  const options = teleportTxOptions();
+  const options = dotUsdTxOptions();
   const dispatchNative = await args.api.tx.PolkadotXcm.execute(
     probe(localExternal + deliveryExternal, 0n, maxWeight),
   ).getEstimatedFees(args.dryRunFrom ?? args.feeProbeAddress, options);
@@ -936,7 +990,7 @@ export async function estimateTeleportProgramFees(args: {
     );
   if (dispatchExternal === undefined) {
     throw new Error(
-      "teleport program fee estimate: the pool cannot price the dispatch fee in the underlying",
+      "dotUSD program fee estimate: the pool cannot price the dispatch fee in the underlying",
     );
   }
 
@@ -967,7 +1021,7 @@ function underlyingOnPeople(pool: Pool, assetHubParaId: number): AssetLocation {
 
 /** The destination's execution fee for the forwarded program, in the underlying, with
  *  FEE_MARGIN_BPS on top so it is never a bare measurement. People runs the program in a dry run
- *  as if Asset Hub had sent it, and the fee is whatever the teleported amount loses before it
+ *  as if Asset Hub had sent it, and the fee is whatever the amount sent loses before it
  *  reaches the beneficiary. People cannot price a weight in the underlying directly, so this reads
  *  the charge its fee logic actually makes. Throws when the dry run does not complete. */
 export async function estimateDestinationFeeCash(args: {
@@ -978,9 +1032,11 @@ export async function estimateDestinationFeeCash(args: {
   /** Representative underlying amount. The fee does not depend on it, but the deposit must clear
    *  the asset's minimum balance for the dry run to complete. */
   amount: bigint;
+  /** How the CASH moves to People. */
+  transfer: CashTransfer;
 }): Promise<bigint> {
   const asset = underlyingOnPeople(args.pool, args.assetHubParaId);
-  const program = forwardedProgramStandIn(asset, args.amount, args.beneficiaryHex);
+  const program = forwardedProgramStandIn(asset, args.amount, args.beneficiaryHex, args.transfer);
   const run = await dryRunOnPeople({
     peopleApi: args.peopleApi,
     assetHubParaId: args.assetHubParaId,
@@ -991,7 +1047,7 @@ export async function estimateDestinationFeeCash(args: {
   if (run.landed === 0n) {
     throw new Error("destination fee estimate: nothing reached the beneficiary in the dry run");
   }
-  // The stand-in teleports the amount twice and deposits what is left to the beneficiary.
+  // The stand-in receives the amount twice and deposits what is left to the beneficiary.
   return withFeeMargin(2n * args.amount - run.landed);
 }
 

@@ -264,7 +264,7 @@ describe("funding progress registry", () => {
       kind: "stage",
       stageKey: "cash-conversion",
     });
-    // The swap and the teleport are one program, so both report the conversion.
+    // The swap and the send are one program, so both report the conversion.
     expect(observeSharedCashProgress("await-arrival")).toEqual({
       kind: "stage",
       stageKey: "cash-conversion",

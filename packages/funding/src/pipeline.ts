@@ -2,16 +2,17 @@
 // coinage underlying on the People chain with one extrinsic signed by the ephemeral, through the
 // tier the request was quoted (route.ts) and never another. On the pool tier the deposit is the
 // native: one program pays its own fees in native, exchanges the rest through the AssetConversion
-// pool inside the XCM holding, and teleports the result to the ephemeral's People address. On the
-// PSM tier the deposit is the external (USDT): one batch mints CASH through the PSM and teleports
-// it, the dispatch fee and the XCM's own fees both paid in the external, the latter from an
-// allowance the mint leaves on the burner and the program refunds the unspent part of
-// (psm-batch.ts). The pool tier fed with a stable, USDC or USDT the PSM will not serve, is the
-// stable pool tier: one program pays its fees in the stable as the PSM tier does, exchanges the
-// stable for the native and the native for CASH inside the holding, and teleports the CASH. On the
-// teleport tier the deposit is the underlying itself, dotUSD: one program pays its fees in it and
-// teleports the rest, with nothing to exchange and so nothing to quote. The handoff session's
-// funded gate takes over from there; this pipeline never touches the settle.
+// pool inside the XCM holding, and sends the result to the ephemeral's People address, by
+// teleport or by reserve transfer as the network allows (cash-transfer.ts). On the PSM tier the
+// deposit is the external (USDT): one batch mints CASH through the PSM and sends it, the dispatch
+// fee and the XCM's own fees both paid in the external, the latter from an allowance the mint
+// leaves on the burner and the program refunds the unspent part of (psm-batch.ts). The pool tier
+// fed with a stable, USDC or USDT the PSM will not serve, is the stable pool tier: one program
+// pays its fees in the stable as the PSM tier does, exchanges the stable for the native and the
+// native for CASH inside the holding, and sends the CASH. On the dotUSD tier the deposit is the
+// underlying itself, dotUSD: one program pays its fees in it and sends the rest, with nothing to
+// exchange and so nothing to quote. The handoff session's funded gate takes over from there; this
+// pipeline never touches the settle.
 //
 // EVERYTHING THE BURNER HOLDS IS CONVERTED AND MOVED. The burner serves one request and the claim
 // sweeps its whole balance, so anything left behind is stranded. The program withdraws the full
@@ -64,6 +65,7 @@ import type {
   TxEventsPayload,
   TypedApi,
 } from "polkadot-api";
+import type { CashTransfer } from "./cash-transfer";
 import { describeDispatchError, psmRefusalKind, type PsmRefusalKind } from "./dispatch-error";
 import {
   buildFundingProgram,
@@ -76,9 +78,9 @@ import {
   withFeeMargin,
   type PeopleApi,
   type Pool,
-  buildTeleportFundingProgram,
-  estimateTeleportProgramFees,
-  teleportTxOptions,
+  buildDotUsdFundingProgram,
+  estimateDotUsdProgramFees,
+  dotUsdTxOptions,
   type StableLegFees,
 } from "./funding-program";
 import {
@@ -104,7 +106,7 @@ type AssetLocation = Parameters<AssetHubApi["query"]["AssetConversion"]["Pools"]
 
 /** The step a tick performs or waits in. 'await-native' waits for the deposit the route expects,
  *  the native on the pool tier and the external on the PSM tier; 'swap' submits the one
- *  transaction that converts it and teleports the result, an exchange or a mint; 'await-arrival'
+ *  transaction that converts it and sends the result, an exchange or a mint; 'await-arrival'
  *  holds while that XCM has not yet credited People in a finalized block. The two names predate
  *  the PSM tier and are persisted in TopUpRecord and the worker's job blob, so they keep their
  *  names and widen their meaning. */
@@ -455,6 +457,9 @@ export interface TickOnceInput {
   peopleApi: PeopleApi;
   /** The tier the request was quoted, as recorded on it (recordedRoute); never decided here. */
   route: ConversionRoute;
+  /** How the CASH moves to People, as the chains answered through `chooseCashTransfer`; never
+   *  decided here. */
+  transfer: CashTransfer;
   /** The native/CASH pool keys; discovered once and passed in. The pool tiers only. */
   pool?: Pool;
   /** The stable/native pool keys, `underlying` being the stable; discovered once and passed in.
@@ -472,7 +477,7 @@ export interface TickOnceInput {
   keepNativeForFees: bigint;
   /** Pool tiers only. On the stable pool tier it also bounds the first exchange's floor. */
   slippagePct: number;
-  /** PSM, stable pool and teleport tiers: the deposit the buyer was asked for, frozen at quote
+  /** PSM, stable pool and dotUSD tiers: the deposit the buyer was asked for, frozen at quote
    *  time. The gate checks for exactly this rather than re-pricing the fees, since re-pricing
    *  moves the bar under a deposit that was already sized against it. Absent on a request quoted
    *  before it was recorded, which falls back to the live figure. */
@@ -714,32 +719,33 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
   let psmFees: PsmBatchFees | null = null;
   let stableIn = 0n;
   let stableFees: StableLegFees | null = null;
-  let teleportFees: StableLegFees | null = null;
-  if (needsGate && route.tier === "teleport") {
+  let dotUsdFees: StableLegFees | null = null;
+  if (needsGate && route.tier === "dotusd") {
     // The deposit is the underlying itself, so there is no quote: a deposit short of the bare
     // target waits without the fee reads, and past it the gate is the target plus the program's
     // own fees.
     if (balances.depositAh < buyNow) {
       depositNeeded = buyNow;
     } else {
-      teleportFees = await bounded(
-        estimateTeleportProgramFees({
+      dotUsdFees = await bounded(
+        estimateDotUsdProgramFees({
           api,
           beneficiaryHex: input.beneficiaryHex,
           peopleParaId: input.peopleParaId,
           // At the magnitude the program will carry: everything the burner holds.
           depositUnderlying: balances.depositAh,
           remoteFeesCash: earmark,
+          transfer: input.transfer,
           feeProbeAddress: address,
           dryRunFrom: address,
         }),
         input.tickTimeoutMs,
-        "teleport program fee estimate",
+        "dotUSD program fee estimate",
       );
       // The figure the buyer was asked against, frozen at quote time; the live figure stands in
       // where it is missing or no longer owed whole.
       const frozen = buyNow === buyAmount ? input.quotedDeposit : undefined;
-      depositNeeded = frozen ?? stableDepositNeeded(buyNow, teleportFees);
+      depositNeeded = frozen ?? stableDepositNeeded(buyNow, dotUsdFees);
     }
   } else if (needsGate && isStablePoolRoute(route)) {
     // The plain two-hop quote first, as the native pool tier's gate is plain; a deposit short of
@@ -768,6 +774,7 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
           depositStable: balances.depositAh,
           minUnderlyingOut: buyNow,
           remoteFeesCash: earmark,
+          transfer: input.transfer,
           feeProbeAddress: address,
           dryRunFrom: address,
         }),
@@ -804,6 +811,7 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
           // At the magnitude the batch will carry: everything the burner holds.
           depositExternal: balances.depositAh,
           remoteFeesCash: earmark,
+          transfer: input.transfer,
           feeProbeAddress: address,
           dryRunFrom: address,
         }),
@@ -835,10 +843,10 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
     return { step: "done", balances, submitted: false };
   }
 
-  if (effective === "swap" && route.tier === "teleport") {
+  if (effective === "swap" && route.tier === "dotusd") {
     // The gate priced the program this very tick: a deposit past the bare target always did.
-    if (teleportFees === null) throw new Error("teleport tier: the swap step has no fee estimate");
-    await teleportToPeople(input, state, balances, earmark, teleportFees);
+    if (dotUsdFees === null) throw new Error("dotUSD tier: the swap step has no fee estimate");
+    await sendDotUsdToPeople(input, state, balances, earmark, dotUsdFees);
     return { step: effective, balances, submitted: true };
   }
 
@@ -868,7 +876,7 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
   if (effective === "swap") {
     const pool = poolOf(input);
     // Withdraw the whole native balance minus the dispatch fee, pay the XCM's fees in native,
-    // exchange the rest inside the holding, and teleport the result to the burner on People.
+    // exchange the rest inside the holding, and send the result to the burner on People.
     const fees = await bounded(
       estimateFundingProgramFees({
         api,
@@ -878,6 +886,7 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
         nativeBalance: balances.depositAh,
         minUnderlyingOut: buyNow,
         remoteFeesCash: earmark,
+        transfer: input.transfer,
         feeProbeAddress: address,
         // The burner holds the native, so the delivery fee is priced from the real forwarded
         // program.
@@ -939,6 +948,7 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
       remoteFeesCash: earmark,
       beneficiaryHex: input.beneficiaryHex,
       peopleParaId: input.peopleParaId,
+      transfer: input.transfer,
       // The weighed weight, declared as the ceiling.
       maxWeight: fees.maxWeight,
     });
@@ -1068,6 +1078,7 @@ async function swapThroughStablePool(
     remoteFeesCash,
     beneficiaryHex: input.beneficiaryHex,
     peopleParaId: input.peopleParaId,
+    transfer: input.transfer,
     maxWeight: fees.maxWeight,
   });
   // Both chains run the program before it is paid for; one that would fail, trap assets or land
@@ -1105,10 +1116,10 @@ async function swapThroughStablePool(
   }
 }
 
-/** The teleport tier's swap step: send everything the fees leave, not just the target, to the
+/** The dotUSD tier's swap step: send everything the fees leave, not just the target, to the
  *  burner on People, after the dry run. Nothing is exchanged, so there is no quote to take and no
  *  price to wait for; a surplus lands as extra CASH. */
-async function teleportToPeople(
+async function sendDotUsdToPeople(
   input: TickOnceInput,
   state: TickState,
   balances: FundingBalances,
@@ -1121,16 +1132,17 @@ async function teleportToPeople(
   const send = balances.depositAh - fees.dispatchExternal - fees.heldBackExternal;
   if (send <= 0n) {
     throw new Error(
-      `deposit ${balances.depositAh} cannot cover the teleport program's own fees ` +
+      `deposit ${balances.depositAh} cannot cover the dotUSD program's own fees ` +
         `(dispatch ${fees.dispatchExternal} + held back ${fees.heldBackExternal})`,
     );
   }
-  const execArgs = buildTeleportFundingProgram({
+  const execArgs = buildDotUsdFundingProgram({
     withdrawUnderlying: send + fees.feeAllowanceExternal,
     payFeesUnderlying: fees.feeAllowanceExternal,
     remoteFeesCash,
     beneficiaryHex: input.beneficiaryHex,
     peopleParaId: input.peopleParaId,
+    transfer: input.transfer,
     maxWeight: fees.maxWeight,
   });
   // Both chains run the program before it is paid for; one that would fail, trap assets or land
@@ -1147,7 +1159,7 @@ async function teleportToPeople(
       mustLand: input.settleAmount - balances.underlyingPeople,
     }),
     input.tickTimeoutMs,
-    "teleport program dry run",
+    "dotUSD program dry run",
   );
   const tx = api.tx.PolkadotXcm.execute(execArgs);
   // The dispatch fee is charged in the underlying, the one asset the burner holds.
@@ -1156,14 +1168,14 @@ async function teleportToPeople(
     state,
     balances,
     tx,
-    { ...teleportTxOptions(), ...input.signOptions },
-    "teleport program",
+    { ...dotUsdTxOptions(), ...input.signOptions },
+    "dotUSD program",
   );
   // A rejected program rolls back whole: the deposit stays on the burner minus the dispatch fee,
   // and the next tick re-prices and retries.
   if (!res.ok) {
     throw new Error(
-      `teleport program dispatch rejected: ${describeDispatchError(res.dispatchError, execArgs)}`,
+      `dotUSD program dispatch rejected: ${describeDispatchError(res.dispatchError, execArgs)}`,
     );
   }
 }
@@ -1196,7 +1208,7 @@ export function psmDepositNeeded(
   );
 }
 
-/** The PSM tier's swap step: mint everything the dispatch fee leaves and teleport the CASH to the
+/** The PSM tier's swap step: mint everything the dispatch fee leaves and send the CASH to the
  *  burner on People, in one batch, after the dry run of the whole batch. Counts the PSM's
  *  refusals towards the hold; every other failure is the next tick's to retry. */
 async function mintThroughPsm(
@@ -1232,6 +1244,7 @@ async function mintThroughPsm(
     remoteFeesCash,
     beneficiaryHex: input.beneficiaryHex,
     peopleParaId: input.peopleParaId,
+    transfer: input.transfer,
     maxWeight: fees.maxWeight,
   });
   // The whole batch on both chains before paying for it, the mint included: a PSM refusal

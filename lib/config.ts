@@ -50,7 +50,7 @@ export const SOURCE_CHAINS = [
 ] as const;
 
 /** The direct network: the buyer sends the token from any wallet to the request's own account
- *  on Asset Hub. The token picks the tier: DOT the pool, dotUSD the teleport with no conversion,
+ *  on Asset Hub. The token picks the tier: DOT the pool, dotUSD sent as it is with no conversion,
  *  USDT the PSM with the pool through PAS as the fallback, USDC the pool through PAS. */
 export const POLKADOT_CHAIN = {
   chain: CHAINS.Polkadot,

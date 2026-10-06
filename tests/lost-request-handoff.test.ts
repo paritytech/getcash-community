@@ -9,7 +9,7 @@ const fees = vi.hoisted(() => ({
   estimateFundingSizing: vi.fn(),
   estimatePsmFundingSizing: vi.fn(),
   estimateStableFundingSizing: vi.fn(),
-  estimateTeleportFundingSizing: vi.fn(),
+  estimateDotUsdFundingSizing: vi.fn(),
 }));
 vi.mock("../lib/funding-fees", () => fees);
 vi.mock("../lib/host-chain", () => ({
@@ -43,9 +43,9 @@ describe("lostRequestHandoff", () => {
     for (const fn of Object.values(fees)) fn.mockReset();
   });
 
-  it("sizes the teleport tier live and carries its quoted deposit as the gate", async () => {
-    fees.estimateTeleportFundingSizing.mockResolvedValue({
-      tier: "teleport",
+  it("sizes the dotUSD tier live and carries its quoted deposit as the gate", async () => {
+    fees.estimateDotUsdFundingSizing.mockResolvedValue({
+      tier: "dotusd",
       ...leg,
       quotedDeposit: 12_093_512n,
     });
@@ -53,19 +53,19 @@ describe("lostRequestHandoff", () => {
       "dotusd-assethub",
       3,
       "5Burner",
-      slot({ tier: "teleport" }),
+      slot({ tier: "dotusd" }),
     );
     expect(handoff).toMatchObject({
       label: "onramp:eph:dotusd-assethub:3",
       burnerAddress: "5Burner",
       settleAmount: "12000000",
       depositExpiresAt: 99,
-      tier: "teleport",
+      tier: "dotusd",
       remoteFeeBuffer: "43",
       keepNativeForFees: "0",
       quotedDeposit: "12093512",
     });
-    expect(fees.estimateTeleportFundingSizing).toHaveBeenCalledWith(
+    expect(fees.estimateDotUsdFundingSizing).toHaveBeenCalledWith(
       expect.objectContaining({ settleAmount: 12_000_000n, probeAddress: "5Burner" }),
     );
   });
@@ -129,15 +129,15 @@ describe("lostRequestHandoff", () => {
   });
 
   it("falls back to the worker's defaults when a read fails, the pool sizing gives up, or there is nothing to size", async () => {
-    fees.estimateTeleportFundingSizing.mockRejectedValue(new Error("rpc down"));
+    fees.estimateDotUsdFundingSizing.mockRejectedValue(new Error("rpc down"));
     const failed = await lostRequestHandoff(
       "dotusd-assethub",
       3,
       "5Burner",
-      slot({ tier: "teleport" }),
+      slot({ tier: "dotusd" }),
     );
     expect(failed).toMatchObject({
-      tier: "teleport",
+      tier: "dotusd",
       remoteFeeBuffer: "1000",
       keepNativeForFees: "0",
     });

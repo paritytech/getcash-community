@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   heldWrites: [] as Array<() => void>,
   tickOnce: vi.fn(),
   discoverPools: vi.fn(),
+  chooseCashTransfer: vi.fn(),
   settlementBalance: vi.fn(),
 }));
 
@@ -64,6 +65,7 @@ vi.mock("@getsome/funding", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   tickOnce: mocks.tickOnce,
   discoverPools: mocks.discoverPools,
+  chooseCashTransfer: mocks.chooseCashTransfer,
 }));
 
 vi.mock("@getsome/people", () => ({
@@ -174,6 +176,7 @@ function armSeams() {
   mocks.getHostProvider.mockReset();
   mocks.discoverPools.mockReset();
   mocks.tickOnce.mockReset();
+  mocks.chooseCashTransfer.mockReset();
   mocks.registerTopUp.mockReset();
   mocks.settlementBalance.mockReset();
   mocks.deriveEntropy.mockResolvedValue({ ok: true, value: SEED });
@@ -181,6 +184,7 @@ function armSeams() {
   mocks.discoverPools.mockImplementation(async (_api: unknown, ids: number[]) =>
     ids.map(() => ({ native: "N", underlying: "U" })),
   );
+  mocks.chooseCashTransfer.mockResolvedValue("teleport");
   mocks.watches.length = 0;
   mocks.stored.clear();
   mocks.storageDown = false;
@@ -313,18 +317,18 @@ describe("worker funding engine", () => {
     expect(unknown.reason).toContain("deposit asset");
   });
 
-  it("hands a teleport job its route and frozen deposit with no pool to find", async () => {
+  it("hands a dotUSD job its route and frozen deposit with no pool to find", async () => {
     armSeams();
     const engine = await freshEngine();
     await engine.startFunding(
-      JSON.stringify({ ...HANDOFF, tier: "teleport", quotedDeposit: "5143041" }),
+      JSON.stringify({ ...HANDOFF, tier: "dotusd", quotedDeposit: "5143041" }),
     );
-    expect(storedJob()).toMatchObject({ tier: "teleport", quotedDeposit: "5143041" });
+    expect(storedJob()).toMatchObject({ tier: "dotusd", quotedDeposit: "5143041" });
     mocks.tickOnce.mockResolvedValue(outcome("swap"));
     await engine.tickAllFunding();
     expect(mocks.discoverPools).not.toHaveBeenCalled();
     expect(mocks.tickOnce.mock.calls[0]![0]).toMatchObject({
-      route: { tier: "teleport" },
+      route: { tier: "dotusd" },
       pool: undefined,
       stablePool: undefined,
       quotedDeposit: 5_143_041n,
@@ -784,7 +788,7 @@ describe("worker funding engine", () => {
       JSON.stringify({
         ...HANDOFF,
         settleAmount: "7900000",
-        tier: "teleport",
+        tier: "dotusd",
         quotedDeposit: "8000000",
       }),
     );
@@ -792,7 +796,7 @@ describe("worker funding engine", () => {
     const job = storedJob();
     expect(job).toMatchObject({
       settleAmount: "7900000",
-      tier: "teleport",
+      tier: "dotusd",
       quotedDeposit: "8000000",
     });
     // The old route's stable is gone with it, and the job's identity is kept.
@@ -826,7 +830,7 @@ describe("worker funding engine", () => {
     await engine.tickAllFunding();
     expect(storedJob()).toMatchObject({ phase: "failed", failure: "expired" });
     const expired = await engine.amendFunding(
-      JSON.stringify({ ...HANDOFF, settleAmount: "7900000", tier: "teleport" }),
+      JSON.stringify({ ...HANDOFF, settleAmount: "7900000", tier: "dotusd" }),
     );
     expect(expired).toMatchObject({ error: "invalid" });
     expect(storedJob().settleAmount).toBe(HANDOFF.settleAmount);
