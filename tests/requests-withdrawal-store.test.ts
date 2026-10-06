@@ -271,6 +271,26 @@ describe("requests store: withdrawals", () => {
     expect(await stored(REF)).not.toBeNull();
   });
 
+  it("rebuilds the sale the job keeps, the PSM's fee rate included, and refuses a job without one", async () => {
+    await seed([], {
+      [SESSION]: job({ tier: "psm", external: "USDT", feeRate: 5_000, phase: "await-cash" }),
+    });
+    const requests = useRequestsStore();
+    await requests.reconcile("boot");
+    const record = requests.get(REF);
+    expect(record?.kind === "withdrawal" && record.handoff).toMatchObject({
+      tier: "psm",
+      external: "USDT",
+      feeRate: 5_000,
+    });
+
+    setActivePinia(createPinia());
+    await seed([], { [SESSION]: job({ tier: undefined }) });
+    const again = useRequestsStore();
+    await again.reconcile("boot");
+    expect(again.get(REF)).toBeUndefined();
+  });
+
   it("does not sweep a cancelled withdrawal's job back into a record", async () => {
     await seed([], { [SESSION]: job({ phase: "failed", failure: "cancelled" }) });
     const requests = useRequestsStore();

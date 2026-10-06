@@ -155,15 +155,21 @@ async function onAddress(entered: string) {
     return;
   }
   receive.value = null;
+  // A chain answer that lands after the user went back and picked another token is for nobody:
+  // the summary must still show the destination this run was started for.
+  const stale = () => step.value !== "summary" || destination.value !== picked;
   try {
     if (picked.rail === "direct") {
       // The sale the token picked takes, decided now and frozen at confirm, and what it lands
       // on Asset Hub in that token's decimals: the direct rail lands exactly that.
       const live = await import("~~/lib/withdraw-live");
       const route = await live.chooseWithdrawRoute(base, picked.landing);
-      const units = await live.quoteDirectReceive(base, route);
-      if (step.value !== "summary") return;
+      if (stale()) return;
+      // The sale stands on its own: an estimate that cannot be priced hides the figure, as it
+      // always did, and does not hold the withdrawal back.
       sale.value = route;
+      const units = await live.quoteDirectReceive(base, route);
+      if (stale()) return;
       receive.value = `${formatLanding(units, depositTokenOf(route).decimals)} ${picked.asset}`;
       return;
     }
@@ -171,7 +177,7 @@ async function onAddress(entered: string) {
     // would land, and the channel is opened at confirm for the native that offer was quoted for.
     sale.value = { tier: "pool" };
     await offers.learn(base);
-    if (step.value !== "summary") return;
+    if (stale()) return;
     const offer = offers.offerFor(picked);
     if (offer.state !== "available" || offers.sellable === null) {
       receive.value = undefined;
