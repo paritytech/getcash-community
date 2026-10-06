@@ -81,8 +81,8 @@ export type Kind = "top-up" | "withdrawal";
  *  still within its TTL, waiting on a running reconcile, or the cache as it was left. */
 export type Freshness = "confirmed" | "reconciling" | "cached";
 /** The pipeline's steps between the deposit and the claim, derived from `FundingStep`: `swap` is
- *  the one program that swaps and teleports together, `await-arrival` waits for the teleported
- *  $CASH to be credited on People. */
+ *  the one program that swaps and sends together, `await-arrival` waits for the CASH sent to be
+ *  credited on People. */
 export type ConvertingStep = Exclude<FundingStep, "await-native" | "done">;
 export type DepositSeenVia = "worker" | "chain" | "rail" | "core" | "faucet" | "pre-cancel";
 /** The worker's claim as it moves: sized, registered with the host, claiming, claimed. */
@@ -399,7 +399,7 @@ export interface WithdrawalHandoffPayload {
   /** The sale on Asset Hub, decided from the destination at quote time and frozen here; the
    *  worker consumes it and never re-decides. The pool sells for the native, and for `external`
    *  sells that again for the stable; the psm redeems for `external` at `feeRate`, the Permill
-   *  read at quote time that the call's `max_fee` repeats; the teleport lands the CASH as dotUSD. */
+   *  read at quote time that the call's `max_fee` repeats; the dotUSD tier lands the CASH as it is. */
   tier: ConversionRoute["tier"];
   external?: Stable;
   feeRate?: number;

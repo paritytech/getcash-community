@@ -415,6 +415,7 @@ async function drive(
         poolAccount: PASEO_PEOPLE_POOL_ACCOUNT,
         sale,
         slippagePct: 5,
+        transfer: "teleport",
         tickTimeoutMs: 1_000,
         submitTimeoutMs: 1_000,
         readKeyOnPeople: async () => ({ cash: world.state.keyCash, pas: world.state.keyPas }),
@@ -540,7 +541,7 @@ describe("withdrawTickOnce", () => {
 
   it("lands the CASH as dotUSD on the teleport tier, with the PAS that travelled sold for it", async () => {
     const world = scriptedWorld();
-    const run = await drive(world, 3, freshWithdrawTickState(), { tier: "teleport" });
+    const run = await drive(world, 3, freshWithdrawTickState(), { tier: "dotusd" });
     expect(run.steps).toEqual(["swap", "convert", "done"]);
     const { cashSold, pasTravelling, program } = sentXcm(world);
     expect(program.map((i) => i.type)).toEqual([
@@ -564,6 +565,7 @@ describe("withdrawTickOnce", () => {
       assetHubParaId: 1500,
       peopleParaId: 1502,
       sale: { tier: "pool" },
+      transfer: "teleport",
     });
     // The swap for the deposit and the reserve, the swap's own fee, and Asset Hub's buffer, the
     // first two priced in CASH through the pool. Nothing was submitted to learn it.

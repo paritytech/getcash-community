@@ -13,6 +13,7 @@ import { getWsProvider } from "polkadot-api/ws";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import { deriveKeypairWithSecret } from "@getsome/ephemeral";
 import {
+  chooseCashTransfer,
   chooseRoute,
   depositTokenOf,
   PASEO_ASSET_HUB_PARA_ID,
@@ -50,6 +51,13 @@ describe.runIf(process.env.VERIFY_WITHDRAW === "1")("live withdrawal sizing", ()
       if (LANDING === undefined) {
         throw new Error("WITHDRAW_ASSET must be dot, dotusd, usdt or usdc");
       }
+      const transfer = await chooseCashTransfer({
+        assetHub: ahC,
+        people: peC,
+        assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
+        peopleParaId: PASEO_PEOPLE_PARA_ID,
+      });
+      console.log(`CASH moves to Asset Hub by ${transfer}`);
       const entropy = new Uint8Array(32);
       new TextEncoder().encodeInto(BURNER_LABEL, entropy);
       const key = deriveKeypairWithSecret(entropy);
@@ -83,6 +91,7 @@ describe.runIf(process.env.VERIFY_WITHDRAW === "1")("live withdrawal sizing", ()
         assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
         peopleParaId: PASEO_PEOPLE_PARA_ID,
         sale: route,
+        transfer,
       });
       console.log(`swap: at most ${fmtCash(swap.cashInMax)} CASH -> ${fmtPas(swap.pasOut)} PAS`);
       expect(swap.cashInMax).toBeLessThan(cashOnKey);
@@ -103,6 +112,7 @@ describe.runIf(process.env.VERIFY_WITHDRAW === "1")("live withdrawal sizing", ()
         peopleParaId: PASEO_PEOPLE_PARA_ID,
         sale: route,
         slippagePct: 5,
+        transfer,
       }).catch((e: unknown) => {
         if (e instanceof NeedsSwapError) return null;
         throw e;
@@ -117,7 +127,7 @@ describe.runIf(process.env.VERIFY_WITHDRAW === "1")("live withdrawal sizing", ()
       console.log(`  tx fee reserve: ${fmtPas(sizing.txFeePasReserved)} PAS, reaped as dust`);
       console.log(`  People XCM:     ${fmtPas(args.payFeesPas)} PAS exact allowance`);
       console.log(
-        `  teleports:      ${fmtCash(args.cashToTeleport)} CASH + ${fmtPas(args.pasToWithdraw - args.payFeesPas)} PAS`,
+        `  sends:          ${fmtCash(args.cashToSend)} CASH + ${fmtPas(args.pasToWithdraw - args.payFeesPas)} PAS`,
       );
       console.log(`  AH earmark:     ${fmtCash(args.remoteFeesCash)} CASH`);
       let floor = 1n;
@@ -141,7 +151,7 @@ describe.runIf(process.env.VERIFY_WITHDRAW === "1")("live withdrawal sizing", ()
       );
       console.log(`  max weight:     ${JSON.stringify(args.maxWeight, (_k, v) => String(v))}`);
       // Every unit of CASH leaves, and every PAS but the fee reserve.
-      expect(args.cashToTeleport).toBe(cashOnKey);
+      expect(args.cashToSend).toBe(cashOnKey);
       expect(args.pasToWithdraw + sizing.txFeePasReserved).toBe(pasOnKey);
       // What lands clears the floor the program holds the sale to.
       expect(sizing.landed).toBeGreaterThanOrEqual(floor);

@@ -35,6 +35,7 @@ vi.mock("../lib/worker-rpc", () => ({
 }));
 vi.mock("../lib/withdraw-live", () => ({
   PaymentRefusedError: class PaymentRefusedError extends Error {},
+  cashCanMove: async () => true,
   nextWithdrawNumber: async () => 1,
   withdrawKeyFor: async () => ({ address: KEY_ADDRESS, publicKeyHex: KEY_HEX }),
   advanceWithdrawCounter: async () => {},

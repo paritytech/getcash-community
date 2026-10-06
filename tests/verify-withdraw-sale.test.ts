@@ -63,7 +63,7 @@ function asAssetHubSeesIt(standIn: ReturnType<typeof forwardedStandIn>, earmark:
 
 /** The floor the program holds the sale to, in the landing asset. */
 const floorOf = (sale: Sale): bigint => {
-  if (sale.tier === "teleport") return 1n;
+  if (sale.tier === "dotusd") return 1n;
   if (sale.tier === "psm") return sale.externalOut;
   return sale.external === undefined ? sale.minNativeOut : sale.minOut;
 };
@@ -83,7 +83,7 @@ describe.runIf(process.env.VERIFY_WITHDRAW_SALE === "1")("the sale per token on 
       });
       const routes: Array<[string, ConversionRoute]> = [
         ["DOT", { tier: "pool" }],
-        ["dotUSD", { tier: "teleport" }],
+        ["dotUSD", { tier: "dotusd" }],
         [`USDT ${usdt.tier}`, usdt],
         ["USDT pool", { tier: "pool", external: "USDT" }],
         ["USDC", { tier: "pool", external: "USDC" }],
@@ -101,7 +101,7 @@ describe.runIf(process.env.VERIFY_WITHDRAW_SALE === "1")("the sale per token on 
         });
         const forwarded = asAssetHubSeesIt(
           forwardedStandIn({
-            cashToTeleport: CASH_TO_TELEPORT,
+            cashToSend: CASH_TO_TELEPORT,
             pasToWithdraw: PAS_TRAVELLING,
             payFeesPas: 0n,
             remoteFeesCash: earmark,
@@ -111,6 +111,7 @@ describe.runIf(process.env.VERIFY_WITHDRAW_SALE === "1")("the sale per token on 
             originHex: KEY_HEX,
             assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
             peopleParaId: PASEO_PEOPLE_PARA_ID,
+            transfer: "teleport",
           }),
           earmark,
         );

@@ -62,7 +62,12 @@ describe("CASH constants", () => {
       expect.objectContaining({ type: "Parachain", value: NETWORK.assetHub.paraId }),
     );
     expect(pallet).toEqual(expect.objectContaining({ type: "PalletInstance", value: 50 }));
-    expect(index).toEqual(expect.objectContaining({ type: "GeneralIndex", value: 50_000_413n }));
+    expect(index).toEqual(
+      expect.objectContaining({
+        type: "GeneralIndex",
+        value: BigInt(NETWORK.assetHub.cashAssetId),
+      }),
+    );
     expect(CASH_DECIMALS).toBe(6);
     expect(CASH_SETTLEMENT).toEqual({ kind: "foreign", id: "cash" });
   });

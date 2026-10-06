@@ -1,4 +1,4 @@
-import { depositTokenOf, recordedRoute } from "@getsome/funding";
+import { chooseCashTransfer, depositTokenOf, recordedRoute } from "@getsome/funding";
 import { CASH_LOCATION } from "@getsome/people";
 import {
   ChannelExpiredError,
@@ -484,6 +484,18 @@ async function tickRecord(record, nowMs) {
     peopleClient = await connectChain(record.peopleGenesis, "people");
     const assetHubApi = ahClient.getTypedApi(paseo_next_v2);
     const peopleApi = peopleClient.getTypedApi(paseo_people_next);
+    // Asked on every dispatch, so a runtime upgrade between ticks is picked up before the next
+    // submit; a network with no transfer fails the tick like any other read.
+    const transfer = await bounded(
+      chooseCashTransfer({
+        assetHub: ahClient,
+        people: peopleClient,
+        assetHubParaId: record.assetHubParaId,
+        peopleParaId: record.peopleParaId,
+      }),
+      DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+      "cash transfer choice",
+    );
 
     // Restore the persisted state into the shape withdrawTickOnce mutates.
     const state = freshWithdrawTickState();
@@ -522,6 +534,7 @@ async function tickRecord(record, nowMs) {
           poolAccount: record.poolAccount,
           sale,
           slippagePct: record.slippagePct,
+          transfer,
           tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
           submitTimeoutMs: DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
           // Every submit is on People; one anchor per tick serves them all.

@@ -25,7 +25,7 @@
 // same transaction will not pass on the fourth try.
 
 import type { PolkadotSigner } from "polkadot-api";
-import { describeDispatchError, type ConversionRoute } from "@getsome/funding";
+import { describeDispatchError, type CashTransfer, type ConversionRoute } from "@getsome/funding";
 import { bounded } from "./bounded";
 import { PEOPLE_TX_OPTIONS } from "./paseo";
 import { NeedsSwapError, sizeSwap, sizeXcm, type AssetHubApi } from "./fees";
@@ -105,6 +105,9 @@ export interface WithdrawTickInput {
   /** The sale on Asset Hub, as the hand-off froze it: what the destination receives. */
   sale: ConversionRoute;
   slippagePct: number;
+  /** How the CASH moves to Asset Hub, as the chains answered through `chooseCashTransfer`; never
+   *  decided here. */
+  transfer: CashTransfer;
   tickTimeoutMs: number;
   submitTimeoutMs: number;
   /** Extra options merged into every submit, after People's signed extension and, for the
@@ -205,6 +208,7 @@ export async function withdrawTickOnce(
           peopleParaId: input.peopleParaId,
           sale: input.sale,
           slippagePct: input.slippagePct,
+          transfer: input.transfer,
         }),
         input.tickTimeoutMs,
         "withdrawal sizing",
@@ -252,6 +256,7 @@ export async function withdrawTickOnce(
       assetHubParaId: input.assetHubParaId,
       peopleParaId: input.peopleParaId,
       sale: input.sale,
+      transfer: input.transfer,
     }),
     input.tickTimeoutMs,
     "swap sizing",

@@ -11,7 +11,7 @@ const chain = (paraId: number, byte: string) => ({
 const VALID = {
   testnet: false,
   nativeSymbol: "UNIT",
-  assetHub: chain(2000, "aa"),
+  assetHub: { ...chain(2000, "aa"), cashAssetId: 1 },
   people: { ...chain(2004, "bb"), poolAccount: "1".repeat(47) },
 };
 
@@ -45,6 +45,10 @@ describe("parseNetwork", () => {
     ["assetHub.genesis", { assetHub: { ...VALID.assetHub, genesis: "0x1234" } }],
     ["people.genesis", { people: { ...VALID.people, genesis: `0x${"AB".repeat(32)}` } }],
     ["assetHub.rpc", { assetHub: { ...VALID.assetHub, rpc: "https://chain.example" } }],
+    ["assetHub.cashAssetId", { assetHub: { ...VALID.assetHub, cashAssetId: undefined } }],
+    ["assetHub.cashAssetId", { assetHub: { ...VALID.assetHub, cashAssetId: 0 } }],
+    ["assetHub.cashAssetId", { assetHub: { ...VALID.assetHub, cashAssetId: 1.5 } }],
+    ["assetHub.cashAssetId", { assetHub: { ...VALID.assetHub, cashAssetId: 2 ** 32 } }],
     ["people.paraId", { people: { ...VALID.people, paraId: "1004" } }],
     ["people.poolAccount", { people: { ...VALID.people, poolAccount: "not-an-account" } }],
   ])("rejects a bad %s", (path, override) => {

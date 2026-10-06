@@ -1,6 +1,6 @@
 // Readers for what a dry run reports, shared by every program that runs on both chains: the
-// origins a dry run is asked from, the program a chain forwards to a sibling, what a run traps,
-// and what it credits to an account.
+// origins a dry run is asked from, the program a chain forwards to a sibling, why a run did not
+// complete, what it traps, and what it credits to an account.
 
 import { AccountId } from "polkadot-api";
 
@@ -29,6 +29,21 @@ export function forwardedTo(effects: unknown, paraId: number): unknown | null {
     return loc?.parents === 1 && loc?.interior?.value?.value === paraId;
   });
   return match?.[1]?.[0] ?? null;
+}
+
+type ExecutionOutcome = {
+  type: string;
+  value?: { error?: { type?: string; error?: { type?: string } } };
+};
+
+/** The XcmError's name an execution result that did not complete reports. `Incomplete` carries
+ *  it under the failing instruction's index, `Error` directly; the outcome's own type stands in
+ *  when neither names one. */
+export function xcmErrorName(executionResult: unknown): string {
+  const { type, value } = executionResult as ExecutionOutcome;
+  if (type === "Incomplete") return value?.error?.error?.type ?? type;
+  if (type === "Error") return value?.error?.type ?? type;
+  return type;
 }
 
 /** The fungible total the PolkadotXcm.AssetsTrapped events of a dry run report. */

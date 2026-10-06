@@ -12,6 +12,7 @@ import { getWsProvider } from "polkadot-api/ws";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import { deriveKeypairWithSecret } from "@getsome/ephemeral";
 import {
+  chooseCashTransfer,
   chooseRoute,
   depositTokenOf,
   PASEO_ASSET_HUB_PARA_ID,
@@ -60,6 +61,13 @@ describe.runIf(process.env.PROD_PROOF_WITHDRAW === "1")("withdrawal production p
       if (LANDING === undefined) {
         throw new Error("WITHDRAW_ASSET must be dot, dotusd, usdt or usdc");
       }
+      const transfer = await chooseCashTransfer({
+        assetHub: ahC,
+        people: peC,
+        assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
+        peopleParaId: PASEO_PEOPLE_PARA_ID,
+      });
+      console.log(`CASH moves to Asset Hub by ${transfer}`);
       const entropy = new Uint8Array(32);
       new TextEncoder().encodeInto(BURNER_LABEL, entropy);
       const key = deriveKeypairWithSecret(entropy);
@@ -108,6 +116,7 @@ describe.runIf(process.env.PROD_PROOF_WITHDRAW === "1")("withdrawal production p
               poolAccount: PASEO_PEOPLE_POOL_ACCOUNT,
               sale: route,
               slippagePct: DEFAULT_WITHDRAW_SLIPPAGE_PCT,
+              transfer,
               tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
               submitTimeoutMs: DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
               readKeyOnPeople: async (ss58) => ({

@@ -9,14 +9,15 @@
 // withdraws is the balance read after the swap, all of it.
 //
 // The XCM withdraws the PAS and the CASH, pays People's execution and delivery fees in PAS with an
-// exact allowance, and teleports both to Asset Hub. The program Asset Hub receives pays its own
-// fees in CASH through the pool, makes the sale the destination asks for in the holding, and
-// deposits everything to the destination account. The sale follows the on-ramp's tiers the other
-// way round: the pool sells the CASH for PAS, and for a stable sells that PAS again on the
-// stable's pool; the PSM redeems the CASH for its stable one to one less the redemption fee; the
-// teleport tier keeps the CASH and lands it as dotUSD. Whatever the tier, the PAS that travelled
-// with the CASH ends up in the landing asset too, so one asset is deposited. The program names
-// an asset claimer so a trap on Asset Hub is recoverable.
+// exact allowance, and sends both to Asset Hub: the PAS by teleport, the CASH by teleport or by
+// reserve withdrawal as the network's XCM trust allows (CashTransfer). The program Asset Hub
+// receives pays its own fees in CASH through the pool, makes the sale the destination asks for in
+// the holding, and deposits everything to the destination account. The sale follows the on-ramp's
+// tiers the other way round: the pool sells the CASH for PAS, and for a stable sells that PAS
+// again on the stable's pool; the PSM redeems the CASH for its stable one to one less the
+// redemption fee; the dotUSD tier keeps the CASH and lands it as it is. Whatever the tier, the PAS
+// that travelled with the CASH ends up in the landing asset too, so one asset is deposited. The
+// program names an asset claimer so a trap on Asset Hub is recoverable.
 //
 // The PSM redeem is a signed call, so the XCM keeps the key's origin across the hop: on Asset Hub
 // the origin is the key's account under People, which has an account of its own there. The CASH
@@ -30,7 +31,7 @@
 import { paseo_people_next } from "@polkadot-api/descriptors";
 import type { TypedApi } from "polkadot-api";
 import { TOKENS } from "@getsome/core";
-import { permillMulCeil, STABLE_TOKENS, type ConversionRoute, type Stable } from "@getsome/funding";
+import { permillMulCeil, STABLE_TOKENS, type CashTransfer, type Stable } from "@getsome/funding";
 import { CASH_LOCATION } from "@getsome/people";
 import { PEOPLE_NATIVE } from "./paseo";
 
@@ -66,7 +67,7 @@ export type Sale =
       call: Uint8Array;
     }
   /** No sale of the CASH: it lands as it is, with the PAS that travelled sold for it. */
-  | { tier: "teleport" };
+  | { tier: "dotusd" };
 
 /** The stable a redeem of `cashIn` CASH pays out: the amount less the fee the PSM rounds up. */
 export function psmRedeemOut(cashIn: bigint, feeRate: number): bigint {
@@ -181,10 +182,10 @@ function remoteProgram(destinationHex: string, claimerHex: string, sale: Sale) {
       deposit(allCounted(2), destinationHex),
     ];
   }
-  // The teleport tier keeps the CASH and sells only the PAS that travelled, dust at any price,
-  // so the destination gets dotUSD alone and never a native deposit it may be too small for.
+  // The dotUSD tier keeps the CASH and sells only the PAS that travelled, dust at any price, so
+  // the destination gets dotUSD alone and never a native deposit it may be too small for.
   const hops =
-    sale.tier === "teleport"
+    sale.tier === "dotusd"
       ? [exchange(allOf(NATIVE_ON_ASSET_HUB), fungible(CASH_ON_ASSET_HUB, 1n))]
       : [
           exchange(allOf(CASH_ON_ASSET_HUB), fungible(NATIVE_ON_ASSET_HUB, sale.minNativeOut)),
@@ -207,7 +208,7 @@ function remoteProgram(destinationHex: string, claimerHex: string, sale: Sale) {
 
 export interface WithdrawXcmArgs {
   /** All the CASH the key holds after the swap. */
-  cashToTeleport: bigint;
+  cashToSend: bigint;
   /** The PAS the XCM withdraws: what the key holds less the transaction fee and its margin. */
   pasToWithdraw: bigint;
   /** People's XCM fee allowance, in PAS. The unspent part travels on with the rest. */
@@ -224,8 +225,25 @@ export interface WithdrawXcmArgs {
   originHex: string;
   assetHubParaId: number;
   peopleParaId: number;
+  /** How the CASH moves to Asset Hub. */
+  transfer: CashTransfer;
   /** The XCM weight ceiling; defaults to WITHDRAW_XCM_MAX_WEIGHT. */
   maxWeight?: { ref_time: bigint; proof_size: bigint };
+}
+
+/** The transfer's asset filters: the PAS the fees leave and all the CASH. The PAS always
+ *  teleports, since the relay token moves between system chains by teleport everywhere; only the
+ *  CASH follows `transfer`. A teleport takes both in one filter. A reserve withdrawal names each,
+ *  the PAS filter present even when the allowance leaves none: the message is weighed once,
+ *  before the PAS left over is known, so its shape must not depend on the amounts. */
+function transferFilters(args: WithdrawXcmArgs) {
+  if (args.transfer === "teleport") {
+    return [{ type: "Teleport", value: allCounted(2) }];
+  }
+  return [
+    { type: "Teleport", value: allOf(PEOPLE_NATIVE) },
+    { type: "ReserveWithdraw", value: allOf(CASH_LOCATION) },
+  ];
 }
 
 /** The XCM message alone, for weighing and dry runs. */
@@ -233,20 +251,19 @@ export function withdrawMessage(args: WithdrawXcmArgs) {
   return {
     type: "V5",
     value: [
-      { type: "WithdrawAsset", value: [pas(args.pasToWithdraw), cash(args.cashToTeleport)] },
+      { type: "WithdrawAsset", value: [pas(args.pasToWithdraw), cash(args.cashToSend)] },
       { type: "PayFees", value: { asset: pas(args.payFeesPas) } },
       {
         type: "InitiateTransfer",
         value: {
           destination: assetHubDest(args.assetHubParaId),
           remote_fees: {
-            type: "Teleport",
+            type: args.transfer === "teleport" ? "Teleport" : "ReserveWithdraw",
             value: { type: "Definite", value: [cash(args.remoteFeesCash)] },
           },
           // The PSM tier redeems as the key, so its origin travels; the others need none.
           preserve_origin: args.sale.tier === "psm",
-          // Both assets teleport: the PAS the fees leave and all the CASH.
-          assets: [{ type: "Teleport", value: allCounted(2) }],
+          assets: transferFilters(args),
           remote_xcm: remoteProgram(args.destinationHex, args.claimerHex, args.sale),
         },
       },
@@ -262,21 +279,40 @@ export function buildWithdrawXcm(peopleApi: PeopleApi, args: WithdrawXcmArgs) {
   } as never);
 }
 
-/** The message People forwards to Asset Hub for `args`, as the runtime would build it, with the
- *  fee allowance's remainder as the PAS that travels and the CASH less its earmark. Used to price
- *  the delivery before the runtime produces the real one. */
-export function forwardedStandIn(args: WithdrawXcmArgs) {
+/** The instructions that land the assets on Asset Hub, one per filter of the transfer in filter
+ *  order, the fee's first with its PayFees: teleported assets arrive by ReceiveTeleportedAsset,
+ *  reserve-withdrawn CASH by WithdrawAsset from People's account there. The earmark comes out of
+ *  the CASH, so less of it travels. A reserve withdrawal's PAS filter stays when no PAS is left,
+ *  so its ReceiveTeleportedAsset arrives empty. */
+function arrivals(args: WithdrawXcmArgs) {
   const pasLeft = args.pasToWithdraw - args.payFeesPas;
-  const cashLeft = cash(args.cashToTeleport - args.remoteFeesCash);
-  return {
-    type: "V5",
-    value: [
+  const cashLeft = cash(args.cashToSend - args.remoteFeesCash);
+  if (args.transfer === "teleport") {
+    return [
       { type: "ReceiveTeleportedAsset", value: [cash(args.remoteFeesCash)] },
       { type: "PayFees", value: { asset: cash(args.remoteFeesCash) } },
       {
         type: "ReceiveTeleportedAsset",
         value: pasLeft > 0n ? [pas(pasLeft), cashLeft] : [cashLeft],
       },
+    ];
+  }
+  return [
+    { type: "WithdrawAsset", value: [cash(args.remoteFeesCash)] },
+    { type: "PayFees", value: { asset: cash(args.remoteFeesCash) } },
+    { type: "ReceiveTeleportedAsset", value: pasLeft > 0n ? [pas(pasLeft)] : [] },
+    { type: "WithdrawAsset", value: [cashLeft] },
+  ];
+}
+
+/** The message People forwards to Asset Hub for `args`, as the runtime would build it, with the
+ *  fee allowance's remainder as the PAS that travels. Used to price the delivery before the
+ *  runtime produces the real one. The PSM tier keeps the key's origin, the others clear it. */
+export function forwardedStandIn(args: WithdrawXcmArgs) {
+  return {
+    type: "V5",
+    value: [
+      ...arrivals(args),
       args.sale.tier === "psm"
         ? { type: "AliasOrigin", value: originOnAssetHub(args.peopleParaId, args.originHex) }
         : { type: "ClearOrigin" },

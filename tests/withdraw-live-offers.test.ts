@@ -19,7 +19,12 @@ vi.mock("../lib/host-payments", () => ({
   subscribePaymentStatus: vi.fn(),
 }));
 
-// The fee estimate reads People's pool; here it is the 0.45 CASH the figures below assume.
+// The fee estimate asks the chains how CASH moves and reads People's pool; here the move is a
+// teleport and the fees are the 0.45 CASH the figures below assume.
+vi.mock("@getsome/funding", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@getsome/funding")>()),
+  chooseCashTransfer: async () => "teleport",
+}));
 vi.mock("@getsome/withdraw", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@getsome/withdraw")>()),
   estimateDirectFeesCash: async () => 450_000n,
@@ -89,14 +94,14 @@ describe("what a direct withdrawal lands per token", () => {
     expect(
       await quoteDirectReceive(amount, { tier: "psm", external: "USDT", feeRate: 5_000 }),
     ).toBe(sold - (sold * 5_000n + 999_999n) / 1_000_000n);
-    expect(await quoteDirectReceive(amount, { tier: "teleport" })).toBe(sold);
+    expect(await quoteDirectReceive(amount, { tier: "dotusd" })).toBe(sold);
     // An amount the fees eat whole lands nothing on any tier.
-    expect(await quoteDirectReceive(400_000n, { tier: "teleport" })).toBe(0n);
+    expect(await quoteDirectReceive(400_000n, { tier: "dotusd" })).toBe(0n);
   });
 
   it("decides the native and dotUSD without a chain read", async () => {
     expect(await chooseWithdrawRoute(21_000_000n, "native")).toEqual({ tier: "pool" });
-    expect(await chooseWithdrawRoute(21_000_000n, "dotUSD")).toEqual({ tier: "teleport" });
+    expect(await chooseWithdrawRoute(21_000_000n, "dotUSD")).toEqual({ tier: "dotusd" });
   });
 });
 

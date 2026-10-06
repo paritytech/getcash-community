@@ -33,6 +33,8 @@ import {
   signedOrigin,
   STABLE_TOKENS,
   trappedIn,
+  xcmErrorName,
+  type CashTransfer,
   type ConversionRoute,
 } from "@getsome/funding";
 import { PEOPLE_NATIVE, PEOPLE_TX_OPTIONS } from "./paseo";
@@ -114,7 +116,7 @@ async function xcmTxFeeReserve(peopleApi: PeopleApi, keyAddress: string, args: W
 /** The sale with every figure at its longest: a stand-in for the fee estimate, whose charge
  *  grows with the call's length and not with the figures. */
 function longestSale(route: ConversionRoute): Sale {
-  if (route.tier === "teleport") return { tier: "teleport" };
+  if (route.tier === "dotusd") return { tier: "dotusd" };
   if (route.tier === "psm") {
     return {
       tier: "psm",
@@ -148,6 +150,8 @@ export interface SizeSwapInput {
   peopleParaId: number;
   /** The sale on Asset Hub, whose shape the XCM's fee depends on. */
   sale: ConversionRoute;
+  /** How the CASH moves to Asset Hub; the XCM's length, and so its fee, depends on it. */
+  transfer: CashTransfer;
 }
 
 /** The swap that buys the PAS the XCM needs on the key: the existential deposit, which must
@@ -160,7 +164,7 @@ export async function sizeSwap(input: SizeSwapInput): Promise<SwapArgs> {
   // A stand-in for the XCM. The fee grows with the call's length, and the amounts still unknown
   // encode to as many bytes as any real one will, so the reserve is not below the real fee.
   const { reserve } = await xcmTxFeeReserve(input.peopleApi, input.key.address, {
-    cashToTeleport: input.cashBalance,
+    cashToSend: input.cashBalance,
     pasToWithdraw: LONGEST_AMOUNT,
     payFeesPas: LONGEST_AMOUNT,
     remoteFeesCash: destinationEarmark(input.cashBalance, ASSET_HUB_FEE_BUFFER_CASH),
@@ -170,6 +174,7 @@ export async function sizeSwap(input: SizeSwapInput): Promise<SwapArgs> {
     originHex: input.key.publicKeyHex,
     assetHubParaId: input.assetHubParaId,
     peopleParaId: input.peopleParaId,
+    transfer: input.transfer,
   });
   const pasOut = ed + reserve;
   const quoted = cashInFor(pasOut, reserves);
@@ -192,6 +197,8 @@ export interface EstimateDirectFeesInput {
   peopleParaId: number;
   /** The sale on Asset Hub, whose shape the XCM's fee depends on. */
   sale: ConversionRoute;
+  /** How the CASH moves to Asset Hub; the XCM's length, and so its fee, depends on it. */
+  transfer: CashTransfer;
 }
 
 /** What a direct withdrawal costs in CASH before the sale, priced now for the summary: the swap
@@ -206,7 +213,7 @@ export async function estimateDirectFeesCash(input: EstimateDirectFeesInput): Pr
     readPoolReserves(peopleApi, input.poolAccount),
   ]);
   const { reserve } = await xcmTxFeeReserve(peopleApi, address, {
-    cashToTeleport: LONGEST_AMOUNT,
+    cashToSend: LONGEST_AMOUNT,
     pasToWithdraw: LONGEST_AMOUNT,
     payFeesPas: LONGEST_AMOUNT,
     remoteFeesCash: LONGEST_AMOUNT,
@@ -216,6 +223,7 @@ export async function estimateDirectFeesCash(input: EstimateDirectFeesInput): Pr
     originHex: `0x${"00".repeat(32)}`,
     assetHubParaId: input.assetHubParaId,
     peopleParaId: input.peopleParaId,
+    transfer: input.transfer,
   });
   const pasOut = ed + reserve;
   const swapFee = await buildSwap(peopleApi, {
@@ -255,6 +263,8 @@ export interface SizeXcmInput {
   sale: ConversionRoute;
   /** How far below the quoted sale the Asset Hub price may move before the program fails there. */
   slippagePct: number;
+  /** How the CASH moves to Asset Hub. */
+  transfer: CashTransfer;
 }
 
 /** What a dry run of the XCM on People reports. */
@@ -373,7 +383,7 @@ export interface PriceSaleInput {
  *  account on Asset Hub. The teleport tier has no price to hold. */
 export async function priceSale(input: PriceSaleInput): Promise<Sale> {
   const { assetHubApi, route, slippagePct } = input;
-  if (route.tier === "teleport") return { tier: "teleport" };
+  if (route.tier === "dotusd") return { tier: "dotusd" };
   if (route.tier === "psm") {
     const holder = await assetHubApi.apis.LocationToAccountApi.convert_location({
       type: "V5",
@@ -438,7 +448,7 @@ export async function sizeXcm(input: SizeXcmInput): Promise<XcmSizing> {
   });
 
   const base = (pasToWithdraw: bigint, payFeesPas: bigint): WithdrawXcmArgs => ({
-    cashToTeleport: input.cashOnKey,
+    cashToSend: input.cashOnKey,
     pasToWithdraw,
     payFeesPas,
     remoteFeesCash,
@@ -448,6 +458,7 @@ export async function sizeXcm(input: SizeXcmInput): Promise<XcmSizing> {
     originHex: key.publicKeyHex,
     assetHubParaId: input.assetHubParaId,
     peopleParaId: input.peopleParaId,
+    transfer: input.transfer,
   });
 
   // The transaction fee in PAS, for the exact call, with headroom. Left on the key for the
@@ -540,17 +551,13 @@ export async function dryRunOnAssetHub(
   if (!dr.success) throw new Error("not submitted: Asset Hub would not dry-run the program");
   const outcome = dr.value.execution_result;
   if (outcome.type !== "Complete") {
-    // An incomplete run names the instruction and its error; an older runtime the error alone.
-    const failed = (outcome.value as { error?: { index?: number; error?: { type?: string } } })
-      .error;
-    const error = failed?.error?.type ?? (failed as { type?: string } | undefined)?.type;
-    const where = failed?.index === undefined ? "" : ` at instruction ${failed.index}`;
     // The PSM tier checks the redeem went through right after it; a false expectation there is
     // the PSM refusing, which the dry run cannot name further.
+    const error = xcmErrorName(outcome);
     const reason =
       sale.tier === "psm" && error === "ExpectationFalse"
         ? "the PSM refused the redeem"
-        : `the program fails on Asset Hub${where} with ${error ?? outcome.type}`;
+        : `the program fails on Asset Hub with ${error}`;
     throw new Error(`not submitted: ${reason}`);
   }
   const trapped = trappedIn(dr.value.emitted_events);

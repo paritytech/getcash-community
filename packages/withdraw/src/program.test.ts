@@ -53,7 +53,7 @@ function recordingApi() {
 
 const SALE: Sale = { tier: "pool", minNativeOut: 700_000_000n };
 const XCM = {
-  cashToTeleport: 2_000_000n,
+  cashToSend: 2_000_000n,
   pasToWithdraw: 958_441_000n,
   payFeesPas: 319_110_000n,
   remoteFeesCash: 300_000n,
@@ -63,6 +63,7 @@ const XCM = {
   originHex: `0x${"0b".repeat(32)}`,
   assetHubParaId: 1500,
   peopleParaId: 1502,
+  transfer: "teleport" as const,
 };
 
 /** The remote program of the message for `sale`. */
@@ -104,7 +105,7 @@ describe("withdrawal transactions", () => {
       "InitiateTransfer",
     ]);
     const withdrawn = withdraw!.value as Fungible[];
-    expect(withdrawn.map((a) => a.fun.value)).toEqual([XCM.pasToWithdraw, XCM.cashToTeleport]);
+    expect(withdrawn.map((a) => a.fun.value)).toEqual([XCM.pasToWithdraw, XCM.cashToSend]);
     expect(withdrawn[0]!.id).toEqual(PEOPLE_NATIVE);
     expect(withdrawn[1]!.id).toEqual(CASH_LOCATION);
     expect((payFees!.value as { asset: Fungible }).asset).toEqual({
@@ -131,6 +132,37 @@ describe("withdrawal transactions", () => {
       "RefundSurplus",
       "ExchangeAsset",
       "DepositAsset",
+    ]);
+  });
+
+  it("withdraws the CASH from People's reserve when the chains allow no teleport, the PAS still teleporting", () => {
+    const { api, seen } = recordingApi();
+    buildWithdrawXcm(api, { ...XCM, transfer: "reserve" });
+    const execute = seen.execute as { message: { value: Instruction[] } };
+    const t = execute.message.value[2]!.value as {
+      remote_fees: { type: string; value: { type: string; value: Fungible[] } };
+      assets: unknown;
+    };
+    expect(t.remote_fees.type).toBe("ReserveWithdraw");
+    expect(t.remote_fees.value).toEqual({
+      type: "Definite",
+      value: [{ id: CASH_LOCATION, fun: { type: "Fungible", value: XCM.remoteFeesCash } }],
+    });
+    expect(t.assets).toEqual([
+      {
+        type: "Teleport",
+        value: {
+          type: "Wild",
+          value: { type: "AllOf", value: { id: PEOPLE_NATIVE, fun: { type: "Fungible" } } },
+        },
+      },
+      {
+        type: "ReserveWithdraw",
+        value: {
+          type: "Wild",
+          value: { type: "AllOf", value: { id: CASH_LOCATION, fun: { type: "Fungible" } } },
+        },
+      },
     ]);
   });
 
@@ -197,8 +229,8 @@ describe("withdrawal transactions", () => {
     expect(depositCount(deposit!)).toBe(3);
   });
 
-  it("keeps the CASH on the teleport tier and sells only the PAS that travelled for it", () => {
-    const program = remoteProgramFor({ tier: "teleport" });
+  it("keeps the CASH on the dotUSD tier and sells only the PAS that travelled for it", () => {
+    const program = remoteProgramFor({ tier: "dotusd" });
     expect(program.map((i) => i.type)).toEqual([
       "SetHints",
       "RefundSurplus",
@@ -292,10 +324,69 @@ describe("withdrawal transactions", () => {
     // The earmark comes out of the CASH, so less of it travels.
     expect(travelling.map((a) => a.fun.value)).toEqual([
       XCM.pasToWithdraw - XCM.payFeesPas,
-      XCM.cashToTeleport - XCM.remoteFeesCash,
+      XCM.cashToSend - XCM.remoteFeesCash,
     ]);
     // An allowance that takes every PAS leaves only the CASH travelling.
     const allSpent = forwardedStandIn({ ...XCM, payFeesPas: XCM.pasToWithdraw });
     expect((allSpent.value[2]!.value as Fungible[]).length).toBe(1);
+  });
+
+  it("stands in for a reserve withdrawal with the CASH withdrawn on Asset Hub and the PAS received by teleport", () => {
+    const standIn = forwardedStandIn({ ...XCM, transfer: "reserve" });
+    expect(standIn.value.map((i) => i.type)).toEqual([
+      "WithdrawAsset",
+      "PayFees",
+      "ReceiveTeleportedAsset",
+      "WithdrawAsset",
+      "ClearOrigin",
+      "SetHints",
+      "RefundSurplus",
+      "ExchangeAsset",
+      "DepositAsset",
+      "SetTopic",
+    ]);
+    const [fee, , travellingPas, travellingCash] = standIn.value;
+    expect(fee!.value).toEqual([
+      { id: CASH_LOCATION, fun: { type: "Fungible", value: XCM.remoteFeesCash } },
+    ]);
+    expect(travellingPas!.value).toEqual([
+      { id: PEOPLE_NATIVE, fun: { type: "Fungible", value: XCM.pasToWithdraw - XCM.payFeesPas } },
+    ]);
+    // The earmark was withdrawn first, so the rest is what travels.
+    expect(travellingCash!.value).toEqual([
+      { id: CASH_LOCATION, fun: { type: "Fungible", value: XCM.cashToSend - XCM.remoteFeesCash } },
+    ]);
+  });
+
+  it("keeps the reserve withdrawal's shape when the allowance takes every PAS, the PAS arriving empty", () => {
+    const allSpent = { ...XCM, transfer: "reserve" as const, payFeesPas: XCM.pasToWithdraw };
+    const { api, seen } = recordingApi();
+    buildWithdrawXcm(api, allSpent);
+    const execute = seen.execute as { message: { value: Instruction[] } };
+    const t = execute.message.value[2]!.value as { assets: unknown };
+    expect(t.assets).toEqual([
+      {
+        type: "Teleport",
+        value: {
+          type: "Wild",
+          value: { type: "AllOf", value: { id: PEOPLE_NATIVE, fun: { type: "Fungible" } } },
+        },
+      },
+      {
+        type: "ReserveWithdraw",
+        value: {
+          type: "Wild",
+          value: { type: "AllOf", value: { id: CASH_LOCATION, fun: { type: "Fungible" } } },
+        },
+      },
+    ]);
+    const standIn = forwardedStandIn(allSpent);
+    expect(standIn.value.slice(0, 4).map((i) => i.type)).toEqual([
+      "WithdrawAsset",
+      "PayFees",
+      "ReceiveTeleportedAsset",
+      "WithdrawAsset",
+    ]);
+    expect(standIn.value[2]!.value).toEqual([]);
   });
 });

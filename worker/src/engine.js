@@ -10,6 +10,7 @@ import {
   FundingShortfallError,
   PASEO_ASSET_HUB_PARA_ID,
   STABLE_TOKENS,
+  chooseCashTransfer,
   discoverPools,
   freshTickState,
   recordedRoute,
@@ -65,9 +66,9 @@ const saveJobs = () => store.save();
  *   burnerAddress,                           // the address the surface showed
  *   depositExpiresAt: number|null,           // the rail's deposit deadline
  *   settleAmount, remoteFeeBuffer, keepNativeForFees, slippagePct,   // bigints as strings
- *   quotedDeposit?,                                    // psm, stable pool and teleport tiers
+ *   quotedDeposit?,                                    // psm, stable pool and dotUSD tiers
  *   underlyingAssetId, peopleParaId, assetHubGenesis, peopleGenesis,
- *   tier: "pool" | "psm" | "teleport", external?, feeRate?, // the conversion route the surface
+ *   tier: "pool" | "psm" | "dotusd", external?, feeRate?, // the conversion route the surface
  *                                            // decided at quote time; consumed here, never
  *                                            // re-decided
  *   phase: "starting" | FundingStep | "failed",  // await-native: the route's deposit asset
@@ -632,7 +633,7 @@ async function tickRecord(record, nowMs) {
     const api = ahClient.getTypedApi(paseo_next_v2);
     // Pool keys are re-discovered each wake and not persisted, in one read of the pool table: the
     // CASH pool, and for a pool job fed with a stable the stable's own pool too, under its
-    // pallet-assets id. The PSM and teleport tiers have no pool to find.
+    // pallet-assets id. The PSM and dotUSD tiers have no pool to find.
     const [pool, stablePool] =
       route.tier === "pool"
         ? await bounded(
@@ -646,6 +647,18 @@ async function tickRecord(record, nowMs) {
             "pool discovery",
           )
         : [];
+    // Asked on every dispatch, so a runtime upgrade between ticks is picked up before the next
+    // submit; a network with no transfer fails the tick like any other read.
+    const transfer = await bounded(
+      chooseCashTransfer({
+        assetHub: ahClient,
+        people: peopleClient,
+        assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
+        peopleParaId: record.peopleParaId,
+      }),
+      DEFAULT_TICK_TIMEOUT_MS,
+      "cash transfer choice",
+    );
 
     // Restore the persisted state into the shape tickOnce mutates. fundsSeenAt must be
     // exactly null when absent.
@@ -679,6 +692,7 @@ async function tickRecord(record, nowMs) {
           api,
           peopleApi: peopleClient.getTypedApi(paseo_people_next),
           route,
+          transfer,
           pool,
           stablePool,
           address: burner.address,

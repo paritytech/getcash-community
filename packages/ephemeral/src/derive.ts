@@ -1,5 +1,6 @@
-// sr25519 ephemeral key derivation: 32 bytes of entropy in, keypair out. No hex strings
-// and no storage here, the caller owns where the entropy comes from.
+// sr25519 key derivation: entropy in, keypair out. Ephemeral keys take exactly 32 bytes; a BIP-39
+// seed's root account takes the entropy of a 12- or 24-word phrase. No hex strings and no storage
+// here, the caller owns where the entropy comes from.
 
 import { sr25519CreateDerive } from "@polkadot-labs/hdkd";
 import { entropyToMiniSecret } from "@polkadot-labs/hdkd-helpers";
@@ -28,6 +29,21 @@ export function deriveKeypair(entropy: Uint8Array): EphemeralKeypair {
         "A wrong-length seed would derive a different (unrecoverable) account.",
     );
   }
+  return rootKeypair(entropy);
+}
+
+/**
+ * The root account of a BIP-39 seed, as `subkey` derives it: 16 bytes of entropy for a 12-word
+ * phrase, 32 for a 24-word one. From 32 bytes it is the account `deriveKeypair` derives.
+ */
+export function deriveSeedKeypair(entropy: Uint8Array): EphemeralKeypair {
+  if (entropy.length !== 16 && entropy.length !== 32) {
+    throw new Error(`deriveSeedKeypair: entropy must be 16 or 32 bytes, got ${entropy.length}`);
+  }
+  return rootKeypair(entropy);
+}
+
+function rootKeypair(entropy: Uint8Array): EphemeralKeypair {
   const miniSecret = entropyToMiniSecret(entropy);
   const derive = sr25519CreateDerive(miniSecret);
   const { publicKey, sign } = derive("");

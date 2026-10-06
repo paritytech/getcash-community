@@ -8,8 +8,10 @@ import { PaymentRequestErr, PaymentStatusErr } from "@novasamatech/host-api";
 import { deriveEntropy, getHostLocalStorage } from "@parity/product-sdk-host";
 import { deriveKeypair } from "@getsome/ephemeral";
 import {
+  chooseCashTransfer,
   chooseRoute,
   destinationEarmark,
+  NoCashTransferError,
   PASEO_ASSET_HUB_PARA_ID,
   PASEO_PEOPLE_PARA_ID,
   STABLE_TOKENS,
@@ -107,6 +109,26 @@ export async function probeWithdrawKey(
   return { address, cash: account?.balance ?? 0n };
 }
 
+/** Whether this network lets CASH move from People to Asset Hub. False only when the chains say
+ *  so; a read that fails answers true, since the worker asks again before it moves anything. */
+export async function cashCanMove(): Promise<boolean> {
+  try {
+    const { connectChain, ASSET_HUB, PEOPLE } = await import("./host-chain");
+    const [assetHub, people] = await Promise.all([connectChain(ASSET_HUB), connectChain(PEOPLE)]);
+    await chooseCashTransfer({
+      assetHub,
+      people,
+      assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
+      peopleParaId: PASEO_PEOPLE_PARA_ID,
+    });
+    return true;
+  } catch (e) {
+    if (e instanceof NoCashTransferError) return false;
+    console.warn("[withdraw] the CASH transfer could not be read (the worker asks again):", e);
+    return true;
+  }
+}
+
 /** How long a fee estimate serves before People is read again. */
 const FEES_FRESH_MS = 60_000;
 const feesByTier = new Map<ConversionRoute["tier"], { at: number; fees: Promise<bigint> }>();
@@ -118,15 +140,23 @@ export async function directFeesCash(sale: ConversionRoute): Promise<bigint> {
   const cached = feesByTier.get(sale.tier);
   if (cached !== undefined && Date.now() - cached.at < FEES_FRESH_MS) return cached.fees;
   const fees = (async () => {
-    const { connectChain, PEOPLE } = await import("./host-chain");
-    const api = (await connectChain(PEOPLE)).getTypedApi(paseo_people_next);
+    const { connectChain, ASSET_HUB, PEOPLE } = await import("./host-chain");
+    const [assetHub, people] = await Promise.all([connectChain(ASSET_HUB), connectChain(PEOPLE)]);
+    // Priced on the XCM the worker will send, which the chains' trust shapes.
+    const transfer = await chooseCashTransfer({
+      assetHub,
+      people,
+      assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
+      peopleParaId: PASEO_PEOPLE_PARA_ID,
+    });
     return estimateDirectFeesCash({
-      peopleApi: api,
+      peopleApi: people.getTypedApi(paseo_people_next),
       address: PASEO_PEOPLE_POOL_ACCOUNT,
       poolAccount: PASEO_PEOPLE_POOL_ACCOUNT,
       assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
       peopleParaId: PASEO_PEOPLE_PARA_ID,
       sale,
+      transfer,
     });
   })();
   feesByTier.set(sale.tier, { at: Date.now(), fees });
@@ -144,7 +174,7 @@ export async function chooseWithdrawRoute(
   landing: DepositAsset,
 ): Promise<ConversionRoute> {
   if (landing === "native") return { tier: "pool" };
-  if (landing === "dotUSD") return { tier: "teleport" };
+  if (landing === "dotUSD") return { tier: "dotusd" };
   const { connectChain, ASSET_HUB } = await import("./host-chain");
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
   // Judged on what the redeem will take: the amount less the fees and Asset Hub's earmark.
@@ -160,7 +190,7 @@ export async function chooseWithdrawRoute(
 export async function quoteDirectReceive(amount: bigint, sale: ConversionRoute): Promise<bigint> {
   const sold = amount - (await directFeesCash(sale));
   if (sold <= 0n) return 0n;
-  if (sale.tier === "teleport") return sold;
+  if (sale.tier === "dotusd") return sold;
   if (sale.tier === "psm") return psmRedeemOut(sold, sale.feeRate);
   const { connectChain, ASSET_HUB } = await import("./host-chain");
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
