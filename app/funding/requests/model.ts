@@ -81,8 +81,8 @@ export type Kind = "top-up" | "withdrawal";
  *  still within its TTL, waiting on a running reconcile, or the cache as it was left. */
 export type Freshness = "confirmed" | "reconciling" | "cached";
 /** The pipeline's steps between the deposit and the claim, derived from `FundingStep`: `swap` is
- *  the one program that swaps and teleports together, `await-arrival` waits for the teleported
- *  $CASH to be credited on People. */
+ *  the one program that swaps and sends together, `await-arrival` waits for the CASH sent to be
+ *  credited on People. */
 export type ConvertingStep = Exclude<FundingStep, "await-native" | "done">;
 export type DepositSeenVia = "worker" | "chain" | "rail" | "core" | "faucet" | "pre-cancel";
 /** The worker's claim as it moves: sized, registered with the host, claiming, claimed. */

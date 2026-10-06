@@ -101,7 +101,7 @@ describe("request views", () => {
       // "Started" is the deposit seen at a best block, whatever confirmed it.
       ["deposit-seen provisional via chain", at(seen("chain")), 1],
       ["deposit-seen finalized via worker", at(seen("worker", "finalized")), 1],
-      // One program swaps and teleports, so both steps sit inside "Conversion".
+      // One program swaps and sends to People, so both steps sit inside "Conversion".
       ["converting at the swap", at({ kind: "converting", at: AT, step: "swap" }), 1],
       [
         "converting, awaiting arrival",
@@ -157,7 +157,7 @@ describe("request views", () => {
         at(seen("rail"), { rail: rail("chainflip", "delivered", "complete") }),
         2,
       ],
-      // One program swaps and teleports, so both steps sit inside "Conversion".
+      // One program swaps and sends to People, so both steps sit inside "Conversion".
       ["converting at the swap", at({ kind: "converting", at: AT, step: "swap" }), 3],
       [
         "converting, awaiting arrival",

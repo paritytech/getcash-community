@@ -106,7 +106,7 @@ const paymentTaken = (kind?: FailureKind): boolean =>
 /** How many of the crypto journey's three markers are complete, 0..3. The scale starts at 0: the
  *  journey only opens once the deposit is seen, and until then the deposit screen is showing.
  *  Started: the deposit was seen at a best block, whatever its assurance. Conversion: the worker
- *  reported `done`, so the one program that swaps and teleports is behind the record and the
+ *  reported `done`, so the one program that swaps and sends is behind the record and the
  *  claim has started. Added: the host reported the claim in a block, or the request settled. A
  *  side exit reports the leg it left; from the deposit, the kind says whether the network took
  *  the payment. */
@@ -134,7 +134,7 @@ function cryptoJourneySteps(record: TopUpRecord): number {
 /** How many of the card and bank journey's five markers are complete, 1..5. Started: the request
  *  exists, so a record awaiting its payment counts one. Payment: the provider reported the
  *  payment. Approved: the deposit is on the burner at finality. Conversion: the worker reported
- *  `done`, since the swap and the teleport are one program. Added: the host reported the claim
+ *  `done`, since the swap and the send are one program. Added: the host reported the claim
  *  in a block, or the request settled. */
 function cardJourneySteps(record: TopUpRecord): number {
   const { status, failure } = record;

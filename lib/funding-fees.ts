@@ -2,21 +2,23 @@
 // no stand-in account. Every figure is a runtime read against our own message. The two tiers'
 // costs differ in composition, not just in value, so each has its
 // own shape. On the pool tier, keepNativeForFees is the native the deposit carries on top of the
-// pool quote for the program's own costs on Asset Hub, and any failure returns null so the caller
-// keeps the funding package's static fallbacks. On the PSM tier the batch's dispatch fee and the
-// XCM's own fees are both charged in the external, the latter from an allowance a tenth over the
-// estimate that stays out of the mint with the external's min_balance and is refunded to the
-// burner where unspent, and the PSM takes its fee on the mint; there is no static fallback,
-// because the tier is only chosen once the chain has answered. The stable pool tier's fees have
-// the PSM tier's shape, with the two-hop pool quote in place of the mint; the teleport tier's
-// have it too, with nothing in place of the mint, since the deposit is the underlying itself.
-// remoteFeeBuffer is the same on every tier: the extra underlying to over-buy for the
-// destination's execution fee, read from a dry run of the forwarded program on People, with the
-// same tenth on top.
+// pool quote for the program's own costs on Asset Hub, and a failed read returns null so the caller
+// keeps the funding package's static fallbacks; a network with no CASH transfer is the one failure
+// that propagates, since no fee figure can make its deposit land. On the PSM tier the batch's
+// dispatch fee and the XCM's own fees are both charged in the external, the latter from an
+// allowance a tenth over the estimate that stays out of the mint with the external's min_balance
+// and is refunded to the burner where unspent, and the PSM takes its fee on the mint; there is no
+// static fallback, because the tier is only chosen once the chain has answered. The stable pool
+// tier's fees have the PSM tier's shape, with the two-hop pool quote in place of the mint; the
+// dotUSD tier's have it too, with nothing in place of the mint, since the deposit is the
+// underlying itself. remoteFeeBuffer is the same on every tier: the extra underlying to over-buy
+// for the destination's execution fee, read from a dry run of the forwarded program on People, with
+// the same tenth on top.
 
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import type { PolkadotClient } from "polkadot-api";
 import {
+  chooseCashTransfer,
   DEFAULT_KEEP_NATIVE_FOR_FEES,
   DEFAULT_REMOTE_FEE_BUFFER,
   DEFAULT_SLIPPAGE_PCT,
@@ -27,7 +29,8 @@ import {
   estimateFundingProgramFees,
   estimatePsmBatchFees,
   estimateStableProgramFees,
-  estimateTeleportProgramFees,
+  estimateDotUsdProgramFees,
+  NoCashTransferError,
   PASEO_ASSET_HUB_PARA_ID,
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
@@ -106,10 +109,10 @@ export interface StablePoolFundingSizing {
   askedDeposit: bigint;
 }
 
-/** The teleport tier's costs: the PSM tier's shape without the mint, the deposit being the
+/** The dotUSD tier's costs: the PSM tier's shape without the mint, the deposit being the
  *  underlying itself. */
-export interface TeleportFundingSizing {
-  tier: "teleport";
+export interface DotUsdFundingSizing {
+  tier: "dotusd";
   /** Extra underlying to send along for the destination's execution fee. */
   remoteFeeBuffer: bigint;
   /** The dispatch fee, in the underlying, kept out of the send. */
@@ -126,7 +129,7 @@ export interface TeleportFundingSizing {
 }
 
 export type FundingSizing =
-  PoolFundingSizing | StablePoolFundingSizing | PsmFundingSizing | TeleportFundingSizing;
+  PoolFundingSizing | StablePoolFundingSizing | PsmFundingSizing | DotUsdFundingSizing;
 
 /** A throwaway 32-byte beneficiary for the fee reads; it does not affect any fee. */
 const ZERO_32 = `0x${"00".repeat(32)}`;
@@ -141,18 +144,26 @@ interface SizingArgs {
   probeAddress: string;
 }
 
-/** The chains' typed apis, the pool and the destination's execution fee: what every tier's sizing
- *  starts from. The pool is on the fee path on every tier; the stable pool tier's stable pool is
- *  found in the same read. */
+/** The chains' typed apis, the pool, the transfer that moves the CASH to People and the
+ *  destination's execution fee: what every tier's sizing starts from. The pool is on the fee path
+ *  on every tier; the stable pool tier's stable pool is found in the same read. */
 async function sizingReads(args: SizingArgs, stableAssetId?: number) {
   const api = args.ahClient.getTypedApi(paseo_next_v2);
   const peopleApi = args.peopleClient.getTypedApi(paseo_people_next);
-  const pools = await discoverPools(
-    api,
-    stableAssetId === undefined
-      ? [args.underlyingAssetId]
-      : [args.underlyingAssetId, stableAssetId],
-  );
+  const [pools, transfer] = await Promise.all([
+    discoverPools(
+      api,
+      stableAssetId === undefined
+        ? [args.underlyingAssetId]
+        : [args.underlyingAssetId, stableAssetId],
+    ),
+    chooseCashTransfer({
+      assetHub: args.ahClient,
+      people: args.peopleClient,
+      assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
+      peopleParaId: args.peopleParaId,
+    }),
+  ]);
   const pool: Pool = pools[0]!;
   const stablePool: Pool | undefined = pools[1];
   const destinationFee = await estimateDestinationFeeCash({
@@ -161,14 +172,15 @@ async function sizingReads(args: SizingArgs, stableAssetId?: number) {
     assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
     beneficiaryHex: ZERO_32,
     amount: args.settleAmount,
+    transfer,
   });
-  return { api, pool, stablePool, destinationFee };
+  return { api, pool, stablePool, transfer, destinationFee };
 }
 
 /** The pool tier's sizing. */
 export async function estimateFundingSizing(args: SizingArgs): Promise<PoolFundingSizing | null> {
   try {
-    const { api, pool, destinationFee } = await sizingReads(args);
+    const { api, pool, transfer, destinationFee } = await sizingReads(args);
 
     // The fee probes carry the amounts a real deposit would, so the measured dispatch fee matches
     // the submitted call's length.
@@ -183,6 +195,7 @@ export async function estimateFundingSizing(args: SizingArgs): Promise<PoolFundi
       nativeBalance: nativeInMax,
       minUnderlyingOut: buyTarget,
       remoteFeesCash: destinationEarmark(buyTarget, destinationFee),
+      transfer,
       feeProbeAddress: args.probeAddress,
     });
 
@@ -192,6 +205,7 @@ export async function estimateFundingSizing(args: SizingArgs): Promise<PoolFundi
       keepNativeForFees: fees.payFeesNative + fees.dispatchNative,
     };
   } catch (e) {
+    if (e instanceof NoCashTransferError) throw e;
     console.warn("[coinage] funding sizing estimate failed; using static fallbacks:", e);
     return null;
   }
@@ -203,7 +217,7 @@ export async function estimateFundingSizing(args: SizingArgs): Promise<PoolFundi
 export async function estimatePsmFundingSizing(
   args: SizingArgs & { route: PsmRoute },
 ): Promise<PsmFundingSizing> {
-  const { api, destinationFee } = await sizingReads(args);
+  const { api, transfer, destinationFee } = await sizingReads(args);
   const buyTarget = args.settleAmount + destinationFee;
   // At the magnitude the batch will carry, as the pool tier's probes do; the few cents the fees
   // add on top do not change the encoded lengths.
@@ -214,6 +228,7 @@ export async function estimatePsmFundingSizing(
     peopleParaId: args.peopleParaId,
     depositExternal: sizePsmMint(buyTarget, args.route).externalIn,
     remoteFeesCash: destinationEarmark(buyTarget, destinationFee),
+    transfer,
     feeProbeAddress: args.probeAddress,
   });
   return {
@@ -239,7 +254,7 @@ export async function estimateStableFundingSizing(
   },
 ): Promise<StablePoolFundingSizing> {
   const stable = args.route.external;
-  const { api, pool, stablePool, destinationFee } = await sizingReads(
+  const { api, pool, stablePool, transfer, destinationFee } = await sizingReads(
     args,
     STABLE_TOKENS[stable].assetHubId,
   );
@@ -259,6 +274,7 @@ export async function estimateStableFundingSizing(
     depositStable: stableInMax,
     minUnderlyingOut: buyTarget,
     remoteFeesCash: destinationEarmark(buyTarget, destinationFee),
+    transfer,
     feeProbeAddress: args.probeAddress,
   });
   return {
@@ -273,24 +289,23 @@ export async function estimateStableFundingSizing(
   };
 }
 
-/** The teleport tier's sizing: the program's own fees, measured against the program that sends
+/** The dotUSD tier's sizing: the program's own fees, measured against the program that sends
  *  the settle amount plus the destination fee. Throws when a read fails, as the PSM tier's does. */
-export async function estimateTeleportFundingSizing(
-  args: SizingArgs,
-): Promise<TeleportFundingSizing> {
-  const { api, destinationFee } = await sizingReads(args);
+export async function estimateDotUsdFundingSizing(args: SizingArgs): Promise<DotUsdFundingSizing> {
+  const { api, transfer, destinationFee } = await sizingReads(args);
   const buyTarget = args.settleAmount + destinationFee;
   // At the magnitude the program will carry, as the other tiers' probes do.
-  const fees = await estimateTeleportProgramFees({
+  const fees = await estimateDotUsdProgramFees({
     api,
     beneficiaryHex: ZERO_32,
     peopleParaId: args.peopleParaId,
     depositUnderlying: buyTarget,
     remoteFeesCash: destinationEarmark(buyTarget, destinationFee),
+    transfer,
     feeProbeAddress: args.probeAddress,
   });
   return {
-    tier: "teleport",
+    tier: "dotusd",
     remoteFeeBuffer: destinationFee,
     dispatchExternal: fees.dispatchExternal,
     heldBackExternal: fees.heldBackExternal,
@@ -341,7 +356,7 @@ export async function quoteDepositValue(
     route.tier === "pool" && route.external !== undefined
       ? STABLE_TOKENS[route.external].assetHubId
       : undefined;
-  const { api, pool, stablePool, destinationFee } = await sizingReads(
+  const { api, pool, stablePool, transfer, destinationFee } = await sizingReads(
     { ...args, settleAmount: deposit },
     stableAssetId,
   );
@@ -352,6 +367,7 @@ export async function quoteDepositValue(
     beneficiaryHex: ZERO_32,
     peopleParaId: args.peopleParaId,
     remoteFeesCash: earmark,
+    transfer,
     feeProbeAddress: args.probeAddress,
   };
   let reaches: bigint | null = null;
@@ -359,8 +375,8 @@ export async function quoteDepositValue(
   let fixedGate = true;
   // A deposit under what the program keeps out for its own fees has nothing to convert.
   try {
-    if (route.tier === "teleport") {
-      const fees = await estimateTeleportProgramFees({ ...common, depositUnderlying: deposit });
+    if (route.tier === "dotusd") {
+      const fees = await estimateDotUsdProgramFees({ ...common, depositUnderlying: deposit });
       reaches = leftAfterFees(deposit, fees);
     } else if (route.tier === "psm") {
       const fees = await estimatePsmBatchFees({ ...common, route, depositExternal: deposit });
@@ -419,9 +435,9 @@ export const FALLBACK_FUNDING_SIZING: PoolFundingSizing = {
  * against.
  *
  * The mock quote paths' single entry point: those price the pool tier, the only one the mock world
- * takes. It never rejects and never returns null, so a caller that only needs figures to price
- * with can use the result directly. An unreachable chain leaves the static fallbacks, the same
- * ones the worker itself falls back to.
+ * takes. It never returns null and rejects only when the network has no CASH transfer, so a caller
+ * that only needs figures to price with can use the result directly. An unreachable chain leaves
+ * the static fallbacks, the same ones the worker itself falls back to.
  */
 export async function estimatePublicFundingSizing(args: {
   settleAmount: bigint;
@@ -444,6 +460,7 @@ export async function estimatePublicFundingSizing(args: {
       })) ?? FALLBACK_FUNDING_SIZING
     );
   } catch (e) {
+    if (e instanceof NoCashTransferError) throw e;
     console.warn("[coinage] funding sizing unreachable; using static fallbacks:", e);
     return FALLBACK_FUNDING_SIZING;
   }

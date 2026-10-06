@@ -9,6 +9,7 @@ import { getWsProvider } from "polkadot-api/ws";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import {
   buildFundingProgram,
+  chooseCashTransfer,
   destinationEarmark,
   discoverPool,
   dryRunFundingProgram,
@@ -35,6 +36,13 @@ describe.runIf(process.env.VERIFY_AMOUNTS === "1")("live amount check", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pe: any = peC.getTypedApi(paseo_people_next);
     try {
+      const transfer = await chooseCashTransfer({
+        assetHub: ahC,
+        people: peC,
+        assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
+        peopleParaId: PASEO_PEOPLE_PARA_ID,
+      });
+      console.log(`CASH moves to People by ${transfer}`);
       // Dry-run from the richest native holder, so the whole program can be simulated whatever
       // the deposit size.
       const accounts = (await ah.query.System.Account.getEntries()) as Array<{
@@ -79,6 +87,7 @@ describe.runIf(process.env.VERIFY_AMOUNTS === "1")("live amount check", () => {
             nativeBalance: deposit,
             minUnderlyingOut: buyTarget,
             remoteFeesCash: earmark,
+            transfer,
             feeProbeAddress: from,
             dryRunFrom: from,
           });
@@ -90,6 +99,7 @@ describe.runIf(process.env.VERIFY_AMOUNTS === "1")("live amount check", () => {
             remoteFeesCash: earmark,
             beneficiaryHex: ZERO_32,
             peopleParaId: PASEO_PEOPLE_PARA_ID,
+            transfer,
             maxWeight: fees.maxWeight,
           });
           // The worker's gate: both chains run the program, and it throws on a failure, a trap or

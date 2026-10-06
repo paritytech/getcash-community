@@ -8,7 +8,7 @@ export const sharedCashProgress = {
   stages: [
     {
       key: "cash-conversion",
-      // One XCM program swaps and teleports, so the teleport's own time belongs to the conversion.
+      // One XCM program swaps and sends, so the send's own time belongs to the conversion.
       nodeLabel: "Converted",
       activeLabel: `Converting to ${currencyConfig.name}`,
       nominalMs: 8 * MINUTE,

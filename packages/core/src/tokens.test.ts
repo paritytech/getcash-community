@@ -21,21 +21,21 @@ describe("re-exported asset constants", () => {
         value: [
           { type: "Parachain", value: NETWORK.assetHub.paraId },
           { type: "PalletInstance", value: 50 },
-          { type: "GeneralIndex", value: 50_000_413n },
+          { type: "GeneralIndex", value: BigInt(NETWORK.assetHub.cashAssetId) },
         ],
       },
     });
   });
 
   it("CASH on Asset Hub: packages/funding/src/paseo.ts, packages/withdraw/src/program.ts", () => {
-    expect(PASEO_UNDERLYING_ASSET_ID).toBe(50_000_413);
+    expect(PASEO_UNDERLYING_ASSET_ID).toBe(NETWORK.assetHub.cashAssetId);
     expect(CASH_ON_ASSET_HUB).toStrictEqual({
       parents: 0,
       interior: {
         type: "X2",
         value: [
           { type: "PalletInstance", value: 50 },
-          { type: "GeneralIndex", value: 50_000_413n },
+          { type: "GeneralIndex", value: BigInt(NETWORK.assetHub.cashAssetId) },
         ],
       },
     });
