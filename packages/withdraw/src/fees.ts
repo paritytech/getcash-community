@@ -265,6 +265,28 @@ export interface SizeXcmInput {
   slippagePct: number;
   /** How the CASH moves to Asset Hub. */
   transfer: CashTransfer;
+  /** The least the sale must land, for a withdrawal that promised a provider an exact figure.
+   *  A floor below it is refused rather than raised: a tighter floor than the pool supports fails
+   *  the program on Asset Hub and traps the funds there. */
+  minLanding?: bigint;
+}
+
+/**
+ * The sale cannot land what the withdrawal promised its provider: at today's price its floor is
+ * below the payment, its fee and the key's existential deposit. Nothing has left People: the CASH
+ * is still on the key there, beside the PAS its fee swap bought. Terminal for the sale: the worker
+ * sends the key's funds home.
+ */
+export class CommitmentUnfundableError extends Error {
+  constructor(
+    readonly floor: bigint,
+    readonly needed: bigint,
+  ) {
+    super(
+      `withdraw sizing: the sale's floor of ${floor} PAS is below the ${needed} the promised payment needs`,
+    );
+    this.name = "CommitmentUnfundableError";
+  }
 }
 
 /** What a dry run of the XCM on People reports. */
@@ -433,6 +455,14 @@ export async function priceSale(input: PriceSaleInput): Promise<Sale> {
   };
 }
 
+/** The least the sale lands in its asset, the floor the program holds it to; none on the dotUSD
+ *  tier, which sells nothing it could hold to a price. */
+function saleFloor(sale: Sale): bigint | undefined {
+  if (sale.tier === "dotusd") return undefined;
+  if (sale.tier === "psm") return sale.externalOut;
+  return sale.external === undefined ? sale.minNativeOut : sale.minOut;
+}
+
 export async function sizeXcm(input: SizeXcmInput): Promise<XcmSizing> {
   const { peopleApi, assetHubApi, key } = input;
   const claimerHex = input.claimerHex ?? key.publicKeyHex;
@@ -446,6 +476,11 @@ export async function sizeXcm(input: SizeXcmInput): Promise<XcmSizing> {
     originHex: key.publicKeyHex,
     peopleParaId: input.peopleParaId,
   });
+  // A withdrawal that promised a provider an exact figure needs the sale's floor to cover it.
+  const floor = saleFloor(sale);
+  if (input.minLanding !== undefined && floor !== undefined && floor < input.minLanding) {
+    throw new CommitmentUnfundableError(floor, input.minLanding);
+  }
 
   const base = (pasToWithdraw: bigint, payFeesPas: bigint): WithdrawXcmArgs => ({
     cashToSend: input.cashOnKey,

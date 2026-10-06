@@ -11,6 +11,7 @@ export {
 export type { PeopleApi, Sale, SwapArgs, WithdrawXcmArgs } from "./program";
 export {
   ASSET_HUB_FEE_BUFFER_CASH,
+  CommitmentUnfundableError,
   dryRunOnAssetHub,
   estimateDirectFeesCash,
   NeedsSwapError,
@@ -45,7 +46,7 @@ export type {
   WithdrawTickOutcome,
   WithdrawTickState,
 } from "./tick";
-export { readDestinationBalance } from "./destination";
+export { readAssetHubAccount, readDestinationBalance } from "./destination";
 export {
   CHANNEL_EXPIRY_MARGIN_MS,
   ChannelExpiredError,
@@ -67,6 +68,14 @@ export type {
 } from "./rail-leg";
 export { buildSweep, freshSweepState, sweepOnce } from "./sweep";
 export type { SweepInput, SweepState } from "./sweep";
+export {
+  exactPaymentFloor,
+  exactPaymentLanded,
+  freshExactPayState,
+  payExactOnce,
+  PaymentUnresolvedError,
+  SALE_RESIDUE_RETURN_FLOOR,
+} from "./pay-exact";
 export { cashInFor, pasOutFor } from "./pool";
 export type { PoolReserves } from "./pool";
 export {

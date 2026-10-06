@@ -27,6 +27,7 @@ vi.mock("../worker/src/host.js", () => ({
 
 // The provider and the sweep are the seams; the leg between them is the code under test.
 vi.mock("../worker/src/providers.js", () => ({
+  PAY_TIMEOUT_MS: 300_000,
   railFor: mocks.railFor,
   payRail: mocks.payRail,
 }));
