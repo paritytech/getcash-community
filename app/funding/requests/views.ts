@@ -22,7 +22,7 @@ export function phaseLike(record: TopUpRecord): PaymentPhase {
     case "settled":
       return "done";
     case "claiming":
-      return "working";
+      return record.creditedAt === undefined ? "working" : "done";
     case "failed":
     case "expired":
       return "failed";
@@ -106,9 +106,10 @@ const paymentTaken = (kind?: FailureKind): boolean =>
 /** How many of the crypto journey's three markers are complete, 0..3. The scale starts at 0: the
  *  journey only opens once the deposit is seen, and until then the deposit screen is showing.
  *  Started: the deposit was seen at a best block, whatever its assurance. Conversion: the worker
- *  reported `done`, so the one program that swaps and teleports is behind the record and the
- *  claim has started. Added: the request settled. A side exit reports the leg it left; from the
- *  deposit, the kind says whether the network took the payment. */
+ *  reported `done`, so the one program that swaps and sends is behind the record and the
+ *  claim has started. Added: the host reported the claim in a block, or the request settled. A
+ *  side exit reports the leg it left; from the deposit, the kind says whether the network took
+ *  the payment. */
 function cryptoJourneySteps(record: TopUpRecord): number {
   const { status, failure } = record;
   switch (status.kind) {
@@ -118,7 +119,7 @@ function cryptoJourneySteps(record: TopUpRecord): number {
     case "converting":
       return 1;
     case "claiming":
-      return 2;
+      return record.creditedAt === undefined ? 2 : 3;
     case "settled":
       return 3;
     case "failed":
@@ -133,7 +134,8 @@ function cryptoJourneySteps(record: TopUpRecord): number {
 /** How many of the card and bank journey's five markers are complete, 1..5. Started: the request
  *  exists, so a record awaiting its payment counts one. Payment: the provider reported the
  *  payment. Approved: the deposit is on the burner at finality. Conversion: the worker reported
- *  `done`, since the swap and the teleport are one program. Added: the request settled. */
+ *  `done`, since the swap and the send are one program. Added: the host reported the claim
+ *  in a block, or the request settled. */
 function cardJourneySteps(record: TopUpRecord): number {
   const { status, failure } = record;
   switch (status.kind) {
@@ -146,7 +148,7 @@ function cardJourneySteps(record: TopUpRecord): number {
     case "converting":
       return 3;
     case "claiming":
-      return 4;
+      return record.creditedAt === undefined ? 4 : 5;
     case "settled":
       return 5;
     case "failed":
@@ -160,9 +162,9 @@ function cardJourneySteps(record: TopUpRecord): number {
 
 /** How many of the bank journey's three markers are complete, 1..3. Started: the request exists,
  *  so a transfer still to arrive counts one — the buyer has been given the details to pay. Payment:
- *  the money was seen, whoever saw it. Added: the request settled. The conversion sits inside
- *  "Payment": from the buyer's side the transfer is the wait, and what follows it is not theirs to
- *  watch. */
+ *  the money was seen, whoever saw it. Added: the host reported the claim in a block, or the
+ *  request settled. The conversion sits inside "Payment": from the buyer's side the transfer is
+ *  the wait, and what follows it is not theirs to watch. */
 function bankJourneySteps(record: TopUpRecord): number {
   const { status, failure } = record;
   switch (status.kind) {
@@ -174,8 +176,9 @@ function bankJourneySteps(record: TopUpRecord): number {
       // the burner holds it, or the worker saw it land.
       return status.via === "rail" || status.via === "core" ? 1 : 2;
     case "converting":
-    case "claiming":
       return 2;
+    case "claiming":
+      return record.creditedAt === undefined ? 2 : 3;
     case "settled":
       return 3;
     case "failed":
@@ -249,9 +252,13 @@ export function rowStateOf(
       return { kind: "failed", at: status.at, reason: "Cancelled" };
     case "awaiting-deposit":
       return { kind: "awaiting-transfer", status: progress.view.label };
+    case "claiming":
+      if (record.creditedAt !== undefined) {
+        return { kind: "settled", at: record.creditedAt, creditedAmount: creditedAmount(record) };
+      }
+      return { kind: "finishing", status: progress.view.label };
     case "deposit-seen":
     case "converting":
-    case "claiming":
       return { kind: "finishing", status: progress.view.label };
   }
 }
@@ -280,10 +287,15 @@ export function milestonesOf(record: TopUpRecord): Record<number, number> {
   const converted = progress.stageTimestamps["cash-conversion"];
   if (converted !== undefined) milestones[4] = converted;
   if (record.settledAt !== undefined) milestones[5] = record.settledAt;
+  else if (record.status.kind === "claiming" && record.creditedAt !== undefined) {
+    milestones[5] = record.creditedAt;
+  }
   return milestones;
 }
 
-export const claimingOf = (record: TopUpRecord): boolean => record.status.kind === "claiming";
+/** The claim is still in flight: registered, and not yet reported in a block by the host. */
+export const claimingOf = (record: TopUpRecord): boolean =>
+  record.status.kind === "claiming" && record.creditedAt === undefined;
 
 /** Confirmed by a read since `epoch` that has not aged past the TTL (a finished record's never
  *  does); otherwise reconciling while a pass runs, else the cache as it was left. */

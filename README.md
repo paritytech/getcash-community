@@ -20,11 +20,30 @@ a static Nuxt 4 single-page app plus a background worker, both published to bull
 The **surface** (`app/`, `lib/`) is what the user sees. It quotes, shows a deposit address or
 opens the provider's widget, and tracks the request. The **worker** (`worker/`) runs in the
 background inside the host. Once a deposit has landed, the surface hands the job to the
-worker, which converts it to CASH and teleports it to the People chain in a single XCM on Asset
-Hub, then claims the CASH through the host's top-up call. The top-up is registered under the
-ephemeral account's public key and driven by the host from there; the worker follows its status
-until the claim is final, and registers a further top-up for whatever a short claim left on the
-account. The worker keeps going after the surface is closed.
+worker, which converts it to CASH and sends it to the People chain in one transaction on Asset
+Hub (by teleport, or by reserve transfer where the chains do not trust the teleport), then, once
+that CASH is final on People, claims it through the host's top-up call. The top-up is registered
+under the ephemeral account's public key and driven by the host from there.
+The surface shows the top-up done as soon as the host reports the claim in a block; the worker
+follows the host's status over a subscription it holds open until the claim is final, and
+registers a further top-up for whatever a short claim left on the account. The worker keeps going
+after the surface is closed.
+
+The conversion has two tiers, and the PSM is the default. Asset Hub's Peg Stability Module swaps
+an approved token for CASH at a given rate less its own fee, so what a purchase buys
+is known before it is quoted and cannot move before it settles: the provider delivers that
+token and the worker signs one `Utility.batch_all` that mints the CASH and sends it to People.
+The AssetConversion pool is the fallback, priced at whatever it quotes at the time. It
+takes over whenever the PSM cannot serve a request (i.e.: no instance open for the pair, minting
+paused, the amount over the instance's debt ceiling or under its minimum) and then the provider
+delivers the native token and one XCM swaps and sends it instead. Which tier a request takes
+is decided at quote time, before the provider is told what to send, and recorded on the request
+with the fee rate it was quoted; the worker runs the tier it is handed and never chooses one.
+On the Polkadot route the token the buyer picks decides: DOT takes the pool, USDT the PSM (the
+pool through PAS when the PSM cannot serve), USDC a stable pool leg, one XCM that exchanges USDC
+for PAS and PAS for CASH inside the holding and sends the CASH on, every fee paid in the stable,
+and dotUSD, the underlying itself, sent as it is with no conversion, its fees paid in dotUSD.
+`@getsome/funding` holds the four programs, the routing rule and the tick.
 
 The two talk over host storage. `lib/worker-rpc.ts` (surface side) and `worker/src/rpc.js`
 (worker side) implement a polled request/response channel: the surface writes a request under
@@ -66,12 +85,15 @@ same observations and the same reconcile.
 `@getsome/core` owns the session state machine and defines the ports it needs. The rail port
 (`ChainflipRail` in `packages/core/src/ports.ts`) is the contract a funding source has to
 meet: reverse-quote a target amount, open a deposit channel to the ephemeral, report status,
-probe liquidity, and list its sources. Two packages implement it:
+probe liquidity, and list its sources. Two packages implement it, and one source needs none:
 
 - `@getsome/chainflip` for crypto deposits, over the Chainflip SDK. Sources are BTC, ETH,
   USDC and the other Chainflip assets.
 - `@getsome/meld` for card and bank sources, over a Meld adapter service. Meld delivers the
-  native token to the ephemeral; from there the flow is identical to a crypto deposit.
+  route's deposit asset to the ephemeral; from there the flow is identical to a crypto deposit.
+- Polkadot directly: the buyer sends DOT, dotUSD, USDT or USDC from any wallet to the ephemeral
+  on Asset Hub. `createManualRail` in `@getsome/funding` stands in for the rail port, one source
+  id per token, and the deposit screen shows the account as a QR at once.
 
 The core session does not know which rail it is running. The surface picks one per route.
 
@@ -152,31 +174,41 @@ pnpm typecheck:packages # the engine (tsc)
 pnpm format             # prettier
 ```
 
+A build targets the network `packages/core/src/network.json` describes: whether it is a testnet,
+the native symbol and, for Asset Hub and People, the para id, genesis hash and endpoint, plus the
+CASH asset id on Asset Hub and People's pool account. `.papi/` holds the metadata the calls are
+typed from and must name the same genesis hashes; the build refuses a mismatch. Both describe Paseo
+Next. Demo builds, and with them the faucet and Skip, need `"testnet": true`; the build refuses
+`VITE_FAUCET_SEED` otherwise.
+
 Copy `.env.example` to `.env` and fill in what you need. Nuxt reads `.env`, not `.env.local`.
 
-| Variable               | Purpose                                                                                       |
-| ---------------------- | --------------------------------------------------------------------------------------------- |
-| `VITE_FAUCET_SEED`     | demo faucet account for the mock world; inlined into the client bundle, use a testnet account |
-| `VITE_DEPLOYER_SEED`   | fallback for `MNEMONIC` in `deploy.sh`                                                        |
-| `VITE_MELD_BASE_URL`   | origin of the Meld adapter; unset, the offline fake Meld client runs instead                  |
-| `VITE_MELD_PRODUCT_ID` | product id the adapter expects in the `x-dev-product-id` header                               |
+| Variable               | Purpose                                                                                                                     |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `VITE_FAUCET_SEED`     | demo faucet account, holding PAS, dotUSD, USDt and USDC on Asset Hub; inlined into the client bundle, use a testnet account |
+| `VITE_DEPLOYER_SEED`   | fallback for `MNEMONIC` in `deploy.sh`                                                                                      |
+| `VITE_MELD_BASE_URL`   | origin of the Meld adapter; unset, the offline fake Meld client runs instead                                                |
+| `VITE_MELD_PRODUCT_ID` | product id the adapter expects in the `x-dev-product-id` header                                                             |
 
 Two tests submit real transactions to the Paseo testnet and are skipped unless enabled:
 `PROD_PROOF=1` runs `tests/prod-proof.test.ts`, `VERIFY_AMOUNTS=1` runs
-`tests/verify-amounts.test.ts`.
+`tests/verify-amounts.test.ts`. `VERIFY_STABLE=1` runs `tests/verify-stable.test.ts`, which
+dry-runs the USDC and USDT programs from a rich account on Paseo and spends nothing, and
+`VERIFY_DOTUSD=1` runs `tests/verify-dotusd.test.ts`, the same for the dotUSD tier.
 
 ### Demo-only paths
 
 Being a prototype, parts of the tree exist to keep a demo moving and are not what a real
 deployment would do. Each is marked `TODO(production)` at its definition:
 
-- the faucet (`lib/faucet.ts`, `app/utils/demo.ts`) and the `estimateSource*` helpers behind
-  the `≈` amounts on the deposit screen
+- the faucet (`lib/faucet.ts`, `app/utils/demo.ts`), which funds the burner in the route's
+  deposit asset on Skip, and the `estimateSource*` helpers behind the `≈` amounts on the deposit
+  screen
 - `demoFallback` in `app/stores/offers.ts`, which offers every source ungated when Chainflip
   answers for nothing
 - `DEMO_MAX_CASH` in `app/stores/session.ts`, a 200 CASH cap on a purchase
-- the source-chain stand-in address in `app/components/screens/DepositScreen.vue`, used until
-  the Chainflip channel rail lands
+- the demo Chainflip picks, which run the Polkadot direct deposit under the source of the token
+  the route delivers until the Chainflip channel rail lands
 
 ## Deploy
 

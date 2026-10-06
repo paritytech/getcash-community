@@ -1,15 +1,19 @@
-import { readTopUpStatus, registerTopUp } from "./host.js";
+import { followTopUpStatus, registerTopUp } from "./host.js";
 import { toSchnorrkelSecret } from "@getsome/ephemeral";
 import {
+  DEFAULT_INCLUSION_TIMEOUT_MS,
   DEFAULT_KEEP_NATIVE_FOR_FEES,
   DEFAULT_REMOTE_FEE_BUFFER,
   DEFAULT_SLIPPAGE_PCT,
-  DEFAULT_SUBMIT_TIMEOUT_MS,
   DEFAULT_TICK_TIMEOUT_MS,
+  FundingHeldError,
   FundingShortfallError,
   PASEO_ASSET_HUB_PARA_ID,
-  discoverPool,
+  STABLE_TOKENS,
+  chooseCashTransfer,
+  discoverPools,
   freshTickState,
+  recordedRoute,
   tickOnce,
 } from "@getsome/funding";
 import { CASH_SETTLEMENT, createPeopleChainPort } from "@getsome/people";
@@ -21,6 +25,7 @@ import {
   bounded,
   connectChain,
   createJobStore,
+  fromHex,
   keypairFor,
   signOptionsFor,
   toHex,
@@ -61,13 +66,26 @@ const saveJobs = () => store.save();
  *   burnerAddress,                           // the address the surface showed
  *   depositExpiresAt: number|null,           // the rail's deposit deadline
  *   settleAmount, remoteFeeBuffer, keepNativeForFees, slippagePct,   // bigints as strings
+ *   quotedDeposit?,                                    // psm, stable pool and dotUSD tiers
  *   underlyingAssetId, peopleParaId, assetHubGenesis, peopleGenesis,
- *   phase: "starting" | FundingStep | "failed",
- *   failure?: "shortfall" | "timeout" | "expired" | "cancelled" | "claim",
+ *   tier: "pool" | "psm" | "dotusd", external?, feeRate?, // the conversion route the surface
+ *                                            // decided at quote time; consumed here, never
+ *                                            // re-decided
+ *   phase: "starting" | FundingStep | "failed",  // await-native: the route's deposit asset
+ *   failure?: "shortfall" | "timeout" | "expired" | "cancelled" | "claim" | "held",
+ *                                            // held: the PSM refused the mint three times; the
+ *                                            // deposit stays on the burner
  *   done, createdAt, armedAt, lastTickAt, lastError?,
- *   state: { attempts, xcmSubmitted, peopleAtXcm: string, fundsSeenAt: number|null,
- *            workedMs },                       // attempts: submits so far
- *   submitting?: { call: "swap", at },        // written before a submit
+ *   state: { attempts, psmRefusals, xcmSubmitted, peopleAtXcm: string,
+ *            fundsSeenAt: number|null, nonceAtSubmit: number|null,
+ *            inclusionBlock: number|null, workedMs },
+ *                                            // attempts: submits so far
+ *                                            // psmRefusals: PSM refusals so far, not transport
+ *                                            // nonceAtSubmit: set from before a submit until
+ *                                            // the conversion is final
+ *                                            // inclusionBlock: the block the conversion was
+ *                                            // seen in, while it is not final
+ *   submitting?: { call: "swap", at },        // written before a submit, with the state
  *   txs: [{ call, txHash, block? }],
  *   claim?: { phase: "sizing"|"registering"|"claiming"|"claimed", attempt, credited,
  *             id?, amount?, at, attempts, registeredAt?, status?, partial?, error? },
@@ -98,6 +116,9 @@ function newRecord(input, nowMs) {
   if (!Number.isInteger(underlyingAssetId) || !Number.isInteger(peopleParaId)) {
     throw new Error("startFunding: underlyingAssetId and peopleParaId must be integers");
   }
+  // The route is the surface's decision, taken once at quote time; a hand-off whose psm route
+  // lacks its fee is refused here rather than guessed at.
+  const route = recordedRoute(input);
   return {
     v: RECORD_V,
     sessionId,
@@ -108,10 +129,14 @@ function newRecord(input, nowMs) {
     remoteFeeBuffer: asBig(input.remoteFeeBuffer, DEFAULT_REMOTE_FEE_BUFFER).toString(),
     keepNativeForFees: asBig(input.keepNativeForFees, DEFAULT_KEEP_NATIVE_FOR_FEES).toString(),
     slippagePct: Number(input.slippagePct) > 0 ? Number(input.slippagePct) : DEFAULT_SLIPPAGE_PCT,
+    // The PSM tier's gate waits for the deposit the quote asked for. Absent on a pool job and on
+    // anything quoted before it was recorded.
+    ...(typeof input.quotedDeposit === "string" ? { quotedDeposit: input.quotedDeposit } : {}),
     underlyingAssetId,
     peopleParaId,
     assetHubGenesis,
     peopleGenesis,
+    ...route,
     phase: "starting",
     done: false,
     createdAt: nowMs,
@@ -124,9 +149,12 @@ function newRecord(input, nowMs) {
 
 const freshRecordState = () => ({
   attempts: 0,
+  psmRefusals: 0,
   xcmSubmitted: false,
   peopleAtXcm: "0",
   fundsSeenAt: null,
+  nonceAtSubmit: null,
+  inclusionBlock: null,
   workedMs: 0,
 });
 
@@ -192,8 +220,9 @@ const depositExpiryOf = (input) => {
 
 /**
  * Re-arms a failed job on a re-sent hand-off. The run clock, the deposit window and the claim's
- * tracking window restart. Submit latches survive except after a shortfall; a claim that was
- * still registering is retried at once, and a claim the host settled short gets a fresh attempt.
+ * tracking window restart. Submit latches survive except after a shortfall; a held job gets a
+ * fresh refusal counter, for a ceiling raised since; a claim that was still registering is
+ * retried at once, and a claim the host settled short gets a fresh attempt.
  */
 function rearm(record, nowMs) {
   record.phase = record.done ? "done" : "starting";
@@ -210,7 +239,10 @@ function rearm(record, nowMs) {
     record.state.attempts = 0;
     record.state.xcmSubmitted = false;
     record.state.peopleAtXcm = "0";
+    record.state.nonceAtSubmit = null;
+    record.state.inclusionBlock = null;
   }
+  if (failure === "held") record.state.psmRefusals = 0;
   if (record.claim?.phase === "registering") {
     record.claim = { ...record.claim, attempts: 0, at: 0 };
   }
@@ -224,6 +256,7 @@ function fail(record, failure, reason) {
   record.phase = "failed";
   record.failure = failure;
   record.lastError = reason;
+  unwatchClaim(record.sessionId);
 }
 
 /**
@@ -243,13 +276,54 @@ export async function cancelFunding(params) {
   return describeFunding(record);
 }
 
+/**
+ * New terms for a job still waiting for its deposit, from a re-sent hand-off: the settle amount,
+ * the route and the figures the gate reads. A direct deposit that arrived short or in another
+ * token is continued this way. Refused once the worker has seen funds or submitted anything, for
+ * another burner, and for a job that has ended; the burner, the label and the run's own state
+ * stay as they were.
+ */
+export async function amendFunding(params) {
+  const input = readParams(params);
+  const all = await loadJobs();
+  const record = all[String(input.sessionId ?? "")];
+  if (!record) return { error: "invalid", reason: "no such job to amend" };
+  const mismatch = await burnerMismatch(record, String(input.burnerAddress ?? ""));
+  if (mismatch) return { error: "invalid", reason: mismatch };
+  const waiting =
+    !record.done &&
+    record.phase !== "failed" &&
+    record.state.fundsSeenAt === null &&
+    !record.state.xcmSubmitted &&
+    record.submitting === undefined;
+  if (!waiting) return { error: "invalid", reason: "the job is no longer waiting for its deposit" };
+  let terms;
+  try {
+    // The same checks a new hand-off gets, route included.
+    terms = newRecord({ ...input, label: record.label }, Date.now());
+  } catch (error) {
+    return { error: "invalid", reason: String(error?.message ?? error) };
+  }
+  for (const field of ["tier", "external", "feeRate", "quotedDeposit"]) delete record[field];
+  Object.assign(record, {
+    settleAmount: terms.settleAmount,
+    remoteFeeBuffer: terms.remoteFeeBuffer,
+    keepNativeForFees: terms.keepNativeForFees,
+    slippagePct: terms.slippagePct,
+    ...(terms.quotedDeposit === undefined ? {} : { quotedDeposit: terms.quotedDeposit }),
+    ...recordedRoute(terms),
+  });
+  await saveJobs();
+  return describeFunding(record);
+}
+
 /** True once the CASH has landed and been claimed; `done` alone means the funding leg is over. */
 const isFinished = (record) => record.done === true && record.claim?.phase === "claimed";
 
-/** The burner's CASH on People, floored to the claim unit. */
+/** The burner's CASH on People in the finalized block, floored to the claim unit. */
 async function claimableOn(peoplePort, burner, what) {
   const held = await bounded(
-    peoplePort.settlementBalance(burner.address, CASH_SETTLEMENT),
+    peoplePort.settlementBalance(burner.address, CASH_SETTLEMENT, { at: "finalized" }),
     DEFAULT_TICK_TIMEOUT_MS,
     what,
   );
@@ -261,7 +335,7 @@ async function claimableOn(peoplePort, burner, what) {
  * registered amount is exactly what the host can mint.
  */
 const CLAIM_UNIT = 10_000n;
-/** Timeout for one host top-up call or status read. */
+/** Timeout for one host top-up call. */
 const CLAIM_TIMEOUT_MS = 45_000;
 /** Minimum wait before a failed registration is retried. */
 const CLAIM_RETRY_MS = 180_000;
@@ -273,25 +347,36 @@ const MAX_CLAIM_ATTEMPTS = 3;
 /**
  * Claims the burner's CASH into the purse once the funding leg is done. Each attempt sizes the
  * burner, registers that amount with the host under an id derived from the burner's public key,
- * and follows the top-up to its terminal status; the host drives it from registration on. A
- * top-up the host settles short leaves CASH on the burner, and the next attempt claims it. The
- * `registering` marker is written before the call, so a wake that finds it re-registers, and
- * `AlreadyExists` counts as registered.
+ * and follows the top-up's status, as the host pushes it, to its terminal value; the host drives
+ * it from registration on. A top-up the host settles short leaves CASH on the burner, and the
+ * next attempt claims it. The `registering` marker is written before the call, so a wake that
+ * finds it re-registers, and `AlreadyExists` counts as registered. Only sizing reads a chain.
  */
-async function claimFor(record, burner, peoplePort) {
+async function claimFor(record) {
   const claim = record.claim ?? null;
   if (claim?.phase === "claimed") return;
   if (claim?.phase === "claiming") {
-    await followClaim(record, burner);
+    watchClaim(record);
     return;
   }
   if (claim?.phase === "registering") {
     if (Date.now() - claim.at < CLAIM_RETRY_MS) return;
-    await registerClaim(record, burner);
+    await registerClaim(record, await keypairFor(record.label));
     return;
   }
+  const burner = await keypairFor(record.label);
+  const peopleClient = await connectChain(record.peopleGenesis, "people");
+  try {
+    await sizeClaim(record, burner, createPeopleChainPort({ client: peopleClient }));
+  } finally {
+    peopleClient.destroy();
+  }
+}
 
+/** Sizes the burner on People and registers the attempt for what it holds, or settles. */
+async function sizeClaim(record, burner, peoplePort) {
   const amount = await claimableOn(peoplePort, burner, "burner CASH read");
+  const claim = record.claim ?? null;
   if (amount === 0n) {
     if (claim?.phase === "sizing") settleOnCredited(record);
     return;
@@ -337,23 +422,54 @@ async function registerClaim(record, burner) {
   }
   delete record.claim.error;
   record.claim = { ...record.claim, phase: "claiming", registeredAt: Date.now() };
+  watchClaim(record);
 }
 
-async function followClaim(record, burner) {
-  let status;
-  try {
-    status = await readTopUpStatus(
-      topUpIdFor(burner.publicKey, record.claim.attempt),
-      CLAIM_TIMEOUT_MS,
-    );
-  } catch (error) {
-    if (error instanceof PaymentTopUpStatusErr.NotFound) {
-      record.claim = { ...record.claim, phase: "registering", at: 0 };
-      return;
-    }
-    record.claim = { ...record.claim, error: String(error?.message ?? error) };
-    throw error;
-  }
+/** The status subscriptions held open, one per claiming job: `{ id, stop }` by session id. */
+const claimWatches = new Map();
+
+/**
+ * Follows the claim's current attempt on the host until it ends. The host replays the latest
+ * status on subscribe, so a watch opened late, after a restart or an interrupt, misses nothing.
+ */
+function watchClaim(record) {
+  const { sessionId } = record;
+  const { id } = record.claim;
+  if (claimWatches.get(sessionId)?.id === id) return;
+  unwatchClaim(sessionId);
+  // A word about an attempt that is no longer the live one is ignored.
+  const live = () =>
+    record.phase !== "failed" && record.claim?.phase === "claiming" && record.claim.id === id;
+  const stop = followTopUpStatus(
+    fromHex(id),
+    (status) => {
+      if (!live()) return;
+      applyClaimStatus(record, status);
+      if (!live()) unwatchClaim(sessionId);
+      void saveJobs();
+    },
+    (error) => {
+      if (!live()) return;
+      unwatchClaim(sessionId);
+      if (error instanceof PaymentTopUpStatusErr.NotFound) {
+        record.claim = { ...record.claim, phase: "registering", at: 0 };
+      } else {
+        record.claim = { ...record.claim, error: String(error?.message ?? error) };
+        record.lastError = record.claim.error;
+      }
+      void saveJobs();
+    },
+  );
+  claimWatches.set(sessionId, { id, stop });
+}
+
+function unwatchClaim(sessionId) {
+  claimWatches.get(sessionId)?.stop();
+  claimWatches.delete(sessionId);
+}
+
+/** Applies one status the host reported for the claim's current attempt. */
+function applyClaimStatus(record, status) {
   delete record.claim.error;
   record.claim = { ...record.claim, status: status.type };
   switch (status.type) {
@@ -498,34 +614,76 @@ function judgeBounds(record, nowMs, read) {
   }
 }
 
-/** One tick for one record: connect, read the world, act at most once, persist, let go. */
+/** One tick for one record: read what it needs, act at most once, persist, let go. */
 async function tickRecord(record, nowMs) {
   accountWorkedTime(record, nowMs);
+  if (record.done) {
+    await claimFor(record);
+    return;
+  }
+  // The tier is an input to this worker, never a decision it makes: a job converts through the
+  // route it was quoted or not at all.
+  const route = recordedRoute(record);
   const burner = await keypairFor(record.label);
   const ahClient = await connectChain(record.assetHubGenesis, "asset hub");
   let peopleClient = null;
   try {
     peopleClient = await connectChain(record.peopleGenesis, "people");
     const peoplePort = createPeopleChainPort({ client: peopleClient });
-    if (record.done) {
-      await claimFor(record, burner, peoplePort);
-      return;
-    }
     const api = ahClient.getTypedApi(paseo_next_v2);
-    // Pool keys are re-discovered each wake and not persisted.
-    const pool = await bounded(
-      discoverPool(api, record.underlyingAssetId),
+    // Pool keys are re-discovered each wake and not persisted, in one read of the pool table: the
+    // CASH pool, and for a pool job fed with a stable the stable's own pool too, under its
+    // pallet-assets id. The PSM and dotUSD tiers have no pool to find.
+    const [pool, stablePool] =
+      route.tier === "pool"
+        ? await bounded(
+            discoverPools(
+              api,
+              route.external === undefined
+                ? [record.underlyingAssetId]
+                : [record.underlyingAssetId, STABLE_TOKENS[route.external].assetHubId],
+            ),
+            DEFAULT_TICK_TIMEOUT_MS,
+            "pool discovery",
+          )
+        : [];
+    // Asked on every dispatch, so a runtime upgrade between ticks is picked up before the next
+    // submit; a network with no transfer fails the tick like any other read.
+    const transfer = await bounded(
+      chooseCashTransfer({
+        assetHub: ahClient,
+        people: peopleClient,
+        assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
+        peopleParaId: record.peopleParaId,
+      }),
       DEFAULT_TICK_TIMEOUT_MS,
-      "pool discovery",
+      "cash transfer choice",
     );
 
     // Restore the persisted state into the shape tickOnce mutates. fundsSeenAt must be
     // exactly null when absent.
     const state = freshTickState();
     state.attempts = record.state.attempts;
+    state.psmRefusals = record.state.psmRefusals ?? 0;
     state.xcmSubmitted = !!record.state.xcmSubmitted;
     state.peopleAtXcm = asBig(record.state.peopleAtXcm);
     state.fundsSeenAt = record.state.fundsSeenAt ?? null;
+    state.nonceAtSubmit = record.state.nonceAtSubmit ?? null;
+    state.inclusionBlock = record.state.inclusionBlock ?? null;
+    // tickOnce mutates the state as it works; it is written back before a submit leaves and
+    // after the tick, thrown or not.
+    const persistState = () => {
+      record.state = {
+        attempts: state.attempts,
+        psmRefusals: state.psmRefusals,
+        xcmSubmitted: state.xcmSubmitted,
+        peopleAtXcm: state.peopleAtXcm.toString(),
+        fundsSeenAt: state.fundsSeenAt,
+        nonceAtSubmit: state.nonceAtSubmit,
+        inclusionBlock: state.inclusionBlock,
+        workedMs: record.state.workedMs ?? 0,
+      };
+    };
 
     let outcome;
     try {
@@ -533,7 +691,10 @@ async function tickRecord(record, nowMs) {
         {
           api,
           peopleApi: peopleClient.getTypedApi(paseo_people_next),
+          route,
+          transfer,
           pool,
+          stablePool,
           address: burner.address,
           signer: burner.signer,
           beneficiaryHex: toHex(burner.publicKey),
@@ -544,14 +705,21 @@ async function tickRecord(record, nowMs) {
           remoteFeeBuffer: asBig(record.remoteFeeBuffer, DEFAULT_REMOTE_FEE_BUFFER),
           keepNativeForFees: asBig(record.keepNativeForFees, DEFAULT_KEEP_NATIVE_FOR_FEES),
           slippagePct: record.slippagePct,
+          ...(typeof record.quotedDeposit === "string"
+            ? { quotedDeposit: asBig(record.quotedDeposit) }
+            : {}),
           tickTimeoutMs: DEFAULT_TICK_TIMEOUT_MS,
-          submitTimeoutMs: DEFAULT_SUBMIT_TIMEOUT_MS,
-          // Every submit is on Asset Hub; one anchor per tick serves them all.
+          inclusionTimeoutMs: DEFAULT_INCLUSION_TIMEOUT_MS,
+          // Every submit is on Asset Hub; one anchor per tick serves them all. The PSM tier adds
+          // its fee asset itself.
           signOptions: await signOptionsFor(ahClient),
-          readUnderlyingOnPeople: (ss58) => peoplePort.settlementBalance(ss58, CASH_SETTLEMENT),
+          readFinalizedUnderlyingOnPeople: (ss58) =>
+            peoplePort.settlementBalance(ss58, CASH_SETTLEMENT, { at: "finalized" }),
           now: Date.now,
-          // Persisted before the broadcast leaves.
+          // Persisted before the broadcast leaves, so a wake mid-send knows a conversion may be
+          // in flight.
           onBeforeSubmit: async (call) => {
+            persistState();
             record.submitting = { call, at: Date.now() };
             await saveJobs();
           },
@@ -563,14 +731,7 @@ async function tickRecord(record, nowMs) {
         state,
       );
     } finally {
-      // Write the state back even when the tick threw; tickOnce mutates it as it works.
-      record.state = {
-        attempts: state.attempts,
-        xcmSubmitted: state.xcmSubmitted,
-        peopleAtXcm: state.peopleAtXcm.toString(),
-        fundsSeenAt: state.fundsSeenAt,
-        workedMs: record.state.workedMs ?? 0,
-      };
+      persistState();
     }
     // A cancel that landed during this tick stands.
     if (record.phase === "failed") return;
@@ -580,8 +741,8 @@ async function tickRecord(record, nowMs) {
     delete record.submitting;
     if (outcome.step === "done") {
       record.done = true;
-      // Claim in the same tick the CASH lands.
-      await claimFor(record, burner, peoplePort);
+      // Claim in the same tick the CASH lands, over this tick's People connection.
+      await sizeClaim(record, burner, peoplePort);
     }
   } finally {
     try {
@@ -619,6 +780,10 @@ export async function tickAllFunding() {
       } catch (error) {
         if (error instanceof FundingShortfallError) {
           fail(record, "shortfall", `shortfall: ${error.message}`);
+        } else if (error instanceof FundingHeldError) {
+          // The PSM would not take the mint three times over. The deposit stays on the burner
+          // and nothing converts it through the pool; a re-sent hand-off tries again.
+          fail(record, "held", error.message);
         } else {
           // Other errors are transient; the next wake retries.
           record.lastError = String(error?.message ?? error);

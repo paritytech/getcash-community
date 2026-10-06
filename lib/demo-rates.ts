@@ -1,12 +1,13 @@
 // Indicative USD reference rates for the demo CASH quote display, rendered with a leading ≈.
 const USD_RATES: Record<string, number> = {
-  BTC: 110_000,
-  ETH: 3_500,
-  SOL: 150,
-  TRX: 0.28,
+  BTC: 84_500,
+  ETH: 2_670,
+  SOL: 114,
+  TRX: 0.34,
   USDC: 1,
   USDT: 1,
-  DOT: 4,
+  dotUSD: 1,
+  DOT: 1.1,
 };
 
 function fmtAmount(amount: number): string | null {
@@ -18,13 +19,19 @@ function fmtAmount(amount: number): string | null {
     .replace(/\.$/, "");
 }
 
-/** Estimated source-asset amount equivalent to `nativeBase` (10-dec DOT base units).
- *  Null when the asset has no reference rate. */
-export function estimateSourceAmount(nativeBase: bigint, sourceSymbol: string): string | null {
+/** Estimated source-asset amount equivalent to `depositBase`, the deposit in `depositToken`'s own
+ *  base units. The deposit asset follows the conversion route, the native on the pool tier and a
+ *  stable on the stable tiers, so its decimals and its reference rate both come from the token
+ *  rather than being assumed to be DOT's. Null when either asset has no reference rate. */
+export function estimateSourceAmount(
+  depositBase: bigint,
+  depositToken: { symbol: string; chainflipAsset?: string; decimals: number },
+  sourceSymbol: string,
+): string | null {
   const src = USD_RATES[sourceSymbol];
-  const dot = USD_RATES.DOT;
-  if (!src) return null;
-  return fmtAmount(((Number(nativeBase) / 1e10) * dot) / src);
+  const deposit = USD_RATES[depositToken.chainflipAsset ?? depositToken.symbol];
+  if (!src || !deposit) return null;
+  return fmtAmount(((Number(depositBase) / 10 ** depositToken.decimals) * deposit) / src);
 }
 
 /** Estimated source-asset amount for `cashBase` (6-dec CASH, pegged ~1 USD). */

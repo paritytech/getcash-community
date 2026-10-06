@@ -174,7 +174,7 @@ describe("request record migration", () => {
     expect(effectiveSourceId(record.ref)).toBe(CRYPTO_SOURCE_ID);
     expect(record.route).toBe("crypto");
     expect(record.rail.provider).toBe("manual");
-    expect(record.progress.profile.id).toBe("chainflip");
+    expect(record.progress.profile.id).toBe("direct");
     expect(record.progress.stageTimestamps).toEqual({});
     expect(record.deadline).toEqual({
       depositExpiresAt: legacyBareRefRecord.startedAt + DEFAULT_DEPOSIT_WINDOW_MS,
@@ -197,6 +197,17 @@ describe("request record migration", () => {
     expect(migrated(fundedCryptoRecord).progress.stageTimestamps["cash-conversion"]).toBe(
       fundedCryptoRecord.funded,
     );
+  });
+
+  it("keeps creditedAt on a schema-2 record", () => {
+    const credited: RequestRecord = {
+      ...migrated(submittedCardRecord),
+      status: { kind: "claiming", at: FIXTURE_NOW },
+      creditedAt: FIXTURE_NOW - 30_000,
+    };
+    const reloaded = migrateRecord(credited, credited.ref, FIXTURE_NOW);
+    expect(reloaded?.creditedAt).toBe(FIXTURE_NOW - 30_000);
+    expect(reloaded?.status).toEqual(credited.status);
   });
 
   it("rejects a record without a parseable amount", () => {

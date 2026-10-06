@@ -530,6 +530,17 @@ describe("createPayment session, handoff mode", () => {
     session.dispose();
   });
 
+  it("the slot carries the conversion route the caller decided, verbatim", async () => {
+    const conversion = { tier: "psm", external: "USDT", feeRate: 5_000 };
+    const { storage, session } = setup({ config: { conversion } });
+    await session.ready;
+    await session.quote();
+    await session.start({ refundAddress: "bc1-refund" });
+
+    const persisted = await createFlowStore(storage, "btc", RECIPIENT).load();
+    expect(persisted?.conversion).toEqual(conversion);
+  });
+
   it("pool-route decoupling: native budget for the rail, underlying settle for the gate", async () => {
     const CASH = { kind: "foreign", id: "cash" } as const;
     const SETTLE = 7_000_000n; // 7 underlying at 6 decimals; what topUp claims

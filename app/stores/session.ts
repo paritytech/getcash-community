@@ -3,10 +3,26 @@
 
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef, watch } from "vue";
-import type { ChainflipRail, PaymentState, SourceId } from "@getsome/core";
-import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
+import {
+  NETWORK,
+  TOKENS,
+  type ChainflipRail,
+  type PaymentState,
+  type SourceId,
+  type TokenSpec,
+} from "@getsome/core";
+import { egressFor, SOURCE_CONFIG_BY_ID, type ChainflipToken } from "@getsome/chainflip";
 import type { RefundKey } from "@getsome/ephemeral";
-import type { FundingStep } from "@getsome/funding";
+import {
+  createManualRail,
+  manualSourceIdOf,
+  NoCashTransferError,
+  PERMILL,
+  PSM_EXTERNAL,
+  recordedRoute,
+  type ConversionRoute,
+  type FundingStep,
+} from "@getsome/funding";
 import {
   advanceFundingProgressSnapshot,
   createFundingProgressSnapshot,
@@ -15,18 +31,20 @@ import {
   type FundingProgressSnapshot,
 } from "../funding/progress";
 import { depositWindowFor } from "../funding/config";
+import { formatFundingAmount } from "../funding/selection";
 import {
   effectiveSourceId,
   isTopUp,
   railProviderOf,
   routeOf,
   type TopUpRecord,
+  type WorkerHandoffPayload,
 } from "../funding/requests/model";
+import type { DepositMismatch } from "../funding/deposit-mismatch";
 import {
   createFakeMeldClient,
   createMeldClient,
   createMeldRail,
-  NATIVE_DECIMALS,
   pickBestQuote,
   shareStatusReads,
   type MeldClientLike,
@@ -36,37 +54,60 @@ import { CASH_DECIMALS } from "@getsome/people";
 import { meldPaymentMethod, resolveMeldRegion } from "~~/lib/region";
 import {
   fetchCorridor,
+  DEFAULT_MELD_DESTINATION,
   fetchSupportedCorridors,
   fetchSupportedCountries,
   methodFor,
   type SupportedCorridor,
   type SupportedCountry,
 } from "~~/lib/supported";
-import { requestRefOf, type RequestRef } from "../utils/request-index";
+import { requestRefKey, requestRefOf, type RequestRef } from "../utils/request-index";
 import { journeyScaleOf, type JourneyScale } from "../funding/requests/views";
 import { estimateSourceAmount, estimateSourceFromCash } from "~~/lib/demo-rates";
 import { priceSourceLeg, type SourcePriceResult } from "~~/lib/source-price";
 import {
   createMockCoinageSession,
-  DEFAULT_SOURCE_ID,
+  depositTokenOf,
   workerSessionId,
   type MockCoinageWorld,
 } from "~~/lib/coinage";
 import type { HostedCoinageWorld } from "~~/lib/coinage-live";
 import { isHosted } from "~~/lib/host-account";
-import type { FundingSizing } from "~~/lib/funding-fees";
+import type {
+  DepositValue,
+  FundingSizing,
+  PoolFundingSizing,
+  PsmFundingSizing,
+} from "~~/lib/funding-fees";
 import { isDemoBuild } from "../utils/demo";
 import { isMeldSourceId, meldSourceIdFor } from "../funding/source-ids";
-import { toCashBase } from "../utils/cash";
+import { fmtCash, toCashBase } from "../utils/cash";
 import { isMoneyAmount, sumMoney } from "../utils/money";
 import { fundFromFaucet, isFaucetConfigured } from "~~/lib/faucet";
-import { sourceIdFor } from "~~/lib/config";
+import {
+  depositAssetFor,
+  directTokenNamed,
+  isDirectSourceId,
+  sourceIdFor,
+  type DepositAsset,
+} from "~~/lib/config";
 import { useRequestsStore } from "./requests";
 
 export { DEPOSIT_EXPIRED_REASON } from "../funding/requests/model";
 
 /** Stand-in address for the mock world, which never touches a chain. */
 const DEV_RECIPIENT = "13ENScfFZXQ8avXf6cphack516B8YCjdL4MJbodm7VxK8GE9";
+
+/** The deposit token as the Chainflip pricing and floors read it; undefined for a token Chainflip
+ *  cannot deliver, such as USDC, which prices nothing through it. */
+const chainflipTokenOf = (token: TokenSpec): ChainflipToken | undefined =>
+  token.chainflipAsset === undefined ? undefined : (token as ChainflipToken);
+
+/** The deposit token as Meld delivers it. Throws for a token Meld cannot deliver. */
+function meldTokenOf(token: TokenSpec): Parameters<typeof createMeldRail>[0]["token"] {
+  if (token.meldCurrencyCode === undefined) throw new Error(`Meld cannot deliver ${token.symbol}`);
+  return token as Parameters<typeof createMeldRail>[0]["token"];
+}
 
 /** Persisted per request; enough to re-open it. */
 export interface ActiveFlowRecord {
@@ -86,6 +127,8 @@ export interface ActiveFlowRecord {
   sourcePartnerFee?: string;
   /** The funding leg's own network fee as the quote priced it, in `sourceSymbol` units. */
   sourceChainFee?: string;
+  /** The PSM's fee on the mint as the quote priced it, in `sourceSymbol` units; PSM tier only. */
+  sourceMintFee?: string;
   startedAt: number;
   depositAddress?: string;
   progress?: FundingProgressSnapshot;
@@ -153,7 +196,7 @@ async function step<T>(label: string, ms: number, work: Promise<T>): Promise<T> 
 const ahBlockLink = (block?: number) =>
   block === undefined
     ? ""
-    : ` https://polkadot.js.org/apps/?rpc=wss%3A%2F%2Fpaseo-asset-hub-next-rpc.polkadot.io#/explorer/query/${block}`;
+    : ` https://polkadot.js.org/apps/?rpc=${encodeURIComponent(NETWORK.assetHub.rpc)}#/explorer/query/${block}`;
 
 export interface QuotedView {
   send: string;
@@ -166,43 +209,88 @@ export interface QuotedView {
   transactionFee?: string | null;
   networkFee?: string | null;
   partnerFee?: string | null;
-  /** The funding leg's own network fee, in `symbol` units: what the swap and the teleport up to
+  /** The funding leg's own network fee, in `symbol` units: what the swap and the send up to
    *  CASH on People cost, which the rail's quote knows nothing about. Priced by the app, not
    *  reported by the rail. */
   chainFee?: string | null;
+  /** The PSM's fee on the mint, in `symbol` units: the flat cut the PSM tier takes for turning the
+   *  delivered stable into CASH. Priced by the app; null on the pool tier, whose costs have no
+   *  such component. */
+  mintFee?: string | null;
   /** The provider these terms came from ("TRANSAK"), not the aggregator in front of it. */
   provider?: string | null;
-  /** Live world only: the native (DOT) budget the rail must deliver, 10-dec base units. */
+  /** Live world only: what the rail must deliver to the burner, in `depositToken`'s base units:
+   *  the native on the pool tier, the stable on the stable tiers. */
   nativeAmount: bigint | null;
+  /** The token `nativeAmount` is counted in, set with it and only when Chainflip can deliver that
+   *  token: the floors and the display price read it. A USDC deposit sets neither. */
+  depositToken?: ChainflipToken;
   sourceAsset: string | null;
   sourceChain: string | null;
 }
 
 /**
+ * The quote's own implied rate for the token Meld delivers: the fiat left after the rail's fees is
+ * what bought `destinationAmount`. Null when the quote cannot price it.
+ */
+function meldImpliedRate(raw: MeldQuoteRaw): { delivered: number; fiatPerToken: number } | null {
+  const delivered = Number(raw.destinationAmount);
+  const netFiat = Number(raw.provider.sourceAmount) - Number(raw.provider.totalFee ?? 0);
+  if (!Number.isFinite(delivered) || delivered <= 0) return null;
+  if (!Number.isFinite(netFiat) || netFiat <= 0) return null;
+  return { delivered, fiatPerToken: netFiat / delivered };
+}
+
+/** Carried unrounded: the row's display rounds it, and the total has to sum the exact figures. */
+function feeFiat(total: number): string | null {
+  return Number.isFinite(total) && total > 0 ? String(total) : null;
+}
+
+/**
  * The funding leg's network fee in the quote's fiat, or null when the quote cannot price it.
  *
- * Meld's own fees stop where its delivery does: native on Asset Hub. Getting from there to CASH
- * on People costs two more things, both already sized by the funding estimate and both already
- * inside what the buyer pays, because the deposit was over-bought to cover them —
- * `keepNativeForFees` (dispatch, execution and delivery on Asset Hub, in native) and
- * `remoteFeeBuffer` (execution on People, in CASH). Neither has a row of its own on the rail's
- * quote, so the breakdown prices them here.
+ * Meld's own fees stop where its delivery does: the route's token on Asset Hub. Getting from
+ * there to CASH on People costs more, all of it already sized by the funding estimate and already
+ * inside what the buyer pays, because the deposit was over-bought to cover it. On the pool tier
+ * that is `keepNativeForFees` (dispatch, execution and delivery on Asset Hub, in native) and
+ * `remoteFeeBuffer` (execution on People, in CASH). On the PSM tier the Asset Hub side is all in
+ * the delivered stable: the batch's dispatch fee plus what the mint keeps out for the XCM's
+ * execution and delivery, the fee allowance and the asset's min_balance that keeps the burner
+ * alive. The min_balance and the unspent allowance stay on the
+ * burner, but the buyer paid for them, so they are part of the cost shown. None has a row of its
+ * own on the rail's quote, so the breakdown prices them here.
  *
- * The native side converts at the quote's own implied rate: the fiat left after the rail's fees
- * is what bought `destinationAmount`. The CASH side takes the peg this app quotes against
- * throughout, one CASH to one unit of the quote fiat (see `sizeMeldNativeBudget`).
+ * The delivered token's side converts at the quote's implied rate (`meldImpliedRate`). The CASH
+ * side takes the peg this app quotes against throughout, one CASH to one unit of the quote fiat
+ * (see `sizeMeldNativeBudget`).
  */
 function meldChainFeeFiat(raw: MeldQuoteRaw, sizing: FundingSizing): string | null {
-  const nativeOut = Number(raw.destinationAmount);
-  const netFiat = Number(raw.provider.sourceAmount) - Number(raw.provider.totalFee ?? 0);
-  if (!Number.isFinite(nativeOut) || nativeOut <= 0) return null;
-  if (!Number.isFinite(netFiat) || netFiat <= 0) return null;
+  const rate = meldImpliedRate(raw);
+  if (rate === null) return null;
+  const inCash = (amount: bigint) => Number(amount) / 10 ** CASH_DECIMALS;
   const onAssetHub =
-    (Number(sizing.keepNativeForFees) / 10 ** NATIVE_DECIMALS) * (netFiat / nativeOut);
-  const onPeople = Number(sizing.remoteFeeBuffer) / 10 ** CASH_DECIMALS;
-  const total = onAssetHub + onPeople;
-  // Carried unrounded: the row's display rounds it, and the total has to sum the exact figures.
-  return Number.isFinite(total) && total > 0 ? String(total) : null;
+    "keepNativeForFees" in sizing
+      ? (Number(sizing.keepNativeForFees) / 10 ** TOKENS.PAS.decimals) * rate.fiatPerToken
+      : (Number(sizing.dispatchExternal + sizing.heldBackExternal) /
+          10 ** ("external" in sizing ? TOKENS[sizing.external] : TOKENS.DOTUSD).decimals) *
+        rate.fiatPerToken;
+  return feeFiat(onAssetHub + inCash(sizing.remoteFeeBuffer));
+}
+
+/**
+ * The PSM's fee on the mint in the quote's fiat, or null when the quote cannot price it. The
+ * pipeline mints everything the dispatch fee and the held-back external leave of what the
+ * provider delivered, and the PSM takes its Permill of that; at the quote's implied rate, since
+ * the fee is taken in the stable.
+ */
+function meldMintFeeFiat(raw: MeldQuoteRaw, sizing: PsmFundingSizing): string | null {
+  const rate = meldImpliedRate(raw);
+  if (rate === null) return null;
+  const minted =
+    rate.delivered -
+    Number(sizing.dispatchExternal + sizing.heldBackExternal) /
+      10 ** TOKENS[sizing.external].decimals;
+  return feeFiat(minted * (sizing.feeRate / Number(PERMILL)) * rate.fiatPerToken);
 }
 
 /** Half a cent: below this the split and the total still round to the same figure. */
@@ -240,6 +328,7 @@ function meldQuotedView(raw: MeldQuoteRaw, sizing: FundingSizing): QuotedView {
     networkFee: raw.provider.networkFee ?? null,
     partnerFee: raw.provider.partnerFee ?? null,
     chainFee: meldChainFeeFiat(raw, sizing),
+    mintFee: sizing.tier === "psm" ? meldMintFeeFiat(raw, sizing) : null,
     nativeAmount: null,
     sourceAsset: null,
     sourceChain: null,
@@ -268,6 +357,15 @@ export const useSessionStore = defineStore("session", () => {
   /** True when the selected card or bank method is not routed for the chosen region. Not a quote
    *  failure; nothing to retry. */
   const meldMethodUnavailable = ref(false);
+  /** The crypto the Meld catalog is read for. `chooseQuoteRoute` sets it from the route the moment
+   *  one is chosen, and that value is what every quote is placed against. This initial value only
+   *  covers the window before then: the catalog loads when the pay screen mounts, before any amount
+   *  exists and so before a route can be chosen, so it assumes the PSM tier's external rather than
+   *  the fallback's. A route that comes back `pool` — the PSM paused, at its ceiling, or below its
+   *  minimum — moves it to the native and the watch below reloads. Off-host there is no PSM. */
+  const meldDestination = ref<string>(
+    isHosted() ? TOKENS[PSM_EXTERNAL].meldCurrencyCode : DEFAULT_MELD_DESTINATION,
+  );
   /** Every Meld on-ramp country from the adapter's live catalog; null until loaded. */
   const supportedCountries = ref<SupportedCountry[] | null>(null);
   /** Bulk per-country corridors for greying the dropdown; null until loaded or when unreachable. */
@@ -394,17 +492,21 @@ export const useSessionStore = defineStore("session", () => {
     return "ok";
   }
 
-  /** Prices the selected source for this budget in the background. Epoch-guarded. */
+  /** Prices the selected source for this budget, in `depositToken`, in the background.
+   *  Epoch-guarded. */
   function priceSelectedSource(
     chain: string,
     asset: string,
-    targetNativeBase: bigint,
+    targetBaseUnits: bigint,
+    depositToken: ChainflipToken,
     epoch: number,
   ) {
     const sourceId = sourceIdFor(chain, asset);
-    if (sourceId === undefined) return;
+    // A direct deposit has no swap to price: the manual rail's figure is the deposit itself.
+    if (sourceId === undefined || isDirectSourceId(sourceId)) return;
     sourcePrice.value = { kind: "pending" };
-    void priceSourceLeg({ sourceId, targetNativeBase }).then((result) => {
+    const egress = egressFor(depositToken);
+    void priceSourceLeg({ sourceId, targetBaseUnits, egress }).then((result) => {
       if (epoch === quoteEpoch) sourcePrice.value = result;
     });
   }
@@ -529,10 +631,12 @@ export const useSessionStore = defineStore("session", () => {
 
   /** The hosted world up to hydration, shared by the fresh-quote and resume paths. Returns null
    *  when a newer quote superseded this one. `staleFlowMs` is the request's deposit window, so
-   *  core's stale guard and the record's deadline agree. */
+   *  core's stale guard and the record's deadline agree. `route` is the request's tier, already
+   *  decided: the world freezes it and never decides one. */
   async function createLiveWorld(
     epoch: number,
     staleFlowMs: number,
+    route: ConversionRoute,
     tradeN?: number,
     rail?: ChainflipRail,
     sourceId?: SourceId,
@@ -549,6 +653,7 @@ export const useSessionStore = defineStore("session", () => {
         // A re-opened request's own number; a new one's is the free number the quote reserved.
         ...(tradeN === undefined ? {} : { tradeN }),
         staleFlowMs,
+        route,
         // The fiat route injects a Meld rail and its source id; the crypto route leaves both unset.
         ...(rail ? { rail } : {}),
         ...(sourceId ? { sourceId } : {}),
@@ -572,6 +677,34 @@ export const useSessionStore = defineStore("session", () => {
       return null;
     }
     return world;
+  }
+
+  /**
+   * The conversion tier a fresh quote is built on, decided once here and handed down: the rail
+   * is built for the asset the tier delivers, and the world freezes the tier into the hand-off.
+   * Nothing downstream decides again. `deposit` names the asset the buyer will send when the
+   * picker knows it; the fiat rails name none. The mock world runs over fakes with no PSM to
+   * ask, so outside the host the tier is the pool, fed with the stable the buyer picked.
+   */
+  async function chooseQuoteRoute(
+    amount: bigint,
+    deposit?: DepositAsset,
+  ): Promise<ConversionRoute> {
+    if (!isHosted()) {
+      if (deposit === "dotUSD") return { tier: "dotusd" };
+      return deposit === undefined || deposit === "native"
+        ? { tier: "pool" }
+        : { tier: "pool", external: deposit };
+    }
+    const { chooseHostedRoute } = await import("~~/lib/coinage-live");
+    const route = await step("route selection", 10_000, chooseHostedRoute(amount, deposit));
+    // The catalog is read for the crypto the rail will be asked to deliver. A region validated
+    // against one destination and quoted against another is how a supported region yields an
+    // unquotable request, so the dropdown follows the route rather than a constant. A token Meld
+    // cannot deliver leaves it as it was.
+    const code = depositTokenOf(route).meldCurrencyCode;
+    if (code !== undefined) meldDestination.value = code;
+    return route;
   }
 
   /** The quote in flight, whichever rail: start() waits for it before opening the deposit. */
@@ -607,10 +740,10 @@ export const useSessionStore = defineStore("session", () => {
   }
 
   /**
-   * Builds the Meld rail for the current selection, or signals that the method is not routed for
-   * the region.
+   * Builds the Meld rail for the current selection and the token the route delivers, or signals
+   * that the method is not routed for the region.
    */
-  async function buildMeldRail(): Promise<
+  async function buildMeldRail(route: ConversionRoute): Promise<
     | {
         rail: ChainflipRail;
         sourceId: SourceId;
@@ -628,7 +761,7 @@ export const useSessionStore = defineStore("session", () => {
     // The live corridor is authoritative when discovery is reachable. Otherwise fall back to the
     // static region map as a whole {country, fiat} tuple with a synthetic corridor. The caller
     // assigns `meldCorridor` after its epoch guard.
-    const live = await fetchCorridor(country);
+    const live = await fetchCorridor(meldDestination.value, country);
     let region: { country: string; fiat: string };
     let corridor: SupportedCorridor;
     let paymentMethodType: string | null;
@@ -673,6 +806,7 @@ export const useSessionStore = defineStore("session", () => {
       fiat: region.fiat,
       method: meldMethod,
       paymentMethodType,
+      token: meldTokenOf(depositTokenOf(route)),
     });
     return { rail, sourceId, client: meldClient, region, paymentMethodType, corridor };
   }
@@ -694,8 +828,8 @@ export const useSessionStore = defineStore("session", () => {
     const { quotes } = await client.getQuote({
       country: ctx.country,
       sourceCurrencyCode: ctx.fiat,
-      // The rail's own destination code.
-      destinationCurrencyCode: "DOT_ASSETHUB",
+      // The rail's own destination code; the budget is priced in the asset the rail is built with.
+      destinationCurrencyCode: TOKENS.PAS.meldCurrencyCode,
       sourceAmount: fiat.toFixed(2),
       paymentMethodType: ctx.paymentMethodType,
     });
@@ -710,7 +844,7 @@ export const useSessionStore = defineStore("session", () => {
     const netFiat = Number.isFinite(fee) ? paid - fee : paid;
     if (!Number.isFinite(paid) || netFiat <= 0) return null;
     const nativePerFiat = out / netFiat;
-    return BigInt(Math.ceil(fiat * nativePerFiat * 10 ** NATIVE_DECIMALS));
+    return BigInt(Math.ceil(fiat * nativePerFiat * 10 ** TOKENS.PAS.decimals));
   }
 
   /**
@@ -722,15 +856,20 @@ export const useSessionStore = defineStore("session", () => {
    * pricing. Outside a browser there is nothing to read and nothing to price: the zero sizing
    * leaves both the budget and the breakdown as they were.
    */
-  async function meldFundingSizing(settleAmount: bigint): Promise<FundingSizing> {
-    if (typeof window === "undefined") return { remoteFeeBuffer: 0n, keepNativeForFees: 0n };
+  async function meldFundingSizing(settleAmount: bigint): Promise<PoolFundingSizing> {
+    if (typeof window === "undefined") {
+      return { tier: "pool", remoteFeeBuffer: 0n, keepNativeForFees: 0n };
+    }
     const { estimatePublicFundingSizing, FALLBACK_FUNDING_SIZING } =
       await import("~~/lib/funding-fees");
     return step(
       "funding sizing estimate (public read)",
       20_000,
       estimatePublicFundingSizing({ settleAmount, probeAddress: DEV_RECIPIENT }),
-    ).catch(() => FALLBACK_FUNDING_SIZING);
+    ).catch((e: unknown) => {
+      if (e instanceof NoCashTransferError) throw e;
+      return FALLBACK_FUNDING_SIZING;
+    });
   }
 
   /** (Re)quotes the Meld rail for the current CASH amount and region. The mock world simulates
@@ -754,7 +893,10 @@ export const useSessionStore = defineStore("session", () => {
     }
     loading.value = true;
     try {
-      const built = await buildMeldRail();
+      // The tier first: the rail is built for the asset the tier delivers.
+      const route = await chooseQuoteRoute(amountBase.value);
+      if (epoch !== quoteEpoch) return;
+      const built = await buildMeldRail(route);
       // A newer quote may have started while the corridor probe was in flight; do not clobber its
       // state.
       if (epoch !== quoteEpoch) return;
@@ -796,6 +938,7 @@ export const useSessionStore = defineStore("session", () => {
           nativeBudget,
           fundingSizing: sizing,
           tradeN: nextMockTradeN(built.sourceId),
+          route,
         });
         await world.session.ready;
         const quote = await world.session.quote();
@@ -807,8 +950,8 @@ export const useSessionStore = defineStore("session", () => {
         quoted.value = meldQuotedView(quote.raw as MeldQuoteRaw, world.fundingSizing);
         return;
       }
-      // Hosted world: the same rail over the real host seams. The provider delivers DOT to the
-      // burner and the funding leg swaps it to CASH.
+      // Hosted world: the same rail over the real host seams. The provider delivers the route's
+      // token to the burner and the funding leg converts it to CASH.
       const { nextHostedTradeNumber } = await import("~~/lib/coinage-live");
       const tradeN = await step(
         "trade number",
@@ -818,6 +961,7 @@ export const useSessionStore = defineStore("session", () => {
       const world = await createLiveWorld(
         epoch,
         depositWindowFor(method.value),
+        route,
         tradeN,
         built.rail,
         built.sourceId,
@@ -836,7 +980,9 @@ export const useSessionStore = defineStore("session", () => {
       quoted.value = meldQuotedView(quote.raw as MeldQuoteRaw, world.fundingSizing);
     } catch (e: unknown) {
       if (epoch !== quoteEpoch) return; // a newer quote owns the state now
-      console.error("[meld] quote failed:", e);
+      // The host logger renders an Error as `{}`; log the message, as the transient
+      // hooks above already do, or a failed quote is undiagnosable from a device log.
+      console.error(`[meld] quote failed: ${e instanceof Error ? e.message : String(e)}`);
       quoted.value = null;
       quoteError.value = e instanceof Error ? e.message : String(e);
     } finally {
@@ -867,14 +1013,32 @@ export const useSessionStore = defineStore("session", () => {
       `[coinage] quoting in the ${isHosted() ? "LIVE (hosted)" : "MOCK (browser)"} world`,
     );
     try {
+      // A direct Polkadot pick names the token it deposits; a demo Chainflip pick leaves the
+      // route to the amount. Either way the world runs under the source of the token the route
+      // has the buyer deposit.
+      const sourceId = sourceIdFor(chain, asset);
+      const direct = isDirectSourceId(sourceId) ? sourceId : null;
+      const route = await chooseQuoteRoute(
+        amountBase.value,
+        direct === null ? undefined : depositAssetFor(direct),
+      );
+      if (epoch !== quoteEpoch) return;
       if (isHosted()) {
         const { nextHostedTradeNumber } = await import("~~/lib/coinage-live");
+        const liveSourceId: SourceId = manualSourceIdOf(depositTokenOf(route));
         const tradeN = await step(
           "trade number",
           10_000,
-          nextHostedTradeNumber(DEFAULT_SOURCE_ID, (n) => requests.hasTrace(DEFAULT_SOURCE_ID, n)),
+          nextHostedTradeNumber(liveSourceId, (n) => requests.hasTrace(liveSourceId, n)),
         );
-        const world = await createLiveWorld(epoch, depositWindowFor("crypto"), tradeN);
+        const world = await createLiveWorld(
+          epoch,
+          depositWindowFor("crypto"),
+          route,
+          tradeN,
+          undefined,
+          liveSourceId,
+        );
         if (!world) return; // superseded by a newer quote
         if (epoch !== quoteEpoch) {
           world.dispose();
@@ -886,43 +1050,35 @@ export const useSessionStore = defineStore("session", () => {
           return;
         }
         live.value = world;
+        const depositToken = chainflipTokenOf(depositTokenOf(route));
         quoted.value = {
           send: quote.source.formatted,
           symbol: quote.source.assetSymbol,
-          nativeAmount: quote.source.amount,
+          nativeAmount: depositToken === undefined ? null : quote.source.amount,
+          ...(depositToken === undefined ? {} : { depositToken }),
           sourceAsset: asset,
           sourceChain: chain,
         };
-        priceSelectedSource(chain, asset, quote.source.amount, epoch);
+        if (depositToken !== undefined) {
+          priceSelectedSource(chain, asset, quote.source.amount, depositToken, epoch);
+        }
       } else {
-        const sourceId = sourceIdFor(chain, asset);
         if (!sourceId) {
           loading.value = false;
           return;
         }
-        const world = await createMockCoinageSession({
-          recipient: DEV_RECIPIENT,
-          amount: amountBase.value,
-          sourceId,
-          tradeN: nextMockTradeN(sourceId),
-        });
-        await world.session.ready;
-        const quote = await world.session.quote();
-        if (epoch !== quoteEpoch) {
-          world.session.dispose();
-          return;
-        }
-        mock.value = world;
         // Real pricing outside the host: the pool leg is a public chain read over a standalone
         // WebSocket. Skipped in node test runs; falls back to demo rates when the RPC is
-        // unreachable.
+        // unreachable. A stable deposit has nothing to read, the fakes take it one to one.
         let nativeAmount: bigint | null = null;
+        let sizing: PoolFundingSizing | null = null;
         const settleForPricing = amountBase.value; // non-null: guarded at fetchQuote entry
-        if (typeof window !== "undefined" && settleForPricing !== null) {
+        const pricesNative = direct === null || depositAssetFor(direct) === "native";
+        if (typeof window !== "undefined" && settleForPricing !== null && pricesNative) {
           try {
             const [
               { connectChain, ASSET_HUB },
-              { sizeNativeBudget, PASEO_UNDERLYING_ASSET_ID },
+              { sizeNativeBudget, PASEO_UNDERLYING_ASSET_ID, DIRECT_SLIPPAGE_PCT },
               { estimatePublicFundingSizing, FALLBACK_FUNDING_SIZING },
             ] = await Promise.all([
               import("~~/lib/host-chain"),
@@ -932,7 +1088,7 @@ export const useSessionStore = defineStore("session", () => {
             const client = await connectChain(ASSET_HUB);
             // Size the deposit from live public reads. Best effort; falls back to the defaults,
             // and an unreachable People chain leaves the pool quote below untouched.
-            const sizing = await step(
+            const priced = await step(
               "funding sizing estimate (public read)",
               20_000,
               estimatePublicFundingSizing({
@@ -940,6 +1096,7 @@ export const useSessionStore = defineStore("session", () => {
                 probeAddress: DEV_RECIPIENT,
               }),
             ).catch(() => FALLBACK_FUNDING_SIZING);
+            sizing = priced;
             nativeAmount = await step(
               "pool quote (public read)",
               30_000,
@@ -948,35 +1105,63 @@ export const useSessionStore = defineStore("session", () => {
                   client,
                   underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
                   settleAmount: settleForPricing,
-                  remoteFeeBuffer: sizing.remoteFeeBuffer,
-                  keepNativeForFees: sizing.keepNativeForFees,
+                  remoteFeeBuffer: priced.remoteFeeBuffer,
+                  keepNativeForFees: priced.keepNativeForFees,
+                  // A direct deposit carries the smaller headroom, as the hosted sizing does.
+                  ...(direct === null ? {} : { slippagePct: DIRECT_SLIPPAGE_PCT }),
                 }))(),
             );
           } catch (e) {
             console.warn("[coinage] live pool pricing unavailable, using demo rates:", e);
           }
         }
+        if (epoch !== quoteEpoch) return;
+        const world = await createMockCoinageSession({
+          recipient: DEV_RECIPIENT,
+          amount: amountBase.value,
+          sourceId,
+          tradeN: nextMockTradeN(sourceId),
+          route,
+          // A direct source deposits to the mock burner itself, in the token picked, and a DOT
+          // deposit is sized by the pool read when it answered: the QR, the copy row and the
+          // record then carry one figure.
+          ...(direct === null
+            ? {}
+            : {
+                rail: createManualRail({ token: depositTokenOf(route) }),
+                ...(nativeAmount === null || sizing === null
+                  ? {}
+                  : { nativeBudget: nativeAmount, fundingSizing: sizing }),
+              }),
+        });
+        await world.session.ready;
+        const quote = await world.session.quote();
         if (epoch !== quoteEpoch) {
           world.session.dispose();
           return;
         }
-        // The fake rail returns a fixed quote regardless of source; show a source-appropriate
-        // estimate.
+        mock.value = world;
+        // The fake rail returns a fixed quote regardless of source, so a Chainflip pick shows a
+        // source-appropriate estimate. A direct pick shows the rail's own figure.
         const cfg = SOURCE_CONFIG_BY_ID.get(sourceId);
         const est =
-          cfg && amountBase.value !== null
+          direct === null && cfg && amountBase.value !== null
             ? estimateSourceFromCash(amountBase.value, cfg.asset)
             : null;
+        const depositToken = chainflipTokenOf(depositTokenOf(route));
         quoted.value = {
           send: est ?? quote.source.formatted,
           symbol: est && cfg ? cfg.asset : quote.source.assetSymbol,
           nativeAmount,
-          sourceAsset: est && cfg ? cfg.asset : null,
+          ...(depositToken === undefined ? {} : { depositToken }),
+          sourceAsset: direct === null ? (est && cfg ? cfg.asset : null) : asset,
           sourceChain: chain,
         };
         // The swap network's quote endpoint is public; it needs the pool figure above as its
         // target.
-        if (nativeAmount !== null) priceSelectedSource(chain, asset, nativeAmount, epoch);
+        if (nativeAmount !== null && direct === null) {
+          priceSelectedSource(chain, asset, nativeAmount, TOKENS.PAS, epoch);
+        }
       }
     } catch (e: unknown) {
       if (epoch !== quoteEpoch) return; // a newer quote owns the state now
@@ -988,7 +1173,7 @@ export const useSessionStore = defineStore("session", () => {
         evictChains();
         return fetchQuote(chain, asset, true);
       }
-      console.error("[coinage] quote failed:", e);
+      console.error(`[coinage] quote failed: ${e instanceof Error ? e.message : String(e)}`);
       quoted.value = null;
       quoteError.value = msg;
     } finally {
@@ -1036,10 +1221,11 @@ export const useSessionStore = defineStore("session", () => {
     void reconcileBackground();
   }
 
-  /** The source the request on screen runs under: the live world's, or in the browser the one
+  /** The source the request on screen runs under: the world's, or before there is one the one
    *  the chosen method implies. */
   function foregroundSourceId(): string | undefined {
-    if (live.value) return live.value.sourceId;
+    const world = mock.value ?? live.value;
+    if (world) return world.sourceId;
     return method.value === "crypto" ? undefined : meldSourceIdFor(method.value);
   }
 
@@ -1140,10 +1326,22 @@ export const useSessionStore = defineStore("session", () => {
         sourceSymbol: priced.minimum.assetSymbol,
       };
     }
+    // A direct Polkadot pick is paid in the token the rail quoted: the figure is exact, not an
+    // estimate. A demo Chainflip pick runs under the same default source but keeps its estimate.
+    const picked = lastQuoteParams
+      ? sourceIdFor(lastQuoteParams.chain, lastQuoteParams.asset)
+      : undefined;
+    if (isDirectSourceId(picked) && quoted.value) {
+      return { sourceAmount: quoted.value.send, sourceSymbol: quoted.value.symbol };
+    }
     const state = lastState.value;
     const deposit = state && "deposit" in state ? state.deposit : null;
     if (live.value && deposit) {
-      const estimate = estimateSourceAmount(deposit.amount, sourceSymbol);
+      const estimate = estimateSourceAmount(
+        deposit.amount,
+        depositTokenOf(live.value.route),
+        sourceSymbol,
+      );
       if (estimate) return { sourceAmount: `≈ ${estimate}`, sourceSymbol };
     }
     if (!live.value && amountBase.value !== null) {
@@ -1195,6 +1393,7 @@ export const useSessionStore = defineStore("session", () => {
                 ? { sourcePartnerFee: quoted.value.partnerFee }
                 : {}),
               ...(quoted.value.chainFee != null ? { sourceChainFee: quoted.value.chainFee } : {}),
+              ...(quoted.value.mintFee != null ? { sourceMintFee: quoted.value.mintFee } : {}),
             }
           : null
         : sourceDisplayForRecord();
@@ -1245,6 +1444,7 @@ export const useSessionStore = defineStore("session", () => {
                 source: "route",
               },
         handoff: await world.handoffPayload(),
+        conversion: world.route,
         refundAddress: world.refundAddress ?? undefined,
         status: { kind: "awaiting-deposit" },
         rail: {
@@ -1401,6 +1601,7 @@ export const useSessionStore = defineStore("session", () => {
         networkFee: record.sourceNetworkFee ?? null,
         partnerFee: record.sourcePartnerFee ?? null,
         chainFee: record.sourceChainFee ?? null,
+        mintFee: record.sourceMintFee ?? null,
         nativeAmount: null,
         sourceAsset: record.asset,
         sourceChain: record.chain,
@@ -1426,11 +1627,18 @@ export const useSessionStore = defineStore("session", () => {
           );
           return false;
         }
+        const sourceId = effectiveSourceId(ref) as SourceId;
+        const route = recordedRoute(record.handoff ?? record.conversion ?? {});
         const world = await createMockCoinageSession({
           recipient: DEV_RECIPIENT,
           amount,
-          sourceId: effectiveSourceId(ref) as SourceId,
+          sourceId,
           tradeN: ref.tradeN,
+          route,
+          // The direct sources deposit to the burner itself, in the recorded route's token.
+          ...(isDirectSourceId(sourceId)
+            ? { rail: createManualRail({ token: depositTokenOf(route) }) }
+            : {}),
         });
         await world.session.ready;
         if (epoch !== quoteEpoch) {
@@ -1452,10 +1660,15 @@ export const useSessionStore = defineStore("session", () => {
         deadline.depositExpiresAt === null
           ? depositWindowFor(record.route)
           : deadline.depositExpiresAt - record.startedAt;
-      // Re-enter under the record's own trade and source id.
+      // Re-enter under the record's own trade and source id, on the tier the record froze at
+      // quote time; a record from before tiers were recorded is a pool one. No decision here.
+      // Both places the tier can be, in the requests store's order: a request whose hand-off never
+      // persisted still froze one, and reading only the hand-off would rebuild it as pool and then
+      // read the burner in the wrong asset.
       const world = await createLiveWorld(
         epoch,
         staleFlowMs,
+        recordedRoute(record.handoff ?? record.conversion ?? {}),
         record.tradeN,
         undefined,
         record.sourceId as SourceId | undefined,
@@ -1560,13 +1773,19 @@ export const useSessionStore = defineStore("session", () => {
     try {
       const tradeN = live.value.tradeN;
       const faucetRef = requestRefOf(live.value.sourceId, tradeN);
-      await fundFromFaucet({ address: s.deposit.address, amount: s.deposit.amount });
+      // The world's route fixes the asset the faucet sends: the one the pipeline reads the burner
+      // for.
+      const sent = await fundFromFaucet({
+        address: s.deposit.address,
+        amount: s.deposit.amount,
+        route: live.value.route,
+      });
       faucetState.value = "sent";
       // The transfer is in a block: the chain's own sighting of the deposit.
       await requests.observe(faucetRef, {
         source: "chain",
         at: Date.now(),
-        burnerNative: s.deposit.amount.toString(),
+        burnerNative: sent.toString(),
         finality: "finalized",
         via: "faucet",
       });
@@ -1590,6 +1809,223 @@ export const useSessionStore = defineStore("session", () => {
     void markDepositSkipped();
     if (mock.value && amountBase.value !== null)
       mock.value.harness.setSettlementBalance(amountBase.value);
+  }
+
+  // A direct deposit that is not the one asked: the sheet's figures, Continue, and the key.
+
+  /** What the mismatch on screen converts to, and when it was priced; `route` is the route the
+   *  deposit takes if the buyer continues, and a null `value` means it cannot be converted. */
+  const mismatchPrice = shallowRef<{
+    key: string;
+    at: number;
+    route: ConversionRoute | null;
+    value: DepositValue | null;
+  } | null>(null);
+  /** How long a price stays good for Continue; an older one is taken again first. */
+  const MISMATCH_PRICE_FRESH_MS = 120_000;
+  const priceIsFresh = (key: string): boolean =>
+    mismatchPrice.value?.key === key &&
+    Date.now() - mismatchPrice.value.at < MISMATCH_PRICE_FRESH_MS;
+  /** Continue is on its way. */
+  const acceptingMismatch = ref(false);
+  /** Why the last Continue did not go through. */
+  const mismatchError = ref<string | null>(null);
+
+  /** The mismatch on the request on screen, while it still waits for its deposit. */
+  const foregroundMismatch = computed(() => {
+    const record = requests.foregroundRecord;
+    const m = record?.depositMismatch;
+    if (!record || !m || requests.phase !== "awaiting-deposit" || !record.deposit) return null;
+    const key = `${requestRefKey(record.ref)}|${m.kind}|${m.asset}|${m.amount}`;
+    return { record, key, mismatch: m };
+  });
+
+  /** A base-unit figure in a direct token, as the deposit screen writes it. */
+  const formatDirect = (amount: string, asset: string): string =>
+    formatFundingAmount(BigInt(amount), directTokenNamed(asset)?.token.decimals ?? CASH_DECIMALS);
+
+  /** What arrived on the request on screen that did not match, in any phase; the recovery guide
+   *  names it after the request has ended too. */
+  const depositLanded = computed(() => {
+    const m = requests.foregroundRecord?.depositMismatch;
+    return m ? { amount: formatDirect(m.amount, m.asset), symbol: m.asset } : null;
+  });
+
+  /** The sheet's figures for the mismatch on screen, or null when there is none. */
+  const depositMismatch = computed<DepositMismatch | null>(() => {
+    const current = foregroundMismatch.value;
+    if (current === null || depositLanded.value === null) return null;
+    const { record, key, mismatch } = current;
+    const price = mismatchPrice.value?.key === key ? mismatchPrice.value : null;
+    return {
+      kind: mismatch.kind,
+      asked: { amount: record.deposit!.formatted, symbol: record.deposit!.assetSymbol },
+      landed: depositLanded.value,
+      target: record.amountHuman,
+      receive: price?.value ? fmtCash(price.value.receive) : null,
+      pending: price === null,
+    };
+  });
+
+  /** The route a mismatched deposit takes if the buyer continues: the one a fresh quote gives
+   *  the token and amount that arrived. Chosen again even for less of the picked token, since the
+   *  PSM does not serve a sum under its minimum and the pool takes it instead. */
+  async function routeForMismatch(record: TopUpRecord): Promise<ConversionRoute | null> {
+    const mismatch = record.depositMismatch!;
+    const named = directTokenNamed(mismatch.asset);
+    if (named === undefined) return null;
+    const { chooseHostedRoute } = await import("~~/lib/coinage-live");
+    // The PSM reads the amount in CASH units, which a stable's base units match; the other
+    // tokens take their route without reading it.
+    return chooseHostedRoute(BigInt(mismatch.amount), named.deposit);
+  }
+
+  /** How long a failed pricing waits before it is tried again. */
+  const MISMATCH_REPRICE_MS = 10_000;
+
+  /**
+   * Prices the mismatch on screen and leaves the answer for the sheet. A read that fails is not
+   * an answer: nothing is stored, so the sheet keeps checking, and it is tried again while the
+   * same mismatch is on screen. Only the hosted app records a mismatch.
+   */
+  async function priceMismatch(record: TopUpRecord, key: string): Promise<void> {
+    try {
+      const route = await routeForMismatch(record);
+      let value: DepositValue | null = null;
+      if (route !== null) {
+        const [{ quoteDepositValue }, { connectChain, ASSET_HUB, PEOPLE }, funding] =
+          await Promise.all([
+            import("~~/lib/funding-fees"),
+            import("~~/lib/host-chain"),
+            import("@getsome/funding"),
+          ]);
+        value = await quoteDepositValue({
+          ahClient: await connectChain(ASSET_HUB),
+          peopleClient: await connectChain(PEOPLE),
+          underlyingAssetId: funding.PASEO_UNDERLYING_ASSET_ID,
+          peopleParaId: funding.PASEO_PEOPLE_PARA_ID,
+          probeAddress: record.deposit!.address,
+          route,
+          deposit: BigInt(record.depositMismatch!.amount),
+          slippagePct: funding.DIRECT_SLIPPAGE_PCT,
+        });
+      }
+      if (foregroundMismatch.value?.key === key) {
+        mismatchPrice.value = { key, at: Date.now(), route, value };
+      }
+    } catch (e) {
+      console.warn("[coinage] could not price the deposit that arrived; trying again:", e);
+      setTimeout(() => {
+        const current = foregroundMismatch.value;
+        if (current?.key === key && mismatchPrice.value?.key !== key) {
+          void priceMismatch(current.record, key);
+        }
+      }, MISMATCH_REPRICE_MS);
+    }
+  }
+
+  watch(
+    () => foregroundMismatch.value?.key ?? null,
+    (key) => {
+      mismatchError.value = null;
+      const current = foregroundMismatch.value;
+      if (key === null || current === null || priceIsFresh(key)) return;
+      mismatchPrice.value = null;
+      void priceMismatch(current.record, key);
+    },
+    { immediate: true },
+  );
+
+  /** The hand-off the worker converts a continued deposit with: the request's own, with the new
+   *  target, the new route, and the figures its gate reads. */
+  function continuedHandoff(
+    handoff: WorkerHandoffPayload,
+    route: ConversionRoute,
+    value: DepositValue,
+  ): WorkerHandoffPayload {
+    const { external: _e, feeRate: _f, quotedDeposit: _q, tier: _t, ...rest } = handoff;
+    return {
+      ...rest,
+      settleAmount: value.receive.toString(),
+      remoteFeeBuffer: value.remoteFeeBuffer.toString(),
+      keepNativeForFees: value.keepNativeForFees.toString(),
+      ...route,
+      ...(value.quotedDeposit === undefined
+        ? {}
+        : { quotedDeposit: value.quotedDeposit.toString() }),
+    };
+  }
+
+  /**
+   * Continues the request on screen with what arrived: the worker's job takes the new target and
+   * route, then the record does, and the deposit watch starts over in the token that arrived.
+   * The next reading covers the new ask, so the request moves on from there as any deposit does.
+   * A price that has aged is taken again first and shown, so the buyer continues on the figure
+   * they see. False, with the reason on `mismatchError` when there is one, when it did not go.
+   */
+  async function acceptDepositMismatch(): Promise<boolean> {
+    const current = foregroundMismatch.value;
+    if (current === null) return false;
+    if (!priceIsFresh(current.key)) {
+      mismatchPrice.value = null;
+      void priceMismatch(current.record, current.key);
+      return false;
+    }
+    const price = mismatchPrice.value;
+    if (!price?.value || !price.route) return false;
+    const { record, mismatch } = current;
+    if (record.handoff === undefined) {
+      mismatchError.value = "This top-up can't be changed from here.";
+      return false;
+    }
+    acceptingMismatch.value = true;
+    mismatchError.value = null;
+    try {
+      const next = continuedHandoff(record.handoff, price.route, price.value);
+      // The worker's refusal comes back as a thrown error.
+      const { getStorageWorkerManager } = await import("~~/lib/worker-rpc");
+      await getStorageWorkerManager().call("amendFunding", {
+        sessionId: workerSessionId(record.ref.sourceId, record.ref.tradeN),
+        ...next,
+      });
+      const amountHuman = fmtCash(price.value.receive);
+      await requests.observe(record.ref, {
+        source: "user",
+        at: Date.now(),
+        event: "deposit-accepted",
+        terms: {
+          amountHuman,
+          asset: mismatch.asset,
+          deposit: {
+            amount: mismatch.amount,
+            formatted: formatDirect(mismatch.amount, mismatch.asset),
+            assetSymbol: mismatch.asset,
+          },
+          conversion: price.route,
+          handoff: next,
+        },
+      });
+      setAmount(amountHuman);
+      requests.restartDepositWatch();
+      return true;
+    } catch (e) {
+      console.warn("[coinage] could not continue with the deposit that arrived:", e);
+      mismatchError.value = "Couldn't continue with this deposit. Try again in a moment.";
+      return false;
+    } finally {
+      acceptingMismatch.value = false;
+    }
+  }
+
+  /** The key of the account a Polkadot deposit landed on, as a raw seed, for the buyer to move
+   *  what arrived: the live world's, or derived again for a request reopened without one. Null
+   *  off-host, where there is nothing to derive it from. */
+  async function revealDepositSecret(): Promise<string | null> {
+    if (live.value) return live.value.exportBurnerSecret();
+    const ref = requests.foregroundRecord?.ref;
+    if (!isHosted() || ref === undefined) return null;
+    const { probeBurnerSecret } = await import("~~/lib/coinage-live");
+    return probeBurnerSecret(effectiveSourceId(ref), ref.tradeN).catch(() => null);
   }
 
   /** Demo Skip was pressed: record it on the request so a re-open never offers Skip again.
@@ -1695,7 +2131,9 @@ export const useSessionStore = defineStore("session", () => {
       return s
         .retry()
         .then(() => console.info(`[coinage] retry() resolved, phase now ${s.getState().phase}`))
-        .catch((e: unknown) => console.error("[coinage] retry() threw:", e));
+        .catch((e: unknown) =>
+          console.error(`[coinage] retry() threw: ${e instanceof Error ? e.message : String(e)}`),
+        );
     });
   }
 
@@ -1714,7 +2152,7 @@ export const useSessionStore = defineStore("session", () => {
       const world = live.value;
       if (world && foregroundRef !== null) {
         const verdict = await requests.cancel(foregroundRef, {
-          readBurner: () => world.readBurnerNativeOnAh(),
+          readBurner: () => world.readBurnerDepositOnAh(),
         });
         if (verdict === "refused") {
           console.warn("[coinage] cancel refused: the burner already holds funds");
@@ -1799,14 +2237,27 @@ export const useSessionStore = defineStore("session", () => {
 
   /** Loads the region dropdown from the adapter's live catalog. On failure `supportedCountries`
    *  stays null and the screen keeps its static list. */
+  // A destination change invalidates the catalog on screen; reload both for the new one.
+  watch(meldDestination, () => {
+    void loadSupportedCountries();
+    void loadSupportedCorridors();
+  });
+
   async function loadSupportedCountries(): Promise<void> {
-    const rows = await fetchSupportedCountries();
+    const destination = meldDestination.value;
+    const rows = await fetchSupportedCountries(destination);
+    // The destination can change while this is in flight, and the fetches do not return in the
+    // order they were made. Adopting a stale one greys the dropdown by a corridor the quotes are
+    // no longer placed against.
+    if (destination !== meldDestination.value) return;
     if (rows !== null) supportedCountries.value = rows;
   }
 
   // Loads the bulk per-country corridors; only a real catalog is adopted so a cold/empty read greys nothing.
   async function loadSupportedCorridors(): Promise<void> {
-    const map = await fetchSupportedCorridors();
+    const destination = meldDestination.value;
+    const map = await fetchSupportedCorridors(destination);
+    if (destination !== meldDestination.value) return;
     if (map !== null && map.size > 0) corridorByCountry.value = map;
   }
 
@@ -1860,6 +2311,12 @@ export const useSessionStore = defineStore("session", () => {
     journeyScale,
     fundFaucet,
     simulateDeposit,
+    depositMismatch,
+    depositLanded,
+    acceptingMismatch,
+    mismatchError,
+    acceptDepositMismatch,
+    revealDepositSecret,
     simulateMeldPayment,
     pollMeldStatus,
     markMeldSubmitted,

@@ -4,6 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SupportedCorridor } from "../lib/supported";
 
+/** The catalog is keyed by destination; these cases all read the pool tier's.
+ *  See lib/supported.ts. */
+const DEST = "DOT_ASSETHUB";
+
 const BASE = "https://adapter.test";
 
 /** A `fetch` stub that answers by URL fragment; anything unmatched is a 404. */
@@ -83,18 +87,18 @@ describe("lib/supported", () => {
       }),
     );
     const { fetchCorridor } = await import("../lib/supported");
-    const ca = await fetchCorridor("CA");
+    const ca = await fetchCorridor(DEST, "CA");
     expect(ca?.fiat).toBe("CAD"); // fiat resolved server-side, echoed back
     expect(ca?.methods[0]?.paymentMethodType).toBe("CREDIT_DEBIT_CARD");
-    expect(await fetchCorridor("ZZ")).toBeNull(); // 404 -> null
+    expect(await fetchCorridor(DEST, "ZZ")).toBeNull(); // 404 -> null
   });
 
   it("does not cache an empty catalog: it stays retryable", async () => {
     const fetchMock = stubFetch({ "/supported/countries": { countries: [] } });
     vi.stubGlobal("fetch", fetchMock);
     const { fetchSupportedCountries } = await import("../lib/supported");
-    expect(await fetchSupportedCountries()).toEqual([]);
-    await fetchSupportedCountries();
+    expect(await fetchSupportedCountries(DEST)).toEqual([]);
+    await fetchSupportedCountries(DEST);
     const calls = fetchMock.mock.calls.filter(([u]) =>
       String(u).includes("/supported/countries"),
     ).length;
@@ -107,8 +111,8 @@ describe("lib/supported", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     const { fetchSupportedCountries } = await import("../lib/supported");
-    const a = await fetchSupportedCountries();
-    const b = await fetchSupportedCountries();
+    const a = await fetchSupportedCountries(DEST);
+    const b = await fetchSupportedCountries(DEST);
     expect(a?.[0]).toEqual({ country: "US", name: "United States" });
     expect(b).toEqual(a);
     const calls = fetchMock.mock.calls.filter(([u]) =>
@@ -150,7 +154,7 @@ describe("lib/supported", () => {
       }),
     );
     const { fetchSupportedCorridors } = await import("../lib/supported");
-    const map = await fetchSupportedCorridors();
+    const map = await fetchSupportedCorridors(DEST);
     expect(map?.size).toBe(1); // the empty-country row is dropped
     expect(map?.get("US")?.methods[0]?.paymentMethodType).toBe("CREDIT_DEBIT_CARD");
     expect(map?.get("US")?.methods[0]?.currency).toBe("USD");
@@ -160,8 +164,8 @@ describe("lib/supported", () => {
     const empty = stubFetch({ "/supported/corridors": { corridors: [] } });
     vi.stubGlobal("fetch", empty);
     const { fetchSupportedCorridors } = await import("../lib/supported");
-    expect((await fetchSupportedCorridors())?.size).toBe(0);
-    await fetchSupportedCorridors();
+    expect((await fetchSupportedCorridors(DEST))?.size).toBe(0);
+    await fetchSupportedCorridors(DEST);
     const emptyCalls = empty.mock.calls.filter(([u]) =>
       String(u).includes("/supported/corridors"),
     ).length;
@@ -176,8 +180,8 @@ describe("lib/supported", () => {
     });
     vi.stubGlobal("fetch", ok);
     const { fetchSupportedCorridors } = await import("../lib/supported");
-    await fetchSupportedCorridors();
-    await fetchSupportedCorridors();
+    await fetchSupportedCorridors(DEST);
+    await fetchSupportedCorridors(DEST);
     const okCalls = ok.mock.calls.filter(([u]) =>
       String(u).includes("/supported/corridors"),
     ).length;
@@ -192,7 +196,7 @@ describe("lib/supported", () => {
       }),
     );
     const reimport = await import("../lib/supported");
-    expect(await reimport.fetchSupportedCorridors()).toBeNull(); // throw -> null
+    expect(await reimport.fetchSupportedCorridors(DEST)).toBeNull(); // throw -> null
   });
 
   it("corridorOptions leaves every row plain and selectable when the map is null", async () => {

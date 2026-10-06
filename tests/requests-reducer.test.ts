@@ -5,6 +5,7 @@ import type { SwapStatusResult } from "@getsome/core";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
   DEPOSIT_EXPIRED_REASON,
+  FUNDING_HELD_REASON,
   paymentWatchUntil,
   PROVISIONAL_REVERT_MS,
   type Observation,
@@ -104,6 +105,23 @@ const coreDone = (time: number): Observation => ({
 
 /** A crypto request the worker is converting: the deposit seen at +1, the swap step at +2. */
 const converting = () => reduce(awaiting(), workerSwap(at(1)));
+/** The worker's job once the funding leg is done and the host drives the claim. */
+const claimingJob = (time: number, claim: NonNullable<WorkerJobView["claim"]>): WorkerJobView =>
+  job({ phase: "done", done: true, fundsSeenAt: at(1), lastTickAt: time, claim });
+const CLAIM = { amount: "25250000", credited: "0" };
+/** A crypto request whose claim the host reported in a block: registered at +3, read in a block
+ *  at +4. */
+const credited = () =>
+  reduce(
+    reduce(
+      converting(),
+      worker(at(3), claimingJob(at(3), { ...CLAIM, phase: "claiming", at: at(3) })),
+    ),
+    worker(
+      at(4),
+      claimingJob(at(4), { ...CLAIM, phase: "claiming", status: "claimed", at: at(3) }),
+    ),
+  );
 
 describe("request reducer: top-up transitions", () => {
   it("start record then worker swap → converting(swap) and cash-conversion stage", () => {
@@ -463,7 +481,7 @@ describe("request reducer: top-up transitions", () => {
       worker(at(3), job({ phase: "swap", fundsSeenAt: at(1), lastTickAt: at(3) })),
     );
     expect(stale.status).toEqual(arriving.status);
-    // The swap and the teleport are one program, so awaiting the arrival is still the conversion.
+    // The swap and the send are one program, so awaiting the arrival is still the conversion.
     expect(stale.progress.confirmedStageKey).toBe("cash-conversion");
     expect(stale.witnesses.worker).toMatchObject({ known: true, phase: "swap", at: at(3) });
 
@@ -536,6 +554,31 @@ describe("request reducer: top-up transitions", () => {
     expect(retried.failureReason).toBeUndefined();
     expect(retried.progress.failedAt).toBeUndefined();
     expect(retried.progress.confirmedStageKey).toBe("cash-conversion");
+  });
+
+  it("worker held at converting → failed(recoverable) in the app's words; user retry → converting(swap)", () => {
+    const held = job({
+      phase: "failed",
+      failure: "held",
+      lastError: "funding held: the PSM refused the mint 3 times, last: Psm.MintingStopped",
+      fundsSeenAt: at(1),
+      lastTickAt: at(5),
+    });
+    const failed = reduce(converting(), worker(at(5), held));
+    expect(failed.status).toEqual({ kind: "failed", at: at(5), recoverable: true });
+    expect(failed.failure).toEqual({
+      kind: "mint",
+      step: "swap",
+      message: FUNDING_HELD_REASON,
+      recoverable: true,
+    });
+    expect(failed.failureReason).toBe(FUNDING_HELD_REASON);
+    expect(failed.witnesses.worker).toMatchObject({ known: true, failure: "held" });
+
+    const retried = reduce(failed, { source: "user", at: at(6), event: "retry" });
+    expect(retried.status).toEqual({ kind: "converting", at: at(6), step: "swap" });
+    expect(retried.failure).toBeUndefined();
+    expect(retried.failureReason).toBeUndefined();
   });
 
   it("worker expired at rank 1 → ignored", () => {
@@ -650,6 +693,102 @@ describe("request reducer: top-up transitions", () => {
       claimPhase: "claimed",
       claimStatus: "settled",
     });
+  });
+
+  it("the host's early word stamps creditedAt once; the record stays claiming until the final word", () => {
+    const registered = reduce(
+      converting(),
+      worker(at(3), claimingJob(at(3), { ...CLAIM, phase: "claiming", at: at(3) })),
+    );
+    expect(registered.status).toEqual({ kind: "claiming", at: at(3) });
+    expect(registered.creditedAt).toBeUndefined();
+
+    const inBlock = credited();
+    expect(inBlock.creditedAt).toBe(at(3));
+    expect(inBlock.status).toEqual({ kind: "claiming", at: at(3) });
+    expect(inBlock.settledAt).toBeUndefined();
+    expect(inBlock.claimed).toBeUndefined();
+    expect(inBlock.progress.settledAt).toBeUndefined();
+    expect(inBlock.witnesses.worker).toMatchObject({
+      claimPhase: "claiming",
+      claimStatus: "claimed",
+      at: at(4),
+    });
+
+    // The host steps back after a reorg or a restart, or the worker starts a further attempt:
+    // the stamp stays and the record keeps being followed.
+    const later: NonNullable<WorkerJobView["claim"]>[] = [
+      { ...CLAIM, phase: "claiming", status: "claiming", at: at(3) },
+      { ...CLAIM, phase: "claiming", status: "detecting", at: at(3) },
+      { phase: "sizing", credited: "0", at: 0 },
+      { ...CLAIM, phase: "registering", at: at(6) },
+      { ...CLAIM, phase: "claiming", status: "claimed", at: at(6) },
+    ];
+    for (const claim of later) {
+      const name = `${claim.phase}/${claim.status ?? "-"}`;
+      const stepped = reduce(inBlock, worker(at(7), claimingJob(at(7), claim)));
+      expect(stepped.creditedAt, name).toBe(at(3));
+      expect(stepped.status, name).toEqual({ kind: "claiming", at: at(3) });
+      expect(stepped.settledAt, name).toBeUndefined();
+    }
+
+    const settled = reduce(
+      inBlock,
+      worker(
+        at(8),
+        claimingJob(at(8), {
+          phase: "claimed",
+          amount: "25250000",
+          credited: "25250000",
+          status: "claimed",
+          at: at(8),
+        }),
+      ),
+    );
+    expect(settled.status).toEqual({ kind: "settled", at: at(8) });
+    expect(settled.settledAt).toBe(at(8));
+    expect(settled.claimed).toBe("25250000");
+    expect(settled.progress.settledAt).toBe(at(8));
+    expect(settled.creditedAt).toBe(at(3));
+  });
+
+  it("a failure after the host's early word fails the record as it does today; a retry drops the stamp", () => {
+    const inBlock = credited();
+    const failedJob = (failure: "claim" | "timeout") =>
+      job({
+        phase: "failed",
+        failure,
+        lastError: `${failure} failed`,
+        done: true,
+        fundsSeenAt: at(1),
+        lastTickAt: at(8),
+        claim: { ...CLAIM, phase: "claiming", status: "claimed", at: at(3) },
+      });
+    for (const failure of ["claim", "timeout"] as const) {
+      const failed = reduce(inBlock, worker(at(8), failedJob(failure)));
+      expect(failed.status, failure).toEqual({ kind: "failed", at: at(8), recoverable: true });
+      expect(failed.failure, failure).toEqual({
+        kind: "mint",
+        step: "mint",
+        message: `${failure} failed`,
+        recoverable: true,
+      });
+      expect(failed.progress.failedAt, failure).toBe(at(8));
+      expect(failed.settledAt, failure).toBeUndefined();
+      expect(failed.creditedAt, failure).toBe(at(3));
+    }
+
+    const failed = reduce(inBlock, worker(at(8), failedJob("claim")));
+    const retried = reduce(failed, { source: "user", at: at(9), event: "retry" });
+    expect(retried.status).toEqual({ kind: "claiming", at: at(9) });
+    expect(retried.creditedAt).toBeUndefined();
+
+    // A failed job's last host word never stamps a record.
+    const registered = reduce(
+      converting(),
+      worker(at(3), claimingJob(at(3), { ...CLAIM, phase: "claiming", at: at(3) })),
+    );
+    expect(reduce(registered, worker(at(8), failedJob("claim"))).creditedAt).toBeUndefined();
   });
 
   it("unchanged observation returns the same object reference", () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { ReverseQuoteInput } from "@getsome/core";
-import type { MeldClientLike, MeldQuoteEntry } from "./client";
+import { TOKENS, type ReverseQuoteInput } from "@getsome/core";
+import type { MeldClientLike, MeldQuoteEntry, MeldSessionRequest } from "./client";
 import type { MeldQuoteRaw } from "./quote";
 import { createMeldRail } from "./rail";
 
@@ -41,6 +41,49 @@ describe("createMeldRail", () => {
       decimals: 10,
     });
     expect(sources[0]?.displayName).toContain("Bank transfer");
+  });
+
+  it("sizes, formats and asks Meld for the configured token, not the native", async () => {
+    // The trap this guards: a 6-dec asset on the wire while the app sizes it as 10-dec.
+    const sentQuote: string[] = [];
+    let sentSession: MeldSessionRequest | undefined;
+    const client = fakeClient({
+      getQuote: async (req) => {
+        sentQuote.push(req.destinationCurrencyCode);
+        return {
+          quotes: [
+            { serviceProvider: "TRANSAK", sourceAmount: "20.71", destinationAmount: "20.1" },
+          ],
+        };
+      },
+      createSession: async (req) => {
+        sentSession = req;
+        return {
+          fundingRequestId: "funding-1",
+          sessionId: "meld-sess-1",
+          externalSessionId: "ext-1",
+          widgetUrl: "https://pay.meld/x",
+        };
+      },
+    });
+    const rail = createMeldRail({ client, country: "US", token: TOKENS.USDT });
+    expect(rail.sources()[0]).toMatchObject({ asset: "USDT", decimals: 6 });
+
+    // A 10-dec target narrows to 6-dec USDT units, rounded up so it never under-targets.
+    const quote = await rail.getQuote({
+      sourceId: "dot-assethub",
+      target: { amount: 200_000_000_001n, decimals: 10 },
+    });
+    expect(quote.source).toEqual({
+      amount: 20_000_001n,
+      formatted: "20.000001",
+      assetSymbol: "USDT",
+      decimals: 6,
+    });
+    expect(sentQuote).toEqual(["USDT_ASSETHUB"]);
+
+    await rail.requestDepositAddress({ quote, destAddress: BURNER, refundAddress: "" });
+    expect(sentSession?.destinationCurrencyCode).toBe("USDT_ASSETHUB");
   });
 
   it("quotes through Meld with the rail-configured country/fiat/method", async () => {

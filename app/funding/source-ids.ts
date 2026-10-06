@@ -1,6 +1,12 @@
 // Maps a request's source id to its rail. Records with no source id belong to the crypto rail.
 
-/** The crypto rail's session source: a direct dot-assethub deposit (Chainflip or manual). */
+import { isDirectSourceId } from "~~/lib/config";
+
+export { isDirectSourceId };
+export type { DirectSourceId } from "~~/lib/config";
+
+/** The crypto rail's default session source: a direct DOT deposit on Asset Hub, and what a
+ *  record with no source id means. */
 export const CRYPTO_SOURCE_ID = "dot-assethub";
 
 /** The Meld fiat rail's sources, one per payment method. */
@@ -17,6 +23,6 @@ export const meldSourceIdFor = (method: MeldMethod): MeldSourceId =>
 export const meldMethodFor = (sourceId: MeldSourceId): MeldMethod =>
   sourceId === "meld-card" ? "card" : "bank";
 
-/** A source the crypto rail serves: its own, or none. */
+/** A source the crypto rail serves: a direct Asset Hub deposit, or none. */
 export const isCryptoSourceId = (sourceId: string | undefined): boolean =>
-  sourceId === undefined || sourceId === CRYPTO_SOURCE_ID;
+  sourceId === undefined || isDirectSourceId(sourceId);

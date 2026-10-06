@@ -17,8 +17,9 @@ import {
 import { getPolkadotSigner } from "polkadot-api/signer";
 import { deriveKeypairWithSecret } from "@getsome/ephemeral";
 import {
+  chooseCashTransfer,
+  DEFAULT_INCLUSION_TIMEOUT_MS,
   DEFAULT_SLIPPAGE_PCT,
-  DEFAULT_SUBMIT_TIMEOUT_MS,
   DEFAULT_TICK_TIMEOUT_MS,
   discoverPool,
   freshTickState,
@@ -70,6 +71,14 @@ describe.runIf(process.env.PROD_PROOF === "1")("production proof", () => {
       const burner = deriveKeypairWithSecret(entropy);
       console.log(`BURNER ${burner.address}  entropy=${toHex(entropy)}`);
 
+      const transfer = await chooseCashTransfer({
+        assetHub: ahC,
+        people: peC,
+        assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
+        peopleParaId: PASEO_PEOPLE_PARA_ID,
+      });
+      console.log(`CASH moves to People by ${transfer}`);
+
       // Size the deposit as the app does
       const sizing = await estimateFundingSizing({
         ahClient: ahC,
@@ -110,8 +119,8 @@ describe.runIf(process.env.PROD_PROOF === "1")("production proof", () => {
       const txs: string[] = [];
       const pool = await discoverPool(ah, PASEO_UNDERLYING_ASSET_ID);
       const state = freshTickState();
-      const readUnderlyingOnPeople = async (ss58: string) => {
-        const h = await pe.query.Assets.Account.getValue(CASH_LOCATION, ss58);
+      const readFinalizedUnderlyingOnPeople = async (ss58: string) => {
+        const h = await pe.query.Assets.Account.getValue(CASH_LOCATION, ss58, { at: "finalized" });
         return h?.balance ?? 0n;
       };
       const deadline = Date.now() + RUN_TIMEOUT_MS;
@@ -125,6 +134,8 @@ describe.runIf(process.env.PROD_PROOF === "1")("production proof", () => {
             {
               api: ah,
               peopleApi: pe,
+              route: { tier: "pool" },
+              transfer,
               pool,
               address: burner.address,
               signer: burner.signer,
@@ -136,9 +147,9 @@ describe.runIf(process.env.PROD_PROOF === "1")("production proof", () => {
               keepNativeForFees: sizing.keepNativeForFees,
               slippagePct: DEFAULT_SLIPPAGE_PCT,
               tickTimeoutMs: DEFAULT_TICK_TIMEOUT_MS,
-              submitTimeoutMs: DEFAULT_SUBMIT_TIMEOUT_MS,
+              inclusionTimeoutMs: DEFAULT_INCLUSION_TIMEOUT_MS,
               signOptions: { at: best[0]?.hash },
-              readUnderlyingOnPeople,
+              readFinalizedUnderlyingOnPeople,
               now: Date.now,
               onTx: (i) => {
                 txs.push(`${i.call}@${i.block ?? "?"}`);
