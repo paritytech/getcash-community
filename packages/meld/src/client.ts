@@ -215,21 +215,37 @@ interface TagValue {
   fundingRequestId?: string;
 }
 
+/** "your region (Germany)" when the asked country is known — the geo-detected default makes the
+ *  region worth naming — and the bare phrase when no country was on the request. */
+function regionPhrase(region?: string): string {
+  if (!region) return "your region";
+  let name: string | undefined;
+  try {
+    name = new Intl.DisplayNames(["en"], { type: "region" }).of(region) ?? undefined;
+  } catch {
+    // A malformed code names itself.
+  }
+  // ICU answers "Unknown Region" for a well-formed code it has no name for; the code says more.
+  return `your region (${name === undefined || name === "Unknown Region" ? region : name})`;
+}
+
 /** Buyer-facing copy for each adapter failure tag. Unknown tags fall back to a generic line naming
- *  the failed call, `what`. */
-function messageForTag(tag: string, value?: TagValue, what?: string): string {
+ *  the failed call, `what`; `region` is the ISO country the refused request asked for. */
+function messageForTag(tag: string, value?: TagValue, what?: string, region?: string): string {
   switch (tag) {
     case "NoQuotesAvailable":
-      return "Not available for this payment method or region. Try another method.";
+      return region
+        ? `Not available for this payment method in ${regionPhrase(region)}. Try another method.`
+        : "Not available for this payment method or region. Try another method.";
     case "RegionUnavailable":
-      return "Not available in your region yet.";
+      return `Not available in ${regionPhrase(region)} yet.`;
     case "BelowMinimum":
       return value
-        ? `Below the minimum. The minimum is ${value.amount} ${value.currency}.`
+        ? `Below the minimum. The minimum for ${regionPhrase(region)} is ${value.amount} ${value.currency}.`
         : "That amount is below the minimum.";
     case "AboveMaximum":
       return value
-        ? `Above the maximum. The maximum is ${value.amount} ${value.currency}.`
+        ? `Above the maximum. The maximum for ${regionPhrase(region)} is ${value.amount} ${value.currency}.`
         : "That amount is above the maximum.";
     case "WrongAssetOrChain":
       return "That asset isn't supported.";
@@ -273,6 +289,8 @@ const MAX_ATTEMPTS = 5;
 interface SessionWalk {
   /** Names the failing call in the refusal copy. */
   readonly what: string;
+  /** The ISO country the request asks for, named in region-shaped refusals. */
+  readonly region: string;
   /** The default idempotency key for an attempt. A caller-supplied key bypasses it. */
   readonly key: (attempt: number) => string;
   /** The create body, without the key the walk adds. */
@@ -378,7 +396,11 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
    * Parses the adapter's JSON body. On a non-OK response, maps `{ error: { tag, value } }` to an
    * AdapterRefusal with a buyer-facing message.
    */
-  async function read(res: Response, what: string): Promise<Record<string, unknown>> {
+  async function read(
+    res: Response,
+    what: string,
+    region?: string,
+  ): Promise<Record<string, unknown>> {
     const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     if (!res.ok) {
       const err = data["error"] as { tag?: string; value?: TagValue } | string | undefined;
@@ -388,7 +410,7 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
         `[meld] ${what} failed: ${res.status} ${tag}${value ? ` ${JSON.stringify(value)}` : ""}`,
       );
       throw new AdapterRefusal(
-        messageForTag(tag, value, what),
+        messageForTag(tag, value, what, region),
         res.status,
         typeof value === "object" && value !== null && "code" in value
           ? String(value.code)
@@ -399,13 +421,18 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
     return data;
   }
 
-  async function post(path: string, body: unknown, what: string): Promise<Record<string, unknown>> {
+  async function post(
+    path: string,
+    body: unknown,
+    what: string,
+    region?: string,
+  ): Promise<Record<string, unknown>> {
     const res = await doFetch(`${base}${path}`, {
       method: "POST",
       headers: { ...headers(), "content-type": "application/json" },
       body: JSON.stringify(body),
     });
-    return read(res, what);
+    return read(res, what, region);
   }
 
   /** Fetches `GET /funding/:id` and maps the adapter's funding record onto MeldStatusResult. */
@@ -498,6 +525,7 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
           "/session",
           { idempotencyKey: externalSessionId, ...walk.body() },
           walk.what,
+          walk.region,
         );
         const fundingRequestId = String(data.fundingRequestId ?? "");
         if (!fundingRequestId) {
@@ -585,6 +613,7 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
           paymentMethodType: req.paymentMethodType,
         },
         "The quote",
+        req.country,
       );
       const raw = (data.quotes as Record<string, unknown>[] | undefined) ?? [];
       return { quotes: toQuoteEntries(raw) };
@@ -606,6 +635,7 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
           paymentMethodType: req.paymentMethodType,
         },
         "The quote",
+        req.country,
       );
       const raw = (data.quotes as Record<string, unknown>[] | undefined) ?? [];
       return { quotes: toQuoteEntries(raw) };
@@ -614,6 +644,7 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
     async createSession(req) {
       return openSession({
         what: "Starting the payment",
+        region: req.country,
         key: (attempt) => intentKey(req, attempt),
         body: () => ({
           country: req.country,
@@ -645,6 +676,7 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
     async createSellSession(req) {
       return openSession({
         what: "Starting the sale",
+        region: req.country,
         key: (attempt) => sellIntentKey(req, attempt),
         body: () => ({
           direction: "sell",

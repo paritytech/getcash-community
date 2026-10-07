@@ -12,7 +12,7 @@ import CashAmount from "../ui/CashAmount.vue";
 import DetailRows, { type DetailRow } from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
 import RegionRow from "../ui/RegionRow.vue";
-import SkeletonBlock from "../ui/SkeletonBlock.vue";
+import SkeletonRow from "../ui/SkeletonRow.vue";
 
 const props = defineProps<{
   /** The CASH leaving the balance, as typed. */
@@ -20,9 +20,10 @@ const props = defineProps<{
   quote: MeldSellQuote | null;
   loading: boolean;
   error: string | null;
-  /** The payout country, as an ISO code, and its name. */
-  country: string;
-  countryName: string;
+  /** The payout country, as an ISO code, and its name. Null while it is still being decided
+   *  (geo, or the bounded locale fallback), which the row shows as a skeleton. */
+  country: string | null;
+  countryName: string | null;
   starting: boolean;
   startError: string | null;
 }>();
@@ -65,18 +66,18 @@ const canContinue = computed(
 
     <div class="mt-8 flex flex-col gap-4">
       <!-- Live even while the quote is refused: another country is the way out of one that pays
-           out nothing. -->
+           out nothing. Undecided (null), the row is a skeleton rather than a provisional region
+           the seller could mistake for a decision. -->
+      <SkeletonRow v-if="country === null" value-width="w-1/4" />
       <RegionRow
+        v-else
         label="Payout country"
-        :value="countryName"
+        :value="countryName ?? country"
         :country="country"
         @open="emit('region')"
       />
       <div v-if="loading" class="flex flex-col gap-4">
-        <div v-for="n in 2" :key="n" class="flex h-6 items-center justify-between">
-          <SkeletonBlock class="h-4 w-2/5" />
-          <SkeletonBlock class="h-4 w-1/5" />
-        </div>
+        <SkeletonRow v-for="n in 2" :key="n" />
       </div>
       <DetailRows v-else-if="quote" :rows="rows" @fees="emit('fees')" />
     </div>
