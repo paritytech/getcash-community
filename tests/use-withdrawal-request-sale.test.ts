@@ -147,6 +147,7 @@ describe("a fiat sale from the page", () => {
       fiat: "EUR",
       paymentMethodType: "SEPA",
       quote: QUOTE,
+      sale: { tier: "pool" },
       cryptoAmount: COMMITTED,
     });
 
@@ -187,6 +188,7 @@ describe("a fiat sale from the page", () => {
       sale: {
         fundingRequestId: "mock-sell-1",
         cryptoAmount: COMMITTED.toString(),
+        token: "PAS",
         quotedPayout: "90.12",
       },
       handoff: { rail: "meld", meld: { baseUrl: "https://adapter.test" } },
@@ -196,6 +198,28 @@ describe("a fiat sale from the page", () => {
     expect(handedOff).not.toHaveBeenCalled();
     // The screen that asked takes the sale to the front, if it is still up; opening it does not.
     expect(useRequestsStore().foregroundWithdrawal).toBeNull();
+  });
+
+  it("opens a sale decided for the PSM in USDT, the figure at the token's six decimals", async () => {
+    const spy = vi.spyOn(meld, "createSellSession");
+    const outcome = await useWithdrawalRequest().startSale({
+      method: "bank",
+      amount: 100_000_000n,
+      country: "DE",
+      fiat: "EUR",
+      paymentMethodType: "SEPA",
+      quote: QUOTE,
+      sale: { tier: "psm", external: "USDT", feeRate: 5_000 },
+      cryptoAmount: 97_791_700n,
+    });
+    expect(outcome.ok).toBe(true);
+    expect(spy).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceCurrencyCode: "USDT_ASSETHUB", sourceAmount: "97.7917" }),
+    );
+    if (!outcome.ok) return;
+    expect(useRequestsStore().get(outcome.ref)).toMatchObject({
+      sale: { cryptoAmount: "97791700", token: "USDT" },
+    });
   });
 
   it("creates nothing when the provider will not open the sale", async () => {
@@ -218,7 +242,9 @@ describe("a fiat sale from the page", () => {
 
     const paid = await useWithdrawalRequest().paySale(outcome.ref);
     expect(paid).toEqual({ ok: true });
-    expect(fundable).toHaveBeenCalledWith(100_000_000n, COMMITTED, known.handoff.channel!.address);
+    expect(fundable).toHaveBeenCalledWith(100_000_000n, COMMITTED, known.handoff.channel!.address, {
+      tier: "pool",
+    });
     expect(asked).toHaveBeenCalledWith(expect.objectContaining({ amount: 100_000_000n }));
     expect(handedOff).toHaveBeenCalledTimes(1);
     const [, , payload] = handedOff.mock.calls[0]!;
@@ -459,6 +485,7 @@ describe("a fiat sale in a build that cannot run one", () => {
       fiat: "EUR",
       paymentMethodType: "CREDIT_DEBIT_CARD",
       quote: QUOTE,
+      sale: { tier: "pool" },
       cryptoAmount: COMMITTED,
     });
     expect(outcome).toEqual({
@@ -481,6 +508,7 @@ describe("a fiat sale in a build that cannot run one", () => {
       fiat: "EUR",
       paymentMethodType: "SEPA",
       quote: QUOTE,
+      sale: { tier: "pool" },
       cryptoAmount: COMMITTED,
     });
     expect(outcome).toEqual({

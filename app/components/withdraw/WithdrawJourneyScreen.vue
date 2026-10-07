@@ -3,7 +3,8 @@
 // Everything shown is read from the record; the actions go back to the route.
 import { computed } from "vue";
 import { Check, RefreshCcw, X } from "lucide-vue-next";
-import { formatBaseUnits, sellAmountOf, SELL_TOKEN } from "@getsome/meld";
+import { depositTokenOf, recordedRoute } from "@getsome/funding";
+import { formatBaseUnits, sellAmountOf } from "@getsome/meld";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
 import {
   paymentTaken,
@@ -98,9 +99,12 @@ const residueNote = computed(() => {
   if (residue.stuck === true) {
     return "What was left could not come back to your balance on its own. Contact support with your reference.";
   }
-  // Shown to the sale's decimals; a remainder below them is not worth a line.
-  const shown = residue.amount === undefined ? 0n : sellAmountOf(BigInt(residue.amount));
-  const amount = shown === 0n ? null : `${formatBaseUnits(SELL_TOKEN, shown)} ${SELL_TOKEN.symbol}`;
+  // In the token the sale sold, shown to the sale's decimals; a remainder below them is not worth
+  // a line.
+  const token = depositTokenOf(recordedRoute(props.record.handoff));
+  const shown = residue.amount === undefined ? 0n : sellAmountOf(token, BigInt(residue.amount));
+  const symbol = props.record.sale?.token ?? token.symbol;
+  const amount = shown === 0n ? null : `${formatBaseUnits(token, shown)} ${symbol}`;
   if (!residue.returning) {
     return amount === null
       ? null

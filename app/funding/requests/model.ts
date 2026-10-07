@@ -499,8 +499,11 @@ export interface MeldSale {
   paymentMethodType: string;
   /** Where the seller does KYC and names the payout account. */
   widgetUrl: string;
-  /** The exact planck the key pays the provider. */
+  /** Exactly what the key pays the provider, in the base units of `token`. */
   cryptoAmount: string;
+  /** The symbol of the token the sale sells, the one the hand-off's sale lands; absent on a sale
+   *  opened before the token was recorded, which sold the native. */
+  token?: string;
   /** The fiat the quote said reaches the seller, decimal text in `fiat`. An estimate: the
    *  provider prices the payout again. */
   quotedPayout: string;

@@ -13,8 +13,9 @@
 // agreed, becomes the hand-off's channel; an order that ends first ends the record, and the
 // payment window starts when the purse is asked, not when the address is named.
 
-import type { FailureKind } from "@getsome/core";
-import { parseBaseUnits, SELL_TOKEN } from "@getsome/meld";
+import type { FailureKind, TokenSpec } from "@getsome/core";
+import { depositTokenOf, recordedRoute } from "@getsome/funding";
+import { parseBaseUnits } from "@getsome/meld";
 import {
   PAYMENT_EXPIRED_REASON,
   PAYMENT_WINDOW_MS,
@@ -419,7 +420,7 @@ function applySale(record: WithdrawalRecord, observation: SaleObservation): With
   // The address taken must still be the provider's word. The adapter stops naming one the
   // provider moved away from and shows the terms the provider states now, so a deposit that is
   // gone or changed ends the sale before anything is asked of the purse.
-  if (channel !== undefined && !sameDeposit(channel, reading.deposit)) {
+  if (channel !== undefined && !sameDeposit(channel, reading.deposit, saleTokenOf(next))) {
     return failed(next, at, {
       kind: "sale-mismatch",
       step: "payment",
@@ -430,13 +431,21 @@ function applySale(record: WithdrawalRecord, observation: SaleObservation): With
   return next;
 }
 
-/** Whether `deposit` is the channel's address, for the sale's asset and its exact amount. */
-function sameDeposit(channel: WithdrawalChannel, deposit: MeldSaleReading["deposit"]): boolean {
+/** The token a sale sells: the one the hand-off's sale lands on the key. */
+const saleTokenOf = (record: WithdrawalRecord): TokenSpec =>
+  depositTokenOf(recordedRoute(record.handoff));
+
+/** Whether `deposit` is the channel's address, for the sale's `token` and its exact amount. */
+function sameDeposit(
+  channel: WithdrawalChannel,
+  deposit: MeldSaleReading["deposit"],
+  token: TokenSpec,
+): boolean {
   return (
     deposit !== undefined &&
     deposit.address === channel.address &&
-    deposit.currency === SELL_TOKEN.meldCurrencyCode &&
-    parseBaseUnits(SELL_TOKEN, deposit.amount) === BigInt(channel.amount ?? "0")
+    deposit.currency === token.meldCurrencyCode &&
+    parseBaseUnits(token, deposit.amount) === BigInt(channel.amount ?? "0")
   );
 }
 
@@ -451,9 +460,10 @@ function depositKnown(
   at: number,
 ): WithdrawalRecord {
   const sale = record.sale!;
+  const token = saleTokenOf(record);
   const expected = BigInt(sale.cryptoAmount);
-  const asked = parseBaseUnits(SELL_TOKEN, deposit.amount);
-  if (deposit.currency !== SELL_TOKEN.meldCurrencyCode || asked !== expected) {
+  const asked = parseBaseUnits(token, deposit.amount);
+  if (deposit.currency !== token.meldCurrencyCode || asked !== expected) {
     return failed(record, at, {
       kind: "sale-mismatch",
       step: "payment",

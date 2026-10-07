@@ -2,6 +2,7 @@
 // back, the offline script, and the sale as the withdrawal's rail leg sees it.
 
 import { describe, expect, it } from "vitest";
+import { TOKENS } from "@getsome/core";
 import { createMeldClient } from "./client";
 import { createFakeMeldClient } from "./fake";
 import type { MeldClientLike, MeldQuoteEntry, MeldStatusResult } from "./client";
@@ -14,7 +15,6 @@ import {
   saleStatusView,
   sellAmountOf,
   sellQuoteUsable,
-  SELL_TOKEN,
   type SaleReadMemory,
 } from "./sell";
 import { parseBaseUnits } from "./units";
@@ -338,7 +338,7 @@ describe("the sale as the rail leg reads it", () => {
   };
 
   it("is a channel to an address for an exact figure, paid out off chain", () => {
-    expect(saleChannelOf(disclosed)).toEqual({
+    expect(saleChannelOf(disclosed, TOKENS.PAS)).toEqual({
       depositAddress: "14Kt",
       payout: "off-chain",
       expired: false,
@@ -347,17 +347,24 @@ describe("the sale as the rail leg reads it", () => {
   });
 
   it("is closed once the adapter concludes it", () => {
-    expect(saleChannelOf({ ...disclosed, status: "expired" })?.expired).toBe(true);
+    expect(saleChannelOf({ ...disclosed, status: "expired" }, TOKENS.PAS)?.expired).toBe(true);
   });
 
   it("is no channel without a disclosure, for another asset, or for an unreadable amount", () => {
-    expect(saleChannelOf({ status: "session_opened" })).toBeNull();
+    expect(saleChannelOf({ status: "session_opened" }, TOKENS.PAS)).toBeNull();
+    const usdt = { ...disclosed, deposit: { ...disclosed.deposit, currency: "USDT_ASSETHUB" } };
+    expect(saleChannelOf(usdt, TOKENS.PAS)).toBeNull();
     expect(
-      saleChannelOf({ ...disclosed, deposit: { ...disclosed.deposit, currency: "USDT_ASSETHUB" } }),
+      saleChannelOf(
+        { ...disclosed, deposit: { ...disclosed.deposit, amount: "1.00000000001" } },
+        TOKENS.PAS,
+      ),
     ).toBeNull();
-    expect(
-      saleChannelOf({ ...disclosed, deposit: { ...disclosed.deposit, amount: "1.00000000001" } }),
-    ).toBeNull();
+  });
+
+  it("reads a USDT sale's deposit at the token's six decimals", () => {
+    const usdt = { ...disclosed, deposit: { ...disclosed.deposit, currency: "USDT_ASSETHUB" } };
+    expect(saleChannelOf(usdt, TOKENS.USDT)?.expectedAmount).toBe(23_452_100n);
   });
 
   it("ends the follow when the provider changed the deposit after the key paid", () => {
@@ -383,26 +390,28 @@ describe("the sale as the rail leg reads it", () => {
 
 describe("sale amounts", () => {
   it("cuts a figure to the sale's decimals, never up", () => {
-    expect(sellAmountOf(234_521_987_654n)).toBe(234_521_000_000n);
-    expect(formatSellAmount(234_521_000_000n)).toBe("23.4521");
+    expect(sellAmountOf(TOKENS.PAS, 234_521_987_654n)).toBe(234_521_000_000n);
+    expect(formatSellAmount(TOKENS.PAS, 234_521_000_000n)).toBe("23.4521");
+    expect(sellAmountOf(TOKENS.USDT, 23_452_199n)).toBe(23_452_100n);
+    expect(formatSellAmount(TOKENS.USDT, 23_452_100n)).toBe("23.4521");
   });
 
   it("parses a decimal exactly, refusing more precision than the token has", () => {
-    expect(parseBaseUnits(SELL_TOKEN, "23.4521")).toBe(234_521_000_000n);
-    expect(parseBaseUnits(SELL_TOKEN, "7")).toBe(70_000_000_000n);
-    expect(parseBaseUnits(SELL_TOKEN, "0.00000000001")).toBeNull();
-    expect(parseBaseUnits(SELL_TOKEN, "-1")).toBeNull();
-    expect(parseBaseUnits(SELL_TOKEN, "1e3")).toBeNull();
+    expect(parseBaseUnits(TOKENS.PAS, "23.4521")).toBe(234_521_000_000n);
+    expect(parseBaseUnits(TOKENS.PAS, "7")).toBe(70_000_000_000n);
+    expect(parseBaseUnits(TOKENS.PAS, "0.00000000001")).toBeNull();
+    expect(parseBaseUnits(TOKENS.PAS, "-1")).toBeNull();
+    expect(parseBaseUnits(TOKENS.PAS, "1e3")).toBeNull();
   });
 
   it("reads trailing zeros as no value, as a provider may pad its amount", () => {
-    expect(parseBaseUnits(SELL_TOKEN, "23.452100000000000000")).toBe(234_521_000_000n);
-    expect(parseBaseUnits(SELL_TOKEN, "7.0")).toBe(70_000_000_000n);
-    expect(parseBaseUnits(SELL_TOKEN, "7.")).toBe(70_000_000_000n);
-    expect(parseBaseUnits(SELL_TOKEN, "0.00000000010")).toBe(1n);
+    expect(parseBaseUnits(TOKENS.PAS, "23.452100000000000000")).toBe(234_521_000_000n);
+    expect(parseBaseUnits(TOKENS.PAS, "7.0")).toBe(70_000_000_000n);
+    expect(parseBaseUnits(TOKENS.PAS, "7.")).toBe(70_000_000_000n);
+    expect(parseBaseUnits(TOKENS.PAS, "0.00000000010")).toBe(1n);
     // A digit past the token's own is still refused, however it is padded.
-    expect(parseBaseUnits(SELL_TOKEN, "0.000000000010")).toBeNull();
-    expect(parseBaseUnits(SELL_TOKEN, "0.00000000001")).toBeNull();
+    expect(parseBaseUnits(TOKENS.PAS, "0.000000000010")).toBeNull();
+    expect(parseBaseUnits(TOKENS.PAS, "0.00000000001")).toBeNull();
   });
 });
 
@@ -432,7 +441,7 @@ describe("the sale's reads for the worker", () => {
   }
 
   it("reads the channel and the status through the adapter", async () => {
-    const rail = saleRail(scripted([live, { status: "settled" }]), {});
+    const rail = saleRail(scripted([live, { status: "settled" }]), TOKENS.PAS, {});
     expect(await rail.channel("funding-1")).toMatchObject({ expectedAmount: 234_521_000_000n });
     expect(await rail.status("funding-1")).toMatchObject({ status: "complete" });
   });
@@ -440,7 +449,7 @@ describe("the sale's reads for the worker", () => {
   it("takes a sale the adapter keeps answering 404 for as gone, and only then", async () => {
     const memory: SaleReadMemory = {};
     let clock = 1_000_000;
-    const rail = saleRail(scripted([notFound]), memory, () => clock);
+    const rail = saleRail(scripted([notFound]), TOKENS.PAS, memory, () => clock);
     for (let read = 1; read < SALE_GONE_AFTER; read += 1) {
       await expect(rail.channel("funding-1")).rejects.toBe(notFound);
       expect(memory.saleNotFound).toBe(read);
@@ -463,7 +472,7 @@ describe("the sale's reads for the worker", () => {
   it("starts the count again after an answer, and throws any other failure as it is", async () => {
     const memory: SaleReadMemory = {};
     const boom = Object.assign(new Error("bad gateway"), { status: 502 });
-    const rail = saleRail(scripted([notFound, notFound, live, notFound, boom]), memory);
+    const rail = saleRail(scripted([notFound, notFound, live, notFound, boom]), TOKENS.PAS, memory);
     await expect(rail.channel("funding-1")).rejects.toBe(notFound);
     await expect(rail.channel("funding-1")).rejects.toBe(notFound);
     expect(await rail.channel("funding-1")).not.toBeNull();

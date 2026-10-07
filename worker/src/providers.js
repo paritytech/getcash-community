@@ -70,18 +70,20 @@ export function railFor(provider, record) {
         ? { productId: meld.productId }
         : {}),
     });
-    return saleRail(client, record);
+    return saleRail(client, depositTokenOf(recordedRoute(record)), record);
   }
   return null;
 }
 
 /**
- * Pays the channel exactly `amount` from the key on Asset Hub, at the nonce `exact` keeps.
- * Resolves once the payment is on chain. `hooks.onBeforeSubmit` runs before the broadcast, so the
- * driver can persist the attempt; `hooks.onTx` takes the transaction as it lands.
+ * Pays the channel exactly `amount` of the token the sale landed from the key on Asset Hub, at the
+ * nonce `exact` keeps. Resolves once the payment is on chain. `hooks.onBeforeSubmit` runs before
+ * the broadcast, so the driver can persist the attempt; `hooks.onTx` takes the transaction as it
+ * lands.
  */
 export async function payRailExact(record, handoff, amount, exact, hooks = {}) {
   const key = await keypairFor(record.label);
+  const token = depositTokenOf(recordedRoute(record));
   const client = await connectChain(record.assetHubGenesis, "asset hub");
   try {
     const assetHubApi = client.getTypedApi(paseo_next_v2);
@@ -92,11 +94,12 @@ export async function payRailExact(record, handoff, amount, exact, hooks = {}) {
         key: { address: key.address, signer: key.signer },
         to: handoff.address,
         amount,
+        token,
         tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
         submitTimeoutMs: DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
         signOptions: { at: anchor.hash },
         anchorNumber: anchor.number,
-        readKey: () => readAssetHubAccount(assetHubApi, record.keyPublicKeyHex),
+        readKey: () => readAssetHubAccount(assetHubApi, record.keyPublicKeyHex, token),
         onBeforeSubmit: hooks.onBeforeSubmit,
         onTx: hooks.onTx,
       },
@@ -114,6 +117,7 @@ export async function payRailExact(record, handoff, amount, exact, hooks = {}) {
  */
 export async function exactPaymentOut(record, amount, exact) {
   if (!exact.inFlight) return false;
+  const token = depositTokenOf(recordedRoute(record));
   const client = await connectChain(record.assetHubGenesis, "asset hub");
   try {
     const assetHubApi = client.getTypedApi(paseo_next_v2);
@@ -121,7 +125,7 @@ export async function exactPaymentOut(record, amount, exact) {
       {
         amount,
         tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
-        readKey: () => readAssetHubAccount(assetHubApi, record.keyPublicKeyHex),
+        readKey: () => readAssetHubAccount(assetHubApi, record.keyPublicKeyHex, token),
         readFinalizedNumber: async () => (await client.getFinalizedBlock()).number,
       },
       exact,

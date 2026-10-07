@@ -1,12 +1,15 @@
 // The quote a fiat sale is confirmed on: the region and payout method from the adapter's sell
-// catalog, the exact figure the key will pay out of the pool sale, and the best provider line for
-// that figure. Priced again whenever the region changes; nothing here opens a session.
+// catalog for the token the sale sells, the exact figure the key will pay out of the sale on
+// Asset Hub, and the best provider line for that figure. Priced again whenever the region
+// changes; nothing here opens a session. The sale itself is the route component's decision,
+// made before the catalog is read.
 
-import { ref, shallowRef } from "vue";
+import { ref, shallowRef, toValue, type MaybeRefOrGetter } from "vue";
+import { depositTokenOf, type ConversionRoute } from "@getsome/funding";
 import {
   formatSellAmount,
+  meldTokenOf,
   pickBestQuote,
-  SELL_TOKEN,
   sellQuoteUsable,
   type MeldQuoteEntry,
 } from "@getsome/meld";
@@ -27,7 +30,9 @@ export interface MeldSellQuote {
   country: string;
   fiat: string;
   paymentMethodType: string;
-  /** Exactly what the key pays the provider, planck. */
+  /** The sale on Asset Hub the figure was sized on, frozen into the hand-off at confirm. */
+  sale: ConversionRoute;
+  /** Exactly what the key pays the provider, in the base units of the sale's token. */
   cryptoAmount: bigint;
   /** The CASH expected back once the provider is paid, before the way back's fees; 0 when it is
    *  too small to send back. */
@@ -47,7 +52,11 @@ function startingCountry(method: "card" | "bank"): string {
   return method === "card" || bankRailCountries().includes(detected) ? detected : "DE";
 }
 
-export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
+export function useMeldSellQuote(
+  method: "card" | "bank",
+  amount: bigint,
+  sale: MaybeRefOrGetter<ConversionRoute | null>,
+) {
   const country = ref(startingCountry(method));
   const countries = shallowRef<SupportedCountry[] | null>(null);
   const corridors = shallowRef<Map<string, SupportedCorridor> | null>(null);
@@ -56,9 +65,17 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
   const error = ref<string | null>(null);
   let epoch = 0;
 
-  /** The sell catalog, for the region picker. Null lists when discovery is unreachable. */
+  /** The token the sale sells as Meld names it; null until the sale is decided. */
+  function sellToken() {
+    const chosen = toValue(sale);
+    return chosen === null ? null : meldTokenOf(depositTokenOf(chosen));
+  }
+
+  /** The sell catalog for the sale's token, for the region picker. Null lists when discovery is
+   *  unreachable, or until the sale is decided. */
   async function loadCatalog(): Promise<void> {
-    const code = SELL_TOKEN.meldCurrencyCode;
+    const code = sellToken()?.meldCurrencyCode;
+    if (code === undefined) return;
     const [listed, routed] = await Promise.all([
       fetchSupportedCountries(code, "sell"),
       fetchSupportedCorridors(code, "sell"),
@@ -74,8 +91,8 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
    */
   async function corridorFor(
     cc: string,
+    code: string,
   ): Promise<{ fiat: string; paymentMethodType: string } | null> {
-    const code = SELL_TOKEN.meldCurrencyCode;
     const live = corridors.value?.get(cc) ?? (await fetchCorridor(code, cc, "sell"));
     if (live !== null) {
       const found = methodFor(live, method);
@@ -112,10 +129,16 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
         error.value = "Card and bank withdrawals are not available right now.";
         return;
       }
+      const chosen = toValue(sale);
+      if (chosen === null) {
+        error.value = "The estimate is not available right now.";
+        return;
+      }
+      const token = meldTokenOf(depositTokenOf(chosen));
       const live = await import("~~/lib/withdraw-live");
       const [corridor, size] = await Promise.all([
-        corridorFor(country.value),
-        live.sizeMeldCommitment(amount),
+        corridorFor(country.value, token.meldCurrencyCode),
+        live.sizeMeldCommitment(amount, chosen),
       ]);
       if (mine !== epoch) return;
       if (corridor === null) {
@@ -124,8 +147,8 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
       }
       const { quotes } = await client.getSellQuote({
         country: country.value,
-        sourceCurrencyCode: SELL_TOKEN.meldCurrencyCode,
-        sourceAmount: formatSellAmount(size.planck),
+        sourceCurrencyCode: token.meldCurrencyCode,
+        sourceAmount: formatSellAmount(token, size.planck),
         destinationCurrencyCode: corridor.fiat,
         paymentMethodType: corridor.paymentMethodType,
       });
@@ -140,6 +163,7 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
       quote.value = {
         country: country.value,
         ...corridor,
+        sale: chosen,
         cryptoAmount: size.planck,
         backCash: size.backCash,
         line,

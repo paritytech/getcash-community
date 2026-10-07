@@ -47,7 +47,13 @@ import {
   type StableLegFees,
 } from "./funding-program";
 import type { ConversionRoute } from "./route";
-import { STABLE_TOKENS, asLocation, stableTxOptions, type Location } from "./stable";
+import {
+  STABLE_TOKENS,
+  asLocation,
+  priceNativeFeeIn,
+  stableTxOptions,
+  type Location,
+} from "./stable";
 
 type AssetHubApi = TypedApi<typeof paseo_next_v2>;
 type Weight = { ref_time: bigint; proof_size: bigint };
@@ -263,20 +269,7 @@ export async function estimatePsmBatchFees(args: {
     0n,
     maxWeight,
   ).batch.getEstimatedFees(args.dryRunFrom ?? args.feeProbeAddress, options);
-  // ChargeAssetTxPayment swaps exactly the native fee out of the pool, so the external it takes is
-  // the exact-out quote for it, pool fee included.
-  const dispatchExternal =
-    await args.api.apis.AssetConversionApi.quote_price_tokens_for_exact_tokens(
-      options.asset,
-      asLocation(TOKENS.PAS.location),
-      dispatchNative,
-      true,
-    );
-  if (dispatchExternal === undefined) {
-    throw new Error(
-      "psm batch fee estimate: the pool cannot price the dispatch fee in the external",
-    );
-  }
+  const dispatchExternal = await priceNativeFeeIn(args.api, args.route.external, dispatchNative);
 
   const feeAllowanceExternal = withFeeMargin(localExternal + deliveryExternal);
   const heldBackExternal = minBalance + feeAllowanceExternal;

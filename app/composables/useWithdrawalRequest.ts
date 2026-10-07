@@ -7,7 +7,7 @@
 
 import { computed } from "vue";
 import { depositTokenOf, recordedRoute, type ConversionRoute } from "@getsome/funding";
-import { formatSellAmount, SELL_TOKEN, type MeldQuoteEntry } from "@getsome/meld";
+import { formatSellAmount, meldTokenOf, type MeldQuoteEntry } from "@getsome/meld";
 import {
   MELD_WITHDRAW_DESTINATIONS,
   PAYMENT_WINDOW_MS,
@@ -66,7 +66,10 @@ export interface MeldSaleStart {
   paymentMethodType: string;
   /** The provider line the seller confirmed: its payout and its fees, in `fiat`. */
   quote: MeldQuoteEntry;
-  /** Exactly what the key pays the provider, planck. */
+  /** The sale the worker makes on Asset Hub, as the quote screen decided it under the fiat rule:
+   *  the key pays the provider in the token it lands. */
+  sale: ConversionRoute;
+  /** Exactly what the key pays the provider, in the base units of the sale's token. */
   cryptoAmount: bigint;
 }
 
@@ -219,14 +222,15 @@ export function useWithdrawalRequest() {
     const ref = requestRefOf(sourceId, n);
     const key = await live.withdrawKeyFor(sourceId, n);
     await live.advanceWithdrawCounter(sourceId, n);
+    const token = meldTokenOf(depositTokenOf(input.sale));
     let session: Awaited<ReturnType<typeof client.createSellSession>>;
     try {
       session = await client.createSellSession({
         serviceProvider: input.quote.serviceProvider,
         orderRef: key.address,
         country: input.country,
-        sourceCurrencyCode: SELL_TOKEN.meldCurrencyCode,
-        sourceAmount: formatSellAmount(input.cryptoAmount),
+        sourceCurrencyCode: token.meldCurrencyCode,
+        sourceAmount: formatSellAmount(token, input.cryptoAmount),
         destinationCurrencyCode: input.fiat,
         paymentMethodType: input.paymentMethodType,
       });
@@ -257,8 +261,7 @@ export function useWithdrawalRequest() {
       destination,
       landingHex: key.publicKeyHex,
       rail: "meld",
-      // A fiat sale takes DOT from the key, whatever the provider pays out.
-      sale: { tier: "pool" },
+      sale: input.sale,
       paymentExpiresAt,
       meld,
     });
@@ -293,6 +296,7 @@ export function useWithdrawalRequest() {
         paymentMethodType: input.paymentMethodType,
         widgetUrl,
         cryptoAmount: input.cryptoAmount.toString(),
+        token: token.symbol,
         quotedPayout: quote.destinationAmount,
         ...(Object.keys(fees).length === 0 ? {} : { fees }),
       },
@@ -341,6 +345,7 @@ export function useWithdrawalRequest() {
         BigInt(record.handoff.amount),
         BigInt(record.sale.cryptoAmount),
         channel.address,
+        recordedRoute(record.handoff),
       );
     } catch (e: unknown) {
       // Not knowing is not a no: the sale waits, and the seller can try again.

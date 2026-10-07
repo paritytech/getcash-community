@@ -12,6 +12,18 @@ import type { TokenSpec } from "@getsome/core";
 export type MeldToken = TokenSpec &
   Required<Pick<TokenSpec, "chainflipAsset" | "meldCurrencyCode">>;
 
+/** `token` as Meld names it on the wire. Throws for a token Meld does not list. */
+export function meldTokenOf(token: TokenSpec): MeldToken {
+  if (token.chainflipAsset === undefined || token.meldCurrencyCode === undefined) {
+    throw new Error(`Meld does not list ${token.symbol}`);
+  }
+  return {
+    ...token,
+    chainflipAsset: token.chainflipAsset,
+    meldCurrencyCode: token.meldCurrencyCode,
+  };
+}
+
 /** Ceil-normalize a reverse-quote target to `token` base units (never under-target). */
 export function toBaseUnits(
   token: TokenSpec,

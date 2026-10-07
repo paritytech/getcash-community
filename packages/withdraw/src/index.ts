@@ -77,7 +77,7 @@ export {
   freshExactPayState,
   payExactOnce,
   PaymentUnresolvedError,
-  SALE_RESIDUE_RETURN_FLOOR,
+  residueReturnFloor,
 } from "./pay-exact";
 export { cashInFor, pasOutFor } from "./pool";
 export type { PoolReserves } from "./pool";

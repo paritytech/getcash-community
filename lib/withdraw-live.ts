@@ -36,7 +36,7 @@ import {
   psmRedeemOut,
   readDestinationBalance,
   redeemAmountOf,
-  SALE_RESIDUE_RETURN_FLOOR,
+  residueReturnFloor,
 } from "@getsome/withdraw";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import {
@@ -248,15 +248,16 @@ export async function quoteDirectCashFor(native: bigint): Promise<bigint> {
   return quoted + (await directFeesCash({ tier: "pool" }));
 }
 
-// A fiat sale promises its provider an exact figure before the seller's KYC and pays it after,
-// out of a pool sale that only runs then, held to the program's floor of
-// DEFAULT_WITHDRAW_SLIPPAGE_PCT below the quote of its moment. So the figure is what the sale lands
-// today less that floor, less the margin the check before the purse keeps, less a point for the
-// price to move while the seller verifies, less what the payment itself costs the key. What the
-// sale lands above it is the residue, which the worker sends home once the provider is paid.
-// Before the purse is asked the figure is checked again, with that margin under the floor, since
-// the worker sizes the sale a few minutes later; a price that moved too far meanwhile ends the sale
-// with nothing taken.
+// A fiat sale promises its provider an exact figure before the seller's KYC and pays it after, out
+// of a sale on Asset Hub that only runs then. On the pool tier that sale is held to the program's
+// floor of DEFAULT_WITHDRAW_SLIPPAGE_PCT below the quote of its moment, so the figure is what the
+// sale lands today less that floor, less the margin the check before the purse keeps, less a point
+// for the price to move while the seller verifies, less what the payment itself costs the key. On
+// the PSM tier the rate is frozen on the sale, so the figure is what the redeem lands less the
+// payment's cost and nothing else. What the sale lands above the figure is the residue, which the
+// worker sends home once the provider is paid. Before the purse is asked the figure is checked
+// again, on the pool tier with that margin under the floor, since the worker sizes the sale a few
+// minutes later; a price that moved too far meanwhile ends the sale with nothing taken.
 
 /** Stands in for the key and the provider in the payment's fee estimate before either is known:
  *  the fee depends on the call, not on who makes it. */
@@ -268,27 +269,35 @@ const PURSE_CHECK_MARGIN_PCT = 0.5;
 /** Room for the price to move while the seller verifies with the provider, percent. */
 const SALE_KYC_MARGIN_PCT = 1;
 
-/** The program's floor under a sale that lands `native` planck, as `sizeXcm` computes it, with
- *  `marginPct` more under it. */
-const saleFloor = (native: bigint, marginPct: number): bigint =>
-  (native * BigInt(Math.round((100 - DEFAULT_WITHDRAW_SLIPPAGE_PCT - marginPct) * 100))) / 10_000n;
+/** The least `sale` lands of `expected`, in its token, as the worker will hold it: the program's
+ *  floor of the slippage under it on the pool tiers, with `marginPct` more under that; the figure
+ *  itself on the PSM tier, whose rate is frozen on the sale. */
+function saleFloor(expected: bigint, sale: ConversionRoute, marginPct: number): bigint {
+  if (sale.tier === "psm") return expected;
+  const keptPct = BigInt(Math.round((100 - DEFAULT_WITHDRAW_SLIPPAGE_PCT - marginPct) * 100));
+  return (expected * keptPct) / 10_000n;
+}
 
-/** A fiat sale takes DOT from the key, so it is sized on the pool sale for the native. */
-const FIAT_SALE: ConversionRoute = { tier: "pool" };
-
-/** What a sale of `amount` CASH lands today, the fees it takes first and the Asset Hub it was
- *  read on; null when the fees take the whole amount. */
-async function saleNow(amount: bigint) {
-  const fees = await directFeesCash(FIAT_SALE);
-  if (amount - fees <= 0n) return null;
+/** What `sale` lands of `amount` CASH today in its token, as the worker will size it, the fees it
+ *  takes first and the Asset Hub it was read on; null when the fees take the whole amount. The
+ *  pool tiers land the quote for everything the fees leave; the PSM redeems that less Asset Hub's
+ *  earmark, the figure `priceSale` redeems and the only one the exact payment can be held to. */
+async function saleNow(amount: bigint, sale: ConversionRoute) {
+  const fees = await directFeesCash(sale);
+  const sold = amount - fees;
+  if (sold <= 0n) return null;
   const { connectChain, ASSET_HUB } = await import("./host-chain");
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
-  return { api, fees, expected: await quoteDirectReceive(amount, FIAT_SALE) };
+  const expected =
+    sale.tier === "psm"
+      ? psmRedeemOut(redeemAmountOf(sold), sale.feeRate)
+      : await quoteDirectReceive(amount, sale);
+  return { api, fees, expected };
 }
 
 /** What a sale of some CASH promises its provider, and what it is expected to send back. */
 export interface MeldSaleSize {
-  /** Exactly what the key pays the provider, planck, cut to the sale's decimals. */
+  /** Exactly what the key pays the provider, in the sale's token, cut to the sale's decimals. */
   planck: bigint;
   /** The CASH expected back once the provider is paid: the share of the sale the figure and the
    *  payment do not use, at today's price and before the way back's own fees. 0 when that share is
@@ -296,37 +305,54 @@ export interface MeldSaleSize {
   backCash: bigint;
 }
 
-/** The figure a sale of `amount` CASH promises its provider, and what it should send back. Throws
- *  when nothing is left for the figure. */
-export async function sizeMeldCommitment(amount: bigint): Promise<MeldSaleSize> {
-  const now = await saleNow(amount);
+/** The figure a sale of `amount` CASH through `sale` promises its provider, in the sale's token,
+ *  and what it should send back. Throws when nothing is left for the figure. */
+export async function sizeMeldCommitment(
+  amount: bigint,
+  sale: ConversionRoute,
+): Promise<MeldSaleSize> {
+  const now = await saleNow(amount, sale);
   if (now === null) throw new Error("The amount does not cover the network fees.");
+  const token = depositTokenOf(sale);
   const cost =
-    (await exactPaymentFloor(now.api, FEE_ESTIMATE_ACCOUNT, FEE_ESTIMATE_ACCOUNT, now.expected)) -
-    now.expected;
+    (await exactPaymentFloor(
+      now.api,
+      FEE_ESTIMATE_ACCOUNT,
+      FEE_ESTIMATE_ACCOUNT,
+      now.expected,
+      token,
+    )) - now.expected;
   const planck = sellAmountOf(
-    saleFloor(now.expected, PURSE_CHECK_MARGIN_PCT + SALE_KYC_MARGIN_PCT) - cost,
+    token,
+    saleFloor(now.expected, sale, PURSE_CHECK_MARGIN_PCT + SALE_KYC_MARGIN_PCT) - cost,
   );
   if (planck <= 0n) throw new Error("The amount does not cover the network fees.");
   // The worker sends home what the key holds once the provider is paid, as it judges it then.
   const left = now.expected - planck - cost;
   const backCash =
-    left < SALE_RESIDUE_RETURN_FLOOR ? 0n : ((amount - now.fees) * left) / now.expected;
+    left < residueReturnFloor(token) ? 0n : ((amount - now.fees) * left) / now.expected;
   return { planck, backCash };
 }
 
-/** Whether `amount` CASH still covers a sale's `planck` at today's price: the floor the worker
- *  would ship covers the payment to `depositAddress`, its fee and the key's existential deposit,
- *  as the worker itself will require. Asked before the purse is. */
+/** Whether `amount` CASH through `sale` still covers a sale's `planck` at today's price: the floor
+ *  the worker would ship covers the payment to `depositAddress`, its fee and what the key keeps to
+ *  stay alive, as the worker itself will require. Asked before the purse is. */
 export async function meldCommitmentFundable(
   amount: bigint,
   planck: bigint,
   depositAddress: string,
+  sale: ConversionRoute,
 ): Promise<boolean> {
-  const now = await saleNow(amount);
+  const now = await saleNow(amount, sale);
   if (now === null) return false;
-  const needed = await exactPaymentFloor(now.api, FEE_ESTIMATE_ACCOUNT, depositAddress, planck);
-  return saleFloor(now.expected, PURSE_CHECK_MARGIN_PCT) >= needed;
+  const needed = await exactPaymentFloor(
+    now.api,
+    FEE_ESTIMATE_ACCOUNT,
+    depositAddress,
+    planck,
+    depositTokenOf(sale),
+  );
+  return saleFloor(now.expected, sale, PURSE_CHECK_MARGIN_PCT) >= needed;
 }
 
 /** Where the worker reads a fiat sale from: the adapter this build names, or the stand-in sale in

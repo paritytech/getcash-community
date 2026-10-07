@@ -2,11 +2,14 @@
 // The fiat withdrawal package, card or bank through Meld: the quote with its payout country and
 // fees, KYC on the provider's page, then the journey. Shaped like the crypto package: the shell
 // took the amount, the journey is the shared WithdrawJourneyScreen, and a withdrawal opened from
-// the list loads this route onto its record. Nothing is asked of the balance until the provider
-// names where the funds go; from there the record and the worker carry the sale.
+// the list loads this route onto its record. The sale on Asset Hub is decided here, once for the
+// amount and before the provider's catalog is read, and frozen into the hand-off at confirm.
+// Nothing is asked of the balance until the provider names where the funds go; from there the
+// record and the worker carry the sale.
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import type { ConversionRoute } from "@getsome/funding";
 import { useMeldSellQuote } from "../../../composables/useMeldSellQuote";
-import { useWithdrawalRequest } from "../../../composables/useWithdrawalRequest";
+import { psmReserved, useWithdrawalRequest } from "../../../composables/useWithdrawalRequest";
 import type { FundingPackageEmits } from "../../../funding/handoff";
 import { paymentTaken, saleAwaitingDeposit } from "../../../funding/requests/model";
 import type { FundingSelection } from "../../../funding/selection";
@@ -52,7 +55,10 @@ const method = ((): "card" | "bank" => {
 const requests = useRequestsStore();
 const withdrawal = useWithdrawalRequest();
 const amount = computed(() => props.selection?.amount ?? props.topUp?.amount ?? "");
-const sale = useMeldSellQuote(method, toCashBase(amount.value) ?? 0n);
+/** The sale on Asset Hub the figure is sized on and the provider is asked for: the fiat rule,
+ *  decided once the screen opens; null until then, and when it could not be decided. */
+const route = ref<ConversionRoute | null>(null);
+const sale = useMeldSellQuote(method, toCashBase(amount.value) ?? 0n, route);
 
 type Step = "quote" | "fees" | "region" | "kyc" | "journey" | "cancel";
 const step = ref<Step>(props.topUp ? "journey" : "quote");
@@ -143,6 +149,27 @@ function pickCountry(country: string) {
  *  screen. */
 let alive = true;
 
+/** Decides the sale for the amount, then reads the provider's catalog and prices the figure for
+ *  its token. A sale that cannot be decided leaves the quote unavailable. */
+async function openQuote() {
+  const base = toCashBase(amount.value);
+  if (base !== null) {
+    try {
+      const live = await import("~~/lib/withdraw-live");
+      route.value = await live.chooseWithdrawRoute(
+        base,
+        undefined,
+        psmReserved(requests.openWithdrawals),
+      );
+    } catch (error: unknown) {
+      console.warn("[withdraw] the sale could not be decided:", error);
+    }
+  }
+  if (!alive) return;
+  void sale.loadCatalog();
+  void sale.refresh();
+}
+
 async function confirm() {
   const quoted = sale.quote.value;
   const amountBase = toCashBase(amount.value);
@@ -157,6 +184,7 @@ async function confirm() {
       fiat: quoted.fiat,
       paymentMethodType: quoted.paymentMethodType,
       quote: quoted.line,
+      sale: quoted.sale,
       cryptoAmount: quoted.cryptoAmount,
     });
     if (!outcome.ok) {
@@ -344,8 +372,7 @@ onMounted(() => {
   window.addEventListener("message", onMessage);
   const opened = props.topUp;
   if (!opened) {
-    void sale.loadCatalog();
-    void sale.refresh();
+    void openQuote();
     return;
   }
   const ref = withdrawalRequestRef(opened.id);

@@ -1,6 +1,7 @@
-import { NETWORK } from "@getsome/core";
+import { NETWORK, TOKENS } from "@getsome/core";
 import {
   chooseCashTransfer,
+  chooseRoute,
   depositTokenOf,
   PASEO_UNDERLYING_ASSET_ID,
   recordedRoute,
@@ -22,9 +23,8 @@ import {
   PaymentUnresolvedError,
   RailFailedError,
   railTickOnce,
-  readAssetHubAccount,
   readDestinationBalance,
-  SALE_RESIDUE_RETURN_FLOOR,
+  residueReturnFloor,
   withdrawTickOnce,
   WithdrawHeldError,
   WithdrawRejectedError,
@@ -114,10 +114,12 @@ const saveJobs = () => store.save();
  *                                            // exact: the Meld payment's nonce, in flight or
  *                                            // not, and the block its attempt is anchored at
  *   saleNotFound?, saleNotFoundSince?,       // Meld only: the adapter's 404s in a row, and since
- *   residue?: { amount?, returning, whole?, sessionId?, rearms?, stuck? },
+ *   residue?: { amount?, returning, whole?, sessionId?, route?, rearms?, stuck? },
  *                                            // Meld only: what the sale left on the key once
- *                                            // the provider was paid, and its way home; whole:
- *                                            // the sale ended unpaid and all of it goes home;
+ *                                            // the provider was paid, in the sale's token, and
+ *                                            // its way home; whole: the sale ended unpaid and
+ *                                            // all of it goes home; route: the funding route
+ *                                            // the way home takes, decided when it started;
  *                                            // stuck: its funding job failed past RETURN_REARMS
  *   residueError?,                           // why the way home's last step failed; the
  *                                            // next pass tries it again
@@ -706,20 +708,10 @@ async function settleInFlight(record) {
   }
 }
 
-/** Whether a sale's key holds anything worth the way home: CASH on People, or PAS on Asset Hub at
- *  or above the floor a residue is sent home at. */
-async function keyHoldsAnything(record) {
-  const assetHub = await connectChain(record.assetHubGenesis, "asset hub");
-  try {
-    const account = await bounded(
-      readAssetHubAccount(assetHub.getTypedApi(paseo_next_v2), record.keyPublicKeyHex),
-      DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
-      "key read on asset hub",
-    );
-    if (account.free >= SALE_RESIDUE_RETURN_FLOOR) return true;
-  } finally {
-    assetHub.destroy();
-  }
+/** Whether a sale's key holds anything worth the way home: `held` of the sale's token on Asset
+ *  Hub at or above the floor a residue is sent home at, or CASH on People. */
+async function keyHoldsAnything(record, held, token) {
+  if (held >= residueReturnFloor(token)) return true;
   const people = await connectChain(record.peopleGenesis, "people");
   try {
     const cash = await bounded(
@@ -764,60 +756,85 @@ const goesHomeWhole = (record) => record.residue?.whole === true || returnDue(re
 
 /**
  * Sends what a Meld sale left on its key home as CASH, through the funding engine, as it does an
- * on-ramp: everything the key holds on Asset Hub is converted, teleported to the key on People
- * and claimed into the purse, and CASH already on People is claimed as it is. So a residue starts
- * strictly after the payment is on chain, or that conversion would take the provider's figure too,
- * and one below SALE_RESIDUE_RETURN_FLOOR stays on the key. A sale that ended unpaid sends everything,
- * wherever it is: the CASH still on People when the price moved, the PAS on Asset Hub when the
- * provider closed the order. The exchange is held to the bound the sale itself went out under.
+ * on-ramp: everything the key holds on Asset Hub in the token the sale landed is converted,
+ * teleported to the key on People and claimed into the purse, and CASH already on People is
+ * claimed as it is. So a residue starts strictly after the payment is on chain, or that conversion
+ * would take the provider's figure too, and one below `residueReturnFloor` stays on the key. A sale
+ * that ended unpaid sends everything, wherever it is: the CASH still on People when the price
+ * moved, the token on Asset Hub when the provider closed the order. The exchange is held to the
+ * bound the sale itself went out under.
  */
 async function sendHome(record, kind) {
-  let amount = null;
-  if (kind === "residue") {
-    const client = await connectChain(record.assetHubGenesis, "asset hub");
-    try {
-      const assetHubApi = client.getTypedApi(paseo_next_v2);
-      amount = (
-        await bounded(
-          readAssetHubAccount(assetHubApi, record.keyPublicKeyHex),
-          DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
-          "residue read",
-        )
-      ).free;
-    } finally {
-      client.destroy();
-    }
-    if (amount < SALE_RESIDUE_RETURN_FLOOR) {
-      record.residue = { amount: amount.toString(), returning: false };
+  const sale = recordedRoute(record);
+  const token = depositTokenOf(sale);
+  const client = await connectChain(record.assetHubGenesis, "asset hub");
+  let held;
+  let route;
+  try {
+    const assetHubApi = client.getTypedApi(paseo_next_v2);
+    held = await bounded(
+      readDestinationBalance(assetHubApi, record.keyPublicKeyHex, token.assetHubId),
+      DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+      kind === "residue" ? "residue read" : "key read on asset hub",
+    );
+    if (kind === "residue" && held < residueReturnFloor(token)) {
+      record.residue = { amount: held.toString(), returning: false };
       return;
     }
-  } else if (!(await keyHoldsAnything(record))) {
-    // A sale that failed before anything reached its key: no way home to start.
-    record.residue = { whole: true, returning: false };
-    return;
+    if (kind === "whole" && !(await keyHoldsAnything(record, held, token))) {
+      // A sale that failed before anything reached its key: no way home to start.
+      record.residue = { whole: true, returning: false };
+      return;
+    }
+    route = await wayHomeRoute(assetHubApi, sale, held);
+  } finally {
+    client.destroy();
   }
   // The way home is on the job, and stored, before its funding job exists: a worker stopped in
   // between finds the sale over and its way home open, and follows it (`keepWayHome`), rather than
   // driving the sale on or reading a key the funding job is already emptying.
   record.residue = {
-    ...(amount === null ? { whole: true } : { amount: amount.toString() }),
+    ...(kind === "whole" ? { whole: true } : { amount: held.toString() }),
     returning: true,
     sessionId: residueSessionId(record),
+    route,
   };
   await saveJobs();
   await startWayHome(record);
 }
 
+/**
+ * The funding route a sale's key takes home. The native takes the pool, as every native deposit
+ * does. A stable, the PSM's external, is minted back through the PSM when it can serve `held` and
+ * swapped through the stable pool otherwise, the way a stable deposit on the on-ramp is.
+ */
+async function wayHomeRoute(assetHubApi, sale, held) {
+  if (sale.external === undefined) return { tier: "pool" };
+  const token = depositTokenOf(sale);
+  // The one tier this worker decides. Every other route is the surface's, frozen on the hand-off
+  // with the figure the user was quoted; no user was quoted a figure for the residue.
+  return bounded(
+    chooseRoute(assetHubApi, {
+      direction: "mint",
+      internalAmount: (held * 10n ** BigInt(TOKENS.CASH.decimals)) / 10n ** BigInt(token.decimals),
+      deposit: sale.external,
+    }),
+    DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+    "way home route",
+  );
+}
+
 /** Starts, or re-arms, the funding job that carries a sale's key home. Throws when it is refused,
  *  and the next pass tries again. */
 async function startWayHome(record) {
-  const started = await startFunding(wayHomeParams(record));
+  const started = await startFunding(wayHomeParams(record, record.residue.route ?? {}));
   if (started?.error) throw new Error(started.reason ?? started.error);
 }
 
-/** The funding job that carries a sale's key home: a pool job on the key, held to the bound the
- *  sale itself went out under, claimed under ids far past the purse's payments to the key. */
-const wayHomeParams = (record) => ({
+/** The funding job that carries a sale's key home: a job on the key through `route`, held to the
+ *  bound the sale itself went out under, claimed under ids far past the purse's payments to the
+ *  key. A way home from before the route was recorded is a pool one, which is what it was. */
+const wayHomeParams = (record, route) => ({
   sessionId: residueSessionId(record),
   label: record.label,
   burnerAddress: record.keyAddress,
@@ -826,7 +843,7 @@ const wayHomeParams = (record) => ({
   peopleParaId: record.peopleParaId,
   assetHubGenesis: record.assetHubGenesis,
   peopleGenesis: record.peopleGenesis,
-  tier: "pool",
+  ...recordedRoute(route),
   quoteFloorPct: record.slippagePct,
   claimIdOffset: RESIDUE_CLAIM_ID_OFFSET,
 });
@@ -880,7 +897,7 @@ async function tickRecord(record, nowMs) {
   // The sale is an input to this engine, never a decision it makes: a job sells through the tier
   // the surface froze on it, and lands the asset that tier ends in.
   const sale = recordedRoute(record);
-  const landingAssetId = depositTokenOf(sale).assetHubId;
+  const landingToken = depositTokenOf(sale);
   const key = await keypairFor(record.label);
   const ahClient = await connectChain(record.assetHubGenesis, "asset hub");
   let peopleClient = null;
@@ -944,7 +961,7 @@ async function tickRecord(record, nowMs) {
           slippagePct: record.slippagePct,
           transfer,
           // A Meld sale promised its provider an exact figure out of what lands: the sale must
-          // cover it, its fee and the key's existential deposit, or nothing leaves People.
+          // cover it, its fee and what the key keeps to stay alive, or nothing leaves People.
           ...(record.rail === "meld"
             ? {
                 minLanding: () =>
@@ -953,6 +970,7 @@ async function tickRecord(record, nowMs) {
                     key.address,
                     record.channel.address,
                     asBig(record.channel.amount, 0n),
+                    landingToken,
                   ),
               }
             : {}),
@@ -968,7 +986,7 @@ async function tickRecord(record, nowMs) {
             return { cash: asset?.balance ?? 0n, pas: native?.data?.free ?? 0n };
           },
           readDestinationOnAssetHub: (hex) =>
-            readDestinationBalance(assetHubApi, hex, landingAssetId),
+            readDestinationBalance(assetHubApi, hex, landingToken.assetHubId),
           now: Date.now,
           // Persisted before the broadcast leaves.
           onBeforeSubmit: async (call) => {
