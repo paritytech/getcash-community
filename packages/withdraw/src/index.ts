@@ -3,22 +3,33 @@ export {
   buildWithdrawXcm,
   CASH_ON_ASSET_HUB,
   forwardedStandIn,
+  originOnAssetHub,
+  psmRedeemOut,
   withdrawMessage,
   WITHDRAW_XCM_MAX_WEIGHT,
 } from "./program";
-export type { PeopleApi, SwapArgs, WithdrawXcmArgs } from "./program";
+export type { PeopleApi, Sale, SwapArgs, WithdrawXcmArgs } from "./program";
 export {
   ASSET_HUB_FEE_BUFFER_CASH,
   CommitmentUnfundableError,
   dryRunOnAssetHub,
+  estimateDirectFeesCash,
   NeedsSwapError,
+  priceSale,
   readPoolReserves,
   sizeSwap,
   sizeXcm,
   SWAP_HEADROOM_PCT,
   XCM_TX_FEE_HEADROOM_PCT,
 } from "./fees";
-export type { AssetHubApi, SizeSwapInput, SizeXcmInput, XcmSizing } from "./fees";
+export type {
+  AssetHubApi,
+  EstimateDirectFeesInput,
+  PriceSaleInput,
+  SizeSwapInput,
+  SizeXcmInput,
+  XcmSizing,
+} from "./fees";
 export {
   DEFAULT_WITHDRAW_SLIPPAGE_PCT,
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
@@ -35,7 +46,7 @@ export type {
   WithdrawTickOutcome,
   WithdrawTickState,
 } from "./tick";
-export { readAssetHubAccount, readDestinationPas } from "./destination";
+export { readAssetHubAccount, readDestinationBalance } from "./destination";
 export {
   CHANNEL_EXPIRY_MARGIN_MS,
   ChannelExpiredError,

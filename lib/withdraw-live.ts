@@ -9,9 +9,14 @@ import { deriveEntropy, getHostLocalStorage } from "@parity/product-sdk-host";
 import { deriveKeypair } from "@getsome/ephemeral";
 import {
   chooseCashTransfer,
+  chooseRoute,
+  destinationEarmark,
   NoCashTransferError,
   PASEO_ASSET_HUB_PARA_ID,
   PASEO_PEOPLE_PARA_ID,
+  STABLE_TOKENS,
+  type ConversionRoute,
+  type DepositAsset,
 } from "@getsome/funding";
 import { sellAmountOf } from "@getsome/meld";
 import {
@@ -21,17 +26,21 @@ import {
 } from "@getsome/host";
 import { CASH_LOCATION } from "@getsome/people";
 import {
+  ASSET_HUB_FEE_BUFFER_CASH,
   CASH_ON_ASSET_HUB,
   DEFAULT_WITHDRAW_SLIPPAGE_PCT,
+  estimateDirectFeesCash,
   exactPaymentFloor,
   PASEO_PEOPLE_POOL_ACCOUNT,
   PEOPLE_NATIVE,
-  readDestinationPas,
+  psmRedeemOut,
+  readDestinationBalance,
   SALE_RESIDUE_RETURN_FLOOR,
 } from "@getsome/withdraw";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import {
   WITHDRAW_SOURCE_PREFIX,
+  handoffSaleOf,
   isWithdrawSourceId,
   type HostPaymentStatus,
   type WithdrawalChannel,
@@ -124,26 +133,93 @@ export async function cashCanMove(): Promise<boolean> {
   }
 }
 
-/** The CASH the fees take from a direct withdrawal before the sale on Asset Hub, as measured on
- *  Paseo: the People swap for the fee PAS, about 0.42 CASH, and Asset Hub's execution fee. */
-const DIRECT_FEES_CASH = 450_000n;
+/** How long a fee estimate serves before People is read again. */
+const FEES_FRESH_MS = 60_000;
+const feesBySale = new Map<string, { at: number; fees: Promise<bigint> }>();
 
-/** What a direct withdrawal of `amount` CASH lands on Asset Hub, in planck, at today's pool
- *  price: the amount less the fees, sold as the program sells it. An estimate for the summary,
- *  not what the program is held to. */
-export async function quoteDirectReceive(amount: bigint): Promise<bigint> {
-  const sold = amount - DIRECT_FEES_CASH;
-  if (sold <= 0n) return 0n;
+/** The sales whose XCM has one shape, and so one fee: a pool sale fed through a stable has a hop
+ *  more than one for the native, so the two are kept apart. */
+const feesKeyOf = (sale: ConversionRoute): string =>
+  sale.tier === "dotusd" ? sale.tier : `${sale.tier}:${sale.external ?? "native"}`;
+
+/** The CASH the fees take from a direct withdrawal before the sale on Asset Hub, priced now on
+ *  People and kept for a minute: the swap that buys the fee PAS, its own fee and Asset Hub's
+ *  buffer, as the worker will size them. An estimate for the summary, on the safe side. */
+export async function directFeesCash(sale: ConversionRoute): Promise<bigint> {
+  const key = feesKeyOf(sale);
+  const cached = feesBySale.get(key);
+  if (cached !== undefined && Date.now() - cached.at < FEES_FRESH_MS) return cached.fees;
+  const fees = (async () => {
+    const { connectChain, ASSET_HUB, PEOPLE } = await import("./host-chain");
+    const [assetHub, people] = await Promise.all([connectChain(ASSET_HUB), connectChain(PEOPLE)]);
+    // Priced on the XCM the worker will send, which the chains' trust shapes.
+    const transfer = await chooseCashTransfer({
+      assetHub,
+      people,
+      assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
+      peopleParaId: PASEO_PEOPLE_PARA_ID,
+    });
+    return estimateDirectFeesCash({
+      peopleApi: people.getTypedApi(paseo_people_next),
+      address: PASEO_PEOPLE_POOL_ACCOUNT,
+      poolAccount: PASEO_PEOPLE_POOL_ACCOUNT,
+      assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
+      peopleParaId: PASEO_PEOPLE_PARA_ID,
+      sale,
+      transfer,
+    });
+  })();
+  feesBySale.set(key, { at: Date.now(), fees });
+  // A read that failed is not kept; the next quote asks again.
+  fees.catch(() => feesBySale.delete(key));
+  return fees;
+}
+
+/** The sale a direct withdrawal of `amount` CASH makes for the token it lands, decided the way
+ *  the on-ramp decides a deposit's tier the other way round: the native takes the pool and
+ *  dotUSD the teleport, with no chain read; a stable takes the PSM when it is approved for
+ *  redeeming and can serve the amount, the pool fed through the native otherwise. */
+export async function chooseWithdrawRoute(
+  amount: bigint,
+  landing: DepositAsset,
+): Promise<ConversionRoute> {
+  if (landing === "native") return { tier: "pool" };
+  if (landing === "dotUSD") return { tier: "dotusd" };
   const { connectChain, ASSET_HUB } = await import("./host-chain");
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
-  const quoted = await api.apis.AssetConversionApi.quote_price_exact_tokens_for_tokens(
+  // Judged on what the redeem will take: the amount less the fees and Asset Hub's earmark.
+  const sold = amount - (await directFeesCash({ tier: "pool" }));
+  const redeemed = sold - destinationEarmark(sold, ASSET_HUB_FEE_BUFFER_CASH);
+  return chooseRoute(api, { direction: "redeem", internalAmount: redeemed, deposit: landing });
+}
+
+/** What a direct withdrawal of `amount` CASH lands on Asset Hub in the asset `sale` ends in,
+ *  base units, at today's prices: the amount less the fees, sold as the program sells it,
+ *  redeemed at the PSM's fee rate, or landed as it is on the dotUSD tier. An estimate for the
+ *  summary, not what the program is held to. */
+export async function quoteDirectReceive(amount: bigint, sale: ConversionRoute): Promise<bigint> {
+  const sold = amount - (await directFeesCash(sale));
+  if (sold <= 0n) return 0n;
+  if (sale.tier === "dotusd") return sold;
+  if (sale.tier === "psm") return psmRedeemOut(sold, sale.feeRate);
+  const { connectChain, ASSET_HUB } = await import("./host-chain");
+  const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
+  const native = await api.apis.AssetConversionApi.quote_price_exact_tokens_for_tokens(
     CASH_ON_ASSET_HUB as never,
     PEOPLE_NATIVE as never,
     sold,
     true,
   );
-  if (quoted === undefined) throw new Error("Asset Hub cannot quote the sale");
-  return quoted;
+  if (native === undefined) throw new Error("Asset Hub cannot quote the sale");
+  if (sale.external === undefined) return native;
+  const stable = await api.apis.AssetConversionApi.quote_price_exact_tokens_for_tokens(
+    PEOPLE_NATIVE as never,
+    STABLE_TOKENS[sale.external].location as never,
+    native,
+    true,
+  );
+  if (stable === undefined) throw new Error(`Asset Hub cannot quote the ${sale.external} sale`);
+  return stable;
 }
 
 /** The CASH a direct withdrawal must take for `native` planck to land on Asset Hub, at today's
@@ -158,7 +234,7 @@ export async function quoteDirectCashFor(native: bigint): Promise<bigint> {
     true,
   );
   if (quoted === undefined) throw new Error("Asset Hub cannot quote the purchase");
-  return quoted + DIRECT_FEES_CASH;
+  return quoted + (await directFeesCash({ tier: "pool" }));
 }
 
 // A fiat sale promises its provider an exact figure before the seller's KYC and pays it after,
@@ -186,13 +262,17 @@ const SALE_KYC_MARGIN_PCT = 1;
 const saleFloor = (native: bigint, marginPct: number): bigint =>
   (native * BigInt(Math.round((100 - DEFAULT_WITHDRAW_SLIPPAGE_PCT - marginPct) * 100))) / 10_000n;
 
-/** What a sale of `amount` CASH lands today, and the Asset Hub it was read on; null when the
- *  fees take the whole amount. */
+/** A fiat sale takes DOT from the key, so it is sized on the pool sale for the native. */
+const FIAT_SALE: ConversionRoute = { tier: "pool" };
+
+/** What a sale of `amount` CASH lands today, the fees it takes first and the Asset Hub it was
+ *  read on; null when the fees take the whole amount. */
 async function saleNow(amount: bigint) {
-  if (amount - DIRECT_FEES_CASH <= 0n) return null;
+  const fees = await directFeesCash(FIAT_SALE);
+  if (amount - fees <= 0n) return null;
   const { connectChain, ASSET_HUB } = await import("./host-chain");
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
-  return { api, expected: await quoteDirectReceive(amount) };
+  return { api, fees, expected: await quoteDirectReceive(amount, FIAT_SALE) };
 }
 
 /** What a sale of some CASH promises its provider, and what it is expected to send back. */
@@ -220,7 +300,7 @@ export async function sizeMeldCommitment(amount: bigint): Promise<MeldSaleSize> 
   // The worker sends home what the key holds once the provider is paid, as it judges it then.
   const left = now.expected - planck - cost;
   const backCash =
-    left < SALE_RESIDUE_RETURN_FLOOR ? 0n : ((amount - DIRECT_FEES_CASH) * left) / now.expected;
+    left < SALE_RESIDUE_RETURN_FLOOR ? 0n : ((amount - now.fees) * left) / now.expected;
   return { planck, backCash };
 }
 
@@ -285,7 +365,10 @@ export async function quoteWithdrawOffers(
   let sdk: Awaited<ReturnType<typeof mainnetSdk>>;
   try {
     [sellable, sdk] = await withTimeout(
-      Promise.all([quoteDirectReceive(amountCash).then(lessHeadroom), mainnetSdk()]),
+      Promise.all([
+        quoteDirectReceive(amountCash, { tier: "pool" }).then(lessHeadroom),
+        mainnetSdk(),
+      ]),
       OFFERS_TIMEOUT_MS,
       "withdraw offers",
     );
@@ -403,7 +486,7 @@ export async function advanceWithdrawCounter(sourceId: string, n: number): Promi
 export async function readWithdrawKeyNativeOnAssetHub(keyPublicKeyHex: string): Promise<bigint> {
   const { connectChain, ASSET_HUB } = await import("./host-chain");
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
-  return readDestinationPas(api, keyPublicKeyHex);
+  return readDestinationBalance(api, keyPublicKeyHex);
 }
 
 /** A provider destination's asset and chain, as Chainflip names them, with the asset's decimals
@@ -438,7 +521,8 @@ export async function openWithdrawChannelFor(args: {
   };
 }
 
-/** The hand-off for a withdrawal, with the chain facts this build is made for. */
+/** The hand-off for a withdrawal, with the chain facts this build is made for. The sale rides
+ *  on it the way the on-ramp's tier does. */
 export function withdrawHandoff(args: {
   sourceId: string;
   n: number;
@@ -447,6 +531,7 @@ export function withdrawHandoff(args: {
   destination: WithdrawalHandoffPayload["destination"];
   landingHex: string;
   rail: WithdrawalHandoffPayload["rail"];
+  sale: ConversionRoute;
   paymentExpiresAt: number;
   channel?: WithdrawalChannel;
   meld?: WithdrawalHandoffPayload["meld"];
@@ -461,6 +546,7 @@ export function withdrawHandoff(args: {
     destination: args.destination,
     landingHex: args.landingHex,
     rail: args.rail,
+    ...handoffSaleOf(args.sale),
     assetHubGenesis: ASSET_HUB_GENESIS,
     peopleGenesis: PEOPLE_GENESIS,
     peopleParaId: PASEO_PEOPLE_PARA_ID,

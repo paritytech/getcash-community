@@ -44,6 +44,17 @@ vi.mock("../lib/host-chain", () => ({
   }),
 }));
 
+// The fee estimate asks the chains how CASH moves and reads People's pool; here the move is a
+// teleport and the fees are the 0.45 CASH the figures below assume.
+vi.mock("@getsome/funding", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@getsome/funding")>()),
+  chooseCashTransfer: async () => "teleport",
+}));
+vi.mock("@getsome/withdraw", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@getsome/withdraw")>()),
+  estimateDirectFeesCash: async () => 450_000n,
+}));
+
 import { meldCommitmentFundable, sizeMeldCommitment } from "../lib/withdraw-live";
 
 const DEPOSIT = "14Kt4HmnCzMqUKvWcGZdLaWkLNcL4TcUSXYvKyKdbMhsvRxM";

@@ -1,5 +1,10 @@
 import { NETWORK } from "@getsome/core";
-import { chooseCashTransfer, PASEO_UNDERLYING_ASSET_ID } from "@getsome/funding";
+import {
+  chooseCashTransfer,
+  depositTokenOf,
+  PASEO_UNDERLYING_ASSET_ID,
+  recordedRoute,
+} from "@getsome/funding";
 import { MELD_SELL_ENABLED } from "@getsome/meld";
 import { CASH_LOCATION } from "@getsome/people";
 import {
@@ -18,7 +23,7 @@ import {
   RailFailedError,
   railTickOnce,
   readAssetHubAccount,
-  readDestinationPas,
+  readDestinationBalance,
   SALE_RESIDUE_RETURN_FLOOR,
   withdrawTickOnce,
   WithdrawRejectedError,
@@ -37,8 +42,9 @@ import {
 } from "./shared.js";
 
 // The withdrawal engine: the only driver of withdrawTickOnce and railTickOnce, one tick per live
-// job per pass. The message leg moves the CASH to Asset Hub as PAS; for a destination beyond
-// Asset Hub the rail leg then hands the PAS to a provider and follows its word.
+// job per pass. The message leg moves the CASH to Asset Hub as the asset the hand-off's sale
+// lands; for a destination beyond Asset Hub that is PAS on the key, and the rail leg then hands
+// it to a provider and follows its word.
 //
 // Once this engine holds a job it is the only writer for it. The surface only reads records back.
 // Each dispatch runs at most one tick per live job, persists what it learned, and exits. Records
@@ -88,6 +94,7 @@ const saveJobs = () => store.save();
  *   v: 1, sessionId, label,                  // label: the entropy label the surface used
  *   keyAddress, keyPublicKeyHex,             // the key the surface showed and the purse pays
  *   amount, destination, landingHex, rail,   // what the surface asked for; kept for its records
+ *   tier, external?, feeRate?,               // the sale on Asset Hub the surface froze
  *   channel?,                                // the provider's channel the page opened; for Meld
  *                                            // its `amount` is the exact planck the key pays
  *   meld?: { baseUrl?, productId?, offline? }, // Meld only: the adapter the sale is read from
@@ -96,9 +103,9 @@ const saveJobs = () => store.save();
  *   phase: "starting" | WithdrawStep | RailStep | "failed",
  *   failure?: "rejected" | "timeout" | "expired" | "cancelled" | "no-rail" | "rail-failed"
  *            | "channel-expired" | "channel-mismatch" | "unfundable" | "unresolved",
- *   landed,                                  // the message leg is done: PAS on Asset Hub
+ *   landed,                                  // the message leg is done: the funds are on Asset Hub
  *   done, createdAt, armedAt, lastTickAt, lastError?,
- *   state: { attempts, rejections, submitted, destinationPasBefore, expectedLanding,
+ *   state: { attempts, rejections, submitted, destinationBefore, expectedLanding,
  *            fundsSeenAt, workedMs },       // the two balances as decimal strings or null
  *   leg: { handoff, paid, sweep, exact?, reading },  // the rail leg, for a provider rail;
  *                                            // exact: the Meld payment's nonce, in flight or
@@ -176,6 +183,10 @@ function newRecord(input, nowMs) {
   }
   if (!poolAccount) throw new Error("startWithdraw: the pool account is required");
   if (!(slippagePct > 0)) throw new Error("startWithdraw: slippagePct must be positive");
+  // The sale is the surface's decision, taken at confirm; a hand-off without one, or with a psm
+  // route missing its fee rate, is refused here rather than guessed at.
+  if (typeof input.tier !== "string") throw new Error("startWithdraw: the sale tier is required");
+  const sale = recordedRoute(input);
   return {
     v: RECORD_V,
     sessionId,
@@ -190,6 +201,7 @@ function newRecord(input, nowMs) {
     },
     landingHex,
     rail: input.rail,
+    ...sale,
     assetHubGenesis,
     peopleGenesis,
     peopleParaId,
@@ -805,7 +817,7 @@ async function keepWayHome(record) {
 }
 
 /** One tick for one record: connect, read the world, act at most once, persist, let go. The
- *  message leg until the PAS is on Asset Hub, the rail leg after that for a provider rail. */
+ *  message leg until the funds are on Asset Hub, the rail leg after that for a provider rail. */
 async function tickRecord(record, nowMs) {
   accountWorkedTime(record, nowMs);
   if (record.landed && record.rail !== "direct") {
@@ -823,6 +835,10 @@ async function tickRecord(record, nowMs) {
     );
     return;
   }
+  // The sale is an input to this engine, never a decision it makes: a job sells through the tier
+  // the surface froze on it, and lands the asset that tier ends in.
+  const sale = recordedRoute(record);
+  const landingAssetId = depositTokenOf(sale).assetHubId;
   const key = await keypairFor(record.label);
   const ahClient = await connectChain(record.assetHubGenesis, "asset hub");
   let peopleClient = null;
@@ -848,7 +864,7 @@ async function tickRecord(record, nowMs) {
     state.attempts = record.state.attempts ?? 0;
     state.rejections = record.state.rejections ?? 0;
     state.submitted = !!record.state.submitted;
-    state.destinationPasBefore = asBig(record.state.destinationPasBefore, null);
+    state.destinationBefore = asBig(record.state.destinationBefore, null);
     state.expectedLanding = asBig(record.state.expectedLanding, null);
     state.fundsSeenAt = record.state.fundsSeenAt ?? null;
 
@@ -859,8 +875,8 @@ async function tickRecord(record, nowMs) {
         attempts: state.attempts,
         rejections: state.rejections,
         submitted: state.submitted,
-        destinationPasBefore:
-          state.destinationPasBefore === null ? null : String(state.destinationPasBefore),
+        destinationBefore:
+          state.destinationBefore === null ? null : String(state.destinationBefore),
         expectedLanding: state.expectedLanding === null ? null : String(state.expectedLanding),
         fundsSeenAt: state.fundsSeenAt,
         workedMs: record.state.workedMs ?? 0,
@@ -878,6 +894,7 @@ async function tickRecord(record, nowMs) {
           assetHubParaId: record.assetHubParaId,
           peopleParaId: record.peopleParaId,
           poolAccount: record.poolAccount,
+          sale,
           slippagePct: record.slippagePct,
           transfer,
           // A Meld sale promised its provider an exact figure out of what lands: the sale must
@@ -904,7 +921,8 @@ async function tickRecord(record, nowMs) {
             ]);
             return { cash: asset?.balance ?? 0n, pas: native?.data?.free ?? 0n };
           },
-          readDestinationOnAssetHub: (hex) => readDestinationPas(assetHubApi, hex),
+          readDestinationOnAssetHub: (hex) =>
+            readDestinationBalance(assetHubApi, hex, landingAssetId),
           now: Date.now,
           // Persisted before the broadcast leaves.
           onBeforeSubmit: async (call) => {
@@ -931,7 +949,7 @@ async function tickRecord(record, nowMs) {
     // A completed tick clears any stale submitting marker.
     delete record.submitting;
     if (outcome.step === "done") {
-      // The PAS is on Asset Hub. That is the whole job for a direct rail; a provider rail
+      // The funds are on Asset Hub. That is the whole job for a direct rail; a provider rail
       // carries on from the key on the next tick.
       record.landed = true;
       if (record.rail === "direct") record.done = true;

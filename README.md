@@ -70,9 +70,19 @@ The off-ramp reuses the pieces above in the other direction. The page at `#/with
 fresh ephemeral key under a `wd:` label and asks the host to pay the CASH into it, under a payment
 id derived from the key. The worker watches that key on People and runs two transactions signed
 by it: a swap that buys the PAS the fees need, then one XCM that withdraws everything the key
-holds and lands PAS on the destination account on Asset Hub. The key is left empty and reaped.
-Arrival is a balance read at the head, like every other read in the engine: the destination's
-PAS is read just before the XCM leaves, and the run is done once it has grown by what the Asset
+holds and lands it on the destination account on Asset Hub. The key is left empty and reaped.
+On Asset Hub the destination takes DOT, dotUSD, USDT or USDC, and the sale inside the XCM follows
+the on-ramp's tiers the other way: the PSM redeems the CASH for USDT one to one less its fee,
+with the pool as the fallback when the PSM cannot serve; the pool sells the CASH for DOT, and for
+a stable sells that DOT again on the stable's pool; dotUSD is the CASH sent as it is. The
+PSM redeem runs inside the same XCM: the key's origin travels with it, the redeem runs as the
+key's account on Asset Hub, and the fee refund and the PAS that travelled are sold for USDT too.
+Whatever the tier, the fee PAS that travels with the CASH ends up in the landing token, so the
+destination is credited one asset.
+The sale is decided from the token picked at quote time with the on-ramp's own rule and frozen on
+the hand-off, so the worker never re-decides it. Arrival is a
+balance read at the head, like every other read in the engine: the destination's balance in that
+token is read just before the XCM leaves, and the run is done once it has grown by what the Asset
 Hub dry run said would land. Hosts serve the current head and nothing older, so nothing follows
 block history. `@getsome/withdraw` holds the program, the sizing and the tick;
 `worker/src/withdraw-engine.js` drives it.

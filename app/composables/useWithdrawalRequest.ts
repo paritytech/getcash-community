@@ -6,6 +6,7 @@
 // its own wake, so a cancelled record cannot cause a payment.
 
 import { computed } from "vue";
+import type { ConversionRoute } from "@getsome/funding";
 import { formatSellAmount, SELL_TOKEN, type MeldQuoteEntry } from "@getsome/meld";
 import {
   MELD_WITHDRAW_DESTINATIONS,
@@ -31,15 +32,17 @@ import { isHosted } from "~~/lib/host-account";
 const cancelsUnderWay = new Set<string>();
 
 export interface WithdrawalStart {
-  /** The destination's id, the tail of the source id: `pas-assethub`, `btc-bitcoin`. */
+  /** The destination's id, the tail of the source id: `usdc-assethub`, `btc`. */
   destinationId: string;
   /** The CASH to withdraw, base units. */
   amount: bigint;
   destination: WithdrawalRecord["destination"];
-  /** The Asset Hub account the native lands on: the destination itself, or null for the
-   *  withdrawal's own key when a provider carries it on. */
+  /** The Asset Hub account the funds land on: the destination itself, or null for the
+   *  withdrawal's own key when a provider carries the native on. */
   landingHex: string | null;
   rail: WithdrawalRailState["provider"];
+  /** The sale the worker makes on Asset Hub, as the quote decided it for the destination. */
+  sale: ConversionRoute;
   /** The native the summary estimated will land, base units: what a provider's channel is
    *  quoted for. Required for every rail but `direct`. */
   expectedNative?: bigint;
@@ -131,6 +134,7 @@ export function useWithdrawalRequest() {
       destination: input.destination,
       landingHex: input.landingHex ?? key.publicKeyHex,
       rail: input.rail,
+      sale: input.sale,
       paymentExpiresAt,
       ...(channel === undefined ? {} : { channel }),
     });
@@ -237,6 +241,8 @@ export function useWithdrawalRequest() {
       destination,
       landingHex: key.publicKeyHex,
       rail: "meld",
+      // A fiat sale takes DOT from the key, whatever the provider pays out.
+      sale: { tier: "pool" },
       paymentExpiresAt,
       meld,
     });

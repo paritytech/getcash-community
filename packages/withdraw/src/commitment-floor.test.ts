@@ -34,6 +34,7 @@ const input = (minLanding?: bigint): SizeXcmInput => ({
   destinationHex: `0x${"11".repeat(32)}`,
   assetHubParaId: 1500,
   peopleParaId: 1004,
+  sale: { tier: "pool" },
   slippagePct: 5,
   transfer: "teleport",
   ...(minLanding === undefined ? {} : { minLanding }),

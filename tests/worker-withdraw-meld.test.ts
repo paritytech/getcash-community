@@ -130,6 +130,7 @@ const handoff = (overrides: Record<string, unknown> = {}) => ({
   destination: { chain: "Bank transfer", asset: "EUR", address: "" },
   landingHex: hash32(0x07),
   rail: "meld",
+  tier: "pool",
   assetHubGenesis: hash32(0x11),
   peopleGenesis: hash32(0x22),
   peopleParaId: 1004,
