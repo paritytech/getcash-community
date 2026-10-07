@@ -12,7 +12,9 @@ import { useRequestsStore } from "../../../stores/requests";
 import { useWithdrawOffersStore } from "../../../stores/withdraw-offers";
 import { toCashBase } from "../../../utils/cash";
 import { isDemoBuild } from "../../../utils/demo";
+import { requestRefKey, type RequestRef } from "../../../utils/request-index";
 import {
+  formatLanding,
   landingAccountHex,
   type WithdrawDestination,
   type WithdrawNetwork,
@@ -57,6 +59,8 @@ const starting = ref(false);
 const startError = ref<string | null>(null);
 const busy = ref(false);
 const notice = ref<string | null>(null);
+/** What the pool would land for a held withdrawal; null until quoted. */
+const poolFigure = ref<string | null>(null);
 
 const record = computed(() => requests.foregroundWithdrawal);
 const amount = computed(() => props.selection?.amount ?? props.topUp?.amount ?? "");
@@ -131,15 +135,6 @@ function pickNetwork(picked: WithdrawNetwork) {
 function pickToken(picked: WithdrawDestination) {
   destination.value = picked;
   step.value = "address";
-}
-
-/** Four decimals of the landing asset, the trailing zeros dropped. */
-function formatLanding(units: bigint, decimals: number): string {
-  const unit = 10n ** BigInt(decimals);
-  const whole = units / unit;
-  const fraction = ((units % unit) * 10_000n) / unit;
-  const digits = fraction.toString().padStart(4, "0").replace(/0+$/, "");
-  return digits === "" ? whole.toString() : `${whole}.${digits}`;
 }
 
 async function onAddress(entered: string) {
@@ -258,19 +253,28 @@ async function confirmCancel() {
   }
 }
 
-async function retry() {
+/** One action on the journey's record at a time; `failed` is the line shown when it could not
+ *  start. */
+async function act(run: (ref: RequestRef) => Promise<boolean>, failed: string) {
   const current = record.value;
   if (current === null || busy.value) return;
   busy.value = true;
   notice.value = null;
   try {
-    if (!(await withdrawal.retry(current.ref))) {
-      notice.value = "The withdrawal could not be restarted. Try again in a moment.";
-    }
+    if (!(await run(current.ref))) notice.value = failed;
   } finally {
     busy.value = false;
   }
 }
+
+const retry = () =>
+  act(withdrawal.retry, "The withdrawal could not be restarted. Try again in a moment.");
+
+const switchToPool = () =>
+  act(
+    withdrawal.switchToPool,
+    "The withdrawal could not be moved to the pool. Try again in a moment.",
+  );
 
 // A record that moves clears the line about the last action.
 watch(
@@ -278,6 +282,33 @@ watch(
   () => {
     notice.value = null;
   },
+);
+
+/** The record on screen while the PSM will not redeem it, by key: the pool's figure is quoted
+ *  once for it, not on every poll that rewrites the record. */
+const heldKey = computed(() => {
+  const current = record.value;
+  const held = current?.status.kind === "failed" && current.failure?.kind === "held";
+  return held ? requestRefKey(current.ref) : null;
+});
+
+watch(
+  heldKey,
+  (key) => {
+    poolFigure.value = null;
+    const held = record.value;
+    if (key === null || held === null) return;
+    void withdrawal
+      .poolFigure(held.ref)
+      .then((figure) => {
+        // An answer that lands after the record moved on is for nobody.
+        if (heldKey.value === key) poolFigure.value = figure;
+      })
+      .catch((error: unknown) => {
+        console.warn("[withdraw] pool estimate unavailable:", error);
+      });
+  },
+  { immediate: true },
 );
 
 onMounted(() => {
@@ -350,8 +381,10 @@ onUnmounted(() => {
         :record="record"
         :notice="notice"
         :busy="busy"
+        :pool-figure="poolFigure"
         @cancel="step = 'cancel'"
         @retry="retry"
+        @pool="switchToPool"
         @close="emit('back')"
       />
       <div

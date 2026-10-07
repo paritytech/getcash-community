@@ -14,7 +14,7 @@ export function withdrawalFailureText(failure: WithdrawalFailure): string {
     case "timeout":
       return "The conversion is taking longer than expected. You can try again.";
     case "held":
-      return "CASH can't be redeemed right now. Your funds are safe; try again later.";
+      return "CASH can't be redeemed right now. Your funds are safe; you can try again or sell on the pool.";
     case "egress-failed":
       return "The transfer to your address could not be completed.";
     case "deposit-rejected":

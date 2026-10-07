@@ -136,6 +136,16 @@ export function landingAccountHex(
   return destination.rail === "direct" ? assetHubAccountHex(address) : null;
 }
 
+/** A figure in the landing asset as the summary shows it: four decimals, the trailing zeros
+ *  dropped. */
+export function formatLanding(units: bigint, decimals: number): string {
+  const unit = 10n ** BigInt(decimals);
+  const whole = units / unit;
+  const fraction = ((units % unit) * 10_000n) / unit;
+  const digits = fraction.toString().padStart(4, "0").replace(/0+$/, "");
+  return digits === "" ? whole.toString() : `${whole}.${digits}`;
+}
+
 /** The address as the summary shows it: the first and last characters around an ellipsis. */
 export function shortAddress(address: string): string {
   const trimmed = address.trim();

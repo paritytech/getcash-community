@@ -1,6 +1,7 @@
 // The worker's intake of a withdrawal hand-off: the sale it names is kept on the job as the
 // surface froze it, and a hand-off without one, or with a psm route missing its fee rate, is
-// refused before anything is stored. And its clock: a job waiting for PSM room is off it.
+// refused before anything is stored. A re-sent hand-off may change the tier only while nothing
+// was submitted. And its clock: a job waiting for PSM room is off it.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deriveKeypairWithSecret } from "@getsome/ephemeral";
@@ -129,6 +130,61 @@ describe("the worker's intake of a withdrawal", () => {
       await engine.startWithdraw(JSON.stringify(handoff({ tier: "pool", external: "EUR" }))),
     ).toMatchObject({ error: "invalid", reason: expect.stringMatching(/unknown deposit asset/) });
     expect(storedJobs()).toEqual({});
+  });
+});
+
+describe("the worker's intake of a switch to the pool", () => {
+  /** A PSM-tier job the PSM refused three times with room, as the hold leaves it. */
+  const heldJob = (): StoredJob => {
+    const job = convertingJob("s-1", null);
+    return {
+      ...job,
+      phase: "failed",
+      failure: "held",
+      state: { ...(job.state as object), psmRefusals: 3, workedMs: 0 },
+    };
+  };
+
+  beforeEach(() => {
+    mocks.stored.clear();
+  });
+
+  it("takes the pool tier a re-sent hand-off names before any submit, and re-arms the held job", async () => {
+    mocks.stored.set(WITHDRAW_KEY, { "s-1": heldJob() });
+    const engine = await freshEngine();
+    const answer = await engine.startWithdraw(
+      JSON.stringify(handoff({ tier: "pool", external: "USDT" })),
+    );
+    expect(answer).toMatchObject({ sessionId: "s-1", phase: "starting", tier: "pool" });
+    const job = storedJobs()["s-1"]!;
+    expect(job).toMatchObject({
+      tier: "pool",
+      external: "USDT",
+      phase: "starting",
+      state: { psmRefusals: 0, waitingSince: null },
+    });
+    expect(job.feeRate).toBeUndefined();
+    expect(job.failure).toBeUndefined();
+  });
+
+  it("refuses the change once the job has submitted, and keeps its sale", async () => {
+    const job = heldJob();
+    mocks.stored.set(WITHDRAW_KEY, {
+      "s-1": { ...job, state: { ...(job.state as object), submitted: true } },
+    });
+    const engine = await freshEngine();
+    const answer = await engine.startWithdraw(
+      JSON.stringify(handoff({ tier: "pool", external: "USDT" })),
+    );
+    expect(answer).toMatchObject({ error: "invalid", reason: expect.stringMatching(/tier/) });
+    expect(storedJobs()["s-1"]).toMatchObject({
+      tier: "psm",
+      external: "USDT",
+      feeRate: 5_000,
+      phase: "failed",
+      failure: "held",
+      state: { psmRefusals: 3, submitted: true },
+    });
   });
 });
 

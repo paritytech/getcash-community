@@ -1,6 +1,7 @@
 // The withdrawal kind through the store: its record lives in the same map as the top-ups, the
 // worker poll reads the withdrawal blob for it, a withdrawal job with no record becomes one, the
-// payment's stamps are critical writes, and the cancel takes its last look at the key.
+// payment's stamps are critical writes, the cancel takes its last look at the key, and only a
+// held withdrawal can be switched to the pool.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
@@ -23,6 +24,11 @@ import {
 import { useRequestsStore } from "../app/stores/requests";
 import { requestRefOf, serializeRequestIndex, type RequestRef } from "../app/utils/request-index";
 import { awaitingDepositCryptoRecord, FIXTURE_NOW } from "./fixtures/requests";
+
+// The switch to the pool re-sends the hand-off only hosted; off-host, as every other test here
+// runs, the store has no worker to tell.
+const { hosted } = vi.hoisted(() => ({ hosted: { value: false } }));
+vi.mock("../lib/host-account", () => ({ isHosted: () => hosted.value }));
 
 const MINUTE = 60_000;
 /** How long a poll tick may take to land: its worker nudge imports modules the fake clock cannot
@@ -151,6 +157,7 @@ describe("requests store: withdrawals", () => {
     vi.restoreAllMocks();
     setRequestsClock(Date.now);
     setMirrorStorage(null);
+    hosted.value = false;
   });
 
   it("lists a withdrawal beside the top-ups, in its own view", async () => {
@@ -358,6 +365,76 @@ describe("requests store: withdrawals", () => {
     const requests = useRequestsStore();
     await requests.reconcile("boot");
     expect(await requests.cancelWithdrawal(REF, { readKeyCash: async () => 0n })).toBe("refused");
+  });
+
+  it("switches a held withdrawal to the pool route it is given and re-sends the hand-off", async () => {
+    hosted.value = true;
+    const call = vi.fn(async () => ({}));
+    vi.doMock("../lib/worker-rpc", () => ({
+      getStorageWorkerManager: () => ({ isAvailable: () => true, call }),
+    }));
+    try {
+      await import("../lib/withdraw-live");
+      const psm = { ...handoff, tier: "psm" as const, external: "USDT" as const, feeRate: 5_000 };
+      const held = withdrawal({
+        handoff: psm,
+        status: { kind: "failed", at: FIXTURE_NOW - MINUTE, recoverable: true },
+        failure: {
+          kind: "held",
+          step: "convert",
+          message: "the PSM refused the redeem",
+          recoverable: true,
+        },
+      });
+      await seed([held], {
+        [SESSION]: job({
+          ...psm,
+          phase: "failed",
+          failure: "held",
+          state: { fundsSeenAt: STARTED + 1_000, psmRefusals: 3 },
+        }),
+      });
+      const requests = useRequestsStore();
+      await requests.reconcile("boot");
+      expect(requests.get(REF)?.failure?.kind).toBe("held");
+
+      expect(await requests.switchWithdrawalToPool(REF, { tier: "pool", external: "USDT" })).toBe(
+        true,
+      );
+      const after = requests.get(REF) as WithdrawalRecord;
+      expect(after.handoff).toEqual({ ...handoff, tier: "pool", external: "USDT" });
+      expect("feeRate" in after.handoff).toBe(false);
+      expect(after.status.kind).toBe("converting");
+      // The hand-off on the host agrees with what the worker was sent.
+      expect(await stored(REF)).toMatchObject({ handoff: { tier: "pool", external: "USDT" } });
+      expect(call).toHaveBeenCalledWith(
+        "startWithdraw",
+        expect.objectContaining({ sessionId: SESSION, tier: "pool", external: "USDT" }),
+      );
+      const sent = call.mock.calls.find(([api]) => api === "startWithdraw")![1] as object;
+      expect("feeRate" in sent).toBe(false);
+    } finally {
+      vi.doUnmock("../lib/worker-rpc");
+    }
+  });
+
+  it("refuses the switch to the pool for any failure but a hold, changing nothing", async () => {
+    hosted.value = true;
+    const rejected = withdrawal({
+      status: { kind: "failed", at: FIXTURE_NOW - MINUTE, recoverable: true },
+      failure: { kind: "rejected", step: "convert", message: "refused", recoverable: true },
+    });
+    await seed([rejected], {
+      [SESSION]: job({ phase: "failed", failure: "rejected", state: { fundsSeenAt: STARTED } }),
+    });
+    const requests = useRequestsStore();
+    await requests.reconcile("boot");
+    expect(await requests.switchWithdrawalToPool(REF, { tier: "pool" })).toBe(false);
+    expect(requests.get(REF)).toMatchObject({
+      handoff,
+      status: { kind: "failed" },
+      failure: { kind: "rejected" },
+    });
   });
 
   it("keeps the top-up paths for top-ups: their cancel and retry refuse a withdrawal", async () => {

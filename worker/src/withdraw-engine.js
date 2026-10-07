@@ -338,6 +338,8 @@ export async function startWithdraw(params) {
     if (shown && shown !== existing.keyAddress) {
       return { error: "invalid", reason: mismatchReason(existing.keyAddress, shown) };
     }
+    const refused = retier(existing, input, Date.now());
+    if (refused) return refused;
     // A sale whose key goes home whole never pays its provider again, whatever is re-sent, and
     // one whose payment could not be confirmed waits for a person, not for a re-sent hand-off.
     const held = goesHomeWhole(existing) || existing.failure === "unresolved";
@@ -374,6 +376,33 @@ export async function startWithdraw(params) {
   all[record.sessionId] = record;
   await saveJobs();
   return describeWithdraw(record);
+}
+
+/**
+ * Takes the sale a re-sent hand-off names when its tier differs from the job's: the user's switch
+ * to the pool from a hold. Only while nothing has been submitted nor may still land; the fee swap
+ * is tier-neutral, so its PAS serves whichever program runs next. The hand-off is checked as a new
+ * one is. Returns the refusal, or null once the job carries the new sale.
+ */
+function retier(record, input, nowMs) {
+  if (typeof input.tier !== "string" || input.tier === recordedRoute(record).tier) return null;
+  if (!unsubmitted(record, nowMs)) {
+    return {
+      error: "invalid",
+      reason: "the sale keeps its tier once its transaction has been submitted",
+    };
+  }
+  let terms;
+  try {
+    terms = newRecord(input, nowMs);
+  } catch (error) {
+    return { error: "invalid", reason: String(error?.message ?? error) };
+  }
+  for (const field of ["tier", "external", "feeRate"]) delete record[field];
+  Object.assign(record, recordedRoute(terms));
+  record.state.psmRefusals = 0;
+  record.state.waitingSince = null;
+  return null;
 }
 
 /**

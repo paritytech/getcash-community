@@ -1759,6 +1759,35 @@ export const useRequestsStore = defineStore("requests", () => {
     return true;
   }
 
+  /** The user's switch of a withdrawal the PSM will not redeem to the pool: `route`, decided on
+   *  the page, replaces the sale on the hand-off, written to the host before the retry re-sends
+   *  it, so the record and the worker's job never disagree on the tier. Only a `held` failure
+   *  admits it; the worker refuses the change itself once anything was submitted. */
+  async function switchWithdrawalToPool(ref: RequestRef, route: ConversionRoute): Promise<boolean> {
+    const key = requestRefKey(ref);
+    const record = get(ref);
+    if (
+      record === undefined ||
+      !isWithdrawal(record) ||
+      record.status.kind !== "failed" ||
+      record.failure?.kind !== "held"
+    ) {
+      return false;
+    }
+    await enqueue(key, async () => {
+      const entry = entries.value[key];
+      if (entry === undefined || !isWithdrawal(entry.record)) return;
+      const { record: current } = entry;
+      const { tier: _tier, external: _external, feeRate: _feeRate, ...handoff } = current.handoff;
+      await commit(
+        key,
+        { ...current, rev: current.rev + 1, handoff: { ...handoff, ...handoffSaleOf(route) } },
+        true,
+      );
+    });
+    return retryWithdrawal(ref);
+  }
+
   // Consecutive "not found" answers per request, on screen or in the background.
   const meldNotFound = new Map<RequestKey, number>();
 
@@ -2961,6 +2990,7 @@ export const useRequestsStore = defineStore("requests", () => {
     markDepositSkipped,
     cancelWithdrawal,
     retryWithdrawal,
+    switchWithdrawalToPool,
     markPaymentRequested,
     observePaymentStatus,
     startMeldPoll,
