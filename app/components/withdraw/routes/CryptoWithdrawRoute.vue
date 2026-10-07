@@ -4,7 +4,7 @@
 // record. The record and the worker carry on when this screen is left.
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { depositTokenOf, type ConversionRoute } from "@getsome/funding";
-import { useWithdrawalRequest } from "../../../composables/useWithdrawalRequest";
+import { psmReserved, useWithdrawalRequest } from "../../../composables/useWithdrawalRequest";
 import type { FundingPackageEmits } from "../../../funding/handoff";
 import type { FundingSelection } from "../../../funding/selection";
 import type { FundingTopUp } from "../../../funding/top-ups";
@@ -163,7 +163,11 @@ async function onAddress(entered: string) {
       // The sale the token picked takes, decided now and frozen at confirm, and what it lands
       // on Asset Hub in that token's decimals: the direct rail lands exactly that.
       const live = await import("~~/lib/withdraw-live");
-      const route = await live.chooseWithdrawRoute(base, picked.landing);
+      const route = await live.chooseWithdrawRoute(
+        base,
+        picked.landing,
+        psmReserved(requests.openWithdrawals),
+      );
       if (stale()) return;
       // The sale stands on its own: an estimate that cannot be priced hides the figure, as it
       // always did, and does not hold the withdrawal back.

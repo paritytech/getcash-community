@@ -58,6 +58,7 @@ export {
   chooseRoute,
   depositTokenOf,
   isStablePoolRoute,
+  readRedeemCapacity,
   recordedRoute,
 } from "./route";
 export type {

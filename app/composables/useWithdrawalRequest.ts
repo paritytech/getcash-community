@@ -74,6 +74,20 @@ export type MeldSaleStartOutcome =
   /** Nothing was created. */
   | { ok: false; reason: string };
 
+/** The CASH this app's own PSM-tier withdrawals have yet to redeem, base units: every open one
+ *  the worker has not seen through, counted whole. A new route is chosen with this much of the
+ *  PSM's room already spoken for, since the chain learns of each only as its XCM lands. */
+export function psmReserved(withdrawals: readonly WithdrawalRecord[]): bigint {
+  let reserved = 0n;
+  for (const record of withdrawals) {
+    if (record.handoff.tier !== "psm" || record.status.kind === "sent") continue;
+    const { worker } = record.witnesses;
+    if (worker?.known === true && worker.done) continue;
+    reserved += BigInt(record.handoff.amount);
+  }
+  return reserved;
+}
+
 export function useWithdrawalRequest() {
   const requests = useRequestsStore();
 

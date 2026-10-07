@@ -100,8 +100,8 @@ describe("what a direct withdrawal lands per token", () => {
   });
 
   it("decides the native and dotUSD without a chain read", async () => {
-    expect(await chooseWithdrawRoute(21_000_000n, "native")).toEqual({ tier: "pool" });
-    expect(await chooseWithdrawRoute(21_000_000n, "dotUSD")).toEqual({ tier: "dotusd" });
+    expect(await chooseWithdrawRoute(21_000_000n, "native", 0n)).toEqual({ tier: "pool" });
+    expect(await chooseWithdrawRoute(21_000_000n, "dotUSD", 0n)).toEqual({ tier: "dotusd" });
   });
 });
 

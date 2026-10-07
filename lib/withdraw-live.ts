@@ -178,10 +178,14 @@ export async function directFeesCash(sale: ConversionRoute): Promise<bigint> {
 /** The sale a direct withdrawal of `amount` CASH makes for the token it lands, decided the way
  *  the on-ramp decides a deposit's tier the other way round: the native takes the pool and
  *  dotUSD the teleport, with no chain read; a stable takes the PSM when it is approved for
- *  redeeming and can serve the amount, the pool fed through the native otherwise. */
+ *  redeeming and can serve the amount, the pool fed through the native otherwise. No landing is
+ *  the fiat rails' rule: the PSM's own external when it can serve, the native otherwise.
+ *  `reserved` is the CASH this app's own in-flight PSM withdrawals have yet to redeem, which the
+ *  PSM's room is judged without. */
 export async function chooseWithdrawRoute(
   amount: bigint,
-  landing: DepositAsset,
+  landing: DepositAsset | undefined,
+  reserved: bigint,
 ): Promise<ConversionRoute> {
   if (landing === "native") return { tier: "pool" };
   if (landing === "dotUSD") return { tier: "dotusd" };
@@ -190,7 +194,12 @@ export async function chooseWithdrawRoute(
   // Judged on what the redeem will take: the amount less the fees and Asset Hub's earmark.
   const sold = amount - (await directFeesCash({ tier: "pool" }));
   const redeemed = sold - destinationEarmark(sold, ASSET_HUB_FEE_BUFFER_CASH);
-  return chooseRoute(api, { direction: "redeem", internalAmount: redeemed, deposit: landing });
+  return chooseRoute(api, {
+    direction: "redeem",
+    internalAmount: redeemed,
+    reserved,
+    ...(landing === undefined ? {} : { deposit: landing }),
+  });
 }
 
 /** What a direct withdrawal of `amount` CASH lands on Asset Hub in the asset `sale` ends in,
