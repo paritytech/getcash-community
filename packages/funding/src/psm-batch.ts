@@ -269,7 +269,12 @@ export async function estimatePsmBatchFees(args: {
     0n,
     maxWeight,
   ).batch.getEstimatedFees(args.dryRunFrom ?? args.feeProbeAddress, options);
-  const dispatchExternal = await priceNativeFeeIn(args.api, args.route.external, dispatchNative);
+  const dispatchExternal = await priceNativeFeeIn(
+    args.api,
+    options.asset,
+    dispatchNative,
+    external.symbol,
+  );
 
   const feeAllowanceExternal = withFeeMargin(localExternal + deliveryExternal);
   const heldBackExternal = minBalance + feeAllowanceExternal;

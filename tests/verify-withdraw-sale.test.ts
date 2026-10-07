@@ -1,13 +1,15 @@
 // Live check of the sale per token on Paseo Asset Hub next: the program People forwards for a
 // withdrawal is priced and built as the sizing does it, and dry run on Asset Hub for each token
-// the destination can take, the PSM redeem included. Nothing is signed and no key is needed.
-// Prints what lands in each token. Needs network and is not part of CI:
+// the destination can take; the PSM tier lands its CASH on the key, which redeems afterwards.
+// Nothing is signed and no key is needed. Prints what lands in each token. Needs network and is
+// not part of CI:
 //   VERIFY_WITHDRAW_SALE=1 pnpm vitest run tests/verify-withdraw-sale.test.ts
 
 import { describe, expect, it } from "vitest";
 import { AccountId, createClient } from "polkadot-api";
 import { getWsProvider } from "polkadot-api/ws";
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
+import { TOKENS } from "@getsome/core";
 import {
   chooseRoute,
   depositTokenOf,
@@ -31,7 +33,7 @@ const toHex = (b: Uint8Array) =>
   `0x${Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("")}`;
 /** A funded Asset Hub account, so a native deposit clears the existential deposit. */
 const DESTINATION = "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5";
-/** The key the XCM is signed by; only its origin matters here. */
+/** The key the XCM is signed by: where the PSM tier lands. */
 const KEY_HEX = `0x${"07".repeat(32)}`;
 /** What a 5 CASH withdrawal carries by the time it reaches Asset Hub. */
 const CASH_TO_TELEPORT = 5_000_000n;
@@ -63,8 +65,7 @@ function asAssetHubSeesIt(standIn: ReturnType<typeof forwardedStandIn>, earmark:
 
 /** The floor the program holds the sale to, in the landing asset. */
 const floorOf = (sale: Sale): bigint => {
-  if (sale.tier === "dotusd") return 1n;
-  if (sale.tier === "psm") return sale.externalOut;
+  if (sale.tier === "dotusd" || sale.tier === "psm") return 1n;
   return sale.external === undefined ? sale.minNativeOut : sale.minOut;
 };
 
@@ -95,9 +96,9 @@ describe.runIf(process.env.VERIFY_WITHDRAW_SALE === "1")("the sale per token on 
           route,
           cashOnKey: CASH_TO_TELEPORT,
           slippagePct: SLIPPAGE_PCT,
-          originHex: KEY_HEX,
-          peopleParaId: PASEO_PEOPLE_PARA_ID,
         });
+        // The PSM tier lands on the key, as the sizing aims it.
+        const landingHex = route.tier === "psm" ? KEY_HEX : destinationHex;
         const forwarded = asAssetHubSeesIt(
           forwardedStandIn({
             cashToSend: CASH_TO_TELEPORT,
@@ -105,9 +106,8 @@ describe.runIf(process.env.VERIFY_WITHDRAW_SALE === "1")("the sale per token on 
             payFeesPas: 0n,
             remoteFeesCash: earmark,
             sale,
-            destinationHex,
+            destinationHex: landingHex,
             claimerHex: destinationHex,
-            originHex: KEY_HEX,
             assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
             peopleParaId: PASEO_PEOPLE_PARA_ID,
             transfer: "teleport",
@@ -118,13 +118,13 @@ describe.runIf(process.env.VERIFY_WITHDRAW_SALE === "1")("the sale per token on 
           api,
           PASEO_PEOPLE_PARA_ID,
           forwarded,
-          destinationHex,
+          landingHex,
           route,
         );
-        const token = depositTokenOf(route);
+        const token = route.tier === "psm" ? TOKENS.CASH : depositTokenOf(route);
         const floor = floorOf(sale);
         console.log(
-          `${name.padEnd(10)} ${fmtUnits(CASH_TO_TELEPORT, 6)} CASH teleported with ${fmtUnits(PAS_TRAVELLING, 10)} PAS lands ${fmtUnits(landed, token.decimals)} ${token.symbol}, floor ${fmtUnits(floor, token.decimals)}`,
+          `${name.padEnd(10)} ${fmtUnits(CASH_TO_TELEPORT, 6)} CASH teleported with ${fmtUnits(PAS_TRAVELLING, 10)} PAS lands ${fmtUnits(landed, token.decimals)} ${token.symbol}${route.tier === "psm" ? " on the key" : ""}, floor ${fmtUnits(floor, token.decimals)}`,
         );
         expect(landed).toBeGreaterThanOrEqual(floor);
       }

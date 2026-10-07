@@ -3,7 +3,6 @@ export {
   buildWithdrawXcm,
   CASH_ON_ASSET_HUB,
   forwardedStandIn,
-  originOnAssetHub,
   psmRedeemOut,
   withdrawMessage,
   WITHDRAW_XCM_MAX_WEIGHT,
@@ -16,7 +15,6 @@ export {
   estimateDirectFeesCash,
   NeedsSwapError,
   priceSale,
-  PsmRefusedError,
   readPoolReserves,
   redeemAmountOf,
   sizeSwap,
@@ -24,6 +22,18 @@ export {
   SWAP_HEADROOM_PCT,
   XCM_TX_FEE_HEADROOM_PCT,
 } from "./fees";
+export {
+  buildPoolExit,
+  buildRedeemBatch,
+  cashToExit,
+  dryRunRedeem,
+  estimateRedeemFeeCash,
+  quotePoolExit,
+  readRedeemFloors,
+  RedeemTooSmallError,
+  sizeRedeem,
+} from "./redeem";
+export type { ExitCall, PoolExitArgs, RedeemBatchArgs, RedeemFloors } from "./redeem";
 export type {
   AssetHubApi,
   EstimateDirectFeesInput,
@@ -82,6 +92,7 @@ export {
 export { cashInFor, pasOutFor } from "./pool";
 export type { PoolReserves } from "./pool";
 export {
+  ASSET_HUB_CASH_TX_OPTIONS,
   PASEO_PEOPLE_POOL_ACCOUNT,
   PEOPLE_NATIVE,
   PEOPLE_POOL_FEE_PPM,

@@ -140,14 +140,15 @@ describe.runIf(process.env.VERIFY_WITHDRAW === "1")("live withdrawal sizing", ()
         }
       } else if (sale.tier === "psm") {
         console.log(
-          `  PSM redeem:     ${fmtCash(sale.redeemAmount)} CASH -> ${fmtUnits(sale.externalOut, 6)} ${sale.external} at ${sale.feeRate} ppm`,
+          `  no sale in the XCM: the CASH lands on the key, to redeem for ${sale.external} at ${sale.feeRate} ppm`,
         );
-        floor = sale.externalOut;
       } else {
         console.log("  no sale: the CASH lands as dotUSD");
       }
       console.log(
-        `  lands:          ${fmtUnits(sizing.landed, token.decimals)} ${token.symbol} at the destination`,
+        route.tier === "psm"
+          ? `  lands:          ${fmtCash(sizing.landed)} CASH on the key`
+          : `  lands:          ${fmtUnits(sizing.landed, token.decimals)} ${token.symbol} at the destination`,
       );
       console.log(`  max weight:     ${JSON.stringify(args.maxWeight, (_k, v) => String(v))}`);
       // Every unit of CASH leaves, and every PAS but the fee reserve.

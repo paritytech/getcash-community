@@ -189,9 +189,9 @@ export class FundingHeldError extends Error {
     readonly kind: PsmRefusalKind = "unavailable",
   ) {
     super(
-      kind === "unavailable"
-        ? `funding held: the PSM refused the mint ${MAX_PSM_REFUSALS} times, last: ${reason}`
-        : `funding held: the PSM will not mint this swap as quoted: ${reason}`,
+      kind === "will-not-serve"
+        ? `funding held: the PSM will not mint this swap as quoted: ${reason}`
+        : `funding held: the PSM refused the mint ${MAX_PSM_REFUSALS} times, last: ${reason}`,
     );
     this.name = "FundingHeldError";
   }

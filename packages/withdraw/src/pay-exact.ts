@@ -20,6 +20,7 @@ import {
   isStable,
   priceNativeFeeIn,
   signedOrigin,
+  stableLocation,
   stableTxOptions,
   type Stable,
 } from "@getsome/funding";
@@ -145,7 +146,9 @@ export async function exactPaymentFloor(
     feeOptionsOf(token) as never,
   );
   const [fee, keep] = await Promise.all([
-    stable === null ? feeNative : priceNativeFeeIn(api, stable.symbol, feeNative),
+    stable === null
+      ? feeNative
+      : priceNativeFeeIn(api, stableLocation(stable.symbol), feeNative, stable.symbol),
     stable === null ? api.constants.Balances.ExistentialDeposit() : minBalanceOf(api, stable),
   ]);
   return amount + (fee * BigInt(100 + PAY_FEE_HEADROOM_PCT)) / 100n + keep;

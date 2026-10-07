@@ -21,7 +21,8 @@
 // existential deposit and the chain reaps it with the account.
 
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
-import { AccountId, type TypedApi } from "polkadot-api";
+import type { TypedApi } from "polkadot-api";
+import { TOKENS } from "@getsome/core";
 import { CASH_LOCATION } from "@getsome/people";
 import {
   creditedTo,
@@ -44,8 +45,6 @@ import {
   buildWithdrawXcm,
   CASH_ON_ASSET_HUB,
   forwardedStandIn,
-  originOnAssetHub,
-  psmRedeemOut,
   withdrawMessage,
   type PeopleApi,
   type Sale,
@@ -55,9 +54,9 @@ import {
 
 export type AssetHubApi = TypedApi<typeof paseo_next_v2>;
 
-/** CASH set aside for Asset Hub's execution fee, above the one percent floor. The pool programs
- *  measure a few thousand units and the PSM one about eight thousand, priced through the pool,
- *  so this leaves room for the price to move; the unused part is refunded into the sale. */
+/** CASH set aside for Asset Hub's execution fee, above the one percent floor. The programs
+ *  measure a few thousand units, priced through the pool, so this leaves room for the price to
+ *  move; the unused part is refunded into the sale. */
 export const ASSET_HUB_FEE_BUFFER_CASH = 30_000n;
 
 /** Headroom the swap may spend above the quoted CASH, percent. What it does not spend leaves
@@ -73,26 +72,11 @@ const FEE_ROUNDS = 3;
 /** An amount whose compact encoding is the longest any amount below 2^64 gets: nine bytes. */
 const LONGEST_AMOUNT = 2n ** 63n;
 
-/** More bytes than the redeem call encodes to, for the fee estimate on the call's length. */
-const LONGEST_CALL = new Uint8Array(64);
-
-const toHex = (bytes: Uint8Array): string =>
-  `0x${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
-
-/** The CASH the PSM tier redeems out of what the key holds: all of it but the earmark for Asset
- *  Hub's fees. The one figure the sale is priced on and the PSM's room is measured against. */
+/** The CASH a PSM-tier withdrawal has to redeem out of what the key holds on People: all of it
+ *  but the earmark for Asset Hub's fees. The figure a sale is quoted on; the redeem itself is
+ *  sized from what reaches the key on Asset Hub. */
 export const redeemAmountOf = (cashOnKey: bigint): bigint =>
   cashOnKey - destinationEarmark(cashOnKey, ASSET_HUB_FEE_BUFFER_CASH);
-
-/** The Asset Hub dry run found the redeem's status expectation false: the PSM refused it, which
- *  the forwarded program cannot name further. No room, a paused pair, a fee past the frozen
- *  `max_fee` and an amount the pallet will not take all read the same here. */
-export class PsmRefusedError extends Error {
-  constructor() {
-    super("not submitted: the PSM refused the redeem");
-    this.name = "PsmRefusedError";
-  }
-}
 
 /** The key needs more PAS than it holds to send the XCM: swap again. */
 export class NeedsSwapError extends Error {
@@ -131,18 +115,7 @@ async function xcmTxFeeReserve(peopleApi: PeopleApi, keyAddress: string, args: W
 /** The sale with every figure at its longest: a stand-in for the fee estimate, whose charge
  *  grows with the call's length and not with the figures. */
 function longestSale(route: ConversionRoute): Sale {
-  if (route.tier === "dotusd") return { tier: "dotusd" };
-  if (route.tier === "psm") {
-    return {
-      tier: "psm",
-      external: route.external,
-      feeRate: route.feeRate,
-      redeemAmount: LONGEST_AMOUNT,
-      externalOut: LONGEST_AMOUNT,
-      holderHex: `0x${"00".repeat(32)}`,
-      call: LONGEST_CALL,
-    };
-  }
+  if (route.tier === "dotusd" || route.tier === "psm") return route;
   if (route.external === undefined) return { tier: "pool", minNativeOut: LONGEST_AMOUNT };
   return {
     tier: "pool",
@@ -186,7 +159,6 @@ export async function sizeSwap(input: SizeSwapInput): Promise<SwapArgs> {
     sale: longestSale(input.sale),
     destinationHex: input.destinationHex,
     claimerHex: input.claimerHex ?? input.key.publicKeyHex,
-    originHex: input.key.publicKeyHex,
     assetHubParaId: input.assetHubParaId,
     peopleParaId: input.peopleParaId,
     transfer: input.transfer,
@@ -235,7 +207,6 @@ export async function estimateDirectFeesCash(input: EstimateDirectFeesInput): Pr
     sale: longestSale(input.sale),
     destinationHex: `0x${"00".repeat(32)}`,
     claimerHex: `0x${"00".repeat(32)}`,
-    originHex: `0x${"00".repeat(32)}`,
     assetHubParaId: input.assetHubParaId,
     peopleParaId: input.peopleParaId,
     transfer: input.transfer,
@@ -256,7 +227,8 @@ export interface XcmSizing {
   txFeePasReserved: bigint;
   /** The message People forwards to Asset Hub for the final transaction. */
   forwarded: unknown;
-  /** What the Asset Hub dry run credited to the destination, in the asset the sale lands. */
+  /** What the Asset Hub dry run credited to the destination, in the asset the sale lands; to
+   *  the key, in CASH, on the PSM tier. */
   landed: bigint;
 }
 
@@ -268,7 +240,8 @@ export interface SizeXcmInput {
   /** What the key holds after the swap; all the CASH and all the PAS leave. */
   cashOnKey: bigint;
   pasOnKey: bigint;
-  /** The Asset Hub account that receives the funds, 32-byte public key hex. */
+  /** The Asset Hub account that receives the funds, 32-byte public key hex. The PSM tier's XCM
+   *  lands on the key instead, and the redeem pays here. */
   destinationHex: string;
   /** The Asset Hub account that may claim a trapped program; defaults to the key. */
   claimerHex?: string;
@@ -379,7 +352,7 @@ async function weighed(
 }
 
 /** What `amountIn` of one asset sells for in another on Asset Hub's pools, now. */
-async function quoted(
+export async function quoted(
   assetHubApi: AssetHubApi,
   give: unknown,
   want: unknown,
@@ -396,7 +369,8 @@ async function quoted(
   return out;
 }
 
-const lessHeadroom = (amount: bigint, slippagePct: number): bigint =>
+/** `amount` less `slippagePct` of it: the floor a quote is held to. */
+export const lessHeadroom = (amount: bigint, slippagePct: number): bigint =>
   (amount * BigInt(Math.round((100 - slippagePct) * 100))) / 10_000n;
 
 export interface PriceSaleInput {
@@ -405,45 +379,16 @@ export interface PriceSaleInput {
   /** All the CASH the XCM teleports. */
   cashOnKey: bigint;
   slippagePct: number;
-  /** The key's public key, whose account under People the PSM tier redeems as. */
-  originHex: string;
-  peopleParaId: number;
 }
 
 /** The sale and its figures, priced now. The pool tiers hold each hop to its quote less the
  *  headroom; all the CASH is sold there but Asset Hub's execution fee, a few thousand units the
  *  earmark's refund covers. One headroom for the whole sale: a stable's floor is the two hop
- *  quote less it, so the hops share it and the arrival floor is the same figure. The PSM tier
- *  redeems what travels less the earmark, at the fee rate the hand-off froze, as the key's own
- *  account on Asset Hub. The dotUSD tier has no price to hold. */
+ *  quote less it, so the hops share it and the arrival floor is the same figure. The PSM and
+ *  dotUSD tiers have no price to hold: neither sells the CASH in the XCM. */
 export async function priceSale(input: PriceSaleInput): Promise<Sale> {
   const { assetHubApi, route, slippagePct } = input;
-  if (route.tier === "dotusd") return { tier: "dotusd" };
-  if (route.tier === "psm") {
-    const holder = await assetHubApi.apis.LocationToAccountApi.convert_location({
-      type: "V5",
-      value: originOnAssetHub(input.peopleParaId, input.originHex),
-    } as never);
-    if (!holder.success) {
-      throw new Error("withdraw sizing: Asset Hub cannot name the key's account");
-    }
-    const redeemAmount = redeemAmountOf(input.cashOnKey);
-    const call = await assetHubApi.tx.Psm.redeem({
-      internal_asset: CASH_ON_ASSET_HUB as never,
-      external_asset: STABLE_TOKENS[route.external].location as never,
-      internal_amount: redeemAmount,
-      max_fee: route.feeRate,
-    }).getEncodedData();
-    return {
-      tier: "psm",
-      external: route.external,
-      feeRate: route.feeRate,
-      redeemAmount,
-      externalOut: psmRedeemOut(redeemAmount, route.feeRate),
-      holderHex: toHex(AccountId().enc(holder.value as string)),
-      call,
-    };
-  }
+  if (route.tier === "dotusd" || route.tier === "psm") return route;
   const native = await quoted(
     assetHubApi,
     CASH_ON_ASSET_HUB,
@@ -469,24 +414,29 @@ export async function priceSale(input: PriceSaleInput): Promise<Sale> {
 }
 
 /** The least the sale lands in its asset, the floor the program holds it to; none on the dotUSD
- *  tier, which sells nothing it could hold to a price. */
+ *  and PSM tiers, which sell nothing in the XCM they could hold to a price. The PSM tier's
+ *  promise is held at the redeem instead. */
 function saleFloor(sale: Sale): bigint | undefined {
-  if (sale.tier === "dotusd") return undefined;
-  if (sale.tier === "psm") return sale.externalOut;
+  if (sale.tier === "dotusd" || sale.tier === "psm") return undefined;
   return sale.external === undefined ? sale.minNativeOut : sale.minOut;
 }
+
+/** The asset the forwarded program deposits: the CASH itself on the PSM tier, which lands on the
+ *  key and redeems from there; the sale's token otherwise. */
+const landingAssetOf = (sale: ConversionRoute) =>
+  sale.tier === "psm" ? TOKENS.CASH : depositTokenOf(sale);
 
 export async function sizeXcm(input: SizeXcmInput): Promise<XcmSizing> {
   const { peopleApi, assetHubApi, key } = input;
   const claimerHex = input.claimerHex ?? key.publicKeyHex;
+  // The PSM tier lands on the key itself; the hand-off's destination is where the redeem pays.
+  const landingHex = input.sale.tier === "psm" ? key.publicKeyHex : input.destinationHex;
   const remoteFeesCash = destinationEarmark(input.cashOnKey, ASSET_HUB_FEE_BUFFER_CASH);
   const sale = await priceSale({
     assetHubApi,
     route: input.sale,
     cashOnKey: input.cashOnKey,
     slippagePct: input.slippagePct,
-    originHex: key.publicKeyHex,
-    peopleParaId: input.peopleParaId,
   });
   // A withdrawal that promised a provider an exact figure needs the sale's floor to cover it.
   const floor = saleFloor(sale);
@@ -500,9 +450,8 @@ export async function sizeXcm(input: SizeXcmInput): Promise<XcmSizing> {
     payFeesPas,
     remoteFeesCash,
     sale,
-    destinationHex: input.destinationHex,
+    destinationHex: landingHex,
     claimerHex,
-    originHex: key.publicKeyHex,
     assetHubParaId: input.assetHubParaId,
     peopleParaId: input.peopleParaId,
     transfer: input.transfer,
@@ -575,20 +524,21 @@ export async function sizeXcm(input: SizeXcmInput): Promise<XcmSizing> {
     assetHubApi,
     input.peopleParaId,
     run.forwarded,
-    input.destinationHex,
+    landingHex,
     input.sale,
   );
   return { args: final, txFeePasReserved, forwarded: run.forwarded, landed };
 }
 
 /** Runs the forwarded program on Asset Hub as People. Throws when it fails, traps, or credits
- *  the destination nothing. Returns what it credits in the asset the sale lands: the native's
- *  deposit for the pool, the token's for a stable and for dotUSD. */
+ *  `landingHex` nothing. Returns what it credits there in the asset the program lands: the
+ *  native's deposit for the pool, the token's for a stable and for dotUSD, the CASH's for the PSM
+ *  tier, whose landing is the key. */
 export async function dryRunOnAssetHub(
   assetHubApi: AssetHubApi,
   peopleParaId: number,
   forwarded: unknown,
-  destinationHex: string,
+  landingHex: string,
   sale: ConversionRoute,
 ): Promise<bigint> {
   const dr = await assetHubApi.apis.DryRunApi.dry_run_xcm(
@@ -598,19 +548,16 @@ export async function dryRunOnAssetHub(
   if (!dr.success) throw new Error("not submitted: Asset Hub would not dry-run the program");
   const outcome = dr.value.execution_result;
   if (outcome.type !== "Complete") {
-    // The PSM tier checks the redeem went through right after it.
-    const error = xcmErrorName(outcome);
-    if (sale.tier === "psm" && error === "ExpectationFalse") throw new PsmRefusedError();
-    throw new Error(`not submitted: the program fails on Asset Hub with ${error}`);
+    throw new Error(`not submitted: the program fails on Asset Hub with ${xcmErrorName(outcome)}`);
   }
   const trapped = trappedIn(dr.value.emitted_events);
   if (trapped > 0n)
     throw new Error(`not submitted: the program would trap ${trapped} on Asset Hub`);
-  const { assetHubId } = depositTokenOf(sale);
+  const { assetHubId } = landingAssetOf(sale);
   const landed =
     assetHubId === undefined
-      ? creditedTo(dr.value.emitted_events, destinationHex, "native")
-      : creditedTo(dr.value.emitted_events, destinationHex, "asset", assetHubId);
+      ? creditedTo(dr.value.emitted_events, landingHex, "native")
+      : creditedTo(dr.value.emitted_events, landingHex, "asset", assetHubId);
   if (landed === 0n) {
     throw new Error("not submitted: nothing would reach the destination on Asset Hub");
   }

@@ -339,10 +339,12 @@ export function withdrawalRouteOf(sourceId: string | undefined): "crypto" | "car
 
 /** The worker's steps between the payment and the arrival on Asset Hub. */
 export type SendingStep = Exclude<WithdrawStep, "await-cash" | "done">;
-export const SENDING_STEP_ORDER = { swap: 0, convert: 1, "await-arrival": 2 } satisfies Record<
-  SendingStep,
-  number
->;
+export const SENDING_STEP_ORDER = {
+  swap: 0,
+  convert: 1,
+  "await-arrival": 2,
+  redeem: 3,
+} satisfies Record<SendingStep, number>;
 export const isSendingStep = (step: string): step is SendingStep =>
   Object.hasOwn(SENDING_STEP_ORDER, step);
 
