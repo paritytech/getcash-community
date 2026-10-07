@@ -29,6 +29,13 @@ export {
 export { computeMeldQuote, pickBestQuote, type MeldQuoteContext, type MeldQuoteRaw } from "./quote";
 export { requestMeldDeposit, type MeldDepositChannel } from "./session";
 export { getMeldStatus } from "./status";
+export {
+  shareStatusReads,
+  SHARED_STATUS_TTL_MS,
+  RATE_LIMIT_COOLDOWN_MS,
+  MAX_RATE_LIMIT_COOLDOWN_MS,
+  type SharedStatusOptions,
+} from "./shared-status";
 export { createMeldRail, type MeldMethod, type MeldRail, type MeldRailOptions } from "./rail";
 export { createFakeMeldClient, type FakeMeldOptions } from "./fake";
 export { currentNetwork, networkForHostname } from "./network";

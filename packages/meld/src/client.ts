@@ -271,11 +271,27 @@ class AdapterRefusal extends Error {
     readonly code: string | undefined,
     readonly fundingRequestId?: string,
     options?: { cause?: unknown },
+    /** From a 429's `retry-after`, when the response lets the browser read it. */
+    readonly retryAfterMs?: number,
   ) {
     super(message, options);
     this.name = "AdapterRefusal";
   }
 }
+
+/** `retry-after` in milliseconds: delta-seconds or an HTTP date. Undefined when absent or unreadable
+ *  (a cross-origin response hides it unless the adapter exposes the header). */
+function retryAfterMsOf(res: Response): number | undefined {
+  const raw = res.headers?.get("retry-after");
+  if (raw == null || raw.trim() === "") return undefined;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds)) return seconds >= 0 ? seconds * 1_000 : undefined;
+  const at = Date.parse(raw);
+  return Number.isNaN(at) ? undefined : Math.max(0, at - Date.now());
+}
+
+/** How long a status read may take before it fails: every poller of an id waits on the same read. */
+const STATUS_TIMEOUT_MS = 10_000;
 
 /** How many finished attempts, concluded or cancelled, a session create walks past before
  *  giving up. */
@@ -416,6 +432,8 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
           ? String(value.code)
           : undefined,
         typeof value?.fundingRequestId === "string" ? value.fundingRequestId : undefined,
+        undefined,
+        res.status === 429 ? retryAfterMsOf(res) : undefined,
       );
     }
     return data;
@@ -439,6 +457,7 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
   async function getFundingStatus(fundingRequestId: string): Promise<MeldStatusResult> {
     const res = await doFetch(`${base}/funding/${encodeURIComponent(fundingRequestId)}`, {
       headers: headers(),
+      signal: AbortSignal.timeout(STATUS_TIMEOUT_MS),
     });
     const data = await read(res, "the payment status");
     const funding = (data.funding as Record<string, unknown> | undefined) ?? {};

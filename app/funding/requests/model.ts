@@ -33,6 +33,8 @@ export const JOB_POLL_MS = 6_000;
 export const JOB_POLL_CLAIMING_MS = 1_000;
 /** Foreground Meld status poll. */
 export const MELD_POLL_MS = 3_000;
+/** The Meld poll's ceiling while its reads keep failing; the delay doubles up to it. */
+export const MELD_POLL_MAX_MS = 30_000;
 /** Foreground host payment status poll, while a withdrawal awaits its payment. */
 export const PAYMENT_POLL_MS = 3_000;
 /** A job whose `lastTickAt` is older than this counts as stale. */

@@ -188,6 +188,15 @@ describe("createMeldClient quote mapping", () => {
   });
 });
 
+describe("createMeldClient status read", () => {
+  it("bounds the read with a timeout, so one stalled request cannot hold every poller", async () => {
+    const { impl, calls } = stubFetch(200, { funding: { status: "session_opened" } });
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+    await client.getStatus("mfr");
+    expect(calls[0]?.init?.signal).toBeInstanceOf(AbortSignal);
+  });
+});
+
 describe("createMeldClient error mapping", () => {
   it("carries the adapter's own code through the `Other` catch-all", async () => {
     const { impl } = stubFetch(400, {
@@ -607,5 +616,32 @@ describe("createMeldClient cancel", () => {
     const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
 
     await expect(client.cancel("funding-1")).rejects.toThrow();
+  });
+});
+
+describe("createMeldClient: a 429's retry-after", () => {
+  const rateLimited = (headers: Record<string, string>) =>
+    (async () =>
+      new Response(
+        JSON.stringify({ error: { tag: "Other", value: { code: "RATE_LIMITED", message: "x" } } }),
+        { status: 429, headers: { "content-type": "application/json", ...headers } },
+      )) as unknown as typeof fetch;
+  const refusalOf = (fetchImpl: typeof fetch) =>
+    createMeldClient({ baseUrl: "https://adapter.test", fetchImpl })
+      .getStatus("mfr")
+      .then(
+        () => null,
+        (e: unknown) => e as { status: number; retryAfterMs?: number },
+      );
+
+  it("carries the header's delta-seconds as milliseconds", async () => {
+    const refusal = await refusalOf(rateLimited({ "retry-after": "12" }));
+    expect(refusal).toMatchObject({ status: 429, retryAfterMs: 12_000 });
+  });
+
+  it("leaves it undefined when the browser cannot read the header", async () => {
+    const refusal = await refusalOf(rateLimited({}));
+    expect(refusal?.status).toBe(429);
+    expect(refusal?.retryAfterMs).toBeUndefined();
   });
 });
