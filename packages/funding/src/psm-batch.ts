@@ -82,19 +82,25 @@ function scaleUnits(amount: bigint, from: TokenSpec, to: TokenSpec): bigint {
   return (amount + divisor - 1n) / divisor;
 }
 
-/** The mint that pays out at least `cashOut`: the smallest external amount `A` with
- *  `A - ceil(feeRate × A) >= cashOut`, which is `ceil(cashOut / (1 - feeRate))` exactly, since
- *  `ceil(x) <= n` for an integer `n` is `x <= n`. No headroom: the PSM's rate is fixed, so this
- *  does not drift between quote and execution. `cashMinted` is what that mint pays out, at least
- *  `cashOut`. */
+/** The gross a PSM swap at `feeRate` must take in for at least `net` to come out: the smallest
+ *  `A` with `A - ceil(feeRate × A) >= net`, which is `ceil(net / (1 - feeRate))` exactly, since
+ *  `ceil(x) <= n` for an integer `n` is `x <= n`. The mint's and the redeem's inverse alike, as
+ *  both charge the fee on the gross. No headroom: the PSM's rate is fixed, so this does not drift
+ *  between quote and execution. */
+export function psmGrossFor(net: bigint, feeRate: number): bigint {
+  const keep = PERMILL - BigInt(feeRate);
+  if (keep <= 0n) throw new Error(`psm sizing: a fee of ${feeRate} parts keeps nothing`);
+  return (net * PERMILL + keep - 1n) / keep;
+}
+
+/** The mint that pays out at least `cashOut`, by `psmGrossFor`. `cashMinted` is what that mint
+ *  pays out, at least `cashOut`. */
 export function sizePsmMint(
   cashOut: bigint,
   route: PsmRoute,
 ): { externalIn: bigint; cashMinted: bigint } {
   const external = EXTERNAL_TOKENS[route.external];
-  const keep = PERMILL - BigInt(route.feeRate);
-  if (keep <= 0n) throw new Error(`psm sizing: a fee of ${route.feeRate} parts keeps nothing`);
-  const cashIn = (cashOut * PERMILL + keep - 1n) / keep;
+  const cashIn = psmGrossFor(cashOut, route.feeRate);
   const externalIn = scaleUnits(cashIn, INTERNAL, external);
   return {
     externalIn,

@@ -5,6 +5,7 @@
 
 import { readChannelRecord, readSwapStatus } from "@getsome/chainflip/swap-status";
 import { NETWORK } from "@getsome/core";
+import { depositTokenOf, recordedRoute, stableTxOptions } from "@getsome/funding";
 import { createMeldClient, MELD_SELL_ENABLED, saleRail } from "@getsome/meld";
 import {
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
@@ -131,12 +132,17 @@ export async function exactPaymentOut(record, amount, exact) {
 }
 
 /**
- * Pays the channel: everything the key holds on Asset Hub, in one transfer that reaps the key.
- * Resolves once the key is empty. `hooks.onBeforeSubmit` runs before the broadcast, so the
- * driver can persist the attempt; `hooks.onTx` takes the transaction as it lands.
+ * Pays the channel: everything the key holds on Asset Hub of the token the sale landed, in one
+ * transfer that reaps the key. Resolves once the key is empty. `hooks.onBeforeSubmit` runs before
+ * the broadcast, so the driver can persist the attempt; `hooks.onTx` takes the transaction as it
+ * lands.
  */
 export async function payRail(record, handoff, sweep, hooks = {}) {
   const key = await keypairFor(record.label);
+  const sale = recordedRoute(record);
+  const token = depositTokenOf(sale);
+  // The key holds the sale's token and nothing else, so a stable pays the transfer's fee itself.
+  const feeOptions = sale.external === undefined ? {} : stableTxOptions(sale.external);
   const client = await connectChain(record.assetHubGenesis, "asset hub");
   try {
     const assetHubApi = client.getTypedApi(paseo_next_v2);
@@ -145,10 +151,12 @@ export async function payRail(record, handoff, sweep, hooks = {}) {
         assetHubApi,
         key: { signer: key.signer },
         to: handoff.address,
+        token,
         tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
         submitTimeoutMs: DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
-        signOptions: await signOptionsFor(client),
-        readKeyOnAssetHub: () => readDestinationBalance(assetHubApi, record.keyPublicKeyHex),
+        signOptions: { ...feeOptions, ...(await signOptionsFor(client)) },
+        readKeyOnAssetHub: () =>
+          readDestinationBalance(assetHubApi, record.keyPublicKeyHex, token.assetHubId),
         onBeforeSubmit: hooks.onBeforeSubmit,
         onTx: hooks.onTx,
       },

@@ -49,6 +49,7 @@ export {
   PERMILL,
   permillMulCeil,
   psmBatchTxOptions,
+  psmGrossFor,
   psmMintOut,
   sizePsmMint,
 } from "./psm-batch";

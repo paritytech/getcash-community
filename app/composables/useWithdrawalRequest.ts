@@ -6,7 +6,7 @@
 // its own wake, so a cancelled record cannot cause a payment.
 
 import { computed } from "vue";
-import { depositTokenOf, type ConversionRoute } from "@getsome/funding";
+import { depositTokenOf, recordedRoute, type ConversionRoute } from "@getsome/funding";
 import { formatSellAmount, SELL_TOKEN, type MeldQuoteEntry } from "@getsome/meld";
 import {
   MELD_WITHDRAW_DESTINATIONS,
@@ -39,14 +39,14 @@ export interface WithdrawalStart {
   amount: bigint;
   destination: WithdrawalRecord["destination"];
   /** The Asset Hub account the funds land on: the destination itself, or null for the
-   *  withdrawal's own key when a provider carries the native on. */
+   *  withdrawal's own key when a provider carries the sale's token on. */
   landingHex: string | null;
   rail: WithdrawalRailState["provider"];
   /** The sale the worker makes on Asset Hub, as the quote decided it for the destination. */
   sale: ConversionRoute;
-  /** The native the summary estimated will land, base units: what a provider's channel is
-   *  quoted for. Required for every rail but `direct`. */
-  expectedNative?: bigint;
+  /** What the summary estimated will land on the key in the sale's token, base units: what a
+   *  provider's channel is quoted for. Required for every rail but `direct`. */
+  expectedLanding?: bigint;
 }
 
 export type WithdrawalStartOutcome =
@@ -122,14 +122,15 @@ export function useWithdrawalRequest() {
     // they were shown. Nothing is created when the provider cannot open one.
     let channel: WithdrawalChannel | undefined;
     if (input.rail !== "direct") {
-      if (input.expectedNative === undefined) {
+      if (input.expectedLanding === undefined) {
         return { ok: false, ref: null, reason: "The estimate is not available right now." };
       }
       try {
         channel = await live.openWithdrawChannelFor({
-          amountNative: input.expectedNative,
+          amount: input.expectedLanding,
           destination: { id: input.destinationId, ...input.destination },
           keyPublicKeyHex: key.publicKeyHex,
+          sale: input.sale,
         });
       } catch (e: unknown) {
         return {
@@ -439,8 +440,8 @@ export function useWithdrawalRequest() {
   }
 
   /** A user retry: a failed payment is prompted again under a fresh attempt; a failed swap gets
-   *  a fresh channel for the native the provider refunded to the key; a failed conversion is handed
-   *  to the worker again. */
+   *  a fresh channel for what the provider refunded to the key, in the sale's token; a failed
+   *  conversion is handed to the worker again. */
   async function retry(ref: RequestRef): Promise<boolean> {
     const record = requests.get(ref);
     if (record === undefined || record.kind !== "withdrawal") return false;
@@ -454,10 +455,12 @@ export function useWithdrawalRequest() {
     if (step === "send" && record.rail.provider === "chainflip") {
       // The channel first, so a provider that cannot be reached leaves the record as it was; then
       // stamped on the record, so the hand-off the store's retry re-sends carries it.
+      const sale = recordedRoute(record.handoff);
       const channel = await live.openWithdrawChannelFor({
-        amountNative: await live.readWithdrawKeyNativeOnAssetHub(record.key.publicKeyHex),
+        amount: await live.readWithdrawKeyBalanceOnAssetHub(record.key.publicKeyHex, sale),
         destination: { id: withdrawDestinationIdOf(record), ...record.destination },
         keyPublicKeyHex: record.key.publicKeyHex,
+        sale,
       });
       await requests.observe(ref, {
         source: "user",

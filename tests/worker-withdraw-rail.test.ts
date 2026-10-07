@@ -4,6 +4,7 @@
 // paid on the way there.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { stableTxOptions } from "@getsome/funding";
 
 const mocks = vi.hoisted(() => ({
   stored: new Map<string, unknown>(),
@@ -11,6 +12,10 @@ const mocks = vi.hoisted(() => ({
   payRail: vi.fn(),
   status: vi.fn(),
   channel: vi.fn(),
+  /** What the key holds on Asset Hub, in whichever token the hand that pays reads. */
+  keyHolds: 0n,
+  /** The transfers the hand that pays signed, when it is the real one. */
+  submits: [] as { pallet: string; args: unknown; options: unknown }[],
 }));
 
 vi.mock("../worker/src/host.js", () => ({
@@ -32,6 +37,33 @@ vi.mock("../worker/src/providers.js", () => ({
   payRail: mocks.payRail,
 }));
 
+// Where a test lets the real hand pay, the chain it pays on is scripted: the key's holding and
+// a transfer that records what it was asked to sign.
+vi.mock("../worker/src/shared.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../worker/src/shared.js")>();
+  const transferAll = (pallet: string) => (args: unknown) => ({
+    signAndSubmit: async (_signer: unknown, options: unknown) => {
+      mocks.submits.push({ pallet, args, options });
+      return { ok: true, txHash: "0x1", block: { number: 7 } };
+    },
+  });
+  return {
+    ...actual,
+    keypairFor: async () => ({ address: "5Key", signer: {} }),
+    connectChain: async () => ({
+      getBestBlocks: async () => [{ hash: "0xbest", number: 1 }],
+      getTypedApi: () => ({
+        query: { Assets: { Account: { getValue: async () => ({ balance: mocks.keyHolds }) } } },
+        tx: {
+          Balances: { transfer_all: transferAll("Balances") },
+          Assets: { transfer_all: transferAll("Assets") },
+        },
+      }),
+      destroy: () => {},
+    }),
+  };
+});
+
 vi.mock("@polkadot-api/descriptors", () => ({
   paseo_next_v2: { fake: "asset-hub" },
   paseo_people_next: { fake: "people" },
@@ -47,8 +79,11 @@ const hash32 = (fill: number) => `0x${fill.toString(16).padStart(2, "0").repeat(
 const NOW = Date.UTC(2026, 8, 23, 12, 0, 0);
 const DAY = 86_400_000;
 
-/** A job whose message leg is done: the native is on the key, the channel is still to be paid. */
-function landedJob(overrides: { leg?: unknown; channel?: unknown } = {}): StoredJob {
+/** A job whose message leg is done: the sale's token is on the key, the channel is still to be
+ *  paid. */
+function landedJob(
+  overrides: { leg?: unknown; channel?: unknown; sale?: Record<string, unknown> } = {},
+): StoredJob {
   const channel = {
     id: "ch-1",
     address: "5Channel",
@@ -66,7 +101,7 @@ function landedJob(overrides: { leg?: unknown; channel?: unknown } = {}): Stored
     destination: { chain: "Bitcoin", asset: "BTC", address: "bc1qw508" },
     landingHex: hash32(0x07),
     rail: "chainflip",
-    tier: "pool",
+    ...(overrides.sale ?? { tier: "pool" }),
     assetHubGenesis: hash32(0x11),
     peopleGenesis: hash32(0x22),
     peopleParaId: 1004,
@@ -129,11 +164,35 @@ describe("the worker's rail leg", () => {
     mocks.railFor.mockReturnValue({ status: mocks.status, channel: mocks.channel });
     mocks.payRail.mockResolvedValue(undefined);
     mocks.status.mockResolvedValue({ status: "swapping" });
+    mocks.keyHolds = 0n;
+    mocks.submits.length = 0;
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
   });
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("sweeps the USDT a PSM sale landed to the channel, the fee charged in it", async () => {
+    const { payRail } = await vi.importActual<typeof import("../worker/src/providers.js")>(
+      "../worker/src/providers.js",
+    );
+    mocks.payRail.mockImplementation(payRail);
+    mocks.keyHolds = 20_000_000n;
+    const engine = await engineWith(
+      landedJob({ sale: { tier: "psm", external: "USDT", feeRate: 5_000 } }),
+    );
+
+    await engine.tickAllWithdraw();
+    expect(mocks.submits).toEqual([
+      {
+        pallet: "Assets",
+        args: { id: 1984, dest: { type: "Id", value: "5Channel" }, keep_alive: false },
+        options: { ...stableTxOptions("USDT"), at: "0xbest" },
+      },
+    ]);
+    expect(storedJob()).toMatchObject({ phase: "handoff", leg: { paid: true } });
+    expect(storedJob().txs).toEqual([{ call: "sweep", txHash: "0x1", block: 7 }]);
   });
 
   it("pays a channel that is open, and follows the swap after it", async () => {

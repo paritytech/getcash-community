@@ -2,40 +2,41 @@
 // it leaves, a lost answer read back from the empty key, and rejections counted to the bound.
 
 import { describe, expect, it } from "vitest";
+import { TOKENS } from "@getsome/core";
 import { freshSweepState, sweepOnce, type SweepInput } from "./sweep";
 import { MAX_REJECTIONS, WithdrawRejectedError } from "./tick";
 
 const CHANNEL = "5Channel";
 const SIGNER = {} as never;
 
-type Submit = { args: unknown; options: unknown };
+type Submit = { pallet: string; args: unknown; options: unknown };
 type Outcome = { ok: true } | { ok: false; error: string };
 
 /** An Asset Hub whose key balances come from a script and whose submits answer from another. */
 function world(balances: bigint[], outcomes: Outcome[], overrides: Partial<SweepInput> = {}) {
   const submits: Submit[] = [];
   const events: string[] = [];
+  const transferAll = (pallet: string) => (args: unknown) => ({
+    signAndSubmit: async (_signer: unknown, options: unknown) => {
+      submits.push({ pallet, args, options });
+      events.push("submit");
+      const outcome = outcomes.shift() ?? { ok: true };
+      return outcome.ok
+        ? { ok: true, txHash: `0x${submits.length}`, block: { number: 100 + submits.length } }
+        : {
+            ok: false,
+            txHash: `0x${submits.length}`,
+            dispatchError: {
+              type: "Module",
+              value: { type: pallet, value: { type: outcome.error } },
+            },
+          };
+    },
+  });
   const api = {
     tx: {
-      Balances: {
-        transfer_all: (args: unknown) => ({
-          signAndSubmit: async (_signer: unknown, options: unknown) => {
-            submits.push({ args, options });
-            events.push("submit");
-            const outcome = outcomes.shift() ?? { ok: true };
-            return outcome.ok
-              ? { ok: true, txHash: `0x${submits.length}`, block: { number: 100 + submits.length } }
-              : {
-                  ok: false,
-                  txHash: `0x${submits.length}`,
-                  dispatchError: {
-                    type: "Module",
-                    value: { type: "Balances", value: { type: outcome.error } },
-                  },
-                };
-          },
-        }),
-      },
+      Balances: { transfer_all: transferAll("Balances") },
+      Assets: { transfer_all: transferAll("Assets") },
     },
   } as unknown as SweepInput["assetHubApi"];
   const txs: { call: string; txHash: string; block?: number }[] = [];
@@ -43,6 +44,7 @@ function world(balances: bigint[], outcomes: Outcome[], overrides: Partial<Sweep
     assetHubApi: api,
     key: { signer: SIGNER },
     to: CHANNEL,
+    token: TOKENS.PAS,
     tickTimeoutMs: 1_000,
     submitTimeoutMs: 1_000,
     signOptions: { at: "0xbest" },
@@ -63,6 +65,7 @@ describe("the sweep", () => {
     await sweepOnce(input, state);
     expect(submits).toEqual([
       {
+        pallet: "Balances",
         args: { dest: { type: "Id", value: CHANNEL }, keep_alive: false },
         options: { at: "0xbest" },
       },
@@ -70,6 +73,18 @@ describe("the sweep", () => {
     expect(events).toEqual(["persist", "submit"]);
     expect(txs).toEqual([{ call: "sweep", txHash: "0x1", block: 101 }]);
     expect(state).toEqual({ attempts: 1, rejections: 0 });
+  });
+
+  it("moves a pallet-assets token through its own transfer, by the token's id", async () => {
+    const { input, submits } = world([20_000_000n], [], { token: TOKENS.USDT });
+    await sweepOnce(input, freshSweepState());
+    expect(submits).toEqual([
+      {
+        pallet: "Assets",
+        args: { id: 1984, dest: { type: "Id", value: CHANNEL }, keep_alive: false },
+        options: { at: "0xbest" },
+      },
+    ]);
   });
 
   it("counts the attempt before the driver persists it, so a dead worker still reads it back", async () => {

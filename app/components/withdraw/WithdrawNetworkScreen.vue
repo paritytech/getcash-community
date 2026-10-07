@@ -17,7 +17,10 @@ const offers = useWithdrawOffersStore();
 watch(
   () => props.amount,
   (amount) => {
-    void offers.learn(amount);
+    // No route is decided before an address is in, so the rows are judged on the native pool
+    // sale, which every destination can be quoted for; the summary quotes the destination's own
+    // sale, and the confirm judges on that.
+    void offers.learn(amount, { tier: "pool" });
   },
   { immediate: true },
 );

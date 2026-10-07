@@ -44,8 +44,8 @@ import {
 
 // The withdrawal engine: the only driver of withdrawTickOnce and railTickOnce, one tick per live
 // job per pass. The message leg moves the CASH to Asset Hub as the asset the hand-off's sale
-// lands; for a destination beyond Asset Hub that is PAS on the key, and the rail leg then hands
-// it to a provider and follows its word.
+// lands; for a destination beyond Asset Hub that asset lands on the key, and the rail leg then
+// hands it to a provider and follows its word.
 //
 // Once this engine holds a job it is the only writer for it. The surface only reads records back.
 // Each dispatch runs at most one tick per live job, persists what it learned, and exits. Records

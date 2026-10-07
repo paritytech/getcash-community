@@ -3,11 +3,13 @@
 
 import { describe, expect, it } from "vitest";
 import type { SwapSdkLike } from "./sdk";
+import { ASSET_HUB_USDT } from "./sources";
 import { openWithdrawChannel, quoteOutgoing } from "./withdraw-channel";
 
 const KEY_ON_ASSET_HUB = "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5";
 const BTC_ADDRESS = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
 const FOUR_DOT = 40_000_000_000n;
+const TWENTY_USDT = 20_000_000n;
 
 const REGULAR = {
   type: "REGULAR",
@@ -55,6 +57,33 @@ describe("the outgoing channel", () => {
     expect(quote.egressAmount).toBe(123_456n);
     expect(quote.estimatedDurationSeconds).toBe(900);
     expect(quote.raw).toBe(REGULAR); // the regular quote, not the DCA one
+  });
+
+  it("quotes USDT on Asset Hub when the withdrawal lands that on its key", async () => {
+    const { sdk, asked } = scripted();
+    const quote = await quoteOutgoing(sdk, TWENTY_USDT, destination, ASSET_HUB_USDT);
+    expect(asked.quote).toEqual({
+      srcChain: "Assethub",
+      srcAsset: "USDT",
+      destChain: "Bitcoin",
+      destAsset: "BTC",
+      amount: "20000000",
+    });
+    expect(quote.egressAmount).toBe(123_456n);
+  });
+
+  it("opens a USDT-sourced channel with a quote for USDT", async () => {
+    const { sdk, asked } = scripted();
+    const channel = await openWithdrawChannel({
+      sdk,
+      amount: TWENTY_USDT,
+      source: ASSET_HUB_USDT,
+      destination,
+      refundAddress: KEY_ON_ASSET_HUB,
+    });
+    expect(asked.quote).toMatchObject({ srcAsset: "USDT", amount: "20000000" });
+    expect(asked.channel).toMatchObject({ quote: REGULAR, destAddress: BTC_ADDRESS });
+    expect(channel.id).toBe("42");
   });
 
   it("opens the channel with that quote, refunding to the key, paying the user", async () => {
