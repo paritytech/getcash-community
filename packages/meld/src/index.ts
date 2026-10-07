@@ -23,6 +23,7 @@ export {
   saleRail,
   type SaleReadMemory,
   SELL_TOKEN,
+  type SellToken,
   sellAmountOf,
   sellQuoteUsable,
 } from "./sell";

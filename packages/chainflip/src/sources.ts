@@ -273,6 +273,18 @@ export const ASSET_HUB_DOT: SourceConfig = makeSource(
   validateAssetHubAddress,
 );
 
+/** USDT on Asset Hub as a swap's source: what an offramp sale sells after the PSM redeem. Not a
+ *  deposit source, so not in the catalog above; the reference amount is about $250. */
+export const ASSET_HUB_USDT: SourceConfig = makeSource(
+  "usdt-assethub",
+  "Assethub",
+  "USDT",
+  "Tether USD",
+  6,
+  "250000000",
+  validateAssetHubAddress,
+);
+
 /** The core-typed catalog view, without validators or URI builders. */
 export const SOURCES: readonly SourceDescriptor[] = SOURCE_CONFIGS.map(
   ({ sourceId, chain, asset, displayName, decimals }) =>

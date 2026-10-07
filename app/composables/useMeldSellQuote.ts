@@ -10,6 +10,9 @@ import {
   sellQuoteUsable,
   type MeldQuoteEntry,
 } from "@getsome/meld";
+import type { ConversionRoute } from "@getsome/funding";
+import { laneById, laneSellToken, type LaneId } from "@getsome/offramp";
+import { MELD_SELL_LANE } from "~~/lib/config";
 import { bankRailCountries, regionForCountry } from "~~/lib/region";
 import {
   fetchCorridor,
@@ -27,13 +30,18 @@ export interface MeldSellQuote {
   country: string;
   fiat: string;
   paymentMethodType: string;
-  /** Exactly what the key pays the provider, planck. */
+  /** Exactly what the provider is paid, base units of the sold asset: PAS, or the lane's. */
   cryptoAmount: bigint;
+  /** A sale through an offramp lane: the lane, and the USDT redeem the withdrawal runs. */
+  swap?: { lane: LaneId; route: ConversionRoute };
   /** The CASH expected back once the provider is paid, before the way back's fees; 0 when it is
    *  too small to send back. */
   backCash: bigint;
   line: MeldQuoteEntry;
 }
+
+/** What a sale commits to its provider, and its lane when it sells through one. */
+type SizedSale = { planck: bigint; backCash: bigint; swap?: MeldSellQuote["swap"] };
 
 /** How a sale pays out when the live catalog cannot say: Meld's payout codes, which the sell
  *  catalog names its methods by, not the buy side's card and bank codes. */
@@ -48,6 +56,8 @@ function startingCountry(method: "card" | "bank"): string {
 }
 
 export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
+  const lane = MELD_SELL_LANE === null ? null : laneById(MELD_SELL_LANE);
+  const token = lane === null ? SELL_TOKEN : laneSellToken(lane);
   const country = ref(startingCountry(method));
   const countries = shallowRef<SupportedCountry[] | null>(null);
   const corridors = shallowRef<Map<string, SupportedCorridor> | null>(null);
@@ -58,7 +68,7 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
 
   /** The sell catalog, for the region picker. Null lists when discovery is unreachable. */
   async function loadCatalog(): Promise<void> {
-    const code = SELL_TOKEN.meldCurrencyCode;
+    const code = token.meldCurrencyCode;
     const [listed, routed] = await Promise.all([
       fetchSupportedCountries(code, "sell"),
       fetchSupportedCorridors(code, "sell"),
@@ -75,7 +85,7 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
   async function corridorFor(
     cc: string,
   ): Promise<{ fiat: string; paymentMethodType: string } | null> {
-    const code = SELL_TOKEN.meldCurrencyCode;
+    const code = token.meldCurrencyCode;
     const live = corridors.value?.get(cc) ?? (await fetchCorridor(code, cc, "sell"));
     if (live !== null) {
       const found = methodFor(live, method);
@@ -113,10 +123,15 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
         return;
       }
       const live = await import("~~/lib/withdraw-live");
-      const [corridor, size] = await Promise.all([
-        corridorFor(country.value),
-        live.sizeMeldCommitment(amount),
-      ]);
+      const sizing: Promise<SizedSale> =
+        lane === null
+          ? live.sizeMeldCommitment(amount)
+          : live.sizeSwapSale(amount, lane).then((swap) => ({
+              planck: swap.commit,
+              backCash: 0n,
+              swap: { lane: lane.id, route: swap.route },
+            }));
+      const [corridor, size] = await Promise.all([corridorFor(country.value), sizing]);
       if (mine !== epoch) return;
       if (corridor === null) {
         error.value = unroutedReason();
@@ -124,8 +139,8 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
       }
       const { quotes } = await client.getSellQuote({
         country: country.value,
-        sourceCurrencyCode: SELL_TOKEN.meldCurrencyCode,
-        sourceAmount: formatSellAmount(size.planck),
+        sourceCurrencyCode: token.meldCurrencyCode,
+        sourceAmount: formatSellAmount(size.planck, token),
         destinationCurrencyCode: corridor.fiat,
         paymentMethodType: corridor.paymentMethodType,
       });
@@ -142,6 +157,7 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
         ...corridor,
         cryptoAmount: size.planck,
         backCash: size.backCash,
+        ...(size.swap === undefined ? {} : { swap: size.swap }),
         line,
       };
     } catch (e: unknown) {

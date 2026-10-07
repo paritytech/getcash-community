@@ -14,7 +14,8 @@
 // payment window starts when the purse is asked, not when the address is named.
 
 import type { FailureKind } from "@getsome/core";
-import { parseBaseUnits, SELL_TOKEN } from "@getsome/meld";
+import { parseBaseUnits, SELL_TOKEN, type SellToken } from "@getsome/meld";
+import { laneById, laneSellToken } from "@getsome/offramp";
 import {
   PAYMENT_EXPIRED_REASON,
   PAYMENT_WINDOW_MS,
@@ -25,6 +26,7 @@ import {
   saleBeforePurse,
   withdrawalRankOf,
   type HostPayment,
+  type MeldSale,
   type MeldSaleReading,
   type Observation,
   type PaidVia,
@@ -409,7 +411,7 @@ function applySale(record: WithdrawalRecord, observation: SaleObservation): With
   // The address taken must still be the provider's word. The adapter stops naming one the
   // provider moved away from and shows the terms the provider states now, so a deposit that is
   // gone or changed ends the sale before anything is asked of the purse.
-  if (channel !== undefined && !sameDeposit(channel, reading.deposit)) {
+  if (channel !== undefined && !sameDeposit(sellTokenOf(sale), channel, reading.deposit)) {
     return failed(next, at, {
       kind: "sale-mismatch",
       step: "payment",
@@ -421,12 +423,20 @@ function applySale(record: WithdrawalRecord, observation: SaleObservation): With
 }
 
 /** Whether `deposit` is the channel's address, for the sale's asset and its exact amount. */
-function sameDeposit(channel: WithdrawalChannel, deposit: MeldSaleReading["deposit"]): boolean {
+/** What a sale sells: PAS, or its offramp lane's asset. */
+const sellTokenOf = (sale: MeldSale): SellToken =>
+  sale.lane === undefined ? SELL_TOKEN : laneSellToken(laneById(sale.lane));
+
+function sameDeposit(
+  token: SellToken,
+  channel: WithdrawalChannel,
+  deposit: MeldSaleReading["deposit"],
+): boolean {
   return (
     deposit !== undefined &&
     deposit.address === channel.address &&
-    deposit.currency === SELL_TOKEN.meldCurrencyCode &&
-    parseBaseUnits(SELL_TOKEN, deposit.amount) === BigInt(channel.amount ?? "0")
+    deposit.currency === token.meldCurrencyCode &&
+    parseBaseUnits(token, deposit.amount) === BigInt(channel.amount ?? "0")
   );
 }
 
@@ -441,9 +451,10 @@ function depositKnown(
   at: number,
 ): WithdrawalRecord {
   const sale = record.sale!;
+  const token = sellTokenOf(sale);
   const expected = BigInt(sale.cryptoAmount);
-  const asked = parseBaseUnits(SELL_TOKEN, deposit.amount);
-  if (deposit.currency !== SELL_TOKEN.meldCurrencyCode || asked !== expected) {
+  const asked = parseBaseUnits(token, deposit.amount);
+  if (deposit.currency !== token.meldCurrencyCode || asked !== expected) {
     return failed(record, at, {
       kind: "sale-mismatch",
       step: "payment",
@@ -593,6 +604,11 @@ function applyUser(record: WithdrawalRecord, observation: UserObservation): With
     case "channel-opened":
       // A fresh channel for the rail leg; the hand-off the worker is re-armed with carries it.
       return { ...record, handoff: { ...record.handoff, channel: observation.channel } };
+    case "swap-opened":
+      // Only before the purse is asked: a key already paying keeps the swap it was handed.
+      if (record.sale?.lane === undefined || record.payment.requestedAt !== undefined)
+        return record;
+      return { ...record, handoff: { ...record.handoff, swap: observation.channel } };
     case "sale-unfundable":
       // Only before the purse was asked: after that the worker's own floor decides.
       if (

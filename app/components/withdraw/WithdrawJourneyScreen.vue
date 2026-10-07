@@ -3,7 +3,8 @@
 // Everything shown is read from the record; the actions go back to the route.
 import { computed } from "vue";
 import { Check, RefreshCcw, X } from "lucide-vue-next";
-import { formatBaseUnits, sellAmountOf, SELL_TOKEN } from "@getsome/meld";
+import { TOKENS } from "@getsome/core";
+import { formatBaseUnits, sellAmountOf, SELL_TOKEN, type SellToken } from "@getsome/meld";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
 import {
   paymentTaken,
@@ -96,9 +97,11 @@ const residueNote = computed(() => {
   if (residue.stuck === true) {
     return "What was left could not come back to your balance on its own. Contact support with your reference.";
   }
+  // A sale through an offramp lane leaves USDT on the key, the rest PAS.
+  const token = props.record.sale?.lane === undefined ? SELL_TOKEN : (TOKENS.USDT as SellToken);
   // Shown to the sale's decimals; a remainder below them is not worth a line.
-  const shown = residue.amount === undefined ? 0n : sellAmountOf(BigInt(residue.amount));
-  const amount = shown === 0n ? null : `${formatBaseUnits(SELL_TOKEN, shown)} ${SELL_TOKEN.symbol}`;
+  const shown = residue.amount === undefined ? 0n : sellAmountOf(BigInt(residue.amount), token);
+  const amount = shown === 0n ? null : `${formatBaseUnits(token, shown)} ${token.symbol}`;
   if (!residue.returning) {
     return amount === null
       ? null

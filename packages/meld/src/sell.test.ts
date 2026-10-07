@@ -498,3 +498,29 @@ describe("which quote lines can carry a sale", () => {
     }
   });
 });
+
+describe("a sale of another asset", () => {
+  const USDT_SOL = { symbol: "USDT", decimals: 6, meldCurrencyCode: "USDT_SOL" };
+
+  it("commits, formats and reads its deposit in that asset's units", () => {
+    expect(sellAmountOf(98_852_550n, USDT_SOL)).toBe(98_852_500n);
+    expect(formatSellAmount(98_850_000n, USDT_SOL)).toBe("98.85");
+    const deposit = {
+      address: "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+      amount: "98.85",
+      observedAt: 1,
+    };
+    expect(
+      saleChannelOf(
+        { status: "transaction_seen", deposit: { ...deposit, currency: "USDT_SOL" } },
+        USDT_SOL,
+      ),
+    ).toMatchObject({ depositAddress: deposit.address, expectedAmount: 98_850_000n });
+    expect(
+      saleChannelOf(
+        { status: "transaction_seen", deposit: { ...deposit, currency: "DOT_ASSETHUB" } },
+        USDT_SOL,
+      ),
+    ).toBeNull();
+  });
+});

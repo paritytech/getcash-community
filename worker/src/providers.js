@@ -5,6 +5,7 @@
 
 import { readChannelRecord, readSwapStatus } from "@getsome/chainflip/swap-status";
 import { NETWORK } from "@getsome/core";
+import { STABLE_TOKENS, stableTxOptions } from "@getsome/funding";
 import { createMeldClient, MELD_SELL_ENABLED, saleRail } from "@getsome/meld";
 import {
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
@@ -69,9 +70,28 @@ export function railFor(provider, record) {
         ? { productId: meld.productId }
         : {}),
     });
-    return saleRail(client, record);
+    const sale = saleRail(client, record);
+    return record?.swap ? swapSaleRail(sale, record) : sale;
   }
   return null;
+}
+
+/** Chainflip's network for a sale's swap: Perseverance on a test network, as the page opens it. */
+const SWAP_NETWORK = NETWORK.testnet ? "perseverance" : "mainnet";
+
+/**
+ * A sale through an offramp lane: the key pays a Chainflip channel, which pays the provider. The
+ * channel is Chainflip's, checked before the key pays; the swap is followed until Chainflip
+ * delivers, then the sale until the provider pays out.
+ */
+function swapSaleRail(sale, record) {
+  return {
+    channel: (id) => readChannelRecord(id, undefined, SWAP_NETWORK),
+    status: async (id) => {
+      const swap = await readSwapStatus(id, undefined, SWAP_NETWORK);
+      return swap.status === "complete" ? sale.status(record.channel.id) : swap;
+    },
+  };
 }
 
 /**
@@ -138,6 +158,8 @@ export async function exactPaymentOut(record, amount, exact) {
 export async function payRail(record, handoff, sweep, hooks = {}) {
   const key = await keypairFor(record.label);
   const client = await connectChain(record.assetHubGenesis, "asset hub");
+  // A swap sale's key holds the USDT the PSM redeemed, and pays its fee in it.
+  const assetId = record.swap ? STABLE_TOKENS.USDT.assetHubId : undefined;
   try {
     const assetHubApi = client.getTypedApi(paseo_next_v2);
     await sweepOnce(
@@ -145,10 +167,15 @@ export async function payRail(record, handoff, sweep, hooks = {}) {
         assetHubApi,
         key: { signer: key.signer },
         to: handoff.address,
+        ...(assetId === undefined ? {} : { assetId }),
         tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
         submitTimeoutMs: DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
-        signOptions: await signOptionsFor(client),
-        readKeyOnAssetHub: () => readDestinationBalance(assetHubApi, record.keyPublicKeyHex),
+        signOptions: {
+          ...(await signOptionsFor(client)),
+          ...(assetId === undefined ? {} : stableTxOptions("USDT")),
+        },
+        readKeyOnAssetHub: () =>
+          readDestinationBalance(assetHubApi, record.keyPublicKeyHex, assetId),
         onBeforeSubmit: hooks.onBeforeSubmit,
         onTx: hooks.onTx,
       },

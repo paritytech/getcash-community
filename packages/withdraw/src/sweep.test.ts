@@ -15,26 +15,28 @@ type Outcome = { ok: true } | { ok: false; error: string };
 function world(balances: bigint[], outcomes: Outcome[], overrides: Partial<SweepInput> = {}) {
   const submits: Submit[] = [];
   const events: string[] = [];
+  const transferAll = (args: unknown) => ({
+    signAndSubmit: async (_signer: unknown, options: unknown) => {
+      submits.push({ args, options });
+      events.push("submit");
+      const outcome = outcomes.shift() ?? { ok: true };
+      return outcome.ok
+        ? { ok: true, txHash: `0x${submits.length}`, block: { number: 100 + submits.length } }
+        : {
+            ok: false,
+            txHash: `0x${submits.length}`,
+            dispatchError: {
+              type: "Module",
+              value: { type: "Balances", value: { type: outcome.error } },
+            },
+          };
+    },
+  });
   const api = {
     tx: {
-      Balances: {
-        transfer_all: (args: unknown) => ({
-          signAndSubmit: async (_signer: unknown, options: unknown) => {
-            submits.push({ args, options });
-            events.push("submit");
-            const outcome = outcomes.shift() ?? { ok: true };
-            return outcome.ok
-              ? { ok: true, txHash: `0x${submits.length}`, block: { number: 100 + submits.length } }
-              : {
-                  ok: false,
-                  txHash: `0x${submits.length}`,
-                  dispatchError: {
-                    type: "Module",
-                    value: { type: "Balances", value: { type: outcome.error } },
-                  },
-                };
-          },
-        }),
+      Balances: { transfer_all: (args: unknown) => ({ ...transferAll(args), pallet: "Balances" }) },
+      Assets: {
+        transfer_all: (args: unknown) => transferAll({ pallet: "Assets", ...(args as object) }),
       },
     },
   } as unknown as SweepInput["assetHubApi"];
@@ -114,5 +116,16 @@ describe("the sweep", () => {
       tickTimeoutMs: 5,
     });
     await expect(sweepOnce(input, freshSweepState())).rejects.toThrow(/timed out/);
+  });
+
+  it("sweeps a pallet asset with Assets.transfer_all when given its id", async () => {
+    const { input, submits } = world([5_000_000n, 0n], [{ ok: true }], { assetId: 1984 });
+    await sweepOnce(input, freshSweepState());
+    expect(submits[0]!.args).toEqual({
+      pallet: "Assets",
+      id: 1984,
+      dest: { type: "Id", value: CHANNEL },
+      keep_alive: false,
+    });
   });
 });

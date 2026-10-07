@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { SwapSdkLike } from "./sdk";
+import { ASSET_HUB_USDT } from "./sources";
 import { openWithdrawChannel, quoteOutgoing } from "./withdraw-channel";
 
 const KEY_ON_ASSET_HUB = "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5";
@@ -99,5 +100,40 @@ describe("the outgoing channel", () => {
         refundAddress: KEY_ON_ASSET_HUB,
       }),
     ).rejects.toThrow(/no BTC quote/);
+  });
+
+  it("sells Asset Hub USDT to a lane key at the slippage the sale committed to", async () => {
+    const { sdk, asked } = scripted();
+    const solanaKey = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
+    await openWithdrawChannel({
+      sdk,
+      source: ASSET_HUB_USDT,
+      amount: 99_900_000n,
+      destination: { chain: "Solana", asset: "USDT", address: solanaKey },
+      refundAddress: KEY_ON_ASSET_HUB,
+      fillOrKill: { slippageTolerancePercent: "0.3", retryDurationMinutes: 30 },
+    });
+    expect(asked.quote).toEqual({
+      srcChain: "Assethub",
+      srcAsset: "USDT",
+      destChain: "Solana",
+      destAsset: "USDT",
+      amount: "99900000",
+    });
+    expect(asked.channel).toEqual({
+      quote: REGULAR,
+      destAddress: solanaKey,
+      fillOrKillParams: {
+        refundAddress: KEY_ON_ASSET_HUB,
+        slippageTolerancePercent: "0.3",
+        retryDurationMinutes: 30,
+      },
+    });
+  });
+
+  it("names the source asset when Chainflip cannot quote it", async () => {
+    await expect(
+      quoteOutgoing(scripted([]).sdk, 1n, { chain: "Solana", asset: "USDT" }, ASSET_HUB_USDT),
+    ).rejects.toThrow(/no USDT quote for 1 USDT/);
   });
 });

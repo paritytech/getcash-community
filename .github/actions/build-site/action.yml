@@ -27,6 +27,11 @@ inputs:
       that does not list it refuses with 401 on every call — a quote that cannot be
       fetched, and a country catalog that silently empties to its fallback list.
     default: ""
+  meld-sell-lane:
+    description: >
+      Optional VITE_MELD_SELL_LANE, the offramp lane card and bank sales go through
+      (usdt-solana, usdc-solana). Empty sells PAS to Meld directly.
+    default: ""
   require-meld-base-url:
     description: >
       Whether an empty meld-base-url or meld-product-id is a build failure. True
@@ -84,6 +89,7 @@ runs:
         VITE_FAUCET_SEED: ${{ inputs.faucet-seed }}
         VITE_MELD_BASE_URL: ${{ inputs.meld-base-url }}
         VITE_MELD_PRODUCT_ID: ${{ inputs.meld-product-id }}
+        VITE_MELD_SELL_LANE: ${{ inputs.meld-sell-lane }}
         REQUIRE_MELD_BASE_URL: ${{ inputs.require-meld-base-url }}
       run: |
         if [ -z "$VITE_MELD_BASE_URL" ]; then
