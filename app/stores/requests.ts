@@ -6,7 +6,12 @@ import { defineStore } from "pinia";
 import { computed, ref, shallowRef, watch } from "vue";
 import { recordedRoute, type ConversionRoute } from "@getsome/funding";
 import type { FlowState, SourceId, SwapStatusResult } from "@getsome/core";
-import { createMeldClient, getMeldStatus, type MeldClientLike } from "@getsome/meld";
+import {
+  createMeldClient,
+  getMeldStatus,
+  type MeldClientLike,
+  type MeldStatusResult,
+} from "@getsome/meld";
 import {
   advanceFundingProgressSnapshot,
   createFundingProgressSnapshot,
@@ -32,6 +37,7 @@ import {
   WORKER_STALE_MS,
   buyerPaid,
   effectiveSourceId,
+  handoffSaleOf,
   isDirectDeposit,
   isFinished,
   isTopUp,
@@ -44,8 +50,11 @@ import {
   rankOf,
   requestsNow,
   routeOf,
+  saleBeforePurse,
+  withdrawalRouteOf,
   type Freshness,
   type HostPaymentStatus,
+  type MeldSaleReading,
   type Observation,
   type StrayDeposit,
   type RequestKey,
@@ -331,6 +340,8 @@ const followsWorker = (record: RequestRecord): boolean =>
 function lostHandoff(record: RequestRecord): "unknown" | "expired" | null {
   const { worker } = record.witnesses;
   if (worker === undefined || !isWorkerDriven(record)) return null;
+  // A sale the purse has not been asked for has nothing for the worker yet: no CASH will come.
+  if (isWithdrawal(record) && saleBeforePurse(record)) return null;
   if (!worker.known) return "unknown";
   if (isWithdrawal(record) && worker.failure === "cancelled" && rankOf(record) >= 1) {
     return "expired";
@@ -424,6 +435,14 @@ type WithdrawJob = {
   state?: { fundsSeenAt?: number | null };
   leg?: { reading?: SwapStatusResult | null };
   txs?: WithdrawJobView["txs"];
+  /** A fiat sale's residue, once the provider was paid, or its whole key once it ended unpaid. */
+  residue?: {
+    amount?: unknown;
+    returning?: unknown;
+    whole?: unknown;
+    sessionId?: unknown;
+    stuck?: unknown;
+  } | null;
   // The hand-off the worker keeps, read back when the surface has no record of the job.
   label?: string;
   keyAddress?: string;
@@ -432,6 +451,9 @@ type WithdrawJob = {
   destination?: { chain?: unknown; asset?: unknown; address?: unknown };
   landingHex?: string;
   rail?: string;
+  tier?: unknown;
+  external?: unknown;
+  feeRate?: unknown;
   assetHubGenesis?: string;
   peopleGenesis?: string;
   peopleParaId?: number;
@@ -445,7 +467,9 @@ type WithdrawJob = {
     openedAt?: unknown;
     expiresAt?: unknown;
     expectedEgress?: unknown;
+    amount?: unknown;
   };
+  meld?: { baseUrl?: unknown; productId?: unknown; offline?: unknown };
   createdAt?: number;
 };
 
@@ -459,9 +483,11 @@ async function readWithdrawJobs(): Promise<Record<string, WithdrawJob>> {
   }
 }
 
-/** The withdrawal job as the record's reducer reads it. */
-function withdrawJobView(job: WithdrawJob): WithdrawJobView {
+/** The withdrawal job as the record's reducer reads it. A sale's residue says whether its CASH
+ *  reached the purse, from the funding job that carries it home. */
+function withdrawJobView(job: WithdrawJob, residueJob?: WorkerJob): WithdrawJobView {
   const reading = job.leg?.reading;
+  const residue = job.residue;
   return {
     phase: job.phase ?? "",
     // Jobs from before the rail leg carry no `landed`; for them the message was the whole job.
@@ -473,12 +499,54 @@ function withdrawJobView(job: WithdrawJob): WithdrawJobView {
     fundsSeenAt: job.state?.fundsSeenAt ?? null,
     lastTickAt: job.lastTickAt ?? null,
     ...(job.txs === undefined ? {} : { txs: job.txs }),
+    ...(residue == null ? {} : residueViewOf(residue, residueJob)),
+  };
+}
+
+/** A sale's residue as the reducer reads it: an amount of planck, or the whole key. */
+function residueViewOf(
+  residue: NonNullable<WithdrawJob["residue"]>,
+  residueJob: WorkerJob | undefined,
+): Pick<WithdrawJobView, "residue"> {
+  const whole = residue.whole === true;
+  const amount = isString(residue.amount) && /^\d+$/.test(residue.amount) ? residue.amount : null;
+  if (!whole && amount === null) return {};
+  return {
+    residue: {
+      ...(amount === null ? {} : { amount }),
+      returning: residue.returning === true,
+      ...(whole ? { whole: true } : {}),
+      ...(residueJob?.claim?.phase === "claimed" ? { returned: true } : {}),
+      ...(residue.stuck === true ? { stuck: true } : {}),
+    },
   };
 }
 
 const isString = (value: unknown): value is string => typeof value === "string";
 const isNumber = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value);
+
+/** A sale's order as the reducer reads it: the adapter's status and, when disclosed, the
+ *  provider's deposit terms. */
+function saleReadingOf(result: MeldStatusResult): MeldSaleReading {
+  const { deposit } = result;
+  return {
+    status: result.status,
+    ...(result.providerStatus === undefined ? {} : { providerStatus: result.providerStatus }),
+    ...(result.depositConflictAt === undefined
+      ? {}
+      : { depositConflictAt: result.depositConflictAt }),
+    ...(deposit === undefined
+      ? {}
+      : {
+          deposit: {
+            address: deposit.address,
+            amount: deposit.amount,
+            currency: deposit.currency,
+          },
+        }),
+  };
+}
 
 /** The ref a worker session id names (`<sourceId>:<tradeN>`), or null for anything else. */
 function refOfSessionId(sessionId: string): RequestRef | null {
@@ -593,6 +661,7 @@ function withdrawHandoffOf(job: WithdrawJob): WithdrawalHandoffPayload | undefin
     !isString(destination?.address) ||
     !isString(job.landingHex) ||
     !isWithdrawalRail(rail) ||
+    !isString(job.tier) ||
     !isString(job.assetHubGenesis) ||
     !isString(job.peopleGenesis) ||
     !isNumber(job.peopleParaId) ||
@@ -601,6 +670,13 @@ function withdrawHandoffOf(job: WithdrawJob): WithdrawalHandoffPayload | undefin
     !isNumber(job.slippagePct) ||
     !isNumber(job.paymentExpiresAt)
   ) {
+    return undefined;
+  }
+  // The sale as the worker keeps it.
+  let sale: ConversionRoute;
+  try {
+    sale = recordedRoute({ tier: job.tier, external: job.external, feeRate: job.feeRate });
+  } catch {
     return undefined;
   }
   return {
@@ -615,6 +691,7 @@ function withdrawHandoffOf(job: WithdrawJob): WithdrawalHandoffPayload | undefin
     },
     landingHex: job.landingHex,
     rail,
+    ...handoffSaleOf(sale),
     assetHubGenesis: job.assetHubGenesis,
     peopleGenesis: job.peopleGenesis,
     peopleParaId: job.peopleParaId,
@@ -623,6 +700,7 @@ function withdrawHandoffOf(job: WithdrawJob): WithdrawalHandoffPayload | undefin
     slippagePct: job.slippagePct,
     paymentExpiresAt: job.paymentExpiresAt,
     ...(channel === undefined ? {} : { channel }),
+    ...(meldOf(job) === undefined ? {} : { meld: meldOf(job)! }),
   };
 }
 
@@ -645,7 +723,17 @@ function channelOf(job: WithdrawJob): WithdrawalChannel | undefined {
     openedAt: c.openedAt,
     expiresAt: c.expiresAt,
     expectedEgress: c.expectedEgress,
+    ...(isString(c.amount) && /^\d+$/.test(c.amount) ? { amount: c.amount } : {}),
   };
+}
+
+/** The adapter a fiat sale's job reads from, as the hand-off gave it. */
+function meldOf(job: WithdrawJob): WithdrawalHandoffPayload["meld"] {
+  const m = job.meld;
+  if (m === undefined || m === null) return undefined;
+  if (m.offline === true) return { offline: true };
+  if (!isString(m.baseUrl) || m.baseUrl === "") return undefined;
+  return { baseUrl: m.baseUrl, ...(isString(m.productId) ? { productId: m.productId } : {}) };
 }
 
 /** A withdrawal record for a job the surface has no record of. The prompt happened before the
@@ -664,7 +752,7 @@ function recordFromWithdrawJob(sessionId: string, job: WithdrawJob): WithdrawalR
     updatedAt: startedAt,
     startedAt,
     amountHuman: fmtCash(BigInt(handoff.amount)),
-    route: "crypto",
+    route: withdrawalRouteOf(ref.sourceId),
     destination: handoff.destination,
     key: {
       label: handoff.label,
@@ -1078,7 +1166,14 @@ export const useRequestsStore = defineStore("requests", () => {
       return { source: "worker", at: now, job: job ? jobView(job) : null };
     }
     const job = blobs.withdrawJobs[sessionId];
-    return { source: "worker", at: now, withdrawJob: job ? withdrawJobView(job) : null };
+    // The funding job the worker opened to bring a sale's residue home, under the id it names.
+    const residueId = job?.residue?.sessionId;
+    const residueJob = isString(residueId) ? blobs.jobs[residueId] : undefined;
+    return {
+      source: "worker",
+      at: now,
+      withdrawJob: job ? withdrawJobView(job, residueJob) : null,
+    };
   }
 
   type WorkerBlobs = { jobs: Record<string, WorkerJob>; withdrawJobs: Record<string, WithdrawJob> };
@@ -1385,6 +1480,7 @@ export const useRequestsStore = defineStore("requests", () => {
     stopForegroundClock();
     stopDepositWatch();
     stopMeldPoll();
+    stopSalePoll();
     stopPaymentPoll();
     setForeground(null);
     transientError.value = null;
@@ -1574,8 +1670,18 @@ export const useRequestsStore = defineStore("requests", () => {
     if (rankOf(record) >= 1 || paymentTaken(record)) return "refused";
     const at = requestsNow();
     const { attempt, id } = record.payment;
+    // A sale asks its purse only once the provider has named its deposit address, so one never
+    // asked has sent its key nothing: a People that cannot be reached does not hold up a cancel
+    // during KYC. Any other withdrawal takes its last look at the key.
+    const saleNeverAsked =
+      record.sale !== undefined &&
+      attempt === 0 &&
+      id === undefined &&
+      record.payment.requestedAt === undefined;
     const [key, host] = await Promise.all([
-      bounded("the key read", CANCEL_CONFIRM_MS, opts.readKeyCash),
+      saleNeverAsked
+        ? Promise.resolve<Bounded<bigint>>({ ok: true, value: 0n })
+        : bounded("the key read", CANCEL_CONFIRM_MS, opts.readKeyCash),
       id === undefined
         ? Promise.resolve<Bounded<HostPaymentReading | null>>({ ok: true, value: null })
         : bounded("the payment status read", CANCEL_CONFIRM_MS, async () => {
@@ -1779,6 +1885,125 @@ export const useRequestsStore = defineStore("requests", () => {
   function stopMeldPoll(): void {
     meldPoll?.stop();
     meldPoll = null;
+  }
+
+  // A fiat sale's order, read by the page until the purse is asked: on screen by the poll below
+  // while the seller is in KYC, off screen by the reconcile, whose reads also catch an order that
+  // ends after its address was named but before the seller came back. Once the purse is asked the
+  // worker follows the sale and these reads stop.
+
+  /** The sale on the record is still waiting for its purse to be asked. */
+  const saleWaiting = (record: RequestRecord | undefined): record is WithdrawalRecord =>
+    record !== undefined && isWithdrawal(record) && saleBeforePurse(record);
+
+  // Consecutive "not found" answers per sale; the adapter losing a sale never heals.
+  const saleNotFound = new Map<RequestKey, number>();
+
+  /** One read of a sale's order, applied as the provider's observation. A read that fails changes
+   *  nothing, but the `MELD_GONE_AFTER`th consecutive 404 ends the sale: nothing was asked of the
+   *  purse, and there is no order left to pay. */
+  async function observeSaleStatus(
+    ref: RequestRef,
+    client: MeldClientLike,
+    fundingRequestId: string,
+  ): Promise<"ok" | "failed"> {
+    const at = requestsNow();
+    const key = requestRefKey(ref);
+    try {
+      const result = await client.getStatus(fundingRequestId);
+      saleNotFound.delete(key);
+      await observe(ref, { source: "provider", provider: "meld", at, sale: saleReadingOf(result) });
+      return "ok";
+    } catch (e) {
+      if ((e as { status?: number } | null)?.status === 404) {
+        const notFound = (saleNotFound.get(key) ?? 0) + 1;
+        saleNotFound.set(key, notFound);
+        if (notFound >= MELD_GONE_AFTER) {
+          saleNotFound.delete(key);
+          await observe(ref, {
+            source: "provider",
+            provider: "meld",
+            at,
+            sale: { status: "unobserved" },
+          });
+          return "ok";
+        }
+      }
+      console.warn(`[meld] sale read for ${fundingRequestId} failed (will retry): ${messageOf(e)}`);
+      return "failed";
+    }
+  }
+
+  let salePoll: {
+    key: RequestKey;
+    timer: ReturnType<typeof setTimeout> | null;
+    paused: boolean;
+    resume(): void;
+  } | null = null;
+
+  /** Reads the sale on screen every `MELD_POLL_MS`, one read at a time, until its purse is asked.
+   *  `client` is the one the sale was opened with, which for the offline sale holds its script.
+   *  Starting it again for the same request is a no-op. */
+  function startSalePoll(ref: RequestRef, client: MeldClientLike): void {
+    if (sandboxed.value) return;
+    const key = requestRefKey(ref);
+    if (salePoll?.key === key) return;
+    stopSalePoll();
+    let inFlight = false;
+    const poll = {
+      key,
+      timer: null as ReturnType<typeof setTimeout> | null,
+      paused: false,
+      resume() {
+        if (!poll.paused) return;
+        poll.paused = false;
+        void tick();
+      },
+    };
+    salePoll = poll;
+    const tick = async (): Promise<void> => {
+      if (salePoll !== poll || poll.paused || inFlight) return;
+      const record = entries.value[key]?.record;
+      if (!saleWaiting(record)) {
+        stopSalePoll();
+        return;
+      }
+      inFlight = true;
+      await observeSaleStatus(ref, client, record.sale!.fundingRequestId);
+      inFlight = false;
+      if (salePoll !== poll || poll.paused) return;
+      if (!saleWaiting(entries.value[key]?.record)) {
+        stopSalePoll();
+        return;
+      }
+      poll.timer = setTimeout(() => void tick(), MELD_POLL_MS);
+    };
+    void tick();
+  }
+  function pauseSalePoll(): void {
+    if (salePoll === null) return;
+    salePoll.paused = true;
+    if (salePoll.timer !== null) clearTimeout(salePoll.timer);
+    salePoll.timer = null;
+  }
+  function stopSalePoll(): void {
+    pauseSalePoll();
+    salePoll = null;
+  }
+
+  /** Reconcile's sale step, hosted only: one read of every sale off screen whose purse has not
+   *  been asked. Skipped when this build has no adapter. */
+  async function readBackgroundSaleStatuses(): Promise<void> {
+    if (sandboxed.value) return;
+    if (!isHosted()) return;
+    const client = meldStatusClientFactory();
+    if (client === null) return;
+    const pending = withdrawals.value.filter(
+      (record) => saleWaiting(record) && requestRefKey(record.ref) !== foreground.value,
+    );
+    await inParallel(pending, MELD_READ_PARALLELISM, async (record) => {
+      await observeSaleStatus(record.ref, client, record.sale!.fundingRequestId);
+    });
   }
 
   // The payment poll: while the withdrawal on screen awaits its payment and the host's id is
@@ -2375,6 +2600,7 @@ export const useRequestsStore = defineStore("requests", () => {
     stopJobPoll();
     stopDepositWatch();
     meldPoll?.pause();
+    pauseSalePoll();
     stopPaymentPoll();
     if (tickTimer !== null) {
       clearInterval(tickTimer);
@@ -2387,6 +2613,7 @@ export const useRequestsStore = defineStore("requests", () => {
     syncDepositWatch();
     syncTick();
     meldPoll?.resume();
+    salePoll?.resume();
     syncPaymentPoll();
   }
 
@@ -2601,6 +2828,12 @@ export const useRequestsStore = defineStore("requests", () => {
     }
 
     try {
+      await readBackgroundSaleStatuses();
+    } catch (e) {
+      console.warn(`[requests] reconcile (${reason}): sale step failed: ${messageOf(e)}`);
+    }
+
+    try {
       await readPaymentStatuses();
     } catch (e) {
       console.warn(`[requests] reconcile (${reason}): host step failed: ${messageOf(e)}`);
@@ -2624,6 +2857,7 @@ export const useRequestsStore = defineStore("requests", () => {
     sandboxed.value = true;
     stopJobPoll();
     stopMeldPoll();
+    stopSalePoll();
     stopPaymentPoll();
     stopDepositWatch();
     entries.value = {};
@@ -2711,6 +2945,9 @@ export const useRequestsStore = defineStore("requests", () => {
     observePaymentStatus,
     startMeldPoll,
     stopMeldPoll,
+    startSalePoll,
+    stopSalePoll,
+    observeSaleStatus,
     startPaymentPoll,
     stopPaymentPoll,
     startForegroundClock,

@@ -3,6 +3,7 @@
 // purse was asked. Opened from the list with `topUp`, it goes straight to the journey of that
 // record. The record and the worker carry on when this screen is left.
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { depositTokenOf, type ConversionRoute } from "@getsome/funding";
 import { useWithdrawalRequest } from "../../../composables/useWithdrawalRequest";
 import type { FundingPackageEmits } from "../../../funding/handoff";
 import type { FundingSelection } from "../../../funding/selection";
@@ -47,6 +48,9 @@ const destination = ref<WithdrawDestination | null>(null);
 const address = ref("");
 /** What arrives, formatted; null while quoting; undefined without a quote. */
 const receive = ref<string | null | undefined>(undefined);
+/** The sale on Asset Hub the estimate was made for, frozen into the hand-off at confirm; null
+ *  until the quote decided it. */
+const sale = ref<ConversionRoute | null>(null);
 /** The native the estimate is for; what a provider's channel is quoted with at confirm. */
 const expectedNative = ref<bigint | null>(null);
 const starting = ref(false);
@@ -129,11 +133,11 @@ function pickToken(picked: WithdrawDestination) {
   step.value = "address";
 }
 
-/** Four decimals of the destination's native, the trailing zeros dropped. */
-function formatNative(planck: bigint, decimals: number): string {
+/** Four decimals of the landing asset, the trailing zeros dropped. */
+function formatLanding(units: bigint, decimals: number): string {
   const unit = 10n ** BigInt(decimals);
-  const whole = planck / unit;
-  const fraction = ((planck % unit) * 10_000n) / unit;
+  const whole = units / unit;
+  const fraction = ((units % unit) * 10_000n) / unit;
   const digits = fraction.toString().padStart(4, "0").replace(/0+$/, "");
   return digits === "" ? whole.toString() : `${whole}.${digits}`;
 }
@@ -145,24 +149,35 @@ async function onAddress(entered: string) {
   const picked = destination.value;
   const base = toCashBase(amount.value);
   expectedNative.value = null;
+  sale.value = null;
   if (picked === null || base === null) {
     receive.value = undefined;
     return;
   }
   receive.value = null;
+  // A chain answer that lands after the user went back and picked another token is for nobody:
+  // the summary must still show the destination this run was started for.
+  const stale = () => step.value !== "summary" || destination.value !== picked;
   try {
     if (picked.rail === "direct") {
-      // What the CASH sells for on Asset Hub's pool: the direct rail lands exactly that.
+      // The sale the token picked takes, decided now and frozen at confirm, and what it lands
+      // on Asset Hub in that token's decimals: the direct rail lands exactly that.
       const live = await import("~~/lib/withdraw-live");
-      const planck = await live.quoteDirectReceive(base);
-      if (step.value !== "summary") return;
-      receive.value = `${formatNative(planck, 10)} ${picked.asset}`;
+      const route = await live.chooseWithdrawRoute(base, picked.landing);
+      if (stale()) return;
+      // The sale stands on its own: an estimate that cannot be priced hides the figure, as it
+      // always did, and does not hold the withdrawal back.
+      sale.value = route;
+      const units = await live.quoteDirectReceive(base, route);
+      if (stale()) return;
+      receive.value = `${formatLanding(units, depositTokenOf(route).decimals)} ${picked.asset}`;
       return;
     }
-    // A provider destination shows what its offer for this amount said would land, and the
-    // channel is opened at confirm for the native that offer was quoted for.
+    // A provider takes the native from the key. It shows what its offer for this amount said
+    // would land, and the channel is opened at confirm for the native that offer was quoted for.
+    sale.value = { tier: "pool" };
     await offers.learn(base);
-    if (step.value !== "summary") return;
+    if (stale()) return;
     const offer = offers.offerFor(picked);
     if (offer.state !== "available" || offers.sellable === null) {
       receive.value = undefined;
@@ -187,6 +202,13 @@ async function confirm() {
     startError.value = allowed.subtitle ?? "This destination cannot take the amount.";
     return;
   }
+  // The sale is the quote's decision; without one the worker would have to decide, which it
+  // never does.
+  const route = sale.value;
+  if (route === null) {
+    startError.value = "The estimate is not available right now.";
+    return;
+  }
   starting.value = true;
   startError.value = null;
   try {
@@ -196,6 +218,7 @@ async function confirm() {
       destination: { chain: picked.chainLabel, asset: picked.asset, address: address.value },
       landingHex: landingAccountHex(picked, address.value),
       rail: picked.rail,
+      sale: route,
       ...(expectedNative.value === null ? {} : { expectedNative: expectedNative.value }),
     });
     if (outcome.ref === null) {

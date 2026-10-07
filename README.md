@@ -70,15 +70,42 @@ The off-ramp reuses the pieces above in the other direction. The page at `#/with
 fresh ephemeral key under a `wd:` label and asks the host to pay the CASH into it, under a payment
 id derived from the key. The worker watches that key on People and runs two transactions signed
 by it: a swap that buys the PAS the fees need, then one XCM that withdraws everything the key
-holds and lands PAS on the destination account on Asset Hub. The key is left empty and reaped.
-Arrival is a balance read at the head, like every other read in the engine: the destination's
-PAS is read just before the XCM leaves, and the run is done once it has grown by what the Asset
+holds and lands it on the destination account on Asset Hub. The key is left empty and reaped.
+On Asset Hub the destination takes DOT, dotUSD, USDT or USDC, and the sale inside the XCM follows
+the on-ramp's tiers the other way: the PSM redeems the CASH for USDT one to one less its fee,
+with the pool as the fallback when the PSM cannot serve; the pool sells the CASH for DOT, and for
+a stable sells that DOT again on the stable's pool; dotUSD is the CASH sent as it is. The
+PSM redeem runs inside the same XCM: the key's origin travels with it, the redeem runs as the
+key's account on Asset Hub, and the fee refund and the PAS that travelled are sold for USDT too.
+Whatever the tier, the fee PAS that travels with the CASH ends up in the landing token, so the
+destination is credited one asset.
+The sale is decided from the token picked at quote time with the on-ramp's own rule and frozen on
+the hand-off, so the worker never re-decides it. Arrival is a
+balance read at the head, like every other read in the engine: the destination's balance in that
+token is read just before the XCM leaves, and the run is done once it has grown by what the Asset
 Hub dry run said would land. Hosts serve the current head and nothing older, so nothing follows
 block history. `@getsome/withdraw` holds the program, the sizing and the tick;
 `worker/src/withdraw-engine.js` drives it.
 
 Withdrawals are a second record kind in the same request store as the top-ups, moved by the
 same observations and the same reconcile.
+
+A withdrawal to a bank or a card is a sale through Meld. The page quotes it for an exact PAS
+figure, sized from the pool with room for the seller's KYC, and opens the provider's SELL session
+for that figure; the seller does KYC on the provider's page. Nothing is asked of the purse until
+the provider names its deposit address, which the page reads off the adapter and checks against
+the figure agreed, and until the order and the price are checked once more. Then the purse pays
+the key, the worker's message leg lands the sale's PAS on the key's own Asset Hub account, and the
+rail leg pays the provider exactly that figure, once, at a nonce it pins, after the adapter
+confirms the address, the asset and the amount, and within an hour of the purse being asked. What
+the sale landed above the figure goes home as CASH when it is worth the way back (0.1 PAS or more;
+less stays on the key), and the quote says about how much: the worker hands the key to the funding
+engine, which converts and claims it into the purse as it does an on-ramp, and starts that job
+again if it fails, up to three times. A sale that ends before the provider is paid, because the
+price moved past the figure, the provider closed or changed the order, or the hour ran out, sends
+everything on the key home the same way. A payment whose answer was lost holds the job until the
+chain shows it landed or outlived its mortality; only a key whose chain state contradicts the
+payment stops the job for a person.
 
 ### Rails as packages
 

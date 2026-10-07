@@ -1,7 +1,8 @@
 // The provider leg of a withdrawal. Once the PAS sits on the key's own Asset Hub account, a
 // provider carries it to the destination the user named. Two moves, at most one per tick: pay
-// the provider's channel with everything the key holds, then read the swap until the provider
-// says it is delivered or that it failed.
+// the provider's channel, then read the swap until the provider says it is delivered or that it
+// failed. Chainflip takes everything the key holds; a fiat sale through Meld takes the exact
+// figure it was quoted, and what the sale landed above it stays on the key.
 //
 // THE CHANNEL IS OPENED ELSEWHERE. The page opens it at confirm, while the user is there and
 // with the quote they were shown, and the hand-off carries it here. This leg never opens one.
@@ -12,14 +13,15 @@
 // lost. The message therefore lands on the key, and the key pays the channel with a transfer.
 //
 // PROVIDER AGNOSTIC. The provider is a client with two calls, status and channel, and the payment
-// is a hand the driver supplies, the sweep of the key. Chainflip and Meld each plug in behind that
-// shape; nothing here knows which one it is talking to.
+// is a hand the driver supplies: the sweep of the key for Chainflip, the exact figure for Meld.
+// Each plugs in behind that shape; nothing here knows which one it is talking to.
 //
 // THE HAND-OFF IS NOT TRUSTED FOR THE PAYMENT. The channel was opened by the page and has been
 // through storage since, and the transfer it names cannot be undone. So before the key pays, the
 // provider is asked what it holds for that channel id and the answer is checked against the
-// withdrawal: the address about to be paid, the address the user asked to be paid, and whether
-// the channel is still open. A provider with no such read is trusted as the hand-off describes it.
+// withdrawal: the address about to be paid, where the provider pays out (the address the user
+// asked for, or for a bank or card the exact amount), and whether the channel is still open. A
+// provider with no such read is trusted as the hand-off describes it.
 //
 // RE-ENTRANT, like the message leg. The state is the driver's to persist; a tick that throws is
 // retried on the next tick. Terminal is the provider's own verdict: delivered, or a failure it
@@ -50,8 +52,9 @@ export interface RailHandoff {
 /**
  * How close to a channel's expiry the key may still pay it. The payment has to be read, submitted,
  * included and then witnessed by the provider before the channel closes, and a deposit into a
- * closed one is neither swapped nor refunded. So the margin covers this leg's own bounds and
- * leaves the provider time to see the transfer.
+ * closed one is neither swapped nor refunded. So the margin is a tick, a submit and ten minutes,
+ * which outlasts the driver's whole bound on a payment and still leaves the provider minutes to
+ * see the transfer.
  *
  * Erring long is cheap: refusing early costs a retry on a fresh channel, with nothing moved.
  * Erring short costs the whole withdrawal.
@@ -82,10 +85,15 @@ export const freshRailLegState = (): RailLegState => ({
 export interface RailChannelRecord {
   /** Where the provider expects the deposit. */
   depositAddress: string;
-  /** Where the swap pays out. */
-  destinationAddress: string;
+  /** Where the swap pays out. Absent for a provider that pays out off chain, a bank or a card. */
+  destinationAddress?: string;
+  /** `off-chain` when the payout has no address to compare; absent for a payout to an address. */
+  payout?: "off-chain";
   /** The provider's own word on the channel being closed. */
   expired: boolean;
+  /** What the provider expects to receive, base units, for a provider that holds the key to an
+   *  exact figure. */
+  expectedAmount?: bigint;
 }
 
 /** A provider, bound to one network: the swap behind a channel, as it stands. */
@@ -95,16 +103,16 @@ export interface RailClient {
    * The provider's record of the channel, checked before the key pays. Optional: a provider with
    * no such read is trusted as the hand-off describes it.
    *
-   * Null means the provider answered but could not name the channel. Anything else throws, a
-   * not-found included: a channel opened seconds ago may not be visible yet.
+   * Null means the provider answered but could not name the channel, or gave it up. Anything
+   * else throws, a not-found included: a channel opened seconds ago may not be visible yet.
    */
   channel?(id: string): Promise<RailChannelRecord | null>;
 }
 
 /**
  * The provider's record of the channel does not match the withdrawal, or the provider does not
- * know the channel at all. Nothing has moved. Terminal for this channel and recoverable through a
- * fresh one, like an expiry.
+ * know the channel at all. Nothing has moved. Terminal for this channel: Chainflip recovers
+ * through a fresh one, like an expiry, while a sale has its one order and its key goes home.
  */
 export class ChannelMismatchError extends Error {
   constructor(readonly detail: string) {
@@ -147,8 +155,9 @@ function sameAccount(a: string, b: string): boolean {
 
 export interface RailLegInput {
   rail: RailClient;
-  /** Moves everything the key holds on Asset Hub to the channel; resolves once the key is
-   *  empty. The sweep state is its to keep across ticks. */
+  /** Pays the channel from the key on Asset Hub: everything it holds, or the exact `amount` for a
+   *  provider that expects one. Resolves once the payment is on chain. The sweep state is its to
+   *  keep across ticks; an exact payment keeps its own with the driver. */
   pay: (handoff: RailHandoff, sweep: SweepState) => Promise<void>;
   /** Bound on a provider call. */
   tickTimeoutMs: number;
@@ -159,8 +168,19 @@ export interface RailLegInput {
   /** The address the withdrawal is for, checked against the provider's own record of the channel
    *  before the key pays. Required: a leg that cannot say where the money is going has no business
    *  sending it, so a missing or empty one refuses rather than skipping the check. The driver is
-   *  not always typed against this, so the refusal is enforced at run time too. */
+   *  not always typed against this, so the refusal is enforced at run time too. Not read for an
+   *  `off-chain` payout, which is checked by its amount instead. */
   destinationAddress: string;
+  /** `off-chain` for a payout to a bank or a card, which names no address. The provider's record
+   *  must say the same, and must expect exactly `amount`. Absent for a payout to an address. */
+  payout?: "off-chain";
+  /** The exact amount the key pays, base units, for a provider that expects one. */
+  amount?: bigint;
+  /** For a payment that keeps its own memory of an attempt that may have left (the exact
+   *  payment's nonce): whether that attempt landed, from the chain alone. Asked before anything
+   *  else while the key is unpaid, since a provider that saw the funds may already have closed the
+   *  order and its record would read as unpaid. Bound by `payTimeoutMs`. */
+  landed?: () => Promise<boolean>;
   /** Runs before the payment leaves, so the driver can persist what it is about to pay. */
   onBeforePay?: (handoff: RailHandoff) => Promise<void> | void;
 }
@@ -173,7 +193,8 @@ export interface RailLegOutcome {
 /**
  * The channel is at or past its expiry, so the key must not pay it: the provider does not witness
  * a deposit into a closed channel, and what lands there is neither swapped nor refunded. Terminal
- * for this channel, and recoverable through a fresh one, since nothing has moved.
+ * for this channel. Nothing has moved: a Chainflip withdrawal recovers through a fresh channel, and
+ * a fiat sale, whose order cannot be opened again, sends the key home.
  */
 export class ChannelExpiredError extends Error {
   constructor(
@@ -238,22 +259,53 @@ async function checkAgainstProvider(input: RailLegInput, handoff: RailHandoff): 
       `channel ${handoff.id} takes deposits at ${record.depositAddress}, not ${handoff.address}`,
     );
   }
-  // Both sides must name a payout address. An empty one on either side means the check cannot be
-  // made, which is a refusal here and not a pass: this is the only thing standing between a
-  // hand-off and an irreversible transfer.
-  const wanted = input.destinationAddress ?? "";
-  if (wanted.trim() === "" || record.destinationAddress.trim() === "") {
-    throw new ChannelMismatchError(
-      `channel ${handoff.id} cannot be checked: it pays out to '${record.destinationAddress}' and the withdrawal names '${wanted}'`,
-    );
-  }
-  if (!sameAddress(record.destinationAddress, wanted)) {
-    throw new ChannelMismatchError(
-      `channel ${handoff.id} pays out to ${record.destinationAddress}, not ${wanted}`,
-    );
+  if (input.payout === "off-chain") {
+    checkOffChainPayout(input, handoff, record);
+  } else {
+    // Both sides must name a payout address. An empty one on either side means the check cannot
+    // be made, which is a refusal here and not a pass: this is the only thing standing between a
+    // hand-off and an irreversible transfer.
+    const wanted = input.destinationAddress ?? "";
+    const named = record.destinationAddress ?? "";
+    if (wanted.trim() === "" || named.trim() === "") {
+      throw new ChannelMismatchError(
+        `channel ${handoff.id} cannot be checked: it pays out to '${named}' and the withdrawal names '${wanted}'`,
+      );
+    }
+    if (!sameAddress(named, wanted)) {
+      throw new ChannelMismatchError(`channel ${handoff.id} pays out to ${named}, not ${wanted}`);
+    }
   }
   // The provider's own word outranks our stored clock.
   if (record.expired) throw new ChannelExpiredError(handoff, input.now());
+}
+
+/**
+ * A payout to a bank or a card has no address to compare, so the amount stands in for it: the
+ * provider holds the key to an exact figure, and a record that expects another one, or none, is
+ * not this withdrawal's. Both sides must agree the payout is off chain, so a provider record that
+ * lost its payout address cannot slip through here.
+ */
+function checkOffChainPayout(
+  input: RailLegInput,
+  handoff: RailHandoff,
+  record: RailChannelRecord,
+): void {
+  if (record.payout !== "off-chain") {
+    throw new ChannelMismatchError(
+      `channel ${handoff.id} pays out on chain, and the withdrawal pays out to a bank or a card`,
+    );
+  }
+  if (input.amount === undefined || record.expectedAmount === undefined) {
+    throw new ChannelMismatchError(
+      `channel ${handoff.id} cannot be checked: the amount is not known on both sides`,
+    );
+  }
+  if (record.expectedAmount !== input.amount) {
+    throw new ChannelMismatchError(
+      `channel ${handoff.id} expects ${record.expectedAmount}, and the key would pay ${input.amount}`,
+    );
+  }
 }
 
 /**
@@ -266,6 +318,15 @@ export async function railTickOnce(
 ): Promise<RailLegOutcome> {
   if (state.handoff === null) throw new Error("the rail leg has no channel to pay");
   if (!state.paid) {
+    // A payment whose answer was lost is settled by the chain before the provider or the clock is
+    // asked: once the funds are out, neither has a say.
+    if (
+      input.landed !== undefined &&
+      (await bounded(input.landed(), input.payTimeoutMs, "earlier payment read"))
+    ) {
+      state.paid = true;
+      return { step: "handoff", reading: null };
+    }
     // Checked before the money moves, not on the way in: every path here pays the same way, and a
     // channel can go stale between the hand-off and the tick that acts on it.
     const { expiresAt } = state.handoff;

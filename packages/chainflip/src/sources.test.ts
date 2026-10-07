@@ -85,20 +85,32 @@ describe("deposit URIs", () => {
     );
   });
 
-  it("ERC-20, SPL and TRC-20 tokens get a bare address (token URI forms are drainable by partial parsers)", () => {
-    for (const id of [
-      "usdc-eth",
-      "usdt-eth",
-      "flip-ethereum",
-      "usdc-arbitrum",
-      "usdt-arbitrum",
-    ] as const) {
-      expect(get(id).buildDepositUri("0xtoken", 1n)).toBe("0xtoken");
-    }
-    expect(get("usdc-solana").buildDepositUri("SplAddr", 1n)).toBe("SplAddr");
-    expect(get("usdt-solana").buildDepositUri("SplAddr", 1n)).toBe("SplAddr");
+  it("ERC-20 tokens use the EIP-681 transfer form, the contract first and the recipient as a parameter", () => {
+    expect(get("usdc-eth").buildDepositUri("0xrecipient", 250_000_000n)).toBe(
+      "ethereum:0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48@1/transfer?address=0xrecipient&uint256=250000000",
+    );
+    expect(get("usdt-eth").buildDepositUri("0xrecipient", 1n)).toBe(
+      "ethereum:0xdAC17F958D2ee523a2206206994597C13D831ec7@1/transfer?address=0xrecipient&uint256=1",
+    );
+    expect(get("usdc-arbitrum").buildDepositUri("0xrecipient", 1n)).toBe(
+      "ethereum:0xaf88d065e77c8cC2239327C5EDb3A432268e5831@42161/transfer?address=0xrecipient&uint256=1",
+    );
+    expect(get("usdt-arbitrum").buildDepositUri("0xrecipient", 1n)).toBe(
+      "ethereum:0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9@42161/transfer?address=0xrecipient&uint256=1",
+    );
+  });
+
+  it("SPL tokens use Solana Pay with the recipient first and the mint as spl-token", () => {
+    expect(get("usdc-solana").buildDepositUri("SplAddr", 250_000_000n)).toBe(
+      "solana:SplAddr?amount=250&spl-token=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    );
+    expect(get("usdt-solana").buildDepositUri("SplAddr", 1n)).toBe(
+      "solana:SplAddr?amount=0.000001&spl-token=Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+    );
+  });
+
+  it("Tron has no payment URI: TRC-20 and native TRX get the bare address", () => {
     expect(get("usdt-tron").buildDepositUri("TDepositAddr", 1n)).toBe("TDepositAddr");
-    // native TRX too
     expect(get("trx-tron").buildDepositUri("TDepositAddr", 1n)).toBe("TDepositAddr");
   });
 });
