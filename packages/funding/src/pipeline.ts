@@ -482,6 +482,11 @@ export interface TickOnceInput {
    *  moves the bar under a deposit that was already sized against it. Absent on a request quoted
    *  before it was recorded, which falls back to the live figure. */
   quotedDeposit?: bigint;
+  /** Pool tier: how far below the pool's quote for what it converts the exchange may fill,
+   *  percent, for a burner whose target is a token one and does not bound the price (a
+   *  withdrawal's key sent home whole). The target stays the floor where it is higher. Absent:
+   *  the target alone is the floor. */
+  quoteFloorPct?: number;
   tickTimeoutMs: number;
   /** Bound on the submit reaching a best block; past it the tick throws and a later tick settles
    *  from the chain what became of the submit. */
@@ -934,7 +939,8 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
     }
     // The floor is the requirement itself, not a share of the expected fill. A fill under it would
     // fail the whole program and cost a dispatch fee, so a quote already under it waits for the
-    // next tick instead of submitting. Anything above lands as extra CASH.
+    // next tick instead of submitting. Anything above lands as extra CASH. A burner held to the
+    // quote (`quoteFloorPct`) has a token target, so its floor is a share of the fill instead.
     if (absorbable < buyNow) {
       throw new Error(
         `pool quote ${absorbable} for the spend is below the target ${buyNow}; waiting for the price`,
@@ -944,7 +950,7 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
       pool,
       withdrawNative: spend + payFeesNative,
       payFeesNative,
-      minUnderlyingOut: buyNow,
+      minUnderlyingOut: exchangeFloor(buyNow, absorbable, input.quoteFloorPct),
       remoteFeesCash: earmark,
       beneficiaryHex: input.beneficiaryHex,
       peopleParaId: input.peopleParaId,
@@ -997,6 +1003,18 @@ const poolOf = (input: TickOnceInput): Pool => {
   if (input.pool === undefined) throw new Error("pool tier: the tick was given no pool keys");
   return input.pool;
 };
+
+/** The least the exchange may fill: the target, or `quoteFloorPct` below the pool's quote for
+ *  what is converted when that is more. */
+export function exchangeFloor(
+  target: bigint,
+  quoted: bigint,
+  quoteFloorPct: number | undefined,
+): bigint {
+  if (quoteFloorPct === undefined || !(quoteFloorPct >= 0 && quoteFloorPct < 100)) return target;
+  const held = (quoted * BigInt(Math.round((100 - quoteFloorPct) * 100))) / 10_000n;
+  return held > target ? held : target;
+}
 
 const stablePoolOf = (input: TickOnceInput): Pool => {
   if (input.stablePool === undefined) {

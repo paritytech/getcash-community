@@ -1,22 +1,22 @@
 // The withdrawal pipeline: moves the CASH a disposable key holds on People to a destination on
-// Asset Hub as PAS, in two transactions signed by the key. The host pays the key; this waits for
-// that CASH, buys the PAS the fees need, sizes and proves the XCM, submits it once, and waits for
-// the PAS to show on the destination.
+// Asset Hub, as the asset the hand-off's sale lands, in two transactions signed by the key. The
+// host pays the key; this waits for that CASH, buys the PAS the fees need, sizes and proves the
+// XCM, submits it once, and waits for the funds to show on the destination.
 //
 // EVERYTHING THE KEY HOLDS LEAVES. The XCM is sized from the key's whole CASH balance after the
 // swap, read to the unit, and the PAS left for the transaction fee's headroom is reaped with the
 // account.
 //
 // ARRIVAL IS A BALANCE READ AT THE HEAD, like every other read here. The destination account is
-// not ours, so its balance is measured against a baseline taken just before the XCM leaves, and
-// the arrival is what the Asset Hub dry run said would land, less the slippage the program
-// itself allows: a sale that slips further fails the program, so nothing less can be a landing.
-// The key must hold no CASH too, which says the XCM executed on People; a deposit from
-// elsewhere alone does not count. Nothing is followed through block history: hosts serve the
-// current head and nothing older, and a run that resumes after a reload has no memory but the
-// persisted state. A program that fails on Asset Hub traps its assets there and never shows on
-// the destination; the run holds until the driver's bound, and the claimer named in the program
-// can recover the assets.
+// not ours, so its balance in the landing asset is measured against a baseline taken just before
+// the XCM leaves, and the arrival is what the Asset Hub dry run said would land, less the
+// slippage the program itself allows: a sale that slips further fails the program, so nothing
+// less can be a landing. The key must hold no CASH too, which says the XCM executed on People; a
+// deposit from elsewhere alone does not count. Nothing is followed through block history: hosts
+// serve the current head and nothing older, and a run that resumes after a reload has no memory
+// but the persisted state. A program that fails on Asset Hub traps its assets there and never
+// shows on the destination; the run holds until the driver's bound, and the claimer named in the
+// program can recover the assets.
 //
 // BALANCE-DRIVEN AND RE-ENTRANT: every tick reads the key's CASH and PAS and acts at most once.
 // PAS on the key means the swap happened; the XCM is next. A reload resumes from the persisted
@@ -25,14 +25,14 @@
 // same transaction will not pass on the fourth try.
 
 import type { PolkadotSigner } from "polkadot-api";
-import { describeDispatchError, type CashTransfer } from "@getsome/funding";
+import { describeDispatchError, type CashTransfer, type ConversionRoute } from "@getsome/funding";
 import { bounded } from "./bounded";
 import { PEOPLE_TX_OPTIONS } from "./paseo";
 import { NeedsSwapError, sizeSwap, sizeXcm, type AssetHubApi } from "./fees";
 import { buildSwap, buildWithdrawXcm, withdrawMessage, type PeopleApi } from "./program";
 
 /** 'swap' buys the PAS the fees need; 'convert' submits the XCM; 'await-arrival' holds while the
- *  PAS has not shown on the destination. */
+ *  funds have not shown on the destination. */
 export type WithdrawStep = "await-cash" | "swap" | "convert" | "await-arrival" | "done";
 
 /** Bound on a tick's chain reads and dry runs. */
@@ -43,9 +43,10 @@ export const DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS = 180_000;
 export const DEFAULT_WITHDRAW_SLIPPAGE_PCT = 5;
 /** Rejections at inclusion after a passing dry run before the run is given up. */
 export const MAX_REJECTIONS = 3;
-/** The least the destination must gain for the PAS to count as arrived: the dry run's landing
+/** The least the destination must gain for the funds to count as arrived: the dry run's landing
  *  less the slippage the program allows the sale, since a sale that slips further fails the
- *  program on Asset Hub and lands nothing. */
+ *  program on Asset Hub and lands nothing. The dotUSD tier makes no sale, and the same margin
+ *  covers Asset Hub's fee moving between the dry run and inclusion. */
 export const landingFloor = (landed: bigint, slippagePct: number): bigint =>
   landed - (landed * BigInt(Math.round(slippagePct * 100))) / 10_000n;
 
@@ -53,7 +54,7 @@ export const landingFloor = (landed: bigint, slippagePct: number): bigint =>
  *  passed each time. Something the dry run cannot see differs at inclusion. */
 export class WithdrawRejectedError extends Error {
   constructor(
-    readonly call: "swap" | "withdraw" | "sweep",
+    readonly call: "swap" | "withdraw" | "sweep" | "pay",
     readonly reason: string,
   ) {
     super(`withdrawal given up: ${call} rejected ${MAX_REJECTIONS} times, last: ${reason}`);
@@ -69,9 +70,11 @@ export interface WithdrawTickState {
   rejections: number;
   /** Set once the XCM landed on People; holds the run in await-arrival. */
   submitted: boolean;
-  /** The destination's PAS on Asset Hub read just before the XCM left; what the arrival adds to. */
-  destinationPasBefore: bigint | null;
-  /** PAS the Asset Hub dry run credited to the destination, for the XCM that left. */
+  /** The destination's balance in the landing asset on Asset Hub, read just before the XCM
+   *  left; what the arrival adds to. */
+  destinationBefore: bigint | null;
+  /** What the Asset Hub dry run credited to the destination, in the landing asset, for the XCM
+   *  that left. */
   expectedLanding: bigint | null;
   /** When the first tick saw CASH (ms); null while the payment is still awaited. */
   fundsSeenAt: number | null;
@@ -81,7 +84,7 @@ export const freshWithdrawTickState = (): WithdrawTickState => ({
   attempts: 0,
   rejections: 0,
   submitted: false,
-  destinationPasBefore: null,
+  destinationBefore: null,
   expectedLanding: null,
   fundsSeenAt: null,
 });
@@ -91,7 +94,7 @@ export interface WithdrawTickInput {
   assetHubApi: AssetHubApi;
   /** The disposable key: its People SS58, its public key, and its signer. */
   key: { address: string; publicKeyHex: string; signer: PolkadotSigner };
-  /** The Asset Hub account that receives the PAS, 32-byte public key hex. */
+  /** The Asset Hub account that receives the funds, 32-byte public key hex. */
   destinationHex: string;
   /** The Asset Hub account that may claim a trapped program; defaults to the key. */
   claimerHex?: string;
@@ -99,10 +102,16 @@ export interface WithdrawTickInput {
   peopleParaId: number;
   /** The People pool's account, whose balances are the reserves. */
   poolAccount: string;
+  /** The sale on Asset Hub, as the hand-off froze it: what the destination receives. */
+  sale: ConversionRoute;
   slippagePct: number;
   /** How the CASH moves to Asset Hub, as the chains answered through `chooseCashTransfer`; never
    *  decided here. */
   transfer: CashTransfer;
+  /** The least the sale must land on the destination, for a withdrawal that has promised a
+   *  provider an exact figure out of it. Read before each sizing; a sale whose floor is below it
+   *  is refused with CommitmentUnfundableError and nothing leaves People. */
+  minLanding?: () => Promise<bigint>;
   tickTimeoutMs: number;
   submitTimeoutMs: number;
   /** Extra options merged into every submit, after People's signed extension and, for the
@@ -110,7 +119,8 @@ export interface WithdrawTickInput {
   signOptions?: Record<string, unknown>;
   /** The key's CASH and PAS on People. */
   readKeyOnPeople: (ss58: string) => Promise<{ cash: bigint; pas: bigint }>;
-  /** The destination's free PAS on Asset Hub at the current head. */
+  /** The destination's balance in the landing asset on Asset Hub at the finalized head
+   *  (`readDestinationBalance`). */
   readDestinationOnAssetHub: (destinationHex: string) => Promise<bigint>;
   now: () => number;
   onTx?: (info: { call: "swap" | "withdraw"; txHash: string; block?: number }) => void;
@@ -141,12 +151,12 @@ export async function withdrawTickOnce(
   );
 
   if (state.submitted) {
-    // The XCM left People; the PAS shows on the destination. Without the baseline the arrival
+    // The XCM left People; the funds show on the destination. Without the baseline the arrival
     // cannot be measured, so the run holds here until the driver's bound.
-    if (state.destinationPasBefore === null || state.expectedLanding === null) {
+    if (state.destinationBefore === null || state.expectedLanding === null) {
       return { step: "await-arrival", balances, submitted: false };
     }
-    const destinationPas = await bounded(
+    const destination = await bounded(
       input.readDestinationOnAssetHub(input.destinationHex),
       input.tickTimeoutMs,
       "destination balance read",
@@ -156,7 +166,7 @@ export async function withdrawTickOnce(
     // is not an arrival.
     const cashGone = balances.cash === 0n;
     const landed =
-      destinationPas - state.destinationPasBefore >=
+      destination - state.destinationBefore >=
       landingFloor(state.expectedLanding, input.slippagePct);
     return { step: cashGone && landed ? "done" : "await-arrival", balances, submitted: false };
   }
@@ -190,6 +200,10 @@ export async function withdrawTickOnce(
   const needsSwap = balances.pas === 0n;
   if (!needsSwap) {
     try {
+      const minLanding =
+        input.minLanding === undefined
+          ? undefined
+          : await bounded(input.minLanding(), input.tickTimeoutMs, "payment floor read");
       const sizing = await bounded(
         sizeXcm({
           peopleApi: input.peopleApi,
@@ -201,8 +215,10 @@ export async function withdrawTickOnce(
           claimerHex: input.claimerHex,
           assetHubParaId: input.assetHubParaId,
           peopleParaId: input.peopleParaId,
+          sale: input.sale,
           slippagePct: input.slippagePct,
           transfer: input.transfer,
+          ...(minLanding === undefined ? {} : { minLanding }),
         }),
         input.tickTimeoutMs,
         "withdrawal sizing",
@@ -210,7 +226,7 @@ export async function withdrawTickOnce(
       const tx = buildWithdrawXcm(input.peopleApi, sizing.args);
       // Read before the submit, so what the XCM adds is measured from what was there. Set before
       // the driver persists, so a submit whose answer is lost keeps its baseline.
-      state.destinationPasBefore = await bounded(
+      state.destinationBefore = await bounded(
         input.readDestinationOnAssetHub(input.destinationHex),
         input.tickTimeoutMs,
         "destination balance read",
@@ -248,6 +264,8 @@ export async function withdrawTickOnce(
       destinationHex: input.destinationHex,
       claimerHex: input.claimerHex,
       assetHubParaId: input.assetHubParaId,
+      peopleParaId: input.peopleParaId,
+      sale: input.sale,
       transfer: input.transfer,
     }),
     input.tickTimeoutMs,

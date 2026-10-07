@@ -1,5 +1,5 @@
 // The two withdrawal transactions' shapes, checked against a recording People api: what each call
-// carries, and how CASH is keyed on each side.
+// carries, how CASH is keyed on each side, and the sale per tier inside the remote program.
 
 import { describe, expect, it } from "vitest";
 import { CASH_LOCATION } from "@getsome/people";
@@ -7,13 +7,27 @@ import { PEOPLE_NATIVE } from "./paseo";
 import {
   buildSwap,
   buildWithdrawXcm,
+  CASH_ON_ASSET_HUB,
   forwardedStandIn,
+  originOnAssetHub,
+  psmRedeemOut,
   WITHDRAW_XCM_MAX_WEIGHT,
+  withdrawMessage,
   type PeopleApi,
+  type Sale,
 } from "./program";
 
 type Instruction = { type: string; value: unknown };
 type Fungible = { id: unknown; fun: { type: string; value: bigint } };
+type Exchange = {
+  give: { type: string; value: { type: string; value: { id: AssetLocation } } };
+  want: Fungible[];
+  maximal: boolean;
+};
+type AssetLocation = {
+  parents: number;
+  interior: { type: string; value?: Array<{ type: string; value: unknown }> };
+};
 
 /** A People api that records the arguments of the two calls. */
 function recordingApi() {
@@ -37,17 +51,34 @@ function recordingApi() {
   return { api, seen };
 }
 
+const SALE: Sale = { tier: "pool", minNativeOut: 700_000_000n };
 const XCM = {
   cashToSend: 2_000_000n,
   pasToWithdraw: 958_441_000n,
   payFeesPas: 319_110_000n,
   remoteFeesCash: 300_000n,
-  minPasOut: 700_000_000n,
+  sale: SALE,
   destinationHex: `0x${"aa".repeat(32)}`,
   claimerHex: `0x${"07".repeat(32)}`,
+  originHex: `0x${"0b".repeat(32)}`,
   assetHubParaId: 1500,
+  peopleParaId: 1502,
   transfer: "teleport" as const,
 };
+
+/** The remote program of the message for `sale`. */
+function remoteProgramFor(sale: Sale): Instruction[] {
+  const transfer = withdrawMessage({ ...XCM, sale }).value[2]!.value as {
+    remote_xcm: Instruction[];
+  };
+  return transfer.remote_xcm;
+}
+
+const depositCount = (deposit: Instruction) =>
+  (deposit.value as { assets: { value: { value: number } } }).assets.value.value;
+const beneficiaryOf = (deposit: Instruction) =>
+  (deposit.value as { beneficiary: { interior: { value: { value: { id: string } } } } }).beneficiary
+    .interior.value.value.id;
 
 describe("withdrawal transactions", () => {
   it("swaps CASH, within a cap, for exactly the PAS the fees need, credited to the key without keeping it alive", () => {
@@ -154,21 +185,126 @@ describe("withdrawal transactions", () => {
       }
     ).hints[0]!.value.location.interior.value.value.id;
     expect(claimer).toBe(XCM.claimerHex);
-    const give = (
-      exchange!.value as {
-        give: { value: { value: { id: { parents: number; interior: { type: string } } } } };
-      }
-    ).give.value.value.id;
+    const give = (exchange!.value as Exchange).give.value.value.id;
     // Local to Asset Hub: parents 0, the pallet and the asset index.
     expect(give.parents).toBe(0);
     expect(give.interior.type).toBe("X2");
-    const want = (exchange!.value as { want: Fungible[]; maximal: boolean }).want[0]!;
-    expect(want.fun.value).toBe(XCM.minPasOut);
-    expect((exchange!.value as { maximal: boolean }).maximal).toBe(true);
+    const want = (exchange!.value as Exchange).want[0]!;
+    expect(want.fun.value).toBe(SALE.minNativeOut);
+    expect((exchange!.value as Exchange).maximal).toBe(true);
     const beneficiary = (
       deposit!.value as { beneficiary: { interior: { value: { value: { id: string } } } } }
     ).beneficiary.interior.value.value.id;
     expect(beneficiary).toBe(XCM.destinationHex);
+    expect(depositCount(deposit!)).toBe(2);
+  });
+
+  it("sells the native again for a stable on its pool, then deposits the three assets the holding can carry", () => {
+    const program = remoteProgramFor({
+      tier: "pool",
+      external: "USDC",
+      minNativeOut: 700_000_000n,
+      minOut: 68_000n,
+    });
+    expect(program.map((i) => i.type)).toEqual([
+      "SetHints",
+      "RefundSurplus",
+      "ExchangeAsset",
+      "ExchangeAsset",
+      "DepositAsset",
+    ]);
+    const [, , first, second, deposit] = program;
+    expect((first!.value as Exchange).want[0]!.fun.value).toBe(700_000_000n);
+    // The second hop gives every unit of the native the first bought, named so stable dust in
+    // the holding cannot be picked, and wants USDC as Asset Hub keys it.
+    const give = (second!.value as Exchange).give;
+    expect(give.type).toBe("Wild");
+    expect(give.value.type).toBe("AllOf");
+    expect(give.value.value.id).toEqual({ parents: 1, interior: { type: "Here" } });
+    const want = (second!.value as Exchange).want[0]!;
+    expect(want.fun.value).toBe(68_000n);
+    const index = (want.id as AssetLocation).interior.value![1]!;
+    expect(index).toEqual({ type: "GeneralIndex", value: 1337n });
+    expect((second!.value as Exchange).maximal).toBe(true);
+    expect(depositCount(deposit!)).toBe(3);
+  });
+
+  it("keeps the CASH on the dotUSD tier and sells only the PAS that travelled for it", () => {
+    const program = remoteProgramFor({ tier: "dotusd" });
+    expect(program.map((i) => i.type)).toEqual([
+      "SetHints",
+      "RefundSurplus",
+      "ExchangeAsset",
+      "DepositAsset",
+    ]);
+    const hop = program[2]!.value as Exchange;
+    expect(hop.give.value.value.id).toEqual({ parents: 1, interior: { type: "Here" } });
+    expect(hop.want[0]!.id).toEqual(CASH_ON_ASSET_HUB);
+    expect(hop.want[0]!.fun.value).toBe(1n);
+    expect(depositCount(program[3]!)).toBe(2);
+  });
+
+  it("redeems through the PSM as the key's own account, then sells the surplus and the PAS for the stable", () => {
+    const call = Uint8Array.from([0x3b, 0x01, 0xaa]);
+    const sale: Sale = {
+      tier: "psm",
+      external: "USDT",
+      feeRate: 5_000,
+      redeemAmount: 4_950_000n,
+      externalOut: 4_925_250n,
+      holderHex: `0x${"0d".repeat(32)}`,
+      call,
+    };
+    const transfer = withdrawMessage({ ...XCM, sale }).value[2]!.value as {
+      preserve_origin: boolean;
+      remote_xcm: Instruction[];
+    };
+    // The key's origin travels, so Asset Hub runs the redeem as its account there.
+    expect(transfer.preserve_origin).toBe(true);
+    expect(transfer.remote_xcm.map((i) => i.type)).toEqual([
+      "SetHints",
+      "DepositAsset",
+      "Transact",
+      "ExpectTransactStatus",
+      "WithdrawAsset",
+      "RefundSurplus",
+      "ExchangeAsset",
+      "ExchangeAsset",
+      "DepositAsset",
+    ]);
+    const [, held, transact, status, withdraw, , first, second, deposit] = transfer.remote_xcm;
+    expect(status!.value).toEqual({ type: "Success" });
+    const holding = held!.value as { assets: { type: string; value: Fungible[] } };
+    expect(holding.assets.type).toBe("Definite");
+    expect(holding.assets.value[0]!.fun.value).toBe(sale.redeemAmount);
+    expect(beneficiaryOf(held!)).toBe(sale.holderHex);
+    expect(transact!.value).toEqual({
+      origin_kind: { type: "SovereignAccount" },
+      fallback_max_weight: undefined,
+      call,
+    });
+    const withdrawn = (withdraw!.value as Fungible[])[0]!;
+    expect(withdrawn.fun.value).toBe(sale.externalOut);
+    expect((withdrawn.id as AssetLocation).interior.value![1]).toEqual({
+      type: "GeneralIndex",
+      value: 1984n,
+    });
+    // The surplus and the PAS are dust, sold at any price.
+    expect((first!.value as Exchange).want[0]!.fun.value).toBe(1n);
+    expect((second!.value as Exchange).want[0]!.fun.value).toBe(1n);
+    expect(beneficiaryOf(deposit!)).toBe(XCM.destinationHex);
+    expect(depositCount(deposit!)).toBe(2);
+    // The stand-in keeps the origin the way People forwards it, and clears it for the rest.
+    expect(forwardedStandIn({ ...XCM, sale }).value[3]).toEqual({
+      type: "AliasOrigin",
+      value: originOnAssetHub(XCM.peopleParaId, XCM.originHex),
+    });
+    expect(forwardedStandIn(XCM).value[3]).toEqual({ type: "ClearOrigin" });
+  });
+
+  it("pays a redeem out less the fee the PSM rounds up", () => {
+    expect(psmRedeemOut(4_950_000n, 5_000)).toBe(4_925_250n);
+    expect(psmRedeemOut(1_000_001n, 5_000)).toBe(1_000_001n - 5_001n);
   });
 
   it("stands in for the forwarded message with the fee remainder travelling as PAS", () => {
@@ -185,9 +321,10 @@ describe("withdrawal transactions", () => {
       "SetTopic",
     ]);
     const travelling = standIn.value[2]!.value as Fungible[];
+    // The earmark comes out of the CASH, so less of it travels.
     expect(travelling.map((a) => a.fun.value)).toEqual([
       XCM.pasToWithdraw - XCM.payFeesPas,
-      XCM.cashToSend,
+      XCM.cashToSend - XCM.remoteFeesCash,
     ]);
     // An allowance that takes every PAS leaves only the CASH travelling.
     const allSpent = forwardedStandIn({ ...XCM, payFeesPas: XCM.pasToWithdraw });
@@ -215,8 +352,9 @@ describe("withdrawal transactions", () => {
     expect(travellingPas!.value).toEqual([
       { id: PEOPLE_NATIVE, fun: { type: "Fungible", value: XCM.pasToWithdraw - XCM.payFeesPas } },
     ]);
+    // The earmark was withdrawn first, so the rest is what travels.
     expect(travellingCash!.value).toEqual([
-      { id: CASH_LOCATION, fun: { type: "Fungible", value: XCM.cashToSend } },
+      { id: CASH_LOCATION, fun: { type: "Fungible", value: XCM.cashToSend - XCM.remoteFeesCash } },
     ]);
   });
 
