@@ -260,10 +260,11 @@ export interface SizeXcmInput {
 }
 
 /**
- * The sale cannot land what the withdrawal promised its provider: at today's price its floor is
- * below the payment, its fee and the key's existential deposit. Nothing has left People: the CASH
- * is still on the key there, beside the PAS its fee swap bought. Terminal for the sale: the worker
- * sends the key's funds home.
+ * The sale cannot land what the withdrawal promised its provider: its floor, in the sale's token,
+ * is below the payment, its fee and what the key keeps to stay alive. On the pool tiers this is
+ * thrown before anything leaves People, with the CASH still on the key there beside the PAS its
+ * fee swap bought; on the PSM tier at the redeem, with the CASH on the key's own Asset Hub
+ * account. Terminal for the sale: the worker sends the key's funds home.
  */
 export class CommitmentUnfundableError extends Error {
   constructor(
@@ -271,7 +272,7 @@ export class CommitmentUnfundableError extends Error {
     readonly needed: bigint,
   ) {
     super(
-      `withdraw sizing: the sale's floor of ${floor} PAS is below the ${needed} the promised payment needs`,
+      `withdraw sizing: the sale's floor of ${floor} is below the ${needed} the promised payment needs`,
     );
     this.name = "CommitmentUnfundableError";
   }
