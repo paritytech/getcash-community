@@ -23,7 +23,7 @@ import { paymentIdFor } from "../funding/requests/payment-id";
 import { useRequestsStore } from "../stores/requests";
 import { fmtCash } from "../utils/cash";
 import { requestRefKey, requestRefOf, type RequestRef } from "../utils/request-index";
-import { formatLanding, withdrawDestination } from "../withdraw/destinations";
+import { formatLanding } from "../withdraw/destinations";
 import { meldSellClient } from "../withdraw/meld-client";
 import { workerSessionId } from "~~/lib/coinage";
 import { isHosted } from "~~/lib/host-account";
@@ -485,39 +485,24 @@ export function useWithdrawalRequest() {
     return prompted.ok;
   }
 
-  /** The user's switch of a held withdrawal to the pool: the pool route for its destination,
-   *  decided here with no chain read, written onto the record and re-sent to the worker. */
-  async function switchToPool(ref: RequestRef): Promise<boolean> {
-    const record = requests.get(ref);
-    if (record === undefined || record.kind !== "withdrawal") return false;
-    const route = poolRouteOf(record);
-    if (route === null) return false;
-    return requests.switchWithdrawalToPool(ref, route);
-  }
+  /** The user's switch of a held withdrawal to the pool: the worker sells the CASH on the key's
+   *  Asset Hub account through the pool, for the same stable the sale froze. */
+  const switchToPool = (ref: RequestRef): Promise<boolean> => requests.switchWithdrawalToPool(ref);
 
   /** What the pool would land for a withdrawal's amount at today's prices, as the summary shows
-   *  the estimate, in the asset the destination takes. Null for a withdrawal the pool cannot
-   *  take. */
+   *  the estimate, in the asset the destination takes. Null for any withdrawal but a PSM-tier
+   *  one, the only one a hold can leave on the key. */
   async function poolFigure(ref: RequestRef): Promise<string | null> {
     const record = requests.get(ref);
     if (record === undefined || record.kind !== "withdrawal") return null;
-    const route = poolRouteOf(record);
-    if (route === null) return null;
+    const sale = recordedRoute(record.handoff);
+    if (sale.tier !== "psm") return null;
+    const route: ConversionRoute = { tier: "pool", external: sale.external };
     const live = await import("~~/lib/withdraw-live");
     const units = await live.quoteDirectReceive(BigInt(record.handoff.amount), route);
     const token = depositTokenOf(route);
     const symbol = record.rail.provider === "direct" ? record.destination.asset : token.symbol;
     return `${formatLanding(units, token.decimals)} ${symbol}`;
-  }
-
-  /** The pool route for a withdrawal's destination: the stable it lands, sold for through the
-   *  native, or the native itself, which a provider takes from the key. None for dotUSD, which
-   *  never takes the PSM and so is never held. */
-  function poolRouteOf(record: WithdrawalRecord): ConversionRoute | null {
-    const landing = withdrawDestination(withdrawDestinationIdOf(record))?.landing;
-    if (landing === "dotUSD") return null;
-    if (landing === "USDT" || landing === "USDC") return { tier: "pool", external: landing };
-    return { tier: "pool" };
   }
 
   /** The destination's id is the tail of the withdrawal's source id. */

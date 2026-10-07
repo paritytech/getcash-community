@@ -653,6 +653,13 @@ export function skipWithdrawRail(worker: WorkerLike, sessionId: string): Promise
   return worker.call("skipWithdrawRail", { sessionId });
 }
 
+/** Tells the worker to sell a held withdrawal's CASH on the pool instead of redeeming it: the
+ *  job's exit changes and the job is re-armed; its sale stays as the hand-off froze it. The worker
+ *  refuses a job that is not held. */
+export function switchWithdrawToPool(worker: WorkerLike, sessionId: string): Promise<unknown> {
+  return worker.call("switchWithdrawToPool", { sessionId });
+}
+
 /** Nudges the worker into a pass over its withdrawals. A run has stalled between wakes while the
  *  page was up, so each poll round drives a pass, as the top-up's loop does. Detached: a tick can
  *  take tens of seconds and the poll does not wait on it. A worker that is not up is left alone. */

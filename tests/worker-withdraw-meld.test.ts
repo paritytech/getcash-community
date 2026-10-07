@@ -25,6 +25,8 @@ const mocks = vi.hoisted(() => ({
   keyCash: 0n,
   /** The key's holding of the sale's token on Asset Hub, when the sale landed a stable. */
   keyToken: 0n,
+  /** The key's nonce on Asset Hub. */
+  keyNonce: 1,
   keyReadHangs: false,
 }));
 
@@ -116,7 +118,7 @@ vi.mock("../worker/src/shared.js", async (importOriginal) => {
               getValue: () =>
                 mocks.keyReadHangs
                   ? new Promise(() => {})
-                  : Promise.resolve({ data: { free: mocks.keyFree }, nonce: 1 }),
+                  : Promise.resolve({ data: { free: mocks.keyFree }, nonce: mocks.keyNonce }),
             },
           },
         },
@@ -1082,6 +1084,7 @@ describe("a sale on the PSM tier, in USDT", () => {
     mocks.chooseRoute.mockResolvedValue({ tier: "psm", external: "USDT", feeRate: 5_000 });
     mocks.keyFree = 0n;
     mocks.keyToken = 27_000_000n;
+    mocks.keyNonce = 1;
     mocks.keyReadHangs = false;
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
@@ -1111,6 +1114,19 @@ describe("a sale on the PSM tier, in USDT", () => {
       },
     ]);
     expect(exact).toMatchObject({ inFlight: true, balanceBefore: "27000000" });
+  });
+
+  it("seats a payment not yet attempted at the key's live nonce, past the redeem it signed", async () => {
+    const providers = await vi.importActual<typeof import("../worker/src/providers.js")>(
+      "../worker/src/providers.js",
+    );
+    const job = psmJob();
+    mocks.keyNonce = 2;
+    const exact = { nonce: 0, inFlight: false, balanceBefore: null, anchor: null, rejections: 0 };
+    await providers.payRailExact(job, job.leg.handoff, USDT_AMOUNT, exact);
+    expect(mocks.submits).toHaveLength(1);
+    expect(mocks.submits[0]!.options).toMatchObject({ nonce: 2 });
+    expect(exact).toMatchObject({ nonce: 2, inFlight: true, balanceBefore: "27000000" });
   });
 
   it("sends the USDT residue home on the mint route the worker chose for it", async () => {

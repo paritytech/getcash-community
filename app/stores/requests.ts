@@ -112,6 +112,7 @@ import {
 import { sendHandoff, workerSessionId } from "~~/lib/coinage";
 import { FUNDING_CHAINS, sourceIdFor, sourcePairFor } from "~~/lib/config";
 import { isHosted } from "~~/lib/host-account";
+import type { StorageWorker } from "~~/lib/worker-rpc";
 
 export interface RequestEntry {
   record: RequestRecord;
@@ -438,7 +439,12 @@ type WithdrawJob = {
   failure?: string;
   lastError?: string;
   lastTickAt?: number | null;
-  state?: { fundsSeenAt?: number | null; waitingSince?: number | null; psmRefusals?: number };
+  state?: {
+    fundsSeenAt?: number | null;
+    waitingSince?: number | null;
+    psmRefusals?: number;
+    exit?: unknown;
+  };
   leg?: { reading?: SwapStatusResult | null };
   txs?: WithdrawJobView["txs"];
   /** A fiat sale's residue, once the provider was paid, or its whole key once it ended unpaid. */
@@ -507,6 +513,7 @@ function withdrawJobView(job: WithdrawJob, residueJob?: WorkerJob): WithdrawJobV
     ...(isNumber(job.state?.waitingSince) ? { waitingSince: job.state.waitingSince } : {}),
     ...(isNumber(job.state?.psmRefusals) ? { psmRefusals: job.state.psmRefusals } : {}),
     ...(isString(job.tier) ? { tier: job.tier } : {}),
+    ...(job.state?.exit === "psm" || job.state?.exit === "pool" ? { exit: job.state.exit } : {}),
     ...(job.txs === undefined ? {} : { txs: job.txs }),
     ...(residue == null ? {} : residueViewOf(residue, residueJob)),
   };
@@ -1724,6 +1731,46 @@ export const useRequestsStore = defineStore("requests", () => {
     return "ok";
   }
 
+  /** Re-arms the worker's job for `ref` through `tell`, hosted. A worker that could not be told
+   *  leaves its reason on the record, and nothing moves. */
+  async function tellWithdrawWorker(
+    ref: RequestRef,
+    what: string,
+    tell: (
+      live: typeof import("~~/lib/withdraw-live"),
+      worker: StorageWorker,
+      sessionId: string,
+    ) => Promise<unknown>,
+  ): Promise<boolean> {
+    const key = requestRefKey(ref);
+    try {
+      const [{ getStorageWorkerManager }, live] = await Promise.all([
+        import("~~/lib/worker-rpc"),
+        import("~~/lib/withdraw-live"),
+      ]);
+      await tell(
+        live,
+        getStorageWorkerManager(),
+        workerSessionId(effectiveSourceId(ref), ref.tradeN),
+      );
+      patchEntry(key, ({ handoffError: _cleared, ...sent }) => sent);
+      return true;
+    } catch (e) {
+      const handoffError = messageOf(e);
+      console.warn(`[requests] ${what} for ${key} could not re-arm the worker: ${handoffError}`);
+      patchEntry(key, (current) => ({ ...current, handoffError }));
+      return false;
+    }
+  }
+
+  /** The user's retry, once the worker is re-armed: noted on the record, which moves back into
+   *  the pipeline, and the job poll synced to it. */
+  async function noteWithdrawalRetry(ref: RequestRef): Promise<true> {
+    await observe(ref, { source: "user", at: requestsNow(), event: "retry" });
+    syncJobPoll();
+    return true;
+  }
+
   /** A user retry of a failed withdrawal. A payment that failed gets a fresh attempt for the
    *  surface to prompt; a conversion that failed has its hand-off re-sent, hosted, so the worker
    *  re-arms the job, and is moved back into the pipeline. */
@@ -1738,33 +1785,19 @@ export const useRequestsStore = defineStore("requests", () => {
       return false;
     }
     if (record.failure?.step !== "payment" && isHosted()) {
-      const key = requestRefKey(ref);
-      try {
-        const [{ getStorageWorkerManager }, { sendWithdrawHandoff }] = await Promise.all([
-          import("~~/lib/worker-rpc"),
-          import("~~/lib/withdraw-live"),
-        ]);
-        const sessionId = workerSessionId(effectiveSourceId(ref), ref.tradeN);
-        await sendWithdrawHandoff(getStorageWorkerManager(), sessionId, record.handoff);
-        patchEntry(key, ({ handoffError: _cleared, ...sent }) => sent);
-      } catch (e) {
-        const handoffError = messageOf(e);
-        console.warn(`[requests] retry for ${key} could not re-arm the worker: ${handoffError}`);
-        patchEntry(key, (current) => ({ ...current, handoffError }));
-        return false;
-      }
+      const told = await tellWithdrawWorker(ref, "retry", (live, worker, sessionId) =>
+        live.sendWithdrawHandoff(worker, sessionId, record.handoff),
+      );
+      if (!told) return false;
     }
-    await observe(ref, { source: "user", at: requestsNow(), event: "retry" });
-    syncJobPoll();
-    return true;
+    return noteWithdrawalRetry(ref);
   }
 
-  /** The user's switch of a withdrawal the PSM will not redeem to the pool: `route`, decided on
-   *  the page, replaces the sale on the hand-off, written to the host before the retry re-sends
-   *  it, so the record and the worker's job never disagree on the tier. Only a `held` failure
-   *  admits it; the worker refuses the change itself once anything was submitted. */
-  async function switchWithdrawalToPool(ref: RequestRef, route: ConversionRoute): Promise<boolean> {
-    const key = requestRefKey(ref);
+  /** The user's switch of a withdrawal the PSM will not redeem to the pool: the worker's job sells
+   *  the CASH on its Asset Hub account through the pool instead, for the same stable, and is
+   *  re-armed. The hand-off keeps its sale: the CASH left People under it, and the worker refuses
+   *  a changed tier. Only a `held` failure admits it. */
+  async function switchWithdrawalToPool(ref: RequestRef): Promise<boolean> {
     const record = get(ref);
     if (
       record === undefined ||
@@ -1774,18 +1807,13 @@ export const useRequestsStore = defineStore("requests", () => {
     ) {
       return false;
     }
-    await enqueue(key, async () => {
-      const entry = entries.value[key];
-      if (entry === undefined || !isWithdrawal(entry.record)) return;
-      const { record: current } = entry;
-      const { tier: _tier, external: _external, feeRate: _feeRate, ...handoff } = current.handoff;
-      await commit(
-        key,
-        { ...current, rev: current.rev + 1, handoff: { ...handoff, ...handoffSaleOf(route) } },
-        true,
+    if (isHosted()) {
+      const told = await tellWithdrawWorker(ref, "pool switch", (live, worker, sessionId) =>
+        live.switchWithdrawToPool(worker, sessionId),
       );
-    });
-    return retryWithdrawal(ref);
+      if (!told) return false;
+    }
+    return noteWithdrawalRetry(ref);
   }
 
   // Consecutive "not found" answers per request, on screen or in the background.

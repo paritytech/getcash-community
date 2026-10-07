@@ -1,7 +1,7 @@
 // The worker's intake of a withdrawal hand-off: the sale it names is kept on the job as the
 // surface froze it, and a hand-off without one, or with a psm route missing its fee rate, is
-// refused before anything is stored. A re-sent hand-off may change the tier only while nothing
-// was submitted. And its clock: a job waiting for PSM room is off it.
+// refused before anything is stored. The user's switch to the pool changes a held job's exit and
+// nothing else. And its clock: a job waiting for PSM room is off it.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deriveKeypairWithSecret } from "@getsome/ephemeral";
@@ -133,57 +133,72 @@ describe("the worker's intake of a withdrawal", () => {
   });
 });
 
-describe("the worker's intake of a switch to the pool", () => {
-  /** A PSM-tier job the PSM refused three times with room, as the hold leaves it. */
+describe("the worker's switch of a held withdrawal to the pool", () => {
+  /** A PSM-tier job the PSM refused three times with room, as the hold leaves it: its CASH on
+   *  the key's Asset Hub account. */
   const heldJob = (): StoredJob => {
     const job = convertingJob("s-1", null);
     return {
       ...job,
       phase: "failed",
       failure: "held",
-      state: { ...(job.state as object), psmRefusals: 3, workedMs: 0 },
+      lastError: "the PSM refused the redeem",
+      state: { ...(job.state as object), submitted: true, psmRefusals: 3, workedMs: 0 },
     };
   };
 
   beforeEach(() => {
     mocks.stored.clear();
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
-  it("takes the pool tier a re-sent hand-off names before any submit, and re-arms the held job", async () => {
+  it("sets a held job's exit to the pool and re-arms it, keeping its sale", async () => {
     mocks.stored.set(WITHDRAW_KEY, { "s-1": heldJob() });
     const engine = await freshEngine();
-    const answer = await engine.startWithdraw(
-      JSON.stringify(handoff({ tier: "pool", external: "USDT" })),
-    );
-    expect(answer).toMatchObject({ sessionId: "s-1", phase: "starting", tier: "pool" });
+    const answer = await engine.switchWithdrawToPool(JSON.stringify({ sessionId: "s-1" }));
+    expect(answer).toMatchObject({
+      sessionId: "s-1",
+      phase: "starting",
+      tier: "psm",
+      exit: "pool",
+      psmRefusals: 0,
+      waitingSince: null,
+    });
     const job = storedJobs()["s-1"]!;
     expect(job).toMatchObject({
-      tier: "pool",
-      external: "USDT",
-      phase: "starting",
-      state: { psmRefusals: 0, waitingSince: null },
-    });
-    expect(job.feeRate).toBeUndefined();
-    expect(job.failure).toBeUndefined();
-  });
-
-  it("refuses the change once the job has submitted, and keeps its sale", async () => {
-    const job = heldJob();
-    mocks.stored.set(WITHDRAW_KEY, {
-      "s-1": { ...job, state: { ...(job.state as object), submitted: true } },
-    });
-    const engine = await freshEngine();
-    const answer = await engine.startWithdraw(
-      JSON.stringify(handoff({ tier: "pool", external: "USDT" })),
-    );
-    expect(answer).toMatchObject({ error: "invalid", reason: expect.stringMatching(/tier/) });
-    expect(storedJobs()["s-1"]).toMatchObject({
       tier: "psm",
       external: "USDT",
       feeRate: 5_000,
-      phase: "failed",
-      failure: "held",
-      state: { psmRefusals: 3, submitted: true },
+      phase: "starting",
+      armedAt: NOW,
+      state: { exit: "pool", submitted: true, psmRefusals: 0, waitingSince: null, workedMs: 0 },
+    });
+    expect(job.failure).toBeUndefined();
+    expect(job.lastError).toBeUndefined();
+  });
+
+  it("refuses a job that is not held, changing nothing", async () => {
+    const rejected = { ...heldJob(), failure: "rejected" };
+    mocks.stored.set(WITHDRAW_KEY, { "s-1": rejected, "s-2": convertingJob("s-2", null) });
+    const engine = await freshEngine();
+    for (const sessionId of ["s-1", "s-2"]) {
+      expect(await engine.switchWithdrawToPool(JSON.stringify({ sessionId }))).toEqual({
+        error: "invalid",
+        reason: "only a withdrawal the PSM holds can move to the pool",
+      });
+    }
+    expect(storedJobs()["s-1"]).toMatchObject({ phase: "failed", failure: "rejected" });
+    expect(storedJobs()["s-2"]).toMatchObject({ phase: "convert" });
+    for (const job of Object.values(storedJobs())) {
+      expect((job.state as Record<string, unknown>).exit).toBeUndefined();
+    }
+    expect(await engine.switchWithdrawToPool(JSON.stringify({ sessionId: "s-9" }))).toEqual({
+      sessionId: "s-9",
+      known: false,
     });
   });
 });

@@ -302,6 +302,16 @@ function applyWorker(
           message: job.lastError ?? "no provider can carry this withdrawal in this build",
           recoverable: false,
         });
+      case "too-small":
+        // Once the exit's fee and the account's minimum are left behind, the CASH on the key's
+        // Asset Hub account is under what any exit can take; it stays there for a person.
+        if (rank < 1) return next;
+        return failed(next, at, {
+          kind: "unknown",
+          step: "convert",
+          message: job.lastError ?? "the CASH left on the key is too small to redeem",
+          recoverable: false,
+        });
       case "unfundable":
         // The price moved past what the sale promised its provider before anything left People.
         // The worker sends the CASH home.

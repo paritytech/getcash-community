@@ -545,7 +545,14 @@ export interface WithdrawJobView {
   psmRefusals?: number;
   /** The sale's tier as the job recorded it. */
   tier?: string;
-  txs?: { call: "swap" | "withdraw" | "sweep" | "pay"; txHash: string; block?: number }[];
+  /** Where a PSM-tier job's CASH leaves the key on Asset Hub: the PSM, or the pool once the user
+   *  chose it from a hold. */
+  exit?: "psm" | "pool";
+  txs?: {
+    call: "swap" | "withdraw" | "redeem" | "pool-exit" | "sweep" | "pay";
+    txHash: string;
+    block?: number;
+  }[];
   /** The provider's latest word on the swap, once the worker has paid it. */
   rail?: SwapStatusResult;
   /** A fiat sale only: what the sale left on the key once the provider was paid, planck, and its

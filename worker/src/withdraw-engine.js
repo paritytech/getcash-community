@@ -24,6 +24,7 @@ import {
   RailFailedError,
   railTickOnce,
   readDestinationBalance,
+  RedeemTooSmallError,
   residueReturnFloor,
   withdrawTickOnce,
   WithdrawHeldError,
@@ -74,9 +75,9 @@ const RESIDUE_SETTLE_AMOUNT = CLAIM_UNIT.toString();
 const RESIDUE_CLAIM_ID_OFFSET = 1_000_000;
 /** The failures before the provider is paid that do not send a sale's key home: a job whose
  *  payment never came and one the page cancelled hold nothing, and a re-sent hand-off may still
- *  revive them; a payment that cannot be confirmed waits for a person. Any other failure ends the
- *  sale, and the key goes home whole. */
-const KEPT_ON_FAILURE = new Set(["expired", "cancelled", "unresolved"]);
+ *  revive them; a payment that cannot be confirmed, or CASH too small for any exit to take, waits
+ *  for a person. Any other failure ends the sale, and the key goes home whole. */
+const KEPT_ON_FAILURE = new Set(["expired", "cancelled", "unresolved", "too-small"]);
 /** How long a submit whose answer was lost may still land: past its mortality, with room. Until
  *  then a sale is not called unfundable, since the CASH it would send home may be on its way. */
 const SUBMIT_SETTLE_MS = 600_000;
@@ -102,14 +103,18 @@ const saveJobs = () => store.save();
  *   assetHubGenesis, peopleGenesis, peopleParaId, assetHubParaId, poolAccount, slippagePct,
  *   paymentExpiresAt: number|null,
  *   phase: "starting" | WithdrawStep | RailStep | "failed",
- *   failure?: "rejected" | "timeout" | "held" | "expired" | "cancelled" | "no-rail"
- *            | "rail-failed" | "channel-expired" | "channel-mismatch" | "unfundable"
- *            | "unresolved",
+ *   failure?: "rejected" | "timeout" | "held" | "too-small" | "expired" | "cancelled"
+ *            | "no-rail" | "rail-failed" | "channel-expired" | "channel-mismatch"
+ *            | "unfundable" | "unresolved",
  *   landed,                                  // the message leg is done: the funds are on Asset Hub
  *   done, createdAt, armedAt, lastTickAt, lastError?,
  *   state: { attempts, rejections, submitted, destinationBefore, expectedLanding,
- *            fundsSeenAt, psmRefusals, waitingSince, workedMs },
- *                                            // the two balances as decimal strings or null
+ *            fundsSeenAt, psmRefusals, waitingSince, exit?, redeemSubmitted?, workedMs },
+ *                                            // the two balances as decimal strings or null;
+ *                                            // exit: where the PSM tier's CASH leaves the key
+ *                                            // on Asset Hub, "psm" unless the user chose the
+ *                                            // pool from a hold; redeemSubmitted: that exit's
+ *                                            // transaction went out
  *   leg: { handoff, paid, sweep, exact?, reading },  // the rail leg, for a provider rail;
  *                                            // exact: the Meld payment's nonce, in flight or
  *                                            // not, and the block its attempt is anchored at
@@ -315,6 +320,10 @@ function laterDeadline(current, latest) {
 
 const freshRecordState = () => ({ ...freshWithdrawTickState(), workedMs: 0 });
 
+/** Where a job's CASH leaves the key on Asset Hub: the PSM, unless the user chose the pool. A job
+ *  stored before the exit was recorded takes the PSM, which is what it was. */
+const exitOf = (state) => (state?.exit === "pool" ? "pool" : "psm");
+
 /** The surface's payment deadline, or null when it gave none. */
 const paymentExpiryOf = (input) => {
   const at = Number(input.paymentExpiresAt);
@@ -340,8 +349,6 @@ export async function startWithdraw(params) {
     if (shown && shown !== existing.keyAddress) {
       return { error: "invalid", reason: mismatchReason(existing.keyAddress, shown) };
     }
-    const refused = retier(existing, input, Date.now());
-    if (refused) return refused;
     // A sale whose key goes home whole never pays its provider again, whatever is re-sent, and
     // one whose payment could not be confirmed waits for a person, not for a re-sent hand-off.
     const held = goesHomeWhole(existing) || existing.failure === "unresolved";
@@ -381,30 +388,24 @@ export async function startWithdraw(params) {
 }
 
 /**
- * Takes the sale a re-sent hand-off names when its tier differs from the job's: the user's switch
- * to the pool from a hold. Only while nothing has been submitted nor may still land; the fee swap
- * is tier-neutral, so its PAS serves whichever program runs next. The hand-off is checked as a new
- * one is. Returns the refusal, or null once the job carries the new sale.
+ * The user's switch of a held withdrawal to the pool: the CASH the PSM would not redeem leaves
+ * the key's Asset Hub account through the pool swap instead, for the same stable. The job keeps
+ * its sale, since the CASH has left People under it; only the exit changes. Admitted from a hold
+ * alone, the one failure waiting cannot clear, and re-armed as a re-sent hand-off would re-arm it.
  */
-function retier(record, input, nowMs) {
-  if (typeof input.tier !== "string" || input.tier === recordedRoute(record).tier) return null;
-  if (!unsubmitted(record, nowMs)) {
-    return {
-      error: "invalid",
-      reason: "the sale keeps its tier once its transaction has been submitted",
-    };
+export async function switchWithdrawToPool(params) {
+  const input = readParams(params);
+  const all = await loadJobs();
+  const sessionId = String(input.sessionId ?? "");
+  const record = all[sessionId];
+  if (!record) return { sessionId, known: false };
+  if (record.phase !== "failed" || record.failure !== "held") {
+    return { error: "invalid", reason: "only a withdrawal the PSM holds can move to the pool" };
   }
-  let terms;
-  try {
-    terms = newRecord(input, nowMs);
-  } catch (error) {
-    return { error: "invalid", reason: String(error?.message ?? error) };
-  }
-  for (const field of ["tier", "external", "feeRate"]) delete record[field];
-  Object.assign(record, recordedRoute(terms));
-  record.state.psmRefusals = 0;
-  record.state.waitingSince = null;
-  return null;
+  record.state.exit = "pool";
+  rearm(record, Date.now());
+  await saveJobs();
+  return describeWithdraw(record);
 }
 
 /**
@@ -476,6 +477,8 @@ function describeWithdraw(record) {
     waitingSince: record.state?.waitingSince ?? null,
     psmRefusals: record.state?.psmRefusals ?? 0,
     tier: record.tier,
+    exit: exitOf(record.state),
+    redeemSubmitted: record.state?.redeemSubmitted === true,
     residue: record.residue ?? null,
   };
 }
@@ -708,20 +711,20 @@ async function settleInFlight(record) {
   }
 }
 
-/** Whether a sale's key holds anything worth the way home: `held` of the sale's token on Asset
- *  Hub at or above the floor a residue is sent home at, or CASH on People. */
-async function keyHoldsAnything(record, held, token) {
-  if (held >= residueReturnFloor(token)) return true;
+/** Whether a sale's key holds anything worth the way home: `held` of the sale's token or `cash`
+ *  of CASH on Asset Hub at or above the floor a residue is sent home at, or CASH on People. */
+async function keyHoldsAnything(record, held, token, cash) {
+  if (held >= residueReturnFloor(token) || cash >= residueReturnFloor(TOKENS.CASH)) return true;
   const people = await connectChain(record.peopleGenesis, "people");
   try {
-    const cash = await bounded(
+    const onPeople = await bounded(
       people
         .getTypedApi(paseo_people_next)
         .query.Assets.Account.getValue(CASH_LOCATION, record.keyAddress),
       DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
       "key read on people",
     );
-    return (cash?.balance ?? 0n) > 0n;
+    return (onPeople?.balance ?? 0n) > 0n;
   } finally {
     people.destroy();
   }
@@ -761,8 +764,9 @@ const goesHomeWhole = (record) => record.residue?.whole === true || returnDue(re
  * claimed as it is. So a residue starts strictly after the payment is on chain, or that conversion
  * would take the provider's figure too, and one below `residueReturnFloor` stays on the key. A sale
  * that ended unpaid sends everything, wherever it is: the CASH still on People when the price
- * moved, the token on Asset Hub when the provider closed the order. The exchange is held to the
- * bound the sale itself went out under.
+ * moved, the token on Asset Hub when the provider closed the order, the CASH on Asset Hub when
+ * the PSM tier's exit could not pay the promise. The exchange is held to the bound the sale
+ * itself went out under.
  */
 async function sendHome(record, kind) {
   const sale = recordedRoute(record);
@@ -772,21 +776,30 @@ async function sendHome(record, kind) {
   let route;
   try {
     const assetHubApi = client.getTypedApi(paseo_next_v2);
-    held = await bounded(
-      readDestinationBalance(assetHubApi, record.keyPublicKeyHex, token.assetHubId),
-      DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+    const readKey = (assetHubId, what) =>
+      bounded(
+        readDestinationBalance(assetHubApi, record.keyPublicKeyHex, assetHubId),
+        DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+        what,
+      );
+    held = await readKey(
+      token.assetHubId,
       kind === "residue" ? "residue read" : "key read on asset hub",
     );
     if (kind === "residue" && held < residueReturnFloor(token)) {
       record.residue = { amount: held.toString(), returning: false };
       return;
     }
-    if (kind === "whole" && !(await keyHoldsAnything(record, held, token))) {
+    // Only a sale that ended unpaid can have its CASH still on the key: a paid one has redeemed
+    // it, and what the redeem left is dust.
+    const cash =
+      kind === "whole" ? await readKey(TOKENS.CASH.assetHubId, "key cash read on asset hub") : 0n;
+    if (kind === "whole" && !(await keyHoldsAnything(record, held, token, cash))) {
       // A sale that failed before anything reached its key: no way home to start.
       record.residue = { whole: true, returning: false };
       return;
     }
-    route = await wayHomeRoute(assetHubApi, sale, held);
+    route = await wayHomeRoute(assetHubApi, sale, held, cash);
   } finally {
     client.destroy();
   }
@@ -804,11 +817,16 @@ async function sendHome(record, kind) {
 }
 
 /**
- * The funding route a sale's key takes home. The native takes the pool, as every native deposit
- * does. A stable, the PSM's external, is minted back through the PSM when it can serve `held` and
- * swapped through the stable pool otherwise, the way a stable deposit on the on-ramp is.
+ * The funding route a sale's key takes home. CASH the PSM tier landed on the key and never
+ * redeemed goes home as it is, on the dotUSD tier. The native takes the pool, as every native
+ * deposit does. A stable, the PSM's external, is minted back through the PSM when it can serve
+ * `held` and swapped through the stable pool otherwise, the way a stable deposit on the on-ramp
+ * is.
  */
-async function wayHomeRoute(assetHubApi, sale, held) {
+async function wayHomeRoute(assetHubApi, sale, held, cash) {
+  if (held < residueReturnFloor(depositTokenOf(sale)) && cash >= residueReturnFloor(TOKENS.CASH)) {
+    return { tier: "dotusd" };
+  }
   if (sale.external === undefined) return { tier: "pool" };
   const token = depositTokenOf(sale);
   // The one tier this worker decides. Every other route is the surface's, frozen on the hand-off
@@ -928,6 +946,8 @@ async function tickRecord(record, nowMs) {
     state.fundsSeenAt = record.state.fundsSeenAt ?? null;
     state.psmRefusals = record.state.psmRefusals ?? 0;
     state.waitingSince = record.state.waitingSince ?? null;
+    state.exit = exitOf(record.state);
+    state.redeemSubmitted = record.state.redeemSubmitted === true;
 
     // Written before a submit and after every tick, thrown ones included; withdrawTickOnce
     // mutates the state as it works and a lost submit answer must keep its baseline.
@@ -942,6 +962,8 @@ async function tickRecord(record, nowMs) {
         fundsSeenAt: state.fundsSeenAt,
         psmRefusals: state.psmRefusals,
         waitingSince: state.waitingSince,
+        exit: state.exit,
+        redeemSubmitted: state.redeemSubmitted,
         workedMs: record.state.workedMs ?? 0,
       };
     };
@@ -976,8 +998,9 @@ async function tickRecord(record, nowMs) {
             : {}),
           tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
           submitTimeoutMs: DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
-          // Every submit is on People; one anchor per tick serves them all.
+          // One anchor per chain per tick serves every submit on it.
           signOptions: await signOptionsFor(peopleClient),
+          assetHubSignOptions: await signOptionsFor(ahClient),
           readKeyOnPeople: async (ss58) => {
             const [asset, native] = await Promise.all([
               peopleApi.query.Assets.Account.getValue(CASH_LOCATION, ss58),
@@ -987,6 +1010,13 @@ async function tickRecord(record, nowMs) {
           },
           readDestinationOnAssetHub: (hex) =>
             readDestinationBalance(assetHubApi, hex, landingToken.assetHubId),
+          readKeyOnAssetHub: async (hex) => {
+            const [cash, usdt] = await Promise.all([
+              readDestinationBalance(assetHubApi, hex, TOKENS.CASH.assetHubId),
+              readDestinationBalance(assetHubApi, hex, landingToken.assetHubId),
+            ]);
+            return { cash, usdt };
+          },
           now: Date.now,
           // Persisted before the broadcast leaves.
           onBeforeSubmit: async (call) => {
@@ -1076,6 +1106,10 @@ export async function tickAllWithdraw() {
             // The PSM refused the redeem with room for it, three times over: the CASH stays on
             // the key until a re-sent hand-off re-arms the count.
             fail(record, "held", error.message);
+          } else if (error instanceof RedeemTooSmallError) {
+            // Once the exit's fee and the account's minimum are left behind, the CASH on the key
+            // is under what any exit can take. It stays there for a person; no tick can move it.
+            fail(record, "too-small", error.message);
           } else if (error instanceof CommitmentUnfundableError && !submitMayLand(record, nowMs)) {
             // The price moved past what the sale promised its provider before anything left
             // People. The CASH goes home (see `returnDue`). Not while an earlier submit may still

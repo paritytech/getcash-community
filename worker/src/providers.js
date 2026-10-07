@@ -20,6 +20,7 @@ import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import {
   ANCHOR_TIMEOUT_MS,
   anchorFor,
+  bounded,
   CONNECT_TIMEOUT_MS,
   connectChain,
   keypairFor,
@@ -76,6 +77,18 @@ export function railFor(provider, record) {
 }
 
 /**
+ * Seats a payment not yet attempted at the key's live nonce on Asset Hub. The payment's state
+ * starts at 0, the first nonce of a key the sale reaches by XCM alone; a sale on the PSM tier has
+ * the key sign its redeem there first. A key that signed nothing is at 0 still.
+ */
+async function seedExactNonce(exact, readKey) {
+  if (exact.inFlight || exact.nonce !== 0) return;
+  exact.nonce = (
+    await bounded(readKey(), DEFAULT_WITHDRAW_TICK_TIMEOUT_MS, "key nonce read")
+  ).nonce;
+}
+
+/**
  * Pays the channel exactly `amount` of the token the sale landed from the key on Asset Hub, at the
  * nonce `exact` keeps. Resolves once the payment is on chain. `hooks.onBeforeSubmit` runs before
  * the broadcast, so the driver can persist the attempt; `hooks.onTx` takes the transaction as it
@@ -87,6 +100,8 @@ export async function payRailExact(record, handoff, amount, exact, hooks = {}) {
   const client = await connectChain(record.assetHubGenesis, "asset hub");
   try {
     const assetHubApi = client.getTypedApi(paseo_next_v2);
+    const readKey = () => readAssetHubAccount(assetHubApi, record.keyPublicKeyHex, token);
+    await seedExactNonce(exact, readKey);
     const anchor = await anchorFor(client);
     await payExactOnce(
       {
@@ -99,7 +114,7 @@ export async function payRailExact(record, handoff, amount, exact, hooks = {}) {
         submitTimeoutMs: DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
         signOptions: { at: anchor.hash },
         anchorNumber: anchor.number,
-        readKey: () => readAssetHubAccount(assetHubApi, record.keyPublicKeyHex, token),
+        readKey,
         onBeforeSubmit: hooks.onBeforeSubmit,
         onTx: hooks.onTx,
       },

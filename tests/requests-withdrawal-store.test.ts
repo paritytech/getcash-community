@@ -1,7 +1,7 @@
 // The withdrawal kind through the store: its record lives in the same map as the top-ups, the
 // worker poll reads the withdrawal blob for it, a withdrawal job with no record becomes one, the
 // payment's stamps are critical writes, the cancel takes its last look at the key, and only a
-// held withdrawal can be switched to the pool.
+// held withdrawal can be switched to the pool, which changes nothing on its hand-off.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
@@ -25,8 +25,8 @@ import { useRequestsStore } from "../app/stores/requests";
 import { requestRefOf, serializeRequestIndex, type RequestRef } from "../app/utils/request-index";
 import { awaitingDepositCryptoRecord, FIXTURE_NOW } from "./fixtures/requests";
 
-// The switch to the pool re-sends the hand-off only hosted; off-host, as every other test here
-// runs, the store has no worker to tell.
+// The switch to the pool tells the worker only hosted; off-host, as every other test here runs,
+// the store has no worker to tell.
 const { hosted } = vi.hoisted(() => ({ hosted: { value: false } }));
 vi.mock("../lib/host-account", () => ({ isHosted: () => hosted.value }));
 
@@ -367,7 +367,7 @@ describe("requests store: withdrawals", () => {
     expect(await requests.cancelWithdrawal(REF, { readKeyCash: async () => 0n })).toBe("refused");
   });
 
-  it("switches a held withdrawal to the pool route it is given and re-sends the hand-off", async () => {
+  it("switches a held withdrawal to the pool through the worker, its hand-off untouched", async () => {
     hosted.value = true;
     const call = vi.fn(async () => ({}));
     vi.doMock("../lib/worker-rpc", () => ({
@@ -398,21 +398,12 @@ describe("requests store: withdrawals", () => {
       await requests.reconcile("boot");
       expect(requests.get(REF)?.failure?.kind).toBe("held");
 
-      expect(await requests.switchWithdrawalToPool(REF, { tier: "pool", external: "USDT" })).toBe(
-        true,
-      );
+      expect(await requests.switchWithdrawalToPool(REF)).toBe(true);
       const after = requests.get(REF) as WithdrawalRecord;
-      expect(after.handoff).toEqual({ ...handoff, tier: "pool", external: "USDT" });
-      expect("feeRate" in after.handoff).toBe(false);
+      expect(after.handoff).toEqual(psm);
       expect(after.status.kind).toBe("converting");
-      // The hand-off on the host agrees with what the worker was sent.
-      expect(await stored(REF)).toMatchObject({ handoff: { tier: "pool", external: "USDT" } });
-      expect(call).toHaveBeenCalledWith(
-        "startWithdraw",
-        expect.objectContaining({ sessionId: SESSION, tier: "pool", external: "USDT" }),
-      );
-      const sent = call.mock.calls.find(([api]) => api === "startWithdraw")![1] as object;
-      expect("feeRate" in sent).toBe(false);
+      expect(await stored(REF)).toMatchObject({ handoff: psm });
+      expect(call.mock.calls).toEqual([["switchWithdrawToPool", { sessionId: SESSION }]]);
     } finally {
       vi.doUnmock("../lib/worker-rpc");
     }
@@ -429,7 +420,7 @@ describe("requests store: withdrawals", () => {
     });
     const requests = useRequestsStore();
     await requests.reconcile("boot");
-    expect(await requests.switchWithdrawalToPool(REF, { tier: "pool" })).toBe(false);
+    expect(await requests.switchWithdrawalToPool(REF)).toBe(false);
     expect(requests.get(REF)).toMatchObject({
       handoff,
       status: { kind: "failed" },

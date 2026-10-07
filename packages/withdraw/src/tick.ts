@@ -188,9 +188,12 @@ export interface WithdrawTickInput {
   minLanding?: () => Promise<bigint>;
   tickTimeoutMs: number;
   submitTimeoutMs: number;
-  /** Extra options merged into every submit, after People's signed extension and, for the
-   *  swap and the redeem, their CASH fee asset. */
+  /** Extra options merged into every submit on People, after its signed extension and, for the
+   *  swap, its CASH fee asset. */
   signOptions?: Record<string, unknown>;
+  /** Extra options merged into the exit's submit on Asset Hub, after its CASH fee asset. An
+   *  anchor from People is not valid there, so the two chains' options never share a field. */
+  assetHubSignOptions?: Record<string, unknown>;
   /** The key's CASH and PAS on People. */
   readKeyOnPeople: (ss58: string) => Promise<{ cash: bigint; pas: bigint }>;
   /** The key's CASH and USDT on Asset Hub at the finalized head, for the PSM tier. */
@@ -504,7 +507,10 @@ async function exitFromAssetHub(
   await input.onBeforeSubmit?.(call);
   state.attempts += 1;
   const res = await bounded(
-    exit.signAndSubmit(key.signer, { ...ASSET_HUB_CASH_TX_OPTIONS, ...input.signOptions } as never),
+    exit.signAndSubmit(key.signer, {
+      ...ASSET_HUB_CASH_TX_OPTIONS,
+      ...input.assetHubSignOptions,
+    } as never),
     input.submitTimeoutMs,
     `${call} submit`,
   );
