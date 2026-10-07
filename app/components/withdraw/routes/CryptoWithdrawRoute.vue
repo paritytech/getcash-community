@@ -3,6 +3,7 @@
 // purse was asked. Opened from the list with `topUp`, it goes straight to the journey of that
 // record. The record and the worker carry on when this screen is left.
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { depositTokenOf, type ConversionRoute } from "@getsome/funding";
 import { useStateDirector } from "../../../composables/useStateDirector";
 import { useWithdrawalRequest } from "../../../composables/useWithdrawalRequest";
 import type { FundingPackageEmits } from "../../../funding/handoff";
@@ -58,6 +59,9 @@ const address = ref("");
 const receive = ref<string | null | undefined>(undefined);
 /** The quote's fee split behind the summary's caption; null when it brought none. */
 const fees = ref<WithdrawFeeView | null>(null);
+/** The sale on Asset Hub the estimate was made for, frozen into the hand-off at confirm; null
+ *  until the quote decided it. */
+const sale = ref<ConversionRoute | null>(null);
 /** The native the estimate is for; what a provider's channel is quoted with at confirm. */
 const expectedNative = ref<bigint | null>(null);
 const starting = ref(false);
@@ -164,20 +168,20 @@ function pickToken(picked: WithdrawDestination) {
   step.value = "address";
 }
 
-/** Four decimals of the destination's native, the trailing zeros dropped. */
-function formatNative(planck: bigint, decimals: number): string {
+/** Four decimals of the landing asset, the trailing zeros dropped. */
+function formatLanding(units: bigint, decimals: number): string {
   const unit = 10n ** BigInt(decimals);
-  const whole = planck / unit;
-  const fraction = ((planck % unit) * 10_000n) / unit;
+  const whole = units / unit;
+  const fraction = ((units % unit) * 10_000n) / unit;
   const digits = fraction.toString().padStart(4, "0").replace(/0+$/, "");
   return digits === "" ? whole.toString() : `${whole}.${digits}`;
 }
 
-/** "$1 CASH ≈ 0.19 DOT": the gross rate the direct estimate implies. */
-function directRate(planck: bigint, base: bigint): string | null {
-  const value = Number(planck) / 1e10 / (Number(base) / 10 ** CASH_DECIMALS);
+/** "$1 CASH ≈ 0.19 DOT": the gross rate the direct estimate implies, in the landing asset. */
+function directRate(units: bigint, decimals: number, base: bigint, asset: string): string | null {
+  const value = Number(units) / 10 ** decimals / (Number(base) / 10 ** CASH_DECIMALS);
   if (!Number.isFinite(value) || value <= 0) return null;
-  return `${cashAmount("1")} ≈ ${value >= 0.01 ? value.toFixed(2) : value.toPrecision(2)} DOT`;
+  return `${cashAmount("1")} ≈ ${value >= 0.01 ? value.toFixed(2) : value.toPrecision(2)} ${asset}`;
 }
 
 async function onAddress(entered: string) {
@@ -188,30 +192,45 @@ async function onAddress(entered: string) {
   const base = toCashBase(amount.value);
   expectedNative.value = null;
   fees.value = null;
+  sale.value = null;
   if (picked === null || base === null) {
     receive.value = undefined;
     return;
   }
   receive.value = null;
+  // A chain answer that lands after the user went back and picked another token is for nobody:
+  // the summary must still show the destination this run was started for.
+  const stale = () => step.value !== "summary" || destination.value !== picked;
   try {
     if (picked.rail === "direct") {
-      // What the CASH sells for on Asset Hub's pool: the direct rail lands exactly that. Its one
-      // fee is taken in CASH before the sale, so the drill-in shows it as CASH.
+      // The sale the token picked takes, decided now and frozen at confirm, and what it lands
+      // on Asset Hub in that token's decimals: the direct rail lands exactly that. Its fees are
+      // taken in CASH before the sale, so the drill-in shows them as CASH.
       const live = await import("~~/lib/withdraw-live");
-      const planck = await live.quoteDirectReceive(base);
-      if (step.value !== "summary") return;
-      receive.value = `${formatNative(planck, 10)} ${picked.asset}`;
+      const route = await live.chooseWithdrawRoute(base, picked.landing);
+      if (stale()) return;
+      // The sale stands on its own: an estimate that cannot be priced hides the figure, as it
+      // always did, and does not hold the withdrawal back.
+      sale.value = route;
+      const [units, feesCash] = await Promise.all([
+        live.quoteDirectReceive(base, route),
+        live.directFeesCash(route),
+      ]);
+      if (stale()) return;
+      const landing = depositTokenOf(route);
+      receive.value = `${formatLanding(units, landing.decimals)} ${picked.asset}`;
       fees.value = {
-        rows: [{ label: "Network fee", value: cashAmount(fmtCash(live.DIRECT_FEES_CASH)) }],
+        rows: [{ label: "Network fee", value: cashAmount(fmtCash(feesCash)) }],
         receive: receive.value,
-        rate: directRate(planck, base),
+        rate: directRate(units, landing.decimals, base, picked.asset),
       };
       return;
     }
-    // A provider destination shows what its offer for this amount said would land, and the
-    // channel is opened at confirm for the native that offer was quoted for.
+    // A provider takes the native from the key. It shows what its offer for this amount said
+    // would land, and the channel is opened at confirm for the native that offer was quoted for.
+    sale.value = { tier: "pool" };
     await offers.learn(base);
-    if (step.value !== "summary") return;
+    if (stale()) return;
     const offer = offers.offerFor(picked);
     if (offer.state !== "available" || offers.sellable === null) {
       receive.value = undefined;
@@ -237,6 +256,13 @@ async function confirm() {
     startError.value = allowed.subtitle ?? "This destination cannot take the amount.";
     return;
   }
+  // The sale is the quote's decision; without one the worker would have to decide, which it
+  // never does.
+  const route = sale.value;
+  if (route === null) {
+    startError.value = "The estimate is not available right now.";
+    return;
+  }
   starting.value = true;
   startError.value = null;
   try {
@@ -246,6 +272,7 @@ async function confirm() {
       destination: { chain: picked.chainLabel, asset: picked.asset, address: address.value },
       landingHex: landingAccountHex(picked, address.value),
       rail: picked.rail,
+      sale: route,
       ...(expectedNative.value === null ? {} : { expectedNative: expectedNative.value }),
     });
     if (outcome.ref === null) {

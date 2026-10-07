@@ -39,9 +39,11 @@ type Assurance = Extract<RequestStatus, { kind: "deposit-seen" }>["assurance"];
 type ChainObservation = Extract<Observation, { source: "chain"; burnerNative: string }>;
 type UserObservation = Extract<Observation, { source: "user" }>;
 type ProviderResult = Extract<Observation, { source: "provider"; result: unknown }>;
-/** The fields a positive money observation clears from a record it resurrects, and the mismatch
- *  a Polkadot deposit drops once it is settled one way or the other. */
-type ClearedField = "cancelledAt" | "failureReason" | "refunded" | "failure" | "depositMismatch";
+/** The fields a positive money observation clears from a record it resurrects, the mismatch a
+ *  Polkadot deposit drops once it is settled one way or the other, and the early claim word a
+ *  retry drops. */
+type ClearedField =
+  "cancelledAt" | "failureReason" | "refunded" | "failure" | "depositMismatch" | "creditedAt";
 
 const FAILED: FundingProgressSignal = { observation: { kind: "failed" } };
 const SETTLED: FundingProgressSignal = { observation: { kind: "settled" } };
@@ -77,6 +79,8 @@ function apply(record: TopUpRecord, observation: Observation): TopUpRecord {
       if ("gone" in observation) {
         return applyProviderGone(record, observation.at, observation.message);
       }
+      // A sale's order belongs to a withdrawal.
+      if ("sale" in observation) return record;
       return applyProviderUnreachable(record, observation.at);
     case "chain":
       return "burnerNative" in observation ? applyChain(record, observation) : record;
@@ -331,6 +335,17 @@ function applyWorker(record: TopUpRecord, at: number, job: WorkerJobView | null)
   };
   // A job that saw funds is a money observation whatever its phase says (3.2, rule 3).
   if (job.fundsSeenAt !== null) next = moneySeen(next, job.fundsSeenAt, "finalized", "worker");
+  // The host's early word: every mint is in a block. Kept through a reorg or a further attempt;
+  // only a retry after a failure drops it.
+  const { claim } = job;
+  if (
+    job.phase !== "failed" &&
+    claim?.phase === "claiming" &&
+    claim.status === "claimed" &&
+    next.creditedAt === undefined
+  ) {
+    next = { ...next, creditedAt: claim.at };
+  }
   const rank = rankOf(next);
   if (job.claim?.phase === "claimed") {
     const claimed = claimedAmount(job.claim.amount ?? job.claim.credited);
@@ -584,7 +599,11 @@ function applyUser(record: TopUpRecord, observation: UserObservation): TopUpReco
         record.failure?.step === "mint"
           ? { kind: "claiming", at }
           : { kind: "converting", at, step };
-      return advanced({ ...without(record, ["failure", "failureReason"]), status }, HOLD, at);
+      return advanced(
+        { ...without(record, ["failure", "failureReason", "creditedAt"]), status },
+        HOLD,
+        at,
+      );
     }
     case "meld-submitted":
       return record.meldSubmittedAt === undefined ? { ...record, meldSubmittedAt: at } : record;
@@ -610,6 +629,7 @@ function applyUser(record: TopUpRecord, observation: UserObservation): TopUpReco
     }
     case "payment-requested":
     case "channel-opened":
+    case "sale-unfundable":
       return record;
   }
 }

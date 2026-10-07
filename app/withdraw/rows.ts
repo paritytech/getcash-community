@@ -7,6 +7,8 @@ import {
   WITHDRAW_SOURCE_PREFIX,
   isFinished,
   isWithdrawSourceId,
+  saleAwaitingDeposit,
+  saleBeforePurse,
   type WithdrawalRecord,
 } from "../funding/requests/model";
 import type { FundingTopUpAdapter } from "../funding/top-up-adapter";
@@ -20,7 +22,12 @@ import { useRequestsStore } from "../stores/requests";
 import { parseRequestRefKey, requestRefKey, type RequestRef } from "../utils/request-index";
 import { destinationTokenIcon, withdrawDestination, withdrawNetwork } from "./destinations";
 import { withdrawalFailureText } from "./failure-copy";
-import { withdrawalProgress, withdrawalProgressProfile } from "./progress";
+import {
+  SALE_KYC_LABEL,
+  SALE_READY_LABEL,
+  withdrawalProgress,
+  withdrawalProgressProfile,
+} from "./progress";
 
 /** The words the rows use for a withdrawal. */
 export const WITHDRAWAL_WORDING: FundingTopUpWording = { settled: "Sent" };
@@ -43,14 +50,14 @@ export function withdrawalRequestRef(id: string): RequestRef | null {
   return ref !== null && isWithdrawSourceId(ref.sourceId) ? ref : null;
 }
 
-/** The row's state, worded as the design's list draws it: an unpaid withdrawal is initiated, a
- *  moving one is converting to its destination asset. A cancelled record is never listed; it
- *  reads as failed so the type has a value. */
+/** The row's state, worded as the design's list draws it: an unpaid withdrawal is initiated
+ *  (a fiat sale names what it waits on instead), a moving one is converting to its destination
+ *  asset. A cancelled record is never listed; it reads as failed so the type has a value. */
 export function withdrawalRowStateOf(record: WithdrawalRecord): FundingTopUpState {
   const { status } = record;
   switch (status.kind) {
     case "awaiting-payment":
-      return { kind: "awaiting-transfer", status: "Withdrawal initiated" };
+      return { kind: "awaiting-transfer", status: saleWaitLabel(record) ?? "Withdrawal initiated" };
     case "paid":
     case "converting":
     case "sending":
@@ -69,8 +76,37 @@ export function withdrawalRowStateOf(record: WithdrawalRecord): FundingTopUpStat
   }
 }
 
+/** What a fiat sale waits on before its balance is asked, or null past that: the seller's KYC, then
+ *  the seller, who pays from the sale's own screen. */
+function saleWaitLabel(record: WithdrawalRecord): string | null {
+  if (saleAwaitingDeposit(record)) return SALE_KYC_LABEL;
+  return saleBeforePurse(record) ? SALE_READY_LABEL : null;
+}
+
 /** The icon for a destination this build no longer knows. */
 const UNKNOWN_ICON = "/icons/crypto.svg";
+
+/** What a row says a withdrawal went out as: the network and token for crypto, the payout
+ *  method and its currency for a fiat sale. */
+function detailsOf(record: WithdrawalRecord): FundingTopUp["details"] {
+  if (record.route !== "crypto") {
+    const icon = record.route === "bank" ? "/icons/bank.svg" : "/icons/card.svg";
+    return {
+      network: { label: record.destination.chain, icon },
+      token: { label: record.destination.asset, icon },
+    };
+  }
+  const destinationId = record.ref.sourceId?.slice(WITHDRAW_SOURCE_PREFIX.length) ?? "";
+  const destination = withdrawDestination(destinationId);
+  const network = destination === undefined ? undefined : withdrawNetwork(destination.chain);
+  return {
+    network: { label: record.destination.chain, icon: network?.icon ?? UNKNOWN_ICON },
+    token: {
+      label: record.destination.asset,
+      icon: destination === undefined ? UNKNOWN_ICON : destinationTokenIcon(destination),
+    },
+  };
+}
 
 export function projectWithdrawalTopUps(
   records: readonly WithdrawalRecord[],
@@ -78,32 +114,44 @@ export function projectWithdrawalTopUps(
 ): FundingTopUp[] {
   return records.map((record) => {
     const progress = withdrawalProgress(record, now);
-    const destinationId = record.ref.sourceId?.slice(WITHDRAW_SOURCE_PREFIX.length) ?? "";
-    const destination = withdrawDestination(destinationId);
-    const network = destination === undefined ? undefined : withdrawNetwork(destination.chain);
     return {
       id: rowId(record.ref),
       amount: record.amountHuman,
       debit: true,
-      route: "crypto",
+      // The route opens the package the withdrawal came from: crypto's, or the fiat sale's.
+      route: record.route,
       startedAt: record.startedAt,
       progress,
-      details: {
-        network: { label: record.destination.chain, icon: network?.icon ?? UNKNOWN_ICON },
-        token: {
-          label: record.destination.asset,
-          icon: destination === undefined ? UNKNOWN_ICON : destinationTokenIcon(destination),
-        },
-      },
+      details: detailsOf(record),
       state: withdrawalRowStateOf(record),
     };
   });
 }
 
-export function useWithdrawalTopUpAdapter(): FundingTopUpAdapter {
+/** The store pass behind the lists' refresh. The page refreshes every package's list at once and
+ *  each lists from the same store, so the calls of one turn share one pass. */
+let refreshing: Promise<void> | null = null;
+function refreshWithdrawals(requests: ReturnType<typeof useRequestsStore>): Promise<void> {
+  if (refreshing === null) {
+    refreshing = requests.reconcile("refresh");
+    queueMicrotask(() => {
+      refreshing = null;
+    });
+  }
+  return refreshing;
+}
+
+/** The list adapter for the withdrawals on `routes`. Each package lists its own, so the page's
+ *  one-adapter-per-package lists every withdrawal once. */
+function useWithdrawalTopUpAdapterFor(
+  routes: readonly WithdrawalRecord["route"][],
+): FundingTopUpAdapter {
   const requests = useRequestsStore();
+  const mine = computed(() =>
+    requests.openWithdrawals.filter((record) => routes.includes(record.route)),
+  );
   const cadence = computed(() => {
-    const moving = requests.openWithdrawals.filter((record) => !isFinished(record));
+    const moving = mine.value.filter((record) => !isFinished(record));
     return moving.length === 0
       ? null
       : Math.min(
@@ -112,8 +160,8 @@ export function useWithdrawalTopUpAdapter(): FundingTopUpAdapter {
   });
   const now = useFundingProgressClock(cadence);
   return {
-    topUps: computed(() => projectWithdrawalTopUps(requests.openWithdrawals, now.value)),
-    refresh: () => requests.reconcile("refresh"),
+    topUps: computed(() => projectWithdrawalTopUps(mine.value, now.value)),
+    refresh: () => refreshWithdrawals(requests),
     // A withdrawal has no world to rebuild: bringing it to the front is the record itself.
     open: async (topUp) => {
       const ref = withdrawalRequestRef(topUp.id);
@@ -123,3 +171,11 @@ export function useWithdrawalTopUpAdapter(): FundingTopUpAdapter {
     },
   };
 }
+
+/** The crypto withdrawals: Asset Hub and the Chainflip networks. */
+export const useCryptoWithdrawalTopUpAdapter = (): FundingTopUpAdapter =>
+  useWithdrawalTopUpAdapterFor(["crypto"]);
+
+/** The fiat sales, by card or bank. */
+export const useFiatWithdrawalTopUpAdapter = (): FundingTopUpAdapter =>
+  useWithdrawalTopUpAdapterFor(["card", "bank"]);

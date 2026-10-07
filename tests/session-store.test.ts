@@ -88,7 +88,7 @@ describe("session store: Polkadot direct deposit in the mock world", () => {
   });
 
   it(
-    "quotes dotUSD under its own source on the teleport tier, and runs to done",
+    "quotes dotUSD under its own source on the dotUSD tier, and runs to done",
     { timeout: 30_000 },
     async () => {
       const store = useSessionStore();
@@ -104,7 +104,7 @@ describe("session store: Polkadot direct deposit in the mock world", () => {
         nativeAmount: null,
       });
       expect(store.mock?.sourceId).toBe("dotusd-assethub");
-      expect(store.mock?.route).toEqual({ tier: "teleport" });
+      expect(store.mock?.route).toEqual({ tier: "dotusd" });
 
       await store.start();
       expect(requests.phase).toBe("awaiting-deposit");
@@ -180,6 +180,31 @@ describe("session store: Polkadot direct deposit in the mock world", () => {
       expect(requests.phase).toBe("done");
     },
   );
+
+  it("keeps the same deposit address and amount when the top-up is re-opened from the list", async () => {
+    const store = useSessionStore();
+    const requests = useRequestsStore();
+    store.setAmount("10");
+    await store.fetchQuote("Polkadot", "USDC");
+    await store.start();
+    const record = requests.foregroundRecord;
+    if (record?.deposit === undefined) throw new Error("the started request has no deposit");
+    const { ref } = record;
+    const opened = { ...record.deposit };
+
+    // Leaving the screen drops the world, as walking back to the list does. The record stays.
+    store.reset();
+    expect(requests.foregroundRecord).toBeNull();
+
+    // Tapping the row rebuilds the world under the same trade, so the account is the same one.
+    expect(await store.openRequest(ref)).toBe(true);
+    expect(requests.phase).toBe("awaiting-deposit");
+    expect(requests.foregroundRecord?.deposit).toMatchObject({
+      address: opened.address,
+      amount: opened.amount,
+      assetSymbol: opened.assetSymbol,
+    });
+  });
 });
 
 describe("session store: Meld (card / bank) in the mock world", () => {

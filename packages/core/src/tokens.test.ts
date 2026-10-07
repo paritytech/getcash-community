@@ -8,6 +8,7 @@ import { CASH_DECIMALS, CASH_LOCATION } from "../../people/src/cash";
 import { USDC_ASSET_ID, USDT_ASSET_ID } from "../../revive/src/constants";
 import { PEOPLE_NATIVE } from "../../withdraw/src/paseo";
 import { CASH_ON_ASSET_HUB } from "../../withdraw/src/program";
+import { NETWORK } from "./network";
 import { TOKENS, type TokenSpec } from "./tokens";
 
 describe("re-exported asset constants", () => {
@@ -18,23 +19,23 @@ describe("re-exported asset constants", () => {
       interior: {
         type: "X3",
         value: [
-          { type: "Parachain", value: 1500 },
+          { type: "Parachain", value: NETWORK.assetHub.paraId },
           { type: "PalletInstance", value: 50 },
-          { type: "GeneralIndex", value: 50_000_413n },
+          { type: "GeneralIndex", value: BigInt(NETWORK.assetHub.cashAssetId) },
         ],
       },
     });
   });
 
   it("CASH on Asset Hub: packages/funding/src/paseo.ts, packages/withdraw/src/program.ts", () => {
-    expect(PASEO_UNDERLYING_ASSET_ID).toBe(50_000_413);
+    expect(PASEO_UNDERLYING_ASSET_ID).toBe(NETWORK.assetHub.cashAssetId);
     expect(CASH_ON_ASSET_HUB).toStrictEqual({
       parents: 0,
       interior: {
         type: "X2",
         value: [
           { type: "PalletInstance", value: 50 },
-          { type: "GeneralIndex", value: 50_000_413n },
+          { type: "GeneralIndex", value: BigInt(NETWORK.assetHub.cashAssetId) },
         ],
       },
     });

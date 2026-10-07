@@ -143,7 +143,7 @@ const QUOTED_CARD = {
   transactionFee: "1.06",
   networkFee: null,
   partnerFee: "0.50",
-  // Not Meld's: the swap and teleport up to CASH on People, as the store prices them. Measured
+  // Not Meld's: the swap and send up to CASH on People, as the store prices them. Measured
   // against Paseo for this frame's 50 CASH — 0.0343 DOT of Asset Hub fees at the quote's implied
   // rate, plus 0.000043 CASH of execution on People.
   chainFee: "0.0867",
@@ -463,6 +463,7 @@ async function previewWithdrawal(
       destination,
       landingHex: `0x${"5d".repeat(32)}`,
       rail: "chainflip",
+      tier: "pool",
       assetHubGenesis: "0xah",
       peopleGenesis: "0xpe",
       peopleParaId: 1004,

@@ -2,7 +2,7 @@
 // The amount screens' shared frame: header, route pills, purse pill, notice line, keypad and
 // bottom-anchored CTA. The screen's own middle comes in through the slots, which hand back the
 // grouped amount the display writes.
-import { computed } from "vue";
+import { computed, onBeforeUnmount, ref } from "vue";
 import AvailableBalancePill from "./AvailableBalancePill.vue";
 import CashAmount from "../ui/CashAmount.vue";
 import FundingEntryHeader from "./FundingEntryHeader.vue";
@@ -47,9 +47,51 @@ const emit = defineEmits<{
 
 const displayAmount = computed(() => (props.amount === "" ? "0" : groupAmountDigits(props.amount)));
 
+/** How long a rejected tap holds the maximum on the notice line. */
+const MAXIMUM_FLASH_MS = 1000;
+
+const noticeEl = ref<HTMLElement | null>(null);
+const maximumFlash = ref(false);
+let maximumFlashTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** The notice as drawn: a rejected tap flashes the maximum over it in the breach colour. */
+const shownNotice = computed(() =>
+  maximumFlash.value
+    ? {
+        lead: "Maximum ",
+        from: null,
+        amount: groupAmountDigits(props.config.amount.maximum),
+        breach: true,
+      }
+    : props.notice,
+);
+
 function enter(key: FundingKey) {
-  emit("change", reduceFundingAmount(props.amount, key, props.config.amount.decimals));
+  const { amount, hitMaximum } = reduceFundingAmount(props.amount, key, props.config.amount);
+  if (hitMaximum) {
+    flashMaximum();
+    return;
+  }
+  clearTimeout(maximumFlashTimer);
+  maximumFlash.value = false;
+  emit("change", amount);
 }
+
+// A tap that writes nothing must read as the cap, not a broken keypad.
+function flashMaximum() {
+  clearTimeout(maximumFlashTimer);
+  maximumFlash.value = true;
+  maximumFlashTimer = setTimeout(() => (maximumFlash.value = false), MAXIMUM_FLASH_MS);
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  noticeEl.value?.animate(
+    {
+      transform: ["translateX(0)", "translateX(-0.25rem)", "translateX(0.25rem)", "translateX(0)"],
+    },
+    { duration: 200, easing: "ease-out" },
+  );
+}
+
+onBeforeUnmount(() => clearTimeout(maximumFlashTimer));
 
 function requestContinue() {
   if (props.skeleton || props.loading || !props.canContinue) return;
@@ -90,14 +132,15 @@ function requestContinue() {
         <!-- The notice names the bound an amount broke, so a breach has to be announced. -->
         <p
           v-else
+          ref="noticeEl"
           class="amount-shell-notice text-body-m"
-          :class="{ 'amount-shell-notice-breach': notice.breach }"
+          :class="{ 'amount-shell-notice-breach': shownNotice.breach }"
           aria-live="polite"
         >
-          {{ notice.lead
-          }}<template v-if="notice.from != null"
-            ><CashAmount :amount="notice.from" :ticker="false" /> to </template
-          ><CashAmount v-if="notice.amount != null" :amount="notice.amount" />
+          {{ shownNotice.lead
+          }}<template v-if="shownNotice.from != null"
+            ><CashAmount :amount="shownNotice.from" :ticker="false" /> to </template
+          ><CashAmount v-if="shownNotice.amount != null" :amount="shownNotice.amount" />
         </p>
 
         <slot name="after" :display-amount="displayAmount" />

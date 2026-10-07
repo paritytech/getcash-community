@@ -6,12 +6,14 @@ import { deriveEntropy, getHostLocalStorage, getHostProvider } from "./host.js";
 // wait, a chain client for one tick, the anchor of a submit, and the key a label derives.
 
 /**
- * A job map under `storageKey`, loaded once and single-flight, saved after every change. A
- * failed load throws and caches nothing; a failed save keeps answering from memory.
+ * A job map under `storageKey`, loaded once and single-flight, saved after every change, one
+ * write at a time in the order asked. A failed load throws and caches nothing; a failed save
+ * keeps answering from memory.
  */
 export function createJobStore(storageKey, label) {
   let jobs = null;
   let loading = null;
+  let saving = Promise.resolve();
 
   async function read() {
     const store = await getHostLocalStorage();
@@ -19,6 +21,15 @@ export function createJobStore(storageKey, label) {
     const stored = await store.readJSON(storageKey);
     jobs = stored && typeof stored === "object" ? stored : {};
     return jobs;
+  }
+
+  async function write() {
+    try {
+      const store = await getHostLocalStorage();
+      await store?.writeJSON(storageKey, jobs);
+    } catch (error) {
+      console.warn(`[${label}] jobs write failed: ${String(error?.message ?? error)}`);
+    }
   }
 
   return {
@@ -29,14 +40,10 @@ export function createJobStore(storageKey, label) {
       });
       return loading;
     },
-    async save() {
-      if (!jobs) return;
-      try {
-        const store = await getHostLocalStorage();
-        await store?.writeJSON(storageKey, jobs);
-      } catch (error) {
-        console.warn(`[${label}] jobs write failed: ${String(error?.message ?? error)}`);
-      }
+    save() {
+      if (!jobs) return Promise.resolve();
+      saving = saving.then(write);
+      return saving;
     },
   };
 }
@@ -52,6 +59,9 @@ export const asBig = (value, fallback = 0n) => {
 
 export const toHex = (bytes) =>
   `0x${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+
+export const fromHex = (hex) =>
+  Uint8Array.from(hex.slice(2).match(/.{2}/g) ?? [], (byte) => parseInt(byte, 16));
 
 /** Rejects with a timeout error when `promise` takes longer than `ms`. */
 export function bounded(promise, ms, what) {
@@ -70,16 +80,32 @@ export function bounded(promise, ms, what) {
   });
 }
 
+/** Bounds on the host's provider and on the chain spec read that verifies it. */
+const PROVIDER_TIMEOUT_MS = 8_000;
+const CHAIN_SPEC_TIMEOUT_MS = 10_000;
+/** The longest `connectChain` waits before it gives up. */
+export const CONNECT_TIMEOUT_MS = PROVIDER_TIMEOUT_MS + CHAIN_SPEC_TIMEOUT_MS;
+/** The longest `signOptionsFor` waits for the tip. */
+export const ANCHOR_TIMEOUT_MS = 8_000;
+
 /**
  * Creates a papi client for `genesisHash` through the host and verifies the chain it serves.
  * Clients live for one tick and are destroyed when it ends.
  */
 export async function connectChain(genesisHash, what) {
-  const provider = await bounded(getHostProvider(genesisHash), 8_000, `${what} provider`);
+  const provider = await bounded(
+    getHostProvider(genesisHash),
+    PROVIDER_TIMEOUT_MS,
+    `${what} provider`,
+  );
   if (!provider) throw new Error(`${what}: no host provider (not in a container?)`);
   const client = createClient(provider);
   try {
-    const spec = await bounded(client.getChainSpecData(), 10_000, `${what} chainSpec`);
+    const spec = await bounded(
+      client.getChainSpecData(),
+      CHAIN_SPEC_TIMEOUT_MS,
+      `${what} chainSpec`,
+    );
     if (spec.genesisHash !== genesisHash) {
       throw new Error(`${what}: genesis mismatch: host routed ${spec.genesisHash}`);
     }
@@ -95,10 +121,16 @@ export async function connectChain(genesisHash, what) {
  * cannot be read.
  */
 export async function signOptionsFor(client) {
-  const best = await bounded(client.getBestBlocks(), 8_000, "best block");
-  const hash = best?.[0]?.hash;
-  if (!hash) throw new Error("no best block to anchor the submit against");
-  return { at: hash };
+  return { at: (await anchorFor(client)).hash };
+}
+
+/** The best block a submit is anchored at, its hash and its number. Throws when the tip cannot be
+ *  read. */
+export async function anchorFor(client) {
+  const best = await bounded(client.getBestBlocks(), ANCHOR_TIMEOUT_MS, "best block");
+  const block = best?.[0];
+  if (!block?.hash) throw new Error("no best block to anchor the submit against");
+  return { hash: block.hash, number: block.number };
 }
 
 /** The keypair the entropy label `label` derives, from host entropy. Never persisted. */

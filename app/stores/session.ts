@@ -4,6 +4,7 @@
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef, watch } from "vue";
 import {
+  NETWORK,
   TOKENS,
   type ChainflipRail,
   type PaymentState,
@@ -15,6 +16,7 @@ import type { RefundKey } from "@getsome/ephemeral";
 import {
   createManualRail,
   manualSourceIdOf,
+  NoCashTransferError,
   PERMILL,
   PSM_EXTERNAL,
   recordedRoute,
@@ -193,7 +195,7 @@ async function step<T>(label: string, ms: number, work: Promise<T>): Promise<T> 
 const ahBlockLink = (block?: number) =>
   block === undefined
     ? ""
-    : ` https://polkadot.js.org/apps/?rpc=wss%3A%2F%2Fpaseo-asset-hub-next-rpc.polkadot.io#/explorer/query/${block}`;
+    : ` https://polkadot.js.org/apps/?rpc=${encodeURIComponent(NETWORK.assetHub.rpc)}#/explorer/query/${block}`;
 
 export interface QuotedView {
   send: string;
@@ -206,7 +208,7 @@ export interface QuotedView {
   transactionFee?: string | null;
   networkFee?: string | null;
   partnerFee?: string | null;
-  /** The funding leg's own network fee, in `symbol` units: what the swap and the teleport up to
+  /** The funding leg's own network fee, in `symbol` units: what the swap and the send up to
    *  CASH on People cost, which the rail's quote knows nothing about. Priced by the app, not
    *  reported by the rail. */
   chainFee?: string | null;
@@ -688,7 +690,7 @@ export const useSessionStore = defineStore("session", () => {
     deposit?: DepositAsset,
   ): Promise<ConversionRoute> {
     if (!isHosted()) {
-      if (deposit === "dotUSD") return { tier: "teleport" };
+      if (deposit === "dotUSD") return { tier: "dotusd" };
       return deposit === undefined || deposit === "native"
         ? { tier: "pool" }
         : { tier: "pool", external: deposit };
@@ -861,7 +863,10 @@ export const useSessionStore = defineStore("session", () => {
       "funding sizing estimate (public read)",
       20_000,
       estimatePublicFundingSizing({ settleAmount, probeAddress: DEV_RECIPIENT }),
-    ).catch(() => FALLBACK_FUNDING_SIZING);
+    ).catch((e: unknown) => {
+      if (e instanceof NoCashTransferError) throw e;
+      return FALLBACK_FUNDING_SIZING;
+    });
   }
 
   /** (Re)quotes the Meld rail for the current CASH amount and region. The mock world simulates

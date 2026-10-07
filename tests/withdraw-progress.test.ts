@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import { PAYMENT_WINDOW_MS, type WithdrawalRecord } from "../app/funding/requests/model";
 import { requestRefOf } from "../app/utils/request-index";
 import {
+  SALE_KYC_LABEL,
+  SALE_READY_LABEL,
   WITHDRAWAL_JOURNEY_LABELS,
   withdrawalJourneyDone,
   withdrawalProgress,
@@ -45,6 +47,7 @@ function record(overrides: Partial<WithdrawalRecord> = {}): WithdrawalRecord {
       },
       landingHex: `0x${"aa".repeat(32)}`,
       rail: "direct",
+      tier: "pool",
       assetHubGenesis: "0xah",
       peopleGenesis: "0xpe",
       peopleParaId: 1004,
@@ -147,5 +150,48 @@ describe("withdrawal rows", () => {
     });
     const [sent] = projectWithdrawalTopUps([record({ status: { kind: "sent", at: at(6) } })]);
     expect(sent!.state).toEqual({ kind: "settled", at: at(6) });
+  });
+
+  it("says a sale in KYC waits on the provider, with no estimate counted from a payment", () => {
+    const sale = record({
+      route: "bank",
+      payment: { attempt: 0 },
+      rail: { provider: "meld", stage: "waiting", updatedAt: STARTED },
+      sale: {
+        fundingRequestId: "funding-sell-1",
+        serviceProvider: "BANXA",
+        country: "DE",
+        fiat: "EUR",
+        paymentMethodType: "SEPA",
+        widgetUrl: "https://kyc.test",
+        cryptoAmount: "234521000000",
+        quotedPayout: "96",
+      },
+    });
+    const [row] = projectWithdrawalTopUps([sale], at(1));
+    expect(row!.state).toEqual({ kind: "awaiting-transfer", status: SALE_KYC_LABEL });
+    expect(JSON.stringify(withdrawalProgress(sale, at(1)))).not.toContain("after you pay");
+
+    // Past KYC the sale's own screen asks the balance, so the list sends the seller there.
+    const verified = {
+      ...sale,
+      handoff: {
+        ...sale.handoff,
+        channel: {
+          id: "funding-sell-1",
+          address: "14Kt4HmnCzMqUKvWcGZdLaWkLNcL4TcUSXYvKyKdbMhsvRxM",
+          openedAt: at(1),
+          expiresAt: 0,
+          expectedEgress: "0",
+          amount: "234521000000",
+        },
+      },
+    };
+    const [ready] = projectWithdrawalTopUps([verified], at(2));
+    expect(ready!.state).toEqual({ kind: "awaiting-transfer", status: SALE_READY_LABEL });
+    // Once asked, the row reads as any payment in progress.
+    const asked = { ...verified, payment: { attempt: 0, requestedAt: at(3), id: "pay-1" } };
+    const [paying] = projectWithdrawalTopUps([asked], at(3));
+    expect(paying!.state).not.toEqual({ kind: "awaiting-transfer", status: SALE_READY_LABEL });
   });
 });
