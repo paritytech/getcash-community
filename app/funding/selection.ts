@@ -84,22 +84,42 @@ export function fundingAmountStatus(value: string, rules: FundingAmountRules): F
  *  amount; it only keeps a runaway entry from outgrowing the row the display can shrink. */
 const MAX_WHOLE_DIGITS = 9;
 
-export function reduceFundingAmount(current: string, key: FundingKey, decimals: number): string {
+export type FundingAmountEntry = Readonly<{
+  amount: string;
+  /** The key was a digit the configured maximum turned away; the caller announces the bound. */
+  hitMaximum: boolean;
+}>;
+
+export function reduceFundingAmount(
+  current: string,
+  key: FundingKey,
+  rules: FundingAmountRules,
+): FundingAmountEntry {
   const editable = /^(?:(?:0|[1-9]\d*)(?:\.\d*)?)?$/.test(current) ? current : "";
+  const kept = (amount: string): FundingAmountEntry => ({ amount, hitMaximum: false });
 
   if (key === "delete") {
-    return editable.slice(0, -1);
+    return kept(editable.slice(0, -1));
   }
   if (key === ".") {
-    if (decimals === 0 || editable.includes(".")) return editable;
-    return editable === "" ? "0." : `${editable}.`;
+    if (rules.decimals === 0 || editable.includes(".")) return kept(editable);
+    return kept(editable === "" ? "0." : `${editable}.`);
   }
 
   const [whole = "", fraction] = editable.split(".");
-  if (fraction !== undefined && fraction.length >= decimals) return editable;
-  if (fraction === undefined && whole.length >= MAX_WHOLE_DIGITS) return editable;
-  if ((editable === "" || editable === "0") && fraction === undefined) return key;
-  return `${editable}${key}`;
+  if (fraction !== undefined && fraction.length >= rules.decimals) return kept(editable);
+
+  const next =
+    (editable === "" || editable === "0") && fraction === undefined ? key : `${editable}${key}`;
+  // The maximum rejects like the decimal cap does, but reported, so the dead tap can be announced.
+  // Only a digit can raise the amount, so delete always backs out of a breach.
+  const value = parseFundingAmount(next, rules.decimals);
+  const maximum = parseFundingAmount(rules.maximum, rules.decimals);
+  if (value !== null && maximum !== null && value > maximum) {
+    return { amount: editable, hitMaximum: true };
+  }
+  if (fraction === undefined && whole.length >= MAX_WHOLE_DIGITS) return kept(editable);
+  return kept(next);
 }
 
 export function createFundingSelection(
