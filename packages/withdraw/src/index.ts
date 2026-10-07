@@ -16,7 +16,9 @@ export {
   estimateDirectFeesCash,
   NeedsSwapError,
   priceSale,
+  PsmRefusedError,
   readPoolReserves,
+  redeemAmountOf,
   sizeSwap,
   sizeXcm,
   SWAP_HEADROOM_PCT,
@@ -38,6 +40,7 @@ export {
   landingFloor,
   MAX_REJECTIONS,
   withdrawTickOnce,
+  WithdrawHeldError,
   WithdrawRejectedError,
 } from "./tick";
 export type {

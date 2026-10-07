@@ -262,6 +262,16 @@ function applyWorker(
           message: job.lastError ?? "the conversion failed in the background",
           recoverable: true,
         });
+      case "held":
+        // The PSM refused the redeem three times with room for it, so waiting cannot clear it.
+        // The CASH is still on the key; a retry re-arms the worker's count.
+        if (rank < 1) return next;
+        return failed(next, at, {
+          kind: "held",
+          step: "convert",
+          message: job.lastError ?? "the PSM would not redeem the CASH",
+          recoverable: true,
+        });
       case "expired":
         return rank === 0 && !paymentTaken(next) ? expired(next, at) : next;
       case "channel-expired":

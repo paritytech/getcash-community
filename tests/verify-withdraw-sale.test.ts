@@ -94,7 +94,6 @@ describe.runIf(process.env.VERIFY_WITHDRAW_SALE === "1")("the sale per token on 
           assetHubApi: api,
           route,
           cashOnKey: CASH_TO_TELEPORT,
-          remoteFeesCash: earmark,
           slippagePct: SLIPPAGE_PCT,
           originHex: KEY_HEX,
           peopleParaId: PASEO_PEOPLE_PARA_ID,

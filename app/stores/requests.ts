@@ -438,7 +438,7 @@ type WithdrawJob = {
   failure?: string;
   lastError?: string;
   lastTickAt?: number | null;
-  state?: { fundsSeenAt?: number | null };
+  state?: { fundsSeenAt?: number | null; waitingSince?: number | null; psmRefusals?: number };
   leg?: { reading?: SwapStatusResult | null };
   txs?: WithdrawJobView["txs"];
   /** A fiat sale's residue, once the provider was paid, or its whole key once it ended unpaid. */
@@ -504,6 +504,9 @@ function withdrawJobView(job: WithdrawJob, residueJob?: WorkerJob): WithdrawJobV
     ...(job.lastError === undefined ? {} : { lastError: job.lastError }),
     fundsSeenAt: job.state?.fundsSeenAt ?? null,
     lastTickAt: job.lastTickAt ?? null,
+    ...(isNumber(job.state?.waitingSince) ? { waitingSince: job.state.waitingSince } : {}),
+    ...(isNumber(job.state?.psmRefusals) ? { psmRefusals: job.state.psmRefusals } : {}),
+    ...(isString(job.tier) ? { tier: job.tier } : {}),
     ...(job.txs === undefined ? {} : { txs: job.txs }),
     ...(residue == null ? {} : residueViewOf(residue, residueJob)),
   };

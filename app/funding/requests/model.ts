@@ -369,6 +369,8 @@ export type WithdrawalFailureKind =
   | "payment-failed"
   | "rejected"
   | "timeout"
+  /** The PSM refused the redeem three times with room for it; the CASH is still on the key. */
+  | "held"
   | "expired"
   | "unknown"
   | "deposit-rejected"
@@ -531,6 +533,13 @@ export interface WithdrawJobView {
   lastError?: string;
   fundsSeenAt: number | null;
   lastTickAt: number | null;
+  /** Since when the PSM has had no room for the redeem; the worker waits, off its clock, and
+   *  the journey shows the ordinary status. Diagnostics only. */
+  waitingSince?: number | null;
+  /** PSM refusals of the redeem with room for it, towards the hold. */
+  psmRefusals?: number;
+  /** The sale's tier as the job recorded it. */
+  tier?: string;
   txs?: { call: "swap" | "withdraw" | "sweep" | "pay"; txHash: string; block?: number }[];
   /** The provider's latest word on the swap, once the worker has paid it. */
   rail?: SwapStatusResult;

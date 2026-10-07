@@ -421,6 +421,16 @@ describe("withdrawal: the worker", () => {
     expect(rejected.failure?.step).toBe("convert");
   });
 
+  it("fails recoverably at the conversion when the PSM would not redeem", () => {
+    const seen = at(1);
+    const held = run(
+      prompted(),
+      worker(at(3), job({ phase: "failed", failure: "held", fundsSeenAt: seen })),
+    );
+    expect(held.status).toEqual({ kind: "failed", at: at(3), recoverable: true });
+    expect(held.failure).toMatchObject({ kind: "held", step: "convert" });
+  });
+
   it("expires an unpaid request on the worker's word, but not one the host took", () => {
     const expired = run(prompted(), worker(at(40), job({ phase: "failed", failure: "expired" })));
     expect(expired.status).toEqual({ kind: "expired", at: at(40) });

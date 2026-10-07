@@ -26,6 +26,7 @@ import {
   readDestinationBalance,
   SALE_RESIDUE_RETURN_FLOOR,
   withdrawTickOnce,
+  WithdrawHeldError,
   WithdrawRejectedError,
 } from "@getsome/withdraw";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
@@ -101,12 +102,14 @@ const saveJobs = () => store.save();
  *   assetHubGenesis, peopleGenesis, peopleParaId, assetHubParaId, poolAccount, slippagePct,
  *   paymentExpiresAt: number|null,
  *   phase: "starting" | WithdrawStep | RailStep | "failed",
- *   failure?: "rejected" | "timeout" | "expired" | "cancelled" | "no-rail" | "rail-failed"
- *            | "channel-expired" | "channel-mismatch" | "unfundable" | "unresolved",
+ *   failure?: "rejected" | "timeout" | "held" | "expired" | "cancelled" | "no-rail"
+ *            | "rail-failed" | "channel-expired" | "channel-mismatch" | "unfundable"
+ *            | "unresolved",
  *   landed,                                  // the message leg is done: the funds are on Asset Hub
  *   done, createdAt, armedAt, lastTickAt, lastError?,
  *   state: { attempts, rejections, submitted, destinationBefore, expectedLanding,
- *            fundsSeenAt, workedMs },       // the two balances as decimal strings or null
+ *            fundsSeenAt, psmRefusals, waitingSince, workedMs },
+ *                                            // the two balances as decimal strings or null
  *   leg: { handoff, paid, sweep, exact?, reading },  // the rail leg, for a provider rail;
  *                                            // exact: the Meld payment's nonce, in flight or
  *                                            // not, and the block its attempt is anchored at
@@ -392,6 +395,10 @@ function rearm(record, nowMs) {
     // The nonce stays where the refusals left it: nothing went out at the ones they spent.
     if (record.leg?.exact) record.leg.exact.rejections = 0;
   }
+  if (failure === "held") {
+    record.state.psmRefusals = 0;
+    record.state.waitingSince = null;
+  }
   if (failure === "expired" || failure === "cancelled") record.state.fundsSeenAt = null;
 }
 
@@ -435,6 +442,9 @@ function describeWithdraw(record) {
     submitting: record.submitting,
     txs: record.txs,
     fundsSeenAt: record.state?.fundsSeenAt ?? null,
+    waitingSince: record.state?.waitingSince ?? null,
+    psmRefusals: record.state?.psmRefusals ?? 0,
+    tier: record.tier,
     residue: record.residue ?? null,
   };
 }
@@ -478,6 +488,9 @@ export async function withdrawStatus(params) {
 const onTheClock = (record) =>
   !record.done &&
   record.state.fundsSeenAt !== null &&
+  // A PSM with no room for the redeem is waited for without bound: room comes back with every
+  // mint, on the chain's time.
+  record.state.waitingSince == null &&
   // A sale stops the clock once its PAS has landed: paying its provider is held to the sale's own
   // deadline and to the payment's mortality, not to worker time.
   !(record.rail === "meld" ? record.landed : record.landed && record.leg?.paid);
@@ -867,6 +880,8 @@ async function tickRecord(record, nowMs) {
     state.destinationBefore = asBig(record.state.destinationBefore, null);
     state.expectedLanding = asBig(record.state.expectedLanding, null);
     state.fundsSeenAt = record.state.fundsSeenAt ?? null;
+    state.psmRefusals = record.state.psmRefusals ?? 0;
+    state.waitingSince = record.state.waitingSince ?? null;
 
     // Written before a submit and after every tick, thrown ones included; withdrawTickOnce
     // mutates the state as it works and a lost submit answer must keep its baseline.
@@ -879,6 +894,8 @@ async function tickRecord(record, nowMs) {
           state.destinationBefore === null ? null : String(state.destinationBefore),
         expectedLanding: state.expectedLanding === null ? null : String(state.expectedLanding),
         fundsSeenAt: state.fundsSeenAt,
+        psmRefusals: state.psmRefusals,
+        waitingSince: state.waitingSince,
         workedMs: record.state.workedMs ?? 0,
       };
     };
@@ -1008,6 +1025,10 @@ export async function tickAllWithdraw() {
         } catch (error) {
           if (error instanceof WithdrawRejectedError) {
             fail(record, "rejected", error.message);
+          } else if (error instanceof WithdrawHeldError) {
+            // The PSM refused the redeem with room for it, three times over: the CASH stays on
+            // the key until a re-sent hand-off re-arms the count.
+            fail(record, "held", error.message);
           } else if (error instanceof CommitmentUnfundableError && !submitMayLand(record, nowMs)) {
             // The price moved past what the sale promised its provider before anything left
             // People. The CASH goes home (see `returnDue`). Not while an earlier submit may still

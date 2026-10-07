@@ -22,14 +22,35 @@
 // PAS on the key means the swap happened; the XCM is next. A reload resumes from the persisted
 // state. A tick that throws is retried on the next tick. Terminal is a transaction rejected at
 // inclusion after the dry run passed, three times over, since each rejection costs a fee and the
-// same transaction will not pass on the fourth try.
+// same transaction will not pass on the fourth try; and, on the PSM tier, the PSM refusing the
+// redeem three times with room for it, which waiting cannot clear. A PSM short of room is not
+// terminal: the run waits on People, spending nothing, until a mint makes room.
 
 import type { PolkadotSigner } from "polkadot-api";
-import { describeDispatchError, type CashTransfer, type ConversionRoute } from "@getsome/funding";
+import {
+  describeDispatchError,
+  MAX_PSM_REFUSALS,
+  readRedeemCapacity,
+  type CashTransfer,
+  type ConversionRoute,
+} from "@getsome/funding";
 import { bounded } from "./bounded";
 import { PEOPLE_TX_OPTIONS } from "./paseo";
-import { NeedsSwapError, sizeSwap, sizeXcm, type AssetHubApi } from "./fees";
-import { buildSwap, buildWithdrawXcm, withdrawMessage, type PeopleApi } from "./program";
+import {
+  NeedsSwapError,
+  PsmRefusedError,
+  redeemAmountOf,
+  sizeSwap,
+  sizeXcm,
+  type AssetHubApi,
+} from "./fees";
+import {
+  buildSwap,
+  buildWithdrawXcm,
+  psmRedeemOut,
+  withdrawMessage,
+  type PeopleApi,
+} from "./program";
 
 /** 'swap' buys the PAS the fees need; 'convert' submits the XCM; 'await-arrival' holds while the
  *  funds have not shown on the destination. */
@@ -62,6 +83,17 @@ export class WithdrawRejectedError extends Error {
   }
 }
 
+/** Terminal: the PSM refused the redeem MAX_PSM_REFUSALS times with room for it, so waiting
+ *  cannot clear it: the pair is paused, the fee moved past the frozen `max_fee`, or the pallet
+ *  will not take the amount. The CASH is still on the key on People, and a resume with a fresh
+ *  count tries again. */
+export class WithdrawHeldError extends Error {
+  constructor(readonly reason: string) {
+    super(`withdrawal held: the PSM refused the redeem ${MAX_PSM_REFUSALS} times, last: ${reason}`);
+    this.name = "WithdrawHeldError";
+  }
+}
+
 /** Cross-tick memory for one withdrawal. The driver persists it; `withdrawTickOnce` mutates it. */
 export interface WithdrawTickState {
   /** Submits so far, rejected ones included. */
@@ -78,6 +110,12 @@ export interface WithdrawTickState {
   expectedLanding: bigint | null;
   /** When the first tick saw CASH (ms); null while the payment is still awaited. */
   fundsSeenAt: number | null;
+  /** PSM refusals of the redeem at the Asset Hub dry run with room for it; MAX_PSM_REFUSALS hold
+   *  the run. A shortfall of room, a transport error or a rejected submit does not count. */
+  psmRefusals: number;
+  /** Since when the PSM has had no room for the redeem (ms); null while it fits. The driver keeps
+   *  a waiting run off its clock. */
+  waitingSince: number | null;
 }
 
 export const freshWithdrawTickState = (): WithdrawTickState => ({
@@ -87,6 +125,8 @@ export const freshWithdrawTickState = (): WithdrawTickState => ({
   destinationBefore: null,
   expectedLanding: null,
   fundsSeenAt: null,
+  psmRefusals: 0,
+  waitingSince: null,
 });
 
 export interface WithdrawTickInput {
@@ -133,11 +173,14 @@ export interface WithdrawTickOutcome {
   balances: { cash: bigint; pas: bigint };
   /** A transaction went out and landed ok. */
   submitted: boolean;
+  /** The PSM has no room for the redeem: nothing was sized or submitted, and the next tick reads
+   *  again. */
+  waiting?: boolean;
 }
 
 /**
  * One reading of the key and at most one action on it. Retryable by calling again; the terminal
- * signals are the returned "done" and a thrown WithdrawRejectedError.
+ * signals are the returned "done" and a thrown WithdrawRejectedError or WithdrawHeldError.
  */
 export async function withdrawTickOnce(
   input: WithdrawTickInput,
@@ -194,11 +237,37 @@ export async function withdrawTickOnce(
     if (state.rejections >= MAX_REJECTIONS) throw new WithdrawRejectedError(call, reason);
     throw new Error(`${call} rejected: ${reason}`);
   };
+  // Room was read a moment before the dry run, so this refusal is one waiting cannot clear.
+  const refusedWithRoom = (error: PsmRefusedError): never => {
+    state.psmRefusals += 1;
+    if (state.psmRefusals >= MAX_PSM_REFUSALS) throw new WithdrawHeldError(error.message);
+    throw error;
+  };
 
   // No PAS on the key yet: buy the fees' PAS first. PAS on the key: the swap is done, size and
   // prove the XCM. A sizing that finds the PAS short after all sends the run back to the swap.
   const needsSwap = balances.pas === 0n;
   if (!needsSwap) {
+    const { sale } = input;
+    // The PSM tier redeems only against the pair's debt. Short of the redeem's net, the run waits
+    // where it is, with nothing sized or spent and without bound: room comes back with every
+    // mint. Read again right before the submit, so the race with other redeems is only the
+    // XCM's flight.
+    const psmHasRoom = async (): Promise<boolean> => {
+      if (sale.tier !== "psm") return true;
+      const capacity = await bounded(
+        readRedeemCapacity(input.assetHubApi, sale.external),
+        input.tickTimeoutMs,
+        "PSM capacity read",
+      );
+      return capacity >= psmRedeemOut(redeemAmountOf(balances.cash), sale.feeRate);
+    };
+    const waiting = (): WithdrawTickOutcome => {
+      state.waitingSince ??= input.now();
+      return { step: "convert", balances, submitted: false, waiting: true };
+    };
+    if (!(await psmHasRoom())) return waiting();
+    state.waitingSince = null;
     try {
       const minLanding =
         input.minLanding === undefined
@@ -224,6 +293,7 @@ export async function withdrawTickOnce(
         "withdrawal sizing",
       );
       const tx = buildWithdrawXcm(input.peopleApi, sizing.args);
+      if (!(await psmHasRoom())) return waiting();
       // Read before the submit, so what the XCM adds is measured from what was there. Set before
       // the driver persists, so a submit whose answer is lost keeps its baseline.
       state.destinationBefore = await bounded(
@@ -250,6 +320,7 @@ export async function withdrawTickOnce(
       state.submitted = true;
       return { step: "convert", balances, submitted: true };
     } catch (error) {
+      if (error instanceof PsmRefusedError) refusedWithRoom(error);
       if (!(error instanceof NeedsSwapError)) throw error;
       input.onTransientError?.(error);
     }

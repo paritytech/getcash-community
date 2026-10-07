@@ -5,22 +5,26 @@
 import { AccountId } from "polkadot-api";
 import { describe, expect, it } from "vitest";
 import { TOKENS } from "@getsome/core";
-import { permillMulCeil, type ConversionRoute } from "@getsome/funding";
+import { MAX_PSM_REFUSALS, permillMulCeil, type ConversionRoute } from "@getsome/funding";
 import {
   ASSET_HUB_FEE_BUFFER_CASH,
   estimateDirectFeesCash,
+  redeemAmountOf,
   SWAP_HEADROOM_PCT,
   XCM_TX_FEE_HEADROOM_PCT,
 } from "./fees";
 import { PASEO_PEOPLE_POOL_ACCOUNT } from "./paseo";
 import { cashInFor } from "./pool";
+import { psmRedeemOut } from "./program";
 import {
   freshWithdrawTickState,
   landingFloor,
   MAX_REJECTIONS,
   withdrawTickOnce,
+  WithdrawHeldError,
   WithdrawRejectedError,
   type WithdrawStep,
+  type WithdrawTickOutcome,
   type WithdrawTickState,
 } from "./tick";
 
@@ -55,6 +59,7 @@ const DESTINATION_PAS = 3n * ED;
 const HOLDER_SS58 = AccountId(42).dec(new Uint8Array(32).fill(0x0d));
 const REDEEM_CALL = Uint8Array.from([0x3b, 0x01, 0xaa]);
 const PSM_FEE_RATE = 5_000;
+const PSM_SALE: ConversionRoute = { tier: "psm", external: "USDT", feeRate: PSM_FEE_RATE };
 
 type Instruction = { type: string; value?: unknown };
 type Fungible = { id: unknown; fun: { type: string; value: bigint } };
@@ -122,6 +127,11 @@ function scriptedWorld(
     loseXcmAnswer?: boolean;
     /** Asset Hub's dry run traps this much. */
     trapOnAssetHubDryRun?: bigint;
+    /** Asset Hub's dry run reports the PSM refusing the redeem. */
+    refusePsm?: boolean;
+    /** The PSM's room drops to this once Asset Hub has dry-run the redeem: another redeem landed
+     *  while this one was sized. */
+    psmDebtAfterDryRun?: bigint;
   } = {},
 ) {
   const state = {
@@ -130,6 +140,8 @@ function scriptedWorld(
     dustLost: 0n,
     submits: [] as Submit[],
     dryRuns: 0,
+    /** The PSM's room for a redeem, the pair's debt; the PSM tier's tests set it. */
+    psmDebt: 0n,
     destinationPas: DESTINATION_PAS,
     /** What the last Asset Hub dry run credited to the destination. */
     lastDryRunLanded: 0n,
@@ -314,6 +326,7 @@ function scriptedWorld(
 
   const assetHubApi = {
     tx: { Psm: { redeem: () => ({ getEncodedData: async () => REDEEM_CALL }) } },
+    query: { Psm: { PsmDebt: { getValue: async () => state.psmDebt } } },
     apis: {
       LocationToAccountApi: {
         convert_location: async () => ({ success: true, value: HOLDER_SS58 }),
@@ -338,6 +351,19 @@ function scriptedWorld(
           const native = pas + cash * AH_RATE;
           let events: unknown[];
           if (forwarded.value.some((i) => i.type === "Transact")) {
+            if (opts.psmDebtAfterDryRun !== undefined) state.psmDebt = opts.psmDebtAfterDryRun;
+            if (opts.refusePsm) {
+              return {
+                success: true,
+                value: {
+                  execution_result: {
+                    type: "Incomplete",
+                    value: { error: { error: { type: "ExpectationFalse" } } },
+                  },
+                  emitted_events: [],
+                },
+              };
+            }
             // The PSM tier: the amount deposited to the holder is redeemed for what the program
             // withdraws back, and the surplus and the PAS are sold for the stable on top.
             const held = (
@@ -400,6 +426,7 @@ async function drive(
   sale: ConversionRoute = { tier: "pool" },
 ) {
   const steps: WithdrawStep[] = [];
+  const outcomes: WithdrawTickOutcome[] = [];
   const transients: string[] = [];
   let now = 1_000;
   for (let tick = 0; tick < ticks; tick += 1) {
@@ -426,10 +453,14 @@ async function drive(
       state,
     );
     steps.push(outcome.step);
+    outcomes.push(outcome);
     if (outcome.step === "done") break;
   }
-  return { steps, state, transients };
+  return { steps, outcomes, state, transients };
 }
+
+/** The net the PSM tier's redeem pays out of what the key holds now, after its fee. */
+const redeemNet = (world: World) => psmRedeemOut(redeemAmountOf(world.state.keyCash), PSM_FEE_RATE);
 
 const submitsOf = (world: World) => ({
   swap: world.state.submits.find((s) => s.call === "swap"),
@@ -504,14 +535,15 @@ describe("withdrawTickOnce", () => {
     expect(world.state.destinationPas).toBe(DESTINATION_PAS + world.state.lastDryRunLanded);
   });
 
-  it("redeems through the PSM as the key's account on Asset Hub, and reads the arrival in the stable", async () => {
+  it("redeems through the PSM as the key's account on Asset Hub once it has room for the net, and reads the arrival in the stable", async () => {
     const world = scriptedWorld();
-    const run = await drive(world, 3, freshWithdrawTickState(), {
-      tier: "psm",
-      external: "USDT",
-      feeRate: PSM_FEE_RATE,
-    });
-    expect(run.steps).toEqual(["swap", "convert", "done"]);
+    const state = freshWithdrawTickState();
+    const swapped = await drive(world, 1, state, PSM_SALE);
+    // Room for exactly the redeem's net is enough.
+    world.state.psmDebt = redeemNet(world);
+    const run = await drive(world, 2, state, PSM_SALE);
+    expect([...swapped.steps, ...run.steps]).toEqual(["swap", "convert", "done"]);
+    expect(run.state).toMatchObject({ waitingSince: null, psmRefusals: 0 });
     const { cashSold, earmark, preserveOrigin, program } = sentXcm(world);
     expect(preserveOrigin).toBe(true);
     expect(program.map((i) => i.type)).toEqual([
@@ -537,6 +569,57 @@ describe("withdrawTickOnce", () => {
     expect(run.state.expectedLanding).toBe(world.state.lastDryRunLanded);
     expect(run.state.expectedLanding).toBeGreaterThan(out);
     expect(run.state.expectedLanding).toBeLessThan(out + out / 10n);
+  });
+
+  it("waits while the PSM is short of the redeem's net, sizing and counting nothing, and submits once it has room", async () => {
+    const world = scriptedWorld();
+    const state = freshWithdrawTickState();
+    await drive(world, 1, state, PSM_SALE);
+    world.state.psmDebt = redeemNet(world) - 1n;
+    const short = await drive(world, 1, state, PSM_SALE);
+    expect(short.outcomes[0]).toMatchObject({ step: "convert", submitted: false, waiting: true });
+    expect(state).toMatchObject({ waitingSince: 2_000, attempts: 1, psmRefusals: 0 });
+    expect(world.state.dryRuns).toBe(0);
+    expect(world.state.submits.map((s) => s.call)).toEqual(["swap"]);
+
+    world.state.psmDebt = redeemNet(world);
+    const fits = await drive(world, 1, state, PSM_SALE);
+    expect(fits.outcomes[0]).toMatchObject({ step: "convert", submitted: true });
+    expect(state).toMatchObject({ waitingSince: null, attempts: 2 });
+  });
+
+  it("counts a refusal with room towards the hold, and holds the run on the third", async () => {
+    const world = scriptedWorld({ refusePsm: true });
+    const state = freshWithdrawTickState();
+    await drive(world, 1, state, PSM_SALE);
+    world.state.psmDebt = redeemNet(world);
+    for (let refusal = 1; refusal < MAX_PSM_REFUSALS; refusal += 1) {
+      await expect(drive(world, 1, state, PSM_SALE)).rejects.toThrow(/the PSM refused the redeem/);
+      expect(state.psmRefusals).toBe(refusal);
+    }
+    await expect(drive(world, 1, state, PSM_SALE)).rejects.toBeInstanceOf(WithdrawHeldError);
+    expect(state).toMatchObject({
+      psmRefusals: MAX_PSM_REFUSALS,
+      waitingSince: null,
+      submitted: false,
+    });
+    expect(world.state.submits.map((s) => s.call)).toEqual(["swap"]);
+  });
+
+  it("reads the room again before the submit, and waits when another redeem took it meanwhile", async () => {
+    const world = scriptedWorld({ psmDebtAfterDryRun: 0n });
+    const state = freshWithdrawTickState();
+    await drive(world, 1, state, PSM_SALE);
+    world.state.psmDebt = redeemNet(world);
+    const run = await drive(world, 1, state, PSM_SALE);
+    expect(run.outcomes[0]).toMatchObject({ step: "convert", submitted: false, waiting: true });
+    expect(state).toMatchObject({
+      waitingSince: 2_000,
+      destinationBefore: null,
+      expectedLanding: null,
+      attempts: 1,
+    });
+    expect(world.state.submits.map((s) => s.call)).toEqual(["swap"]);
   });
 
   it("lands the CASH as dotUSD on the dotUSD tier, with the PAS that travelled sold for it", async () => {

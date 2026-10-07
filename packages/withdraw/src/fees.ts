@@ -79,6 +79,21 @@ const LONGEST_CALL = new Uint8Array(64);
 const toHex = (bytes: Uint8Array): string =>
   `0x${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
 
+/** The CASH the PSM tier redeems out of what the key holds: all of it but the earmark for Asset
+ *  Hub's fees. The one figure the sale is priced on and the PSM's room is measured against. */
+export const redeemAmountOf = (cashOnKey: bigint): bigint =>
+  cashOnKey - destinationEarmark(cashOnKey, ASSET_HUB_FEE_BUFFER_CASH);
+
+/** The Asset Hub dry run found the redeem's status expectation false: the PSM refused it, which
+ *  the forwarded program cannot name further. No room, a paused pair, a fee past the frozen
+ *  `max_fee` and an amount the pallet will not take all read the same here. */
+export class PsmRefusedError extends Error {
+  constructor() {
+    super("not submitted: the PSM refused the redeem");
+    this.name = "PsmRefusedError";
+  }
+}
+
 /** The key needs more PAS than it holds to send the XCM: swap again. */
 export class NeedsSwapError extends Error {
   constructor(
@@ -389,8 +404,6 @@ export interface PriceSaleInput {
   route: ConversionRoute;
   /** All the CASH the XCM teleports. */
   cashOnKey: bigint;
-  /** The CASH earmarked for Asset Hub's fees out of it. */
-  remoteFeesCash: bigint;
   slippagePct: number;
   /** The key's public key, whose account under People the PSM tier redeems as. */
   originHex: string;
@@ -414,7 +427,7 @@ export async function priceSale(input: PriceSaleInput): Promise<Sale> {
     if (!holder.success) {
       throw new Error("withdraw sizing: Asset Hub cannot name the key's account");
     }
-    const redeemAmount = input.cashOnKey - input.remoteFeesCash;
+    const redeemAmount = redeemAmountOf(input.cashOnKey);
     const call = await assetHubApi.tx.Psm.redeem({
       internal_asset: CASH_ON_ASSET_HUB as never,
       external_asset: STABLE_TOKENS[route.external].location as never,
@@ -471,7 +484,6 @@ export async function sizeXcm(input: SizeXcmInput): Promise<XcmSizing> {
     assetHubApi,
     route: input.sale,
     cashOnKey: input.cashOnKey,
-    remoteFeesCash,
     slippagePct: input.slippagePct,
     originHex: key.publicKeyHex,
     peopleParaId: input.peopleParaId,
@@ -586,14 +598,10 @@ export async function dryRunOnAssetHub(
   if (!dr.success) throw new Error("not submitted: Asset Hub would not dry-run the program");
   const outcome = dr.value.execution_result;
   if (outcome.type !== "Complete") {
-    // The PSM tier checks the redeem went through right after it; a false expectation there is
-    // the PSM refusing, which the dry run cannot name further.
+    // The PSM tier checks the redeem went through right after it.
     const error = xcmErrorName(outcome);
-    const reason =
-      sale.tier === "psm" && error === "ExpectationFalse"
-        ? "the PSM refused the redeem"
-        : `the program fails on Asset Hub with ${error}`;
-    throw new Error(`not submitted: ${reason}`);
+    if (sale.tier === "psm" && error === "ExpectationFalse") throw new PsmRefusedError();
+    throw new Error(`not submitted: the program fails on Asset Hub with ${error}`);
   }
   const trapped = trappedIn(dr.value.emitted_events);
   if (trapped > 0n)

@@ -13,6 +13,8 @@ export function withdrawalFailureText(failure: WithdrawalFailure): string {
       return "The network refused the transaction. You can try again.";
     case "timeout":
       return "The conversion is taking longer than expected. You can try again.";
+    case "held":
+      return "CASH can't be redeemed right now. Your funds are safe; try again later.";
     case "egress-failed":
       return "The transfer to your address could not be completed.";
     case "deposit-rejected":
