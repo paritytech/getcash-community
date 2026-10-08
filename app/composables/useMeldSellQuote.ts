@@ -1,6 +1,8 @@
-// The quote a fiat sale is confirmed on: the region and payout method from the adapter's sell
-// catalog, the exact figure the key will pay out of the pool sale, and the best provider line for
-// that figure. Priced again whenever the region changes; nothing here opens a session.
+// The quote a fiat sale is confirmed on: the region and payout method from the adapter's off-ramp
+// catalog, the exact figure the key will pay, and the best provider line for that figure. The
+// catalog names, per region and method, what the sale sells: PAS on Asset Hub out of the pool sale,
+// or, where no provider buys that, a lane's asset that Chainflip swaps the key's USDT into. Priced
+// again whenever the region changes; nothing here opens a session.
 
 import { ref, shallowRef } from "vue";
 import {
@@ -11,14 +13,14 @@ import {
   type MeldQuoteEntry,
 } from "@getsome/meld";
 import type { ConversionRoute } from "@getsome/funding";
-import { laneById, laneSellToken, type LaneId } from "@getsome/offramp";
-import { MELD_SELL_LANE } from "~~/lib/config";
+import { laneByMeldCode, laneSellToken, type LaneId, type OfframpLane } from "@getsome/offramp";
 import { bankRailCountries, regionForCountry } from "~~/lib/region";
 import {
-  fetchCorridor,
-  fetchSupportedCorridors,
-  fetchSupportedCountries,
+  countryName,
+  fetchOfframpCorridor,
+  fetchOfframpCorridors,
   methodFor,
+  type OfframpLaneRef,
   type SupportedCorridor,
   type SupportedCountry,
 } from "~~/lib/supported";
@@ -55,9 +57,15 @@ function startingCountry(method: "card" | "bank"): string {
   return method === "card" || bankRailCountries().includes(detected) ? detected : "DE";
 }
 
+/** What a sale through `ref` sells: PAS on Asset Hub (null), a lane this build can swap into, or
+ *  `undefined` for a code it cannot sell at all. A method with no lane is today's Asset Hub sale. */
+export function saleLaneOf(ref: OfframpLaneRef | undefined): OfframpLane | null | undefined {
+  if (ref === undefined || ref.code === SELL_TOKEN.meldCurrencyCode) return null;
+  if (ref.chain === "assethub") return undefined;
+  return laneByMeldCode(ref.code) ?? undefined;
+}
+
 export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
-  const lane = MELD_SELL_LANE === null ? null : laneById(MELD_SELL_LANE);
-  const token = lane === null ? SELL_TOKEN : laneSellToken(lane);
   const country = ref(startingCountry(method));
   const countries = shallowRef<SupportedCountry[] | null>(null);
   const corridors = shallowRef<Map<string, SupportedCorridor> | null>(null);
@@ -66,15 +74,17 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
   const error = ref<string | null>(null);
   let epoch = 0;
 
-  /** The sell catalog, for the region picker. Null lists when discovery is unreachable. */
+  /** The off-ramp catalog, for the region picker. Null lists when discovery is unreachable. */
   async function loadCatalog(): Promise<void> {
-    const code = token.meldCurrencyCode;
-    const [listed, routed] = await Promise.all([
-      fetchSupportedCountries(code, "sell"),
-      fetchSupportedCorridors(code, "sell"),
-    ]);
-    countries.value = listed;
+    const routed = await fetchOfframpCorridors();
     corridors.value = routed;
+    countries.value =
+      routed === null
+        ? null
+        : [...routed.values()].map((c) => ({
+            country: c.country,
+            name: c.name ?? countryName(c.country),
+          }));
   }
 
   /**
@@ -84,14 +94,17 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
    */
   async function corridorFor(
     cc: string,
-  ): Promise<{ fiat: string; paymentMethodType: string } | null> {
-    const code = token.meldCurrencyCode;
-    const live = corridors.value?.get(cc) ?? (await fetchCorridor(code, cc, "sell"));
+  ): Promise<{ fiat: string; paymentMethodType: string; lane?: OfframpLaneRef } | null> {
+    const live = corridors.value?.get(cc) ?? (await fetchOfframpCorridor(cc));
     if (live !== null) {
       const found = methodFor(live, method);
       return found === null
         ? null
-        : { fiat: live.fiat, paymentMethodType: found.paymentMethodType };
+        : {
+            fiat: live.fiat,
+            paymentMethodType: found.paymentMethodType,
+            ...(found.lane === undefined ? {} : { lane: found.lane }),
+          };
     }
     const region = regionForCountry(cc);
     if (method === "bank" && !bankRailCountries().includes(region.country)) return null;
@@ -123,20 +136,28 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
         return;
       }
       const live = await import("~~/lib/withdraw-live");
-      const sizing: Promise<SizedSale> =
-        lane === null
-          ? live.sizeMeldCommitment(amount)
-          : live.sizeSwapSale(amount, lane).then((swap) => ({
-              planck: swap.commit,
-              backCash: 0n,
-              swap: { lane: lane.id, route: swap.route },
-            }));
-      const [corridor, size] = await Promise.all([corridorFor(country.value), sizing]);
+      // The method decides what is sold, so the corridor is read before the sale is sized.
+      const corridor = await corridorFor(country.value);
       if (mine !== epoch) return;
       if (corridor === null) {
         error.value = unroutedReason();
         return;
       }
+      const lane = saleLaneOf(corridor.lane);
+      if (lane === undefined) {
+        error.value = "No provider can pay out this sale right now.";
+        return;
+      }
+      const token = lane === null ? SELL_TOKEN : laneSellToken(lane);
+      const size: SizedSale =
+        lane === null
+          ? await live.sizeMeldCommitment(amount)
+          : await live.sizeSwapSale(amount, lane).then((swap) => ({
+              planck: swap.commit,
+              backCash: 0n,
+              swap: { lane: lane.id, route: swap.route },
+            }));
+      if (mine !== epoch) return;
       const { quotes } = await client.getSellQuote({
         country: country.value,
         sourceCurrencyCode: token.meldCurrencyCode,
@@ -154,7 +175,8 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
       }
       quote.value = {
         country: country.value,
-        ...corridor,
+        fiat: corridor.fiat,
+        paymentMethodType: corridor.paymentMethodType,
         cryptoAmount: size.planck,
         backCash: size.backCash,
         ...(size.swap === undefined ? {} : { swap: size.swap }),

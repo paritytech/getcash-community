@@ -1,5 +1,4 @@
 import type { SourceId, TokenSpec } from "@getsome/core";
-import { isLaneId, type LaneId } from "@getsome/offramp";
 import {
   directAssetName,
   isManualSourceId,
@@ -135,9 +134,3 @@ const PAIR_BY_SOURCE_ID: ReadonlyMap<string, { chain: string; asset: string }> =
 /** The UI pair a source id names, in either catalog; undefined for a Meld or unknown id. */
 export const sourcePairFor = (sourceId: string): { chain: string; asset: string } | undefined =>
   PAIR_BY_SOURCE_ID.get(sourceId);
-
-/** The offramp lane a card or bank sale goes through, or null to sell PAS to Meld directly. Set
- *  by VITE_MELD_SELL_LANE (`usdt-solana`, `usdc-solana`), for where Meld buys no Asset Hub asset. */
-export const MELD_SELL_LANE: LaneId | null = isLaneId(import.meta.env.VITE_MELD_SELL_LANE)
-  ? import.meta.env.VITE_MELD_SELL_LANE
-  : null;

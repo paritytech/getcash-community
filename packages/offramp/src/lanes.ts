@@ -38,6 +38,11 @@ export function laneById(id: LaneId): OfframpLane {
   return lane;
 }
 
+/** The lane a Meld code sells through, as the adapter's off-ramp catalog names it; null for a code
+ *  this build has no swap for. */
+export const laneByMeldCode = (code: string): OfframpLane | null =>
+  LANES.find((l) => l.meldCode === code) ?? null;
+
 /** The lane's asset as a Meld sale names and sizes it. */
 export const laneSellToken = (lane: OfframpLane) => ({
   symbol: lane.chainflip.asset,
