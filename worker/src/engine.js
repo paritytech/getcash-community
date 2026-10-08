@@ -240,9 +240,10 @@ const depositExpiryOf = (input) => {
 
 /**
  * Re-arms a failed job on a re-sent hand-off. The run clock, the deposit window and the claim's
- * tracking window restart. Submit latches survive except after a shortfall; a held job gets a
- * fresh refusal counter, for a ceiling raised since; a claim that was still registering is
- * retried at once, and a claim the host settled short gets a fresh attempt.
+ * tracking window restart. Submit latches survive except after a shortfall; the rejection count
+ * starts over; a held job gets a fresh refusal counter, for a ceiling raised since; a claim that
+ * was still registering is retried at once, and a claim the host settled short gets a fresh
+ * attempt.
  */
 function rearm(record, nowMs) {
   record.phase = record.done ? "done" : "starting";
@@ -262,11 +263,9 @@ function rearm(record, nowMs) {
     record.state.nonceAtSubmit = null;
     record.state.inclusionBlock = null;
   }
-  if (failure === "held") {
-    record.state.psmRefusals = 0;
-    record.state.rejections = 0;
-    record.state.lastRejection = null;
-  }
+  if (failure === "held") record.state.psmRefusals = 0;
+  record.state.rejections = 0;
+  record.state.lastRejection = null;
   if (record.claim?.phase === "registering") {
     record.claim = { ...record.claim, attempts: 0, at: 0 };
   }

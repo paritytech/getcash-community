@@ -704,6 +704,8 @@ describe("worker funding engine", () => {
       state.attempts = 1;
       state.xcmSubmitted = true;
       state.fundsSeenAt = Date.now();
+      state.rejections = 2;
+      state.lastRejection = "ExchangeAsset #1 failed with NoDeal";
       return { ...outcome("await-arrival"), submitted: true };
     });
     await started.tickAllFunding();
@@ -715,6 +717,7 @@ describe("worker funding engine", () => {
     expect(storedJob()).toMatchObject({ phase: "failed", failure: "timeout" });
     expect((await engine.tickAllFunding()).ticked).toBe(0);
 
+    // The latches and the attempts survive; the rejection count starts over.
     const rearmed = await engine.startFunding(JSON.stringify(HANDOFF));
     expect(rearmed).toMatchObject({ phase: "starting", done: false });
     expect(storedJob().lastError).toBeUndefined();
@@ -723,10 +726,13 @@ describe("worker funding engine", () => {
       attempts: 1,
       xcmSubmitted: true,
       fundsSeenAt: null,
+      rejections: 0,
+      lastRejection: null,
     });
 
     mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
       expect(state.xcmSubmitted).toBe(true);
+      expect(state.rejections).toBe(0);
       return outcome("await-arrival");
     });
     expect((await engine.tickAllFunding()).ticked).toBe(1);
