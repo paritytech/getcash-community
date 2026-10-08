@@ -11,7 +11,7 @@ describe("saleLaneOf", () => {
   });
 
   it("swaps into a lane this build knows", () => {
-    expect(saleLaneOf({ code: "USDT_SOL", chain: "solana" })?.id).toBe("usdt-solana");
+    expect(saleLaneOf({ code: "USDT_SOLANA", chain: "solana" })?.id).toBe("usdt-solana");
   });
 
   it("sells nothing for another Asset Hub asset or an unknown lane", () => {

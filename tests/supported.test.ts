@@ -458,7 +458,7 @@ describe("lib/supported", () => {
               min: "10",
               max: "2000",
               currency: "EUR",
-              lane: { code: "USDT_SOL", chain: "solana" },
+              lane: { code: "USDT_SOLANA", chain: "solana" },
             },
           ],
         },
@@ -473,7 +473,7 @@ describe("lib/supported", () => {
     expect(map!.get("DE")).toMatchObject({ name: "Germany", fiat: "EUR" });
     expect(map!.get("DE")!.methods.map((m) => m.lane)).toEqual([
       { code: "DOT_ASSETHUB", chain: "assethub" },
-      { code: "USDT_SOL", chain: "solana" },
+      { code: "USDT_SOLANA", chain: "solana" },
     ]);
     await fetchOfframpCorridors();
     expect(fetchMock).toHaveBeenCalledTimes(1);

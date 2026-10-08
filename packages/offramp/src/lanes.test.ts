@@ -22,14 +22,14 @@ describe("lane catalog", () => {
     expect(laneSellToken(laneById("usdt-solana"))).toEqual({
       symbol: "USDT",
       decimals: 6,
-      meldCurrencyCode: "USDT_SOL",
+      meldCurrencyCode: "USDT_SOLANA",
     });
   });
 });
 
 describe("laneByMeldCode", () => {
   it("finds the lane a Meld code sells through, and none for an Asset Hub code", () => {
-    expect(laneByMeldCode("USDC_SOL")?.id).toBe("usdc-solana");
+    expect(laneByMeldCode("USDC_SOLANA")?.id).toBe("usdc-solana");
     expect(laneByMeldCode("DOT_ASSETHUB")).toBeNull();
   });
 });

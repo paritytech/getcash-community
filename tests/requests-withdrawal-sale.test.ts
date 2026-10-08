@@ -479,7 +479,7 @@ describe("a fiat sale through an offramp lane", () => {
     sale({
       sale: { ...sale().sale!, lane: "usdt-solana", cryptoAmount: "98850000" },
     });
-  const laneDisclosed = (currency = "USDT_SOL"): MeldSaleReading => ({
+  const laneDisclosed = (currency = "USDT_SOLANA"): MeldSaleReading => ({
     status: "transaction_seen",
     deposit: { address: SOLANA_DEPOSIT, amount: "98.85", currency },
   });

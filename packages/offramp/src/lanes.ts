@@ -8,8 +8,7 @@ export interface OfframpLane {
   readonly id: LaneId;
   /** What Chainflip delivers to the provider, as the SDK names it. */
   readonly chainflip: { readonly chain: string; readonly asset: string };
-  /** The asset's code in the Meld adapter's sell catalog. Unconfirmed until the catalog lists it:
-   *  a wrong code only means no provider quotes the lane. */
+  /** The asset's code in Meld's `CRYPTO_OFFRAMP` catalog, which the adapter passes through. */
   readonly meldCode: string;
   /** Base-unit decimals on the lane's chain. Never assumed: BSC USDT is 18. */
   readonly decimals: number;
@@ -19,13 +18,13 @@ export const LANES: readonly OfframpLane[] = Object.freeze([
   {
     id: "usdt-solana",
     chainflip: { chain: "Solana", asset: "USDT" },
-    meldCode: "USDT_SOL",
+    meldCode: "USDT_SOLANA",
     decimals: 6,
   },
   {
     id: "usdc-solana",
     chainflip: { chain: "Solana", asset: "USDC" },
-    meldCode: "USDC_SOL",
+    meldCode: "USDC_SOLANA",
     decimals: 6,
   },
 ] satisfies OfframpLane[]);
