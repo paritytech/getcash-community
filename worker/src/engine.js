@@ -88,6 +88,7 @@ const saveJobs = () => store.save();
  *                                            // the conversion is final
  *                                            // inclusionBlock: the block the conversion was
  *                                            // seen in, while it is not final
+ *            rejections, lastRejection },    // paid rejections in a row with the same answer
  *   submitting?: { call: "swap", at },        // written before a submit, with the state
  *   txs: [{ call, txHash, block? }],
  *   claim?: { phase: "sizing"|"registering"|"claiming"|"claimed", attempt, credited,
@@ -261,7 +262,11 @@ function rearm(record, nowMs) {
     record.state.nonceAtSubmit = null;
     record.state.inclusionBlock = null;
   }
-  if (failure === "held") record.state.psmRefusals = 0;
+  if (failure === "held") {
+    record.state.psmRefusals = 0;
+    record.state.rejections = 0;
+    record.state.lastRejection = null;
+  }
   if (record.claim?.phase === "registering") {
     record.claim = { ...record.claim, attempts: 0, at: 0 };
   }
@@ -692,6 +697,8 @@ async function tickRecord(record, nowMs) {
     const state = freshTickState();
     state.attempts = record.state.attempts;
     state.psmRefusals = record.state.psmRefusals ?? 0;
+    state.rejections = record.state.rejections ?? 0;
+    state.lastRejection = record.state.lastRejection ?? null;
     state.xcmSubmitted = !!record.state.xcmSubmitted;
     state.peopleAtXcm = asBig(record.state.peopleAtXcm);
     state.fundsSeenAt = record.state.fundsSeenAt ?? null;
@@ -703,6 +710,8 @@ async function tickRecord(record, nowMs) {
       record.state = {
         attempts: state.attempts,
         psmRefusals: state.psmRefusals,
+        rejections: state.rejections,
+        lastRejection: state.lastRejection,
         xcmSubmitted: state.xcmSubmitted,
         peopleAtXcm: state.peopleAtXcm.toString(),
         fundsSeenAt: state.fundsSeenAt,

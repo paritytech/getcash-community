@@ -56,6 +56,20 @@
 // resume with a fresh counter. Never the pool instead: the tier was quoted and committed, and
 // converting at a rate the buyer did not agree to is worse than waiting. Only the PSM's own
 // refusals count; a transport error or a timeout is retried as any other, without limit.
+//
+// THE SAME PAID REJECTION THREE TIMES IN A ROW HOLDS THE RUN. A program rejected at inclusion
+// costs its dispatch fee. After MAX_PROGRAM_REJECTIONS rejections with the same answer the run
+// is held with the deposit on the burner, as a PSM refusal holds it. A different answer starts
+// the count over. A dry run's refusal costs nothing and is not counted.
+//
+// THE DISPATCH FEE IS PRICED ON THE PROGRAM THAT GOES OUT. The fee is taken before the program
+// runs, for the declared weight, and the unused part comes back after it. The stable tiers keep
+// that much out of the conversion. The fee grows with the transaction's length, so the gate's
+// stand-in can price it short. The submit prices the program it sends and builds it again when
+// the figure moved. A charge above what was kept leaves the account under min_balance, and the
+// withdrawal sweeps the rest of the fee asset into the holding. The transfer names the CASH and
+// leaves the rest there. The refund deposits it back with the unspent allowance, which keeps the
+// account alive.
 
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import type {
@@ -74,6 +88,7 @@ import {
   dryRunFundingProgram,
   estimateFundingProgramFees,
   estimateStableProgramFees,
+  priceDispatchFee,
   ProgramRejectedError,
   withFeeMargin,
   type PeopleApi,
@@ -176,22 +191,28 @@ export class FundingShortfallError extends Error {
   }
 }
 
-/** Terminal: the PSM would not mint. The run stops and the deposit stays on the burner,
- *  recoverable through its secret; it is not sent through the pool instead.
+/** Paid rejections in a row with the same answer before the run is held. */
+export const MAX_PROGRAM_REJECTIONS = 3;
+
+/** Terminal: the chain would not take the conversion. The run stops and the deposit stays on the
+ *  burner, recoverable through its secret; it is not sent through the pool instead.
  *
  *  Either the PSM was unavailable for MAX_PSM_REFUSALS ticks — paused, or over its ceiling — where
  *  a resume with a fresh counter tries again once the ceiling has been raised; or it refused the
  *  swap as quoted, where a resume replays the same frozen rate and amount and fails identically,
- *  and only a fresh quote can serve the buyer. */
+ *  and only a fresh quote can serve the buyer; or the program was rejected at inclusion with the
+ *  same answer MAX_PROGRAM_REJECTIONS times in a row, each costing its dispatch fee. */
 export class FundingHeldError extends Error {
   constructor(
     readonly reason: string,
-    readonly kind: PsmRefusalKind = "unavailable",
+    readonly kind: PsmRefusalKind | "rejected" = "unavailable",
   ) {
     super(
       kind === "unavailable"
         ? `funding held: the PSM refused the mint ${MAX_PSM_REFUSALS} times, last: ${reason}`
-        : `funding held: the PSM will not mint this swap as quoted: ${reason}`,
+        : kind === "rejected"
+          ? `funding held: the program was rejected ${MAX_PROGRAM_REJECTIONS} times running: ${reason}`
+          : `funding held: the PSM will not mint this swap as quoted: ${reason}`,
     );
     this.name = "FundingHeldError";
   }
@@ -439,6 +460,10 @@ export interface TickState {
    *  landed; the chain final at or past it with the nonce unmoved means that block was replaced.
    *  Null once the conversion is final or the block was replaced. */
   inclusionBlock: number | null;
+  /** Paid rejections in a row, with their answer in `lastRejection`. MAX_PROGRAM_REJECTIONS
+   *  hold the run. A different answer starts over; a landed program clears both. */
+  rejections: number;
+  lastRejection: string | null;
 }
 
 export const freshTickState = (): TickState => ({
@@ -449,6 +474,8 @@ export const freshTickState = (): TickState => ({
   fundsSeenAt: null,
   nonceAtSubmit: null,
   inclusionBlock: null,
+  rejections: 0,
+  lastRejection: null,
 });
 
 export interface TickOnceInput {
@@ -609,10 +636,30 @@ async function submitConversion<Options>(
   if (included.ok) {
     state.xcmSubmitted = true;
     state.inclusionBlock = included.block.number;
+    state.rejections = 0;
+    state.lastRejection = null;
   } else {
     state.nonceAtSubmit = null;
   }
   return included;
+}
+
+/** A paid rejection: the program was in a block and rolled back, and the dispatch fee is gone.
+ *  The same answer MAX_PROGRAM_REJECTIONS times in a row holds the run. Otherwise the tick fails
+ *  and the next one re-prices and retries. */
+function rejected(
+  state: TickState,
+  what: string,
+  dispatchError: unknown,
+  execArgs: unknown,
+): never {
+  const answer = describeDispatchError(dispatchError, execArgs);
+  state.rejections = answer === state.lastRejection ? state.rejections + 1 : 1;
+  state.lastRejection = answer;
+  if (state.rejections >= MAX_PROGRAM_REJECTIONS) {
+    throw new FundingHeldError(`${what}: ${answer}`, "rejected");
+  }
+  throw new Error(`${what} dispatch rejected: ${answer}`);
 }
 
 /** The last submit's answer was lost, to a worker killed mid-send or to the inclusion bound. The
@@ -757,13 +804,12 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
     // even the bare swap waits without the fee reads.
     const pool = poolOf(input);
     const stablePool = stablePoolOf(input);
-    stableIn = (
-      await bounded(
-        quoteStableForUnderlying(api, pool, stablePool, buyNow),
-        input.tickTimeoutMs,
-        "stable pool quote",
-      )
-    ).stableIn;
+    const quote = await bounded(
+      quoteStableForUnderlying(api, pool, stablePool, buyNow),
+      input.tickTimeoutMs,
+      "stable pool quote",
+    );
+    stableIn = quote.stableIn;
     if (balances.depositAh < stableIn) {
       depositNeeded = stableIn;
     } else {
@@ -775,8 +821,10 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
           pool,
           beneficiaryHex: input.beneficiaryHex,
           peopleParaId: input.peopleParaId,
-          // At the magnitude the program will carry: everything the burner holds.
+          // At the magnitude the program will carry: everything the burner holds, and the
+          // native the target is quoted at as the floor.
           depositStable: balances.depositAh,
+          minNativeOut: quote.nativeIn,
           minUnderlyingOut: buyNow,
           remoteFeesCash: earmark,
           transfer: input.transfer,
@@ -988,11 +1036,7 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
     // A rejected program rolls back whole: the deposit stays native and the next tick re-prices
     // and retries. It happens when the pool moved past the floor, a fee allowance fell short, or
     // the balance was already spent by an earlier run.
-    if (!res.ok) {
-      throw new Error(
-        `funding program dispatch rejected: ${describeDispatchError(res.dispatchError, execArgs)}`,
-      );
-    }
+    if (!res.ok) rejected(state, "funding program", res.dispatchError, execArgs);
     return { step: effective, balances, submitted: true };
   }
 
@@ -1024,7 +1068,9 @@ const stablePoolOf = (input: TickOnceInput): Pool => {
 };
 
 /** The stable pool tier's swap step: everything the fees leave, through both pools, to the burner
- *  on People, after the dry run of the program. Every failure is the next tick's to retry. */
+ *  on People, after the dry run of the program. The program is built with the gate's dispatch
+ *  figure, then priced itself and built again if the fee moved. Every failure is the next tick's
+ *  to retry. */
 async function swapThroughStablePool(
   input: TickOnceInput,
   state: TickState,
@@ -1038,16 +1084,6 @@ async function swapThroughStablePool(
   const { api, address } = input;
   const pool = poolOf(input);
   const stablePool = stablePoolOf(input);
-  // Convert everything the fees leave, not just enough for the target: the dispatch fee, the
-  // min_balance and the fee allowance stay out, as on the PSM tier, and the cushion the deposit
-  // was asked with reaches the exchange.
-  let spend = balances.depositAh - fees.dispatchExternal - fees.heldBackExternal;
-  if (spend <= 0n) {
-    throw new Error(
-      `deposit ${balances.depositAh} cannot cover the stable program's own fees ` +
-        `(dispatch ${fees.dispatchExternal} + held back ${fees.heldBackExternal})`,
-    );
-  }
   const twoHop = async (stableIn: bigint) => {
     const nativeOut = await bounded(
       quoteNativeOut(api, stablePool, stableIn),
@@ -1062,43 +1098,71 @@ async function swapThroughStablePool(
     );
     return cashOut === null ? null : { nativeOut, cashOut };
   };
-  let quotes = await twoHop(spend);
-  if (quotes === null) {
-    // A pool too shallow for the whole deposit: buy the target instead, as the native pool tier
-    // does, and the surplus stable stays on the burner, reachable through its secret.
-    const target = withHeadroom(stableForTarget, input.slippagePct);
-    spend = target < spend ? target : spend;
-    input.onTransientError?.(
-      new Error(
-        `a pool cannot absorb the whole balance in one exchange; buying the target with ${spend} instead`,
-      ),
-    );
-    quotes = await twoHop(spend);
-    if (quotes === null) throw new Error("the pools cannot quote even the target amount");
+  let fellBack = false;
+  // Converts everything the fees leave, not just enough for the target: the dispatch fee, the
+  // min_balance and the fee allowance stay out, as on the PSM tier, and the cushion the deposit
+  // was asked with reaches the exchange.
+  const carve = async (dispatch: bigint) => {
+    let spend = balances.depositAh - dispatch - fees.heldBackExternal;
+    if (spend <= 0n) {
+      throw new Error(
+        `deposit ${balances.depositAh} cannot cover the stable program's own fees ` +
+          `(dispatch ${dispatch} + held back ${fees.heldBackExternal})`,
+      );
+    }
+    let quotes = await twoHop(spend);
+    if (quotes === null) {
+      // A pool too shallow for the whole deposit: buy the target instead, as the native pool tier
+      // does, and the surplus stable stays on the burner, reachable through its secret.
+      const target = withHeadroom(stableForTarget, input.slippagePct);
+      spend = target < spend ? target : spend;
+      if (!fellBack) {
+        fellBack = true;
+        input.onTransientError?.(
+          new Error(
+            `a pool cannot absorb the whole balance in one exchange; buying the target with ${spend} instead`,
+          ),
+        );
+      }
+      quotes = await twoHop(spend);
+      if (quotes === null) throw new Error("the pools cannot quote even the target amount");
+    }
+    // The second exchange's floor is the requirement itself, as on the native pool tier: a quote
+    // already under it waits for the next tick instead of submitting.
+    if (quotes.cashOut < buyNow) {
+      throw new Error(
+        `pool quote ${quotes.cashOut} for the spend is below the target ${buyNow}; waiting for the price`,
+      );
+    }
+    // The first exchange's floor is its quote less the headroom.
+    const minNativeOut =
+      (quotes.nativeOut * BigInt(Math.round((100 - input.slippagePct) * 100))) / 10_000n;
+    return buildStableFundingProgram({
+      stablePool,
+      pool,
+      withdrawStable: spend + fees.feeAllowanceExternal,
+      payFeesStable: fees.feeAllowanceExternal,
+      minNativeOut,
+      minUnderlyingOut: buyNow,
+      remoteFeesCash,
+      beneficiaryHex: input.beneficiaryHex,
+      peopleParaId: input.peopleParaId,
+      transfer: input.transfer,
+      maxWeight: fees.maxWeight,
+    });
+  };
+  let execArgs = await carve(fees.dispatchExternal);
+  // The gate priced the dispatch on a stand-in. Price the program itself and build it again if
+  // the fee moved. The amounts shift by the difference and keep their length, so once is enough.
+  const options = stableTxOptions(route.external);
+  const priced = await bounded(
+    priceDispatchFee(api, api.tx.PolkadotXcm.execute(execArgs), address, options, "stable program"),
+    input.tickTimeoutMs,
+    "stable program dispatch price",
+  );
+  if (priced.dispatchExternal !== fees.dispatchExternal) {
+    execArgs = await carve(priced.dispatchExternal);
   }
-  // The second exchange's floor is the requirement itself, as on the native pool tier: a quote
-  // already under it waits for the next tick instead of submitting.
-  if (quotes.cashOut < buyNow) {
-    throw new Error(
-      `pool quote ${quotes.cashOut} for the spend is below the target ${buyNow}; waiting for the price`,
-    );
-  }
-  // The first exchange's floor is its quote less the headroom.
-  const minNativeOut =
-    (quotes.nativeOut * BigInt(Math.round((100 - input.slippagePct) * 100))) / 10_000n;
-  const execArgs = buildStableFundingProgram({
-    stablePool,
-    pool,
-    withdrawStable: spend + fees.feeAllowanceExternal,
-    payFeesStable: fees.feeAllowanceExternal,
-    minNativeOut,
-    minUnderlyingOut: buyNow,
-    remoteFeesCash,
-    beneficiaryHex: input.beneficiaryHex,
-    peopleParaId: input.peopleParaId,
-    transfer: input.transfer,
-    maxWeight: fees.maxWeight,
-  });
   // Both chains run the program before it is paid for; one that would fail, trap assets or land
   // short of what People still lacks is not submitted, and the next tick re-prices.
   await bounded(
@@ -1122,16 +1186,12 @@ async function swapThroughStablePool(
     state,
     balances,
     tx,
-    { ...stableTxOptions(route.external), ...input.signOptions },
+    { ...options, ...input.signOptions },
     "stable program",
   );
   // A rejected program rolls back whole: the deposit stays in the stable minus the dispatch fee,
   // and the next tick re-prices and retries.
-  if (!res.ok) {
-    throw new Error(
-      `stable program dispatch rejected: ${describeDispatchError(res.dispatchError, execArgs)}`,
-    );
-  }
+  if (!res.ok) rejected(state, "stable program", res.dispatchError, execArgs);
 }
 
 /** The dotUSD tier's swap step: send everything the fees leave, not just the target, to the
@@ -1147,22 +1207,35 @@ async function sendDotUsdToPeople(
   const { api, address } = input;
   // The dispatch fee, the min_balance and the fee allowance stay out, as on the stable tiers, and
   // the cushion the deposit was asked with goes along to People.
-  const send = balances.depositAh - fees.dispatchExternal - fees.heldBackExternal;
-  if (send <= 0n) {
-    throw new Error(
-      `deposit ${balances.depositAh} cannot cover the dotUSD program's own fees ` +
-        `(dispatch ${fees.dispatchExternal} + held back ${fees.heldBackExternal})`,
-    );
+  const carve = (dispatch: bigint) => {
+    const send = balances.depositAh - dispatch - fees.heldBackExternal;
+    if (send <= 0n) {
+      throw new Error(
+        `deposit ${balances.depositAh} cannot cover the dotUSD program's own fees ` +
+          `(dispatch ${dispatch} + held back ${fees.heldBackExternal})`,
+      );
+    }
+    return buildDotUsdFundingProgram({
+      withdrawUnderlying: send + fees.feeAllowanceExternal,
+      payFeesUnderlying: fees.feeAllowanceExternal,
+      remoteFeesCash,
+      beneficiaryHex: input.beneficiaryHex,
+      peopleParaId: input.peopleParaId,
+      transfer: input.transfer,
+      maxWeight: fees.maxWeight,
+    });
+  };
+  let execArgs = carve(fees.dispatchExternal);
+  // Price the program itself and build it again if the fee moved.
+  const options = dotUsdTxOptions();
+  const priced = await bounded(
+    priceDispatchFee(api, api.tx.PolkadotXcm.execute(execArgs), address, options, "dotUSD program"),
+    input.tickTimeoutMs,
+    "dotUSD program dispatch price",
+  );
+  if (priced.dispatchExternal !== fees.dispatchExternal) {
+    execArgs = carve(priced.dispatchExternal);
   }
-  const execArgs = buildDotUsdFundingProgram({
-    withdrawUnderlying: send + fees.feeAllowanceExternal,
-    payFeesUnderlying: fees.feeAllowanceExternal,
-    remoteFeesCash,
-    beneficiaryHex: input.beneficiaryHex,
-    peopleParaId: input.peopleParaId,
-    transfer: input.transfer,
-    maxWeight: fees.maxWeight,
-  });
   // Both chains run the program before it is paid for; one that would fail, trap assets or land
   // short of what People still lacks is not submitted, and the next tick re-prices.
   await bounded(
@@ -1186,16 +1259,12 @@ async function sendDotUsdToPeople(
     state,
     balances,
     tx,
-    { ...dotUsdTxOptions(), ...input.signOptions },
+    { ...options, ...input.signOptions },
     "dotUSD program",
   );
   // A rejected program rolls back whole: the deposit stays on the burner minus the dispatch fee,
   // and the next tick re-prices and retries.
-  if (!res.ok) {
-    throw new Error(
-      `dotUSD program dispatch rejected: ${describeDispatchError(res.dispatchError, execArgs)}`,
-    );
-  }
+  if (!res.ok) rejected(state, "dotUSD program", res.dispatchError, execArgs);
 }
 
 /** The external the PSM tier asks the buyer for, so `buyNow` CASH reaches People: the mint that
@@ -1253,18 +1322,31 @@ async function mintThroughPsm(
   };
   // Mint everything the dispatch fee and the held-back external leave, not just enough for the
   // target; the gate already saw that this pays out the target.
-  const externalIn = balances.depositAh - fees.dispatchExternal - fees.heldBackExternal;
-  const { batch, execArgs } = buildPsmBatch(api, {
-    route,
-    externalIn,
-    cashMinted: psmMintOut(externalIn, route.feeRate),
-    feeAllowanceExternal: fees.feeAllowanceExternal,
-    remoteFeesCash,
-    beneficiaryHex: input.beneficiaryHex,
-    peopleParaId: input.peopleParaId,
-    transfer: input.transfer,
-    maxWeight: fees.maxWeight,
-  });
+  const carve = (dispatch: bigint) => {
+    const externalIn = balances.depositAh - dispatch - fees.heldBackExternal;
+    return buildPsmBatch(api, {
+      route,
+      externalIn,
+      cashMinted: psmMintOut(externalIn, route.feeRate),
+      feeAllowanceExternal: fees.feeAllowanceExternal,
+      remoteFeesCash,
+      beneficiaryHex: input.beneficiaryHex,
+      peopleParaId: input.peopleParaId,
+      transfer: input.transfer,
+      maxWeight: fees.maxWeight,
+    });
+  };
+  let { batch, execArgs } = carve(fees.dispatchExternal);
+  // Price the program itself and build it again if the fee moved.
+  const options = psmBatchTxOptions(route.external);
+  const priced = await bounded(
+    priceDispatchFee(api, batch, address, options, "psm batch"),
+    input.tickTimeoutMs,
+    "psm batch dispatch price",
+  );
+  if (priced.dispatchExternal !== fees.dispatchExternal) {
+    ({ batch, execArgs } = carve(priced.dispatchExternal));
+  }
   // The whole batch on both chains before paying for it, the mint included: a PSM refusal
   // surfaces here, with nothing spent, rather than at inclusion.
   try {
@@ -1292,15 +1374,13 @@ async function mintThroughPsm(
     state,
     balances,
     batch,
-    { ...psmBatchTxOptions(route.external), ...input.signOptions },
+    { ...options, ...input.signOptions },
     "psm batch",
   );
   // A rejected batch rolls back whole, the mint included: the deposit stays in the external
   // minus the dispatch fee, and the next tick re-prices and retries.
   if (!res.ok) {
     refused(res.dispatchError);
-    throw new Error(
-      `psm batch dispatch rejected: ${describeDispatchError(res.dispatchError, execArgs)}`,
-    );
+    rejected(state, "psm batch", res.dispatchError, execArgs);
   }
 }
