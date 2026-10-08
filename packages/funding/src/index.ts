@@ -38,7 +38,6 @@ export {
   estimateDotUsdProgramFees,
   FEE_MARGIN_BPS,
   FUNDING_PROGRAM_MAX_WEIGHT,
-  priceDispatchFee,
   ProgramRejectedError,
   dotUsdTxOptions,
   withFeeMargin,
