@@ -3,7 +3,8 @@
 // Everything shown is read from the record; the actions go back to the route.
 import { computed } from "vue";
 import { Check, RefreshCcw, X } from "lucide-vue-next";
-import { formatBaseUnits, sellAmountOf, SELL_TOKEN } from "@getsome/meld";
+import { depositTokenOf, recordedRoute } from "@getsome/funding";
+import { formatBaseUnits, sellAmountOf } from "@getsome/meld";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
 import {
   paymentTaken,
@@ -32,8 +33,10 @@ const props = defineProps<{
   /** A line the record does not carry: a refused cancel, a retry that could not start. */
   notice: string | null;
   busy: boolean;
+  /** What the pool would land for a held withdrawal, formatted; null until quoted. */
+  poolFigure?: string | null;
 }>();
-const emit = defineEmits<{ cancel: []; retry: []; close: [] }>();
+const emit = defineEmits<{ cancel: []; retry: []; pool: []; close: [] }>();
 
 const now = useFundingProgressClock(
   () => withdrawalProgressProfile(props.record.rail.provider).cadenceMs,
@@ -96,9 +99,12 @@ const residueNote = computed(() => {
   if (residue.stuck === true) {
     return "What was left could not come back to your balance on its own. Contact support with your reference.";
   }
-  // Shown to the sale's decimals; a remainder below them is not worth a line.
-  const shown = residue.amount === undefined ? 0n : sellAmountOf(BigInt(residue.amount));
-  const amount = shown === 0n ? null : `${formatBaseUnits(SELL_TOKEN, shown)} ${SELL_TOKEN.symbol}`;
+  // In the token the sale sold, shown to the sale's decimals; a remainder below them is not worth
+  // a line.
+  const token = depositTokenOf(recordedRoute(props.record.handoff));
+  const shown = residue.amount === undefined ? 0n : sellAmountOf(token, BigInt(residue.amount));
+  const symbol = props.record.sale?.token ?? token.symbol;
+  const amount = shown === 0n ? null : `${formatBaseUnits(token, shown)} ${symbol}`;
   if (!residue.returning) {
     return amount === null
       ? null
@@ -131,6 +137,10 @@ const canCancel = computed(
   () => status.value.kind === "awaiting-payment" && !paymentTaken(props.record),
 );
 const canRetry = computed(() => status.value.kind === "failed" && status.value.recoverable);
+/** The pool is offered only where waiting cannot help: the PSM refused with room for the redeem. */
+const canSwitchToPool = computed(
+  () => status.value.kind === "failed" && failure.value?.kind === "held",
+);
 </script>
 
 <template>
@@ -164,9 +174,17 @@ const canRetry = computed(() => status.value.kind === "failed" && status.value.r
       <p v-if="residueNote" class="text-body-s text-fg-secondary">{{ residueNote }}</p>
       <DetailRows v-if="saleRows.length > 0" :rows="saleRows" muted />
 
-      <PillButton v-if="canRetry" class="mt-auto" :disabled="busy" @click="emit('retry')">
-        Try again
-      </PillButton>
+      <div v-if="canRetry" class="mt-auto flex flex-col gap-3">
+        <PillButton :disabled="busy" @click="emit('retry')">Try again</PillButton>
+        <PillButton
+          v-if="canSwitchToPool"
+          variant="tertiary"
+          :disabled="busy || !poolFigure"
+          @click="emit('pool')"
+        >
+          Sell on the pool{{ poolFigure ? ` for about ${poolFigure}` : "" }}
+        </PillButton>
+      </div>
       <!-- Cancel and retry never show together: cancel is for an unpaid request, retry for a
            failed one. -->
       <PillButton

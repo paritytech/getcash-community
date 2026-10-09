@@ -13,7 +13,7 @@ export {
   type MeldStatusResult,
   type MeldCancelResult,
 } from "./client";
-export { formatBaseUnits, parseBaseUnits, toBaseUnits, type MeldToken } from "./units";
+export { formatBaseUnits, meldTokenOf, parseBaseUnits, toBaseUnits, type MeldToken } from "./units";
 export {
   formatSellAmount,
   MELD_SELL_ENABLED,
@@ -22,7 +22,6 @@ export {
   type SaleChannelRecord,
   saleRail,
   type SaleReadMemory,
-  SELL_TOKEN,
   sellAmountOf,
   sellQuoteUsable,
 } from "./sell";

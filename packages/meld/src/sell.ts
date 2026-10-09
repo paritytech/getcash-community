@@ -2,9 +2,9 @@
 // provider's channel before the key pays and as its status after. The worker asks both through
 // the same `GET /funding/:id` the page polls during KYC.
 
-import { NETWORK, TOKENS, type SwapStatusResult } from "@getsome/core";
+import { NETWORK, type SwapStatusResult, type TokenSpec } from "@getsome/core";
 import type { MeldClientLike, MeldQuoteEntry, MeldStatusResult } from "./client";
-import { formatBaseUnits, parseBaseUnits } from "./units";
+import { formatBaseUnits, parseBaseUnits, type MeldToken } from "./units";
 
 /** Whether this build sells CASH for fiat through Meld, the card and bank withdrawals. On a test
  *  network the sale only ever moves test funds. On a live one it stays off until a small real sale
@@ -13,21 +13,19 @@ import { formatBaseUnits, parseBaseUnits } from "./units";
  *  it, so neither trusts the other to hold the line. */
 export const MELD_SELL_ENABLED = NETWORK.testnet;
 
-/** What a sale sells: the native on Asset Hub, which Meld names DOT_ASSETHUB. */
-export const SELL_TOKEN = TOKENS.PAS;
-
 /** The fraction digits a committed amount carries. Few enough that no provider rounds it, and the
- *  planck below them stay with the rest of the sale. */
+ *  base units below them stay with the rest of the sale. */
 const SELL_AMOUNT_DECIMALS = 4;
 
-/** `planck` cut down to what a sale may commit, rounded down. */
-export function sellAmountOf(planck: bigint): bigint {
-  const step = 10n ** BigInt(SELL_TOKEN.decimals - SELL_AMOUNT_DECIMALS);
-  return (planck / step) * step;
+/** `amount` of `token` cut down to what a sale may commit, rounded down. */
+export function sellAmountOf(token: TokenSpec, amount: bigint): bigint {
+  const step = 10n ** BigInt(token.decimals - SELL_AMOUNT_DECIMALS);
+  return (amount / step) * step;
 }
 
-/** The committed amount as the adapter and the provider see it. */
-export const formatSellAmount = (planck: bigint): string => formatBaseUnits(SELL_TOKEN, planck);
+/** The committed amount of `token` as the adapter and the provider see it. */
+export const formatSellAmount = (token: TokenSpec, amount: bigint): string =>
+  formatBaseUnits(token, amount);
 
 /**
  * Providers Meld lists as running only the standard sell flow: their widget finishes the trade
@@ -61,14 +59,17 @@ export interface SaleChannelRecord {
 }
 
 /**
- * The sale as a channel: where the key pays and how much the provider expects. Null when the
- * adapter is not disclosing a deposit, or discloses one the key must not pay: another asset, or
- * an amount that does not parse.
+ * The sale as a channel: where the key pays and how much the provider expects of `token`, the one
+ * the sale sells. Null when the adapter is not disclosing a deposit, or discloses one the key must
+ * not pay: another asset, or an amount that does not parse.
  */
-export function saleChannelOf(result: MeldStatusResult): SaleChannelRecord | null {
+export function saleChannelOf(
+  result: MeldStatusResult,
+  token: MeldToken,
+): SaleChannelRecord | null {
   const { deposit } = result;
-  if (deposit === undefined || deposit.currency !== SELL_TOKEN.meldCurrencyCode) return null;
-  const expectedAmount = parseBaseUnits(SELL_TOKEN, deposit.amount);
+  if (deposit === undefined || deposit.currency !== token.meldCurrencyCode) return null;
+  const expectedAmount = parseBaseUnits(token, deposit.amount);
   if (expectedAmount === null || expectedAmount <= 0n) return null;
   return {
     depositAddress: deposit.address,
@@ -135,14 +136,15 @@ export interface SaleReadMemory {
 }
 
 /**
- * The rail leg's two reads of a sale through `client`: its channel before the key pays, its status
- * after. A sale the adapter keeps answering 404 for (a reset database, a product id that changed)
- * is gone after SALE_GONE_AFTER reads in a row spanning SALE_GONE_FOR_MS: no channel to pay, so the
- * key goes home, or, once paid, a payout nobody can confirm. Short of that, and on any other
- * failure, the read throws and the next tick reads again.
+ * The rail leg's two reads of a sale of `token` through `client`: its channel before the key pays,
+ * its status after. A sale the adapter keeps answering 404 for (a reset database, a product id
+ * that changed) is gone after SALE_GONE_AFTER reads in a row spanning SALE_GONE_FOR_MS: no channel
+ * to pay, so the key goes home, or, once paid, a payout nobody can confirm. Short of that, and on
+ * any other failure, the read throws and the next tick reads again.
  */
 export function saleRail(
   client: MeldClientLike,
+  token: MeldToken,
   memory: SaleReadMemory,
   now: () => number = Date.now,
 ) {
@@ -166,7 +168,7 @@ export function saleRail(
   return {
     channel: async (fundingRequestId: string): Promise<SaleChannelRecord | null> => {
       const result = await read(fundingRequestId);
-      return result === null ? null : saleChannelOf(result);
+      return result === null ? null : saleChannelOf(result, token);
     },
     status: async (fundingRequestId: string): Promise<SwapStatusResult> =>
       saleStatusView((await read(fundingRequestId)) ?? { status: "unobserved" }),

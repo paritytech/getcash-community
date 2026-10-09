@@ -2,7 +2,7 @@
 // is gated at runtime per source by probeLiquidity.
 
 import { sha256 } from "@noble/hashes/sha2.js";
-import type { SourceDescriptor, SourceId } from "@getsome/core";
+import type { SourceDescriptor, SourceId, TokenSpec } from "@getsome/core";
 
 function validateBtcRefundAddress(addr: string): boolean {
   const trimmed = addr.trim();
@@ -261,8 +261,9 @@ export const SOURCE_CONFIG_BY_ID: ReadonlyMap<SourceId, SourceConfig> = new Map(
   SOURCE_CONFIGS.map((s) => [s.sourceId, s]),
 );
 
-/** DOT on Asset Hub as a swap's source: what a withdrawal sells. Not a deposit source, so not
- *  in the catalog above; the reference amount is Chainflip's minimum swap out, 4 DOT. */
+/** DOT on Asset Hub as a swap's source: what a withdrawal sold on the pool sells. Not a deposit
+ *  source, so not in the catalog above; the reference amount is Chainflip's minimum swap out,
+ *  4 DOT. */
 export const ASSET_HUB_DOT: SourceConfig = makeSource(
   "dot-assethub",
   "Assethub",
@@ -272,6 +273,30 @@ export const ASSET_HUB_DOT: SourceConfig = makeSource(
   "40000000000",
   validateAssetHubAddress,
 );
+
+/** USDT on Asset Hub as a swap's source: what a withdrawal redeemed through the PSM sells. The
+ *  reference amount is Chainflip's minimum swap out, 20 USDT. */
+export const ASSET_HUB_USDT: SourceConfig = makeSource(
+  "usdt-assethub",
+  "Assethub",
+  "USDT",
+  "Tether USD",
+  6,
+  "20000000",
+  validateAssetHubAddress,
+);
+
+const ASSET_HUB_SOURCES: readonly SourceConfig[] = [ASSET_HUB_DOT, ASSET_HUB_USDT];
+
+/** The Asset Hub source a withdrawal that lands `token` on its key sells through, by the asset
+ *  Chainflip names it. Throws for a token Chainflip takes from no Asset Hub source. */
+export function assetHubSourceFor(token: TokenSpec): SourceConfig {
+  const source = ASSET_HUB_SOURCES.find((candidate) => candidate.asset === token.chainflipAsset);
+  if (source === undefined) {
+    throw new Error(`Chainflip has no Asset Hub source for ${token.symbol}`);
+  }
+  return source;
+}
 
 /** The core-typed catalog view, without validators or URI builders. */
 export const SOURCES: readonly SourceDescriptor[] = SOURCE_CONFIGS.map(

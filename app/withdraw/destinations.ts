@@ -20,9 +20,10 @@ export interface WithdrawDestination {
   asset: string;
   rail: WithdrawalRailState["provider"];
   /** What the CASH lands as on Asset Hub, named as the on-ramp names a deposit: the token picked
-   *  for Asset Hub itself, the native for a provider, which takes PAS from the key. The sale that
-   *  gets there is decided at quote time from it. */
-  landing: DepositAsset;
+   *  for Asset Hub itself. A provider names none: it takes from the key whatever the fiat rule
+   *  lands there, the PSM's external when the PSM can serve and the native otherwise. The sale
+   *  that gets there is decided at quote time from it. */
+  landing?: DepositAsset;
   validateAddress(address: string): boolean;
 }
 
@@ -90,7 +91,6 @@ function chainflipDestinations(chain: string, assets: readonly string[]): Withdr
         chainLabel: chain,
         asset,
         rail: "chainflip" as const,
-        landing: "native" as const,
         validateAddress: (address: string) => config.validateRefundAddress(address.trim()),
       }),
     ];
@@ -127,13 +127,23 @@ export const destinationTokenIcon = (destination: WithdrawDestination): string =
   tokenIcon(destination.asset);
 
 /** The Asset Hub account the funds land on for a destination: the address itself for Asset Hub.
- *  Null for a provider destination: the PAS lands on the withdrawal's own key, which then pays
- *  the provider and is where a refund comes back to. */
+ *  Null for a provider destination: the sale's token lands on the withdrawal's own key, which
+ *  then pays the provider and is where a refund comes back to. */
 export function landingAccountHex(
   destination: WithdrawDestination,
   address: string,
 ): `0x${string}` | null {
   return destination.rail === "direct" ? assetHubAccountHex(address) : null;
+}
+
+/** A figure in the landing asset as the summary shows it: four decimals, the trailing zeros
+ *  dropped. */
+export function formatLanding(units: bigint, decimals: number): string {
+  const unit = 10n ** BigInt(decimals);
+  const whole = units / unit;
+  const fraction = ((units % unit) * 10_000n) / unit;
+  const digits = fraction.toString().padStart(4, "0").replace(/0+$/, "");
+  return digits === "" ? whole.toString() : `${whole}.${digits}`;
 }
 
 /** The address as the summary shows it: the first and last characters around an ellipsis. */

@@ -1,8 +1,9 @@
 // The worker's intake of a withdrawal hand-off: the sale it names is kept on the job as the
 // surface froze it, and a hand-off without one, or with a psm route missing its fee rate, is
-// refused before anything is stored.
+// refused before anything is stored. The user's switch to the pool changes a held job's exit and
+// nothing else. And its clock: a job waiting for PSM room is off it.
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deriveKeypairWithSecret } from "@getsome/ephemeral";
 
 const mocks = vi.hoisted(() => ({ stored: new Map<string, unknown>() }));
@@ -59,6 +60,36 @@ const handoff = (sale: Record<string, unknown>) => ({
 
 const storedJobs = () => (mocks.stored.get(WITHDRAW_KEY) ?? {}) as Record<string, StoredJob>;
 
+const NOW = Date.UTC(2026, 9, 7, 12, 0, 0);
+/** The engine's bound on a job's worked time. */
+const RUN_TIMEOUT_MS = 900_000;
+
+/** A PSM-tier job between the swap and the XCM, as stored between wakes, worked to the bound. */
+const convertingJob = (sessionId: string, waitingSince: number | null): StoredJob => ({
+  ...handoff({ tier: "psm", external: "USDT", feeRate: 5_000 }),
+  v: 1,
+  sessionId,
+  phase: "convert",
+  landed: false,
+  done: false,
+  createdAt: NOW - 60_000,
+  armedAt: NOW - 60_000,
+  lastTickAt: NOW - 10_000,
+  state: {
+    attempts: 1,
+    rejections: 0,
+    submitted: false,
+    destinationBefore: null,
+    expectedLanding: null,
+    fundsSeenAt: NOW - 60_000,
+    psmRefusals: 0,
+    waitingSince,
+    workedMs: RUN_TIMEOUT_MS,
+  },
+  leg: { handoff: null, paid: false, sweep: { attempts: 0, rejections: 0 }, reading: null },
+  txs: [],
+});
+
 async function freshEngine() {
   vi.resetModules();
   return await import("../worker/src/withdraw-engine.js");
@@ -99,5 +130,107 @@ describe("the worker's intake of a withdrawal", () => {
       await engine.startWithdraw(JSON.stringify(handoff({ tier: "pool", external: "EUR" }))),
     ).toMatchObject({ error: "invalid", reason: expect.stringMatching(/unknown deposit asset/) });
     expect(storedJobs()).toEqual({});
+  });
+});
+
+describe("the worker's switch of a held withdrawal to the pool", () => {
+  /** A PSM-tier job the PSM refused three times with room, as the hold leaves it: its CASH on
+   *  the key's Asset Hub account. */
+  const heldJob = (): StoredJob => {
+    const job = convertingJob("s-1", null);
+    return {
+      ...job,
+      phase: "failed",
+      failure: "held",
+      lastError: "the PSM refused the redeem",
+      state: { ...(job.state as object), submitted: true, psmRefusals: 3, workedMs: 0 },
+    };
+  };
+
+  beforeEach(() => {
+    mocks.stored.clear();
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("sets a held job's exit to the pool and re-arms it, keeping its sale", async () => {
+    mocks.stored.set(WITHDRAW_KEY, { "s-1": heldJob() });
+    const engine = await freshEngine();
+    const answer = await engine.switchWithdrawToPool(JSON.stringify({ sessionId: "s-1" }));
+    expect(answer).toMatchObject({
+      sessionId: "s-1",
+      phase: "starting",
+      tier: "psm",
+      exit: "pool",
+      psmRefusals: 0,
+      waitingSince: null,
+    });
+    const job = storedJobs()["s-1"]!;
+    expect(job).toMatchObject({
+      tier: "psm",
+      external: "USDT",
+      feeRate: 5_000,
+      phase: "starting",
+      armedAt: NOW,
+      state: { exit: "pool", submitted: true, psmRefusals: 0, waitingSince: null, workedMs: 0 },
+    });
+    expect(job.failure).toBeUndefined();
+    expect(job.lastError).toBeUndefined();
+  });
+
+  it("refuses a job that is not held, changing nothing", async () => {
+    const rejected = { ...heldJob(), failure: "rejected" };
+    mocks.stored.set(WITHDRAW_KEY, { "s-1": rejected, "s-2": convertingJob("s-2", null) });
+    const engine = await freshEngine();
+    for (const sessionId of ["s-1", "s-2"]) {
+      expect(await engine.switchWithdrawToPool(JSON.stringify({ sessionId }))).toEqual({
+        error: "invalid",
+        reason: "only a withdrawal the PSM holds can move to the pool",
+      });
+    }
+    expect(storedJobs()["s-1"]).toMatchObject({ phase: "failed", failure: "rejected" });
+    expect(storedJobs()["s-2"]).toMatchObject({ phase: "convert" });
+    for (const job of Object.values(storedJobs())) {
+      expect((job.state as Record<string, unknown>).exit).toBeUndefined();
+    }
+    expect(await engine.switchWithdrawToPool(JSON.stringify({ sessionId: "s-9" }))).toEqual({
+      sessionId: "s-9",
+      known: false,
+    });
+  });
+});
+
+describe("the worker's clock on a withdrawal waiting for PSM room", () => {
+  beforeEach(() => {
+    mocks.stored.clear();
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("neither counts worked time nor times out a waiting job, where the same job on the clock times out", async () => {
+    // No chain is reachable here: the tick's read fails and is contained as a transient, and the
+    // worked time is counted before it and judged after it, as on every pass.
+    mocks.stored.set(WITHDRAW_KEY, {
+      waiting: convertingJob("waiting", NOW - 30_000),
+      clocked: convertingJob("clocked", null),
+    });
+    const engine = await freshEngine();
+    await engine.tickAllWithdraw();
+    expect(storedJobs()["waiting"]).toMatchObject({
+      phase: "convert",
+      state: { workedMs: RUN_TIMEOUT_MS, waitingSince: NOW - 30_000 },
+    });
+    expect(storedJobs()["waiting"]!.failure).toBeUndefined();
+    expect(storedJobs()["clocked"]).toMatchObject({
+      phase: "failed",
+      failure: "timeout",
+      state: { workedMs: RUN_TIMEOUT_MS + 10_000 },
+    });
   });
 });

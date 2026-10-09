@@ -49,6 +49,7 @@ export {
   PERMILL,
   permillMulCeil,
   psmBatchTxOptions,
+  psmGrossFor,
   psmMintOut,
   sizePsmMint,
 } from "./psm-batch";
@@ -58,6 +59,7 @@ export {
   chooseRoute,
   depositTokenOf,
   isStablePoolRoute,
+  readRedeemCapacity,
   recordedRoute,
 } from "./route";
 export type {
@@ -71,7 +73,15 @@ export type {
 } from "./route";
 export { chooseCashTransfer, NoCashTransferError } from "./cash-transfer";
 export type { CashTransfer } from "./cash-transfer";
-export { STABLE_TOKENS, isStable, stableTxOptions } from "./stable";
+export {
+  STABLE_TOKENS,
+  asLocation,
+  isStable,
+  priceNativeFeeIn,
+  stableLocation,
+  stableTxOptions,
+} from "./stable";
+export type { Location } from "./stable";
 export {
   creditedTo,
   forwardedTo,

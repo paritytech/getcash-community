@@ -3,6 +3,7 @@
 // lives in one place, and the key's own read for the exact payment.
 
 import { AccountId } from "polkadot-api";
+import type { TokenSpec } from "@getsome/core";
 import type { AssetHubApi } from "./fees";
 
 const accountId = AccountId();
@@ -15,21 +16,24 @@ export async function readDestinationBalance(
   destinationHex: string,
   assetHubId?: number,
 ): Promise<bigint> {
-  if (assetHubId === undefined) return (await readAssetHubAccount(api, destinationHex)).free;
-  const holding = await api.query.Assets.Account.getValue(
-    assetHubId,
-    accountId.dec(destinationHex),
-  );
+  const address = accountId.dec(destinationHex);
+  if (assetHubId === undefined) {
+    return (await api.query.System.Account.getValue(address))?.data?.free ?? 0n;
+  }
+  const holding = await api.query.Assets.Account.getValue(assetHubId, address);
   return holding?.balance ?? 0n;
 }
 
-/** The account's free PAS and nonce on Asset Hub at the finalized head; both 0 for an account the
- *  chain does not know. The exact payment reads the nonce to tell whether it already went out. */
+/** The account's balance in `token` and its nonce on Asset Hub at the finalized head; both 0 for
+ *  an account the chain does not know. The exact payment reads the nonce to tell whether it
+ *  already went out. */
 export async function readAssetHubAccount(
   api: AssetHubApi,
   accountHex: string,
+  token: TokenSpec,
 ): Promise<{ free: bigint; nonce: number }> {
-  const address = accountId.dec(accountHex);
-  const account = await api.query.System.Account.getValue(address);
-  return { free: account?.data?.free ?? 0n, nonce: account?.nonce ?? 0 };
+  const account = await api.query.System.Account.getValue(accountId.dec(accountHex));
+  const nonce = account?.nonce ?? 0;
+  if (token.assetHubId === undefined) return { free: account?.data?.free ?? 0n, nonce };
+  return { free: await readDestinationBalance(api, accountHex, token.assetHubId), nonce };
 }

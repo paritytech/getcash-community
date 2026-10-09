@@ -1,9 +1,11 @@
-// What the provider destinations offer for the amount on screen, quoted once per amount and kept
-// while fresh, and the rows of the withdraw pickers read off them.
+// What the provider destinations offer for the amount on screen and the sale it is sold through,
+// quoted once per amount and sale and kept while fresh, and the rows of the withdraw pickers read
+// off them.
 
 import { defineStore } from "pinia";
 import { ref, shallowRef } from "vue";
-import { quoteWithdrawOffers } from "~~/lib/withdraw-live";
+import type { ConversionRoute } from "@getsome/funding";
+import { quoteWithdrawOffers, saleKeyOf } from "~~/lib/withdraw-live";
 import { chainflipRailOn } from "../utils/rail";
 import {
   WITHDRAW_NETWORKS,
@@ -22,12 +24,15 @@ const PROVIDER_DESTINATIONS: readonly WithdrawDestination[] = WITHDRAW_NETWORKS.
 ).filter((destination) => destination.rail !== "direct");
 
 export const useWithdrawOffersStore = defineStore("withdraw-offers", () => {
-  /** The offers by destination id, for `amount`; empty while being quoted. */
+  /** The offers by destination id, for `amount` sold through the sale; empty while being quoted. */
   const offers = shallowRef<ReadonlyMap<string, WithdrawOffer>>(new Map());
   /** The CASH the offers are for. */
   const amount = ref<bigint | null>(null);
-  /** The native the provider quotes were asked for: the pool's answer for `amount`, less the
-   *  headroom the sale and the sweep may take. What a channel is opened for at confirm. */
+  /** The sale the offers are for, as `saleKeyOf` names it. */
+  const saleKey = ref<string | null>(null);
+  /** What the provider quotes were asked for, in the sale's token: what the sale lands for
+   *  `amount`, less the headroom the sale and the sweep may take on the pool tier. What a channel
+   *  is opened for at confirm. */
   const sellable = ref<bigint | null>(null);
   const learnedAt = ref<number | null>(null);
   let inflight: Promise<void> | null = null;
@@ -41,24 +46,27 @@ export const useWithdrawOffersStore = defineStore("withdraw-offers", () => {
     offers.value.size > 0 &&
     [...offers.value.values()].every((offer) => offer.state !== "unavailable");
 
-  /** Quotes every provider destination for `amountCash`: on a new amount, when the answer went
-   *  stale, or when a destination could not be quoted last time. Nothing is asked while the rail
-   *  is off. Repeat calls for the same amount join the in-flight load. */
-  function learn(amountCash: bigint | null): Promise<void> {
+  /** Quotes every provider destination for `amountCash` sold through `sale`: on a new amount or
+   *  sale, when the answer went stale, or when a destination could not be quoted last time.
+   *  Nothing is asked while the rail is off. Repeat calls for the same amount and sale join the
+   *  in-flight load. */
+  function learn(amountCash: bigint | null, sale: ConversionRoute): Promise<void> {
     if (!railOn.value || amountCash === null) return Promise.resolve();
-    if (amount.value === amountCash) {
+    const key = saleKeyOf(sale);
+    if (amount.value === amountCash && saleKey.value === key) {
       if (inflight) return inflight;
       if (settled() && fresh()) return Promise.resolve();
     } else {
-      // A new amount: the rows start over. A refresh for the same amount keeps the current
+      // A new amount or sale: the rows start over. A refresh for the same ones keeps the current
       // answer on screen until the new one lands.
       amount.value = amountCash;
+      saleKey.value = key;
       offers.value = new Map();
     }
-    const run: Promise<void> = quoteWithdrawOffers(amountCash, PROVIDER_DESTINATIONS)
+    const run: Promise<void> = quoteWithdrawOffers(amountCash, PROVIDER_DESTINATIONS, sale)
       .then((quoted) => {
-        // The amount moved on while this was in flight: the answer is for nobody.
-        if (amount.value !== amountCash) return;
+        // The amount or the sale moved on while this was in flight: the answer is for nobody.
+        if (amount.value !== amountCash || saleKey.value !== key) return;
         sellable.value = quoted.sellable;
         offers.value = quoted.offers;
         learnedAt.value = Date.now();

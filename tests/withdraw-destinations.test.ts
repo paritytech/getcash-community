@@ -39,8 +39,8 @@ describe("withdrawal destinations", () => {
     ]);
     const provided = others.flatMap((network) => network.destinations);
     expect(provided.every((d) => d.rail === "chainflip")).toBe(true);
-    // A provider takes the native from the key, whatever it delivers.
-    expect(provided.every((d) => d.landing === "native")).toBe(true);
+    // A provider names no landing: the fiat rule decides what lands on the key for it.
+    expect(provided.every((d) => d.landing === undefined)).toBe(true);
   });
 
   it("finds a network and a destination by id", () => {

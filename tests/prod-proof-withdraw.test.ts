@@ -10,6 +10,7 @@ import { describe, it } from "vitest";
 import { AccountId, createClient } from "polkadot-api";
 import { getWsProvider } from "polkadot-api/ws";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
+import { TOKENS } from "@getsome/core";
 import { deriveKeypairWithSecret } from "@getsome/ephemeral";
 import {
   chooseCashTransfer,
@@ -122,6 +123,10 @@ describe.runIf(process.env.PROD_PROOF_WITHDRAW === "1")("withdrawal production p
               readKeyOnPeople: async (ss58) => ({
                 cash: await readCash(ss58),
                 pas: await readPas(ss58),
+              }),
+              readKeyOnAssetHub: async (hex) => ({
+                cash: await readDestinationBalance(assetHubApi, hex, TOKENS.CASH.assetHubId),
+                usdt: await readDestinationBalance(assetHubApi, hex, TOKENS.USDT.assetHubId),
               }),
               readDestinationOnAssetHub: readAlice,
               now: Date.now,

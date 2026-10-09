@@ -4,7 +4,7 @@
 // record. The record and the worker carry on when this screen is left.
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { depositTokenOf, type ConversionRoute } from "@getsome/funding";
-import { useWithdrawalRequest } from "../../../composables/useWithdrawalRequest";
+import { psmReserved, useWithdrawalRequest } from "../../../composables/useWithdrawalRequest";
 import type { FundingPackageEmits } from "../../../funding/handoff";
 import type { FundingSelection } from "../../../funding/selection";
 import type { FundingTopUp } from "../../../funding/top-ups";
@@ -12,7 +12,9 @@ import { useRequestsStore } from "../../../stores/requests";
 import { useWithdrawOffersStore } from "../../../stores/withdraw-offers";
 import { toCashBase } from "../../../utils/cash";
 import { isDemoBuild } from "../../../utils/demo";
+import { requestRefKey, type RequestRef } from "../../../utils/request-index";
 import {
+  formatLanding,
   landingAccountHex,
   type WithdrawDestination,
   type WithdrawNetwork,
@@ -51,12 +53,15 @@ const receive = ref<string | null | undefined>(undefined);
 /** The sale on Asset Hub the estimate was made for, frozen into the hand-off at confirm; null
  *  until the quote decided it. */
 const sale = ref<ConversionRoute | null>(null);
-/** The native the estimate is for; what a provider's channel is quoted with at confirm. */
-const expectedNative = ref<bigint | null>(null);
+/** What the estimate says lands on the key in the sale's token; what a provider's channel is
+ *  quoted with at confirm. */
+const expectedLanding = ref<bigint | null>(null);
 const starting = ref(false);
 const startError = ref<string | null>(null);
 const busy = ref(false);
 const notice = ref<string | null>(null);
+/** What the pool would land for a held withdrawal; null until quoted. */
+const poolFigure = ref<string | null>(null);
 
 const record = computed(() => requests.foregroundWithdrawal);
 const amount = computed(() => props.selection?.amount ?? props.topUp?.amount ?? "");
@@ -133,22 +138,13 @@ function pickToken(picked: WithdrawDestination) {
   step.value = "address";
 }
 
-/** Four decimals of the landing asset, the trailing zeros dropped. */
-function formatLanding(units: bigint, decimals: number): string {
-  const unit = 10n ** BigInt(decimals);
-  const whole = units / unit;
-  const fraction = ((units % unit) * 10_000n) / unit;
-  const digits = fraction.toString().padStart(4, "0").replace(/0+$/, "");
-  return digits === "" ? whole.toString() : `${whole}.${digits}`;
-}
-
 async function onAddress(entered: string) {
   address.value = entered;
   startError.value = null;
   step.value = "summary";
   const picked = destination.value;
   const base = toCashBase(amount.value);
-  expectedNative.value = null;
+  expectedLanding.value = null;
   sale.value = null;
   if (picked === null || base === null) {
     receive.value = undefined;
@@ -159,31 +155,37 @@ async function onAddress(entered: string) {
   // the summary must still show the destination this run was started for.
   const stale = () => step.value !== "summary" || destination.value !== picked;
   try {
+    // The sale the destination takes, decided now and frozen at confirm: the token picked for
+    // Asset Hub itself, the fiat rule for a provider, which lands the sale's token on the key.
+    const live = await import("~~/lib/withdraw-live");
+    const route = await live.chooseWithdrawRoute(
+      base,
+      picked.landing,
+      psmReserved(requests.openWithdrawals),
+    );
+    if (stale()) return;
+    // The sale stands on its own: an estimate that cannot be priced hides the figure, as it
+    // always did, and does not hold the withdrawal back.
+    sale.value = route;
     if (picked.rail === "direct") {
-      // The sale the token picked takes, decided now and frozen at confirm, and what it lands
-      // on Asset Hub in that token's decimals: the direct rail lands exactly that.
-      const live = await import("~~/lib/withdraw-live");
-      const route = await live.chooseWithdrawRoute(base, picked.landing);
-      if (stale()) return;
-      // The sale stands on its own: an estimate that cannot be priced hides the figure, as it
-      // always did, and does not hold the withdrawal back.
-      sale.value = route;
+      // What the sale lands on Asset Hub in the token's decimals: the direct rail lands exactly
+      // that.
       const units = await live.quoteDirectReceive(base, route);
       if (stale()) return;
       receive.value = `${formatLanding(units, depositTokenOf(route).decimals)} ${picked.asset}`;
       return;
     }
-    // A provider takes the native from the key. It shows what its offer for this amount said
-    // would land, and the channel is opened at confirm for the native that offer was quoted for.
-    sale.value = { tier: "pool" };
-    await offers.learn(base);
+    // A provider takes the sale's token from the key. It shows what its offer for this amount
+    // and sale said would land, and the channel is opened at confirm for the figure that offer
+    // was quoted for.
+    await offers.learn(base, route);
     if (stale()) return;
     const offer = offers.offerFor(picked);
     if (offer.state !== "available" || offers.sellable === null) {
       receive.value = undefined;
       return;
     }
-    expectedNative.value = offers.sellable;
+    expectedLanding.value = offers.sellable;
     receive.value = offer.formatted;
   } catch (error: unknown) {
     console.warn("[withdraw] receive estimate unavailable:", error);
@@ -219,7 +221,7 @@ async function confirm() {
       landingHex: landingAccountHex(picked, address.value),
       rail: picked.rail,
       sale: route,
-      ...(expectedNative.value === null ? {} : { expectedNative: expectedNative.value }),
+      ...(expectedLanding.value === null ? {} : { expectedLanding: expectedLanding.value }),
     });
     if (outcome.ref === null) {
       startError.value = outcome.reason;
@@ -254,19 +256,28 @@ async function confirmCancel() {
   }
 }
 
-async function retry() {
+/** One action on the journey's record at a time; `failed` is the line shown when it could not
+ *  start. */
+async function act(run: (ref: RequestRef) => Promise<boolean>, failed: string) {
   const current = record.value;
   if (current === null || busy.value) return;
   busy.value = true;
   notice.value = null;
   try {
-    if (!(await withdrawal.retry(current.ref))) {
-      notice.value = "The withdrawal could not be restarted. Try again in a moment.";
-    }
+    if (!(await run(current.ref))) notice.value = failed;
   } finally {
     busy.value = false;
   }
 }
+
+const retry = () =>
+  act(withdrawal.retry, "The withdrawal could not be restarted. Try again in a moment.");
+
+const switchToPool = () =>
+  act(
+    withdrawal.switchToPool,
+    "The withdrawal could not be moved to the pool. Try again in a moment.",
+  );
 
 // A record that moves clears the line about the last action.
 watch(
@@ -274,6 +285,33 @@ watch(
   () => {
     notice.value = null;
   },
+);
+
+/** The record on screen while the PSM will not redeem it, by key: the pool's figure is quoted
+ *  once for it, not on every poll that rewrites the record. */
+const heldKey = computed(() => {
+  const current = record.value;
+  const held = current?.status.kind === "failed" && current.failure?.kind === "held";
+  return held ? requestRefKey(current.ref) : null;
+});
+
+watch(
+  heldKey,
+  (key) => {
+    poolFigure.value = null;
+    const held = record.value;
+    if (key === null || held === null) return;
+    void withdrawal
+      .poolFigure(held.ref)
+      .then((figure) => {
+        // An answer that lands after the record moved on is for nobody.
+        if (heldKey.value === key) poolFigure.value = figure;
+      })
+      .catch((error: unknown) => {
+        console.warn("[withdraw] pool estimate unavailable:", error);
+      });
+  },
+  { immediate: true },
 );
 
 onMounted(() => {
@@ -346,8 +384,10 @@ onUnmounted(() => {
         :record="record"
         :notice="notice"
         :busy="busy"
+        :pool-figure="poolFigure"
         @cancel="step = 'cancel'"
         @retry="retry"
+        @pool="switchToPool"
         @close="emit('back')"
       />
       <div

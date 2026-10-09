@@ -339,10 +339,12 @@ export function withdrawalRouteOf(sourceId: string | undefined): "crypto" | "car
 
 /** The worker's steps between the payment and the arrival on Asset Hub. */
 export type SendingStep = Exclude<WithdrawStep, "await-cash" | "done">;
-export const SENDING_STEP_ORDER = { swap: 0, convert: 1, "await-arrival": 2 } satisfies Record<
-  SendingStep,
-  number
->;
+export const SENDING_STEP_ORDER = {
+  swap: 0,
+  convert: 1,
+  "await-arrival": 2,
+  redeem: 3,
+} satisfies Record<SendingStep, number>;
 export const isSendingStep = (step: string): step is SendingStep =>
   Object.hasOwn(SENDING_STEP_ORDER, step);
 
@@ -369,6 +371,8 @@ export type WithdrawalFailureKind =
   | "payment-failed"
   | "rejected"
   | "timeout"
+  /** The PSM refused the redeem three times with room for it; the CASH is still on the key. */
+  | "held"
   | "expired"
   | "unknown"
   | "deposit-rejected"
@@ -497,8 +501,11 @@ export interface MeldSale {
   paymentMethodType: string;
   /** Where the seller does KYC and names the payout account. */
   widgetUrl: string;
-  /** The exact planck the key pays the provider. */
+  /** Exactly what the key pays the provider, in the base units of `token`. */
   cryptoAmount: string;
+  /** The symbol of the token the sale sells, the one the hand-off's sale lands; absent on a sale
+   *  opened before the token was recorded, which sold the native. */
+  token?: string;
   /** The fiat the quote said reaches the seller, decimal text in `fiat`. An estimate: the
    *  provider prices the payout again. */
   quotedPayout: string;
@@ -531,7 +538,21 @@ export interface WithdrawJobView {
   lastError?: string;
   fundsSeenAt: number | null;
   lastTickAt: number | null;
-  txs?: { call: "swap" | "withdraw" | "sweep" | "pay"; txHash: string; block?: number }[];
+  /** Since when the PSM has had no room for the redeem; the worker waits, off its clock, and
+   *  the journey shows the ordinary status. Diagnostics only. */
+  waitingSince?: number | null;
+  /** PSM refusals of the redeem with room for it, towards the hold. */
+  psmRefusals?: number;
+  /** The sale's tier as the job recorded it. */
+  tier?: string;
+  /** Where a PSM-tier job's CASH leaves the key on Asset Hub: the PSM, or the pool once the user
+   *  chose it from a hold. */
+  exit?: "psm" | "pool";
+  txs?: {
+    call: "swap" | "withdraw" | "redeem" | "pool-exit" | "sweep" | "pay";
+    txHash: string;
+    block?: number;
+  }[];
   /** The provider's latest word on the swap, once the worker has paid it. */
   rail?: SwapStatusResult;
   /** A fiat sale only: what the sale left on the key once the provider was paid, planck, and its

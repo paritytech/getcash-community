@@ -14,16 +14,14 @@
 // receives pays its own fees in CASH through the pool, makes the sale the destination asks for in
 // the holding, and deposits everything to the destination account. The sale follows the on-ramp's
 // tiers the other way round: the pool sells the CASH for PAS, and for a stable sells that PAS
-// again on the stable's pool; the PSM redeems the CASH for its stable one to one less the
-// redemption fee; the dotUSD tier keeps the CASH and lands it as it is. Whatever the tier, the PAS
-// that travelled with the CASH ends up in the landing asset too, so one asset is deposited. The
-// program names an asset claimer so a trap on Asset Hub is recoverable.
+// again on the stable's pool; the dotUSD tier keeps the CASH and lands it as it is. Whatever the
+// tier, the PAS that travelled with the CASH ends up in the landing asset too, so one asset is
+// deposited. The program names an asset claimer so a trap on Asset Hub is recoverable.
 //
-// The PSM redeem is a signed call, so the XCM keeps the key's origin across the hop: on Asset Hub
-// the origin is the key's account under People, which has an account of its own there. The CASH
-// to redeem is deposited to that account, the redeem runs as it, and the stable it receives is
-// withdrawn back into the holding. The fee refund and the PAS that travelled are then sold for the
-// stable too, so everything lands in one asset.
+// The PSM tier makes no sale in the XCM: its program is the dotUSD one aimed at the key's own
+// Asset Hub account, and the key then redeems the CASH there in a signed batch (redeem.ts). An
+// XCM is not atomic across its instructions, so a redeem refused inside one would leave the CASH
+// deposited and stranded; a batch reverts whole and names the PSM's own error.
 //
 // CASH is keyed two ways: as People holds it for the calls that run on People, and as Asset Hub
 // holds it for the remote program, which is forwarded verbatim and so must speak Asset Hub's view.
@@ -55,17 +53,9 @@ export type Sale =
   | { tier: "pool"; external?: undefined; minNativeOut: bigint }
   /** All the CASH for the native, then all the native for the stable, at least `minOut`. */
   | { tier: "pool"; external: Stable; minNativeOut: bigint; minOut: bigint }
-  /** `redeemAmount` of CASH through the PSM for `externalOut` of the stable, as the key's own
-   *  account on Asset Hub, `holderHex`, with the redeem call encoded for that chain. */
-  | {
-      tier: "psm";
-      external: Stable;
-      feeRate: number;
-      redeemAmount: bigint;
-      externalOut: bigint;
-      holderHex: string;
-      call: Uint8Array;
-    }
+  /** No sale of the CASH in the XCM: it lands as it is on the key's own Asset Hub account, and
+   *  the key redeems it there for the stable at the fee rate the hand-off froze. */
+  | { tier: "psm"; external: Stable; feeRate: number }
   /** No sale of the CASH: it lands as it is, with the PAS that travelled sold for it. */
   | { tier: "dotusd" };
 
@@ -90,18 +80,6 @@ const account = (hex: string) => ({
 const assetHubDest = (assetHubParaId: number) => ({
   parents: 1,
   interior: { type: "X1", value: { type: "Parachain", value: assetHubParaId } },
-});
-
-/** The key's origin as Asset Hub sees it: its account under People. */
-export const originOnAssetHub = (peopleParaId: number, originHex: string) => ({
-  parents: 1,
-  interior: {
-    type: "X2",
-    value: [
-      { type: "Parachain", value: peopleParaId },
-      { type: "AccountId32", value: { network: undefined, id: originHex } },
-    ],
-  },
 });
 
 /** Every unit of one asset in the holding. */
@@ -148,44 +126,17 @@ export function buildSwap(peopleApi: PeopleApi, args: SwapArgs) {
 
 /** The program Asset Hub runs on arrival: claim hint, the sale, deposit everything to the
  *  destination. Keyed as Asset Hub sees the assets. The pool tiers refund the fee surplus into
- *  the sale; the PSM tier redeems a fixed amount as the key's account, then sells the surplus
- *  and the PAS that travelled for the stable, so the deposit is one asset. Each deposit counts
- *  what the holding can carry by then. */
+ *  the sale. Each deposit counts what the holding can carry by then. */
 function remoteProgram(destinationHex: string, claimerHex: string, sale: Sale) {
   const hints = {
     type: "SetHints",
     value: { hints: [{ type: "AssetClaimer", value: { location: account(claimerHex) } }] },
   };
-  if (sale.tier === "psm") {
-    const stable = STABLE_TOKENS[sale.external].location;
-    return [
-      hints,
-      deposit(
-        { type: "Definite", value: [fungible(CASH_ON_ASSET_HUB, sale.redeemAmount)] },
-        sale.holderHex,
-      ),
-      {
-        type: "Transact",
-        value: {
-          origin_kind: { type: "SovereignAccount" },
-          fallback_max_weight: undefined,
-          call: sale.call,
-        },
-      },
-      // A refused redeem fails the program here, named as such, rather than at the withdrawal
-      // of a stable the account never received.
-      { type: "ExpectTransactStatus", value: { type: "Success" } },
-      { type: "WithdrawAsset", value: [fungible(stable, sale.externalOut)] },
-      { type: "RefundSurplus" },
-      exchange(allOf(CASH_ON_ASSET_HUB), fungible(NATIVE_ON_ASSET_HUB, 1n)),
-      exchange(allOf(NATIVE_ON_ASSET_HUB), fungible(stable, 1n)),
-      deposit(allCounted(2), destinationHex),
-    ];
-  }
   // The dotUSD tier keeps the CASH and sells only the PAS that travelled, dust at any price, so
-  // the destination gets dotUSD alone and never a native deposit it may be too small for.
+  // the destination gets dotUSD alone and never a native deposit it may be too small for. The
+  // PSM tier lands the same way on the key, which redeems from there.
   const hops =
-    sale.tier === "dotusd"
+    sale.tier === "dotusd" || sale.tier === "psm"
       ? [exchange(allOf(NATIVE_ON_ASSET_HUB), fungible(CASH_ON_ASSET_HUB, 1n))]
       : [
           exchange(allOf(CASH_ON_ASSET_HUB), fungible(NATIVE_ON_ASSET_HUB, sale.minNativeOut)),
@@ -217,12 +168,10 @@ export interface WithdrawXcmArgs {
   remoteFeesCash: bigint;
   /** The sale on Asset Hub and its floors. */
   sale: Sale;
-  /** The account the funds land on, Asset Hub public key hex. */
+  /** The account the funds land on, Asset Hub public key hex: the key itself on the PSM tier. */
   destinationHex: string;
   /** The account that may claim a trap on Asset Hub, public key hex. */
   claimerHex: string;
-  /** The key that signs the XCM, public key hex: the origin the PSM tier keeps across the hop. */
-  originHex: string;
   assetHubParaId: number;
   peopleParaId: number;
   /** How the CASH moves to Asset Hub. */
@@ -261,8 +210,7 @@ export function withdrawMessage(args: WithdrawXcmArgs) {
             type: args.transfer === "teleport" ? "Teleport" : "ReserveWithdraw",
             value: { type: "Definite", value: [cash(args.remoteFeesCash)] },
           },
-          // The PSM tier redeems as the key, so its origin travels; the others need none.
-          preserve_origin: args.sale.tier === "psm",
+          preserve_origin: false,
           assets: transferFilters(args),
           remote_xcm: remoteProgram(args.destinationHex, args.claimerHex, args.sale),
         },
@@ -307,15 +255,13 @@ function arrivals(args: WithdrawXcmArgs) {
 
 /** The message People forwards to Asset Hub for `args`, as the runtime would build it, with the
  *  fee allowance's remainder as the PAS that travels. Used to price the delivery before the
- *  runtime produces the real one. The PSM tier keeps the key's origin, the others clear it. */
+ *  runtime produces the real one. */
 export function forwardedStandIn(args: WithdrawXcmArgs) {
   return {
     type: "V5",
     value: [
       ...arrivals(args),
-      args.sale.tier === "psm"
-        ? { type: "AliasOrigin", value: originOnAssetHub(args.peopleParaId, args.originHex) }
-        : { type: "ClearOrigin" },
+      { type: "ClearOrigin" },
       ...remoteProgram(args.destinationHex, args.claimerHex, args.sale),
       { type: "SetTopic", value: `0x${"00".repeat(32)}` },
     ],

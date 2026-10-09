@@ -19,8 +19,14 @@ const mocks = vi.hoisted(() => ({
   startFunding: vi.fn(),
   fundingStatus: vi.fn(),
   withdrawTickOnce: vi.fn(),
+  chooseRoute: vi.fn(),
+  submits: [] as { args: unknown; options: unknown }[],
   keyFree: 0n,
   keyCash: 0n,
+  /** The key's holding of the sale's token on Asset Hub, when the sale landed a stable. */
+  keyToken: 0n,
+  /** The key's nonce on Asset Hub. */
+  keyNonce: 1,
   keyReadHangs: false,
 }));
 
@@ -60,13 +66,17 @@ vi.mock("@getsome/withdraw", async (importOriginal) => ({
   withdrawTickOnce: mocks.withdrawTickOnce,
 }));
 
-// How the CASH moves to Asset Hub is the chains' answer, and the scripted leg does not read it.
+// How the CASH moves to Asset Hub is the chains' answer, and the scripted leg does not read it;
+// the route a stable residue takes home is the PSM's answer, scripted here.
 vi.mock("@getsome/funding", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   chooseCashTransfer: async () => "teleport",
+  chooseRoute: mocks.chooseRoute,
 }));
 
-// The residue is read off the key on Asset Hub through a client the engine opens for it.
+// The residue is read off the key on Asset Hub through a client the engine opens for it: the
+// native from the account, a stable from its pallet-assets holding; the CASH on People from its
+// holding under the CASH location. The real hand that pays submits through the same client.
 vi.mock("../worker/src/shared.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../worker/src/shared.js")>();
   return {
@@ -75,16 +85,40 @@ vi.mock("../worker/src/shared.js", async (importOriginal) => {
     connectChain: async () => ({
       getBestBlocks: async () => [{ hash: "0xbest", number: 1 }],
       getTypedApi: () => ({
+        tx: {
+          Assets: {
+            transfer_keep_alive: (args: unknown) => ({
+              decodedCall: { transfer: args },
+              signAndSubmit: async (_signer: unknown, options: unknown) => {
+                mocks.submits.push({ args, options });
+                return { ok: true, txHash: "0xpaid", block: { number: 2 } };
+              },
+            }),
+          },
+        },
+        apis: {
+          DryRunApi: {
+            dry_run_call: async () => ({
+              success: true,
+              value: { execution_result: { success: true } },
+            }),
+          },
+        },
         query: {
           Assets: {
-            Account: { getValue: () => Promise.resolve({ balance: mocks.keyCash }) },
+            Account: {
+              getValue: (id: unknown) =>
+                Promise.resolve({
+                  balance: typeof id === "number" ? mocks.keyToken : mocks.keyCash,
+                }),
+            },
           },
           System: {
             Account: {
               getValue: () =>
                 mocks.keyReadHangs
                   ? new Promise(() => {})
-                  : Promise.resolve({ data: { free: mocks.keyFree }, nonce: 1 }),
+                  : Promise.resolve({ data: { free: mocks.keyFree }, nonce: mocks.keyNonce }),
             },
           },
         },
@@ -1009,5 +1043,126 @@ describe("a failed sale whose payment may still land", () => {
     await engine.tickAllWithdraw();
     expect(storedJob().failure).toBe("unresolved");
     expect(mocks.startFunding).not.toHaveBeenCalled();
+  });
+});
+
+describe("a sale on the PSM tier, in USDT", () => {
+  const USDT_AMOUNT = 20_000_000n;
+  const psmJob = (): StoredJob => ({
+    ...landedJob(),
+    tier: "psm",
+    external: "USDT",
+    feeRate: 5_000,
+    channel: { ...channel, amount: USDT_AMOUNT.toString() },
+  });
+
+  beforeEach(() => {
+    mocks.stored.clear();
+    for (const fn of [
+      mocks.railFor,
+      mocks.payRailExact,
+      mocks.exactPaymentOut,
+      mocks.status,
+      mocks.channel,
+      mocks.startFunding,
+      mocks.chooseRoute,
+    ]) {
+      fn.mockReset();
+    }
+    mocks.submits.length = 0;
+    mocks.channel.mockResolvedValue({
+      depositAddress: DEPOSIT,
+      payout: "off-chain",
+      expired: false,
+      expectedAmount: USDT_AMOUNT,
+    });
+    mocks.railFor.mockReturnValue({ status: mocks.status, channel: mocks.channel });
+    mocks.payRailExact.mockResolvedValue(undefined);
+    mocks.exactPaymentOut.mockResolvedValue(false);
+    mocks.status.mockResolvedValue({ status: "receiving" });
+    mocks.startFunding.mockResolvedValue({ sessionId: "s-1/residue" });
+    mocks.chooseRoute.mockResolvedValue({ tier: "psm", external: "USDT", feeRate: 5_000 });
+    mocks.keyFree = 0n;
+    mocks.keyToken = 27_000_000n;
+    mocks.keyNonce = 1;
+    mocks.keyReadHangs = false;
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("pays the exact USDT figure through pallet-assets, the fee charged in USDT", async () => {
+    const { TOKENS } = await import("@getsome/core");
+    const providers = await vi.importActual<typeof import("../worker/src/providers.js")>(
+      "../worker/src/providers.js",
+    );
+    const job = psmJob();
+    // The key's first signature on Asset Hub, as the scripted account reports its nonce.
+    const exact = { nonce: 1, inFlight: false, balanceBefore: null, anchor: null, rejections: 0 };
+    await providers.payRailExact(job, job.leg.handoff, USDT_AMOUNT, exact);
+    expect(mocks.submits).toEqual([
+      {
+        args: { id: 1984, target: { type: "Id", value: DEPOSIT }, amount: USDT_AMOUNT },
+        options: {
+          asset: TOKENS.USDT.location,
+          at: "0xbest",
+          nonce: 1,
+          mortality: { mortal: true, period: 64 },
+        },
+      },
+    ]);
+    expect(exact).toMatchObject({ inFlight: true, balanceBefore: "27000000" });
+  });
+
+  it("seats a payment not yet attempted at the key's live nonce, past the redeem it signed", async () => {
+    const providers = await vi.importActual<typeof import("../worker/src/providers.js")>(
+      "../worker/src/providers.js",
+    );
+    const job = psmJob();
+    mocks.keyNonce = 2;
+    const exact = { nonce: 0, inFlight: false, balanceBefore: null, anchor: null, rejections: 0 };
+    await providers.payRailExact(job, job.leg.handoff, USDT_AMOUNT, exact);
+    expect(mocks.submits).toHaveLength(1);
+    expect(mocks.submits[0]!.options).toMatchObject({ nonce: 2 });
+    expect(exact).toMatchObject({ nonce: 2, inFlight: true, balanceBefore: "27000000" });
+  });
+
+  it("sends the USDT residue home on the mint route the worker chose for it", async () => {
+    const engine = await engineWith({ "s-1": psmJob() });
+    await engine.tickAllWithdraw();
+    expect(mocks.payRailExact).toHaveBeenCalledTimes(1);
+    expect(mocks.chooseRoute).toHaveBeenCalledTimes(1);
+    expect(mocks.chooseRoute.mock.calls[0]![1]).toEqual({
+      direction: "mint",
+      internalAmount: 27_000_000n,
+      deposit: "USDT",
+    });
+    expect(mocks.startFunding).toHaveBeenCalledTimes(1);
+    expect(mocks.startFunding.mock.calls[0]![0]).toMatchObject({
+      sessionId: "s-1/residue",
+      burnerAddress: "5Key",
+      tier: "psm",
+      external: "USDT",
+      feeRate: 5_000,
+      quoteFloorPct: 5,
+      claimIdOffset: 1_000_000,
+    });
+    expect(storedJob().residue).toEqual({
+      amount: "27000000",
+      returning: true,
+      sessionId: "s-1/residue",
+      route: { tier: "psm", external: "USDT", feeRate: 5_000 },
+    });
+  });
+
+  it("keeps a USDT residue under a tenth of a dollar, choosing no route for it", async () => {
+    mocks.keyToken = 99_999n;
+    const engine = await engineWith({ "s-1": psmJob() });
+    await engine.tickAllWithdraw();
+    expect(mocks.chooseRoute).not.toHaveBeenCalled();
+    expect(mocks.startFunding).not.toHaveBeenCalled();
+    expect(storedJob().residue).toEqual({ amount: "99999", returning: false });
   });
 });

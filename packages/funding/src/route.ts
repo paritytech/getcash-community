@@ -27,6 +27,11 @@ export const ROUTE_MARGIN_BPS = 1_000n;
 /** The margin's absolute floor, internal units (1 CASH at 6 decimals), so the tier is never
  *  chosen when the PSM is within a hair of full however small the amount. */
 export const ROUTE_MARGIN_FLOOR = 1_000_000n;
+/** The margin's floor in the redeem direction, internal units (20 CASH). On a redeem the amount is
+ *  fixed by the payment and does not grow; what moves between the decision and the redeem is other
+ *  users' redeems draining `PsmDebt`, which is independent of our amount, so the cushion is
+ *  absolute. */
+export const REDEEM_MARGIN_FLOOR = 20_000_000n;
 
 export type { Stable } from "./stable";
 
@@ -84,6 +89,10 @@ export interface RouteQuery {
    *  it is approved and can serve, the pool fed with that stable otherwise. Absent, the fiat
    *  rails' rule: the PSM's external when the PSM can serve, the native otherwise. */
   deposit?: DepositAsset;
+  /** Internal units this app's own in-flight PSM-tier withdrawals have yet to redeem, taken out
+   *  of the capacity before a redeem is judged: the chain does not know of them until each one's
+   *  XCM lands, but they will drain the same debt. Unused in the mint direction. */
+  reserved?: bigint;
 }
 
 const POOL: ConversionRoute = { tier: "pool" };
@@ -98,10 +107,16 @@ const EXTERNAL_LOCATIONS: Record<PsmExternal, PsmAssetId> = {
 };
 
 /** The amount plus the margin the tier must clear: `ROUTE_MARGIN_BPS` of it, never less than
- *  `ROUTE_MARGIN_FLOOR`. */
-export function withMargin(internalAmount: bigint): bigint {
+ *  `floor`, the mint's `ROUTE_MARGIN_FLOOR` unless the caller names another. */
+export function withMargin(internalAmount: bigint, floor = ROUTE_MARGIN_FLOOR): bigint {
   const margin = (internalAmount * ROUTE_MARGIN_BPS) / 10_000n;
-  return internalAmount + (margin > ROUTE_MARGIN_FLOOR ? margin : ROUTE_MARGIN_FLOOR);
+  return internalAmount + (margin > floor ? margin : floor);
+}
+
+/** Internal units a redeem against this external may still take back: the pair's own debt,
+ *  since only debt minted through the pair can be redeemed through it. */
+export function readRedeemCapacity(api: AssetHubApi, external: PsmExternal): Promise<bigint> {
+  return api.query.Psm.PsmDebt.getValue(INTERNAL, EXTERNAL_LOCATIONS[external]);
 }
 
 /** Internal units a mint against this external may still add: the smaller of the instance's
@@ -151,12 +166,13 @@ export async function chooseRoute(api: AssetHubApi, query: RouteQuery): Promise<
   const [weight, weights, debt, debts, feeRate] = await Promise.all([
     api.query.Psm.AssetCeilingWeight.getValue(INTERNAL, externalLocation),
     api.query.Psm.AssetCeilingWeight.getEntries(INTERNAL),
-    api.query.Psm.PsmDebt.getValue(INTERNAL, externalLocation),
+    readRedeemCapacity(api, external),
     api.query.Psm.PsmDebt.getEntries(INTERNAL),
     fee.getValue(INTERNAL, externalLocation),
   ]);
   // 3. Headroom for the amount plus the margin: what a mint may still add, or what a redeem may
-  //    still take back (only debt minted through this pair can be redeemed through it).
+  //    still take back once this app's own in-flight redeems have taken theirs.
+  const reserved = query.reserved ?? 0n;
   const capacity =
     query.direction === "mint"
       ? mintHeadroom({
@@ -166,8 +182,11 @@ export async function chooseRoute(api: AssetHubApi, query: RouteQuery): Promise<
           debt,
           totalDebt: debts.reduce((sum, entry) => sum + entry.value, 0n),
         })
-      : debt;
-  if (capacity < withMargin(query.internalAmount)) return fallback;
+      : debt < reserved
+        ? 0n
+        : debt - reserved;
+  const floor = query.direction === "mint" ? ROUTE_MARGIN_FLOOR : REDEEM_MARGIN_FLOOR;
+  if (capacity < withMargin(query.internalAmount, floor)) return fallback;
   // 4. Not below the instance's minimum swap.
   if (query.internalAmount < instance.min_swap_amount) return fallback;
   return { tier: "psm", external, feeRate };
