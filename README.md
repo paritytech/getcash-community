@@ -217,7 +217,7 @@ Copy `.env.example` to `.env` and fill in what you need. Nuxt reads `.env`, not 
 | `VITE_MELD_BASE_URL`   | origin of the Meld adapter; unset, the offline fake Meld client runs instead                                                |
 | `VITE_MELD_PRODUCT_ID` | product id the adapter expects in the `x-dev-product-id` header                                                             |
 | `VITE_MELD_ENV`        | provider environment of the Meld card surface: `sandbox` (default) or `production`                                          |
-| `VITE_MELD_MODE`       | Meld card flow, fixed at build: `iframe` (default, the hosted widget) or `native` (headless orders, `@meldcrypto/sdk`)      |
+| `VITE_MELD_MODE`       | Meld on-ramp flow, fixed at build: `iframe` (default, the hosted widget) or `native` (headless orders, `@meldcrypto/sdk`)   |
 
 Two tests submit real transactions to the Paseo testnet and are skipped unless enabled:
 `PROD_PROOF=1` runs `tests/prod-proof.test.ts`, `VERIFY_AMOUNTS=1` runs

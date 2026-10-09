@@ -48,6 +48,8 @@ import {
   createMeldRail,
   pickBestQuote,
   shareStatusReads,
+  type BankInstructions,
+  type HeadlessFunding,
   type MeldClientLike,
   type MeldHeadlessRail,
   type MeldOrderPayment,
@@ -235,6 +237,9 @@ export interface QuotedView {
   sourceChain: string | null;
 }
 
+/** How the buyer pays a headless order, and the order it pays. */
+export type MeldPaymentView = MeldOrderPayment & { readonly fundingRequestId: string };
+
 /**
  * The quote's own implied rate for the token Meld delivers: the fiat left after the rail's fees is
  * what bought `destinationAmount`. Null when the quote cannot price it.
@@ -382,9 +387,16 @@ export const useSessionStore = defineStore("session", () => {
   /** The provider widget URL recovered when resuming a Meld request; null unless a resume found a
    *  live one. */
   const meldResumeWidgetUrl = ref<string | null>(null);
-  /** True while a re-opened request is still asking the adapter for its pay page. Absence of a
-   *  URL means "lapsed" only once this is false; before that it means "not asked yet". */
+  /** True while a re-opened request is still asking the adapter for its pay page, or in a native
+   *  build its transfer details. Absence of either means "lapsed" only once this is false; before
+   *  that it means "not asked yet". */
   const meldPayUrlPending = ref(false);
+  /** Native mode: the transfer details recovered when resuming a bank order; null unless a resume
+   *  found them still live. */
+  const meldResumeInstructions = shallowRef<{
+    fundingRequestId: string;
+    instructions: BankInstructions;
+  } | null>(null);
   /** Native mode: when the buyer accepted the quoted provider's terms, ISO 8601. The order placed
    *  by `start()` carries it. */
   const meldTermsAcceptedAt = ref<string | null>(null);
@@ -556,6 +568,7 @@ export const useSessionStore = defineStore("session", () => {
     quoteEpoch += 1;
     stopSimulatedPayment();
     meldResumeWidgetUrl.value = null;
+    meldResumeInstructions.value = null;
     meldPayUrlPending.value = false;
     meldCredited = false;
     meldFundingRequestId = null;
@@ -804,8 +817,8 @@ export const useSessionStore = defineStore("session", () => {
           ...(redirectUrl ? { redirectUrl } : {}),
         })
       : createFakeMeldClient();
-    // Native card orders are headless; bank still opens the provider's widget.
-    const headless = meldMode() === "native" && uiMethod === "card" ? meldHeadlessClient() : null;
+    // A native build places headless orders for card and bank alike.
+    const headless = meldMode() === "native" ? meldHeadlessClient() : null;
     // Core's status poll (the rail) and the store's poll read the same id; they share each read.
     const statusReads = shareStatusReads(
       headless === null
@@ -1799,26 +1812,43 @@ export const useSessionStore = defineStore("session", () => {
           );
           meldPayUrlPending.value = false;
         } else {
+          const fundingRequestId = record.meldFundingRequestId;
+          const base = createMeldClient({
+            baseUrl: meldBaseUrl,
+            productId:
+              (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
+          });
+          // A native bank order's transfer details come only with the headless read.
+          const headless =
+            meldMode() === "native" && record.sourceId === "meld-bank"
+              ? meldHeadlessClient()
+              : null;
+          // The shared reads are typed as plain status; the details ride on the headless result.
+          let lastFunding: HeadlessFunding | null = null;
           // The pay-page lookup below and the poll's first tick share one read.
           const client = shareStatusReads(
-            createMeldClient({
-              baseUrl: meldBaseUrl,
-              productId:
-                (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
-            }),
+            headless === null
+              ? base
+              : {
+                  ...base,
+                  getStatus: async (id) => (lastFunding = await headless.getFunding(id)),
+                },
           );
           meldStatusClient = client;
-          meldFundingRequestId = record.meldFundingRequestId;
+          meldFundingRequestId = fundingRequestId;
           meldServiceProvider = record.meldServiceProvider ?? null;
-          // Recover the pay URL from the adapter; the rail keeps pay URLs only in memory. The
-          // adapter serves one only while the request is still payable, so a row past its page
-          // comes back without one — which the screen may only call lapsed once this settles.
+          // Recover the pay URL, or the transfer details, from the adapter; the rail keeps both
+          // only in memory. The adapter serves them only while the request is still payable, so a
+          // row past that comes back without them — which the screen may only call lapsed once
+          // this settles.
           meldPayUrlPending.value = true;
           void client
-            .getStatus(record.meldFundingRequestId)
+            .getStatus(fundingRequestId)
             .then((s) => {
               if (s.serviceProviderWidgetUrl)
                 meldResumeWidgetUrl.value = s.serviceProviderWidgetUrl;
+              const instructions = lastFunding?.paymentInstructions;
+              if (instructions) meldResumeInstructions.value = { fundingRequestId, instructions };
             })
             .catch(() => {})
             .finally(() => {
@@ -2199,15 +2229,18 @@ export const useSessionStore = defineStore("session", () => {
     return fromRail ?? meldResumeWidgetUrl.value;
   });
 
-  /** Native mode: how the buyer pays the order on screen, while its deposit is awaited. */
-  const meldPayment = computed<MeldOrderPayment | null>(() => {
+  /** Native mode: how the buyer pays the order on screen, while its deposit is awaited, or the
+   *  transfer details a resume recovered. */
+  const meldPayment = computed<MeldPaymentView | null>(() => {
     const state = lastState.value;
     const rail = meldHeadlessRail.value;
     // The order id is captured as the order is placed, before the deposit state is published.
-    if (state?.phase !== "awaiting-deposit" || rail === null || meldFundingRequestId === null) {
-      return null;
+    if (state?.phase === "awaiting-deposit" && rail !== null && meldFundingRequestId !== null) {
+      const payment = rail.payment(meldFundingRequestId);
+      if (payment !== undefined) return { ...payment, fundingRequestId: meldFundingRequestId };
     }
-    return rail.payment(meldFundingRequestId) ?? null;
+    const resumed = meldResumeInstructions.value;
+    return resumed === null ? null : { kind: "bank", ...resumed };
   });
 
   /** Starts the store's poll of the Meld payment's status for the request on screen. Idempotent;

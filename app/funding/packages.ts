@@ -105,8 +105,8 @@ export async function loadFundingTopUpPackage(
 }
 
 /** The package shared by the card and bank routes. One package in either build mode, so the top-ups
- *  list keeps one Meld adapter: its route runs the native card flow in a native build, and bank
- *  stays on the provider's widget in both. */
+ *  list keeps one Meld adapter: its route runs the native card and bank flows in a native build,
+ *  and the provider's widget in an iframe build. */
 const meldPackage = {
   packageId: "@getsome/meld",
   load: () =>

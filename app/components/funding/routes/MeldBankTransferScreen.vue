@@ -2,14 +2,14 @@
 // The bank route's two steps, in one screen because they share one quote and one request.
 //
 // `summary` prices the transfer and asks the buyer to commit to it; `details` opens the provider's
-// page, where the account to pay lives. The request is opened by Continue, not on arrival: a
-// transfer nobody committed to would leave a payable page behind, and the key that opened it dies
-// with it.
+// page, where the account to pay lives, or in a native build the order's own transfer details. The
+// request is opened by Continue, not on arrival: a transfer nobody committed to would leave a
+// payable page behind, and the key that opened it dies with it.
 //
 // Nothing here can see whether the transfer was actually made — the provider only learns of it
 // when the money lands — so "I've sent funds" is the buyer's word. It waits out a short countdown
 // first, because the details behind it take longer to read than the button takes to reach.
-import { computed, onUnmounted, ref, watch } from "vue";
+import { computed, defineAsyncComponent, onUnmounted, ref, watch } from "vue";
 import { ChevronRight, CircleAlert } from "lucide-vue-next";
 import { regionForCountry } from "~~/lib/region";
 import { namedCountry } from "~~/lib/supported";
@@ -19,12 +19,21 @@ import { currencyConfig } from "../../../funding/config";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import type { FundingRoute } from "../../../funding/selection";
 import type { ProviderTerms } from "../../../composables/useMeldRequirements";
+import type { TermsStatus } from "../../../composables/useMeldNativeCheckout";
 import CashAmount from "../../ui/CashAmount.vue";
+import CopiedPill from "../../ui/CopiedPill.vue";
 import PillButton from "../../ui/PillButton.vue";
 import RegionRow from "../../ui/RegionRow.vue";
+import SecondaryButton from "../../ui/SecondaryButton.vue";
 import SkeletonBlock from "../../ui/SkeletonBlock.vue";
 import MeldPaySheet from "./MeldPaySheet.vue";
 import MeldTermsNotice from "./MeldTermsNotice.vue";
+
+// Inline, not `meldMode()`: an iframe build folds it away with the details behind it.
+const MeldBankDetails =
+  import.meta.env.VITE_MELD_MODE === "native"
+    ? defineAsyncComponent(() => import("./MeldBankDetails.vue"))
+    : null;
 
 const props = defineProps<{
   /** The region the quote is priced in, as an ISO 3166-1 alpha-2 code. */
@@ -36,6 +45,13 @@ const props = defineProps<{
   cancellable?: boolean;
   /** The provider terms the summary's Continue accepts, shown above it. */
   terms?: ProviderTerms;
+  /** What the summary's Continue runs in place of opening the request; it opens the request
+   *  through the exposed `openRequest` once its steps are done. */
+  continueAction?: () => Promise<void>;
+  /** When given, the summary's Continue waits for the terms it accepts to be known. */
+  termsStatus?: TermsStatus;
+  /** Reads the terms again after they failed to load. */
+  retryTerms?: () => void;
 }>();
 // `fees` and `currency` open this route's drill-ins; `continue` asks the route for the details
 // step; `switchRoute` asks the shell for another package when no transfer can be routed from here.
@@ -75,11 +91,19 @@ const countryLabel = computed(() => namedCountry(props.country, session.supporte
 const starting = ref(false);
 const startError = ref<string | null>(null);
 
+/** A native order's transfer details; null in an iframe build, whose orders have a page instead. */
+const transfer = computed(() =>
+  session.meldPayment?.kind === "bank" ? session.meldPayment : null,
+);
+/** What the buyer pays from: the order with its details, else the provider's page. */
+const payTarget = computed(() => transfer.value?.fundingRequestId ?? session.meldPayUrl);
+
 /**
- * The provider no longer serves a page for this request: it is still live, but past the point
- * where it can be paid on, so there are no account details left to read and nothing to confirm.
+ * The provider no longer serves a page, or the adapter the details, for this request: it is still
+ * live, but past the point where it can be paid on, so there are no account details left to read
+ * and nothing to confirm.
  *
- * Only once the lookup has settled — a re-opened request has no URL until the adapter answers,
+ * Only once the lookup has settled — a re-opened request has neither until the adapter answers,
  * and calling that lapsed would accuse every resume of having expired.
  */
 const lapsed = computed(
@@ -88,7 +112,7 @@ const lapsed = computed(
     requestOpen.value &&
     !starting.value &&
     !session.meldPayUrlPending &&
-    session.meldPayUrl === null &&
+    payTarget.value === null &&
     !requests.meldSubmitted,
 );
 
@@ -107,16 +131,49 @@ async function openRequest() {
     starting.value = false;
   }
 }
-/** Commit: the details step opens while its request is being made, and shows its own progress. */
-function onContinue() {
-  emit("continue");
-  void openRequest();
+/** Native: the summary's Continue is running the steps before the request. */
+const checking = ref(false);
+/** Why those steps placed no order; cleared by a fresh quote. */
+const checkError = ref<string | null>(null);
+watch(
+  () => session.quoted,
+  () => {
+    checkError.value = null;
+  },
+);
+const canContinue = computed(
+  () =>
+    !checking.value &&
+    checkError.value === null &&
+    (requestOpen.value || props.termsStatus === undefined || props.termsStatus === "ready"),
+);
+/** Commit: the details step opens while its request is being made, and shows its own progress.
+ *  A request already open is returned to without running the steps before it again. */
+async function onContinue() {
+  if (!canContinue.value) return;
+  if (props.continueAction === undefined || requestOpen.value) {
+    emit("continue");
+    void openRequest();
+    return;
+  }
+  checking.value = true;
+  try {
+    await props.continueAction();
+  } catch (e) {
+    console.warn("[meld] could not start the transfer:", e);
+    checkError.value =
+      e instanceof Error ? e.message : "Could not start the transfer. Please try again.";
+  } finally {
+    checking.value = false;
+  }
 }
 
 function requote() {
   startError.value = null;
   void session.fetchMeldQuote();
 }
+
+defineExpose({ openRequest });
 
 /** Bank is not routed from this region: offer card if the corridor has it, else crypto. */
 const cardAvailable = computed(() =>
@@ -141,7 +198,7 @@ function stopCountdown() {
   if (countdownTimer !== null) clearInterval(countdownTimer);
   countdownTimer = null;
 }
-/** Runs once per pay page: a page that reloads under the buyer does not restart their wait. */
+/** Runs once per pay target: a page that reloads under the buyer does not restart their wait. */
 function startCountdown() {
   if (countdownTimer !== null || countdown.value === 0) return;
   countdownTimer = setInterval(() => {
@@ -149,21 +206,21 @@ function startCountdown() {
     if (countdown.value <= 0) stopCountdown();
   }, 1_000);
 }
-/** The pay page the wait was served for. Tracked as the last URL seen, not the watch's previous
+/** The pay target the wait was served for. Tracked as the last one seen, not the watch's previous
  *  value: two requests are always separated by a null gap (the cancel tears the page down), so a
  *  plain old-vs-new comparison would read the second one as the first. */
 let waitedFor: string | null = null;
 watch(
-  () => (props.step === "details" ? session.meldPayUrl : null),
-  (url) => {
-    if (url === null) return;
-    if (waitedFor !== null && url !== waitedFor) {
+  () => (props.step === "details" ? payTarget.value : null),
+  (target) => {
+    if (target === null) return;
+    if (waitedFor !== null && target !== waitedFor) {
       // A new request behind the same mounted screen: new account, new amount — the wait is owed
       // again. The same page seen again (Back, then Continue) keeps the wait already served.
       stopCountdown();
       countdown.value = CONFIRM_DELAY_S;
     }
-    waitedFor = url;
+    waitedFor = target;
     startCountdown();
   },
   { immediate: true },
@@ -179,7 +236,7 @@ const canConfirm = computed(
   () =>
     countdown.value === 0 &&
     !requests.meldSubmitted &&
-    session.meldPayUrl !== null &&
+    payTarget.value !== null &&
     !requests.claiming,
 );
 function confirmSent() {
@@ -278,17 +335,29 @@ function confirmSent() {
       </PillButton>
       <SkeletonBlock v-else-if="pricing" class="mt-auto mb-6 h-12 w-full shrink-0" />
       <template v-else>
+        <p v-if="checkError" class="mt-4 shrink-0 text-body-m text-fg-error">{{ checkError }}</p>
+        <div v-else-if="termsStatus === 'failed'" class="mt-4 flex shrink-0 flex-col gap-3">
+          <p class="text-body-m text-fg-error">Couldn't load the provider's terms.</p>
+          <SecondaryButton class="self-start" @click="retryTerms?.()">Retry</SecondaryButton>
+        </div>
         <div v-if="terms" class="mt-auto shrink-0">
           <MeldTermsNotice :provider="terms.provider" :agreements="terms.agreements" class="mb-3" />
         </div>
-        <PillButton class="mb-6 w-full shrink-0" :class="{ 'mt-auto': !terms }" @click="onContinue">
+        <PillButton
+          class="mb-6 w-full shrink-0"
+          :class="{ 'mt-auto': !terms }"
+          :disabled="!canContinue"
+          @click="onContinue"
+        >
           Continue
         </PillButton>
       </template>
     </template>
 
     <template v-else>
-      <!-- The provider's page, and nothing of ours over it: the account to pay is on it. -->
+      <!-- The provider's page, and nothing of ours over it: the account to pay is on it. A native
+           order shows its transfer details instead, and leaves the sent and failed states to the
+           page's sheet. -->
       <div
         class="flex min-h-0 flex-1 flex-col overflow-clip rounded-container bg-surface-container"
       >
@@ -304,6 +373,17 @@ function confirmSent() {
             Otherwise start a new top-up.
           </p>
         </div>
+        <component
+          :is="MeldBankDetails"
+          v-else-if="
+            MeldBankDetails &&
+            transfer &&
+            !startError &&
+            !requests.meldSubmitted &&
+            requests.meldStage !== 'failed'
+          "
+          :instructions="transfer.instructions"
+        />
         <MeldPaySheet v-else-if="requestOpen && !startError" :pay-url="session.meldPayUrl" />
         <div
           v-else-if="!startError"
@@ -322,6 +402,7 @@ function confirmSent() {
       </p>
 
       <div class="mt-6 mb-6 flex shrink-0 flex-col gap-3">
+        <CopiedPill v-if="MeldBankDetails" />
         <PillButton v-if="startError" class="w-full" @click="openRequest">Try again</PillButton>
         <!-- Nothing left to confirm on a lapsed transfer, and nothing to cancel either: a
              transfer already sent still arrives, so this only leaves the screen. -->

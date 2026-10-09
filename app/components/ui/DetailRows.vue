@@ -57,7 +57,7 @@ async function copyRow(row: DetailRow) {
           <ChevronRight class="size-4 text-fg-secondary" aria-hidden="true" />
         </button>
       </dd>
-      <dd v-else-if="row.copy !== undefined">
+      <dd v-else-if="row.copy !== undefined" class="flex flex-col items-end text-right">
         <button
           type="button"
           class="flex items-center gap-2 text-heading-m text-fg-primary"
@@ -72,6 +72,7 @@ async function copyRow(row: DetailRow) {
           />
           <Copy v-else class="size-5 shrink-0 text-fg-secondary" aria-hidden="true" />
         </button>
+        <span v-if="row.note" class="text-body-s text-fg-secondary">{{ row.note }}</span>
       </dd>
       <dd v-else-if="row.note" class="flex flex-col items-end text-right">
         <span class="text-heading-m text-fg-primary">{{ row.value }}</span>

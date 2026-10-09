@@ -275,3 +275,42 @@ describe("useMeldNativeCheckout", () => {
     expect(warn).toHaveBeenCalledOnce();
   });
 });
+
+describe("useMeldNativeCheckout for a bank transfer", () => {
+  const SEPA: RequirementsQuery = { ...QUERY, paymentMethodType: "SEPA" };
+
+  it("asks the transfer's own requirements between the identity step and the order", async () => {
+    const state: Script = { kyc: "none", requirements: EMAIL };
+    const client = scripted(state);
+    const { flow, start } = await checkout(SEPA);
+    expect(client.getRequirements).toHaveBeenCalledWith(SEPA);
+
+    const done = flow.continueAction();
+    await flush();
+    expect(flow.step.value).toBe("identity");
+
+    state.kyc = "approved";
+    flow.ready();
+    await flush();
+    expect(flow.step.value).toBe("requirements");
+    expect(flow.query.value).toBe(SEPA);
+    expect(start).not.toHaveBeenCalled();
+
+    flow.ready();
+    await done;
+    expect(start).toHaveBeenCalledExactlyOnceWith(PRESSED.toISOString());
+  });
+
+  it("opens no transfer until the terms it accepts are known", async () => {
+    scripted(
+      { kyc: "approved", requirements: READY },
+      { getRequirements: vi.fn(async () => Promise.reject(new Error("offline"))) },
+    );
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { flow, start } = await checkout(SEPA);
+
+    expect(flow.termsStatus.value).toBe("failed");
+    await expect(flow.continueAction()).rejects.toThrow("terms");
+    expect(start).not.toHaveBeenCalled();
+  });
+});

@@ -315,7 +315,7 @@ describe("session store: Meld (card / bank) in the mock world", () => {
   });
 });
 
-describe("session store: native Meld card in the mock world", () => {
+describe("session store: native Meld in the mock world", () => {
   const ACCEPTED_AT = "2026-10-09T10:00:00.000Z";
   let orders: HeadlessOrderRequest[];
 
@@ -412,17 +412,42 @@ describe("session store: native Meld card in the mock world", () => {
     expect(store.meldTermsAcceptedAt).toBeNull();
   });
 
-  it("keeps bank on the provider's widget", async () => {
+  it("places a bank order on the corridor's rail and shows its transfer details", async () => {
     const store = useSessionStore();
+    const requests = useRequestsStore();
     store.setMethod("bank");
     store.setMeldCountry("DE");
     store.setAmount("100");
     await store.fetchMeldQuote();
-    expect(store.meldOrderQuery).toBeNull();
+    expect(store.quoteError).toBeNull();
+    expect(store.meldOrderQuery).toMatchObject({
+      paymentMethodType: "SEPA",
+      country: "DE",
+      fiat: "EUR",
+      sourceAmount: store.quoted?.send,
+    });
+
+    store.meldTermsAcceptedAt = ACCEPTED_AT;
     await store.start();
-    expect(orders).toHaveLength(0);
-    expect(store.meldPayUrl).toMatch(/^https:\/\//);
-    expect(store.meldPayment).toBeNull();
+
+    const burner = requests.foregroundRecord?.depositAddress;
+    expect(burner).toEqual(expect.any(String));
+    expect(orders).toHaveLength(1);
+    expect(orders[0]).toMatchObject({
+      walletAddress: burner,
+      termsAcceptedAt: ACCEPTED_AT,
+      paymentMethodType: "SEPA",
+      serviceProvider: store.quoted?.provider,
+    });
+    const sent = store.quoted?.send;
+    expect(sent).toMatch(/^\d+(\.\d+)?$/);
+    // The amount to transfer is the order's exact decimal, never a float round trip.
+    expect(store.meldPayment).toEqual({
+      kind: "bank",
+      fundingRequestId: "mock-order-1",
+      instructions: expect.objectContaining({ rail: "SEPA", amount: sent, currency: "EUR" }),
+    });
+    expect(store.meldPayUrl).toBeNull();
   });
 });
 

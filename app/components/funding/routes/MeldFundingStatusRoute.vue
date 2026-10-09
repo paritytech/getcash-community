@@ -4,8 +4,9 @@
 //
 // The two rails need different screens here, because the payment is made in different places. A
 // card is paid inside the provider's widget, which reports the payment itself. A bank transfer is
-// paid in the buyer's own banking app, from details the provider's page only displays — nothing
-// can observe it, so the transfer's own screen and its "I've sent funds" is the only way forward.
+// paid in the buyer's own banking app, from details that are only displayed (the provider's page,
+// or in a native build the order's details the adapter still serves) — nothing can observe it, so
+// the transfer's own screen and its "I've sent funds" is the only way forward.
 // Showing the widget for both left a re-opened transfer with no way to say it had been sent, and
 // an unconfirmed request expires on the clock while the money is still in the post.
 import { computed, defineAsyncComponent, onMounted, onUnmounted, ref } from "vue";

@@ -1,5 +1,5 @@
-// Continue on a native Meld card quote: the identity step if the customer is not approved yet,
-// then the provider's requirements if any are outstanding, then the order. Pressing Continue
+// Continue on a native Meld quote, card or bank: the identity step if the customer is not approved
+// yet, then the provider's requirements if any are outstanding, then the order. Pressing Continue
 // accepts the provider's terms shown above it, and the order carries that time.
 
 import { getCurrentScope, onScopeDispose, ref, shallowRef, watch } from "vue";

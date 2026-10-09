@@ -1,9 +1,10 @@
 <script setup lang="ts">
 // Meld route for card and bank. Card picks the region, sees the quote, then pays inside the
-// provider's widget, or in a native build on the provider's card surface once the identity and
-// requirements steps are done. Bank prices the transfer first and opens its request on Continue, then shows
-// the provider's details for the buyer to pay from their own banking app. Both hand off to the
-// journey once the payment is approved, asserted, or fails.
+// provider's widget, or in a native build on the provider's card surface. Bank prices the transfer
+// first and opens its request on Continue, then shows the provider's details, or in a native build
+// the order's own, for the buyer to pay from their own banking app. A native build runs the
+// identity and requirements steps on Continue first. Both hand off to the journey once the payment
+// is approved, asserted, or fails.
 import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from "vue";
 import { bankRailCountries } from "~~/lib/region";
 import { corridorOptions, countryName, type CountryOption } from "~~/lib/supported";
@@ -54,14 +55,17 @@ useVisibilityReconcile();
 useStateDirector();
 const { handedOff } = useMeldHandoff(emit);
 
-/** Native card only: the identity and requirements steps Continue runs before the order. */
+const bankScreen = ref<InstanceType<typeof MeldBankTransferScreen> | null>(null);
+/** Native only: the identity and requirements steps Continue runs before the order. */
 const checkout =
-  import.meta.env.VITE_MELD_MODE === "native" && !isBank
+  import.meta.env.VITE_MELD_MODE === "native"
     ? useMeldNativeCheckout({
         query: () => session.meldOrderQuery,
         start: async (acceptedAt) => {
           session.meldTermsAcceptedAt = acceptedAt;
-          await session.start();
+          if (!isBank) return session.start();
+          bankStep.value = "details";
+          await bankScreen.value?.openRequest();
         },
       })
     : null;
@@ -319,8 +323,9 @@ onUnmounted(() => {
         />
         <p class="text-body-m text-fg-secondary">Opening your top-up…</p>
       </div>
-      <!-- Bank: both steps in one component, with the drill-ins laid over them. It stays mounted
-           behind them — re-creating it would reload the provider's details page. -->
+      <!-- Bank: both steps in one component, with the drill-ins and the native checkout steps laid
+           over them. It stays mounted behind them — re-creating it would reload the provider's
+           details page, and Continue is still running under the checkout steps. -->
       <template v-else-if="isBank">
         <MeldFeeDetailsScreen
           v-if="showingFees"
@@ -337,10 +342,29 @@ onUnmounted(() => {
           :notice="session.cancelNotice"
           @pick="pickCurrency"
         />
+        <MeldIdentityStep
+          v-else-if="checkoutStep === 'identity'"
+          ref="identityStep"
+          :country="selectedCountry"
+          @ready="checkout?.ready()"
+          @back="checkout?.leave()"
+        />
+        <MeldRequirementsScreen
+          v-else-if="checkoutStep === 'requirements' && checkoutQuery"
+          ref="requirementsStep"
+          :query="checkoutQuery"
+          @ready="checkout?.ready()"
+          @back="checkout?.leave()"
+        />
         <MeldBankTransferScreen
-          v-show="!showingFees && !showingCurrency"
+          v-show="!showingFees && !showingCurrency && checkoutStep === 'pay'"
+          ref="bankScreen"
           :country="selectedCountry"
           :step="bankStep"
+          :terms="providerTerms"
+          :continue-action="checkout?.continueAction"
+          :terms-status="checkout?.termsStatus.value"
+          :retry-terms="checkout?.retryTerms"
           @fees="showingFees = true"
           @currency="showingCurrency = true"
           @continue="bankStep = 'details'"
