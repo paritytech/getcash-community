@@ -221,9 +221,9 @@ Copy `.env.example` to `.env` and fill in what you need. Nuxt reads `.env`, not 
 `VITE_CHAINFLIP_BROKER_API_KEY` names an account on Broker-as-a-Service (chainflip-broker.io), one
 key per Chainflip network; this app uses mainnet. Chainflip's own backend refuses to open deposit
 channels on its default broker as of October 2026, so the channels open on the BaaS broker, which
-takes 5 bps of each swap on top of the commission set in its dashboard, which is 0 for this app.
-BaaS treats the key as the account's name rather than a secret, so it is inlined into the client
-bundle like the other values; keep it out of the repo all the same.
+takes 5 bps of each swap on top of the commission set in its dashboard; ours is 0. BaaS treats the
+key as the account's name rather than a secret, so it is inlined into the client bundle like the
+other values; keep it out of the repo all the same.
 
 Two tests submit real transactions to the Paseo testnet and are skipped unless enabled:
 `PROD_PROOF=1` runs `tests/prod-proof.test.ts`, `VERIFY_AMOUNTS=1` runs

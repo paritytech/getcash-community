@@ -11,7 +11,9 @@ import { readPurseBalance } from "./coinage";
 const CHAINFLIP_DOMAINS = ["rpc.mainnet.chainflip.io", "chainflip-swap.chainflip.io"];
 
 /** The broker the channels open on, when the build has a key for it. */
-const brokerDomains = (): string[] => (brokerConfigured() ? [BAAS_BROKER_HOST] : []);
+function brokerDomains(): string[] {
+  return brokerConfigured() ? [BAAS_BROKER_HOST] : [];
+}
 
 /** The fiat rail's domain, read from the build-time base URL. A relative base yields nothing. */
 function meldDomains(): string[] {

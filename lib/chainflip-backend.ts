@@ -20,7 +20,7 @@ function brokerApiKey(): string | null {
 }
 
 /** The broker RPC the channels open on, or null when the build has no key. */
-export function brokerUrl(): string | null {
+function brokerUrl(): string | null {
   const key = brokerApiKey();
   return key === null ? null : baasBrokerUrl(key);
 }
