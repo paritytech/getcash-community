@@ -117,18 +117,50 @@ async function sendOverFetch(): Promise<void> {
   axios.defaults.adapter = "fetch";
 }
 
+/** Where Broker-as-a-Service lives on mainnet. Its RPC drop-in speaks the native broker RPC. */
+export const BAAS_BROKER_HOST = "chainflip-broker.io";
+const BAAS_BROKER_RPC = `https://${BAAS_BROKER_HOST}/rpc/`;
+
+/** The broker RPC that opens channels on the BaaS account the API key names. */
+export const baasBrokerUrl = (apiKey: string): string => `${BAAS_BROKER_RPC}${apiKey}`;
+
+/** What BaaS sets as the broker commission on every channel it opens, in basis points. */
+export const BAAS_COMMISSION_BPS = 5;
+
+export interface CreateSwapSdkOptions {
+  /** A broker RPC to open channels on. Without one the SDK asks Chainflip's backend, which
+   *  refuses channels on its default broker. */
+  brokerUrl?: string;
+  /** The commission that broker sets on a channel, so a quote says what lands. Never sent when
+   *  opening the channel: BaaS sets its own and takes a higher figure as ours to add on top. */
+  brokerCommissionBps?: number;
+}
+
 /**
- * Builds a SwapSdkLike over the real @chainflip/sdk, imported dynamically here.
+ * Builds a SwapSdkLike over the real @chainflip/sdk, imported dynamically here. Quotes, limits
+ * and status go to Chainflip's backend either way; only the channel opening follows the broker.
  */
-export async function createSwapSdk(network: ChainflipNetworkId): Promise<SwapSdkLike> {
+export async function createSwapSdk(
+  network: ChainflipNetworkId,
+  options: CreateSwapSdkOptions = {},
+): Promise<SwapSdkLike> {
   const [{ SwapSDK }] = await Promise.all([import("@chainflip/sdk/swap"), sendOverFetch()]);
-  const sdk = new SwapSDK({ network });
+  const sdk = new SwapSDK({
+    network,
+    ...(options.brokerUrl ? { broker: { url: options.brokerUrl } } : {}),
+  });
   return {
     // The SDK's request types are zod-refined asset/chain unions; the plain-string args are
     // valid at runtime.
     getQuoteV2: async (args) => {
+      const request = {
+        ...args,
+        ...(options.brokerCommissionBps === undefined
+          ? {}
+          : { brokerCommissionBps: options.brokerCommissionBps }),
+      };
       try {
-        return (await sdk.getQuoteV2(args as never)) as { quotes: unknown[] };
+        return (await sdk.getQuoteV2(request as never)) as { quotes: unknown[] };
       } catch (error) {
         throw normalizeQuoteRequestError(error);
       }
