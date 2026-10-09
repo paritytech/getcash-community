@@ -59,8 +59,8 @@
 //
 // THE SAME PAID REJECTION THREE TIMES IN A ROW HOLDS THE RUN. A program rejected at inclusion
 // costs its dispatch fee. After MAX_PROGRAM_REJECTIONS rejections with the same answer the run
-// is held with the deposit on the burner, as a PSM refusal holds it. A different answer starts
-// the count over. A dry run's refusal costs nothing and is not counted.
+// is held with the deposit on the burner, as a PSM refusal holds it. A different answer, or a
+// program that lands, starts the count over. A dry run's refusal costs nothing and is not counted.
 //
 // THE DISPATCH FEE IS PRICED ON THE PROGRAM THAT GOES OUT. The fee is taken before the program
 // runs, for the declared weight, and the unused part comes back after it. The stable tiers keep
@@ -604,6 +604,15 @@ function includedInBlock(watch: Watch, timeoutMs: number, what: string): Promise
   });
 }
 
+/** The program is in a block. The latch holds until finality settles it, and the rejection
+ *  count starts over. */
+function markLanded(state: TickState, block: number): void {
+  state.xcmSubmitted = true;
+  state.inclusionBlock = block;
+  state.rejections = 0;
+  state.lastRejection = null;
+}
+
 /** Signs and broadcasts the tier's one transaction and resolves with its outcome at inclusion.
  *  Before the broadcast, `state` records what a tick that never hears the answer needs; a program
  *  that landed keeps it, with the block it was seen in, until finality settles it. A rejection is
@@ -634,10 +643,7 @@ async function submitConversion<Options>(
   );
   input.onTx?.({ call: "swap", txHash: included.txHash, block: included.block.number });
   if (included.ok) {
-    state.xcmSubmitted = true;
-    state.inclusionBlock = included.block.number;
-    state.rejections = 0;
-    state.lastRejection = null;
+    markLanded(state, included.block.number);
   } else {
     state.nonceAtSubmit = null;
   }
@@ -688,12 +694,10 @@ async function settleLostSubmit(
     state.nonceAtSubmit = null;
     return;
   }
-  state.inclusionBlock = await bounded(
-    readBlockNumber(api, "best"),
-    input.tickTimeoutMs,
-    "block number read (latest)",
+  markLanded(
+    state,
+    await bounded(readBlockNumber(api, "best"), input.tickTimeoutMs, "block number read (latest)"),
   );
-  state.xcmSubmitted = true;
 }
 
 /** The program is in a best block the chain may yet replace, so the finalized block has the last

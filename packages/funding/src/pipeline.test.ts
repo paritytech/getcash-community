@@ -2181,6 +2181,9 @@ describe("the submit, and the CASH read final on People", () => {
     // The CASH is not final on People yet when the tick looks: the spent deposit is the tell.
     const world = funded({ loseAnswer: "included", quoteAfterXcm: true, arrivalAfterReads: 2 });
     const state = freshTickState();
+    // Two paid rejections came before the submit whose answer was lost.
+    state.rejections = 2;
+    state.lastRejection = "ExchangeAsset #1 failed with NoDeal";
     await lostTick(world, state);
     expect(world.nonce.latest).toBe(1);
     expect(world.state.nativeAh).toBe(0n);
@@ -2189,7 +2192,14 @@ describe("the submit, and the CASH read final on People", () => {
     const run = await drive(world, 3, state);
     expect(run.steps).toEqual(["await-arrival", "done"]);
     expect(run.txs).toEqual(["swap"]);
-    expect(state).toMatchObject({ attempts: 1, xcmSubmitted: true, nonceAtSubmit: null });
+    // Settled as landed, it clears the rejection count like a submit that heard its answer.
+    expect(state).toMatchObject({
+      attempts: 1,
+      xcmSubmitted: true,
+      nonceAtSubmit: null,
+      rejections: 0,
+      lastRejection: null,
+    });
   });
 
   it("retries a lost submit that failed at dispatch: the nonce moved and the deposit is still there", async () => {
