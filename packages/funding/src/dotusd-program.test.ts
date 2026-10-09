@@ -53,6 +53,7 @@ describe("buildDotUsdFundingProgram", () => {
     const transfer = instruction(args, "InitiateTransfer") as {
       destination: unknown;
       remote_fees: { value: { value: Fungible[] } };
+      assets: unknown;
       remote_xcm: Instruction[];
     };
     expect(transfer.destination).toEqual(peopleDest(PEOPLE_PARA));
@@ -60,6 +61,18 @@ describe("buildDotUsdFundingProgram", () => {
       id: TOKENS.CASH.location,
       fun: { type: "Fungible", value: PROGRAM.remoteFeesCash },
     });
+    expect(transfer.assets).toEqual([
+      {
+        type: "Teleport",
+        value: {
+          type: "Wild",
+          value: {
+            type: "AllOf",
+            value: { id: TOKENS.CASH.location, fun: { type: "Fungible", value: undefined } },
+          },
+        },
+      },
+    ]);
     expect(transfer.remote_xcm.map((i) => i.type)).toEqual(["RefundSurplus", "DepositAsset"]);
     expect(args.max_weight).toEqual(PROGRAM.maxWeight);
   });

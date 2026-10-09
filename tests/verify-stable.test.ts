@@ -96,6 +96,7 @@ describe.runIf(process.env.VERIFY_STABLE === "1")("stable pool tier dry runs", (
             beneficiaryHex: holderHex,
             peopleParaId: PASEO_PEOPLE_PARA_ID,
             depositStable: stableInMax,
+            minNativeOut: nativeIn,
             minUnderlyingOut: buyTarget,
             remoteFeesCash: earmark,
             transfer,
