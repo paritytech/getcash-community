@@ -41,6 +41,9 @@ importers:
       '@getsome/withdraw':
         specifier: workspace:*
         version: link:packages/withdraw
+      '@meldcrypto/sdk':
+        specifier: 0.6.0
+        version: 0.6.0
       '@noble/hashes':
         specifier: ^2.2.0
         version: 2.3.0
@@ -718,6 +721,10 @@ packages:
     resolution: {integrity: sha512-uwPAhccfFJlsfCxMYTwOdVfOz3xqyj8xYL3zJj8f0pb30tLohnnFPhLuqp4/qoEz8sNxe4SESZedcBojRefIzg==}
     engines: {node: '>=18'}
     hasBin: true
+
+  '@meldcrypto/sdk@0.6.0':
+    resolution: {integrity: sha512-CL5Xv3Mcz6O3F6wfn4WnlCoefAInNggPTBK7fi7TkJlpo+FANsA6YQiS7HM5gTlzYwkUfukgfaL9S0WNNEX80Q==}
+    engines: {node: '>=16'}
 
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     resolution: {integrity: sha512-oTXEIha4SsuXdTA4Iyskj0kpdx2yVXdhd75c2v3xGrHFfVMsbhTPZU/nMPL4sWKo4pBHm3aucLaqGlF696dTyQ==}
@@ -6130,6 +6137,8 @@ snapshots:
     transitivePeerDependencies:
       - encoding
       - supports-color
+
+  '@meldcrypto/sdk@0.6.0': {}
 
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     optional: true
