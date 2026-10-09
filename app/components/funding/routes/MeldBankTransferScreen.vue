@@ -18,11 +18,13 @@ import { useSessionStore } from "../../../stores/session";
 import { currencyConfig } from "../../../funding/config";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import type { FundingRoute } from "../../../funding/selection";
+import type { ProviderTerms } from "../../../composables/useMeldRequirements";
 import CashAmount from "../../ui/CashAmount.vue";
 import PillButton from "../../ui/PillButton.vue";
 import RegionRow from "../../ui/RegionRow.vue";
 import SkeletonBlock from "../../ui/SkeletonBlock.vue";
 import MeldPaySheet from "./MeldPaySheet.vue";
+import MeldTermsNotice from "./MeldTermsNotice.vue";
 
 const props = defineProps<{
   /** The region the quote is priced in, as an ISO 3166-1 alpha-2 code. */
@@ -32,6 +34,8 @@ const props = defineProps<{
   /** Offer a cancel under the confirmation. Set when the transfer was re-opened from the list:
    *  there the details are all the buyer came back for, and leaving is the other way out. */
   cancellable?: boolean;
+  /** The provider terms the summary's Continue accepts, shown above it. */
+  terms?: ProviderTerms;
 }>();
 // `fees` and `currency` open this route's drill-ins; `continue` asks the route for the details
 // step; `switchRoute` asks the shell for another package when no transfer can be routed from here.
@@ -273,9 +277,14 @@ function confirmSent() {
         }}
       </PillButton>
       <SkeletonBlock v-else-if="pricing" class="mt-auto mb-6 h-12 w-full shrink-0" />
-      <PillButton v-else class="mt-auto mb-6 w-full shrink-0" @click="onContinue">
-        Continue
-      </PillButton>
+      <template v-else>
+        <div v-if="terms" class="mt-auto shrink-0">
+          <MeldTermsNotice :provider="terms.provider" :agreements="terms.agreements" class="mb-3" />
+        </div>
+        <PillButton class="mb-6 w-full shrink-0" :class="{ 'mt-auto': !terms }" @click="onContinue">
+          Continue
+        </PillButton>
+      </template>
     </template>
 
     <template v-else>

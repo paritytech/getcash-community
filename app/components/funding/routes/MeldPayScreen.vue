@@ -8,11 +8,20 @@ import { namedCountry } from "~~/lib/supported";
 import { localeCountry } from "../../../utils/locale";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import type { FundingRoute } from "../../../funding/selection";
+import type { ProviderTerms } from "../../../composables/useMeldRequirements";
 import DetailRows from "../../ui/DetailRows.vue";
 import PillButton from "../../ui/PillButton.vue";
 import RegionRow from "../../ui/RegionRow.vue";
 import SecondaryButton from "../../ui/SecondaryButton.vue";
 import SkeletonBlock from "../../ui/SkeletonBlock.vue";
+import MeldTermsNotice from "./MeldTermsNotice.vue";
+
+const props = defineProps<{
+  /** The provider terms Continue accepts, shown above it. */
+  terms?: ProviderTerms;
+  /** What Continue runs in place of starting the request. */
+  continueAction?: () => Promise<void>;
+}>();
 
 const session = useSessionStore();
 // switchRoute asks the shell to swap to the crypto package when this region routes neither card
@@ -126,7 +135,7 @@ async function next() {
   starting.value = true;
   startError.value = null;
   try {
-    await session.start();
+    await (props.continueAction ? props.continueAction() : session.start());
   } catch (e) {
     console.warn("[meld] could not start the payment:", e);
     startError.value =
@@ -218,7 +227,15 @@ async function next() {
 
     <p v-if="startError" class="mt-4 text-body-m text-fg-error">{{ startError }}</p>
 
-    <PillButton class="mt-auto mb-6 w-full" :disabled="!canContinue" @click="next">
+    <div v-if="terms" class="mt-auto">
+      <MeldTermsNotice :provider="terms.provider" :agreements="terms.agreements" class="mb-3" />
+    </div>
+    <PillButton
+      class="mb-6 w-full"
+      :class="{ 'mt-auto': !terms }"
+      :disabled="!canContinue"
+      @click="next"
+    >
       {{ starting ? "Starting…" : "Continue" }}
     </PillButton>
   </div>
