@@ -8,6 +8,7 @@
 import { computed } from "vue";
 import type { ConversionRoute } from "@getsome/funding";
 import { formatSellAmount, SELL_TOKEN, type MeldQuoteEntry } from "@getsome/meld";
+import { laneById, laneSellToken, type LaneId } from "@getsome/offramp";
 import {
   MELD_WITHDRAW_DESTINATIONS,
   PAYMENT_WINDOW_MS,
@@ -65,8 +66,10 @@ export interface MeldSaleStart {
   paymentMethodType: string;
   /** The provider line the seller confirmed: its payout and its fees, in `fiat`. */
   quote: MeldQuoteEntry;
-  /** Exactly what the key pays the provider, planck. */
+  /** Exactly what the provider is paid, base units of the sold asset: PAS, or the lane's. */
   cryptoAmount: bigint;
+  /** A sale through an offramp lane: the lane, and the USDT redeem the withdrawal runs. */
+  swap?: { lane: LaneId; route: ConversionRoute };
 }
 
 export type MeldSaleStartOutcome =
@@ -203,14 +206,15 @@ export function useWithdrawalRequest() {
     const ref = requestRefOf(sourceId, n);
     const key = await live.withdrawKeyFor(sourceId, n);
     await live.advanceWithdrawCounter(sourceId, n);
+    const token = input.swap === undefined ? SELL_TOKEN : laneSellToken(laneById(input.swap.lane));
     let session: Awaited<ReturnType<typeof client.createSellSession>>;
     try {
       session = await client.createSellSession({
         serviceProvider: input.quote.serviceProvider,
         orderRef: key.address,
         country: input.country,
-        sourceCurrencyCode: SELL_TOKEN.meldCurrencyCode,
-        sourceAmount: formatSellAmount(input.cryptoAmount),
+        sourceCurrencyCode: token.meldCurrencyCode,
+        sourceAmount: formatSellAmount(input.cryptoAmount, token),
         destinationCurrencyCode: input.fiat,
         paymentMethodType: input.paymentMethodType,
       });
@@ -241,8 +245,9 @@ export function useWithdrawalRequest() {
       destination,
       landingHex: key.publicKeyHex,
       rail: "meld",
-      // A fiat sale takes DOT from the key, whatever the provider pays out.
-      sale: { tier: "pool" },
+      // A fiat sale takes DOT from the key, whatever the provider pays out; one through an
+      // offramp lane takes USDT, which Chainflip swaps for the lane's asset.
+      sale: input.swap?.route ?? { tier: "pool" },
       paymentExpiresAt,
       meld,
     });
@@ -277,6 +282,7 @@ export function useWithdrawalRequest() {
         paymentMethodType: input.paymentMethodType,
         widgetUrl,
         cryptoAmount: input.cryptoAmount.toString(),
+        ...(input.swap === undefined ? {} : { lane: input.swap.lane }),
         quotedPayout: quote.destinationAmount,
         ...(Object.keys(fees).length === 0 ? {} : { fees }),
       },
@@ -319,13 +325,20 @@ export function useWithdrawalRequest() {
       return { ok: false, reason: "The sale could not be checked with the provider." };
     }
     if (!unasked(ref)) return { ok: false, reason: "The sale is no longer waiting for payment." };
+    const { lane } = record.sale;
     let fundable: boolean;
     try {
-      fundable = await live.meldCommitmentFundable(
-        BigInt(record.handoff.amount),
-        BigInt(record.sale.cryptoAmount),
-        channel.address,
-      );
+      if (lane !== undefined) {
+        // The swap is opened now, to the address the provider named, on today's quote; a quote
+        // that no longer covers the sale throws, and nothing is opened or asked.
+        fundable = record.handoff.swap !== undefined || (await openSaleSwap(ref, lane, live));
+      } else {
+        fundable = await live.meldCommitmentFundable(
+          BigInt(record.handoff.amount),
+          BigInt(record.sale.cryptoAmount),
+          channel.address,
+        );
+      }
     } catch (e: unknown) {
       // Not knowing is not a no: the sale waits, and the seller can try again.
       return { ok: false, reason: `The price could not be checked: ${messageOf(e)}` };
@@ -343,6 +356,34 @@ export function useWithdrawalRequest() {
     if (!prompted.ok) return prompted;
     await handOff(ref, live);
     return { ok: true };
+  }
+
+  /** Opens a lane sale's Chainflip channel to the provider's deposit address and records it.
+   *  False when the price moved too far for the sale's promise. */
+  async function openSaleSwap(
+    ref: RequestRef,
+    lane: LaneId,
+    live: typeof import("~~/lib/withdraw-live"),
+  ): Promise<boolean> {
+    const record = requests.get(ref);
+    if (record?.kind !== "withdrawal" || record.sale === undefined) return false;
+    const provider = record.handoff.channel;
+    if (provider === undefined) return false;
+    const swap = await live.openSwapSaleChannel({
+      amount: BigInt(record.handoff.amount),
+      lane: laneById(lane),
+      committed: BigInt(record.sale.cryptoAmount),
+      providerAddress: provider.address,
+      keyPublicKeyHex: record.key.publicKeyHex,
+    });
+    if (swap === null) return false;
+    await requests.observe(ref, {
+      source: "user",
+      at: requestsNow(),
+      event: "swap-opened",
+      channel: swap,
+    });
+    return true;
   }
 
   /** The sale on the record still waits for its purse to be asked, as the record stands now. */

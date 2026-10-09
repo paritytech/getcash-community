@@ -29,21 +29,27 @@ export interface SweepInput {
   key: { signer: PolkadotSigner };
   /** The Asset Hub account that receives everything, SS58. */
   to: string;
+  /** A pallet-assets id to sweep instead of PAS. The fee is then the caller's to arrange through
+   *  `signOptions` (ChargeAssetTxPayment in the same asset), since the key holds no PAS. */
+  assetId?: number;
   /** Bound on the balance read. */
   tickTimeoutMs: number;
   /** Bound on the submit's resolution. */
   submitTimeoutMs: number;
   signOptions?: Record<string, unknown>;
-  /** The key's free PAS on Asset Hub. */
+  /** The key's free PAS on Asset Hub, or its balance of `assetId`. */
   readKeyOnAssetHub: () => Promise<bigint>;
   /** Runs before the broadcast, so the driver can persist the attempt about to be made. */
   onBeforeSubmit?: () => Promise<void> | void;
   onTx?: (info: { call: "sweep"; txHash: string; block?: number }) => void;
 }
 
-/** The whole balance to `to`, the key reaped behind it. */
-export function buildSweep(api: AssetHubApi, to: string) {
-  return api.tx.Balances.transfer_all({ dest: { type: "Id", value: to }, keep_alive: false });
+/** The whole balance to `to`, the key reaped behind it: PAS, or the asset `assetId` names. */
+export function buildSweep(api: AssetHubApi, to: string, assetId?: number) {
+  const dest = { type: "Id", value: to } as const;
+  return assetId === undefined
+    ? api.tx.Balances.transfer_all({ dest, keep_alive: false })
+    : api.tx.Assets.transfer_all({ id: assetId, dest, keep_alive: false });
 }
 
 /**
@@ -62,7 +68,7 @@ export async function sweepOnce(input: SweepInput, state: SweepState): Promise<v
   state.attempts += 1;
   await input.onBeforeSubmit?.();
   const res = await bounded(
-    buildSweep(input.assetHubApi, input.to).signAndSubmit(
+    buildSweep(input.assetHubApi, input.to, input.assetId).signAndSubmit(
       input.key.signer,
       input.signOptions as never,
     ),

@@ -158,6 +158,7 @@ async function confirm() {
       paymentMethodType: quoted.paymentMethodType,
       quote: quoted.line,
       cryptoAmount: quoted.cryptoAmount,
+      ...(quoted.swap === undefined ? {} : { swap: quoted.swap }),
     });
     if (!outcome.ok) {
       startError.value = outcome.reason;

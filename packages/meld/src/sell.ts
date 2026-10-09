@@ -13,21 +13,30 @@ import { formatBaseUnits, parseBaseUnits } from "./units";
  *  it, so neither trusts the other to hold the line. */
 export const MELD_SELL_ENABLED = NETWORK.testnet;
 
-/** What a sale sells: the native on Asset Hub, which Meld names DOT_ASSETHUB. */
-export const SELL_TOKEN = TOKENS.PAS;
+/** What a sale sells by default: the native on Asset Hub, which Meld names DOT_ASSETHUB. */
+export const SELL_TOKEN = TOKENS.PAS as SellToken;
+
+/** An asset a sale can sell: how Meld names it and its base-unit decimals. A sale through an
+ *  offramp lane sells the lane's asset on another chain. */
+export interface SellToken {
+  symbol: string;
+  decimals: number;
+  meldCurrencyCode: string;
+}
 
 /** The fraction digits a committed amount carries. Few enough that no provider rounds it, and the
  *  planck below them stay with the rest of the sale. */
 const SELL_AMOUNT_DECIMALS = 4;
 
-/** `planck` cut down to what a sale may commit, rounded down. */
-export function sellAmountOf(planck: bigint): bigint {
-  const step = 10n ** BigInt(SELL_TOKEN.decimals - SELL_AMOUNT_DECIMALS);
-  return (planck / step) * step;
+/** `base` units of `token` cut down to what a sale may commit, rounded down. */
+export function sellAmountOf(base: bigint, token: SellToken = SELL_TOKEN): bigint {
+  const step = 10n ** BigInt(Math.max(token.decimals - SELL_AMOUNT_DECIMALS, 0));
+  return (base / step) * step;
 }
 
 /** The committed amount as the adapter and the provider see it. */
-export const formatSellAmount = (planck: bigint): string => formatBaseUnits(SELL_TOKEN, planck);
+export const formatSellAmount = (base: bigint, token: SellToken = SELL_TOKEN): string =>
+  formatBaseUnits(token, base);
 
 /**
  * Providers Meld lists as running only the standard sell flow: their widget finishes the trade
@@ -65,10 +74,13 @@ export interface SaleChannelRecord {
  * adapter is not disclosing a deposit, or discloses one the key must not pay: another asset, or
  * an amount that does not parse.
  */
-export function saleChannelOf(result: MeldStatusResult): SaleChannelRecord | null {
+export function saleChannelOf(
+  result: MeldStatusResult,
+  token: SellToken = SELL_TOKEN,
+): SaleChannelRecord | null {
   const { deposit } = result;
-  if (deposit === undefined || deposit.currency !== SELL_TOKEN.meldCurrencyCode) return null;
-  const expectedAmount = parseBaseUnits(SELL_TOKEN, deposit.amount);
+  if (deposit === undefined || deposit.currency !== token.meldCurrencyCode) return null;
+  const expectedAmount = parseBaseUnits(token, deposit.amount);
   if (expectedAmount === null || expectedAmount <= 0n) return null;
   return {
     depositAddress: deposit.address,

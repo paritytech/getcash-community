@@ -26,8 +26,10 @@ export async function requestDepositAddress(
       fillOrKillParams: {
         refundAddress: args.refundAddress,
         slippageTolerancePercent:
-          (rawQuote?.["recommendedSlippageTolerancePercent"] as string | undefined) ?? "3",
-        retryDurationMinutes: 10,
+          args.fillOrKill?.slippageTolerancePercent ??
+          (rawQuote?.["recommendedSlippageTolerancePercent"] as string | undefined) ??
+          "3",
+        retryDurationMinutes: args.fillOrKill?.retryDurationMinutes ?? 10,
       },
     });
   } catch (err) {

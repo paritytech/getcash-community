@@ -11,6 +11,8 @@ import type {
 
 /** A well-formed Asset Hub account for the sale's stand-in deposit address. */
 const SELL_DEPOSIT_ADDRESS = "13ENScfFZXQ8avXf6cphack516B8YCjdL4MJbodm7VxK8GE9";
+/** A well-formed Solana wallet for a sale of a Solana asset (Meld codes ending `_SOLANA`). */
+const SOLANA_DEPOSIT_ADDRESS = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
 
 export interface FakeMeldOptions {
   /** Demo fiat price per whole native token. Default 7 (≈ USD/DOT ballpark). */
@@ -83,7 +85,7 @@ export function createFakeMeldClient(
       status: "transaction_seen",
       ...terms,
       deposit: {
-        address: SELL_DEPOSIT_ADDRESS,
+        address: sale.crypto.endsWith("_SOLANA") ? SOLANA_DEPOSIT_ADDRESS : SELL_DEPOSIT_ADDRESS,
         amount: sale.cryptoAmount,
         currency: sale.crypto,
         observedAt: sale.disclosedAt,

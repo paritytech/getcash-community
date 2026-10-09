@@ -32,6 +32,9 @@ importers:
       '@getsome/meld':
         specifier: workspace:*
         version: link:packages/meld
+      '@getsome/offramp':
+        specifier: workspace:*
+        version: link:packages/offramp
       '@getsome/people':
         specifier: workspace:*
         version: link:packages/people
@@ -231,6 +234,16 @@ importers:
       '@getsome/core':
         specifier: workspace:*
         version: link:../core
+
+  packages/offramp:
+    dependencies:
+      '@getsome/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@getsome/chainflip':
+        specifier: workspace:*
+        version: link:../chainflip
 
   packages/people:
     dependencies:

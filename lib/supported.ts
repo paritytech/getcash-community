@@ -23,6 +23,18 @@ export interface SupportedMethod {
   max: string;
   currency: string;
   providers: string[];
+  /** An off-ramp method only: every lane the adapter found routing it, in the adapter's order,
+   *  each with its own limits. The sale picks among them (see useMeldSellQuote). */
+  lanes?: OfframpLaneRef[];
+}
+
+/** An off-ramp lane as the adapter names it: the Meld code sold, its chain and its limits. A chain
+ *  other than `assethub` means the sale swaps through Chainflip first. */
+export interface OfframpLaneRef {
+  code: string;
+  chain: string;
+  min?: string;
+  max?: string;
 }
 
 /** A (country, fiat) corridor. Empty `methods` means nothing routes here. */
@@ -30,6 +42,8 @@ export interface SupportedCorridor {
   country: string;
   fiat: string;
   methods: SupportedMethod[];
+  /** The country's name, where the catalog gave one. */
+  name?: string;
 }
 
 /** One region-dropdown row. Deliverability is answered per selection by `fetchCorridor`. */
@@ -101,7 +115,27 @@ function toMethod(raw: Record<string, unknown>, fiat: string): SupportedMethod {
     max: String(raw.max ?? ""),
     currency: String(raw.currency ?? fiat),
     providers: Array.isArray(raw.providers) ? raw.providers.map(String) : [],
+    ...lanesOf(raw.lanes),
   };
+}
+
+function lanesOf(raw: unknown): { lanes?: OfframpLaneRef[] } {
+  if (!Array.isArray(raw)) return {};
+  const lanes: OfframpLaneRef[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const { code, chain, min, max } = entry as Record<string, unknown>;
+    if (typeof code !== "string" || code === "" || typeof chain !== "string" || chain === "") {
+      continue;
+    }
+    lanes.push({
+      code,
+      chain,
+      ...(typeof min === "string" ? { min } : {}),
+      ...(typeof max === "string" ? { max } : {}),
+    });
+  }
+  return { lanes };
 }
 
 /**
@@ -201,6 +235,70 @@ export async function fetchSupportedCorridors(
     // Only a non-empty result is cached; an empty one (cold cache) is retried next call.
     if (map.size > 0) corridorsCache.set(catalogKey(destination, direction), map);
     return map;
+  } catch {
+    return null;
+  }
+}
+
+// The off-ramp catalog: the adapter merges Meld's sell routes for every configured lane (today's
+// Asset Hub sale first, then the Chainflip lanes) and tags each country's payout method with the
+// first lane that routes it. A sale reads this instead of one destination's sell catalog, so a
+// region no provider buys the Asset Hub asset in still sells, through the swap.
+
+let offrampCorridors: Map<string, SupportedCorridor> | null = null;
+const offrampCorridorCache = new Map<string, SupportedCorridor>();
+
+function corridorOf(c: Record<string, unknown>, country: string): SupportedCorridor {
+  const fiat = String(c.fiat ?? "");
+  const methods = Array.isArray(c.methods) ? (c.methods as Record<string, unknown>[]) : [];
+  return {
+    country,
+    fiat,
+    methods: methods.map((m) => toMethod(m, fiat)),
+    ...(typeof c.name === "string" && c.name !== "" ? { name: c.name } : {}),
+  };
+}
+
+/** Every off-ramp corridor as a country -> corridor map, tab-cached; null when unreachable. */
+export async function fetchOfframpCorridors(): Promise<Map<string, SupportedCorridor> | null> {
+  if (offrampCorridors !== null) return offrampCorridors;
+  const base = baseUrl();
+  if (base === undefined) return null;
+  try {
+    const res = await fetch(`${base.replace(/\/$/, "")}/supported/offramp/corridors`, {
+      headers: headers(),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { corridors?: Record<string, unknown>[] };
+    const map = new Map<string, SupportedCorridor>();
+    for (const c of data.corridors ?? []) {
+      const country = String(c.country ?? "");
+      if (country !== "") map.set(country, corridorOf(c, country));
+    }
+    // Only a non-empty result is cached; an empty one (cold cache) is retried next call.
+    if (map.size > 0) offrampCorridors = map;
+    return map;
+  } catch {
+    return null;
+  }
+}
+
+/** One country's off-ramp corridor, read live. Cached per country; null when unreachable. */
+export async function fetchOfframpCorridor(country: string): Promise<SupportedCorridor | null> {
+  const hit = offrampCorridorCache.get(country);
+  if (hit !== undefined) return hit;
+  const base = baseUrl();
+  if (base === undefined) return null;
+  try {
+    const res = await fetch(
+      `${base.replace(/\/$/, "")}/supported/offramp?country=${encodeURIComponent(country)}`,
+      { headers: headers() },
+    );
+    if (!res.ok) return null;
+    const data = (await res.json()) as Record<string, unknown>;
+    const corridor = corridorOf(data, String(data.country ?? country));
+    offrampCorridorCache.set(country, corridor);
+    return corridor;
   } catch {
     return null;
   }

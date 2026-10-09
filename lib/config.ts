@@ -134,3 +134,15 @@ const PAIR_BY_SOURCE_ID: ReadonlyMap<string, { chain: string; asset: string }> =
 /** The UI pair a source id names, in either catalog; undefined for a Meld or unknown id. */
 export const sourcePairFor = (sourceId: string): { chain: string; asset: string } | undefined =>
   PAIR_BY_SOURCE_ID.get(sourceId);
+
+/** The off-ramp lanes this build sells through, in preference order, by Meld code: the direct
+ *  Asset Hub sale first, then the Chainflip lanes. VITE_OFFRAMP_LANES overrides it, comma
+ *  separated; a code left out is not offered, whatever the adapter lists. */
+export const OFFRAMP_LANE_ORDER: readonly string[] = (() => {
+  const raw = import.meta.env.VITE_OFFRAMP_LANES as string | undefined;
+  const listed = (raw ?? "")
+    .split(",")
+    .map((code) => code.trim().toUpperCase())
+    .filter((code) => code !== "");
+  return listed.length > 0 ? listed : ["DOT_ASSETHUB", "USDC_ARBITRUM", "USDC_SOLANA"];
+})();

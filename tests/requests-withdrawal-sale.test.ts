@@ -472,3 +472,70 @@ describe("the worker's words for a sale", () => {
     expect(stuck.status.kind).toBe("sent");
   });
 });
+
+describe("a fiat sale through an offramp lane", () => {
+  const SOLANA_DEPOSIT = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
+  const laneSale = () =>
+    sale({
+      sale: { ...sale().sale!, lane: "usdt-solana", cryptoAmount: "98850000" },
+    });
+  const laneDisclosed = (currency = "USDT_SOLANA"): MeldSaleReading => ({
+    status: "transaction_seen",
+    deposit: { address: SOLANA_DEPOSIT, amount: "98.85", currency },
+  });
+  const swap = {
+    id: "cf-channel-7",
+    address: "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5",
+    openedAt: at(6),
+    expiresAt: at(6) + 24 * 60 * MINUTE,
+    expectedEgress: "99150000",
+    amount: "99800000",
+  };
+
+  it("takes a deposit in the lane's asset, sized to its decimals", () => {
+    const next = reduce(laneSale(), read(at(5), laneDisclosed())) as WithdrawalRecord;
+    expect(next.handoff.channel).toMatchObject({ address: SOLANA_DEPOSIT, amount: "98850000" });
+  });
+
+  it("refuses a deposit in any other asset", () => {
+    const next = reduce(laneSale(), read(at(5), laneDisclosed("DOT_ASSETHUB"))) as WithdrawalRecord;
+    expect(next.failure?.kind).toBe("sale-mismatch");
+    expect(next.handoff.channel).toBeUndefined();
+  });
+
+  it("keeps the swap the page opened before the purse is asked, and no later one", () => {
+    const known = reduce(laneSale(), read(at(5), laneDisclosed()));
+    const opened = reduce(known, {
+      source: "user",
+      at: at(6),
+      event: "swap-opened",
+      channel: swap,
+    }) as WithdrawalRecord;
+    expect(opened.handoff.swap).toEqual(swap);
+    const asked = reduce(opened, {
+      source: "user",
+      at: at(7),
+      event: "payment-requested",
+      attempt: 0,
+      id: "pay-1",
+    });
+    const late = reduce(asked, {
+      source: "user",
+      at: at(8),
+      event: "swap-opened",
+      channel: { ...swap, id: "cf-channel-8" },
+    }) as WithdrawalRecord;
+    expect(late.handoff.swap?.id).toBe("cf-channel-7");
+  });
+
+  it("ignores a swap for a sale with no lane", () => {
+    const known = reduce(sale(), read(at(5), disclosed()));
+    const next = reduce(known, {
+      source: "user",
+      at: at(6),
+      event: "swap-opened",
+      channel: swap,
+    }) as WithdrawalRecord;
+    expect(next.handoff.swap).toBeUndefined();
+  });
+});

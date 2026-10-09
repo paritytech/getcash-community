@@ -1,23 +1,26 @@
-// The outgoing channel: DOT on Asset Hub sold for a destination asset and paid out to the user's
-// address. The mirror of the deposit rail, which quotes backwards from a wanted DOT amount and
+// The outgoing channel: an Asset Hub asset (DOT by default, USDT for an offramp sale) sold for a
+// destination asset and paid out to the given address. The mirror of the deposit rail, which quotes backwards from a wanted DOT amount and
 // opens channels that end on Asset Hub. This quotes forwards from the DOT a withdrawal expects to
 // land and opens the channel with the withdrawal's own key as the refund address.
 //
 // Opened on the page, at confirm, while the user is there: the quote they were shown is the
 // quote the channel is opened with. The worker then only pays the channel and reads the swap.
 
-import type { Quote } from "@getsome/core";
+import type { OpenChannelArgs, Quote } from "@getsome/core";
 import { requestDepositAddress } from "./deposit";
 import { pickRegularQuote, type QuoteBackend } from "./quote";
 import type { SwapSdkLike } from "./sdk";
-import { ASSET_HUB_DOT, formatSourceAmount } from "./sources";
+import { ASSET_HUB_DOT, formatSourceAmount, type SourceConfig } from "./sources";
 
-/** What a forward quote says about selling `amount` of DOT for the destination asset. */
+/** What a forward quote says about selling `amount` of the source for the destination asset. */
 export interface OutgoingQuote {
   /** The quote as Chainflip returned it; what the channel is opened with. */
   raw: Record<string, unknown>;
   /** What lands on the destination, in the destination asset's base units. */
   egressAmount: bigint;
+  /** The destination chain's delivery fee inside that figure, same units; 0 when not itemised.
+   *  It moves with the chain's gas between the quote and the delivery. */
+  egressFee: bigint;
   /** Chainflip's own estimate of the swap, seconds; null when absent. */
   estimatedDurationSeconds: number | null;
 }
@@ -30,39 +33,61 @@ export interface OutgoingDestination {
 
 const numberOrNull = (value: unknown): number | null => (typeof value === "number" ? value : null);
 
-/** Quotes selling `amount` of DOT on Asset Hub for the destination asset. Throws when Chainflip
- *  has no quote for the pair. */
+/** The `EGRESS` line of a quote's `includedFees`, base units of the destination asset. */
+function egressFeeOf(raw: Record<string, unknown>): bigint {
+  const fees = Array.isArray(raw["includedFees"]) ? (raw["includedFees"] as unknown[]) : [];
+  const egress = fees.find(
+    (f): f is { amount: unknown } =>
+      typeof f === "object" && f !== null && (f as { type?: unknown }).type === "EGRESS",
+  );
+  try {
+    return egress === undefined ? 0n : BigInt(String(egress.amount));
+  } catch {
+    return 0n;
+  }
+}
+
+/** Quotes selling `amount` of `source` (DOT on Asset Hub unless named) for the destination asset.
+ *  Throws when Chainflip has no quote for the pair. */
 export async function quoteOutgoing(
   backend: QuoteBackend,
   amount: bigint,
   destination: OutgoingDestination,
+  source: SourceConfig = ASSET_HUB_DOT,
 ): Promise<OutgoingQuote> {
   const { quotes } = await backend.getQuoteV2({
-    srcChain: ASSET_HUB_DOT.chain,
-    srcAsset: ASSET_HUB_DOT.asset,
+    srcChain: source.chain,
+    srcAsset: source.asset,
     destChain: destination.chain,
     destAsset: destination.asset,
     amount: amount.toString(),
   });
   const raw = pickRegularQuote(quotes);
   if (raw === null) {
-    throw new Error(`Chainflip has no ${destination.asset} quote for ${amount} DOT on Asset Hub`);
+    throw new Error(
+      `Chainflip has no ${destination.asset} quote for ${amount} ${source.asset} on Asset Hub`,
+    );
   }
   return {
     raw,
     egressAmount: BigInt(String(raw["egressAmount"] ?? "0")),
+    egressFee: egressFeeOf(raw),
     estimatedDurationSeconds: numberOrNull(raw["estimatedDurationSeconds"]),
   };
 }
 
 export interface OpenWithdrawChannelArgs {
   sdk: SwapSdkLike;
-  /** The DOT the withdrawal expects to land on its key, base units: what the quote is for. The
+  /** What is sold. DOT on Asset Hub unless named. */
+  source?: SourceConfig;
+  /** The source the withdrawal expects to land on its key, base units: what the quote is for. The
    *  channel takes whatever then arrives; the quote sets the price it must fill at. */
   amount: bigint;
   destination: OutgoingDestination & { address: string };
   /** Where the swap refunds when it cannot fill at the quoted price: the key on Asset Hub, SS58. */
   refundAddress: string;
+  /** Fill-or-kill terms; the quote's recommended slippage when absent. */
+  fillOrKill?: OpenChannelArgs["fillOrKill"];
 }
 
 /** The channel a withdrawal pays: its id, the Asset Hub account, and when Chainflip closes it. */
@@ -78,21 +103,23 @@ export interface WithdrawChannel {
 /** Quotes and opens the channel in one go, so the two can never disagree. */
 export async function openWithdrawChannel(args: OpenWithdrawChannelArgs): Promise<WithdrawChannel> {
   if (args.amount <= 0n) throw new Error("nothing to quote a swap for");
-  const quoted = await quoteOutgoing(args.sdk, args.amount, args.destination);
+  const source = args.source ?? ASSET_HUB_DOT;
+  const quoted = await quoteOutgoing(args.sdk, args.amount, args.destination, source);
   const quote: Quote = {
-    sourceId: ASSET_HUB_DOT.sourceId,
+    sourceId: source.sourceId,
     source: {
       amount: args.amount,
-      formatted: formatSourceAmount(ASSET_HUB_DOT, args.amount),
-      assetSymbol: ASSET_HUB_DOT.shortName,
-      decimals: ASSET_HUB_DOT.decimals,
+      formatted: formatSourceAmount(source, args.amount),
+      assetSymbol: source.shortName,
+      decimals: source.decimals,
     },
     raw: quoted.raw,
   };
-  const channel = await requestDepositAddress(args.sdk, ASSET_HUB_DOT, {
+  const channel = await requestDepositAddress(args.sdk, source, {
     quote,
     destAddress: args.destination.address,
     refundAddress: args.refundAddress,
+    ...(args.fillOrKill ? { fillOrKill: args.fillOrKill } : {}),
   });
   return {
     id: channel.depositChannelId,
