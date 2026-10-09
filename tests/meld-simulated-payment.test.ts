@@ -20,8 +20,14 @@ async function cardOnScreen() {
 }
 
 describe("simulateMeldPayment", () => {
-  beforeEach(() => setActivePinia(createPinia()));
-  afterEach(() => vi.useRealTimers());
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.stubEnv("VITE_MELD_MODE", "iframe");
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+  });
 
   it("walks the payment from the widget to the deposit, in order", async () => {
     const store = await cardOnScreen();

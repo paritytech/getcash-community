@@ -212,6 +212,11 @@ describe("session store: Polkadot direct deposit in the mock world", () => {
 describe("session store: Meld (card / bank) in the mock world", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
+    vi.stubEnv("VITE_MELD_MODE", "iframe");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("quotes a card purchase through the offline fake Meld client, in the region's fiat", async () => {

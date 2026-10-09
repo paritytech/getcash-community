@@ -150,6 +150,7 @@ describe("requests store: foreground, clock and user actions", () => {
     await requests.flush();
     vi.useRealTimers();
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     setRequestsClock(Date.now);
   });
 
@@ -383,6 +384,7 @@ describe("requests store: foreground, clock and user actions", () => {
   });
 
   it("a provider that refuses the withdrawal keeps the request", async () => {
+    vi.stubEnv("VITE_MELD_MODE", "iframe");
     meldCancel.run = () => Promise.resolve({ outcome: "not-cancellable" });
     const session = useSessionStore();
     const requests = useRequestsStore();
@@ -404,6 +406,7 @@ describe("requests store: foreground, clock and user actions", () => {
   });
 
   it("a dead adapter does not strand the cancel", async () => {
+    vi.stubEnv("VITE_MELD_MODE", "iframe");
     meldCancel.run = () => Promise.reject(new Error("adapter down"));
     const session = useSessionStore();
     const requests = useRequestsStore();

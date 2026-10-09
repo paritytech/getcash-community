@@ -12,6 +12,8 @@
   "scripts": {
     "dev": "nuxt dev",
     "build": "nuxt generate",
+    "build:native": "VITE_MELD_MODE=native pnpm build",
+    "build:iframe": "VITE_MELD_MODE=iframe pnpm build",
     "preview": "nuxt preview",
     "postinstall": "nuxt prepare && papi",
     "typecheck": "nuxt typecheck",

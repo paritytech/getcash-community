@@ -35,6 +35,7 @@ jobs:
           faucet-seed: ${{ secrets.VITE_FAUCET_SEED }}
           meld-base-url: ${{ secrets.VITE_MELD_BASE_URL }}
           meld-product-id: ${{ secrets.VITE_MELD_PRODUCT_ID }}
+          meld-mode: ${{ vars.MELD_MODE || 'native' }}
 
   # Which network legs this run deploys: every target on push, the chosen one
   # on a targeted redeploy (paritytech/autodeployer dispatches per network).

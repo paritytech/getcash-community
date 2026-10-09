@@ -170,6 +170,10 @@ describe("re-opening a native bank transfer", () => {
 });
 
 describe("re-opening a bank transfer in an iframe build", () => {
+  beforeEach(() => {
+    vi.stubEnv("VITE_MELD_MODE", "iframe");
+  });
+
   it("recovers the provider's page and never reads the headless funding", async () => {
     const getFunding = vi.fn();
     setMeldHeadlessClientFactory(() => ({ ...createFakeMeldHeadlessClient(), getFunding }));

@@ -18,7 +18,7 @@ a static Nuxt 4 single-page app plus a background worker, both published to bull
 ### Two executables
 
 The **surface** (`app/`, `lib/`) is what the user sees. It quotes, shows a deposit address or
-opens the provider's widget, and tracks the request. The **worker** (`worker/`) runs in the
+takes a card or bank payment through Meld, and tracks the request. The **worker** (`worker/`) runs in the
 background inside the host. Once a deposit has landed, the surface hands the job to the
 worker, which converts it to CASH and sends it to the People chain in one transaction on Asset
 Hub (by teleport, or by reserve transfer where the chains do not trust the teleport), then, once
@@ -217,13 +217,29 @@ Copy `.env.example` to `.env` and fill in what you need. Nuxt reads `.env`, not 
 | `VITE_MELD_BASE_URL`   | origin of the Meld adapter; unset, the offline fake Meld client runs instead                                                |
 | `VITE_MELD_PRODUCT_ID` | product id the adapter expects in the `x-dev-product-id` header                                                             |
 | `VITE_MELD_ENV`        | provider environment of the Meld card surface: `sandbox` (default) or `production`                                          |
-| `VITE_MELD_MODE`       | Meld on-ramp flow, fixed at build: `iframe` (default, the hosted widget) or `native` (headless orders, `@meldcrypto/sdk`)   |
+| `VITE_MELD_MODE`       | Meld on-ramp flow, fixed at build: `native` (default, headless orders, `@meldcrypto/sdk`) or `iframe` (the hosted widget)   |
 
 Two tests submit real transactions to the Paseo testnet and are skipped unless enabled:
 `PROD_PROOF=1` runs `tests/prod-proof.test.ts`, `VERIFY_AMOUNTS=1` runs
 `tests/verify-amounts.test.ts`. `VERIFY_STABLE=1` runs `tests/verify-stable.test.ts`, which
 dry-runs the USDC and USDT programs from a rich account on Paseo and spends nothing, and
 `VERIFY_DOTUSD=1` runs `tests/verify-dotusd.test.ts`, the same for the dotUSD tier.
+
+### Meld payment modes
+
+A card or bank top-up runs in one of two modes, fixed at build time by `VITE_MELD_MODE`:
+
+- `native` (default) renders the flow in the app: the identity check, the provider's requirements
+  and terms, then the card form, drawn by Meld's web SDK, or the bank details to pay into. Orders
+  go through the adapter's headless endpoints.
+- `iframe` keeps the provider's hosted page, embedded in an iframe, which collects identity and
+  payment itself.
+
+Choose with `VITE_MELD_MODE` in `.env` or the environment, or build with `pnpm build:native` or
+`pnpm build:iframe`. In CI the `meld-mode` input of `.github/actions/build-site` sets it;
+`deploy.yml` and `pr-preview.yml` read the repository variable `MELD_MODE` and default to
+`native`. Any other value fails the build. The mode is a constant in the bundle, so a build
+carries only its own flow.
 
 ### Demo-only paths
 

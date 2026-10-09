@@ -1,4 +1,4 @@
-// The build flag that picks the Meld on-ramp flow: the widget unless the build names native, and a
+// The build flag that picks the Meld on-ramp flow: native unless the build names the widget, and a
 // clear refusal of anything else.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -9,9 +9,9 @@ afterEach(() => {
 });
 
 describe("parseMeldMode", () => {
-  it("is the widget when the build names no mode", () => {
-    expect(parseMeldMode(undefined)).toBe("iframe");
-    expect(parseMeldMode("")).toBe("iframe");
+  it("is native when the build names no mode", () => {
+    expect(parseMeldMode(undefined)).toBe("native");
+    expect(parseMeldMode("")).toBe("native");
   });
 
   it("takes either mode by name", () => {
@@ -30,9 +30,9 @@ describe("parseMeldMode", () => {
 describe("meldMode", () => {
   it("reads the build's VITE_MELD_MODE", () => {
     vi.stubEnv("VITE_MELD_MODE", undefined);
-    expect(meldMode()).toBe("iframe");
-    vi.stubEnv("VITE_MELD_MODE", "native");
     expect(meldMode()).toBe("native");
+    vi.stubEnv("VITE_MELD_MODE", "iframe");
+    expect(meldMode()).toBe("iframe");
     vi.stubEnv("VITE_MELD_MODE", "embedded");
     expect(() => meldMode()).toThrow("VITE_MELD_MODE");
   });
