@@ -15,6 +15,8 @@ export interface MeldQuoteRequest {
   sourceAmount: string;
   /** Meld payment-method code, e.g. 'CREDIT_DEBIT_CARD' | 'ACH' | 'SEPA'. */
   paymentMethodType: string;
+  /** Quotes for a headless order (`createMeldHeadlessClient`) rather than a widget session. */
+  integrationMode?: "headless";
 }
 
 /** Sell-quote request, the reverse of a buy: the seller names the crypto they send and Meld
@@ -213,6 +215,8 @@ interface TagValue {
   message?: string;
   /** On a 409 for an existing request: the id of that request. */
   fundingRequestId?: string;
+  /** On a 429 for a contact verification: when another code may be sent, or null at the cap. */
+  resendAvailableAt?: string | null;
 }
 
 /** Buyer-facing copy for each adapter failure tag. Unknown tags fall back to a generic line naming
@@ -248,7 +252,7 @@ function messageForTag(tag: string, value?: TagValue, what?: string): string {
 }
 
 /** An adapter refusal: the buyer-facing message plus the adapter's code and the request id. */
-class AdapterRefusal extends Error {
+export class AdapterRefusal extends Error {
   constructor(
     message: string,
     readonly status: number,
@@ -257,6 +261,8 @@ class AdapterRefusal extends Error {
     options?: { cause?: unknown },
     /** From a 429's `retry-after`, when the response lets the browser read it. */
     readonly retryAfterMs?: number,
+    /** From a verification cooldown: when another code may be sent, as the adapter states it. */
+    readonly resendAvailableAt?: string,
   ) {
     super(message, options);
     this.name = "AdapterRefusal";
@@ -274,8 +280,39 @@ function retryAfterMsOf(res: Response): number | undefined {
   return Number.isNaN(at) ? undefined : Math.max(0, at - Date.now());
 }
 
+/**
+ * Parses the adapter's JSON body. On a non-OK response, maps `{ error: { tag, value } }` to an
+ * AdapterRefusal with a buyer-facing message.
+ */
+export async function readAdapterBody(
+  res: Response,
+  what: string,
+): Promise<Record<string, unknown>> {
+  const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!res.ok) {
+    const err = data["error"] as { tag?: string; value?: TagValue } | string | undefined;
+    const tag = typeof err === "string" ? err : (err?.tag ?? String(res.status));
+    const value = typeof err === "string" ? undefined : err?.value;
+    console.warn(
+      `[meld] ${what} failed: ${res.status} ${tag}${value ? ` ${JSON.stringify(value)}` : ""}`,
+    );
+    throw new AdapterRefusal(
+      messageForTag(tag, value, what),
+      res.status,
+      typeof value === "object" && value !== null && "code" in value
+        ? String(value.code)
+        : undefined,
+      typeof value?.fundingRequestId === "string" ? value.fundingRequestId : undefined,
+      undefined,
+      res.status === 429 ? retryAfterMsOf(res) : undefined,
+      typeof value?.resendAvailableAt === "string" ? value.resendAvailableAt : undefined,
+    );
+  }
+  return data;
+}
+
 /** How long a status read may take before it fails: every poller of an id waits on the same read. */
-const STATUS_TIMEOUT_MS = 10_000;
+export const STATUS_TIMEOUT_MS = 10_000;
 
 /** How many finished attempts, concluded or cancelled, a session create walks past before
  *  giving up. */
@@ -347,6 +384,33 @@ function depositOf(raw: unknown): MeldDepositDisclosure | undefined {
   };
 }
 
+/** Maps the adapter's funding record onto MeldStatusResult. */
+export function toStatusResult(funding: Record<string, unknown>): MeldStatusResult {
+  const deposit = depositOf(funding.deposit);
+  return {
+    status: String(funding.status ?? ""),
+    ...(funding.providerStatus != null ? { providerStatus: String(funding.providerStatus) } : {}),
+    // Present only while the purchase is still payable.
+    ...(funding.serviceProviderWidgetUrl != null
+      ? { serviceProviderWidgetUrl: String(funding.serviceProviderWidgetUrl) }
+      : {}),
+    ...(funding.widgetUrl != null ? { widgetUrl: String(funding.widgetUrl) } : {}),
+    ...(typeof funding.expiresAt === "number" ? { expiresAt: funding.expiresAt } : {}),
+    // The terms the row was opened with. Reported for concluded rows too.
+    ...(funding.walletAddress != null ? { walletAddress: String(funding.walletAddress) } : {}),
+    ...(funding.fiat != null ? { fiat: String(funding.fiat) } : {}),
+    ...(funding.destinationCurrencyCode != null
+      ? { destinationCurrencyCode: String(funding.destinationCurrencyCode) }
+      : {}),
+    ...(funding.sourceAmount != null ? { sourceAmount: String(funding.sourceAmount) } : {}),
+    ...(funding.cryptoAmount != null ? { cryptoAmount: String(funding.cryptoAmount) } : {}),
+    ...(deposit === undefined ? {} : { deposit }),
+    ...(typeof funding.depositConflictAt === "number"
+      ? { depositConflictAt: funding.depositConflictAt }
+      : {}),
+  };
+}
+
 /**
  * Builds a MeldClientLike over the Meld adapter service, which holds the Meld key and adds the
  * Meld auth headers server-side. This side speaks the adapter's JSON routes: `POST /quote`,
@@ -390,40 +454,13 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
     ...(config.productId ? { "x-dev-product-id": config.productId } : {}),
   });
 
-  /**
-   * Parses the adapter's JSON body. On a non-OK response, maps `{ error: { tag, value } }` to an
-   * AdapterRefusal with a buyer-facing message.
-   */
-  async function read(res: Response, what: string): Promise<Record<string, unknown>> {
-    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-    if (!res.ok) {
-      const err = data["error"] as { tag?: string; value?: TagValue } | string | undefined;
-      const tag = typeof err === "string" ? err : (err?.tag ?? String(res.status));
-      const value = typeof err === "string" ? undefined : err?.value;
-      console.warn(
-        `[meld] ${what} failed: ${res.status} ${tag}${value ? ` ${JSON.stringify(value)}` : ""}`,
-      );
-      throw new AdapterRefusal(
-        messageForTag(tag, value, what),
-        res.status,
-        typeof value === "object" && value !== null && "code" in value
-          ? String(value.code)
-          : undefined,
-        typeof value?.fundingRequestId === "string" ? value.fundingRequestId : undefined,
-        undefined,
-        res.status === 429 ? retryAfterMsOf(res) : undefined,
-      );
-    }
-    return data;
-  }
-
   async function post(path: string, body: unknown, what: string): Promise<Record<string, unknown>> {
     const res = await doFetch(`${base}${path}`, {
       method: "POST",
       headers: { ...headers(), "content-type": "application/json" },
       body: JSON.stringify(body),
     });
-    return read(res, what);
+    return readAdapterBody(res, what);
   }
 
   /** Fetches `GET /funding/:id` and maps the adapter's funding record onto MeldStatusResult. */
@@ -432,31 +469,8 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
       headers: headers(),
       signal: AbortSignal.timeout(STATUS_TIMEOUT_MS),
     });
-    const data = await read(res, "the payment status");
-    const funding = (data.funding as Record<string, unknown> | undefined) ?? {};
-    const deposit = depositOf(funding.deposit);
-    return {
-      status: String(funding.status ?? ""),
-      ...(funding.providerStatus != null ? { providerStatus: String(funding.providerStatus) } : {}),
-      // Present only while the purchase is still payable.
-      ...(funding.serviceProviderWidgetUrl != null
-        ? { serviceProviderWidgetUrl: String(funding.serviceProviderWidgetUrl) }
-        : {}),
-      ...(funding.widgetUrl != null ? { widgetUrl: String(funding.widgetUrl) } : {}),
-      ...(typeof funding.expiresAt === "number" ? { expiresAt: funding.expiresAt } : {}),
-      // The terms the row was opened with. Reported for concluded rows too.
-      ...(funding.walletAddress != null ? { walletAddress: String(funding.walletAddress) } : {}),
-      ...(funding.fiat != null ? { fiat: String(funding.fiat) } : {}),
-      ...(funding.destinationCurrencyCode != null
-        ? { destinationCurrencyCode: String(funding.destinationCurrencyCode) }
-        : {}),
-      ...(funding.sourceAmount != null ? { sourceAmount: String(funding.sourceAmount) } : {}),
-      ...(funding.cryptoAmount != null ? { cryptoAmount: String(funding.cryptoAmount) } : {}),
-      ...(deposit === undefined ? {} : { deposit }),
-      ...(typeof funding.depositConflictAt === "number"
-        ? { depositConflictAt: funding.depositConflictAt }
-        : {}),
-    };
+    const data = await readAdapterBody(res, "the payment status");
+    return toStatusResult((data.funding as Record<string, unknown> | undefined) ?? {});
   }
 
   /**
@@ -602,6 +616,7 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
           destinationCurrencyCode: req.destinationCurrencyCode,
           sourceAmount: req.sourceAmount, // Meld's quote is source-denominated (forward)
           paymentMethodType: req.paymentMethodType,
+          ...(req.integrationMode === "headless" ? { integrationMode: "headless" } : {}),
         },
         "The quote",
       );

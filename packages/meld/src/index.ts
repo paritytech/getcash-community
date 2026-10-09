@@ -1,4 +1,5 @@
 export {
+  AdapterRefusal,
   createMeldClient,
   type MeldClientLike,
   type MeldDepositDisclosure,
@@ -39,3 +40,31 @@ export {
 export { createMeldRail, type MeldMethod, type MeldRail, type MeldRailOptions } from "./rail";
 export { createFakeMeldClient, type FakeMeldOptions } from "./fake";
 export { currentNetwork, networkForHostname } from "./network";
+export {
+  createMeldHeadlessClient,
+  type MeldCustomerSigner,
+  type MeldHeadlessClient,
+  type MeldHeadlessConfig,
+} from "./headless/client";
+export type {
+  BankInstructions,
+  CustomerAddress,
+  CustomerRegistration,
+  CustomerView,
+  HeadlessFunding,
+  HeadlessOrder,
+  HeadlessOrderRequest,
+  IntegrationMode,
+  KycState,
+  ProviderAgreement,
+  ProviderDetails,
+  ProviderKyc,
+  RequiredVerification,
+  RequirementsQuery,
+  RequirementsView,
+  VerificationChannel,
+  VerificationConfirmation,
+  VerificationRequest,
+  VerificationResult,
+  VerificationStarted,
+} from "./headless/types";

@@ -186,6 +186,17 @@ describe("createMeldClient quote mapping", () => {
     expect(quotes[0]).not.toHaveProperty("transactionFee");
     expect(quotes[0]).not.toHaveProperty("partnerFee");
   });
+
+  it("asks for headless quotes only when the request says so", async () => {
+    const { impl, calls } = stubFetch(200, { quotes: [] });
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+
+    await client.getQuote(QUOTE_REQ);
+    await client.getQuote({ ...QUOTE_REQ, integrationMode: "headless" });
+
+    expect(JSON.parse(String(calls[0]?.init?.body))).not.toHaveProperty("integrationMode");
+    expect(JSON.parse(String(calls[1]?.init?.body))).toMatchObject({ integrationMode: "headless" });
+  });
 });
 
 describe("createMeldClient status read", () => {
