@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { AccountId } from "polkadot-api";
 import type { FakeRail } from "@getsome/testing";
+import { createFakeMeldHeadlessClient, type HeadlessOrderRequest } from "@getsome/meld";
+import { setMeldHeadlessClientFactory } from "../lib/meld-headless";
 import { useRequestsStore } from "../app/stores/requests";
 import { useSessionStore } from "../app/stores/session";
 import { refundStorageKey } from "../lib/coinage";
@@ -310,6 +312,117 @@ describe("session store: Meld (card / bank) in the mock world", () => {
     const store = useSessionStore();
     await store.loadSupportedCorridors();
     expect(store.corridorByCountry).toBeNull();
+  });
+});
+
+describe("session store: native Meld card in the mock world", () => {
+  const ACCEPTED_AT = "2026-10-09T10:00:00.000Z";
+  let orders: HeadlessOrderRequest[];
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.stubEnv("VITE_MELD_MODE", "native");
+    orders = [];
+    const client = createFakeMeldHeadlessClient();
+    setMeldHeadlessClientFactory(() => ({
+      ...client,
+      createOrder: async (request) => {
+        orders.push(request);
+        return client.createOrder(request);
+      },
+    }));
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    setMeldHeadlessClientFactory(null);
+  });
+
+  async function quoteCard() {
+    const store = useSessionStore();
+    store.setMethod("card");
+    store.setAmount("100");
+    await store.fetchMeldQuote();
+    return store;
+  }
+
+  it("quotes for a headless order and names the order the quote would place", async () => {
+    const store = await quoteCard();
+    expect(store.quoteError).toBeNull();
+    expect(store.meldOrderQuery).toEqual({
+      provider: store.quoted?.provider,
+      paymentMethodType: "CREDIT_DEBIT_CARD",
+      country: "US",
+      fiat: "USD",
+      sourceAmount: store.quoted?.send,
+      destinationCurrencyCode: expect.any(String),
+    });
+    expect(store.meldPayment).toBeNull();
+  });
+
+  it("places the order for the burner on the accepted terms, and shows its card payment", async () => {
+    const store = await quoteCard();
+    const requests = useRequestsStore();
+    store.meldTermsAcceptedAt = ACCEPTED_AT;
+    await store.start();
+
+    expect(requests.phase).toBe("awaiting-deposit");
+    const burner = requests.foregroundRecord?.depositAddress;
+    expect(burner).toEqual(expect.any(String));
+    expect(orders).toHaveLength(1);
+    expect(orders[0]).toMatchObject({
+      walletAddress: burner,
+      termsAcceptedAt: ACCEPTED_AT,
+      paymentMethodType: "CREDIT_DEBIT_CARD",
+      serviceProvider: store.quoted?.provider,
+      sourceAmount: store.quoted?.send,
+    });
+    expect(store.meldPayment).toMatchObject({ kind: "card", order: { mock: true } });
+    // No hosted page for a headless order.
+    expect(store.meldPayUrl).toBeNull();
+    expect(requests.foregroundRecord).toMatchObject({
+      meldServiceProvider: store.quoted?.provider,
+      meldFundingRequestId: "mock-order-1",
+    });
+  });
+
+  it("places no order without accepted terms", async () => {
+    const store = await quoteCard();
+    await store.start().catch(() => {});
+    expect(orders).toHaveLength(0);
+    expect(store.meldPayment).toBeNull();
+  });
+
+  it("records the submitted payment as the widget's return did", async () => {
+    const store = await quoteCard();
+    const requests = useRequestsStore();
+    store.meldTermsAcceptedAt = ACCEPTED_AT;
+    await store.start();
+    await store.markMeldSubmitted();
+    expect(requests.meldSubmitted).toBe(true);
+  });
+
+  it("forgets the order and the accepted terms when the request is left", async () => {
+    const store = await quoteCard();
+    store.meldTermsAcceptedAt = ACCEPTED_AT;
+    await store.start();
+    store.reset();
+    expect(store.meldPayment).toBeNull();
+    expect(store.meldOrderQuery).toBeNull();
+    expect(store.meldTermsAcceptedAt).toBeNull();
+  });
+
+  it("keeps bank on the provider's widget", async () => {
+    const store = useSessionStore();
+    store.setMethod("bank");
+    store.setMeldCountry("DE");
+    store.setAmount("100");
+    await store.fetchMeldQuote();
+    expect(store.meldOrderQuery).toBeNull();
+    await store.start();
+    expect(orders).toHaveLength(0);
+    expect(store.meldPayUrl).toMatch(/^https:\/\//);
+    expect(store.meldPayment).toBeNull();
   });
 });
 

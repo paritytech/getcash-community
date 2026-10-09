@@ -9,6 +9,7 @@ import { localeCountry } from "../../../utils/locale";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import type { FundingRoute } from "../../../funding/selection";
 import type { ProviderTerms } from "../../../composables/useMeldRequirements";
+import type { TermsStatus } from "../../../composables/useMeldNativeCheckout";
 import DetailRows from "../../ui/DetailRows.vue";
 import PillButton from "../../ui/PillButton.vue";
 import RegionRow from "../../ui/RegionRow.vue";
@@ -21,6 +22,10 @@ const props = defineProps<{
   terms?: ProviderTerms;
   /** What Continue runs in place of starting the request. */
   continueAction?: () => Promise<void>;
+  /** When given, Continue waits for the terms it accepts to be known. */
+  termsStatus?: TermsStatus;
+  /** Reads the terms again after they failed to load. */
+  retryTerms?: () => void;
 }>();
 
 const session = useSessionStore();
@@ -127,6 +132,7 @@ const canContinue = computed(
     !session.meldMethodUnavailable &&
     !!session.quoted &&
     !starting.value &&
+    (props.termsStatus === undefined || props.termsStatus === "ready") &&
     // A refusal blocks Continue until a fresh quote clears it.
     startError.value === null,
 );
@@ -226,6 +232,10 @@ async function next() {
     </div>
 
     <p v-if="startError" class="mt-4 text-body-m text-fg-error">{{ startError }}</p>
+    <div v-else-if="termsStatus === 'failed'" class="mt-4 flex flex-col gap-3">
+      <p class="text-body-m text-fg-error">Couldn't load the provider's terms.</p>
+      <SecondaryButton class="self-start" @click="retryTerms?.()">Retry</SecondaryButton>
+    </div>
 
     <div v-if="terms" class="mt-auto">
       <MeldTermsNotice :provider="terms.provider" :agreements="terms.agreements" class="mb-3" />

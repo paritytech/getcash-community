@@ -3,6 +3,11 @@ import { nodePolyfills } from "vite-plugin-node-polyfills";
 import { DEFAULT_THEME, THEMES } from "./app/theme/theme";
 import papiConfig from "./.papi/polkadot-api.json";
 import { NETWORK } from "./packages/core/src/network";
+import { parseMeldMode } from "./lib/meld-mode";
+
+// Refuses an unknown mode before anything builds, and pins the chosen one as a constant, so an
+// iframe build tree-shakes the native flow and the provider SDK out of the bundle.
+const MELD_MODE = parseMeldMode(process.env.VITE_MELD_MODE);
 
 // The faucet seed is inlined into the bundle, so a network with real funds must never get one.
 if (!NETWORK.testnet && process.env.VITE_FAUCET_SEED?.trim()) {
@@ -79,5 +84,6 @@ export default defineNuxtConfig({
       }),
     ],
     build: { target: "es2022" },
+    define: { "import.meta.env.VITE_MELD_MODE": JSON.stringify(MELD_MODE) },
   },
 });

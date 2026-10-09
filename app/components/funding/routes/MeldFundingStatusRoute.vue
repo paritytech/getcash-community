@@ -8,7 +8,7 @@
 // can observe it, so the transfer's own screen and its "I've sent funds" is the only way forward.
 // Showing the widget for both left a re-opened transfer with no way to say it had been sent, and
 // an unconfirmed request expires on the clock while the money is still in the post.
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref } from "vue";
 import { useJourneyQuote } from "../../../composables/useJourneyQuote";
 import { useMeldHandoff } from "../../../composables/useMeldHandoff";
 import { useVisibilityReconcile } from "../../../composables/useVisibilityReconcile";
@@ -24,6 +24,12 @@ import CancelTopUpScreen from "../../screens/CancelTopUpScreen.vue";
 import MeldBankTransferScreen from "./MeldBankTransferScreen.vue";
 import MeldFeeDetailsScreen from "./MeldFeeDetailsScreen.vue";
 import MeldPaySheet from "./MeldPaySheet.vue";
+
+// Inline, not `meldMode()`: an iframe build folds it away with the card surface behind it.
+const MeldCardSheet =
+  import.meta.env.VITE_MELD_MODE === "native"
+    ? defineAsyncComponent(() => import("./MeldCardSheet.vue"))
+    : null;
 
 const props = defineProps<{ topUp: FundingTopUp }>();
 const emit = defineEmits<FundingPackageEmits>();
@@ -198,7 +204,15 @@ onUnmounted(() => {
       />
 
       <template v-else>
-        <MeldPaySheet :pay-url="session.meldPayUrl" />
+        <!-- A headless card order is never stored, so a reopened one cannot be paid again. -->
+        <component
+          :is="MeldCardSheet"
+          v-if="MeldCardSheet"
+          :order="session.meldPayment?.kind === 'card' ? session.meldPayment.order : null"
+          lapsed
+          @cancel="cancelTopUp"
+        />
+        <MeldPaySheet v-else :pay-url="session.meldPayUrl" />
         <!-- No confirmation on the card: its charge is reported by the widget itself, so a
              payment we cannot see is not a state this rail reaches. -->
         <button

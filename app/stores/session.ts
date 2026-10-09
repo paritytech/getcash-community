@@ -44,12 +44,18 @@ import type { DepositMismatch } from "../funding/deposit-mismatch";
 import {
   createFakeMeldClient,
   createMeldClient,
+  createMeldHeadlessRail,
   createMeldRail,
   pickBestQuote,
   shareStatusReads,
   type MeldClientLike,
+  type MeldHeadlessRail,
+  type MeldOrderPayment,
   type MeldQuoteRaw,
+  type RequirementsQuery,
 } from "@getsome/meld";
+import { meldHeadlessClient } from "~~/lib/meld-headless";
+import { meldMode } from "~~/lib/meld-mode";
 import { CASH_DECIMALS } from "@getsome/people";
 import { meldPaymentMethod, resolveMeldRegion } from "~~/lib/region";
 import {
@@ -379,6 +385,14 @@ export const useSessionStore = defineStore("session", () => {
   /** True while a re-opened request is still asking the adapter for its pay page. Absence of a
    *  URL means "lapsed" only once this is false; before that it means "not asked yet". */
   const meldPayUrlPending = ref(false);
+  /** Native mode: when the buyer accepted the quoted provider's terms, ISO 8601. The order placed
+   *  by `start()` carries it. */
+  const meldTermsAcceptedAt = ref<string | null>(null);
+  /** Native mode: the order the quote on screen would place, as its requirements are asked for.
+   *  One object per quote. */
+  const meldOrderQuery = shallowRef<RequirementsQuery | null>(null);
+  /** Native mode: the headless rail of the quote on screen, which holds its order's payment. */
+  const meldHeadlessRail = shallowRef<MeldHeadlessRail | null>(null);
   /** Latched once the settled payment has been credited to the coinage leg. */
   let meldCredited = false;
   /** The swap network's price for the selected source; `pending` while asking. */
@@ -547,6 +561,9 @@ export const useSessionStore = defineStore("session", () => {
     meldFundingRequestId = null;
     meldServiceProvider = null;
     meldStatusClient = null;
+    meldHeadlessRail.value = null;
+    meldOrderQuery.value = null;
+    meldTermsAcceptedAt.value = null;
     cancelNotice.value = null;
     sub?.unsubscribe();
     sub = null;
@@ -746,6 +763,8 @@ export const useSessionStore = defineStore("session", () => {
   async function buildMeldRail(route: ConversionRoute): Promise<
     | {
         rail: ChainflipRail;
+        /** The same rail when it places headless orders; null for the widget. */
+        headlessRail: MeldHeadlessRail | null;
         sourceId: SourceId;
         client: MeldClientLike;
         region: { country: string; fiat: string };
@@ -785,8 +804,14 @@ export const useSessionStore = defineStore("session", () => {
           ...(redirectUrl ? { redirectUrl } : {}),
         })
       : createFakeMeldClient();
+    // Native card orders are headless; bank still opens the provider's widget.
+    const headless = meldMode() === "native" && uiMethod === "card" ? meldHeadlessClient() : null;
     // Core's status poll (the rail) and the store's poll read the same id; they share each read.
-    const statusReads = shareStatusReads(baseClient);
+    const statusReads = shareStatusReads(
+      headless === null
+        ? baseClient
+        : { ...baseClient, getStatus: (id) => headless.getFunding(id) },
+    );
     // Capture the funding-request id on create so the pay sheet can poll this payment's status.
     const meldClient: MeldClientLike = {
       getQuote: (r) => baseClient.getQuote(r),
@@ -800,15 +825,79 @@ export const useSessionStore = defineStore("session", () => {
       cancel: (id) => baseClient.cancel(id),
     };
     meldStatusClient = meldClient;
-    const rail = createMeldRail({
-      client: meldClient,
+    const railOptions = {
       country: region.country,
       fiat: region.fiat,
       method: meldMethod,
       paymentMethodType,
       token: meldTokenOf(depositTokenOf(route)),
+    } as const;
+    if (headless === null) {
+      const rail = createMeldRail({ client: meldClient, ...railOptions });
+      return {
+        rail,
+        headlessRail: null,
+        sourceId,
+        client: meldClient,
+        region,
+        paymentMethodType,
+        corridor,
+      };
+    }
+    const rail = createMeldHeadlessRail({
+      ...railOptions,
+      quoteClient: meldClient,
+      client: {
+        createOrder: async (r) => {
+          const order = await headless.createOrder(r);
+          meldFundingRequestId = order.fundingRequestId;
+          meldServiceProvider = r.serviceProvider || null;
+          return order;
+        },
+        getFunding: async (id) => ({
+          ...(await statusReads.getStatus(id)),
+          integrationMode: "headless",
+        }),
+      },
+      termsAcceptedAt: () => {
+        // An order is placed only on terms the buyer accepted; never on a time made up here.
+        const at = meldTermsAcceptedAt.value;
+        if (at === null) throw new Error("Accept the provider's terms to continue.");
+        return at;
+      },
     });
-    return { rail, sourceId, client: meldClient, region, paymentMethodType, corridor };
+    return {
+      rail,
+      headlessRail: rail,
+      sourceId,
+      client: meldClient,
+      region,
+      paymentMethodType,
+      corridor,
+    };
+  }
+
+  /** The order a headless quote would place, as its provider's requirements are asked for. */
+  function meldOrderQueryOf(raw: MeldQuoteRaw): RequirementsQuery {
+    return {
+      provider: raw.provider.serviceProvider,
+      paymentMethodType: raw.context.method,
+      country: raw.context.country,
+      fiat: raw.context.fiat,
+      sourceAmount: raw.provider.sourceAmount,
+      destinationCurrencyCode: raw.context.token.meldCurrencyCode,
+    };
+  }
+
+  /** Shows a Meld quote, and for a headless rail the order it would place. */
+  function adoptMeldQuote(
+    raw: MeldQuoteRaw,
+    sizing: FundingSizing,
+    headlessRail: MeldHeadlessRail | null,
+  ): void {
+    quoted.value = meldQuotedView(raw, sizing);
+    meldHeadlessRail.value = headlessRail;
+    meldOrderQuery.value = headlessRail === null ? null : meldOrderQueryOf(raw);
   }
 
   /**
@@ -947,7 +1036,7 @@ export const useSessionStore = defineStore("session", () => {
           return;
         }
         mock.value = world;
-        quoted.value = meldQuotedView(quote.raw as MeldQuoteRaw, world.fundingSizing);
+        adoptMeldQuote(quote.raw as MeldQuoteRaw, world.fundingSizing, built.headlessRail);
         return;
       }
       // Hosted world: the same rail over the real host seams. The provider delivers the route's
@@ -977,7 +1066,7 @@ export const useSessionStore = defineStore("session", () => {
         return;
       }
       live.value = world;
-      quoted.value = meldQuotedView(quote.raw as MeldQuoteRaw, world.fundingSizing);
+      adoptMeldQuote(quote.raw as MeldQuoteRaw, world.fundingSizing, built.headlessRail);
     } catch (e: unknown) {
       if (epoch !== quoteEpoch) return; // a newer quote owns the state now
       // The host logger renders an Error as `{}`; log the message, as the transient
@@ -2110,6 +2199,17 @@ export const useSessionStore = defineStore("session", () => {
     return fromRail ?? meldResumeWidgetUrl.value;
   });
 
+  /** Native mode: how the buyer pays the order on screen, while its deposit is awaited. */
+  const meldPayment = computed<MeldOrderPayment | null>(() => {
+    const state = lastState.value;
+    const rail = meldHeadlessRail.value;
+    // The order id is captured as the order is placed, before the deposit state is published.
+    if (state?.phase !== "awaiting-deposit" || rail === null || meldFundingRequestId === null) {
+      return null;
+    }
+    return rail.payment(meldFundingRequestId) ?? null;
+  });
+
   /** Starts the store's poll of the Meld payment's status for the request on screen. Idempotent;
    *  a no-op until the request has a ref, a client and a funding-request id. */
   function pollMeldStatus(): void {
@@ -2276,6 +2376,9 @@ export const useSessionStore = defineStore("session", () => {
     meldResumeWidgetUrl,
     meldPayUrlPending,
     meldPayUrl,
+    meldPayment,
+    meldTermsAcceptedAt,
+    meldOrderQuery,
     sourcePrice,
     loading,
     resuming,

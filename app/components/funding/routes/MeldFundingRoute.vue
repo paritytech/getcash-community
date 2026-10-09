@@ -1,12 +1,14 @@
 <script setup lang="ts">
 // Meld route for card and bank. Card picks the region, sees the quote, then pays inside the
-// provider's widget. Bank prices the transfer first and opens its request on Continue, then shows
+// provider's widget, or in a native build on the provider's card surface once the identity and
+// requirements steps are done. Bank prices the transfer first and opens its request on Continue, then shows
 // the provider's details for the buyer to pay from their own banking app. Both hand off to the
 // journey once the payment is approved, asserted, or fails.
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from "vue";
 import { bankRailCountries } from "~~/lib/region";
 import { corridorOptions, countryName, type CountryOption } from "~~/lib/supported";
 import { useMeldHandoff } from "../../../composables/useMeldHandoff";
+import { useMeldNativeCheckout } from "../../../composables/useMeldNativeCheckout";
 import { useStateDirector } from "../../../composables/useStateDirector";
 import { useVisibilityReconcile } from "../../../composables/useVisibilityReconcile";
 import { fundingSelectorConfig } from "../../../funding/config";
@@ -22,8 +24,10 @@ import { useJourneyQuote } from "../../../composables/useJourneyQuote";
 import CurrencySelectScreen from "./CurrencySelectScreen.vue";
 import MeldBankTransferScreen from "./MeldBankTransferScreen.vue";
 import MeldFeeDetailsScreen from "./MeldFeeDetailsScreen.vue";
+import MeldIdentityStep from "./MeldIdentityStep.vue";
 import MeldPayScreen from "./MeldPayScreen.vue";
 import MeldPaySheet from "./MeldPaySheet.vue";
+import MeldRequirementsScreen from "./MeldRequirementsScreen.vue";
 
 const props = defineProps<{ selection: FundingSelection }>();
 const emit = defineEmits<FundingPackageEmits>();
@@ -36,6 +40,12 @@ if (route !== "card" && route !== "bank") {
   throw new Error(`Meld cannot handle the ${route} route`);
 }
 const isBank = route === "bank";
+// Inline, not `meldMode()`: the build folds it to a constant, so an iframe build carries no card
+// surface and none of the provider SDK behind it.
+const MeldCardSheet =
+  import.meta.env.VITE_MELD_MODE === "native"
+    ? defineAsyncComponent(() => import("./MeldCardSheet.vue"))
+    : null;
 
 const session = useSessionStore();
 const requests = useRequestsStore();
@@ -43,6 +53,27 @@ const flow = useFlowStore();
 useVisibilityReconcile();
 useStateDirector();
 const { handedOff } = useMeldHandoff(emit);
+
+/** Native card only: the identity and requirements steps Continue runs before the order. */
+const checkout =
+  import.meta.env.VITE_MELD_MODE === "native" && !isBank
+    ? useMeldNativeCheckout({
+        query: () => session.meldOrderQuery,
+        start: async (acceptedAt) => {
+          session.meldTermsAcceptedAt = acceptedAt;
+          await session.start();
+        },
+      })
+    : null;
+const checkoutStep = computed(() => checkout?.step.value ?? "pay");
+const checkoutQuery = computed(() => checkout?.query.value ?? null);
+const providerTerms = computed(() => checkout?.terms.value);
+const identityStep = ref<InstanceType<typeof MeldIdentityStep> | null>(null);
+const requirementsStep = ref<InstanceType<typeof MeldRequirementsScreen> | null>(null);
+/** The hosted identity check takes the whole width, as the card surface does. */
+const identityFullBleed = computed(
+  () => checkoutStep.value === "identity" && identityStep.value?.fullBleed === true,
+);
 
 // "Add funds via card" / "Add funds via bank": the toolbar names the whole action, since the
 // screen below it no longer spells out the provider or the method.
@@ -81,7 +112,13 @@ if (isDemoBuild()) {
 }
 
 function goBack() {
-  if (showingCurrency.value) showingCurrency.value = false;
+  if (checkout !== null && checkoutStep.value !== "pay") {
+    const handled =
+      checkoutStep.value === "identity"
+        ? identityStep.value?.back()
+        : requirementsStep.value?.back();
+    if (!handled) checkout.leave();
+  } else if (showingCurrency.value) showingCurrency.value = false;
   else if (showingFees.value) showingFees.value = false;
   // Back off the details is back to the summary; the request it opened stays, and Continue
   // returns to it rather than opening a second one.
@@ -232,10 +269,16 @@ onUnmounted(() => {
       padding-bottom: env(safe-area-inset-bottom);
     "
   >
-    <!-- No title while the card widget is up; the back control stays. -->
+    <!-- No title while the card widget or the identity check is up; the back control stays. -->
     <Toolbar
       :title="
-        paying ? '' : showingCurrency ? 'Choose payment country' : showingFees ? 'Fees' : title
+        paying || identityFullBleed
+          ? ''
+          : showingCurrency
+            ? 'Choose payment country'
+            : showingFees
+              ? 'Fees'
+              : title
       "
       :back="!requests.claiming && !session.resuming && !session.cancelling"
       @back="goBack"
@@ -265,8 +308,11 @@ onUnmounted(() => {
       </template>
     </Toolbar>
 
-    <!-- The screen padding is dropped while the card widget is up. -->
-    <div class="flex min-h-0 flex-1 flex-col" :class="paying ? '' : 'px-6 pt-6'">
+    <!-- The screen padding is dropped while the card widget or the identity check is up. -->
+    <div
+      class="flex min-h-0 flex-1 flex-col"
+      :class="paying || identityFullBleed ? '' : 'px-6 pt-6'"
+    >
       <div v-if="session.resuming" class="flex flex-col items-center gap-4 pt-16">
         <span
           class="inline-block size-8 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary"
@@ -303,7 +349,13 @@ onUnmounted(() => {
         />
       </template>
       <template v-else-if="paying">
-        <MeldPaySheet :pay-url="session.meldPayUrl" />
+        <component
+          :is="MeldCardSheet"
+          v-if="MeldCardSheet"
+          :order="session.meldPayment?.kind === 'card' ? session.meldPayment.order : null"
+          @cancel="cancelTopUp"
+        />
+        <MeldPaySheet v-else :pay-url="session.meldPayUrl" />
         <button
           v-if="canCancel"
           type="button"
@@ -337,12 +389,35 @@ onUnmounted(() => {
         placeholder="Search for a country"
         @pick="pickCurrency"
       />
-      <MeldPayScreen
-        v-else
-        @fees="showingFees = true"
-        @currency="showingCurrency = true"
-        @switch-route="emit('switchRoute', $event)"
-      />
+      <template v-else>
+        <MeldIdentityStep
+          v-if="checkoutStep === 'identity'"
+          ref="identityStep"
+          :country="selectedCountry"
+          @ready="checkout?.ready()"
+          @back="checkout?.leave()"
+        />
+        <MeldRequirementsScreen
+          v-else-if="checkoutStep === 'requirements' && checkoutQuery"
+          ref="requirementsStep"
+          :query="checkoutQuery"
+          @ready="checkout?.ready()"
+          @back="checkout?.leave()"
+        />
+        <!-- Kept mounted under the steps: Continue is still running, and its outcome lands here.
+             A step left unfinished shows it afresh. -->
+        <MeldPayScreen
+          v-show="checkoutStep === 'pay'"
+          :key="checkout?.left.value ?? 0"
+          :terms="providerTerms"
+          :continue-action="checkout?.continueAction"
+          :terms-status="checkout?.termsStatus.value"
+          :retry-terms="checkout?.retryTerms"
+          @fees="showingFees = true"
+          @currency="showingCurrency = true"
+          @switch-route="emit('switchRoute', $event)"
+        />
+      </template>
     </div>
 
     <!-- state-director scene label (dev/demo keys only) -->
