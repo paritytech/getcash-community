@@ -644,6 +644,9 @@ export const useSessionStore = defineStore("session", () => {
     // No account lookup: the burner comes from the host's entropy root and the claim credits
     // whoever the host authenticated.
     const { createHostedCoinageWorld } = await import("~~/lib/coinage-live");
+    // This world's own request, not `foregroundRef`: a claim can land after the foreground has
+    // moved on to the next request, and it must never be recorded against that one (#62).
+    let claimRef: RequestRef | null = null;
     // Outer bound sized above the sum of the setup's inner stage bounds.
     const world = await step(
       "create session + size budget",
@@ -658,8 +661,8 @@ export const useSessionStore = defineStore("session", () => {
         ...(rail ? { rail } : {}),
         ...(sourceId ? { sourceId } : {}),
         onClaimProgress: (stage, claimed) => {
-          if (foregroundRef === null) return;
-          void requests.observe(foregroundRef, {
+          if (claimRef === null) return;
+          void requests.observe(claimRef, {
             source: "core",
             at: Date.now(),
             claim: { stage, ...(claimed === undefined ? {} : { claimed: claimed.toString() }) },
@@ -667,6 +670,7 @@ export const useSessionStore = defineStore("session", () => {
         },
       }),
     );
+    claimRef = requestRefOf(world.sourceId, world.tradeN);
     if (epoch !== quoteEpoch) {
       world.dispose();
       return null;
