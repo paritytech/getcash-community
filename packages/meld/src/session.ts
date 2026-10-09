@@ -6,7 +6,7 @@ import type { MeldClientLike } from "./client";
 import type { MeldQuoteRaw } from "./quote";
 
 /** Fallback resume window for a Meld purchase when Meld published no expiry. */
-const RESUME_WINDOW_MS = 24 * 60 * 60 * 1000;
+export const RESUME_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /** A Meld deposit channel plus the hosted pay URL. */
 export interface MeldDepositChannel {

@@ -60,6 +60,8 @@ export interface MeldQuoteEntry {
   readonly partnerFee?: string;
   /** Meld's provider ranking; higher is better. Used only to break ties. */
   readonly customerScore?: number;
+  /** The chain Meld selected for this line. A headless order must carry it as quoted. */
+  readonly destinationNetworkCode?: string;
 }
 
 export interface MeldSessionRequest {
@@ -360,6 +362,9 @@ function toQuoteEntries(raw: Record<string, unknown>[]): MeldQuoteEntry[] {
         const cs = Number(text);
         return text != null && text !== "" && Number.isFinite(cs) ? { customerScore: cs } : {};
       })(),
+      ...(typeof q.destinationNetworkCode === "string" && q.destinationNetworkCode.trim() !== ""
+        ? { destinationNetworkCode: q.destinationNetworkCode }
+        : {}),
     }));
 }
 

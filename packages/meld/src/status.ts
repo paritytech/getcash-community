@@ -97,7 +97,7 @@ function providerEnding(
 
 /** Fetch and normalize a funding request's status. Early states stay 'waiting'. */
 export async function getMeldStatus(
-  client: MeldClientLike,
+  client: Pick<MeldClientLike, "getStatus">,
   fundingRequestId: string,
 ): Promise<MeldStatusView> {
   const { status, providerStatus, sourceAmount, fiat } = await client.getStatus(fundingRequestId);

@@ -67,28 +67,32 @@ const METHOD_SOURCE_ID: Record<MeldMethod, SourceId> = {
   BANK_TRANSFER: "meld-bank",
 };
 
-export function createMeldRail(opts: MeldRailOptions): MeldRail {
+/** The quote context and the source a Meld rail is fixed to, with the options' defaults applied. */
+export function meldRailRoute(opts: Omit<MeldRailOptions, "client">): {
+  context: MeldQuoteContext;
+  descriptor: SourceDescriptor;
+} {
   const fiat = opts.fiat ?? "USD";
   const method: MeldMethod = opts.method ?? "CARD";
   const token: MeldToken = opts.token ?? TOKENS.PAS;
   const paymentMethodType = opts.paymentMethodType ?? DEFAULT_PAYMENT_METHOD[method];
-  const context: MeldQuoteContext = {
-    country: opts.country,
-    fiat,
-    token,
-    method: paymentMethodType,
+  return {
+    context: { country: opts.country, fiat, token, method: paymentMethodType },
+    descriptor: Object.freeze({
+      sourceId: METHOD_SOURCE_ID[method],
+      chain: "AssetHub",
+      asset: token.chainflipAsset,
+      displayName: `${METHOD_LABEL[method]} · Meld`,
+      decimals: token.decimals,
+    }),
   };
+}
+
+export function createMeldRail(opts: MeldRailOptions): MeldRail {
+  const { context, descriptor } = meldRailRoute(opts);
 
   // Session pay URLs, keyed by depositChannelId, filled at requestDepositAddress time.
   const payUrls = new Map<string, string>();
-
-  const descriptor: SourceDescriptor = Object.freeze({
-    sourceId: METHOD_SOURCE_ID[method],
-    chain: "AssetHub",
-    asset: token.chainflipAsset,
-    displayName: `${METHOD_LABEL[method]} · Meld`,
-    decimals: token.decimals,
-  });
 
   return {
     getQuote(req: ReverseQuoteInput): Promise<Quote> {

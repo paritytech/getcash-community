@@ -5,6 +5,9 @@ import type { Quote, ReverseQuoteInput } from "@getsome/core";
 import type { MeldClientLike, MeldQuoteEntry } from "./client";
 import { formatBaseUnits, toBaseUnits, type MeldToken } from "./units";
 
+/** The quoting half of the Meld client: all `computeMeldQuote` needs. */
+export type MeldQuoter = Pick<MeldClientLike, "getQuote">;
+
 /** The buyer and route context a Meld quote needs beyond the target. Fixed per rail instance. */
 export interface MeldQuoteContext {
   readonly country: string;
@@ -12,6 +15,8 @@ export interface MeldQuoteContext {
   /** The token Meld delivers; its `meldCurrencyCode` is the wire destination. */
   readonly token: MeldToken;
   readonly method: string;
+  /** Quotes for a headless order. Absent for the widget. */
+  readonly integrationMode?: "headless";
 }
 
 /** Carried on Quote.raw to the deposit step and the app: the chosen provider line plus the
@@ -45,7 +50,7 @@ const SOLVE_BUFFER = 1.01;
 
 /** One forward quote at `sourceAmount` fiat, reduced to the best line. */
 async function forwardBest(
-  client: MeldClientLike,
+  client: MeldQuoter,
   ctx: MeldQuoteContext,
   sourceAmount: string,
 ): Promise<MeldQuoteEntry> {
@@ -55,13 +60,19 @@ async function forwardBest(
     destinationCurrencyCode: ctx.token.meldCurrencyCode,
     sourceAmount,
     paymentMethodType: ctx.method,
+    ...(ctx.integrationMode === undefined ? {} : { integrationMode: ctx.integrationMode }),
   });
-  if (!quotes || quotes.length === 0) {
+  // A headless line without its chain cannot be ordered.
+  const usable =
+    ctx.integrationMode === "headless"
+      ? quotes?.filter((q) => q.destinationNetworkCode !== undefined)
+      : quotes;
+  if (!usable || usable.length === 0) {
     throw new Error(
       `No Meld provider offers ${ctx.method} for ${ctx.token.meldCurrencyCode} in ${ctx.country}`,
     );
   }
-  const best = pickBestQuote(quotes);
+  const best = pickBestQuote(usable);
   if (!best) throw new Error("Meld returned no usable quote line");
   return best;
 }
@@ -71,7 +82,7 @@ async function forwardBest(
  * is that delivery and whose `raw` carries the chosen fiat line.
  */
 export async function computeMeldQuote(
-  client: MeldClientLike,
+  client: MeldQuoter,
   ctx: MeldQuoteContext,
   req: ReverseQuoteInput,
 ): Promise<Quote> {

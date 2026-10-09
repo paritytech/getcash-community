@@ -35,6 +35,9 @@ export interface FakeMeldOptions {
 /** The prefix of every sale id this fake hands out. */
 const SALE_ID_PREFIX = "mock-sell-";
 
+/** The chain a headless quote names. A stand-in: Meld's code for Asset Hub is not yet known. */
+const HEADLESS_NETWORK_CODE = "MOCK_ASSETHUB";
+
 /** The flat partner fee real card quotes carry, in fiat units. */
 const PARTNER_FEE = 0.5;
 
@@ -111,6 +114,9 @@ export function createFakeMeldClient(
           transactionFee: Math.max(fee - PARTNER_FEE, 0).toFixed(2),
           partnerFee: PARTNER_FEE.toFixed(2),
           customerScore: 100 - i,
+          ...(req.integrationMode === "headless"
+            ? { destinationNetworkCode: HEADLESS_NETWORK_CODE }
+            : {}),
         };
       });
       return { quotes };

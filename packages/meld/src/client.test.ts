@@ -197,6 +197,24 @@ describe("createMeldClient quote mapping", () => {
     expect(JSON.parse(String(calls[0]?.init?.body))).not.toHaveProperty("integrationMode");
     expect(JSON.parse(String(calls[1]?.init?.body))).toMatchObject({ integrationMode: "headless" });
   });
+
+  it("keeps the chain a line names, and drops a blank one", async () => {
+    const line = { serviceProvider: "BANXA", sourceAmount: "50", destinationAmount: "60" };
+    const { impl } = stubFetch(200, {
+      quotes: [
+        line,
+        { ...line, destinationNetworkCode: "POLKADOT_ASSETHUB" },
+        { ...line, destinationNetworkCode: " " },
+      ],
+    });
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+    const { quotes } = await client.getQuote({ ...QUOTE_REQ, integrationMode: "headless" });
+    expect(quotes.map((q) => q.destinationNetworkCode)).toEqual([
+      undefined,
+      "POLKADOT_ASSETHUB",
+      undefined,
+    ]);
+  });
 });
 
 describe("createMeldClient status read", () => {

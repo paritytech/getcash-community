@@ -27,7 +27,13 @@ export {
   sellAmountOf,
   sellQuoteUsable,
 } from "./sell";
-export { computeMeldQuote, pickBestQuote, type MeldQuoteContext, type MeldQuoteRaw } from "./quote";
+export {
+  computeMeldQuote,
+  pickBestQuote,
+  type MeldQuoteContext,
+  type MeldQuoter,
+  type MeldQuoteRaw,
+} from "./quote";
 export { requestMeldDeposit, type MeldDepositChannel } from "./session";
 export { getMeldStatus } from "./status";
 export {
@@ -46,6 +52,13 @@ export {
   type MeldHeadlessClient,
   type MeldHeadlessConfig,
 } from "./headless/client";
+export {
+  createMeldHeadlessRail,
+  type MeldHeadlessRail,
+  type MeldHeadlessRailOptions,
+  type MeldOrderPayment,
+} from "./headless/rail";
+export { createFakeMeldHeadlessClient, type FakeMeldHeadlessOptions } from "./headless/fake";
 export type {
   BankInstructions,
   CustomerAddress,
