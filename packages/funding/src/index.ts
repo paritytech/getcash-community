@@ -7,6 +7,7 @@ export {
   DIRECT_SLIPPAGE_PCT,
   FundingHeldError,
   FundingShortfallError,
+  MAX_PROGRAM_REJECTIONS,
   MAX_PSM_REFUSALS,
   discoverPool,
   discoverPools,

@@ -341,21 +341,30 @@ describe("worker funding engine", () => {
     await engine.startFunding(
       JSON.stringify({ ...HANDOFF, tier: "psm", external: "USDT", feeRate: 5_000 }),
     );
-    // Two refusals so far: the tick throws as any transient, and the counter it bumped persists.
+    // Two refusals and one paid rejection so far: the tick throws as any transient, and the
+    // counters it bumped persist.
     mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
       state.psmRefusals = 2;
+      state.rejections = 1;
+      state.lastRejection = "InitiateTransfer failed with NotHoldingFees";
       throw new Error("not submitted: Asset Hub rejects the program: Psm.MintingStopped");
     });
     await engine.tickAllFunding();
     expect(storedJob()).toMatchObject({
       phase: "starting",
-      state: { psmRefusals: 2 },
+      state: {
+        psmRefusals: 2,
+        rejections: 1,
+        lastRejection: "InitiateTransfer failed with NotHoldingFees",
+      },
       lastError: expect.stringContaining("Psm.MintingStopped"),
     });
-    // The next wake restores the counter, and the third refusal is terminal: held, not failed
+    // The next wake restores the counters, and the third refusal is terminal: held, not failed
     // through the pool.
     mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
       expect(state.psmRefusals).toBe(2);
+      expect(state.rejections).toBe(1);
+      expect(state.lastRejection).toBe("InitiateTransfer failed with NotHoldingFees");
       state.psmRefusals = 3;
       throw new FundingHeldError("Psm.MintingStopped");
     });
@@ -369,11 +378,14 @@ describe("worker funding engine", () => {
     // A held job is not ticked again on its own.
     await engine.tickAllFunding();
     expect(mocks.tickOnce).toHaveBeenCalledTimes(2);
-    // A re-sent hand-off re-arms it with a fresh counter, for a ceiling raised since.
+    // A re-sent hand-off re-arms it with fresh counters, for a ceiling raised since.
     await engine.startFunding(
       JSON.stringify({ ...HANDOFF, tier: "psm", external: "USDT", feeRate: 5_000 }),
     );
-    expect(storedJob()).toMatchObject({ phase: "starting", state: { psmRefusals: 0 } });
+    expect(storedJob()).toMatchObject({
+      phase: "starting",
+      state: { psmRefusals: 0, rejections: 0, lastRejection: null },
+    });
     expect(storedJob().failure).toBeUndefined();
   });
 
@@ -692,6 +704,8 @@ describe("worker funding engine", () => {
       state.attempts = 1;
       state.xcmSubmitted = true;
       state.fundsSeenAt = Date.now();
+      state.rejections = 2;
+      state.lastRejection = "ExchangeAsset #1 failed with NoDeal";
       return { ...outcome("await-arrival"), submitted: true };
     });
     await started.tickAllFunding();
@@ -703,6 +717,7 @@ describe("worker funding engine", () => {
     expect(storedJob()).toMatchObject({ phase: "failed", failure: "timeout" });
     expect((await engine.tickAllFunding()).ticked).toBe(0);
 
+    // The latches and the attempts survive; the rejection count starts over.
     const rearmed = await engine.startFunding(JSON.stringify(HANDOFF));
     expect(rearmed).toMatchObject({ phase: "starting", done: false });
     expect(storedJob().lastError).toBeUndefined();
@@ -711,10 +726,13 @@ describe("worker funding engine", () => {
       attempts: 1,
       xcmSubmitted: true,
       fundsSeenAt: null,
+      rejections: 0,
+      lastRejection: null,
     });
 
     mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
       expect(state.xcmSubmitted).toBe(true);
+      expect(state.rejections).toBe(0);
       return outcome("await-arrival");
     });
     expect((await engine.tickAllFunding()).ticked).toBe(1);

@@ -120,8 +120,18 @@ describe("buildStableFundingProgram", () => {
     expect(transfer.remote_fees.value.value[0]!.fun.value).toBe(PROGRAM.remoteFeesCash);
     expect(transfer.remote_fees.value.value[0]!.id).toEqual(TOKENS.CASH.location);
     expect(transfer.preserve_origin).toBe(false);
+    // The transfer names the CASH, so a stable swept into the holding stays behind.
     expect(transfer.assets).toEqual([
-      { type: "Teleport", value: { type: "Wild", value: { type: "AllCounted", value: 1 } } },
+      {
+        type: "Teleport",
+        value: {
+          type: "Wild",
+          value: {
+            type: "AllOf",
+            value: { id: TOKENS.CASH.location, fun: { type: "Fungible", value: undefined } },
+          },
+        },
+      },
     ]);
     expect(transfer.remote_xcm.map((i) => i.type)).toEqual(["RefundSurplus", "DepositAsset"]);
     const refund = instruction(args, "DepositAsset") as {
@@ -259,6 +269,7 @@ describe("estimateStableProgramFees", () => {
     beneficiaryHex: BENEFICIARY_HEX,
     peopleParaId: PEOPLE_PARA,
     depositStable: 5_400_000n,
+    minNativeOut: 41_000_000_000n,
     minUnderlyingOut: 5_100_000n,
     remoteFeesCash: 300_000n,
     transfer: "teleport" as const,
@@ -306,8 +317,10 @@ describe("estimateStableProgramFees", () => {
     expect(seen.feeFrom).toBe("5Probe");
     expect(seen.feeOptions).toEqual({ asset: TOKENS.USDC.location });
     expect(seen.quote).toEqual([TOKENS.USDC.location, TOKENS.PAS.location, 1_234n, true]);
-    // The dispatch probe carries the measured fees, the real CASH floor and the weighed weight.
+    // The dispatch probe carries the measured fees, both floors at their real magnitude and the
+    // weighed weight. The fee grows with the call's length.
     const dispatchProbe = seen.executed.at(-1)!;
+    expect(exchanges(dispatchProbe)[0]!.want[0]!.fun.value).toBe(input.minNativeOut);
     expect(exchanges(dispatchProbe)[1]!.want[0]!.fun.value).toBe(input.minUnderlyingOut);
     expect((instruction(dispatchProbe, "PayFees") as { asset: Fungible }).asset.fun.value).toBe(
       2_256n + 28_857n,
