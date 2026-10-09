@@ -90,14 +90,14 @@ describe("requestDepositAddress", () => {
     );
   });
 
-  it("wraps backend failures in a stable message", async () => {
+  it("wraps backend failures in a stable message that keeps the reason", async () => {
     const backend: DepositBackend = {
       requestDepositAddressV2: async () => {
-        throw new Error("boom");
+        throw new Error("HTTP error: 401");
       },
     };
     await expect(requestDepositAddress(backend, btc, args(makeQuote({})))).rejects.toThrow(
-      /Failed to open swap deposit channel/,
+      "Failed to open swap deposit channel: HTTP error: 401",
     );
   });
 });

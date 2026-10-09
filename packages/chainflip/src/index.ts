@@ -44,7 +44,11 @@ export {
   type SourceOffer,
 } from "./floors";
 export {
+  BAAS_BROKER_HOST,
+  BAAS_COMMISSION_BPS,
+  baasBrokerUrl,
   createSwapSdk,
+  type CreateSwapSdkOptions,
   BelowMinimumSwapAmountError,
   ChainflipRequestError,
   normalizeQuoteRequestError,
