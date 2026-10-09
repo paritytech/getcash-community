@@ -9,7 +9,7 @@ import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
 import type { DepositAsset } from "@getsome/funding";
 import type { WithdrawalRailState } from "../funding/requests/model";
 import { networkIcon, tokenIcon } from "../utils/icons";
-import { SOURCE_CHAINS, sourceIdFor } from "~~/lib/config";
+import { POLKADOT_CHAIN, SOURCE_CHAINS, sourceIdFor } from "~~/lib/config";
 
 export interface WithdrawDestination {
   /** The destination's id, the tail of the withdrawal's source id: `usdc-assethub`, `btc`. */
@@ -32,8 +32,6 @@ export interface WithdrawNetwork {
   icon: string;
   destinations: readonly WithdrawDestination[];
 }
-
-const ASSET_HUB_CHAIN = "AssetHub";
 
 const accountId = AccountId();
 
@@ -59,8 +57,8 @@ const assetHubDestination = (
 ): WithdrawDestination =>
   Object.freeze({
     id,
-    chain: ASSET_HUB_CHAIN,
-    chainLabel: "Asset Hub",
+    chain: POLKADOT_CHAIN.chain,
+    chainLabel: POLKADOT_CHAIN.label,
     asset,
     rail: "direct",
     landing,
@@ -100,9 +98,9 @@ function chainflipDestinations(chain: string, assets: readonly string[]): Withdr
 /** The networks in picker order: Asset Hub first, then the Chainflip networks. */
 export const WITHDRAW_NETWORKS: readonly WithdrawNetwork[] = Object.freeze([
   Object.freeze({
-    chain: ASSET_HUB_CHAIN,
-    label: "Asset Hub",
-    icon: networkIcon("Polkadot"),
+    chain: POLKADOT_CHAIN.chain,
+    label: POLKADOT_CHAIN.label,
+    icon: networkIcon(POLKADOT_CHAIN.chain),
     destinations: ASSET_HUB_DESTINATIONS,
   }),
   ...SOURCE_CHAINS.map(({ chain, label, assets }) =>

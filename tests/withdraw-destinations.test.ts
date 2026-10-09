@@ -18,9 +18,10 @@ const ALICE_GENERIC = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY";
 const ALICE_HEX = "0xd43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d";
 
 describe("withdrawal destinations", () => {
-  it("lists Asset Hub first on the direct rail, with the Polkadot tokens, then the Chainflip networks", () => {
-    expect(WITHDRAW_NETWORKS[0]).toMatchObject({ chain: "AssetHub", label: "Asset Hub" });
+  it("lists Polkadot first on the direct rail, with its tokens, then the Chainflip networks", () => {
+    expect(WITHDRAW_NETWORKS[0]).toMatchObject({ chain: "Polkadot", label: "Polkadot" });
     const assetHub = WITHDRAW_NETWORKS[0]!.destinations;
+    expect(assetHub.every((d) => d.chainLabel === "Polkadot")).toBe(true);
     expect(assetHub.map((d) => [d.id, d.asset, d.rail])).toEqual([
       ["dot-assethub", "DOT", "direct"],
       ["dotusd-assethub", "dotUSD", "direct"],

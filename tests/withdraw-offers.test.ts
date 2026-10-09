@@ -92,7 +92,7 @@ describe("the withdraw offers store", () => {
     expect(store.rowFor(btc)).toEqual({ pickable: false });
     expect(store.awaitingNetworks).toBe(true);
     expect(store.awaitingTokens(bitcoin)).toBe(true);
-    expect(store.awaitingTokens(withdrawNetwork("AssetHub")!)).toBe(false);
+    expect(store.awaitingTokens(withdrawNetwork("Polkadot")!)).toBe(false);
 
     await store.learn(50_000_000n);
     expect(quote).toHaveBeenCalledWith(50_000_000n, expect.any(Array));
