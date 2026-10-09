@@ -223,13 +223,11 @@ export function buildFundingProgram(args: {
  *
  *  The refund comes AFTER the transfer: delivery is charged from the fees register inside
  *  InitiateTransfer, and a RefundSurplus before it would empty that register and leave delivery
- *  to be taken from a holding the transfer has already sent. When the transfer runs the
- *  external sits in the fees register and the holding is CASH alone, so the transfer's
- *  `AllCounted(1)` is unambiguous; after RefundSurplus the holding is the external alone, so the
- *  refund's is too. It counts one asset rather than `Wild(All)`, which is weighed as
- *  MaxAssetsIntoHolding deposits and costs twenty times the fee. The refund lands in an account the
- *  batch keeps alive (psm-batch.ts), and a deposit into a live account has no minimum. Should the
- *  transfer fail, nothing after it runs and batch_all reverts the mint. */
+ *  to be taken from a holding the transfer has already sent. After RefundSurplus the holding is
+ *  the external alone, so the refund counts one asset rather than `Wild(All)`, which is weighed
+ *  as MaxAssetsIntoHolding deposits and costs twenty times the fee. The refund lands in an
+ *  account the batch keeps alive (psm-batch.ts), and a deposit into a live account has no
+ *  minimum. Should the transfer fail, nothing after it runs and batch_all reverts the mint. */
 export function buildPsmFundingProgram(args: {
   /** CASH withdrawn into the holding: what the mint paid out. */
   withdrawCash: bigint;
@@ -358,9 +356,9 @@ export function buildStableFundingProgram(args: {
 /** The dotUSD tier's program: the underlying the buyer deposited as dotUSD, landed on the
  *  burner's People address as it is, every Asset Hub fee paid in it from an allowance the program
  *  refunds. The PSM shape without the mint before it: one asset in the holding and in the fees
- *  register alike, the fees register filled first, so the transfer's `AllCounted(1)` takes what
- *  the allowance leaves. The refund comes after the transfer and lands in an account its
- *  min_balance keeps alive. */
+ *  register alike, the fees register filled first, so the transfer takes what the allowance
+ *  leaves. The refund comes after the transfer and lands in an account its min_balance keeps
+ *  alive. */
 export function buildDotUsdFundingProgram(args: {
   /** Underlying withdrawn into the holding: what is sent plus the fee allowance. The asset's
    *  min_balance stays on the burner. */
@@ -408,22 +406,31 @@ export function dotUsdTxOptions(): { asset: Location } {
   return { asset: asLocation(TOKENS.DOTUSD.location) };
 }
 
-/** The InitiateTransfer every shape carries: everything in the holding sent to People by
- *  `transfer`, `remoteFees` earmarked for the destination's execution. */
+/** The InitiateTransfer every shape carries: the holding's CASH sent to People by `transfer`,
+ *  `remoteFees` earmarked for the destination's execution. The filter names the CASH. When the
+ *  dispatch fee leaves the account under min_balance, the withdrawal sweeps the rest of the fee
+ *  asset into the holding, where it sorts first, and People does not accept it. */
 function holdingToPeople(
-  remoteFees: unknown,
+  remoteFees: { id: unknown; fun: unknown },
   beneficiaryHex: string,
   peopleParaId: number,
   transfer: CashTransfer,
 ) {
   const kind = transfer === "teleport" ? "Teleport" : "ReserveDeposit";
+  const allCash = {
+    type: "Wild",
+    value: {
+      type: "AllOf",
+      value: { id: remoteFees.id, fun: { type: "Fungible", value: undefined } },
+    },
+  };
   return {
     type: "InitiateTransfer",
     value: {
       destination: peopleDest(peopleParaId),
       remote_fees: { type: kind, value: { type: "Definite", value: [remoteFees] } },
       preserve_origin: false,
-      assets: [{ type: kind, value: { type: "Wild", value: { type: "AllCounted", value: 1 } } }],
+      assets: [{ type: kind, value: allCash }],
       remote_xcm: [
         // Return the unused destination allowance to the holding, then sweep everything to the
         // burner.
@@ -721,10 +728,37 @@ export interface StableLegFees {
   /** The dispatch fee as the runtime weighs it, native. */
   dispatchNative: bigint;
   /** The dispatch fee as ChargeAssetTxPayment charges it: the stable its pool takes for
-   *  `dispatchNative`. Keep this much of the balance out of the conversion. */
+   *  `dispatchNative`. Keep this much of the balance out of the conversion. The fee is taken
+   *  before the program runs and the unused part comes back after it. */
   dispatchExternal: bigint;
   /** The weighed weight, declared as the execute() ceiling. */
   maxWeight: { ref_time: bigint; proof_size: bigint };
+}
+
+/** A transaction the runtime can price. */
+type Priceable = Pick<ReturnType<AssetHubApi["tx"]["PolkadotXcm"]["execute"]>, "getEstimatedFees">;
+
+/** The dispatch fee of `tx` in `options.asset`: the native fee for the declared weight and the
+ *  transaction's length, then the stable the pool takes for it. Priced on the transaction
+ *  itself, since the fee grows with its length. */
+export async function priceDispatchFee(
+  api: AssetHubApi,
+  tx: Priceable,
+  from: string,
+  options: { asset: Location },
+  what: string,
+): Promise<{ dispatchNative: bigint; dispatchExternal: bigint }> {
+  const dispatchNative = await tx.getEstimatedFees(from, options);
+  const dispatchExternal = await api.apis.AssetConversionApi.quote_price_tokens_for_exact_tokens(
+    options.asset,
+    asLocation(TOKENS.PAS.location),
+    dispatchNative,
+    true,
+  );
+  if (dispatchExternal === undefined) {
+    throw new Error(`${what}: the pool cannot price the dispatch fee in the fee asset`);
+  }
+  return { dispatchNative, dispatchExternal };
 }
 
 /** Every cost of the stable pool tier's program, measured against the program itself, all in the
@@ -740,6 +774,9 @@ export async function estimateStableProgramFees(args: {
   /** The stable the program is carved from, at its real magnitude: the dispatch fee has a
    *  per-byte component and compact-encoded amounts change length with magnitude. */
   depositStable: bigint;
+  /** The native floor the first exchange will carry, at its real magnitude. The native the
+   *  target is quoted at serves. */
+  minNativeOut: bigint;
   /** The CASH floor the program will carry, for the same reason. */
   minUnderlyingOut: bigint;
   /** The destination fee allowance the program will carry, for the same reason. */
@@ -838,30 +875,21 @@ export async function estimateStableProgramFees(args: {
   // Price the dispatch against the program carrying the final amounts and the declared weight, so
   // the charge it predicts is the charge the submitted call pays. The dispatch fee itself is not
   // yet known to keep out of the probe; a few thousand units do not change a compact encoding's
-  // length.
-  const options = stableTxOptions(args.stable);
-  const dispatchNative = await args.api.tx.PolkadotXcm.execute(
-    probe(
-      localExternal + deliveryExternal,
-      0n,
-      { native: 1n, cash: args.minUnderlyingOut },
-      maxWeight,
+  // length. The submit prices the program it sends once more.
+  const { dispatchNative, dispatchExternal } = await priceDispatchFee(
+    args.api,
+    args.api.tx.PolkadotXcm.execute(
+      probe(
+        localExternal + deliveryExternal,
+        0n,
+        { native: args.minNativeOut, cash: args.minUnderlyingOut },
+        maxWeight,
+      ),
     ),
-  ).getEstimatedFees(args.dryRunFrom ?? args.feeProbeAddress, options);
-  // ChargeAssetTxPayment swaps exactly the native fee out of the pool, so the stable it takes is
-  // the exact-out quote for it, pool fee included.
-  const dispatchExternal =
-    await args.api.apis.AssetConversionApi.quote_price_tokens_for_exact_tokens(
-      options.asset,
-      asLocation(TOKENS.PAS.location),
-      dispatchNative,
-      true,
-    );
-  if (dispatchExternal === undefined) {
-    throw new Error(
-      "stable program fee estimate: the pool cannot price the dispatch fee in the stable",
-    );
-  }
+    args.dryRunFrom ?? args.feeProbeAddress,
+    stableTxOptions(args.stable),
+    "stable program fee estimate",
+  );
 
   const feeAllowanceExternal = withFeeMargin(localExternal + deliveryExternal);
   return {
@@ -974,25 +1002,14 @@ export async function estimateDotUsdProgramFees(args: {
   // Price the dispatch against the program carrying the final amounts and the declared weight, so
   // the charge it predicts is the charge the submitted call pays. The dispatch fee itself is not
   // yet known to keep out of the probe; a few thousand units do not change a compact encoding's
-  // length.
-  const options = dotUsdTxOptions();
-  const dispatchNative = await args.api.tx.PolkadotXcm.execute(
-    probe(localExternal + deliveryExternal, 0n, maxWeight),
-  ).getEstimatedFees(args.dryRunFrom ?? args.feeProbeAddress, options);
-  // ChargeAssetTxPayment swaps exactly the native fee out of the pool, so the underlying it takes
-  // is the exact-out quote for it, pool fee included.
-  const dispatchExternal =
-    await args.api.apis.AssetConversionApi.quote_price_tokens_for_exact_tokens(
-      options.asset,
-      asLocation(TOKENS.PAS.location),
-      dispatchNative,
-      true,
-    );
-  if (dispatchExternal === undefined) {
-    throw new Error(
-      "dotUSD program fee estimate: the pool cannot price the dispatch fee in the underlying",
-    );
-  }
+  // length. The submit prices the program it sends once more.
+  const { dispatchNative, dispatchExternal } = await priceDispatchFee(
+    args.api,
+    args.api.tx.PolkadotXcm.execute(probe(localExternal + deliveryExternal, 0n, maxWeight)),
+    args.dryRunFrom ?? args.feeProbeAddress,
+    dotUsdTxOptions(),
+    "dotUSD program fee estimate",
+  );
 
   const feeAllowanceExternal = withFeeMargin(localExternal + deliveryExternal);
   return {
