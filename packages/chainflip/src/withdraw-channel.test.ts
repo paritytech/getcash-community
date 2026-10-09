@@ -136,4 +136,18 @@ describe("the outgoing channel", () => {
       quoteOutgoing(scripted([]).sdk, 1n, { chain: "Solana", asset: "USDT" }, ASSET_HUB_USDT),
     ).rejects.toThrow(/no USDT quote for 1 USDT/);
   });
+
+  it("reads the destination's delivery fee off the quote, or 0 when it is not itemised", async () => {
+    const withFee = {
+      ...REGULAR,
+      includedFees: [
+        { type: "NETWORK", amount: "248995" },
+        { type: "EGRESS", amount: "25124" },
+      ],
+    };
+    expect((await quoteOutgoing(scripted([withFee]).sdk, 1n, destination)).egressFee).toBe(25_124n);
+    expect((await quoteOutgoing(scripted().sdk, 1n, destination)).egressFee).toBe(0n);
+    const garbled = { ...REGULAR, includedFees: [{ type: "EGRESS", amount: "n/a" }] };
+    expect((await quoteOutgoing(scripted([garbled]).sdk, 1n, destination)).egressFee).toBe(0n);
+  });
 });

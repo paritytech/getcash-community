@@ -18,6 +18,9 @@ export interface OutgoingQuote {
   raw: Record<string, unknown>;
   /** What lands on the destination, in the destination asset's base units. */
   egressAmount: bigint;
+  /** The destination chain's delivery fee inside that figure, same units; 0 when not itemised.
+   *  It moves with the chain's gas between the quote and the delivery. */
+  egressFee: bigint;
   /** Chainflip's own estimate of the swap, seconds; null when absent. */
   estimatedDurationSeconds: number | null;
 }
@@ -29,6 +32,20 @@ export interface OutgoingDestination {
 }
 
 const numberOrNull = (value: unknown): number | null => (typeof value === "number" ? value : null);
+
+/** The `EGRESS` line of a quote's `includedFees`, base units of the destination asset. */
+function egressFeeOf(raw: Record<string, unknown>): bigint {
+  const fees = Array.isArray(raw["includedFees"]) ? (raw["includedFees"] as unknown[]) : [];
+  const egress = fees.find(
+    (f): f is { amount: unknown } =>
+      typeof f === "object" && f !== null && (f as { type?: unknown }).type === "EGRESS",
+  );
+  try {
+    return egress === undefined ? 0n : BigInt(String(egress.amount));
+  } catch {
+    return 0n;
+  }
+}
 
 /** Quotes selling `amount` of `source` (DOT on Asset Hub unless named) for the destination asset.
  *  Throws when Chainflip has no quote for the pair. */
@@ -54,6 +71,7 @@ export async function quoteOutgoing(
   return {
     raw,
     egressAmount: BigInt(String(raw["egressAmount"] ?? "0")),
+    egressFee: egressFeeOf(raw),
     estimatedDurationSeconds: numberOrNull(raw["estimatedDurationSeconds"]),
   };
 }

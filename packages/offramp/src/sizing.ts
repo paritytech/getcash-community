@@ -9,3 +9,18 @@ export function saleFloor(expectedOut: bigint, slippageBps: number): bigint {
   }
   return (expectedOut * BigInt(10_000 - slippageBps)) / 10_000n;
 }
+
+/**
+ * What a sale through `lane` promises its provider, from a Chainflip quote: the quoted output less
+ * the delivery-fee headroom the lane keeps beyond the fee already inside it, then the lane's
+ * fill-or-kill floor. Zero when the headroom takes it all.
+ */
+export function laneCommit(
+  lane: { slippageBps: number; egressFeeHeadroom: number },
+  egressAmount: bigint,
+  egressFee: bigint,
+): bigint {
+  const headroom = egressFee * BigInt(Math.max(Math.ceil(lane.egressFeeHeadroom) - 1, 0));
+  const kept = egressAmount - headroom;
+  return kept <= 0n ? 0n : saleFloor(kept, lane.slippageBps);
+}

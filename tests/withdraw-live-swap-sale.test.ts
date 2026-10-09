@@ -15,14 +15,23 @@ vi.mock("../lib/host-payments", () => ({
 }));
 
 /** Chainflip delivers `rate` per million of what it is quoted on. */
-const cf = vi.hoisted(() => ({ rate: 993_000n, quoted: [] as string[], opened: [] as unknown[] }));
+const cf = vi.hoisted(() => ({
+  rate: 993_000n,
+  egressFee: 0n,
+  quoted: [] as string[],
+  opened: [] as unknown[],
+}));
 vi.mock("../lib/chainflip-backend", () => {
   const sdk = {
     getQuoteV2: async (args: { amount: string }) => {
       cf.quoted.push(args.amount);
       return {
         quotes: [
-          { type: "REGULAR", egressAmount: String((BigInt(args.amount) * cf.rate) / 1_000_000n) },
+          {
+            type: "REGULAR",
+            egressAmount: String((BigInt(args.amount) * cf.rate) / 1_000_000n),
+            includedFees: [{ type: "EGRESS", amount: String(cf.egressFee) }],
+          },
         ],
       };
     },
@@ -64,6 +73,7 @@ const USDT_IN = (LANDED * 9_980n) / 10_000n - 100_000n;
 describe("a sale through an offramp lane", () => {
   beforeEach(() => {
     cf.rate = 993_000n;
+    cf.egressFee = 0n;
     cf.quoted.length = 0;
     cf.opened.length = 0;
   });
@@ -110,5 +120,13 @@ describe("a sale through an offramp lane", () => {
     });
     expect(channel).toBeNull();
     expect(cf.opened).toEqual([]);
+  });
+
+  it("keeps the lane's delivery-fee headroom out of the promise", async () => {
+    cf.egressFee = 25_000n; // 0.025 USDC on Arbitrum, kept three times over
+    const arbitrum = laneById("usdc-arbitrum");
+    const { commit } = await sizeSwapSale(AMOUNT, arbitrum);
+    const kept = (USDT_IN * 993_000n) / 1_000_000n - 2n * 25_000n;
+    expect(commit).toBe(((kept * 9_950n) / 10_000n / 100n) * 100n);
   });
 });

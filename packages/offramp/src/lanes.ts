@@ -2,7 +2,7 @@
 // for the Asset Hub asset itself. The key sells Asset Hub USDT through Chainflip for the lane's
 // asset, paid straight to the Meld provider's deposit address. Adding a lane is one entry here.
 
-export type LaneId = "usdt-solana" | "usdc-solana";
+export type LaneId = "usdc-arbitrum" | "usdc-solana" | "usdt-solana";
 
 export interface OfframpLane {
   readonly id: LaneId;
@@ -12,20 +12,39 @@ export interface OfframpLane {
   readonly meldCode: string;
   /** Base-unit decimals on the lane's chain. Never assumed: BSC USDT is 18. */
   readonly decimals: number;
+  /** Chainflip's fill-or-kill tolerance on the swap, basis points. */
+  readonly slippageBps: number;
+  /** How many times the quoted delivery fee the sale keeps in hand, for gas rising between the
+   *  quote and the delivery: 1 trusts the quote, 3 survives the fee tripling. */
+  readonly egressFeeHeadroom: number;
 }
 
 export const LANES: readonly OfframpLane[] = Object.freeze([
+  {
+    id: "usdc-arbitrum",
+    chainflip: { chain: "Arbitrum", asset: "USDC" },
+    meldCode: "USDC_ARBITRUM",
+    decimals: 6,
+    slippageBps: 50,
+    // Fractions of a cent today; spikes are short but sharp.
+    egressFeeHeadroom: 3,
+  },
   {
     id: "usdt-solana",
     chainflip: { chain: "Solana", asset: "USDT" },
     meldCode: "USDT_SOLANA",
     decimals: 6,
+    slippageBps: 50,
+    egressFeeHeadroom: 2,
   },
   {
     id: "usdc-solana",
     chainflip: { chain: "Solana", asset: "USDC" },
     meldCode: "USDC_SOLANA",
     decimals: 6,
+    slippageBps: 50,
+    // About 0.32 USDC and steady.
+    egressFeeHeadroom: 2,
   },
 ] satisfies OfframpLane[]);
 

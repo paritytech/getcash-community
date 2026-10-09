@@ -14,6 +14,7 @@ import {
 } from "@getsome/meld";
 import type { ConversionRoute } from "@getsome/funding";
 import { laneByMeldCode, laneSellToken, type LaneId, type OfframpLane } from "@getsome/offramp";
+import { OFFRAMP_LANE_ORDER } from "~~/lib/config";
 import { bankRailCountries, regionForCountry } from "~~/lib/region";
 import {
   countryName,
@@ -57,12 +58,24 @@ function startingCountry(method: "card" | "bank"): string {
   return method === "card" || bankRailCountries().includes(detected) ? detected : "DE";
 }
 
-/** What a sale through `ref` sells: PAS on Asset Hub (null), a lane this build can swap into, or
- *  `undefined` for a code it cannot sell at all. A method with no lane is today's Asset Hub sale. */
-export function saleLaneOf(ref: OfframpLaneRef | undefined): OfframpLane | null | undefined {
-  if (ref === undefined || ref.code === SELL_TOKEN.meldCurrencyCode) return null;
-  if (ref.chain === "assethub") return undefined;
-  return laneByMeldCode(ref.code) ?? undefined;
+/** What a sale of Meld code `code` sells: PAS on Asset Hub (null), a lane this build can swap into,
+ *  or `undefined` for a code it cannot sell. */
+export function saleLaneOf(code: string): OfframpLane | null | undefined {
+  if (code === SELL_TOKEN.meldCurrencyCode) return null;
+  return laneByMeldCode(code) ?? undefined;
+}
+
+/**
+ * The lanes a sale tries, best first: the ones the adapter found routing the method, in this
+ * build's order (OFFRAMP_LANE_ORDER), any other dropped. A method with no lanes, from the static
+ * fallback when the catalog is unreachable, sells PAS on Asset Hub as it always has.
+ */
+export function laneCandidates(
+  lanes: readonly OfframpLaneRef[] | undefined,
+  order: readonly string[],
+): string[] {
+  if (lanes === undefined) return [SELL_TOKEN.meldCurrencyCode];
+  return order.filter((code) => lanes.some((l) => l.code === code));
 }
 
 export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
@@ -94,7 +107,7 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
    */
   async function corridorFor(
     cc: string,
-  ): Promise<{ fiat: string; paymentMethodType: string; lane?: OfframpLaneRef } | null> {
+  ): Promise<{ fiat: string; paymentMethodType: string; lanes?: OfframpLaneRef[] } | null> {
     const live = corridors.value?.get(cc) ?? (await fetchOfframpCorridor(cc));
     if (live !== null) {
       const found = methodFor(live, method);
@@ -103,7 +116,7 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
         : {
             fiat: live.fiat,
             paymentMethodType: found.paymentMethodType,
-            ...(found.lane === undefined ? {} : { lane: found.lane }),
+            ...(found.lanes === undefined ? {} : { lanes: found.lanes }),
           };
     }
     const region = regionForCountry(cc);
@@ -143,45 +156,50 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
         error.value = unroutedReason();
         return;
       }
-      const lane = saleLaneOf(corridor.lane);
-      if (lane === undefined) {
-        error.value = "No provider can pay out this sale right now.";
-        return;
+      // Best lane first; a lane whose providers will not quote falls through to the next.
+      let failure = "No provider can pay out this sale right now.";
+      for (const code of laneCandidates(corridor.lanes, OFFRAMP_LANE_ORDER)) {
+        const lane = saleLaneOf(code);
+        if (lane === undefined) continue;
+        const token = lane === null ? SELL_TOKEN : laneSellToken(lane);
+        try {
+          const size: SizedSale =
+            lane === null
+              ? await live.sizeMeldCommitment(amount)
+              : await live.sizeSwapSale(amount, lane).then((swap) => ({
+                  planck: swap.commit,
+                  backCash: 0n,
+                  swap: { lane: lane.id, route: swap.route },
+                }));
+          if (mine !== epoch) return;
+          const { quotes } = await client.getSellQuote({
+            country: country.value,
+            sourceCurrencyCode: token.meldCurrencyCode,
+            sourceAmount: formatSellAmount(size.planck, token),
+            destinationCurrencyCode: corridor.fiat,
+            paymentMethodType: corridor.paymentMethodType,
+          });
+          if (mine !== epoch) return;
+          // The best line pays the seller the most; the fees come off the payout. Only providers
+          // that send the seller back for the key to pay, and only a payout that is a number.
+          const line = pickBestQuote(quotes.filter(sellQuoteUsable));
+          if (line === null) continue;
+          quote.value = {
+            country: country.value,
+            fiat: corridor.fiat,
+            paymentMethodType: corridor.paymentMethodType,
+            cryptoAmount: size.planck,
+            backCash: size.backCash,
+            ...(size.swap === undefined ? {} : { swap: size.swap }),
+            line,
+          };
+          return;
+        } catch (e: unknown) {
+          if (mine !== epoch) return;
+          failure = e instanceof Error ? e.message : String(e);
+        }
       }
-      const token = lane === null ? SELL_TOKEN : laneSellToken(lane);
-      const size: SizedSale =
-        lane === null
-          ? await live.sizeMeldCommitment(amount)
-          : await live.sizeSwapSale(amount, lane).then((swap) => ({
-              planck: swap.commit,
-              backCash: 0n,
-              swap: { lane: lane.id, route: swap.route },
-            }));
-      if (mine !== epoch) return;
-      const { quotes } = await client.getSellQuote({
-        country: country.value,
-        sourceCurrencyCode: token.meldCurrencyCode,
-        sourceAmount: formatSellAmount(size.planck, token),
-        destinationCurrencyCode: corridor.fiat,
-        paymentMethodType: corridor.paymentMethodType,
-      });
-      if (mine !== epoch) return;
-      // The best line pays the seller the most; the fees come off the payout. Only providers that
-      // send the seller back for the key to pay, and only a payout that is a number.
-      const line = pickBestQuote(quotes.filter(sellQuoteUsable));
-      if (line === null) {
-        error.value = "No provider can pay out this sale right now.";
-        return;
-      }
-      quote.value = {
-        country: country.value,
-        fiat: corridor.fiat,
-        paymentMethodType: corridor.paymentMethodType,
-        cryptoAmount: size.planck,
-        backCash: size.backCash,
-        ...(size.swap === undefined ? {} : { swap: size.swap }),
-        line,
-      };
+      error.value = failure;
     } catch (e: unknown) {
       if (mine === epoch) error.value = e instanceof Error ? e.message : String(e);
     } finally {

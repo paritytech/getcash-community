@@ -19,7 +19,7 @@ import {
   type DepositAsset,
 } from "@getsome/funding";
 import { sellAmountOf } from "@getsome/meld";
-import { laneSellToken, saleFloor as swapFloor, type OfframpLane } from "@getsome/offramp";
+import { laneCommit, laneSellToken, type OfframpLane } from "@getsome/offramp";
 import {
   createHostEntropyPort,
   createHostStorageAdapter,
@@ -329,8 +329,6 @@ export async function meldCommitmentFundable(
 const SWAP_SALE_KEY_FEE_USDT = 100_000n;
 /** Room under the USDT the redeem lands, basis points, for the fees the estimate cannot see. */
 const SWAP_SALE_LANDING_MARGIN_BPS = 20n;
-/** Chainflip's fill-or-kill tolerance on a lane sale's swap, basis points. */
-export const SWAP_SALE_SLIPPAGE_BPS = 50;
 
 /** What a sale through `lane` sells and commits to. */
 export interface SwapSaleSize {
@@ -354,8 +352,9 @@ export async function sizeSwapSale(amount: bigint, lane: OfframpLane): Promise<S
     (landed * (10_000n - SWAP_SALE_LANDING_MARGIN_BPS)) / 10_000n - SWAP_SALE_KEY_FEE_USDT;
   if (usdtIn <= 0n) throw new Error("The amount does not cover the network fees.");
   const quote = await quoteOutgoing(await saleSwapSdk(), usdtIn, lane.chainflip, ASSET_HUB_USDT);
+  // The lane's own buffer: its delivery fee can rise before the swap lands, by chain.
   const commit = sellAmountOf(
-    swapFloor(quote.egressAmount, SWAP_SALE_SLIPPAGE_BPS),
+    laneCommit(lane, quote.egressAmount, quote.egressFee),
     laneSellToken(lane),
   );
   if (commit <= 0n) throw new Error("The amount does not cover the network fees.");
@@ -381,7 +380,7 @@ export async function openSwapSaleChannel(args: {
     destination: { ...args.lane.chainflip, address: args.providerAddress },
     refundAddress: AccountId(0).dec(args.keyPublicKeyHex as `0x${string}`),
     fillOrKill: {
-      slippageTolerancePercent: (SWAP_SALE_SLIPPAGE_BPS / 100).toString(),
+      slippageTolerancePercent: (args.lane.slippageBps / 100).toString(),
       retryDurationMinutes: 30,
     },
   });

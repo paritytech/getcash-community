@@ -450,7 +450,7 @@ describe("lib/supported", () => {
               min: "20",
               max: "5000",
               currency: "EUR",
-              lane: { code: "DOT_ASSETHUB", chain: "assethub" },
+              lanes: [{ code: "DOT_ASSETHUB", chain: "assethub", min: "20", max: "5000" }],
             },
             {
               paymentMethodType: "PAYOUT_TO_CARD",
@@ -458,7 +458,10 @@ describe("lib/supported", () => {
               min: "10",
               max: "2000",
               currency: "EUR",
-              lane: { code: "USDT_SOLANA", chain: "solana" },
+              lanes: [
+                { code: "USDC_ARBITRUM", chain: "arbitrum", min: "10", max: "2000" },
+                { code: "USDC_SOLANA", chain: "solana" },
+              ],
             },
           ],
         },
@@ -471,15 +474,18 @@ describe("lib/supported", () => {
     const map = await fetchOfframpCorridors();
     expect([...map!.keys()]).toEqual(["DE"]);
     expect(map!.get("DE")).toMatchObject({ name: "Germany", fiat: "EUR" });
-    expect(map!.get("DE")!.methods.map((m) => m.lane)).toEqual([
-      { code: "DOT_ASSETHUB", chain: "assethub" },
-      { code: "USDT_SOLANA", chain: "solana" },
+    expect(map!.get("DE")!.methods.map((m) => m.lanes)).toEqual([
+      [{ code: "DOT_ASSETHUB", chain: "assethub", min: "20", max: "5000" }],
+      [
+        { code: "USDC_ARBITRUM", chain: "arbitrum", min: "10", max: "2000" },
+        { code: "USDC_SOLANA", chain: "solana" },
+      ],
     ]);
     await fetchOfframpCorridors();
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("reads one country's off-ramp corridor, dropping a malformed lane", async () => {
+  it("reads one country's off-ramp corridor, dropping malformed lanes", async () => {
     vi.stubGlobal(
       "fetch",
       stubFetch({
@@ -492,7 +498,7 @@ describe("lib/supported", () => {
               category: "bank",
               min: "5",
               max: "900",
-              lane: { code: "" },
+              lanes: [{ code: "" }, null, { code: "USDC_SOLANA", chain: "solana" }],
             },
           ],
         },
@@ -501,7 +507,7 @@ describe("lib/supported", () => {
     const { fetchOfframpCorridor, fetchOfframpCorridors } = await import("../lib/supported");
     const corridor = await fetchOfframpCorridor("BR");
     expect(corridor).toMatchObject({ country: "BR", fiat: "BRL" });
-    expect(corridor!.methods[0]!.lane).toBeUndefined();
+    expect(corridor!.methods[0]!.lanes).toEqual([{ code: "USDC_SOLANA", chain: "solana" }]);
     expect(corridor!.methods[0]!.currency).toBe("BRL");
     // An unreachable catalog is null, not empty.
     expect(await fetchOfframpCorridors()).toBeNull();

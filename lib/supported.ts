@@ -23,16 +23,18 @@ export interface SupportedMethod {
   max: string;
   currency: string;
   providers: string[];
-  /** An off-ramp method only: the asset and chain a sale through it sells, as the adapter's merged
-   *  off-ramp catalog picked it (the first configured lane that routes this method). */
-  lane?: OfframpLaneRef;
+  /** An off-ramp method only: every lane the adapter found routing it, in the adapter's order,
+   *  each with its own limits. The sale picks among them (see useMeldSellQuote). */
+  lanes?: OfframpLaneRef[];
 }
 
-/** An off-ramp lane as the adapter names it: the Meld code sold, and its chain. A chain other than
- *  `assethub` means the sale swaps through Chainflip first. */
+/** An off-ramp lane as the adapter names it: the Meld code sold, its chain and its limits. A chain
+ *  other than `assethub` means the sale swaps through Chainflip first. */
 export interface OfframpLaneRef {
   code: string;
   chain: string;
+  min?: string;
+  max?: string;
 }
 
 /** A (country, fiat) corridor. Empty `methods` means nothing routes here. */
@@ -113,16 +115,27 @@ function toMethod(raw: Record<string, unknown>, fiat: string): SupportedMethod {
     max: String(raw.max ?? ""),
     currency: String(raw.currency ?? fiat),
     providers: Array.isArray(raw.providers) ? raw.providers.map(String) : [],
-    ...laneOf(raw.lane),
+    ...lanesOf(raw.lanes),
   };
 }
 
-function laneOf(raw: unknown): { lane?: OfframpLaneRef } {
-  if (typeof raw !== "object" || raw === null) return {};
-  const { code, chain } = raw as Record<string, unknown>;
-  return typeof code === "string" && code !== "" && typeof chain === "string" && chain !== ""
-    ? { lane: { code, chain } }
-    : {};
+function lanesOf(raw: unknown): { lanes?: OfframpLaneRef[] } {
+  if (!Array.isArray(raw)) return {};
+  const lanes: OfframpLaneRef[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const { code, chain, min, max } = entry as Record<string, unknown>;
+    if (typeof code !== "string" || code === "" || typeof chain !== "string" || chain === "") {
+      continue;
+    }
+    lanes.push({
+      code,
+      chain,
+      ...(typeof min === "string" ? { min } : {}),
+      ...(typeof max === "string" ? { max } : {}),
+    });
+  }
+  return { lanes };
 }
 
 /**
