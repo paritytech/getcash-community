@@ -163,7 +163,7 @@ brand/        the product icon used in the bulletin manifest
 | Package              | Role                                                             |
 | -------------------- | ---------------------------------------------------------------- |
 | `@getsome/core`      | session state machine, flow store, re-entry logic, port types    |
-| `@getsome/ephemeral` | seed to keypair derivation, handoff secret encoding, refund keys |
+| `@getsome/ephemeral` | keypair derivation, handoff secrets, refund and customer keys    |
 | `@getsome/funding`   | the funding program the worker runs on Asset Hub                 |
 | `@getsome/withdraw`  | the withdrawal legs the worker runs on People, swap then XCM     |
 | `@getsome/chainflip` | crypto rail over the Chainflip SDK                               |
