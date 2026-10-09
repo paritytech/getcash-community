@@ -19,7 +19,7 @@ import {
   type SupportedCorridor,
   type SupportedCountry,
 } from "~~/lib/supported";
-import { localeCountry } from "../utils/locale";
+import { detectedCountryNow } from "./useDetectedCountry";
 import { meldSellClient } from "../withdraw/meld-client";
 
 /** A priced sale: where it pays out, what the key pays, and the provider line for it. */
@@ -39,16 +39,16 @@ export interface MeldSellQuote {
  *  catalog names its methods by, not the buy side's card and bank codes. */
 const FALLBACK_PAYOUT_METHOD = { card: "PAYOUT_TO_CARD", bank: "PAYOUT_TO_BANK" } as const;
 
-/** The region a sale starts from: the device's own where this method pays out there, else a
- *  SEPA one, until geolocation lands. */
-function startingCountry(method: "card" | "bank"): string {
-  const detected = localeCountry();
-  if (detected === null) return "DE";
-  return method === "card" || bankRailCountries().includes(detected) ? detected : "DE";
+/** The region a sale starts from: the geo cache where detection has already answered, else the
+ *  device locale, UNfiltered — a region with no payout rail still prices as "choose another
+ *  country", which is the truth about the seller. The route re-commits once the async lookup
+ *  lands (MeldWithdrawRoute). */
+function startingCountry(): string {
+  return detectedCountryNow() ?? "DE";
 }
 
 export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
-  const country = ref(startingCountry(method));
+  const country = ref(startingCountry());
   const countries = shallowRef<SupportedCountry[] | null>(null);
   const corridors = shallowRef<Map<string, SupportedCorridor> | null>(null);
   const quote = shallowRef<MeldSellQuote | null>(null);

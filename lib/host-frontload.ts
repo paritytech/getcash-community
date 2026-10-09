@@ -2,11 +2,16 @@
 // launch: Network (Remote) for the Chainflip domains, ChainSubmit for the funding pipeline, and
 // Balance through a one-shot purse read. Outside a host container this is a no-op.
 
+import { fetchGeoCountry } from "./geo";
 import { isHosted } from "./host-account";
 import { readPurseBalance } from "./coinage";
 
 /** The two Chainflip hosts that serve quotes, floors and prices. */
 const CHAINFLIP_DOMAINS = ["rpc.mainnet.chainflip.io", "chainflip-swap.chainflip.io"];
+
+/** The IP→country service the funding screens default the buyer's region from (lib/geo.ts);
+ *  the same one the host app's IpCountryDetectionService asks. */
+const GEO_DOMAINS = ["ip-api.com"];
 
 /** The fiat rail's domain, read from the build-time base URL. A relative base yields nothing. */
 function meldDomains(): string[] {
@@ -26,8 +31,11 @@ export async function frontloadHostPermissions(): Promise<void> {
   // Network first: the amount screen's floor-learning fires as soon as this resolves.
   await requestPermission({
     tag: "Remote",
-    value: { domains: [...CHAINFLIP_DOMAINS, ...meldDomains()] },
+    value: { domains: [...CHAINFLIP_DOMAINS, ...GEO_DOMAINS, ...meldDomains()] },
   }).catch((e) => console.warn("[host] network grant failed (continuing):", e));
+
+  // Warm the region guess while launch work runs; the Meld screens read the cache.
+  void fetchGeoCountry();
 
   // These do not gate the first quote and queue behind the network dialog.
   void requestPermission({ tag: "ChainSubmit", value: undefined }).catch((e) =>

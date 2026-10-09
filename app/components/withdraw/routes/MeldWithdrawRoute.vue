@@ -14,7 +14,7 @@ import type { FundingTopUp } from "../../../funding/top-ups";
 import { useRequestsStore } from "../../../stores/requests";
 import { toCashBase } from "../../../utils/cash";
 import { isDemoBuild } from "../../../utils/demo";
-import { localeCountry } from "../../../utils/locale";
+import { detectCountry, useDetectedCountry } from "../../../composables/useDetectedCountry";
 import type { RequestRef } from "../../../utils/request-index";
 import { meldSellClient } from "../../../withdraw/meld-client";
 import { withdrawalRequestRef } from "../../../withdraw/rows";
@@ -126,10 +126,18 @@ const pickerCountries = computed(() => {
   return corridorOptions(base, sale.corridors.value, method);
 });
 
+// IP-geo first, the device locale otherwise; live, so a late geo answer updates the pin in place.
+const detected = useDetectedCountry();
+
+/** False until the payout region is decided (geo answered, or the bounded wait fell back to the
+ *  locale): undecided, the quote screen shows the row as a skeleton, not a provisional region. */
+const countryDecided = ref(false);
+
+/** The seller's detected region, pinned in the picker only while it is pickable there: a bank
+ *  payout needs a rail, so only bank filters. */
 const detectedCountry = computed(() => {
-  const detected = localeCountry();
-  if (detected === null) return null;
-  return method === "card" || bankRailCountries().includes(detected) ? detected : null;
+  if (detected.value === null) return null;
+  return method === "card" || bankRailCountries().includes(detected.value) ? detected.value : null;
 });
 
 const countryLabel = computed(() => namedCountry(sale.country.value, sale.countries.value));
@@ -345,9 +353,19 @@ onMounted(() => {
   const opened = props.topUp;
   if (!opened) {
     void sale.loadCatalog();
-    void sale.refresh();
+    // The first pricing waits for the geo answer (bounded, lib/geo.ts), or the locale starting
+    // region it already holds prices a sale the seller never asked for.
+    void (async () => {
+      const country = await detectCountry();
+      // setCountry reprices; an unchanged region just prices the starting one.
+      if (country !== null && country !== sale.country.value) sale.setCountry(country);
+      else void sale.refresh();
+      countryDecided.value = true;
+    })();
     return;
   }
+  // A resumed sale carries the region it was opened with; there is nothing left to decide.
+  countryDecided.value = true;
   const ref = withdrawalRequestRef(opened.id);
   if (ref === null || !requests.has(ref)) return;
   requests.setForeground(ref);
@@ -424,10 +442,10 @@ onUnmounted(() => {
         v-else-if="step === 'quote' || step === 'fees'"
         :amount="amount"
         :quote="sale.quote.value"
-        :loading="sale.loading.value"
+        :loading="sale.loading.value || !countryDecided"
         :error="sale.error.value"
-        :country="sale.country.value"
-        :country-name="countryLabel"
+        :country="countryDecided ? sale.country.value : null"
+        :country-name="countryDecided ? countryLabel : null"
         :starting="starting"
         :start-error="startError"
         @continue="confirm"

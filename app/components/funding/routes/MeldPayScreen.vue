@@ -5,7 +5,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { ChevronRight } from "lucide-vue-next";
 import { useSessionStore } from "../../../stores/session";
 import { namedCountry } from "~~/lib/supported";
-import { localeCountry } from "../../../utils/locale";
+import { detectCountry } from "../../../composables/useDetectedCountry";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import type { FundingRoute } from "../../../funding/selection";
 import DetailRows from "../../ui/DetailRows.vue";
@@ -13,6 +13,7 @@ import PillButton from "../../ui/PillButton.vue";
 import RegionRow from "../../ui/RegionRow.vue";
 import SecondaryButton from "../../ui/SecondaryButton.vue";
 import SkeletonBlock from "../../ui/SkeletonBlock.vue";
+import SkeletonRow from "../../ui/SkeletonRow.vue";
 
 const session = useSessionStore();
 // switchRoute asks the shell to swap to the crypto package when this region routes neither card
@@ -33,10 +34,15 @@ const countryLabel = computed(() =>
 );
 
 // Adopts the default region and quotes when none is chosen, then loads the full catalog. A catalog
-// failure leaves the fallback list in place.
-onMounted(() => {
+// failure leaves the fallback list in place. IP-geo over the device locale: the locale is the
+// buyer's region setting, not where their card is from (the mispriced-corridor decline this
+// ordering exists to avoid). Usually answered from the cache host-frontload warmed at launch.
+onMounted(async () => {
+  if (session.meldCountry !== null) return;
+  const detected = await detectCountry();
+  // Re-checked after the await: the buyer may have picked a region while the lookup ran.
   if (session.meldCountry === null) {
-    session.setMeldCountry(localeCountry() ?? DEFAULT_COUNTRY);
+    session.setMeldCountry(detected ?? DEFAULT_COUNTRY);
     requote();
   }
 });
@@ -165,7 +171,11 @@ async function next() {
     <!-- The region the card is registered in leads the terms, and is live even while the quote
          below it is blocked: changing it is the way out of a region that routes nothing. -->
     <div class="mt-6 flex flex-col gap-4">
+      <!-- Undecided until geo or the locale fallback answers (onMounted): a skeleton, not a
+           default the buyer could mistake for a decision. -->
+      <SkeletonRow v-if="session.meldCountry === null" value-width="w-1/4" />
       <RegionRow
+        v-else
         label="Payment country"
         :value="countryLabel"
         :country="selectedCountry"
@@ -175,10 +185,7 @@ async function next() {
       <!-- The quote's own rows, bare on the surface. -->
       <template v-if="!session.meldMethodUnavailable && !session.quoteError">
         <div v-if="session.loading || !session.quoted" class="flex flex-col gap-4">
-          <div v-for="n in 2" :key="n" class="flex h-6 items-center justify-between">
-            <SkeletonBlock class="h-4 w-2/5" />
-            <SkeletonBlock class="h-4 w-1/5" />
-          </div>
+          <SkeletonRow v-for="n in 2" :key="n" />
         </div>
         <DetailRows v-else :rows="quoteRows" />
       </template>
@@ -197,7 +204,8 @@ async function next() {
           region, but {{ methodLabel(otherMethod).toLowerCase() }} is.
         </p>
         <p v-else class="text-body-m text-fg-secondary">
-          This region isn't supported for card or bank right now. You can buy with crypto instead.
+          Your region ({{ countryLabel }}) isn't supported for card or bank right now. You can
+          change payment country or buy with crypto instead.
         </p>
         <SecondaryButton
           class="self-start"
