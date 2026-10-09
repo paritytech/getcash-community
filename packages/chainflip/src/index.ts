@@ -9,6 +9,7 @@ export {
 export {
   openWithdrawChannel,
   quoteOutgoing,
+  type IncludedFee,
   type OpenWithdrawChannelArgs,
   type OutgoingDestination,
   type OutgoingQuote,

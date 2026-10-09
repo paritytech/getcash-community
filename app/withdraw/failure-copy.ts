@@ -20,7 +20,7 @@ export function withdrawalFailureText(failure: WithdrawalFailure): string {
     case "fallback-egress":
       return "The provider sent the funds somewhere else. Contact support.";
     case "refunded":
-      return "The swap did not go through and the funds came back. You can try again.";
+      return "The rate moved too far to complete the conversion. Your DOT is waiting, you'll need to move it yourself.";
     case "channel-expired":
       return "This withdrawal took too long to pay for. Nothing was sent, so you can try again.";
     case "channel-mismatch":

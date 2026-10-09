@@ -288,6 +288,8 @@ async function stagePreview(stage: PreviewStage): Promise<boolean> {
     };
     return true;
   }
+  // The withdrawal package stages on `#/withdraw`; this page has nowhere to put it.
+  if (stage.kind === "withdraw-package") return false;
   if (activePackage.value !== null && selection.value?.route === stage.route) return false;
   journey.value = null;
   activeTopUpId.value = null;

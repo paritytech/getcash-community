@@ -136,7 +136,7 @@ const busy = computed(() => Boolean(props.openingTopUpId));
       </p>
 
       <PillButton class="mt-6 w-full" :disabled="busy" @click="emit('newTopUp')">
-        New top-up
+        {{ wording.pendingCta }}
       </PillButton>
     </div>
   </div>

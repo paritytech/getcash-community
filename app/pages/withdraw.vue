@@ -4,7 +4,16 @@
 // card and bank open the fiat sale's where the build sells for fiat (`MELD_SELL_ENABLED`). The
 // pending and history screens list the withdrawals, and opening one lands on its journey inside
 // the package.
-import { computed, markRaw, onMounted, ref, shallowRef, type Component } from "vue";
+import {
+  computed,
+  markRaw,
+  nextTick,
+  onMounted,
+  ref,
+  shallowRef,
+  watch,
+  type Component,
+} from "vue";
 import FundingSelectorScreen from "../components/funding/FundingSelectorScreen.vue";
 import WithdrawAmountScreen from "../components/withdraw/WithdrawAmountScreen.vue";
 import { usePurseBalance } from "../composables/usePurseBalance";
@@ -25,6 +34,8 @@ import {
 import type { FundingRoute, FundingSelection } from "../funding/selection";
 import { projectFundingTopUps, type FundingTopUp } from "../funding/top-ups";
 import { useRequestsStore } from "../stores/requests";
+import { applyCurrentScene } from "../utils/dev-preview";
+import { previewStage, type PreviewStage } from "../utils/dev-preview-stage";
 import { WITHDRAWAL_LIST_WORDING, WITHDRAWAL_WORDING } from "../withdraw/rows";
 import { frontloadHostPermissions } from "~~/lib/host-frontload";
 
@@ -142,6 +153,43 @@ function returnFromPackage() {
   // until the re-read lands.
   void purse.refresh({ spent: true });
 }
+
+/**
+ * Puts this page where a preview scene's state can be read: the crypto package for the
+ * `withdraw / …` scenes, the shell for the list scenes. The stages of the top-up page's
+ * containers are ignored — they live on `#/`. Returns whether anything moved. Dev and demo
+ * builds only — `previewStage` is null in every other.
+ */
+async function stagePreview(stage: PreviewStage): Promise<boolean> {
+  if (stage.kind === "withdraw-package") {
+    // The package is up; the route itself reads the stage's step and skeletons.
+    if (activePackage.value !== null && selection.value?.route === "crypto") return false;
+    cancelPendingLoad();
+    activeTopUpPackage.value = null;
+    activeTopUpId.value = null;
+    // The section's design frames withdraw $25; a selection already on screen keeps its amount.
+    await continueToPackage({ amount: selection.value?.amount ?? "25", route: "crypto" });
+    return true;
+  }
+  if (stage.kind === "shell") {
+    if (activePackage.value === null && activeTopUpPackage.value === null) return false;
+    loadEpoch += 1;
+    activeTopUpPackage.value = null;
+    activeTopUpId.value = null;
+    openingTopUpId.value = null;
+    topUpError.value = null;
+    returnToShell();
+    return true;
+  }
+  return false;
+}
+
+watch(previewStage, async (stage) => {
+  if (stage === null || !(await stagePreview(stage))) return;
+  // The container is up; its own mount ran as it changed, so the scene's state goes on top again.
+  await nextTick();
+  await applyCurrentScene();
+});
 
 /** Upper bound on the permission front-load at launch. */
 const FRONTLOAD_TIMEOUT_MS = 20_000;
