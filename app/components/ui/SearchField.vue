@@ -45,7 +45,7 @@ const resting = computed(() => !focused.value && props.modelValue === "");
       autocomplete="off"
       autocapitalize="none"
       spellcheck="false"
-      class="size-full rounded-full bg-surface-nested pr-4 text-body-m text-fg-primary"
+      class="size-full rounded-full bg-surface-container pr-4 text-body-m text-fg-primary"
       :class="resting ? 'pl-4' : 'pl-9'"
       @focus="focused = true"
       @blur="focused = false"
