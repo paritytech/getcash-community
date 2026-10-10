@@ -13,6 +13,7 @@ import type {
 } from "@getsome/core";
 import {
   DIRECT_SLIPPAGE_PCT,
+  recordedRoute,
   type ConversionRoute,
   type FundingStep,
   type Stable,
@@ -255,6 +256,8 @@ export interface WorkerJobView {
   } | null;
   /** As the worker records them on either branch. */
   txs?: { call: "swap" | "xcm"; txHash: string; block?: number }[];
+  /** The PSM's refusals of the mint so far, when there were any; the third holds the job. */
+  psmRefusals?: number;
   depositSeen?: DepositInBlock;
   /** When the conversion first passed its dry run, and its transaction once converted. */
   conversion?: { preparedAt: number; converted?: ConvertedTx };
@@ -350,6 +353,9 @@ export interface TopUpRecord {
           done: boolean;
           claimPhase?: WorkerClaimPhase;
           claimStatus?: string;
+          /** CASH the host minted on the claim so far. */
+          claimCredited?: string;
+          psmRefusals?: number;
           fundsSeenAt: number | null;
           lastTickAt: number | null;
           failure?: string;
@@ -367,6 +373,12 @@ export interface TopUpRecord {
   };
   confirmedAt?: number;
 }
+
+/** The tier a record was quoted on, read off what it persisted and never decided here: the
+ *  hand-off it froze at quote time, or the tier recorded beside it when the hand-off is missing.
+ *  A record with neither is from before tiers were recorded, and so a pool one. */
+export const conversionRouteOf = (record: TopUpRecord): ConversionRoute =>
+  recordedRoute(record.handoff ?? record.conversion ?? {});
 
 // The withdrawal: the purse pays CASH to a disposable key on People, the worker moves it to Asset
 // Hub as the token the user picked, or as PAS that a rail carries on to the destination they named.

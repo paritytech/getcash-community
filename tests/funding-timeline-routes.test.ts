@@ -1,0 +1,223 @@
+import { describe, expect, it } from "vitest";
+import { migrateRecord } from "../app/funding/requests/migrate";
+import type { TopUpRecord } from "../app/funding/requests/model";
+import { checkedLine } from "../app/funding/timeline/checked";
+import { PART_LIMIT } from "../app/funding/timeline/model";
+import type { TimelineMessage, TimelineRoute } from "../app/funding/timeline/route";
+import { topUpTimeline } from "../app/funding/timeline/top-up";
+import type { TimelineView } from "../app/funding/timeline/types";
+import { requestRefOf } from "../app/utils/request-index";
+import { FIXTURE_NOW, submittedCardRecord } from "./fixtures/requests";
+
+const SECOND = 1_000;
+const MINUTE = 60 * SECOND;
+const SENT = FIXTURE_NOW;
+const RECEIVED = SENT + MINUTE;
+const CONVERTED = RECEIVED + 20 * SECOND;
+const MOVED = CONVERTED + MINUTE;
+const SEEN_T = 30 * SECOND;
+/** The fill of a part after `elapsed` of its expected time `t`. */
+const timeFill = (elapsed: number, t: number) => 1 - Math.exp((-3 * elapsed) / t);
+
+const route: TimelineRoute = {
+  milestones: () => ({ started: { at: SENT - 2 * MINUTE }, accepted: { at: SENT - MINUTE } }),
+  phase: () => ({ parts: [{ weight: 1, expectedMs: MINUTE }] }),
+  seenExpectedMs: SEEN_T,
+  text: () => ({ message: { text: "Provider text", delay: false } }),
+};
+const sentRoute: TimelineRoute = {
+  ...route,
+  milestones: (record) => ({ ...route.milestones(record), sent: { at: SENT } }),
+};
+
+function cardRecord(): TopUpRecord {
+  const record = migrateRecord(submittedCardRecord, requestRefOf("meld-card", 2), FIXTURE_NOW);
+  if (record?.kind !== "top-up") throw new Error("fixture did not migrate");
+  return record;
+}
+
+type Worker = Extract<NonNullable<TopUpRecord["witnesses"]["worker"]>, { known: true }>;
+
+function record(facts: Partial<TopUpRecord> = {}, worker: Partial<Worker> = {}): TopUpRecord {
+  return {
+    ...cardRecord(),
+    witnesses: {
+      worker: {
+        known: true,
+        phase: "await-native",
+        done: false,
+        fundsSeenAt: null,
+        lastTickAt: SENT + 10 * SECOND,
+        at: SENT,
+        ...worker,
+      },
+    },
+    ...facts,
+  };
+}
+
+const received = { fundsSeenAt: RECEIVED };
+const MARKS = { complete: "●", upcoming: "○", failed: "✕" } as const;
+const marks = (view: TimelineView) => view.milestones.map((state) => MARKS[state]).join("");
+const normal = (text: string): TimelineMessage => ({ text, delay: false });
+const delay = (text: string): TimelineMessage => ({ text, delay: true });
+
+describe("top-up timeline, shared route frame", () => {
+  it.each([
+    [
+      "the provider sent the funds",
+      record(),
+      SENT + 12 * SECOND,
+      { marks: "●●●○○○○", state: "active", line: 0.5 * timeFill(12 * SECOND, SEEN_T) },
+      { message: normal("Your money is arriving"), detail: "Checked 2s ago" },
+    ],
+    [
+      "the funds are not seen 2 minutes after Sent",
+      record(),
+      SENT + 2 * MINUTE + 1,
+      { marks: "●●●○○○○", state: "delayed", line: 0.5 * PART_LIMIT },
+      { message: normal("Your money is arriving"), detail: "Checked 110s ago" },
+    ],
+    [
+      "the deposit is in a block that is half way to final",
+      record({ depositInBlock: { block: 110, finalizedAtSeen: 100, finalized: 105 } }),
+      SENT + 3 * MINUTE,
+      { marks: "●●●○○○○", state: "active", line: 0.75 },
+      { message: normal("Making sure your money arrived safely"), detail: "Checked 170s ago" },
+    ],
+    [
+      "the deposit's block was final when seen",
+      record({ depositInBlock: { block: 100, finalizedAtSeen: 100, finalized: 100 } }),
+      SENT,
+      { marks: "●●●○○○○", state: "active", line: 0.5 + 0.5 * PART_LIMIT },
+      { message: normal("Making sure your money arrived safely"), detail: "Checked just now" },
+    ],
+    [
+      "the deposit is final on Asset Hub",
+      record({}, received),
+      RECEIVED,
+      { marks: "●●●●○○○", state: "active", line: 0 },
+      { message: normal("Converting your money to Cash") },
+    ],
+    [
+      "the conversion passed its dry run",
+      record({ conversionPreparedAt: RECEIVED }, received),
+      RECEIVED,
+      { marks: "●●●●○○○", state: "active", line: 1 / 3 },
+      { message: normal("Converting your money to Cash") },
+    ],
+    [
+      "the PSM refused the mint once",
+      record({ conversionPreparedAt: RECEIVED }, { ...received, psmRefusals: 1 }),
+      RECEIVED,
+      { marks: "●●●●○○○", state: "delayed", line: 1 / 3 },
+      { message: delay("The conversion paused for a moment and will retry automatically") },
+    ],
+    [
+      "a dotUSD deposit converts",
+      record({ handoff: undefined, conversion: { tier: "dotusd" } }, received),
+      RECEIVED,
+      { marks: "●●●●○○○", state: "active", line: 0 },
+      { message: normal("Getting your Cash ready") },
+    ],
+    [
+      "the conversion is in a block",
+      record({ converted: { txHash: "0x01", block: 120, at: CONVERTED } }, received),
+      CONVERTED,
+      { marks: "●●●●●○○", state: "active", line: 0 },
+      { message: normal("Getting your Cash ready"), detail: "Checked 70s ago" },
+    ],
+    [
+      "the Cash is not final on People after its expected time",
+      record({ converted: { txHash: "0x01", block: 120, at: CONVERTED } }, received),
+      CONVERTED + 91 * SECOND,
+      { marks: "●●●●●○○", state: "delayed", line: timeFill(91 * SECOND, 90 * SECOND) },
+      {
+        message: delay("Your Cash is ready and waiting for the network to confirm it"),
+        detail: "Checked 161s ago",
+      },
+    ],
+    [
+      "the Cash is final on People",
+      record({ observedAt: { "cash-on-people": MOVED } }, received),
+      MOVED,
+      { marks: "●●●●●●○", state: "active", line: 0 },
+      { message: normal("Adding $50 CASH to your balance") },
+    ],
+    [
+      "the Host is claiming a registered claim",
+      record(
+        {
+          observedAt: { "cash-on-people": MOVED, "host-claiming": MOVED },
+          claimRegisteredAt: MOVED,
+        },
+        received,
+      ),
+      MOVED,
+      { marks: "●●●●●●○", state: "active", line: 2 / 3 },
+      { message: normal("Adding $50 CASH to your balance") },
+    ],
+    [
+      "the Host added a part and the worker tries again",
+      record(
+        { observedAt: { "cash-on-people": MOVED } },
+        { ...received, claimCredited: "30000000" },
+      ),
+      MOVED,
+      { marks: "●●●●●●○", state: "active", line: 0 },
+      { message: normal("Adding the rest of your Cash") },
+    ],
+    [
+      "the Host added the top-up",
+      record({ creditedAt: MOVED }),
+      MOVED,
+      { marks: "●●●●●●●", state: "done", line: undefined },
+      {},
+    ],
+    [
+      "a settled top-up whose claim in a block was not seen",
+      record({ status: { kind: "settled", at: MOVED }, settledAt: MOVED }),
+      MOVED,
+      { marks: "●●●●●●●", state: "done", line: undefined },
+      {},
+    ],
+    [
+      "the conversion failed",
+      record({ status: { kind: "failed", at: RECEIVED, recoverable: true } }, received),
+      MOVED,
+      { marks: "●●●●✕○○", state: "failed", line: 0 },
+      {},
+    ],
+  ] satisfies [
+    string,
+    TopUpRecord,
+    number,
+    { marks: string; state: TimelineView["state"]; line: number | undefined },
+    { message?: TimelineMessage; detail?: string },
+  ][])("shows %s", (_, topUp, now, expected, text) => {
+    const { view, message, detail } = topUpTimeline(topUp, sentRoute, now);
+
+    expect({ marks: marks(view), state: view.state }).toEqual({
+      marks: expected.marks,
+      state: expected.state,
+    });
+    if (view.state !== "done") expect(view.lines[view.phase]).toBeCloseTo(expected.line ?? 1, 10);
+    expect({ message, detail }).toEqual(text);
+  });
+
+  it("makes Sent green when the funds are final before the provider reports it", () => {
+    const { view, message } = topUpTimeline(record({}, received), route, RECEIVED);
+
+    expect(marks(view)).toBe("●●●●○○○");
+    expect(message).toEqual(normal("Converting your money to Cash"));
+  });
+
+  it.each([
+    [0, "Checked just now"],
+    [999, "Checked just now"],
+    [1_000, "Checked 1s ago"],
+    [2_500, "Checked 2s ago"],
+  ])("writes a check %ims ago as %s", (elapsed, line) => {
+    expect(checkedLine(SENT, SENT + elapsed)).toBe(line);
+  });
+});

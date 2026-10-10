@@ -283,7 +283,8 @@ describe("requests store: the worker poll", () => {
       JSON.stringify({
         "dot-assethub:3": {
           ...job,
-          claim: { ...job.claim, registeredAt: tickAt },
+          state: { ...job.state, psmRefusals: 2 },
+          claim: { ...job.claim, registeredAt: tickAt, credited: "10000000" },
           depositSeen: { block: 10, finalizedAtSeen: 8, finalized: 10 },
           conversion: {
             preparedAt: tickAt,
@@ -299,6 +300,7 @@ describe("requests store: the worker poll", () => {
       depositInBlock: { block: 10, finalizedAtSeen: 8, finalized: 10 },
       conversionPreparedAt: tickAt,
       claimRegisteredAt: tickAt,
+      witnesses: { worker: { psmRefusals: 2, claimCredited: "10000000" } },
     });
     expect(record).not.toHaveProperty("converted");
   });

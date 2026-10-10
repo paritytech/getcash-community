@@ -38,6 +38,7 @@ import {
   WORKER_READY_MS,
   WORKER_STALE_MS,
   buyerPaid,
+  conversionRouteOf,
   effectiveSourceId,
   handoffSaleOf,
   isDirectDeposit,
@@ -366,7 +367,7 @@ type WorkerJob = {
   failure?: string;
   lastError?: string;
   lastTickAt?: number | null;
-  state?: { fundsSeenAt?: number | null };
+  state?: { fundsSeenAt?: number | null; psmRefusals?: number };
   claim?: {
     phase?: string;
     amount?: string;
@@ -441,6 +442,7 @@ function jobView(job: WorkerJob): WorkerJobView {
   const { claim } = job;
   const depositSeen = depositSeenOf(job);
   const conversion = conversionOf(job);
+  const refusals = job.state?.psmRefusals;
   return {
     phase: job.phase ?? "",
     done: job.done === true,
@@ -464,6 +466,7 @@ function jobView(job: WorkerJob): WorkerJobView {
           }
         : null,
     ...(job.txs === undefined ? {} : { txs: job.txs }),
+    ...(isNumber(refusals) && refusals > 0 ? { psmRefusals: refusals } : {}),
     ...(depositSeen === undefined ? {} : { depositSeen }),
     ...(conversion === undefined ? {} : { conversion }),
   };
@@ -872,12 +875,6 @@ function recordFromJob(sessionId: string, job: WorkerJob): TopUpRecord | null {
 /** A flow slot that can size a record: core wrote the settle amount into it at the start. */
 const hasHandoffAmount = (slot: FlowState | null): slot is FlowState & { handoffAmount: string } =>
   slot !== null && slot.handoffAmount !== undefined;
-
-/** The tier a record was quoted on, read off what it persisted and never decided here: the
- *  hand-off it froze at quote time, or the tier recorded beside it when the hand-off is missing.
- *  A record with neither is from before tiers were recorded, and so a pool one. */
-const conversionRouteOf = (record: TopUpRecord): ConversionRoute =>
-  recordedRoute(record.handoff ?? record.conversion ?? {});
 
 /** A record for a funded burner the surface lost every trace of, from the core flow slot that
  *  started it: the only thing left that knows the amount. Generic labels, like a job's record. */
