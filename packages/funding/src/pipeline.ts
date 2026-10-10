@@ -59,6 +59,7 @@
 
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import type {
+  HexString,
   PolkadotClient,
   PolkadotSigner,
   Transaction,
@@ -524,14 +525,15 @@ export interface TickOutcome {
 
 type BlockTag = "best" | "finalized";
 
-/** The burner's deposit on Asset Hub in the asset the route expects: the native's free balance,
- *  or the holding of the pallet-assets id the route's token names. */
-async function readDeposit(
+/** The burner's deposit on Asset Hub in the asset the route expects, at a block tag or a block
+ *  hash: the native's free balance, or the holding of the pallet-assets id the route's token
+ *  names. */
+export async function readDeposit(
   api: AssetHubApi,
   route: ConversionRoute,
   address: string,
-  at: BlockTag,
-) {
+  at: BlockTag | HexString,
+): Promise<bigint> {
   const token = depositTokenOf(route);
   if (token.assetHubId === undefined) {
     const account = await api.query.System.Account.getValue(address, { at });

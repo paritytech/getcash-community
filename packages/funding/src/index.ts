@@ -17,6 +17,7 @@ export {
   quoteStableForUnderlying,
   quoteStableIn,
   quoteUnderlyingOut,
+  readDeposit,
   sizeNativeBudget,
   stableDepositNeeded,
   tickOnce,
