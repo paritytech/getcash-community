@@ -18,6 +18,7 @@ import {
   type QuoteRow,
 } from "../../funding/quote-rows";
 import { journeyScaleOf, type JourneyScale } from "../../funding/requests/views";
+import { TIMELINE_CADENCE_MS } from "../../funding/timeline/timelines";
 import { providerNameOf } from "../../funding/top-up-projection";
 import type { FundingTopUp } from "../../funding/top-ups";
 import { useRequestsStore } from "../../stores/requests";
@@ -28,6 +29,7 @@ import { fmtFiat, isMoneyAmount } from "../../utils/money";
 import { formatWhenShort, shortRef } from "../../utils/journey";
 import { refundedFailure } from "../../utils/recovery";
 import FundingJourneyTimeline from "../funding/progress/FundingJourneyTimeline.vue";
+import FundingTimeline from "../funding/timeline/FundingTimeline.vue";
 import CashAmount from "../ui/CashAmount.vue";
 import DetailRows, { type DetailRow } from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
@@ -57,11 +59,17 @@ const emit = defineEmits<{
 const session = useSessionStore();
 const requests = useRequestsStore();
 
-const cadence = computed(
-  () =>
-    requests.foregroundProgress?.snapshot.profile.cadenceMs ?? props.progress?.cadenceMs ?? null,
+const cadence = computed(() =>
+  requests.foregroundRecord !== null ? TIMELINE_CADENCE_MS : (props.progress?.cadenceMs ?? null),
 );
 const now = useFundingProgressClock(cadence);
+/** The top-up's timeline once it opened: the live record's, else the list's for a journey opened
+ *  from history. */
+const timeline = computed(() =>
+  requests.foregroundRecord !== null
+    ? requests.foregroundTimeline(now.value)
+    : props.topUp?.timeline,
+);
 const progress = computed(() => {
   const foreground = requests.foregroundProgress;
   if (foreground) {
@@ -372,6 +380,13 @@ const canStartOver = computed(
 /** Temporarily stuck (the provider is retrying): amber on the stepper, never terminal. */
 const delayed = computed(() => requests.meldDelayed && !finished.value && !heroFailed.value);
 
+/** Explains a header amount that moved off the quote. */
+const rateChangeNotice = computed(() =>
+  revisedAmount.value
+    ? `Rates changed while your money was on its way. You'll get ${cashAmount(revisedAmount.value)} instead of ${cashAmount(quotedAmount.value)}`
+    : null,
+);
+
 /** The one ribbon line under the stepper: a failure reason, an out-of-band notice, a transient
  *  delay, or the rail's own word on its payment. The last matters most on the bank rail, where
  *  "Confirming your bank transfer…" can be the state for days. */
@@ -398,9 +413,7 @@ const message = computed(() => {
   // is read as a mistake, and name both amounts so the difference is the buyer's to check. Above
   // the rail's own line, which by then reads "Bank transfer confirmed" — true, and not the news.
   // Below the notices, which are what a buyer has to act on.
-  if (revisedAmount.value) {
-    return `Rates changed while your money was on its way. You'll get ${cashAmount(revisedAmount.value)} instead of ${cashAmount(quotedAmount.value)}`;
-  }
+  if (rateChangeNotice.value) return rateChangeNotice.value;
   if (props.status) return props.status.text;
   // Nothing has been reported on a bank transfer yet: days can pass here, so the ribbon says what
   // the silence means rather than leaving the stepper to speak for itself.
@@ -409,6 +422,14 @@ const message = computed(() => {
   }
   return null;
 });
+
+/** The band's text: the screen's failure text until the timeline draws failures, then the
+ *  rate-change notice, which explains the header's new amount, then the timeline's own message. */
+const timelineMessage = computed(() => {
+  if (heroFailed.value) return message.value;
+  return rateChangeNotice.value ?? timeline.value?.message?.text ?? null;
+});
+const timelineDetail = computed(() => (heroFailed.value ? null : (timeline.value?.detail ?? null)));
 </script>
 
 <template>
@@ -435,8 +456,14 @@ const message = computed(() => {
 
     <div class="mt-6 flex flex-1 flex-col gap-6">
       <!-- The stepper leaves once the CASH lands. -->
+      <FundingTimeline
+        v-if="timeline && !finished"
+        :view="timeline.view"
+        :message="timelineMessage"
+        :detail="timelineDetail"
+      />
       <FundingJourneyTimeline
-        v-if="progress && !finished"
+        v-else-if="progress && !finished"
         :progress="progress"
         :scale="scale"
         :completed-steps="completedSteps"
