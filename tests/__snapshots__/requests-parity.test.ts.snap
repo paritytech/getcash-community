@@ -3851,6 +3851,34 @@ exports[`request list projection > projects the fixture records exactly as today
         "kind": "finishing",
         "status": "Converting to $CASH",
       },
+      "timeline": {
+        "detail": undefined,
+        "message": {
+          "delay": false,
+          "text": "Your money is arriving",
+        },
+        "view": {
+          "lines": [
+            1,
+            1,
+            0.4925,
+            0,
+            0,
+            0,
+          ],
+          "milestones": [
+            "complete",
+            "complete",
+            "complete",
+            "upcoming",
+            "upcoming",
+            "upcoming",
+            "upcoming",
+          ],
+          "phase": 2,
+          "state": "delayed",
+        },
+      },
     },
     {
       "amount": "25",
@@ -3990,6 +4018,29 @@ exports[`request list projection > projects the fixture records exactly as today
         "at": 1746551400000,
         "kind": "failed",
         "reason": "shortfall: the deposit is below the swap minimum",
+      },
+      "timeline": {
+        "view": {
+          "lines": [
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+          ],
+          "milestones": [
+            "complete",
+            "complete",
+            "complete",
+            "failed",
+            "upcoming",
+            "upcoming",
+            "upcoming",
+          ],
+          "phase": 2,
+          "state": "failed",
+        },
       },
     },
     {
@@ -4198,6 +4249,34 @@ exports[`request list projection > projects the fixture records exactly as today
         "kind": "awaiting-transfer",
         "status": "Confirming your payment",
       },
+      "timeline": {
+        "detail": undefined,
+        "message": {
+          "delay": true,
+          "text": "The payment provider is still reviewing your payment. Don't pay again.",
+        },
+        "view": {
+          "lines": [
+            0.985,
+            0,
+            0,
+            0,
+            0,
+            0,
+          ],
+          "milestones": [
+            "complete",
+            "upcoming",
+            "upcoming",
+            "upcoming",
+            "upcoming",
+            "upcoming",
+            "upcoming",
+          ],
+          "phase": 0,
+          "state": "delayed",
+        },
+      },
     },
     {
       "amount": "50",
@@ -4269,6 +4348,28 @@ exports[`request list projection > projects the fixture records exactly as today
         "at": 1746549600000,
         "creditedAmount": "50.25",
         "kind": "settled",
+      },
+      "timeline": {
+        "view": {
+          "lines": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+          ],
+          "milestones": [
+            "complete",
+            "complete",
+            "complete",
+            "complete",
+            "complete",
+            "complete",
+            "complete",
+          ],
+          "state": "done",
+        },
       },
     },
   ],
@@ -4350,6 +4451,29 @@ exports[`request list projection > projects the fixture records with live status
         "kind": "failed",
         "reason": "funding failed in the background",
       },
+      "timeline": {
+        "view": {
+          "lines": [
+            1,
+            1,
+            1,
+            0,
+            0,
+            0,
+          ],
+          "milestones": [
+            "complete",
+            "complete",
+            "complete",
+            "complete",
+            "failed",
+            "upcoming",
+            "upcoming",
+          ],
+          "phase": 3,
+          "state": "failed",
+        },
+      },
     },
     {
       "amount": "25",
@@ -4420,6 +4544,34 @@ exports[`request list projection > projects the fixture records with live status
       "state": {
         "kind": "finishing",
         "status": "Converting to $CASH",
+      },
+      "timeline": {
+        "detail": undefined,
+        "message": {
+          "delay": false,
+          "text": "Converting your money to Cash",
+        },
+        "view": {
+          "lines": [
+            1,
+            1,
+            1,
+            0,
+            0,
+            0,
+          ],
+          "milestones": [
+            "complete",
+            "complete",
+            "complete",
+            "complete",
+            "upcoming",
+            "upcoming",
+            "upcoming",
+          ],
+          "phase": 3,
+          "state": "active",
+        },
       },
     },
     {
@@ -4493,6 +4645,29 @@ exports[`request list projection > projects the fixture records with live status
         "at": 1746551400000,
         "kind": "failed",
         "reason": "shortfall: the deposit is below the swap minimum",
+      },
+      "timeline": {
+        "view": {
+          "lines": [
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+          ],
+          "milestones": [
+            "complete",
+            "complete",
+            "complete",
+            "failed",
+            "upcoming",
+            "upcoming",
+            "upcoming",
+          ],
+          "phase": 2,
+          "state": "failed",
+        },
       },
     },
     {
@@ -4702,6 +4877,34 @@ exports[`request list projection > projects the fixture records with live status
         "kind": "finishing",
         "status": "Converting to $CASH",
       },
+      "timeline": {
+        "detail": undefined,
+        "message": {
+          "delay": false,
+          "text": "Converting your money to Cash",
+        },
+        "view": {
+          "lines": [
+            1,
+            1,
+            1,
+            0,
+            0,
+            0,
+          ],
+          "milestones": [
+            "complete",
+            "complete",
+            "complete",
+            "complete",
+            "upcoming",
+            "upcoming",
+            "upcoming",
+          ],
+          "phase": 3,
+          "state": "active",
+        },
+      },
     },
     {
       "amount": "50",
@@ -4773,6 +4976,28 @@ exports[`request list projection > projects the fixture records with live status
         "at": 1746549600000,
         "creditedAmount": "50.25",
         "kind": "settled",
+      },
+      "timeline": {
+        "view": {
+          "lines": [
+            1,
+            1,
+            1,
+            1,
+            1,
+            1,
+          ],
+          "milestones": [
+            "complete",
+            "complete",
+            "complete",
+            "complete",
+            "complete",
+            "complete",
+            "complete",
+          ],
+          "state": "done",
+        },
       },
     },
   ],

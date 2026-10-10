@@ -9,6 +9,11 @@ import { CRYPTO_SOURCE_ID, isCryptoSourceId } from "./source-ids";
 import { projectFundingProgress, type FundingProgressSnapshot } from "./progress";
 import { effectiveSourceId, railProviderOf, type TopUpRecord } from "./requests/model";
 import { journeyScaleOf, journeyStepsOf, rowStateOf } from "./requests/views";
+import {
+  createTopUpTimelines,
+  TIMELINE_CADENCE_MS,
+  type TopUpTimelineOf,
+} from "./timeline/timelines";
 import type { FundingTopUpAdapter } from "./top-up-adapter";
 import { quoteOf, type FundingTopUpRecord } from "./top-up-projection";
 import type { FundingTopUp, FundingTopUpDetails } from "./top-ups";
@@ -55,11 +60,13 @@ export function isChainflipRecord(record: Pick<TopUpRecord, "ref">): boolean {
 export function projectChainflipTopUps(
   records: readonly TopUpRecord[],
   now = Date.now(),
+  timelineOf: TopUpTimelineOf = createTopUpTimelines(),
 ): FundingTopUp[] {
   return records.flatMap((record) => {
     if (!isChainflipRecord(record)) return [];
     const { ref, progress: snapshot } = record;
     const progress = projectFundingProgress({ snapshot, createdAt: record.startedAt, now });
+    const timeline = timelineOf(record, now);
     return [
       {
         id: topUpId(ref),
@@ -67,6 +74,7 @@ export function projectChainflipTopUps(
         route: "crypto" as const,
         startedAt: record.startedAt,
         progress,
+        ...(timeline === undefined ? {} : { timeline }),
         details: topUpDetails(record, snapshot),
         ...quoteOf(record),
         // The request's own identity, so a refund can be walked back to its key with no world.
@@ -90,15 +98,15 @@ export function chainflipRequestRef(id: string): RequestRef | null {
 export function useChainflipTopUpAdapter(): FundingTopUpAdapter {
   const session = useSessionStore();
   const requests = useRequestsStore();
-  const cadence = computed(() => {
-    const cadences = requests.openTopUps.flatMap((record) =>
-      FINISHED.has(record.status.kind) ? [] : [record.progress.profile.cadenceMs],
-    );
-    return cadences.length === 0 ? null : Math.min(...cadences);
-  });
-  const now = useFundingProgressClock(cadence);
+  const now = useFundingProgressClock(() =>
+    requests.openTopUps.some((record) => !FINISHED.has(record.status.kind))
+      ? TIMELINE_CADENCE_MS
+      : null,
+  );
   return {
-    topUps: computed(() => projectChainflipTopUps(requests.openTopUps, now.value)),
+    topUps: computed(() =>
+      projectChainflipTopUps(requests.openTopUps, now.value, requests.topUpTimelineOf),
+    ),
     refresh: () => session.resumeOpenRequests("boot"),
     open: (topUp) => {
       const ref = chainflipRequestRef(topUp.id);

@@ -1,6 +1,7 @@
 import type { FundingSelectorConfig } from "./config";
 import type { FundingProgressProjection } from "./progress";
 import type { FundingRoute } from "./selection";
+import type { TopUpTimeline } from "./timeline/top-up";
 
 export type FundingTopUpState =
   | { kind: "awaiting-transfer"; status: string }
@@ -57,6 +58,8 @@ export type FundingTopUp = Readonly<{
   route: FundingRoute;
   startedAt: number;
   progress: FundingProgressProjection;
+  /** The top-up's timeline, once it opened with the deposit. */
+  timeline?: TopUpTimeline;
   details?: FundingTopUpDetails;
   /** What the buyer pays as the rail quoted it, for the journey's money row when the request is
    *  not (yet) live in the store — and for the fee breakdown behind it, which is why the fee's

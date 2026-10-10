@@ -10,6 +10,11 @@ import type { TopUpRecord } from "./requests/model";
 import { journeyScaleOf, journeyStepsOf, rowStateOf } from "./requests/views";
 import type { FundingRoute } from "./selection";
 import { isMeldSourceId, meldMethodFor, meldSourceIdFor, type MeldMethod } from "./source-ids";
+import {
+  createTopUpTimelines,
+  TIMELINE_CADENCE_MS,
+  type TopUpTimelineOf,
+} from "./timeline/timelines";
 import type { FundingTopUpAdapter } from "./top-up-adapter";
 import { providerNameOf, quoteOf, referenceOf, type FundingTopUpRecord } from "./top-up-projection";
 import type { FundingTopUp, FundingTopUpDetails } from "./top-ups";
@@ -57,6 +62,7 @@ function topUpDetails(record: MeldTopUpRecord, method: MeldMethod): FundingTopUp
 export function projectMeldTopUps(
   records: readonly TopUpRecord[],
   now = Date.now(),
+  timelineOf: TopUpTimelineOf = createTopUpTimelines(),
 ): FundingTopUp[] {
   return records.flatMap((record) => {
     const { ref, progress: snapshot } = record;
@@ -64,6 +70,7 @@ export function projectMeldTopUps(
     const method = meldMethodFor(ref.sourceId);
     const route: FundingRoute = method;
     const progress = projectFundingProgress({ snapshot, createdAt: record.startedAt, now });
+    const timeline = timelineOf(record, now);
     const state = rowStateOf(record, progress);
     const worded =
       state.kind === "failed" && state.reason === DEPOSIT_EXPIRED_REASON
@@ -76,6 +83,7 @@ export function projectMeldTopUps(
         route,
         startedAt: record.startedAt,
         progress,
+        ...(timeline === undefined ? {} : { timeline }),
         details: topUpDetails(record, method),
         ...quoteOf(record),
         ...referenceOf(record),
@@ -90,17 +98,17 @@ export function projectMeldTopUps(
 export function useMeldTopUpAdapter(): FundingTopUpAdapter {
   const session = useSessionStore();
   const requests = useRequestsStore();
-  const cadence = computed(() => {
-    const cadences = requests.openTopUps.flatMap((record) =>
-      !isMeldSourceId(record.ref.sourceId) || FINISHED.has(record.status.kind)
-        ? []
-        : [record.progress.profile.cadenceMs],
-    );
-    return cadences.length === 0 ? null : Math.min(...cadences);
-  });
-  const now = useFundingProgressClock(cadence);
+  const now = useFundingProgressClock(() =>
+    requests.openTopUps.some(
+      (record) => isMeldSourceId(record.ref.sourceId) && !FINISHED.has(record.status.kind),
+    )
+      ? TIMELINE_CADENCE_MS
+      : null,
+  );
   return {
-    topUps: computed(() => projectMeldTopUps(requests.openTopUps, now.value)),
+    topUps: computed(() =>
+      projectMeldTopUps(requests.openTopUps, now.value, requests.topUpTimelineOf),
+    ),
     refresh: () => session.resumeOpenRequests("boot"),
     open: (topUp) => {
       const ref = meldRequestRef(topUp.id);

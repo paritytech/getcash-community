@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import type { PaymentState } from "@getsome/core";
 import type { MeldCancelResult } from "@getsome/meld";
+import { projectChainflipTopUps } from "../app/funding/chainflip-top-ups";
 import type { FundingProgressSnapshot } from "../app/funding/progress";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
@@ -314,6 +315,21 @@ describe("requests store: foreground, clock and user actions", () => {
     // The snapshot settles on the final word only: a settled one is terminal and would hide a
     // failure that followed.
     expect(requests.foregroundProgress?.snapshot.settledAt).toBeUndefined();
+  });
+
+  it("never shows the journey's timeline behind the list's for the same top-up", async () => {
+    setRequestsClock(() => FIXTURE_NOW);
+    const requests = useRequestsStore();
+    await requests.create(AWAITING_REF, migrated(awaitingDepositCryptoRecord));
+    requests.setForeground(AWAITING_REF);
+    expect(requests.foregroundTimeline(at(1))).toBeUndefined();
+
+    await requests.observe(AWAITING_REF, workerSwap(at(2)));
+    const [row] = projectChainflipTopUps(requests.openTopUps, at(3), requests.topUpTimelineOf);
+    const listed = row?.timeline?.view;
+    expect(listed).toMatchObject({ state: "delayed", phase: 3 });
+    expect(listed?.lines[3]).toBeGreaterThan(0);
+    expect(requests.foregroundTimeline(at(2))?.view.lines).toEqual(listed?.lines);
   });
 
   it("cancel refuses on funds in the burner read", async () => {

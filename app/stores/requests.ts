@@ -102,6 +102,8 @@ import {
   phaseLike,
 } from "../funding/requests/views";
 import { CRYPTO_SOURCE_ID, MELD_SOURCE_IDS } from "../funding/source-ids";
+import { createTopUpTimelines } from "../funding/timeline/timelines";
+import type { TopUpTimeline } from "../funding/timeline/top-up";
 import { fmtCash, toCashBase } from "../utils/cash";
 import {
   parseRequestIndex,
@@ -1355,6 +1357,11 @@ export const useRequestsStore = defineStore("requests", () => {
         : record.progress;
     return { ref: record.ref, startedAt: record.startedAt, snapshot };
   });
+  /** The timelines the list and the journey show, so that a top-up on both never moves back. */
+  const topUpTimelineOf = createTopUpTimelines();
+  /** The timeline of the top-up on screen at `now`. */
+  const foregroundTimeline = (now: number): TopUpTimeline | undefined =>
+    foregroundRecord.value === null ? undefined : topUpTimelineOf(foregroundRecord.value, now);
 
   // The Meld poll's views, read from the record on screen.
   /** The Meld payment's stage: `waiting` while the buyer is on the widget, `receiving` once the
@@ -2980,6 +2987,8 @@ export const useRequestsStore = defineStore("requests", () => {
     journeyDone,
     claiming,
     foregroundProgress,
+    topUpTimelineOf,
+    foregroundTimeline,
     meldStage,
     meldDelayed,
     railSeen,

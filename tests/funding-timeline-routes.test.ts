@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import type { ChainflipFacts, TopUpRecord } from "../app/funding/requests/model";
 import { chainflipRoute } from "../app/funding/timeline/chainflip";
+import { directRoute } from "../app/funding/timeline/direct";
 import { meldBankRoute, meldCardRoute } from "../app/funding/timeline/meld";
 import { PART_LIMIT } from "../app/funding/timeline/model";
 import type { TimelineMessage, TimelineRoute } from "../app/funding/timeline/route";
+import { createTopUpTimelines, timelineRouteOf } from "../app/funding/timeline/timelines";
 import { RECONNECT_AFTER_MS, topUpTimeline } from "../app/funding/timeline/top-up";
 import type { TimelineView } from "../app/funding/timeline/types";
 import { requestRefOf } from "../app/utils/request-index";
@@ -662,6 +664,50 @@ describe("top-up timeline, reconnect line", () => {
     "shows for %s",
     (_, topUp, route, now, watchingSince, detail) => {
       expect(topUpTimeline(topUp, route, { now, watchingSince }).detail).toBe(detail);
+    },
+  );
+});
+
+describe("top-up timeline, route by source", () => {
+  it.each([
+    ["meld-card", meldCardRoute],
+    ["meld-bank", meldBankRoute],
+    ["dot-assethub", directRoute],
+    ["usdc-assethub", directRoute],
+    [undefined, directRoute],
+    ["btc", chainflipRoute],
+    ["usdt-tron", chainflipRoute],
+  ] satisfies [string | undefined, TimelineRoute][])(
+    "picks for %s its route",
+    (sourceId, route) => {
+      expect(timelineRouteOf(sourceId)).toBe(route);
+    },
+  );
+
+  const direct = (facts: Partial<TopUpRecord>): TopUpRecord => ({
+    ...cryptoRecord("dot-assethub"),
+    ...facts,
+  });
+
+  it.each([
+    ["the deposit is not seen", direct({}), undefined],
+    [
+      "the deposit watch sees the deposit",
+      direct({ funded: SENT }),
+      { marks: "●●●○○○○", message: normal("Your money is arriving") },
+    ],
+    [
+      "the worker sees the deposit in a best block",
+      direct({ depositInBlock: { block: 110, finalizedAtSeen: 100, finalized: 105 } }),
+      { marks: "●●●○○○○", message: normal("Making sure your money arrived safely") },
+    ],
+  ] satisfies [string, TopUpRecord, { marks: string; message: TimelineMessage } | undefined][])(
+    "opens a direct deposit's timeline on phase 3 when %s",
+    (_, topUp, expected) => {
+      const timeline = createTopUpTimelines()(topUp, SENT);
+      expect(timeline && { marks: marks(timeline.view), message: timeline.message }).toEqual(
+        expected,
+      );
     },
   );
 });

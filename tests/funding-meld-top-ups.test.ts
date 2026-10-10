@@ -8,6 +8,7 @@ import { createFundingProgressSnapshot, meldProgressProvider } from "../app/fund
 import { migrateRecord } from "../app/funding/requests/migrate";
 import type { Observation, RequestRecord } from "../app/funding/requests/model";
 import { reduce } from "../app/funding/requests/reducer";
+import { createTopUpTimelines } from "../app/funding/timeline/timelines";
 import type { ActiveFlowRecord } from "../app/stores/session";
 import { requestRefOf } from "../app/utils/request-index";
 
@@ -66,6 +67,7 @@ describe("Meld top-up adapter", () => {
       progress: { view: { kind: "waiting", label: "Waiting for your payment" } },
       state: { kind: "awaiting-transfer", status: "Waiting for your payment" },
     });
+    expect(topUps[0]).not.toHaveProperty("timeline");
     expect(topUps[0]?.details).not.toHaveProperty("network");
     expect(topUps[0]?.details).not.toHaveProperty("token");
     expect(topUps[1]).toMatchObject({
@@ -74,6 +76,24 @@ describe("Meld top-up adapter", () => {
       details: { method: { label: "Bank transfer" } },
       state: { kind: "finishing", status: "Converting to $CASH" },
     });
+  });
+
+  it("carries the timeline once the payment is submitted, never behind the line it showed", () => {
+    const submitted = record(
+      { tradeN: 2, amountHuman: "50", startedAt: 100, sourceId: "meld-card", meldSubmittedAt: 100 },
+      100,
+    );
+    if (submitted.kind !== "top-up") throw new Error("fixture is not a top-up");
+    const timelineOf = createTopUpTimelines();
+    const rowAt = (now: number) => projectMeldTopUps([submitted], now, timelineOf)[0];
+
+    const shown = rowAt(60_100)?.timeline;
+    expect(shown).toMatchObject({
+      view: { state: "active", phase: 0 },
+      message: { text: "Checking your payment" },
+    });
+    expect(shown?.view.lines[0]).toBeGreaterThan(0);
+    expect(rowAt(30_100)?.timeline?.view.lines[0]).toBe(shown?.view.lines[0]);
   });
 
   it("carries the reference and the provider a failed journey has to show", () => {
