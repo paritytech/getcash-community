@@ -131,8 +131,8 @@ export interface ChainflipProgressFacts {
   chunks?: { executed: number; remaining: number };
   /** When Chainflip last moved the swap, or the current DCA chunk, to a later block. */
   swapRescheduledAt?: number;
-  /** Chainflip's expected duration of each stage. */
-  estimatedDurationsSeconds?: { deposit: number; swap: number; egress: number };
+  /** Chainflip's expected duration of each stage it gave. A completed swap carries only `swap`. */
+  estimatedDurationsSeconds?: { deposit?: number; swap?: number; egress?: number };
 }
 
 /**

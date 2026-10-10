@@ -91,7 +91,7 @@ describe("progress facts", () => {
       {
         state: "SWAPPING",
         srcChainRequiredBlockConfirmations: 3,
-        estimatedDurationsSeconds: { deposit: 1800, swap: 12, egress: 30 },
+        estimatedDurationsSeconds: { deposit: 6.65, swap: 12, egress: 96 },
         deposit: { amount: "1", txConfirmations: 2 },
         boost: { maxBoostFeeBps: 5, boostedAt: 1_000 },
         swap: { regular: { scheduledAt: 2_000, latestSwapRescheduledAt: 3_000 } },
@@ -102,7 +102,7 @@ describe("progress facts", () => {
         boostedAt: 1_000,
         swapScheduledAt: 2_000,
         swapRescheduledAt: 3_000,
-        estimatedDurationsSeconds: { deposit: 1800, swap: 12, egress: 30 },
+        estimatedDurationsSeconds: { deposit: 6.65, swap: 12, egress: 96 },
       },
     ],
     [
@@ -120,11 +120,16 @@ describe("progress facts", () => {
       { chunks: { executed: 2, remaining: 3 }, swapRescheduledAt: 5_000 },
     ],
     [
+      "a completed swap's estimates",
+      { state: "COMPLETED", estimatedDurationsSeconds: { swap: 12, egress: null } },
+      { estimatedDurationsSeconds: { swap: 12 } },
+    ],
+    [
       "malformed fields",
       {
         state: "SWAPPING",
         srcChainRequiredBlockConfirmations: null,
-        estimatedDurationsSeconds: { deposit: 1800, swap: "12", egress: 30 },
+        estimatedDurationsSeconds: { deposit: -1, swap: "12" },
         deposit: { txConfirmations: 1.5 },
         boost: { boostedAt: -1 },
         swap: { regular: "soon", dca: { executedChunks: 2 } },

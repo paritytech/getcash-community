@@ -890,7 +890,11 @@ describe("request reducer: top-up timeline facts", () => {
       estimatedDurationsSeconds: { deposit: 600, swap: 12, egress: 30 },
     };
     const second = { depositConfirmations: 2, boostedAt: 5 };
-    const swap = { chunks: { executed: 1, remaining: 3 }, swapScheduledAt: 7 };
+    const swap = {
+      chunks: { executed: 1, remaining: 3 },
+      swapScheduledAt: 7,
+      estimatedDurationsSeconds: { swap: 15 },
+    };
     // Fewer confirmations and chunks, an earlier schedule and a second boost move nothing back.
     const stale = {
       depositConfirmations: 1,
@@ -902,7 +906,14 @@ describe("request reducer: top-up timeline facts", () => {
     replay(chainflipRecord(), (record) => record.chainflip ?? {}, [
       [swapping(at(1), "receiving", first), { ...first, confirmationsAt: at(1) }],
       [swapping(at(2), "receiving", second), { ...second, confirmationsAt: at(2) }],
-      [swapping(at(3), "swapping", swap), { ...swap, chunksAt: at(3) }],
+      [
+        swapping(at(3), "swapping", swap),
+        {
+          ...swap,
+          chunksAt: at(3),
+          estimatedDurationsSeconds: { deposit: 600, swap: 15, egress: 30 },
+        },
+      ],
       [swapping(at(4), "swapping", stale), { swapRescheduledAt: 8 }],
       [swapping(at(5), "sending", undefined, 9), { egressScheduledAt: 9 }],
     ]);

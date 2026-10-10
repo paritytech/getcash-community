@@ -4,7 +4,14 @@
 import { cashAmount } from "../../utils/cash";
 import { conversionRouteOf, type DepositInBlock, type TopUpRecord } from "../requests/model";
 import { checkedLine } from "./checked";
-import type { ProviderPhaseIndex, TextState, TimelineMessage, TimelineText } from "./route";
+import {
+  delay,
+  normal,
+  type ProviderPhaseIndex,
+  type TextState,
+  type TimelineMessage,
+  type TimelineText,
+} from "./route";
 import type { Fact, PhaseIndex, PhaseInput, PhasePart, ReachedMilestones } from "./types";
 
 const SECOND = 1_000;
@@ -99,9 +106,6 @@ export function polkadotPhase(
       };
   }
 }
-
-const normal = (text: string): TimelineMessage => ({ text, delay: false });
-const delay = (text: string): TimelineMessage => ({ text, delay: true });
 
 function workerChecked(record: TopUpRecord, now: number): string | undefined {
   const tick = workerOf(record)?.lastTickAt;

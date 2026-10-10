@@ -31,6 +31,18 @@ export function statusObserved(
   return status === "waiting" || status === "failed" ? record : observedFirst(record, status, at);
 }
 
+type Estimates = ChainflipFacts["estimatedDurationsSeconds"];
+
+/** Each stage's estimate from the latest read that gave one. */
+function estimatesKept(current: Estimates, read: Estimates): Estimates {
+  if (current === undefined || read === undefined) return read ?? current;
+  return {
+    deposit: read.deposit ?? current.deposit,
+    swap: read.swap ?? current.swap,
+    egress: read.egress ?? current.egress,
+  };
+}
+
 type ChainflipRead = Pick<
   Extract<PaymentState, { phase: "swapping" }>,
   "progress" | "egressScheduledAt"
@@ -59,7 +71,10 @@ export function chainflipObserved(
     swapScheduledAt: latest(current?.swapScheduledAt, read.swapScheduledAt),
     chunks,
     swapRescheduledAt: latest(current?.swapRescheduledAt, read.swapRescheduledAt),
-    estimatedDurationsSeconds: read.estimatedDurationsSeconds ?? current?.estimatedDurationsSeconds,
+    estimatedDurationsSeconds: estimatesKept(
+      current?.estimatedDurationsSeconds,
+      read.estimatedDurationsSeconds,
+    ),
     egressScheduledAt: latest(current?.egressScheduledAt, egressScheduledAt),
     confirmationsAt:
       depositConfirmations === current?.depositConfirmations ? current?.confirmationsAt : at,

@@ -7,6 +7,9 @@ export interface TimelineMessage {
   readonly delay: boolean;
 }
 
+export const normal = (text: string): TimelineMessage => ({ text, delay: false });
+export const delay = (text: string): TimelineMessage => ({ text, delay: true });
+
 export interface TimelineText {
   readonly message: TimelineMessage;
   /** The detail line under the message, when the phase has one. */

@@ -78,12 +78,12 @@ function chunksOf(dca: Fields): ChainflipProgressFacts["chunks"] {
 
 function durationsOf(value: unknown): ChainflipProgressFacts["estimatedDurationsSeconds"] {
   const durations = fields(value);
-  const deposit = time(durations.deposit);
-  const swap = time(durations.swap);
-  const egress = time(durations.egress);
-  return deposit === undefined || swap === undefined || egress === undefined
-    ? undefined
-    : { deposit, swap, egress };
+  const estimates = {
+    deposit: time(durations.deposit),
+    swap: time(durations.swap),
+    egress: time(durations.egress),
+  };
+  return Object.values(estimates).some((seconds) => seconds !== undefined) ? estimates : undefined;
 }
 
 function progressOf(body: Fields): ChainflipProgressFacts {
