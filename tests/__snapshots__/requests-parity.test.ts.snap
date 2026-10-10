@@ -3855,13 +3855,13 @@ exports[`request list projection > projects the fixture records exactly as today
         "detail": undefined,
         "message": {
           "delay": false,
-          "text": "Your money is arriving",
+          "text": "Making sure your money arrived safely",
         },
         "view": {
           "lines": [
             1,
             1,
-            0.4925,
+            0.9924999999999999,
             0,
             0,
             0,
@@ -4018,29 +4018,6 @@ exports[`request list projection > projects the fixture records exactly as today
         "at": 1746551400000,
         "kind": "failed",
         "reason": "shortfall: the deposit is below the swap minimum",
-      },
-      "timeline": {
-        "view": {
-          "lines": [
-            1,
-            1,
-            0,
-            0,
-            0,
-            0,
-          ],
-          "milestones": [
-            "complete",
-            "complete",
-            "complete",
-            "failed",
-            "upcoming",
-            "upcoming",
-            "upcoming",
-          ],
-          "phase": 2,
-          "state": "failed",
-        },
       },
     },
     {
@@ -4645,29 +4622,6 @@ exports[`request list projection > projects the fixture records with live status
         "at": 1746551400000,
         "kind": "failed",
         "reason": "shortfall: the deposit is below the swap minimum",
-      },
-      "timeline": {
-        "view": {
-          "lines": [
-            1,
-            1,
-            0,
-            0,
-            0,
-            0,
-          ],
-          "milestones": [
-            "complete",
-            "complete",
-            "complete",
-            "failed",
-            "upcoming",
-            "upcoming",
-            "upcoming",
-          ],
-          "phase": 2,
-          "state": "failed",
-        },
       },
     },
     {

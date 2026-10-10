@@ -97,6 +97,8 @@ export type Freshness = "confirmed" | "reconciling" | "cached";
  *  credited on People. */
 export type ConvertingStep = Exclude<FundingStep, "await-native" | "done">;
 export type DepositSeenVia = "worker" | "chain" | "rail" | "core" | "faucet" | "pre-cancel";
+/** A sighting of the money on the burner itself; core and the rail only relay the provider's. */
+export const seenOnBurner = (via: DepositSeenVia): boolean => via !== "core" && via !== "rail";
 /** The worker's claim as it moves: sized, registered with the host, claiming, claimed. */
 export type WorkerClaimPhase = "sizing" | "registering" | "claiming" | "claimed";
 

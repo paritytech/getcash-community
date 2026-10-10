@@ -22,6 +22,7 @@ import {
   isDirectDeposit,
   isTerminal,
   rankOf,
+  seenOnBurner,
   type ConvertingStep,
   type DepositMismatchState,
   type DepositSeenVia,
@@ -160,8 +161,7 @@ function moneySeen(
     status: { kind: "deposit-seen", at, assurance, via },
     funded: earliest(record.funded, at),
   };
-  const onBurner = via !== "core" && via !== "rail";
-  return advanced(seen, onBurner ? ROUTE_COMPLETE : HOLD, at);
+  return advanced(seen, seenOnBurner(via) ? ROUTE_COMPLETE : HOLD, at);
 }
 
 function failed(record: TopUpRecord, at: number, failure: RequestFailure): TopUpRecord {

@@ -89,6 +89,29 @@ describe("top-up timeline, shared route frame", () => {
       { message: normal("Your money is arriving") },
     ],
     [
+      "the deposit watch sees the funds before the worker",
+      record({
+        status: { kind: "deposit-seen", at: SENT, assurance: "provisional", via: "chain" },
+      }),
+      SENT + 12 * SECOND,
+      {
+        marks: "●●●○○○○",
+        state: "active",
+        line: 0.5 + 0.5 * timeFill(12 * SECOND, 5 * MINUTE),
+      },
+      { message: normal("Making sure your money arrived safely") },
+    ],
+    [
+      "the provider alone reports the funds",
+      record({
+        funded: SENT,
+        status: { kind: "deposit-seen", at: SENT, assurance: "provisional", via: "core" },
+      }),
+      SENT + 12 * SECOND,
+      { marks: "●●●○○○○", state: "active", line: 0.5 * timeFill(12 * SECOND, SEEN_T) },
+      { message: normal("Your money is arriving") },
+    ],
+    [
       "the deposit is in a block that is half way to final",
       record({ depositInBlock: { block: 110, finalizedAtSeen: 100, finalized: 105 } }),
       SENT + 3 * MINUTE,
@@ -692,9 +715,20 @@ describe("top-up timeline, route by source", () => {
   it.each([
     ["the deposit is not seen", direct({}), undefined],
     [
+      "the provider alone reports the deposit",
+      direct({
+        funded: SENT,
+        status: { kind: "deposit-seen", at: SENT, assurance: "provisional", via: "core" },
+      }),
+      undefined,
+    ],
+    [
       "the deposit watch sees the deposit",
-      direct({ funded: SENT }),
-      { marks: "●●●○○○○", message: normal("Your money is arriving") },
+      direct({
+        funded: SENT,
+        status: { kind: "deposit-seen", at: SENT, assurance: "provisional", via: "chain" },
+      }),
+      { marks: "●●●○○○○", message: normal("Making sure your money arrived safely") },
     ],
     [
       "the worker sees the deposit in a best block",

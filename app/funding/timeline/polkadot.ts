@@ -2,7 +2,12 @@
 // 6, and their texts.
 
 import { cashAmount } from "../../utils/cash";
-import { conversionRouteOf, type DepositInBlock, type TopUpRecord } from "../requests/model";
+import {
+  conversionRouteOf,
+  seenOnBurner,
+  type DepositInBlock,
+  type TopUpRecord,
+} from "../requests/model";
 import { factAt } from "./observed";
 import {
   delay,
@@ -12,7 +17,7 @@ import {
   type TimelineMessage,
   type TimelineText,
 } from "./route";
-import type { PhaseIndex, PhaseInput, PhasePart, ReachedMilestones } from "./types";
+import type { Fact, PhaseIndex, PhaseInput, PhasePart, ReachedMilestones } from "./types";
 
 const SECOND = 1_000;
 const MINUTE = 60 * SECOND;
@@ -55,6 +60,14 @@ export function polkadotMilestones(record: TopUpRecord): PolkadotMilestones {
   };
 }
 
+/** The deposit on the burner in a best block: the app's own read of the burner saw it, with the
+ *  time of that read, or the worker followed it into a block. A provider's word is not enough. */
+export function depositOnBurner(record: TopUpRecord): Fact | undefined {
+  const { status } = record;
+  if (status.kind === "deposit-seen" && seenOnBurner(status.via)) return { at: status.at };
+  return record.depositInBlock === undefined ? undefined : {};
+}
+
 /** How far finality moved from where it stood when the deposit was seen to the deposit's block. */
 function finality({ block, finalizedAtSeen, finalized }: DepositInBlock): number {
   // A block that was already final when the deposit was seen leaves nothing to wait for.
@@ -71,15 +84,15 @@ export function polkadotPhase(
 ): PhaseInput {
   switch (index) {
     case 2: {
-      const seen = record.depositInBlock;
+      const inBlock = record.depositInBlock;
       return {
         parts: [
           {
             ...PARTS.seen,
             expectedMs: seenExpectedMs,
-            completed: seen === undefined ? undefined : {},
+            completed: depositOnBurner(record) === undefined ? undefined : {},
           },
-          { ...PARTS.final, fraction: seen === undefined ? undefined : finality(seen) },
+          { ...PARTS.final, fraction: inBlock === undefined ? undefined : finality(inBlock) },
         ],
       };
     }
@@ -134,7 +147,7 @@ export function polkadotText(
     case 2:
       return {
         message: normal(
-          record.depositInBlock === undefined
+          depositOnBurner(record) === undefined
             ? "Your money is arriving"
             : "Making sure your money arrived safely",
         ),
