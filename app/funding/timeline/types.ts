@@ -26,8 +26,8 @@ export interface PhasePart {
   readonly weight: number;
   /** The expected time `T` of the part. */
   readonly expectedMs: number;
-  /** How long the part runs before it is late. Defaults to `expectedMs`. */
-  readonly lateAfterMs?: number;
+  /** How long the part runs before it is late. Defaults to `expectedMs`; `null` is never late. */
+  readonly lateAfterMs?: number | null;
   /** When the part began. Defaults to the completion of the last completed part, else the start
    *  of the phase. */
   readonly startedAt?: number;

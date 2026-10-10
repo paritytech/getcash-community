@@ -4,6 +4,7 @@
 import { cashAmount } from "../../utils/cash";
 import { conversionRouteOf, type DepositInBlock, type TopUpRecord } from "../requests/model";
 import { checkedLine } from "./checked";
+import { factAt } from "./observed";
 import {
   delay,
   normal,
@@ -12,7 +13,7 @@ import {
   type TimelineMessage,
   type TimelineText,
 } from "./route";
-import type { Fact, PhaseIndex, PhaseInput, PhasePart, ReachedMilestones } from "./types";
+import type { PhaseIndex, PhaseInput, PhasePart, ReachedMilestones } from "./types";
 
 const SECOND = 1_000;
 const MINUTE = 60 * SECOND;
@@ -34,9 +35,6 @@ const PARTS = {
 export type PolkadotPhaseIndex = Exclude<PhaseIndex, ProviderPhaseIndex>;
 
 type PolkadotMilestones = Pick<ReachedMilestones, "received" | "converted" | "moved" | "added">;
-
-const factAt = (at: number | undefined): Fact | undefined =>
-  at === undefined ? undefined : { at };
 
 function workerOf(record: TopUpRecord) {
   const worker = record.witnesses.worker;

@@ -3,6 +3,7 @@ import { migrateRecord } from "../app/funding/requests/migrate";
 import type { ChainflipFacts, TopUpRecord } from "../app/funding/requests/model";
 import { chainflipRoute } from "../app/funding/timeline/chainflip";
 import { checkedLine } from "../app/funding/timeline/checked";
+import { meldBankRoute, meldCardRoute } from "../app/funding/timeline/meld";
 import { PART_LIMIT } from "../app/funding/timeline/model";
 import type { TimelineMessage, TimelineRoute } from "../app/funding/timeline/route";
 import { topUpTimeline } from "../app/funding/timeline/top-up";
@@ -452,6 +453,148 @@ describe("top-up timeline, Chainflip route", () => {
     { message: TimelineMessage; detail?: string },
   ][])("shows %s", (_, topUp, seconds, expected, text) => {
     const { view, message, detail } = topUpTimeline(topUp, chainflipRoute, at(seconds));
+
+    expect({ marks: marks(view), state: view.state }).toEqual({
+      marks: expected.marks,
+      state: expected.state,
+    });
+    if (view.state !== "done") expect(view.lines[view.phase]).toBeCloseTo(expected.line, 10);
+    expect({ message, detail }).toEqual(text);
+  });
+});
+
+describe("top-up timeline, Meld routes", () => {
+  const DAY = 24 * 60 * MINUTE;
+  const START = FIXTURE_NOW;
+  const routes = { card: meldCardRoute, bank: meldBankRoute };
+  const BANK_FIRST =
+    "If you've sent the money from your bank, it's on its way. Bank transfers can take a few days. This page will update when it arrives.";
+
+  /** A Meld record with `facts`, polled 3 s before `now`, its rail in Meld `ERROR` when `error`. */
+  function meldRecord(now: number, facts: Partial<TopUpRecord>, error = false): TopUpRecord {
+    const base = cardRecord();
+    return {
+      ...base,
+      meldSubmittedAt: undefined,
+      rail: { ...base.rail, delayed: error },
+      witnesses: { provider: { status: "transaction_seen", at: now - 3 * SECOND } },
+      ...facts,
+    };
+  }
+
+  it.each([
+    [
+      "card",
+      "the review, from the widget finished before the first transaction",
+      meldRecord(START + MINUTE, {
+        meldSubmittedAt: START,
+        observedAt: { receiving: START + 30 * SECOND },
+      }),
+      START + MINUTE,
+      { marks: "●○○○○○○", state: "active", line: timeFill(MINUTE, 2 * MINUTE) },
+      { message: normal("Checking your payment"), detail: "Checked 3s ago" },
+    ],
+    [
+      "card",
+      "Meld ERROR in the review",
+      meldRecord(START + MINUTE, { observedAt: { receiving: START } }, true),
+      START + MINUTE,
+      { marks: "●○○○○○○", state: "delayed", line: timeFill(MINUTE, 2 * MINUTE) },
+      {
+        message: delay("The payment provider hit a problem and is retrying. Don't pay again."),
+        detail: "Checked 3s ago",
+      },
+    ],
+    [
+      "card",
+      "a late review",
+      meldRecord(START + 2 * MINUTE + SECOND, { meldSubmittedAt: START }),
+      START + 2 * MINUTE + SECOND,
+      { marks: "●○○○○○○", state: "delayed", line: timeFill(121 * SECOND, 2 * MINUTE) },
+      {
+        message: delay("The payment provider is still reviewing your payment. Don't pay again."),
+        detail: "Checked 3s ago",
+      },
+    ],
+    [
+      "card",
+      "an accepted payment",
+      meldRecord(START + 2 * MINUTE, { observedAt: { receiving: START, sending: START + MINUTE } }),
+      START + 2 * MINUTE,
+      { marks: "●●○○○○○", state: "active", line: timeFill(MINUTE, 5 * MINUTE) },
+      { message: normal("Your money is on its way"), detail: "Checked 3s ago" },
+    ],
+    [
+      "card",
+      "Meld ERROR after the payment was accepted",
+      meldRecord(
+        START + 2 * MINUTE,
+        { observedAt: { receiving: START, sending: START + MINUTE } },
+        true,
+      ),
+      START + 2 * MINUTE,
+      { marks: "●●○○○○○", state: "delayed", line: timeFill(MINUTE, 5 * MINUTE) },
+      {
+        message: delay("The payment provider is retrying the transfer. Don't pay again."),
+        detail: "Checked 3s ago",
+      },
+    ],
+    [
+      "card",
+      "a sent payment",
+      meldRecord(START + 3 * MINUTE + 12 * SECOND, {
+        observedAt: { receiving: START, sending: START + MINUTE, complete: START + 3 * MINUTE },
+      }),
+      START + 3 * MINUTE + 12 * SECOND,
+      { marks: "●●●○○○○", state: "active", line: 0.5 * timeFill(12 * SECOND, SEEN_T) },
+      { message: normal("Your money is arriving") },
+    ],
+    [
+      "card",
+      "SETTLED read with no status before it",
+      meldRecord(START + MINUTE, { observedAt: { complete: START + MINUTE } }),
+      START + MINUTE,
+      { marks: "●●●○○○○", state: "active", line: 0 },
+      { message: normal("Your money is arriving") },
+    ],
+    [
+      "bank",
+      "a transfer just sent",
+      meldRecord(START, { meldSubmittedAt: START }),
+      START,
+      { marks: "●○○○○○○", state: "active", line: 0 },
+      { message: normal(BANK_FIRST), detail: "Checked 3s ago" },
+    ],
+    [
+      "bank",
+      "a transfer after 6 days, with Meld ERROR",
+      meldRecord(START + 6 * DAY, { meldSubmittedAt: START }, true),
+      START + 6 * DAY,
+      { marks: "●○○○○○○", state: "active", line: PART_LIMIT },
+      { message: normal(BANK_FIRST), detail: "Checked 3s ago" },
+    ],
+    [
+      "bank",
+      "Meld ERROR after the transfer was accepted",
+      meldRecord(START + DAY, { observedAt: { receiving: START, sending: START + DAY } }, true),
+      START + DAY,
+      { marks: "●●○○○○○", state: "delayed", line: 0 },
+      {
+        message: delay(
+          "The payment provider is retrying the transfer. Don't send the money again.",
+        ),
+        detail: "Checked 3s ago",
+      },
+    ],
+  ] satisfies [
+    keyof typeof routes,
+    string,
+    TopUpRecord,
+    number,
+    { marks: string; state: TimelineView["state"]; line: number },
+    { message: TimelineMessage; detail?: string },
+  ][])("shows on the %s route %s", (route, _, topUp, now, expected, text) => {
+    const { view, message, detail } = topUpTimeline(topUp, routes[route], now);
 
     expect({ marks: marks(view), state: view.state }).toEqual({
       marks: expected.marks,

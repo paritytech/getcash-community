@@ -25,7 +25,11 @@ function assertValidPart(part: PhasePart): void {
   if (!isPositive(part.expectedMs)) {
     throw new RangeError(`Phase part expected time must be positive, got ${part.expectedMs}`);
   }
-  if (part.lateAfterMs !== undefined && !isPositive(part.lateAfterMs)) {
+  if (
+    part.lateAfterMs !== undefined &&
+    part.lateAfterMs !== null &&
+    !isPositive(part.lateAfterMs)
+  ) {
     throw new RangeError(`Phase part late time must be positive, got ${part.lateAfterMs}`);
   }
   if (part.fraction !== undefined && !Number.isFinite(part.fraction)) {
@@ -61,7 +65,7 @@ function lineProgress(
   const within = part.fraction ?? 1 - Math.exp((-FILL_RATE * elapsed) / part.expectedMs);
   return {
     fill: before + share * clamp(within, 0, PART_LIMIT),
-    overdue: elapsed > (part.lateAfterMs ?? part.expectedMs),
+    overdue: part.lateAfterMs !== null && elapsed > (part.lateAfterMs ?? part.expectedMs),
   };
 }
 

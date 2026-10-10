@@ -4,8 +4,9 @@
 import { SOURCE_CONFIG_BY_ID, type SourceConfig } from "@getsome/chainflip";
 import { effectiveSourceId, type ChainflipFacts, type TopUpRecord } from "../requests/model";
 import { checkedLine } from "./checked";
+import { factAt, observedFrom } from "./observed";
 import { delay, normal, type TimelineRoute, type TimelineText } from "./route";
-import type { Fact, PhaseInput, PhasePart } from "./types";
+import type { PhaseInput, PhasePart } from "./types";
 
 const SECOND = 1_000;
 
@@ -17,19 +18,8 @@ const FALLBACK_ESTIMATES: Readonly<Record<Stage, number>> = { deposit: 300, swap
 /** Chainflip's statuses from the deposit on, in order. */
 const STATUSES = ["receiving", "swapping", "sending", "sent", "complete"] as const;
 
-/** When the record first observed `status` or a later one, which implies it. */
-function reachedAt(record: TopUpRecord, status: (typeof STATUSES)[number]): number | undefined {
-  const times = STATUSES.slice(STATUSES.indexOf(status)).flatMap((later) => {
-    const at = record.observedAt?.[later];
-    return at === undefined ? [] : [at];
-  });
-  return times.length === 0 ? undefined : Math.min(...times);
-}
-
-function reached(record: TopUpRecord, status: (typeof STATUSES)[number]): Fact | undefined {
-  const at = reachedAt(record, status);
-  return at === undefined ? undefined : { at };
-}
+const reachedAt = (record: TopUpRecord, status: (typeof STATUSES)[number]): number | undefined =>
+  observedFrom(record, STATUSES, status);
 
 /** Chainflip's estimate for a stage in seconds, when it gave a positive one. */
 function estimated(facts: ChainflipFacts, stage: Stage): number | undefined {
@@ -213,9 +203,9 @@ function exchangeText(
 
 export const chainflipRoute: TimelineRoute = {
   milestones: (record) => ({
-    started: reached(record, "receiving"),
-    accepted: reached(record, "sending"),
-    sent: reached(record, "sent"),
+    started: factAt(reachedAt(record, "receiving")),
+    accepted: factAt(reachedAt(record, "sending")),
+    sent: factAt(reachedAt(record, "sent")),
   }),
   phase(record, index) {
     const facts = record.chainflip ?? {};

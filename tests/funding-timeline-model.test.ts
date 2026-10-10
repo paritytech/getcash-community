@@ -124,6 +124,12 @@ describe("top-up timeline model", () => {
     ],
     [
       "active",
+      "the part in progress is never late",
+      { parts: [part({ lateAfterMs: null })] },
+      100 * T,
+    ],
+    [
+      "active",
       "a part completed and the next one started",
       { parts: [part({ completed: { at: T } }), part()] },
       T + 1,
