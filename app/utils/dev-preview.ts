@@ -1205,8 +1205,8 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    // The provider's crypto delivery is stuck and retrying (TRANSACTION_CRYPTO_FAILED): amber
-    // current step, delay notice in the ribbon, nothing terminal.
+    // The provider reports a temporary error (Meld's ERROR) and may still retry: amber current
+    // step, delay notice in the ribbon, nothing terminal.
     name: "card / journey: delayed",
     apply: async (s, f, i) => {
       const r = await cardPayment(s, f, i);
@@ -1356,8 +1356,8 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    // The provider has the money and its delivery is stuck, retrying on their side. Nothing is
-    // left to instruct or to call off, and the stepper goes amber rather than red.
+    // The provider has the money and reports a temporary error, retrying on their side. Nothing
+    // is left to instruct or to call off, and the stepper goes amber rather than red.
     name: "bank / journey: delayed",
     apply: async (s, f, i) => {
       const r = await bankTransfer(s, f, i);

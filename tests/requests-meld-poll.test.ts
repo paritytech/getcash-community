@@ -60,6 +60,7 @@ vi.mock("../lib/coinage-live", () => ({
  *  reached by a status poll. */
 interface FakeMeldClient extends MeldClientLike {
   status: string;
+  providerStatus?: string;
   /** Thrown by the next status reads instead of answering, when set. */
   failure: Error | null;
   /** Status reads so far, by funding-request id. */
@@ -80,7 +81,8 @@ function fakeMeldClient(status: string): FakeMeldClient {
     getStatus: async (fundingRequestId) => {
       client.reads[fundingRequestId] = (client.reads[fundingRequestId] ?? 0) + 1;
       if (client.failure !== null) throw client.failure;
-      return { status: client.status };
+      const { status, providerStatus } = client;
+      return providerStatus === undefined ? { status } : { status, providerStatus };
     },
     cancel: async () => {
       throw new Error("unused");
@@ -218,8 +220,14 @@ describe("requests store: the Meld poll", () => {
     expect(requests.meldHandedOff).toBe(true);
     expect(requests.meldSubmitted).toBe(true);
 
-    // The provider's crypto delivery is stuck and retrying: a delay, nothing terminal.
-    client.status = "crypto_failed";
+    // The provider approved the payment: the stage reads as before.
+    client.providerStatus = "SETTLING";
+    await nextPoll();
+    expect(requests.meldStage).toBe("receiving");
+    expect(requests.meldDelayed).toBe(false);
+
+    // A temporary provider error: a delay, nothing terminal.
+    client.providerStatus = "ERROR";
     await nextPoll();
     await nextTick();
     expect(requests.meldStage).toBe("receiving");

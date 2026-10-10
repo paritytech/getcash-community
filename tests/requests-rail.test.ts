@@ -112,8 +112,6 @@ describe("rail mapping", () => {
       ["session_opened", { status: "waiting", stage: "waiting" }],
       ["a_state_added_later", { status: "waiting", stage: "waiting" }],
       ["transaction_seen", { status: "receiving", stage: "received" }],
-      ["crypto_failed", { status: "receiving", stage: "received", delayed: true }],
-      ["transaction_crypto_failed", { status: "receiving", stage: "received", delayed: true }],
       ["settled", { status: "complete", stage: "delivered" }],
       [
         "failed",

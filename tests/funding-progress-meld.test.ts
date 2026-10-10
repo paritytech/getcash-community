@@ -43,10 +43,9 @@ describe("Meld progress provider", () => {
 
   it("maps the normalized statuses and holds on anything else", () => {
     expect(observeMeldProgress("waiting")).toEqual({ kind: "waiting" });
-    expect(observeMeldProgress("receiving")).toEqual({
-      kind: "stage",
-      stageKey: MELD_PAYMENT_STAGE,
-    });
+    for (const status of ["receiving", "sending"]) {
+      expect(observeMeldProgress(status)).toEqual({ kind: "stage", stageKey: MELD_PAYMENT_STAGE });
+    }
     expect(observeMeldProgress("complete")).toEqual({ kind: "route-complete" });
     expect(observeMeldProgress("swapping")).toEqual({ kind: "hold" });
     expect(observeMeldProgress("session_opened")).toEqual({ kind: "hold" });

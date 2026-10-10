@@ -14,6 +14,7 @@ export function observeMeldProgress(status: string): FundingProgressObservation 
     case "waiting":
       return { kind: "waiting" };
     case "receiving":
+    case "sending":
       return { kind: "stage", stageKey: MELD_PAYMENT_STAGE };
     case "complete":
       return { kind: "route-complete" };
