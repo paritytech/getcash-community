@@ -264,6 +264,45 @@ describe("requests store: the worker poll", () => {
     });
   });
 
+  it("poll carries the worker's facts past the deposit and drops a malformed one", async () => {
+    vi.useFakeTimers();
+    await seed([awaitingDepositCryptoRecord], AWAITING_JOB_BLOB);
+    const requests = useRequestsStore();
+    await requests.reconcile("boot");
+
+    const tickAt = FIXTURE_NOW + 3_000;
+    const job = doneJob(AWAITING_JOB, tickAt, {
+      phase: "claiming",
+      amount: "25250000",
+      at: tickAt,
+      attempts: 1,
+    });
+    // The worker's blob as it stores it, with a conversion block that is not a number.
+    await host.storage.write(
+      WORKER_JOBS_KEY,
+      JSON.stringify({
+        "dot-assethub:3": {
+          ...job,
+          claim: { ...job.claim, registeredAt: tickAt },
+          depositSeen: { block: 10, finalizedAtSeen: 8, finalized: 10 },
+          conversion: {
+            preparedAt: tickAt,
+            converted: { txHash: "0xaa", block: "12", at: tickAt },
+          },
+        },
+      }),
+    );
+    await elapse(JOB_POLL_MS);
+
+    const record = requests.get(AWAITING_REF);
+    expect(record).toMatchObject({
+      depositInBlock: { block: 10, finalizedAtSeen: 8, finalized: 10 },
+      conversionPreparedAt: tickAt,
+      claimRegisteredAt: tickAt,
+    });
+    expect(record).not.toHaveProperty("converted");
+  });
+
   it("a job without a record creates a record with the job's amount and deadline", async () => {
     await seed(fixtureRecords);
     const requests = useRequestsStore();

@@ -2,6 +2,7 @@
 // that move it, and the constants the store and the reducer share.
 
 import type {
+  ChainflipProgressFacts,
   FailureKind,
   FailureStep,
   PaymentPhase,
@@ -141,6 +142,8 @@ export interface RequestFailure {
   recoverable: boolean;
   refunded?: boolean;
   refund?: RefundProgress;
+  /** The rail's own code for the ending, when it named one. */
+  code?: string;
 }
 
 /** A direct deposit that is not the one asked: less of the picked token, or a balance in another
@@ -198,6 +201,39 @@ export interface WorkerHandoffPayload {
   quotedDeposit?: string;
 }
 
+/** A fact the top-up timeline measures time from that has no time of its own on the record: a
+ *  provider status, the CASH final on People (the worker's funding leg done), and the host's
+ *  `claiming`. */
+export type ObservedFact = Exclude<SwapProgress, "waiting"> | "cash-on-people" | "host-claiming";
+
+/** Chainflip's progress as the record keeps it: no count or time moves back, and a fact a later
+ *  read leaves out stays. */
+export interface ChainflipFacts extends ChainflipProgressFacts {
+  /** When Chainflip scheduled the egress to Asset Hub. */
+  egressScheduledAt?: number;
+  /** When the current confirmation count was first observed. */
+  confirmationsAt?: number;
+  /** When the current count of executed chunks was first observed. */
+  chunksAt?: number;
+}
+
+/** The deposit in a best block on Asset Hub, as the worker follows it until it is final. */
+export interface DepositInBlock {
+  /** The best block that first held it. */
+  block: number;
+  /** The finalized block number when it was first seen there. */
+  finalizedAtSeen: number;
+  /** The finalized block number at the worker's latest tick. */
+  finalized: number;
+}
+
+/** The conversion transaction in a best block: successful, with the tier's conversion event. */
+export interface ConvertedTx {
+  txHash: string;
+  block: number;
+  at: number;
+}
+
 /** What the store extracts from one job in the worker's blob. */
 export interface WorkerJobView {
   phase: string;
@@ -213,10 +249,15 @@ export interface WorkerJobView {
     credited?: string;
     /** The host's last word on the top-up. */
     status?: string;
+    /** When the worker registered the claim with the host. */
+    registeredAt?: number;
     at: number;
   } | null;
   /** As the worker records them on either branch. */
   txs?: { call: "swap" | "xcm"; txHash: string; block?: number }[];
+  depositSeen?: DepositInBlock;
+  /** When the conversion first passed its dry run, and its transaction once converted. */
+  conversion?: { preparedAt: number; converted?: ConvertedTx };
 }
 
 export interface TopUpRecord {
@@ -287,6 +328,16 @@ export interface TopUpRecord {
   /** When the host first reported the claim in a block with the full amount, before finality.
    *  Set once and never cleared; the screens show a `claiming` record done from here. */
   creditedAt?: number;
+  /** When the record first observed each fact the timeline measures time from. */
+  observedAt?: Partial<Record<ObservedFact, number>>;
+  /** A Chainflip swap's progress, from core's status reads. */
+  chainflip?: ChainflipFacts;
+  /** The worker's facts past the deposit, each kept from its first report. Only `finalized` of
+   *  the deposit moves on. */
+  depositInBlock?: DepositInBlock;
+  conversionPreparedAt?: number;
+  converted?: ConvertedTx;
+  claimRegisteredAt?: number;
   status: RequestStatus;
   rail: RailState;
   failure?: RequestFailure;

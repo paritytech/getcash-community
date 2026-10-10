@@ -32,6 +32,7 @@ import {
   type RequestStatus,
   type WorkerJobView,
 } from "../model";
+import { chainflipObserved, statusObserved, workerObserved } from "../facts";
 import { mergeRail, railFromSwapStatus, stageRank } from "../rail";
 
 type Witnesses = TopUpRecord["witnesses"];
@@ -250,14 +251,14 @@ function applyCoreState(record: TopUpRecord, at: number, state: PaymentState): T
       };
     }
     case "swapping": {
-      let seen = next;
+      let seen = chainflipObserved(next, state, at);
       // Core's view of the rail counts only while no provider poll has reported.
       if (seen.witnesses.provider === undefined) {
         const rail = mergeRail(
           seen.rail,
           railFromSwapStatus(seen.rail.provider, { status: state.swap }, at),
         );
-        seen = { ...seen, rail };
+        seen = statusObserved({ ...seen, rail }, state.swap, at);
         if (rail.stage !== "failed" && stageRank(rail.stage) >= stageRank("received")) {
           seen = moneySeen(seen, at, "provisional", "core");
         }
@@ -329,10 +330,11 @@ function workerWitness(job: WorkerJobView, at: number): Witnesses["worker"] {
 function applyWorker(record: TopUpRecord, at: number, job: WorkerJobView | null): TopUpRecord {
   if (job === null) return witnessed(record, { worker: { known: false, at } });
   const witnessAt = Math.max(at, job.lastTickAt ?? 0, job.claim?.at ?? 0);
-  let next: TopUpRecord = {
-    ...witnessed(record, { worker: workerWitness(job, witnessAt) }),
-    confirmedAt: at,
-  };
+  let next: TopUpRecord = workerObserved(
+    { ...witnessed(record, { worker: workerWitness(job, witnessAt) }), confirmedAt: at },
+    job,
+    at,
+  );
   // A job that saw funds is a money observation whatever its phase says (3.2, rule 3).
   if (job.fundsSeenAt !== null) next = moneySeen(next, job.fundsSeenAt, "finalized", "worker");
   // The host's early word: every mint is in a block. Kept through a reorg or a further attempt;
@@ -410,9 +412,12 @@ function applyProviderResult(record: TopUpRecord, observation: ProviderResult): 
     record.rail,
     railFromSwapStatus(record.rail.provider, result, at, observation.delayed),
   );
-  let next = witnessed(rail === record.rail ? record : { ...record, rail }, {
-    provider: { status: result.status, at },
-  });
+  const railed = statusObserved(
+    rail === record.rail ? record : { ...record, rail },
+    result.status,
+    at,
+  );
+  let next = witnessed(railed, { provider: { status: result.status, at } });
   if (rail.stage !== record.rail.stage || rail.status !== record.rail.status) {
     const provider = progressProviderForSource(effectiveSourceId(record.ref));
     next = advanced(

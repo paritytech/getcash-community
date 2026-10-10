@@ -1,15 +1,17 @@
 // The top-up transition table through the reducer: one `it` per transition of the design's table.
 
 import { describe, expect, it } from "vitest";
-import type { SwapStatusResult } from "@getsome/core";
+import type { ChainflipProgressFacts, PaymentState, SwapStatusResult } from "@getsome/core";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
   DEPOSIT_EXPIRED_REASON,
   FUNDING_HELD_REASON,
   paymentWatchUntil,
   PROVISIONAL_REVERT_MS,
+  type ChainflipFacts,
   type Observation,
   type RequestRecord,
+  type TopUpRecord,
   type WorkerJobView,
 } from "../app/funding/requests/model";
 import { reduce } from "../app/funding/requests/reducer";
@@ -810,5 +812,162 @@ describe("request reducer: top-up transitions", () => {
     expect(skipped.depositSkippedAt).toBe(at(1));
     // A second press keeps the first stamp and returns the same reference.
     expect(reduce(skipped, { source: "user", at: at(2), event: "deposit-skipped" })).toBe(skipped);
+  });
+});
+
+describe("request reducer: top-up timeline facts", () => {
+  type Swap = Extract<PaymentState, { phase: "swapping" }>["swap"];
+  const chainflipRecord = () => migrated(awaitingDepositCryptoRecord, requestRefOf("btc", 3));
+  const deposit = { address: "bc1q", amount: 1n, formatted: "1", assetSymbol: "BTC", expiresAt: 0 };
+  const swapping = (
+    time: number,
+    swap: Swap,
+    progress?: ChainflipProgressFacts,
+    egressScheduledAt?: number,
+  ): Observation => ({
+    source: "core",
+    at: time,
+    state: {
+      phase: "swapping",
+      sourceId: "btc",
+      quote: null,
+      deposit,
+      swap,
+      progress,
+      egressScheduledAt,
+    },
+  });
+  const topUp = (record: RequestRecord): TopUpRecord => {
+    if (record.kind !== "top-up") throw new Error("not a top-up");
+    return record;
+  };
+  /** Reduces each step's observation and checks the whole facts against everything expected so
+   *  far, updated with the step's own: a fact the step does not name must hold. */
+  function replay<F extends object>(
+    start: RequestRecord,
+    factsOf: (record: TopUpRecord) => F,
+    steps: readonly (readonly [Observation, Partial<F>])[],
+  ): void {
+    let record = start;
+    let expected: Partial<F> = {};
+    for (const [index, [observation, delta]] of steps.entries()) {
+      record = reduce(record, observation);
+      expected = { ...expected, ...delta };
+      expect(factsOf(topUp(record)), `step ${String(index + 1)}`).toEqual(expected);
+    }
+  }
+
+  it("stamps each provider status at its first read; a later read never moves a stamp", () => {
+    const statuses: Swap[] = ["receiving", "swapping", "swapping", "sending", "sent", "complete"];
+    const chainflip = statuses.map((status, i) => swapping(at(i + 1), status));
+    const meldStatuses: Swap[] = ["waiting", "receiving", "sending", "receiving", "sending"];
+    // The second `receiving` is Meld's ERROR after SETTLING.
+    const meldReads = meldStatuses.map((status, i) => ({
+      ...meld(at(i + 1), { status }),
+      delayed: i === 3,
+    }));
+    const cases: [RequestRecord, Observation[], TopUpRecord["observedAt"]][] = [
+      [
+        chainflipRecord(),
+        chainflip,
+        { receiving: at(1), swapping: at(2), sending: at(4), sent: at(5), complete: at(6) },
+      ],
+      [
+        card(),
+        [...meldReads, meld(at(6), { status: "complete" })],
+        { receiving: at(2), sending: at(3), complete: at(6) },
+      ],
+    ];
+    for (const [start, observations, observedAt] of cases) {
+      expect(topUp(observations.reduce(reduce, start)).observedAt).toEqual(observedAt);
+    }
+  });
+
+  it("keeps Chainflip's progress facts, and no later read moves one back", () => {
+    const first = {
+      depositConfirmations: 1,
+      requiredConfirmations: 3,
+      estimatedDurationsSeconds: { deposit: 600, swap: 12, egress: 30 },
+    };
+    const second = { depositConfirmations: 2, boostedAt: 5 };
+    const swap = { chunks: { executed: 1, remaining: 3 }, swapScheduledAt: 7 };
+    // Fewer confirmations and chunks, an earlier schedule and a second boost move nothing back.
+    const stale = {
+      depositConfirmations: 1,
+      boostedAt: 6,
+      swapScheduledAt: 6,
+      chunks: { executed: 0, remaining: 4 },
+      swapRescheduledAt: 8,
+    };
+    replay(chainflipRecord(), (record) => record.chainflip ?? {}, [
+      [swapping(at(1), "receiving", first), { ...first, confirmationsAt: at(1) }],
+      [swapping(at(2), "receiving", second), { ...second, confirmationsAt: at(2) }],
+      [swapping(at(3), "swapping", swap), { ...swap, chunksAt: at(3) }],
+      [swapping(at(4), "swapping", stale), { swapRescheduledAt: 8 }],
+      [swapping(at(5), "sending", undefined, 9), { egressScheduledAt: 9 }],
+    ]);
+  });
+
+  it("keeps Chainflip's code for a rejected deposit on the failure", () => {
+    const failure = {
+      kind: "deposit-rejected",
+      step: "deposit",
+      message: "below minimum",
+      recoverable: false,
+      code: "BelowMinimumDeposit",
+    } as const;
+    const state: PaymentState = { phase: "failed", sourceId: "btc", failure };
+    const record = reduce(chainflipRecord(), { source: "core", at: at(1), state });
+    expect(topUp(record).failure?.code).toBe("BelowMinimumDeposit");
+  });
+
+  it("keeps the worker's facts past the deposit, and no later read moves one back", () => {
+    const converted = { txHash: "0xaa", block: 12, at: at(3) };
+    const blocks = (block: number, finalizedAtSeen: number, finalized: number) => ({
+      block,
+      finalizedAtSeen,
+      finalized,
+    });
+    const read = (time: number, overrides: Partial<WorkerJobView>): Observation =>
+      worker(time, job({ phase: "swap", fundsSeenAt: at(1), lastTickAt: time, ...overrides }));
+    const claim = (time: number, status: string): Partial<WorkerJobView> => ({
+      phase: "done",
+      done: true,
+      claim: { phase: "claiming", status, registeredAt: time, at: time },
+    });
+    const facts = (record: TopUpRecord) => ({
+      depositInBlock: record.depositInBlock,
+      conversionPreparedAt: record.conversionPreparedAt,
+      converted: record.converted,
+      claimRegisteredAt: record.claimRegisteredAt,
+      observedAt: record.observedAt,
+    });
+    replay(converting(), facts, [
+      [
+        read(at(2), { depositSeen: blocks(10, 8, 9), conversion: { preparedAt: at(2) } }),
+        { depositInBlock: blocks(10, 8, 9), conversionPreparedAt: at(2) },
+      ],
+      [
+        read(at(3), {
+          depositSeen: blocks(11, 9, 10),
+          conversion: { preparedAt: at(3), converted },
+        }),
+        { depositInBlock: blocks(10, 8, 10), converted },
+      ],
+      // A lower finalized block and a later conversion move nothing back.
+      [
+        read(at(4), {
+          ...claim(at(4), "detecting"),
+          depositSeen: blocks(10, 8, 9),
+          conversion: { preparedAt: at(2), converted: { ...converted, txHash: "0xbb" } },
+        }),
+        { claimRegisteredAt: at(4), observedAt: { "cash-on-people": at(4) } },
+      ],
+      [
+        read(at(5), claim(at(5), "claiming")),
+        { observedAt: { "cash-on-people": at(4), "host-claiming": at(5) } },
+      ],
+      [worker(at(6), null), {}],
+    ]);
   });
 });

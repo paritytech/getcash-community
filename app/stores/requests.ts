@@ -54,6 +54,8 @@ import {
   routeOf,
   saleBeforePurse,
   withdrawalRouteOf,
+  type ConvertedTx,
+  type DepositInBlock,
   type Freshness,
   type HostPaymentStatus,
   type MeldSaleReading,
@@ -371,8 +373,14 @@ type WorkerJob = {
     credited?: string;
     status?: string;
     at?: number;
+    registeredAt?: number;
   } | null;
   txs?: WorkerJobView["txs"];
+  depositSeen?: { block?: number; finalizedAtSeen?: number; finalized?: number } | null;
+  conversion?: {
+    preparedAt?: number;
+    converted?: { txHash?: string; block?: number; at?: number };
+  } | null;
   // The hand-off the worker keeps, read back when the surface has no record of the job.
   label?: string;
   burnerAddress?: string;
@@ -402,9 +410,37 @@ async function readWorkerJobs(): Promise<Record<string, WorkerJob>> {
   }
 }
 
+/** The deposit the job followed in a best block, when every field is there. */
+function depositSeenOf(job: WorkerJob): DepositInBlock | undefined {
+  const seen = job.depositSeen;
+  if (
+    !isObject(seen) ||
+    !isNumber(seen.block) ||
+    !isNumber(seen.finalizedAtSeen) ||
+    !isNumber(seen.finalized)
+  ) {
+    return undefined;
+  }
+  return { block: seen.block, finalizedAtSeen: seen.finalizedAtSeen, finalized: seen.finalized };
+}
+
+/** The job's conversion, once prepared, with its transaction when every field is there. */
+function conversionOf(job: WorkerJob): WorkerJobView["conversion"] {
+  const conversion = job.conversion;
+  if (!isObject(conversion) || !isNumber(conversion.preparedAt)) return undefined;
+  const tx = conversion.converted;
+  const converted: ConvertedTx | undefined =
+    isObject(tx) && isString(tx.txHash) && isNumber(tx.block) && isNumber(tx.at)
+      ? { txHash: tx.txHash, block: tx.block, at: tx.at }
+      : undefined;
+  return { preparedAt: conversion.preparedAt, ...(converted === undefined ? {} : { converted }) };
+}
+
 /** The job as the record's reducer reads it. */
 function jobView(job: WorkerJob): WorkerJobView {
   const { claim } = job;
+  const depositSeen = depositSeenOf(job);
+  const conversion = conversionOf(job);
   return {
     phase: job.phase ?? "",
     done: job.done === true,
@@ -423,10 +459,13 @@ function jobView(job: WorkerJob): WorkerJobView {
             ...(claim.amount === undefined ? {} : { amount: claim.amount }),
             ...(claim.credited === undefined ? {} : { credited: claim.credited }),
             ...(claim.status === undefined ? {} : { status: claim.status }),
+            ...(isNumber(claim.registeredAt) ? { registeredAt: claim.registeredAt } : {}),
             at: claim.at ?? job.lastTickAt ?? Date.now(),
           }
         : null,
     ...(job.txs === undefined ? {} : { txs: job.txs }),
+    ...(depositSeen === undefined ? {} : { depositSeen }),
+    ...(conversion === undefined ? {} : { conversion }),
   };
 }
 
@@ -531,6 +570,8 @@ function residueViewOf(
 const isString = (value: unknown): value is string => typeof value === "string";
 const isNumber = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value);
+const isObject = <T extends object>(value: T | null | undefined): value is T =>
+  typeof value === "object" && value !== null;
 
 /** A sale's order as the reducer reads it: the adapter's status and, when disclosed, the
  *  provider's deposit terms. */

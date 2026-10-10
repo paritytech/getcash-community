@@ -15,6 +15,7 @@ import {
 import type { HandoffAction, HandoffKey } from "./handoff";
 import { fnv1a32Hex } from "./hash";
 import type {
+  ChainflipFailureInfo,
   EphemeralSigner,
   PaymentDeps,
   SourceAvailability,
@@ -260,6 +261,9 @@ function asciiBytes(s: string): Uint8Array {
   return out;
 }
 
+const failureCode = (failure: ChainflipFailureInfo): { code?: string } =>
+  failure.reason?.code === undefined ? {} : { code: failure.reason.code };
+
 /** Map a Chainflip status result to the failure vocabulary. */
 function mapSwapFailure(r: SwapStatusResult): PaymentFailure {
   if (r.depositFailure) {
@@ -270,6 +274,7 @@ function mapSwapFailure(r: SwapStatusResult): PaymentFailure {
       message:
         r.depositFailure.reason?.message ?? "Deposit rejected by Chainflip; funds not recoverable",
       recoverable: false,
+      ...failureCode(r.depositFailure),
     };
   }
   if (r.swapEgressFailure) {
@@ -280,6 +285,7 @@ function mapSwapFailure(r: SwapStatusResult): PaymentFailure {
         r.swapEgressFailure.reason?.message ??
         "Swap egress failed; funds stuck on Chainflip. Contact support",
       recoverable: false,
+      ...failureCode(r.swapEgressFailure),
     };
   }
   if (r.fallbackEgress) {
@@ -602,6 +608,10 @@ export function createPayment<T>(config: PaymentConfig<T>): PaymentSession<T> {
           quote: lastQuote,
           deposit: currentDeposit(),
           swap: result.status,
+          ...(result.progress === undefined ? {} : { progress: result.progress }),
+          ...(result.egress?.scheduledAt === undefined
+            ? {}
+            : { egressScheduledAt: result.egress.scheduledAt }),
         });
       }
 
