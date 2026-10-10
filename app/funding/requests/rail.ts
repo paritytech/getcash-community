@@ -47,6 +47,7 @@ function stageOf(result: SwapStatusResult): RailStage {
       return "received";
     case "swapping":
     case "sending":
+    case "sent":
       return "processing";
     case "complete":
       return "delivered";

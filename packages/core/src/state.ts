@@ -40,7 +40,7 @@ export type PaymentPhase =
   | "failed";
 
 /** Chainflip swap sub-status, mapped from the SDK. */
-export type SwapProgress = "waiting" | "receiving" | "swapping" | "sending" | "complete";
+export type SwapProgress = "waiting" | "receiving" | "swapping" | "sending" | "sent" | "complete";
 
 /**
  * Spend/handoff sub-status. 'awaiting-consent' and 'verifying' are handoff-only: the host

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { ChainflipProgressFacts } from "@getsome/core";
 import {
   CHAINFLIP_PROGRESS_STATUSES,
   getSwapStatus,
@@ -16,7 +17,7 @@ describe("getSwapStatus mapping", () => {
     ["RECEIVING", "receiving"],
     ["SWAPPING", "swapping"],
     ["SENDING", "sending"],
-    ["SENT", "sending"], // SENT collapses into 'sending'
+    ["SENT", "sent"],
     ["COMPLETED", "complete"],
     ["FAILED", "failed"],
   ];
@@ -32,6 +33,7 @@ describe("getSwapStatus mapping", () => {
       "receiving",
       "swapping",
       "sending",
+      "sent",
       "complete",
     ]);
   });
@@ -57,7 +59,10 @@ describe("getSwapStatus mapping", () => {
   });
 
   it("extracts failure/egress substates", async () => {
-    const depositFailure = { mode: "DEPOSIT_TOO_SMALL", reason: { message: "below minimum" } };
+    const depositFailure = {
+      mode: "DEPOSIT_TOO_SMALL",
+      reason: { code: "BelowMinimumDeposit", message: "below minimum" },
+    };
     const swapEgressFailure = { mode: "EGRESS", reason: { message: "egress failed" } };
     const fallbackEgress = { amount: "5", scheduledAt: 1 };
     const refundEgress = { amount: "7", txRef: "0xdead" };
@@ -65,7 +70,7 @@ describe("getSwapStatus mapping", () => {
       backendReturning({
         state: "FAILED",
         deposit: { failure: depositFailure },
-        swapEgress: { failure: swapEgressFailure },
+        swapEgress: { scheduledAt: 2, failure: swapEgressFailure },
         fallbackEgress,
         refundEgress,
       }),
@@ -73,8 +78,64 @@ describe("getSwapStatus mapping", () => {
     );
     expect(result.depositFailure).toEqual(depositFailure);
     expect(result.swapEgressFailure).toEqual(swapEgressFailure);
+    expect(result.egress?.scheduledAt).toBe(2);
     expect(result.fallbackEgress).toEqual(fallbackEgress);
     expect(result.refundEgress).toEqual(refundEgress);
+  });
+});
+
+describe("progress facts", () => {
+  const cases: Array<[string, unknown, ChainflipProgressFacts]> = [
+    [
+      "a regular swap",
+      {
+        state: "SWAPPING",
+        srcChainRequiredBlockConfirmations: 3,
+        estimatedDurationsSeconds: { deposit: 1800, swap: 12, egress: 30 },
+        deposit: { amount: "1", txConfirmations: 2 },
+        boost: { maxBoostFeeBps: 5, boostedAt: 1_000 },
+        swap: { regular: { scheduledAt: 2_000, latestSwapRescheduledAt: 3_000 } },
+      },
+      {
+        depositConfirmations: 2,
+        requiredConfirmations: 3,
+        boostedAt: 1_000,
+        swapScheduledAt: 2_000,
+        swapRescheduledAt: 3_000,
+        estimatedDurationsSeconds: { deposit: 1800, swap: 12, egress: 30 },
+      },
+    ],
+    [
+      "a DCA swap",
+      {
+        state: "SWAPPING",
+        swap: {
+          dca: {
+            executedChunks: 2,
+            remainingChunks: 3,
+            currentChunk: { scheduledAt: 4_000, latestSwapRescheduledAt: 5_000 },
+          },
+        },
+      },
+      { chunks: { executed: 2, remaining: 3 }, swapRescheduledAt: 5_000 },
+    ],
+    [
+      "malformed fields",
+      {
+        state: "SWAPPING",
+        srcChainRequiredBlockConfirmations: null,
+        estimatedDurationsSeconds: { deposit: 1800, swap: "12", egress: 30 },
+        deposit: { txConfirmations: 1.5 },
+        boost: { boostedAt: -1 },
+        swap: { regular: "soon", dca: { executedChunks: 2 } },
+      },
+      {},
+    ],
+    ["a body that is not an object", [], {}],
+  ];
+
+  it.each(cases)("reads %s", async (_, body, expected) => {
+    expect((await getSwapStatus(backendReturning(body), "id")).progress).toEqual(expected);
   });
 });
 

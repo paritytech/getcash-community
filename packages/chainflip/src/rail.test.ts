@@ -123,7 +123,7 @@ describe("createChainflipRail", () => {
     expect(channel.deposit.expiresAt).toBe(123_456);
 
     const status = await rail.getStatus(channel.depositChannelId);
-    expect(status.status).toBe("sending"); // SENT normalized
+    expect(status.status).toBe("sent");
   });
 
   it("probeLiquidity gates per rail instance", async () => {

@@ -42,7 +42,7 @@ describe("rail mapping", () => {
       [{ state: "RECEIVING" }, { status: "receiving", stage: "received" }],
       [{ state: "SWAPPING" }, { status: "swapping", stage: "processing" }],
       [{ state: "SENDING" }, { status: "sending", stage: "processing" }],
-      [{ state: "SENT" }, { status: "sending", stage: "processing" }],
+      [{ state: "SENT" }, { status: "sent", stage: "processing" }],
       [{ state: "COMPLETED" }, { status: "complete", stage: "delivered" }],
       [
         { state: "FAILED" },

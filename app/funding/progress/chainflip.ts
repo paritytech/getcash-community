@@ -17,6 +17,7 @@ export function observeChainflipProgress(
     case "swapping":
       return { kind: "stage", stageKey: "chainflip-swapping" };
     case "sending":
+    case "sent":
       return { kind: "stage", stageKey: "chainflip-sending" };
     case "complete":
       return { kind: "route-complete" };
