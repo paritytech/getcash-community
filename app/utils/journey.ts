@@ -46,19 +46,36 @@ function sameCalendarDay(a: Date, b: Date): boolean {
   );
 }
 
-/** "Today at 12:45", "Yesterday at 12:45", else "May 6 at 5:53 PM" — the list's own date line. */
-export function formatWhenShort(ms: number, locale?: string, now = Date.now()): string {
+/** The words for today and yesterday, as they start a line or follow other words. */
+type RelativeDays = readonly [today: string, yesterday: string];
+
+function formatWhenRelative(
+  ms: number,
+  locale: string | undefined,
+  now: number,
+  [todayWord, yesterdayWord]: RelativeDays,
+): string {
   const time = new Intl.DateTimeFormat(locale, { hour: "numeric", minute: "2-digit" }).format(
     new Date(ms),
   );
   const moment = new Date(ms);
   const today = new Date(now);
-  if (sameCalendarDay(moment, today)) return `Today at ${time}`;
+  if (sameCalendarDay(moment, today)) return `${todayWord} at ${time}`;
   const yesterday = new Date(now);
   yesterday.setDate(yesterday.getDate() - 1);
-  if (sameCalendarDay(moment, yesterday)) return `Yesterday at ${time}`;
+  if (sameCalendarDay(moment, yesterday)) return `${yesterdayWord} at ${time}`;
   const date = new Intl.DateTimeFormat(locale, { month: "short", day: "numeric" }).format(moment);
   return `${date} at ${time}`;
+}
+
+/** "Today at 12:45", "Yesterday at 12:45", else "May 6 at 5:53 PM": the list's own date line. */
+export function formatWhenShort(ms: number, locale?: string, now = Date.now()): string {
+  return formatWhenRelative(ms, locale, now, ["Today", "Yesterday"]);
+}
+
+/** "today at 12:45", "yesterday at 12:45", else "May 6 at 5:53 PM", to follow other words. */
+export function formatWhenInline(ms: number, locale?: string, now = Date.now()): string {
+  return formatWhenRelative(ms, locale, now, ["today", "yesterday"]);
 }
 
 /**

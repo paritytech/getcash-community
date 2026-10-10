@@ -3,7 +3,6 @@
 
 import { SOURCE_CONFIG_BY_ID, type SourceConfig } from "@getsome/chainflip";
 import { effectiveSourceId, type ChainflipFacts, type TopUpRecord } from "../requests/model";
-import { checkedLine } from "./checked";
 import { factAt, observedFrom } from "./observed";
 import { delay, normal, type TimelineRoute, type TimelineText } from "./route";
 import type { PhaseInput, PhasePart } from "./types";
@@ -122,15 +121,8 @@ function sourceOf(record: TopUpRecord): { source: string; chain: string } {
   return { source: config?.asset ?? record.asset, chain: config?.chain ?? record.chain };
 }
 
-/** Our last Chainflip status read: core reports each one as its `swapping` state. */
-function checked(record: TopUpRecord, now: number): string | undefined {
-  const core = record.witnesses.core;
-  return core?.phase === "swapping" ? checkedLine(core.at, now) : undefined;
-}
-
-/** The time left of a stage Chainflip scheduled and estimated, then our last check. */
+/** The time left of a stage Chainflip scheduled and estimated, while some is left. */
 function countdown(
-  record: TopUpRecord,
   scheduledAt: number | undefined,
   seconds: number | undefined,
   now: number,
@@ -139,7 +131,7 @@ function countdown(
     scheduledAt === undefined || seconds === undefined ? undefined : scheduledAt + seconds * SECOND;
   return endsAt !== undefined && endsAt > now
     ? `About ${Math.ceil((endsAt - now) / SECOND)}s left`
-    : checked(record, now);
+    : undefined;
 }
 
 const UNITS = [
@@ -178,15 +170,12 @@ function exchangeText(
           : normal(`Confirming your ${source} deposit`),
       detail:
         required === undefined
-          ? checked(record, now)
+          ? undefined
           : stepLine("Confirmation", facts.depositConfirmations ?? 0, required),
     };
   }
   if (waitingForPrice(facts)) {
-    return {
-      message: delay(`Waiting for a stable price to exchange your ${source}`),
-      detail: checked(record, now),
-    };
+    return { message: delay(`Waiting for a stable price to exchange your ${source}`) };
   }
   const chunks = chunkCount(facts);
   if (chunks !== undefined) {
@@ -197,7 +186,7 @@ function exchangeText(
   }
   return {
     message: normal(`Exchanging your ${source}`),
-    detail: countdown(record, facts.swapScheduledAt, estimated(facts, "swap"), now),
+    detail: countdown(facts.swapScheduledAt, estimated(facts, "swap"), now),
   };
 }
 
@@ -217,6 +206,11 @@ export const chainflipRoute: TimelineRoute = {
     };
   },
   seenExpectedMs: 30 * SECOND,
+  lastReadAt(record) {
+    // Core reports each Chainflip status read as its `swapping` state.
+    const core = record.witnesses.core;
+    return core?.phase === "swapping" ? core.at : undefined;
+  },
   text(record, index, { delayed, now }) {
     const facts = record.chainflip ?? {};
     if (index === 0) return exchangeText(record, facts, delayed, now);
@@ -226,7 +220,7 @@ export const chainflipRoute: TimelineRoute = {
             `Your ${sourceOf(record).source} is exchanged and the network is processing the transfer`,
           )
         : normal("Your money is on its way"),
-      detail: countdown(record, facts.egressScheduledAt, estimated(facts, "egress"), now),
+      detail: countdown(facts.egressScheduledAt, estimated(facts, "egress"), now),
     };
   },
 };

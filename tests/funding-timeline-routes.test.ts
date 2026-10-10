@@ -2,11 +2,10 @@ import { describe, expect, it } from "vitest";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import type { ChainflipFacts, TopUpRecord } from "../app/funding/requests/model";
 import { chainflipRoute } from "../app/funding/timeline/chainflip";
-import { checkedLine } from "../app/funding/timeline/checked";
 import { meldBankRoute, meldCardRoute } from "../app/funding/timeline/meld";
 import { PART_LIMIT } from "../app/funding/timeline/model";
 import type { TimelineMessage, TimelineRoute } from "../app/funding/timeline/route";
-import { topUpTimeline } from "../app/funding/timeline/top-up";
+import { RECONNECT_AFTER_MS, topUpTimeline } from "../app/funding/timeline/top-up";
 import type { TimelineView } from "../app/funding/timeline/types";
 import { requestRefOf } from "../app/utils/request-index";
 import { FIXTURE_NOW, awaitingDepositCryptoRecord, submittedCardRecord } from "./fixtures/requests";
@@ -25,6 +24,7 @@ const route: TimelineRoute = {
   milestones: () => ({ started: { at: SENT - 2 * MINUTE }, accepted: { at: SENT - MINUTE } }),
   phase: () => ({ parts: [{ weight: 1, expectedMs: MINUTE }] }),
   seenExpectedMs: SEEN_T,
+  lastReadAt: () => undefined,
   text: () => ({ message: { text: "Provider text", delay: false } }),
 };
 const sentRoute: TimelineRoute = {
@@ -34,6 +34,12 @@ const sentRoute: TimelineRoute = {
 
 function cardRecord(): TopUpRecord {
   const record = migrateRecord(submittedCardRecord, requestRefOf("meld-card", 2), FIXTURE_NOW);
+  if (record?.kind !== "top-up") throw new Error("fixture did not migrate");
+  return record;
+}
+
+function cryptoRecord(sourceId = "btc"): TopUpRecord {
+  const record = migrateRecord(awaitingDepositCryptoRecord, requestRefOf(sourceId, 3), FIXTURE_NOW);
   if (record?.kind !== "top-up") throw new Error("fixture did not migrate");
   return record;
 }
@@ -71,28 +77,28 @@ describe("top-up timeline, shared route frame", () => {
       record(),
       SENT + 12 * SECOND,
       { marks: "●●●○○○○", state: "active", line: 0.5 * timeFill(12 * SECOND, SEEN_T) },
-      { message: normal("Your money is arriving"), detail: "Checked 2s ago" },
+      { message: normal("Your money is arriving") },
     ],
     [
       "the funds are not seen 2 minutes after Sent",
       record(),
       SENT + 2 * MINUTE + 1,
       { marks: "●●●○○○○", state: "delayed", line: 0.5 * PART_LIMIT },
-      { message: normal("Your money is arriving"), detail: "Checked 110s ago" },
+      { message: normal("Your money is arriving") },
     ],
     [
       "the deposit is in a block that is half way to final",
       record({ depositInBlock: { block: 110, finalizedAtSeen: 100, finalized: 105 } }),
       SENT + 3 * MINUTE,
       { marks: "●●●○○○○", state: "active", line: 0.75 },
-      { message: normal("Making sure your money arrived safely"), detail: "Checked 170s ago" },
+      { message: normal("Making sure your money arrived safely") },
     ],
     [
       "the deposit's block was final when seen",
       record({ depositInBlock: { block: 100, finalizedAtSeen: 100, finalized: 100 } }),
       SENT,
       { marks: "●●●○○○○", state: "active", line: 0.5 + 0.5 * PART_LIMIT },
-      { message: normal("Making sure your money arrived safely"), detail: "Checked just now" },
+      { message: normal("Making sure your money arrived safely") },
     ],
     [
       "the deposit is final on Asset Hub",
@@ -127,17 +133,14 @@ describe("top-up timeline, shared route frame", () => {
       record({ converted: { txHash: "0x01", block: 120, at: CONVERTED } }, received),
       CONVERTED,
       { marks: "●●●●●○○", state: "active", line: 0 },
-      { message: normal("Getting your Cash ready"), detail: "Checked 70s ago" },
+      { message: normal("Getting your Cash ready") },
     ],
     [
       "the Cash is not final on People after its expected time",
       record({ converted: { txHash: "0x01", block: 120, at: CONVERTED } }, received),
       CONVERTED + 91 * SECOND,
       { marks: "●●●●●○○", state: "delayed", line: timeFill(91 * SECOND, 90 * SECOND) },
-      {
-        message: delay("Your Cash is ready and waiting for the network to confirm it"),
-        detail: "Checked 161s ago",
-      },
+      { message: delay("Your Cash is ready and waiting for the network to confirm it") },
     ],
     [
       "the Cash is final on People",
@@ -197,7 +200,7 @@ describe("top-up timeline, shared route frame", () => {
     { marks: string; state: TimelineView["state"]; line: number | undefined },
     { message?: TimelineMessage; detail?: string },
   ][])("shows %s", (_, topUp, now, expected, text) => {
-    const { view, message, detail } = topUpTimeline(topUp, sentRoute, now);
+    const { view, message, detail } = topUpTimeline(topUp, sentRoute, { now, watchingSince: now });
 
     expect({ marks: marks(view), state: view.state }).toEqual({
       marks: expected.marks,
@@ -208,19 +211,13 @@ describe("top-up timeline, shared route frame", () => {
   });
 
   it("makes Sent green when the funds are final before the provider reports it", () => {
-    const { view, message } = topUpTimeline(record({}, received), route, RECEIVED);
+    const { view, message } = topUpTimeline(record({}, received), route, {
+      now: RECEIVED,
+      watchingSince: RECEIVED,
+    });
 
     expect(marks(view)).toBe("●●●●○○○");
     expect(message).toEqual(normal("Converting your money to Cash"));
-  });
-
-  it.each([
-    [0, "Checked just now"],
-    [999, "Checked just now"],
-    [1_000, "Checked 1s ago"],
-    [2_500, "Checked 2s ago"],
-  ])("writes a check %ims ago as %s", (elapsed, line) => {
-    expect(checkedLine(SENT, SENT + elapsed)).toBe(line);
   });
 });
 
@@ -241,14 +238,8 @@ describe("top-up timeline, Chainflip route", () => {
     chainflip: ChainflipFacts,
     sourceId = "btc",
   ): TopUpRecord {
-    const record = migrateRecord(
-      awaitingDepositCryptoRecord,
-      requestRefOf(sourceId, 3),
-      FIXTURE_NOW,
-    );
-    if (record?.kind !== "top-up") throw new Error("fixture did not migrate");
     return {
-      ...record,
+      ...cryptoRecord(sourceId),
       observedAt,
       chainflip,
       witnesses: { core: { phase: "swapping", at: at(now) - 3 * SECOND } },
@@ -314,7 +305,7 @@ describe("top-up timeline, Chainflip route", () => {
         state: "active",
         line: (3 * confirmation * timeFill(60 * SECOND, 3 * confirmation)) / total,
       },
-      { message: normal("Confirming your BTC deposit"), detail: "Checked 3s ago" },
+      { message: normal("Confirming your BTC deposit") },
     ],
     [
       "late confirmations with fallback estimates",
@@ -340,7 +331,7 @@ describe("top-up timeline, Chainflip route", () => {
         state: "active",
         line: (3 * confirmation + swap * timeFill(6 * SECOND, swap)) / total,
       },
-      { message: normal("Exchanging your BTC"), detail: "Checked 3s ago" },
+      { message: normal("Exchanging your BTC") },
     ],
     [
       "a regular swap",
@@ -362,7 +353,7 @@ describe("top-up timeline, Chainflip route", () => {
         state: "delayed",
         line: (3 * confirmation + swap * timeFill(13 * SECOND, swap)) / total,
       },
-      { message: normal("Exchanging your BTC"), detail: "Checked 3s ago" },
+      { message: normal("Exchanging your BTC") },
     ],
     [
       "the second part of a DCA swap",
@@ -394,7 +385,6 @@ describe("top-up timeline, Chainflip route", () => {
       },
       {
         message: delay("Waiting for a stable price to exchange your BTC"),
-        detail: "Checked 3s ago",
       },
     ],
     [
@@ -433,10 +423,7 @@ describe("top-up timeline, Chainflip route", () => {
       ),
       722,
       { marks: "●●○○○○○", state: "delayed", line: timeFill(97 * SECOND, 96 * SECOND) },
-      {
-        message: delay("Your BTC is exchanged and the network is processing the transfer"),
-        detail: "Checked 3s ago",
-      },
+      { message: delay("Your BTC is exchanged and the network is processing the transfer") },
     ],
     [
       "a completed swap whose funds are not seen",
@@ -452,7 +439,11 @@ describe("top-up timeline, Chainflip route", () => {
     { marks: string; state: TimelineView["state"]; line: number },
     { message: TimelineMessage; detail?: string },
   ][])("shows %s", (_, topUp, seconds, expected, text) => {
-    const { view, message, detail } = topUpTimeline(topUp, chainflipRoute, at(seconds));
+    const now = at(seconds);
+    const { view, message, detail } = topUpTimeline(topUp, chainflipRoute, {
+      now,
+      watchingSince: now,
+    });
 
     expect({ marks: marks(view), state: view.state }).toEqual({
       marks: expected.marks,
@@ -469,6 +460,9 @@ describe("top-up timeline, Meld routes", () => {
   const routes = { card: meldCardRoute, bank: meldBankRoute };
   const BANK_FIRST =
     "If you've sent the money from your bank, it's on its way. Bank transfers can take a few days. This page will update when it arrives.";
+  /** Local times, so that the sent line reads the same in every timezone. */
+  const BANK_SENT = new Date(2025, 4, 6, 10, 42).getTime();
+  const NEXT_MORNING = new Date(2025, 4, 7, 9, 0).getTime();
 
   /** A Meld record with `facts`, polled 3 s before `now`, its rail in Meld `ERROR` when `error`. */
   function meldRecord(now: number, facts: Partial<TopUpRecord>, error = false): TopUpRecord {
@@ -492,7 +486,7 @@ describe("top-up timeline, Meld routes", () => {
       }),
       START + MINUTE,
       { marks: "●○○○○○○", state: "active", line: timeFill(MINUTE, 2 * MINUTE) },
-      { message: normal("Checking your payment"), detail: "Checked 3s ago" },
+      { message: normal("Checking your payment") },
     ],
     [
       "card",
@@ -500,10 +494,7 @@ describe("top-up timeline, Meld routes", () => {
       meldRecord(START + MINUTE, { observedAt: { receiving: START } }, true),
       START + MINUTE,
       { marks: "●○○○○○○", state: "delayed", line: timeFill(MINUTE, 2 * MINUTE) },
-      {
-        message: delay("The payment provider hit a problem and is retrying. Don't pay again."),
-        detail: "Checked 3s ago",
-      },
+      { message: delay("The payment provider hit a problem and is retrying. Don't pay again.") },
     ],
     [
       "card",
@@ -511,10 +502,7 @@ describe("top-up timeline, Meld routes", () => {
       meldRecord(START + 2 * MINUTE + SECOND, { meldSubmittedAt: START }),
       START + 2 * MINUTE + SECOND,
       { marks: "●○○○○○○", state: "delayed", line: timeFill(121 * SECOND, 2 * MINUTE) },
-      {
-        message: delay("The payment provider is still reviewing your payment. Don't pay again."),
-        detail: "Checked 3s ago",
-      },
+      { message: delay("The payment provider is still reviewing your payment. Don't pay again.") },
     ],
     [
       "card",
@@ -522,7 +510,7 @@ describe("top-up timeline, Meld routes", () => {
       meldRecord(START + 2 * MINUTE, { observedAt: { receiving: START, sending: START + MINUTE } }),
       START + 2 * MINUTE,
       { marks: "●●○○○○○", state: "active", line: timeFill(MINUTE, 5 * MINUTE) },
-      { message: normal("Your money is on its way"), detail: "Checked 3s ago" },
+      { message: normal("Your money is on its way") },
     ],
     [
       "card",
@@ -534,10 +522,7 @@ describe("top-up timeline, Meld routes", () => {
       ),
       START + 2 * MINUTE,
       { marks: "●●○○○○○", state: "delayed", line: timeFill(MINUTE, 5 * MINUTE) },
-      {
-        message: delay("The payment provider is retrying the transfer. Don't pay again."),
-        detail: "Checked 3s ago",
-      },
+      { message: delay("The payment provider is retrying the transfer. Don't pay again.") },
     ],
     [
       "card",
@@ -560,18 +545,26 @@ describe("top-up timeline, Meld routes", () => {
     [
       "bank",
       "a transfer just sent",
-      meldRecord(START, { meldSubmittedAt: START }),
-      START,
+      meldRecord(BANK_SENT, { meldSubmittedAt: BANK_SENT }),
+      BANK_SENT,
       { marks: "●○○○○○○", state: "active", line: 0 },
-      { message: normal(BANK_FIRST), detail: "Checked 3s ago" },
+      { message: normal(BANK_FIRST), detail: "Sent today at 10:42" },
+    ],
+    [
+      "bank",
+      "a transfer sent yesterday",
+      meldRecord(NEXT_MORNING, { meldSubmittedAt: BANK_SENT }),
+      NEXT_MORNING,
+      { marks: "●○○○○○○", state: "active", line: timeFill(NEXT_MORNING - BANK_SENT, 3 * DAY) },
+      { message: normal(BANK_FIRST), detail: "Sent yesterday at 10:42" },
     ],
     [
       "bank",
       "a transfer after 6 days, with Meld ERROR",
-      meldRecord(START + 6 * DAY, { meldSubmittedAt: START }, true),
-      START + 6 * DAY,
+      meldRecord(BANK_SENT + 6 * DAY, { meldSubmittedAt: BANK_SENT }, true),
+      BANK_SENT + 6 * DAY,
       { marks: "●○○○○○○", state: "active", line: PART_LIMIT },
-      { message: normal(BANK_FIRST), detail: "Checked 3s ago" },
+      { message: normal(BANK_FIRST), detail: "Sent 6 May at 10:42" },
     ],
     [
       "bank",
@@ -583,7 +576,6 @@ describe("top-up timeline, Meld routes", () => {
         message: delay(
           "The payment provider is retrying the transfer. Don't send the money again.",
         ),
-        detail: "Checked 3s ago",
       },
     ],
   ] satisfies [
@@ -594,7 +586,11 @@ describe("top-up timeline, Meld routes", () => {
     { marks: string; state: TimelineView["state"]; line: number },
     { message: TimelineMessage; detail?: string },
   ][])("shows on the %s route %s", (route, _, topUp, now, expected, text) => {
-    const { view, message, detail } = topUpTimeline(topUp, routes[route], now);
+    const { view, message, detail } = topUpTimeline(topUp, routes[route], {
+      now,
+      watchingSince: now,
+      locale: "en-GB",
+    });
 
     expect({ marks: marks(view), state: view.state }).toEqual({
       marks: expected.marks,
@@ -603,4 +599,69 @@ describe("top-up timeline, Meld routes", () => {
     if (view.state !== "done") expect(view.lines[view.phase]).toBeCloseTo(expected.line, 10);
     expect({ message, detail }).toEqual(text);
   });
+});
+
+describe("top-up timeline, reconnect line", () => {
+  const LONG_AGO = SENT - 60 * MINUTE;
+  const confirming = (readAt: number): TopUpRecord => ({
+    ...cryptoRecord(),
+    observedAt: { receiving: LONG_AGO },
+    chainflip: { requiredConfirmations: 3, depositConfirmations: 1 },
+    witnesses: { core: { phase: "swapping", at: readAt } },
+  });
+  const settling = (readAt: number): TopUpRecord => ({
+    ...cardRecord(),
+    observedAt: { receiving: LONG_AGO, sending: LONG_AGO },
+    witnesses: { provider: { status: "transaction_seen", at: readAt } },
+  });
+  /** The worker's last tick in `record()`. */
+  const TICK = SENT + 10 * SECOND;
+
+  it.each([
+    [
+      "a Chainflip read failing for over a minute",
+      confirming(SENT),
+      chainflipRoute,
+      SENT + RECONNECT_AFTER_MS + 1,
+      LONG_AGO,
+      "Trying to reconnect",
+    ],
+    [
+      "a Meld poll failing for over a minute",
+      settling(SENT),
+      meldCardRoute,
+      SENT + RECONNECT_AFTER_MS + 1,
+      LONG_AGO,
+      "Trying to reconnect",
+    ],
+    [
+      "the worker's tick missing for over a minute",
+      record(),
+      sentRoute,
+      TICK + RECONNECT_AFTER_MS + 1,
+      LONG_AGO,
+      "Trying to reconnect",
+    ],
+    [
+      "the worker's tick missing for a minute",
+      record(),
+      sentRoute,
+      TICK + RECONNECT_AFTER_MS,
+      LONG_AGO,
+      undefined,
+    ],
+    [
+      "old reads just after the app started watching",
+      confirming(LONG_AGO),
+      chainflipRoute,
+      SENT + 30 * SECOND,
+      SENT,
+      "Confirmation 2 of 3",
+    ],
+  ] satisfies [string, TopUpRecord, TimelineRoute, number, number, string | undefined][])(
+    "shows for %s",
+    (_, topUp, route, now, watchingSince, detail) => {
+      expect(topUpTimeline(topUp, route, { now, watchingSince }).detail).toBe(detail);
+    },
+  );
 });

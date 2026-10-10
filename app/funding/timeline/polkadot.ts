@@ -3,7 +3,6 @@
 
 import { cashAmount } from "../../utils/cash";
 import { conversionRouteOf, type DepositInBlock, type TopUpRecord } from "../requests/model";
-import { checkedLine } from "./checked";
 import { factAt } from "./observed";
 import {
   delay,
@@ -105,10 +104,9 @@ export function polkadotPhase(
   }
 }
 
-function workerChecked(record: TopUpRecord, now: number): string | undefined {
-  const tick = workerOf(record)?.lastTickAt;
-  return tick === undefined || tick === null ? undefined : checkedLine(tick, now);
-}
+/** The worker's last tick, which moves phases 3 to 6. */
+export const workerTickAt = (record: TopUpRecord): number | undefined =>
+  workerOf(record)?.lastTickAt ?? undefined;
 
 function conversionMessage(record: TopUpRecord): TimelineMessage {
   if (psmRefused(record)) {
@@ -130,7 +128,7 @@ function partlyCredited(record: TopUpRecord): boolean {
 export function polkadotText(
   record: TopUpRecord,
   index: PolkadotPhaseIndex,
-  { delayed, now }: TextState,
+  { delayed }: TextState,
 ): TimelineText {
   switch (index) {
     case 2:
@@ -140,7 +138,6 @@ export function polkadotText(
             ? "Your money is arriving"
             : "Making sure your money arrived safely",
         ),
-        detail: workerChecked(record, now),
       };
     case 3:
       return { message: conversionMessage(record) };
@@ -149,7 +146,6 @@ export function polkadotText(
         message: delayed
           ? delay("Your Cash is ready and waiting for the network to confirm it")
           : normal("Getting your Cash ready"),
-        detail: workerChecked(record, now),
       };
     case 5:
       return {

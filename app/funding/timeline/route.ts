@@ -20,6 +20,8 @@ export interface TimelineText {
 export interface TextState {
   readonly delayed: boolean;
   readonly now: number;
+  /** The locale of dates, the person's own when absent. */
+  readonly locale?: string;
 }
 
 /** Phases 1 and 2, the provider's own. */
@@ -34,5 +36,7 @@ export interface TimelineRoute {
   phase(record: TopUpRecord, index: ProviderPhaseIndex): PhaseInput;
   /** The expected time `T` of phase 3's Seen part. */
   readonly seenExpectedMs: number;
+  /** When our last read of the provider, which moves phases 1 and 2, succeeded. */
+  lastReadAt(record: TopUpRecord): number | undefined;
   text(record: TopUpRecord, index: ProviderPhaseIndex, state: TextState): TimelineText;
 }

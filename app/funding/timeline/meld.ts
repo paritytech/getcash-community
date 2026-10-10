@@ -1,10 +1,10 @@
 // The Meld card and bank routes' provider part: Started, Accepted and Sent from Meld's statuses,
 // and one time-moved part in each of phases 1 and 2.
 
+import { formatWhenInline } from "../../utils/journey";
 import type { TopUpRecord } from "../requests/model";
-import { checkedLine } from "./checked";
 import { factAt, observedFrom } from "./observed";
-import { delay, normal, type TimelineMessage, type TimelineRoute } from "./route";
+import { delay, normal, type TextState, type TimelineMessage, type TimelineRoute } from "./route";
 import type { PhasePart } from "./types";
 
 const SECOND = 1_000;
@@ -28,12 +28,6 @@ function startedAt(record: TopUpRecord): number | undefined {
 /** Meld `ERROR`: a temporary status the provider retries. */
 const providerError = (record: TopUpRecord): boolean => record.rail.delayed === true;
 
-/** Our last poll of the adapter. */
-function checked(record: TopUpRecord, now: number): string | undefined {
-  const provider = record.witnesses.provider;
-  return provider === undefined ? undefined : checkedLine(provider.at, now);
-}
-
 /** What one Meld payment method sets in phases 1 and 2. */
 interface MeldMethod {
   /** Phase 1's one part. */
@@ -41,6 +35,8 @@ interface MeldMethod {
   /** Whether Meld `ERROR` delays phase 1. */
   readonly errorDelaysFirst: boolean;
   firstMessage(record: TopUpRecord, delayed: boolean): TimelineMessage;
+  /** Phase 1's detail line, when the method has one. */
+  firstDetail?(record: TopUpRecord, state: TextState): string | undefined;
   /** Phase 2's text on Meld `ERROR`. */
   readonly retryingText: string;
 }
@@ -58,14 +54,19 @@ function meldRoute(method: MeldMethod): TimelineRoute {
       return { parts: [part], delayed };
     },
     seenExpectedMs: 30 * SECOND,
-    text(record, index, { delayed, now }) {
-      const message =
-        index === 0
-          ? method.firstMessage(record, delayed)
-          : providerError(record)
-            ? delay(method.retryingText)
-            : normal("Your money is on its way");
-      return { message, detail: checked(record, now) };
+    lastReadAt: (record) => record.witnesses.provider?.at,
+    text(record, index, state) {
+      if (index === 0) {
+        return {
+          message: method.firstMessage(record, state.delayed),
+          detail: method.firstDetail?.(record, state),
+        };
+      }
+      return {
+        message: providerError(record)
+          ? delay(method.retryingText)
+          : normal("Your money is on its way"),
+      };
     },
   };
 }
@@ -94,5 +95,9 @@ export const meldBankRoute = meldRoute({
     normal(
       "If you've sent the money from your bank, it's on its way. Bank transfers can take a few days. This page will update when it arrives.",
     ),
+  firstDetail(record, { now, locale }) {
+    const sentAt = startedAt(record);
+    return sentAt === undefined ? undefined : `Sent ${formatWhenInline(sentAt, locale, now)}`;
+  },
   retryingText: "The payment provider is retrying the transfer. Don't send the money again.",
 });
