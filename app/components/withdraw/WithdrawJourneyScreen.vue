@@ -67,8 +67,8 @@ const sentWhen = computed(() =>
   status.value.kind === "sent" ? formatWhenShort(status.value.at) : null,
 );
 
-/** What the quote said would land, formatted in the destination asset. Nothing for the direct
- *  rail, which stores no channel and no promised figure. */
+/** What the quote said would land, formatted in the destination asset: an estimate, so `≈`.
+ *  Nothing for the direct rail, which stores no channel and no promised figure. */
 const sentEgress = computed(() => {
   const egress = props.record.handoff.channel?.expectedEgress;
   if (egress === undefined) return null;
@@ -77,7 +77,7 @@ const sentEgress = computed(() => {
   const config = id === undefined ? undefined : SOURCE_CONFIG_BY_ID.get(id);
   if (config === undefined) return null;
   try {
-    return `${formatSourceAmount(config, egress, { maxDecimals: 6 })} ${asset}`;
+    return `≈ ${formatSourceAmount(config, egress, { maxDecimals: 6 })} ${asset}`;
   } catch {
     return null;
   }
@@ -149,9 +149,13 @@ const saleRows = computed<DetailRow[]>(() => {
 const canCancel = computed(
   () => status.value.kind === "awaiting-payment" && !paymentTaken(props.record),
 );
-/** A refund leaves the DOT on the withdrawal's own key: the design walks it into a wallet. */
+/** A refund leaves the DOT on the withdrawal's own key: the design walks it into a wallet.
+ *  Only the crypto route mounts that walk-through. */
 const refunded = computed(
-  () => status.value.kind === "failed" && failure.value?.kind === "refunded",
+  () =>
+    props.record.route === "crypto" &&
+    status.value.kind === "failed" &&
+    failure.value?.kind === "refunded",
 );
 const canRetry = computed(
   () => status.value.kind === "failed" && status.value.recoverable && !refunded.value,

@@ -51,7 +51,7 @@ const emit = defineEmits<{ confirm: []; fees: [] }>();
             v-if="receive === null"
             class="inline-block h-5 w-24 animate-pulse rounded-small bg-surface-container"
           />
-          <template v-else>{{ receive }}</template>
+          <template v-else>≈ {{ receive }}</template>
         </dd>
       </div>
       <div class="flex items-baseline justify-between gap-4">
