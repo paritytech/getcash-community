@@ -2,7 +2,8 @@
 // The amount is known before any route is picked, so every Chainflip destination is quoted for
 // it once: the quote says whether the route answers at all, whether the amount is under the
 // provider's minimum, and what would land. A row is greyed with the reason; the confirm judges
-// once more before the channel is opened. Asset Hub itself has no provider: the direct rail is
+// once more before the channel is opened. A row still being quoted is not drawn at all: the
+// picker shows a skeleton row in its place. Asset Hub itself has no provider: the direct rail is
 // always pickable.
 
 import { wholeCashCeil } from "../funding/source-groups";
@@ -35,7 +36,7 @@ export function rowState(destination: WithdrawDestination, offer: WithdrawOffer)
   if (destination.rail === "direct") return PICKABLE;
   switch (offer.state) {
     case "checking":
-      return { pickable: false, subtitle: "Checking…" };
+      return { pickable: false };
     case "rail-off":
       return { pickable: false, subtitle: "Not available yet" };
     case "unavailable":

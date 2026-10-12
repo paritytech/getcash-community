@@ -53,7 +53,8 @@ describe("a row against its offer", () => {
       pickable: false,
       subtitle: "Not available yet",
     });
-    expect(rowState(btc, { state: "checking" }).subtitle).toBe("Checking…");
+    // Never drawn as a row: the picker shows a skeleton row in its place.
+    expect(rowState(btc, { state: "checking" })).toEqual({ pickable: false });
     expect(rowState(btc, { state: "unavailable", reason: "down" }).subtitle).toBe(
       "Not available right now",
     );
@@ -89,10 +90,16 @@ describe("the withdraw offers store", () => {
       .mockResolvedValue(everyOffer(AVAILABLE));
     const store = useWithdrawOffersStore();
     store.railOn = true;
-    expect(store.rowFor(btc).subtitle).toBe("Checking…");
+    // Nothing quoted yet: the pickers wait, except one of Asset Hub's own tokens.
+    expect(store.rowFor(btc)).toEqual({ pickable: false });
+    expect(store.awaitingNetworks).toBe(true);
+    expect(store.awaitingTokens(bitcoin)).toBe(true);
+    expect(store.awaitingTokens(withdrawNetwork("Polkadot")!)).toBe(false);
 
     await store.learn(50_000_000n);
     expect(quote).toHaveBeenCalledWith(50_000_000n, expect.any(Array));
+    expect(store.awaitingNetworks).toBe(false);
+    expect(store.awaitingTokens(bitcoin)).toBe(false);
     expect(store.rowFor(btc).subtitle).toBe("Not available right now");
     expect(store.networkRowFor(bitcoin).pickable).toBe(false);
 
@@ -123,6 +130,7 @@ describe("the withdraw offers store", () => {
     // A third look at the new amount joins its load rather than starting another: two quotes
     // in all, asserted below.
     const third = store.learn(5_000_000n);
+    expect(store.awaitingNetworks).toBe(true);
     release(everyOffer(AVAILABLE));
     await third;
     await Promise.all([first, second]);
@@ -142,6 +150,7 @@ describe("the withdraw offers store", () => {
     vi.advanceTimersByTime(FLOORS_STALE_MS);
     const refresh = store.learn(50_000_000n);
     expect(store.offerFor(btc)).toEqual(AVAILABLE); // the old answer stands meanwhile
+    expect(store.awaitingNetworks).toBe(false);
     release(everyOffer(TOO_SMALL));
     await refresh;
     expect(store.offerFor(btc)).toEqual(TOO_SMALL);
@@ -152,6 +161,7 @@ describe("the withdraw offers store", () => {
     store.railOn = false;
     await store.learn(50_000_000n);
     expect(quote).not.toHaveBeenCalled();
+    expect(store.awaitingNetworks).toBe(false);
     expect(store.rowFor(btc).subtitle).toBe("Not available yet");
     expect(store.rowFor(assetHub)).toEqual({ pickable: true });
   });
