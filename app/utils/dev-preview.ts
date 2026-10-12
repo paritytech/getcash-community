@@ -2053,8 +2053,8 @@ export const SCENES: Scene[] = [
       await previewWithdrawal(5, "refunded");
     },
   },
-  // ——— The card withdrawal: the sale's quote priced and pricing, its fee drill-in, and the payout
-  // country picker.
+  // ——— The card withdrawal: the sale's quote priced, pricing and refused, its fee drill-in, and
+  // the payout country picker.
   {
     name: "withdraw card / quote",
     stage: { kind: "withdraw-package", route: "card", step: "quote", sale: SALE_PREVIEW_QUOTE },
@@ -2063,6 +2063,36 @@ export const SCENES: Scene[] = [
   {
     name: "withdraw card / quote: quoting",
     stage: { kind: "withdraw-package", route: "card", step: "quote", sale: null },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    name: "withdraw card / quote: couldn't get the rate",
+    stage: {
+      kind: "withdraw-package",
+      route: "card",
+      step: "quote",
+      saleError: { kind: "rate", attempts: 1 },
+    },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    name: "withdraw card / quote: still not working",
+    stage: {
+      kind: "withdraw-package",
+      route: "card",
+      step: "quote",
+      saleError: { kind: "rate", attempts: 2 },
+    },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    name: "withdraw card / quote: region not supported",
+    stage: {
+      kind: "withdraw-package",
+      route: "card",
+      step: "quote",
+      saleError: { kind: "unrouted" },
+    },
     apply: (s, f) => base(s, f),
   },
   {

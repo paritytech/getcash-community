@@ -46,9 +46,10 @@ export type PreviewStage =
       secret?: string;
       skeleton?: boolean;
       /** A fiat route's canned sale: the quote shows it priced, null shows it pricing, and
-       *  `saleError` alone shows it refused. The route never asks the adapter while staged. */
+       *  `saleError` alone shows it refused, the rate after `attempts` failures in a row. The route
+       *  never asks the adapter while staged. */
       sale?: MeldSellQuote | null;
-      saleError?: string;
+      saleError?: { kind: "unrouted" | "rate"; attempts?: number };
       /** The fiat route's payout country, ISO code; GB when unsaid. */
       country?: string;
     };

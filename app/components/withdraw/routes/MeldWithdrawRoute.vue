@@ -156,7 +156,15 @@ watch(
     sale.country.value = stage.country ?? stage.sale?.country ?? "GB";
     sale.quote.value = stage.sale ?? null;
     sale.loading.value = stage.sale === null;
-    sale.error.value = stage.saleError ?? null;
+    const failed = stage.saleError;
+    sale.error.value =
+      failed?.kind === "unrouted"
+        ? `${method === "bank" ? "Bank" : "Card"} payout isn't available in this region`
+        : failed
+          ? "The rate could not be read."
+          : null;
+    sale.errorKind.value = failed?.kind ?? null;
+    sale.rateFailures.value = failed?.kind === "rate" ? (failed.attempts ?? 1) : 0;
     const staged = stage.step;
     step.value =
       staged === "fees" || staged === "region" || staged === "journey" ? staged : "quote";
@@ -164,9 +172,18 @@ watch(
   { immediate: true },
 );
 
+/** Another try at the price; a staged one only counts the failure, so the deck can walk on to the
+ *  screen that stops offering it. */
+function retryQuote() {
+  if (previewed) sale.rateFailures.value += 1;
+  else void sale.refresh();
+}
+
 /** Demo Skip on the quote: a simulated sale plays paying out and paid out, without a provider
  *  or a purse — the walkthrough a plain browser can give. */
-const canSkipQuote = computed(() => isDemoBuild() && step.value === "quote");
+const canSkipQuote = computed(
+  () => isDemoBuild() && step.value === "quote" && sale.quote.value !== null,
+);
 
 async function onSkipQuote() {
   const over = {
@@ -467,6 +484,8 @@ onUnmounted(() => {
         :quote="sale.quote.value"
         :loading="sale.loading.value"
         :error="sale.error.value"
+        :error-kind="sale.errorKind.value"
+        :rate-failures="sale.rateFailures.value"
         :country="sale.country.value"
         :country-name="countryLabel"
         :starting="starting"
@@ -474,6 +493,9 @@ onUnmounted(() => {
         @continue="confirm"
         @fees="step = 'fees'"
         @region="step = 'region'"
+        @retry="retryQuote"
+        @use-crypto="emit('switchRoute', 'crypto')"
+        @change-amount="emit('changeAmount')"
       />
       <WithdrawCancelScreen
         v-else-if="step === 'cancel'"
