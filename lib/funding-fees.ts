@@ -261,7 +261,7 @@ export async function estimateStableFundingSizing(
   if (stablePool === undefined) throw new Error(`no native pool found for ${stable}`);
   const buyTarget = args.settleAmount + destinationFee;
   // The plain two-hop quote is the gate; the ask carries the headroom once, on the stable.
-  const { stableIn } = await quoteStableForUnderlying(api, pool, stablePool, buyTarget);
+  const { nativeIn, stableIn } = await quoteStableForUnderlying(api, pool, stablePool, buyTarget);
   const stableInMax = withHeadroom(stableIn, args.slippagePct ?? DEFAULT_SLIPPAGE_PCT);
   // At the magnitude the program will carry, as the other tiers' probes do.
   const fees = await estimateStableProgramFees({
@@ -272,6 +272,7 @@ export async function estimateStableFundingSizing(
     beneficiaryHex: ZERO_32,
     peopleParaId: args.peopleParaId,
     depositStable: stableInMax,
+    minNativeOut: nativeIn,
     minUnderlyingOut: buyTarget,
     remoteFeesCash: destinationEarmark(buyTarget, destinationFee),
     transfer,
@@ -383,12 +384,14 @@ export async function quoteDepositValue(
       const left = leftAfterFees(deposit, fees);
       reaches = left <= 0n ? null : psmMintOut(left, route.feeRate);
     } else if (stablePool !== undefined && route.external !== undefined) {
+      const nativeForDeposit = await quoteNativeOut(api, stablePool, deposit);
       const fees = await estimateStableProgramFees({
         ...common,
         stable: route.external,
         stablePool,
         pool,
         depositStable: deposit,
+        minNativeOut: nativeForDeposit ?? deposit,
         minUnderlyingOut: deposit,
       });
       const left = leftAfterFees(deposit, fees);

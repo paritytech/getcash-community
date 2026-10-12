@@ -41,6 +41,7 @@ import {
   extractFungibleAmount,
   forwardedProgramStandIn,
   peopleDest,
+  priceDispatchFee,
   realForwardedProgram,
   withFeeMargin,
   type PeopleApi,
@@ -250,27 +251,14 @@ export async function estimatePsmBatchFees(args: {
   // Price the dispatch against the batch carrying the final amounts and the declared weight, so
   // the charge it predicts is the charge the submitted batch pays. The dispatch fee itself is not
   // yet known to keep out of the probe's mint; a few thousand units do not change a compact
-  // encoding's length.
-  const options = psmBatchTxOptions(args.route.external);
-  const dispatchNative = await probe(
-    localExternal + deliveryExternal,
-    0n,
-    maxWeight,
-  ).batch.getEstimatedFees(args.dryRunFrom ?? args.feeProbeAddress, options);
-  // ChargeAssetTxPayment swaps exactly the native fee out of the pool, so the external it takes is
-  // the exact-out quote for it, pool fee included.
-  const dispatchExternal =
-    await args.api.apis.AssetConversionApi.quote_price_tokens_for_exact_tokens(
-      options.asset,
-      asLocation(TOKENS.PAS.location),
-      dispatchNative,
-      true,
-    );
-  if (dispatchExternal === undefined) {
-    throw new Error(
-      "psm batch fee estimate: the pool cannot price the dispatch fee in the external",
-    );
-  }
+  // encoding's length. The submit prices the batch it sends once more.
+  const { dispatchNative, dispatchExternal } = await priceDispatchFee(
+    args.api,
+    probe(localExternal + deliveryExternal, 0n, maxWeight).batch,
+    args.dryRunFrom ?? args.feeProbeAddress,
+    psmBatchTxOptions(args.route.external),
+    "psm batch fee estimate",
+  );
 
   const feeAllowanceExternal = withFeeMargin(localExternal + deliveryExternal);
   const heldBackExternal = minBalance + feeAllowanceExternal;
