@@ -2,7 +2,6 @@
 // field or the ref.
 
 import { describe, expect, it } from "vitest";
-import { progressProviderForSource, resolveFundingProgressSnapshot } from "../app/funding/progress";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
   DEFAULT_DEPOSIT_WINDOW_MS,
@@ -78,7 +77,7 @@ describe("request record migration", () => {
         },
       },
       "dot-assethub#2": {
-        status: { kind: "failed", at: failedCryptoRecord.progress!.failedAt!, recoverable: false },
+        status: { kind: "failed", at: failedCryptoRecord.startedAt, recoverable: false },
         route: "crypto",
         provider: "manual",
         deadline: {
@@ -125,17 +124,9 @@ describe("request record migration", () => {
       expect(record.witnesses, key).toEqual({});
       expect(record.confirmedAt, key).toBeUndefined();
 
-      const { progress, ...legacy } = input;
-      for (const [field, value] of Object.entries(legacy)) {
+      for (const [field, value] of Object.entries(input)) {
         expect(record[field as keyof RequestRecord], `${key} ${field}`).toEqual(value);
       }
-      expect(record.progress, key).toEqual(
-        resolveFundingProgressSnapshot(
-          progress,
-          progressProviderForSource(effectiveSourceId(ref)).createProfile(),
-          { fundedAt: input.funded, settledAt: input.settledAt },
-        ),
-      );
 
       const want = expected[key]!;
       expect(record.status, key).toEqual(want.status);
@@ -174,29 +165,10 @@ describe("request record migration", () => {
     expect(effectiveSourceId(record.ref)).toBe(CRYPTO_SOURCE_ID);
     expect(record.route).toBe("crypto");
     expect(record.rail.provider).toBe("manual");
-    expect(record.progress.profile.id).toBe("direct");
-    expect(record.progress.stageTimestamps).toEqual({});
     expect(record.deadline).toEqual({
       depositExpiresAt: legacyBareRefRecord.startedAt + DEFAULT_DEPOSIT_WINDOW_MS,
       source: "route",
     });
-  });
-
-  it("keeps the stored progress of a schema-2 record", () => {
-    // The provider saw the card charge: `funded` is set while the progress stands at the payment
-    // stage. A reload must not advance it to the conversion.
-    const seen: RequestRecord = { ...migrated(submittedCardRecord), funded: FIXTURE_NOW - 60_000 };
-    expect(seen.progress.confirmedStageKey).toBe("meld-payment");
-    const reloaded = migrated(seen, seen.ref);
-    expect(reloaded.progress).toEqual(seen.progress);
-    expect(reloaded.progress.confirmedStageKey).toBe("meld-payment");
-    expect(reloaded.progress.routeCompletedAt).toBeUndefined();
-    expect(reloaded.progress.stageTimestamps["cash-conversion"]).toBeUndefined();
-
-    // A legacy record has no better information: its funded stamp still guesses the conversion.
-    expect(migrated(fundedCryptoRecord).progress.stageTimestamps["cash-conversion"]).toBe(
-      fundedCryptoRecord.funded,
-    );
   });
 
   it("keeps creditedAt on a schema-2 record", () => {

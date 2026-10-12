@@ -4,20 +4,8 @@ import type {
   ChainflipFailureInfo,
   ChainflipProgressFacts,
   EgressInfo,
-  SwapProgress,
   SwapStatusResult,
 } from "@getsome/core";
-
-export const CHAINFLIP_PROGRESS_STATUSES = [
-  "waiting",
-  "receiving",
-  "swapping",
-  "sending",
-  "sent",
-  "complete",
-] as const satisfies readonly SwapProgress[];
-
-export type ChainflipProgressStatus = (typeof CHAINFLIP_PROGRESS_STATUSES)[number];
 
 export interface StatusBackend {
   getStatusV2(args: { id: string }): Promise<unknown>;

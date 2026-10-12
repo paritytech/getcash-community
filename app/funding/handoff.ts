@@ -10,9 +10,3 @@ export type FundingPackageEmits = {
   handoff: [];
   switchRoute: [route: FundingRoute];
 };
-
-/** A package's payment status line, shown above the shell's timeline. Null when there is none. */
-export interface FundingJourneyStatus {
-  text: string;
-  tone: "pending" | "done" | "failed";
-}

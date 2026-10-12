@@ -211,8 +211,7 @@ describe("requests store", () => {
       status: { kind: "awaiting-deposit" },
       rail: { provider: "manual", status: "waiting", stage: "waiting" },
     });
-    const { progress: _resolved, ...legacy } = awaitingDepositCryptoRecord;
-    expect(written).toMatchObject(legacy);
+    expect(written).toMatchObject(awaitingDepositCryptoRecord);
     expect(await storedIndex()).toEqual([AWAITING_REF]);
 
     const mirrored = JSON.parse(mirror.entries.get(MIRROR_KEY)!) as {

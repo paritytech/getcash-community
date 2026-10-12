@@ -5,8 +5,6 @@ import { computed, ref, watch } from "vue";
 import { Plus, RefreshCcw, X } from "lucide-vue-next";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
 import { useJourneyQuote } from "../../composables/useJourneyQuote";
-import type { FundingJourneyStatus } from "../../funding/handoff";
-import { projectFundingProgress, type FundingProgressProjection } from "../../funding/progress";
 import { headerAmount, isExpiredEnding } from "../../funding/journey-endings";
 import {
   failureDetailRows,
@@ -14,7 +12,7 @@ import {
   quoteDetailRows,
   type QuoteRow,
 } from "../../funding/quote-rows";
-import { creditedAmountOf, journeyScaleOf, type JourneyScale } from "../../funding/requests/views";
+import { creditedAmountOf } from "../../funding/requests/views";
 import { CLOSE, type FailureAction } from "../../funding/timeline/failure";
 import { TIMELINE_CADENCE_MS } from "../../funding/timeline/timelines";
 import type { FundingTopUp } from "../../funding/top-ups";
@@ -31,12 +29,6 @@ import PillButton from "../ui/PillButton.vue";
 import { nextSuccessStage, openingSuccessStage } from "./success-stage";
 
 const props = defineProps<{
-  /**
-   * A stored projection for a request not (yet) on screen; the live foreground wins when present.
-   */
-  progress?: FundingProgressProjection | null;
-  /** The package's own word on its payment, shown above the timeline. */
-  status?: FundingJourneyStatus | null;
   /** The top-up as the list knows it; its stored quote backs the detail rows until the request
    *  is live in the store. */
   topUp?: FundingTopUp | null;
@@ -55,10 +47,9 @@ const emit = defineEmits<{
 const session = useSessionStore();
 const requests = useRequestsStore();
 
-const cadence = computed(() =>
-  requests.foregroundRecord !== null ? TIMELINE_CADENCE_MS : (props.progress?.cadenceMs ?? null),
+const now = useFundingProgressClock(() =>
+  requests.foregroundRecord !== null ? TIMELINE_CADENCE_MS : null,
 );
-const now = useFundingProgressClock(cadence);
 /** The top-up's timeline once it opened or ended: the live record's, else the list's for a journey
  *  opened from history. */
 const timeline = computed(() =>
@@ -66,18 +57,6 @@ const timeline = computed(() =>
     ? requests.foregroundTimeline(now.value)
     : props.topUp?.timeline,
 );
-const progress = computed(() => {
-  const foreground = requests.foregroundProgress;
-  if (foreground) {
-    return projectFundingProgress({
-      snapshot: foreground.snapshot,
-      createdAt: foreground.startedAt,
-      now: now.value,
-    });
-  }
-  return props.progress ?? null;
-});
-
 const finished = computed(() => requests.phase === "done");
 
 const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -110,13 +89,13 @@ const storedEndedAt = computed(() => {
 });
 
 /** The route of the top-up on screen. The store owns it whenever a request is on screen; the
- *  list's word on the route only stands in before the top-up is live. */
-const scale = computed<JourneyScale>(() => {
-  if (requests.foregroundRecord !== null || !props.topUp) return session.journeyScale;
-  return journeyScaleOf(props.topUp.route);
-});
-const crypto = computed(() => scale.value === "crypto");
-const bank = computed(() => scale.value === "bank");
+ *  list's word on the route only stands in before the top-up is live, and the selected method
+ *  before there is either. */
+const route = computed(
+  () => requests.foregroundRecord?.route ?? props.topUp?.route ?? session.method,
+);
+const crypto = computed(() => route.value === "crypto");
+const bank = computed(() => route.value === "bank");
 
 /** Nothing was paid on an expired top-up, so it carries no quote rows. Opened from history there
  *  is no live failure to read, so the record's own word stands in. */
@@ -128,10 +107,7 @@ const expired = computed(
 
 /** Whether this journey's top-up stopped rather than finished, live or as history stored it. */
 const heroFailed = computed(
-  () =>
-    progress.value?.view.kind === "failed" ||
-    failure.value !== null ||
-    storedFailure.value !== null,
+  () => requests.handoffRefused || failure.value !== null || storedFailure.value !== null,
 );
 
 /** Which money rows this ending shows; the rule is the design's, not this screen's. */
@@ -190,13 +166,13 @@ const pendingAmount = computed(() =>
 );
 const successAmount = computed(() => headerAmount("success", amounts.value));
 
-/** When the top-up reached its end, under the hero: the live milestone (stamped at the route's
- *  last step) for a credit that just landed, else the list's own timestamp. A failed top-up gets
- *  one too — when it stopped is part of what a buyer opens this screen to find out. */
+/** When the top-up reached its end, under the hero: the live record's credit for one that just
+ *  landed, else the list's own timestamp. A failed top-up gets one too: when it stopped is part
+ *  of what a buyer opens this screen to find out. */
 const settledWhen = computed(() => {
-  // The store stamps the credit at the card scale's last step, whatever scale the route draws.
+  const record = requests.foregroundRecord;
   const at = successShown.value
-    ? (requests.milestones[5] ?? storedEndedAt.value)
+    ? (record?.settledAt ?? record?.creditedAt ?? storedEndedAt.value)
     : storedEndedAt.value;
   return at != null ? formatWhenShort(at) : null;
 });
@@ -376,7 +352,7 @@ watch([timelineMessage, timelineDetail], ([message, detail]) => {
     </div>
 
     <div class="mt-6 flex flex-1 flex-col gap-6">
-      <!-- The stepper leaves once the CASH lands. -->
+      <!-- The timeline leaves once the CASH lands. -->
       <div
         v-if="timeline && success !== 'shown'"
         :class="{ 'journey-timeline-out': successPlaying }"

@@ -1,12 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  listHeadline,
-  overallProgress,
   TIMELINE_INSETS,
   timelineDrawing,
   type LabelAlign,
   type TimelineDrawing,
 } from "../app/components/funding/timeline/drawing";
+import { listHeadline, listProgress, overallProgress } from "../app/funding/timeline/list";
 import { timelineView } from "../app/funding/timeline/model";
 import {
   MILESTONES,
@@ -205,5 +204,27 @@ describe("top-up list headline", () => {
     ["a delayed Polkadot part", "card", current("delayed", 4, 0.5), "Adding to your balance", true],
   ] as const)("words %s", (_, route, view, text, delayed) => {
     expect(listHeadline(route, view && { view })).toEqual({ text, delayed });
+  });
+});
+
+describe("top-up list progress", () => {
+  it.each([
+    [
+      "before the timeline",
+      undefined,
+      { value: 0, tone: "waiting", status: "Waiting for your payment", delayed: false },
+    ],
+    [
+      "a delayed provider part",
+      current("delayed", 1, 0.5),
+      { value: 1.5 / 6, tone: "delayed", status: "Delayed, don't pay again", delayed: true },
+    ],
+    [
+      "the Polkadot part",
+      current("active", 3, 0.5),
+      { value: 3.5 / 6, tone: "active", status: "Adding to your balance", delayed: false },
+    ],
+  ] as const)("rings %s", (_, view, expected) => {
+    expect(listProgress("card", view && { view })).toEqual(expected);
   });
 });

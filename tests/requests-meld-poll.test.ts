@@ -212,7 +212,7 @@ describe("requests store: the Meld poll", () => {
     client.status = "transaction_seen";
     await nextPoll();
     expect(requests.meldStage).toBe("waiting");
-    expect(requests.meldDelayed).toBe(false);
+    expect(requests.get(CARD_REF)?.rail.delayed === true).toBe(false);
     expect(requests.get(CARD_REF)?.rail.stage).toBe("received");
 
     await requests.markMeldSubmitted(CARD_REF);
@@ -224,14 +224,14 @@ describe("requests store: the Meld poll", () => {
     client.providerStatus = "SETTLING";
     await nextPoll();
     expect(requests.meldStage).toBe("receiving");
-    expect(requests.meldDelayed).toBe(false);
+    expect(requests.get(CARD_REF)?.rail.delayed === true).toBe(false);
 
     // A temporary provider error: a delay, nothing terminal.
     client.providerStatus = "ERROR";
     await nextPoll();
     await nextTick();
     expect(requests.meldStage).toBe("receiving");
-    expect(requests.meldDelayed).toBe(true);
+    expect(requests.get(CARD_REF)?.rail.delayed === true).toBe(true);
 
     client.status = "settled";
     await nextPoll();
@@ -317,7 +317,7 @@ describe("requests store: the Meld poll", () => {
       status: { kind: "awaiting-deposit" },
       rail: { stage: "waiting" },
     });
-    expect(requests.meldDelayed).toBe(false);
+    expect(requests.get(CARD_REF)?.rail.delayed === true).toBe(false);
     expect(notFoundWarnings()).toEqual(["[meld] status for mfr not found (1/3)"]);
     // A miss keeps the 3s cadence; only other failures back off.
     await nextPoll();
@@ -327,7 +327,7 @@ describe("requests store: the Meld poll", () => {
       status: { kind: "awaiting-deposit" },
       rail: { stage: "waiting" },
     });
-    expect(requests.meldDelayed).toBe(false);
+    expect(requests.get(CARD_REF)?.rail.delayed === true).toBe(false);
     expect(notFoundWarnings()).toEqual([
       "[meld] status for mfr not found (1/3)",
       "[meld] status for mfr not found (2/3)",

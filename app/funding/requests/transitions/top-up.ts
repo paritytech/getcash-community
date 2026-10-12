@@ -4,12 +4,6 @@
 
 import type { FailureStep, PaymentState } from "@getsome/core";
 import {
-  advanceFundingProgressSnapshot,
-  fundingProgressSignalForSharedStep,
-  progressProviderForSource,
-  type FundingProgressSignal,
-} from "../../progress";
-import {
   CONVERTING_STEP_ORDER,
   DEPOSIT_EXPIRED_REASON,
   FUNDING_HELD_REASON,
@@ -17,7 +11,6 @@ import {
   buyerPaid,
   directDepositGate,
   paymentWatchUntil,
-  effectiveSourceId,
   isConvertingStep,
   isDirectDeposit,
   isTerminal,
@@ -53,13 +46,6 @@ type ProviderResult = Extract<Observation, { source: "provider"; result: unknown
 type ClearedField =
   "cancelledAt" | "failureReason" | "refunded" | "failure" | "depositMismatch" | "creditedAt";
 
-const FAILED: FundingProgressSignal = { observation: { kind: "failed" } };
-const SETTLED: FundingProgressSignal = { observation: { kind: "settled" } };
-const HOLD: FundingProgressSignal = { observation: { kind: "hold" } };
-const ROUTE_COMPLETE: FundingProgressSignal = {
-  observation: { kind: "route-complete" },
-  routeStatus: "complete",
-};
 const EXPIRED_FAILURE: RequestFailure = {
   kind: "expired",
   step: "deposit",
@@ -115,11 +101,6 @@ function settledOnly(record: TopUpRecord, next: TopUpRecord): TopUpRecord {
   };
 }
 
-function advanced(record: TopUpRecord, signal: FundingProgressSignal, at: number): TopUpRecord {
-  const progress = advanceFundingProgressSnapshot(record.progress, { ...signal, at });
-  return progress === record.progress ? record : { ...record, progress };
-}
-
 function witnessed(record: TopUpRecord, patch: Partial<Witnesses>): TopUpRecord {
   return { ...record, witnesses: { ...record.witnesses, ...patch } };
 }
@@ -147,9 +128,8 @@ const atSideExit = (record: TopUpRecord): boolean =>
 
 /** A positive money observation: moves a rank-0 record (or a side exit left from rank 0) to
  *  deposit-seen, and firms up a provisional sighting. Never touches a record past rank 1. Money
- *  on the burner itself (the worker, the faucet, a chain read, the pre-cancel read) completes the
- *  payment leg; the conversion stage waits for the worker's swap report. A sighting on the
- *  provider's side holds, and the branch's own route observation carries the stage. */
+ *  on the burner itself (the worker, the faucet, a chain read, the pre-cancel read) is also
+ *  recorded as the burner sighting. */
 function moneySeen(
   record: TopUpRecord,
   at: number,
@@ -167,52 +147,29 @@ function moneySeen(
     status: { kind: "deposit-seen", at, assurance, via },
     funded: earliest(record.funded, at),
   };
-  if (!seenOnBurner(via)) return advanced(seen, HOLD, at);
-  return advanced(burnerSighted(seen, at), ROUTE_COMPLETE, at);
+  return seenOnBurner(via) ? burnerSighted(seen, at) : seen;
 }
 
 function failed(record: TopUpRecord, at: number, failure: RequestFailure): TopUpRecord {
   const status: RequestStatus = { kind: "failed", at, recoverable: failure.recoverable };
-  return advanced({ ...record, status, failure, failureReason: failure.message }, FAILED, at);
+  return { ...record, status, failure, failureReason: failure.message };
 }
 
 function expired(record: TopUpRecord, at: number): TopUpRecord {
   const status: RequestStatus = { kind: "expired", at };
-  return advanced(
-    { ...record, status, failure: EXPIRED_FAILURE, failureReason: DEPOSIT_EXPIRED_REASON },
-    FAILED,
-    at,
-  );
+  return { ...record, status, failure: EXPIRED_FAILURE, failureReason: DEPOSIT_EXPIRED_REASON };
 }
 
 function settled(record: TopUpRecord, at: number): TopUpRecord {
-  return advanced({ ...record, status: { kind: "settled", at }, settledAt: at }, SETTLED, at);
-}
-
-/** The conversion started no later than the step that follows it: a record whose first worker
- *  report is already past the swap still gets the stage stamped, at that report's instant. */
-function conversionStarted(record: TopUpRecord, at: number): TopUpRecord {
-  return record.progress.stageTimestamps["cash-conversion"] === undefined
-    ? advanced(record, fundingProgressSignalForSharedStep("swap"), at)
-    : record;
+  return { ...record, status: { kind: "settled", at }, settledAt: at };
 }
 
 function claiming(record: TopUpRecord, at: number): TopUpRecord {
-  const status: RequestStatus = { kind: "claiming", at };
-  return advanced(
-    conversionStarted({ ...record, status }, at),
-    fundingProgressSignalForSharedStep("done"),
-    at,
-  );
+  return { ...record, status: { kind: "claiming", at } };
 }
 
 function converting(record: TopUpRecord, at: number, step: ConvertingStep): TopUpRecord {
-  const status: RequestStatus = { kind: "converting", at, step };
-  return advanced(
-    conversionStarted({ ...record, status }, at),
-    fundingProgressSignalForSharedStep(step),
-    at,
-  );
+  return { ...record, status: { kind: "converting", at, step } };
 }
 
 function sameDeposit(
@@ -270,12 +227,7 @@ function applyCoreState(record: TopUpRecord, at: number, state: PaymentState): T
           seen = moneySeen(seen, at, "provisional", "core");
         }
       }
-      const provider = progressProviderForSource(effectiveSourceId(record.ref));
-      return advanced(
-        seen,
-        { observation: provider.observeRoute(state.swap), routeStatus: state.swap },
-        at,
-      );
+      return seen;
     }
     case "funded":
     case "working":
@@ -429,14 +381,6 @@ function applyProviderResult(record: TopUpRecord, observation: ProviderResult): 
     at,
   );
   let next = witnessed(railed, { provider: { status: result.status, at } });
-  if (rail.stage !== record.rail.stage || rail.status !== record.rail.status) {
-    const provider = progressProviderForSource(effectiveSourceId(record.ref));
-    next = advanced(
-      next,
-      { observation: provider.observeRoute(result.status), routeStatus: result.status },
-      at,
-    );
-  }
   if (rail.stage !== "failed" && stageRank(rail.stage) >= stageRank("received")) {
     // The rail reports the buyer paid; a payment reported after the window closed re-opens the
     // request.
@@ -615,11 +559,7 @@ function applyUser(record: TopUpRecord, observation: UserObservation): TopUpReco
         record.failure?.step === "mint"
           ? { kind: "claiming", at }
           : { kind: "converting", at, step };
-      return advanced(
-        { ...without(record, ["failure", "failureReason", "creditedAt"]), status },
-        HOLD,
-        at,
-      );
+      return { ...without(record, ["failure", "failureReason", "creditedAt"]), status };
     }
     case "meld-submitted":
       return record.meldSubmittedAt === undefined ? { ...record, meldSubmittedAt: at } : record;

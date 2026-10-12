@@ -1,11 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ChainflipProgressFacts } from "@getsome/core";
-import {
-  CHAINFLIP_PROGRESS_STATUSES,
-  getSwapStatus,
-  isImplicitFailure,
-  type StatusBackend,
-} from "./status";
+import { getSwapStatus, isImplicitFailure, type StatusBackend } from "./status";
 
 function backendReturning(payload: unknown): StatusBackend {
   return { getStatusV2: async () => payload };
@@ -25,17 +20,6 @@ describe("getSwapStatus mapping", () => {
   it.each(cases)("maps SDK state %s -> %s", async (sdkState, expected) => {
     const result = await getSwapStatus(backendReturning({ state: sdkState }), "123-Bitcoin-45");
     expect(result.status).toBe(expected);
-  });
-
-  it("exports the ordered progress vocabulary", () => {
-    expect(CHAINFLIP_PROGRESS_STATUSES).toEqual([
-      "waiting",
-      "receiving",
-      "swapping",
-      "sending",
-      "sent",
-      "complete",
-    ]);
   });
 
   it("maps an unknown/missing state to waiting", async () => {

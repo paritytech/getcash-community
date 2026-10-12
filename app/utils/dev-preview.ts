@@ -10,12 +10,6 @@ import type {
   SourceId,
 } from "@getsome/core";
 import { SOURCE_CONFIG_BY_ID, type SourceFloorResult } from "@getsome/chainflip";
-import {
-  advanceFundingProgressSnapshot,
-  createFundingProgressSnapshot,
-  fundingProgressSignalForPaymentState,
-  progressProviderForSource,
-} from "../funding/progress";
 import { chainflipTopUpId, projectChainflipTopUps } from "../funding/chainflip-top-ups";
 import { meldTopUpId, projectMeldTopUps } from "../funding/meld-top-ups";
 import { CRYPTO_SOURCE_ID, isMeldSourceId, meldMethodFor } from "../funding/source-ids";
@@ -237,20 +231,6 @@ const DISPLAY: Partial<Record<SourceId, { chain: string; asset: string }>> = {
   "meld-bank": { chain: "Meld", asset: "Bank" },
 };
 
-/** What each rail says it will take, before anything is detected; the store words these the same
- *  way when it opens a real request. */
-const ESTIMATE: Partial<Record<SourceId, string>> = {
-  "meld-card": "≈ minutes after you pay",
-  "meld-bank": "1-2 business days after you pay",
-};
-
-/** How long the rail's own leg is expected to take, where the store sizes it per method
- *  (`initialProgress`): a card confirms within minutes, a bank transfer takes business days. */
-const INGRESS_MS: Partial<Record<SourceId, number>> = {
-  "meld-card": 5 * 60_000,
-  "meld-bank": 24 * 60 * 60_000,
-};
-
 /** The scene's synthetic request: its record and the handle the scene feeds observations through. */
 interface PreviewRequest {
   ref: RequestRef;
@@ -289,23 +269,6 @@ function previewRecord(opts: PreviewRecordOptions, now: number): TopUpRecord {
   const ref: RequestRef = { sourceId, tradeN: opts.tradeN };
   const expiresAt = opts.deposit?.expiresAt ?? 0;
   const display = opts.display ?? DISPLAY[sourceId] ?? { chain: sourceId, asset: sourceId };
-  // The initial snapshot moved by core's first state. The bank transfer's ingress is the store's
-  // own day-long one, so its progress crawls as a real one does.
-  const provider = progressProviderForSource(sourceId);
-  const ingressDurationMs = INGRESS_MS[sourceId];
-  const initial = createFundingProgressSnapshot(
-    provider.createProfile({
-      ...(ingressDurationMs === undefined ? {} : { ingressDurationMs }),
-      // As `initialProgress` words it: a transfer is sent, not paid.
-      ...(sourceId === "meld-bank" ? { waitingLabel: "Waiting for your transfer" } : {}),
-    }),
-    { preDetectionEstimateText: ESTIMATE[sourceId] ?? "≈10 min after your transfer" },
-  );
-  const opening = fundingProgressSignalForPaymentState(provider, awaitingDeposit(0, sourceId));
-  const progress =
-    opening === null
-      ? initial
-      : advanceFundingProgressSnapshot(initial, { ...opening, at: startedAt });
   return {
     schema: 2,
     kind: "top-up",
@@ -316,7 +279,6 @@ function previewRecord(opts: PreviewRecordOptions, now: number): TopUpRecord {
     ...display,
     startedAt,
     depositAddress: DEPOSIT.address,
-    progress,
     tradeN: ref.tradeN,
     sourceId,
     route: routeOf(sourceId),
@@ -445,10 +407,8 @@ function worker(request: PreviewRequest, step: number, phase: string, done = fal
   };
 }
 
-/**
- * How far a running preview top-up has got. Named for the rail's own step, because that is what
- * the observations below say and what the progress machine words the card with.
- */
+/** How far a running preview top-up has got. Named for the rail's own step, because that is what
+ *  the observations below say. */
 type RunningStage =
   /** Opened, nothing sent yet. */
   | "waiting"
@@ -481,9 +441,8 @@ interface RunningTopUp {
  * observations its rail would produce.
  *
  * The rows the scene then shows are the package adapters' own projections, so the card's id is
- * the request's, its status line is whatever the progress machine words that stage as, its amber
- * is `rail.delayed` off the record, and its Fees and Total come from the record's persisted
- * quote. Nothing is left on screen: the subject is the list.
+ * the request's, its ring and status line are its timeline's, and its Fees and Total come from
+ * the record's persisted quote. Nothing is left on screen: the subject is the list.
  */
 async function seedRunningTopUps(
   session: Session,
@@ -1379,7 +1338,6 @@ export const SCENES: Scene[] = [
       await core(r, 0, awaitingDeposit());
       useRequestsStore().setTransientError({
         message: "faucet transfer failed on-chain (is the faucet funded on Asset Hub?)",
-        at: Date.now(),
         source: "faucet",
       });
     },
@@ -1465,7 +1423,7 @@ export const SCENES: Scene[] = [
   },
   {
     // The provider reports a temporary error (Meld's ERROR) and may still retry: amber current
-    // step, delay notice in the ribbon, nothing terminal.
+    // line, delay text in the band, nothing terminal.
     name: "card / journey: delayed",
     apply: async (s, f, i) => {
       const r = await cardPayment(s, f, i);
@@ -1473,8 +1431,8 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    // After "Try again" on a failed payment: the new attempt in flight on the Payment step, amber
-    // like the delayed state, the retry line in the ribbon, no button.
+    // After "Try again" on a failed payment: the new attempt in flight on the provider's line,
+    // amber like the delayed state, the retry text in the band, no button.
     // FUTURE: our retry flow does not exist yet, so the app cannot reach this state.
     name: "card / journey: retrying (future)",
     apply: async (s, f, i) => {
@@ -1599,7 +1557,7 @@ export const SCENES: Scene[] = [
   },
   {
     // The design's bank pending frame: the transfer is the buyer's word until the money lands, so
-    // the stepper waits on "Payment" and the rows restate what to send and what to quote with it.
+    // the timeline waits on it and the rows restate what to send and what to quote with it.
     name: "bank / journey: transfer sent",
     apply: async (s, f, i) => {
       await bankTransfer(s, f, i);
@@ -1615,7 +1573,7 @@ export const SCENES: Scene[] = [
   },
   {
     // The provider has the money and reports a temporary error, retrying on their side. Nothing
-    // is left to instruct or to call off, and the stepper goes amber rather than red.
+    // is left to instruct or to call off, and the timeline goes amber rather than red.
     name: "bank / journey: delayed",
     apply: async (s, f, i) => {
       const r = await bankTransfer(s, f, i);
@@ -1624,7 +1582,7 @@ export const SCENES: Scene[] = [
   },
   {
     // The transfer landed: the provider delivered it and the worker has the deposit. The wait is
-    // off the buyer now, so the stepper moves on and the cancel goes with it.
+    // off the buyer now, so the timeline moves on and the cancel goes with it.
     name: "bank / journey: transfer arrived",
     apply: async (s, f, i) => {
       const r = await bankTransfer(s, f, i);
@@ -1704,7 +1662,7 @@ export const SCENES: Scene[] = [
   },
   {
     // The rate moved between the payment and the claim: the hero corrects itself to what will
-    // actually land, and the ribbon names both figures so the difference is the buyer's to check.
+    // actually land, and the band names both figures so the difference is the buyer's to check.
     name: "bank / journey: rate changed",
     apply: async (s, f, i) => {
       const r = await bankTransfer(s, f, i);

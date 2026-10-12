@@ -13,12 +13,6 @@ import {
   type MeldClientLike,
   type MeldStatusResult,
 } from "@getsome/meld";
-import {
-  advanceFundingProgressSnapshot,
-  createFundingProgressSnapshot,
-  progressProviderForSource,
-  type FundingProgressSnapshot,
-} from "../funding/progress";
 import { depositWindowFor } from "../funding/config";
 import { migrateRecord } from "../funding/requests/migrate";
 import {
@@ -94,11 +88,8 @@ import {
   freshnessOf,
   fundingStepOf,
   fundsSeenOf,
-  journeyScaleOf,
-  journeyStepsOf,
   meldHandedOffOf,
   meldStageOf,
-  milestonesOf,
   phaseLike,
 } from "../funding/requests/views";
 import { CRYPTO_SOURCE_ID, MELD_SOURCE_IDS } from "../funding/source-ids";
@@ -324,8 +315,6 @@ async function inParallel<T>(
   };
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane));
 }
-
-const MINUTE = 60_000;
 
 /** Rank 0–3 in the design's sense: a request the worker is still moving. A withdrawal at
  *  `sending` is on the rail leg, which the worker drives and reads for the provider. */
@@ -642,32 +631,6 @@ function displaySourceOf(sourceId: string): { chain: string; asset: string } {
   return sourcePairFor(sourceId) ?? { chain: sourceId, asset: sourceId };
 }
 
-/** The snapshot a request starts with when its record is built from the worker's job: today's
- *  defaults for the source, with no quote to size the ingress from. */
-function initialProgressForSource(sourceId: string, startedAt: number): FundingProgressSnapshot {
-  const route = routeOf(sourceId);
-  const provider = progressProviderForSource(sourceId);
-  // A card confirms within minutes; a bank transfer takes business days.
-  const profile =
-    route === "crypto"
-      ? provider.createProfile()
-      : provider.createProfile({
-          ingressDurationMs: route === "bank" ? 24 * 60 * MINUTE : 5 * MINUTE,
-        });
-  const journeyMs =
-    profile.expectedUserDelayMs +
-    profile.stages.reduce((total, stage) => total + stage.nominalMs, 0);
-  return createFundingProgressSnapshot(profile, {
-    preDetectionEstimateText:
-      route === "crypto"
-        ? "≈10 min after your transfer"
-        : route === "bank"
-          ? "1-2 business days after you pay"
-          : "≈ minutes after you pay",
-    estimatedCompletionAt: startedAt + journeyMs,
-  });
-}
-
 /** The hand-off the worker keeps on its job, when every field is there. */
 function handoffOf(job: WorkerJob): WorkerHandoffPayload | undefined {
   const {
@@ -872,7 +835,6 @@ function recordFromJob(sessionId: string, job: WorkerJob): TopUpRecord | null {
     ...displaySourceOf(sourceId),
     startedAt,
     ...(isString(job.burnerAddress) ? { depositAddress: job.burnerAddress } : {}),
-    progress: initialProgressForSource(sourceId, startedAt),
     tradeN: ref.tradeN,
     sourceId,
     ...(railExpiry === null ? {} : { depositExpiresAt: railExpiry }),
@@ -920,7 +882,6 @@ function recordFromFlowSlot(
     ...displaySourceOf(sourceId),
     startedAt,
     depositAddress,
-    progress: initialProgressForSource(sourceId, startedAt),
     tradeN: ref.tradeN,
     sourceId,
     ...(railExpiry === null ? {} : { depositExpiresAt: railExpiry }),
@@ -1309,14 +1270,10 @@ export const useRequestsStore = defineStore("requests", () => {
 
   /** A failure the record cannot carry: a hand-off the worker refused, or a faucet transfer that
    *  failed, write nothing to the record, yet the screen shows them. Only the refused hand-off
-   *  also marks the progress failed. Cleared when a drive starts and when the foreground leaves. */
-  const transientError = ref<{
-    message: string;
-    at: number;
-    source: "handoff" | "faucet";
-  } | null>(null);
+   *  also shows the request failed. Cleared when a drive starts and when the foreground leaves. */
+  const transientError = ref<{ message: string; source: "handoff" | "faucet" } | null>(null);
   function setTransientError(
-    value: { message: string; at: number; source: "handoff" | "faucet" } | null,
+    value: { message: string; source: "handoff" | "faucet" } | null,
   ): void {
     transientError.value = value;
   }
@@ -1348,34 +1305,20 @@ export const useRequestsStore = defineStore("requests", () => {
     const claimed = foregroundRecord.value?.claimed;
     return claimed === undefined ? null : BigInt(claimed);
   });
-  /** When each journey step landed, in ms since epoch, by step number. */
-  const milestones = computed<Record<number, number>>(() =>
-    foregroundRecord.value ? milestonesOf(foregroundRecord.value) : {},
-  );
-  /** How many of the journey's steps are done, on the scale the record's own route shows. */
-  const journeyDone = computed(() => {
-    const record = foregroundRecord.value;
-    return record ? journeyStepsOf(record, journeyScaleOf(record.route)) : 1;
-  });
   /** True while a claim is in flight: the host's sheet is up, or the credit is being verified. */
   const claiming = computed(() =>
     foregroundRecord.value ? claimingOf(foregroundRecord.value) : false,
   );
-  /** The record's progress; a hand-off the worker refused shows as failed on screen while the
-   *  record, still awaiting its deposit, waits for the worker's verdict. */
-  const foregroundProgress = computed(() => {
+  /** A hand-off the worker refused shows as failed on screen while the record, still awaiting its
+   *  deposit, waits for the worker's verdict. */
+  const handoffRefused = computed(() => {
     const record = foregroundRecord.value;
-    if (!record) return null;
-    const failure = transientError.value;
-    const snapshot =
-      failure !== null && failure.source === "handoff" && rankOf(record) === 0
-        ? advanceFundingProgressSnapshot(record.progress, {
-            observation: { kind: "failed" },
-            at: failure.at,
-          })
-        : record.progress;
-    return { ref: record.ref, startedAt: record.startedAt, snapshot };
+    return record !== null && rankOf(record) === 0 && transientError.value?.source === "handoff";
   });
+  /** The request on screen still waits for its deposit, with nothing seen and nothing ended. */
+  const awaitingDeposit = computed(
+    () => foregroundRecord.value?.status.kind === "awaiting-deposit" && !handoffRefused.value,
+  );
   /** The timelines the list and the journey show, so that a top-up on both never moves back. */
   const topUpTimelineOf = createTopUpTimelines();
   /** The timeline of the top-up on screen at `now`. */
@@ -1388,9 +1331,6 @@ export const useRequestsStore = defineStore("requests", () => {
   const meldStage = computed(() =>
     foregroundRecord.value ? meldStageOf(foregroundRecord.value) : null,
   );
-  /** The Meld payment is temporarily stuck (provider retrying its crypto delivery). Transient:
-   *  the record's rail says so, never terminal on its own. */
-  const meldDelayed = computed(() => foregroundRecord.value?.rail.delayed === true);
   /** The rail has the money for the request on screen. What the buyer is still told to do, and
    *  what they can still call off, both end here. */
   const railSeen = computed(() =>
@@ -3002,14 +2942,12 @@ export const useRequestsStore = defineStore("requests", () => {
     fundingError,
     claimStage,
     claimedBase,
-    milestones,
-    journeyDone,
     claiming,
-    foregroundProgress,
+    handoffRefused,
+    awaitingDeposit,
     topUpTimelineOf,
     foregroundTimeline,
     meldStage,
-    meldDelayed,
     railSeen,
     meldFailureMessage,
     meldFailureCode,

@@ -22,10 +22,10 @@ import {
   withdrawalProgress,
   withdrawalProgressProfile,
 } from "../../withdraw/progress";
-import FundingJourneyTimeline from "../funding/progress/FundingJourneyTimeline.vue";
 import CashAmount from "../ui/CashAmount.vue";
 import DetailRows, { type DetailRow } from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
+import WithdrawalJourneyTimeline from "./WithdrawalJourneyTimeline.vue";
 
 const props = defineProps<{
   record: WithdrawalRecord;
@@ -154,7 +154,7 @@ const canRetry = computed(() => status.value.kind === "failed" && status.value.r
     </div>
 
     <div class="mt-6 flex flex-1 flex-col gap-6">
-      <FundingJourneyTimeline
+      <WithdrawalJourneyTimeline
         :progress="progress"
         :labels="WITHDRAWAL_JOURNEY_LABELS"
         :completed-steps="done"

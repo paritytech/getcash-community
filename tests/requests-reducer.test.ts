@@ -126,15 +126,10 @@ const credited = () =>
   );
 
 describe("request reducer: top-up transitions", () => {
-  it("start record then worker swap → converting(swap) and cash-conversion stage", () => {
+  it("start record then worker swap → converting(swap)", () => {
     const record = reduce(awaiting(), workerSwap(at(1)));
     expect(record.status).toEqual({ kind: "converting", at: at(2), step: "swap" });
     expect(record.funded).toBe(at(1));
-    // The sighting completes the payment leg; the swap report starts the conversion stage.
-    expect(record.progress.confirmedStageKey).toBe("cash-conversion");
-    expect(record.progress.stageTimestamps["cash-conversion"]).toBe(at(2));
-    expect(record.progress.detectedAt).toBe(at(1));
-    expect(record.progress.routeCompletedAt).toBe(at(1));
     expect(record.witnesses.worker).toEqual({
       known: true,
       phase: "swap",
@@ -159,8 +154,6 @@ describe("request reducer: top-up transitions", () => {
     expect(record.status).toEqual({ kind: "settled", at: at(10) });
     expect(record.settledAt).toBe(at(10));
     expect(record.claimed).toBe("25250000");
-    expect(record.progress.settledAt).toBe(at(10));
-    expect(record.progress.confirmedStageKey).toBe("cash-top-up");
     expect(record.witnesses.worker).toMatchObject({
       known: true,
       claimPhase: "claimed",
@@ -231,7 +224,6 @@ describe("request reducer: top-up transitions", () => {
       message: DEPOSIT_EXPIRED_REASON,
       recoverable: false,
     });
-    expect(expired.progress.failedAt).toBe(deadline + 1);
     expect(expired.witnesses.clock).toEqual({ at: deadline + 1 });
   });
 
@@ -246,7 +238,6 @@ describe("request reducer: top-up transitions", () => {
     expect(ticked.status).toEqual({ kind: "awaiting-deposit" });
     expect(ticked.failureReason).toBeUndefined();
     expect(ticked.failure).toBeUndefined();
-    expect(ticked.progress.failedAt).toBeUndefined();
     expect(ticked.witnesses.clock).toEqual({ at: deadline + 1 });
   });
 
@@ -278,7 +269,6 @@ describe("request reducer: top-up transitions", () => {
     });
     expect(seen.funded).toBe(at(1));
     expect(seen.witnesses.provider).toEqual({ status: "receiving", at: at(1) });
-    expect(seen.progress.latestRouteStatus).toBe("receiving");
 
     const deadline = submittedCardRecord.startedAt + DAY;
     expect(card().deadline).toEqual({ depositExpiresAt: deadline, source: "route" });
@@ -295,7 +285,6 @@ describe("request reducer: top-up transitions", () => {
     });
     expect(revived.failureReason).toBeUndefined();
     expect(revived.failure).toBeUndefined();
-    expect(revived.progress.failedAt).toBeUndefined();
   });
 
   it("provider failed at rank 0 → failed non-recoverable; at rank 2 → rail only", () => {
@@ -315,7 +304,6 @@ describe("request reducer: top-up transitions", () => {
       failure: { kind: "deposit-rejected", message: DECLINED, code: "declined" },
       updatedAt: at(1),
     });
-    expect(failed.progress.failedAt).toBe(at(1));
 
     const busy = reduce(card(), workerSwap(at(1)));
     expect(busy.status).toEqual({ kind: "converting", at: at(2), step: "swap" });
@@ -324,7 +312,6 @@ describe("request reducer: top-up transitions", () => {
     expect(railOnly.failure).toBeUndefined();
     expect(railOnly.failureReason).toBeUndefined();
     expect(railOnly.rail.stage).toBe("failed");
-    expect(railOnly.progress.failedAt).toBeUndefined();
 
     // A refund-like failure marks the record refunded, as core's own failure does. The record's
     // rail keeps its own provider.
@@ -422,14 +409,6 @@ describe("request reducer: top-up transitions", () => {
       expect(revived.failureReason, name).toBeUndefined();
       expect(revived.failure, name).toBeUndefined();
       expect(revived.refunded, name).toBeUndefined();
-      expect(revived.progress.failedAt, name).toBeUndefined();
-      // The sighting completes the payment leg and no more; a record funded before its exit (the
-      // failed fixture) keeps the leg it had already recorded.
-      const { profile } = revived.progress;
-      expect(revived.progress.routeCompletedAt, name).toBe(start.progress.routeCompletedAt ?? time);
-      expect(revived.progress.confirmedStageKey, name).toBe(
-        start.progress.confirmedStageKey ?? profile.stages[profile.routeStageCount - 1]!.key,
-      );
     }
     // The failed fixture had already seen its deposit; the earliest sighting stands.
     const [, failedStart] = cases[2]!;
@@ -487,7 +466,6 @@ describe("request reducer: top-up transitions", () => {
     );
     expect(stale.status).toEqual(arriving.status);
     // The swap and the send are one program, so awaiting the arrival is still the conversion.
-    expect(stale.progress.confirmedStageKey).toBe("cash-conversion");
     expect(stale.witnesses.worker).toMatchObject({ known: true, phase: "swap", at: at(3) });
 
     const claiming = reduce(
@@ -523,7 +501,6 @@ describe("request reducer: top-up transitions", () => {
     expect(read.status).toEqual(settled.status);
     expect(read.funded).toBe(settledCardRecord.funded);
     expect(read.claimed).toBe(settledCardRecord.claimed);
-    expect(read.progress).toBe(settled.progress);
     expect(read.witnesses.conflict).toEqual({
       source: "chain",
       note: "funds on a settled burner",
@@ -551,14 +528,11 @@ describe("request reducer: top-up transitions", () => {
       recoverable: true,
     });
     expect(failed.failureReason).toBe(SHORTFALL);
-    expect(failed.progress.failedAt).toBe(at(5));
 
     const retried = reduce(failed, { source: "user", at: at(6), event: "retry" });
     expect(retried.status).toEqual({ kind: "converting", at: at(6), step: "swap" });
     expect(retried.failure).toBeUndefined();
     expect(retried.failureReason).toBeUndefined();
-    expect(retried.progress.failedAt).toBeUndefined();
-    expect(retried.progress.confirmedStageKey).toBe("cash-conversion");
   });
 
   it("worker held at converting → failed(recoverable) in the app's words; user retry → converting(swap)", () => {
@@ -596,7 +570,6 @@ describe("request reducer: top-up transitions", () => {
     expect(ignored.status).toEqual(seen.status);
     expect(ignored.failureReason).toBeUndefined();
     expect(ignored.failure).toBeUndefined();
-    expect(ignored.progress.failedAt).toBeUndefined();
     expect(ignored.witnesses.worker).toMatchObject({
       known: true,
       phase: "failed",
@@ -634,7 +607,6 @@ describe("request reducer: top-up transitions", () => {
       recoverable: true,
     });
     expect(failed.failureReason).toBe(CLAIM_SHORT);
-    expect(failed.progress.failedAt).toBe(at(5));
     expect(failed.witnesses.worker).toMatchObject({
       known: true,
       phase: "failed",
@@ -645,7 +617,6 @@ describe("request reducer: top-up transitions", () => {
     expect(retried.status).toEqual({ kind: "claiming", at: at(6) });
     expect(retried.failure).toBeUndefined();
     expect(retried.failureReason).toBeUndefined();
-    expect(retried.progress.failedAt).toBeUndefined();
   });
 
   it("worker sizing and registering phases leave the record claiming and record the phase", () => {
@@ -713,7 +684,6 @@ describe("request reducer: top-up transitions", () => {
     expect(inBlock.status).toEqual({ kind: "claiming", at: at(3) });
     expect(inBlock.settledAt).toBeUndefined();
     expect(inBlock.claimed).toBeUndefined();
-    expect(inBlock.progress.settledAt).toBeUndefined();
     expect(inBlock.witnesses.worker).toMatchObject({
       claimPhase: "claiming",
       claimStatus: "claimed",
@@ -753,7 +723,6 @@ describe("request reducer: top-up transitions", () => {
     expect(settled.status).toEqual({ kind: "settled", at: at(8) });
     expect(settled.settledAt).toBe(at(8));
     expect(settled.claimed).toBe("25250000");
-    expect(settled.progress.settledAt).toBe(at(8));
     expect(settled.creditedAt).toBe(at(3));
   });
 
@@ -778,7 +747,6 @@ describe("request reducer: top-up transitions", () => {
         message: `${failure} failed`,
         recoverable: true,
       });
-      expect(failed.progress.failedAt, failure).toBe(at(8));
       expect(failed.settledAt, failure).toBeUndefined();
       expect(failed.creditedAt, failure).toBe(at(3));
     }

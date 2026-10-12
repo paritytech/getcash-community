@@ -558,7 +558,6 @@ describe("requests store: the chain step", () => {
       rev: 1,
       status: { kind: "deposit-seen", at: FIXTURE_NOW, assurance: "provisional", via: "chain" },
       funded: FIXTURE_NOW,
-      progress: { routeCompletedAt: FIXTURE_NOW },
       witnesses: { chain: { best: { burnerNative: "5000000000", at: FIXTURE_NOW } } },
     });
     expect(watcher.unsubscribed).toBe(true);

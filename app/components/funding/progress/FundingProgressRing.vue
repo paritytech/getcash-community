@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { computed } from "vue";
-
-export type ProgressRingTone = "waiting" | "active" | "delayed" | "settled" | "failed";
+import type { FundingTopUpProgress } from "../../../funding/top-ups";
 
 const props = withDefaults(
   defineProps<{
     /** From 0 to 1. */
     value: number;
-    tone: ProgressRingTone;
+    tone: FundingTopUpProgress["tone"];
     size?: number;
   }>(),
   { size: 30 },

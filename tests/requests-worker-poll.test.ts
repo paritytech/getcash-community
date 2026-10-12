@@ -4,7 +4,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { projectChainflipTopUps } from "../app/funding/chainflip-top-ups";
-import { progressProviderForSource } from "../app/funding/progress";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
   JOB_POLL_CLAIMING_MS,
@@ -353,17 +352,6 @@ describe("requests store: the worker poll", () => {
       },
       confirmedAt: FIXTURE_NOW,
     });
-    // Today's default crypto snapshot: no quote to size the ingress from.
-    const profile = progressProviderForSource("dot-assethub").createProfile();
-    const journeyMs =
-      profile.expectedUserDelayMs +
-      profile.stages.reduce((total, stage) => total + stage.nominalMs, 0);
-    expect(record?.progress).toMatchObject({
-      profile: { id: "direct" },
-      stageTimestamps: {},
-      preDetectionEstimateText: "≈10 min after your transfer",
-      estimatedCompletionAt: job.createdAt + journeyMs,
-    });
     expect(record).not.toHaveProperty("deposit");
     expect(record).not.toHaveProperty("refundAddress");
     expect(record).not.toHaveProperty("sourceAmount");
@@ -399,7 +387,6 @@ describe("requests store: the worker poll", () => {
         network: { label: "Polkadot" },
         token: { label: "DOT" },
         depositAddress: job.burnerAddress,
-        arrivalEstimate: "≈10 min after your transfer",
       },
     });
     expect(row).not.toHaveProperty("quote");

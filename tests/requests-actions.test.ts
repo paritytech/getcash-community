@@ -10,7 +10,6 @@ import type { PaymentState } from "@getsome/core";
 import type { MeldCancelResult } from "@getsome/meld";
 import { projectChainflipTopUps } from "../app/funding/chainflip-top-ups";
 import { fundingSelectorConfig } from "../app/funding/config";
-import type { FundingProgressSnapshot } from "../app/funding/progress";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
   CANCEL_CONFIRM_MS,
@@ -124,13 +123,6 @@ const workerFailed = (time: number, fundsSeenAt: number): Observation => ({
   },
 });
 
-/** The fields of a progress snapshot the views and the journey read. */
-function progressOf(snapshot: FundingProgressSnapshot | undefined) {
-  if (snapshot === undefined) return undefined;
-  const { confirmedStageKey, latestRouteStatus, detectedAt, stageTimestamps, settledAt } = snapshot;
-  return { confirmedStageKey, latestRouteStatus, detectedAt, stageTimestamps, settledAt };
-}
-
 const waitFor = async (predicate: () => boolean, ms: number) => {
   const until = Date.now() + ms;
   while (!predicate() && Date.now() < until) await new Promise((r) => setTimeout(r, 25));
@@ -183,20 +175,13 @@ describe("requests store: foreground, clock and user actions", () => {
       await waitFor(() => requests.get(ref)?.status.kind === "settled", 10_000);
       expect(requests.get(ref)?.status.kind).toBe("settled");
       expect(requests.phase).toBe("done");
-      // A crypto record counts on the journey's three-stop scale: settled is all three.
-      expect(requests.journeyDone).toBe(3);
-      expect(requests.foregroundProgress?.snapshot.confirmedStageKey).toBe("cash-top-up");
     },
   );
 
-  // The record is a crypto one, so `journeyDone` counts on the three-stop scale: it opens at 0
-  // because the journey only starts once the deposit is seen, and until then the deposit screen
-  // is showing.
   it("computed views match the milestone-1 table for a core-driven sequence", async () => {
     setRequestsClock(() => FIXTURE_NOW);
     const requests = useRequestsStore();
     const record = migrated(awaitingDepositCryptoRecord);
-    const { startedAt } = record;
     await requests.create(AWAITING_REF, record);
     requests.setForeground(AWAITING_REF);
     const views = () => ({
@@ -204,9 +189,6 @@ describe("requests store: foreground, clock and user actions", () => {
       fundsSeen: requests.fundsSeen,
       fundingStep: requests.fundingStep,
       claiming: requests.claiming,
-      journeyDone: requests.journeyDone,
-      milestones: requests.milestones,
-      progress: progressOf(requests.foregroundProgress?.snapshot),
     });
 
     await requests.observe(AWAITING_REF, coreAwaitingDeposit(at(1)));
@@ -215,15 +197,6 @@ describe("requests store: foreground, clock and user actions", () => {
       fundsSeen: false,
       fundingStep: null,
       claiming: false,
-      journeyDone: 0,
-      milestones: { 1: startedAt },
-      progress: {
-        confirmedStageKey: undefined,
-        latestRouteStatus: "waiting",
-        detectedAt: undefined,
-        stageTimestamps: {},
-        settledAt: undefined,
-      },
     });
 
     await requests.observe(AWAITING_REF, workerSwap(at(2)));
@@ -232,15 +205,6 @@ describe("requests store: foreground, clock and user actions", () => {
       fundsSeen: true,
       fundingStep: "swap",
       claiming: false,
-      journeyDone: 1,
-      milestones: { 1: startedAt, 2: at(2), 4: at(2) },
-      progress: {
-        confirmedStageKey: "cash-conversion",
-        latestRouteStatus: "complete",
-        detectedAt: at(2),
-        stageTimestamps: { "cash-conversion": at(2) },
-        settledAt: undefined,
-      },
     });
 
     await requests.observe(AWAITING_REF, workerDone(at(3), at(2)));
@@ -249,15 +213,6 @@ describe("requests store: foreground, clock and user actions", () => {
       fundsSeen: true,
       fundingStep: "done",
       claiming: true,
-      journeyDone: 2,
-      milestones: { 1: startedAt, 2: at(2), 4: at(2) },
-      progress: {
-        confirmedStageKey: "cash-top-up",
-        latestRouteStatus: "complete",
-        detectedAt: at(2),
-        stageTimestamps: { "cash-conversion": at(2), "cash-top-up": at(3) },
-        settledAt: undefined,
-      },
     });
     expect(requests.claimStage).toBe("prompted");
 
@@ -267,15 +222,6 @@ describe("requests store: foreground, clock and user actions", () => {
       fundsSeen: true,
       fundingStep: "done",
       claiming: false,
-      journeyDone: 3,
-      milestones: { 1: startedAt, 2: at(2), 4: at(2), 5: at(4) },
-      progress: {
-        confirmedStageKey: "cash-top-up",
-        latestRouteStatus: "complete",
-        detectedAt: at(2),
-        stageTimestamps: { "cash-conversion": at(2), "cash-top-up": at(3) },
-        settledAt: at(4),
-      },
     });
     expect(requests.claimStage).toBeNull();
     expect(requests.fundingError).toBeNull();
@@ -312,11 +258,6 @@ describe("requests store: foreground, clock and user actions", () => {
     expect(requests.phase).toBe("done");
     expect(requests.claiming).toBe(false);
     expect(requests.claimStage).toBeNull();
-    expect(requests.journeyDone).toBe(3);
-    expect(requests.milestones[5]).toBe(at(3));
-    // The snapshot settles on the final word only: a settled one is terminal and would hide a
-    // failure that followed.
-    expect(requests.foregroundProgress?.snapshot.settledAt).toBeUndefined();
   });
 
   it("never shows the journey's timeline behind the list's for the same top-up", async () => {
@@ -699,7 +640,19 @@ describe("requests store: foreground, clock and user actions", () => {
     });
     expect(requests.phase).toBe("failed");
     expect(requests.fundingError).toBe(DEPOSIT_EXPIRED_REASON);
-    expect(requests.foregroundProgress?.snapshot.failedAt).toBe(now);
+  });
+
+  it("a refused hand-off ends the deposit wait while the record still awaits it", async () => {
+    setRequestsClock(() => FIXTURE_NOW);
+    const requests = useRequestsStore();
+    await requests.create(AWAITING_REF, migrated(awaitingDepositCryptoRecord));
+    requests.setForeground(AWAITING_REF);
+    expect(requests.awaitingDeposit).toBe(true);
+
+    requests.setTransientError({ message: "refused", source: "handoff" });
+    expect(requests.handoffRefused).toBe(true);
+    expect(requests.awaitingDeposit).toBe(false);
+    expect(requests.get(AWAITING_REF)?.status).toEqual({ kind: "awaiting-deposit" });
   });
 
   it("preview deck writes no session refs", () => {

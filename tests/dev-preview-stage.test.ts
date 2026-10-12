@@ -28,7 +28,6 @@ function sceneState(): string {
     meldFailureCode: r.meldFailureCode,
     meldFailureMessage: r.meldFailureMessage,
     meldRefunded: r.meldRefunded,
-    meldDelayed: r.meldDelayed,
     fundingError: r.fundingError,
     fundingNotice: r.fundingNotice,
     claimStage: r.claimStage,

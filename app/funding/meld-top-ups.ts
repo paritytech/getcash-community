@@ -5,11 +5,11 @@ import { useFundingProgressClock } from "../composables/useFundingProgressClock"
 import { useRequestsStore } from "../stores/requests";
 import { DEPOSIT_EXPIRED_REASON, useSessionStore } from "../stores/session";
 import { parseRequestRefKey, requestRefKey, type RequestRef } from "../utils/request-index";
-import { projectFundingProgress } from "./progress";
 import type { TopUpRecord } from "./requests/model";
-import { journeyScaleOf, journeyStepsOf, rowStateOf } from "./requests/views";
+import { rowStateOf } from "./requests/views";
 import type { FundingRoute } from "./selection";
 import { isMeldSourceId, meldMethodFor, meldSourceIdFor, type MeldMethod } from "./source-ids";
+import { listProgress } from "./timeline/list";
 import {
   createTopUpTimelines,
   TIMELINE_CADENCE_MS,
@@ -57,9 +57,6 @@ function topUpDetails(record: MeldTopUpRecord, method: MeldMethod): FundingTopUp
       icon: method === "card" ? "/icons/card.svg" : "/icons/bank.svg",
     },
     ...(record.meldCountry ? { region: record.meldCountry } : {}),
-    ...(record.progress?.preDetectionEstimateText
-      ? { arrivalEstimate: record.progress.preDetectionEstimateText }
-      : {}),
   };
 }
 
@@ -69,13 +66,13 @@ export function projectMeldTopUps(
   timelineOf: TopUpTimelineOf = createTopUpTimelines(),
 ): FundingTopUp[] {
   return records.flatMap((record) => {
-    const { ref, progress: snapshot } = record;
+    const { ref } = record;
     if (!isMeldSourceId(ref.sourceId)) return [];
     const method = meldMethodFor(ref.sourceId);
     const route: FundingRoute = method;
-    const progress = projectFundingProgress({ snapshot, createdAt: record.startedAt, now });
     const timeline = timelineOf(record, now);
-    const state = rowStateOf(record, progress);
+    const progress = listProgress(route, timeline);
+    const state = rowStateOf(record, progress.status);
     const worded =
       state.kind === "failed" && state.reason === DEPOSIT_EXPIRED_REASON
         ? { ...state, reason: MELD_WINDOW_CLOSED_REASON }
@@ -91,8 +88,6 @@ export function projectMeldTopUps(
         details: topUpDetails(record, method),
         ...quoteOf(record),
         ...referenceOf(record),
-        ...(record.rail.delayed === true ? { delayed: true } : {}),
-        journeyDone: journeyStepsOf(record, journeyScaleOf(record.route)),
         state: worded,
       },
     ];

@@ -1,25 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { fundingSelectorConfig } from "../app/funding/config";
-import {
-  chainflipProgressProvider,
-  createFundingProgressSnapshot,
-  projectFundingProgress,
-} from "../app/funding/progress";
 import type { TopUpTimeline } from "../app/funding/timeline/top-up";
 import { MILESTONES } from "../app/funding/timeline/types";
 import {
   hasFundingPendingContent,
   projectFundingTopUps,
   type FundingTopUp,
+  type FundingTopUpProgress,
 } from "../app/funding/top-ups";
 
-function progress(startedAt: number) {
-  return projectFundingProgress({
-    snapshot: createFundingProgressSnapshot(chainflipProgressProvider.createProfile()),
-    createdAt: startedAt,
-    now: startedAt,
-  });
-}
+const progress: FundingTopUpProgress = { value: 0, tone: "waiting", status: "", delayed: false };
 
 const topUps = [
   {
@@ -27,7 +17,7 @@ const topUps = [
     amount: "25",
     route: "bank",
     startedAt: 100,
-    progress: progress(100),
+    progress,
     state: { kind: "awaiting-transfer", status: "Waiting for your transfer" },
   },
   {
@@ -35,7 +25,7 @@ const topUps = [
     amount: "50",
     route: "crypto",
     startedAt: 400,
-    progress: progress(400),
+    progress,
     state: { kind: "finishing", status: "Received, finishing up" },
   },
   {
@@ -43,7 +33,7 @@ const topUps = [
     amount: "20",
     route: "card",
     startedAt: 200,
-    progress: progress(200),
+    progress,
     details: {
       network: { label: "Bitcoin", icon: "/icons/bitcoin.svg" },
       token: { label: "BTC", icon: "/icons/bitcoin.svg" },
@@ -56,7 +46,7 @@ const topUps = [
     amount: "40",
     route: "crypto",
     startedAt: 500,
-    progress: progress(500),
+    progress,
     state: { kind: "failed", at: 800, reason: "Deposit expired" },
   },
 ] as const satisfies readonly FundingTopUp[];
@@ -153,7 +143,7 @@ describe("funding top-up projections", () => {
           amount: "100",
           route: "crypto",
           startedAt: 800,
-          progress: progress(800),
+          progress,
           state: { kind: "settled", at: 900 },
         },
       ],
@@ -176,7 +166,7 @@ describe("funding top-up projections", () => {
           amount: "15",
           route: "crypto",
           startedAt: 1_000,
-          progress: progress(1_000),
+          progress,
           state: { kind: "failed", reason: "Unavailable" },
         },
       ],
@@ -204,11 +194,7 @@ describe("fiat routes in the shell list", () => {
     const base = {
       amount: "100",
       startedAt: 100,
-      progress: projectFundingProgress({
-        snapshot: createFundingProgressSnapshot(chainflipProgressProvider.createProfile()),
-        createdAt: 100,
-        now: 200,
-      }),
+      progress,
       state: { kind: "awaiting-transfer" as const, status: "Waiting for your payment" },
     };
     const sections = projectFundingTopUps(

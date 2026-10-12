@@ -5,7 +5,6 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useStateDirector } from "../../composables/useStateDirector";
 import { useVisibilityReconcile } from "../../composables/useVisibilityReconcile";
-import type { FundingJourneyStatus } from "../../funding/handoff";
 import type { FundingTopUp } from "../../funding/top-ups";
 import { useFlowStore } from "../../stores/flow";
 import { useRequestsStore } from "../../stores/requests";
@@ -21,12 +20,11 @@ import MeldFeeDetailsScreen from "./routes/MeldFeeDetailsScreen.vue";
 
 const props = defineProps<{
   title: string;
-  /** The top-up as the list knows it; null after a handoff. Its stored progress is the fallback
+  /** The top-up as the list knows it; null after a handoff. Its stored timeline is the fallback
    *  while the request is not live in the store. */
   topUp?: FundingTopUp | null;
   /** Brings `topUp` to the foreground; null after a handoff. */
   open?: ((topUp: FundingTopUp) => Promise<boolean>) | null;
-  status?: FundingJourneyStatus | null;
 }>();
 // startOver bubbles up from a fiat top-up that ended: the host re-enters its package with the same
 // amount.
@@ -196,8 +194,6 @@ onUnmounted(() => {
       />
       <template v-else>
         <JourneyScreen
-          :progress="topUp?.progress ?? null"
-          :status="status ?? null"
           :top-up="topUp ?? null"
           @fees="showingFees = true"
           @refund="showingRefund = true"

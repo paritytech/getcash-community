@@ -111,16 +111,16 @@ export function projectWithdrawalTopUps(
   now = Date.now(),
 ): FundingTopUp[] {
   return records.map((record) => {
-    const progress = withdrawalProgress(record, now);
+    const { view } = withdrawalProgress(record, now);
     return {
       id: rowId(record.ref),
       amount: record.amountHuman,
       // The route opens the package the withdrawal came from: crypto's, or the fiat sale's.
       route: record.route,
       startedAt: record.startedAt,
-      progress,
+      progress: { value: view.value, tone: view.kind, status: view.label, delayed: false },
       details: detailsOf(record),
-      state: withdrawalRowStateOf(record, progress.view.label),
+      state: withdrawalRowStateOf(record, view.label),
     };
   });
 }

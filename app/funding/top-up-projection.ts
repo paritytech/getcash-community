@@ -1,6 +1,5 @@
 // Shared top-up adapter helpers: the durable record as the adapters read it.
 
-import type { FundingProgressSnapshot } from "./progress";
 import type { FundingTopUp } from "./top-ups";
 
 /** The durable request record as the adapters read it. */
@@ -44,7 +43,6 @@ export interface FundingTopUpRecord {
   refunded?: boolean;
   refundAmount?: string;
   refundTxRef?: string;
-  progress?: FundingProgressSnapshot;
 }
 
 /**

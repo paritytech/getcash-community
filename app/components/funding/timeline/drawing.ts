@@ -1,5 +1,3 @@
-import type { FundingRoute } from "../../../funding/selection";
-import type { TopUpTimeline } from "../../../funding/timeline/top-up";
 import { lastReached } from "../../../funding/timeline/model";
 import {
   MILESTONES,
@@ -84,39 +82,6 @@ export const TIMELINE_INSETS = {
 
 /** Each line's share of the stretched width: the designer's gap between the two rings. */
 const LINE_WEIGHTS = ringEdges.slice(1).map((edge, index) => edge.start - ringEdges[index]!.end);
-
-/** How far the whole top-up has come, from 0 to 1: the completed lines and the current line's
- *  fill, over all the lines. */
-export function overallProgress(view: TimelineView): number {
-  return view.lines.reduce((sum, fill) => sum + fill, 0) / view.lines.length;
-}
-
-export interface ListHeadline {
-  readonly text: string;
-  /** Drawn amber. */
-  readonly delayed: boolean;
-}
-
-const WAITING: Readonly<Record<FundingRoute, string>> = {
-  crypto: "Waiting for your deposit",
-  card: "Waiting for your payment",
-  bank: "Waiting for your bank transfer",
-};
-
-/** The last phase the provider owns on the list; the phases after it are the Polkadot part. */
-const LAST_PROVIDER_PHASE = 2;
-
-/** The list row's short status line: what is being waited for until the timeline opens, then the
- *  part of the timeline the top-up is in. The journey's timeline carries the detail. */
-export function listHeadline(route: FundingRoute, timeline?: TopUpTimeline): ListHeadline {
-  if (timeline === undefined) return { text: WAITING[route], delayed: false };
-  const { view } = timeline;
-  const delayed = view.state === "delayed";
-  if (lastReached(view) > LAST_PROVIDER_PHASE) return { text: "Adding to your balance", delayed };
-  // A fiat provider that is late or retrying may still take the money: never invite a second one.
-  if (delayed && route !== "crypto") return { text: "Delayed, don't pay again", delayed };
-  return { text: "On its way", delayed };
-}
 
 /**
  * What to draw for a view. `shownReached` is the last milestone drawn as reached; it trails

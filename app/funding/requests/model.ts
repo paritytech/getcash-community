@@ -20,7 +20,6 @@ import {
 } from "@getsome/funding";
 import type { WithdrawStep } from "@getsome/withdraw";
 import type { RequestRef } from "../../utils/request-index";
-import type { FundingProgressSnapshot } from "../progress";
 import { CRYPTO_SOURCE_ID, isDirectSourceId, isMeldSourceId, meldMethodFor } from "../source-ids";
 
 /** Trailing debounce per key for non-critical host writes. */
@@ -319,7 +318,6 @@ export interface TopUpRecord {
   refunded?: boolean;
   tradeN?: number;
   sourceId?: string;
-  progress: FundingProgressSnapshot;
   // Additive fields.
   route: "crypto" | "card" | "bank";
   deposit?: {

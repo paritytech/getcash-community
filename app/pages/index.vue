@@ -8,7 +8,6 @@ import {
   shallowRef,
   watch,
   type Component,
-  type Ref,
 } from "vue";
 import FundingJourneyRoute from "../components/funding/FundingJourneyRoute.vue";
 import FundingSelectorScreen from "../components/funding/FundingSelectorScreen.vue";
@@ -22,7 +21,6 @@ import {
   uniqueFundingPackages,
 } from "../funding/packages";
 import { frontloadHostPermissions } from "~~/lib/host-frontload";
-import type { FundingJourneyStatus } from "../funding/handoff";
 import {
   resolveFundingTopUpDestination,
   type FundingHistoryReturnScreen,
@@ -79,7 +77,7 @@ const journey = ref<{ title: string; route: FundingRoute; origin: "package" | "t
   null,
 );
 
-// One adapter and one status composable per package, indexed by every route the package serves.
+// One adapter per package, indexed by every route the package serves.
 const adapterByPackage = new Map(
   uniqueFundingPackages(getcashRoutePackages).flatMap((routePackage) =>
     routePackage.topUps === undefined
@@ -87,20 +85,10 @@ const adapterByPackage = new Map(
       : [[routePackage, routePackage.topUps.useAdapter()] as const],
   ),
 );
-const statusByPackage = new Map(
-  uniqueFundingPackages(getcashRoutePackages).flatMap((routePackage) =>
-    routePackage.journeyStatus === undefined
-      ? []
-      : [[routePackage, routePackage.journeyStatus()] as const],
-  ),
-);
 const adapterByRoute = new Map<FundingRoute, FundingTopUpAdapter>();
-const statusByRoute = new Map<FundingRoute, Readonly<Ref<FundingJourneyStatus | null>>>();
 for (const [route, routePackage] of Object.entries(getcashRoutePackages)) {
   const adapter = adapterByPackage.get(routePackage);
   if (adapter) adapterByRoute.set(route as FundingRoute, adapter);
-  const status = statusByPackage.get(routePackage);
-  if (status) statusByRoute.set(route as FundingRoute, status);
 }
 const topUpAdapters = [...adapterByPackage.values()];
 // A preview scene's canned cards stand in for the adapters' — null in every production build.
@@ -135,9 +123,6 @@ watch(
     topUpError.value = scene.error ?? null;
   },
   { immediate: true },
-);
-const journeyStatus = computed<FundingJourneyStatus | null>(() =>
-  journey.value === null ? null : (statusByRoute.get(journey.value.route)?.value ?? null),
 );
 const activeTopUp = computed<FundingTopUp | null>(() => {
   if (activeTopUpId.value === null) return null;
@@ -347,7 +332,6 @@ onMounted(async () => {
     :title="journey.title"
     :top-up="activeTopUp"
     :open="journey.origin === 'top-up' ? openTopUpRequest : null"
-    :status="journeyStatus"
     @back="leaveJourney"
     @start-over="startOverFromJourney"
   />

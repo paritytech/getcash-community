@@ -4,7 +4,6 @@
 import type { FailureKind, PaymentPhase } from "@getsome/core";
 import type { FundingStep } from "@getsome/funding";
 import { fmtCash } from "../../utils/cash";
-import type { FundingProgressProjection } from "../progress";
 import type { FundingTopUpState } from "../top-ups";
 import {
   CONFIRMED_TTL_MS,
@@ -96,152 +95,15 @@ export const fundsSeenOf = (record: TopUpRecord): boolean =>
       record.status.via === "faucet" ||
       record.status.via === "pre-cancel"));
 
-/** The scale a route's journey is drawn and counted on: each names its own stops. */
-export type JourneyScale = "crypto" | "card" | "bank";
-
-/** The scale a route's journey is counted on. */
-export const journeyScaleOf = (route: TopUpRecord["route"]): JourneyScale =>
-  route === "crypto" ? "crypto" : route === "bank" ? "bank" : "card";
-
-/** The stops each scale draws, in order. The bank transfer has no "Approved" of its own: nothing
- *  can be approved before the money lands, and the conversion that follows is over in the same
- *  breath, so the design draws the wait as one step. */
-export const JOURNEY_STAGES: Record<JourneyScale, readonly string[]> = {
-  crypto: ["Started", "Conversion", "Added"],
-  card: ["Started", "Payment", "Approved", "Conversion", "Added"],
-  bank: ["Started", "Payment", "Added"],
-};
-
 /** A failure that closed the deposit window with nothing paid, as against a payment that went
  *  wrong. The design names the step itself ("Expired") and shows no money rows, so the two endings
  *  have to stay apart on the record as well as in the live world. */
 export const expiredFailure = (kind?: FailureKind): boolean =>
   kind === "expired" || kind === "stale";
 
-/** A side exit's kind: the network took the payment even though it could not deliver it. */
-const paymentTaken = (kind?: FailureKind): boolean =>
-  kind === "refunded" ||
-  kind === "refund-failed" ||
-  kind === "egress-failed" ||
-  kind === "fallback-egress";
-
-/** How many of the crypto journey's three markers are complete, 0..3. The scale starts at 0: the
- *  journey only opens once the deposit is seen, and until then the deposit screen is showing.
- *  Started: the deposit was seen at a best block, whatever its assurance. Conversion: the worker
- *  reported `done`, so the one program that swaps and sends is behind the record and the
- *  claim has started. Added: the host reported the claim in a block, or the request settled. A
- *  side exit reports the leg it left; from the deposit, the kind says whether the network took
- *  the payment. */
-function cryptoJourneySteps(record: TopUpRecord): number {
-  const { status, failure } = record;
-  switch (status.kind) {
-    case "awaiting-deposit":
-      return 0;
-    case "deposit-seen":
-    case "converting":
-      return 1;
-    case "claiming":
-      return record.creditedAt === undefined ? 2 : 3;
-    case "settled":
-      return 3;
-    case "failed":
-    case "expired":
-    case "cancelled":
-      if (failure?.step === "mint") return 2;
-      if (failure?.step === "swap") return 1;
-      return paymentTaken(failure?.kind) ? 1 : 0;
-  }
-}
-
-/** How many of the card and bank journey's five markers are complete, 1..5. Started: the request
- *  exists, so a record awaiting its payment counts one. Payment: the provider reported the
- *  payment. Approved: the deposit is on the burner at finality. Conversion: the worker reported
- *  `done`, since the swap and the send are one program. Added: the host reported the claim
- *  in a block, or the request settled. */
-function cardJourneySteps(record: TopUpRecord): number {
-  const { status, failure } = record;
-  switch (status.kind) {
-    case "awaiting-deposit":
-      return 1;
-    case "deposit-seen":
-      // "Approved" waits for finality on the burner: a rail's delivery on its own is a payment
-      // received and no more.
-      return status.assurance === "finalized" ? 3 : 2;
-    case "converting":
-      return 3;
-    case "claiming":
-      return record.creditedAt === undefined ? 4 : 5;
-    case "settled":
-      return 5;
-    case "failed":
-    case "expired":
-    case "cancelled":
-      if (failure?.step === "mint") return 4;
-      if (failure?.step === "swap") return 3;
-      return paymentTaken(failure?.kind) ? 2 : 1;
-  }
-}
-
-/** How many of the bank journey's three markers are complete, 1..3. Started: the request exists,
- *  so a transfer still to arrive counts one — the buyer has been given the details to pay. Payment:
- *  the money was seen, whoever saw it. Added: the host reported the claim in a block, or the
- *  request settled. The conversion sits inside "Payment": from the buyer's side the transfer is
- *  the wait, and what follows it is not theirs to watch. */
-function bankJourneySteps(record: TopUpRecord): number {
-  const { status, failure } = record;
-  switch (status.kind) {
-    case "awaiting-deposit":
-      return 1;
-    case "deposit-seen":
-      // The provider's own word that a transfer reached them is not the payment leg done: their
-      // delivery can still be stuck and retrying. "Payment" completes when the money is ours —
-      // the burner holds it, or the worker saw it land.
-      return status.via === "rail" || status.via === "core" ? 1 : 2;
-    case "converting":
-      return 2;
-    case "claiming":
-      return record.creditedAt === undefined ? 2 : 3;
-    case "settled":
-      return 3;
-    case "failed":
-    case "expired":
-    case "cancelled":
-      // Past the deposit the money was taken, whatever the leg it then failed on.
-      if (failure?.step === "mint" || failure?.step === "swap") return 2;
-      return paymentTaken(failure?.kind) ? 2 : 1;
-  }
-}
-
-/**
- * The markers the timeline draws as complete, which is not always what the record counted.
- *
- * The crypto journey opens on the first sighting — its "Started" marker *is* the deposit — so a
- * failure with nothing detected has nothing behind it. The fiat scales count "Started" as the
- * request itself, which exists whatever the payment did, so their count stands as recorded: a
- * declined transfer is a failure at "Payment", not at the beginning.
- */
-export function completedMarkers(
-  scale: JourneyScale,
-  counted: number,
-  failed: { failed: boolean; detected: boolean },
-): number {
-  const floor = Math.max(counted, 0);
-  if (scale !== "crypto") return floor;
-  return failed.failed && !failed.detected ? 0 : floor;
-}
-
-/** How many of the journey's markers are complete, on the scale the route shows. */
-export function journeyStepsOf(record: TopUpRecord, scale: JourneyScale): number {
-  if (scale === "crypto") return cryptoJourneySteps(record);
-  return scale === "bank" ? bankJourneySteps(record) : cardJourneySteps(record);
-}
-
-/** The list row's state, worded by the same progress projection the journey ribbon shows. A
- *  cancelled record is never listed; it reads as failed so the type has a value. */
-export function rowStateOf(
-  record: TopUpRecord,
-  progress: FundingProgressProjection,
-): FundingTopUpState {
+/** The list row's state, a running one worded by `label`. A cancelled record is never listed; it
+ *  reads as failed so the type has a value. */
+export function rowStateOf(record: TopUpRecord, label: string): FundingTopUpState {
   const { status } = record;
   switch (status.kind) {
     case "settled":
@@ -275,7 +137,7 @@ export function rowStateOf(
     case "cancelled":
       return { kind: "failed", at: status.at, reason: "Cancelled" };
     case "awaiting-deposit":
-      return { kind: "awaiting-transfer", status: progress.view.label };
+      return { kind: "awaiting-transfer", status: label };
     case "claiming":
       if (record.creditedAt !== undefined) {
         return {
@@ -284,10 +146,10 @@ export function rowStateOf(
           creditedAmount: creditedAmountOf(record) ?? record.amountHuman,
         };
       }
-      return { kind: "finishing", status: progress.view.label };
+      return { kind: "finishing", status: label };
     case "deposit-seen":
     case "converting":
-      return { kind: "finishing", status: progress.view.label };
+      return { kind: "finishing", status: label };
   }
 }
 
@@ -306,20 +168,6 @@ export function meldStageOf(
 /** The journey took over from the widget: the buyer submitted, or the payment completed. */
 export const meldHandedOffOf = (record: TopUpRecord): boolean =>
   record.meldSubmittedAt !== undefined || record.rail.stage === "delivered";
-
-/** When each journey step landed, by step number. */
-export function milestonesOf(record: TopUpRecord): Record<number, number> {
-  const { progress } = record;
-  const milestones: Record<number, number> = { 1: record.startedAt };
-  if (progress.detectedAt !== undefined) milestones[2] = progress.detectedAt;
-  const converted = progress.stageTimestamps["cash-conversion"];
-  if (converted !== undefined) milestones[4] = converted;
-  if (record.settledAt !== undefined) milestones[5] = record.settledAt;
-  else if (record.status.kind === "claiming" && record.creditedAt !== undefined) {
-    milestones[5] = record.creditedAt;
-  }
-  return milestones;
-}
 
 /** The claim is still in flight: registered, and not yet reported in a block by the host. */
 export const claimingOf = (record: TopUpRecord): boolean =>
