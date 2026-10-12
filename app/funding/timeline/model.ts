@@ -1,5 +1,6 @@
 import {
   MILESTONES,
+  type MilestoneIndex,
   type MilestoneState,
   type PhaseIndex,
   type PhaseInput,
@@ -54,40 +55,56 @@ function lineFill({ parts }: PhaseInput, phaseStartedAt: number | undefined, at:
   return before + share * clamp(within, 0, PART_LIMIT);
 }
 
-/** Evaluates the timeline: milestone states, the fill of each phase line and the overall state. */
-export function timelineView(input: TimelineInput): TimelineView {
-  const { reached } = input;
-  const lastReached = MILESTONES.reduce(
-    (last, milestone, index) => (reached[milestone] ? index : last),
-    0,
+/** The index of the last milestone the view reached, -1 when Started failed. */
+export function lastReached(view: TimelineView): number {
+  if (view.state === "done") return PHASE_COUNT;
+  return view.state === "failed" ? view.failed - 1 : view.phase;
+}
+
+/** Milestones up to `last` complete, the one after it failed when `failed`, the rest upcoming. */
+const milestoneStates = (last: number, failed: boolean): MilestoneState[] =>
+  MILESTONES.map((_, index) =>
+    index <= last ? "complete" : index === last + 1 && failed ? "failed" : "upcoming",
   );
-  if (lastReached === PHASE_COUNT) {
-    return {
-      state: "done",
-      milestones: MILESTONES.map((): MilestoneState => "complete"),
-      lines: Array.from({ length: PHASE_COUNT }, () => 1),
-    };
+
+/** Lines before `phase` full, the line of `phase` at `fill`, the rest empty. */
+const lineFills = (phase: number, fill: number): number[] =>
+  Array.from({ length: PHASE_COUNT }, (_, index) =>
+    index < phase ? 1 : index === phase ? fill : 0,
+  );
+
+/**
+ * Evaluates the timeline: milestone states, the fill of each phase line and the overall state.
+ * Absent while no milestone is reached, unless the top-up failed there: then Started fails.
+ */
+export function timelineView(input: TimelineInput): TimelineView | undefined {
+  const { reached, failedAt } = input;
+  const last = MILESTONES.reduce(
+    (found, milestone, index) => (reached[milestone] ? index : found),
+    -1,
+  );
+  if (last === PHASE_COUNT) {
+    return { state: "done", milestones: milestoneStates(last, false), lines: lineFills(last, 1) };
+  }
+  const failed = failedAt !== undefined;
+  if (last < 0) {
+    return failed
+      ? {
+          state: "failed",
+          failed: 0,
+          milestones: milestoneStates(last, true),
+          lines: lineFills(last, 0),
+        }
+      : undefined;
   }
 
-  const phase = lastReached as PhaseIndex;
-  const failed = input.failedAt !== undefined;
+  const phase = last as PhaseIndex;
   const phaseInput = input.phase(phase);
-  const fill = lineFill(phaseInput, reached[MILESTONES[phase]]?.at, input.failedAt ?? input.now);
+  const fill = lineFill(phaseInput, reached[MILESTONES[phase]]?.at, failedAt ?? input.now);
   const { previous } = input;
-  const shown =
-    previous && previous.state !== "done" && previous.phase === phase
-      ? (previous.lines[phase] ?? 0)
-      : 0;
-  const line = Math.max(fill, shown);
-
-  return {
-    state: failed ? "failed" : phaseInput.delayed ? "delayed" : "active",
-    phase,
-    milestones: MILESTONES.map((_, index): MilestoneState =>
-      index <= phase ? "complete" : index === phase + 1 && failed ? "failed" : "upcoming",
-    ),
-    lines: Array.from({ length: PHASE_COUNT }, (_, index) =>
-      index < phase ? 1 : index === phase ? line : 0,
-    ),
-  };
+  const shown = previous && lastReached(previous) === phase ? (previous.lines[phase] ?? 0) : 0;
+  const milestones = milestoneStates(phase, failed);
+  const lines = lineFills(phase, Math.max(fill, shown));
+  if (failed) return { state: "failed", failed: (phase + 1) as MilestoneIndex, milestones, lines };
+  return { state: phaseInput.delayed ? "delayed" : "active", phase, milestones, lines };
 }

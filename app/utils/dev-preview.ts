@@ -706,8 +706,8 @@ const HISTORY = {
     ending: failedWith("refunded", "Refunded to your card"),
   },
   // The two expired endings: the day-long deposit window closed with nothing paid, so the journey
-  // says "Expired" and shows no money rows, card included, although its route would otherwise get
-  // the failure receipt.
+  // shows no money rows, card included, although its route would otherwise get the failure
+  // receipt.
   expiredSwap: {
     sourceId: CRYPTO_SOURCE_ID,
     display: SENT_BITCOIN,
@@ -1531,7 +1531,7 @@ export const SCENES: Scene[] = [
     apply: topUpList({ finished: PREVIEW_HISTORY, entry: "history" }),
   },
   {
-    // An expiry read off the list's own record: the marker says "Expired", the ribbon spells out
+    // An expiry read off the list's own record: Started fails on the timeline, the band spells out
     // that no funds arrived, and there are no money rows — nobody was charged. The card twin below
     // is the review comment's case: without the record's own word it drew the failure receipt.
     name: "crypto / expired: from history",

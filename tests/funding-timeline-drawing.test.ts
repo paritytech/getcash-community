@@ -4,21 +4,37 @@ import {
   overallProgress,
   TIMELINE_INSETS,
   timelineDrawing,
+  type LabelAlign,
   type TimelineDrawing,
 } from "../app/components/funding/timeline/drawing";
 import { timelineView } from "../app/funding/timeline/model";
-import { MILESTONES, type PhaseIndex, type TimelineView } from "../app/funding/timeline/types";
+import {
+  MILESTONES,
+  type MilestoneIndex,
+  type PhaseIndex,
+  type TimelineView,
+} from "../app/funding/timeline/types";
 
-function current(
-  state: "active" | "delayed" | "failed",
-  phase: PhaseIndex,
-  fill: number,
-): TimelineView {
+function current(state: "active" | "delayed", phase: PhaseIndex, fill: number): TimelineView {
   return {
     state,
     phase,
     milestones: MILESTONES.map((_, index) => (index <= phase ? "complete" : "upcoming")),
     lines: MILESTONES.slice(1).map((_, index) => (index < phase ? 1 : index === phase ? fill : 0)),
+  };
+}
+
+/** Milestone `failed` red, the line into it stopped at `fill`. */
+function failedAt(failed: MilestoneIndex, fill: number): TimelineView {
+  return {
+    state: "failed",
+    failed,
+    milestones: MILESTONES.map((_, index) =>
+      index < failed ? "complete" : index === failed ? "failed" : "upcoming",
+    ),
+    lines: MILESTONES.slice(1).map((_, index) =>
+      index < failed - 1 ? 1 : index === failed - 1 ? fill : 0,
+    ),
   };
 }
 
@@ -33,12 +49,15 @@ const skipped = timelineView({
   reached: { started: { at: 0 }, received: { at: 0 } },
   phase: () => ({ parts: [{ weight: 1, expectedMs: 1_000 }] }),
   now: 0,
-});
+})!;
 
-/** Milestones as `●` (complete) and `○`, the milestone marked current, and each line. */
+const MARKS = { complete: "●", upcoming: "○", failed: "✕" } as const;
+
+/** Milestones as `●` (complete), `○` and `✕` (failed), the milestone marked current, and each
+ *  line. */
 function summary({ milestones, lines }: TimelineDrawing) {
   return {
-    milestones: milestones.map(({ complete }) => (complete ? "●" : "○")).join(""),
+    milestones: milestones.map(({ state }) => MARKS[state]).join(""),
     current: milestones.find((milestone) => milestone.current)?.id ?? null,
     lines: lines.map(({ tone, fill, live }) => `${tone} ${fill}${live ? " live" : ""}`),
   };
@@ -79,12 +98,12 @@ describe("top-up timeline drawing", () => {
       ["complete 1", "current 1 live", "upcoming 0", "upcoming 0", "upcoming 0", "upcoming 0"],
     ],
     [
-      "a failed phase",
-      current("failed", 2, 0.6),
-      undefined,
-      "●●●○○○○",
+      "a failure the drawing has not reached yet",
+      failedAt(4, 0.3),
+      1,
+      "●●○○○○○",
       "received",
-      ["complete 1", "complete 1", "current 0.6", "upcoming 0", "upcoming 0", "upcoming 0"],
+      ["complete 1", "current 1", "upcoming 0", "upcoming 0", "upcoming 0", "upcoming 0"],
     ],
     [
       "a done top-up",
@@ -102,6 +121,59 @@ describe("top-up timeline drawing", () => {
     });
   });
 
+  it.each([
+    [
+      "Started",
+      failedAt(0, 0),
+      "✕○○○○○○",
+      ["upcoming 0", "upcoming 0", "upcoming 0", "upcoming 0", "upcoming 0", "upcoming 0"],
+      "centre",
+    ],
+    [
+      "Sent, grown, its label leaning away from Received",
+      failedAt(2, 0.4),
+      "●●✕○○○○",
+      ["complete 1", "failed 0.4", "upcoming 0", "upcoming 0", "upcoming 0", "upcoming 0"],
+      "end",
+    ],
+    [
+      "Received",
+      failedAt(3, 0.7),
+      "●●●✕○○○",
+      ["complete 1", "complete 1", "failed 0.7", "upcoming 0", "upcoming 0", "upcoming 0"],
+      "centre",
+    ],
+    [
+      "Converted, grown, its label leaning away from Received",
+      failedAt(4, 0.5),
+      "●●●●✕○○",
+      ["complete 1", "complete 1", "complete 1", "failed 0.5", "upcoming 0", "upcoming 0"],
+      "start",
+    ],
+    [
+      "Added",
+      failedAt(6, 0.2),
+      "●●●●●●✕",
+      ["complete 1", "complete 1", "complete 1", "complete 1", "complete 1", "failed 0.2"],
+      "centre",
+    ],
+  ] satisfies [string, TimelineView, string, string[], LabelAlign][])(
+    "draws a failure at %s: red, large and labelled, the rest grey, no head light",
+    (_, view, milestones, lines, labelAlign) => {
+      const drawing = timelineDrawing(view);
+      const failed = drawing.milestones.find(({ state }) => state === "failed");
+      expect({
+        ...summary(drawing),
+        failed: failed && `${failed.size} ${failed.label} ${failed.labelAlign}`,
+      }).toEqual({
+        milestones,
+        current: failed?.id,
+        lines,
+        failed: `large Failed ${labelAlign}`,
+      });
+    },
+  );
+
   it("keeps the designer's spacing between the rings", () => {
     const { lines } = timelineDrawing(done);
     expect(lines.map(({ weight }) => weight)).toEqual([18.5, 48, 22.5, 22.5, 48, 16]);
@@ -113,7 +185,7 @@ describe("top-up overall progress", () => {
   it.each([
     ["the first line filling", current("active", 0, 0.6), 0.6 / 6],
     ["a delayed fourth line", current("delayed", 3, 0.3), 3.3 / 6],
-    ["a failed line", current("failed", 2, 0.6), 2.6 / 6],
+    ["a failed line", failedAt(3, 0.6), 2.6 / 6],
     ["a done top-up", done, 1],
   ])("counts %s", (_, view, expected) => {
     expect(overallProgress(view)).toBeCloseTo(expected);

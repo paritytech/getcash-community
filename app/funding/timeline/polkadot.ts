@@ -2,12 +2,7 @@
 // 6, and their texts.
 
 import { cashAmount } from "../../utils/cash";
-import {
-  conversionRouteOf,
-  seenOnBurner,
-  type DepositInBlock,
-  type TopUpRecord,
-} from "../requests/model";
+import { conversionRouteOf, type DepositInBlock, type TopUpRecord } from "../requests/model";
 import { factAt } from "./observed";
 import {
   delay,
@@ -76,8 +71,8 @@ export function polkadotMilestones(record: TopUpRecord): PolkadotMilestones {
 /** The deposit on the burner in a best block: the app's own read of the burner saw it, with the
  *  time of that read, or the worker followed it into a block. A provider's word is not enough. */
 export function depositOnBurner(record: TopUpRecord): Fact | undefined {
-  const { status } = record;
-  if (status.kind === "deposit-seen" && seenOnBurner(status.via)) return { at: status.at };
+  const seenAt = record.observedAt?.["on-burner"];
+  if (seenAt !== undefined) return { at: seenAt };
   return record.depositInBlock === undefined ? undefined : {};
 }
 

@@ -42,15 +42,15 @@ function failedAt({ status }: TopUpRecord): number | undefined {
   return status.kind === "failed" || status.kind === "expired" ? status.at : undefined;
 }
 
-/** The timeline of a top-up on its route, never behind the view shown before. */
+/** The timeline of a top-up on its route, never behind the view shown before. Absent until it
+ *  opens with the deposit, unless the top-up ended before. */
 export function topUpTimeline(
   record: TopUpRecord,
   route: TimelineRoute,
   { now, watchingSince, locale, previous, sentUnseenMs = 0 }: TopUpTimelineOptions,
-): TopUpTimeline {
-  const provider = route.milestones(record);
+): TopUpTimeline | undefined {
   const view = timelineView({
-    reached: { ...provider, started: provider.started ?? {}, ...polkadotMilestones(record) },
+    reached: { ...route.milestones(record), ...polkadotMilestones(record) },
     phase: (index) =>
       isProviderPhase(index)
         ? route.phase(record, index)
@@ -59,6 +59,7 @@ export function topUpTimeline(
     now,
     previous,
   });
+  if (view === undefined) return undefined;
   if (view.state === "done" || view.state === "failed") return { view };
 
   const state = { delayed: view.state === "delayed", now, locale };

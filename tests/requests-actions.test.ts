@@ -9,6 +9,7 @@ import { createPinia, setActivePinia } from "pinia";
 import type { PaymentState } from "@getsome/core";
 import type { MeldCancelResult } from "@getsome/meld";
 import { projectChainflipTopUps } from "../app/funding/chainflip-top-ups";
+import { fundingSelectorConfig } from "../app/funding/config";
 import type { FundingProgressSnapshot } from "../app/funding/progress";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
@@ -25,6 +26,7 @@ import {
   WORKER_JOBS_KEY,
   type KeyedStorage,
 } from "../app/funding/requests/storage";
+import { projectFundingTopUps } from "../app/funding/top-ups";
 import { useRequestsStore } from "../app/stores/requests";
 import { useSessionStore, type ActiveFlowRecord } from "../app/stores/session";
 import { requestRefKey, requestRefOf, type RequestRef } from "../app/utils/request-index";
@@ -331,6 +333,56 @@ describe("requests store: foreground, clock and user actions", () => {
     expect(listed?.lines[3]).toBeGreaterThan(0);
     expect(requests.foregroundTimeline(at(2))?.view.lines).toEqual(listed?.lines);
   });
+
+  it.each([
+    ["it expired unseen", [{ source: "clock", at: FIXTURE_NOW + 2 * DAY }], 0],
+    [
+      "it failed after the app's own watch saw the deposit",
+      [
+        {
+          source: "chain",
+          at: at(2),
+          burnerNative: DEPOSIT.amount.toString(),
+          finality: "best",
+          via: "probe",
+        },
+        {
+          source: "core",
+          at: at(3),
+          state: {
+            phase: "failed",
+            sourceId: "dot-assethub",
+            failure: {
+              kind: "deposit-rejected",
+              step: "deposit",
+              message: "rejected",
+              recoverable: false,
+            },
+          },
+        },
+      ],
+      3,
+    ],
+  ] satisfies [string, Observation[], number][])(
+    "draws a direct deposit the same live and from history when %s",
+    async (_, observations, failed) => {
+      setRequestsClock(() => FIXTURE_NOW);
+      const requests = useRequestsStore();
+      await requests.create(AWAITING_REF, migrated(awaitingDepositCryptoRecord));
+      requests.setForeground(AWAITING_REF);
+      for (const observation of observations) await requests.observe(AWAITING_REF, observation);
+
+      const record = requests.get(AWAITING_REF);
+      if (record?.kind !== "top-up") throw new Error("the top-up is gone");
+      const { past } = projectFundingTopUps(
+        projectChainflipTopUps([record], at(5)),
+        fundingSelectorConfig,
+      );
+      const live = requests.foregroundTimeline(at(5))?.view;
+      expect(live).toMatchObject({ state: "failed", failed });
+      expect(past[0]?.timeline?.view).toEqual(live);
+    },
+  );
 
   it("cancel refuses on funds in the burner read", async () => {
     setRequestsClock(() => FIXTURE_NOW);

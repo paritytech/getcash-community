@@ -10,7 +10,7 @@ import { useJourneyQuote } from "../../composables/useJourneyQuote";
 import type { FundingJourneyStatus } from "../../funding/handoff";
 import { projectFundingProgress, type FundingProgressProjection } from "../../funding/progress";
 import { effectiveSourceId, isDirectDeposit } from "../../funding/requests/model";
-import { bankEndingText, endingLabel, isExpiredEnding } from "../../funding/journey-endings";
+import { bankEndingText, isExpiredEnding } from "../../funding/journey-endings";
 import {
   journeyMoneyRows,
   paidDetailRows,
@@ -28,7 +28,6 @@ import { currencyConfig } from "../../funding/config";
 import { fmtFiat, isMoneyAmount } from "../../utils/money";
 import { formatWhenShort, shortRef } from "../../utils/journey";
 import { refundedFailure } from "../../utils/recovery";
-import FundingJourneyTimeline from "../funding/progress/FundingJourneyTimeline.vue";
 import FundingTimeline from "../funding/timeline/FundingTimeline.vue";
 import CashAmount from "../ui/CashAmount.vue";
 import DetailRows, { type DetailRow } from "../ui/DetailRows.vue";
@@ -63,8 +62,8 @@ const cadence = computed(() =>
   requests.foregroundRecord !== null ? TIMELINE_CADENCE_MS : (props.progress?.cadenceMs ?? null),
 );
 const now = useFundingProgressClock(cadence);
-/** The top-up's timeline once it opened: the live record's, else the list's for a journey opened
- *  from history. */
+/** The top-up's timeline once it opened or ended: the live record's, else the list's for a journey
+ *  opened from history. */
 const timeline = computed(() =>
   requests.foregroundRecord !== null
     ? requests.foregroundTimeline(now.value)
@@ -102,26 +101,14 @@ const storedEndedAt = computed(() => {
   return stored?.kind === "settled" || stored?.kind === "failed" ? stored.at : null;
 });
 
-/**
- * The route's own timeline: the card rail shows five stops, crypto and bank three of their own.
- *
- * The store owns the scale whenever a request is on screen; the list's word on the route only
- * stands in before the top-up is live. `requests.journeyDone` counts on that same scale.
- */
+/** The route of the top-up on screen. The store owns it whenever a request is on screen; the
+ *  list's word on the route only stands in before the top-up is live. */
 const scale = computed<JourneyScale>(() => {
   if (requests.foregroundRecord !== null || !props.topUp) return session.journeyScale;
   return journeyScaleOf(props.topUp.route);
 });
 const crypto = computed(() => scale.value === "crypto");
 const bank = computed(() => scale.value === "bank");
-
-/** How many markers the timeline draws as done, counted on `scale`. The request on screen counts
- *  them; a journey opened from history has none, and takes the count the list's own record made —
- *  a top-up that was paid and converted before it failed must not redraw as though it never
- *  started. */
-const completedSteps = computed(() =>
-  requests.foregroundRecord !== null ? requests.journeyDone : (props.topUp?.journeyDone ?? 1),
-);
 
 /** Nothing was paid on an expired top-up, so it carries no quote rows. Opened from history there
  *  is no live failure to read, so the record's own word stands in. */
@@ -130,9 +117,6 @@ const expired = computed(
     isExpiredEnding(failure.value?.kind, requests.fundingError) ||
     storedFailure.value?.expired === true,
 );
-/** The design names the ending itself, not "<stage> failed": a window that closed, a bank that
- *  said no, a payment that came back. */
-const failedLabel = computed(() => endingLabel(expired.value, requests.meldFailureCode));
 
 /**
  * Whether this top-up's money came back rather than being kept.
@@ -377,7 +361,7 @@ const canStartOver = computed(
     requests.meldFailureCode !== "unobserved",
 );
 
-/** Temporarily stuck (the provider is retrying): amber on the stepper, never terminal. */
+/** Temporarily stuck (the provider is retrying), never terminal. */
 const delayed = computed(() => requests.meldDelayed && !finished.value && !heroFailed.value);
 
 /** Explains a header amount that moved off the quote. */
@@ -423,8 +407,8 @@ const message = computed(() => {
   return null;
 });
 
-/** The band's text: the screen's failure text until the timeline draws failures, then the
- *  rate-change notice, which explains the header's new amount, then the timeline's own message. */
+/** The band's text: the screen's failure text, then the rate-change notice, which explains the
+ *  header's new amount, then the timeline's own message. */
 const timelineMessage = computed(() => {
   if (heroFailed.value) return message.value;
   return rateChangeNotice.value ?? timeline.value?.message?.text ?? null;
@@ -461,15 +445,6 @@ const timelineDetail = computed(() => (heroFailed.value ? null : (timeline.value
         :view="timeline.view"
         :message="timelineMessage"
         :detail="timelineDetail"
-      />
-      <FundingJourneyTimeline
-        v-else-if="progress && !finished"
-        :progress="progress"
-        :scale="scale"
-        :completed-steps="completedSteps"
-        :message="message"
-        :delayed="delayed"
-        :failed-label="failedLabel"
       />
 
       <DetailRows v-if="detailRows.length" :rows="detailRows" @fees="emit('fees')" />

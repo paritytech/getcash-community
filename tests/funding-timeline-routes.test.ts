@@ -4,10 +4,14 @@ import type { ChainflipFacts, TopUpRecord } from "../app/funding/requests/model"
 import { chainflipRoute } from "../app/funding/timeline/chainflip";
 import { directRoute } from "../app/funding/timeline/direct";
 import { meldBankRoute, meldCardRoute } from "../app/funding/timeline/meld";
-import { PART_LIMIT } from "../app/funding/timeline/model";
+import { lastReached, PART_LIMIT } from "../app/funding/timeline/model";
 import type { TimelineMessage, TimelineRoute } from "../app/funding/timeline/route";
 import { createTopUpTimelines, timelineRouteOf } from "../app/funding/timeline/timelines";
-import { RECONNECT_AFTER_MS, topUpTimeline } from "../app/funding/timeline/top-up";
+import {
+  RECONNECT_AFTER_MS,
+  topUpTimeline,
+  type TopUpTimeline,
+} from "../app/funding/timeline/top-up";
 import type { TimelineView } from "../app/funding/timeline/types";
 import { requestRefOf } from "../app/utils/request-index";
 import { FIXTURE_NOW, awaitingDepositCryptoRecord, submittedCardRecord } from "./fixtures/requests";
@@ -70,6 +74,13 @@ function record(facts: Partial<TopUpRecord> = {}, worker: Partial<Worker> = {}):
   };
 }
 
+/** `topUpTimeline` for a top-up whose timeline opened. */
+function openedTimeline(...args: Parameters<typeof topUpTimeline>): TopUpTimeline {
+  const timeline = topUpTimeline(...args);
+  if (timeline === undefined) throw new Error("The timeline did not open");
+  return timeline;
+}
+
 const received = { fundsSeenAt: RECEIVED };
 const MARKS = { complete: "●", upcoming: "○", failed: "✕" } as const;
 const marks = (view: TimelineView) => view.milestones.map((state) => MARKS[state]).join("");
@@ -96,6 +107,7 @@ describe("top-up timeline, shared route frame", () => {
       "the deposit watch sees the funds before the worker",
       record({
         status: { kind: "deposit-seen", at: SENT, assurance: "provisional", via: "chain" },
+        observedAt: { "on-burner": SENT },
       }),
       SENT + 12 * SECOND,
       {
@@ -287,13 +299,15 @@ describe("top-up timeline, shared route frame", () => {
     { marks: string; state: TimelineView["state"]; line: number | undefined },
     { message?: TimelineMessage; detail?: string },
   ][])("shows %s", (_, topUp, now, expected, text) => {
-    const { view, message, detail } = topUpTimeline(topUp, sentRoute, { now, watchingSince: now });
+    const { view, message, detail } = openedTimeline(topUp, sentRoute, { now, watchingSince: now });
 
     expect({ marks: marks(view), state: view.state }).toEqual({
       marks: expected.marks,
       state: expected.state,
     });
-    if (view.state !== "done") expect(view.lines[view.phase]).toBeCloseTo(expected.line ?? 1, 10);
+    if (view.state !== "done") {
+      expect(view.lines[lastReached(view)]).toBeCloseTo(expected.line ?? 1, 10);
+    }
     expect({ message, detail }).toEqual(text);
   });
 
@@ -310,7 +324,7 @@ describe("top-up timeline, shared route frame", () => {
     "decides phase 3's delay on fresh reads without the funds for %s",
     (_, sentUnseenMs, topUp, state) => {
       const now = SENT + 12 * SECOND;
-      const { view } = topUpTimeline(topUp, sentRoute, { now, watchingSince: SENT, sentUnseenMs });
+      const { view } = openedTimeline(topUp, sentRoute, { now, watchingSince: SENT, sentUnseenMs });
       expect(view.state).toBe(state);
     },
   );
@@ -336,7 +350,7 @@ describe("top-up timeline, shared route frame", () => {
   );
 
   it("makes Sent green when the funds are final before the provider reports it", () => {
-    const { view, message } = topUpTimeline(record({}, received), route, {
+    const { view, message } = openedTimeline(record({}, received), route, {
       now: RECEIVED,
       watchingSince: RECEIVED,
     });
@@ -597,7 +611,7 @@ describe("top-up timeline, Chainflip route", () => {
     { message: TimelineMessage; detail?: string },
   ][])("shows %s", (_, topUp, seconds, expected, text) => {
     const now = at(seconds);
-    const { view, message, detail } = topUpTimeline(topUp, chainflipRoute, {
+    const { view, message, detail } = openedTimeline(topUp, chainflipRoute, {
       now,
       watchingSince: now,
     });
@@ -606,7 +620,7 @@ describe("top-up timeline, Chainflip route", () => {
       marks: expected.marks,
       state: expected.state,
     });
-    if (view.state !== "done") expect(view.lines[view.phase]).toBeCloseTo(expected.line, 10);
+    if (view.state !== "done") expect(view.lines[lastReached(view)]).toBeCloseTo(expected.line, 10);
     expect({ message, detail }).toEqual(text);
   });
 });
@@ -743,7 +757,7 @@ describe("top-up timeline, Meld routes", () => {
     { marks: string; state: TimelineView["state"]; line: number },
     { message: TimelineMessage; detail?: string },
   ][])("shows on the %s route %s", (route, _, topUp, now, expected, text) => {
-    const { view, message, detail } = topUpTimeline(topUp, routes[route], {
+    const { view, message, detail } = openedTimeline(topUp, routes[route], {
       now,
       watchingSince: now,
       locale: "en-GB",
@@ -753,7 +767,7 @@ describe("top-up timeline, Meld routes", () => {
       marks: expected.marks,
       state: expected.state,
     });
-    if (view.state !== "done") expect(view.lines[view.phase]).toBeCloseTo(expected.line, 10);
+    if (view.state !== "done") expect(view.lines[lastReached(view)]).toBeCloseTo(expected.line, 10);
     expect({ message, detail }).toEqual(text);
   });
 });
@@ -818,7 +832,7 @@ describe("top-up timeline, reconnect line", () => {
   ] satisfies [string, TopUpRecord, TimelineRoute, number, number, string | undefined][])(
     "shows for %s",
     (_, topUp, route, now, watchingSince, detail) => {
-      expect(topUpTimeline(topUp, route, { now, watchingSince }).detail).toBe(detail);
+      expect(openedTimeline(topUp, route, { now, watchingSince }).detail).toBe(detail);
     },
   );
 });
@@ -859,6 +873,7 @@ describe("top-up timeline, route by source", () => {
       direct({
         funded: SENT,
         status: { kind: "deposit-seen", at: SENT, assurance: "provisional", via: "chain" },
+        observedAt: { "on-burner": SENT },
       }),
       { marks: "●●●○○○○", message: normal("Making sure your money arrived safely") },
     ],

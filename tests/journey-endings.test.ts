@@ -1,30 +1,18 @@
-// The ending rules the journey reads: what the stepper calls a failure, and what the bank
-// transfer says about one the adapter worded for a card.
+// The ending rules the journey reads: whether a top-up expired, and what the bank transfer says
+// about an ending the adapter worded for a card.
 
 import { describe, expect, it } from "vitest";
-import { bankEndingText, endingLabel, isExpiredEnding } from "../app/funding/journey-endings";
+import { bankEndingText, isExpiredEnding } from "../app/funding/journey-endings";
 import { DEPOSIT_EXPIRED_REASON } from "../app/funding/requests/model";
 
 describe("journey endings", () => {
-  it("names an expired top-up from its own failure, not from the stepper's label", () => {
+  it("names an expired top-up from its own failure", () => {
     expect(isExpiredEnding("expired", null)).toBe(true);
     expect(isExpiredEnding("stale", null)).toBe(true);
     expect(isExpiredEnding(undefined, DEPOSIT_EXPIRED_REASON)).toBe(true);
     // A named ending is not an expiry: it keeps its quote rows, which an expiry drops.
     expect(isExpiredEnding("deposit-rejected", "Top-up didn't go through.")).toBe(false);
     expect(isExpiredEnding(undefined, null)).toBe(false);
-  });
-
-  it("gives each rail ending its own step name", () => {
-    expect(endingLabel(true, null)).toBe("Expired");
-    // An expiry outranks whatever the rail called it.
-    expect(endingLabel(true, "declined")).toBe("Expired");
-    expect(endingLabel(false, "declined")).toBe("Payment declined");
-    expect(endingLabel(false, "refunded")).toBe("Refunded");
-    // A plain failure keeps the stepper's own "<stage> failed".
-    expect(endingLabel(false, "failed")).toBeNull();
-    expect(endingLabel(false, "unobserved")).toBeNull();
-    expect(endingLabel(false, null)).toBeNull();
   });
 
   it("words the endings the adapter wrote for a card as a transfer's own", () => {

@@ -33,7 +33,13 @@ import {
   type RequestStatus,
   type WorkerJobView,
 } from "../model";
-import { chainflipObserved, statusObserved, workerObserved } from "../facts";
+import {
+  burnerSighted,
+  burnerSightingRetracted,
+  chainflipObserved,
+  statusObserved,
+  workerObserved,
+} from "../facts";
 import { mergeRail, railFromSwapStatus, stageRank } from "../rail";
 
 type Witnesses = TopUpRecord["witnesses"];
@@ -161,7 +167,8 @@ function moneySeen(
     status: { kind: "deposit-seen", at, assurance, via },
     funded: earliest(record.funded, at),
   };
-  return advanced(seen, seenOnBurner(via) ? ROUTE_COMPLETE : HOLD, at);
+  if (!seenOnBurner(via)) return advanced(seen, HOLD, at);
+  return advanced(burnerSighted(seen, at), ROUTE_COMPLETE, at);
 }
 
 function failed(record: TopUpRecord, at: number, failure: RequestFailure): TopUpRecord {
@@ -525,7 +532,7 @@ function applyChain(record: TopUpRecord, observation: ChainObservation): TopUpRe
     at - status.at > PROVISIONAL_REVERT_MS &&
     !workerSawFunds(next)
   ) {
-    return { ...next, status: { kind: "awaiting-deposit" } };
+    return burnerSightingRetracted({ ...next, status: { kind: "awaiting-deposit" } });
   }
   return next;
 }

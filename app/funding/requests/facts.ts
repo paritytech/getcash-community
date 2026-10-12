@@ -31,6 +31,18 @@ export function statusObserved(
   return status === "waiting" || status === "failed" ? record : observedFirst(record, status, at);
 }
 
+/** Stamps the deposit's first sighting on the burner itself. */
+export const burnerSighted = (record: TopUpRecord, at: number): TopUpRecord =>
+  observedFirst(record, "on-burner", at);
+
+/** Drops a burner sighting that a final read showed was never there. */
+export function burnerSightingRetracted(record: TopUpRecord): TopUpRecord {
+  if (record.observedAt?.["on-burner"] === undefined) return record;
+  const observedAt = { ...record.observedAt };
+  delete observedAt["on-burner"];
+  return { ...record, observedAt };
+}
+
 type Estimates = ChainflipFacts["estimatedDurationsSeconds"];
 
 /** Each stage's estimate from the latest read that gave one. */

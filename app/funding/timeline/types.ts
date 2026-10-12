@@ -10,6 +10,9 @@ export const MILESTONES = [
 
 export type Milestone = (typeof MILESTONES)[number];
 
+/** The position of a milestone in `MILESTONES`. */
+export type MilestoneIndex = PhaseIndex | 6;
+
 /** Phase `i` is the line from `MILESTONES[i]` to `MILESTONES[i + 1]`. */
 export type PhaseIndex = 0 | 1 | 2 | 3 | 4 | 5;
 
@@ -18,8 +21,8 @@ export interface Fact {
   readonly at?: number;
 }
 
-/** The milestones whose fact arrived. Started is reached when the timeline opens. */
-export type ReachedMilestones = Readonly<{ started: Fact } & Partial<Record<Milestone, Fact>>>;
+/** The milestones whose fact arrived. A reached milestone implies every milestone before it. */
+export type ReachedMilestones = Readonly<Partial<Record<Milestone, Fact>>>;
 
 export interface PhasePart {
   /** The part's share of the line is its weight over the total weight of the phase. */
@@ -45,7 +48,8 @@ export interface TimelineInput {
   readonly reached: ReachedMilestones;
   /** The parts of a phase. Called for the current phase only. */
   readonly phase: (index: PhaseIndex) => PhaseInput;
-  /** When the current phase failed. Its line stops at the fill it had then. */
+  /** When the top-up failed. The current line stops at the fill it had then; with no milestone
+   *  reached, Started fails. */
   readonly failedAt?: number;
   readonly now: number;
   /** The view shown before, so that the current line never moves back. */
@@ -62,8 +66,10 @@ interface TimelineLines {
 }
 
 export type TimelineView =
+  | (TimelineLines & { readonly state: "active" | "delayed"; readonly phase: PhaseIndex })
   | (TimelineLines & {
-      readonly state: "active" | "delayed" | "failed";
-      readonly phase: PhaseIndex;
+      readonly state: "failed";
+      /** The red milestone: the end of the line that stopped, or Started before it was reached. */
+      readonly failed: MilestoneIndex;
     })
   | (TimelineLines & { readonly state: "done" });

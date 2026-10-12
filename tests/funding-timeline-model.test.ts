@@ -4,7 +4,9 @@ import type {
   PhaseIndex,
   PhaseInput,
   PhasePart,
+  ReachedMilestones,
   TimelineInput,
+  TimelineView,
 } from "../app/funding/timeline/types";
 
 const T = 10_000;
@@ -23,8 +25,10 @@ function evaluate(phase: PhaseInput, overrides: Partial<TimelineInput> = {}) {
   });
 }
 
-function currentLine(view: ReturnType<typeof timelineView>): number {
-  if (view.state === "done") throw new Error("The timeline is done");
+function currentLine(view: TimelineView | undefined): number {
+  if (view === undefined || view.state === "done" || view.state === "failed") {
+    throw new Error("The timeline has no current line");
+  }
   return view.lines[view.phase]!;
 }
 
@@ -116,29 +120,57 @@ describe("top-up timeline model", () => {
     ["delayed", "the route reports a delay", { parts: [part()], delayed: true }, 0],
     ["active", "the part in progress runs far past its T", { parts: [part()] }, 100 * T],
   ] satisfies [string, string, PhaseInput, number][])("is %s when %s", (state, _, phase, now) => {
-    expect(evaluate(phase, { now }).state).toBe(state);
+    expect(evaluate(phase, { now })?.state).toBe(state);
   });
 
-  it("stops the current line at the failure and keeps later milestones grey", () => {
-    const view = evaluate(
-      { parts: [part()], delayed: true },
-      { reached: { started: { at: 0 }, accepted: { at: 0 } }, failedAt: T, now: 100 * T },
-    );
+  it.each([
+    [
+      "stops the current line and fails its end milestone",
+      { started: { at: 0 }, accepted: { at: 0 } },
+      {
+        state: "failed",
+        failed: 2,
+        milestones: [
+          "complete",
+          "complete",
+          "failed",
+          "upcoming",
+          "upcoming",
+          "upcoming",
+          "upcoming",
+        ],
+        lines: [1, expect.closeTo(AT_T, 10), 0, 0, 0, 0],
+      },
+    ],
+    [
+      "fails Started when no milestone was reached",
+      {},
+      {
+        state: "failed",
+        failed: 0,
+        milestones: [
+          "failed",
+          "upcoming",
+          "upcoming",
+          "upcoming",
+          "upcoming",
+          "upcoming",
+          "upcoming",
+        ],
+        lines: [0, 0, 0, 0, 0, 0],
+      },
+    ],
+  ] satisfies [string, ReachedMilestones, TimelineView][])(
+    "on a failure %s",
+    (_, reached, view) => {
+      expect(
+        evaluate({ parts: [part()], delayed: true }, { reached, failedAt: T, now: 100 * T }),
+      ).toEqual(view);
+    },
+  );
 
-    expect(view).toEqual({
-      state: "failed",
-      phase: 1,
-      milestones: [
-        "complete",
-        "complete",
-        "failed",
-        "upcoming",
-        "upcoming",
-        "upcoming",
-        "upcoming",
-      ],
-      lines: [1, expect.closeTo(AT_T, 10), 0, 0, 0, 0],
-    });
+  it("has no view before Started unless the top-up failed", () => {
+    expect(evaluate({ parts: [part()] }, { reached: {} })).toBeUndefined();
   });
 
   it("is done when every milestone is reached", () => {

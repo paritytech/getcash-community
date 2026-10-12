@@ -7,7 +7,6 @@ import { isCryptoSourceId, isMeldSourceId, meldMethodFor, type MeldMethod } from
 import { chainflipRoute } from "./chainflip";
 import { directRoute } from "./direct";
 import { meldBankRoute, meldCardRoute } from "./meld";
-import { polkadotMilestones } from "./polkadot";
 import type { TimelineRoute } from "./route";
 import { topUpTimeline, type TopUpTimeline } from "./top-up";
 import type { TimelineView } from "./types";
@@ -30,16 +29,7 @@ export function timelineRouteOf(sourceId: string | undefined): TimelineRoute {
   return isCryptoSourceId(sourceId) ? directRoute : chainflipRoute;
 }
 
-/** The timeline opens with the deposit: the route's Started, or a later fact that implies it. */
-function opened(record: TopUpRecord, route: TimelineRoute): boolean {
-  const facts = [
-    ...Object.values(route.milestones(record)),
-    ...Object.values(polkadotMilestones(record)),
-  ];
-  return facts.some((fact) => fact !== undefined);
-}
-
-/** A top-up's timeline at `now`; absent until it opens. */
+/** A top-up's timeline at `now`; absent until it opens, unless the top-up ended before. */
 export type TopUpTimelineOf = (record: TopUpRecord, now: number) => TopUpTimeline | undefined;
 
 /** What this session watched of one top-up. */
@@ -63,11 +53,11 @@ export function createTopUpTimelines(): TopUpTimelineOf {
       sentUnseenMs: 0,
     };
     const route = timelineRouteOf(record.ref.sourceId);
-    if (!opened(record, route)) {
+    const timeline = topUpTimeline(record, route, { now, watchingSince, previous, sentUnseenMs });
+    if (timeline === undefined) {
       shown.set(key, { watchingSince, sentUnseenMs });
       return undefined;
     }
-    const timeline = topUpTimeline(record, route, { now, watchingSince, previous, sentUnseenMs });
     const awaiting = timeline.awaitingSentFunds === true;
     const awaited =
       awaiting && awaitingSince !== undefined

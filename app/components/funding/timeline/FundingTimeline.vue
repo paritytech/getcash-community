@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { lastReached } from "../../../funding/timeline/model";
 import type { TimelineView } from "../../../funding/timeline/types";
-import { lastReached, TIMELINE_INSETS, timelineDrawing } from "./drawing";
+import { TIMELINE_INSETS, timelineDrawing } from "./drawing";
 import FlipText from "./FlipText.vue";
 
 const props = defineProps<{
@@ -48,6 +49,15 @@ watch(
 );
 onBeforeUnmount(stopStepping);
 
+// A failure that arrives on screen plays its motion; one present when the screen opens shows at once.
+const failing = ref(false);
+watch(
+  () => props.view.state === "failed",
+  (failed) => {
+    failing.value = failed && !reducedMotion();
+  },
+);
+
 /** Each milestone with the line that leads into it; the first has none. */
 const steps = computed(() => {
   const { milestones, lines } = timelineDrawing(props.view, shownReached.value);
@@ -60,7 +70,7 @@ const insets = {
 </script>
 
 <template>
-  <section class="timeline" aria-label="Top-up progress">
+  <section class="timeline" :class="{ 'timeline-failing': failing }" aria-label="Top-up progress">
     <ol class="timeline-card" :style="insets">
       <li
         v-for="({ milestone, line }, index) in steps"
@@ -82,24 +92,37 @@ const insets = {
           :class="[
             `timeline-milestone-${milestone.size}`,
             {
-              'timeline-milestone-complete': milestone.complete,
+              'timeline-milestone-complete': milestone.state === 'complete',
+              'timeline-milestone-failed': milestone.state === 'failed',
               'timeline-milestone-arriving': arriving === index,
             },
           ]"
         >
           <span class="timeline-dot">
             <svg
-              v-if="milestone.size === 'large'"
-              class="timeline-tick"
+              v-if="milestone.state === 'failed'"
+              class="timeline-glyph timeline-cross"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path d="M8.5 8.5 15.5 15.5M15.5 8.5 8.5 15.5" />
+            </svg>
+            <svg
+              v-else-if="milestone.size === 'large'"
+              class="timeline-glyph timeline-tick"
               viewBox="0 0 24 24"
               aria-hidden="true"
             >
               <path d="M6.67 12 10 15.33 17.33 8" pathLength="1" />
             </svg>
           </span>
-          <span v-if="milestone.label" class="timeline-label text-label-s font-semibold">
+          <span
+            v-if="milestone.label"
+            class="timeline-label text-label-s font-semibold"
+            :class="`timeline-label-${milestone.labelAlign}`"
+          >
             {{ milestone.label }}
-            <span v-if="milestone.complete" class="sr-only">, complete</span>
+            <span v-if="milestone.state === 'complete'" class="sr-only">, complete</span>
           </span>
         </span>
       </li>
@@ -165,6 +188,10 @@ const insets = {
 
 .timeline-line-delayed {
   --timeline-tone: var(--fg-warning);
+}
+
+.timeline-line-failed {
+  --timeline-tone: var(--fg-error);
 }
 
 .timeline-fill {
@@ -245,16 +272,24 @@ const insets = {
   color: var(--fg-primary);
 }
 
-.timeline-tick {
+.timeline-milestone-failed .timeline-dot {
+  background: var(--fg-error);
+  color: var(--fg-primary);
+}
+
+.timeline-glyph {
   width: 100%;
   height: 100%;
   fill: none;
   stroke: currentColor;
-  stroke-dasharray: 1 1;
-  stroke-dashoffset: 0;
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 1.5;
+}
+
+.timeline-tick {
+  stroke-dasharray: 1 1;
+  stroke-dashoffset: 0;
 }
 
 .timeline-label {
@@ -267,8 +302,24 @@ const insets = {
   transition: color 300ms ease;
 }
 
+/* A grown failed milestone's label leans away from its nearer labelled neighbour. */
+.timeline-label-start {
+  left: 50%;
+  translate: none;
+}
+
+.timeline-label-end {
+  right: 50%;
+  left: auto;
+  translate: none;
+}
+
 .timeline-milestone-complete .timeline-label {
   color: var(--fg-success);
+}
+
+.timeline-milestone-failed .timeline-label {
+  color: var(--fg-error);
 }
 
 .timeline-milestone-arriving .timeline-dot {
@@ -288,6 +339,35 @@ const insets = {
 @keyframes timeline-tick {
   from {
     stroke-dashoffset: 1;
+  }
+}
+
+/* A failure: the milestone grows, then its cross and label fade in, then one soft bump. */
+.timeline-failing .timeline-milestone,
+.timeline-failing .timeline-dot {
+  transition:
+    width 380ms ease-out,
+    height 380ms ease-out,
+    background-color 300ms ease;
+}
+
+.timeline-failing .timeline-milestone-failed :is(.timeline-cross, .timeline-label) {
+  animation: timeline-fade 250ms ease-out 380ms backwards;
+}
+
+.timeline-failing .timeline-milestone-failed .timeline-dot {
+  animation: timeline-failed-bump 520ms cubic-bezier(0.3, 0.7, 0.4, 1) 630ms;
+}
+
+@keyframes timeline-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes timeline-failed-bump {
+  50% {
+    transform: scale(1.12);
   }
 }
 

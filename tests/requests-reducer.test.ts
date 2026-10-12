@@ -465,6 +465,9 @@ describe("request reducer: top-up transitions", () => {
       chain(at(1) + PROVISIONAL_REVERT_MS + 1, "0", "finalized"),
     );
     expect(reverted.status).toEqual({ kind: "awaiting-deposit" });
+    // The sighting was never there, so the record forgets it.
+    expect(provisional).toMatchObject({ observedAt: { "on-burner": at(1) } });
+    expect(reverted).not.toHaveProperty(["observedAt", "on-burner"]);
     expect(reverted.witnesses.chain?.finalized).toEqual({
       burnerNative: "0",
       at: at(1) + PROVISIONAL_REVERT_MS + 1,
@@ -957,10 +960,14 @@ describe("request reducer: top-up timeline facts", () => {
       claimRegisteredAt: record.claimRegisteredAt,
       observedAt: record.observedAt,
     });
-    replay(converting(), facts, [
+    replay(awaiting(), facts, [
       [
         read(at(2), { depositSeen: blocks(10, 8, 9, 11), conversion: { preparedAt: at(2) } }),
-        { depositInBlock: blocks(10, 8, 9, 11), conversionPreparedAt: at(2) },
+        {
+          depositInBlock: blocks(10, 8, 9, 11),
+          conversionPreparedAt: at(2),
+          observedAt: { "on-burner": at(1) },
+        },
       ],
       [
         read(at(3), {
@@ -976,11 +983,14 @@ describe("request reducer: top-up timeline facts", () => {
           depositSeen: blocks(10, 8, 9, 12),
           conversion: { preparedAt: at(2), converted: { ...converted, txHash: "0xbb" } },
         }),
-        { claimRegisteredAt: at(4), observedAt: { "cash-on-people": at(4) } },
+        {
+          claimRegisteredAt: at(4),
+          observedAt: { "on-burner": at(1), "cash-on-people": at(4) },
+        },
       ],
       [
         read(at(5), claim(at(5), "claiming")),
-        { observedAt: { "cash-on-people": at(4), "host-claiming": at(5) } },
+        { observedAt: { "on-burner": at(1), "cash-on-people": at(4), "host-claiming": at(5) } },
       ],
       [worker(at(6), null), {}],
     ]);

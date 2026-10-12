@@ -62,10 +62,6 @@ describe("Chainflip top-up adapter", () => {
         view: { kind: "active", activeStageKey: "cash-conversion" },
       },
       state: { kind: "finishing", status: "Converting to $CASH" },
-      timeline: {
-        view: { state: "active", phase: 2 },
-        message: { text: "Making sure your money arrived safely" },
-      },
     });
     expect(topUps[0]).not.toHaveProperty("timeline");
   });

@@ -3852,34 +3852,6 @@ exports[`request list projection > projects the fixture records exactly as today
         "kind": "finishing",
         "status": "Converting to $CASH",
       },
-      "timeline": {
-        "detail": undefined,
-        "message": {
-          "delay": false,
-          "text": "Making sure your money arrived safely",
-        },
-        "view": {
-          "lines": [
-            1,
-            1,
-            0.9924999999999999,
-            0,
-            0,
-            0,
-          ],
-          "milestones": [
-            "complete",
-            "complete",
-            "complete",
-            "upcoming",
-            "upcoming",
-            "upcoming",
-            "upcoming",
-          ],
-          "phase": 2,
-          "state": "active",
-        },
-      },
     },
     {
       "amount": "25",
@@ -4019,6 +3991,29 @@ exports[`request list projection > projects the fixture records exactly as today
         "at": 1746551400000,
         "kind": "failed",
         "reason": "shortfall: the deposit is below the swap minimum",
+      },
+      "timeline": {
+        "view": {
+          "failed": 0,
+          "lines": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+          ],
+          "milestones": [
+            "failed",
+            "upcoming",
+            "upcoming",
+            "upcoming",
+            "upcoming",
+            "upcoming",
+            "upcoming",
+          ],
+          "state": "failed",
+        },
       },
     },
     {
@@ -4431,6 +4426,7 @@ exports[`request list projection > projects the fixture records with live status
       },
       "timeline": {
         "view": {
+          "failed": 4,
           "lines": [
             1,
             1,
@@ -4448,7 +4444,6 @@ exports[`request list projection > projects the fixture records with live status
             "upcoming",
             "upcoming",
           ],
-          "phase": 3,
           "state": "failed",
         },
       },
@@ -4623,6 +4618,29 @@ exports[`request list projection > projects the fixture records with live status
         "at": 1746551400000,
         "kind": "failed",
         "reason": "shortfall: the deposit is below the swap minimum",
+      },
+      "timeline": {
+        "view": {
+          "failed": 0,
+          "lines": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+          ],
+          "milestones": [
+            "failed",
+            "upcoming",
+            "upcoming",
+            "upcoming",
+            "upcoming",
+            "upcoming",
+            "upcoming",
+          ],
+          "state": "failed",
+        },
       },
     },
     {

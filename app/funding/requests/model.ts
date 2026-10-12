@@ -205,9 +205,10 @@ export interface WorkerHandoffPayload {
 }
 
 /** A fact the top-up timeline measures time from that has no time of its own on the record: a
- *  provider status, the CASH final on People (the worker's funding leg done), and the host's
- *  `claiming`. */
-export type ObservedFact = Exclude<SwapProgress, "waiting"> | "cash-on-people" | "host-claiming";
+ *  provider status, the deposit first seen on the burner itself (kept once the status moves on),
+ *  the CASH final on People (the worker's funding leg done), and the host's `claiming`. */
+export type ObservedFact =
+  Exclude<SwapProgress, "waiting"> | "on-burner" | "cash-on-people" | "host-claiming";
 
 /** Chainflip's progress as the record keeps it: no count or time moves back, and a fact a later
  *  read leaves out stays. */
