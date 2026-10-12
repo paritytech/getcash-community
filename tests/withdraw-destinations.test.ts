@@ -6,7 +6,8 @@ import {
   assetHubAccountHex,
   isAssetHubAddress,
   landingAccountHex,
-  shortAddress,
+  matchesOtherNetwork,
+  shortDestinationAddress,
   WITHDRAW_NETWORKS,
   withdrawDestination,
   withdrawNetwork,
@@ -73,8 +74,21 @@ describe("withdrawal destinations", () => {
     expect(landingAccountHex(ethereum, "0x4B2c0000000000000000000000000000000C02db")).toBeNull();
   });
 
+  it("tells a wrong-network address from a malformed one", () => {
+    const ethereum = withdrawNetwork("Ethereum")!;
+    // The design's example: a Bitcoin address on the Ethereum step.
+    expect(matchesOtherNetwork(ethereum, "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2")).toBe(true);
+    expect(matchesOtherNetwork(ethereum, ` ${ALICE_POLKADOT} `)).toBe(true);
+    expect(matchesOtherNetwork(ethereum, "1BvBMSEYstWetq")).toBe(false);
+    // An Ethereum address on the Bitcoin step is the wrong network, not malformed.
+    const bitcoin = withdrawNetwork("Bitcoin")!;
+    expect(matchesOtherNetwork(bitcoin, "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db")).toBe(true);
+  });
+
   it("shortens an address around an ellipsis", () => {
-    expect(shortAddress(ALICE_POLKADOT)).toBe("15oF4…r6Sp5");
-    expect(shortAddress("short")).toBe("short");
+    expect(shortDestinationAddress(ALICE_POLKADOT)).toBe("15oF4…r6Sp5");
+    expect(shortDestinationAddress("short")).toBe("short");
+    // Five each end, against the six the shared `shortAddress` leads with elsewhere.
+    expect(shortDestinationAddress(`  ${ALICE_POLKADOT}  `)).toBe("15oF4…r6Sp5");
   });
 });

@@ -3,15 +3,19 @@
 // screen. Asset Hub is always open; a Chainflip network is dimmed with the reason when this build
 // cannot run it, when the provider is not answering, or when the amount is under the provider's
 // minimum. While the offers are still being quoted, skeleton rows stand in for the list, one per
-// network, so nothing moves when the networks arrive.
+// network, so nothing moves when the networks arrive. `skeleton` forces them, for the preview deck.
 import { computed, watch } from "vue";
 import { useWithdrawOffersStore } from "../../stores/withdraw-offers";
 import { WITHDRAW_NETWORKS, type WithdrawNetwork } from "../../withdraw/destinations";
 
-const props = defineProps<{
-  /** The CASH to withdraw, base units; null while it cannot be read. */
-  amount: bigint | null;
-}>();
+const props = withDefaults(
+  defineProps<{
+    /** The CASH to withdraw, base units; null while it cannot be read. */
+    amount: bigint | null;
+    skeleton?: boolean;
+  }>(),
+  { skeleton: false },
+);
 const emit = defineEmits<{ pick: [network: WithdrawNetwork] }>();
 
 const offers = useWithdrawOffersStore();
@@ -32,7 +36,7 @@ const rows = computed(() =>
   <div class="flex min-h-0 flex-1 flex-col">
     <!-- The cards bleed past the 24px content gutter to the design's 16px inset. -->
     <ul
-      v-if="offers.awaitingNetworks"
+      v-if="skeleton || offers.awaitingNetworks"
       class="-mx-2 flex flex-col gap-2"
       aria-label="Loading networks"
     >
