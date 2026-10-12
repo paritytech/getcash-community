@@ -1,9 +1,11 @@
 // A hosted Chainflip pick runs under its own source and opens the rail's channel to the burner.
-// The demo's Skip then has the faucet send the burner what the rail would have delivered.
+// The demo's Skip then has the faucet send the burner what the rail would have delivered; on a
+// Polkadot deposit, the figure the deposit itself asks.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { TOKENS } from "@getsome/core";
+import { createManualRail } from "@getsome/funding";
 import {
   createMemoryKeyedStorage,
   setMirrorStorage,
@@ -16,6 +18,8 @@ import { useSessionStore } from "../app/stores/session";
 const BURNER = "14uAyRtbeRsrgERPLETm72yFPKW3oi3m4RX93arNwGQhsduC";
 /** What the rail must deliver to the burner, in PAS. */
 const BUDGET = 58_694_260_960n;
+/** What the next world sizes its budget at; a test moves it to stand for a rebuild on reopen. */
+const sizing = { budget: BUDGET };
 
 const { worlds, faucet, manager } = vi.hoisted(() => ({
   worlds: { builds: [] as { sourceId?: string; tradeN?: number }[] },
@@ -33,11 +37,21 @@ vi.mock("../lib/faucet", () => ({
 }));
 // The hosted world over the offline fakes: the fake rail opens the channel, the budget is given.
 vi.mock("../lib/coinage-live", async () => {
-  const { createMockCoinageSession } = await import("../lib/coinage");
+  const { createMockCoinageSession, depositTokenOf } = await import("../lib/coinage");
   return {
     chooseHostedRoute: async () => ({ tier: "pool" }),
     nextHostedTradeNumber: async () => 1,
     ensureChainSubmitGrant: async () => {},
+    // The requests store's own reads for a Polkadot deposit: the counter behind the gap sweep,
+    // a number with no flow slot, an empty burner, so no lost request to recover, and a watch
+    // that never reports a change.
+    readHostedTradeCounter: async () => 1,
+    readFlowSlot: async () => ({ address: BURNER, slot: null }),
+    probeTradeBurner: async () => ({ address: BURNER, free: 0n }),
+    lostRequestHandoff: async () => {
+      throw new Error("no lost request to recover");
+    },
+    watchDirectTradeBurner: async () => () => {},
     createHostedCoinageWorld: async (args: {
       amount: bigint;
       route: { tier: "pool" };
@@ -52,11 +66,15 @@ vi.mock("../lib/coinage-live", async () => {
         tradeN: args.tradeN,
         route: args.route,
         nativeBudget: BUDGET,
+        // A Polkadot pick deposits straight to the burner; every other runs on the fakes' rail.
+        ...(args.sourceId === "dot-assethub"
+          ? { rail: createManualRail({ token: depositTokenOf(args.route) }) }
+          : {}),
       });
       return {
         ...mock,
         burnerAddress: BURNER,
-        budget: BUDGET,
+        budget: sizing.budget,
         runFunding: async () => {},
         readPurse: async () => 0n,
         readBurnerDepositOnAh: async () => 0n,
@@ -80,12 +98,12 @@ function fakeWebStorage(): WebStorageLike {
   };
 }
 
-/** Quotes 50 CASH from the Bitcoin pill and starts the request. */
-async function startBitcoinTopUp() {
+/** Quotes 50 CASH from the pick and starts the request. */
+async function startTopUp(chain: string, asset: string) {
   const session = useSessionStore();
   const requests = useRequestsStore();
   session.setAmount("50");
-  await session.fetchQuote("Bitcoin", "BTC");
+  await session.fetchQuote(chain, asset);
   expect(session.quoteError).toBeNull();
   await session.start();
   expect(requests.phase).toBe("awaiting-deposit");
@@ -99,6 +117,7 @@ describe("a hosted Chainflip pick", () => {
     setMirrorStorage(fakeWebStorage());
     worlds.builds.length = 0;
     faucet.calls.length = 0;
+    sizing.budget = BUDGET;
     vi.spyOn(console, "warn").mockImplementation(() => {});
   });
   afterEach(async () => {
@@ -110,7 +129,7 @@ describe("a hosted Chainflip pick", () => {
   });
 
   it("runs under its own source and opens the rail's channel to the burner", async () => {
-    const { session, requests } = await startBitcoinTopUp();
+    const { session, requests } = await startTopUp("Bitcoin", "BTC");
     // The world runs under the pick's source, not the deposit token's.
     expect(worlds.builds).toEqual([{ sourceId: "btc", tradeN: 1 }]);
     // The rail's figure is what the buyer sends; the budget is what lands on the burner.
@@ -138,7 +157,18 @@ describe("a hosted Chainflip pick", () => {
 
   // TODO(production): delete with the faucet and fundFaucet.
   it("Skip has the faucet send the burner the budget, in the route's token", async () => {
-    const { session, requests } = await startBitcoinTopUp();
+    const { session, requests } = await startTopUp("Bitcoin", "BTC");
+    await session.fundFaucet();
+    expect(faucet.calls).toEqual([{ address: BURNER, amount: BUDGET, route: { tier: "pool" } }]);
+    expect(requests.fundsSeen).toBe(true);
+  });
+
+  // TODO(production): delete with the faucet and fundFaucet.
+  it("Skip on a Polkadot deposit sends the figure the deposit asks, not the world's sizing", async () => {
+    // A world rebuilt on reopen sizes the budget again, and the pool may have moved; the deposit
+    // still asks, and is checked against, the figure it was opened with.
+    sizing.budget = BUDGET + 1n;
+    const { session, requests } = await startTopUp("Polkadot", "DOT");
     await session.fundFaucet();
     expect(faucet.calls).toEqual([{ address: BURNER, amount: BUDGET, route: { tier: "pool" } }]);
     expect(requests.fundsSeen).toBe(true);

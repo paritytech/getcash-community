@@ -1768,10 +1768,12 @@ export const useSessionStore = defineStore("session", () => {
       const tradeN = live.value.tradeN;
       const faucetRef = requestRefOf(live.value.sourceId, tradeN);
       // The faucet stands in for the rail: it sends the burner what the rail would deliver, in
-      // the route's token, the one the pipeline reads the burner for.
+      // the route's token, the one the pipeline reads the burner for. A Polkadot deposit asks the
+      // burner for that figure itself and is checked against it, so it is read off the deposit,
+      // not off a world rebuilt on reopen, whose sizing may have moved with the pool.
       const sent = await fundFromFaucet({
         address: live.value.burnerAddress,
-        amount: live.value.budget,
+        amount: isDirectSourceId(live.value.sourceId) ? s.deposit.amount : live.value.budget,
         route: live.value.route,
       });
       faucetState.value = "sent";
