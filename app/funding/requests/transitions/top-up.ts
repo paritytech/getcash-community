@@ -320,6 +320,8 @@ function workerWitness(job: WorkerJobView, at: number): Witnesses["worker"] {
     fundsSeenAt: job.fundsSeenAt,
     lastTickAt: job.lastTickAt,
     at,
+    ...(job.workedMs === undefined ? {} : { workedMs: job.workedMs }),
+    ...(job.claim?.workedMs === undefined ? {} : { claimWorkedMs: job.claim.workedMs }),
     ...(job.failure === undefined ? {} : { failure: job.failure }),
     ...(job.claim === null ? {} : { claimPhase: job.claim.phase }),
     ...(job.claim?.status === undefined ? {} : { claimStatus: job.claim.status }),

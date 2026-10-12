@@ -283,12 +283,12 @@ describe("requests store: the worker poll", () => {
       JSON.stringify({
         "dot-assethub:3": {
           ...job,
-          state: { ...job.state, psmRefusals: 2 },
-          claim: { ...job.claim, registeredAt: tickAt, credited: "10000000" },
-          depositSeen: { block: 10, finalizedAtSeen: 8, finalized: 10 },
+          state: { ...job.state, psmRefusals: 2, workedMs: 45_000 },
+          claim: { ...job.claim, registeredAt: tickAt, workedMs: 6_000, credited: "10000000" },
+          depositSeen: { block: 10, finalizedAtSeen: 8, finalized: 10, best: 12 },
           conversion: {
             preparedAt: tickAt,
-            converted: { txHash: "0xaa", block: "12", at: tickAt },
+            converted: { txHash: "0xaa", block: "12", at: tickAt, workedMs: 30_000 },
           },
         },
       }),
@@ -297,10 +297,17 @@ describe("requests store: the worker poll", () => {
 
     const record = requests.get(AWAITING_REF);
     expect(record).toMatchObject({
-      depositInBlock: { block: 10, finalizedAtSeen: 8, finalized: 10 },
+      depositInBlock: { block: 10, finalizedAtSeen: 8, finalized: 10, best: 12 },
       conversionPreparedAt: tickAt,
       claimRegisteredAt: tickAt,
-      witnesses: { worker: { psmRefusals: 2, claimCredited: "10000000" } },
+      witnesses: {
+        worker: {
+          psmRefusals: 2,
+          claimCredited: "10000000",
+          workedMs: 45_000,
+          claimWorkedMs: 6_000,
+        },
+      },
     });
     expect(record).not.toHaveProperty("converted");
   });

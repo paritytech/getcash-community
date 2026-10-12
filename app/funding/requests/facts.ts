@@ -76,6 +76,7 @@ export function chainflipObserved(
       read.estimatedDurationsSeconds,
     ),
     egressScheduledAt: latest(current?.egressScheduledAt, egressScheduledAt),
+    lastStatechainUpdateAt: latest(current?.lastStatechainUpdateAt, read.lastStatechainUpdateAt),
     confirmationsAt:
       depositConfirmations === current?.depositConfirmations ? current?.confirmationsAt : at,
     chunksAt: chunks?.executed === current?.chunks?.executed ? current?.chunksAt : at,
@@ -86,8 +87,15 @@ export function chainflipObserved(
 function depositFollowed(record: TopUpRecord, seen: DepositInBlock): TopUpRecord {
   const current = record.depositInBlock;
   if (current === undefined) return { ...record, depositInBlock: seen };
-  if (seen.finalized <= current.finalized) return record;
-  return { ...record, depositInBlock: { ...current, finalized: seen.finalized } };
+  if (seen.finalized <= current.finalized && seen.best <= current.best) return record;
+  return {
+    ...record,
+    depositInBlock: {
+      ...current,
+      finalized: Math.max(current.finalized, seen.finalized),
+      best: Math.max(current.best, seen.best),
+    },
+  };
 }
 
 /** Folds one read of the worker's job into the facts kept so far. */

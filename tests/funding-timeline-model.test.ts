@@ -114,26 +114,7 @@ describe("top-up timeline model", () => {
 
   it.each([
     ["delayed", "the route reports a delay", { parts: [part()], delayed: true }, 0],
-    ["delayed", "the part in progress runs past its T", { parts: [part()] }, T + 1],
-    ["active", "the part in progress is at its T", { parts: [part()] }, T],
-    [
-      "active",
-      "the part in progress is past its T but within its late time",
-      { parts: [part({ lateAfterMs: 2 * T })] },
-      T + 1,
-    ],
-    [
-      "active",
-      "the part in progress is never late",
-      { parts: [part({ lateAfterMs: null })] },
-      100 * T,
-    ],
-    [
-      "active",
-      "a part completed and the next one started",
-      { parts: [part({ completed: { at: T } }), part()] },
-      T + 1,
-    ],
+    ["active", "the part in progress runs far past its T", { parts: [part()] }, 100 * T],
   ] satisfies [string, string, PhaseInput, number][])("is %s when %s", (state, _, phase, now) => {
     expect(evaluate(phase, { now }).state).toBe(state);
   });
@@ -180,7 +161,6 @@ describe("top-up timeline model", () => {
   it.each([
     ["a zero weight", part({ weight: 0 })],
     ["a zero expected time", part({ expectedMs: 0 })],
-    ["a zero late time", part({ lateAfterMs: 0 })],
     ["a fraction that is not a number", part({ fraction: Number.NaN })],
   ])("rejects %s", (_, invalid) => {
     expect(() => evaluate({ parts: [invalid] })).toThrow(RangeError);

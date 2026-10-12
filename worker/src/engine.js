@@ -89,21 +89,28 @@ const saveJobs = () => store.save();
  *                                            // the conversion is final
  *                                            // inclusionBlock: the block the conversion was
  *                                            // seen in, while it is not final
+ *                                            // workedMs: worker time since the deposit was
+ *                                            // final, until the claim is registered (see
+ *                                            // accountWorkedTime)
  *   submitting?: { call: "swap", at },        // written before a submit, with the state
  *   txs: [{ call, txHash, block? }],
- *   depositSeen?: { block, finalizedAtSeen, finalized },
+ *   depositSeen?: { block, finalizedAtSeen, finalized, best },
  *                                            // the deposit in a best block, followed until the
  *                                            // pipeline sees it final: block: the best block it
  *                                            // was first seen in; finalizedAtSeen: the finalized
- *                                            // block number then; finalized: at the last tick
- *   conversion?: { preparedAt, converted?: { txHash, block, at } },
+ *                                            // block number then; finalized and best: at the
+ *                                            // last tick
+ *   conversion?: { preparedAt, converted?: { txHash, block, at, workedMs } },
  *                                            // preparedAt: the first submit past its dry run
  *                                            // converted: the latest submit in a best block that
- *                                            // succeeded and carried the tier's conversion event
+ *                                            // succeeded and carried the tier's conversion event,
+ *                                            // with the worker time then
  *   claim?: { phase: "sizing"|"registering"|"claiming"|"claimed", attempt, credited,
- *             id?, amount?, at, attempts, registeredAt?, status?, partial?, error? },
+ *             id?, amount?, at, attempts, registeredAt?, workedMs?, status?, partial?, error? },
  *                                            // attempt: 0-based; each has its own id (hex)
  *                                            // credited: CASH the host minted so far
+ *                                            // workedMs: worker time since this attempt was
+ *                                            // registered
  *                                            // status: the host's last word on the top-up
  * }
  */
@@ -277,7 +284,9 @@ function rearm(record, nowMs) {
   }
   if (record.claim?.phase === "claiming") {
     record.claim =
-      failure === "claim" ? nextAttempt(record.claim) : { ...record.claim, registeredAt: nowMs };
+      failure === "claim"
+        ? nextAttempt(record.claim)
+        : { ...record.claim, registeredAt: nowMs, workedMs: 0 };
   }
 }
 
@@ -460,7 +469,7 @@ async function registerClaim(record, burner) {
     }
   }
   delete record.claim.error;
-  record.claim = { ...record.claim, phase: "claiming", registeredAt: Date.now() };
+  record.claim = { ...record.claim, phase: "claiming", registeredAt: Date.now(), workedMs: 0 };
   watchClaim(record);
 }
 
@@ -591,6 +600,7 @@ function describeFunding(record) {
     settleAmount: record.settleAmount,
     createdAt: record.createdAt,
     lastTickAt: record.lastTickAt,
+    workedMs: record.state?.workedMs ?? 0,
     lastError: record.lastError,
     failure: record.failure,
     submitting: record.submitting,
@@ -622,13 +632,20 @@ const onTheClock = (record) =>
   !hostOwnsClaim(record) &&
   (record.done || record.state.fundsSeenAt !== null);
 
-/** Adds this tick's gap, capped at MAX_TICK_GAP_MS, to the job's worked time while on the clock. */
+/**
+ * Adds this tick's gap, capped at MAX_TICK_GAP_MS, to the job's worked time while on the clock, or
+ * to the claim's while the host owns it.
+ */
 function accountWorkedTime(record, nowMs) {
   const previous = record.lastTickAt;
   record.lastTickAt = nowMs;
-  if (previous === null || !onTheClock(record)) return;
+  if (previous === null) return;
   const gap = Math.min(Math.max(nowMs - previous, 0), MAX_TICK_GAP_MS);
-  record.state.workedMs = (record.state.workedMs ?? 0) + gap;
+  if (onTheClock(record)) {
+    record.state.workedMs = (record.state.workedMs ?? 0) + gap;
+  } else if (hostOwnsClaim(record)) {
+    record.claim = { ...record.claim, workedMs: (record.claim.workedMs ?? 0) + gap };
+  }
 }
 
 /**
@@ -806,7 +823,11 @@ async function tickRecord(record, nowMs) {
  */
 async function followDeposit(record, api, route, address, anchor) {
   if (record.depositSeen) {
-    record.depositSeen = { ...record.depositSeen, finalized: anchor.finalized };
+    record.depositSeen = {
+      ...record.depositSeen,
+      finalized: anchor.finalized,
+      best: anchor.number,
+    };
     return;
   }
   const held = await bounded(
@@ -819,6 +840,7 @@ async function followDeposit(record, api, route, address, anchor) {
     block: anchor.number,
     finalizedAtSeen: anchor.finalized,
     finalized: anchor.finalized,
+    best: anchor.number,
   };
 }
 
@@ -829,7 +851,12 @@ function recordConversion(record, fact) {
     record.conversion = { ...record.conversion, preparedAt };
     return;
   }
-  const converted = { txHash: fact.txHash, block: fact.block, at: Date.now() };
+  const converted = {
+    txHash: fact.txHash,
+    block: fact.block,
+    at: Date.now(),
+    workedMs: record.state.workedMs ?? 0,
+  };
   record.conversion = { ...record.conversion, preparedAt, converted };
 }
 

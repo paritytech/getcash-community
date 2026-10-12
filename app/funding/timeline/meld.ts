@@ -34,7 +34,7 @@ interface MeldMethod {
   readonly firstPart: PhasePart;
   /** Whether Meld `ERROR` delays phase 1. */
   readonly errorDelaysFirst: boolean;
-  firstMessage(record: TopUpRecord, delayed: boolean): TimelineMessage;
+  firstMessage(record: TopUpRecord): TimelineMessage;
   /** Phase 1's detail line, when the method has one. */
   firstDetail?(record: TopUpRecord, state: TextState): string | undefined;
   /** Phase 2's text on Meld `ERROR`. */
@@ -58,7 +58,7 @@ function meldRoute(method: MeldMethod): TimelineRoute {
     text(record, index, state) {
       if (index === 0) {
         return {
-          message: method.firstMessage(record, state.delayed),
+          message: method.firstMessage(record),
           detail: method.firstDetail?.(record, state),
         };
       }
@@ -74,22 +74,18 @@ function meldRoute(method: MeldMethod): TimelineRoute {
 export const meldCardRoute = meldRoute({
   firstPart: { weight: 1, expectedMs: 2 * MINUTE },
   errorDelaysFirst: true,
-  firstMessage(record, delayed) {
-    if (providerError(record)) {
-      return delay("The payment provider hit a problem and is retrying. Don't pay again.");
-    }
-    return delayed
-      ? delay("The payment provider is still reviewing your payment. Don't pay again.")
-      : normal("Checking your payment");
-  },
+  firstMessage: (record) =>
+    providerError(record)
+      ? delay("The payment provider hit a problem and is retrying. Don't pay again.")
+      : normal("Checking your payment"),
   retryingText: "The payment provider is retrying the transfer. Don't pay again.",
 });
 
-/** Only shapes the line's curve: a bank transfer's time is opaque, so phase 1 is never late. */
+/** Only shapes the line's curve: a bank transfer's time is opaque. */
 const TRANSFER_CURVE_MS = 3 * DAY;
 
 export const meldBankRoute = meldRoute({
-  firstPart: { weight: 1, expectedMs: TRANSFER_CURVE_MS, lateAfterMs: null },
+  firstPart: { weight: 1, expectedMs: TRANSFER_CURVE_MS },
   errorDelaysFirst: false,
   firstMessage: () =>
     normal(

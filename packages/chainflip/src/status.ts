@@ -100,6 +100,7 @@ function progressOf(body: Fields): ChainflipProgressFacts {
       time(regular.latestSwapRescheduledAt) ??
       time(fields(dca.currentChunk).latestSwapRescheduledAt),
     estimatedDurationsSeconds: durationsOf(body.estimatedDurationsSeconds),
+    lastStatechainUpdateAt: time(body.lastStatechainUpdateAt),
   };
 }
 

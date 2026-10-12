@@ -14,6 +14,9 @@ type Stage = "deposit" | "swap" | "egress";
 /** The expected time of each stage, in seconds, when Chainflip gives none. */
 const FALLBACK_ESTIMATES: Readonly<Record<Stage, number>> = { deposit: 300, swap: 12, egress: 96 };
 
+/** A stage is late when Chainflip's own clock is this many times its estimate past its start. */
+const LATE_FACTOR = 2;
+
 /** Chainflip's statuses from the deposit on, in order. */
 const STATUSES = ["receiving", "swapping", "sending", "sent", "complete"] as const;
 
@@ -58,8 +61,7 @@ interface Steps {
   readonly completedAt?: number;
 }
 
-/** `count` equal parts. The one in progress starts when the step before it completed, and is late
- *  once the steps overran `totalMs` and none completed in its own expected time. */
+/** `count` equal parts. The one in progress starts when the step before it completed. */
 function stepParts(steps: Steps): [PhasePart, ...PhasePart[]] {
   const { totalMs, count, done, startedAt, progressAt, completedAt } = steps;
   const expected = totalMs / count;
@@ -69,14 +71,18 @@ function stepParts(steps: Steps): [PhasePart, ...PhasePart[]] {
     if (index < done) return { ...base, completed: {} };
     if (index > done) return base;
     const partStartedAt = done > 0 ? progressAt : startedAt;
-    if (startedAt === undefined || partStartedAt === undefined) return base;
-    return {
-      ...base,
-      startedAt: partStartedAt,
-      lateAfterMs: Math.max(expected, startedAt + totalMs - partStartedAt),
-    };
+    return partStartedAt === undefined ? base : { ...base, startedAt: partStartedAt };
   };
   return [part(0), ...Array.from({ length: count - 1 }, (_, index) => part(index + 1))];
+}
+
+/** Chainflip's own clock is more than `LATE_FACTOR` times its estimate for `stage` past `since`,
+ *  one of Chainflip's own timestamps. Without Chainflip's estimate, nothing is late. */
+function pastEstimate(facts: ChainflipFacts, stage: Stage, since: number | undefined): boolean {
+  const seconds = estimated(facts, stage);
+  const clock = facts.lastStatechainUpdateAt;
+  if (seconds === undefined || since === undefined || clock === undefined) return false;
+  return clock - since > LATE_FACTOR * seconds * SECOND;
 }
 
 /** Chainflip moved the swap to a later time and no chunk executed since. */
@@ -107,19 +113,18 @@ function exchangePhase(record: TopUpRecord, facts: ChainflipFacts): PhaseInput {
     startedAt: facts.swapScheduledAt ?? confirmed,
     progressAt: facts.chunksAt,
   });
+  // Chainflip gives no time for a deposit before it witnesses it, so confirmations are never late.
   return {
     parts: [...confirmations, ...swap],
-    delayed: waitingForPrice(facts),
+    delayed: waitingForPrice(facts) || pastEstimate(facts, "swap", facts.swapScheduledAt),
   };
 }
 
 const SOURCES: ReadonlyMap<string, SourceConfig> = SOURCE_CONFIG_BY_ID;
 
-/** The token the user sends, and its network. */
-function sourceOf(record: TopUpRecord): { source: string; chain: string } {
-  const config = SOURCES.get(effectiveSourceId(record.ref));
-  return { source: config?.asset ?? record.asset, chain: config?.chain ?? record.chain };
-}
+/** The token the user sends. */
+const sourceOf = (record: TopUpRecord): string =>
+  SOURCES.get(effectiveSourceId(record.ref))?.asset ?? record.asset;
 
 /** The time left of a stage Chainflip scheduled and estimated, while some is left. */
 function countdown(
@@ -134,40 +139,16 @@ function countdown(
     : undefined;
 }
 
-const UNITS = [
-  ["hour", 3_600],
-  ["minute", 60],
-  ["second", 1],
-] as const;
-
-/** A positive duration in words, rounded up in its largest unit: "7 seconds", "30 minutes". */
-function durationWords(seconds: number): string {
-  const [unit, size] = UNITS.find(([, size]) => seconds >= size) ?? UNITS[2];
-  const count = Math.ceil(seconds / size);
-  return `${count} ${unit}${count === 1 ? "" : "s"}`;
-}
-
 /** The step in progress of `count`, or the last once all are done. */
 const stepLine = (label: string, done: number, count: number): string =>
   `${label} ${Math.min(done + 1, count)} of ${count}`;
 
-function exchangeText(
-  record: TopUpRecord,
-  facts: ChainflipFacts,
-  delayed: boolean,
-  now: number,
-): TimelineText {
-  const { source, chain } = sourceOf(record);
+function exchangeText(record: TopUpRecord, facts: ChainflipFacts, now: number): TimelineText {
+  const source = sourceOf(record);
   if (confirmedAt(record, facts) === undefined) {
-    const deposit = estimated(facts, "deposit");
     const required = requiredOf(facts);
     return {
-      message:
-        delayed && deposit !== undefined
-          ? delay(
-              `${chain} needs a few confirmations, which can take up to ${durationWords(deposit)}`,
-            )
-          : normal(`Confirming your ${source} deposit`),
+      message: normal(`Confirming your ${source} deposit`),
       detail:
         required === undefined
           ? undefined
@@ -203,6 +184,7 @@ export const chainflipRoute: TimelineRoute = {
       parts: [
         { weight: 1, expectedMs: expectedMs(facts, "egress"), startedAt: facts.egressScheduledAt },
       ],
+      delayed: pastEstimate(facts, "egress", facts.egressScheduledAt),
     };
   },
   seenExpectedMs: 30 * SECOND,
@@ -213,12 +195,10 @@ export const chainflipRoute: TimelineRoute = {
   },
   text(record, index, { delayed, now }) {
     const facts = record.chainflip ?? {};
-    if (index === 0) return exchangeText(record, facts, delayed, now);
+    if (index === 0) return exchangeText(record, facts, now);
     return {
       message: delayed
-        ? delay(
-            `Your ${sourceOf(record).source} is exchanged and the network is processing the transfer`,
-          )
+        ? delay(`Your ${sourceOf(record)} is exchanged and the network is processing the transfer`)
         : normal("Your money is on its way"),
       detail: countdown(facts.egressScheduledAt, estimated(facts, "egress"), now),
     };

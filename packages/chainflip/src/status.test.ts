@@ -95,6 +95,7 @@ describe("progress facts", () => {
         deposit: { amount: "1", txConfirmations: 2 },
         boost: { maxBoostFeeBps: 5, boostedAt: 1_000 },
         swap: { regular: { scheduledAt: 2_000, latestSwapRescheduledAt: 3_000 } },
+        lastStatechainUpdateAt: 3_500,
       },
       {
         depositConfirmations: 2,
@@ -103,6 +104,7 @@ describe("progress facts", () => {
         swapScheduledAt: 2_000,
         swapRescheduledAt: 3_000,
         estimatedDurationsSeconds: { deposit: 6.65, swap: 12, egress: 96 },
+        lastStatechainUpdateAt: 3_500,
       },
     ],
     [
@@ -133,6 +135,7 @@ describe("progress facts", () => {
         deposit: { txConfirmations: 1.5 },
         boost: { boostedAt: -1 },
         swap: { regular: "soon", dca: { executedChunks: 2 } },
+        lastStatechainUpdateAt: "now",
       },
       {},
     ],

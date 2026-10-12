@@ -327,7 +327,7 @@ describe("requests store: foreground, clock and user actions", () => {
     await requests.observe(AWAITING_REF, workerSwap(at(2)));
     const [row] = projectChainflipTopUps(requests.openTopUps, at(3), requests.topUpTimelineOf);
     const listed = row?.timeline?.view;
-    expect(listed).toMatchObject({ state: "delayed", phase: 3 });
+    expect(listed).toMatchObject({ state: "active", phase: 3 });
     expect(listed?.lines[3]).toBeGreaterThan(0);
     expect(requests.foregroundTimeline(at(2))?.view.lines).toEqual(listed?.lines);
   });

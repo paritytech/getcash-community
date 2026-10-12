@@ -961,10 +961,10 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "claimStage": null,
     "claimedBase": null,
     "foregroundSnapshot": {
-      "confirmedStageKey": "chainflip-receiving",
+      "confirmedStageKey": "chainflip-swapping",
       "detectedAt": 1746554272000,
-      "estimatedCompletionAt": 1746556252000,
-      "latestRouteStatus": "receiving",
+      "estimatedCompletionAt": 1746555054000,
+      "latestRouteStatus": "swapping",
       "preDetectionEstimateText": "≈10 min after your transfer",
       "profile": {
         "cadenceMs": 5000,
@@ -1012,6 +1012,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "schemaVersion": 1,
       "stageTimestamps": {
         "chainflip-receiving": 1746554272000,
+        "chainflip-swapping": 1746554274000,
       },
     },
     "fundingError": null,
@@ -1019,7 +1020,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "fundingStep": null,
     "fundsSeen": false,
     "journeyDone": 1,
-    "meldDelayed": true,
+    "meldDelayed": false,
     "meldFailureMessage": null,
     "meldHandedOff": false,
     "meldStage": null,
@@ -1874,7 +1875,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "confirmedStageKey": "meld-payment",
       "detectedAt": 1746554273000,
       "estimatedCompletionAt": 1746641213000,
-      "latestRouteStatus": "receiving",
+      "latestRouteStatus": "sending",
       "preDetectionEstimateText": "1-2 business days after you pay",
       "profile": {
         "cadenceMs": 5000,
@@ -3876,7 +3877,7 @@ exports[`request list projection > projects the fixture records exactly as today
             "upcoming",
           ],
           "phase": 2,
-          "state": "delayed",
+          "state": "active",
         },
       },
     },
@@ -4229,8 +4230,8 @@ exports[`request list projection > projects the fixture records exactly as today
       "timeline": {
         "detail": undefined,
         "message": {
-          "delay": true,
-          "text": "The payment provider is still reviewing your payment. Don't pay again.",
+          "delay": false,
+          "text": "Checking your payment",
         },
         "view": {
           "lines": [
@@ -4251,7 +4252,7 @@ exports[`request list projection > projects the fixture records exactly as today
             "upcoming",
           ],
           "phase": 0,
-          "state": "delayed",
+          "state": "active",
         },
       },
     },

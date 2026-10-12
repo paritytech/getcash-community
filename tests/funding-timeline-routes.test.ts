@@ -18,7 +18,11 @@ const SENT = FIXTURE_NOW;
 const RECEIVED = SENT + MINUTE;
 const CONVERTED = RECEIVED + 20 * SECOND;
 const MOVED = CONVERTED + MINUTE;
+const HOUR = 60 * MINUTE;
 const SEEN_T = 30 * SECOND;
+/** The worker's working time when it saw the conversion. */
+const CONVERTED_WORKED = 20 * SECOND;
+const converted = { txHash: "0x01", block: 120, at: CONVERTED, workedMs: CONVERTED_WORKED };
 /** The fill of a part after `elapsed` of its expected time `t`. */
 const timeFill = (elapsed: number, t: number) => 1 - Math.exp((-3 * elapsed) / t);
 
@@ -82,10 +86,10 @@ describe("top-up timeline, shared route frame", () => {
       { message: normal("Your money is arriving") },
     ],
     [
-      "the funds are not seen 2 minutes after Sent",
-      record(),
-      SENT + 2 * MINUTE + 1,
-      { marks: "●●●○○○○", state: "delayed", line: 0.5 * PART_LIMIT },
+      "the funds not seen an hour after Sent, with no evidence of a delay",
+      record({}, { lastTickAt: SENT + HOUR }),
+      SENT + HOUR,
+      { marks: "●●●○○○○", state: "active", line: 0.5 * PART_LIMIT },
       { message: normal("Your money is arriving") },
     ],
     [
@@ -113,14 +117,21 @@ describe("top-up timeline, shared route frame", () => {
     ],
     [
       "the deposit is in a block that is half way to final",
-      record({ depositInBlock: { block: 110, finalizedAtSeen: 100, finalized: 105 } }),
+      record({ depositInBlock: { block: 110, finalizedAtSeen: 100, finalized: 105, best: 129 } }),
       SENT + 3 * MINUTE,
       { marks: "●●●○○○○", state: "active", line: 0.75 },
       { message: normal("Making sure your money arrived safely") },
     ],
     [
+      "the best block 20 blocks past the deposit's block, which is not final",
+      record({ depositInBlock: { block: 110, finalizedAtSeen: 100, finalized: 105, best: 130 } }),
+      SENT + 3 * MINUTE,
+      { marks: "●●●○○○○", state: "delayed", line: 0.75 },
+      { message: normal("Making sure your money arrived safely") },
+    ],
+    [
       "the deposit's block was final when seen",
-      record({ depositInBlock: { block: 100, finalizedAtSeen: 100, finalized: 100 } }),
+      record({ depositInBlock: { block: 100, finalizedAtSeen: 100, finalized: 100, best: 140 } }),
       SENT,
       { marks: "●●●○○○○", state: "active", line: 0.5 + 0.5 * PART_LIMIT },
       { message: normal("Making sure your money arrived safely") },
@@ -130,6 +141,27 @@ describe("top-up timeline, shared route frame", () => {
       record({}, received),
       RECEIVED,
       { marks: "●●●●○○○", state: "active", line: 0 },
+      { message: normal("Converting your money to Cash") },
+    ],
+    [
+      "the worker worked 2 minutes since the deposit was final",
+      record({}, { ...received, workedMs: 2 * MINUTE }),
+      RECEIVED,
+      { marks: "●●●●○○○", state: "active", line: 0 },
+      { message: normal("Converting your money to Cash") },
+    ],
+    [
+      "the worker worked over 2 minutes since the deposit was final",
+      record({}, { ...received, workedMs: 2 * MINUTE + 1 }),
+      RECEIVED,
+      { marks: "●●●●○○○", state: "delayed", line: 0 },
+      { message: normal("Converting your money to Cash") },
+    ],
+    [
+      "the deposit final an hour ago, with little worker time",
+      record({}, { ...received, workedMs: 30 * SECOND, lastTickAt: RECEIVED + HOUR }),
+      RECEIVED + HOUR,
+      { marks: "●●●●○○○", state: "active", line: PART_LIMIT / 3 },
       { message: normal("Converting your money to Cash") },
     ],
     [
@@ -155,17 +187,27 @@ describe("top-up timeline, shared route frame", () => {
     ],
     [
       "the conversion is in a block",
-      record({ converted: { txHash: "0x01", block: 120, at: CONVERTED } }, received),
+      record({ converted }, { ...received, workedMs: CONVERTED_WORKED }),
       CONVERTED,
       { marks: "●●●●●○○", state: "active", line: 0 },
       { message: normal("Getting your Cash ready") },
     ],
     [
-      "the Cash is not final on People after its expected time",
-      record({ converted: { txHash: "0x01", block: 120, at: CONVERTED } }, received),
+      "the worker worked over 5 minutes since the conversion",
+      record({ converted }, { ...received, workedMs: CONVERTED_WORKED + 5 * MINUTE + 1 }),
       CONVERTED + 91 * SECOND,
       { marks: "●●●●●○○", state: "delayed", line: timeFill(91 * SECOND, 90 * SECOND) },
       { message: delay("Your Cash is ready and waiting for the network to confirm it") },
+    ],
+    [
+      "the conversion an hour ago, with little worker time since",
+      record(
+        { converted },
+        { ...received, workedMs: CONVERTED_WORKED + MINUTE, lastTickAt: CONVERTED + HOUR },
+      ),
+      CONVERTED + HOUR,
+      { marks: "●●●●●○○", state: "active", line: PART_LIMIT },
+      { message: normal("Getting your Cash ready") },
     ],
     [
       "the Cash is final on People",
@@ -185,6 +227,26 @@ describe("top-up timeline, shared route frame", () => {
       ),
       MOVED,
       { marks: "●●●●●●○", state: "active", line: 2 / 3 },
+      { message: normal("Adding $50 CASH to your balance") },
+    ],
+    [
+      "the worker worked over 2 minutes since it registered the claim",
+      record(
+        { observedAt: { "cash-on-people": MOVED }, claimRegisteredAt: MOVED },
+        { ...received, claimWorkedMs: 2 * MINUTE + 1 },
+      ),
+      MOVED,
+      { marks: "●●●●●●○", state: "delayed", line: 1 / 3 },
+      { message: normal("Adding $50 CASH to your balance") },
+    ],
+    [
+      "the claim registered an hour ago, with little worker time since",
+      record(
+        { observedAt: { "cash-on-people": MOVED }, claimRegisteredAt: MOVED },
+        { ...received, claimWorkedMs: 30 * SECOND, lastTickAt: MOVED + HOUR },
+      ),
+      MOVED + HOUR,
+      { marks: "●●●●●●○", state: "active", line: (1 + PART_LIMIT) / 3 },
       { message: normal("Adding $50 CASH to your balance") },
     ],
     [
@@ -234,6 +296,44 @@ describe("top-up timeline, shared route frame", () => {
     if (view.state !== "done") expect(view.lines[view.phase]).toBeCloseTo(expected.line ?? 1, 10);
     expect({ message, detail }).toEqual(text);
   });
+
+  it.each([
+    ["5 minutes", 5 * MINUTE, record(), "active"],
+    ["over 5 minutes", 5 * MINUTE + 1, record(), "delayed"],
+    [
+      "over 5 minutes, then the funds seen",
+      5 * MINUTE + 1,
+      record({ depositInBlock: { block: 110, finalizedAtSeen: 100, finalized: 105, best: 112 } }),
+      "active",
+    ],
+  ] satisfies [string, number, TopUpRecord, TimelineView["state"]][])(
+    "decides phase 3's delay on fresh reads without the funds for %s",
+    (_, sentUnseenMs, topUp, state) => {
+      const now = SENT + 12 * SECOND;
+      const { view } = topUpTimeline(topUp, sentRoute, { now, watchingSince: SENT, sentUnseenMs });
+      expect(view.state).toBe(state);
+    },
+  );
+
+  /** Evaluations one second apart from `from`. */
+  const everySecond = (from: number, count: number) =>
+    Array.from({ length: count }, (_, index) => from + index * SECOND);
+
+  it.each([
+    ["5 minutes of fresh reads", everySecond(SENT, 302), true, "active"],
+    ["over 5 minutes of fresh reads", everySecond(SENT, 303), true, "delayed"],
+    ["over 5 minutes of reads that stopped", everySecond(SENT, 303), false, "active"],
+    ["an hour away between two reads", [SENT, SENT + HOUR, SENT + HOUR + SECOND], true, "active"],
+  ] satisfies [string, number[], boolean, TimelineView["state"]][])(
+    "counts this session's watch for the funds the provider sent: %s",
+    (_, evaluations, fresh, state) => {
+      const timelineOf = createTopUpTimelines();
+      const sent = (now: number) =>
+        record({ observedAt: { complete: SENT } }, { lastTickAt: fresh ? now : SENT });
+      const views = evaluations.map((now) => timelineOf(sent(now), now)?.view);
+      expect(views.at(-1)).toMatchObject({ phase: 2, state });
+    },
+  );
 
   it("makes Sent green when the funds are final before the provider reports it", () => {
     const { view, message } = topUpTimeline(record({}, received), route, {
@@ -303,23 +403,25 @@ describe("top-up timeline, Chainflip route", () => {
       { message: normal("Confirming your BTC deposit"), detail: "Confirmation 3 of 3" },
     ],
     [
-      "late confirmations, named from the source",
+      "confirmations an hour past their estimate, named from the source",
       swapRecord(
-        601,
+        3_600,
         { receiving: at(0) },
-        { ...counted, depositConfirmations: 2, confirmationsAt: at(300) },
+        {
+          ...counted,
+          depositConfirmations: 2,
+          confirmationsAt: at(300),
+          lastStatechainUpdateAt: at(3_600),
+        },
         "sol-solana",
       ),
-      601,
+      3_600,
       {
         marks: "●○○○○○○",
-        state: "delayed",
+        state: "active",
         line: (2 * confirmation + confirmation * PART_LIMIT) / total,
       },
-      {
-        message: delay("Solana needs a few confirmations, which can take up to 10 minutes"),
-        detail: "Confirmation 3 of 3",
-      },
+      { message: normal("Confirming your SOL deposit"), detail: "Confirmation 3 of 3" },
     ],
     [
       "confirmations without a count",
@@ -331,17 +433,6 @@ describe("top-up timeline, Chainflip route", () => {
         line: (3 * confirmation * timeFill(60 * SECOND, 3 * confirmation)) / total,
       },
       { message: normal("Confirming your BTC deposit") },
-    ],
-    [
-      "late confirmations with fallback estimates",
-      swapRecord(
-        301,
-        { receiving: at(0) },
-        { requiredConfirmations: 2, depositConfirmations: 0, confirmationsAt: at(0) },
-      ),
-      301,
-      { marks: "●○○○○○○", state: "delayed", line: (150 * SECOND * PART_LIMIT) / (312 * SECOND) },
-      { message: normal("Confirming your BTC deposit"), detail: "Confirmation 1 of 2" },
     ],
     [
       "a boosted deposit",
@@ -370,8 +461,38 @@ describe("top-up timeline, Chainflip route", () => {
       { message: normal("Exchanging your BTC"), detail: "About 9s left" },
     ],
     [
-      "a regular swap past its estimate",
+      "a regular swap past its estimate on our clock alone",
       swapRecord(615, swapping, { ...counted, swapScheduledAt: at(602) }),
+      615,
+      {
+        marks: "●○○○○○○",
+        state: "active",
+        line: (3 * confirmation + swap * timeFill(13 * SECOND, swap)) / total,
+      },
+      { message: normal("Exchanging your BTC") },
+    ],
+    [
+      "a regular swap twice its estimate past its schedule on Chainflip's clock",
+      swapRecord(615, swapping, {
+        ...counted,
+        swapScheduledAt: at(602),
+        lastStatechainUpdateAt: at(626),
+      }),
+      615,
+      {
+        marks: "●○○○○○○",
+        state: "active",
+        line: (3 * confirmation + swap * timeFill(13 * SECOND, swap)) / total,
+      },
+      { message: normal("Exchanging your BTC") },
+    ],
+    [
+      "a regular swap over twice its estimate past its schedule on Chainflip's clock",
+      swapRecord(615, swapping, {
+        ...counted,
+        swapScheduledAt: at(602),
+        lastStatechainUpdateAt: at(626) + 1,
+      }),
       615,
       {
         marks: "●○○○○○○",
@@ -440,11 +561,22 @@ describe("top-up timeline, Chainflip route", () => {
       { message: normal("Your money is on its way"), detail: "About 91s left" },
     ],
     [
-      "a send past its estimate",
+      "a send an hour past its estimate on our clock alone",
+      swapRecord(
+        4_225,
+        { ...swapping, sending: at(620) },
+        { ...counted, egressScheduledAt: at(625), lastStatechainUpdateAt: at(700) },
+      ),
+      4_225,
+      { marks: "●●○○○○○", state: "active", line: PART_LIMIT },
+      { message: normal("Your money is on its way") },
+    ],
+    [
+      "a send over twice its estimate past its schedule on Chainflip's clock",
       swapRecord(
         722,
         { ...swapping, sending: at(620) },
-        { ...counted, egressScheduledAt: at(625) },
+        { ...counted, egressScheduledAt: at(625), lastStatechainUpdateAt: at(817) + 1 },
       ),
       722,
       { marks: "●●○○○○○", state: "delayed", line: timeFill(97 * SECOND, 96 * SECOND) },
@@ -523,11 +655,11 @@ describe("top-up timeline, Meld routes", () => {
     ],
     [
       "card",
-      "a late review",
-      meldRecord(START + 2 * MINUTE + SECOND, { meldSubmittedAt: START }),
-      START + 2 * MINUTE + SECOND,
-      { marks: "●○○○○○○", state: "delayed", line: timeFill(121 * SECOND, 2 * MINUTE) },
-      { message: delay("The payment provider is still reviewing your payment. Don't pay again.") },
+      "a review an hour long, with no Meld ERROR",
+      meldRecord(START + 60 * MINUTE, { meldSubmittedAt: START }),
+      START + 60 * MINUTE,
+      { marks: "●○○○○○○", state: "active", line: PART_LIMIT },
+      { message: normal("Checking your payment") },
     ],
     [
       "card",
@@ -732,7 +864,7 @@ describe("top-up timeline, route by source", () => {
     ],
     [
       "the worker sees the deposit in a best block",
-      direct({ depositInBlock: { block: 110, finalizedAtSeen: 100, finalized: 105 } }),
+      direct({ depositInBlock: { block: 110, finalizedAtSeen: 100, finalized: 105, best: 112 } }),
       { marks: "●●●○○○○", message: normal("Making sure your money arrived safely") },
     ],
   ] satisfies [string, TopUpRecord, { marks: string; message: TimelineMessage } | undefined][])(

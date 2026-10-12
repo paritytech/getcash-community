@@ -15,6 +15,9 @@ import type { TimelineView } from "./types";
 /** How often a shown timeline is evaluated: each second, for time-moved lines and countdowns. */
 export const TIMELINE_CADENCE_MS = 1_000;
 
+/** Evaluations further apart than this mean the app was not running in between. */
+const MAX_EVALUATION_GAP_MS = 5 * TIMELINE_CADENCE_MS;
+
 const MELD_ROUTES: Readonly<Record<MeldMethod, TimelineRoute>> = {
   card: meldCardRoute,
   bank: meldBankRoute,
@@ -39,20 +42,43 @@ function opened(record: TopUpRecord, route: TimelineRoute): boolean {
 /** A top-up's timeline at `now`; absent until it opens. */
 export type TopUpTimelineOf = (record: TopUpRecord, now: number) => TopUpTimeline | undefined;
 
+/** What this session watched of one top-up. */
+interface Watch {
+  readonly watchingSince: number;
+  readonly previous?: TimelineView;
+  /** The fresh read time, in total, that the funds the provider sent went unseen. */
+  readonly sentUnseenMs: number;
+  /** When the last evaluation found the sent funds unseen with fresh reads. */
+  readonly awaitingSince?: number;
+}
+
 /** Evaluates timelines in memory for one app session. Each top-up is watched from its first
  *  evaluation, and its line never falls behind the view it showed last. */
 export function createTopUpTimelines(): TopUpTimelineOf {
-  const shown = new Map<string, { watchingSince: number; previous?: TimelineView }>();
+  const shown = new Map<string, Watch>();
   return (record, now) => {
     const key = requestRefKey(record.ref);
-    const { watchingSince, previous } = shown.get(key) ?? { watchingSince: now };
+    const { watchingSince, previous, sentUnseenMs, awaitingSince } = shown.get(key) ?? {
+      watchingSince: now,
+      sentUnseenMs: 0,
+    };
     const route = timelineRouteOf(record.ref.sourceId);
     if (!opened(record, route)) {
-      shown.set(key, { watchingSince });
+      shown.set(key, { watchingSince, sentUnseenMs });
       return undefined;
     }
-    const timeline = topUpTimeline(record, route, { now, watchingSince, previous });
-    shown.set(key, { watchingSince, previous: timeline.view });
+    const timeline = topUpTimeline(record, route, { now, watchingSince, previous, sentUnseenMs });
+    const awaiting = timeline.awaitingSentFunds === true;
+    const awaited =
+      awaiting && awaitingSince !== undefined
+        ? Math.min(Math.max(now - awaitingSince, 0), MAX_EVALUATION_GAP_MS)
+        : 0;
+    shown.set(key, {
+      watchingSince,
+      previous: timeline.view,
+      sentUnseenMs: sentUnseenMs + awaited,
+      ...(awaiting ? { awaitingSince: now } : {}),
+    });
     return timeline;
   };
 }

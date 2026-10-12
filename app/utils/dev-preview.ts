@@ -2,7 +2,13 @@
 // drive the requests store with the observations a real purchase would produce; Ctrl+Shift+R
 // reloads the page.
 
-import type { PaymentFailure, PaymentState, RefundProgress, SourceId } from "@getsome/core";
+import type {
+  ChainflipProgressFacts,
+  PaymentFailure,
+  PaymentState,
+  RefundProgress,
+  SourceId,
+} from "@getsome/core";
 import { SOURCE_CONFIG_BY_ID, type SourceFloorResult } from "@getsome/chainflip";
 import {
   advanceFundingProgressSnapshot,
@@ -90,6 +96,7 @@ function awaitingDeposit(
 function swapping(
   swap: "receiving" | "swapping" | "sending" | "complete",
   sourceId: SourceId = "btc",
+  progress?: ChainflipProgressFacts,
 ): PaymentState {
   return {
     phase: "swapping",
@@ -97,6 +104,7 @@ function swapping(
     quote: null,
     deposit: DEPOSIT,
     swap,
+    ...(progress === undefined ? {} : { progress }),
   } as PaymentState;
 }
 function working(
@@ -414,20 +422,13 @@ async function core(request: PreviewRequest, step: number, state: PaymentState) 
   await request.observe({ source: "core", at: request.at(step), state });
 }
 
-/** A rail poll's report that the payment is seen but stuck and retrying: Meld's crypto delivery, or
- *  a deposit the chain is slow to confirm. */
-function railDelayed(
-  request: PreviewRequest,
-  step: number,
-  provider: "meld" | "chainflip",
-): Observation {
-  return {
-    source: "provider",
-    provider,
-    at: request.at(step),
-    result: { status: "receiving" },
-    delayed: true,
-  };
+/** Meld's `ERROR` at `step`: a temporary problem the provider retries. A bank transfer is delayed
+ *  by it only once the provider accepted the transfer, so a bank request is accepted first. */
+async function meldError(request: PreviewRequest, step: number, sourceId: SourceId) {
+  const report = (at: number, status: "receiving" | "sending") =>
+    ({ source: "provider", provider: "meld", at, result: { status } }) as const;
+  if (sourceId === "meld-bank") await request.observe(report(request.at(step), "sending"));
+  await request.observe({ ...report(request.at(step + 1), "receiving"), delayed: true });
 }
 
 /** The worker's job at a step of the pipeline, its deposit in hand. */
@@ -464,8 +465,8 @@ interface RunningTopUp {
    *  coin. */
   display?: { chain: string; asset: string };
   /**
-   * The rail reported the payment seen but stuck and retrying. Only with `confirming`: the flag
-   * belongs to the rail's own leg, and a later observation would move the stage off it.
+   * Meld reported an `ERROR` it retries. Only on a Meld rail with `confirming`: the flag belongs to
+   * the rail's own leg, and a later observation would move the stage off it.
    */
   delayed?: boolean;
   startedMinutesAgo?: number;
@@ -515,11 +516,7 @@ async function seedRunningTopUps(
     await core(request, 0, awaitingDeposit(0, row.sourceId));
     if (row.stage !== "waiting") {
       await core(request, 1, swapping("receiving", row.sourceId));
-      // Whose poll reported the delay. Not `railProviderOf`: the crypto rail's own source runs
-      // under the manual provider, and it is Chainflip that watches the deposit confirm.
-      if (row.delayed === true) {
-        await request.observe(railDelayed(request, 2, route === "crypto" ? "chainflip" : "meld"));
-      }
+      if (row.delayed === true) await meldError(request, 2, row.sourceId);
     }
     if (row.stage === "converting" || row.stage === "adding") {
       await core(request, 3, swapping("complete", row.sourceId));
@@ -1158,7 +1155,7 @@ export const SCENES: Scene[] = [
     }),
   },
   {
-    // The bank rail's own slow confirm, on a route whose ingress runs for days.
+    // The bank rail accepted the transfer, then reported a temporary error while sending it.
     name: "list / top-up: taking longer",
     apply: topUpList({
       running: [{ sourceId: "meld-bank", amount: "50", stage: "confirming", delayed: true }],
@@ -1418,13 +1415,17 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    // The chain is slow to confirm: amber Payment step, its own ribbon line, never terminal.
+    // Chainflip moved the swap to a later block to wait for a stable price: amber, never terminal.
     name: "crypto / convert: delayed",
     apply: async (s, f, i) => {
       base(s, f);
       const r = await previewRequest(s, { sourceId: "btc", index: i });
       await core(r, 0, swapping("receiving"));
-      await r.observe(railDelayed(r, 1, "chainflip"));
+      await core(
+        r,
+        2,
+        swapping("swapping", "btc", { swapScheduledAt: r.at(1), swapRescheduledAt: r.at(2) }),
+      );
     },
   },
   {
@@ -1466,7 +1467,7 @@ export const SCENES: Scene[] = [
     name: "card / journey: delayed",
     apply: async (s, f, i) => {
       const r = await cardPayment(s, f, i);
-      await r.observe(railDelayed(r, 1, "meld"));
+      await meldError(r, 1, "meld-card");
     },
   },
   {
@@ -1476,7 +1477,7 @@ export const SCENES: Scene[] = [
     name: "card / journey: retrying (future)",
     apply: async (s, f, i) => {
       const r = await cardPayment(s, f, i);
-      await r.observe(railDelayed(r, 1, "meld"));
+      await meldError(r, 1, "meld-card");
       useRequestsStore().fundingNotice = "Hang tight, we're retrying your payment";
     },
   },
@@ -1621,7 +1622,7 @@ export const SCENES: Scene[] = [
     name: "bank / journey: delayed",
     apply: async (s, f, i) => {
       const r = await bankTransfer(s, f, i);
-      await r.observe(railDelayed(r, 1, "meld"));
+      await meldError(r, 1, "meld-bank");
     },
   },
   {

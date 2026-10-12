@@ -228,6 +228,8 @@ export interface DepositInBlock {
   finalizedAtSeen: number;
   /** The finalized block number at the worker's latest tick. */
   finalized: number;
+  /** The best block number at the worker's latest tick. */
+  best: number;
 }
 
 /** The conversion transaction in a best block: successful, with the tier's conversion event. */
@@ -235,6 +237,8 @@ export interface ConvertedTx {
   txHash: string;
   block: number;
   at: number;
+  /** The worker's working time when it saw the conversion (`WorkerJobView.workedMs`). */
+  workedMs: number;
 }
 
 /** What the store extracts from one job in the worker's blob. */
@@ -245,6 +249,9 @@ export interface WorkerJobView {
   lastError?: string;
   fundsSeenAt: number | null;
   lastTickAt: number | null;
+  /** The time the worker really ran since the deposit was final, until it registered the claim:
+   *  ticks apart by more than 30 s count as 30 s. */
+  workedMs?: number;
   claim: {
     phase: WorkerClaimPhase;
     amount?: string;
@@ -254,6 +261,8 @@ export interface WorkerJobView {
     status?: string;
     /** When the worker registered the claim with the host. */
     registeredAt?: number;
+    /** The time the worker really ran since it registered this attempt. */
+    workedMs?: number;
     at: number;
   } | null;
   /** As the worker records them on either branch. */
@@ -337,8 +346,8 @@ export interface TopUpRecord {
   observedAt?: Partial<Record<ObservedFact, number>>;
   /** A Chainflip swap's progress, from core's status reads. */
   chainflip?: ChainflipFacts;
-  /** The worker's facts past the deposit, each kept from its first report. Only `finalized` of
-   *  the deposit moves on. */
+  /** The worker's facts past the deposit, each kept from its first report. Only `finalized` and
+   *  `best` of the deposit move on. */
   depositInBlock?: DepositInBlock;
   conversionPreparedAt?: number;
   converted?: ConvertedTx;
@@ -360,6 +369,9 @@ export interface TopUpRecord {
           psmRefusals?: number;
           fundsSeenAt: number | null;
           lastTickAt: number | null;
+          /** The job's `workedMs` and its claim's, as the latest read gave them. */
+          workedMs?: number;
+          claimWorkedMs?: number;
           failure?: string;
           at: number;
           txs?: WorkerJobView["txs"];

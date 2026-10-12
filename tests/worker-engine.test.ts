@@ -593,13 +593,14 @@ describe("worker funding engine", () => {
     armSeams();
     const engine = await freshEngine();
     await engine.startFunding(JSON.stringify(HANDOFF));
-    // [best, finalized, held at the best block, final this tick, finalized recorded, reads so far]
-    const ticks: Array<[number, number, bigint, boolean, number | null, number]> = [
+    // [best, finalized, held at the best block, final this tick, finalized and best recorded,
+    //  reads so far]
+    const ticks: Array<[number, number, bigint, boolean, [number, number] | null, number]> = [
       [100, 98, 0n, false, null, 1],
-      [105, 100, 5n, false, 100, 2],
-      [107, 103, 5n, false, 103, 2],
-      [109, 105, 5n, true, 105, 2],
-      [111, 108, 0n, false, 105, 2],
+      [105, 100, 5n, false, [100, 105], 2],
+      [107, 103, 5n, false, [103, 107], 2],
+      [109, 105, 5n, true, [105, 109], 2],
+      [111, 108, 0n, false, [105, 109], 2],
     ];
     for (const [best, finalized, held, final, recorded, reads] of ticks) {
       mocks.tip = { best, finalized };
@@ -610,7 +611,9 @@ describe("worker funding engine", () => {
       });
       await engine.tickAllFunding();
       const depositSeen =
-        recorded === null ? null : { block: 105, finalizedAtSeen: 100, finalized: recorded };
+        recorded === null
+          ? null
+          : { block: 105, finalizedAtSeen: 100, finalized: recorded[0], best: recorded[1] };
       expect(storedJob().depositSeen ?? null).toEqual(depositSeen);
       expect((await sessionStatus(engine)).depositSeen).toEqual(depositSeen);
       expect(mocks.readDeposit).toHaveBeenCalledTimes(reads);
@@ -642,7 +645,7 @@ describe("worker funding engine", () => {
     await engine.tickAllFunding();
     expect(storedJob().conversion).toEqual({
       preparedAt,
-      converted: { txHash: SWAP_TX, block: 42, at: preparedAt },
+      converted: { txHash: SWAP_TX, block: 42, at: preparedAt, workedMs: 0 },
     });
 
     // A block replaced under the conversion: the retry is prepared and converted again.
@@ -658,7 +661,7 @@ describe("worker funding engine", () => {
     await engine.tickAllFunding();
     const conversion = {
       preparedAt,
-      converted: { txHash: retryTx, block: 50, at: preparedAt + 30_000 },
+      converted: { txHash: retryTx, block: 50, at: preparedAt + 30_000, workedMs: 30_000 },
     };
     expect(storedJob().conversion).toEqual(conversion);
     expect((await sessionStatus(engine)).conversion).toEqual(conversion);
@@ -986,6 +989,28 @@ describe("worker funding engine", () => {
     }
     expect(storedJob()).toMatchObject({ phase: "failed", failure: "timeout" });
     expect(mocks.tickOnce).toHaveBeenCalledTimes(ticks + 2);
+  });
+
+  it("counts the worker's time on a registered claim apart from the run bound", async () => {
+    armSeams();
+    vi.useFakeTimers();
+    const engine = await engineWithLandedJob();
+    mocks.settlementBalance.mockResolvedValue(SETTLE);
+    mocks.registerTopUp.mockResolvedValue(undefined);
+    await engine.tickAllFunding();
+    expect(storedJob()).toMatchObject({ claim: { phase: "claiming", workedMs: 0 } });
+    const runClock = storedJob().state.workedMs;
+
+    // A suspended hour counts as one capped gap, then each running gap counts in full.
+    for (const gap of [3_600_000, 10_000]) {
+      vi.advanceTimersByTime(gap);
+      await engine.tickAllFunding();
+    }
+    expect(storedJob().claim.workedMs).toBe(40_000);
+    const status = await sessionStatus(engine);
+    expect(status.claim.workedMs).toBe(40_000);
+    // The run clock stops once the host owns the claim.
+    expect(status.workedMs).toBe(runClock);
   });
 
   it("reads the chain before judging the bound: a conversion finished while frozen is done", async () => {

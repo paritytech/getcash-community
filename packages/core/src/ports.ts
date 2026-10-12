@@ -133,6 +133,8 @@ export interface ChainflipProgressFacts {
   swapRescheduledAt?: number;
   /** Chainflip's expected duration of each stage it gave. A completed swap carries only `swap`. */
   estimatedDurationsSeconds?: { deposit?: number; swap?: number; egress?: number };
+  /** The time of the newest State Chain block Chainflip's API processed: Chainflip's own clock. */
+  lastStatechainUpdateAt?: number;
 }
 
 /**

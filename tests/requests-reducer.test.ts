@@ -894,14 +894,17 @@ describe("request reducer: top-up timeline facts", () => {
       chunks: { executed: 1, remaining: 3 },
       swapScheduledAt: 7,
       estimatedDurationsSeconds: { swap: 15 },
+      lastStatechainUpdateAt: 10,
     };
-    // Fewer confirmations and chunks, an earlier schedule and a second boost move nothing back.
+    // Fewer confirmations and chunks, an earlier schedule and clock and a second boost move
+    // nothing back.
     const stale = {
       depositConfirmations: 1,
       boostedAt: 6,
       swapScheduledAt: 6,
       chunks: { executed: 0, remaining: 4 },
       swapRescheduledAt: 8,
+      lastStatechainUpdateAt: 9,
     };
     replay(chainflipRecord(), (record) => record.chainflip ?? {}, [
       [swapping(at(1), "receiving", first), { ...first, confirmationsAt: at(1) }],
@@ -933,11 +936,12 @@ describe("request reducer: top-up timeline facts", () => {
   });
 
   it("keeps the worker's facts past the deposit, and no later read moves one back", () => {
-    const converted = { txHash: "0xaa", block: 12, at: at(3) };
-    const blocks = (block: number, finalizedAtSeen: number, finalized: number) => ({
+    const converted = { txHash: "0xaa", block: 12, at: at(3), workedMs: 20_000 };
+    const blocks = (block: number, finalizedAtSeen: number, finalized: number, best: number) => ({
       block,
       finalizedAtSeen,
       finalized,
+      best,
     });
     const read = (time: number, overrides: Partial<WorkerJobView>): Observation =>
       worker(time, job({ phase: "swap", fundsSeenAt: at(1), lastTickAt: time, ...overrides }));
@@ -955,21 +959,21 @@ describe("request reducer: top-up timeline facts", () => {
     });
     replay(converting(), facts, [
       [
-        read(at(2), { depositSeen: blocks(10, 8, 9), conversion: { preparedAt: at(2) } }),
-        { depositInBlock: blocks(10, 8, 9), conversionPreparedAt: at(2) },
+        read(at(2), { depositSeen: blocks(10, 8, 9, 11), conversion: { preparedAt: at(2) } }),
+        { depositInBlock: blocks(10, 8, 9, 11), conversionPreparedAt: at(2) },
       ],
       [
         read(at(3), {
-          depositSeen: blocks(11, 9, 10),
+          depositSeen: blocks(11, 9, 10, 13),
           conversion: { preparedAt: at(3), converted },
         }),
-        { depositInBlock: blocks(10, 8, 10), converted },
+        { depositInBlock: blocks(10, 8, 10, 13), converted },
       ],
-      // A lower finalized block and a later conversion move nothing back.
+      // Lower finalized and best blocks and a later conversion move nothing back.
       [
         read(at(4), {
           ...claim(at(4), "detecting"),
-          depositSeen: blocks(10, 8, 9),
+          depositSeen: blocks(10, 8, 9, 12),
           conversion: { preparedAt: at(2), converted: { ...converted, txHash: "0xbb" } },
         }),
         { claimRegisteredAt: at(4), observedAt: { "cash-on-people": at(4) } },

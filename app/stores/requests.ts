@@ -369,7 +369,7 @@ type WorkerJob = {
   failure?: string;
   lastError?: string;
   lastTickAt?: number | null;
-  state?: { fundsSeenAt?: number | null; psmRefusals?: number };
+  state?: { fundsSeenAt?: number | null; psmRefusals?: number; workedMs?: number };
   claim?: {
     phase?: string;
     amount?: string;
@@ -377,12 +377,18 @@ type WorkerJob = {
     status?: string;
     at?: number;
     registeredAt?: number;
+    workedMs?: number;
   } | null;
   txs?: WorkerJobView["txs"];
-  depositSeen?: { block?: number; finalizedAtSeen?: number; finalized?: number } | null;
+  depositSeen?: {
+    block?: number;
+    finalizedAtSeen?: number;
+    finalized?: number;
+    best?: number;
+  } | null;
   conversion?: {
     preparedAt?: number;
-    converted?: { txHash?: string; block?: number; at?: number };
+    converted?: { txHash?: string; block?: number; at?: number; workedMs?: number };
   } | null;
   // The hand-off the worker keeps, read back when the surface has no record of the job.
   label?: string;
@@ -420,11 +426,17 @@ function depositSeenOf(job: WorkerJob): DepositInBlock | undefined {
     !isObject(seen) ||
     !isNumber(seen.block) ||
     !isNumber(seen.finalizedAtSeen) ||
-    !isNumber(seen.finalized)
+    !isNumber(seen.finalized) ||
+    !isNumber(seen.best)
   ) {
     return undefined;
   }
-  return { block: seen.block, finalizedAtSeen: seen.finalizedAtSeen, finalized: seen.finalized };
+  return {
+    block: seen.block,
+    finalizedAtSeen: seen.finalizedAtSeen,
+    finalized: seen.finalized,
+    best: seen.best,
+  };
 }
 
 /** The job's conversion, once prepared, with its transaction when every field is there. */
@@ -433,8 +445,12 @@ function conversionOf(job: WorkerJob): WorkerJobView["conversion"] {
   if (!isObject(conversion) || !isNumber(conversion.preparedAt)) return undefined;
   const tx = conversion.converted;
   const converted: ConvertedTx | undefined =
-    isObject(tx) && isString(tx.txHash) && isNumber(tx.block) && isNumber(tx.at)
-      ? { txHash: tx.txHash, block: tx.block, at: tx.at }
+    isObject(tx) &&
+    isString(tx.txHash) &&
+    isNumber(tx.block) &&
+    isNumber(tx.at) &&
+    isNumber(tx.workedMs)
+      ? { txHash: tx.txHash, block: tx.block, at: tx.at, workedMs: tx.workedMs }
       : undefined;
   return { preparedAt: conversion.preparedAt, ...(converted === undefined ? {} : { converted }) };
 }
@@ -445,6 +461,7 @@ function jobView(job: WorkerJob): WorkerJobView {
   const depositSeen = depositSeenOf(job);
   const conversion = conversionOf(job);
   const refusals = job.state?.psmRefusals;
+  const workedMs = job.state?.workedMs;
   return {
     phase: job.phase ?? "",
     done: job.done === true,
@@ -452,6 +469,7 @@ function jobView(job: WorkerJob): WorkerJobView {
     ...(job.lastError === undefined ? {} : { lastError: job.lastError }),
     fundsSeenAt: job.state?.fundsSeenAt ?? null,
     lastTickAt: job.lastTickAt ?? null,
+    ...(isNumber(workedMs) ? { workedMs } : {}),
     claim:
       claim &&
       (claim.phase === "sizing" ||
@@ -464,6 +482,7 @@ function jobView(job: WorkerJob): WorkerJobView {
             ...(claim.credited === undefined ? {} : { credited: claim.credited }),
             ...(claim.status === undefined ? {} : { status: claim.status }),
             ...(isNumber(claim.registeredAt) ? { registeredAt: claim.registeredAt } : {}),
+            ...(isNumber(claim.workedMs) ? { workedMs: claim.workedMs } : {}),
             at: claim.at ?? job.lastTickAt ?? Date.now(),
           }
         : null,

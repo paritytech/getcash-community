@@ -24,9 +24,9 @@ const MINUTE = 60 * SECOND;
 
 /** The shares, as weights, and the initial expected times of the shared parts. */
 const PARTS = {
-  /** Its `T` is the route's. Phase 3 is late when the funds are not seen 2 minutes after Sent. */
-  seen: { weight: 1, lateAfterMs: 2 * MINUTE },
-  /** Fills from the finalized block. Its time, counted from Sent, only marks a stall late. */
+  /** Its `T` is the route's. */
+  seen: { weight: 1 },
+  /** Fills from the finalized block; time moves it only until the worker follows the deposit. */
   final: { weight: 1, expectedMs: 5 * MINUTE },
   prepare: { weight: 1, expectedMs: 6 * SECOND },
   include: { weight: 2, expectedMs: 12 * SECOND },
@@ -35,6 +35,19 @@ const PARTS = {
   detect: { weight: 1, expectedMs: 10 * SECOND },
   claim: { weight: 1, expectedMs: 10 * SECOND },
 } as const satisfies Record<string, Partial<PhasePart>>;
+
+/** The evidence past which a shared phase is late. Initial values: measure them. */
+const LATE = {
+  /** Phase 3: the best block this far past the deposit's block while it is not final. */
+  unfinalizedBlocks: 20,
+  /** Phase 3: fresh reads this long in total after Sent without seeing the funds. */
+  unseenMs: 5 * MINUTE,
+  /** Phases 4 to 6: the worker's working time since the deposit was final, since the conversion,
+   *  and since it registered the claim. */
+  convertWorkedMs: 2 * MINUTE,
+  moveWorkedMs: 5 * MINUTE,
+  claimWorkedMs: 2 * MINUTE,
+} as const;
 
 export type PolkadotPhaseIndex = Exclude<PhaseIndex, ProviderPhaseIndex>;
 
@@ -68,6 +81,10 @@ export function depositOnBurner(record: TopUpRecord): Fact | undefined {
   return record.depositInBlock === undefined ? undefined : {};
 }
 
+/** The deposit's block is well behind the best block and still not final. */
+const finalityStalled = ({ block, finalized, best }: DepositInBlock): boolean =>
+  best - block >= LATE.unfinalizedBlocks && finalized < block;
+
 /** How far finality moved from where it stood when the deposit was seen to the deposit's block. */
 function finality({ block, finalizedAtSeen, finalized }: DepositInBlock): number {
   // A block that was already final when the deposit was seen leaves nothing to wait for.
@@ -77,23 +94,38 @@ function finality({ block, finalizedAtSeen, finalized }: DepositInBlock): number
 
 const psmRefused = (record: TopUpRecord): boolean => (workerOf(record)?.psmRefusals ?? 0) > 0;
 
+/** The worker worked more than `limitMs` since `since`, both on its working-time clock. */
+function workedPast(record: TopUpRecord, since: number | undefined, limitMs: number): boolean {
+  const worked = workerOf(record)?.workedMs;
+  return worked !== undefined && since !== undefined && worked - since > limitMs;
+}
+
+/** What phases 3 to 6 read besides the record. */
+export interface PolkadotPhaseContext {
+  /** The expected time `T` of phase 3's Seen part, the route's. */
+  readonly seenExpectedMs: number;
+  /** How long this session's reads were fresh, in total, while the funds the provider sent were
+   *  not seen. */
+  readonly sentUnseenMs: number;
+}
+
 export function polkadotPhase(
   record: TopUpRecord,
   index: PolkadotPhaseIndex,
-  seenExpectedMs: number,
+  { seenExpectedMs, sentUnseenMs }: PolkadotPhaseContext,
 ): PhaseInput {
   switch (index) {
     case 2: {
       const inBlock = record.depositInBlock;
+      const seen = depositOnBurner(record) !== undefined;
       return {
         parts: [
-          {
-            ...PARTS.seen,
-            expectedMs: seenExpectedMs,
-            completed: depositOnBurner(record) === undefined ? undefined : {},
-          },
+          { ...PARTS.seen, expectedMs: seenExpectedMs, completed: seen ? {} : undefined },
           { ...PARTS.final, fraction: inBlock === undefined ? undefined : finality(inBlock) },
         ],
+        delayed: seen
+          ? inBlock !== undefined && finalityStalled(inBlock)
+          : sentUnseenMs > LATE.unseenMs,
       };
     }
     case 3:
@@ -102,10 +134,14 @@ export function polkadotPhase(
           { ...PARTS.prepare, completed: factAt(record.conversionPreparedAt) },
           PARTS.include,
         ],
-        delayed: psmRefused(record),
+        // The worker's working time starts when the deposit is final.
+        delayed: psmRefused(record) || workedPast(record, 0, LATE.convertWorkedMs),
       };
     case 4:
-      return { parts: [PARTS.move] };
+      return {
+        parts: [PARTS.move],
+        delayed: workedPast(record, record.converted?.workedMs, LATE.moveWorkedMs),
+      };
     case 5:
       return {
         parts: [
@@ -113,6 +149,7 @@ export function polkadotPhase(
           { ...PARTS.detect, completed: factAt(record.observedAt?.["host-claiming"]) },
           PARTS.claim,
         ],
+        delayed: (workerOf(record)?.claimWorkedMs ?? 0) > LATE.claimWorkedMs,
       };
   }
 }

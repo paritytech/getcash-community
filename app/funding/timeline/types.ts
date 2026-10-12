@@ -26,8 +26,6 @@ export interface PhasePart {
   readonly weight: number;
   /** The expected time `T` of the part. */
   readonly expectedMs: number;
-  /** How long the part runs before it is late. Defaults to `expectedMs`; `null` is never late. */
-  readonly lateAfterMs?: number | null;
   /** When the part began. Defaults to the completion of the last completed part, else the start
    *  of the phase. */
   readonly startedAt?: number;
@@ -38,7 +36,8 @@ export interface PhasePart {
 
 export interface PhaseInput {
   readonly parts: readonly [PhasePart, ...PhasePart[]];
-  /** The route reports a delay, for example a provider error or a rescheduled swap. */
+  /** The route has evidence that the phase is slow, for example a provider error or a stalled
+   *  block. Time since the phase began is never evidence. */
   readonly delayed?: boolean;
 }
 
