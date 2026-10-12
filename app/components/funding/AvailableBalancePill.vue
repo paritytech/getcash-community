@@ -48,7 +48,7 @@ const fillAmount = computed(() =>
 .available-pill {
   height: 1.75rem;
   border-radius: 9999px;
-  background: var(--bg-surface-nested);
+  background: var(--bg-surface-container);
   padding: 0 0.75rem;
   color: var(--fg-secondary);
   white-space: nowrap;

@@ -35,7 +35,7 @@ const emit = defineEmits<{ select: [] }>();
   <li v-else>
     <button
       type="button"
-      class="option-card flex w-full items-center gap-3 bg-surface-nested p-4 text-left transition-opacity disabled:opacity-50"
+      class="option-card flex w-full items-center gap-3 bg-surface-container p-4 text-left transition-opacity disabled:opacity-50"
       :disabled="disabled"
       @click="emit('select')"
     >
