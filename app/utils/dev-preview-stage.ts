@@ -7,6 +7,7 @@
 
 import { shallowRef } from "vue";
 import type { FundingRoute } from "../funding/selection";
+import type { WithdrawFeeView } from "../withdraw/offers";
 
 export type PreviewStage =
   /** The shell's own screens: the top-ups list, history, the amount screen. */
@@ -15,7 +16,24 @@ export type PreviewStage =
   | { kind: "package"; route: FundingRoute }
   /** The journey. `topUpId` opens it as a top-up from the list; without one it reads as a
    *  package handoff. */
-  | { kind: "journey"; route: FundingRoute; topUpId?: string };
+  | { kind: "journey"; route: FundingRoute; topUpId?: string }
+  /** The withdrawal package's steps, on `#/withdraw` — `app/pages/withdraw.vue` stages the
+   *  package and the route reads the rest: the step on screen, the network already picked, the
+   *  address seeded into the address step, the summary's canned estimate and fee split, and
+   *  whether the pickers show their skeletons. */
+  | {
+      kind: "withdraw-package";
+      step: "network" | "token" | "address" | "summary" | "fees" | "journey" | "return-funds";
+      chain?: string;
+      address?: string;
+      /** The summary's canned estimate: a string shows it, null shows it quoting, absent hides
+       *  the row as an estimate the quote could not give. */
+      receive?: string | null;
+      fees?: WithdrawFeeView;
+      /** A canned secret for the return-funds step, so the revealed frame can be staged. */
+      secret?: string;
+      skeleton?: boolean;
+    };
 
 /**
  * Non-null only while the deck is driving. Always null in a production build — `dev-preview` is

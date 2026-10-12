@@ -190,7 +190,7 @@ function requestContinue() {
 }
 
 .amount-shell-notice {
-  min-height: 1rem;
+  min-height: var(--scale-line-height-20);
   color: var(--fg-secondary);
   text-align: center;
   transition: color 150ms ease;
