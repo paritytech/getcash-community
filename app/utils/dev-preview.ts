@@ -21,7 +21,6 @@ import {
   type WithdrawalStatus,
 } from "../funding/requests/model";
 import { createMockCoinageSession } from "~~/lib/coinage";
-import { isDemoBuild } from "./demo";
 import {
   previewQuote,
   previewTopUp,
@@ -758,9 +757,7 @@ function selection(session: Session, flow: Flow) {
   session.quoted = { ...QUOTED, nativeAmount: 58_694_260_960n };
   const offers = useOffersStore();
   offers.floors = FLOORS;
-  // The paused scene turns the demo fallback off and the rail-off scene turns the rail off; every
-  // other scene gets the build's own settings.
-  offers.demoFallback = isDemoBuild();
+  // The rail-off scene turns the rail off; every other scene gets the build's own settings.
   offers.railEnabled = true;
   flow.setSourceByName("Ethereum", "ETH");
 }
@@ -1171,8 +1168,6 @@ export const SCENES: Scene[] = [
           { kind: "unavailable", reason: "Quoting is currently unavailable due to maintenance" },
         ]),
       );
-      // The demo build's carry-on fallback would swallow the paused state this scene shows.
-      offers.demoFallback = false;
       f.step = "network";
     },
   },

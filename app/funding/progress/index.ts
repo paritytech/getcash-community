@@ -1,4 +1,4 @@
-import { isCryptoSourceId, isMeldSourceId } from "../source-ids";
+import { isDirectSourceId, isMeldSourceId } from "../source-ids";
 import { chainflipProgressProvider } from "./chainflip";
 import { directProgressProvider } from "./direct";
 import { meldProgressProvider } from "./meld";
@@ -15,7 +15,9 @@ export const fundingProgressRegistry = createFundingProgressRegistry([
  *  for a direct Asset Hub source and for a record with none, Chainflip's for a swap source. */
 export function progressProviderForSource(sourceId?: string): FundingProgressProvider {
   if (isMeldSourceId(sourceId)) return fundingProgressRegistry.require("meld");
-  if (isCryptoSourceId(sourceId)) return fundingProgressRegistry.require("direct");
+  if (sourceId === undefined || isDirectSourceId(sourceId)) {
+    return fundingProgressRegistry.require("direct");
+  }
   return fundingProgressRegistry.require("chainflip");
 }
 

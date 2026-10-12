@@ -16,6 +16,7 @@ export {
   type WithdrawChannel,
 } from "./withdraw-channel";
 export {
+  chainflipTokenOf,
   computeQuote,
   egressFor,
   pickRegularQuote,

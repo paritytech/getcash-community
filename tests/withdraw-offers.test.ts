@@ -11,8 +11,6 @@ import {
 import { networkRow, rowState, type WithdrawOffer } from "../app/withdraw/offers";
 
 vi.mock("../lib/withdraw-live", () => ({ quoteWithdrawOffers: vi.fn() }));
-// The rail is on, so what the store starts with is down to the broker key alone.
-vi.mock("../app/utils/rail", () => ({ chainflipRailOn: () => true }));
 
 import { quoteWithdrawOffers } from "../lib/withdraw-live";
 import { FLOORS_STALE_MS } from "../app/stores/offers";

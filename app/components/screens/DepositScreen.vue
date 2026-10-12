@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { Copy } from "lucide-vue-next";
-import { estimateSourceAmount, estimateSourceFromCash } from "~~/lib/demo-rates";
+import { estimateSourceFromCash } from "~~/lib/demo-rates";
 import { FUNDING_CHAINS } from "~~/lib/config";
 import { useCopyToClipboard } from "../../composables/useCopyToClipboard";
 import { shortAddress } from "../../utils/address";
@@ -81,10 +81,6 @@ const amount = computed<{ value: string; symbol: string; approx: boolean } | nul
   if (q?.send && q.symbol === q.sourceAsset) {
     const bare = q.send.endsWith(q.symbol) ? q.send.slice(0, -q.symbol.length).trim() : q.send;
     return { value: bare, symbol: q.symbol, approx: false };
-  }
-  if (session.live && q?.sourceAsset && q.depositToken) {
-    const estimate = estimateSourceAmount(d.amount, q.depositToken, q.sourceAsset);
-    if (estimate) return { value: estimate, symbol: q.sourceAsset, approx: true };
   }
   // The browser world's estimate scales from the CASH amount.
   if (!session.live && q?.sourceAsset && session.amountBase !== null) {

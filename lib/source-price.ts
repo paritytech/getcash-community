@@ -1,7 +1,7 @@
 // What the buyer sends for this purchase, priced by Chainflip. Display only: no deposit channel
 // is opened here.
 
-import type { SourceId } from "@getsome/core";
+import type { Quote, SourceId } from "@getsome/core";
 import {
   computeQuote,
   SOURCE_CONFIG_BY_ID,
@@ -42,6 +42,19 @@ export type SourcePriceResult =
 /** Ceiling on the wait for a price. */
 const DEFAULT_TIMEOUT_MS = 6_000;
 
+/** The rail's own quote as the pay card's price: the figure, and Chainflip's duration estimate
+ *  when the quote carries one. */
+export function sourcePriceOf(quote: Quote): SourcePrice {
+  const raw = quote.raw as { estimatedDurationSeconds?: unknown } | null;
+  const eta =
+    typeof raw?.estimatedDurationSeconds === "number" ? raw.estimatedDurationSeconds : null;
+  return {
+    formatted: quote.source.formatted,
+    baseUnits: quote.source.amount,
+    ...(eta !== null ? { etaSeconds: eta } : {}),
+  };
+}
+
 /**
  * Prices `targetBaseUnits`, what this purchase needs delivered in `egress`'s base units, in
  * `sourceId`'s asset. Never throws: every failure, including a timeout, comes back as a result.
@@ -70,21 +83,12 @@ export async function priceSourceLeg(args: {
       computeQuote(backend, source, args.targetBaseUnits, 0n, args.egress),
       deadline,
     ]);
-    const raw = quote.raw as { estimatedDurationSeconds?: unknown } | null;
-    const eta =
-      typeof raw?.estimatedDurationSeconds === "number" ? raw.estimatedDurationSeconds : null;
+    const price = sourcePriceOf(quote);
     console.info(
-      `[coinage] source price: ${quote.source.formatted} ${source.shortName} for ${args.targetBaseUnits} ${args.egress.asset}` +
-        (eta === null ? "" : `, eta ${Math.round(eta)}s`),
+      `[coinage] source price: ${price.formatted} ${source.shortName} for ${args.targetBaseUnits} ${args.egress.asset}` +
+        (price.etaSeconds === undefined ? "" : `, eta ${Math.round(price.etaSeconds)}s`),
     );
-    return {
-      kind: "price",
-      price: {
-        formatted: quote.source.formatted,
-        baseUnits: quote.source.amount,
-        ...(eta !== null ? { etaSeconds: eta } : {}),
-      },
-    };
+    return { kind: "price", price };
   } catch (e) {
     if (e instanceof SourceMinimumNotMetError) {
       console.info(

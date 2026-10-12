@@ -191,6 +191,9 @@ const tombstone = (tradeN: number, expiresAt: number, startedAt?: number): Reque
   });
 
 const AWAITING_REF = refOf(awaitingDepositCryptoRecord);
+/** A Chainflip pick, paid into the burner by the provider: the watch ends on the first coins. */
+const btcRecord: ActiveFlowRecord = { ...awaitingDepositCryptoRecord, sourceId: "btc" };
+const BTC_REF = refOf(btcRecord);
 const AWAITING_JOB = fixtureWorkerJobs["dot-assethub:3"]!;
 const AWAITING_HANDOFF = handoffOf(AWAITING_JOB);
 
@@ -530,20 +533,20 @@ describe("requests store: the chain step", () => {
 
   it("the deposit watch subscribes to the burner at a best block and ends once the deposit is seen", async () => {
     const requests = useRequestsStore();
-    await requests.create(AWAITING_REF, {
-      ...migrated(awaitingDepositCryptoRecord),
+    await requests.create(BTC_REF, {
+      ...migrated(btcRecord),
       handoff: AWAITING_HANDOFF,
     });
-    requests.setForeground(AWAITING_REF);
+    requests.setForeground(BTC_REF);
     await nextTick();
     await settled();
-    expect(watchers()).toEqual([{ key: "dot-assethub:3", unsubscribed: false }]);
+    expect(watchers()).toEqual([{ key: "btc:3", unsubscribed: false }]);
     const watcher = chain.watchers[0]!;
 
     // An empty burner: the record only witnessed the reading, and the watch goes on.
     watcher.onValue(0n, "burner-3");
     await settled();
-    expect(requests.get(AWAITING_REF)).toMatchObject({
+    expect(requests.get(BTC_REF)).toMatchObject({
       rev: 0,
       status: { kind: "awaiting-deposit" },
       witnesses: { chain: { best: { burnerNative: "0", at: FIXTURE_NOW } } },
@@ -554,7 +557,7 @@ describe("requests store: the chain step", () => {
     // watch ends; the worker's finalized sighting follows on its own.
     watcher.onValue(5_000_000_000n, "burner-3");
     await settled();
-    expect(requests.get(AWAITING_REF)).toMatchObject({
+    expect(requests.get(BTC_REF)).toMatchObject({
       rev: 1,
       status: { kind: "deposit-seen", at: FIXTURE_NOW, assurance: "provisional", via: "chain" },
       funded: FIXTURE_NOW,
@@ -566,11 +569,11 @@ describe("requests store: the chain step", () => {
     // A late emission after the stop changes nothing, and nothing re-subscribes.
     watcher.onValue(7_000_000_000n, "burner-3");
     await settled();
-    expect(requests.get(AWAITING_REF)).toMatchObject({
+    expect(requests.get(BTC_REF)).toMatchObject({
       rev: 1,
       witnesses: { chain: { best: { burnerNative: "5000000000", at: FIXTURE_NOW } } },
     });
-    expect(watchers()).toEqual([{ key: "dot-assethub:3", unsubscribed: true }]);
+    expect(watchers()).toEqual([{ key: "btc:3", unsubscribed: true }]);
     expect(chain.probes).toEqual([]);
     // A hand-off from before tiers were recorded is a pool one: the burner is read in the native.
     expect(watcher.tier).toBe("pool");
@@ -578,37 +581,37 @@ describe("requests store: the chain step", () => {
 
   it("the deposit watch reads the burner in the tier the record froze at quote time", async () => {
     const requests = useRequestsStore();
-    await requests.create(AWAITING_REF, {
-      ...migrated(awaitingDepositCryptoRecord),
+    await requests.create(BTC_REF, {
+      ...migrated(btcRecord),
       handoff: { ...AWAITING_HANDOFF, tier: "psm", external: "USDT", feeRate: 5_000 },
     });
-    requests.setForeground(AWAITING_REF);
+    requests.setForeground(BTC_REF);
     await nextTick();
     await settled();
     expect(chain.watchers.map(({ key, tier }) => ({ key, tier }))).toEqual([
-      { key: "dot-assethub:3", tier: "psm" },
+      { key: "btc:3", tier: "psm" },
     ]);
   });
 
   it("the deposit watch pauses while hidden and stops when the request leaves the screen", async () => {
     const requests = useRequestsStore();
-    await requests.create(AWAITING_REF, {
-      ...migrated(awaitingDepositCryptoRecord),
+    await requests.create(BTC_REF, {
+      ...migrated(btcRecord),
       handoff: AWAITING_HANDOFF,
     });
-    requests.setForeground(AWAITING_REF);
+    requests.setForeground(BTC_REF);
     await nextTick();
     await settled();
-    expect(watchers()).toEqual([{ key: "dot-assethub:3", unsubscribed: false }]);
+    expect(watchers()).toEqual([{ key: "btc:3", unsubscribed: false }]);
 
     // Hidden: the subscription is let go. Visible again: a new one.
     requests.pausePolls();
-    expect(watchers()).toEqual([{ key: "dot-assethub:3", unsubscribed: true }]);
+    expect(watchers()).toEqual([{ key: "btc:3", unsubscribed: true }]);
     requests.resumePolls();
     await settled();
     expect(watchers()).toEqual([
-      { key: "dot-assethub:3", unsubscribed: true },
-      { key: "dot-assethub:3", unsubscribed: false },
+      { key: "btc:3", unsubscribed: true },
+      { key: "btc:3", unsubscribed: false },
     ]);
 
     // The request leaves the screen: the subscription ends and no other takes its place.
@@ -616,14 +619,14 @@ describe("requests store: the chain step", () => {
     await nextTick();
     await settled();
     expect(watchers()).toEqual([
-      { key: "dot-assethub:3", unsubscribed: true },
-      { key: "dot-assethub:3", unsubscribed: true },
+      { key: "btc:3", unsubscribed: true },
+      { key: "btc:3", unsubscribed: true },
     ]);
     expect(console.warn).not.toHaveBeenCalled();
 
     // Back on screen, the chain client fails the subscription: one warning, the watch let go
     // until the next sync.
-    requests.setForeground(AWAITING_REF);
+    requests.setForeground(BTC_REF);
     await nextTick();
     await settled();
     expect(chain.watchers).toHaveLength(3);
@@ -631,11 +634,11 @@ describe("requests store: the chain step", () => {
     expect(chain.watchers[2]!.unsubscribed).toBe(true);
     expect(console.warn).toHaveBeenCalledTimes(1);
     expect(console.warn).toHaveBeenCalledWith(
-      "[requests] deposit watch for dot-assethub#3 failed: asset hub unreachable",
+      "[requests] deposit watch for btc#3 failed: asset hub unreachable",
     );
     await settled();
     expect(chain.watchers).toHaveLength(3);
-    expect(requests.get(AWAITING_REF)).toMatchObject({
+    expect(requests.get(BTC_REF)).toMatchObject({
       rev: 0,
       status: { kind: "awaiting-deposit" },
     });
@@ -645,14 +648,14 @@ describe("requests store: the chain step", () => {
     let now = FIXTURE_NOW;
     setRequestsClock(() => now);
     const requests = useRequestsStore();
-    await requests.create(AWAITING_REF, {
-      ...migrated(awaitingDepositCryptoRecord),
+    await requests.create(BTC_REF, {
+      ...migrated(btcRecord),
       handoff: AWAITING_HANDOFF,
     });
-    requests.setForeground(AWAITING_REF);
+    requests.setForeground(BTC_REF);
     await nextTick();
     await settled();
-    expect(watchers()).toEqual([{ key: "dot-assethub:3", unsubscribed: false }]);
+    expect(watchers()).toEqual([{ key: "btc:3", unsubscribed: false }]);
     const doc = fakeDocument();
     const detach = requests.attachLifecycle({ document: doc, window: fakeWindow() });
 
@@ -665,8 +668,8 @@ describe("requests store: the chain step", () => {
     await until(() => !requests.reconcilingNow);
 
     expect(watchers()).toEqual([
-      { key: "dot-assethub:3", unsubscribed: true },
-      { key: "dot-assethub:3", unsubscribed: false },
+      { key: "btc:3", unsubscribed: true },
+      { key: "btc:3", unsubscribed: false },
     ]);
     expect(evictChains).toHaveBeenCalledTimes(1);
     expect(log).toEqual(["subscribe", "evict", "subscribe"]);
