@@ -1,7 +1,9 @@
 <script setup lang="ts">
 // Token picker: every coin on the chosen network, the ones that clear their floor for this
 // amount first and the rest greyed with why, under a reminder of the network already picked.
-// Picking a row starts the purchase.
+// While any of them is still being answered, skeleton rows stand in for the list, one per token.
+// Picking a row starts the purchase, and a pick in flight keeps its rows on screen, spinner and
+// all.
 import { computed } from "vue";
 import { networkIcon, tokenIcon } from "../../utils/icons";
 import { groupTokens, tokenSubtitle } from "../../funding/source-groups";
@@ -13,7 +15,8 @@ const flow = useFlowStore();
 const offers = useOffersStore();
 useFreshFloors();
 
-const groups = computed(() => groupTokens(offers.tokensOf(flow.srcChain.chain)));
+const tokens = computed(() => offers.tokensOf(flow.srcChain.chain));
+const groups = computed(() => groupTokens(tokens.value));
 
 function pick(token: TokenRow) {
   if (flow.starting) return;
@@ -35,13 +38,12 @@ function pick(token: TokenRow) {
       </span>
     </div>
 
-    <!-- Floors still being learned: skeleton rows stand in for the tokens. -->
     <ul
-      v-if="offers.awaitingFloors"
+      v-if="offers.awaitingTokens(flow.srcChain.chain) && !flow.starting"
       class="-mx-2 mt-4 flex flex-col gap-2"
       aria-label="Loading tokens"
     >
-      <OptionRow v-for="n in 2" :key="n" skeleton />
+      <OptionRow v-for="n in tokens.length" :key="n" skeleton />
     </ul>
 
     <div v-else class="-mx-2 mt-4 flex min-h-0 flex-col gap-4 overflow-y-auto pb-6">

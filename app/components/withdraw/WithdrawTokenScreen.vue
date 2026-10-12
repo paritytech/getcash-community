@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // Token picker for a withdrawal: the tokens on the chosen network, each judged by its own offer
-// for the amount on screen, under a reminder of the network already picked.
+// for the amount on screen, under a reminder of the network already picked. While the offers are
+// still being quoted, skeleton rows stand in for the list, one per token.
 import { computed } from "vue";
 import { useWithdrawOffersStore } from "../../stores/withdraw-offers";
 import {
@@ -35,7 +36,15 @@ const rows = computed(() =>
       </span>
     </div>
 
-    <ul class="-mx-2 mt-4 flex flex-col gap-2 overflow-y-auto pb-6">
+    <ul
+      v-if="offers.awaitingTokens(network)"
+      class="-mx-2 mt-4 flex flex-col gap-2"
+      aria-label="Loading tokens"
+    >
+      <OptionRow v-for="n in network.destinations.length" :key="n" skeleton />
+    </ul>
+
+    <ul v-else class="-mx-2 mt-4 flex flex-col gap-2 overflow-y-auto pb-6">
       <OptionRow
         v-for="{ destination, state } in rows"
         :key="destination.id"

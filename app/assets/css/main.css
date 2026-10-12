@@ -77,3 +77,19 @@ body {
   overflow: hidden;
   overscroll-behavior: none;
 }
+
+html {
+  /* An app, not a document: a long press selects nothing and opens no callout, on iOS and on
+   * Android alike. What a user may need to copy sits on a button that copies it on a tap, and
+   * the recovery key opts back in. */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+input,
+textarea {
+  /* Fields keep their own selection, or iOS cannot place the caret in them. */
+  -webkit-user-select: text;
+  user-select: text;
+}
