@@ -19,7 +19,7 @@ vi.mock("../app/components/funding/routes/ChainflipFundingStatusRoute.vue", () =
   default: {},
 }));
 
-const progress: FundingTopUpProgress = { value: 0, tone: "waiting", status: "", delayed: false };
+const progress: FundingTopUpProgress = { value: 0, tone: "waiting", delayed: false };
 
 describe("getcash funding packages", () => {
   it("maps crypto explicitly to the Chainflip package", () => {

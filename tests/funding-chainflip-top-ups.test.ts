@@ -44,7 +44,7 @@ describe("Chainflip top-up adapter", () => {
       amount: "25",
       route: "crypto",
       startedAt: 200,
-      progress: { tone: "waiting", status: "Waiting for your deposit" },
+      progress: { tone: "waiting" },
       state: { kind: "awaiting-transfer", status: "Waiting for your deposit" },
     });
     expect(topUps[1]).toMatchObject({
@@ -52,7 +52,7 @@ describe("Chainflip top-up adapter", () => {
       amount: "50",
       route: "crypto",
       startedAt: 300,
-      progress: { tone: "waiting", status: "Waiting for your deposit" },
+      progress: { tone: "waiting" },
       state: { kind: "finishing", status: "Waiting for your deposit" },
     });
     expect(topUps[0]).not.toHaveProperty("timeline");

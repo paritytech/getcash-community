@@ -39,15 +39,9 @@ export function listHeadline(route: FundingRoute, timeline?: TopUpTimeline): Lis
   return { text: "On its way", delayed };
 }
 
-/** A running row's ring and status line: the overall progress once the timeline opened, and the
- *  short headline. */
-export function listProgress(route: FundingRoute, timeline?: TopUpTimeline): FundingTopUpProgress {
-  const { text, delayed } = listHeadline(route, timeline);
-  if (timeline === undefined) return { value: 0, tone: "waiting", status: text, delayed };
-  return {
-    value: overallProgress(timeline.view),
-    tone: delayed ? "delayed" : "active",
-    status: text,
-    delayed,
-  };
+/** A running row's ring: the overall progress once the timeline opened. */
+export function listProgress(timeline?: TopUpTimeline): FundingTopUpProgress {
+  if (timeline === undefined) return { value: 0, tone: "waiting", delayed: false };
+  const delayed = timeline.view.state === "delayed";
+  return { value: overallProgress(timeline.view), tone: delayed ? "delayed" : "active", delayed };
 }

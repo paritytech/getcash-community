@@ -9,7 +9,7 @@ import {
   type FundingTopUpProgress,
 } from "../app/funding/top-ups";
 
-const progress: FundingTopUpProgress = { value: 0, tone: "waiting", status: "", delayed: false };
+const progress: FundingTopUpProgress = { value: 0, tone: "waiting", delayed: false };
 
 const topUps = [
   {

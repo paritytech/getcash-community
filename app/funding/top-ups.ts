@@ -43,7 +43,6 @@ export type FundingTopUpDetails = Readonly<{
 export type FundingTopUpProgress = Readonly<{
   value: number;
   tone: "waiting" | "active" | "delayed" | "settled" | "failed";
-  status: string;
   delayed: boolean;
 }>;
 
@@ -64,6 +63,8 @@ export type StoredQuote = Readonly<{
 export type FundingTopUp = Readonly<{
   id: string;
   amount: string;
+  /** Money leaving the balance (a withdrawal): the rows sign it "-" and never green it. */
+  debit?: boolean;
   route: FundingRoute;
   startedAt: number;
   progress: FundingTopUpProgress;
@@ -86,6 +87,7 @@ export type FundingTopUp = Readonly<{
 type FundingTopUpBase = Readonly<{
   id: string;
   amount: string;
+  debit?: boolean;
   route: FundingRoute;
   routeLabel: string;
   routeIcon: string;
@@ -144,12 +146,15 @@ const TOP_UP_WORDING: FundingTopUpWording = { settled: "Added" };
 export interface FundingListWording {
   /** The pending screen's toolbar title. */
   pendingTitle: string;
+  /** The pending screen's bottom CTA: another top-up, or another withdrawal. */
+  pendingCta: string;
   /** The line the history screen shows when there is nothing to list. */
   emptyHistory: string;
 }
 
 export const TOP_UP_LIST_WORDING: FundingListWording = {
   pendingTitle: "Top-up in progress",
+  pendingCta: "New top-up",
   emptyHistory: "Nothing here yet. Your top-ups will appear as you make them.",
 };
 
@@ -166,6 +171,7 @@ export function projectFundingTopUps(
     const base: FundingTopUpBase = {
       id: topUp.id,
       amount: topUp.amount,
+      ...(topUp.debit === undefined ? {} : { debit: topUp.debit }),
       route: topUp.route,
       routeLabel: route?.label ?? topUp.route,
       routeIcon: route?.icon ?? "",

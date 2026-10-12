@@ -82,7 +82,7 @@ const saveJobs = () => store.save();
  *   done, createdAt, armedAt, lastTickAt, lastError?,
  *   state: { attempts, psmRefusals, xcmSubmitted, peopleAtXcm: string,
  *            fundsSeenAt: number|null, nonceAtSubmit: number|null,
- *            inclusionBlock: number|null, workedMs },
+ *            inclusionBlock: number|null, workedMs, rejections, lastRejection },
  *                                            // attempts: submits so far
  *                                            // psmRefusals: PSM refusals so far, not transport
  *                                            // nonceAtSubmit: set from before a submit until
@@ -92,6 +92,8 @@ const saveJobs = () => store.save();
  *                                            // workedMs: worker time since the deposit was
  *                                            // final, until the claim is registered (see
  *                                            // accountWorkedTime)
+ *                                            // rejections, lastRejection: paid rejections in
+ *                                            // a row with the same answer
  *   submitting?: { call: "swap", at },        // written before a submit, with the state
  *   txs: [{ call, txHash, block? }],
  *   depositSeen?: { block, finalizedAtSeen, finalized, best },
@@ -256,9 +258,10 @@ const depositExpiryOf = (input) => {
 
 /**
  * Re-arms a failed job on a re-sent hand-off. The run clock, the deposit window and the claim's
- * tracking window restart. Submit latches survive except after a shortfall; a held job gets a
- * fresh refusal counter, for a ceiling raised since; a claim that was still registering is
- * retried at once, and a claim the host settled short gets a fresh attempt.
+ * tracking window restart. Submit latches survive except after a shortfall; the rejection count
+ * starts over; a held job gets a fresh refusal counter, for a ceiling raised since; a claim that
+ * was still registering is retried at once, and a claim the host settled short gets a fresh
+ * attempt.
  */
 function rearm(record, nowMs) {
   record.phase = record.done ? "done" : "starting";
@@ -279,6 +282,8 @@ function rearm(record, nowMs) {
     record.state.inclusionBlock = null;
   }
   if (failure === "held") record.state.psmRefusals = 0;
+  record.state.rejections = 0;
+  record.state.lastRejection = null;
   if (record.claim?.phase === "registering") {
     record.claim = { ...record.claim, attempts: 0, at: 0 };
   }
@@ -725,6 +730,8 @@ async function tickRecord(record, nowMs) {
     const state = freshTickState();
     state.attempts = record.state.attempts;
     state.psmRefusals = record.state.psmRefusals ?? 0;
+    state.rejections = record.state.rejections ?? 0;
+    state.lastRejection = record.state.lastRejection ?? null;
     state.xcmSubmitted = !!record.state.xcmSubmitted;
     state.peopleAtXcm = asBig(record.state.peopleAtXcm);
     state.fundsSeenAt = record.state.fundsSeenAt ?? null;
@@ -736,6 +743,8 @@ async function tickRecord(record, nowMs) {
       record.state = {
         attempts: state.attempts,
         psmRefusals: state.psmRefusals,
+        rejections: state.rejections,
+        lastRejection: state.lastRejection,
         xcmSubmitted: state.xcmSubmitted,
         peopleAtXcm: state.peopleAtXcm.toString(),
         fundsSeenAt: state.fundsSeenAt,

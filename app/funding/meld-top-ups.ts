@@ -9,7 +9,7 @@ import type { TopUpRecord } from "./requests/model";
 import { rowStateOf } from "./requests/views";
 import type { FundingRoute } from "./selection";
 import { isMeldSourceId, meldMethodFor, meldSourceIdFor, type MeldMethod } from "./source-ids";
-import { listProgress } from "./timeline/list";
+import { listHeadline, listProgress } from "./timeline/list";
 import {
   createTopUpTimelines,
   TIMELINE_CADENCE_MS,
@@ -71,8 +71,8 @@ export function projectMeldTopUps(
     const method = meldMethodFor(ref.sourceId);
     const route: FundingRoute = method;
     const timeline = timelineOf(record, now);
-    const progress = listProgress(route, timeline);
-    const state = rowStateOf(record, progress.status);
+    const progress = listProgress(timeline);
+    const state = rowStateOf(record, listHeadline(route, timeline).text);
     const worded =
       state.kind === "failed" && state.reason === DEPOSIT_EXPIRED_REASON
         ? { ...state, reason: MELD_WINDOW_CLOSED_REASON }

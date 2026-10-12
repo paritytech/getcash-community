@@ -8,7 +8,7 @@ import { parseRequestRefKey, requestRefKey, type RequestRef } from "../utils/req
 import { CRYPTO_SOURCE_ID, isCryptoSourceId } from "./source-ids";
 import { effectiveSourceId, railProviderOf, type TopUpRecord } from "./requests/model";
 import { rowStateOf } from "./requests/views";
-import { listProgress } from "./timeline/list";
+import { listHeadline, listProgress } from "./timeline/list";
 import {
   createTopUpTimelines,
   TIMELINE_CADENCE_MS,
@@ -62,7 +62,7 @@ export function projectChainflipTopUps(
     if (!isChainflipRecord(record)) return [];
     const { ref } = record;
     const timeline = timelineOf(record, now);
-    const progress = listProgress("crypto", timeline);
+    const progress = listProgress(timeline);
     return [
       {
         id: chainflipTopUpId(ref),
@@ -75,7 +75,7 @@ export function projectChainflipTopUps(
         ...quoteOf(record),
         // The request's own identity, so a refund can be walked back to its key with no world.
         request: { sourceId: effectiveSourceId(ref), tradeN: ref.tradeN },
-        state: rowStateOf(record, progress.status),
+        state: rowStateOf(record, listHeadline("crypto", timeline).text),
       },
     ];
   });

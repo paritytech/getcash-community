@@ -209,22 +209,18 @@ describe("top-up list headline", () => {
 
 describe("top-up list progress", () => {
   it.each([
-    [
-      "before the timeline",
-      undefined,
-      { value: 0, tone: "waiting", status: "Waiting for your payment", delayed: false },
-    ],
+    ["before the timeline", undefined, { value: 0, tone: "waiting", delayed: false }],
     [
       "a delayed provider part",
       current("delayed", 1, 0.5),
-      { value: 1.5 / 6, tone: "delayed", status: "Delayed, don't pay again", delayed: true },
+      { value: 1.5 / 6, tone: "delayed", delayed: true },
     ],
     [
       "the Polkadot part",
       current("active", 3, 0.5),
-      { value: 3.5 / 6, tone: "active", status: "Adding to your balance", delayed: false },
+      { value: 3.5 / 6, tone: "active", delayed: false },
     ],
   ] as const)("rings %s", (_, view, expected) => {
-    expect(listProgress("card", view && { view })).toEqual(expected);
+    expect(listProgress(view && { view })).toEqual(expected);
   });
 });

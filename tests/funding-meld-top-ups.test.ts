@@ -63,7 +63,7 @@ describe("Meld top-up adapter", () => {
         method: { label: "Card", icon: "/icons/card.svg" },
         region: "DE",
       },
-      progress: { tone: "waiting", status: "Waiting for your payment" },
+      progress: { tone: "waiting" },
       state: { kind: "awaiting-transfer", status: "Waiting for your payment" },
     });
     expect(topUps[0]).not.toHaveProperty("timeline");
