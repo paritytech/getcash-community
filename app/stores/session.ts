@@ -390,8 +390,6 @@ export const useSessionStore = defineStore("session", () => {
   const cancelling = ref(false);
   /** Set when a cancel was refused because the payment is already on its way; shown to the buyer. */
   const cancelNotice = ref<string | null>(null);
-  /** Asks the journey to open its refund-key panel unprompted; only the preview deck sets it. */
-  const revealRefund = ref(false);
 
   // Monotonic guard for async quote work. Every fetchQuote and reset bumps it; a resolution
   // with a stale token disposes what it built.
@@ -559,7 +557,6 @@ export const useSessionStore = defineStore("session", () => {
     // Cleared with the epoch bump: a `pending` set by the outgoing quote is never resolved.
     sourcePrice.value = null;
     faucetState.value = "idle";
-    revealRefund.value = false;
     foregroundRef = null;
     requests.leave();
     // No reconcile here; reset(), start(), openRequest() and boot reconcile.
@@ -2280,7 +2277,6 @@ export const useSessionStore = defineStore("session", () => {
     loading,
     resuming,
     faucetState,
-    revealRefund,
     canSkipDeposit,
     cancelReady,
     cancelling,

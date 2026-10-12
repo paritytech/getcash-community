@@ -712,17 +712,15 @@ describe("requests store: foreground, clock and user actions", () => {
       written.add(match[1]!);
     }
     // Screen and demo flags only: request state belongs on the record, which the deck reaches
-    // through observations alone. `revealRefund` opens the refund-key panel unprompted, and the
-    // key it shows comes off the request's world, not its record. The supported catalog is the
-    // same kind of thing — what the adapter says the picker may list, not anything about a
-    // request — and a deck run has no adapter to answer for it.
+    // through observations alone. The supported catalog is the same kind of thing — what the
+    // adapter says the picker may list, not anything about a request — and a deck run has no
+    // adapter to answer for it.
     const allowed = new Set([
       "quoted",
       "method",
       "mock",
       "faucetState",
       "resuming",
-      "revealRefund",
       "supportedCountries",
       "corridorByCountry",
     ]);

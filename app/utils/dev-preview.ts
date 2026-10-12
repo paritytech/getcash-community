@@ -761,7 +761,6 @@ function base(session: Session, flow: Flow) {
   session.method = "crypto";
   session.quoted = { ...QUOTED };
   session.resuming = false;
-  session.revealRefund = false;
   useRequestsStore().fundingNotice = null;
   useRequestsStore().setTransientError(null);
   useRequestsStore().leave();
@@ -1841,8 +1840,8 @@ export const SCENES: Scene[] = [
       installPreviewRefundWorld(s);
     },
   },
-  // The return-funds screen opened with the key revealed, once per source: the step copy is
-  // templated on the chain, its native coin, and the asset, so each reads differently.
+  // The return-funds screen opened, once per source: the step copy is templated on the chain, its
+  // native coin, and the asset, so each reads differently.
   ...REFUND_PREVIEWS.map(([sourceId, send]) => {
     const source = SOURCE_CONFIG_BY_ID.get(sourceId)!;
     const apply = refunded(sourceId, send);
@@ -1850,7 +1849,7 @@ export const SCENES: Scene[] = [
       name: `crypto / refund key: ${source.asset} on ${source.chain}`,
       apply: async (s: Session, f: Flow, index: number) => {
         await apply(s, f, index);
-        s.revealRefund = true;
+        f.previewDrillIn = "refund";
       },
     };
   }),

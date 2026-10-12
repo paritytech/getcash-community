@@ -28,10 +28,8 @@ const props = withDefaults(
     material: boolean;
     /** Still working out whether they can, so the unavailable line waits. */
     loading?: boolean;
-    /** Show the key without a tap, for the preview deck. */
-    autoReveal?: boolean;
   }>(),
-  { loading: false, autoReveal: false },
+  { loading: false },
 );
 const emit = defineEmits<{ back: [] }>();
 
@@ -56,13 +54,6 @@ watch(
       masked.value = true;
     }
   },
-);
-watch(
-  () => [props.autoReveal, props.address] as const,
-  ([want]) => {
-    if (want && masked.value) void toggleKey();
-  },
-  { immediate: true },
 );
 
 /** Masked, the card shows stand-in dots: the secret is not even read until the eye is tapped. */

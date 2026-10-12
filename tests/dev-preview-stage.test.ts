@@ -17,12 +17,11 @@ import { useSessionStore } from "../app/stores/session";
  */
 function sceneState(): string {
   const s = useSessionStore();
-  // The record on screen owns the payment now, the rail's own ids included; only the method and
-  // the reveal are still the session's.
+  // The record on screen owns the payment now, the rail's own ids included; only the method is
+  // still the session's.
   const r = useRequestsStore();
   return JSON.stringify({
     method: s.method,
-    revealRefund: s.revealRefund,
     meldServiceProvider: r.foregroundRecord?.meldServiceProvider ?? null,
     meldReference: r.foregroundRecord?.meldFundingRequestId ?? null,
     meldStage: r.meldStage,

@@ -10,6 +10,7 @@ import type { FundingTopUp } from "../../funding/top-ups";
 import { useFlowStore } from "../../stores/flow";
 import { useRequestsStore } from "../../stores/requests";
 import { useSessionStore } from "../../stores/session";
+import { isDemoBuild } from "../../utils/demo";
 import CancelTopUpScreen from "../screens/CancelTopUpScreen.vue";
 import JourneySkeleton from "../screens/JourneySkeleton.vue";
 import RecoverDepositScreen from "../screens/RecoverDepositScreen.vue";
@@ -78,14 +79,16 @@ watch(
 /** The recovery guide over an ended Polkadot top-up, whose funds, if any, are on its own
  *  account. */
 const showingRecovery = ref(false);
-// The preview deck lands straight on the opened guide.
-watch(
-  () => session.revealRefund,
-  (want) => {
-    if (want) showingRefund.value = true;
-  },
-  { immediate: true },
-);
+// Demo deck: a scene can land straight on the opened guide. Inert everywhere else.
+if (isDemoBuild()) {
+  watch(
+    () => flow.previewDrillIn,
+    (want) => {
+      if (want === "refund") showingRefund.value = true;
+    },
+    { immediate: true },
+  );
+}
 
 // The cancel confirmation over the journey, asked for by the bank transfer's Cancel. It is the
 // flow store's flag, as the crypto deposit's confirmation is: one place holds "a cancel is being

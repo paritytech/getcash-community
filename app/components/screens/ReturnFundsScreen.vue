@@ -182,7 +182,6 @@ const { copied: txCopied, copy: copyTx } = useCopyToClipboard();
     :reveal="revealKey"
     :material="material"
     :loading="recovering"
-    :auto-reveal="session.revealRefund"
     @back="emit('back')"
   >
     <template #status>
