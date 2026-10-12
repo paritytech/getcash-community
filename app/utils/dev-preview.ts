@@ -411,6 +411,16 @@ async function previewRequest(
   };
 }
 
+/** A scene's observation that lands once its screen is up, so the screen plays its motion. Applying
+ *  a scene cancels the one pending. */
+let pendingObservation: ReturnType<typeof setTimeout> | null = null;
+function observeLater(request: PreviewRequest, observation: Observation, ms = 2_500): void {
+  pendingObservation = setTimeout(() => {
+    pendingObservation = null;
+    void request.observe(observation);
+  }, ms);
+}
+
 /** Core's state as the request's own observation. */
 async function core(request: PreviewRequest, step: number, state: PaymentState) {
   await request.observe({ source: "core", at: request.at(step), state });
@@ -542,7 +552,8 @@ const DAY = 24 * HOUR;
 
 /** How a finished preview top-up ended. */
 type PreviewEnding =
-  | { kind: "settled" }
+  /** `credited` is the claim, in base units, when the Host credited other than what was asked. */
+  | { kind: "settled"; credited?: string }
   /** Core's own failure, which the record words. */
   | { kind: "failed"; failure: PaymentFailure; refund?: RefundProgress }
   /** The deposit window closed with nothing paid. */
@@ -582,7 +593,11 @@ function endingObservations(
           ...(ending.refund === undefined ? {} : { refund: ending.refund }),
         };
   const paid = fromCore(startedAt + 2 * MINUTE, swapping("receiving", sourceId));
-  return [opened, paid, fromCore(endedAt, ended)];
+  const claimed: Observation[] =
+    ending.kind === "settled" && ending.credited !== undefined
+      ? [{ source: "core", at: endedAt, claim: { stage: "crediting", claimed: ending.credited } }]
+      : [];
+  return [opened, paid, ...claimed, fromCore(endedAt, ended)];
 }
 
 /**
@@ -640,6 +655,7 @@ function failedWith(
 /** The finished top-ups behind the clock: a credit, a declined card, a refunded swap, an older
  *  bank transfer. Shared by the launch simulation and the history scenes. */
 const HISTORY = {
+  // The PSM credited more than the 80 asked.
   creditedSwap: {
     ...BITCOIN_SWAP,
     tradeN: 3,
@@ -647,7 +663,7 @@ const HISTORY = {
     quote: { amount: "0.00072", symbol: "BTC" },
     startedMinutesAgo: 6 * HOUR,
     endedMinutesAgo: 6 * HOUR - 9,
-    ending: SETTLED,
+    ending: { kind: "settled", credited: "80120000" },
   },
   declinedCard: {
     sourceId: "meld-card",
@@ -1641,6 +1657,30 @@ export const SCENES: Scene[] = [
     },
   },
   {
+    // The claim lands while the arrived transfer is on screen: the timeline completes, then the
+    // success motion plays.
+    name: "bank / journey: success, live",
+    apply: async (s, f, i) => {
+      const r = await bankTransfer(s, f, i);
+      await r.observe({
+        source: "provider",
+        provider: "meld",
+        at: r.at(1),
+        result: { status: "complete" },
+      });
+      await r.observe(worker(r, 2, "swap"));
+      observeLater(r, {
+        source: "core",
+        at: r.at(3),
+        state: {
+          phase: "done",
+          sourceId: "meld-bank",
+          result: { id: "preview", sourceId: "meld-bank" },
+        } as PaymentState,
+      });
+    },
+  },
+  {
     // The design's bank failure frame: nothing was taken, so the rows are the handles for asking
     // about it and the way on is a fresh top-up.
     name: "bank / journey: payment failed",
@@ -1840,6 +1880,12 @@ export const SCENES: Scene[] = [
       installPreviewRefundWorld(s);
     },
   },
+  {
+    // A credit read from history: the end state at once, with what the Host credited.
+    name: "crypto / success: from history",
+    stage: { kind: "journey", route: "crypto", topUpId: finishedTopUpId(HISTORY.creditedSwap) },
+    apply: topUpList({ finished: PREVIEW_HISTORY, entry: "history" }),
+  },
   // The return-funds screen opened, once per source: the step copy is templated on the chain, its
   // native coin, and the asset, so each reads differently.
   ...REFUND_PREVIEWS.map(([sourceId, send]) => {
@@ -1909,6 +1955,8 @@ let index = -1;
  * entry and teardown, which would otherwise land on top of the state the scene just wrote.
  */
 export async function applyCurrentScene(): Promise<void> {
+  if (pendingObservation !== null) clearTimeout(pendingObservation);
+  pendingObservation = null;
   const scene = SCENES[index];
   if (!scene) return;
   await scene.apply(useSessionStore(), useFlowStore(), index);

@@ -10,6 +10,10 @@ const props = defineProps<{
   message: string | null;
   detail: string | null;
 }>();
+const emit = defineEmits<{
+  /** The drawing completed Added on a top-up that is done. */
+  added: [];
+}>();
 
 /** How long a line takes to complete before its end milestone turns green. */
 const LINE_COMPLETE_MS = 520;
@@ -48,6 +52,9 @@ watch(
   },
 );
 onBeforeUnmount(stopStepping);
+watch(shownReached, (reached) => {
+  if (props.view.state === "done" && reached === lastReached(props.view)) emit("added");
+});
 
 // A failure that arrives on screen plays its motion; one present when the screen opens shows at once.
 const failing = ref(false);

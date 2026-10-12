@@ -19,6 +19,8 @@ export type FundingTopUpState =
        *  left to ask. Absent on records written before either was kept. */
       refundAmount?: string;
       refundTxRef?: string;
+      /** What the Host credited before the claim failed. */
+      creditedAmount?: string;
     };
 
 export type FundingTopUpDetail = Readonly<{

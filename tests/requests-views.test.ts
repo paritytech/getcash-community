@@ -21,6 +21,7 @@ import { reduce } from "../app/funding/requests/reducer";
 import {
   claimingOf,
   completedMarkers,
+  creditedAmountOf,
   journeyStepsOf,
   meldHandedOffOf,
   meldStageOf,
@@ -449,5 +450,50 @@ describe("request views", () => {
 
     expect(meldStageOf(meld(unstamped, "failed", "failed"))).toBe("failed");
     expect(meldHandedOffOf(meld(unstamped, "failed", "failed"))).toBe(false);
+  });
+
+  it("creditedAmountOf reads what the Host credited only once the top-up ended", () => {
+    const minted = (claimCredited: string): Pick<RequestRecord, "witnesses"> => ({
+      witnesses: {
+        worker: {
+          known: true,
+          phase: "failed",
+          done: false,
+          fundsSeenAt: AT,
+          lastTickAt: AT,
+          at: AT,
+          claimCredited,
+        },
+      },
+    });
+    const failed = { kind: "failed", at: AT, recoverable: true } as const;
+    const partial = { ...at(failed, { failure: mintFailure }), ...minted("30000000") };
+    const cases: [string, RequestRecord, string | undefined][] = [
+      ["claim in flight", { ...at({ kind: "claiming", at: AT }), claimed: "80120000" }, undefined],
+      [
+        "claim in a block",
+        { ...at({ kind: "claiming", at: AT }), claimed: "80120000", creditedAt: AT },
+        "80.12",
+      ],
+      ["settled", { ...at({ kind: "settled", at: AT }), claimed: "80120000" }, "80.12"],
+      ["settled with no claim", at({ kind: "settled", at: AT }), undefined],
+      ["partial claim", partial, "30"],
+      [
+        "failed with nothing minted",
+        { ...at(failed), ...minted("0"), claimed: "80120000" },
+        undefined,
+      ],
+    ];
+    for (const [name, record, credited] of cases) {
+      expect(creditedAmountOf(record), name).toBe(credited);
+    }
+
+    // A journey opened from history reads it off the list row.
+    expect(
+      rowStateOf(
+        partial,
+        projectFundingProgress({ snapshot: partial.progress, createdAt: 0, now: AT }),
+      ),
+    ).toMatchObject({ kind: "failed", creditedAmount: "30" });
   });
 });

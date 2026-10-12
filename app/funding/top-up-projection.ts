@@ -1,7 +1,5 @@
-// Shared top-up adapter helpers: the durable record as the adapters read it, and the amount a
-// claim credited.
+// Shared top-up adapter helpers: the durable record as the adapters read it.
 
-import { fmtCash } from "../utils/cash";
 import type { FundingProgressSnapshot } from "./progress";
 import type { FundingTopUp } from "./top-ups";
 
@@ -120,13 +118,4 @@ export function quoteOf(record: FundingTopUpRecord): Pick<FundingTopUp, "quote">
  */
 export function referenceOf(record: FundingTopUpRecord): Pick<FundingTopUp, "reference"> {
   return record.meldFundingRequestId ? { reference: record.meldFundingRequestId } : {};
-}
-
-export function creditedAmount(record: FundingTopUpRecord): string {
-  if (record.claimed === undefined) return record.amountHuman;
-  try {
-    return fmtCash(BigInt(record.claimed));
-  } catch {
-    return record.amountHuman;
-  }
 }

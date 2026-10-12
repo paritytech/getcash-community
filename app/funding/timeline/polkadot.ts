@@ -3,6 +3,7 @@
 
 import { cashAmount } from "../../utils/cash";
 import { conversionRouteOf, type DepositInBlock, type TopUpRecord } from "../requests/model";
+import { mintedOf } from "../requests/views";
 import { CLOSE, TRY_AGAIN, type PartFailure } from "./failure";
 import { factAt } from "./observed";
 import {
@@ -172,12 +173,6 @@ function conversionMessage(record: TopUpRecord): TimelineMessage {
   );
 }
 
-/** The host credited part of the top-up on an earlier claim attempt. */
-function partlyCredited(record: TopUpRecord): boolean {
-  const credited = workerOf(record)?.claimCredited;
-  return credited !== undefined && /^\d+$/.test(credited) && BigInt(credited) > 0n;
-}
-
 export function polkadotText(
   record: TopUpRecord,
   index: PolkadotPhaseIndex,
@@ -203,7 +198,7 @@ export function polkadotText(
     case 5:
       return {
         message: normal(
-          partlyCredited(record)
+          mintedOf(record) !== undefined
             ? "Adding the rest of your Cash"
             : `Adding ${cashAmount(record.amountHuman)} to your balance`,
         ),

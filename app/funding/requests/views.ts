@@ -3,8 +3,8 @@
 
 import type { FailureKind, PaymentPhase } from "@getsome/core";
 import type { FundingStep } from "@getsome/funding";
+import { fmtCash } from "../../utils/cash";
 import type { FundingProgressProjection } from "../progress";
-import { creditedAmount } from "../top-up-projection";
 import type { FundingTopUpState } from "../top-ups";
 import {
   CONFIRMED_TTL_MS,
@@ -38,6 +38,28 @@ export function phaseLike(record: TopUpRecord): PaymentPhase {
     default:
       return "awaiting-deposit";
   }
+}
+
+/** A base-unit amount above zero. */
+const positiveBase = (amount: string | undefined): bigint | undefined =>
+  amount !== undefined && /^\d+$/.test(amount) && BigInt(amount) > 0n ? BigInt(amount) : undefined;
+
+/** The CASH the Host minted on the claim so far, as the worker last reported it. */
+export function mintedOf(record: TopUpRecord): bigint | undefined {
+  const worker = record.witnesses.worker;
+  return worker?.known ? positiveBase(worker.claimCredited) : undefined;
+}
+
+/** What the Host credited, once the top-up ended with a credit: the claim on success, what it
+ *  minted before a claim that failed. Absent before the end. */
+export function creditedAmountOf(record: TopUpRecord): string | undefined {
+  const credited =
+    phaseLike(record) === "done"
+      ? positiveBase(record.claimed)
+      : record.status.kind === "failed"
+        ? mintedOf(record)
+        : undefined;
+  return credited === undefined ? undefined : fmtCash(credited);
 }
 
 /** Today's step comes from the worker's job or the faucet; a core, rail or chain sighting sets
@@ -226,7 +248,7 @@ export function rowStateOf(
       return {
         kind: "settled",
         at: record.settledAt ?? status.at,
-        creditedAmount: creditedAmount(record),
+        creditedAmount: creditedAmountOf(record) ?? record.amountHuman,
       };
     case "failed":
     case "expired": {
@@ -238,10 +260,12 @@ export function rowStateOf(
       // The status is the rail's own word on an expiry; the failure's kind covers a record whose
       // status stayed `failed` because the expiry came back from core rather than the deadline.
       const expired = status.kind === "expired" || expiredFailure(record.failure?.kind);
+      const credited = creditedAmountOf(record);
       return {
         kind: "failed",
         at: status.at,
         ...(expired ? { expired: true } : {}),
+        ...(credited === undefined ? {} : { creditedAmount: credited }),
         ...(reason === undefined ? {} : { reason }),
         ...(refunded ? { refunded: true } : {}),
         ...(refunded && refund?.amount ? { refundAmount: refund.amount } : {}),
@@ -254,7 +278,11 @@ export function rowStateOf(
       return { kind: "awaiting-transfer", status: progress.view.label };
     case "claiming":
       if (record.creditedAt !== undefined) {
-        return { kind: "settled", at: record.creditedAt, creditedAmount: creditedAmount(record) };
+        return {
+          kind: "settled",
+          at: record.creditedAt,
+          creditedAmount: creditedAmountOf(record) ?? record.amountHuman,
+        };
       }
       return { kind: "finishing", status: progress.view.label };
     case "deposit-seen":

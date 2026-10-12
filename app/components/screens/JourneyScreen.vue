@@ -1,20 +1,20 @@
 <script setup lang="ts">
 // The finish of a top-up: the timeline from a confirmed deposit to CASH in the balance, shared by
 // every package.
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import { Plus, RefreshCcw, X } from "lucide-vue-next";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
 import { useJourneyQuote } from "../../composables/useJourneyQuote";
 import type { FundingJourneyStatus } from "../../funding/handoff";
 import { projectFundingProgress, type FundingProgressProjection } from "../../funding/progress";
-import { isExpiredEnding } from "../../funding/journey-endings";
+import { headerAmount, isExpiredEnding } from "../../funding/journey-endings";
 import {
   failureDetailRows,
   journeyMoneyRows,
   quoteDetailRows,
   type QuoteRow,
 } from "../../funding/quote-rows";
-import { journeyScaleOf, type JourneyScale } from "../../funding/requests/views";
+import { creditedAmountOf, journeyScaleOf, type JourneyScale } from "../../funding/requests/views";
 import { CLOSE, type FailureAction } from "../../funding/timeline/failure";
 import { TIMELINE_CADENCE_MS } from "../../funding/timeline/timelines";
 import type { FundingTopUp } from "../../funding/top-ups";
@@ -28,6 +28,7 @@ import FundingTimeline from "../funding/timeline/FundingTimeline.vue";
 import CashAmount from "../ui/CashAmount.vue";
 import DetailRows, { type DetailRow } from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
+import { nextSuccessStage, openingSuccessStage } from "./success-stage";
 
 const props = defineProps<{
   /**
@@ -78,6 +79,19 @@ const progress = computed(() => {
 });
 
 const finished = computed(() => requests.phase === "done");
+
+const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+const success = ref(openingSuccessStage(finished.value));
+watch(finished, (done) => {
+  success.value = done
+    ? nextSuccessStage(success.value, {
+        kind: "succeeded",
+        animate: timeline.value !== undefined && !reducedMotion(),
+      })
+    : "none";
+});
+const successShown = computed(() => success.value === "playing" || success.value === "shown");
+const successPlaying = computed(() => success.value === "playing");
 const failure = computed(() =>
   requests.phase === "failed" ? (requests.foregroundRecord?.failure ?? null) : null,
 );
@@ -129,9 +143,16 @@ const moneyRows = computed(() =>
   }),
 );
 
-const creditedAmount = computed(() =>
-  requests.claimedBase != null ? fmtCash(requests.claimedBase) : session.amountHuman,
-);
+/** What the Host credited, once the top-up ended with a credit: the live record's, else what the
+ *  list stored for a journey opened from history. */
+const creditedAmount = computed(() => {
+  const record = requests.foregroundRecord;
+  if (record !== null) return creditedAmountOf(record);
+  const stored = props.topUp?.state;
+  return stored?.kind === "settled" || stored?.kind === "failed"
+    ? stored.creditedAmount
+    : undefined;
+});
 /** What the buyer asked for. The store's amount is empty until the request is live; the list's
  *  word on it fills in. */
 const quotedAmount = computed(() => session.amountHuman || (props.topUp?.amount ?? ""));
@@ -158,19 +179,25 @@ const revisedAmount = computed<string | null>(() => {
   return fmtCash(claimed);
 });
 
-const amountParts = computed(() => {
-  if (finished.value) return { sign: "+", amount: creditedAmount.value };
-  // A rate that moved is news the hero carries too: the figure the buyer is owed, not the one
-  // they were quoted.
-  return { sign: "", amount: revisedAmount.value ?? quotedAmount.value };
-});
+const amounts = computed(() => ({
+  asked: quotedAmount.value,
+  credited: creditedAmount.value,
+  revised: revisedAmount.value,
+}));
+/** The header until the success screen shows; the success motion turns it into `successAmount`. */
+const pendingAmount = computed(() =>
+  headerAmount(heroFailed.value ? "failure" : null, amounts.value),
+);
+const successAmount = computed(() => headerAmount("success", amounts.value));
 
 /** When the top-up reached its end, under the hero: the live milestone (stamped at the route's
  *  last step) for a credit that just landed, else the list's own timestamp. A failed top-up gets
  *  one too — when it stopped is part of what a buyer opens this screen to find out. */
 const settledWhen = computed(() => {
   // The store stamps the credit at the card scale's last step, whatever scale the route draws.
-  const at = finished.value ? (requests.milestones[5] ?? storedEndedAt.value) : storedEndedAt.value;
+  const at = successShown.value
+    ? (requests.milestones[5] ?? storedEndedAt.value)
+    : storedEndedAt.value;
   return at != null ? formatWhenShort(at) : null;
 });
 
@@ -199,22 +226,24 @@ const wordForBank = (rows: QuoteRow[]): QuoteRow[] =>
 
 /**
  * The rows come from the shared helper, so the journey and the settled receipt present the same
- * quote identically — except a bank transfer still in flight, which restates the transfer itself:
- * what to send, what to quote with it, and when it lands. The buyer may still be in their banking
- * app, and this is the only place those three survive once the provider's page is behind them. A
- * transfer that has arrived or failed is past instructing anyone, and reads as the receipt every
- * other rail leaves.
+ * quote identically — except a bank transfer, which restates the transfer itself: what to send,
+ * what to quote with it, and when it lands. The buyer may still be in their banking app, and this
+ * is the only place those three survive once the provider's page is behind them. On success the
+ * arrival row goes and the others stay.
  */
 const detailRows = computed<DetailRow[]>(() => {
   if (moneyRows.value !== "quote") return [];
   const q = quoteView.value;
-  if (bank.value && !finished.value && !heroFailed.value) {
+  if (bank.value) {
     const rows: DetailRow[] = [];
     if (q)
       rows.push({
         // Once the rail has the money there is nothing left to instruct, so the line reads as the
         // concluded journeys word it: what was sent, not what to send.
-        label: requests.railSeen ? "Sent inc. fees" : "Send this exact amount inc. fees",
+        label:
+          requests.railSeen || finished.value
+            ? "Sent inc. fees"
+            : "Send this exact amount inc. fees",
         value: fmtFiat(q.amount, q.symbol),
         fees: isMoneyAmount(q.fee ?? ""),
       });
@@ -224,14 +253,16 @@ const detailRows = computed<DetailRow[]>(() => {
         value: shortRef(reference.value),
         copy: reference.value,
       });
-    rows.push({
-      label: "Arrives",
-      value: "1–2 business days",
-      note: `Final ${currencyConfig.name} depends on the rate on arrival`,
-    });
+    // Last, so the success motion can fade it out.
+    if (success.value !== "shown")
+      rows.push({
+        label: "Arrives",
+        value: "1–2 business days",
+        note: `Final ${currencyConfig.name} depends on the rate on arrival`,
+      });
     return rows;
   }
-  return wordForBank(quoteDetailRows(q));
+  return quoteDetailRows(q);
 });
 
 /** What an ended top-up cost, then its failure details: who took the payment, why it ended, and
@@ -291,6 +322,11 @@ const timelineMessage = computed(() => {
   return rateChangeNotice.value ?? timeline.value?.message?.text ?? null;
 });
 const timelineDetail = computed(() => (heroFailed.value ? null : (timeline.value?.detail ?? null)));
+/** The band keeps its last words while the timeline completes and leaves on success. */
+const band = ref({ message: timelineMessage.value, detail: timelineDetail.value });
+watch([timelineMessage, timelineDetail], ([message, detail]) => {
+  if (!finished.value) band.value = { message, detail };
+});
 </script>
 
 <template>
@@ -299,32 +335,67 @@ const timelineDetail = computed(() => (heroFailed.value ? null : (timeline.value
   <div class="-mx-4 flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-6">
     <div class="flex flex-col items-center text-center">
       <span
-        class="flex size-14 items-center justify-center rounded-full"
+        class="journey-stack size-14 rounded-full"
         :class="heroFailed ? 'journey-hero-failed' : 'bg-surface-container'"
       >
         <X v-if="heroFailed" class="size-6 text-fg-error" aria-hidden="true" />
-        <Plus v-else-if="finished" class="size-6 text-fg-primary" aria-hidden="true" />
-        <RefreshCcw v-else class="size-6 text-fg-primary" aria-hidden="true" />
+        <template v-else>
+          <RefreshCcw
+            v-if="!successShown || successPlaying"
+            class="size-6 text-fg-primary"
+            :class="{ 'journey-icon-out': successPlaying }"
+            aria-hidden="true"
+          />
+          <Plus
+            v-if="successShown"
+            class="size-6 text-fg-primary"
+            :class="{ 'journey-icon-in': successPlaying }"
+            aria-hidden="true"
+          />
+        </template>
       </span>
-      <p
-        class="mt-2 text-display-m"
-        :class="finished ? 'text-fg-success' : heroFailed ? 'text-fg-secondary' : 'text-fg-primary'"
-      >
-        <CashAmount :sign="amountParts.sign" :amount="amountParts.amount" />
+      <p class="journey-stack mt-2 text-display-m">
+        <CashAmount
+          v-if="!successShown || successPlaying"
+          v-bind="pendingAmount"
+          :class="[
+            heroFailed ? 'text-fg-secondary' : 'text-fg-primary',
+            { 'journey-amount-out': successPlaying },
+          ]"
+        />
+        <CashAmount
+          v-if="successShown"
+          v-bind="successAmount"
+          class="text-fg-success"
+          :class="{ 'journey-amount-in': successPlaying }"
+        />
       </p>
-      <p v-if="settledWhen" class="text-paragraph-l text-fg-secondary">{{ settledWhen }}</p>
+      <div v-if="settledWhen" :class="{ 'journey-date-in': successPlaying }">
+        <p class="text-paragraph-l text-fg-secondary">{{ settledWhen }}</p>
+      </div>
     </div>
 
     <div class="mt-6 flex flex-1 flex-col gap-6">
       <!-- The stepper leaves once the CASH lands. -->
-      <FundingTimeline
-        v-if="timeline && !finished"
-        :view="timeline.view"
-        :message="timelineMessage"
-        :detail="timelineDetail"
-      />
+      <div
+        v-if="timeline && success !== 'shown'"
+        :class="{ 'journey-timeline-out': successPlaying }"
+      >
+        <FundingTimeline
+          :view="timeline.view"
+          :message="band.message"
+          :detail="band.detail"
+          @added="success = nextSuccessStage(success, { kind: 'drawn' })"
+        />
+      </div>
 
-      <DetailRows v-if="detailRows.length" :rows="detailRows" @fees="emit('fees')" />
+      <!-- On a bank transfer the last row is Arrives, which fades as the success motion plays. -->
+      <DetailRows
+        v-if="detailRows.length"
+        :rows="detailRows"
+        :class="{ 'journey-last-row-out': bank && successPlaying }"
+        @fees="emit('fees')"
+      />
 
       <!-- The reference copies, so the screen carries the confirmation. -->
       <DetailRows v-if="endedRows.length" :rows="endedRows" @fees="emit('fees')" />
@@ -355,9 +426,10 @@ const timelineDetail = computed(() => (heroFailed.value ? null : (timeline.value
       </PillButton>
 
       <PillButton
-        v-if="finished || failureAction?.kind === 'close'"
+        v-if="successShown || failureAction?.kind === 'close'"
         variant="tertiary"
         class="mt-auto"
+        :class="{ 'journey-close-in': successPlaying }"
         @click="emit('close')"
       >
         Close
@@ -377,5 +449,131 @@ const timelineDetail = computed(() => (heroFailed.value ? null : (timeline.value
  * token covers it (reported gap). */
 .journey-hero-failed {
   background: var(--palette-red-alpha-24);
+}
+
+/* The hero's icons and amounts overlap while one turns into the other. */
+.journey-stack {
+  display: grid;
+  place-items: center;
+}
+
+.journey-stack > * {
+  grid-area: 1 / 1;
+}
+
+/* The success motion, timed from the timeline's last tick. */
+.journey-timeline-out {
+  display: grid;
+  animation: journey-collapse 820ms cubic-bezier(0.65, 0, 0.35, 1) 900ms both;
+}
+
+.journey-timeline-out > * {
+  animation: journey-dissolve 560ms ease-out 700ms both;
+}
+
+.journey-icon-out {
+  animation: journey-spin-out 700ms cubic-bezier(0.55, 0, 1, 0.45) 350ms both;
+}
+
+.journey-icon-in {
+  animation: journey-spin-in 520ms cubic-bezier(0.34, 1.56, 0.64, 1) 910ms both;
+}
+
+.journey-amount-out {
+  animation: journey-drop-out 360ms ease-in 1000ms both;
+}
+
+.journey-amount-in {
+  animation: journey-drop-in 480ms ease-out 1000ms both;
+}
+
+.journey-date-in {
+  display: grid;
+  animation: journey-expand 820ms cubic-bezier(0.65, 0, 0.35, 1) 900ms both;
+}
+
+.journey-date-in > p {
+  overflow: hidden;
+  animation: journey-drop-in 480ms ease-out 1000ms both;
+}
+
+.journey-last-row-out > :deep(:last-child) {
+  animation: journey-fade-out 900ms ease-in-out 1300ms both;
+}
+
+.journey-close-in {
+  animation: journey-rise 400ms ease-out 1720ms both;
+}
+
+/* The column's gap-6 goes with the timeline, so the details end where the end state has them. */
+@keyframes journey-collapse {
+  from {
+    grid-template-rows: 1fr;
+  }
+  to {
+    grid-template-rows: 0fr;
+    margin-bottom: -1.5rem;
+    visibility: hidden;
+  }
+}
+
+@keyframes journey-expand {
+  from {
+    grid-template-rows: 0fr;
+  }
+  to {
+    grid-template-rows: 1fr;
+  }
+}
+
+@keyframes journey-dissolve {
+  to {
+    opacity: 0;
+    filter: blur(6px);
+    transform: translateY(-8px) scale(0.96);
+  }
+}
+
+@keyframes journey-spin-out {
+  to {
+    transform: rotate(900deg) scale(0);
+  }
+}
+
+@keyframes journey-spin-in {
+  from {
+    opacity: 0;
+    transform: rotate(-180deg) scale(0.4);
+  }
+}
+
+@keyframes journey-drop-out {
+  to {
+    opacity: 0;
+    filter: blur(3px);
+    transform: translateY(8px);
+  }
+}
+
+@keyframes journey-drop-in {
+  from {
+    opacity: 0;
+    filter: blur(3px);
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes journey-fade-out {
+  to {
+    opacity: 0;
+    visibility: hidden;
+  }
+}
+
+@keyframes journey-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
 }
 </style>
