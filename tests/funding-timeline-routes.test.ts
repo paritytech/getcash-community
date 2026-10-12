@@ -48,10 +48,16 @@ function cardRecord(): TopUpRecord {
   return record;
 }
 
-function cryptoRecord(sourceId = "btc"): TopUpRecord {
-  const record = migrateRecord(awaitingDepositCryptoRecord, requestRefOf(sourceId, 3), FIXTURE_NOW);
+type Paid = Pick<TopUpRecord, "chain" | "asset">;
+const POLKADOT_DOT: Paid = { chain: "Polkadot", asset: "DOT" };
+
+/** A crypto top-up as the session stores it: under the Asset Hub source the funds arrive as, paid
+ *  from Bitcoin unless `paid` names another network and token. */
+function cryptoRecord(paid?: Paid): TopUpRecord {
+  const ref = requestRefOf("dot-assethub", 3);
+  const record = migrateRecord(awaitingDepositCryptoRecord, ref, FIXTURE_NOW);
   if (record?.kind !== "top-up") throw new Error("fixture did not migrate");
-  return record;
+  return { ...record, ...paid };
 }
 
 type Worker = Extract<NonNullable<TopUpRecord["witnesses"]["worker"]>, { known: true }>;
@@ -370,15 +376,15 @@ describe("top-up timeline, Chainflip route", () => {
   const total = 3 * confirmation + swap;
   const swapping = { receiving: at(0), swapping: at(600) };
 
-  /** A swap from source `sourceId` observed at `observedAt`, read by core 3 s before `now`. */
+  /** A swap paid as `paid` observed at `observedAt`, read by core 3 s before `now`. */
   function swapRecord(
     now: number,
     observedAt: TopUpRecord["observedAt"],
     chainflip: ChainflipFacts,
-    sourceId = "btc",
+    paid?: Paid,
   ): TopUpRecord {
     return {
-      ...cryptoRecord(sourceId),
+      ...cryptoRecord(paid),
       observedAt,
       chainflip,
       witnesses: { core: { phase: "swapping", at: at(now) - 3 * SECOND } },
@@ -427,7 +433,7 @@ describe("top-up timeline, Chainflip route", () => {
           confirmationsAt: at(300),
           lastStatechainUpdateAt: at(3_600),
         },
-        "sol-solana",
+        { chain: "Solana", asset: "SOL" },
       ),
       3_600,
       {
@@ -837,24 +843,26 @@ describe("top-up timeline, reconnect line", () => {
   );
 });
 
-describe("top-up timeline, route by source", () => {
+describe("top-up timeline, route by record", () => {
   it.each([
-    ["meld-card", meldCardRoute],
-    ["meld-bank", meldBankRoute],
-    ["dot-assethub", directRoute],
-    ["usdc-assethub", directRoute],
-    [undefined, directRoute],
-    ["btc", chainflipRoute],
-    ["usdt-tron", chainflipRoute],
-  ] satisfies [string | undefined, TimelineRoute][])(
+    ["a card payment", cardRecord(), meldCardRoute],
+    [
+      "a bank transfer",
+      { ...cardRecord(), ref: requestRefOf("meld-bank", 2), asset: "Bank" },
+      meldBankRoute,
+    ],
+    ["a direct deposit on Polkadot", cryptoRecord(POLKADOT_DOT), directRoute],
+    ["a swap from Bitcoin under an Asset Hub source", cryptoRecord(), chainflipRoute],
+    ["a swap with no source id", { ...cryptoRecord(), ref: { tradeN: 3 } }, chainflipRoute],
+  ] satisfies [string, TopUpRecord, TimelineRoute][])(
     "picks for %s its route",
-    (sourceId, route) => {
-      expect(timelineRouteOf(sourceId)).toBe(route);
+    (_, topUp, route) => {
+      expect(timelineRouteOf(topUp)).toBe(route);
     },
   );
 
   const direct = (facts: Partial<TopUpRecord>): TopUpRecord => ({
-    ...cryptoRecord("dot-assethub"),
+    ...cryptoRecord(POLKADOT_DOT),
     ...facts,
   });
 

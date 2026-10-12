@@ -1,9 +1,9 @@
-// The timelines the app shows: the route of each top-up by its source, and the view each showed
+// The timelines the app shows: the route of each top-up, and the view each showed
 // last, so that a top-up shown on two screens never moves back on either.
 
 import { requestRefKey } from "../../utils/request-index";
-import type { TopUpRecord } from "../requests/model";
-import { isCryptoSourceId, isMeldSourceId, meldMethodFor, type MeldMethod } from "../source-ids";
+import { isDirectDeposit, type TopUpRecord } from "../requests/model";
+import { isMeldSourceId, meldMethodFor, type MeldMethod } from "../source-ids";
 import { chainflipRoute } from "./chainflip";
 import { directRoute } from "./direct";
 import { meldBankRoute, meldCardRoute } from "./meld";
@@ -22,11 +22,12 @@ const MELD_ROUTES: Readonly<Record<MeldMethod, TimelineRoute>> = {
   bank: meldBankRoute,
 };
 
-/** The route of a top-up from its source: Meld card or bank, a direct Asset Hub deposit, or else
- *  a Chainflip swap. */
-export function timelineRouteOf(sourceId: string | undefined): TimelineRoute {
+/** The route of a top-up: Meld card or bank by its source, a direct deposit by the network paid
+ *  from, or else a Chainflip swap, which runs under the Asset Hub source it arrives as. */
+export function timelineRouteOf(record: Pick<TopUpRecord, "chain" | "ref">): TimelineRoute {
+  const { sourceId } = record.ref;
   if (isMeldSourceId(sourceId)) return MELD_ROUTES[meldMethodFor(sourceId)];
-  return isCryptoSourceId(sourceId) ? directRoute : chainflipRoute;
+  return isDirectDeposit(record) ? directRoute : chainflipRoute;
 }
 
 /** A top-up's timeline at `now`; absent until it opens, unless the top-up ended before. */
@@ -52,7 +53,7 @@ export function createTopUpTimelines(): TopUpTimelineOf {
       watchingSince: now,
       sentUnseenMs: 0,
     };
-    const route = timelineRouteOf(record.ref.sourceId);
+    const route = timelineRouteOf(record);
     const timeline = topUpTimeline(record, route, { now, watchingSince, previous, sentUnseenMs });
     if (timeline === undefined) {
       shown.set(key, { watchingSince, sentUnseenMs });

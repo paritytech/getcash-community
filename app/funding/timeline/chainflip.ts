@@ -1,8 +1,7 @@
 // The Chainflip route's provider part: Started, Accepted and Sent from Chainflip's statuses, and
 // phases 1 and 2 from its progress facts.
 
-import { SOURCE_CONFIG_BY_ID, type SourceConfig } from "@getsome/chainflip";
-import { effectiveSourceId, type ChainflipFacts, type TopUpRecord } from "../requests/model";
+import type { ChainflipFacts, TopUpRecord } from "../requests/model";
 import { factAt, observedFrom } from "./observed";
 import { delay, normal, type TimelineRoute, type TimelineText } from "./route";
 import type { PhaseInput, PhasePart } from "./types";
@@ -120,12 +119,6 @@ function exchangePhase(record: TopUpRecord, facts: ChainflipFacts): PhaseInput {
   };
 }
 
-const SOURCES: ReadonlyMap<string, SourceConfig> = SOURCE_CONFIG_BY_ID;
-
-/** The token the user sends. */
-const sourceOf = (record: TopUpRecord): string =>
-  SOURCES.get(effectiveSourceId(record.ref))?.asset ?? record.asset;
-
 /** The time left of a stage Chainflip scheduled and estimated, while some is left. */
 function countdown(
   scheduledAt: number | undefined,
@@ -144,7 +137,8 @@ const stepLine = (label: string, done: number, count: number): string =>
   `${label} ${Math.min(done + 1, count)} of ${count}`;
 
 function exchangeText(record: TopUpRecord, facts: ChainflipFacts, now: number): TimelineText {
-  const source = sourceOf(record);
+  // The token the user sent; the source id names the Asset Hub token the swap arrives as.
+  const source = record.asset;
   if (confirmedAt(record, facts) === undefined) {
     const required = requiredOf(facts);
     return {
@@ -198,7 +192,7 @@ export const chainflipRoute: TimelineRoute = {
     if (index === 0) return exchangeText(record, facts, now);
     return {
       message: delayed
-        ? delay(`Your ${sourceOf(record)} is exchanged and the network is processing the transfer`)
+        ? delay(`Your ${record.asset} is exchanged and the network is processing the transfer`)
         : normal("Your money is on its way"),
       detail: countdown(facts.egressScheduledAt, estimated(facts, "egress"), now),
     };

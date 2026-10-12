@@ -368,7 +368,8 @@ describe("requests store: foreground, clock and user actions", () => {
     async (_, observations, failed) => {
       setRequestsClock(() => FIXTURE_NOW);
       const requests = useRequestsStore();
-      await requests.create(AWAITING_REF, migrated(awaitingDepositCryptoRecord));
+      const direct = { ...awaitingDepositCryptoRecord, chain: "Polkadot", asset: "DOT" };
+      await requests.create(AWAITING_REF, migrated(direct));
       requests.setForeground(AWAITING_REF);
       for (const observation of observations) await requests.observe(AWAITING_REF, observation);
 
@@ -383,6 +384,39 @@ describe("requests store: foreground, clock and user actions", () => {
       expect(past[0]?.timeline?.view).toEqual(live);
     },
   );
+
+  it("draws a swap from Bitcoin under its Asset Hub source the same live and from history", async () => {
+    setRequestsClock(() => FIXTURE_NOW);
+    const requests = useRequestsStore();
+    await requests.create(AWAITING_REF, migrated(awaitingDepositCryptoRecord));
+    requests.setForeground(AWAITING_REF);
+    await requests.observe(AWAITING_REF, {
+      source: "core",
+      at: at(2),
+      state: {
+        phase: "swapping",
+        sourceId: "dot-assethub",
+        quote: null,
+        deposit: DEPOSIT,
+        swap: "receiving",
+        progress: { requiredConfirmations: 3, depositConfirmations: 1 },
+      },
+    });
+
+    const record = requests.get(AWAITING_REF);
+    if (record?.kind !== "top-up") throw new Error("the top-up is gone");
+    const { inProgress } = projectFundingTopUps(
+      projectChainflipTopUps([record], at(3)),
+      fundingSelectorConfig,
+    );
+    const live = requests.foregroundTimeline(at(3));
+    expect(live).toMatchObject({
+      view: { state: "active", phase: 0 },
+      message: { text: "Confirming your BTC deposit" },
+      detail: "Confirmation 2 of 3",
+    });
+    expect(inProgress[0]?.timeline).toEqual(live);
+  });
 
   it("cancel refuses on funds in the burner read", async () => {
     setRequestsClock(() => FIXTURE_NOW);
