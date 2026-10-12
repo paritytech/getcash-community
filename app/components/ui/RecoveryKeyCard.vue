@@ -34,7 +34,8 @@ const { copied, copy } = useCopyToClipboard();
       <div class="min-w-0 flex-1">
         <p class="text-body-s text-fg-secondary">{{ label }}</p>
         <div class="relative mt-1">
-          <p class="break-all text-paragraph-l text-fg-primary" :aria-hidden="masked">
+          <!-- The one text worth selecting by hand as well as copying. -->
+          <p class="break-all text-paragraph-l text-fg-primary select-text" :aria-hidden="masked">
             {{ keyText }}
           </p>
           <span
