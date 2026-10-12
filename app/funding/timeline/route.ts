@@ -28,7 +28,7 @@ export interface TextState {
 /** Phases 1 and 2, the provider's own. */
 export type ProviderPhaseIndex = 0 | 1;
 
-/** The milestones only the provider can reach, each with the time it was first reached. */
+/** The milestones the provider reports, each with the time it was first reached. */
 export type ProviderMilestones = Readonly<Partial<Record<"started" | "accepted" | "sent", Fact>>>;
 
 /** What a top-up route adds to the shared frame: its provider part. */

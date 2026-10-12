@@ -1675,8 +1675,8 @@ export const useSessionStore = defineStore("session", () => {
   // Demo faucet
   async function fundFaucet(): Promise<void> {
     const s = lastState.value;
-    // "sent" blocks too: a resolved faucet transfer is in a block. A failed transfer resets to
-    // "idle".
+    // "sent" blocks too: the transfer was broadcast, and the deposit watch takes it from there.
+    // A refused transfer resets to "idle".
     if (
       !live.value ||
       !s ||
@@ -1688,25 +1688,14 @@ export const useSessionStore = defineStore("session", () => {
     faucetState.value = "funding";
     void markDepositSkipped();
     try {
-      const tradeN = live.value.tradeN;
-      const faucetRef = requestRefOf(live.value.sourceId, tradeN);
       // The world's route fixes the asset the faucet sends: the one the pipeline reads the burner
       // for.
-      const sent = await fundFromFaucet({
+      await fundFromFaucet({
         address: s.deposit.address,
         amount: s.deposit.amount,
         route: live.value.route,
       });
       faucetState.value = "sent";
-      // The transfer is in a block: the chain's own sighting of the deposit.
-      await requests.observe(faucetRef, {
-        source: "chain",
-        at: Date.now(),
-        burnerNative: sent.toString(),
-        finality: "finalized",
-        via: "faucet",
-      });
-      driveFunding(); // joins the running leg, or restarts one that had failed
     } catch (e: unknown) {
       faucetState.value = "idle";
       requests.setTransientError({

@@ -4,7 +4,7 @@
 
 import type { TopUpRecord } from "../requests/model";
 import { CLOSE, CRYPTO_EXPIRED_TEXT, expiredEnding, type PartFailure } from "./failure";
-import { depositOnBurner, workerTickAt } from "./polkadot";
+import { workerTickAt } from "./polkadot";
 import type { TimelineRoute } from "./route";
 
 const SECOND = 1_000;
@@ -28,10 +28,7 @@ function directFailure(record: TopUpRecord): PartFailure {
 }
 
 export const directRoute: TimelineRoute = {
-  milestones(record) {
-    const seen = depositOnBurner(record);
-    return { started: seen, accepted: seen, sent: seen };
-  },
+  milestones: () => ({}),
   phase: noProviderPhase,
   seenExpectedMs: 30 * SECOND,
   lastReadAt(record) {

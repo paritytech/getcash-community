@@ -61,8 +61,7 @@ export function creditedAmountOf(record: TopUpRecord): string | undefined {
   return credited === undefined ? undefined : fmtCash(credited);
 }
 
-/** Today's step comes from the worker's job or the faucet; a core, rail or chain sighting sets
- *  none. A side exit reports the leg it kept the rank of. */
+/** Today's step comes from the worker's job; a core, rail or chain sighting sets none. A side exit reports the leg it kept the rank of. */
 export function fundingStepOf(record: TopUpRecord): FundingStep | null {
   const { status } = record;
   switch (status.kind) {
@@ -72,7 +71,7 @@ export function fundingStepOf(record: TopUpRecord): FundingStep | null {
     case "settled":
       return "done";
     case "deposit-seen":
-      return status.via === "worker" || status.via === "faucet" ? "swap" : null;
+      return status.via === "worker" ? "swap" : null;
     case "failed":
     case "expired":
     case "cancelled":
@@ -86,14 +85,11 @@ export function fundingStepOf(record: TopUpRecord): FundingStep | null {
   }
 }
 
-/** Today's latch: a worker step past `await-native`, the faucet's transfer, or the burner read a
- *  cancel refused on. */
+/** Today's latch: a worker step past `await-native`, or the burner read a cancel refused on. */
 export const fundsSeenOf = (record: TopUpRecord): boolean =>
   rankOf(record) >= 2 ||
   (record.status.kind === "deposit-seen" &&
-    (record.status.via === "worker" ||
-      record.status.via === "faucet" ||
-      record.status.via === "pre-cancel"));
+    (record.status.via === "worker" || record.status.via === "pre-cancel"));
 
 /** A failure that closed the deposit window with nothing paid, as against a payment that went
  *  wrong. The design names the step itself ("Expired") and shows no money rows, so the two endings

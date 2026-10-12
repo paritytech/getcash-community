@@ -35,12 +35,20 @@ export function statusObserved(
 export const burnerSighted = (record: TopUpRecord, at: number): TopUpRecord =>
   observedFirst(record, "on-burner", at);
 
+/** Stamps the app's first read of the deposit on the burner in a finalized block. */
+export const burnerFinal = (record: TopUpRecord, at: number): TopUpRecord =>
+  observedFirst(record, "final-on-burner", at);
+
 /** Drops a burner sighting that a final read showed was never there. */
 export function burnerSightingRetracted(record: TopUpRecord): TopUpRecord {
-  if (record.observedAt?.["on-burner"] === undefined) return record;
-  const observedAt = { ...record.observedAt };
-  delete observedAt["on-burner"];
-  return { ...record, observedAt };
+  const { observedAt } = record;
+  if (observedAt?.["on-burner"] === undefined && observedAt?.["final-on-burner"] === undefined) {
+    return record;
+  }
+  const kept = { ...observedAt };
+  delete kept["on-burner"];
+  delete kept["final-on-burner"];
+  return { ...record, observedAt: kept };
 }
 
 type Estimates = ChainflipFacts["estimatedDurationsSeconds"];

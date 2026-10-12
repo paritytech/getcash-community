@@ -1,6 +1,7 @@
 import type { TopUpRecord } from "../requests/model";
 import type { TimelineFailure } from "./failure";
 import { timelineView } from "./model";
+import { earlierFact } from "./observed";
 import {
   depositOnBurner,
   polkadotFailure,
@@ -9,7 +10,12 @@ import {
   polkadotText,
   workerTickAt,
 } from "./polkadot";
-import type { ProviderPhaseIndex, TimelineMessage, TimelineRoute } from "./route";
+import type {
+  ProviderMilestones,
+  ProviderPhaseIndex,
+  TimelineMessage,
+  TimelineRoute,
+} from "./route";
 import type { MilestoneIndex, PhaseIndex, TimelineView } from "./types";
 
 export interface TopUpTimeline {
@@ -46,6 +52,13 @@ function failedAt({ status }: TopUpRecord): number | undefined {
   return status.kind === "failed" || status.kind === "expired" ? status.at : undefined;
 }
 
+/** The provider's milestones, with Sent at the provider's report or the deposit on the burner,
+ *  whichever came first: money on the burner shows the provider sent it. */
+function providerMilestones(record: TopUpRecord, route: TimelineRoute): ProviderMilestones {
+  const milestones = route.milestones(record);
+  return { ...milestones, sent: earlierFact(milestones.sent, depositOnBurner(record)) };
+}
+
 /** The failure of a top-up whose `failed` milestone is red. */
 function failureOf(
   record: TopUpRecord,
@@ -64,7 +77,7 @@ export function topUpTimeline(
   { now, watchingSince, locale, previous, sentUnseenMs = 0 }: TopUpTimelineOptions,
 ): TopUpTimeline | undefined {
   const view = timelineView({
-    reached: { ...route.milestones(record), ...polkadotMilestones(record) },
+    reached: { ...providerMilestones(record, route), ...polkadotMilestones(record) },
     phase: (index) =>
       isProviderPhase(index)
         ? route.phase(record, index)

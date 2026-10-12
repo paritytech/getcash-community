@@ -5,7 +5,7 @@ import { cashAmount } from "../../utils/cash";
 import { conversionRouteOf, type DepositInBlock, type TopUpRecord } from "../requests/model";
 import { mintedOf } from "../requests/views";
 import { CLOSE, TRY_AGAIN, type PartFailure } from "./failure";
-import { factAt } from "./observed";
+import { earlierFact, factAt } from "./observed";
 import {
   delay,
   normal,
@@ -66,11 +66,14 @@ function workerOf(record: TopUpRecord) {
 const settledAt = ({ status, settledAt }: TopUpRecord): number | undefined =>
   status.kind === "settled" ? (settledAt ?? status.at) : undefined;
 
-/** Received is the deposit final on Asset Hub as the worker saw it. Added is the Host's claim in a
- *  block. */
+/** Received is the deposit final on Asset Hub, as the worker or the app's own read saw it first.
+ *  Added is the Host's claim in a block. */
 export function polkadotMilestones(record: TopUpRecord): PolkadotMilestones {
   return {
-    received: factAt(workerOf(record)?.fundsSeenAt ?? undefined),
+    received: earlierFact(
+      factAt(workerOf(record)?.fundsSeenAt ?? undefined),
+      factAt(record.observedAt?.["final-on-burner"]),
+    ),
     converted: factAt(record.converted?.at),
     moved: factAt(record.observedAt?.["cash-on-people"]),
     added: factAt(record.creditedAt ?? settledAt(record)),

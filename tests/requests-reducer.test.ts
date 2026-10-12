@@ -9,12 +9,14 @@ import {
   paymentWatchUntil,
   PROVISIONAL_REVERT_MS,
   type ChainflipFacts,
+  type DepositSeenVia,
   type Observation,
   type RequestRecord,
   type TopUpRecord,
   type WorkerJobView,
 } from "../app/funding/requests/model";
 import { reduce } from "../app/funding/requests/reducer";
+import { polkadotMilestones } from "../app/funding/timeline/polkadot";
 import type { ActiveFlowRecord } from "../app/stores/session";
 import { requestRefOf, type RequestRef } from "../app/utils/request-index";
 import {
@@ -905,6 +907,32 @@ describe("request reducer: top-up timeline facts", () => {
     const record = reduce(chainflipRecord(), { source: "core", at: at(1), state });
     expect(topUp(record).failure?.code).toBe("BelowMinimumDeposit");
   });
+
+  it.each([
+    ["Meld", card, meld(at(1), { status: "receiving" }), "rail"],
+    ["Chainflip", chainflipRecord, swapping(at(1), "receiving"), "core"],
+  ] satisfies [string, () => RequestRecord, Observation, DepositSeenVia][])(
+    "stamps the app's burner reads after %s saw the deposit; only a final one reaches Received",
+    (_, start, providerSaw, via) => {
+      const facts = (record: TopUpRecord) => ({
+        via: record.status.kind === "deposit-seen" ? record.status.via : undefined,
+        observedAt: record.observedAt,
+        received: polkadotMilestones(record).received,
+      });
+      replay(start(), facts, [
+        [providerSaw, { via, observedAt: { receiving: at(1) } }],
+        [chain(at(2), FUNDS, "best"), { observedAt: { receiving: at(1), "on-burner": at(2) } }],
+        [chain(at(3), FUNDS, "best"), {}],
+        [
+          chain(at(4), FUNDS, "finalized"),
+          {
+            observedAt: { receiving: at(1), "on-burner": at(2), "final-on-burner": at(4) },
+            received: { at: at(4) },
+          },
+        ],
+      ]);
+    },
+  );
 
   it("keeps the worker's facts past the deposit, and no later read moves one back", () => {
     const converted = { txHash: "0xaa", block: 12, at: at(3), workedMs: 20_000 };

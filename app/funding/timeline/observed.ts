@@ -16,3 +16,9 @@ export function observedFrom<S extends ObservedFact>(
   });
   return times.length === 0 ? undefined : Math.min(...times);
 }
+
+/** The earlier of two facts. A fact with a known time comes before one without. */
+export function earlierFact(a: Fact | undefined, b: Fact | undefined): Fact | undefined {
+  if (a === undefined || b === undefined) return a ?? b;
+  return (b.at ?? Infinity) < (a.at ?? Infinity) ? b : a;
+}

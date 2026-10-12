@@ -105,7 +105,7 @@ import {
   serializeRequestIndex,
   type RequestRef,
 } from "../utils/request-index";
-import { sendHandoff, workerSessionId } from "~~/lib/coinage";
+import { sendHandoff, workerSessionId, type Finality } from "~~/lib/coinage";
 import { FUNDING_CHAINS, sourceIdFor, sourcePairFor } from "~~/lib/config";
 import { isHosted } from "~~/lib/host-account";
 
@@ -1375,10 +1375,12 @@ export const useRequestsStore = defineStore("requests", () => {
     clearInterval(foregroundClock);
     foregroundClock = null;
   }
-  // The deposit watch: while the request on screen awaits its deposit, the app follows its burner
-  // at each best block, so a direct deposit has an early witness in the app as a provider's
-  // payment does, and the worker's finalized sighting confirms it. Hosted only; it ends the
-  // moment coins show, and a failed subscription is let go until the next sync re-subscribes.
+  // The deposit watch: while the request on screen awaits its deposit, or has it seen but not yet
+  // read final on the burner, the app follows its burner at each best and each finalized block.
+  // The app is the early witness of the deposit, before or after a provider's word, and its own
+  // finalized read confirms it. Hosted only; it ends once the deposit is final on the burner or
+  // the request moves past it, and a failed subscription is let go until the next sync
+  // re-subscribes.
   let depositWatch: {
     key: RequestKey;
     unsubscribe: (() => void) | null;
@@ -1386,6 +1388,16 @@ export const useRequestsStore = defineStore("requests", () => {
   } | null = null;
   const foregroundAwaiting = (): boolean =>
     foregroundRecord.value?.status.kind === "awaiting-deposit";
+  /** The request on screen awaits its deposit, or has it seen but not yet final on the burner. */
+  function foregroundFollowsDeposit(): boolean {
+    const record = foregroundRecord.value;
+    if (record === null) return false;
+    const { kind } = record.status;
+    return (
+      kind === "awaiting-deposit" ||
+      (kind === "deposit-seen" && record.observedAt?.["final-on-burner"] === undefined)
+    );
+  }
   /** The tier a request's deposit arrives on, from what its record froze at quote time: it fixes
    *  the asset the burner is read in. A number with no record is read as a pool one. */
   const depositRouteOf = (ref: RequestRef): ConversionRoute => {
@@ -1395,7 +1407,7 @@ export const useRequestsStore = defineStore("requests", () => {
   function startDepositWatch(): void {
     if (sandboxed.value) return;
     const record = foregroundRecord.value;
-    if (record === null || record.status.kind !== "awaiting-deposit") return;
+    if (record === null || !foregroundFollowsDeposit()) return;
     const { ref } = record;
     const key = requestRefKey(ref);
     if (depositWatch !== null) {
@@ -1413,27 +1425,32 @@ export const useRequestsStore = defineStore("requests", () => {
       );
       stopDepositWatch();
     };
+    // Only a change is observed, since the watch emits at every block; each finality on its own.
+    const last: Partial<Record<Finality, string>> = {};
+    const changed = (finality: Finality, reading: string): boolean => {
+      if (watching.stopped || last[finality] === reading) return false;
+      last[finality] = reading;
+      return true;
+    };
     void import("~~/lib/coinage-live")
       .then((live) => {
         if (isDirectDeposit(record)) {
           // A Polkadot deposit is read in every direct token and followed until the request moves
           // on: a short or wrong-token deposit keeps it waiting, and the rest can still arrive.
-          // Only a change is observed, since the watch emits at every best block.
-          let last = "";
           return live.watchDirectTradeBurner(
             sourceId,
             ref.tradeN,
             depositRouteOf(ref),
-            ({ held, stray }) => {
-              if (watching.stopped) return;
-              const key = `${held}|${stray?.asset ?? ""}|${stray?.amount ?? ""}`;
-              if (key === last) return;
-              last = key;
+            ({ held, stray }, finality) => {
+              if (!changed(finality, `${held}|${stray?.asset ?? ""}|${stray?.amount ?? ""}`)) {
+                return;
+              }
               void observe(
                 ref,
                 chainReading(
                   held,
                   requestsNow(),
+                  finality,
                   stray === null ? null : { asset: stray.asset, amount: stray.amount.toString() },
                 ),
               );
@@ -1445,10 +1462,10 @@ export const useRequestsStore = defineStore("requests", () => {
           sourceId,
           ref.tradeN,
           depositRouteOf(ref),
-          (free) => {
-            if (watching.stopped) return;
-            void observe(ref, chainReading(free, requestsNow()));
-            if (free > 0n) stopDepositWatch();
+          (free, finality) => {
+            if (changed(finality, free.toString())) {
+              void observe(ref, chainReading(free, requestsNow(), finality));
+            }
           },
           failed,
         );
@@ -1471,10 +1488,10 @@ export const useRequestsStore = defineStore("requests", () => {
     watching.stopped = true;
     watching.unsubscribe?.();
   }
-  /** The watch follows the request on screen while it awaits its deposit, hosted, and not
-   *  otherwise. */
+  /** The watch follows the request on screen until its deposit is final on the burner, hosted,
+   *  and not otherwise. */
   function syncDepositWatch(): void {
-    if (isHosted() && foregroundAwaiting()) startDepositWatch();
+    if (isHosted() && foregroundFollowsDeposit()) startDepositWatch();
     else stopDepositWatch();
   }
   watch(
@@ -1482,8 +1499,12 @@ export const useRequestsStore = defineStore("requests", () => {
     (awaitingKey) => {
       if (awaitingKey !== null) startForegroundClock();
       else stopForegroundClock();
-      syncDepositWatch();
     },
+    { immediate: true },
+  );
+  watch(
+    () => (foregroundFollowsDeposit() ? foreground.value : null),
+    () => syncDepositWatch(),
     { immediate: true },
   );
 
@@ -2122,13 +2143,19 @@ export const useRequestsStore = defineStore("requests", () => {
     });
   }
 
-  /** A burner's balance as the chain's own sighting of the request. A direct deposit's watch
-   *  passes what it found in the other direct tokens too. */
-  const chainReading = (free: bigint, at: number, stray?: StrayDeposit | null): Observation => ({
+  /** A burner's balance as the chain's own sighting of the request, at a best block unless the
+   *  watch read it final. A direct deposit's watch passes what it found in the other direct tokens
+   *  too. */
+  const chainReading = (
+    free: bigint,
+    at: number,
+    finality: Finality = "best",
+    stray?: StrayDeposit | null,
+  ): Observation => ({
     source: "chain",
     at,
     burnerNative: free.toString(),
-    finality: "best",
+    finality,
     via: "probe",
     ...(stray === undefined ? {} : { stray }),
   });

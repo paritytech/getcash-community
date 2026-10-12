@@ -27,6 +27,7 @@ import {
   type WorkerJobView,
 } from "../model";
 import {
+  burnerFinal,
   burnerSighted,
   burnerSightingRetracted,
   chainflipObserved,
@@ -128,8 +129,8 @@ const atSideExit = (record: TopUpRecord): boolean =>
 
 /** A positive money observation: moves a rank-0 record (or a side exit left from rank 0) to
  *  deposit-seen, and firms up a provisional sighting. Never touches a record past rank 1. Money
- *  on the burner itself (the worker, the faucet, a chain read, the pre-cancel read) is also
- *  recorded as the burner sighting. */
+ *  on the burner itself (the worker, a chain read, the pre-cancel read) is also recorded as the
+ *  burner sighting. */
 function moneySeen(
   record: TopUpRecord,
   at: number,
@@ -442,8 +443,22 @@ const workerSawFunds = (record: TopUpRecord): boolean => {
   return worker !== undefined && worker.known && worker.fundsSeenAt !== null;
 };
 
+/** The app's read of money on the burner: a money observation, and whatever the status, the
+ *  burner sighting and, when the read was final, the deposit final there. */
+function moneyOnBurner(record: TopUpRecord, { at, finality, via }: ChainObservation): TopUpRecord {
+  const final = finality === "finalized";
+  const seen = moneySeen(
+    record,
+    at,
+    final ? "finalized" : "provisional",
+    via === "probe" ? "chain" : via,
+  );
+  const sighted = burnerSighted(seen, at);
+  return final ? burnerFinal(sighted, at) : sighted;
+}
+
 function applyChain(record: TopUpRecord, observation: ChainObservation): TopUpRecord {
-  const { at, burnerNative, finality, block, via } = observation;
+  const { at, burnerNative, finality, block } = observation;
   const reading = { burnerNative, ...(block === undefined ? {} : { block }), at };
   const next: TopUpRecord = {
     ...witnessed(record, { chain: { ...record.witnesses.chain, [finality]: reading } }),
@@ -462,8 +477,7 @@ function applyChain(record: TopUpRecord, observation: ChainObservation): TopUpRe
         conflict: { source: "chain", note: "funds on a settled burner", at },
       });
     }
-    const assurance: Assurance = finality === "finalized" ? "finalized" : "provisional";
-    return moneySeen(next, at, assurance, via === "probe" ? "chain" : via);
+    return moneyOnBurner(next, observation);
   }
   // A zero read is never a money observation; a finalized one can only unwind a chain-provisional
   // sighting that nothing else has confirmed within the revert window.
@@ -490,12 +504,10 @@ function applyChain(record: TopUpRecord, observation: ChainObservation): TopUpRe
  * all clears a mismatch, since the buyer took the funds back; any other reading leaves it.
  */
 function applyDirectReading(record: TopUpRecord, observation: ChainObservation): TopUpRecord {
-  const { at, burnerNative, finality, via, stray } = observation;
+  const { at, burnerNative, stray } = observation;
   const held = BigInt(burnerNative);
   if (held > 0n && held >= directDepositGate(record)) {
-    const assurance: Assurance = finality === "finalized" ? "finalized" : "provisional";
-    const seen = moneySeen(record, at, assurance, via === "probe" ? "chain" : via);
-    return without(seen, ["depositMismatch"]);
+    return without(moneyOnBurner(record, observation), ["depositMismatch"]);
   }
   const found: Omit<DepositMismatchState, "at"> | null =
     stray && BigInt(stray.amount) > 0n

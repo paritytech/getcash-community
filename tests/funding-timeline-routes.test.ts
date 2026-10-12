@@ -366,6 +366,26 @@ describe("top-up timeline, shared route frame", () => {
     },
   );
 
+  it.each([
+    ["the app's finalized read alone", RECEIVED, null, RECEIVED],
+    ["the worker alone", undefined, RECEIVED, RECEIVED],
+    ["the app's read before the worker", RECEIVED, RECEIVED + 2 * SECOND, RECEIVED],
+    ["the worker before the app's read", RECEIVED + 2 * SECOND, RECEIVED, RECEIVED],
+  ] satisfies [string, number | undefined, number | null, number][])(
+    "reaches Received from %s",
+    (_, finalOnBurner, fundsSeenAt, receivedAt) => {
+      const now = RECEIVED + 3 * SECOND;
+      const observedAt = finalOnBurner === undefined ? {} : { "final-on-burner": finalOnBurner };
+      const { view } = openedTimeline(record({ observedAt }, { fundsSeenAt }), sentRoute, {
+        now,
+        watchingSince: now,
+      });
+
+      expect(marks(view)).toBe("●●●●○○○");
+      expect(view.lines[3]).toBeCloseTo(timeFill(now - receivedAt, 6 * SECOND) / 3, 10);
+    },
+  );
+
   it("makes Sent green when the funds are final before the provider reports it", () => {
     const { view, message } = openedTimeline(record({}, received), route, {
       now: RECEIVED,
@@ -374,6 +394,48 @@ describe("top-up timeline, shared route frame", () => {
 
     expect(marks(view)).toBe("●●●●○○○");
     expect(message).toEqual(normal("Converting your money to Cash"));
+  });
+});
+
+describe("top-up timeline, Sent on the provider routes", () => {
+  const EARLIER = SENT - 10 * SECOND;
+  const NOW = SENT + 12 * SECOND;
+  const providerRoutes = [
+    ["Chainflip", chainflipRoute, cryptoRecord(), "sent"],
+    ["Meld card", meldCardRoute, cardRecord(), "complete"],
+    ["Meld bank", meldBankRoute, cardRecord(), "complete"],
+  ] as const;
+  const cases = [
+    ["the burner sighting alone", undefined, SENT, SENT],
+    ["the provider's report alone", SENT, undefined, SENT],
+    ["the burner sighting before the report", SENT, EARLIER, EARLIER],
+    ["the report before the burner sighting", EARLIER, SENT, EARLIER],
+  ] satisfies [string, number | undefined, number | undefined, number][];
+
+  it.each(
+    providerRoutes.flatMap(([name, route, base, status]) =>
+      cases.map(([source, reportedAt, onBurner, sentAt]) => {
+        const observedAt = {
+          ...(reportedAt === undefined ? {} : { [status]: reportedAt }),
+          ...(onBurner === undefined ? {} : { "on-burner": onBurner }),
+        };
+        const topUp = { ...base, meldSubmittedAt: undefined, observedAt, witnesses: {} };
+        return [name, source, route, topUp, onBurner !== undefined, sentAt] as const;
+      }),
+    ),
+  )("reaches Sent on the %s route from %s", (_, __, route, topUp, seen, sentAt) => {
+    const timeline = openedTimeline(topUp, route, { now: NOW, watchingSince: NOW });
+
+    expect(marks(timeline.view)).toBe("●●●○○○○");
+    expect(timeline.view.lines[2]).toBeCloseTo(
+      seen ? 0.5 + 0.5 * timeFill(NOW - sentAt, 5 * MINUTE) : 0.5 * timeFill(NOW - sentAt, SEEN_T),
+      10,
+    );
+    expect({ message: timeline.message, awaiting: timeline.awaitingSentFunds }).toEqual(
+      seen
+        ? { message: normal("Making sure your money arrived safely"), awaiting: undefined }
+        : { message: normal("Your money is arriving"), awaiting: true },
+    );
   });
 });
 
