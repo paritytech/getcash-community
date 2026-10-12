@@ -91,7 +91,7 @@ describe("rail mapping", () => {
           stage: "failed",
           failure: {
             kind: "fallback-egress",
-            message: "Funds routed to a fallback chain. Contact support",
+            message: "Chainflip exchanged your funds but couldn't send them.",
           },
         },
       ],
@@ -181,7 +181,8 @@ describe("rail mapping", () => {
           stage: "failed",
           failure: {
             kind: "unknown",
-            message: "We could not confirm this payment. Contact support before trying again.",
+            message:
+              "We can't confirm your payment with the provider. Check your card statement before you pay again.",
             code: "unobserved",
           },
         },

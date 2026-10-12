@@ -1,4 +1,5 @@
 import type { TopUpRecord } from "../requests/model";
+import type { FailureDetails, PartFailure } from "./failure";
 import type { Fact, PhaseInput } from "./types";
 
 /** The message under the timeline. `delay` marks the route's delay text for the state. */
@@ -39,4 +40,7 @@ export interface TimelineRoute {
   /** When our last read of the provider, which moves phases 1 and 2, succeeded. */
   lastReadAt(record: TopUpRecord): number | undefined;
   text(record: TopUpRecord, index: ProviderPhaseIndex, state: TextState): TimelineText;
+  /** The failure of a top-up that ended outside the Polkadot part, which words its own. */
+  failure(record: TopUpRecord): PartFailure;
+  failureDetails(record: TopUpRecord): FailureDetails;
 }

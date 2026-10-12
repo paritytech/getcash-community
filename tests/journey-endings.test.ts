@@ -1,8 +1,7 @@
-// The ending rules the journey reads: whether a top-up expired, and what the bank transfer says
-// about an ending the adapter worded for a card.
+// The ending rule the journey reads: whether a top-up expired.
 
 import { describe, expect, it } from "vitest";
-import { bankEndingText, isExpiredEnding } from "../app/funding/journey-endings";
+import { isExpiredEnding } from "../app/funding/journey-endings";
 import { DEPOSIT_EXPIRED_REASON } from "../app/funding/requests/model";
 
 describe("journey endings", () => {
@@ -13,22 +12,5 @@ describe("journey endings", () => {
     // A named ending is not an expiry: it keeps its quote rows, which an expiry drops.
     expect(isExpiredEnding("deposit-rejected", "Top-up didn't go through.")).toBe(false);
     expect(isExpiredEnding(undefined, null)).toBe(false);
-  });
-
-  it("words the endings the adapter wrote for a card as a transfer's own", () => {
-    expect(bankEndingText("declined", "€50.55")).toBe(
-      "Your bank rejected the transfer. Check with your bank or try another account.",
-    );
-    expect(bankEndingText("refunded", "€50.55")).toBe(
-      "Your €50.55 has been returned to your bank account.",
-    );
-    // No quote to name the charge: the sentence still stands.
-    expect(bankEndingText("refunded", null)).toBe(
-      "Your transfer has been returned to your bank account.",
-    );
-    // The adapter's own message already fits these, so nothing is invented over it.
-    expect(bankEndingText("failed", "€50.55")).toBeNull();
-    expect(bankEndingText("unobserved", "€50.55")).toBeNull();
-    expect(bankEndingText(null, "€50.55")).toBeNull();
   });
 });

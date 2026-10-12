@@ -1,8 +1,18 @@
 // The Meld card and bank routes' provider part: Started, Accepted and Sent from Meld's statuses,
-// and one time-moved part in each of phases 1 and 2.
+// one time-moved part in each of phases 1 and 2, and their failures.
 
 import { formatWhenInline } from "../../utils/journey";
+import { fmtFiat } from "../../utils/money";
 import type { TopUpRecord } from "../requests/model";
+import { meldProviderName } from "../top-up-projection";
+import {
+  CLOSE,
+  START_OVER,
+  expiredEnding,
+  failureCode,
+  type FailureDetails,
+  type PartFailure,
+} from "./failure";
 import { factAt, observedFrom } from "./observed";
 import { delay, normal, type TextState, type TimelineMessage, type TimelineRoute } from "./route";
 import type { PhasePart } from "./types";
@@ -28,7 +38,58 @@ function startedAt(record: TopUpRecord): number | undefined {
 /** Meld `ERROR`: a temporary status the provider retries. */
 const providerError = (record: TopUpRecord): boolean => record.rail.delayed === true;
 
-/** What one Meld payment method sets in phases 1 and 2. */
+/** How a Meld payment ended, as the record can tell. */
+type MeldEnding = "declined" | "failed" | "expired" | "unobserved" | "refunded";
+
+/** The ending from the code the rail or core kept. An ending without a code the routes know reads
+ *  as `unobserved`: nothing tells that no money moved. */
+function meldEnding(record: TopUpRecord): MeldEnding {
+  if (expiredEnding(record)) return "expired";
+  switch (failureCode(record)) {
+    case "declined":
+      return "declined";
+    case "failed":
+    case "cancelled":
+    case "refused":
+      return "failed";
+    case "refunded":
+      return "refunded";
+    default:
+      return "unobserved";
+  }
+}
+
+/** Meld's own status behind each code that names exactly one. */
+const PROVIDER_STATUSES: Readonly<Record<string, string>> = {
+  declined: "DECLINED",
+  cancelled: "CANCELLED",
+  refunded: "REFUNDED",
+};
+
+/** The words a Meld failure text fills in: the provider, and what the payment was charged. */
+interface EndingWords {
+  readonly provider: string;
+  readonly charged?: string;
+}
+
+function endingWords(record: TopUpRecord): EndingWords {
+  const { sourceAmount, sourceSymbol } = record;
+  return {
+    provider: meldProviderName(record),
+    ...(sourceAmount && sourceSymbol ? { charged: fmtFiat(sourceAmount, sourceSymbol) } : {}),
+  };
+}
+
+function meldFailureDetails(record: TopUpRecord): FailureDetails {
+  const code = failureCode(record);
+  return {
+    provider: meldProviderName(record),
+    reason: code === undefined ? undefined : PROVIDER_STATUSES[code],
+    reference: record.meldFundingRequestId,
+  };
+}
+
+/** What one Meld payment method sets: phases 1 and 2, and the texts of its failures. */
 interface MeldMethod {
   /** Phase 1's one part. */
   readonly firstPart: PhasePart;
@@ -39,6 +100,7 @@ interface MeldMethod {
   firstDetail?(record: TopUpRecord, state: TextState): string | undefined;
   /** Phase 2's text on Meld `ERROR`. */
   readonly retryingText: string;
+  readonly failures: Readonly<Record<MeldEnding, (words: EndingWords) => PartFailure>>;
 }
 
 function meldRoute(method: MeldMethod): TimelineRoute {
@@ -68,6 +130,8 @@ function meldRoute(method: MeldMethod): TimelineRoute {
           : normal("Your money is on its way"),
       };
     },
+    failure: (record) => method.failures[meldEnding(record)](endingWords(record)),
+    failureDetails: meldFailureDetails,
   };
 }
 
@@ -79,6 +143,33 @@ export const meldCardRoute = meldRoute({
       ? delay("The payment provider hit a problem and is retrying. Don't pay again.")
       : normal("Checking your payment"),
   retryingText: "The payment provider is retrying the transfer. Don't pay again.",
+  failures: {
+    declined: () => ({
+      text: "Your bank declined the payment. No money was taken.",
+      action: START_OVER,
+    }),
+    failed: () => ({
+      text: "The payment didn't go through. No money was taken.",
+      action: START_OVER,
+    }),
+    expired: () => ({
+      text: "We didn't receive your payment. No money was taken.",
+      action: START_OVER,
+    }),
+    unobserved: ({ provider }) => ({
+      text: `We can't confirm your payment with ${provider}. Check your card statement before you pay again.`,
+      action: CLOSE,
+    }),
+    refunded: ({ provider, charged = "the money" }) => ({
+      text: `${provider} couldn't complete your top-up and is returning ${charged} to your card.`,
+      action: START_OVER,
+    }),
+  },
+});
+
+const notAccepted = (provider: string): PartFailure => ({
+  text: `${provider} couldn't accept your bank transfer and is returning the money to your bank account.`,
+  action: START_OVER,
 });
 
 /** Only shapes the line's curve: a bank transfer's time is opaque. */
@@ -96,4 +187,21 @@ export const meldBankRoute = meldRoute({
     return sentAt === undefined ? undefined : `Sent ${formatWhenInline(sentAt, locale, now)}`;
   },
   retryingText: "The payment provider is retrying the transfer. Don't send the money again.",
+  failures: {
+    declined: ({ provider }) => notAccepted(provider),
+    failed: ({ provider }) => notAccepted(provider),
+    // The transfer can still be on its way: a second one does not help.
+    expired: ({ provider }) => ({
+      text: `We haven't received your bank transfer. If it arrives later, ${provider} returns it to your bank account.`,
+      action: CLOSE,
+    }),
+    unobserved: ({ provider }) => ({
+      text: `We can't confirm your bank transfer with ${provider}. Check with your bank before you send the money again.`,
+      action: CLOSE,
+    }),
+    refunded: ({ provider }) => ({
+      text: `${provider} couldn't complete your top-up and is returning the money to your bank account.`,
+      action: START_OVER,
+    }),
+  },
 });

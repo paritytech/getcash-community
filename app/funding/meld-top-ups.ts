@@ -16,7 +16,12 @@ import {
   type TopUpTimelineOf,
 } from "./timeline/timelines";
 import type { FundingTopUpAdapter } from "./top-up-adapter";
-import { providerNameOf, quoteOf, referenceOf, type FundingTopUpRecord } from "./top-up-projection";
+import {
+  meldProviderName,
+  quoteOf,
+  referenceOf,
+  type FundingTopUpRecord,
+} from "./top-up-projection";
 import type { FundingTopUp, FundingTopUpDetails } from "./top-ups";
 
 export type MeldTopUpRecord = FundingTopUpRecord;
@@ -43,10 +48,8 @@ export const MELD_WINDOW_CLOSED_REASON = "Payment window closed";
 
 function topUpDetails(record: MeldTopUpRecord, method: MeldMethod): FundingTopUpDetails {
   return {
-    // The provider that actually took the payment when the record kept it; "Meld" is the
-    // aggregator, and all a record that kept neither of its names can say.
     provider: {
-      label: providerNameOf(record) ?? "Meld",
+      label: meldProviderName(record),
       icon: method === "card" ? "/icons/card.svg" : "/icons/bank.svg",
     },
     method: {

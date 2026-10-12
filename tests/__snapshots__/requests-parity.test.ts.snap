@@ -18,7 +18,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "1/79 list / top-up: waiting",
+    "scene": "1/80 list / top-up: waiting",
   },
   {
     "claimStage": null,
@@ -36,7 +36,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "2/79 list / top-up: converting",
+    "scene": "2/80 list / top-up: converting",
   },
   {
     "claimStage": null,
@@ -54,7 +54,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "3/79 list / top-up: adding",
+    "scene": "3/80 list / top-up: adding",
   },
   {
     "claimStage": null,
@@ -72,7 +72,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "4/79 list / top-up: retrying",
+    "scene": "4/80 list / top-up: retrying",
   },
   {
     "claimStage": null,
@@ -90,7 +90,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "5/79 list / top-up: taking longer",
+    "scene": "5/80 list / top-up: taking longer",
   },
   {
     "claimStage": null,
@@ -108,7 +108,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "6/79 list / top-up: settled",
+    "scene": "6/80 list / top-up: settled",
   },
   {
     "claimStage": null,
@@ -126,7 +126,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "7/79 list / top-up: all settled",
+    "scene": "7/80 list / top-up: all settled",
   },
   {
     "claimStage": null,
@@ -144,7 +144,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "8/79 list / top-ups: show more",
+    "scene": "8/80 list / top-ups: show more",
   },
   {
     "claimStage": null,
@@ -162,7 +162,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "9/79 list / top-ups: loading",
+    "scene": "9/80 list / top-ups: loading",
   },
   {
     "claimStage": null,
@@ -180,7 +180,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "10/79 list / history",
+    "scene": "10/80 list / history",
   },
   {
     "claimStage": null,
@@ -198,7 +198,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "11/79 list / history: empty",
+    "scene": "11/80 list / history: empty",
   },
   {
     "claimStage": null,
@@ -216,7 +216,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "12/79 list / history: loading",
+    "scene": "12/80 list / history: loading",
   },
   {
     "claimStage": null,
@@ -234,7 +234,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "13/79 list / history: error",
+    "scene": "13/80 list / history: error",
   },
   {
     "claimStage": null,
@@ -252,7 +252,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "14/79 crypto / network",
+    "scene": "14/80 crypto / network",
   },
   {
     "claimStage": null,
@@ -270,7 +270,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "15/79 crypto / network: loading",
+    "scene": "15/80 crypto / network: loading",
   },
   {
     "claimStage": null,
@@ -288,7 +288,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "16/79 crypto / network: too small",
+    "scene": "16/80 crypto / network: too small",
   },
   {
     "claimStage": null,
@@ -306,7 +306,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "17/79 crypto / network: paused",
+    "scene": "17/80 crypto / network: paused",
   },
   {
     "claimStage": null,
@@ -324,7 +324,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "18/79 crypto / network: not available yet",
+    "scene": "18/80 crypto / network: not available yet",
   },
   {
     "claimStage": null,
@@ -342,7 +342,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "19/79 crypto / token",
+    "scene": "19/80 crypto / token",
   },
   {
     "claimStage": null,
@@ -360,7 +360,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "20/79 crypto / deposit: opening",
+    "scene": "20/80 crypto / deposit: opening",
   },
   {
     "claimStage": null,
@@ -416,7 +416,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "1": 1746554100000,
     },
     "phase": "awaiting-deposit",
-    "scene": "21/79 crypto / deposit: waiting",
+    "scene": "21/80 crypto / deposit: waiting",
   },
   {
     "claimStage": null,
@@ -472,7 +472,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "1": 1746554100000,
     },
     "phase": "awaiting-deposit",
-    "scene": "22/79 crypto / deposit: cancel confirm",
+    "scene": "22/80 crypto / deposit: cancel confirm",
   },
   {
     "claimStage": null,
@@ -528,7 +528,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "1": 1746554100000,
     },
     "phase": "awaiting-deposit",
-    "scene": "23/79 crypto / deposit: less than asked",
+    "scene": "23/80 crypto / deposit: less than asked",
   },
   {
     "claimStage": null,
@@ -584,7 +584,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "1": 1746554100000,
     },
     "phase": "awaiting-deposit",
-    "scene": "24/79 crypto / deposit: different token",
+    "scene": "24/80 crypto / deposit: different token",
   },
   {
     "claimStage": null,
@@ -640,7 +640,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "1": 1746554100000,
     },
     "phase": "awaiting-deposit",
-    "scene": "25/79 crypto / deposit: faucet sent",
+    "scene": "25/80 crypto / deposit: faucet sent",
   },
   {
     "claimStage": null,
@@ -696,7 +696,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "1": 1746554100000,
     },
     "phase": "awaiting-deposit",
-    "scene": "26/79 crypto / deposit: faucet failed",
+    "scene": "26/80 crypto / deposit: faucet failed",
   },
   {
     "claimStage": null,
@@ -752,7 +752,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "1": 1746554100000,
     },
     "phase": "awaiting-deposit",
-    "scene": "27/79 crypto / deposit: expiring",
+    "scene": "27/80 crypto / deposit: expiring",
   },
   {
     "claimStage": null,
@@ -809,7 +809,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "1": 1746554100000,
     },
     "phase": "failed",
-    "scene": "28/79 crypto / deposit: expired",
+    "scene": "28/80 crypto / deposit: expired",
   },
   {
     "claimStage": null,
@@ -865,7 +865,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "1": 1746554100000,
     },
     "phase": "awaiting-deposit",
-    "scene": "29/79 crypto / convert: receiving",
+    "scene": "29/80 crypto / convert: receiving",
   },
   {
     "claimStage": null,
@@ -921,7 +921,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "1": 1746554100000,
     },
     "phase": "awaiting-deposit",
-    "scene": "30/79 crypto / convert: delayed",
+    "scene": "30/80 crypto / convert: delayed",
   },
   {
     "claimStage": null,
@@ -939,7 +939,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "31/79 card / summary: payment country",
+    "scene": "31/80 card / summary: payment country",
   },
   {
     "claimStage": null,
@@ -957,7 +957,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "32/79 card / picker: choose payment country",
+    "scene": "32/80 card / picker: choose payment country",
   },
   {
     "claimStage": null,
@@ -1019,7 +1019,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "2": 1746554272000,
     },
     "phase": "swapping",
-    "scene": "33/79 card / journey: payment",
+    "scene": "33/80 card / journey: payment",
   },
   {
     "claimStage": null,
@@ -1084,7 +1084,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "4": 1746554274000,
     },
     "phase": "swapping",
-    "scene": "34/79 card / journey: converting",
+    "scene": "34/80 card / journey: converting",
   },
   {
     "claimStage": null,
@@ -1146,7 +1146,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "2": 1746554272000,
     },
     "phase": "swapping",
-    "scene": "35/79 card / journey: delayed",
+    "scene": "35/80 card / journey: delayed",
   },
   {
     "claimStage": null,
@@ -1208,7 +1208,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "2": 1746554272000,
     },
     "phase": "swapping",
-    "scene": "36/79 card / journey: retrying (future)",
+    "scene": "36/80 card / journey: retrying (future)",
   },
   {
     "claimStage": null,
@@ -1271,7 +1271,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "2": 1746554272000,
     },
     "phase": "failed",
-    "scene": "37/79 card / journey: payment failed",
+    "scene": "37/80 card / journey: payment failed",
   },
   {
     "claimStage": null,
@@ -1334,7 +1334,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "2": 1746554272000,
     },
     "phase": "failed",
-    "scene": "38/79 card / journey: declined",
+    "scene": "38/80 card / journey: declined",
   },
   {
     "claimStage": null,
@@ -1397,7 +1397,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "2": 1746554272000,
     },
     "phase": "failed",
-    "scene": "39/79 card / journey: refunded",
+    "scene": "39/80 card / journey: refunded",
   },
   {
     "claimStage": null,
@@ -1415,7 +1415,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "40/79 card / refunded: from history",
+    "scene": "40/80 card / refunded: from history",
   },
   {
     "claimStage": null,
@@ -1433,7 +1433,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "41/79 card / refunded: provider unknown",
+    "scene": "41/80 card / refunded: provider unknown",
   },
   {
     "claimStage": null,
@@ -1451,7 +1451,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "42/79 crypto / expired: from history",
+    "scene": "42/80 crypto / expired: from history",
   },
   {
     "claimStage": null,
@@ -1469,7 +1469,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "43/79 card / expired: from history",
+    "scene": "43/80 card / expired: from history",
   },
   {
     "claimStage": null,
@@ -1512,13 +1512,13 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "schemaVersion": 1,
       "stageTimestamps": {},
     },
-    "fundingError": "We can no longer find this payment. Do not pay again. Contact support with your reference.",
+    "fundingError": "We can no longer find this payment. Do not pay again until you check your card statement.",
     "fundingNotice": null,
     "fundingStep": null,
     "fundsSeen": false,
     "journeyDone": 1,
     "meldDelayed": false,
-    "meldFailureMessage": "We can no longer find this payment. Do not pay again. Contact support with your reference.",
+    "meldFailureMessage": "We can no longer find this payment. Do not pay again until you check your card statement.",
     "meldHandedOff": false,
     "meldStage": "failed",
     "meldSubmitted": false,
@@ -1526,7 +1526,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "1": 1746554100000,
     },
     "phase": "failed",
-    "scene": "44/79 card / journey: unconfirmed",
+    "scene": "44/80 card / journey: unconfirmed",
   },
   {
     "claimStage": null,
@@ -1591,7 +1591,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "5": 1746554274000,
     },
     "phase": "done",
-    "scene": "45/79 card / journey: success",
+    "scene": "45/80 card / journey: success",
   },
   {
     "claimStage": null,
@@ -1609,7 +1609,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "46/79 bank / summary: payment country",
+    "scene": "46/80 bank / summary: payment country",
   },
   {
     "claimStage": null,
@@ -1627,7 +1627,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "47/79 bank / picker: choose payment country",
+    "scene": "47/80 bank / picker: choose payment country",
   },
   {
     "claimStage": null,
@@ -1645,7 +1645,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "48/79 bank / journey: opening",
+    "scene": "48/80 bank / journey: opening",
   },
   {
     "claimStage": null,
@@ -1701,7 +1701,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "1": 1746554100000,
     },
     "phase": "awaiting-deposit",
-    "scene": "49/79 bank / journey: transfer sent",
+    "scene": "49/80 bank / journey: transfer sent",
   },
   {
     "claimStage": null,
@@ -1757,7 +1757,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "1": 1746554100000,
     },
     "phase": "awaiting-deposit",
-    "scene": "50/79 bank / journey: cancel confirm",
+    "scene": "50/80 bank / journey: cancel confirm",
   },
   {
     "claimStage": null,
@@ -1819,7 +1819,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "2": 1746554273000,
     },
     "phase": "swapping",
-    "scene": "51/79 bank / journey: delayed",
+    "scene": "51/80 bank / journey: delayed",
   },
   {
     "claimStage": null,
@@ -1883,7 +1883,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "4": 1746554274000,
     },
     "phase": "swapping",
-    "scene": "52/79 bank / journey: transfer arrived",
+    "scene": "52/80 bank / journey: transfer arrived",
   },
   {
     "claimStage": null,
@@ -1946,7 +1946,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "5": 1746554275000,
     },
     "phase": "done",
-    "scene": "53/79 bank / journey: success",
+    "scene": "53/80 bank / journey: success",
   },
   {
     "claimStage": null,
@@ -2003,7 +2003,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "1": 1746554100000,
     },
     "phase": "failed",
-    "scene": "54/79 bank / journey: payment failed",
+    "scene": "54/80 bank / journey: payment failed",
   },
   {
     "claimStage": null,
@@ -2060,7 +2060,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "1": 1746554100000,
     },
     "phase": "failed",
-    "scene": "55/79 bank / journey: declined",
+    "scene": "55/80 bank / journey: declined",
   },
   {
     "claimStage": null,
@@ -2121,7 +2121,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "2": 1746554273000,
     },
     "phase": "swapping",
-    "scene": "56/79 bank / journey: rate changed",
+    "scene": "56/80 bank / journey: rate changed",
   },
   {
     "claimStage": null,
@@ -2178,7 +2178,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "1": 1746554100000,
     },
     "phase": "failed",
-    "scene": "57/79 bank / journey: refunded",
+    "scene": "57/80 bank / journey: refunded",
   },
   {
     "claimStage": null,
@@ -2234,7 +2234,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "1": 1746554100000,
     },
     "phase": "awaiting-deposit",
-    "scene": "58/79 crypto / convert: swapping",
+    "scene": "58/80 crypto / convert: swapping",
   },
   {
     "claimStage": null,
@@ -2290,7 +2290,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "1": 1746554100000,
     },
     "phase": "awaiting-deposit",
-    "scene": "59/79 crypto / convert: sending",
+    "scene": "59/80 crypto / convert: sending",
   },
   {
     "claimStage": null,
@@ -2354,7 +2354,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "4": 1746554272000,
     },
     "phase": "swapping",
-    "scene": "60/79 crypto / pipeline: swap",
+    "scene": "60/80 crypto / pipeline: swap",
   },
   {
     "claimStage": null,
@@ -2418,7 +2418,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "4": 1746554272000,
     },
     "phase": "swapping",
-    "scene": "61/79 crypto / pipeline: arrival wait",
+    "scene": "61/80 crypto / pipeline: arrival wait",
   },
   {
     "claimStage": null,
@@ -2482,7 +2482,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "4": 1746554272000,
     },
     "phase": "swapping",
-    "scene": "62/79 crypto / heal: reconnecting",
+    "scene": "62/80 crypto / heal: reconnecting",
   },
   {
     "claimStage": "prompted",
@@ -2547,7 +2547,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "4": 1746554272000,
     },
     "phase": "working",
-    "scene": "63/79 crypto / claim: consent",
+    "scene": "63/80 crypto / claim: consent",
   },
   {
     "claimStage": "crediting",
@@ -2612,7 +2612,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "4": 1746554272000,
     },
     "phase": "working",
-    "scene": "64/79 crypto / claim: crediting",
+    "scene": "64/80 crypto / claim: crediting",
   },
   {
     "claimStage": "prompted",
@@ -2677,7 +2677,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "4": 1746554272000,
     },
     "phase": "working",
-    "scene": "65/79 crypto / claim: verifying",
+    "scene": "65/80 crypto / claim: verifying",
   },
   {
     "claimStage": null,
@@ -2743,7 +2743,72 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "4": 1746554272000,
     },
     "phase": "failed",
-    "scene": "66/79 crypto / failed: recoverable",
+    "scene": "66/80 crypto / failed: recoverable",
+  },
+  {
+    "claimStage": null,
+    "claimedBase": null,
+    "foregroundSnapshot": {
+      "confirmedStageKey": "cash-conversion",
+      "detectedAt": 1746554272000,
+      "estimatedCompletionAt": 1746554812000,
+      "failedAt": 1746554273000,
+      "latestRouteStatus": "complete",
+      "preDetectionEstimateText": "≈10 min after your transfer",
+      "profile": {
+        "cadenceMs": 5000,
+        "expectedUserDelayMs": 600000,
+        "id": "direct",
+        "routeCompletedLabel": "Payment received",
+        "routeStageCount": 1,
+        "settledLabel": "Ready to spend",
+        "stages": [
+          {
+            "activeLabel": "Confirming your transfer",
+            "key": "direct-confirming",
+            "nodeLabel": "Confirmed",
+            "nominalMs": 120000,
+          },
+          {
+            "activeLabel": "Converting to $CASH",
+            "key": "cash-conversion",
+            "nodeLabel": "Converted",
+            "nominalMs": 480000,
+          },
+          {
+            "activeLabel": "Adding to your balance",
+            "key": "cash-top-up",
+            "nodeLabel": "Added",
+            "nominalMs": 60000,
+          },
+        ],
+        "startedNodeLabel": "Payment seen",
+        "version": 1,
+        "waitingLabel": "Waiting for your transfer",
+      },
+      "routeCompletedAt": 1746554272000,
+      "schemaVersion": 1,
+      "stageTimestamps": {
+        "cash-conversion": 1746554272000,
+      },
+    },
+    "fundingError": "CASH can't be minted right now. Your funds are safe at this request's deposit address; try again later.",
+    "fundingNotice": null,
+    "fundingStep": "swap",
+    "fundsSeen": true,
+    "journeyDone": 1,
+    "meldDelayed": false,
+    "meldFailureMessage": null,
+    "meldHandedOff": false,
+    "meldStage": null,
+    "meldSubmitted": false,
+    "milestones": {
+      "1": 1746554100000,
+      "2": 1746554272000,
+      "4": 1746554272000,
+    },
+    "phase": "failed",
+    "scene": "67/80 crypto / failed: conversion held",
   },
   {
     "claimStage": null,
@@ -2800,7 +2865,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "1": 1746554100000,
     },
     "phase": "failed",
-    "scene": "67/79 crypto / failed: refunded",
+    "scene": "68/80 crypto / failed: refunded",
   },
   {
     "claimStage": null,
@@ -2818,7 +2883,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "68/79 crypto / refunded: from history",
+    "scene": "69/80 crypto / refunded: from history",
   },
   {
     "claimStage": null,
@@ -2875,7 +2940,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "1": 1746554100000,
     },
     "phase": "failed",
-    "scene": "69/79 crypto / refund key: USDT on Tron",
+    "scene": "70/80 crypto / refund key: USDT on Tron",
   },
   {
     "claimStage": null,
@@ -2932,7 +2997,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "1": 1746554100000,
     },
     "phase": "failed",
-    "scene": "70/79 crypto / refund key: TRX on Tron",
+    "scene": "71/80 crypto / refund key: TRX on Tron",
   },
   {
     "claimStage": null,
@@ -2989,7 +3054,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "1": 1746554100000,
     },
     "phase": "failed",
-    "scene": "71/79 crypto / refund key: BTC on Bitcoin",
+    "scene": "72/80 crypto / refund key: BTC on Bitcoin",
   },
   {
     "claimStage": null,
@@ -3046,7 +3111,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "1": 1746554100000,
     },
     "phase": "failed",
-    "scene": "72/79 crypto / refund key: ETH on Ethereum",
+    "scene": "73/80 crypto / refund key: ETH on Ethereum",
   },
   {
     "claimStage": null,
@@ -3103,7 +3168,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "1": 1746554100000,
     },
     "phase": "failed",
-    "scene": "73/79 crypto / refund key: USDC on Ethereum",
+    "scene": "74/80 crypto / refund key: USDC on Ethereum",
   },
   {
     "claimStage": null,
@@ -3160,7 +3225,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "1": 1746554100000,
     },
     "phase": "failed",
-    "scene": "74/79 crypto / refund key: USDT on Ethereum",
+    "scene": "75/80 crypto / refund key: USDT on Ethereum",
   },
   {
     "claimStage": null,
@@ -3217,7 +3282,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "1": 1746554100000,
     },
     "phase": "failed",
-    "scene": "75/79 crypto / refund key: SOL on Solana",
+    "scene": "76/80 crypto / refund key: SOL on Solana",
   },
   {
     "claimStage": null,
@@ -3274,7 +3339,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "1": 1746554100000,
     },
     "phase": "failed",
-    "scene": "76/79 crypto / refund key: USDC on Solana",
+    "scene": "77/80 crypto / refund key: USDC on Solana",
   },
   {
     "claimStage": null,
@@ -3331,7 +3396,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "1": 1746554100000,
     },
     "phase": "failed",
-    "scene": "77/79 crypto / refund key: USDT on Solana",
+    "scene": "78/80 crypto / refund key: USDT on Solana",
   },
   {
     "claimStage": null,
@@ -3390,7 +3455,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
       "5": 1746554273000,
     },
     "phase": "done",
-    "scene": "78/79 crypto / success",
+    "scene": "79/80 crypto / success",
   },
   {
     "claimStage": null,
@@ -3408,7 +3473,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldSubmitted": false,
     "milestones": {},
     "phase": null,
-    "scene": "79/79 crypto / resume spinner",
+    "scene": "80/80 crypto / resume spinner",
   },
 ]
 `;
@@ -3627,6 +3692,16 @@ exports[`request list projection > projects the fixture records exactly as today
         "reason": "shortfall: the deposit is below the swap minimum",
       },
       "timeline": {
+        "failure": {
+          "action": {
+            "kind": "close",
+          },
+          "details": {
+            "provider": "Chainflip",
+            "reason": undefined,
+          },
+          "text": "Chainflip couldn't accept your BTC.",
+        },
         "view": {
           "failed": 0,
           "lines": [
@@ -4059,6 +4134,16 @@ exports[`request list projection > projects the fixture records with live status
         "reason": "funding failed in the background",
       },
       "timeline": {
+        "failure": {
+          "action": {
+            "kind": "try-again",
+          },
+          "details": {
+            "provider": "Chainflip",
+            "reason": undefined,
+          },
+          "text": "We received less Cash than expected. Your money is safe, and you won't need to pay again.",
+        },
         "view": {
           "failed": 4,
           "lines": [
@@ -4254,6 +4339,16 @@ exports[`request list projection > projects the fixture records with live status
         "reason": "shortfall: the deposit is below the swap minimum",
       },
       "timeline": {
+        "failure": {
+          "action": {
+            "kind": "close",
+          },
+          "details": {
+            "provider": "Chainflip",
+            "reason": undefined,
+          },
+          "text": "Chainflip couldn't accept your BTC.",
+        },
         "view": {
           "failed": 0,
           "lines": [

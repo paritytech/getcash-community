@@ -247,10 +247,14 @@ const FAILURE_KINDS: readonly FailureKind[] = [
 ];
 const FAILURE_STEPS: readonly FailureStep[] = ["deposit", "swap", "mint"];
 
+/** The message of a Chainflip swap whose send to Asset Hub failed or went to the fallback. */
+export const CHAINFLIP_SEND_FAILED_MESSAGE =
+  "Chainflip exchanged your funds but couldn't send them.";
+
 const REFUND_FAILED: PaymentFailure = {
   kind: "refund-failed",
   step: "swap",
-  message: "The refund failed. Contact support with the deposit channel id.",
+  message: "Chainflip couldn't return your funds.",
   recoverable: false,
 };
 
@@ -281,9 +285,7 @@ function mapSwapFailure(r: SwapStatusResult): PaymentFailure {
     return {
       kind: r.swapEgressFailure.kind ?? "egress-failed",
       step: "swap",
-      message:
-        r.swapEgressFailure.reason?.message ??
-        "Swap egress failed; funds stuck on Chainflip. Contact support",
+      message: r.swapEgressFailure.reason?.message ?? CHAINFLIP_SEND_FAILED_MESSAGE,
       recoverable: false,
       ...failureCode(r.swapEgressFailure),
     };
@@ -292,7 +294,7 @@ function mapSwapFailure(r: SwapStatusResult): PaymentFailure {
     return {
       kind: "fallback-egress",
       step: "swap",
-      message: "Funds routed to a fallback chain. Contact support",
+      message: CHAINFLIP_SEND_FAILED_MESSAGE,
       recoverable: false,
     };
   }

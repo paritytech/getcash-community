@@ -623,15 +623,16 @@ function finishedTopUpId({ sourceId, tradeN }: FinishedTopUp): string {
 const SETTLED: PreviewEnding = { kind: "settled" };
 const EXPIRED: PreviewEnding = { kind: "expired" };
 
-/** A failure of `kind` as core reports it, with the reason the row and its journey show. */
+/** A failure of `kind` as core reports it, with the reason the row and its journey show, the
+ *  rail's code for it, and the refund that followed. */
 function failedWith(
   kind: PaymentFailure["kind"],
   message: string,
-  refund?: RefundProgress,
+  { code, refund }: { code?: string; refund?: RefundProgress } = {},
 ): PreviewEnding {
   return {
     kind: "failed",
-    failure: { kind, step: "deposit", message, recoverable: false },
+    failure: { kind, step: "deposit", message, recoverable: false, ...(code ? { code } : {}) },
     ...(refund === undefined ? {} : { refund }),
   };
 }
@@ -656,7 +657,9 @@ const HISTORY = {
     meld: { serviceProvider: "TRANSAK", fundingRequestId: "a1f9c3d2-4c2e-4a71-9f0b-6d5e8c2b1a03" },
     startedMinutesAgo: DAY + 3 * HOUR,
     endedMinutesAgo: DAY + 3 * HOUR - 2,
-    ending: failedWith("deposit-rejected", "The card issuer declined the payment"),
+    ending: failedWith("deposit-rejected", "The card issuer declined the payment", {
+      code: "declined",
+    }),
   },
   refundedSwap: {
     ...BITCOIN_SWAP,
@@ -668,8 +671,11 @@ const HISTORY = {
     // Base units, as the rail reports them: 0.00043 BTC at 8 decimals. Less than the 0.00045
     // deposit: the refund pays its own network fees on the way back.
     ending: failedWith("refunded", "The rate moved too far to complete the swap", {
-      amount: "43000",
-      txRef: "7f1c9b2e4d6a8c0f1e3b5d7a9c2e4f6081a3c5e7",
+      refund: {
+        amount: "43000",
+        txRef: "7f1c9b2e4d6a8c0f1e3b5d7a9c2e4f6081a3c5e7",
+        witnessedAt: Date.now() - (3 * DAY - 30) * MINUTE,
+      },
     }),
   },
   refundedCard: {
@@ -680,7 +686,7 @@ const HISTORY = {
     meld: { serviceProvider: "TRANSAK", fundingRequestId: "b7e4a10c-9d31-4f62-8ab5-3c0f7e19d248" },
     startedMinutesAgo: 4 * DAY,
     endedMinutesAgo: 4 * DAY - 6,
-    ending: failedWith("refunded", "Refunded to your card"),
+    ending: failedWith("deposit-rejected", "Refunded to your card", { code: "refunded" }),
   },
   // The oldest history: the funding-request id was always persisted, so the reference is there,
   // but neither of the provider's names was kept, not the create call's, not the quote's.
@@ -694,7 +700,7 @@ const HISTORY = {
     providerKept: false,
     startedMinutesAgo: 9 * DAY,
     endedMinutesAgo: 9 * DAY - 5,
-    ending: failedWith("refunded", "Refunded to your card"),
+    ending: failedWith("deposit-rejected", "Refunded to your card", { code: "refunded" }),
   },
   // The two expired endings: the day-long deposit window closed with nothing paid, so the journey
   // shows no money rows, card included, although its route would otherwise get the failure
@@ -1074,7 +1080,7 @@ function stageFor(scene: Scene): PreviewStage {
 
 /** The store's own message for a payment the adapter no longer knows. */
 const MELD_GONE_MESSAGE =
-  "We can no longer find this payment. Do not pay again. Contact support with your reference.";
+  "We can no longer find this payment. Do not pay again until you check your card statement.";
 
 const CARD_PAYMENT_FAILED: PaymentState = {
   phase: "failed",
@@ -1083,7 +1089,8 @@ const CARD_PAYMENT_FAILED: PaymentState = {
     kind: "deposit-rejected",
     step: "deposit",
     message: "Top-up didn't go through. No money was taken.",
-    recoverable: true,
+    recoverable: false,
+    code: "failed",
   },
 } as PaymentState;
 
@@ -1094,7 +1101,8 @@ const CARD_DECLINED: PaymentState = {
     kind: "deposit-rejected",
     step: "deposit",
     message: "Your bank declined the payment. Check your card details or try another card.",
-    recoverable: true,
+    recoverable: false,
+    code: "declined",
   },
 } as PaymentState;
 
@@ -1105,7 +1113,8 @@ const CARD_REFUNDED: PaymentState = {
     kind: "deposit-rejected",
     step: "deposit",
     message: "Your top-up didn't go through. Your 52.06 USD has been returned to your card.",
-    recoverable: true,
+    recoverable: false,
+    code: "refunded",
   },
 } as PaymentState;
 
@@ -1460,8 +1469,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    // Meld FAILED: terminal, nothing was charged. The design's inline "Try again" is our own
-    // retry system (re-request the payment); the button is shown here, its action lands later.
+    // Meld FAILED: terminal, nothing was charged, so the way on is a fresh top-up.
     name: "card / journey: payment failed",
     apply: async (s, f, i) => {
       const r = await cardPayment(s, f, i);
@@ -1469,9 +1477,8 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    // Meld DECLINED: the bank refused the card; the message is the `declined` mapping's. The
-    // design labels the button "Try another card" and routes it to card entry; the action lands
-    // later, and the adapter emitting `declined` is unconfirmed (today it flattens to `failed`).
+    // Meld DECLINED: the bank refused the card. The adapter emitting `declined` is unconfirmed
+    // (today it flattens to `failed`).
     name: "card / journey: declined",
     apply: async (s, f, i) => {
       const r = await cardPayment(s, f, i);
@@ -1480,9 +1487,7 @@ export const SCENES: Scene[] = [
   },
   {
     // Meld REFUNDED: terminal, the charge was captured and returned; per Meld it cannot be
-    // retried, only replaced by a fresh top-up. The message is what getMeldStatus composes from
-    // the adapter's reported terms. The design labels the button "Add money again" and starts a
-    // new transaction; the action lands later, and the adapter emitting `refunded` is unconfirmed.
+    // retried, only replaced by a fresh top-up. The adapter emitting `refunded` is unconfirmed.
     name: "card / journey: refunded",
     apply: async (s, f, i) => {
       const r = await cardPayment(s, f, i);
@@ -1491,7 +1496,7 @@ export const SCENES: Scene[] = [
   },
   {
     // The same refund read off the list's own record, with nothing live behind it. The receipt
-    // rows must survive the request being gone: they come from the record, not the session.
+    // and the failure details must survive the request being gone: they come from the record.
     name: "card / refunded: from history",
     stage: { kind: "journey", route: "card", topUpId: finishedTopUpId(HISTORY.refundedCard) },
     apply: topUpList({ finished: PREVIEW_HISTORY, entry: "history" }),
@@ -1522,12 +1527,11 @@ export const SCENES: Scene[] = [
     apply: topUpList({ finished: PREVIEW_HISTORY, entry: "history" }),
   },
   {
-    // No Start over here: the rail could not tell whether the buyer was charged, and a second
+    // Close, not Start over: the rail could not tell whether the buyer was charged, and a second
     // payment would risk charging them twice.
     name: "card / journey: unconfirmed",
     apply: async (s, f, i) => {
       cardJourney(s, f);
-      // The reference is the whole point of this ending: the message asks the buyer for it.
       const r = await previewRequest(s, { sourceId: "meld-card", index: i, meld: PREVIEW_MELD });
       // The adapter's terminal 404, which the reducer ends `unobserved`: the payment was never
       // reported, so the record must not be re-opened from here.
@@ -1768,6 +1772,27 @@ export const SCENES: Scene[] = [
           recoverable: true,
         },
       } as PaymentState);
+    },
+  },
+  {
+    // The PSM refused the mint three times and the worker held the deposit: Converted fails, the
+    // money stays on the top-up's account, and Try again re-runs the conversion.
+    name: "crypto / failed: conversion held",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "swap");
+      await r.observe({
+        source: "worker",
+        at: r.at(1),
+        job: {
+          phase: "failed",
+          done: false,
+          failure: "held",
+          fundsSeenAt: r.at(0),
+          lastTickAt: r.at(1),
+          claim: null,
+          psmRefusals: 3,
+        },
+      });
     },
   },
   {

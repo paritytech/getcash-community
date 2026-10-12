@@ -69,7 +69,8 @@ const FAILURES: Readonly<Record<string, { message: string; kind: FailureKind }>>
     kind: "deposit-rejected",
   },
   unobserved: {
-    message: "We could not confirm this payment. Contact support before trying again.",
+    message:
+      "We can't confirm your payment with the provider. Check your card statement before you pay again.",
     kind: "unknown",
   },
 });

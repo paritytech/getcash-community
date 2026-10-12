@@ -57,7 +57,7 @@ describe("getMeldStatus", () => {
     ],
     [
       "unobserved",
-      "We could not confirm this payment. Contact support before trying again.",
+      "We can't confirm your payment with the provider. Check your card statement before you pay again.",
       "unknown",
     ],
   ])("maps %s to failed with a reason that says which", async (status, message, kind) => {
@@ -133,7 +133,10 @@ describe("getMeldStatus", () => {
   });
 
   it.each([
-    ["unobserved", "We could not confirm this payment. Contact support before trying again."],
+    [
+      "unobserved",
+      "We can't confirm your payment with the provider. Check your card statement before you pay again.",
+    ],
     ["expired", "The payment window closed before the payment arrived."],
     ["refused", "The payment was declined before it started."],
   ])(

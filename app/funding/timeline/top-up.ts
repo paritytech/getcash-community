@@ -1,20 +1,24 @@
 import type { TopUpRecord } from "../requests/model";
+import type { TimelineFailure } from "./failure";
 import { timelineView } from "./model";
 import {
   depositOnBurner,
+  polkadotFailure,
   polkadotMilestones,
   polkadotPhase,
   polkadotText,
   workerTickAt,
 } from "./polkadot";
 import type { ProviderPhaseIndex, TimelineMessage, TimelineRoute } from "./route";
-import type { PhaseIndex, TimelineView } from "./types";
+import type { MilestoneIndex, PhaseIndex, TimelineView } from "./types";
 
 export interface TopUpTimeline {
   readonly view: TimelineView;
   /** Absent once the top-up failed or is done. */
   readonly message?: TimelineMessage;
   readonly detail?: string;
+  /** Present once the top-up failed. */
+  readonly failure?: TimelineFailure;
   /** The provider sent the funds, they are not seen yet, and the reads are fresh. */
   readonly awaitingSentFunds?: boolean;
 }
@@ -42,6 +46,16 @@ function failedAt({ status }: TopUpRecord): number | undefined {
   return status.kind === "failed" || status.kind === "expired" ? status.at : undefined;
 }
 
+/** The failure of a top-up whose `failed` milestone is red. */
+function failureOf(
+  record: TopUpRecord,
+  route: TimelineRoute,
+  failed: MilestoneIndex,
+): TimelineFailure {
+  const part = polkadotFailure(record, failed) ?? route.failure(record);
+  return { ...part, details: route.failureDetails(record) };
+}
+
 /** The timeline of a top-up on its route, never behind the view shown before. Absent until it
  *  opens with the deposit, unless the top-up ended before. */
 export function topUpTimeline(
@@ -60,7 +74,8 @@ export function topUpTimeline(
     previous,
   });
   if (view === undefined) return undefined;
-  if (view.state === "done" || view.state === "failed") return { view };
+  if (view.state === "done") return { view };
+  if (view.state === "failed") return { view, failure: failureOf(record, route, view.failed) };
 
   const state = { delayed: view.state === "delayed", now, locale };
   const providerPhase = isProviderPhase(view.phase);

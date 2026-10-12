@@ -122,7 +122,7 @@ function fakeWebStorage(): WebStorageLike {
 
 const MINUTE = 60_000;
 const MELD_GONE =
-  "We can no longer find this payment. Do not pay again. Contact support with your reference.";
+  "We can no longer find this payment. Do not pay again until you check your card statement.";
 
 /** The ref a fixture is stored under: its own source id and trade number. */
 const refOf = (record: ActiveFlowRecord): RequestRef =>

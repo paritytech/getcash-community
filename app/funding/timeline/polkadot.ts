@@ -1,8 +1,9 @@
 // The part of the timeline every route shares: Received and the Polkadot milestones, phases 3 to
-// 6, and their texts.
+// 6, their texts, and the failures past the provider's part.
 
 import { cashAmount } from "../../utils/cash";
 import { conversionRouteOf, type DepositInBlock, type TopUpRecord } from "../requests/model";
+import { CLOSE, TRY_AGAIN, type PartFailure } from "./failure";
 import { factAt } from "./observed";
 import {
   delay,
@@ -12,7 +13,14 @@ import {
   type TimelineMessage,
   type TimelineText,
 } from "./route";
-import type { Fact, PhaseIndex, PhaseInput, PhasePart, ReachedMilestones } from "./types";
+import type {
+  Fact,
+  MilestoneIndex,
+  PhaseIndex,
+  PhaseInput,
+  PhasePart,
+  ReachedMilestones,
+} from "./types";
 
 const SECOND = 1_000;
 const MINUTE = 60 * SECOND;
@@ -201,4 +209,50 @@ export function polkadotText(
         ),
       };
   }
+}
+
+const MONEY_SAFE = "Your money is safe, and you won't need to pay again.";
+
+const POLKADOT_FAILURES = {
+  held: `We couldn't convert your money to Cash. ${MONEY_SAFE}`,
+  conversionTimeout: `Converting to Cash took too long. ${MONEY_SAFE}`,
+  shortfall: `We received less Cash than expected. ${MONEY_SAFE}`,
+  arrivalTimeout: `Getting your Cash ready took too long. ${MONEY_SAFE}`,
+  notClaimed: `We couldn't add Cash to your balance. ${MONEY_SAFE}`,
+} as const;
+
+const ADDED: MilestoneIndex = 6;
+const MOVED: MilestoneIndex = 5;
+
+/** The cause of a Polkadot part failure, from the worker's failure and the red milestone. A
+ *  failure the worker did not name is core's, which fails only the claim. */
+function polkadotCause(
+  record: TopUpRecord,
+  failed: MilestoneIndex,
+): keyof typeof POLKADOT_FAILURES {
+  switch (workerOf(record)?.failure) {
+    case "held":
+      return "held";
+    case "shortfall":
+      return "shortfall";
+    case "timeout":
+      if (failed === ADDED) return "notClaimed";
+      return failed === MOVED ? "arrivalTimeout" : "conversionTimeout";
+    default:
+      return "notClaimed";
+  }
+}
+
+/** The failure of a top-up past the provider's part: the conversion, the move or the claim. Absent
+ *  for any other failure. */
+export function polkadotFailure(
+  record: TopUpRecord,
+  failed: MilestoneIndex,
+): PartFailure | undefined {
+  const failure = record.failure;
+  if (failure?.kind !== "mint" && failure?.kind !== "under-credit") return undefined;
+  return {
+    text: POLKADOT_FAILURES[polkadotCause(record, failed)],
+    action: failure.recoverable ? TRY_AGAIN : CLOSE,
+  };
 }

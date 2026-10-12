@@ -164,7 +164,7 @@ const WORKER_NOT_RUNNING =
 
 /** Today's message for a payment the adapter no longer knows; a 404 never self-heals. */
 const MELD_GONE_MESSAGE =
-  "We can no longer find this payment. Do not pay again. Contact support with your reference.";
+  "We can no longer find this payment. Do not pay again until you check your card statement.";
 /** Consecutive "not found" answers before a payment is declared gone: one 404 can be an adapter restart. */
 const MELD_GONE_AFTER = 3;
 

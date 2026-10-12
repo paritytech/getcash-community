@@ -1,7 +1,16 @@
-// The Chainflip route's provider part: Started, Accepted and Sent from Chainflip's statuses, and
-// phases 1 and 2 from its progress facts.
+// The Chainflip route's provider part: Started, Accepted and Sent from Chainflip's statuses,
+// phases 1 and 2 from its progress facts, and its failures.
 
+import { formatSourceAmount, SOURCE_CONFIGS } from "@getsome/chainflip";
 import type { ChainflipFacts, TopUpRecord } from "../requests/model";
+import {
+  CLOSE,
+  CRYPTO_EXPIRED_TEXT,
+  expiredEnding,
+  withReason,
+  type FailureAction,
+  type PartFailure,
+} from "./failure";
 import { factAt, observedFrom } from "./observed";
 import { delay, normal, type TimelineRoute, type TimelineText } from "./route";
 import type { PhaseInput, PhasePart } from "./types";
@@ -165,6 +174,79 @@ function exchangeText(record: TopUpRecord, facts: ChainflipFacts, now: number): 
   };
 }
 
+/** Chainflip's own reason for the failure: the record keeps its message with its code. */
+const chainflipReason = ({ failure }: TopUpRecord): string | undefined =>
+  failure?.code === undefined ? undefined : failure.message;
+
+/** The amount Chainflip returned, in the token that was sent, when it can be read. */
+function returnedAmount(record: TopUpRecord, amount: string): string | undefined {
+  const source = SOURCE_CONFIGS.find(
+    ({ chain, asset }) => chain === record.chain && asset === record.asset,
+  );
+  if (source === undefined) return undefined;
+  try {
+    return formatSourceAmount(source, amount);
+  } catch {
+    return undefined;
+  }
+}
+
+/** A swap that did not fill: Chainflip returns the deposit to the refund key. */
+function refundFailure(record: TopUpRecord, source: string): PartFailure {
+  const action: FailureAction = { kind: "get-back", source, from: "refund-key" };
+  const { amount, witnessedAt } = record.failure?.refund ?? {};
+  const returned =
+    witnessedAt === undefined || amount === undefined ? undefined : returnedAmount(record, amount);
+  return {
+    text:
+      returned === undefined
+        ? `The exchange didn't go through. Your ${source} is being returned, and you can move it to your own wallet.`
+        : `The exchange didn't go through. ${returned} ${source} was returned, minus fees. You can move it to your own wallet.`,
+    action,
+  };
+}
+
+function chainflipFailure(record: TopUpRecord): PartFailure {
+  const source = record.asset;
+  const reason = chainflipReason(record);
+  if (expiredEnding(record)) return { text: CRYPTO_EXPIRED_TEXT, action: CLOSE };
+  switch (record.failure?.kind) {
+    case "refunded":
+      return refundFailure(record, source);
+    case "refund-failed":
+      return {
+        text: withReason(
+          `The exchange didn't go through, and Chainflip couldn't return your ${source}`,
+          reason,
+        ),
+        action: CLOSE,
+      };
+    case "egress-failed":
+    case "fallback-egress":
+      return {
+        text: withReason(`Chainflip exchanged your ${source} but couldn't send it`, reason),
+        action: CLOSE,
+      };
+  }
+  switch (record.failure?.code) {
+    case "BelowMinimumDeposit":
+      return {
+        text: `Your ${source} was below the minimum, so Chainflip couldn't exchange it. Chainflip doesn't return deposits below the minimum.`,
+        action: CLOSE,
+      };
+    case "NotEnoughToPayFees":
+      return {
+        text: `Your ${source} was too small to pay the network fees, so Chainflip couldn't exchange it.`,
+        action: CLOSE,
+      };
+    default:
+      return {
+        text: withReason(`Chainflip couldn't accept your ${source}`, reason),
+        action: CLOSE,
+      };
+  }
+}
+
 export const chainflipRoute: TimelineRoute = {
   milestones: (record) => ({
     started: factAt(reachedAt(record, "receiving")),
@@ -197,4 +279,6 @@ export const chainflipRoute: TimelineRoute = {
       detail: countdown(facts.egressScheduledAt, estimated(facts, "egress"), now),
     };
   },
+  failure: chainflipFailure,
+  failureDetails: (record) => ({ provider: "Chainflip", reason: chainflipReason(record) }),
 };

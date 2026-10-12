@@ -1,8 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { migrateRecord } from "../app/funding/requests/migrate";
-import type { ChainflipFacts, TopUpRecord } from "../app/funding/requests/model";
+import type { ChainflipFacts, RequestFailure, TopUpRecord } from "../app/funding/requests/model";
 import { chainflipRoute } from "../app/funding/timeline/chainflip";
 import { directRoute } from "../app/funding/timeline/direct";
+import {
+  CLOSE,
+  CRYPTO_EXPIRED_TEXT,
+  START_OVER,
+  TRY_AGAIN,
+  type FailureAction,
+  type FailureDetails,
+  type PartFailure,
+} from "../app/funding/timeline/failure";
 import { meldBankRoute, meldCardRoute } from "../app/funding/timeline/meld";
 import { lastReached, PART_LIMIT } from "../app/funding/timeline/model";
 import type { TimelineMessage, TimelineRoute } from "../app/funding/timeline/route";
@@ -36,6 +45,8 @@ const route: TimelineRoute = {
   seenExpectedMs: SEEN_T,
   lastReadAt: () => undefined,
   text: () => ({ message: { text: "Provider text", delay: false } }),
+  failure: () => ({ text: "Provider failure", action: CLOSE }),
+  failureDetails: () => ({}),
 };
 const sentRoute: TimelineRoute = {
   ...route,
@@ -897,6 +908,373 @@ describe("top-up timeline, route by record", () => {
       expect(timeline && { marks: marks(timeline.view), message: timeline.message }).toEqual(
         expected,
       );
+    },
+  );
+});
+
+describe("top-up timeline, failures", () => {
+  const NOW = SENT + HOUR;
+  const PROVIDER = "Transak";
+  const REFERENCE = "mfr-fixture-card-2";
+  const CARD_STARTED = { provider: PROVIDER, reference: REFERENCE };
+
+  /** `topUp` ended by `failure`, as core or the rail fails a record. */
+  function failed(topUp: TopUpRecord, failure: Partial<RequestFailure> = {}): TopUpRecord {
+    const recoverable = failure.recoverable ?? false;
+    return {
+      ...topUp,
+      status: { kind: "failed", at: SENT, recoverable },
+      failure: {
+        kind: "deposit-rejected",
+        step: "deposit",
+        message: "Rejected",
+        recoverable,
+        ...failure,
+      },
+    };
+  }
+
+  /** `topUp` whose deposit window closed unpaid. */
+  const expired = (topUp: TopUpRecord): TopUpRecord => ({
+    ...topUp,
+    status: { kind: "expired", at: SENT },
+    failure: { kind: "expired", step: "deposit", message: "Channel expired", recoverable: false },
+  });
+
+  /** A Meld payment the adapter no longer knows: the rail keeps `unobserved`, the record none. */
+  const unobserved = (topUp: TopUpRecord): TopUpRecord =>
+    failed(
+      {
+        ...topUp,
+        rail: {
+          ...topUp.rail,
+          status: "failed",
+          stage: "failed",
+          failure: { kind: "unknown", message: "Gone", code: "unobserved" },
+        },
+      },
+      { kind: "unknown", message: "Gone" },
+    );
+
+  const card = (): TopUpRecord => ({ ...cardRecord(), meldServiceProvider: "TRANSAK" });
+  const bank = (): TopUpRecord => ({ ...card(), ref: requestRefOf("meld-bank", 2), asset: "Bank" });
+  const unpaid = (topUp: TopUpRecord): TopUpRecord => ({ ...topUp, meldSubmittedAt: undefined });
+  const swap = (): TopUpRecord => ({ ...cryptoRecord(), observedAt: { receiving: SENT } });
+
+  const failureOf = (topUp: TopUpRecord) => createTopUpTimelines()(topUp, NOW)?.failure;
+
+  type Row = [string, TopUpRecord, string, FailureAction, FailureDetails];
+
+  const cardRows: Row[] = [
+    [
+      "a declined card",
+      failed(card(), { code: "declined" }),
+      "Your bank declined the payment. No money was taken.",
+      START_OVER,
+      { ...CARD_STARTED, reason: "DECLINED" },
+    ],
+    [
+      "a failed payment",
+      failed(card(), { code: "failed" }),
+      "The payment didn't go through. No money was taken.",
+      START_OVER,
+      CARD_STARTED,
+    ],
+    [
+      "a cancelled payment",
+      failed(card(), { code: "cancelled" }),
+      "The payment didn't go through. No money was taken.",
+      START_OVER,
+      { ...CARD_STARTED, reason: "CANCELLED" },
+    ],
+    [
+      "a payment Meld cannot be asked about",
+      unobserved(card()),
+      "We can't confirm your payment with Transak. Check your card statement before you pay again.",
+      CLOSE,
+      CARD_STARTED,
+    ],
+    [
+      "an ending with no code",
+      failed(card()),
+      "We can't confirm your payment with Transak. Check your card statement before you pay again.",
+      CLOSE,
+      CARD_STARTED,
+    ],
+    [
+      "a refunded payment",
+      failed(card(), { code: "refunded" }),
+      "Transak couldn't complete your top-up and is returning $52.06 to your card.",
+      START_OVER,
+      { ...CARD_STARTED, reason: "REFUNDED" },
+    ],
+    [
+      "a refund with no provider or charge kept",
+      failed(
+        { ...cardRecord(), sourceAmount: undefined, sourceSymbol: undefined },
+        { code: "refunded" },
+      ),
+      "Meld couldn't complete your top-up and is returning the money to your card.",
+      START_OVER,
+      { provider: "Meld", reason: "REFUNDED", reference: REFERENCE },
+    ],
+  ];
+
+  const bankRows: Row[] = [
+    ...(["failed", "declined", "cancelled"] as const).map((code): Row => [
+      `a transfer ended ${code}`,
+      failed(bank(), { code }),
+      "Transak couldn't accept your bank transfer and is returning the money to your bank account.",
+      START_OVER,
+      { ...CARD_STARTED, reason: code === "failed" ? undefined : code.toUpperCase() },
+    ]),
+    [
+      "a transfer Meld cannot be asked about",
+      unobserved(bank()),
+      "We can't confirm your bank transfer with Transak. Check with your bank before you send the money again.",
+      CLOSE,
+      CARD_STARTED,
+    ],
+    [
+      "a refunded transfer",
+      failed(bank(), { code: "refunded" }),
+      "Transak couldn't complete your top-up and is returning the money to your bank account.",
+      START_OVER,
+      { ...CARD_STARTED, reason: "REFUNDED" },
+    ],
+  ];
+
+  const chainflip = (reason?: string): FailureDetails => ({ provider: "Chainflip", reason });
+  const getBtcBack: FailureAction = { kind: "get-back", source: "BTC", from: "refund-key" };
+  const chainflipRows: Row[] = [
+    [
+      "a deposit below the minimum",
+      failed(swap(), { code: "BelowMinimumDeposit", message: "Below minimum" }),
+      "Your BTC was below the minimum, so Chainflip couldn't exchange it. Chainflip doesn't return deposits below the minimum.",
+      CLOSE,
+      chainflip("Below minimum"),
+    ],
+    [
+      "a deposit too small for the fees",
+      failed(swap(), { code: "NotEnoughToPayFees", message: "Not enough to pay fees" }),
+      "Your BTC was too small to pay the network fees, so Chainflip couldn't exchange it.",
+      CLOSE,
+      chainflip("Not enough to pay fees"),
+    ],
+    [
+      "a deposit rejected for another reason",
+      failed(swap(), { code: "TransactionRejected", message: "The deposit was rejected" }),
+      "Chainflip couldn't accept your BTC: The deposit was rejected",
+      CLOSE,
+      chainflip("The deposit was rejected"),
+    ],
+    [
+      "a deposit rejected without Chainflip's reason",
+      failed(swap()),
+      "Chainflip couldn't accept your BTC.",
+      CLOSE,
+      chainflip(),
+    ],
+    [
+      "a refund on its way",
+      failed(swap(), { kind: "refunded", refund: { amount: "43000" } }),
+      "The exchange didn't go through. Your BTC is being returned, and you can move it to your own wallet.",
+      getBtcBack,
+      chainflip(),
+    ],
+    [
+      "a refund Chainflip witnessed",
+      failed(swap(), { kind: "refunded", refund: { amount: "43000", witnessedAt: SENT } }),
+      "The exchange didn't go through. 0.00043 BTC was returned, minus fees. You can move it to your own wallet.",
+      getBtcBack,
+      chainflip(),
+    ],
+    [
+      "a refund that failed",
+      failed(swap(), { kind: "refund-failed" }),
+      "The exchange didn't go through, and Chainflip couldn't return your BTC.",
+      CLOSE,
+      chainflip(),
+    ],
+    [
+      "a send to Asset Hub that failed",
+      failed(swap(), { kind: "egress-failed", code: "EgressFailed", message: "Egress failed" }),
+      "Chainflip exchanged your BTC but couldn't send it: Egress failed",
+      CLOSE,
+      chainflip("Egress failed"),
+    ],
+    [
+      "a send routed to the fallback",
+      failed(swap(), { kind: "fallback-egress" }),
+      "Chainflip exchanged your BTC but couldn't send it.",
+      CLOSE,
+      chainflip(),
+    ],
+  ];
+
+  const direct = (): TopUpRecord => ({
+    ...cryptoRecord(POLKADOT_DOT),
+    observedAt: { "on-burner": SENT },
+  });
+  const directRows: Row[] = [
+    [
+      "a direct deposit that expired short",
+      expired(direct()),
+      CRYPTO_EXPIRED_TEXT,
+      { kind: "get-back", source: "DOT", from: "deposit-account" },
+      {},
+    ],
+    [
+      "a direct deposit that expired with another token",
+      expired({
+        ...direct(),
+        depositMismatch: { kind: "token", asset: "USDT", amount: "1000000", at: SENT },
+      }),
+      CRYPTO_EXPIRED_TEXT,
+      { kind: "get-back", source: "USDT", from: "deposit-account" },
+      {},
+    ],
+    [
+      "a direct deposit that failed otherwise",
+      failed(direct(), { kind: "unknown", message: "The deposit could not be read" }),
+      "The deposit could not be read",
+      CLOSE,
+      {},
+    ],
+  ];
+
+  it.each([...cardRows, ...bankRows, ...chainflipRows, ...directRows])(
+    "words %s",
+    (_, topUp, text, action, details) => {
+      expect(failureOf(topUp)).toEqual({ text, action, details });
+    },
+  );
+
+  it.each([
+    [
+      "the card window closed before a payment",
+      expired(unpaid(card())),
+      { text: "We didn't receive your payment. No money was taken.", action: START_OVER },
+    ],
+    [
+      "the bank window closed before a transfer",
+      expired(unpaid(bank())),
+      {
+        text: "We haven't received your bank transfer. If it arrives later, Transak returns it to your bank account.",
+        action: CLOSE,
+      },
+    ],
+    [
+      "Meld unobserved before any payment",
+      unobserved(unpaid(card())),
+      {
+        text: "We can't confirm your payment with Transak. Check your card statement before you pay again.",
+        action: CLOSE,
+      },
+    ],
+    [
+      "the deposit window closed with no deposit",
+      expired(cryptoRecord()),
+      { text: CRYPTO_EXPIRED_TEXT, action: CLOSE },
+    ],
+  ] satisfies [string, TopUpRecord, PartFailure][])(
+    "fails Started when %s",
+    (_, topUp, expected) => {
+      const timeline = createTopUpTimelines()(topUp, NOW);
+      expect(timeline && marks(timeline.view)).toBe("✕○○○○○○");
+      expect(timeline?.failure).toMatchObject(expected);
+    },
+  );
+
+  const SAFE = "Your money is safe, and you won't need to pay again.";
+  /** A card top-up the worker or core failed past Received, with the worker's `cause`. */
+  function polkadot(
+    facts: Partial<TopUpRecord>,
+    cause?: string,
+    failure: Partial<RequestFailure> = {},
+  ): TopUpRecord {
+    const kind = failure.kind ?? "mint";
+    return failed(
+      record(facts, { ...received, ...(cause === undefined ? {} : { failure: cause }) }),
+      {
+        kind,
+        step: "swap",
+        recoverable: true,
+        ...failure,
+      },
+    );
+  }
+  const moved = { converted, observedAt: { "cash-on-people": MOVED } };
+
+  it.each([
+    [
+      "the PSM held the mint",
+      polkadot({}, "held"),
+      "✕",
+      `We couldn't convert your money to Cash. ${SAFE}`,
+      TRY_AGAIN,
+    ],
+    [
+      "the conversion ran out of time",
+      polkadot({}, "timeout"),
+      "✕",
+      `Converting to Cash took too long. ${SAFE}`,
+      TRY_AGAIN,
+    ],
+    [
+      "less Cash arrived on People",
+      polkadot({ converted }, "shortfall"),
+      "●✕",
+      `We received less Cash than expected. ${SAFE}`,
+      TRY_AGAIN,
+    ],
+    [
+      "the arrival ran out of time",
+      polkadot({ converted }, "timeout"),
+      "●✕",
+      `Getting your Cash ready took too long. ${SAFE}`,
+      TRY_AGAIN,
+    ],
+    [
+      "the claim ran out of time",
+      polkadot(moved, "timeout"),
+      "●●✕",
+      `We couldn't add Cash to your balance. ${SAFE}`,
+      TRY_AGAIN,
+    ],
+    [
+      "the Host added nothing",
+      polkadot(moved, "claim"),
+      "●●✕",
+      `We couldn't add Cash to your balance. ${SAFE}`,
+      TRY_AGAIN,
+    ],
+    [
+      "core failed the claim",
+      polkadot(moved),
+      "●●✕",
+      `We couldn't add Cash to your balance. ${SAFE}`,
+      TRY_AGAIN,
+    ],
+    [
+      "core found the credit short",
+      polkadot(moved, undefined, { kind: "under-credit", recoverable: false }),
+      "●●✕",
+      `We couldn't add Cash to your balance. ${SAFE}`,
+      CLOSE,
+    ],
+  ] satisfies [string, TopUpRecord, string, string, FailureAction][])(
+    "words the Polkadot part when %s",
+    (_, topUp, polkadotMarks, text, action) => {
+      const timeline = createTopUpTimelines()(topUp, NOW);
+      expect(timeline && marks(timeline.view).slice(4, 4 + polkadotMarks.length)).toBe(
+        polkadotMarks,
+      );
+      expect(timeline?.failure).toEqual({
+        text,
+        action,
+        details: { provider: "Meld", reference: REFERENCE },
+      });
     },
   );
 });
