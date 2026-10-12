@@ -1,20 +1,20 @@
 <script setup lang="ts">
-// The sale before the seller verifies: the CASH leaving the balance, the payout country, what the
-// provider says it pays out for the exact figure the key will send, and what comes back of the
-// part held for the price to move. Continue opens the provider's page for KYC; nothing is asked of
-// the balance until the provider names where the funds go.
+// The sale before the seller verifies: the CASH leaving the balance, the payout country, the least
+// the provider says it pays out, and how long it takes. The caption opens the fee drill-in once the
+// sale is priced. Continue opens the provider's page for KYC; nothing is asked of the balance until
+// the provider names where the funds go.
 import { computed } from "vue";
+import { ChevronRight } from "lucide-vue-next";
 import type { MeldSellQuote } from "../../composables/useMeldSellQuote";
-import { asName } from "../../funding/top-up-projection";
-import { backCashText } from "../../withdraw/sale-back";
-import { fmtFiat, isMoneyAmount } from "../../utils/money";
+import { groupAmountDigits } from "../../utils/cash";
+import { fmtFiat } from "../../utils/money";
 import CashAmount from "../ui/CashAmount.vue";
-import DetailRows, { type DetailRow } from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
 import RegionRow from "../ui/RegionRow.vue";
 import SkeletonBlock from "../ui/SkeletonBlock.vue";
 
 const props = defineProps<{
+  method: "card" | "bank";
   /** The CASH leaving the balance, as typed. */
   amount: string;
   quote: MeldSellQuote | null;
@@ -28,27 +28,8 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{ continue: []; fees: []; region: [] }>();
 
-const rows = computed<DetailRow[]>(() => {
-  const q = props.quote;
-  if (q === null) return [];
-  const { line, fiat } = q;
-  const out: DetailRow[] = [
-    { label: "You'll receive", value: `≈ ${fmtFiat(line.destinationAmount, fiat)}` },
-    { label: "Paid out by", value: asName(line.serviceProvider) },
-  ];
-  if (isMoneyAmount(line.totalFee) && Number(line.totalFee) > 0) {
-    out.push({ label: "Fees", value: fmtFiat(line.totalFee, fiat), fees: true });
-  }
-  const back = backCashText(q.backCash);
-  if (back !== null) out.push({ label: "Back to your balance", value: `≈ ${back}` });
-  return out;
-});
-
-/** Why part of the amount comes back, or why at this amount it does not. */
-const heldBack = computed(() =>
-  props.quote !== null && props.quote.backCash > 0n
-    ? "Part of the amount is held back in case the price moves while you verify. What the payout does not use comes back to your balance once the provider is paid."
-    : "Part of the amount is held back in case the price moves while you verify. At this amount, what the payout does not use is too small to send back.",
+const minPayout = computed(() =>
+  props.quote === null ? null : fmtFiat(props.quote.line.destinationAmount, props.quote.fiat),
 );
 
 const canContinue = computed(
@@ -58,9 +39,20 @@ const canContinue = computed(
 
 <template>
   <div class="flex min-h-0 flex-1 flex-col">
-    <div class="flex flex-col items-center text-center">
-      <p class="text-display-l text-fg-primary"><CashAmount :amount="amount" /></p>
-      <p class="mt-1 text-body-m text-fg-secondary">From your balance inc. fees</p>
+    <div class="flex flex-col items-center gap-1 text-center">
+      <p class="text-display-xl text-fg-primary">
+        <CashAmount :amount="groupAmountDigits(amount)" />
+      </p>
+      <button
+        v-if="quote"
+        type="button"
+        class="flex items-center gap-2 text-body-m text-fg-secondary"
+        @click="emit('fees')"
+      >
+        From your balance inc. fees
+        <ChevronRight class="size-4" aria-hidden="true" />
+      </button>
+      <p v-else class="text-body-m text-fg-secondary">From your balance inc. fees</p>
     </div>
 
     <div class="mt-8 flex flex-col gap-4">
@@ -72,23 +64,25 @@ const canContinue = computed(
         :country="country"
         @open="emit('region')"
       />
-      <div v-if="loading" class="flex flex-col gap-4">
-        <div v-for="n in 2" :key="n" class="flex h-6 items-center justify-between">
-          <SkeletonBlock class="h-4 w-2/5" />
-          <SkeletonBlock class="h-4 w-1/5" />
+      <template v-if="!error">
+        <div class="flex items-start justify-between gap-4">
+          <span class="text-paragraph-l text-fg-primary">Min. Payout</span>
+          <SkeletonBlock v-if="loading || !minPayout" class="mt-1 h-4 w-1/5" />
+          <span v-else class="text-heading-m text-fg-primary">{{ minPayout }}</span>
         </div>
-      </div>
-      <DetailRows v-else-if="quote" :rows="rows" @fees="emit('fees')" />
+        <div class="flex items-start justify-between gap-4">
+          <span class="text-paragraph-l text-fg-primary">Arrives</span>
+          <span v-if="method === 'card'" class="text-right text-heading-m text-fg-primary">
+            A few minutes
+          </span>
+          <span v-else class="text-right text-heading-m text-fg-primary">
+            Your bank can take up to<br />2 days to process
+          </span>
+        </div>
+      </template>
     </div>
 
     <p v-if="error" class="mt-6 text-body-m text-fg-error" role="alert">{{ error }}</p>
-    <template v-else-if="quote">
-      <p class="mt-6 text-body-s text-fg-tertiary">
-        The provider verifies you and asks where to pay you out. Your balance is only charged once
-        that is done, and the amount you receive is confirmed by the provider when it pays out.
-      </p>
-      <p class="mt-2 text-body-s text-fg-tertiary">{{ heldBack }}</p>
-    </template>
     <p v-if="startError" class="mt-4 text-body-m text-fg-error" role="alert">{{ startError }}</p>
 
     <PillButton class="mt-auto mb-6 w-full" :disabled="!canContinue" @click="emit('continue')">
