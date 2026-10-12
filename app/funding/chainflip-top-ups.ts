@@ -22,7 +22,7 @@ export type ChainflipTopUpRecord = FundingTopUpRecord;
 
 /** A top-up's id: the route, then the request's identity (`crypto:dot-assethub#12`). Parsed by
  *  `chainflipRequestRef`. */
-const topUpId = (ref: RequestRef) => `crypto:${requestRefKey(ref)}`;
+export const chainflipTopUpId = (ref: RequestRef) => `crypto:${requestRefKey(ref)}`;
 
 /** The rows whose progress no longer moves on its own. */
 const FINISHED = new Set<TopUpRecord["status"]["kind"]>(["settled", "failed", "expired"]);
@@ -69,7 +69,7 @@ export function projectChainflipTopUps(
     const timeline = timelineOf(record, now);
     return [
       {
-        id: topUpId(ref),
+        id: chainflipTopUpId(ref),
         amount: record.amountHuman,
         route: "crypto" as const,
         startedAt: record.startedAt,

@@ -2,7 +2,7 @@
 // drive the requests store with the observations a real purchase would produce; Ctrl+Shift+R
 // reloads the page.
 
-import type { PaymentState, SourceId } from "@getsome/core";
+import type { PaymentFailure, PaymentState, RefundProgress, SourceId } from "@getsome/core";
 import { SOURCE_CONFIG_BY_ID, type SourceFloorResult } from "@getsome/chainflip";
 import {
   advanceFundingProgressSnapshot,
@@ -10,23 +10,21 @@ import {
   fundingProgressSignalForPaymentState,
   progressProviderForSource,
 } from "../funding/progress";
-import { CRYPTO_SOURCE_ID } from "../funding/source-ids";
+import { chainflipTopUpId, projectChainflipTopUps } from "../funding/chainflip-top-ups";
+import { meldTopUpId, projectMeldTopUps } from "../funding/meld-top-ups";
+import { CRYPTO_SOURCE_ID, isMeldSourceId, meldMethodFor } from "../funding/source-ids";
 import {
   DEFAULT_DEPOSIT_WINDOW_MS,
   railProviderOf,
   routeOf,
   type Observation,
-  type RequestRecord,
+  type TopUpRecord,
 } from "../funding/requests/model";
+import { applyTopUp } from "../funding/requests/transitions/top-up";
+import { createTopUpTimelines } from "../funding/timeline/timelines";
 import { createMockCoinageSession } from "~~/lib/coinage";
 import { isDemoBuild } from "./demo";
-import {
-  previewQuote,
-  previewTopUp,
-  previewTopUpHistory,
-  previewTopUpScene,
-  type PreviewTopUpScene,
-} from "./dev-preview-top-ups";
+import { previewQuote, previewTopUpScene, type PreviewTopUpScene } from "./dev-preview-top-ups";
 import type { FundingTopUp, StoredQuote } from "../funding/top-ups";
 import { previewStage, type PreviewStage } from "./dev-preview-stage";
 import { useFlowStore } from "../stores/flow";
@@ -256,51 +254,41 @@ interface PreviewRequest {
   observe: (observation: Observation) => Promise<void>;
 }
 
-/** Creates the scene's request, awaiting its deposit, and puts it on screen. The deck cycles, so
- *  a request the scene made before is removed first. */
-async function previewRequest(
-  session: Session,
-  opts: {
-    sourceId: SourceId;
-    index: number;
-    /** Which of the scene's requests this is; a list scene seeds several. */
-    slot?: number;
-    /** Leave the request off screen, for a scene whose subject is the list rather than one
-     *  request's own screen. */
-    foreground?: boolean;
-    deposit?: { expiresAt: number };
-    /** What the buyer sent, as the record names it. Defaults to what the source id implies; a
-     *  crypto record's source id is the rail's, so the coin has to be said separately. */
-    display?: { chain: string; asset: string };
-    /** CASH asked for. Defaults to the session's, which every single-request scene has set. */
-    amountHuman?: string;
-    /** How long ago the request was opened. */
-    startedMinutesAgo?: number;
-    /** The rail's persisted quote: what the list and a reopened journey read their money row off,
-     *  and the split the fee breakdown behind it itemizes. */
-    quote?: StoredQuote;
-    /** The buyer's region, as a fiat record keeps it. */
-    meldCountry?: string;
-    /** What the Meld create call captured: the provider that took the payment, and the funding
-     *  request's id. The record keeps both, as a real card request's does, and the failed journey
-     *  shows the id as the payment's reference. */
-    meld?: { serviceProvider: string; fundingRequestId: string };
-  },
-): Promise<PreviewRequest> {
-  const requests = useRequestsStore();
-  const { sourceId } = opts;
-  const ref: RequestRef = { sourceId, tradeN: 900 + opts.index * 10 + (opts.slot ?? 0) };
-  if (requests.has(ref)) await requests.remove(ref);
-  const now = Date.now();
-  const startedAt = now - (opts.startedMinutesAgo ?? 5) * 60_000;
+interface PreviewRecordOptions {
+  sourceId: SourceId;
+  tradeN: number;
+  /** CASH asked for. */
+  amountHuman: string;
+  startedAt: number;
+  deposit?: { expiresAt: number };
+  /** What the buyer sent, as the record names it. Defaults to what the source id implies; a
+   *  crypto record's source id is the rail's, so the coin has to be said separately. */
+  display?: { chain: string; asset: string };
+  /** The rail's persisted quote: what the list and a reopened journey read their money row off,
+   *  and the split the fee breakdown behind it itemizes. */
+  quote?: StoredQuote;
+  /** The buyer's region, as a fiat record keeps it. */
+  meldCountry?: string;
+  /** What the Meld create call captured: the provider that took the payment, and the funding
+   *  request's id. The record keeps both, as a real card request's does, and the failed journey
+   *  shows the id as the payment's reference. */
+  meld?: { serviceProvider?: string; fundingRequestId: string };
+  /** False for a fiat record from before either of the provider's names was kept. */
+  providerKept?: boolean;
+}
+
+/** A request awaiting its deposit, as `persistActiveFlow` writes it. */
+function previewRecord(opts: PreviewRecordOptions, now: number): TopUpRecord {
+  const { sourceId, startedAt } = opts;
+  const ref: RequestRef = { sourceId, tradeN: opts.tradeN };
   const expiresAt = opts.deposit?.expiresAt ?? 0;
   const config = SOURCE_CONFIG_BY_ID.get(sourceId);
   const display =
     opts.display ??
     DISPLAY[sourceId] ??
     (config ? { chain: config.chain, asset: config.asset } : { chain: sourceId, asset: sourceId });
-  // As `persistActiveFlow` writes it: the initial snapshot moved by core's first state. The bank
-  // transfer's ingress is the store's own day-long one, so its progress crawls as a real one does.
+  // The initial snapshot moved by core's first state. The bank transfer's ingress is the store's
+  // own day-long one, so its progress crawls as a real one does.
   const provider = progressProviderForSource(sourceId);
   const ingressDurationMs = INGRESS_MS[sourceId];
   const initial = createFundingProgressSnapshot(
@@ -316,13 +304,13 @@ async function previewRequest(
     opening === null
       ? initial
       : advanceFundingProgressSnapshot(initial, { ...opening, at: startedAt });
-  const record: RequestRecord = {
+  return {
     schema: 2,
     kind: "top-up",
     ref,
     rev: 0,
     updatedAt: now,
-    amountHuman: opts.amountHuman ?? session.amountHuman,
+    amountHuman: opts.amountHuman,
     ...display,
     startedAt,
     depositAddress: DEPOSIT.address,
@@ -337,7 +325,7 @@ async function previewRequest(
     ...(sourceId === "meld-card" || sourceId === "meld-bank"
       ? {
           meldFundingRequestId: `preview-funding-${ref.tradeN}`,
-          sourceProvider: "TRANSAK",
+          ...(opts.providerKept === false ? {} : { sourceProvider: "TRANSAK" }),
         }
       : {}),
     ...(opts.quote
@@ -355,7 +343,7 @@ async function previewRequest(
     ...(opts.meldCountry ? { meldCountry: opts.meldCountry } : {}),
     ...(opts.meld
       ? {
-          meldServiceProvider: opts.meld.serviceProvider,
+          ...(opts.meld.serviceProvider ? { meldServiceProvider: opts.meld.serviceProvider } : {}),
           meldFundingRequestId: opts.meld.fundingRequestId,
         }
       : {}),
@@ -379,8 +367,41 @@ async function previewRequest(
     },
     witnesses: {},
   };
+}
+
+/** Creates the scene's request, awaiting its deposit, and puts it on screen. The deck cycles, so
+ *  a request the scene made before is removed first. */
+async function previewRequest(
+  session: Session,
+  opts: Omit<PreviewRecordOptions, "tradeN" | "amountHuman" | "startedAt"> & {
+    index: number;
+    /** Which of the scene's requests this is; a list scene seeds several. */
+    slot?: number;
+    /** Leave the request off screen, for a scene whose subject is the list rather than one
+     *  request's own screen. */
+    foreground?: boolean;
+    /** CASH asked for. Defaults to the session's, which every single-request scene has set. */
+    amountHuman?: string;
+    /** How long ago the request was opened. */
+    startedMinutesAgo?: number;
+  },
+): Promise<PreviewRequest> {
+  const { index, slot, foreground, amountHuman, startedMinutesAgo, ...recordOptions } = opts;
+  const requests = useRequestsStore();
+  const now = Date.now();
+  const record = previewRecord(
+    {
+      ...recordOptions,
+      tradeN: 900 + index * 10 + (slot ?? 0),
+      amountHuman: amountHuman ?? session.amountHuman,
+      startedAt: now - (startedMinutesAgo ?? 5) * 60_000,
+    },
+    now,
+  );
+  const { ref } = record;
+  if (requests.has(ref)) await requests.remove(ref);
   await requests.create(ref, record);
-  if (opts.foreground !== false) requests.setForeground(ref);
+  if (foreground !== false) requests.setForeground(ref);
   return {
     ref,
     at: (step) => now - 128_000 + step * 1_000,
@@ -510,6 +531,234 @@ async function seedRunningTopUps(
   }
   requests.leave();
 }
+
+/** What the crypto rail's records name. Its source id is the rail's, so the coin the buyer sent
+ *  is said separately, exactly as a real record says it. */
+const SENT_BITCOIN = { chain: "Bitcoin", asset: "BTC" };
+
+const MINUTE = 60_000;
+/** In minutes, as the finished top-ups count their times. */
+const HOUR = 60;
+const DAY = 24 * HOUR;
+
+/** How a finished preview top-up ended. */
+type PreviewEnding =
+  | { kind: "settled" }
+  /** Core's own failure, which the record words. */
+  | { kind: "failed"; failure: PaymentFailure; refund?: RefundProgress }
+  /** The deposit window closed with nothing paid. */
+  | { kind: "expired" };
+
+/** A top-up that has stopped moving, as the record it would have left. */
+type FinishedTopUp = Omit<PreviewRecordOptions, "amountHuman" | "startedAt" | "deposit"> & {
+  amount: string;
+  startedMinutesAgo: number;
+  endedMinutesAgo: number;
+  ending: PreviewEnding;
+};
+
+/** The observations a request reports from its opening to its ending: the deposit opens, the
+ *  payment is seen, then the ending. The app's own read of the account sees a crypto deposit; Meld
+ *  reports a fiat payment. An expiry is the clock finding the window closed unpaid. */
+function endingObservations(
+  sourceId: SourceId,
+  startedAt: number,
+  endedAt: number,
+  ending: PreviewEnding,
+): Observation[] {
+  const fromCore = (at: number, state: PaymentState): Observation => ({
+    source: "core",
+    at,
+    state,
+  });
+  const opened = fromCore(startedAt, awaitingDeposit(0, sourceId));
+  if (ending.kind === "expired") return [opened, { source: "clock", at: endedAt }];
+  const ended: PaymentState =
+    ending.kind === "settled"
+      ? ({ phase: "done", sourceId, result: { id: "preview", sourceId } } as PaymentState)
+      : {
+          phase: "failed",
+          sourceId,
+          failure: ending.failure,
+          ...(ending.refund === undefined ? {} : { refund: ending.refund }),
+        };
+  const paidAt = startedAt + 2 * MINUTE;
+  const paid: Observation = isMeldSourceId(sourceId)
+    ? fromCore(paidAt, swapping("receiving", sourceId))
+    : {
+        source: "chain",
+        at: paidAt,
+        burnerNative: DEPOSIT.amount.toString(),
+        finality: "best",
+        via: "probe",
+      };
+  return [opened, paid, fromCore(endedAt, ended)];
+}
+
+/**
+ * Finished top-ups as the adapters project their records. The records stay out of the store, so a
+ * journey opened from one of these rows has only the row to read, as one opened from history does.
+ */
+function finishedTopUps(topUps: readonly FinishedTopUp[]): FundingTopUp[] {
+  const now = Date.now();
+  const records = topUps.map(({ amount, startedMinutesAgo, endedMinutesAgo, ending, ...opts }) => {
+    const startedAt = now - startedMinutesAgo * MINUTE;
+    const quote = opts.quote ?? previewQuote(routeOf(opts.sourceId), amount);
+    const opened = previewRecord(
+      { ...opts, amountHuman: amount, startedAt, ...(quote === undefined ? {} : { quote }) },
+      now,
+    );
+    return endingObservations(
+      opts.sourceId,
+      startedAt,
+      now - endedMinutesAgo * MINUTE,
+      ending,
+    ).reduce(applyTopUp, opened);
+  });
+  const timelineOf = createTopUpTimelines();
+  return [
+    ...projectChainflipTopUps(records, now, timelineOf),
+    ...projectMeldTopUps(records, now, timelineOf),
+  ];
+}
+
+/** The id of a finished top-up's row, for a scene that opens its journey. */
+function finishedTopUpId({ sourceId, tradeN }: FinishedTopUp): string {
+  const ref = { sourceId, tradeN };
+  return isMeldSourceId(sourceId)
+    ? meldTopUpId(meldMethodFor(sourceId), ref)
+    : chainflipTopUpId(ref);
+}
+
+const SETTLED: PreviewEnding = { kind: "settled" };
+const EXPIRED: PreviewEnding = { kind: "expired" };
+
+/** A failure of `kind` as core reports it, with the reason the row and its journey show. */
+function failedWith(
+  kind: PaymentFailure["kind"],
+  message: string,
+  refund?: RefundProgress,
+): PreviewEnding {
+  return {
+    kind: "failed",
+    failure: { kind, step: "deposit", message, recoverable: false },
+    ...(refund === undefined ? {} : { refund }),
+  };
+}
+
+/** The finished top-ups behind the clock: a credit, a declined card, a refunded swap, an older
+ *  bank transfer. Shared by the launch simulation and the history scenes. */
+const HISTORY = {
+  creditedSwap: {
+    sourceId: CRYPTO_SOURCE_ID,
+    display: SENT_BITCOIN,
+    tradeN: 3,
+    amount: "80",
+    quote: { amount: "0.00072", symbol: "BTC" },
+    startedMinutesAgo: 6 * HOUR,
+    endedMinutesAgo: 6 * HOUR - 9,
+    ending: SETTLED,
+  },
+  declinedCard: {
+    sourceId: "meld-card",
+    tradeN: 4,
+    amount: "200",
+    quote: { amount: "212.40", symbol: "EUR", fee: "12.40" },
+    meld: { serviceProvider: "TRANSAK", fundingRequestId: "a1f9c3d2-4c2e-4a71-9f0b-6d5e8c2b1a03" },
+    startedMinutesAgo: DAY + 3 * HOUR,
+    endedMinutesAgo: DAY + 3 * HOUR - 2,
+    ending: failedWith("deposit-rejected", "The card issuer declined the payment"),
+  },
+  refundedSwap: {
+    sourceId: CRYPTO_SOURCE_ID,
+    display: SENT_BITCOIN,
+    tradeN: 5,
+    amount: "50",
+    quote: { amount: "0.00045", symbol: "BTC" },
+    startedMinutesAgo: 3 * DAY,
+    endedMinutesAgo: 3 * DAY - 14,
+    // Base units, as the rail reports them: 0.00043 BTC at 8 decimals. Less than the 0.00045
+    // deposit: the refund pays its own network fees on the way back.
+    ending: failedWith("refunded", "The rate moved too far to complete the swap", {
+      amount: "43000",
+      txRef: "7f1c9b2e4d6a8c0f1e3b5d7a9c2e4f6081a3c5e7",
+    }),
+  },
+  refundedCard: {
+    sourceId: "meld-card",
+    tradeN: 8,
+    amount: "50",
+    quote: { amount: "50.55", symbol: "EUR", fee: "0.55" },
+    meld: { serviceProvider: "TRANSAK", fundingRequestId: "b7e4a10c-9d31-4f62-8ab5-3c0f7e19d248" },
+    startedMinutesAgo: 4 * DAY,
+    endedMinutesAgo: 4 * DAY - 6,
+    ending: failedWith("refunded", "Refunded to your card"),
+  },
+  // The oldest history: the funding-request id was always persisted, so the reference is there,
+  // but neither of the provider's names was kept, not the create call's, not the quote's.
+  // `topUpDetails` names the aggregator rather than leaving the row blank.
+  refundedCardProviderUnknown: {
+    sourceId: "meld-card",
+    tradeN: 9,
+    amount: "30",
+    quote: { amount: "31.80", symbol: "EUR", fee: "1.80" },
+    meld: { fundingRequestId: "0f2c8d41-7b93-4e05-a1d6-84be3f7c0925" },
+    providerKept: false,
+    startedMinutesAgo: 9 * DAY,
+    endedMinutesAgo: 9 * DAY - 5,
+    ending: failedWith("refunded", "Refunded to your card"),
+  },
+  // The two expired endings: the day-long deposit window closed with nothing paid, so the journey
+  // says "Expired" and shows no money rows, card included, although its route would otherwise get
+  // the failure receipt.
+  expiredSwap: {
+    sourceId: CRYPTO_SOURCE_ID,
+    display: SENT_BITCOIN,
+    tradeN: 10,
+    amount: "60",
+    quote: { amount: "0.00054", symbol: "BTC" },
+    startedMinutesAgo: 5 * DAY,
+    endedMinutesAgo: 4 * DAY - 1,
+    ending: EXPIRED,
+  },
+  expiredCard: {
+    sourceId: "meld-card",
+    tradeN: 11,
+    amount: "40",
+    startedMinutesAgo: 7 * DAY,
+    endedMinutesAgo: 6 * DAY - 1,
+    ending: EXPIRED,
+  },
+  creditedBank: {
+    sourceId: "meld-bank",
+    tradeN: 6,
+    amount: "25",
+    startedMinutesAgo: 6 * DAY,
+    endedMinutesAgo: 6 * DAY - 2 * HOUR,
+    ending: SETTLED,
+  },
+  // The widest amount the design draws, against the longest route pill.
+  creditedCard: {
+    sourceId: "meld-card",
+    tradeN: 7,
+    amount: "1,000",
+    startedMinutesAgo: 12 * DAY,
+    endedMinutesAgo: 12 * DAY - 4,
+    ending: SETTLED,
+  },
+} satisfies Record<string, FinishedTopUp>;
+
+const PREVIEW_HISTORY: readonly FinishedTopUp[] = Object.values(HISTORY);
+
+/** A card top-up credited a few minutes ago, for the list scenes. */
+const SETTLED_CARD: FinishedTopUp = {
+  sourceId: "meld-card",
+  tradeN: 2,
+  amount: "50",
+  startedMinutesAgo: 12,
+  endedMinutesAgo: 4,
+  ending: SETTLED,
+};
 
 /** Baseline for every scene: 5 CASH quoted, journey-clean, nothing on screen. */
 function base(session: Session, flow: Flow) {
@@ -786,7 +1035,7 @@ function installPreviewRefundWorld(session: Session) {
 /** A top-ups scene: the shell's landing screen, with the cards it is asked to draw. */
 /**
  * A list scene: the top-ups still running, which it seeds as real records for the adapters to
- * project, and the finished ones, which it supplies as rows.
+ * project, and the finished ones, which it projects from records kept out of the store.
  *
  * The records go in before the scene is announced, so the entry rule and the cards it decides
  * between are resolved against content that is already there.
@@ -794,20 +1043,19 @@ function installPreviewRefundWorld(session: Session) {
 function topUpList(
   opts: Omit<PreviewTopUpScene, "topUps"> & {
     running?: readonly RunningTopUp[];
-    finished?: readonly FundingTopUp[];
+    finished?: readonly FinishedTopUp[];
   } = {},
 ) {
   const { running, finished, ...scene } = opts;
   return async (s: Session, f: Flow, i: number) => {
     base(s, f);
     if (running !== undefined) await seedRunningTopUps(s, i, running);
-    previewTopUpScene.value = { ...(finished === undefined ? {} : { topUps: finished }), ...scene };
+    previewTopUpScene.value = {
+      ...(finished === undefined ? {} : { topUps: finishedTopUps(finished) }),
+      ...scene,
+    };
   };
 }
-
-/** What the crypto rail's records name. Its source id is the rail's, so the coin the buyer sent
- *  is said separately — exactly as a real record says it. */
-const SENT_BITCOIN = { chain: "Bitcoin", asset: "BTC" };
 
 const CRYPTO_PACKAGE: PreviewStage = { kind: "package", route: "crypto" };
 const CRYPTO_JOURNEY: PreviewStage = { kind: "journey", route: "crypto" };
@@ -923,7 +1171,7 @@ export const SCENES: Scene[] = [
       running: [
         { sourceId: CRYPTO_SOURCE_ID, amount: "50", stage: "waiting", display: SENT_BITCOIN },
       ],
-      finished: [previewTopUp("p2", "card", "settled", "Added to your balance")],
+      finished: [SETTLED_CARD],
     }),
   },
   {
@@ -933,7 +1181,7 @@ export const SCENES: Scene[] = [
     // list titled "Top-up in progress" must never open with no top-up in progress.
     name: "list / top-up: all settled",
     apply: topUpList({
-      finished: [previewTopUp("p2", "card", "settled", "Added to your balance")],
+      finished: [SETTLED_CARD],
     }),
   },
   {
@@ -952,7 +1200,15 @@ export const SCENES: Scene[] = [
         { sourceId: "meld-card", amount: "200", stage: "confirming", delayed: true },
       ],
       finished: [
-        previewTopUp("p5", "crypto", "settled", "Added to your balance", { amount: "80" }),
+        {
+          sourceId: CRYPTO_SOURCE_ID,
+          display: SENT_BITCOIN,
+          tradeN: 5,
+          amount: "80",
+          startedMinutesAgo: 12,
+          endedMinutesAgo: 4,
+          ending: SETTLED,
+        },
       ],
     }),
   },
@@ -972,7 +1228,7 @@ export const SCENES: Scene[] = [
     // actually reached.
     name: "list / history",
     apply: async (s, f, i) => {
-      await topUpList({ finished: previewTopUpHistory(), entry: "history" })(s, f, i);
+      await topUpList({ finished: PREVIEW_HISTORY, entry: "history" })(s, f, i);
       installPreviewRefundWorld(s);
     },
   },
@@ -991,7 +1247,7 @@ export const SCENES: Scene[] = [
     // so the buyer who just tapped a card at the top never sees it.
     name: "list / history: error",
     apply: topUpList({
-      finished: previewTopUpHistory(),
+      finished: PREVIEW_HISTORY,
       entry: "history",
       error: "Crypto status couldn't be opened. Try again.",
     }),
@@ -1258,29 +1514,33 @@ export const SCENES: Scene[] = [
     // The same refund read off the list's own record, with nothing live behind it. The receipt
     // rows must survive the request being gone: they come from the record, not the session.
     name: "card / refunded: from history",
-    stage: { kind: "journey", route: "card", topUpId: "p8" },
-    apply: topUpList({ finished: previewTopUpHistory(), entry: "history" }),
+    stage: { kind: "journey", route: "card", topUpId: finishedTopUpId(HISTORY.refundedCard) },
+    apply: topUpList({ finished: PREVIEW_HISTORY, entry: "history" }),
   },
   {
     // A record that kept neither of the provider's names — no create call captured one and no
     // quote was stored to fall back on — so the row can only name the aggregator. The
     // funding-request id was always persisted, so the reference beside it is still real.
     name: "card / refunded: provider unknown",
-    stage: { kind: "journey", route: "card", topUpId: "p9" },
-    apply: topUpList({ finished: previewTopUpHistory(), entry: "history" }),
+    stage: {
+      kind: "journey",
+      route: "card",
+      topUpId: finishedTopUpId(HISTORY.refundedCardProviderUnknown),
+    },
+    apply: topUpList({ finished: PREVIEW_HISTORY, entry: "history" }),
   },
   {
     // An expiry read off the list's own record: the marker says "Expired", the ribbon spells out
     // that no funds arrived, and there are no money rows — nobody was charged. The card twin below
     // is the review comment's case: without the record's own word it drew the failure receipt.
     name: "crypto / expired: from history",
-    stage: { kind: "journey", route: "crypto", topUpId: "p10" },
-    apply: topUpList({ finished: previewTopUpHistory(), entry: "history" }),
+    stage: { kind: "journey", route: "crypto", topUpId: finishedTopUpId(HISTORY.expiredSwap) },
+    apply: topUpList({ finished: PREVIEW_HISTORY, entry: "history" }),
   },
   {
     name: "card / expired: from history",
-    stage: { kind: "journey", route: "card", topUpId: "p11" },
-    apply: topUpList({ finished: previewTopUpHistory(), entry: "history" }),
+    stage: { kind: "journey", route: "card", topUpId: finishedTopUpId(HISTORY.expiredCard) },
+    apply: topUpList({ finished: PREVIEW_HISTORY, entry: "history" }),
   },
   {
     // No Start over here: the rail could not tell whether the buyer was charged, and a second
@@ -1570,9 +1830,9 @@ export const SCENES: Scene[] = [
     // review comment is about — the rows are hidden because the deposit went back, and the guide
     // behind "Refund info" is driven by the request's world, which is gone.
     name: "crypto / refunded: from history",
-    stage: { kind: "journey", route: "crypto", topUpId: "p5" },
+    stage: { kind: "journey", route: "crypto", topUpId: finishedTopUpId(HISTORY.refundedSwap) },
     apply: async (s, f, i) => {
-      await topUpList({ finished: previewTopUpHistory(), entry: "history" })(s, f, i);
+      await topUpList({ finished: PREVIEW_HISTORY, entry: "history" })(s, f, i);
       installPreviewRefundWorld(s);
     },
   },
@@ -1631,6 +1891,16 @@ export async function seedLaunchPreviewTopUps(): Promise<void> {
     },
     { sourceId: "meld-card", amount: "120", stage: "converting", startedMinutesAgo: 21 },
   ]);
+}
+
+/**
+ * The launch scenario's history. The two top-ups still running are seeded as records by
+ * `seedLaunchPreviewTopUps`; both land before the shell's first interactive render so
+ * `resolveFundingShellScreen` decides the entry screen itself, which is the whole point of the
+ * scenario. Reachable in a dev or demo build with `?preview=top-ups`.
+ */
+export function launchPreviewTopUps(): PreviewTopUpScene {
+  return { topUps: finishedTopUps(PREVIEW_HISTORY), entry: "auto" };
 }
 
 let index = -1;

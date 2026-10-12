@@ -34,9 +34,13 @@ import type { FundingTopUpAdapter } from "../funding/top-up-adapter";
 import { projectFundingTopUps, type FundingTopUp } from "../funding/top-ups";
 import { useRequestsStore } from "../stores/requests";
 import { isDemoBuild } from "../utils/demo";
-import { applyCurrentScene, seedLaunchPreviewTopUps } from "../utils/dev-preview";
+import {
+  applyCurrentScene,
+  launchPreviewTopUps,
+  seedLaunchPreviewTopUps,
+} from "../utils/dev-preview";
 import { previewStage, type PreviewStage } from "../utils/dev-preview-stage";
-import { launchPreviewTopUps, previewTopUpScene } from "../utils/dev-preview-top-ups";
+import { previewTopUpScene } from "../utils/dev-preview-top-ups";
 
 useVisualViewportHeight();
 const requests = useRequestsStore();

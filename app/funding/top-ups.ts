@@ -91,6 +91,7 @@ type FundingTopUpBase = Readonly<{
   estimate: string;
   startedAt: number;
   progress: FundingProgressProjection;
+  timeline?: TopUpTimeline;
   details?: FundingTopUpDetails;
   delayed?: boolean;
 }>;
@@ -171,6 +172,7 @@ export function projectFundingTopUps(
       estimate: route?.estimate ?? "",
       startedAt: topUp.startedAt,
       progress: topUp.progress,
+      ...(topUp.timeline === undefined ? {} : { timeline: topUp.timeline }),
       ...(topUp.details === undefined ? {} : { details: topUp.details }),
       ...(topUp.delayed === undefined ? {} : { delayed: topUp.delayed }),
     };

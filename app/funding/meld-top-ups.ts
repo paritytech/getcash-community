@@ -21,8 +21,9 @@ import type { FundingTopUp, FundingTopUpDetails } from "./top-ups";
 
 export type MeldTopUpRecord = FundingTopUpRecord;
 
-/** A fiat top-up's id: the route that paid, then the request's identity (`card:meld-card#3`). */
-const topUpId = (route: MeldMethod, ref: RequestRef) => `${route}:${requestRefKey(ref)}`;
+/** A fiat top-up's id: the route that paid, then the request's identity (`card:meld-card#3`).
+ *  Parsed by `meldRequestRef`. */
+export const meldTopUpId = (route: MeldMethod, ref: RequestRef) => `${route}:${requestRefKey(ref)}`;
 
 /** The rows whose progress no longer moves on its own. */
 const FINISHED = new Set<TopUpRecord["status"]["kind"]>(["settled", "failed", "expired"]);
@@ -78,7 +79,7 @@ export function projectMeldTopUps(
         : state;
     return [
       {
-        id: topUpId(method, ref),
+        id: meldTopUpId(method, ref),
         amount: record.amountHuman,
         route,
         startedAt: record.startedAt,

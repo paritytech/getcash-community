@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  listHeadline,
+  overallProgress,
   TIMELINE_INSETS,
   timelineDrawing,
   type TimelineDrawing,
@@ -104,5 +106,32 @@ describe("top-up timeline drawing", () => {
     const { lines } = timelineDrawing(done);
     expect(lines.map(({ weight }) => weight)).toEqual([18.5, 48, 22.5, 22.5, 48, 16]);
     expect(TIMELINE_INSETS).toEqual({ start: 18.5, end: 16 });
+  });
+});
+
+describe("top-up overall progress", () => {
+  it.each([
+    ["the first line filling", current("active", 0, 0.6), 0.6 / 6],
+    ["a delayed fourth line", current("delayed", 3, 0.3), 3.3 / 6],
+    ["a failed line", current("failed", 2, 0.6), 2.6 / 6],
+    ["a done top-up", done, 1],
+  ])("counts %s", (_, view, expected) => {
+    expect(overallProgress(view)).toBeCloseTo(expected);
+  });
+});
+
+describe("top-up list headline", () => {
+  it.each([
+    ["crypto before the timeline", "crypto", undefined, "Waiting for your deposit", false],
+    ["card before the timeline", "card", undefined, "Waiting for your payment", false],
+    ["bank before the timeline", "bank", undefined, "Waiting for your bank transfer", false],
+    ["the provider part", "card", current("active", 2, 0.5), "On its way", false],
+    ["the Polkadot part", "crypto", current("active", 3, 0.5), "Adding to your balance", false],
+    ["a delayed card", "card", current("delayed", 0, 0.5), "Delayed, don't pay again", true],
+    ["a delayed bank", "bank", current("delayed", 1, 0.5), "Delayed, don't pay again", true],
+    ["a delayed Chainflip provider part", "crypto", current("delayed", 1, 0.5), "On its way", true],
+    ["a delayed Polkadot part", "card", current("delayed", 4, 0.5), "Adding to your balance", true],
+  ] as const)("words %s", (_, route, view, text, delayed) => {
+    expect(listHeadline(route, view && { view })).toEqual({ text, delayed });
   });
 });

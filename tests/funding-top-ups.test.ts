@@ -5,6 +5,8 @@ import {
   createFundingProgressSnapshot,
   projectFundingProgress,
 } from "../app/funding/progress";
+import type { TopUpTimeline } from "../app/funding/timeline/top-up";
+import { MILESTONES } from "../app/funding/timeline/types";
 import {
   hasFundingPendingContent,
   projectFundingTopUps,
@@ -67,6 +69,23 @@ describe("funding top-up projections", () => {
     expect(sections.past.map(({ id }) => id)).toEqual(["crypto:4", "card:3"]);
     expect(sections.latestSettled?.id).toBe("card:3");
     expect(sections.latestSettled?.details?.depositAddress).toBe("bc1q-saved-deposit");
+  });
+
+  it("carries each top-up's timeline to the row the list and history draw", () => {
+    const timeline: TopUpTimeline = {
+      view: {
+        state: "done",
+        milestones: MILESTONES.map(() => "complete"),
+        lines: MILESTONES.slice(1).map(() => 1),
+      },
+    };
+    const sections = projectFundingTopUps(
+      topUps.map((topUp) => ({ ...topUp, timeline })),
+      fundingSelectorConfig,
+    );
+    for (const row of [...sections.inProgress, ...sections.past]) {
+      expect(row.timeline, row.id).toBe(timeline);
+    }
   });
 
   it("says a refunded crypto top-up was returned, not that it failed", () => {
