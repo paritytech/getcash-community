@@ -35,8 +35,9 @@ const config: HardhatUserConfig = {
     arbitrumOne: { url: ARBITRUM_ONE_RPC, chainId: 42161, accounts },
     arbitrumSepolia: { url: ARBITRUM_SEPOLIA_RPC, chainId: 421614, accounts },
   },
+  // Etherscan v2 unified key (one key routes by chainId across chains).
   etherscan: {
-    apiKey: { arbitrumOne: ARBISCAN_API_KEY, arbitrumSepolia: ARBISCAN_API_KEY },
+    apiKey: ARBISCAN_API_KEY,
   },
   contractSizer: { runOnCompile: false },
 };
