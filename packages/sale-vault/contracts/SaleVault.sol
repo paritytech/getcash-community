@@ -28,7 +28,8 @@ contract SaleVault is ICFReceiver, ReentrancyGuard {
 
     /// Hot key. Returns refunds, withdraws dust, resolves stuck deliveries. Can move funds.
     address public operator;
-    /// Cold key. Its only power is rotating the operator, and it has no fund-moving function of its own.
+    /// Cold key. It has no direct fund-moving function. Since it rotates the operator it is still the
+    /// ultimate authority, so keep it cold.
     address public admin;
     /// Pending cold key, for the two-step admin handover.
     address public pendingAdmin;
@@ -64,6 +65,7 @@ contract SaleVault is ICFReceiver, ReentrancyGuard {
     event DustWithdrawn(uint256 amount);
     event RescuedForeign(address indexed token, address indexed to, uint256 amount);
     event RescuedNative(address indexed to, uint256 amount);
+    event SweptUnclaimed(address indexed to, uint256 amount);
     event OperatorChanged(address indexed previous, address indexed current);
     event AdminChanged(address indexed previous, address indexed current);
 
@@ -133,8 +135,12 @@ contract SaleVault is ICFReceiver, ReentrancyGuard {
             emit Unknown(amount, "token");
             return;
         }
+        // The bucket accumulators below are unchecked: amount is real USDC the Vault transferred in,
+        // so every total stays far below 2^256, and this keeps cfReceive revert-free even in theory.
         if (message.length != 128) {
-            stuck += amount;
+            unchecked {
+                stuck += amount;
+            }
             emit Unknown(amount, "message");
             return;
         }
@@ -145,14 +151,17 @@ contract SaleVault is ICFReceiver, ReentrancyGuard {
         bytes32 home = bytes32(message[96:128]);
 
         if (sales[ref].status != Status.None) {
-            stuck += amount;
+            unchecked {
+                stuck += amount;
+            }
             emit Unknown(amount, "ref");
             return;
         }
-        // Both fit uint128 in practice (USDC 6-dp, Chainflip bounds swaps below 2^128). Guard anyway
-        // so a malformed message cannot wrap on the cast.
+        // Guard the uint128 casts so a malformed message cannot wrap.
         if (committed > type(uint128).max || amount > type(uint128).max) {
-            stuck += amount;
+            unchecked {
+                stuck += amount;
+            }
             emit Unknown(amount, "range");
             return;
         }
@@ -168,13 +177,17 @@ contract SaleVault is ICFReceiver, ReentrancyGuard {
             // Exact payout, without a revert on failure (USDC can be paused or blacklist the recipient).
             if (_tryTransfer(recipient, committed)) {
                 uint256 added = amount - committed;
-                dust += added;
+                unchecked {
+                    dust += added;
+                }
                 emit SalePaid(ref, recipient, committed, added);
             } else {
                 // Payout did not land: hold the whole delivery for this sale's home instead of dust.
                 sales[ref].status = Status.Held;
                 sales[ref].held = uint128(amount);
-                heldTotal += amount;
+                unchecked {
+                    heldTotal += amount;
+                }
                 emit SaleHeld(ref, amount);
             }
         } else {
@@ -186,7 +199,9 @@ contract SaleVault is ICFReceiver, ReentrancyGuard {
                 held: uint128(amount),
                 status: Status.Held
             });
-            heldTotal += amount;
+            unchecked {
+                heldTotal += amount;
+            }
             emit SaleHeld(ref, amount);
         }
     }
@@ -262,7 +277,16 @@ contract SaleVault is ICFReceiver, ReentrancyGuard {
         emit RescuedNative(to, amount);
     }
 
-    /// @notice Cold admin rotates the hot operator. The admin can do nothing else to funds.
+    /// @notice Recover USDC sent here outside the Chainflip lane. Bounded by unclaimed() so it can
+    ///         never touch dust, held, or stuck.
+    function rescueUnclaimed(address to, uint256 amount) external onlyOperator {
+        uint256 free = USDC.balanceOf(address(this)) - dust - heldTotal - stuck;
+        if (amount == 0 || amount > free) revert BadAmount();
+        USDC.safeTransfer(to, amount);
+        emit SweptUnclaimed(to, amount);
+    }
+
+    /// @notice Cold admin rotates the hot operator. It has no direct fund-moving function.
     function setOperator(address newOperator) external onlyAdmin {
         if (newOperator == address(0)) revert ZeroAddress();
         emit OperatorChanged(operator, newOperator);
@@ -300,8 +324,8 @@ contract SaleVault is ICFReceiver, ReentrancyGuard {
         (bool success, bytes memory data) = address(USDC).call(
             abi.encodeWithSelector(IERC20.transfer.selector, to, amount)
         );
-        // Only decode a well-formed bool, so any other return data counts as a failed payout rather
-        // than reverting on decode, which would break the never-revert guarantee.
-        return success && (data.length == 0 || (data.length == 32 && abi.decode(data, (bool))));
+        // Read the word as a uint256 (never reverts, unlike decoding a bool that is not 0 or 1) and
+        // treat any non-zero as success. A token returning nothing counts as success too.
+        return success && (data.length == 0 || (data.length == 32 && abi.decode(data, (uint256)) != 0));
     }
 }

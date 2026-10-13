@@ -318,6 +318,25 @@ describe("SaleVault", () => {
       await f.sale.connect(f.operator).rescueNative(f.stranger.address, ethers.parseEther("1"));
       expect(await ethers.provider.getBalance(await f.sale.getAddress())).to.equal(0n);
     });
+
+    it("rescueUnclaimed recovers directly-donated USDC, bounded by unclaimed", async () => {
+      const f = await loadFixture(deploy);
+      // A real sale leaves dust, then someone donates USDC directly on top of it.
+      await deliver(
+        f,
+        encodeMessage(refOf("uq"), f.recipient.address, 100_000_000n, homeOf("uq")),
+        100_500_000n,
+      );
+      await f.usdc.mint(await f.sale.getAddress(), 7_000_000n); // a direct donation
+      expect(await f.sale.unclaimed()).to.equal(7_000_000n);
+      await expect(
+        f.sale.connect(f.operator).rescueUnclaimed(f.stranger.address, 8_000_000n),
+      ).to.be.revertedWithCustomError(f.sale, "BadAmount");
+      await f.sale.connect(f.operator).rescueUnclaimed(f.stranger.address, 7_000_000n);
+      expect(await f.usdc.balanceOf(f.stranger.address)).to.equal(7_000_000n);
+      expect(await f.sale.unclaimed()).to.equal(0n);
+      expect(await f.sale.dust()).to.equal(500_000n); // dust untouched
+    });
   });
 
   describe("roles", () => {
