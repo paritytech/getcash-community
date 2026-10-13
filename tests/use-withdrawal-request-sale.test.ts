@@ -57,6 +57,7 @@ vi.mock("../lib/withdraw-live", () => ({
   probeWithdrawKey: vi.fn(async () => ({ address: KEY_ADDRESS, cash: 0n })),
   readPaymentStatus: async () => ({ status: "not-found" }),
   meldCommitmentFundable: vi.fn(async () => true),
+  usdtSaleFundable: vi.fn(async () => true),
   meldHandoffConfig: () => ({ baseUrl: "https://adapter.test", productId: "getcash.dev" }),
   withdrawHandoff: (
     args: Record<string, unknown> & { key: { address: string; publicKeyHex: string } },
@@ -68,6 +69,7 @@ vi.mock("../lib/withdraw-live", () => ({
     destination: args.destination,
     landingHex: args.landingHex,
     rail: args.rail,
+    ...(args.sale as Record<string, unknown>),
     assetHubGenesis: "0xah",
     peopleGenesis: "0xpe",
     peopleParaId: 1004,
@@ -85,6 +87,7 @@ import { useWithdrawalRequest } from "../app/composables/useWithdrawalRequest";
 const handedOff = vi.mocked(live.sendWithdrawHandoff);
 const asked = vi.mocked(live.requestKeyPayment);
 const fundable = vi.mocked(live.meldCommitmentFundable);
+const usdtFundable = vi.mocked(live.usdtSaleFundable);
 const advanced = vi.mocked(live.advanceWithdrawCounter);
 const probed = vi.mocked(live.probeWithdrawKey);
 
@@ -122,6 +125,7 @@ describe("a fiat sale from the page", () => {
     handedOff.mockClear();
     asked.mockClear();
     fundable.mockClear().mockResolvedValue(true);
+    usdtFundable.mockClear().mockResolvedValue(true);
     advanced.mockClear();
     probed.mockClear();
     counter.next = 1;
@@ -183,7 +187,7 @@ describe("a fiat sale from the page", () => {
     );
   });
 
-  it("refuses a direct sale under a code that is not DOT on Asset Hub, opening nothing", async () => {
+  it("refuses a direct sale under a code it cannot sell, opening nothing", async () => {
     const spy = vi.spyOn(meld, "createSellSession");
     const outcome = await useWithdrawalRequest().startSale({
       method: "bank",
@@ -193,11 +197,94 @@ describe("a fiat sale from the page", () => {
       paymentMethodType: "UK_FASTER_PAYMENTS",
       quote: QUOTE,
       cryptoAmount: COMMITTED,
-      sellCode: "USDT_STATEMINT",
+      sellCode: "USDC_STATEMINT",
     });
-    expect(outcome).toEqual({ ok: false, reason: "A sale cannot sell USDT_STATEMINT." });
+    expect(outcome).toEqual({ ok: false, reason: "A sale cannot sell USDC_STATEMINT." });
     expect(spy).not.toHaveBeenCalled();
     expect(advanced).not.toHaveBeenCalled();
+  });
+
+  /** 25 USDT, the figure a direct sale of USDT commits to. */
+  const USDT_COMMITTED = 25_000_000n;
+  const REDEEM = { tier: "psm", external: "USDT", feeRate: 1_000 } as const;
+  const startUsdtSale = (
+    over: Partial<Parameters<ReturnType<typeof useWithdrawalRequest>["startSale"]>[0]> = {},
+  ) =>
+    useWithdrawalRequest().startSale({
+      method: "bank",
+      amount: 30_000_000n,
+      country: "GB",
+      fiat: "GBP",
+      paymentMethodType: "UK_FASTER_PAYMENTS",
+      quote: { ...QUOTE, serviceProvider: "ONRAMPMONEY" },
+      cryptoAmount: USDT_COMMITTED,
+      sellCode: "USDT_STATEMINT",
+      route: REDEEM,
+      ...over,
+    });
+
+  it("opens a direct sale of USDT under USDT_STATEMINT, the CASH redeemed for it", async () => {
+    const spy = vi.spyOn(meld, "createSellSession");
+    const outcome = await startUsdtSale();
+    if (!outcome.ok) throw new Error(outcome.reason);
+    expect(spy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        serviceProvider: "ONRAMPMONEY",
+        sourceCurrencyCode: "USDT_STATEMINT",
+        sourceAmount: "25",
+        destinationCurrencyCode: "GBP",
+      }),
+    );
+    const record = useRequestsStore().get(outcome.ref) as WithdrawalRecord;
+    expect(record.sale).toMatchObject({
+      sellCode: "USDT_STATEMINT",
+      cryptoAmount: USDT_COMMITTED.toString(),
+    });
+    expect(record.sale?.lane).toBeUndefined();
+    expect(record.handoff).toMatchObject({ rail: "meld", ...REDEEM });
+    expect(record.handoff.swap).toBeUndefined();
+  });
+
+  it("takes a USDT deposit for its exact figure and checks the redeem before the purse", async () => {
+    const outcome = await startUsdtSale();
+    if (!outcome.ok) throw new Error(outcome.reason);
+    const known = await toDeposit(outcome.ref);
+    expect(known.status.kind).toBe("awaiting-payment");
+    expect(known.handoff.channel).toMatchObject({
+      id: "mock-sell-1",
+      amount: USDT_COMMITTED.toString(),
+    });
+
+    expect(await useWithdrawalRequest().paySale(outcome.ref)).toEqual({ ok: true });
+    expect(usdtFundable).toHaveBeenCalledWith(30_000_000n, USDT_COMMITTED);
+    expect(fundable).not.toHaveBeenCalled();
+    expect(handedOff).toHaveBeenCalledTimes(1);
+    expect(handedOff.mock.calls[0]![2]).toMatchObject({
+      ...REDEEM,
+      channel: { id: "mock-sell-1", amount: USDT_COMMITTED.toString() },
+    });
+  });
+
+  it("ends a direct sale of USDT with nothing taken when the redeem no longer covers it", async () => {
+    usdtFundable.mockResolvedValue(false);
+    const outcome = await startUsdtSale();
+    if (!outcome.ok) throw new Error(outcome.reason);
+    await toDeposit(outcome.ref);
+    expect(await useWithdrawalRequest().paySale(outcome.ref)).toEqual({
+      ok: false,
+      reason: "The price moved too far while you verified.",
+    });
+    expect(asked).not.toHaveBeenCalled();
+  });
+
+  it("refuses a sale of USDT without its redeem, and a sale of DOT with one", async () => {
+    const spy = vi.spyOn(meld, "createSellSession");
+    const mismatch = { ok: false, reason: "The sale's asset and its conversion do not match." };
+    expect(await startUsdtSale({ route: undefined })).toEqual(mismatch);
+    expect(await startUsdtSale({ route: { tier: "pool" } })).toEqual(mismatch);
+    expect(await startUsdtSale({ sellCode: "DOT_STATEMINT" })).toEqual(mismatch);
+    expect(await startUsdtSale({ sellCode: undefined })).toEqual(mismatch);
+    expect(spy).not.toHaveBeenCalled();
   });
 
   it("opens the sale for the committed figure and waits on KYC, asking nothing yet", async () => {

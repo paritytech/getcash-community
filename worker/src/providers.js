@@ -6,7 +6,13 @@
 import { readChannelRecord, readSwapStatus } from "@getsome/chainflip/swap-status";
 import { NETWORK } from "@getsome/core";
 import { STABLE_TOKENS, stableTxOptions } from "@getsome/funding";
-import { createMeldClient, MELD_SELL_ENABLED, saleRail } from "@getsome/meld";
+import {
+  createMeldClient,
+  MELD_SELL_ENABLED,
+  saleRail,
+  SELL_TOKEN,
+  USDT_SELL_TOKEN,
+} from "@getsome/meld";
 import {
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
   DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
@@ -22,6 +28,7 @@ import {
   anchorFor,
   CONNECT_TIMEOUT_MS,
   connectChain,
+  holdsUsdt,
   keypairFor,
   signOptionsFor,
 } from "./shared.js";
@@ -70,11 +77,19 @@ export function railFor(provider, record) {
         ? { productId: meld.productId }
         : {}),
     });
-    const sale = saleRail(client, record);
+    const sale = saleRail(
+      client,
+      record,
+      Date.now,
+      holdsUsdt(record) ? USDT_SELL_TOKEN : SELL_TOKEN,
+    );
     return record?.swap ? swapSaleRail(sale, record) : sale;
   }
   return null;
 }
+
+/** What a sale's exact payment pays in: USDT for a key that holds it, PAS (undefined) otherwise. */
+const exactAssetOf = (record) => (holdsUsdt(record) ? STABLE_TOKENS.USDT.assetHubId : undefined);
 
 /** Chainflip's network for a sale's swap: Perseverance on a test network, as the page opens it. */
 const SWAP_NETWORK = NETWORK.testnet ? "perseverance" : "mainnet";
@@ -95,13 +110,16 @@ function swapSaleRail(sale, record) {
 }
 
 /**
- * Pays the channel exactly `amount` from the key on Asset Hub, at the nonce `exact` keeps.
+ * Pays the channel exactly `amount` from the key on Asset Hub, at the nonce `exact` keeps: PAS, or
+ * USDT from a key that holds it.
  * Resolves once the payment is on chain. `hooks.onBeforeSubmit` runs before the broadcast, so the
  * driver can persist the attempt; `hooks.onTx` takes the transaction as it lands.
  */
 export async function payRailExact(record, handoff, amount, exact, hooks = {}) {
   const key = await keypairFor(record.label);
   const client = await connectChain(record.assetHubGenesis, "asset hub");
+  // A sale of USDT pays in USDT, and pays its fee in it.
+  const assetId = exactAssetOf(record);
   try {
     const assetHubApi = client.getTypedApi(paseo_next_v2);
     const anchor = await anchorFor(client);
@@ -111,11 +129,15 @@ export async function payRailExact(record, handoff, amount, exact, hooks = {}) {
         key: { address: key.address, signer: key.signer },
         to: handoff.address,
         amount,
+        ...(assetId === undefined ? {} : { assetId }),
         tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
         submitTimeoutMs: DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
-        signOptions: { at: anchor.hash },
+        signOptions: {
+          at: anchor.hash,
+          ...(assetId === undefined ? {} : stableTxOptions("USDT")),
+        },
         anchorNumber: anchor.number,
-        readKey: () => readAssetHubAccount(assetHubApi, record.keyPublicKeyHex),
+        readKey: () => readAssetHubAccount(assetHubApi, record.keyPublicKeyHex, assetId),
         onBeforeSubmit: hooks.onBeforeSubmit,
         onTx: hooks.onTx,
       },
@@ -140,7 +162,8 @@ export async function exactPaymentOut(record, amount, exact) {
       {
         amount,
         tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
-        readKey: () => readAssetHubAccount(assetHubApi, record.keyPublicKeyHex),
+        readKey: () =>
+          readAssetHubAccount(assetHubApi, record.keyPublicKeyHex, exactAssetOf(record)),
         readFinalizedNumber: async () => (await client.getFinalizedBlock()).number,
       },
       exact,
