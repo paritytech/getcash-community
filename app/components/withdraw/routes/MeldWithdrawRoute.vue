@@ -159,6 +159,7 @@ async function confirm() {
       quote: quoted.line,
       cryptoAmount: quoted.cryptoAmount,
       ...(quoted.swap === undefined ? {} : { swap: quoted.swap }),
+      ...(quoted.sellCode === undefined ? {} : { sellCode: quoted.sellCode }),
     });
     if (!outcome.ok) {
       startError.value = outcome.reason;

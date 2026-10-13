@@ -6,6 +6,8 @@
 
 import { ref, shallowRef } from "vue";
 import {
+  ASSET_HUB_DOT_CODES,
+  directSellToken,
   formatSellAmount,
   pickBestQuote,
   SELL_TOKEN,
@@ -37,6 +39,9 @@ export interface MeldSellQuote {
   cryptoAmount: bigint;
   /** A sale through an offramp lane: the lane, and the USDT redeem the withdrawal runs. */
   swap?: { lane: LaneId; route: ConversionRoute };
+  /** A direct sale quoted under Meld's other code for DOT on Asset Hub (DOT_STATEMINT), which the
+   *  session must name too; absent for DOT_ASSETHUB. */
+  sellCode?: string;
   /** The CASH expected back once the provider is paid, before the way back's fees; 0 when it is
    *  too small to send back. */
   backCash: bigint;
@@ -58,10 +63,10 @@ function startingCountry(method: "card" | "bank"): string {
   return method === "card" || bankRailCountries().includes(detected) ? detected : "DE";
 }
 
-/** What a sale of Meld code `code` sells: PAS on Asset Hub (null), a lane this build can swap into,
- *  or `undefined` for a code it cannot sell. */
+/** What a sale of Meld code `code` sells: PAS on Asset Hub (null), under either of Meld's codes for
+ *  it, a lane this build can swap into, or `undefined` for a code it cannot sell. */
 export function saleLaneOf(code: string): OfframpLane | null | undefined {
-  if (code === SELL_TOKEN.meldCurrencyCode) return null;
+  if (ASSET_HUB_DOT_CODES.includes(code)) return null;
   return laneByMeldCode(code) ?? undefined;
 }
 
@@ -161,7 +166,8 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
       for (const code of laneCandidates(corridor.lanes, OFFRAMP_LANE_ORDER)) {
         const lane = saleLaneOf(code);
         if (lane === undefined) continue;
-        const token = lane === null ? SELL_TOKEN : laneSellToken(lane);
+        // A direct sale is quoted under the code the catalog routed, which its providers buy.
+        const token = lane === null ? directSellToken(code) : laneSellToken(lane);
         try {
           const size: SizedSale =
             lane === null
@@ -191,6 +197,7 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
             cryptoAmount: size.planck,
             backCash: size.backCash,
             ...(size.swap === undefined ? {} : { swap: size.swap }),
+            ...(lane === null && code !== SELL_TOKEN.meldCurrencyCode ? { sellCode: code } : {}),
             line,
           };
           return;

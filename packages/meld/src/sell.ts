@@ -24,6 +24,25 @@ export interface SellToken {
   meldCurrencyCode: string;
 }
 
+/** Meld's two codes for the DOT a direct sale sells on Polkadot Asset Hub: DOT_ASSETHUB, and the
+ *  older DOT_STATEMINT (Statemint was Asset Hub's name), which some providers still buy under. */
+export const ASSET_HUB_DOT_CODES: readonly string[] = [
+  SELL_TOKEN.meldCurrencyCode,
+  "DOT_STATEMINT",
+];
+
+/** The direct sale's asset under one of ASSET_HUB_DOT_CODES, as the provider quoting it names it. */
+export const directSellToken = (code: string): SellToken => ({
+  ...SELL_TOKEN,
+  meldCurrencyCode: code,
+});
+
+/** Whether a deposit's asset code names what the sale sells: the same code, or either of Meld's
+ *  two names for DOT on Asset Hub. */
+export const sameSoldAsset = (depositCode: string, soldCode: string): boolean =>
+  depositCode === soldCode ||
+  (ASSET_HUB_DOT_CODES.includes(depositCode) && ASSET_HUB_DOT_CODES.includes(soldCode));
+
 /** The fraction digits a committed amount carries. Few enough that no provider rounds it, and the
  *  planck below them stay with the rest of the sale. */
 const SELL_AMOUNT_DECIMALS = 4;
@@ -79,7 +98,8 @@ export function saleChannelOf(
   token: SellToken = SELL_TOKEN,
 ): SaleChannelRecord | null {
   const { deposit } = result;
-  if (deposit === undefined || deposit.currency !== token.meldCurrencyCode) return null;
+  if (deposit === undefined || !sameSoldAsset(deposit.currency, token.meldCurrencyCode))
+    return null;
   const expectedAmount = parseBaseUnits(token, deposit.amount);
   if (expectedAmount === null || expectedAmount <= 0n) return null;
   return {

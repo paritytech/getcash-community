@@ -15,6 +15,8 @@ export {
 } from "./client";
 export { formatBaseUnits, parseBaseUnits, toBaseUnits, type MeldToken } from "./units";
 export {
+  ASSET_HUB_DOT_CODES,
+  directSellToken,
   formatSellAmount,
   MELD_SELL_ENABLED,
   SALE_GONE_AFTER,
@@ -22,6 +24,7 @@ export {
   type SaleChannelRecord,
   saleRail,
   type SaleReadMemory,
+  sameSoldAsset,
   SELL_TOKEN,
   type SellToken,
   sellAmountOf,

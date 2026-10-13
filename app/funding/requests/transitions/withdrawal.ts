@@ -14,7 +14,7 @@
 // payment window starts when the purse is asked, not when the address is named.
 
 import type { FailureKind } from "@getsome/core";
-import { parseBaseUnits, SELL_TOKEN, type SellToken } from "@getsome/meld";
+import { parseBaseUnits, sameSoldAsset, SELL_TOKEN, type SellToken } from "@getsome/meld";
 import { laneById, laneSellToken } from "@getsome/offramp";
 import {
   PAYMENT_EXPIRED_REASON,
@@ -435,7 +435,7 @@ function sameDeposit(
   return (
     deposit !== undefined &&
     deposit.address === channel.address &&
-    deposit.currency === token.meldCurrencyCode &&
+    sameSoldAsset(deposit.currency, token.meldCurrencyCode) &&
     parseBaseUnits(token, deposit.amount) === BigInt(channel.amount ?? "0")
   );
 }
@@ -454,7 +454,7 @@ function depositKnown(
   const token = sellTokenOf(sale);
   const expected = BigInt(sale.cryptoAmount);
   const asked = parseBaseUnits(token, deposit.amount);
-  if (deposit.currency !== token.meldCurrencyCode || asked !== expected) {
+  if (!sameSoldAsset(deposit.currency, token.meldCurrencyCode) || asked !== expected) {
     return failed(record, at, {
       kind: "sale-mismatch",
       step: "payment",

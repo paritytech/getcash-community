@@ -30,7 +30,7 @@ inputs:
   offramp-lanes:
     description: >
       Optional VITE_OFFRAMP_LANES, the off-ramp lanes card and bank sales go through, best first,
-      by Meld code (e.g. DOT_ASSETHUB,USDC_ARBITRUM,USDC_SOLANA). Empty uses the build's default.
+      by Meld code (e.g. DOT_ASSETHUB,DOT_STATEMINT,USDC_ARBITRUM,USDC_SOLANA). Empty uses the build's default.
     default: ""
   require-meld-base-url:
     description: >

@@ -160,6 +160,46 @@ describe("a fiat sale from the page", () => {
     return requests.get(ref) as WithdrawalRecord;
   }
 
+  it("opens a direct sale quoted under DOT_STATEMINT under that code", async () => {
+    const spy = vi.spyOn(meld, "createSellSession");
+    const outcome = await useWithdrawalRequest().startSale({
+      method: "bank",
+      amount: 100_000_000n,
+      country: "GB",
+      fiat: "GBP",
+      paymentMethodType: "UK_FASTER_PAYMENTS",
+      quote: { ...QUOTE, serviceProvider: "ONRAMPMONEY" },
+      cryptoAmount: COMMITTED,
+      sellCode: "DOT_STATEMINT",
+    });
+    expect(outcome.ok).toBe(true);
+    expect(spy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        serviceProvider: "ONRAMPMONEY",
+        sourceCurrencyCode: "DOT_STATEMINT",
+        sourceAmount: "23.4521",
+        destinationCurrencyCode: "GBP",
+      }),
+    );
+  });
+
+  it("refuses a direct sale under a code that is not DOT on Asset Hub, opening nothing", async () => {
+    const spy = vi.spyOn(meld, "createSellSession");
+    const outcome = await useWithdrawalRequest().startSale({
+      method: "bank",
+      amount: 100_000_000n,
+      country: "GB",
+      fiat: "GBP",
+      paymentMethodType: "UK_FASTER_PAYMENTS",
+      quote: QUOTE,
+      cryptoAmount: COMMITTED,
+      sellCode: "USDT_STATEMINT",
+    });
+    expect(outcome).toEqual({ ok: false, reason: "A sale cannot sell USDT_STATEMINT." });
+    expect(spy).not.toHaveBeenCalled();
+    expect(advanced).not.toHaveBeenCalled();
+  });
+
   it("opens the sale for the committed figure and waits on KYC, asking nothing yet", async () => {
     const spy = vi.spyOn(meld, "createSellSession");
     const outcome = await startSale();

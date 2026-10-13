@@ -9,9 +9,11 @@ import {
   formatSellAmount,
   SALE_GONE_AFTER,
   SALE_GONE_FOR_MS,
+  directSellToken,
   saleChannelOf,
   saleRail,
   saleStatusView,
+  sameSoldAsset,
   sellAmountOf,
   sellQuoteUsable,
   SELL_TOKEN,
@@ -344,6 +346,19 @@ describe("the sale as the rail leg reads it", () => {
       expired: false,
       expectedAmount: 234_521_000_000n,
     });
+  });
+
+  it("takes a deposit for DOT on Asset Hub under either of Meld's codes for it", () => {
+    const statemint = {
+      ...disclosed,
+      deposit: { ...disclosed.deposit, currency: "DOT_STATEMINT" },
+    };
+    expect(saleChannelOf(statemint)?.expectedAmount).toBe(234_521_000_000n);
+    // And a sale quoted under DOT_STATEMINT takes a deposit named DOT_ASSETHUB.
+    expect(saleChannelOf(disclosed, directSellToken("DOT_STATEMINT"))?.depositAddress).toBe("14Kt");
+    expect(sameSoldAsset("DOT_STATEMINT", "DOT_ASSETHUB")).toBe(true);
+    expect(sameSoldAsset("USDC_SOLANA", "DOT_ASSETHUB")).toBe(false);
+    expect(sameSoldAsset("USDT_STATEMINT", "DOT_ASSETHUB")).toBe(false);
   });
 
   it("is closed once the adapter concludes it", () => {

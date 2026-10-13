@@ -12,6 +12,10 @@ describe("saleLaneOf", () => {
     expect(saleLaneOf("DOT_ASSETHUB")).toBeNull();
   });
 
+  it("sells PAS on Asset Hub under Meld's older Statemint code too", () => {
+    expect(saleLaneOf("DOT_STATEMINT")).toBeNull();
+  });
+
   it("swaps into a lane this build knows", () => {
     expect(saleLaneOf("USDC_ARBITRUM")?.id).toBe("usdc-arbitrum");
     expect(saleLaneOf("USDC_SOLANA")?.id).toBe("usdc-solana");
@@ -33,6 +37,12 @@ describe("laneCandidates", () => {
     const found = [lane("USDC_ARBITRUM", "arbitrum"), lane("USDT_SOLANA", "solana")];
     expect(laneCandidates(found, ORDER)).toEqual(["USDC_ARBITRUM"]);
     expect(laneCandidates(found, ["DOT_ASSETHUB"])).toEqual([]);
+  });
+
+  it("tries the Statemint code right after the Asset Hub one, before any swap", () => {
+    const order = ["DOT_ASSETHUB", "DOT_STATEMINT", "USDC_ARBITRUM"];
+    const found = [lane("USDC_ARBITRUM", "arbitrum"), lane("DOT_STATEMINT", "assethub")];
+    expect(laneCandidates(found, order)).toEqual(["DOT_STATEMINT", "USDC_ARBITRUM"]);
   });
 
   it("sells PAS on Asset Hub when the method came without lanes", () => {

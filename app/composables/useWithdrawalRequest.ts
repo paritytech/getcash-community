@@ -7,7 +7,13 @@
 
 import { computed } from "vue";
 import type { ConversionRoute } from "@getsome/funding";
-import { formatSellAmount, SELL_TOKEN, type MeldQuoteEntry } from "@getsome/meld";
+import {
+  ASSET_HUB_DOT_CODES,
+  directSellToken,
+  formatSellAmount,
+  SELL_TOKEN,
+  type MeldQuoteEntry,
+} from "@getsome/meld";
 import { laneById, laneSellToken, type LaneId } from "@getsome/offramp";
 import {
   MELD_WITHDRAW_DESTINATIONS,
@@ -70,6 +76,9 @@ export interface MeldSaleStart {
   cryptoAmount: bigint;
   /** A sale through an offramp lane: the lane, and the USDT redeem the withdrawal runs. */
   swap?: { lane: LaneId; route: ConversionRoute };
+  /** A direct sale quoted under DOT_STATEMINT, Meld's other code for DOT on Asset Hub; the session
+   *  names the same code. Absent for DOT_ASSETHUB. */
+  sellCode?: string;
 }
 
 export type MeldSaleStartOutcome =
@@ -193,6 +202,9 @@ export function useWithdrawalRequest() {
     if (client === null || meld === null) {
       return { ok: false, reason: "Card and bank withdrawals are not available right now." };
     }
+    if (input.sellCode !== undefined && !ASSET_HUB_DOT_CODES.includes(input.sellCode)) {
+      return { ok: false, reason: `A sale cannot sell ${input.sellCode}.` };
+    }
     // As for any withdrawal: the sale's CASH must be able to reach Asset Hub, or the seller would
     // pass KYC and pay for a sale the worker cannot run.
     if (!(await live.cashCanMove())) {
@@ -206,7 +218,10 @@ export function useWithdrawalRequest() {
     const ref = requestRefOf(sourceId, n);
     const key = await live.withdrawKeyFor(sourceId, n);
     await live.advanceWithdrawCounter(sourceId, n);
-    const token = input.swap === undefined ? SELL_TOKEN : laneSellToken(laneById(input.swap.lane));
+    const token =
+      input.swap === undefined
+        ? directSellToken(input.sellCode ?? SELL_TOKEN.meldCurrencyCode)
+        : laneSellToken(laneById(input.swap.lane));
     let session: Awaited<ReturnType<typeof client.createSellSession>>;
     try {
       session = await client.createSellSession({
