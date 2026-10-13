@@ -255,15 +255,14 @@ function confirmSent() {
       <PillButton
         v-if="blocked"
         variant="secondary"
-        class="mt-auto mb-6 w-full shrink-0"
+        class="mt-auto w-full shrink-0"
         @click="requote"
       >
         Retry quote
       </PillButton>
-      <SkeletonBlock v-else-if="pricing" class="mt-auto mb-6 h-12 w-full shrink-0" />
-      <PillButton v-else class="mt-auto mb-6 w-full shrink-0" @click="onContinue">
-        Continue
-      </PillButton>
+      <SkeletonBlock v-else-if="pricing" class="mt-auto h-12 w-full shrink-0" />
+      <PillButton v-else class="mt-auto w-full shrink-0" @click="onContinue"> Continue </PillButton>
+      <PoweredBy class="mt-3 mb-4" provider="Meld" />
     </template>
 
     <template v-else>
