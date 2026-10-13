@@ -52,13 +52,15 @@ const skipped = timelineView({
 
 const MARKS = { complete: "●", upcoming: "○", failed: "✕" } as const;
 
-/** Milestones as `●` (complete), `○` and `✕` (failed), the milestone marked current, and each
- *  line. */
+/** Milestones as `●` (complete), `○` and `✕` (failed), the milestone marked current, the halo
+ *  and each line. */
 function summary({ milestones, lines }: TimelineDrawing) {
+  const halo = milestones.find((milestone) => milestone.halo);
   return {
     milestones: milestones.map(({ state }) => MARKS[state]).join(""),
     current: milestones.find((milestone) => milestone.current)?.id ?? null,
-    lines: lines.map(({ tone, fill, live }) => `${tone} ${fill}${live ? " live" : ""}`),
+    halo: halo ? `${halo.id} ${halo.halo}` : null,
+    lines: lines.map(({ tone, fill }) => `${tone} ${fill}`),
   };
 }
 
@@ -70,7 +72,17 @@ describe("top-up timeline drawing", () => {
       undefined,
       "●○○○○○○",
       "received",
-      ["current 0.4 live", "upcoming 0", "upcoming 0", "upcoming 0", "upcoming 0", "upcoming 0"],
+      "accepted current",
+      ["current 0.4", "upcoming 0", "upcoming 0", "upcoming 0", "upcoming 0", "upcoming 0"],
+    ],
+    [
+      "an active phase heading to a station",
+      current("active", 2, 0.5),
+      undefined,
+      "●●●○○○○",
+      "received",
+      "received current",
+      ["complete 1", "complete 1", "current 0.5", "upcoming 0", "upcoming 0", "upcoming 0"],
     ],
     [
       "a delayed phase",
@@ -78,7 +90,8 @@ describe("top-up timeline drawing", () => {
       undefined,
       "●●●●○○○",
       "added",
-      ["complete 1", "complete 1", "complete 1", "delayed 0.25 live", "upcoming 0", "upcoming 0"],
+      "converted delayed",
+      ["complete 1", "complete 1", "complete 1", "delayed 0.25", "upcoming 0", "upcoming 0"],
     ],
     [
       "a skipped milestone",
@@ -86,7 +99,8 @@ describe("top-up timeline drawing", () => {
       undefined,
       "●●●●○○○",
       "added",
-      ["complete 1", "complete 1", "complete 1", "current 0 live", "upcoming 0", "upcoming 0"],
+      "converted current",
+      ["complete 1", "complete 1", "complete 1", "current 0", "upcoming 0", "upcoming 0"],
     ],
     [
       "a skipped milestone still completing",
@@ -94,7 +108,8 @@ describe("top-up timeline drawing", () => {
       1,
       "●●○○○○○",
       "received",
-      ["complete 1", "current 1 live", "upcoming 0", "upcoming 0", "upcoming 0", "upcoming 0"],
+      null,
+      ["complete 1", "current 1", "upcoming 0", "upcoming 0", "upcoming 0", "upcoming 0"],
     ],
     [
       "a failure the drawing has not reached yet",
@@ -102,6 +117,7 @@ describe("top-up timeline drawing", () => {
       1,
       "●●○○○○○",
       "received",
+      null,
       ["complete 1", "current 1", "upcoming 0", "upcoming 0", "upcoming 0", "upcoming 0"],
     ],
     [
@@ -110,12 +126,14 @@ describe("top-up timeline drawing", () => {
       undefined,
       "●●●●●●●",
       null,
+      null,
       ["complete 1", "complete 1", "complete 1", "complete 1", "complete 1", "complete 1"],
     ],
-  ])("draws %s", (_, view, shownReached, milestones, heading, lines) => {
+  ])("draws %s", (_, view, shownReached, milestones, heading, halo, lines) => {
     expect(summary(timelineDrawing(view, shownReached))).toEqual({
       milestones,
       current: heading,
+      halo,
       lines,
     });
   });
@@ -157,7 +175,7 @@ describe("top-up timeline drawing", () => {
       "centre",
     ],
   ] satisfies [string, TimelineView, string, string[], LabelAlign][])(
-    "draws a failure at %s: red, large and labelled, the rest grey, no head light",
+    "draws a failure at %s: red, large and labelled, the rest grey, no halo",
     (_, view, milestones, lines, labelAlign) => {
       const drawing = timelineDrawing(view);
       const failed = drawing.milestones.find(({ state }) => state === "failed");
@@ -167,6 +185,7 @@ describe("top-up timeline drawing", () => {
       }).toEqual({
         milestones,
         current: failed?.id,
+        halo: null,
         lines,
         failed: `large Failed ${labelAlign}`,
       });

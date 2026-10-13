@@ -13,7 +13,7 @@ import {
   type PartFailure,
 } from "../app/funding/timeline/failure";
 import { meldBankRoute, meldCardRoute } from "../app/funding/timeline/meld";
-import { lastReached, PART_LIMIT } from "../app/funding/timeline/model";
+import { lastReached, LINE_LIMIT } from "../app/funding/timeline/model";
 import type { TimelineMessage, TimelineRoute } from "../app/funding/timeline/route";
 import { createTopUpTimelines, timelineRouteOf } from "../app/funding/timeline/timelines";
 import {
@@ -38,6 +38,11 @@ const CONVERTED_WORKED = 20 * SECOND;
 const converted = { txHash: "0x01", block: 120, at: CONVERTED, workedMs: CONVERTED_WORKED };
 /** The fill of a part after `elapsed` of its expected time `t`. */
 const timeFill = (elapsed: number, t: number) => 1 - Math.exp((-3 * elapsed) / t);
+
+/** Expects the current line at `progress` through its parts, from 0 to 1. */
+function expectCurrentLine(view: TimelineView, progress: number): void {
+  expect(view.lines[lastReached(view)]).toBeCloseTo(LINE_LIMIT * progress, 10);
+}
 
 const route: TimelineRoute = {
   milestones: () => ({ started: { at: SENT - 2 * MINUTE }, accepted: { at: SENT - MINUTE } }),
@@ -117,7 +122,7 @@ describe("top-up timeline, shared route frame", () => {
       "the funds not seen an hour after Sent, with no evidence of a delay",
       record({}, { lastTickAt: SENT + HOUR }),
       SENT + HOUR,
-      { marks: "●●●○○○○", state: "active", line: 0.5 * PART_LIMIT },
+      { marks: "●●●○○○○", state: "active", line: 0.5 },
       { message: normal("Your money is arriving") },
     ],
     [
@@ -162,7 +167,7 @@ describe("top-up timeline, shared route frame", () => {
       "the deposit's block was final when seen",
       record({ depositInBlock: { block: 100, finalizedAtSeen: 100, finalized: 100, best: 140 } }),
       SENT,
-      { marks: "●●●○○○○", state: "active", line: 0.5 + 0.5 * PART_LIMIT },
+      { marks: "●●●○○○○", state: "active", line: 1 },
       { message: normal("Making sure your money arrived safely") },
     ],
     [
@@ -190,7 +195,7 @@ describe("top-up timeline, shared route frame", () => {
       "the deposit final an hour ago, with little worker time",
       record({}, { ...received, workedMs: 30 * SECOND, lastTickAt: RECEIVED + HOUR }),
       RECEIVED + HOUR,
-      { marks: "●●●●○○○", state: "active", line: PART_LIMIT / 3 },
+      { marks: "●●●●○○○", state: "active", line: 1 / 3 },
       { message: normal("Converting your money to Cash") },
     ],
     [
@@ -235,7 +240,7 @@ describe("top-up timeline, shared route frame", () => {
         { ...received, workedMs: CONVERTED_WORKED + MINUTE, lastTickAt: CONVERTED + HOUR },
       ),
       CONVERTED + HOUR,
-      { marks: "●●●●●○○", state: "active", line: PART_LIMIT },
+      { marks: "●●●●●○○", state: "active", line: 1 },
       { message: normal("Getting your Cash ready") },
     ],
     [
@@ -243,7 +248,7 @@ describe("top-up timeline, shared route frame", () => {
       record({ observedAt: { "cash-on-people": MOVED } }, received),
       MOVED,
       { marks: "●●●●●●○", state: "active", line: 0 },
-      { message: normal("Adding $50 CASH to your balance") },
+      { message: normal("Adding $50 Cash to your balance") },
     ],
     [
       "the Host is claiming a registered claim",
@@ -256,7 +261,7 @@ describe("top-up timeline, shared route frame", () => {
       ),
       MOVED,
       { marks: "●●●●●●○", state: "active", line: 2 / 3 },
-      { message: normal("Adding $50 CASH to your balance") },
+      { message: normal("Adding $50 Cash to your balance") },
     ],
     [
       "the worker worked over 2 minutes since it registered the claim",
@@ -266,7 +271,7 @@ describe("top-up timeline, shared route frame", () => {
       ),
       MOVED,
       { marks: "●●●●●●○", state: "delayed", line: 1 / 3 },
-      { message: normal("Adding $50 CASH to your balance") },
+      { message: normal("Adding $50 Cash to your balance") },
     ],
     [
       "the claim registered an hour ago, with little worker time since",
@@ -275,8 +280,8 @@ describe("top-up timeline, shared route frame", () => {
         { ...received, claimWorkedMs: 30 * SECOND, lastTickAt: MOVED + HOUR },
       ),
       MOVED + HOUR,
-      { marks: "●●●●●●○", state: "active", line: (1 + PART_LIMIT) / 3 },
-      { message: normal("Adding $50 CASH to your balance") },
+      { marks: "●●●●●●○", state: "active", line: 2 / 3 },
+      { message: normal("Adding $50 Cash to your balance") },
     ],
     [
       "the Host added a part and the worker tries again",
@@ -323,7 +328,7 @@ describe("top-up timeline, shared route frame", () => {
       state: expected.state,
     });
     if (view.state !== "done") {
-      expect(view.lines[lastReached(view)]).toBeCloseTo(expected.line ?? 1, 10);
+      expectCurrentLine(view, expected.line ?? 1);
     }
     expect({ message, detail }).toEqual(text);
   });
@@ -382,7 +387,7 @@ describe("top-up timeline, shared route frame", () => {
       });
 
       expect(marks(view)).toBe("●●●●○○○");
-      expect(view.lines[3]).toBeCloseTo(timeFill(now - receivedAt, 6 * SECOND) / 3, 10);
+      expectCurrentLine(view, timeFill(now - receivedAt, 6 * SECOND) / 3);
     },
   );
 
@@ -427,9 +432,9 @@ describe("top-up timeline, Sent on the provider routes", () => {
     const timeline = openedTimeline(topUp, route, { now: NOW, watchingSince: NOW });
 
     expect(marks(timeline.view)).toBe("●●●○○○○");
-    expect(timeline.view.lines[2]).toBeCloseTo(
+    expectCurrentLine(
+      timeline.view,
       seen ? 0.5 + 0.5 * timeFill(NOW - sentAt, 5 * MINUTE) : 0.5 * timeFill(NOW - sentAt, SEEN_T),
-      10,
     );
     expect({ message: timeline.message, awaiting: timeline.awaitingSentFunds }).toEqual(
       seen
@@ -512,7 +517,7 @@ describe("top-up timeline, Chainflip route", () => {
       {
         marks: "●○○○○○○",
         state: "active",
-        line: (2 * confirmation + confirmation * PART_LIMIT) / total,
+        line: (3 * confirmation) / total,
       },
       { message: normal("Confirming your SOL deposit"), detail: "Confirmation 3 of 3" },
     ],
@@ -661,7 +666,7 @@ describe("top-up timeline, Chainflip route", () => {
         { ...counted, egressScheduledAt: at(625), lastStatechainUpdateAt: at(700) },
       ),
       4_225,
-      { marks: "●●○○○○○", state: "active", line: PART_LIMIT },
+      { marks: "●●○○○○○", state: "active", line: 1 },
       { message: normal("Your money is on its way") },
     ],
     [
@@ -699,7 +704,7 @@ describe("top-up timeline, Chainflip route", () => {
       marks: expected.marks,
       state: expected.state,
     });
-    if (view.state !== "done") expect(view.lines[lastReached(view)]).toBeCloseTo(expected.line, 10);
+    if (view.state !== "done") expectCurrentLine(view, expected.line);
     expect({ message, detail }).toEqual(text);
   });
 });
@@ -751,7 +756,7 @@ describe("top-up timeline, Meld routes", () => {
       "a review an hour long, with no Meld ERROR",
       meldRecord(START + 60 * MINUTE, { meldSubmittedAt: START }),
       START + 60 * MINUTE,
-      { marks: "●○○○○○○", state: "active", line: PART_LIMIT },
+      { marks: "●○○○○○○", state: "active", line: 1 },
       { message: normal("Checking your payment") },
     ],
     [
@@ -813,7 +818,7 @@ describe("top-up timeline, Meld routes", () => {
       "a transfer after 6 days, with Meld ERROR",
       meldRecord(BANK_SENT + 6 * DAY, { meldSubmittedAt: BANK_SENT }, true),
       BANK_SENT + 6 * DAY,
-      { marks: "●○○○○○○", state: "active", line: PART_LIMIT },
+      { marks: "●○○○○○○", state: "active", line: timeFill(6 * DAY, 3 * DAY) },
       { message: normal(BANK_FIRST), detail: "Sent 6 May at 10:42" },
     ],
     [
@@ -846,7 +851,7 @@ describe("top-up timeline, Meld routes", () => {
       marks: expected.marks,
       state: expected.state,
     });
-    if (view.state !== "done") expect(view.lines[lastReached(view)]).toBeCloseTo(expected.line, 10);
+    if (view.state !== "done") expectCurrentLine(view, expected.line);
     expect({ message, detail }).toEqual(text);
   });
 });

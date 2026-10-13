@@ -2,7 +2,7 @@
 // The finish of a top-up: the timeline from a confirmed deposit to CASH in the balance, shared by
 // every package.
 import { computed, ref, watch } from "vue";
-import { Plus, RefreshCcw, X } from "lucide-vue-next";
+import { RefreshCcw, X } from "lucide-vue-next";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
 import { useJourneyQuote } from "../../composables/useJourneyQuote";
 import { headerAmount, isExpiredEnding } from "../../funding/journey-endings";
@@ -18,7 +18,7 @@ import { TIMELINE_CADENCE_MS } from "../../funding/timeline/timelines";
 import type { FundingTopUp } from "../../funding/top-ups";
 import { useRequestsStore } from "../../stores/requests";
 import { useSessionStore } from "../../stores/session";
-import { cashAmount, fmtCash, toCashBase } from "../../utils/cash";
+import { cashInText, fmtCash, toCashBase } from "../../utils/cash";
 import { currencyConfig } from "../../funding/config";
 import { fmtFiat, isMoneyAmount } from "../../utils/money";
 import { formatWhenShort, shortRef } from "../../utils/journey";
@@ -26,6 +26,7 @@ import FundingTimeline from "../funding/timeline/FundingTimeline.vue";
 import CashAmount from "../ui/CashAmount.vue";
 import DetailRows, { type DetailRow } from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
+import TransactionIcon from "../ui/TransactionIcon.vue";
 import { nextSuccessStage, openingSuccessStage } from "./success-stage";
 
 const props = defineProps<{
@@ -71,6 +72,8 @@ watch(finished, (done) => {
 });
 const successShown = computed(() => success.value === "playing" || success.value === "shown");
 const successPlaying = computed(() => success.value === "playing");
+/** The success motion brings the transaction icon in as the refresh icon spins out. */
+const SUCCESS_ICON_DELAY_MS = 910;
 const failure = computed(() =>
   requests.phase === "failed" ? (requests.foregroundRecord?.failure ?? null) : null,
 );
@@ -285,7 +288,7 @@ const failureAction = computed<FailureAction | null>(() => {
 /** Explains a header amount that moved off the quote. */
 const rateChangeNotice = computed(() =>
   revisedAmount.value
-    ? `Rates changed while your money was on its way. You'll get ${cashAmount(revisedAmount.value)} instead of ${cashAmount(quotedAmount.value)}`
+    ? `Rates changed while your money was on its way. You'll get ${cashInText(revisedAmount.value)} instead of ${cashInText(quotedAmount.value)}`
     : null,
 );
 
@@ -322,11 +325,11 @@ watch([timelineMessage, timelineDetail], ([message, detail]) => {
             :class="{ 'journey-icon-out': successPlaying }"
             aria-hidden="true"
           />
-          <Plus
+          <TransactionIcon
             v-if="successShown"
-            class="size-6 text-fg-primary"
-            :class="{ 'journey-icon-in': successPlaying }"
-            aria-hidden="true"
+            class="size-14"
+            :animate="successPlaying"
+            :delay="SUCCESS_ICON_DELAY_MS"
           />
         </template>
       </span>
@@ -451,10 +454,6 @@ watch([timelineMessage, timelineDetail], ([message, detail]) => {
   animation: journey-spin-out 700ms cubic-bezier(0.55, 0, 1, 0.45) 350ms both;
 }
 
-.journey-icon-in {
-  animation: journey-spin-in 520ms cubic-bezier(0.34, 1.56, 0.64, 1) 910ms both;
-}
-
 .journey-amount-out {
   animation: journey-drop-out 360ms ease-in 1000ms both;
 }
@@ -513,13 +512,6 @@ watch([timelineMessage, timelineDetail], ([message, detail]) => {
 @keyframes journey-spin-out {
   to {
     transform: rotate(900deg) scale(0);
-  }
-}
-
-@keyframes journey-spin-in {
-  from {
-    opacity: 0;
-    transform: rotate(-180deg) scale(0.4);
   }
 }
 

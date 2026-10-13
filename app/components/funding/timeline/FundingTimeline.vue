@@ -87,11 +87,7 @@ const insets = {
         :aria-hidden="milestone.label === undefined ? 'true' : undefined"
         :aria-current="milestone.current ? 'step' : undefined"
       >
-        <span
-          v-if="line"
-          class="timeline-line"
-          :class="[`timeline-line-${line.tone}`, { 'timeline-line-live': line.live }]"
-        >
+        <span v-if="line" class="timeline-line" :class="`timeline-line-${line.tone}`">
           <span class="timeline-fill" :style="{ width: `${line.fill * 100}%` }" />
         </span>
         <span
@@ -103,8 +99,10 @@ const insets = {
               'timeline-milestone-failed': milestone.state === 'failed',
               'timeline-milestone-arriving': arriving === index,
             },
+            milestone.halo && `timeline-milestone-next timeline-halo-${milestone.halo}`,
           ]"
         >
+          <span v-if="milestone.halo" class="timeline-halo" aria-hidden="true" />
           <span class="timeline-dot">
             <svg
               v-if="milestone.state === 'failed'"
@@ -189,11 +187,13 @@ const insets = {
   --timeline-tone: var(--fg-success);
 }
 
-.timeline-line-current {
+.timeline-line-current,
+.timeline-halo-current {
   --timeline-tone: var(--bg-illustration-dark);
 }
 
-.timeline-line-delayed {
+.timeline-line-delayed,
+.timeline-halo-delayed {
   --timeline-tone: var(--fg-warning);
 }
 
@@ -207,34 +207,6 @@ const insets = {
   left: 0;
   background: var(--fg-success);
   transition: width 600ms ease-out;
-}
-
-/* The soft light that moves into the head of the fill while the phase is live. */
-.timeline-line-live .timeline-fill::after {
-  position: absolute;
-  top: 50%;
-  right: -0.375rem;
-  width: 0.75rem;
-  height: 0.75rem;
-  margin-top: -0.375rem;
-  border-radius: 9999px;
-  background: radial-gradient(closest-side, var(--timeline-tone), transparent);
-  animation: timeline-head 1.6s ease-in-out infinite;
-  content: "";
-}
-
-@keyframes timeline-head {
-  0% {
-    opacity: 0;
-    transform: translateX(-0.75rem) scale(0.6);
-  }
-  50% {
-    opacity: 0.9;
-  }
-  100% {
-    opacity: 0;
-    transform: translateX(0) scale(1);
-  }
 }
 
 .timeline-milestone {
@@ -256,6 +228,7 @@ const insets = {
 }
 
 .timeline-dot {
+  position: relative;
   display: flex;
   border-radius: 9999px;
   background: var(--stroke-secondary);
@@ -282,6 +255,30 @@ const insets = {
 .timeline-milestone-failed .timeline-dot {
   background: var(--fg-error);
   color: var(--fg-primary);
+}
+
+/* The next milestone is painted in its line's tone, with a ripple behind the dot at its size. */
+.timeline-milestone-next .timeline-dot {
+  background: var(--timeline-tone);
+}
+
+.timeline-halo {
+  position: absolute;
+  inset: 12.5%;
+  border-radius: 9999px;
+  background: var(--timeline-tone);
+  animation: timeline-ripple 1.6s cubic-bezier(0.2, 0.6, 0.3, 1) infinite;
+  pointer-events: none;
+}
+
+@keyframes timeline-ripple {
+  from {
+    opacity: 0.5;
+  }
+  to {
+    opacity: 0;
+    transform: scale(2.1);
+  }
 }
 
 .timeline-glyph {
@@ -383,7 +380,7 @@ const insets = {
     transition: none;
   }
 
-  .timeline-line-live .timeline-fill::after {
+  .timeline-halo {
     display: none;
   }
 }

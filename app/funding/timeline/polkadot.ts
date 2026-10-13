@@ -1,7 +1,7 @@
 // The part of the timeline every route shares: Received and the Polkadot milestones, phases 3 to
 // 6, their texts, and the failures past the provider's part.
 
-import { cashAmount } from "../../utils/cash";
+import { cashInText } from "../../utils/cash";
 import { conversionRouteOf, type DepositInBlock, type TopUpRecord } from "../requests/model";
 import { mintedOf } from "../requests/views";
 import { CLOSE, TRY_AGAIN, type PartFailure } from "./failure";
@@ -203,7 +203,7 @@ export function polkadotText(
         message: normal(
           mintedOf(record) !== undefined
             ? "Adding the rest of your Cash"
-            : `Adding ${cashAmount(record.amountHuman)} to your balance`,
+            : `Adding ${cashInText(record.amountHuman)} to your balance`,
         ),
       };
   }

@@ -1632,7 +1632,7 @@ exports[`request list projection > projects the fixture records exactly as today
       "progress": {
         "delayed": false,
         "tone": "active",
-        "value": 0.16416666666666666,
+        "value": 0.10833333333333334,
       },
       "quote": {
         "amount": "52.06",
@@ -1655,7 +1655,7 @@ exports[`request list projection > projects the fixture records exactly as today
         },
         "view": {
           "lines": [
-            0.985,
+            0.65,
             0,
             0,
             0,

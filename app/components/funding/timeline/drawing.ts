@@ -15,6 +15,9 @@ export type LabelAlign = "start" | "centre" | "end";
 /** The colour of a line: green when complete, white, amber or red while it fills, grey after it. */
 export type LineTone = "complete" | "current" | "delayed" | "failed" | "upcoming";
 
+/** The colour of the ripple on the milestone the current line is heading to. */
+export type HaloTone = "current" | "delayed";
+
 export interface DrawnMilestone {
   readonly id: Milestone;
   readonly size: MilestoneSize;
@@ -24,6 +27,8 @@ export interface DrawnMilestone {
   readonly state: MilestoneState;
   /** The large milestone the top-up is heading to, or the failed one, for assistive technology. */
   readonly current: boolean;
+  /** The ripple on the next milestone while the top-up is in progress. */
+  readonly halo: HaloTone | null;
 }
 
 export interface DrawnLine {
@@ -32,8 +37,6 @@ export interface DrawnLine {
   /** From 0 to 1. */
   readonly fill: number;
   readonly tone: LineTone;
-  /** The phase is live: the head of the fill shows the soft light. */
-  readonly live: boolean;
 }
 
 export interface TimelineDrawing {
@@ -48,6 +51,12 @@ const LABELS: Partial<Record<Milestone, string>> = {
   added: "Added",
 };
 const FAILED_LABEL = "Failed";
+
+/** Only a top-up in progress shows the halo. */
+const HALO_TONES: Readonly<Partial<Record<TimelineView["state"], HaloTone>>> = {
+  active: "current",
+  delayed: "delayed",
+};
 
 /** A small milestone grown on failure leans its label away from its nearer labelled neighbour,
  *  toward the longer line beside it. */
@@ -86,7 +95,7 @@ const LINE_WEIGHTS = ringEdges.slice(1).map((edge, index) => edge.start - ringEd
 /**
  * What to draw for a view. `shownReached` is the last milestone drawn as reached; it trails
  * `lastReached(view)` while several milestones complete one after the other, and the line after it
- * then fills to its end. A failure shows once the drawing reaches it.
+ * then fills to its end. A failure shows once the drawing reaches it, the halo once it catches up.
  */
 export function timelineDrawing(
   view: TimelineView,
@@ -95,7 +104,7 @@ export function timelineDrawing(
   const last = lastReached(view);
   const reached = Math.min(shownReached, last);
   const failed = view.state === "failed" && reached === last ? view.failed : -1;
-  const live = view.state === "active" || view.state === "delayed";
+  const halo = reached === last ? (HALO_TONES[view.state] ?? null) : null;
   const heading =
     view.state === "done"
       ? -1
@@ -106,11 +115,11 @@ export function timelineDrawing(
           );
 
   const lines = LINE_WEIGHTS.map((weight, index): DrawnLine => {
-    if (index < reached) return { weight, fill: 1, tone: "complete", live: false };
-    if (index > reached) return { weight, fill: 0, tone: "upcoming", live: false };
-    if (reached < last) return { weight, fill: 1, tone: "current", live };
+    if (index < reached) return { weight, fill: 1, tone: "complete" };
+    if (index > reached) return { weight, fill: 0, tone: "upcoming" };
+    if (reached < last) return { weight, fill: 1, tone: "current" };
     const tone = failed >= 0 ? "failed" : view.state === "delayed" ? "delayed" : "current";
-    return { weight, fill: view.lines[index] ?? 0, tone, live };
+    return { weight, fill: view.lines[index] ?? 0, tone };
   });
 
   return {
@@ -124,6 +133,7 @@ export function timelineDrawing(
         labelAlign: isFailed ? (FAILED_LABEL_ALIGN[id] ?? "centre") : "centre",
         state: index <= reached ? "complete" : isFailed ? "failed" : "upcoming",
         current: index === heading,
+        halo: index === reached + 1 ? halo : null,
       };
     }),
     lines,

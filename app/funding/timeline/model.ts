@@ -12,8 +12,8 @@ import {
 const FILL_RATE = 3;
 const PHASE_COUNT = MILESTONES.length - 1;
 
-/** The most of its share a part fills before its fact arrives. */
-export const PART_LIMIT = 0.985;
+/** The most a line fills before its end milestone is reached. */
+export const LINE_LIMIT = 0.65;
 
 function isPositive(value: number): boolean {
   return value > 0 && Number.isFinite(value);
@@ -47,12 +47,12 @@ function lineFill({ parts }: PhaseInput, phaseStartedAt: number | undefined, at:
   const part = parts[index]!;
   const before = parts.slice(0, index).reduce((sum, { weight }) => sum + weight, 0) / totalWeight;
   const share = part.weight / totalWeight;
-  if (part.completed) return before + share * PART_LIMIT;
+  if (part.completed) return LINE_LIMIT;
 
   const startedAt = part.startedAt ?? parts[lastCompleted]?.completed?.at ?? phaseStartedAt;
   const elapsed = startedAt === undefined ? 0 : Math.max(0, at - startedAt);
   const within = part.fraction ?? 1 - Math.exp((-FILL_RATE * elapsed) / part.expectedMs);
-  return before + share * clamp(within, 0, PART_LIMIT);
+  return LINE_LIMIT * (before + share * clamp(within, 0, 1));
 }
 
 /** The index of the last milestone the view reached, -1 when Started failed. */

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { PART_LIMIT, timelineView } from "../app/funding/timeline/model";
+import { LINE_LIMIT, timelineView } from "../app/funding/timeline/model";
 import type {
   PhaseIndex,
   PhaseInput,
@@ -36,7 +36,7 @@ describe("top-up timeline model", () => {
   it.each([
     ["a part at its start", [part()], 0, 0],
     ["time inside a part", [part()], T, AT_T],
-    ["time approaching the end of a part", [part()], 100 * T, PART_LIMIT],
+    ["time approaching the end of a part", [part()], 100 * T, 1],
     ["a completed part", [part({ completed: { at: 4_000 } }), part()], 4_000, 0.5],
     [
       "time from the last completion",
@@ -51,31 +51,26 @@ describe("top-up timeline model", () => {
       0.5 + 0.5 * AT_T,
     ],
     ["a real fraction", [part({ completed: {} }), part({ fraction: 0.5 })], 100 * T, 0.75],
-    [
-      "a full fraction before the fact",
-      [part({ completed: {} }), part({ fraction: 1 })],
-      0,
-      0.5 + 0.5 * PART_LIMIT,
-    ],
+    ["a full fraction before the fact", [part({ completed: {} }), part({ fraction: 1 })], 0, 1],
     ["a skipped part", [part(), part({ completed: {} }), part()], 0, 2 / 3],
     [
       "all parts complete before the milestone",
       [part({ completed: {} }), part({ completed: {} })],
       0,
-      0.5 + 0.5 * PART_LIMIT,
+      1,
     ],
     ["weighted shares", [part({ completed: {} }), part({ weight: 2 })], 0, 1 / 3],
   ] satisfies [string, PhaseInput["parts"], number, number][])(
-    "fills the current line for %s",
-    (_, parts, now, fill) => {
-      expect(currentLine(evaluate({ parts }, { now }))).toBeCloseTo(fill, 10);
+    "fills the current line up to its limit for %s",
+    (_, parts, now, progress) => {
+      expect(currentLine(evaluate({ parts }, { now }))).toBeCloseTo(LINE_LIMIT * progress, 10);
     },
   );
 
   it.each([
-    ["a higher fill in the same phase", 1, 0.97, 0.97],
-    ["a lower fill in the same phase", 1, 0.1, AT_T],
-    ["a higher fill in an earlier phase", 0, 0.97, AT_T],
+    ["a higher fill in the same phase", 1, 0.64, 0.64],
+    ["a lower fill in the same phase", 1, 0.1, LINE_LIMIT * AT_T],
+    ["a higher fill in an earlier phase", 0, 0.64, LINE_LIMIT * AT_T],
   ] satisfies [string, PhaseIndex, number, number][])(
     "keeps the line monotonic against %s shown before",
     (_, phase, shown, fill) => {
@@ -90,6 +85,22 @@ describe("top-up timeline model", () => {
       expect(currentLine(view)).toBeCloseTo(fill, 10);
     },
   );
+
+  it("fills a line past its limit only when its milestone is reached", () => {
+    const parts: PhaseInput["parts"] = [part({ completed: { at: 0 } }), part()];
+    const before = evaluate({ parts }, { now: 100 * T });
+    const after = evaluate(
+      { parts },
+      {
+        reached: { started: { at: 0 }, accepted: { at: 100 * T } },
+        now: 100 * T,
+        previous: before,
+      },
+    );
+
+    expect(currentLine(before)).toBeLessThanOrEqual(LINE_LIMIT);
+    expect(after?.lines[0]).toBe(1);
+  });
 
   it("makes every milestone before a reached one complete", () => {
     const phase = vi.fn(() => ({ parts: [part()] }) satisfies PhaseInput);
@@ -112,7 +123,7 @@ describe("top-up timeline model", () => {
         "upcoming",
         "upcoming",
       ],
-      lines: [1, 1, expect.closeTo(AT_T, 10), 0, 0, 0],
+      lines: [1, 1, expect.closeTo(LINE_LIMIT * AT_T, 10), 0, 0, 0],
     });
   });
 
@@ -139,7 +150,7 @@ describe("top-up timeline model", () => {
           "upcoming",
           "upcoming",
         ],
-        lines: [1, expect.closeTo(AT_T, 10), 0, 0, 0, 0],
+        lines: [1, expect.closeTo(LINE_LIMIT * AT_T, 10), 0, 0, 0, 0],
       },
     ],
     [
