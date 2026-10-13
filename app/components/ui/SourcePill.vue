@@ -4,7 +4,7 @@ defineProps<{ label: string; value: string; icon: string }>();
 </script>
 
 <template>
-  <div class="flex items-center gap-2 rounded-full bg-surface-nested px-3 py-2">
+  <div class="flex items-center gap-2 rounded-full bg-surface-container px-3 py-2">
     <span class="size-6 shrink-0 overflow-clip rounded-full">
       <img :src="icon" alt="" class="size-full" />
     </span>

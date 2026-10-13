@@ -1,6 +1,8 @@
 <script setup lang="ts">
 // Token picker for a withdrawal: the tokens on the chosen network, each judged by its own offer
-// for the amount on screen, under a reminder of the network already picked.
+// for the amount on screen, under a reminder of the network already picked. While the offers are
+// still being quoted, skeleton rows stand in for the list, one per token. `skeleton` forces them,
+// for the preview deck.
 import { computed } from "vue";
 import { useWithdrawOffersStore } from "../../stores/withdraw-offers";
 import {
@@ -9,7 +11,9 @@ import {
   type WithdrawNetwork,
 } from "../../withdraw/destinations";
 
-const props = defineProps<{ network: WithdrawNetwork }>();
+const props = withDefaults(defineProps<{ network: WithdrawNetwork; skeleton?: boolean }>(), {
+  skeleton: false,
+});
 const emit = defineEmits<{ pick: [destination: WithdrawDestination] }>();
 
 const offers = useWithdrawOffersStore();
@@ -25,17 +29,22 @@ const rows = computed(() =>
 <template>
   <div class="flex min-h-0 flex-1 flex-col">
     <!-- The cards bleed past the 24px content gutter to the design's 16px inset. -->
-    <div
-      class="token-summary -mx-2 flex h-10 shrink-0 items-center justify-between bg-surface-container px-3 text-body-m text-fg-primary"
-    >
-      <span>Network selected</span>
-      <span class="flex items-center gap-2">
-        {{ network.label }}
-        <img :src="network.icon" alt="" class="size-6 rounded-full" />
-      </span>
-    </div>
+    <NetworkRecapBar
+      class="-mx-2"
+      :label="network.label"
+      :icon="network.icon"
+      :skeleton="skeleton"
+    />
 
-    <ul class="-mx-2 mt-4 flex flex-col gap-2 overflow-y-auto pb-6">
+    <ul
+      v-if="skeleton || offers.awaitingTokens(network)"
+      class="-mx-2 mt-4 flex flex-col gap-2"
+      aria-label="Loading tokens"
+    >
+      <OptionRow v-for="n in network.destinations.length" :key="n" skeleton />
+    </ul>
+
+    <ul v-else class="-mx-2 mt-4 flex flex-col gap-2 overflow-y-auto pb-6">
       <OptionRow
         v-for="{ destination, state } in rows"
         :key="destination.id"
@@ -48,10 +57,3 @@ const rows = computed(() =>
     </ul>
   </div>
 </template>
-
-<style scoped>
-/* 24px; the radius scale has no semantic step this size. */
-.token-summary {
-  border-radius: var(--scale-radius-large);
-}
-</style>

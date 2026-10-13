@@ -110,7 +110,7 @@ const notice = computed(() => {
   min-width: 0;
   height: 3rem;
   border-radius: 9999px;
-  background: var(--bg-surface-nested);
+  background: var(--bg-surface-container);
   padding: 0 1rem;
   overflow: hidden;
   white-space: nowrap;

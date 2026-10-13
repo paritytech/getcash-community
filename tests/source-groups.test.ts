@@ -53,8 +53,9 @@ describe("source groups", () => {
     expect(tokenSubtitle({ state: "unavailable", reason: "maintenance" })).toBe(
       "Not available right now",
     );
-    expect(tokenSubtitle({ state: "checking" })).toBe("Checking…");
     expect(tokenSubtitle({ state: "ungated" })).toBeUndefined();
+    // Never drawn as a row: the picker shows a skeleton row in its place.
+    expect(tokenSubtitle({ state: "checking" })).toBeUndefined();
   });
 
   it("names a network's smallest minimum, or why none of its tokens answer", () => {
@@ -68,6 +69,8 @@ describe("source groups", () => {
     expect(networkSubtitle(down)).toBe("Not available right now");
     const fine = network("Ethereum", [token("ETH", { state: "ungated" })]);
     expect(networkSubtitle(fine)).toBeUndefined();
+    const pending = network("Solana", [token("SOL", { state: "checking" })]);
+    expect(networkSubtitle(pending)).toBeUndefined();
   });
 
   it("splits into the pickable group and the greyed one, dropping an empty group", () => {

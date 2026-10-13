@@ -41,19 +41,14 @@ import {
   extractFungibleAmount,
   forwardedProgramStandIn,
   peopleDest,
+  priceDispatchFee,
   realForwardedProgram,
   withFeeMargin,
   type PeopleApi,
   type StableLegFees,
 } from "./funding-program";
 import type { ConversionRoute } from "./route";
-import {
-  STABLE_TOKENS,
-  asLocation,
-  priceNativeFeeIn,
-  stableTxOptions,
-  type Location,
-} from "./stable";
+import { STABLE_TOKENS, asLocation, stableTxOptions, type Location } from "./stable";
 
 type AssetHubApi = TypedApi<typeof paseo_next_v2>;
 type Weight = { ref_time: bigint; proof_size: bigint };
@@ -262,18 +257,13 @@ export async function estimatePsmBatchFees(args: {
   // Price the dispatch against the batch carrying the final amounts and the declared weight, so
   // the charge it predicts is the charge the submitted batch pays. The dispatch fee itself is not
   // yet known to keep out of the probe's mint; a few thousand units do not change a compact
-  // encoding's length.
-  const options = psmBatchTxOptions(args.route.external);
-  const dispatchNative = await probe(
-    localExternal + deliveryExternal,
-    0n,
-    maxWeight,
-  ).batch.getEstimatedFees(args.dryRunFrom ?? args.feeProbeAddress, options);
-  const dispatchExternal = await priceNativeFeeIn(
+  // encoding's length. The submit prices the batch it sends once more.
+  const { dispatchNative, dispatchExternal } = await priceDispatchFee(
     args.api,
-    options.asset,
-    dispatchNative,
-    external.symbol,
+    probe(localExternal + deliveryExternal, 0n, maxWeight).batch,
+    args.dryRunFrom ?? args.feeProbeAddress,
+    psmBatchTxOptions(args.route.external),
+    "psm batch fee estimate",
   );
 
   const feeAllowanceExternal = withFeeMargin(localExternal + deliveryExternal);

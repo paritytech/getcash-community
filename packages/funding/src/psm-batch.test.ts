@@ -306,10 +306,18 @@ describe("buildPsmBatch", () => {
       { id: TOKENS.CASH.location, fun: { type: "Fungible", value: BATCH.remoteFeesCash } },
     ]);
     expect(t.preserve_origin).toBe(false);
-    // The USDT sits in the fees register by now, so the holding is CASH alone and one counted
-    // asset is the whole of it.
+    // The transfer names the CASH, so USDT swept into the holding stays behind.
     expect(t.assets).toEqual([
-      { type: "Teleport", value: { type: "Wild", value: { type: "AllCounted", value: 1 } } },
+      {
+        type: "Teleport",
+        value: {
+          type: "Wild",
+          value: {
+            type: "AllOf",
+            value: { id: TOKENS.CASH.location, fun: { type: "Fungible", value: undefined } },
+          },
+        },
+      },
     ]);
     expect(t.remote_xcm.map((i) => i.type)).toEqual(["RefundSurplus", "DepositAsset"]);
     const deposit = t.remote_xcm[1]!.value as {
@@ -348,7 +356,16 @@ describe("buildPsmBatch", () => {
       value: [{ id: TOKENS.CASH.location, fun: { type: "Fungible", value: BATCH.remoteFeesCash } }],
     });
     expect(transfer.assets).toEqual([
-      { type: "ReserveDeposit", value: { type: "Wild", value: { type: "AllCounted", value: 1 } } },
+      {
+        type: "ReserveDeposit",
+        value: {
+          type: "Wild",
+          value: {
+            type: "AllOf",
+            value: { id: TOKENS.CASH.location, fun: { type: "Fungible", value: undefined } },
+          },
+        },
+      },
     ]);
   });
 
