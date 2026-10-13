@@ -5,7 +5,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { TOKENS } from "@getsome/core";
+import { SourceMinimumNotMetError } from "@getsome/chainflip";
 import { createManualRail } from "@getsome/funding";
+import { createFakeRail } from "@getsome/testing";
 import {
   createMemoryKeyedStorage,
   setMirrorStorage,
@@ -20,6 +22,8 @@ const BURNER = "14uAyRtbeRsrgERPLETm72yFPKW3oi3m4RX93arNwGQhsduC";
 const BUDGET = 58_694_260_960n;
 /** What the next world sizes its budget at; a test moves it to stand for a rebuild on reopen. */
 const sizing = { budget: BUDGET };
+/** Set, the fakes' rail refuses the next quote with it: the pick is under Chainflip's floor. */
+const floor = { error: null as Error | null };
 
 const { worlds, faucet, manager } = vi.hoisted(() => ({
   worlds: { builds: [] as { sourceId?: string; tradeN?: number }[] },
@@ -59,6 +63,14 @@ vi.mock("../lib/coinage-live", async () => {
       tradeN?: number;
     }) => {
       worlds.builds.push({ sourceId: args.sourceId, tradeN: args.tradeN });
+      // A Polkadot pick deposits straight to the burner; every other runs on the fakes' rail,
+      // which refuses when a test puts the pick under its floor.
+      const rail =
+        args.sourceId === "dot-assethub"
+          ? createManualRail({ token: depositTokenOf(args.route) })
+          : floor.error === null
+            ? undefined
+            : createFakeRail({ quoteError: floor.error });
       const mock = await createMockCoinageSession({
         recipient: BURNER,
         amount: args.amount,
@@ -66,10 +78,7 @@ vi.mock("../lib/coinage-live", async () => {
         tradeN: args.tradeN,
         route: args.route,
         nativeBudget: BUDGET,
-        // A Polkadot pick deposits straight to the burner; every other runs on the fakes' rail.
-        ...(args.sourceId === "dot-assethub"
-          ? { rail: createManualRail({ token: depositTokenOf(args.route) }) }
-          : {}),
+        ...(rail === undefined ? {} : { rail }),
       });
       return {
         ...mock,
@@ -118,6 +127,7 @@ describe("a hosted Chainflip pick", () => {
     worlds.builds.length = 0;
     faucet.calls.length = 0;
     sizing.budget = BUDGET;
+    floor.error = null;
     vi.spyOn(console, "warn").mockImplementation(() => {});
   });
   afterEach(async () => {
@@ -153,6 +163,43 @@ describe("a hosted Chainflip pick", () => {
     // The channel refunds to the request's own Bitcoin key.
     expect(session.refundAddress).toMatch(/^bc1/);
     expect(record.refundAddress).toBe(session.refundAddress);
+  });
+
+  it("a pick under its floor sizes the picker without an error and opens nothing", async () => {
+    floor.error = new SourceMinimumNotMetError({
+      sourceId: "btc",
+      assetSymbol: "BTC",
+      minimumBaseUnits: 100_000n,
+      minimumFormatted: "0.001",
+      neededBaseUnits: 50_000n,
+      neededFormatted: "0.0005",
+    });
+    const session = useSessionStore();
+    const requests = useRequestsStore();
+    session.setAmount("50");
+    await session.fetchQuote("Bitcoin", "BTC");
+    // No error card: the budget the world sized is what the picker greys the row against.
+    expect(session.quoteError).toBeNull();
+    expect(session.quoted).toMatchObject({
+      nativeAmount: BUDGET,
+      depositToken: TOKENS.PAS,
+      sourceAsset: "BTC",
+      symbol: "BTC",
+    });
+    expect(session.sourcePrice).toEqual({
+      kind: "minimum",
+      minimum: {
+        minimumFormatted: "0.001",
+        assetSymbol: "BTC",
+        minimumBaseUnits: 100_000n,
+        neededBaseUnits: 50_000n,
+        neededFormatted: "0.0005",
+      },
+    });
+    // The world and its burner are let go, so a start opens nothing.
+    expect(session.live).toBeNull();
+    await session.start();
+    expect(requests.phase).toBeNull();
   });
 
   // TODO(production): delete with the faucet and fundFaucet.

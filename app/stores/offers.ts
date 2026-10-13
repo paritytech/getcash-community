@@ -169,6 +169,15 @@ export const useOffersStore = defineStore("offers", () => {
     () => void learn(),
   );
 
+  // Chainflip refused a pick under a floor the rows did not show: the floors have moved since
+  // they were learned, so they are asked again and the row greys with the fresh one.
+  watch(
+    () => session.sourcePrice,
+    (priced) => {
+      if (priced?.kind === "minimum" && railEnabled.value) void ask(egress.value);
+    },
+  );
+
   // The retry loop runs only while something on screen is watching the floors, and only while
   // Chainflip answers for nothing. Anything else that sets the floors ends it.
   let watchers = 0;

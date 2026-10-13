@@ -55,6 +55,17 @@ export function sourcePriceOf(quote: Quote): SourcePrice {
   };
 }
 
+/** The floor Chainflip refused a purchase under, as the pay card's minimum. */
+export function sourceMinimumOf(e: SourceMinimumNotMetError): SourceMinimum {
+  return {
+    minimumFormatted: e.minimumFormatted,
+    assetSymbol: e.assetSymbol,
+    minimumBaseUnits: e.minimumBaseUnits,
+    neededBaseUnits: e.neededBaseUnits === 0n ? 1n : e.neededBaseUnits,
+    neededFormatted: e.neededFormatted,
+  };
+}
+
 /**
  * Prices `targetBaseUnits`, what this purchase needs delivered in `egress`'s base units, in
  * `sourceId`'s asset. Never throws: every failure, including a timeout, comes back as a result.
@@ -94,16 +105,7 @@ export async function priceSourceLeg(args: {
       console.info(
         `[coinage] source price: below the ${e.assetSymbol} floor (${e.minimumFormatted} ${e.assetSymbol}); this purchase needs ${e.neededBaseUnits} base units`,
       );
-      return {
-        kind: "minimum",
-        minimum: {
-          minimumFormatted: e.minimumFormatted,
-          assetSymbol: e.assetSymbol,
-          minimumBaseUnits: e.minimumBaseUnits,
-          neededBaseUnits: e.neededBaseUnits === 0n ? 1n : e.neededBaseUnits,
-          neededFormatted: e.neededFormatted,
-        },
-      };
+      return { kind: "minimum", minimum: sourceMinimumOf(e) };
     }
     const reason = e instanceof Error ? e.message : String(e);
     console.warn(`[coinage] source price unavailable: ${reason}`);

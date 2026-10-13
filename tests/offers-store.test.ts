@@ -370,4 +370,37 @@ describe("offers store", () => {
     await nextTick();
     expect(learnSourceFloors).toHaveBeenCalledTimes(1);
   });
+
+  it("asks the floors again when a quote came back under a floor the rows did not show", async () => {
+    const session = useSessionStore();
+    const offers = useOffersStore();
+    sized(session, 100n * DOT);
+    offers.floors = LEARNED;
+    const eth = () => offers.tokensOf("Ethereum").find((t) => t.asset === "ETH")!.offer.state;
+    expect(eth()).toBe("available");
+    // ETH's floor moved past this purchase since the rows learned it; Chainflip said so on the
+    // quote, and the fresh floors say so on the row.
+    const moved = new Map<SourceId, SourceFloorResult>([
+      ...LEARNED,
+      ["eth", floor("eth", 10n ** 17n, 250n)],
+    ]);
+    const fresh = Promise.resolve(moved);
+    vi.mocked(learnSourceFloors).mockReturnValueOnce(fresh);
+    session.sourcePrice = {
+      kind: "minimum",
+      minimum: {
+        minimumFormatted: "0.1",
+        assetSymbol: "ETH",
+        minimumBaseUnits: 10n ** 17n,
+        neededBaseUnits: 4n * 10n ** 16n,
+        neededFormatted: "0.04",
+      },
+    };
+    await nextTick();
+    expect(learnSourceFloors).toHaveBeenCalledWith({ egress: egressFor(TOKENS.PAS) });
+    await fresh;
+    await nextTick();
+    expect(offers.floors).toBe(moved);
+    expect(eth()).toBe("too-small");
+  });
 });

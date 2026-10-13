@@ -16,6 +16,7 @@ import {
   chainflipTokenOf,
   egressFor,
   SOURCE_CONFIG_BY_ID,
+  SourceMinimumNotMetError,
   type ChainflipToken,
 } from "@getsome/chainflip";
 import type { RefundKey } from "@getsome/ephemeral";
@@ -69,7 +70,12 @@ import {
 import { requestRefKey, requestRefOf, type RequestRef } from "../utils/request-index";
 import { journeyScaleOf, type JourneyScale } from "../funding/requests/views";
 import { estimateSourceFromCash } from "~~/lib/demo-rates";
-import { priceSourceLeg, sourcePriceOf, type SourcePriceResult } from "~~/lib/source-price";
+import {
+  priceSourceLeg,
+  sourceMinimumOf,
+  sourcePriceOf,
+  type SourcePriceResult,
+} from "~~/lib/source-price";
 import {
   createMockCoinageSession,
   depositTokenOf,
@@ -1047,19 +1053,36 @@ export const useSessionStore = defineStore("session", () => {
           return;
         }
         let quote: Quote;
+        const depositToken = chainflipTokenOf(depositTokenOf(route));
         try {
           quote = await step("quote", 20_000, world.session.quote());
         } catch (e) {
           // Chainflip can refuse, on a floor or an outage: the world and its burner are let go.
           world.dispose();
-          throw e;
+          if (!(e instanceof SourceMinimumNotMetError)) throw e;
+          if (epoch !== quoteEpoch) return;
+          console.info(
+            `[coinage] quote: below the ${e.assetSymbol} floor (${e.minimumFormatted} ${e.assetSymbol}); this purchase needs ${e.neededFormatted}`,
+          );
+          // Under the source's floor is not an error to show: the picker greys the row, held
+          // against the budget the world sized before Chainflip was asked, and the other sources
+          // stay open.
+          quoted.value = {
+            send: e.neededFormatted,
+            symbol: e.assetSymbol,
+            nativeAmount: depositToken === undefined ? null : world.budget,
+            ...(depositToken === undefined ? {} : { depositToken }),
+            sourceAsset: asset,
+            sourceChain: chain,
+          };
+          sourcePrice.value = { kind: "minimum", minimum: sourceMinimumOf(e) };
+          return;
         }
         if (epoch !== quoteEpoch) {
           world.dispose();
           return;
         }
         live.value = world;
-        const depositToken = chainflipTokenOf(depositTokenOf(route));
         quoted.value = {
           send: quote.source.formatted,
           symbol: quote.source.assetSymbol,
