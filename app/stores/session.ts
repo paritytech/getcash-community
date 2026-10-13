@@ -1490,8 +1490,9 @@ export const useSessionStore = defineStore("session", () => {
           : "crypto";
     if (isMeldSourceId(record.sourceId)) meldCountry.value = record.meldCountry ?? null;
     lastQuoteParams = { chain: record.chain, asset: record.asset };
+    teardownWorld();
+    const epoch = quoteEpoch;
     try {
-      teardownWorld();
       foregroundRef = ref; // after teardown, which clears it
       // On screen from its record at once; the world builds behind it.
       requests.setForeground(ref);
@@ -1507,7 +1508,6 @@ export const useSessionStore = defineStore("session", () => {
       console.warn(
         `[coinage] reopen request #${record.tradeN}: funded=${record.funded ?? "no"} status=${status} submitted=${record.meldSubmittedAt !== undefined}`,
       );
-      const epoch = quoteEpoch;
       // Display context for the journey, from the record itself; neither path re-quotes.
       const displayQuote: QuotedView = {
         send: record.sourceAmount ?? "",
@@ -1616,6 +1616,8 @@ export const useSessionStore = defineStore("session", () => {
       });
       // No time bound: resuming a claim in flight blocks on the host's Claim sheet.
       await world.session.resume();
+      // A newer quote or open already disposed this world and owns the screen.
+      if (epoch !== quoteEpoch) return false;
       // Meld rail: rebuild a status-only client from the persisted funding-request id and resume
       // the poll.
       if (record.meldFundingRequestId) {
@@ -1663,6 +1665,7 @@ export const useSessionStore = defineStore("session", () => {
       void reconcileBackground();
       return true;
     } catch (e) {
+      if (epoch !== quoteEpoch) return false; // a newer quote owns the state now
       // The record survives a failed resume.
       console.warn("[coinage] resume failed, falling back to a fresh start:", e);
       reset();
