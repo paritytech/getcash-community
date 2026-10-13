@@ -218,8 +218,9 @@ async function next() {
 
     <p v-if="startError" class="mt-4 text-body-m text-fg-error">{{ startError }}</p>
 
-    <PillButton class="mt-auto mb-6 w-full" :disabled="!canContinue" @click="next">
+    <PillButton class="mt-auto w-full" :disabled="!canContinue" @click="next">
       {{ starting ? "Starting…" : "Continue" }}
     </PillButton>
+    <PoweredBy class="mt-3 mb-4" provider="Meld" />
   </div>
 </template>
