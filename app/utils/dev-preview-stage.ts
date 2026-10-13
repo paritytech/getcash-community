@@ -33,7 +33,10 @@ export type PreviewStage =
       /** A canned secret for the return-funds step, so the revealed frame can be staged. */
       secret?: string;
       skeleton?: boolean;
-    };
+    }
+  /** The fiat withdrawal package's quote, on `#/withdraw`, for a region the method does not pay
+   *  out in. */
+  | { kind: "withdraw-fiat"; method: "card" | "bank"; country: string; countryName: string };
 
 /**
  * Non-null only while the deck is driving. Always null in a production build — `dev-preview` is

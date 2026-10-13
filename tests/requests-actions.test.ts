@@ -613,7 +613,8 @@ describe("requests store: foreground, clock and user actions", () => {
     // through observations alone. `revealRefund` opens the refund-key panel unprompted, and the
     // key it shows comes off the request's world, not its record. The supported catalog is the
     // same kind of thing — what the adapter says the picker may list, not anything about a
-    // request — and a deck run has no adapter to answer for it.
+    // request — and a deck run has no adapter to answer for it; so is the quote's word that the
+    // region routes no such method.
     const allowed = new Set([
       "quoted",
       "method",
@@ -623,6 +624,8 @@ describe("requests store: foreground, clock and user actions", () => {
       "revealRefund",
       "supportedCountries",
       "corridorByCountry",
+      "meldCorridor",
+      "meldMethodUnavailable",
     ]);
     expect([...written].filter((name) => !allowed.has(name))).toEqual([]);
   });

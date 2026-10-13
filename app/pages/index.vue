@@ -36,10 +36,12 @@ import { useRequestsStore } from "../stores/requests";
 import { isDemoBuild } from "../utils/demo";
 import { applyCurrentScene, seedLaunchPreviewTopUps } from "../utils/dev-preview";
 import { previewStage, type PreviewStage } from "../utils/dev-preview-stage";
+import { useRouter } from "vue-router";
 import { launchPreviewTopUps, previewTopUpScene } from "../utils/dev-preview-top-ups";
 
 useVisualViewportHeight();
 const requests = useRequestsStore();
+const router = useRouter();
 
 function routeLabel(route: FundingRoute): string {
   return fundingSelectorConfig.routes.find(({ id }) => id === route)?.label ?? route;
@@ -288,8 +290,11 @@ async function stagePreview(stage: PreviewStage): Promise<boolean> {
     };
     return true;
   }
-  // The withdrawal package stages on `#/withdraw`; this page has nowhere to put it.
-  if (stage.kind === "withdraw-package") return false;
+  // The withdrawal packages stage on `#/withdraw`, which picks the stage up as it mounts.
+  if (stage.kind === "withdraw-package" || stage.kind === "withdraw-fiat") {
+    await router.push("/withdraw");
+    return false;
+  }
   if (activePackage.value !== null && selection.value?.route === stage.route) return false;
   journey.value = null;
   activeTopUpId.value = null;
@@ -301,13 +306,19 @@ async function stagePreview(stage: PreviewStage): Promise<boolean> {
   return true;
 }
 
-watch(previewStage, async (stage) => {
-  if (stage === null || !(await stagePreview(stage))) return;
-  // The container is up. Its own mount and teardown ran as it changed — a package starts its entry
-  // flow over, a journey left behind resets the session — so the scene's state goes on top again.
-  await nextTick();
-  await applyCurrentScene();
-});
+// Immediate: the deck may have sent this page here from `#/withdraw` with the stage already set.
+watch(
+  previewStage,
+  async (stage) => {
+    if (stage === null || !(await stagePreview(stage))) return;
+    // The container is up. Its own mount and teardown ran as it changed — a package starts its
+    // entry flow over, a journey left behind resets the session — so the scene's state goes on top
+    // again.
+    await nextTick();
+    await applyCurrentScene();
+  },
+  { immediate: true },
+);
 
 const openTopUpRequest = (topUp: FundingTopUp): Promise<boolean> =>
   adapterByRoute.get(topUp.route)?.open(topUp) ?? Promise.resolve(false);

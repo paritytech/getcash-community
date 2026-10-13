@@ -6,6 +6,7 @@
 // names where the funds go; from there the record and the worker carry the sale.
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useMeldSellQuote } from "../../../composables/useMeldSellQuote";
+import { useStateDirector } from "../../../composables/useStateDirector";
 import { useWithdrawalRequest } from "../../../composables/useWithdrawalRequest";
 import type { FundingPackageEmits } from "../../../funding/handoff";
 import { paymentTaken, saleAwaitingDeposit } from "../../../funding/requests/model";
@@ -14,6 +15,7 @@ import type { FundingTopUp } from "../../../funding/top-ups";
 import { useRequestsStore } from "../../../stores/requests";
 import { toCashBase } from "../../../utils/cash";
 import { isDemoBuild } from "../../../utils/demo";
+import { previewStage } from "../../../utils/dev-preview-stage";
 import { localeCountry } from "../../../utils/locale";
 import type { RequestRef } from "../../../utils/request-index";
 import { meldSellClient } from "../../../withdraw/meld-client";
@@ -49,6 +51,8 @@ const method = ((): "card" | "bank" => {
   }
   return route;
 })();
+
+useStateDirector();
 
 const requests = useRequestsStore();
 const withdrawal = useWithdrawalRequest();
@@ -344,10 +348,28 @@ async function retry() {
   }
 }
 
+// The preview deck stages the quote's refusal; a production build never has a stage. Immediate:
+// the deck may have staged this package before it mounted.
+watch(
+  previewStage,
+  (stage) => {
+    if (stage?.kind !== "withdraw-fiat" || stage.method !== method) return;
+    sale.country.value = stage.country;
+    sale.countries.value = [{ country: stage.country, name: stage.countryName }];
+    sale.quote.value = null;
+    sale.loading.value = false;
+    sale.error.value = null;
+    sale.unrouted.value = true;
+    step.value = "quote";
+  },
+  { immediate: true },
+);
+
 onMounted(() => {
   window.addEventListener("message", onMessage);
   const opened = props.topUp;
   if (!opened) {
+    if (previewStage.value?.kind === "withdraw-fiat") return;
     void sale.loadCatalog();
     void sale.refresh();
     return;
@@ -473,5 +495,7 @@ onUnmounted(() => {
         <p class="text-body-m text-fg-secondary">Opening your withdrawal…</p>
       </div>
     </div>
+
+    <PreviewSceneLabel />
   </main>
 </template>
