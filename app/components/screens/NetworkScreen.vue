@@ -1,11 +1,11 @@
 <script setup lang="ts">
-// Network picker. Every network the catalog knows, in two groups: the ones with a token that can
-// pay for this amount, then the ones that cannot, greyed and saying why. While any network is
+// Network picker. Every network the catalog knows in one unlabelled list: the ones with a token
+// that can pay for this amount, then the ones that cannot, outlined and saying why. While any network is
 // still being answered, skeleton rows stand in for the list, one per network, so nothing moves
 // when the networks arrive. A pick in flight keeps its rows on screen, spinner and all.
 import { computed } from "vue";
 import { networkIcon } from "../../utils/icons";
-import { groupNetworks, networkSubtitle } from "../../funding/source-groups";
+import { networkSubtitle, sortNetworks } from "../../funding/source-groups";
 import { useFreshFloors } from "../../composables/useFreshFloors";
 import { useFlowStore } from "../../stores/flow";
 import { isNetworkPickable, useOffersStore, type NetworkRow } from "../../stores/offers";
@@ -14,7 +14,7 @@ const flow = useFlowStore();
 const offers = useOffersStore();
 useFreshFloors();
 
-const groups = computed(() => groupNetworks(offers.networks));
+const networks = computed(() => sortNetworks(offers.networks));
 
 function pick(network: NetworkRow) {
   if (flow.starting) return;
@@ -33,27 +33,17 @@ function pick(network: NetworkRow) {
       <OptionRow v-for="n in offers.networks.length" :key="n" skeleton />
     </ul>
 
-    <div v-else class="-mx-2 flex min-h-0 flex-col gap-4 overflow-y-auto pb-6">
-      <ul
-        v-for="group in groups"
-        :key="group.label"
-        class="flex flex-col gap-2"
-        :aria-label="group.label"
-      >
-        <li v-if="groups.length > 1" class="px-2 pt-2 text-overline text-fg-tertiary">
-          {{ group.label }}
-        </li>
-        <OptionRow
-          v-for="network in group.rows"
-          :key="network.chain"
-          :icon="networkIcon(network.chain)"
-          :label="network.label"
-          :subtitle="networkSubtitle(network)"
-          :disabled="!isNetworkPickable(network)"
-          :busy="flow.starting && network.chain === flow.srcChain.chain"
-          @select="pick(network)"
-        />
-      </ul>
-    </div>
+    <ul v-else class="-mx-2 flex min-h-0 flex-col gap-2 overflow-y-auto pb-6" aria-label="Networks">
+      <OptionRow
+        v-for="network in networks"
+        :key="network.chain"
+        :icon="networkIcon(network.chain)"
+        :label="network.label"
+        :subtitle="networkSubtitle(network)"
+        :disabled="!isNetworkPickable(network)"
+        :busy="flow.starting && network.chain === flow.srcChain.chain"
+        @select="pick(network)"
+      />
+    </ul>
   </div>
 </template>

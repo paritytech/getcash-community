@@ -1,6 +1,6 @@
-// The deposit pickers' two groups: the sources a buyer can pick for the amount on screen, then
-// the ones that cannot take it, each greyed with the line that says why. The same split the
-// country picker draws, so the two pickers read alike. Pure, so both screens share one wording.
+// The deposit pickers' order: the sources a buyer can pick for the amount on screen, then the
+// ones that cannot take it, each with the line that says why. The token picker labels the two
+// groups; the network picker lists them as one. Pure, so both screens share one wording.
 
 import { CASH_DECIMALS } from "@getsome/people";
 import {
@@ -79,11 +79,11 @@ function split<T>(
   return groups;
 }
 
-export const groupNetworks = (networks: readonly NetworkRow[]): PickerGroup<NetworkRow>[] =>
-  split(networks, isNetworkPickable, {
-    supported: "All networks",
-    unsupported: "Unsupported network",
-  });
+/** The network picker's one unlabelled list: pickable networks first, catalog order kept. */
+export const sortNetworks = (networks: readonly NetworkRow[]): NetworkRow[] => [
+  ...networks.filter(isNetworkPickable),
+  ...networks.filter((network) => !isNetworkPickable(network)),
+];
 
 export const groupTokens = (tokens: readonly TokenRow[]): PickerGroup<TokenRow>[] =>
   split(tokens, (token) => isPickable(token.offer), {

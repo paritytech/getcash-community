@@ -2,10 +2,10 @@
 
 import { describe, expect, it } from "vitest";
 import {
-  groupNetworks,
   groupTokens,
   networkSubtitle,
   smallestMinimumCash,
+  sortNetworks,
   tokenSubtitle,
   wholeCashCeil,
 } from "../app/funding/source-groups";
@@ -73,18 +73,14 @@ describe("source groups", () => {
     expect(networkSubtitle(pending)).toBeUndefined();
   });
 
-  it("splits into the pickable group and the greyed one, dropping an empty group", () => {
+  it("lists pickable networks first, keeping catalog order", () => {
     const eth = network("Ethereum", [token("ETH", { state: "ungated" })]);
     const btc = network("Bitcoin", [
       token("BTC", { state: "too-small", minimumCashBase: 80_000_000n }),
     ]);
     const pending = network("Solana", [token("SOL", { state: "checking" })]);
-    expect(groupNetworks([btc, eth, pending])).toEqual([
-      { label: "All networks", rows: [eth, pending] },
-      { label: "Unsupported network", rows: [btc] },
-    ]);
-    expect(groupNetworks([eth])).toEqual([{ label: "All networks", rows: [eth] }]);
-    expect(groupNetworks([btc])).toEqual([{ label: "Unsupported network", rows: [btc] }]);
+    expect(sortNetworks([btc, eth, pending])).toEqual([eth, pending, btc]);
+    expect(sortNetworks([btc])).toEqual([btc]);
   });
 
   it("groups tokens the same way", () => {
