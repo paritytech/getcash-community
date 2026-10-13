@@ -45,5 +45,7 @@ function pick(network: NetworkRow) {
         @select="pick(network)"
       />
     </ul>
+
+    <PoweredBy class="mt-auto mb-4 pt-3" provider="Chainflip" />
   </div>
 </template>

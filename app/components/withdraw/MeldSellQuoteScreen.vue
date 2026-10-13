@@ -91,8 +91,9 @@ const canContinue = computed(
     </template>
     <p v-if="startError" class="mt-4 text-body-m text-fg-error" role="alert">{{ startError }}</p>
 
-    <PillButton class="mt-auto mb-6 w-full" :disabled="!canContinue" @click="emit('continue')">
+    <PillButton class="mt-auto w-full" :disabled="!canContinue" @click="emit('continue')">
       {{ starting ? "Starting…" : "Continue" }}
     </PillButton>
+    <PoweredBy class="mt-3 mb-4" provider="Meld" />
   </div>
 </template>
