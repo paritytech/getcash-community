@@ -8,6 +8,7 @@ import type { MeldSellQuote } from "../../composables/useMeldSellQuote";
 import { asName } from "../../funding/top-up-projection";
 import { backCashText } from "../../withdraw/sale-back";
 import { fmtFiat, isMoneyAmount } from "../../utils/money";
+import MethodUnavailable from "../funding/MethodUnavailable.vue";
 import CashAmount from "../ui/CashAmount.vue";
 import DetailRows, { type DetailRow } from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
@@ -20,13 +21,18 @@ const props = defineProps<{
   quote: MeldSellQuote | null;
   loading: boolean;
   error: string | null;
+  /** The method pays out nothing in this country. */
+  unrouted: boolean;
+  /** In the country's fiat, when the catalog prices one. */
+  minimum: { amount: string; fiat: string } | null;
+  method: "card" | "bank";
   /** The payout country, as an ISO code, and its name. */
   country: string;
   countryName: string;
   starting: boolean;
   startError: string | null;
 }>();
-const emit = defineEmits<{ continue: []; fees: []; region: [] }>();
+const emit = defineEmits<{ continue: []; fees: []; region: []; useCrypto: [] }>();
 
 const rows = computed<DetailRow[]>(() => {
   const q = props.quote;
@@ -57,7 +63,18 @@ const canContinue = computed(
 </script>
 
 <template>
-  <div class="flex min-h-0 flex-1 flex-col">
+  <MethodUnavailable
+    v-if="unrouted"
+    direction="withdraw"
+    :method="method"
+    :amount="amount"
+    :country="country"
+    :country-name="countryName"
+    :minimum="minimum"
+    @region="emit('region')"
+    @use-crypto="emit('useCrypto')"
+  />
+  <div v-else class="flex min-h-0 flex-1 flex-col">
     <div class="flex flex-col items-center text-center">
       <p class="text-display-l text-fg-primary"><CashAmount :amount="amount" /></p>
       <p class="mt-1 text-body-m text-fg-secondary">From your balance inc. fees</p>

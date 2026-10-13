@@ -22,6 +22,7 @@ import { bankRailCountries } from "~~/lib/region";
 import {
   corridorOptions,
   countryName,
+  methodMinimum,
   namedCountry,
   type SupportedCountry,
 } from "~~/lib/supported";
@@ -133,6 +134,9 @@ const detectedCountry = computed(() => {
 });
 
 const countryLabel = computed(() => namedCountry(sale.country.value, sale.countries.value));
+const minimum = computed(() =>
+  methodMinimum(sale.corridors.value?.get(sale.country.value) ?? null, method),
+);
 
 function pickCountry(country: string) {
   step.value = "quote";
@@ -426,6 +430,9 @@ onUnmounted(() => {
         :quote="sale.quote.value"
         :loading="sale.loading.value"
         :error="sale.error.value"
+        :unrouted="sale.unrouted.value"
+        :minimum="minimum"
+        :method="method"
         :country="sale.country.value"
         :country-name="countryLabel"
         :starting="starting"
@@ -433,6 +440,7 @@ onUnmounted(() => {
         @continue="confirm"
         @fees="step = 'fees'"
         @region="step = 'region'"
+        @use-crypto="emit('switchRoute', 'crypto')"
       />
       <WithdrawCancelScreen
         v-else-if="step === 'cancel'"

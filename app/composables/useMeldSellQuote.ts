@@ -54,6 +54,8 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
   const quote = shallowRef<MeldSellQuote | null>(null);
   const loading = ref(false);
   const error = ref<string | null>(null);
+  /** This method pays out nowhere in the chosen region, though it does elsewhere. */
+  const unrouted = ref(false);
   let epoch = 0;
 
   /** The sell catalog, for the region picker. Null lists when discovery is unreachable. */
@@ -88,16 +90,12 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
     return { fiat: region.fiat, paymentMethodType: FALLBACK_PAYOUT_METHOD[method] };
   }
 
-  /** Why nothing routes here: this region alone, or every region the catalog knows, which is the
-   *  account's doing and not the seller's. */
-  function unroutedReason(): string {
-    const noun = method === "bank" ? "Bank payouts" : "Card payouts";
-    const routedAnywhere =
+  /** Whether this method pays out in any region the catalog knows. */
+  function routedAnywhere(): boolean {
+    return (
       corridors.value === null ||
-      [...corridors.value.values()].some((c) => methodFor(c, method) !== null);
-    return routedAnywhere
-      ? `${noun} are not available in this country. Choose another country.`
-      : `${noun} are not available right now.`;
+      [...corridors.value.values()].some((c) => methodFor(c, method) !== null)
+    );
   }
 
   /** Prices the sale for the current region. A newer call supersedes an older one. */
@@ -105,6 +103,7 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
     const mine = ++epoch;
     loading.value = true;
     error.value = null;
+    unrouted.value = false;
     quote.value = null;
     try {
       const client = meldSellClient();
@@ -119,7 +118,9 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
       ]);
       if (mine !== epoch) return;
       if (corridor === null) {
-        error.value = unroutedReason();
+        if (routedAnywhere()) unrouted.value = true;
+        else
+          error.value = `${method === "bank" ? "Bank" : "Card"} payouts are not available right now.`;
         return;
       }
       const { quotes } = await client.getSellQuote({
@@ -156,5 +157,16 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
     void refresh();
   }
 
-  return { country, countries, corridors, quote, loading, error, loadCatalog, refresh, setCountry };
+  return {
+    country,
+    countries,
+    corridors,
+    quote,
+    loading,
+    error,
+    unrouted,
+    loadCatalog,
+    refresh,
+    setCountry,
+  };
 }
