@@ -1,6 +1,8 @@
 // The buyer's region from their IP, asked of GeoJS (get.geojs.io) straight from the app. The domain
 // rides the front-loaded Remote grant (host-frontload.ts), which shipped builds auto-allow, so no
-// prompt is added. `null` is "unknown" and callers fall back to the device locale.
+// prompt is added. The lookup itself is not front-loaded: it runs the first time a card or bank
+// screen asks (useDetectedCountry), so a user who never opens one never sends their address.
+// `null` is "unknown" and callers fall back to the device locale.
 //
 // Why GeoJS: the app ships on https origins (the DotNS host, the host webview), and ip-api.com's
 // free tier is http-only, which a secure document blocks as mixed content before the request

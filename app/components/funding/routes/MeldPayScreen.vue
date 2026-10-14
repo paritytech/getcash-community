@@ -36,7 +36,7 @@ const countryLabel = computed(() =>
 // Adopts the default region and quotes when none is chosen, then loads the full catalog. A catalog
 // failure leaves the fallback list in place. IP-geo over the device locale: the locale is the
 // buyer's region setting, not where their card is from (the mispriced-corridor decline this
-// ordering exists to avoid). Usually answered from the cache host-frontload warmed at launch.
+// ordering exists to avoid). Answered from the cache when the route's own lookup has landed.
 onMounted(async () => {
   if (session.meldCountry !== null) return;
   const detected = await detectCountry();
