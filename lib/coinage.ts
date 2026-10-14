@@ -173,6 +173,8 @@ export function createCoinageHandoff(opts: {
   readWorkerClaim: () => Promise<WorkerClaim | null>;
   /** Settle-internal progress for the UI: reports the claim amount once the worker made it. */
   onProgress?: (stage: "prompted" | "crediting", claimed?: bigint) => void;
+  /** Set on dispose: ends the settle wait so a torn-down session stops polling the claim. */
+  stop?: { aborted: boolean };
 }): HandoffAction {
   async function recordWorkerClaim(key: string, claim: WorkerClaim): Promise<void> {
     const record: SettleRecord = {
@@ -186,6 +188,7 @@ export function createCoinageHandoff(opts: {
   }
 
   const readClaim = () => opts.readWorkerClaim().catch(() => null);
+  const disposed = () => new Error("session disposed while awaiting the claim");
 
   return {
     async settle(_ctx, key) {
@@ -195,8 +198,16 @@ export function createCoinageHandoff(opts: {
       let claim = await readClaim();
       while (claim?.phase !== "claimed" && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 2_000));
+        // A disposed session must not keep watching: its claim would be reported against
+        // whatever request came after it. The worker claims on its own either way. Checked
+        // after the sleep, not before it, so a dispose during the sleep ends the wait without
+        // one more read.
+        if (opts.stop?.aborted) throw disposed();
         claim = await readClaim();
       }
+      // The dispose may also have landed while a read was in flight: whatever that read found
+      // is not this session's to record.
+      if (opts.stop?.aborted) throw disposed();
       if (claim?.phase === "claimed") {
         await recordWorkerClaim(key, claim);
         return;
@@ -1201,6 +1212,9 @@ export async function createCoinageSession(
     );
   }
 
+  // Set on dispose: ends the worker poll and the settle wait for this session.
+  const stop = { aborted: false };
+
   const session = createPayment({
     // The burner is its own recipient; core uses this only to key the flow slot and the claim
     // record.
@@ -1214,6 +1228,7 @@ export async function createCoinageSession(
       // Same session id the hand-off uses.
       readWorkerClaim: () =>
         readWorkerClaim(args.hostLocalStorage, workerSessionId(args.sourceId, tradeN)),
+      stop,
     }),
     deriveKey,
     entropyLabel,
@@ -1264,9 +1279,7 @@ export async function createCoinageSession(
     };
   });
 
-  // Single-flight while running, resettable after failure. The stop signal ends the poll on
-  // dispose.
-  const stop = { aborted: false };
+  // Single-flight while running, resettable after failure.
   let funding: Promise<void> | null = null;
   const runFunding: CoinageWorld["runFunding"] = (hooks) => {
     if (!funding) {
