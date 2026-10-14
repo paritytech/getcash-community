@@ -6,7 +6,7 @@
 
 import { PaymentRequestErr, PaymentStatusErr } from "@novasamatech/host-api";
 import { deriveEntropy, getHostLocalStorage } from "@parity/product-sdk-host";
-import { deriveKeypair } from "@getsome/ephemeral";
+import { deriveKeypair, walletSeedHex } from "@getsome/ephemeral";
 import {
   chooseCashTransfer,
   chooseRoute,
@@ -18,25 +18,28 @@ import {
   type ConversionRoute,
   type DepositAsset,
 } from "@getsome/funding";
-import { sellAmountOf } from "@getsome/meld";
+import { sellAmountOf, USDT_SELL_TOKEN } from "@getsome/meld";
 import { laneCommit, laneSellToken, type OfframpLane } from "@getsome/offramp";
 import {
   createHostEntropyPort,
   createHostStorageAdapter,
   type HostLocalStorageLike,
 } from "@getsome/host";
-import { CASH_LOCATION } from "@getsome/people";
+import { CASH_DECIMALS, CASH_LOCATION } from "@getsome/people";
 import {
   ASSET_HUB_FEE_BUFFER_CASH,
   CASH_ON_ASSET_HUB,
   DEFAULT_WITHDRAW_SLIPPAGE_PCT,
   estimateDirectFeesCash,
+  exactAssetPaymentFloor,
   exactPaymentFloor,
   PASEO_PEOPLE_POOL_ACCOUNT,
   PEOPLE_NATIVE,
   psmRedeemOut,
   readDestinationBalance,
   SALE_RESIDUE_RETURN_FLOOR,
+  USDT_PAY_FEE_ALLOWANCE,
+  USDT_RESIDUE_RETURN_FLOOR,
 } from "@getsome/withdraw";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import {
@@ -56,10 +59,13 @@ import {
   openWithdrawChannel,
   quoteOutgoing,
   SOURCE_CONFIG_BY_ID,
+  type IncludedFee,
+  type OutgoingQuote,
 } from "@getsome/chainflip";
 import { AccountId } from "polkadot-api";
+import { cashAmount } from "../app/utils/cash";
 import { isDemoBuild } from "../app/utils/demo";
-import type { WithdrawOffer } from "../app/withdraw/offers";
+import type { WithdrawFeeView, WithdrawOffer } from "../app/withdraw/offers";
 import { mainnetSdk, saleSwapSdk } from "./chainflip-backend";
 import { withTimeout } from "./timeout";
 import { hostSafeEntropy, nextFreeTradeNumber, readTradeCounter, tradeCounterKey } from "./coinage";
@@ -100,6 +106,22 @@ export async function withdrawKeyFor(sourceId: string, n: number): Promise<Withd
   );
   const keypair = deriveKeypair(seed);
   return { address: keypair.address, publicKeyHex: toHex(keypair.publicKey) };
+}
+
+export interface WithdrawRefundKey {
+  /** The key on Asset Hub, where a provider's refund lands. */
+  address: string;
+  /** The raw seed a wallet imports for the same account, hex. */
+  secret: string;
+}
+
+/** The withdrawal key re-derived from its record's entropy label, with the wallet-importable
+ *  seed. Read on tap, never on load; throws outside a host, where there is no entropy root. */
+export async function revealWithdrawKey(label: string): Promise<WithdrawRefundKey> {
+  const entropy = createHostEntropyPort(hostSafeEntropy(deriveEntropy));
+  const seed = await entropy.deriveSeed(new TextEncoder().encode(label));
+  const keypair = deriveKeypair(seed);
+  return { address: keypair.address, secret: walletSeedHex(seed) };
 }
 
 /** The key's CASH on People at the best block. */
@@ -326,12 +348,23 @@ export async function meldCommitmentFundable(
 // the provider. The sale commits to Chainflip's fill-or-kill floor on the least USDT the key can
 // hold, so the provider is never underpaid; what Chainflip delivers above it the provider keeps.
 
-/** The key pays its swap in USDT, ChargeAssetTxPayment taking the fee from it: 0.1 USDT. */
-const SWAP_SALE_KEY_FEE_USDT = 100_000n;
 /** Room under the USDT the redeem lands, basis points, for the fees the estimate cannot see. */
-const SWAP_SALE_LANDING_MARGIN_BPS = 20n;
+const USDT_SALE_LANDING_MARGIN_BPS = 20n;
 // Destination gas the CCM egress runs SaleVault.cfReceive with, well over its worst-case path.
 const SALE_VAULT_CCM_GAS_BUDGET = "300000";
+
+/** The USDT a sale of `amount` CASH lands on the key: the PSM redeem it runs, the CASH it sells
+ *  once the fees are out, what the redeem pays out, and the least of that a promise counts on, with
+ *  room for the fees the estimate cannot see. Throws when the PSM cannot redeem it. */
+async function usdtSaleLanding(amount: bigint) {
+  const route = await chooseWithdrawRoute(amount, "USDT");
+  if (route.tier !== "psm") throw new Error("USDT cannot be redeemed for this sale right now.");
+  const sold = amount - (await directFeesCash(route));
+  const redeemed = sold - destinationEarmark(sold, ASSET_HUB_FEE_BUFFER_CASH);
+  const landed = psmRedeemOut(redeemed, route.feeRate);
+  const least = (landed * (10_000n - USDT_SALE_LANDING_MARGIN_BPS)) / 10_000n;
+  return { route, sold, landed, least };
+}
 
 /** What a sale through `lane` sells and commits to. */
 export interface SwapSaleSize {
@@ -346,13 +379,8 @@ export interface SwapSaleSize {
 /** Sizes a sale of `amount` CASH through `lane`. Throws when the PSM cannot redeem it, Chainflip
  *  cannot quote it, or the fees take it all. */
 export async function sizeSwapSale(amount: bigint, lane: OfframpLane): Promise<SwapSaleSize> {
-  const route = await chooseWithdrawRoute(amount, "USDT");
-  if (route.tier !== "psm") throw new Error("USDT cannot be redeemed for this sale right now.");
-  const sold = amount - (await directFeesCash(route));
-  const redeemed = sold - destinationEarmark(sold, ASSET_HUB_FEE_BUFFER_CASH);
-  const landed = psmRedeemOut(redeemed, route.feeRate);
-  const usdtIn =
-    (landed * (10_000n - SWAP_SALE_LANDING_MARGIN_BPS)) / 10_000n - SWAP_SALE_KEY_FEE_USDT;
+  const { route, least } = await usdtSaleLanding(amount);
+  const usdtIn = least - USDT_PAY_FEE_ALLOWANCE;
   if (usdtIn <= 0n) throw new Error("The amount does not cover the network fees.");
   const quote = await quoteOutgoing(await saleSwapSdk(), usdtIn, lane.chainflip, ASSET_HUB_USDT);
   // The lane's own buffer: its delivery fee can rise before the swap lands, by chain.
@@ -415,10 +443,52 @@ export async function openSwapSaleChannel(args: {
     expiresAt: channel.expiresAt,
     expectedEgress: channel.expectedEgress.toString(),
     // The least USDT the key must land: what the swap was quoted on, and the key's fee.
-    amount: (size.usdtIn + SWAP_SALE_KEY_FEE_USDT).toString(),
+    amount: (size.usdtIn + USDT_PAY_FEE_ALLOWANCE).toString(),
     // The egress pays this vault, so the worker verifies the trusted contract, not the provider.
     ...(useVault ? { vaultAddress: args.vault!.contract } : {}),
   };
+}
+
+// A direct sale of USDT, for a provider that buys USDT on Asset Hub (USDT_ASSETHUB or USDT_STATEMINT), runs the same
+// redeem with no swap after it: the key pays the provider the figure exactly, as a sale of PAS
+// does, pays the transfer's fee in USDT and keeps USDT's minimum balance. The redeem's rate is
+// fixed, so the figure needs no room for a price; what it leaves above the payment is the residue,
+// which the worker sends home once the provider is paid.
+
+const USDT_ID = STABLE_TOKENS.USDT.assetHubId;
+
+/** What a direct sale of USDT promises its provider. */
+export interface UsdtSaleSize {
+  /** The PSM redeem the withdrawal runs, landing USDT on the key. */
+  route: Extract<ConversionRoute, { tier: "psm" }>;
+  /** Exactly what the key pays the provider, USDT base units, cut to the sale's decimals. */
+  commit: bigint;
+  /** The CASH expected back once the provider is paid, before the way back's own fees; 0 when what
+   *  is left is too small to send back, and stays with the withdrawal. */
+  backCash: bigint;
+}
+
+/** Sizes a direct sale of `amount` CASH as USDT. Throws when the PSM cannot redeem it, or when the
+ *  fees take it all. */
+export async function sizeUsdtSale(amount: bigint): Promise<UsdtSaleSize> {
+  const { route, sold, landed, least } = await usdtSaleLanding(amount);
+  const { connectChain, ASSET_HUB } = await import("./host-chain");
+  const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
+  // The fee and the minimum balance, as the worker holds the sale to them.
+  const cost = await exactAssetPaymentFloor(api, USDT_ID, 0n, USDT_PAY_FEE_ALLOWANCE);
+  const commit = sellAmountOf(least - cost, USDT_SELL_TOKEN);
+  if (commit <= 0n) throw new Error("The amount does not cover the network fees.");
+  // The worker sends home what the key holds once the provider is paid, as it judges it then: the
+  // margin and the minimum balance, less at most the fee allowance.
+  const left = landed - commit - USDT_PAY_FEE_ALLOWANCE;
+  const backCash = left < USDT_RESIDUE_RETURN_FLOOR ? 0n : (sold * left) / landed;
+  return { route, commit, backCash };
+}
+
+/** Whether `amount` CASH still covers a direct USDT sale's `committed` figure at today's redeem.
+ *  Asked before the purse is. */
+export async function usdtSaleFundable(amount: bigint, committed: bigint): Promise<boolean> {
+  return (await sizeUsdtSale(amount)).commit >= committed;
 }
 
 /** Where the worker reads a fiat sale from: the adapter this build names, or the stand-in sale in
@@ -440,6 +510,94 @@ export function meldHandoffConfig(): NonNullable<WithdrawalHandoffPayload["meld"
 const PROVIDER_QUOTE_HEADROOM_PCT = BigInt(DEFAULT_WITHDRAW_SLIPPAGE_PCT) + 1n;
 /** Ceiling on the wait for the offers. */
 const OFFERS_TIMEOUT_MS = 15_000;
+
+/** The design's fee rows: what the networks charged, Chainflip's own cut, ours. */
+const FEE_GROUPS: readonly { label: string; types: readonly string[] }[] = [
+  { label: "Network fee", types: ["INGRESS", "EGRESS", "BOOST"] },
+  { label: "Swap fee", types: ["NETWORK"] },
+  { label: "Service fee", types: ["BROKER"] },
+];
+
+/** Stables read naturally at cents; everything else keeps the payout's own precision. */
+const feeDecimals = (config: { decimals: number }): number => (config.decimals <= 6 ? 2 : 6);
+
+/** Digits a payout is stated to, on the summary and in the drill-in alike. */
+const PAYOUT_DECIMALS = 6;
+
+/** A fee, at the cents a fee reads best in. Rounded up, which overstates the charge: the safe
+ *  direction for a fee, and the wrong one for a payout. */
+const fmtDest = (config: { asset: string; decimals: number }, planck: bigint): string =>
+  `${formatSourceAmount(config, planck, { maxDecimals: feeDecimals(config) })} ${config.asset}`;
+
+/**
+ * What lands, at the payout's own precision — the summary's figure and the drill-in's, from one
+ * place so the two cannot disagree.
+ *
+ * Not `fmtDest`: `formatSourceAmount` rounds up, so a stable capped at cents would promise a cent
+ * more than the swap pays out (24.500001 USDC reading as 24.51).
+ */
+const fmtPayout = (config: { asset: string; decimals: number }, planck: bigint): string =>
+  `${formatSourceAmount(config, planck, { maxDecimals: PAYOUT_DECIMALS })} ${config.asset}`;
+
+/** "$1 CASH ≈ 0.99 USDC": the gross rate `equivalent` implies for the CASH withdrawn. */
+function grossRate(
+  config: { asset: string; decimals: number },
+  equivalent: bigint,
+  amountCash: bigint,
+): string | null {
+  const cash = Number(amountCash) / 10 ** CASH_DECIMALS;
+  const value = Number(equivalent) / 10 ** config.decimals / cash;
+  if (!Number.isFinite(value) || value <= 0) return null;
+  const figure = value >= 0.01 ? value.toFixed(2) : value.toPrecision(2);
+  return `${cashAmount("1")} ≈ ${figure} ${config.asset}`;
+}
+
+/**
+ * The quote's fee split priced into the destination asset with the quote's own numbers: a DOT fee
+ * at the deposit-to-egress ratio, a USDC fee at the intermediate-to-egress ratio. An estimate for
+ * the drill-in, not what the swap is held to. A fee neither rule can price, or of a kind the rows
+ * don't name, drops the whole view: better no split than one that does not add up.
+ */
+function offerFees(
+  config: { asset: string; decimals: number },
+  quote: OutgoingQuote,
+  amountCash: bigint,
+): WithdrawFeeView | undefined {
+  const inDest = (fee: IncludedFee): bigint | null => {
+    if (fee.asset === config.asset) return fee.amount;
+    if (fee.asset === "DOT" && quote.depositAmount > 0n)
+      return (fee.amount * quote.egressAmount) / quote.depositAmount;
+    if (fee.asset === "USDC" && quote.intermediateAmount !== null && quote.intermediateAmount > 0n)
+      return (fee.amount * quote.egressAmount) / quote.intermediateAmount;
+    return null;
+  };
+  if (quote.includedFees.length === 0) return undefined;
+  if (quote.includedFees.some((fee) => !FEE_GROUPS.some((g) => g.types.includes(fee.type))))
+    return undefined;
+  const rows: { label: string; value: string }[] = [];
+  let total = 0n;
+  for (const group of FEE_GROUPS) {
+    let sum = 0n;
+    for (const fee of quote.includedFees) {
+      if (!group.types.includes(fee.type)) continue;
+      const priced = inDest(fee);
+      if (priced === null) return undefined;
+      sum += priced;
+    }
+    if (sum > 0n) {
+      rows.push({ label: group.label, value: fmtDest(config, sum) });
+      total += sum;
+    }
+  }
+  const equivalent = quote.egressAmount + total;
+  return {
+    rows,
+    ...(rows.length ? { total: fmtDest(config, total) } : {}),
+    equivalent: `≈ ${fmtPayout(config, equivalent)}`,
+    receive: fmtPayout(config, quote.egressAmount),
+    rate: grossRate(config, equivalent, amountCash),
+  };
+}
 
 const withHeadroom = (native: bigint): bigint =>
   native + (native * PROVIDER_QUOTE_HEADROOM_PCT) / 100n;
@@ -509,13 +667,14 @@ export async function quoteWithdrawOffers(
         OFFERS_TIMEOUT_MS,
         `${config.asset} offer`,
       );
-      const formatted = formatSourceAmount(config, quote.egressAmount, { maxDecimals: 6 });
+      const fees = offerFees(config, quote, amountCash);
       return {
         offer: {
           state: "available",
           egress: quote.egressAmount,
-          formatted: `${formatted} ${config.asset}`,
+          formatted: fmtPayout(config, quote.egressAmount),
           etaSeconds: quote.estimatedDurationSeconds,
+          ...(fees === undefined ? {} : { fees }),
         },
         outage: false,
       };

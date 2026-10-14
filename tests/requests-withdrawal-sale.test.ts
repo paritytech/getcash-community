@@ -210,6 +210,29 @@ describe("a fiat sale in KYC", () => {
     expect(later.status.kind).toBe("awaiting-payment");
   });
 
+  it("takes a deposit named DOT_STATEMINT for a direct sale: Meld's older code for the same DOT", () => {
+    const next = reduce(
+      sale(),
+      read(at(5), disclosed("23.4521", "DOT_STATEMINT")),
+    ) as WithdrawalRecord;
+    expect(next.status.kind).toBe("awaiting-payment");
+    expect(next.handoff.channel).toMatchObject({ address: DEPOSIT, amount: COMMITTED });
+  });
+
+  it("takes a USDT deposit for a direct sale of USDT, read in USDT's units", () => {
+    const base = sale();
+    const usdt = sale({
+      sale: { ...base.sale!, sellCode: "USDT_STATEMINT", cryptoAmount: "25000000" },
+    });
+    const next = reduce(usdt, read(at(5), disclosed("25", "USDT_STATEMINT"))) as WithdrawalRecord;
+    expect(next.status.kind).toBe("awaiting-payment");
+    expect(next.handoff.channel).toMatchObject({ address: DEPOSIT, amount: "25000000" });
+    // DOT for the same figure is not this sale's deposit.
+    const dot = reduce(usdt, read(at(5), disclosed("25", "DOT_STATEMINT"))) as WithdrawalRecord;
+    expect(dot.failure?.kind).toBe("sale-mismatch");
+    expect(dot.handoff.channel).toBeUndefined();
+  });
+
   it("refuses an address for another amount or asset, and nothing is asked of the balance", () => {
     for (const reading of [disclosed("23.4522"), disclosed("23.4521", "USDT_ASSETHUB")]) {
       const next = reduce(sale(), read(at(5), reading)) as WithdrawalRecord;

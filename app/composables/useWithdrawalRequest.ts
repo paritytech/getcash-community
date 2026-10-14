@@ -7,7 +7,14 @@
 
 import { computed } from "vue";
 import type { ConversionRoute } from "@getsome/funding";
-import { formatSellAmount, SELL_TOKEN, type MeldQuoteEntry } from "@getsome/meld";
+import {
+  DIRECT_SELL_CODES,
+  directSellToken,
+  formatSellAmount,
+  isDirectUsdt,
+  SELL_TOKEN,
+  type MeldQuoteEntry,
+} from "@getsome/meld";
 import { laneById, laneSellToken, type LaneId } from "@getsome/offramp";
 import {
   MELD_WITHDRAW_DESTINATIONS,
@@ -27,6 +34,10 @@ import { requestRefKey, requestRefOf, type RequestRef } from "../utils/request-i
 import { meldSellClient } from "../withdraw/meld-client";
 import { workerSessionId } from "~~/lib/coinage";
 import { isHosted } from "~~/lib/host-account";
+
+/** How long before a Chainflip channel closes it is opened afresh instead: room for the key's
+ *  payment to land. */
+const SWAP_REUSE_MARGIN_MS = 10 * 60_000;
 
 /** The withdrawals a cancel is under way for, by request key: a sale's purse is not asked
  *  meanwhile. Module scope, since each screen holds its own `useWithdrawalRequest`. */
@@ -70,6 +81,12 @@ export interface MeldSaleStart {
   cryptoAmount: bigint;
   /** A sale through an offramp lane: the lane, the USDT redeem, and the SaleVault to deliver to. */
   swap?: { lane: LaneId; route: ConversionRoute; vault?: { chainId: number; contract: string } };
+  /** A direct sale quoted under a code other than DOT_ASSETHUB: DOT_STATEMINT, Meld's older code
+   *  for DOT on Asset Hub, or USDT_ASSETHUB or USDT_STATEMINT for USDT there. The session names
+   *  the same code. */
+  sellCode?: string;
+  /** A direct sale of USDT: the PSM redeem the withdrawal runs for the USDT the key pays. */
+  route?: ConversionRoute;
 }
 
 export type MeldSaleStartOutcome =
@@ -193,6 +210,15 @@ export function useWithdrawalRequest() {
     if (client === null || meld === null) {
       return { ok: false, reason: "Card and bank withdrawals are not available right now." };
     }
+    if (input.sellCode !== undefined && !DIRECT_SELL_CODES.includes(input.sellCode)) {
+      return { ok: false, reason: `A sale cannot sell ${input.sellCode}.` };
+    }
+    // A direct sale of USDT runs the PSM redeem for it, and a direct sale of DOT names no route.
+    const sellsUsdt = isDirectUsdt(input.sellCode);
+    const redeemsUsdt = input.route?.tier === "psm" && input.route.external === "USDT";
+    if (input.swap === undefined && (sellsUsdt ? !redeemsUsdt : input.route !== undefined)) {
+      return { ok: false, reason: "The sale's asset and its conversion do not match." };
+    }
     // As for any withdrawal: the sale's CASH must be able to reach Asset Hub, or the seller would
     // pass KYC and pay for a sale the worker cannot run.
     if (!(await live.cashCanMove())) {
@@ -206,7 +232,10 @@ export function useWithdrawalRequest() {
     const ref = requestRefOf(sourceId, n);
     const key = await live.withdrawKeyFor(sourceId, n);
     await live.advanceWithdrawCounter(sourceId, n);
-    const token = input.swap === undefined ? SELL_TOKEN : laneSellToken(laneById(input.swap.lane));
+    const token =
+      input.swap === undefined
+        ? directSellToken(input.sellCode ?? SELL_TOKEN.meldCurrencyCode)
+        : laneSellToken(laneById(input.swap.lane));
     let session: Awaited<ReturnType<typeof client.createSellSession>>;
     try {
       session = await client.createSellSession({
@@ -245,9 +274,10 @@ export function useWithdrawalRequest() {
       destination,
       landingHex: key.publicKeyHex,
       rail: "meld",
-      // A fiat sale takes DOT from the key, whatever the provider pays out; one through an
-      // offramp lane takes USDT, which Chainflip swaps for the lane's asset.
-      sale: input.swap?.route ?? { tier: "pool" },
+      // A fiat sale takes DOT from the key, whatever the provider pays out; a direct sale of USDT
+      // takes the USDT the PSM redeemed, and one through an offramp lane takes USDT too, which
+      // Chainflip swaps for the lane's asset.
+      sale: input.swap?.route ?? input.route ?? { tier: "pool" },
       paymentExpiresAt,
       meld,
     });
@@ -283,6 +313,7 @@ export function useWithdrawalRequest() {
         widgetUrl,
         cryptoAmount: input.cryptoAmount.toString(),
         ...(input.swap === undefined ? {} : { lane: input.swap.lane }),
+        ...(input.sellCode === undefined ? {} : { sellCode: input.sellCode }),
         ...(input.swap?.vault ? { vault: input.swap.vault } : {}),
         quotedPayout: quote.destinationAmount,
         ...(Object.keys(fees).length === 0 ? {} : { fees }),
@@ -330,9 +361,17 @@ export function useWithdrawalRequest() {
     let fundable: boolean;
     try {
       if (lane !== undefined) {
-        // The swap is opened now, to the address the provider named, on today's quote; a quote
-        // that no longer covers the sale throws, and nothing is opened or asked.
-        fundable = record.handoff.swap !== undefined || (await openSaleSwap(ref, lane, live));
+        // The swap is opened now, to the address the provider named, on today's quote. One opened
+        // on an earlier try is kept only while it still has time for the key's payment.
+        const swap = record.handoff.swap;
+        fundable =
+          (swap !== undefined && swapStillOpen(swap, requestsNow())) ||
+          (await openSaleSwap(ref, lane, live));
+      } else if (isDirectUsdt(record.sale.sellCode)) {
+        fundable = await live.usdtSaleFundable(
+          BigInt(record.handoff.amount),
+          BigInt(record.sale.cryptoAmount),
+        );
       } else {
         fundable = await live.meldCommitmentFundable(
           BigInt(record.handoff.amount),
@@ -360,16 +399,18 @@ export function useWithdrawalRequest() {
   }
 
   /** Opens a lane sale's Chainflip channel to the provider's deposit address and records it.
-   *  False when the price moved too far for the sale's promise. */
+   *  False only when the price moved too far for the sale's promise. */
   async function openSaleSwap(
     ref: RequestRef,
     lane: LaneId,
     live: typeof import("~~/lib/withdraw-live"),
   ): Promise<boolean> {
     const record = requests.get(ref);
-    if (record?.kind !== "withdrawal" || record.sale === undefined) return false;
+    if (record?.kind !== "withdrawal" || record.sale === undefined) {
+      throw new Error("the sale is no longer on record");
+    }
     const provider = record.handoff.channel;
-    if (provider === undefined) return false;
+    if (provider === undefined) throw new Error("the provider has not named its deposit address");
     const swap = await live.openSwapSaleChannel({
       amount: BigInt(record.handoff.amount),
       lane: laneById(lane),
@@ -387,6 +428,11 @@ export function useWithdrawalRequest() {
       channel: swap,
     });
     return true;
+  }
+
+  /** A Chainflip channel the key can still pay before it closes. */
+  function swapStillOpen(swap: WithdrawalChannel, now: number): boolean {
+    return swap.expiresAt === 0 || swap.expiresAt - SWAP_REUSE_MARGIN_MS > now;
   }
 
   /** The sale on the record still waits for its purse to be asked, as the record stands now. */

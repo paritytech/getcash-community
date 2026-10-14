@@ -504,11 +504,14 @@ export interface MeldSale {
   paymentMethodType: string;
   /** Where the seller does KYC and names the payout account. */
   widgetUrl: string;
-  /** The exact amount the provider is paid, base units of the sold asset: PAS, or the lane's
-   *  asset for a sale through an offramp lane. */
+  /** The exact amount the provider is paid, base units of the sold asset: PAS, USDT for a direct
+   *  sale of it, or the lane's asset for a sale through an offramp lane. */
   cryptoAmount: string;
   /** A sale through an offramp lane: the asset the provider buys, delivered by Chainflip. */
   lane?: LaneId;
+  /** A direct sale under a code other than DOT_ASSETHUB: DOT_STATEMINT, or USDT_ASSETHUB or USDT_STATEMINT for USDT
+   *  the PSM redeemed, which the key pays and `cryptoAmount` is in. */
+  sellCode?: string;
   // The SaleVault a lane sale delivers to, when it routes through a sale contract with CCM.
   vault?: { chainId: number; contract: string };
   /** The fiat the quote said reaches the seller, decimal text in `fiat`. An estimate: the

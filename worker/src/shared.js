@@ -57,6 +57,11 @@ export const asBig = (value, fallback = 0n) => {
   }
 };
 
+/** A Meld sale whose key holds USDT, which the PSM redeemed its CASH for: one through an offramp
+ *  lane, or a direct sale of USDT. The key pays in USDT, and what it keeps is USDT. */
+export const holdsUsdt = (record) =>
+  record?.rail === "meld" && record.tier === "psm" && record.external === "USDT";
+
 export const toHex = (bytes) =>
   `0x${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
 

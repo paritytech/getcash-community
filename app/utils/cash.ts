@@ -61,3 +61,9 @@ export function groupAmountDigits(value: string): string {
   const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   return fraction === undefined ? grouped : `${grouped}.${fraction}`;
 }
+
+/** Status-screen sizing: four whole digits, or three with cents, steps the figure down to display-s. */
+export function isLongStatusAmount(value: string): boolean {
+  const [whole = "", fraction] = value.replace(/,/g, "").split(".");
+  return whole.length >= 4 || (whole.length === 3 && fraction !== undefined);
+}

@@ -1,6 +1,8 @@
 <script setup lang="ts">
 // Full-screen confirmation before a withdrawal's cancel. Only offered while nothing was paid; the
 // store takes a last look at the key and the host before the record moves.
+import PillButton from "../ui/PillButton.vue";
+
 defineProps<{ cancelling: boolean }>();
 const emit = defineEmits<{ confirm: []; keep: [] }>();
 </script>
@@ -15,22 +17,10 @@ const emit = defineEmits<{ confirm: []; keep: [] }>();
       </p>
     </div>
     <div class="mt-auto flex shrink-0 flex-col gap-3 pb-6">
-      <button
-        type="button"
-        class="h-12 rounded-full bg-status-error text-label-l text-fg-static-white transition-colors hover:bg-status-error-hover disabled:opacity-50"
-        :disabled="cancelling"
-        @click="emit('confirm')"
-      >
+      <PillButton variant="danger" :disabled="cancelling" @click="emit('confirm')">
         {{ cancelling ? "Cancelling…" : "Cancel" }}
-      </button>
-      <button
-        type="button"
-        class="h-12 rounded-full bg-action-primary text-label-l text-fg-primary-inverted transition-colors hover:bg-action-primary-hover disabled:opacity-50"
-        :disabled="cancelling"
-        @click="emit('keep')"
-      >
-        Keep it
-      </button>
+      </PillButton>
+      <PillButton :disabled="cancelling" @click="emit('keep')">Keep it</PillButton>
     </div>
   </section>
 </template>

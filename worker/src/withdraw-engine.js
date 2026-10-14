@@ -15,6 +15,7 @@ import {
   CommitmentUnfundableError,
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
   DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+  exactAssetPaymentFloor,
   exactPaymentFloor,
   freshExactPayState,
   freshRailLegState,
@@ -26,6 +27,8 @@ import {
   readAssetHubAccount,
   readDestinationBalance,
   SALE_RESIDUE_RETURN_FLOOR,
+  USDT_PAY_FEE_ALLOWANCE,
+  USDT_RESIDUE_RETURN_FLOOR,
   withdrawTickOnce,
   WithdrawRejectedError,
 } from "@getsome/withdraw";
@@ -38,6 +41,7 @@ import {
   bounded,
   connectChain,
   createJobStore,
+  holdsUsdt,
   keypairFor,
   signOptionsFor,
 } from "./shared.js";
@@ -97,7 +101,8 @@ const saveJobs = () => store.save();
  *   amount, destination, landingHex, rail,   // what the surface asked for; kept for its records
  *   tier, external?, feeRate?,               // the sale on Asset Hub the surface froze
  *   channel?,                                // the provider's channel the page opened; for Meld
- *                                            // its `amount` is the exact planck the key pays
+ *                                            // its `amount` is exactly what the key pays, PAS
+ *                                            // or, for a sale of USDT, USDT
  *   meld?: { baseUrl?, productId?, offline? }, // Meld only: the adapter the sale is read from
  *   assetHubGenesis, peopleGenesis, peopleParaId, assetHubParaId, poolAccount, slippagePct,
  *   paymentExpiresAt: number|null,
@@ -165,8 +170,6 @@ function newRecord(input, nowMs) {
   if (input.rail === "meld" && channelOf(input.channel).amount === undefined) {
     throw new Error("startWithdraw: a Meld sale needs the exact amount its provider expects");
   }
-  // A sale through an offramp lane redeems the CASH for USDT and pays all of it into a Chainflip
-  // channel that pays the provider; the channel names the least USDT that must land for it.
   if (input.rail === "meld" && input.swap !== undefined) {
     if (!isChannel(input.swap) || channelOf(input.swap).amount === undefined) {
       throw new Error("startWithdraw: a swap sale needs its channel and the USDT it must land");
@@ -198,6 +201,15 @@ function newRecord(input, nowMs) {
   // route missing its fee rate, is refused here rather than guessed at.
   if (typeof input.tier !== "string") throw new Error("startWithdraw: the sale tier is required");
   const sale = recordedRoute(input);
+  // A direct sale pays its provider in what its sale lands: PAS from the pool, or the USDT the PSM
+  // redeemed. A key landed with anything else would have nothing to pay with.
+  if (input.rail === "meld" && input.swap === undefined) {
+    const pas = sale.tier === "pool" && sale.external === undefined;
+    const usdt = sale.tier === "psm" && sale.external === "USDT";
+    if (!pas && !usdt) {
+      throw new Error("startWithdraw: a sale lands PAS from the pool or USDT from the PSM");
+    }
+  }
   return {
     v: RECORD_V,
     sessionId,
@@ -407,6 +419,7 @@ function rearm(record, nowMs) {
   record.phase = "starting";
   delete record.failure;
   delete record.lastError;
+  delete record.failedAt;
   record.armedAt = nowMs;
   record.state.workedMs = 0;
   if (failure === "rejected" || failure === "timeout") {
@@ -422,6 +435,7 @@ function fail(record, failure, reason) {
   record.phase = "failed";
   record.failure = failure;
   record.lastError = reason;
+  record.failedAt = Date.now();
 }
 
 /**
@@ -696,12 +710,12 @@ async function settleInFlight(record) {
 }
 
 /** Whether a sale's key holds anything worth the way home: CASH on People, or PAS on Asset Hub at
- *  or above the floor a residue is sent home at. */
+ *  or above the floor a residue is sent home at, or any USDT on a key that holds it. */
 async function keyHoldsAnything(record) {
   const assetHub = await connectChain(record.assetHubGenesis, "asset hub");
   try {
     const api = assetHub.getTypedApi(paseo_next_v2);
-    if (swapOf(record) !== null && (await readKeyUsdt(api, record)) > 0n) return true;
+    if (holdsUsdt(record) && (await readKeyUsdt(api, record)) > 0n) return true;
     const account = await bounded(
       readAssetHubAccount(api, record.keyPublicKeyHex),
       DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
@@ -765,11 +779,12 @@ const goesHomeWhole = (record) => record.residue?.whole === true || returnDue(re
 async function sendHome(record, kind) {
   let amount = null;
   const swap = swapOf(record) !== null;
+  const usdt = holdsUsdt(record);
   if (kind === "residue") {
     const client = await connectChain(record.assetHubGenesis, "asset hub");
     try {
       const assetHubApi = client.getTypedApi(paseo_next_v2);
-      amount = swap
+      amount = usdt
         ? await readKeyUsdt(assetHubApi, record)
         : (
             await bounded(
@@ -786,7 +801,7 @@ async function sendHome(record, kind) {
     if (swap && amount === 0n && record.phase === "failed" && refundMayLand(record)) {
       throw new Error("waiting for the swap's refund to reach the key");
     }
-    if (amount < (swap ? SWAP_RESIDUE_RETURN_FLOOR : SALE_RESIDUE_RETURN_FLOOR)) {
+    if (amount < (usdt ? USDT_RESIDUE_RETURN_FLOOR : SALE_RESIDUE_RETURN_FLOOR)) {
       record.residue = { amount: amount.toString(), returning: false };
       return;
     }
@@ -814,14 +829,13 @@ async function startWayHome(record) {
   if (started?.error) throw new Error(started.reason ?? started.error);
 }
 
-/** USDT below which a swap sale's key keeps what is left rather than pay the way home: 1 USDT. */
-const SWAP_RESIDUE_RETURN_FLOOR = 1_000_000n;
-/** How long after a swap sale fails its key is read for the swap's refund: two hours. */
+/** How long after a swap sale fails its key is read for the swap's refund: the channel's
+ *  fill-or-kill retry window, then Chainflip's refund egress. */
 const SWAP_REFUND_WAIT_MS = 2 * 60 * 60 * 1000;
 
 const USDT_ID = STABLE_TOKENS.USDT.assetHubId;
 
-/** The USDT a swap sale's key holds on Asset Hub. */
+/** The USDT a sale's key holds on Asset Hub. */
 const readKeyUsdt = (api, record) =>
   bounded(
     readDestinationBalance(api, record.keyPublicKeyHex, USDT_ID),
@@ -829,15 +843,17 @@ const readKeyUsdt = (api, record) =>
     "key usdt read",
   );
 
-/** A swap sale failed after the key paid, recently enough that its refund may still land. */
+/** A swap sale failed after the key paid, before Chainflip delivered, recently enough that its
+ *  refund may still land. */
 function refundMayLand(record, nowMs = Date.now()) {
+  if (record.leg?.reading?.swapDelivered === true) return false;
   record.failedAt ??= nowMs;
   return nowMs - record.failedAt < SWAP_REFUND_WAIT_MS;
 }
 
 /** The funding job that carries a sale's key home: a pool job on the key, held to the bound the
- *  sale itself went out under, claimed under ids far past the purse's payments to the key. A swap
- *  sale's key holds USDT, which the pool takes through the native. */
+ *  sale itself went out under, claimed under ids far past the purse's payments to the key. A key
+ *  that holds USDT has it taken by the pool through the native. */
 const wayHomeParams = (record) => ({
   sessionId: residueSessionId(record),
   label: record.label,
@@ -848,7 +864,7 @@ const wayHomeParams = (record) => ({
   assetHubGenesis: record.assetHubGenesis,
   peopleGenesis: record.peopleGenesis,
   tier: "pool",
-  ...(swapOf(record) === null ? {} : { external: "USDT" }),
+  ...(holdsUsdt(record) ? { external: "USDT" } : {}),
   quoteFloorPct: record.slippagePct,
   claimIdOffset: RESIDUE_CLAIM_ID_OFFSET,
 });
@@ -962,18 +978,26 @@ async function tickRecord(record, nowMs) {
           slippagePct: record.slippagePct,
           transfer,
           // A Meld sale promised its provider an exact figure out of what lands: the sale must
-          // cover it, its fee and the key's existential deposit, or nothing leaves People.
+          // cover it, its fee and what the key keeps (the existential deposit, or USDT's minimum
+          // balance), or nothing leaves People.
           ...(swapOf(record) !== null
             ? { minLanding: async () => asBig(record.swap.amount, 0n) }
             : record.rail === "meld"
               ? {
                   minLanding: () =>
-                    exactPaymentFloor(
-                      assetHubApi,
-                      key.address,
-                      record.channel.address,
-                      asBig(record.channel.amount, 0n),
-                    ),
+                    holdsUsdt(record)
+                      ? exactAssetPaymentFloor(
+                          assetHubApi,
+                          USDT_ID,
+                          asBig(record.channel.amount, 0n),
+                          USDT_PAY_FEE_ALLOWANCE,
+                        )
+                      : exactPaymentFloor(
+                          assetHubApi,
+                          key.address,
+                          record.channel.address,
+                          asBig(record.channel.amount, 0n),
+                        ),
                 }
               : {}),
           tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,

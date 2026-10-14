@@ -1,12 +1,13 @@
 // The quote a fiat sale is confirmed on: the region and payout method from the adapter's off-ramp
-// catalog, the exact figure the key will pay, and the best provider line for that figure. The
-// catalog names, per region and method, what the sale sells: PAS on Asset Hub out of the pool sale,
-// or, where no provider buys that, a lane's asset that Chainflip swaps the key's USDT into. Priced
+// catalog, the exact figure the key will pay, and the best provider line for that figure. Priced
 // again whenever the region changes; nothing here opens a session.
 
 import { ref, shallowRef } from "vue";
 import {
+  DIRECT_SELL_CODES,
+  directSellToken,
   formatSellAmount,
+  isDirectUsdt,
   pickBestQuote,
   SELL_TOKEN,
   sellQuoteUsable,
@@ -38,14 +39,26 @@ export interface MeldSellQuote {
   cryptoAmount: bigint;
   /** A sale through an offramp lane: the lane, the USDT redeem, and the SaleVault it delivers to. */
   swap?: { lane: LaneId; route: ConversionRoute; vault?: { chainId: number; contract: string } };
+  /** A direct sale quoted under a code other than DOT_ASSETHUB, which the session must name too:
+   *  DOT_STATEMINT, Meld's older code for DOT on Asset Hub, or USDT_ASSETHUB or USDT_STATEMINT for
+   *  USDT there. */
+  sellCode?: string;
+  /** A direct sale of USDT: the PSM redeem the withdrawal runs for the USDT the key pays. */
+  route?: ConversionRoute;
   /** The CASH expected back once the provider is paid, before the way back's fees; 0 when it is
    *  too small to send back. */
   backCash: bigint;
   line: MeldQuoteEntry;
 }
 
-/** What a sale commits to its provider, and its lane when it sells through one. */
-type SizedSale = { planck: bigint; backCash: bigint; swap?: MeldSellQuote["swap"] };
+/** What a sale commits to its provider, and its lane when it sells through one, or its redeem when
+ *  it sells USDT directly. */
+type SizedSale = {
+  planck: bigint;
+  backCash: bigint;
+  swap?: MeldSellQuote["swap"];
+  route?: ConversionRoute;
+};
 
 /** How a sale pays out when the live catalog cannot say: Meld's payout codes, which the sell
  *  catalog names its methods by, not the buy side's card and bank codes. */
@@ -59,11 +72,23 @@ function startingCountry(method: "card" | "bank"): string {
   return method === "card" || bankRailCountries().includes(detected) ? detected : "DE";
 }
 
-/** What a sale of Meld code `code` sells: PAS on Asset Hub (null), a lane this build can swap into,
- *  or `undefined` for a code it cannot sell. */
+/** What a sale of Meld code `code` sells: an asset on Asset Hub with no swap (null), PAS under
+ *  either of Meld's codes for it or USDT, a lane this build can swap into, or `undefined` for a
+ *  code it cannot sell. */
 export function saleLaneOf(code: string): OfframpLane | null | undefined {
-  if (code === SELL_TOKEN.meldCurrencyCode) return null;
+  if (DIRECT_SELL_CODES.includes(code)) return null;
   return laneByMeldCode(code) ?? undefined;
+}
+
+/** Sizes a direct sale under `code`: USDT out of the PSM, or PAS out of the pool. */
+async function sizeDirectSale(
+  live: typeof import("~~/lib/withdraw-live"),
+  code: string,
+  amount: bigint,
+): Promise<SizedSale> {
+  if (!isDirectUsdt(code)) return live.sizeMeldCommitment(amount);
+  const size = await live.sizeUsdtSale(amount);
+  return { planck: size.commit, backCash: size.backCash, route: size.route };
 }
 
 /**
@@ -86,7 +111,18 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
   const quote = shallowRef<MeldSellQuote | null>(null);
   const loading = ref(false);
   const error = ref<string | null>(null);
+  /** Why the sale has no quote: the region pays out nothing by this method, or the price could not
+   *  be had, which is usually passing. */
+  const errorKind = ref<"unrouted" | "rate" | null>(null);
+  /** Price failures in a row; the screen gives up on retrying after the second. */
+  const rateFailures = ref(0);
   let epoch = 0;
+
+  function fail(kind: "unrouted" | "rate", message: string): void {
+    error.value = message;
+    errorKind.value = kind;
+    if (kind === "rate") rateFailures.value += 1;
+  }
 
   /** The off-ramp catalog, for the region picker. Null lists when discovery is unreachable. */
   async function loadCatalog(): Promise<void> {
@@ -125,16 +161,20 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
     return { fiat: region.fiat, paymentMethodType: FALLBACK_PAYOUT_METHOD[method] };
   }
 
-  /** Why nothing routes here: this region alone, or every region the catalog knows, which is the
-   *  account's doing and not the seller's. */
-  function unroutedReason(): string {
-    const noun = method === "bank" ? "Bank payouts" : "Card payouts";
+  /** Nothing routes here: this region alone, or every region the catalog knows, which is the
+   *  account's doing and not the seller's, so it reads as a passing failure. */
+  function failUnrouted(): void {
     const routedAnywhere =
       corridors.value === null ||
       [...corridors.value.values()].some((c) => methodFor(c, method) !== null);
-    return routedAnywhere
-      ? `${noun} are not available in this country. Choose another country.`
-      : `${noun} are not available right now.`;
+    if (routedAnywhere) {
+      fail(
+        "unrouted",
+        `${method === "bank" ? "Bank" : "Card"} payout isn't available in this region`,
+      );
+    } else {
+      fail("rate", `${method === "bank" ? "Bank" : "Card"} payouts are not available right now.`);
+    }
   }
 
   /** Prices the sale for the current region. A newer call supersedes an older one. */
@@ -142,31 +182,32 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
     const mine = ++epoch;
     loading.value = true;
     error.value = null;
+    errorKind.value = null;
     quote.value = null;
     try {
       const client = meldSellClient();
       if (client === null) {
-        error.value = "Card and bank withdrawals are not available right now.";
+        fail("rate", "Card and bank withdrawals are not available right now.");
         return;
       }
       const live = await import("~~/lib/withdraw-live");
-      // The method decides what is sold, so the corridor is read before the sale is sized.
       const corridor = await corridorFor(country.value);
       if (mine !== epoch) return;
       if (corridor === null) {
-        error.value = unroutedReason();
+        failUnrouted();
         return;
       }
       // Best lane first; a lane whose providers will not quote falls through to the next.
-      let failure = "No provider can pay out this sale right now.";
+      let failure: string | undefined;
       for (const code of laneCandidates(corridor.lanes, OFFRAMP_LANE_ORDER)) {
         const lane = saleLaneOf(code);
         if (lane === undefined) continue;
-        const token = lane === null ? SELL_TOKEN : laneSellToken(lane);
+        // A direct sale is quoted under the code the catalog routed, which its providers buy.
+        const token = lane === null ? directSellToken(code) : laneSellToken(lane);
         try {
           const size: SizedSale =
             lane === null
-              ? await live.sizeMeldCommitment(amount)
+              ? await sizeDirectSale(live, code, amount)
               : await live.sizeSwapSale(amount, lane).then((swap) => {
                   // Only the Arbitrum lane routes through the SaleVault, so only it carries one.
                   const v = lane.chainflip.chain === "Arbitrum" ? getOfframpVault() : null;
@@ -200,17 +241,23 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
             cryptoAmount: size.planck,
             backCash: size.backCash,
             ...(size.swap === undefined ? {} : { swap: size.swap }),
+            ...(lane === null && code !== SELL_TOKEN.meldCurrencyCode ? { sellCode: code } : {}),
+            ...(size.route === undefined ? {} : { route: size.route }),
             line,
           };
+          rateFailures.value = 0;
           return;
         } catch (e: unknown) {
           if (mine !== epoch) return;
-          failure = e instanceof Error ? e.message : String(e);
+          const message = e instanceof Error ? e.message : String(e);
+          console.warn(`[sell] lane ${code} skipped: ${message}`);
+          // The best lane's failure says most about why the sale cannot be priced.
+          failure ??= message;
         }
       }
-      error.value = failure;
+      fail("rate", failure ?? "No provider can pay out this sale right now.");
     } catch (e: unknown) {
-      if (mine === epoch) error.value = e instanceof Error ? e.message : String(e);
+      if (mine === epoch) fail("rate", e instanceof Error ? e.message : String(e));
     } finally {
       if (mine === epoch) loading.value = false;
     }
@@ -221,5 +268,17 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
     void refresh();
   }
 
-  return { country, countries, corridors, quote, loading, error, loadCatalog, refresh, setCountry };
+  return {
+    country,
+    countries,
+    corridors,
+    quote,
+    loading,
+    error,
+    errorKind,
+    rateFailures,
+    loadCatalog,
+    refresh,
+    setCountry,
+  };
 }

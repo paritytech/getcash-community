@@ -2,9 +2,16 @@
 // The withdrawal's journey: from the payment out of the balance to the funds at the destination.
 // Everything shown is read from the record; the actions go back to the route.
 import { computed } from "vue";
-import { Check, RefreshCcw, X } from "lucide-vue-next";
+import { ArrowUpRight, RefreshCcw, X } from "lucide-vue-next";
 import { TOKENS } from "@getsome/core";
-import { formatBaseUnits, sellAmountOf, SELL_TOKEN, type SellToken } from "@getsome/meld";
+import { formatSourceAmount, SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
+import {
+  formatBaseUnits,
+  isDirectUsdt,
+  sellAmountOf,
+  SELL_TOKEN,
+  type SellToken,
+} from "@getsome/meld";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
 import { useSaleVaultStatus } from "../../composables/useSaleVaultStatus";
 import {
@@ -15,7 +22,8 @@ import {
 import { asName } from "../../funding/top-up-projection";
 import { formatWhenShort, shortRef } from "../../utils/journey";
 import { fmtFiat } from "../../utils/money";
-import { shortAddress } from "../../withdraw/destinations";
+import { shortDestinationAddress } from "../../withdraw/destinations";
+import { sourceIdFor } from "~~/lib/config";
 import { withdrawalFailureText } from "../../withdraw/failure-copy";
 import {
   SALE_KYC_LABEL,
@@ -35,7 +43,7 @@ const props = defineProps<{
   notice: string | null;
   busy: boolean;
 }>();
-const emit = defineEmits<{ cancel: []; retry: []; close: [] }>();
+const emit = defineEmits<{ cancel: []; retry: []; close: []; "return-funds": [] }>();
 
 const now = useFundingProgressClock(
   () => withdrawalProgressProfile(props.record.rail.provider).cadenceMs,
@@ -67,7 +75,24 @@ const sentWhen = computed(() =>
   status.value.kind === "sent" ? formatWhenShort(status.value.at) : null,
 );
 
-/** The one line under the stepper. */
+/** What the quote said would land, formatted in the destination asset: an estimate, so `≈`.
+ *  Nothing for the direct rail, which stores no channel and no promised figure. */
+const sentEgress = computed(() => {
+  const egress = props.record.handoff.channel?.expectedEgress;
+  if (egress === undefined) return null;
+  const { chain, asset } = props.record.destination;
+  const id = sourceIdFor(chain, asset);
+  const config = id === undefined ? undefined : SOURCE_CONFIG_BY_ID.get(id);
+  if (config === undefined) return null;
+  try {
+    return `≈ ${formatSourceAmount(config, egress, { maxDecimals: 6 })} ${asset}`;
+  } catch {
+    return null;
+  }
+});
+
+/** The one line under the stepper: the endings and the payment wait speak, the design's
+ *  in-flight frames carry no ribbon. */
 const message = computed(() => {
   if (props.notice) return props.notice;
   if (status.value.kind === "cancelled") return "This withdrawal was cancelled.";
@@ -80,11 +105,11 @@ const message = computed(() => {
       ? "Waiting for your payment"
       : "Your payment is being processed";
   }
+  // The design's in-flight crypto frames carry no ribbon, and crypto's sent ending trades the
+  // stepper for the summary rows; a sale keeps the stepper and speaks the journey's line.
+  if (props.record.route === "crypto") return null;
   if (status.value.kind === "sent") {
-    if (props.record.route !== "crypto") {
-      return props.record.route === "bank" ? "Paid out to your bank" : "Paid out to your card";
-    }
-    return `Sent to ${shortAddress(props.record.destination.address)}`;
+    return props.record.route === "bank" ? "Paid out to your bank" : "Paid out to your card";
   }
   return progress.value.view.label;
 });
@@ -98,8 +123,11 @@ const residueNote = computed(() => {
   if (residue.stuck === true) {
     return "What was left could not come back to your balance on its own. Contact support with your reference.";
   }
-  // A sale through an offramp lane leaves USDT on the key, the rest PAS.
-  const token = props.record.sale?.lane === undefined ? SELL_TOKEN : (TOKENS.USDT as SellToken);
+  // A sale that redeemed its CASH for USDT, through an offramp lane or sold directly, leaves USDT on
+  // the key, the rest PAS.
+  const sale = props.record.sale;
+  const usdt = sale?.lane !== undefined || isDirectUsdt(sale?.sellCode);
+  const token = usdt ? (TOKENS.USDT as SellToken) : SELL_TOKEN;
   // Shown to the sale's decimals; a remainder below them is not worth a line.
   const shown = residue.amount === undefined ? 0n : sellAmountOf(BigInt(residue.amount), token);
   const amount = shown === 0n ? null : `${formatBaseUnits(token, shown)} ${token.symbol}`;
@@ -134,7 +162,17 @@ const saleRows = computed<DetailRow[]>(() => {
 const canCancel = computed(
   () => status.value.kind === "awaiting-payment" && !paymentTaken(props.record),
 );
-const canRetry = computed(() => status.value.kind === "failed" && status.value.recoverable);
+/** A refund leaves the DOT on the withdrawal's own key: the design walks it into a wallet.
+ *  Only the crypto route mounts that walk-through. */
+const refunded = computed(
+  () =>
+    props.record.route === "crypto" &&
+    status.value.kind === "failed" &&
+    failure.value?.kind === "refunded",
+);
+const canRetry = computed(
+  () => status.value.kind === "failed" && status.value.recoverable && !refunded.value,
+);
 
 // A sale that routes through the vault is the only one with an on-chain state worth reading.
 const vaultSaleId = () =>
@@ -167,25 +205,41 @@ const vaultReturned = computed(
         :class="sideExit ? 'journey-hero-failed' : 'bg-surface-container'"
       >
         <X v-if="sideExit" class="size-6 text-fg-error" aria-hidden="true" />
-        <Check v-else-if="sent" class="size-6 text-fg-primary" aria-hidden="true" />
+        <ArrowUpRight v-else-if="sent" class="size-6 text-fg-primary" aria-hidden="true" />
         <RefreshCcw v-else class="size-6 text-fg-primary" aria-hidden="true" />
       </span>
-      <p
-        class="mt-2 text-display-m"
-        :class="sent ? 'text-fg-success' : sideExit ? 'text-fg-secondary' : 'text-fg-primary'"
-      >
-        <CashAmount :amount="record.amountHuman" />
+      <p class="mt-2 text-display-m" :class="sideExit ? 'text-fg-secondary' : 'text-fg-primary'">
+        <CashAmount :amount="record.amountHuman" :sign="sent ? '-' : ''" />
       </p>
       <p v-if="sentWhen" class="text-paragraph-l text-fg-secondary">{{ sentWhen }}</p>
     </div>
 
     <div class="mt-6 flex flex-1 flex-col gap-6">
+      <!-- Crypto's sent ending trades the stepper for the summary's own rows; a sale has no
+           destination address to show, so its stepper stays. -->
+      <dl v-if="sent && record.route === 'crypto'" class="flex flex-col gap-4">
+        <div v-if="sentEgress" class="flex items-baseline justify-between gap-4">
+          <dt class="text-paragraph-l text-fg-primary">Sent inc. fees</dt>
+          <dd class="text-heading-m text-fg-primary">{{ sentEgress }}</dd>
+        </div>
+        <div class="flex items-baseline justify-between gap-4">
+          <dt class="text-paragraph-l text-fg-primary">
+            To this address<br />
+            on <strong class="font-semibold">{{ record.destination.chain }} Network</strong>
+          </dt>
+          <dd class="text-heading-m text-fg-primary" :title="record.destination.address">
+            {{ shortDestinationAddress(record.destination.address) }}
+          </dd>
+        </div>
+      </dl>
       <FundingJourneyTimeline
+        v-else
         :progress="progress"
         :labels="WITHDRAWAL_JOURNEY_LABELS"
         :completed-steps="done"
         :message="message"
         :failed-label="failedLabel"
+        subject="Withdrawal"
       />
       <p v-if="residueNote" class="text-body-s text-fg-secondary">{{ residueNote }}</p>
 
@@ -209,7 +263,10 @@ const vaultReturned = computed(
 
       <DetailRows v-if="saleRows.length > 0" :rows="saleRows" muted />
 
-      <PillButton v-if="canRetry" class="mt-auto" :disabled="busy" @click="emit('retry')">
+      <PillButton v-if="refunded" class="mt-auto" @click="emit('return-funds')">
+        Return funds
+      </PillButton>
+      <PillButton v-else-if="canRetry" class="mt-auto" :disabled="busy" @click="emit('retry')">
         Try again
       </PillButton>
       <!-- Cancel and retry never show together: cancel is for an unpaid request, retry for a
@@ -224,7 +281,7 @@ const vaultReturned = computed(
         Cancel withdrawal
       </PillButton>
       <PillButton
-        v-if="sent || (sideExit && !canRetry)"
+        v-if="sent || (sideExit && !canRetry && !refunded)"
         variant="tertiary"
         class="mt-auto"
         @click="emit('close')"

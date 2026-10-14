@@ -10,12 +10,13 @@ export interface OfframpLane {
   readonly chainflip: { readonly chain: string; readonly asset: string };
   /** The asset's code in Meld's `CRYPTO_OFFRAMP` catalog, which the adapter passes through. */
   readonly meldCode: string;
-  /** Base-unit decimals on the lane's chain. Never assumed: BSC USDT is 18. */
+  /** Base-unit decimals on the lane's chain. */
   readonly decimals: number;
   /** Chainflip's fill-or-kill tolerance on the swap, basis points. */
   readonly slippageBps: number;
   /** How many times the quoted delivery fee the sale keeps in hand, for gas rising between the
-   *  quote and the delivery: 1 trusts the quote, 3 survives the fee tripling. */
+   *  quote and the delivery: 1 trusts the quote, 3 survives the fee tripling. Arbitrum's spikes
+   *  are sharper than Solana's. */
   readonly egressFeeHeadroom: number;
 }
 
@@ -26,7 +27,6 @@ export const LANES: readonly OfframpLane[] = Object.freeze([
     meldCode: "USDC_ARBITRUM",
     decimals: 6,
     slippageBps: 50,
-    // Fractions of a cent today; spikes are short but sharp.
     egressFeeHeadroom: 3,
   },
   {
@@ -43,7 +43,6 @@ export const LANES: readonly OfframpLane[] = Object.freeze([
     meldCode: "USDC_SOLANA",
     decimals: 6,
     slippageBps: 50,
-    // About 0.32 USDC and steady.
     egressFeeHeadroom: 2,
   },
 ] satisfies OfframpLane[]);
