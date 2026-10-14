@@ -7,6 +7,7 @@ export {
   type SourceConfig,
 } from "./sources";
 export {
+  DEFAULT_CHANNEL_LIFETIME_MS,
   openWithdrawChannel,
   quoteOutgoing,
   type IncludedFee,
@@ -39,7 +40,11 @@ export {
   type SourceOffer,
 } from "./floors";
 export {
+  BAAS_BROKER_HOST,
+  BAAS_COMMISSION_BPS,
+  baasBrokerUrl,
   createSwapSdk,
+  type CreateSwapSdkOptions,
   BelowMinimumSwapAmountError,
   ChainflipRequestError,
   normalizeQuoteRequestError,
