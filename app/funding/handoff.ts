@@ -9,4 +9,6 @@ export type FundingPackageEmits = {
   back: [];
   handoff: [];
   switchRoute: [route: FundingRoute];
+  /** Back to the shell's amount screen, the amount kept. */
+  changeAmount: [];
 };
