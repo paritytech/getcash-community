@@ -10,7 +10,7 @@ import { groupAmountDigits } from "../../utils/cash";
 
 const props = withDefaults(defineProps<AmountScreenProps>(), {
   title: "Top up funds",
-  cta: "Continue to top up",
+  cta: "Continue",
   available: undefined,
 });
 
@@ -107,11 +107,15 @@ const notice = computed(() => {
 }
 
 .funding-presets button {
+  display: flex;
   min-width: 0;
   height: 3rem;
+  align-items: center;
+  /* Flex centring keeps a label wider than the pill centred, clipping both edges evenly. */
+  justify-content: center;
   border-radius: 9999px;
   background: var(--bg-surface-container);
-  padding: 0 1rem;
+  padding: 0 0.5rem;
   overflow: hidden;
   white-space: nowrap;
   transition: background-color 120ms ease-out;
