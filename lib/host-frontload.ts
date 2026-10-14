@@ -9,9 +9,8 @@ import { readPurseBalance } from "./coinage";
 /** The two Chainflip hosts that serve quotes, floors and prices. */
 const CHAINFLIP_DOMAINS = ["rpc.mainnet.chainflip.io", "chainflip-swap.chainflip.io"];
 
-/** The IP→country service the funding screens default the buyer's region from (lib/geo.ts);
- *  the same one the host app's IpCountryDetectionService asks. */
-const GEO_DOMAINS = ["ip-api.com"];
+/** The IP→country service the funding screens default the buyer's region from (lib/geo.ts). */
+const GEO_DOMAINS = ["get.geojs.io"];
 
 /** The fiat rail's domain, read from the build-time base URL. A relative base yields nothing. */
 function meldDomains(): string[] {

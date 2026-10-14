@@ -1,4 +1,4 @@
-// The direct ip-api.com region guess: one fetch per tab, hits cached, misses retried, and silence
+// The direct GeoJS region guess: one fetch per tab, hits cached, misses retried, and silence
 // on any failure (`null`), because the callers all hold a locale fallback. Module reset per test
 // clears the process-wide cache, as in supported.test.ts.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -20,11 +20,12 @@ describe("lib/geo", () => {
     vi.unstubAllGlobals();
   });
 
-  it("answers ip-api's country and remembers it", async () => {
+  it("answers GeoJS's country and remembers it", async () => {
     const fetchMock = answering(200, {
-      status: "success",
-      country: "New Zealand",
-      countryCode: "NZ",
+      ip: "198.35.26.96",
+      country: "NZ",
+      country_3: "NZL",
+      name: "New Zealand",
     });
     vi.stubGlobal("fetch", fetchMock);
     const { fetchGeoCountry, geoCountry } = await import("../lib/geo");
@@ -33,11 +34,14 @@ describe("lib/geo", () => {
     await expect(fetchGeoCountry()).resolves.toBe("NZ");
     expect(geoCountry()).toBe("NZ");
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledWith("http://ip-api.com/json", expect.anything());
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://get.geojs.io/v1/ip/country.json",
+      expect.anything(),
+    );
   });
 
   it("shares one request between concurrent callers", async () => {
-    const fetchMock = answering(200, { countryCode: "DE" });
+    const fetchMock = answering(200, { country: "DE" });
     vi.stubGlobal("fetch", fetchMock);
     const { fetchGeoCountry } = await import("../lib/geo");
     await expect(Promise.all([fetchGeoCountry(), fetchGeoCountry()])).resolves.toEqual([
@@ -48,8 +52,12 @@ describe("lib/geo", () => {
   });
 
   it("answers null on a body that is not a country, and asks again next call", async () => {
-    // ip-api's failure shape: status "fail" and no countryCode; `country` alone must not pass.
-    const fetchMock = answering(200, { status: "fail", country: "New Zealand" });
+    // GeoJS's miss shape: no two-letter `country`; a bare name must not pass as a code.
+    const fetchMock = answering(200, {
+      ip: "10.0.0.1",
+      name: "New Zealand",
+      country: "New Zealand",
+    });
     vi.stubGlobal("fetch", fetchMock);
     const { fetchGeoCountry, geoCountry } = await import("../lib/geo");
     await expect(fetchGeoCountry()).resolves.toBeNull();
@@ -88,7 +96,7 @@ describe("lib/geo", () => {
       await vi.advanceTimersByTimeAsync(3_000);
       await expect(waited).resolves.toBeNull();
       answer?.(
-        new Response(JSON.stringify({ countryCode: "FR" }), {
+        new Response(JSON.stringify({ country: "FR" }), {
           status: 200,
           headers: { "content-type": "application/json" },
         }),
