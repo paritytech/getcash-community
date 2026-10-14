@@ -256,7 +256,6 @@ onMounted(async () => {
     :loading="loading"
     :top-ups="sections.inProgress"
     :past-top-ups="sections.past"
-    :latest-top-up="sections.latestSettled"
     :opening-top-up-id="openingTopUpId"
     :top-up-error="topUpError"
     :wording="WITHDRAWAL_LIST_WORDING"

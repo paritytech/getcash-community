@@ -385,7 +385,6 @@ onMounted(async () => {
     :loading="loading"
     :top-ups="topUpSections.inProgress"
     :past-top-ups="topUpSections.past"
-    :latest-top-up="topUpSections.latestSettled"
     :opening-top-up-id="openingTopUpId"
     :top-up-error="topUpError"
     @change="cancelPendingLoad"
