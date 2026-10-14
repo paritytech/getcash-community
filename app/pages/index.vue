@@ -291,7 +291,7 @@ async function stagePreview(stage: PreviewStage): Promise<boolean> {
     return true;
   }
   // The withdrawal packages stage on `#/withdraw`, which picks the stage up as it mounts.
-  if (stage.kind === "withdraw-package" || stage.kind === "withdraw-fiat") {
+  if (stage.kind === "withdraw-package") {
     await router.push("/withdraw");
     return false;
   }

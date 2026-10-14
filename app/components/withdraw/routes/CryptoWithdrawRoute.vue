@@ -337,7 +337,9 @@ const previewSecret = ref<string | undefined>(undefined);
 watch(
   previewStage,
   (stage) => {
-    if (stage?.kind !== "withdraw-package") return;
+    if (stage?.kind !== "withdraw-package" || (stage.route ?? "crypto") !== "crypto") return;
+    // The fiat routes' own steps never reach this package.
+    if (stage.step === "quote" || stage.step === "region") return;
     const staged = withdrawNetwork(stage.chain ?? "Ethereum") ?? null;
     network.value = staged;
     // The address step needs a destination; the section's frames show USDC.
