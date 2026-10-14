@@ -14,7 +14,14 @@
 // payment window starts when the purse is asked, not when the address is named.
 
 import type { FailureKind } from "@getsome/core";
-import { parseBaseUnits, SELL_TOKEN, type SellToken } from "@getsome/meld";
+import {
+  DIRECT_SELL_CODES,
+  directSellToken,
+  parseBaseUnits,
+  sameSoldAsset,
+  SELL_TOKEN,
+  type SellToken,
+} from "@getsome/meld";
 import { laneById, laneSellToken } from "@getsome/offramp";
 import {
   PAYMENT_EXPIRED_REASON,
@@ -423,9 +430,13 @@ function applySale(record: WithdrawalRecord, observation: SaleObservation): With
 }
 
 /** Whether `deposit` is the channel's address, for the sale's asset and its exact amount. */
-/** What a sale sells: PAS, or its offramp lane's asset. */
-const sellTokenOf = (sale: MeldSale): SellToken =>
-  sale.lane === undefined ? SELL_TOKEN : laneSellToken(laneById(sale.lane));
+/** What a sale sells: its offramp lane's asset, or the asset its code names on Asset Hub, PAS
+ *  unless it names another. The code was checked when the sale opened; this never throws. */
+function sellTokenOf(sale: MeldSale): SellToken {
+  if (sale.lane !== undefined) return laneSellToken(laneById(sale.lane));
+  const code = sale.sellCode ?? SELL_TOKEN.meldCurrencyCode;
+  return DIRECT_SELL_CODES.includes(code) ? directSellToken(code) : SELL_TOKEN;
+}
 
 function sameDeposit(
   token: SellToken,
@@ -435,7 +446,7 @@ function sameDeposit(
   return (
     deposit !== undefined &&
     deposit.address === channel.address &&
-    deposit.currency === token.meldCurrencyCode &&
+    sameSoldAsset(deposit.currency, token.meldCurrencyCode) &&
     parseBaseUnits(token, deposit.amount) === BigInt(channel.amount ?? "0")
   );
 }
@@ -454,7 +465,7 @@ function depositKnown(
   const token = sellTokenOf(sale);
   const expected = BigInt(sale.cryptoAmount);
   const asked = parseBaseUnits(token, deposit.amount);
-  if (deposit.currency !== token.meldCurrencyCode || asked !== expected) {
+  if (!sameSoldAsset(deposit.currency, token.meldCurrencyCode) || asked !== expected) {
     return failed(record, at, {
       kind: "sale-mismatch",
       step: "payment",

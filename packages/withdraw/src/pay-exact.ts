@@ -1,6 +1,7 @@
 // The exact payment: a provider that quoted a fixed figure, a fiat sale through Meld, is paid that
 // figure from the key on Asset Hub and nothing else. What the sale landed above it stays on the
-// key.
+// key. The figure is PAS, or USDT for a sale of USDT, whose key holds nothing else and pays the
+// transfer's fee in it.
 //
 // NEVER TWICE. The key keeps funds after this payment, so an empty key cannot say it went out the
 // way it does for the sweep. The nonce says it instead. The key signs nothing on Asset Hub before
@@ -26,6 +27,13 @@ export const PAY_FEE_HEADROOM_PCT = 25;
  *  planck: 0.1 PAS. Below it the fees of the way back take most of it, and it stays on the key. */
 export const SALE_RESIDUE_RETURN_FLOOR = 1_000_000_000n;
 
+/** The same floor for a sale's key that holds USDT, base units: 1 USDT. */
+export const USDT_RESIDUE_RETURN_FLOOR = 1_000_000n;
+
+/** What a payment in USDT keeps for its own fee, which the key pays in USDT through the pool: 0.1
+ *  USDT, many times what a transfer costs on Asset Hub. */
+export const USDT_PAY_FEE_ALLOWANCE = 100_000n;
+
 /** Blocks a payment stays valid after the block it is anchored at. Signed into the payment
  *  rather than left to papi's default, since `exactPaymentLanded` counts on it to call an
  *  unlanded attempt dead. */
@@ -38,7 +46,7 @@ export interface ExactPayState {
   nonce: number;
   /** An attempt at `nonce` may have left: set before its broadcast. */
   inFlight: boolean;
-  /** The key's free PAS when that attempt left, base units. */
+  /** The key's balance of what it pays when that attempt left, base units. */
   balanceBefore: string | null;
   /** The block that attempt is anchored at: it can land only within PAY_MORTAL_PERIOD blocks of
    *  it, so once the finalized chain is past that with the nonce unmoved, it never will. */
@@ -75,12 +83,16 @@ export interface ExactPayInput {
   to: string;
   /** Exactly what the provider expects, base units. */
   amount: bigint;
+  /** A pallet-assets id to pay in instead of PAS. The fee is then the caller's to arrange through
+   *  `signOptions` (ChargeAssetTxPayment in the same asset), since the key holds no PAS. */
+  assetId?: number;
   tickTimeoutMs: number;
   submitTimeoutMs: number;
   signOptions?: Record<string, unknown>;
   /** The number of the block `signOptions` anchors the payment at. */
   anchorNumber?: number;
-  /** The key's free PAS and its nonce on Asset Hub, at the finalized head. */
+  /** The key's balance of what it pays, free PAS or its holding of `assetId`, and its nonce on
+   *  Asset Hub, at the finalized head. */
   readKey: () => Promise<{ free: bigint; nonce: number }>;
   /** The finalized head's number on Asset Hub. */
   readFinalizedNumber?: () => Promise<number>;
@@ -89,9 +101,13 @@ export interface ExactPayInput {
   onTx?: (info: { call: "pay"; txHash: string; block?: number }) => void;
 }
 
-/** The transfer: `amount` to `to`, the key kept alive with what is left. */
-export function buildExactPay(api: AssetHubApi, to: string, amount: bigint) {
-  return api.tx.Balances.transfer_keep_alive({ dest: { type: "Id", value: to }, value: amount });
+/** The transfer: `amount` to `to`, of PAS or of the asset `assetId` names, the key kept alive with
+ *  what is left. */
+export function buildExactPay(api: AssetHubApi, to: string, amount: bigint, assetId?: number) {
+  const dest = { type: "Id", value: to } as const;
+  return assetId === undefined
+    ? api.tx.Balances.transfer_keep_alive({ dest, value: amount })
+    : api.tx.Assets.transfer_keep_alive({ id: assetId, target: dest, amount });
 }
 
 /**
@@ -110,6 +126,22 @@ export async function exactPaymentFloor(
     api.constants.Balances.ExistentialDeposit(),
   ]);
   return amount + (fee * BigInt(100 + PAY_FEE_HEADROOM_PCT)) / 100n + ed;
+}
+
+/**
+ * The least the key must hold of the asset `assetId` to pay `amount` of it: the amount, `fee` for
+ * the transfer's fee, which the key pays in the same asset, and the asset's minimum balance, which
+ * the key keeps. The sale is held to it before anything leaves People.
+ */
+export async function exactAssetPaymentFloor(
+  api: AssetHubApi,
+  assetId: number,
+  amount: bigint,
+  fee: bigint,
+): Promise<bigint> {
+  const asset = await api.query.Assets.Asset.getValue(assetId);
+  if (asset === undefined) throw new Error(`asset ${assetId} is not on Asset Hub`);
+  return amount + fee + asset.min_balance;
 }
 
 /**
@@ -182,7 +214,7 @@ export async function payExactOnce(input: ExactPayInput, state: ExactPayState): 
   const key = await bounded(input.readKey(), input.tickTimeoutMs, "key read");
   if (judge(key, state, input.amount) === "paid") return;
 
-  const tx = buildExactPay(input.assetHubApi, input.to, input.amount);
+  const tx = buildExactPay(input.assetHubApi, input.to, input.amount, input.assetId);
   const dr = await bounded(
     input.assetHubApi.apis.DryRunApi.dry_run_call(
       signedOrigin(input.key.address) as never,

@@ -4,7 +4,13 @@
 import { computed } from "vue";
 import { Check, RefreshCcw, X } from "lucide-vue-next";
 import { TOKENS } from "@getsome/core";
-import { formatBaseUnits, sellAmountOf, SELL_TOKEN, type SellToken } from "@getsome/meld";
+import {
+  formatBaseUnits,
+  sellAmountOf,
+  SELL_TOKEN,
+  USDT_SELL_TOKEN,
+  type SellToken,
+} from "@getsome/meld";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
 import {
   paymentTaken,
@@ -97,8 +103,11 @@ const residueNote = computed(() => {
   if (residue.stuck === true) {
     return "What was left could not come back to your balance on its own. Contact support with your reference.";
   }
-  // A sale through an offramp lane leaves USDT on the key, the rest PAS.
-  const token = props.record.sale?.lane === undefined ? SELL_TOKEN : (TOKENS.USDT as SellToken);
+  // A sale that redeemed its CASH for USDT, through an offramp lane or sold directly, leaves USDT on
+  // the key, the rest PAS.
+  const sale = props.record.sale;
+  const usdt = sale?.lane !== undefined || sale?.sellCode === USDT_SELL_TOKEN.meldCurrencyCode;
+  const token = usdt ? (TOKENS.USDT as SellToken) : SELL_TOKEN;
   // Shown to the sale's decimals; a remainder below them is not worth a line.
   const shown = residue.amount === undefined ? 0n : sellAmountOf(BigInt(residue.amount), token);
   const amount = shown === 0n ? null : `${formatBaseUnits(token, shown)} ${token.symbol}`;

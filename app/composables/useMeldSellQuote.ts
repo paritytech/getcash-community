@@ -1,15 +1,19 @@
 // The quote a fiat sale is confirmed on: the region and payout method from the adapter's off-ramp
 // catalog, the exact figure the key will pay, and the best provider line for that figure. The
 // catalog names, per region and method, what the sale sells: PAS on Asset Hub out of the pool sale,
-// or, where no provider buys that, a lane's asset that Chainflip swaps the key's USDT into. Priced
+// USDT there out of the PSM, or, where no provider buys either, a lane's asset that Chainflip swaps
+// the key's USDT into. Priced
 // again whenever the region changes; nothing here opens a session.
 
 import { ref, shallowRef } from "vue";
 import {
+  DIRECT_SELL_CODES,
+  directSellToken,
   formatSellAmount,
   pickBestQuote,
   SELL_TOKEN,
   sellQuoteUsable,
+  USDT_SELL_TOKEN,
   type MeldQuoteEntry,
 } from "@getsome/meld";
 import type { ConversionRoute } from "@getsome/funding";
@@ -37,14 +41,25 @@ export interface MeldSellQuote {
   cryptoAmount: bigint;
   /** A sale through an offramp lane: the lane, and the USDT redeem the withdrawal runs. */
   swap?: { lane: LaneId; route: ConversionRoute };
+  /** A direct sale quoted under a code other than DOT_ASSETHUB, which the session must name too:
+   *  DOT_STATEMINT, Meld's older code for DOT on Asset Hub, or USDT_STATEMINT for USDT there. */
+  sellCode?: string;
+  /** A direct sale of USDT: the PSM redeem the withdrawal runs for the USDT the key pays. */
+  route?: ConversionRoute;
   /** The CASH expected back once the provider is paid, before the way back's fees; 0 when it is
    *  too small to send back. */
   backCash: bigint;
   line: MeldQuoteEntry;
 }
 
-/** What a sale commits to its provider, and its lane when it sells through one. */
-type SizedSale = { planck: bigint; backCash: bigint; swap?: MeldSellQuote["swap"] };
+/** What a sale commits to its provider, and its lane when it sells through one, or its redeem when
+ *  it sells USDT directly. */
+type SizedSale = {
+  planck: bigint;
+  backCash: bigint;
+  swap?: MeldSellQuote["swap"];
+  route?: ConversionRoute;
+};
 
 /** How a sale pays out when the live catalog cannot say: Meld's payout codes, which the sell
  *  catalog names its methods by, not the buy side's card and bank codes. */
@@ -58,11 +73,23 @@ function startingCountry(method: "card" | "bank"): string {
   return method === "card" || bankRailCountries().includes(detected) ? detected : "DE";
 }
 
-/** What a sale of Meld code `code` sells: PAS on Asset Hub (null), a lane this build can swap into,
- *  or `undefined` for a code it cannot sell. */
+/** What a sale of Meld code `code` sells: an asset on Asset Hub with no swap (null), PAS under
+ *  either of Meld's codes for it or USDT, a lane this build can swap into, or `undefined` for a
+ *  code it cannot sell. */
 export function saleLaneOf(code: string): OfframpLane | null | undefined {
-  if (code === SELL_TOKEN.meldCurrencyCode) return null;
+  if (DIRECT_SELL_CODES.includes(code)) return null;
   return laneByMeldCode(code) ?? undefined;
+}
+
+/** Sizes a direct sale under `code`: USDT out of the PSM, or PAS out of the pool. */
+async function sizeDirectSale(
+  live: typeof import("~~/lib/withdraw-live"),
+  code: string,
+  amount: bigint,
+): Promise<SizedSale> {
+  if (code !== USDT_SELL_TOKEN.meldCurrencyCode) return live.sizeMeldCommitment(amount);
+  const size = await live.sizeUsdtSale(amount);
+  return { planck: size.commit, backCash: size.backCash, route: size.route };
 }
 
 /**
@@ -161,11 +188,12 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
       for (const code of laneCandidates(corridor.lanes, OFFRAMP_LANE_ORDER)) {
         const lane = saleLaneOf(code);
         if (lane === undefined) continue;
-        const token = lane === null ? SELL_TOKEN : laneSellToken(lane);
+        // A direct sale is quoted under the code the catalog routed, which its providers buy.
+        const token = lane === null ? directSellToken(code) : laneSellToken(lane);
         try {
           const size: SizedSale =
             lane === null
-              ? await live.sizeMeldCommitment(amount)
+              ? await sizeDirectSale(live, code, amount)
               : await live.sizeSwapSale(amount, lane).then((swap) => ({
                   planck: swap.commit,
                   backCash: 0n,
@@ -191,6 +219,8 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
             cryptoAmount: size.planck,
             backCash: size.backCash,
             ...(size.swap === undefined ? {} : { swap: size.swap }),
+            ...(lane === null && code !== SELL_TOKEN.meldCurrencyCode ? { sellCode: code } : {}),
+            ...(size.route === undefined ? {} : { route: size.route }),
             line,
           };
           return;

@@ -15,6 +15,9 @@ export {
 } from "./client";
 export { formatBaseUnits, parseBaseUnits, toBaseUnits, type MeldToken } from "./units";
 export {
+  ASSET_HUB_DOT_CODES,
+  DIRECT_SELL_CODES,
+  directSellToken,
   formatSellAmount,
   MELD_SELL_ENABLED,
   SALE_GONE_AFTER,
@@ -22,10 +25,12 @@ export {
   type SaleChannelRecord,
   saleRail,
   type SaleReadMemory,
+  sameSoldAsset,
   SELL_TOKEN,
   type SellToken,
   sellAmountOf,
   sellQuoteUsable,
+  USDT_SELL_TOKEN,
 } from "./sell";
 export { computeMeldQuote, pickBestQuote, type MeldQuoteContext, type MeldQuoteRaw } from "./quote";
 export { requestMeldDeposit, type MeldDepositChannel } from "./session";

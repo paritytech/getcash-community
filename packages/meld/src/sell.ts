@@ -24,6 +24,46 @@ export interface SellToken {
   meldCurrencyCode: string;
 }
 
+/** Meld's two codes for the DOT a direct sale sells on Polkadot Asset Hub: DOT_ASSETHUB, and the
+ *  older DOT_STATEMINT (Statemint was Asset Hub's name), which some providers still buy under. */
+export const ASSET_HUB_DOT_CODES: readonly string[] = [
+  SELL_TOKEN.meldCurrencyCode,
+  "DOT_STATEMINT",
+];
+
+/** USDT on Asset Hub as a direct sale sells it: the PSM redeems the CASH for it, and the key pays
+ *  the provider in it. Meld names it USDT_STATEMINT for the providers that buy it there. */
+export const USDT_SELL_TOKEN: SellToken = {
+  symbol: TOKENS.USDT.symbol,
+  decimals: TOKENS.USDT.decimals,
+  meldCurrencyCode: "USDT_STATEMINT",
+};
+
+/** What a direct sale sells, on Asset Hub with no swap, by the Meld code a provider buys it under. */
+const DIRECT_SELL_TOKENS: ReadonlyMap<string, SellToken> = new Map([
+  ...ASSET_HUB_DOT_CODES.map((code): [string, SellToken] => [
+    code,
+    { ...SELL_TOKEN, meldCurrencyCode: code },
+  ]),
+  [USDT_SELL_TOKEN.meldCurrencyCode, USDT_SELL_TOKEN],
+]);
+
+/** The Meld codes a direct sale can sell. */
+export const DIRECT_SELL_CODES: readonly string[] = [...DIRECT_SELL_TOKENS.keys()];
+
+/** The direct sale's asset under one of DIRECT_SELL_CODES, as the provider quoting it names it. */
+export function directSellToken(code: string): SellToken {
+  const token = DIRECT_SELL_TOKENS.get(code);
+  if (token === undefined) throw new Error(`A sale cannot sell ${code} directly.`);
+  return token;
+}
+
+/** Whether a deposit's asset code names what the sale sells: the same code, or either of Meld's
+ *  two names for DOT on Asset Hub. */
+export const sameSoldAsset = (depositCode: string, soldCode: string): boolean =>
+  depositCode === soldCode ||
+  (ASSET_HUB_DOT_CODES.includes(depositCode) && ASSET_HUB_DOT_CODES.includes(soldCode));
+
 /** The fraction digits a committed amount carries. Few enough that no provider rounds it, and the
  *  planck below them stay with the rest of the sale. */
 const SELL_AMOUNT_DECIMALS = 4;
@@ -79,7 +119,8 @@ export function saleChannelOf(
   token: SellToken = SELL_TOKEN,
 ): SaleChannelRecord | null {
   const { deposit } = result;
-  if (deposit === undefined || deposit.currency !== token.meldCurrencyCode) return null;
+  if (deposit === undefined || !sameSoldAsset(deposit.currency, token.meldCurrencyCode))
+    return null;
   const expectedAmount = parseBaseUnits(token, deposit.amount);
   if (expectedAmount === null || expectedAmount <= 0n) return null;
   return {
@@ -151,12 +192,14 @@ export interface SaleReadMemory {
  * after. A sale the adapter keeps answering 404 for (a reset database, a product id that changed)
  * is gone after SALE_GONE_AFTER reads in a row spanning SALE_GONE_FOR_MS: no channel to pay, so the
  * key goes home, or, once paid, a payout nobody can confirm. Short of that, and on any other
- * failure, the read throws and the next tick reads again.
+ * failure, the read throws and the next tick reads again. `token` is what the sale sells, which
+ * the deposit is read in.
  */
 export function saleRail(
   client: MeldClientLike,
   memory: SaleReadMemory,
   now: () => number = Date.now,
+  token: SellToken = SELL_TOKEN,
 ) {
   const read = async (fundingRequestId: string): Promise<MeldStatusResult | null> => {
     try {
@@ -178,7 +221,7 @@ export function saleRail(
   return {
     channel: async (fundingRequestId: string): Promise<SaleChannelRecord | null> => {
       const result = await read(fundingRequestId);
-      return result === null ? null : saleChannelOf(result);
+      return result === null ? null : saleChannelOf(result, token);
     },
     status: async (fundingRequestId: string): Promise<SwapStatusResult> =>
       saleStatusView((await read(fundingRequestId)) ?? { status: "unobserved" }),

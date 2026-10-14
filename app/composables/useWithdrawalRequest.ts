@@ -7,7 +7,14 @@
 
 import { computed } from "vue";
 import type { ConversionRoute } from "@getsome/funding";
-import { formatSellAmount, SELL_TOKEN, type MeldQuoteEntry } from "@getsome/meld";
+import {
+  DIRECT_SELL_CODES,
+  directSellToken,
+  formatSellAmount,
+  SELL_TOKEN,
+  USDT_SELL_TOKEN,
+  type MeldQuoteEntry,
+} from "@getsome/meld";
 import { laneById, laneSellToken, type LaneId } from "@getsome/offramp";
 import {
   MELD_WITHDRAW_DESTINATIONS,
@@ -70,6 +77,11 @@ export interface MeldSaleStart {
   cryptoAmount: bigint;
   /** A sale through an offramp lane: the lane, and the USDT redeem the withdrawal runs. */
   swap?: { lane: LaneId; route: ConversionRoute };
+  /** A direct sale quoted under a code other than DOT_ASSETHUB: DOT_STATEMINT, Meld's older code
+   *  for DOT on Asset Hub, or USDT_STATEMINT for USDT there. The session names the same code. */
+  sellCode?: string;
+  /** A direct sale of USDT: the PSM redeem the withdrawal runs for the USDT the key pays. */
+  route?: ConversionRoute;
 }
 
 export type MeldSaleStartOutcome =
@@ -193,6 +205,15 @@ export function useWithdrawalRequest() {
     if (client === null || meld === null) {
       return { ok: false, reason: "Card and bank withdrawals are not available right now." };
     }
+    if (input.sellCode !== undefined && !DIRECT_SELL_CODES.includes(input.sellCode)) {
+      return { ok: false, reason: `A sale cannot sell ${input.sellCode}.` };
+    }
+    // A direct sale of USDT runs the PSM redeem for it, and a direct sale of DOT names no route.
+    const sellsUsdt = input.sellCode === USDT_SELL_TOKEN.meldCurrencyCode;
+    const redeemsUsdt = input.route?.tier === "psm" && input.route.external === "USDT";
+    if (input.swap === undefined && (sellsUsdt ? !redeemsUsdt : input.route !== undefined)) {
+      return { ok: false, reason: "The sale's asset and its conversion do not match." };
+    }
     // As for any withdrawal: the sale's CASH must be able to reach Asset Hub, or the seller would
     // pass KYC and pay for a sale the worker cannot run.
     if (!(await live.cashCanMove())) {
@@ -206,7 +227,10 @@ export function useWithdrawalRequest() {
     const ref = requestRefOf(sourceId, n);
     const key = await live.withdrawKeyFor(sourceId, n);
     await live.advanceWithdrawCounter(sourceId, n);
-    const token = input.swap === undefined ? SELL_TOKEN : laneSellToken(laneById(input.swap.lane));
+    const token =
+      input.swap === undefined
+        ? directSellToken(input.sellCode ?? SELL_TOKEN.meldCurrencyCode)
+        : laneSellToken(laneById(input.swap.lane));
     let session: Awaited<ReturnType<typeof client.createSellSession>>;
     try {
       session = await client.createSellSession({
@@ -245,9 +269,10 @@ export function useWithdrawalRequest() {
       destination,
       landingHex: key.publicKeyHex,
       rail: "meld",
-      // A fiat sale takes DOT from the key, whatever the provider pays out; one through an
-      // offramp lane takes USDT, which Chainflip swaps for the lane's asset.
-      sale: input.swap?.route ?? { tier: "pool" },
+      // A fiat sale takes DOT from the key, whatever the provider pays out; a direct sale of USDT
+      // takes the USDT the PSM redeemed, and one through an offramp lane takes USDT too, which
+      // Chainflip swaps for the lane's asset.
+      sale: input.swap?.route ?? input.route ?? { tier: "pool" },
       paymentExpiresAt,
       meld,
     });
@@ -283,6 +308,7 @@ export function useWithdrawalRequest() {
         widgetUrl,
         cryptoAmount: input.cryptoAmount.toString(),
         ...(input.swap === undefined ? {} : { lane: input.swap.lane }),
+        ...(input.sellCode === undefined ? {} : { sellCode: input.sellCode }),
         quotedPayout: quote.destinationAmount,
         ...(Object.keys(fees).length === 0 ? {} : { fees }),
       },
@@ -332,6 +358,11 @@ export function useWithdrawalRequest() {
         // The swap is opened now, to the address the provider named, on today's quote; a quote
         // that no longer covers the sale throws, and nothing is opened or asked.
         fundable = record.handoff.swap !== undefined || (await openSaleSwap(ref, lane, live));
+      } else if (record.sale.sellCode === USDT_SELL_TOKEN.meldCurrencyCode) {
+        fundable = await live.usdtSaleFundable(
+          BigInt(record.handoff.amount),
+          BigInt(record.sale.cryptoAmount),
+        );
       } else {
         fundable = await live.meldCommitmentFundable(
           BigInt(record.handoff.amount),

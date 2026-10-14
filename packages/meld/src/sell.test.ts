@@ -6,15 +6,19 @@ import { createMeldClient } from "./client";
 import { createFakeMeldClient } from "./fake";
 import type { MeldClientLike, MeldQuoteEntry, MeldStatusResult } from "./client";
 import {
+  DIRECT_SELL_CODES,
   formatSellAmount,
   SALE_GONE_AFTER,
   SALE_GONE_FOR_MS,
+  directSellToken,
   saleChannelOf,
   saleRail,
   saleStatusView,
+  sameSoldAsset,
   sellAmountOf,
   sellQuoteUsable,
   SELL_TOKEN,
+  USDT_SELL_TOKEN,
   type SaleReadMemory,
 } from "./sell";
 import { parseBaseUnits } from "./units";
@@ -346,6 +350,19 @@ describe("the sale as the rail leg reads it", () => {
     });
   });
 
+  it("takes a deposit for DOT on Asset Hub under either of Meld's codes for it", () => {
+    const statemint = {
+      ...disclosed,
+      deposit: { ...disclosed.deposit, currency: "DOT_STATEMINT" },
+    };
+    expect(saleChannelOf(statemint)?.expectedAmount).toBe(234_521_000_000n);
+    // And a sale quoted under DOT_STATEMINT takes a deposit named DOT_ASSETHUB.
+    expect(saleChannelOf(disclosed, directSellToken("DOT_STATEMINT"))?.depositAddress).toBe("14Kt");
+    expect(sameSoldAsset("DOT_STATEMINT", "DOT_ASSETHUB")).toBe(true);
+    expect(sameSoldAsset("USDC_SOLANA", "DOT_ASSETHUB")).toBe(false);
+    expect(sameSoldAsset("USDT_STATEMINT", "DOT_ASSETHUB")).toBe(false);
+  });
+
   it("is closed once the adapter concludes it", () => {
     expect(saleChannelOf({ ...disclosed, status: "expired" })?.expired).toBe(true);
   });
@@ -437,6 +454,17 @@ describe("the sale's reads for the worker", () => {
     expect(await rail.status("funding-1")).toMatchObject({ status: "complete" });
   });
 
+  it("reads the deposit of a sale of USDT in USDT's units", async () => {
+    const usdt = {
+      status: "transaction_seen",
+      deposit: { address: "14Kt", amount: "25", currency: "USDT_STATEMINT", observedAt: 1 },
+    };
+    const rail = saleRail(scripted([usdt]), {}, Date.now, USDT_SELL_TOKEN);
+    expect(await rail.channel("funding-1")).toMatchObject({ expectedAmount: 25_000_000n });
+    // A deposit for DOT is not this sale's.
+    expect(await saleRail(scripted([live]), {}, Date.now, USDT_SELL_TOKEN).channel("f")).toBeNull();
+  });
+
   it("takes a sale the adapter keeps answering 404 for as gone, and only then", async () => {
     const memory: SaleReadMemory = {};
     let clock = 1_000_000;
@@ -496,6 +524,28 @@ describe("which quote lines can carry a sale", () => {
     for (const payout of ["", "0", "-1", "abc"]) {
       expect(sellQuoteUsable(line("TRANSAK", payout))).toBe(false);
     }
+  });
+});
+
+describe("what a direct sale sells", () => {
+  it("is DOT under either of Meld's codes for it, or USDT under USDT_STATEMINT", () => {
+    expect(DIRECT_SELL_CODES).toEqual(["DOT_ASSETHUB", "DOT_STATEMINT", "USDT_STATEMINT"]);
+    expect(directSellToken("DOT_ASSETHUB")).toEqual(SELL_TOKEN);
+    expect(directSellToken("DOT_STATEMINT")).toEqual({
+      ...SELL_TOKEN,
+      meldCurrencyCode: "DOT_STATEMINT",
+    });
+    expect(directSellToken("USDT_STATEMINT")).toEqual({
+      symbol: "USDT",
+      decimals: 6,
+      meldCurrencyCode: "USDT_STATEMINT",
+    });
+    expect(formatSellAmount(25_000_000n, USDT_SELL_TOKEN)).toBe("25");
+  });
+
+  it("is nothing else, a lane's code included", () => {
+    expect(() => directSellToken("USDC_STATEMINT")).toThrow("cannot sell USDC_STATEMINT");
+    expect(() => directSellToken("USDC_ARBITRUM")).toThrow("cannot sell USDC_ARBITRUM");
   });
 });
 
