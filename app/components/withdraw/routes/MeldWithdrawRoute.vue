@@ -6,6 +6,7 @@
 // names where the funds go; from there the record and the worker carry the sale.
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useMeldSellQuote } from "../../../composables/useMeldSellQuote";
+import { useStateDirector } from "../../../composables/useStateDirector";
 import { useWithdrawalRequest } from "../../../composables/useWithdrawalRequest";
 import type { FundingPackageEmits } from "../../../funding/handoff";
 import { paymentTaken, saleAwaitingDeposit } from "../../../funding/requests/model";
@@ -14,6 +15,7 @@ import type { FundingTopUp } from "../../../funding/top-ups";
 import { useRequestsStore } from "../../../stores/requests";
 import { toCashBase } from "../../../utils/cash";
 import { isDemoBuild } from "../../../utils/demo";
+import { previewStage } from "../../../utils/dev-preview-stage";
 import { localeCountry } from "../../../utils/locale";
 import type { RequestRef } from "../../../utils/request-index";
 import { meldSellClient } from "../../../withdraw/meld-client";
@@ -40,6 +42,7 @@ const props = defineProps<{
   topUp?: FundingTopUp | null;
 }>();
 const emit = defineEmits<FundingPackageEmits>();
+useStateDirector();
 
 const method = ((): "card" | "bank" => {
   const route = props.selection?.route ?? props.topUp?.route;
@@ -136,7 +139,60 @@ const countryLabel = computed(() => namedCountry(sale.country.value, sale.countr
 
 function pickCountry(country: string) {
   step.value = "quote";
-  if (country !== sale.country.value) sale.setCountry(country);
+  if (country === sale.country.value) return;
+  // A staged sale keeps its canned quote: the adapter is never asked while the deck drives.
+  if (previewed) sale.country.value = country;
+  else sale.setCountry(country);
+}
+
+// The preview deck drives the step and the sale's canned quote through the stage; a production
+// build never has one. Immediate: the deck may have staged this package before it mounted.
+let previewed = false;
+watch(
+  previewStage,
+  (stage) => {
+    if (stage?.kind !== "withdraw-package" || (stage.route ?? "crypto") !== method) return;
+    previewed = true;
+    sale.country.value = stage.country ?? stage.sale?.country ?? "GB";
+    sale.quote.value = stage.sale ?? null;
+    sale.loading.value = stage.sale === null;
+    const failed = stage.saleError;
+    sale.error.value =
+      failed?.kind === "unrouted"
+        ? `${method === "bank" ? "Bank" : "Card"} payout isn't available in this region`
+        : failed
+          ? "The rate could not be read."
+          : null;
+    sale.errorKind.value = failed?.kind ?? null;
+    sale.rateFailures.value = failed?.kind === "rate" ? (failed.attempts ?? 1) : 0;
+    const staged = stage.step;
+    step.value =
+      staged === "fees" || staged === "region" || staged === "journey" ? staged : "quote";
+  },
+  { immediate: true },
+);
+
+/** Another try at the price; a staged one only counts the failure, so the deck can walk on to the
+ *  screen that stops offering it. */
+function retryQuote() {
+  if (previewed) sale.rateFailures.value += 1;
+  else void sale.refresh();
+}
+
+/** Demo Skip on the quote: a simulated sale plays paying out and paid out, without a provider
+ *  or a purse — the walkthrough a plain browser can give. */
+const canSkipQuote = computed(
+  () => isDemoBuild() && step.value === "quote" && sale.quote.value !== null,
+);
+
+async function onSkipQuote() {
+  const over = {
+    ...(amount.value === "" ? {} : { amountHuman: amount.value }),
+    ...(sale.quote.value === null ? {} : { quote: sale.quote.value }),
+  };
+  step.value = "journey";
+  const preview = await import("../../../utils/dev-preview");
+  void preview.simulateSaleJourney(method, over);
 }
 
 /** False once the route is gone, so a sale it opened is not taken or followed from a dead
@@ -344,6 +400,7 @@ onMounted(() => {
   window.addEventListener("message", onMessage);
   const opened = props.topUp;
   if (!opened) {
+    if (previewed) return;
     void sale.loadCatalog();
     void sale.refresh();
     return;
@@ -385,11 +442,11 @@ onUnmounted(() => {
     "
   >
     <Toolbar :title="toolbar.title" :back="toolbar.back" @back="onBack">
-      <template v-if="canSkipRail" #trailing>
+      <template v-if="canSkipRail || canSkipQuote" #trailing>
         <button
           type="button"
           class="rounded-medium px-4 py-3 text-label-l font-normal text-fg-primary transition-colors hover:bg-action-tertiary-hover"
-          @click="onSkipRail"
+          @click="canSkipRail ? onSkipRail() : onSkipQuote()"
         >
           Skip
         </button>
@@ -422,10 +479,13 @@ onUnmounted(() => {
       />
       <MeldSellQuoteScreen
         v-else-if="step === 'quote' || step === 'fees'"
+        :method="method"
         :amount="amount"
         :quote="sale.quote.value"
         :loading="sale.loading.value"
         :error="sale.error.value"
+        :error-kind="sale.errorKind.value"
+        :rate-failures="sale.rateFailures.value"
         :country="sale.country.value"
         :country-name="countryLabel"
         :starting="starting"
@@ -433,6 +493,9 @@ onUnmounted(() => {
         @continue="confirm"
         @fees="step = 'fees'"
         @region="step = 'region'"
+        @retry="retryQuote"
+        @use-crypto="emit('switchRoute', 'crypto')"
+        @change-amount="emit('changeAmount')"
       />
       <WithdrawCancelScreen
         v-else-if="step === 'cancel'"
@@ -465,5 +528,6 @@ onUnmounted(() => {
         <p class="text-body-m text-fg-secondary">Opening your withdrawal…</p>
       </div>
     </div>
+    <PreviewSceneLabel />
   </main>
 </template>
