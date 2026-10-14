@@ -22,6 +22,7 @@ import {
 } from "../funding/requests/model";
 import { createMockCoinageSession } from "~~/lib/coinage";
 import { isDemoBuild } from "./demo";
+import type { MeldSellQuote } from "../composables/useMeldSellQuote";
 import {
   previewQuote,
   previewTopUp,
@@ -53,6 +54,26 @@ const WITHDRAW_PREVIEW_FEES = {
   equivalent: "≈ 24.75 USDC",
   receive: "24.19 USDC",
   rate: "$1 CASH ≈ 0.99 USDC",
+};
+
+/** The card withdrawal's canned quote for $25 to the United Kingdom, as its frames draw it: the
+ *  provider's line in GBP, the exact PAS the key would pay, and the CASH held back for the price
+ *  that comes home. */
+const SALE_PREVIEW_QUOTE: MeldSellQuote = {
+  country: "GB",
+  fiat: "GBP",
+  paymentMethodType: "PAYOUT_TO_CARD",
+  cryptoAmount: 1_254_321_000_000n,
+  backCash: 420_000n,
+  line: {
+    serviceProvider: "TRANSAK",
+    sourceAmount: "125.4321",
+    destinationAmount: "18.62",
+    totalFee: "1.06",
+    transactionFee: "0.56",
+    partnerFee: "0.50",
+    customerScore: 100,
+  },
 };
 
 function floor(sourceId: SourceId, minimumBaseUnits: bigint, worth: bigint): SourceFloorResult {
@@ -505,8 +526,130 @@ async function previewWithdrawal(
   requests.setForeground(ref);
 }
 
+/**
+ * A fiat withdrawal record in one journey state — $25 sold for a card payout in the United
+ * Kingdom, as the card frames draw it. The provider has named where the funds go and the purse
+ * has paid the key; the worker is paying the provider or has.
+ */
+async function previewSale(
+  index: number,
+  method: "card" | "bank",
+  state: "sending" | "sent",
+  over?: { amountHuman?: string; quote?: MeldSellQuote },
+): Promise<void> {
+  const requests = useRequestsStore();
+  const ref: RequestRef = { sourceId: `wd:meld-${method}`, tradeN: 960 + index };
+  if (requests.has(ref)) await requests.remove(ref);
+  const now = Date.now();
+  const startedAt = now - 6 * 60_000;
+  const at = now - 2 * 60_000;
+  const quote = over?.quote ?? SALE_PREVIEW_QUOTE;
+  const key = {
+    label: `wd:eph:meld-${method}:${ref.tradeN}`,
+    address: "13cKp88mpAujXcqAxDMFEpvDACJyWLXSTbKf6cwHTn92FGGF",
+    publicKeyHex: `0x${"6e".repeat(32)}`,
+  };
+  const destination = {
+    chain: method === "bank" ? "Bank transfer" : "Card",
+    asset: quote.fiat,
+    address: "",
+  };
+  const record: WithdrawalRecord = {
+    schema: 2,
+    kind: "withdrawal",
+    ref,
+    rev: 0,
+    updatedAt: now,
+    startedAt,
+    amountHuman: over?.amountHuman ?? "25",
+    route: method,
+    destination,
+    key,
+    payment: { attempt: 1, requestedAt: startedAt, updatedAt: startedAt },
+    deadline: { paymentExpiresAt: now + 3_600_000 },
+    handoff: {
+      label: key.label,
+      keyAddress: key.address,
+      keyPublicKeyHex: key.publicKeyHex,
+      amount: "25000000",
+      destination,
+      landingHex: key.publicKeyHex,
+      rail: "meld",
+      tier: "pool",
+      assetHubGenesis: "0xah",
+      peopleGenesis: "0xpe",
+      peopleParaId: 1004,
+      assetHubParaId: 1000,
+      poolAccount: "13UVJyLnbVp9RBZYFwFGyDvVd1y27Tt8tkntv6Q7JVPhFsTB",
+      slippagePct: 2,
+      paymentExpiresAt: now + 3_600_000,
+      channel: {
+        id: PREVIEW_MELD.fundingRequestId,
+        address: "14E5nqKAp3oAJcmzgZhUD2RcptBeUBScxKHgJKU4HPNcKVf3",
+        openedAt: startedAt,
+        expiresAt: now + 3_600_000,
+        expectedEgress: quote.cryptoAmount.toString(),
+      },
+      meld: { offline: true },
+    },
+    status: state === "sent" ? { kind: "sent", at } : { kind: "sending", at },
+    rail: {
+      provider: "meld",
+      stage: state === "sent" ? "delivered" : "processing",
+      updatedAt: at,
+    },
+    sale: {
+      fundingRequestId: PREVIEW_MELD.fundingRequestId,
+      serviceProvider: quote.line.serviceProvider,
+      country: quote.country,
+      fiat: quote.fiat,
+      paymentMethodType: quote.paymentMethodType,
+      widgetUrl: "https://sb.meldcrypto.com/?sessionId=preview",
+      cryptoAmount: quote.cryptoAmount.toString(),
+      quotedPayout: quote.line.destinationAmount,
+      ...(quote.line.totalFee === undefined ? {} : { fees: { total: quote.line.totalFee } }),
+    },
+    paidAmount: "25000000",
+    witnesses: {
+      worker: {
+        known: true,
+        phase: state === "sent" ? "done" : "follow",
+        done: state === "sent",
+        fundsSeenAt: startedAt,
+        lastTickAt: at,
+        at,
+      },
+    },
+  };
+  await requests.create(ref, record);
+  requests.setForeground(ref);
+}
+
 /** Which slot the summary's demo Skip plays its journey in; away from the scenes' 950..955. */
 const SKIP_SLOT = 9;
+
+/**
+ * The quote's demo Skip on a fiat withdrawal: the sale walked through the journey — paying the
+ * provider, then paid out — a few seconds apart, on the sandbox, without an adapter or a purse.
+ * Stops early when something else takes the screen. Demo builds only; the route gates the button
+ * on `isDemoBuild()`.
+ */
+export async function simulateSaleJourney(
+  method: "card" | "bank",
+  over?: { amountHuman?: string; quote?: MeldSellQuote },
+): Promise<void> {
+  const requests = useRequestsStore();
+  requests.enterSandbox();
+  const ref: RequestRef = { sourceId: `wd:meld-${method}`, tradeN: 960 + SKIP_SLOT };
+  const stillUp = () =>
+    requests.foregroundWithdrawal?.ref.tradeN === ref.tradeN &&
+    requests.foregroundWithdrawal?.ref.sourceId === ref.sourceId;
+  const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  await previewSale(SKIP_SLOT, method, "sending", over);
+  await delay(4_000);
+  if (!stillUp()) return;
+  await previewSale(SKIP_SLOT, method, "sent", over);
+}
 
 /**
  * The summary's demo Skip: a simulated withdrawal walked through the journey — conversion,
@@ -1909,6 +2052,58 @@ export const SCENES: Scene[] = [
       base(s, f);
       await previewWithdrawal(5, "refunded");
     },
+  },
+  // ——— The card withdrawal: the sale's quote priced, pricing and refused, its fee drill-in, and
+  // the payout country picker.
+  {
+    name: "withdraw card / quote",
+    stage: { kind: "withdraw-package", route: "card", step: "quote", sale: SALE_PREVIEW_QUOTE },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    name: "withdraw card / quote: quoting",
+    stage: { kind: "withdraw-package", route: "card", step: "quote", sale: null },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    name: "withdraw card / quote: couldn't get the rate",
+    stage: {
+      kind: "withdraw-package",
+      route: "card",
+      step: "quote",
+      saleError: { kind: "rate", attempts: 1 },
+    },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    name: "withdraw card / quote: still not working",
+    stage: {
+      kind: "withdraw-package",
+      route: "card",
+      step: "quote",
+      saleError: { kind: "rate", attempts: 2 },
+    },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    name: "withdraw card / quote: region not supported",
+    stage: {
+      kind: "withdraw-package",
+      route: "card",
+      step: "quote",
+      saleError: { kind: "unrouted" },
+    },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    name: "withdraw card / fees",
+    stage: { kind: "withdraw-package", route: "card", step: "fees", sale: SALE_PREVIEW_QUOTE },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    name: "withdraw card / payout country",
+    stage: { kind: "withdraw-package", route: "card", step: "region", sale: SALE_PREVIEW_QUOTE },
+    apply: (s, f) => base(s, f),
   },
 ];
 
