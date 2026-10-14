@@ -7,9 +7,9 @@ import { TOKENS } from "@getsome/core";
 import { formatSourceAmount, SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
 import {
   formatBaseUnits,
+  isDirectUsdt,
   sellAmountOf,
   SELL_TOKEN,
-  USDT_SELL_TOKEN,
   type SellToken,
 } from "@getsome/meld";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
@@ -125,7 +125,7 @@ const residueNote = computed(() => {
   // A sale that redeemed its CASH for USDT, through an offramp lane or sold directly, leaves USDT on
   // the key, the rest PAS.
   const sale = props.record.sale;
-  const usdt = sale?.lane !== undefined || sale?.sellCode === USDT_SELL_TOKEN.meldCurrencyCode;
+  const usdt = sale?.lane !== undefined || isDirectUsdt(sale?.sellCode);
   const token = usdt ? (TOKENS.USDT as SellToken) : SELL_TOKEN;
   // Shown to the sale's decimals; a remainder below them is not worth a line.
   const shown = residue.amount === undefined ? 0n : sellAmountOf(BigInt(residue.amount), token);

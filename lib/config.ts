@@ -137,7 +137,7 @@ export const sourcePairFor = (sourceId: string): { chain: string; asset: string 
 
 /** The off-ramp lanes this build sells through, in preference order, by Meld code: the direct
  *  Asset Hub sales first, USDT before DOT since the PSM redeems the CASH for USDT at a fixed rate
- *  where DOT takes the pool's price, DOT under either of Meld's codes for it, then the Chainflip
+ *  where DOT takes the pool's price, each under either of Meld's codes for it, then the Chainflip
  *  lanes.
  *  VITE_OFFRAMP_LANES overrides it, comma separated; a code left out is not offered, whatever the
  *  adapter lists. */
@@ -149,5 +149,12 @@ export const OFFRAMP_LANE_ORDER: readonly string[] = (() => {
     .filter((code) => code !== "");
   return listed.length > 0
     ? listed
-    : ["USDT_STATEMINT", "DOT_ASSETHUB", "DOT_STATEMINT", "USDC_ARBITRUM", "USDC_SOLANA"];
+    : [
+        "USDT_ASSETHUB",
+        "USDT_STATEMINT",
+        "DOT_ASSETHUB",
+        "DOT_STATEMINT",
+        "USDC_ARBITRUM",
+        "USDC_SOLANA",
+      ];
 })();

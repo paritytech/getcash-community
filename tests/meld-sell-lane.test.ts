@@ -16,7 +16,8 @@ describe("saleLaneOf", () => {
     expect(saleLaneOf("DOT_STATEMINT")).toBeNull();
   });
 
-  it("sells USDT on Asset Hub with no swap under USDT_STATEMINT", () => {
+  it("sells USDT on Asset Hub with no swap under either of Meld's codes for it", () => {
+    expect(saleLaneOf("USDT_ASSETHUB")).toBeNull();
     expect(saleLaneOf("USDT_STATEMINT")).toBeNull();
   });
 
@@ -26,7 +27,7 @@ describe("saleLaneOf", () => {
   });
 
   it("sells nothing for another Asset Hub asset or an unknown lane", () => {
-    expect(saleLaneOf("USDT_ASSETHUB")).toBeUndefined();
+    expect(saleLaneOf("USDC_ASSETHUB")).toBeUndefined();
     expect(saleLaneOf("USDC_STATEMINT")).toBeUndefined();
     expect(saleLaneOf("USDT_TRON")).toBeUndefined();
   });
@@ -51,13 +52,21 @@ describe("laneCandidates", () => {
   });
 
   it("tries the direct sale of USDT first, then DOT's, before any swap", () => {
-    const order = ["USDT_STATEMINT", "DOT_ASSETHUB", "DOT_STATEMINT", "USDC_ARBITRUM"];
+    const order = [
+      "USDT_ASSETHUB",
+      "USDT_STATEMINT",
+      "DOT_ASSETHUB",
+      "DOT_STATEMINT",
+      "USDC_ARBITRUM",
+    ];
     const found = [
       lane("USDC_ARBITRUM", "arbitrum"),
       lane("DOT_STATEMINT", "assethub"),
       lane("USDT_STATEMINT", "assethub"),
+      lane("USDT_ASSETHUB", "assethub"),
     ];
     expect(laneCandidates(found, order)).toEqual([
+      "USDT_ASSETHUB",
       "USDT_STATEMINT",
       "DOT_STATEMINT",
       "USDC_ARBITRUM",
@@ -80,6 +89,7 @@ describe("the build's lane order", () => {
     vi.resetModules();
     const { OFFRAMP_LANE_ORDER } = await import("../lib/config");
     expect(OFFRAMP_LANE_ORDER).toEqual([
+      "USDT_ASSETHUB",
       "USDT_STATEMINT",
       "DOT_ASSETHUB",
       "DOT_STATEMINT",

@@ -10,10 +10,10 @@ import {
   DIRECT_SELL_CODES,
   directSellToken,
   formatSellAmount,
+  isDirectUsdt,
   pickBestQuote,
   SELL_TOKEN,
   sellQuoteUsable,
-  USDT_SELL_TOKEN,
   type MeldQuoteEntry,
 } from "@getsome/meld";
 import type { ConversionRoute } from "@getsome/funding";
@@ -42,7 +42,8 @@ export interface MeldSellQuote {
   /** A sale through an offramp lane: the lane, and the USDT redeem the withdrawal runs. */
   swap?: { lane: LaneId; route: ConversionRoute };
   /** A direct sale quoted under a code other than DOT_ASSETHUB, which the session must name too:
-   *  DOT_STATEMINT, Meld's older code for DOT on Asset Hub, or USDT_STATEMINT for USDT there. */
+   *  DOT_STATEMINT, Meld's older code for DOT on Asset Hub, or USDT_ASSETHUB or USDT_STATEMINT for
+   *  USDT there. */
   sellCode?: string;
   /** A direct sale of USDT: the PSM redeem the withdrawal runs for the USDT the key pays. */
   route?: ConversionRoute;
@@ -87,7 +88,7 @@ async function sizeDirectSale(
   code: string,
   amount: bigint,
 ): Promise<SizedSale> {
-  if (code !== USDT_SELL_TOKEN.meldCurrencyCode) return live.sizeMeldCommitment(amount);
+  if (!isDirectUsdt(code)) return live.sizeMeldCommitment(amount);
   const size = await live.sizeUsdtSale(amount);
   return { planck: size.commit, backCash: size.backCash, route: size.route };
 }

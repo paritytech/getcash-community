@@ -8,6 +8,7 @@ import type { MeldClientLike, MeldQuoteEntry, MeldStatusResult } from "./client"
 import {
   DIRECT_SELL_CODES,
   formatSellAmount,
+  isDirectUsdt,
   SALE_GONE_AFTER,
   SALE_GONE_FOR_MS,
   directSellToken,
@@ -361,6 +362,10 @@ describe("the sale as the rail leg reads it", () => {
     expect(sameSoldAsset("DOT_STATEMINT", "DOT_ASSETHUB")).toBe(true);
     expect(sameSoldAsset("USDC_SOLANA", "DOT_ASSETHUB")).toBe(false);
     expect(sameSoldAsset("USDT_STATEMINT", "DOT_ASSETHUB")).toBe(false);
+    // USDT the same way: either of Meld's codes for it on Asset Hub.
+    expect(sameSoldAsset("USDT_STATEMINT", "USDT_ASSETHUB")).toBe(true);
+    expect(sameSoldAsset("USDT_ASSETHUB", "USDT_STATEMINT")).toBe(true);
+    expect(sameSoldAsset("USDT_SOLANA", "USDT_ASSETHUB")).toBe(false);
   });
 
   it("is closed once the adapter concludes it", () => {
@@ -528,8 +533,18 @@ describe("which quote lines can carry a sale", () => {
 });
 
 describe("what a direct sale sells", () => {
-  it("is DOT under either of Meld's codes for it, or USDT under USDT_STATEMINT", () => {
-    expect(DIRECT_SELL_CODES).toEqual(["DOT_ASSETHUB", "DOT_STATEMINT", "USDT_STATEMINT"]);
+  it("is USDT or DOT, each under either of Meld's codes for it", () => {
+    expect(DIRECT_SELL_CODES).toEqual([
+      "USDT_ASSETHUB",
+      "USDT_STATEMINT",
+      "DOT_ASSETHUB",
+      "DOT_STATEMINT",
+    ]);
+    expect(directSellToken("USDT_ASSETHUB")).toEqual(USDT_SELL_TOKEN);
+    expect(isDirectUsdt("USDT_ASSETHUB")).toBe(true);
+    expect(isDirectUsdt("USDT_STATEMINT")).toBe(true);
+    expect(isDirectUsdt("DOT_STATEMINT")).toBe(false);
+    expect(isDirectUsdt(undefined)).toBe(false);
     expect(directSellToken("DOT_ASSETHUB")).toEqual(SELL_TOKEN);
     expect(directSellToken("DOT_STATEMINT")).toEqual({
       ...SELL_TOKEN,

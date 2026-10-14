@@ -11,8 +11,8 @@ import {
   DIRECT_SELL_CODES,
   directSellToken,
   formatSellAmount,
+  isDirectUsdt,
   SELL_TOKEN,
-  USDT_SELL_TOKEN,
   type MeldQuoteEntry,
 } from "@getsome/meld";
 import { laneById, laneSellToken, type LaneId } from "@getsome/offramp";
@@ -78,7 +78,8 @@ export interface MeldSaleStart {
   /** A sale through an offramp lane: the lane, and the USDT redeem the withdrawal runs. */
   swap?: { lane: LaneId; route: ConversionRoute };
   /** A direct sale quoted under a code other than DOT_ASSETHUB: DOT_STATEMINT, Meld's older code
-   *  for DOT on Asset Hub, or USDT_STATEMINT for USDT there. The session names the same code. */
+   *  for DOT on Asset Hub, or USDT_ASSETHUB or USDT_STATEMINT for USDT there. The session names
+   *  the same code. */
   sellCode?: string;
   /** A direct sale of USDT: the PSM redeem the withdrawal runs for the USDT the key pays. */
   route?: ConversionRoute;
@@ -209,7 +210,7 @@ export function useWithdrawalRequest() {
       return { ok: false, reason: `A sale cannot sell ${input.sellCode}.` };
     }
     // A direct sale of USDT runs the PSM redeem for it, and a direct sale of DOT names no route.
-    const sellsUsdt = input.sellCode === USDT_SELL_TOKEN.meldCurrencyCode;
+    const sellsUsdt = isDirectUsdt(input.sellCode);
     const redeemsUsdt = input.route?.tier === "psm" && input.route.external === "USDT";
     if (input.swap === undefined && (sellsUsdt ? !redeemsUsdt : input.route !== undefined)) {
       return { ok: false, reason: "The sale's asset and its conversion do not match." };
@@ -358,7 +359,7 @@ export function useWithdrawalRequest() {
         // The swap is opened now, to the address the provider named, on today's quote; a quote
         // that no longer covers the sale throws, and nothing is opened or asked.
         fundable = record.handoff.swap !== undefined || (await openSaleSwap(ref, lane, live));
-      } else if (record.sale.sellCode === USDT_SELL_TOKEN.meldCurrencyCode) {
+      } else if (isDirectUsdt(record.sale.sellCode)) {
         fundable = await live.usdtSaleFundable(
           BigInt(record.handoff.amount),
           BigInt(record.sale.cryptoAmount),

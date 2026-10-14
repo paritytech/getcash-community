@@ -223,47 +223,53 @@ describe("a fiat sale from the page", () => {
       ...over,
     });
 
-  it("opens a direct sale of USDT under USDT_STATEMINT, the CASH redeemed for it", async () => {
-    const spy = vi.spyOn(meld, "createSellSession");
-    const outcome = await startUsdtSale();
-    if (!outcome.ok) throw new Error(outcome.reason);
-    expect(spy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        serviceProvider: "ONRAMPMONEY",
-        sourceCurrencyCode: "USDT_STATEMINT",
-        sourceAmount: "25",
-        destinationCurrencyCode: "GBP",
-      }),
-    );
-    const record = useRequestsStore().get(outcome.ref) as WithdrawalRecord;
-    expect(record.sale).toMatchObject({
-      sellCode: "USDT_STATEMINT",
-      cryptoAmount: USDT_COMMITTED.toString(),
-    });
-    expect(record.sale?.lane).toBeUndefined();
-    expect(record.handoff).toMatchObject({ rail: "meld", ...REDEEM });
-    expect(record.handoff.swap).toBeUndefined();
-  });
+  it.each(["USDT_ASSETHUB", "USDT_STATEMINT"])(
+    "opens a direct sale of USDT under %s, the CASH redeemed for it",
+    async (sellCode) => {
+      const spy = vi.spyOn(meld, "createSellSession");
+      const outcome = await startUsdtSale({ sellCode });
+      if (!outcome.ok) throw new Error(outcome.reason);
+      expect(spy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          serviceProvider: "ONRAMPMONEY",
+          sourceCurrencyCode: sellCode,
+          sourceAmount: "25",
+          destinationCurrencyCode: "GBP",
+        }),
+      );
+      const record = useRequestsStore().get(outcome.ref) as WithdrawalRecord;
+      expect(record.sale).toMatchObject({
+        sellCode,
+        cryptoAmount: USDT_COMMITTED.toString(),
+      });
+      expect(record.sale?.lane).toBeUndefined();
+      expect(record.handoff).toMatchObject({ rail: "meld", ...REDEEM });
+      expect(record.handoff.swap).toBeUndefined();
+    },
+  );
 
-  it("takes a USDT deposit for its exact figure and checks the redeem before the purse", async () => {
-    const outcome = await startUsdtSale();
-    if (!outcome.ok) throw new Error(outcome.reason);
-    const known = await toDeposit(outcome.ref);
-    expect(known.status.kind).toBe("awaiting-payment");
-    expect(known.handoff.channel).toMatchObject({
-      id: "mock-sell-1",
-      amount: USDT_COMMITTED.toString(),
-    });
+  it.each(["USDT_ASSETHUB", "USDT_STATEMINT"])(
+    "takes a %s deposit for its exact figure and checks the redeem before the purse",
+    async (sellCode) => {
+      const outcome = await startUsdtSale({ sellCode });
+      if (!outcome.ok) throw new Error(outcome.reason);
+      const known = await toDeposit(outcome.ref);
+      expect(known.status.kind).toBe("awaiting-payment");
+      expect(known.handoff.channel).toMatchObject({
+        id: "mock-sell-1",
+        amount: USDT_COMMITTED.toString(),
+      });
 
-    expect(await useWithdrawalRequest().paySale(outcome.ref)).toEqual({ ok: true });
-    expect(usdtFundable).toHaveBeenCalledWith(30_000_000n, USDT_COMMITTED);
-    expect(fundable).not.toHaveBeenCalled();
-    expect(handedOff).toHaveBeenCalledTimes(1);
-    expect(handedOff.mock.calls[0]![2]).toMatchObject({
-      ...REDEEM,
-      channel: { id: "mock-sell-1", amount: USDT_COMMITTED.toString() },
-    });
-  });
+      expect(await useWithdrawalRequest().paySale(outcome.ref)).toEqual({ ok: true });
+      expect(usdtFundable).toHaveBeenCalledWith(30_000_000n, USDT_COMMITTED);
+      expect(fundable).not.toHaveBeenCalled();
+      expect(handedOff).toHaveBeenCalledTimes(1);
+      expect(handedOff.mock.calls[0]![2]).toMatchObject({
+        ...REDEEM,
+        channel: { id: "mock-sell-1", amount: USDT_COMMITTED.toString() },
+      });
+    },
+  );
 
   it("ends a direct sale of USDT with nothing taken when the redeem no longer covers it", async () => {
     usdtFundable.mockResolvedValue(false);

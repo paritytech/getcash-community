@@ -32,20 +32,34 @@ export const ASSET_HUB_DOT_CODES: readonly string[] = [
 ];
 
 /** USDT on Asset Hub as a direct sale sells it: the PSM redeems the CASH for it, and the key pays
- *  the provider in it. Meld names it USDT_STATEMINT for the providers that buy it there. */
+ *  the provider in it. Meld names it USDT_ASSETHUB, or USDT_STATEMINT for the providers that buy it
+ *  only under Asset Hub's older name. */
 export const USDT_SELL_TOKEN: SellToken = {
   symbol: TOKENS.USDT.symbol,
   decimals: TOKENS.USDT.decimals,
-  meldCurrencyCode: "USDT_STATEMINT",
+  meldCurrencyCode: "USDT_ASSETHUB",
 };
+
+/** Meld's two codes for the USDT a direct sale sells on Polkadot Asset Hub. */
+export const ASSET_HUB_USDT_CODES: readonly string[] = [
+  USDT_SELL_TOKEN.meldCurrencyCode,
+  "USDT_STATEMINT",
+];
+
+/** Whether a direct sale under `code` sells USDT, under either of Meld's codes for it. */
+export const isDirectUsdt = (code: string | undefined): boolean =>
+  code !== undefined && ASSET_HUB_USDT_CODES.includes(code);
 
 /** What a direct sale sells, on Asset Hub with no swap, by the Meld code a provider buys it under. */
 const DIRECT_SELL_TOKENS: ReadonlyMap<string, SellToken> = new Map([
+  ...ASSET_HUB_USDT_CODES.map((code): [string, SellToken] => [
+    code,
+    { ...USDT_SELL_TOKEN, meldCurrencyCode: code },
+  ]),
   ...ASSET_HUB_DOT_CODES.map((code): [string, SellToken] => [
     code,
     { ...SELL_TOKEN, meldCurrencyCode: code },
   ]),
-  [USDT_SELL_TOKEN.meldCurrencyCode, USDT_SELL_TOKEN],
 ]);
 
 /** The Meld codes a direct sale can sell. */
@@ -59,10 +73,12 @@ export function directSellToken(code: string): SellToken {
 }
 
 /** Whether a deposit's asset code names what the sale sells: the same code, or either of Meld's
- *  two names for DOT on Asset Hub. */
+ *  two names for DOT, or for USDT, on Asset Hub. */
 export const sameSoldAsset = (depositCode: string, soldCode: string): boolean =>
   depositCode === soldCode ||
-  (ASSET_HUB_DOT_CODES.includes(depositCode) && ASSET_HUB_DOT_CODES.includes(soldCode));
+  [ASSET_HUB_DOT_CODES, ASSET_HUB_USDT_CODES].some(
+    (codes) => codes.includes(depositCode) && codes.includes(soldCode),
+  );
 
 /** The fraction digits a committed amount carries. Few enough that no provider rounds it, and the
  *  planck below them stay with the rest of the sale. */

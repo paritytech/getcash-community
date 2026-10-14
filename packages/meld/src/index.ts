@@ -16,9 +16,11 @@ export {
 export { formatBaseUnits, parseBaseUnits, toBaseUnits, type MeldToken } from "./units";
 export {
   ASSET_HUB_DOT_CODES,
+  ASSET_HUB_USDT_CODES,
   DIRECT_SELL_CODES,
   directSellToken,
   formatSellAmount,
+  isDirectUsdt,
   MELD_SELL_ENABLED,
   SALE_GONE_AFTER,
   SALE_GONE_FOR_MS,
