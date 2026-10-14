@@ -307,6 +307,43 @@ describe("a fiat sale through an offramp lane", () => {
     expect(storedJob()).toMatchObject({ phase: "failed", failure: "channel-mismatch" });
   });
 
+  it("pays a vault swap once Chainflip's record pays the SaleVault, not the provider", async () => {
+    const VAULT = "0x81949127042930F8e7A1723385A2F76213C72ee9";
+    // The egress now pays the trusted vault; the provider lives inside the CCM message.
+    mocks.channel.mockResolvedValue({
+      depositAddress: CF_DEPOSIT,
+      destinationAddress: VAULT,
+      expired: false,
+    });
+    const first = await engineWith({});
+    await first.startWithdraw(swapHandoff({ swap: { ...swap, vaultAddress: VAULT } }));
+    const job = storedJob();
+    Object.assign(job, { landed: true, phase: "handoff" });
+    job.state.fundsSeenAt = NOW - 60_000;
+    const engine = await engineWith({ "s-1": job });
+    await engine.tickAllWithdraw();
+    expect(mocks.payRail).toHaveBeenCalledTimes(1);
+    expect(storedJob().leg.paid).toBe(true);
+  });
+
+  it("fails a vault swap whose egress is not the vault", async () => {
+    const VAULT = "0x81949127042930F8e7A1723385A2F76213C72ee9";
+    mocks.channel.mockResolvedValue({
+      depositAddress: CF_DEPOSIT,
+      destinationAddress: SOLANA_DEPOSIT,
+      expired: false,
+    });
+    const first = await engineWith({});
+    await first.startWithdraw(swapHandoff({ swap: { ...swap, vaultAddress: VAULT } }));
+    const job = storedJob();
+    Object.assign(job, { landed: true, phase: "handoff" });
+    job.state.fundsSeenAt = NOW - 60_000;
+    const engine = await engineWith({ "s-1": job });
+    await engine.tickAllWithdraw();
+    expect(mocks.payRail).not.toHaveBeenCalled();
+    expect(storedJob()).toMatchObject({ phase: "failed", failure: "channel-mismatch" });
+  });
+
   it("waits for a failed swap's refund, then sends the USDT home through the pool", async () => {
     const engine = await landed();
     await engine.tickAllWithdraw(); // the key pays the swap

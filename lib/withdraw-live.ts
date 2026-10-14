@@ -51,6 +51,7 @@ import {
   ASSET_HUB_USDT,
   BelowMinimumSwapAmountError,
   ChainflipRequestError,
+  encodeSaleMessage,
   formatSourceAmount,
   openWithdrawChannel,
   quoteOutgoing,
@@ -329,6 +330,8 @@ export async function meldCommitmentFundable(
 const SWAP_SALE_KEY_FEE_USDT = 100_000n;
 /** Room under the USDT the redeem lands, basis points, for the fees the estimate cannot see. */
 const SWAP_SALE_LANDING_MARGIN_BPS = 20n;
+// Destination gas the CCM egress runs SaleVault.cfReceive with, well over its worst-case path.
+const SALE_VAULT_CCM_GAS_BUDGET = "300000";
 
 /** What a sale through `lane` sells and commits to. */
 export interface SwapSaleSize {
@@ -370,19 +373,40 @@ export async function openSwapSaleChannel(args: {
   committed: bigint;
   providerAddress: string;
   keyPublicKeyHex: string;
+  fundingRequestId: string;
+  vault?: { chainId: number; contract: string };
 }): Promise<WithdrawalChannel | null> {
   const size = await sizeSwapSale(args.amount, args.lane);
   if (size.commit < args.committed) return null;
+  // The SaleVault is on Arbitrum, so a lane is vault-routed only when it delivers there and the
+  // recipient is an EVM address. Any other lane stays a direct provider pay, never the Arbitrum vault.
+  const useVault =
+    args.vault !== undefined &&
+    args.lane.chainflip.chain === "Arbitrum" &&
+    /^0x[0-9a-fA-F]{40}$/.test(args.providerAddress);
+  const destAddress = useVault ? args.vault!.contract : args.providerAddress;
+  const ccm = useVault
+    ? {
+        gasBudget: SALE_VAULT_CCM_GAS_BUDGET,
+        message: encodeSaleMessage({
+          fundingRequestId: args.fundingRequestId,
+          recipient: args.providerAddress,
+          committed: args.committed,
+          home: args.keyPublicKeyHex,
+        }),
+      }
+    : undefined;
   const channel = await openWithdrawChannel({
     sdk: await saleSwapSdk(),
     source: ASSET_HUB_USDT,
     amount: size.usdtIn,
-    destination: { ...args.lane.chainflip, address: args.providerAddress },
+    destination: { ...args.lane.chainflip, address: destAddress },
     refundAddress: AccountId(0).dec(args.keyPublicKeyHex as `0x${string}`),
     fillOrKill: {
       slippageTolerancePercent: (args.lane.slippageBps / 100).toString(),
       retryDurationMinutes: 30,
     },
+    ...(ccm ? { ccm } : {}),
   });
   return {
     id: channel.id,
@@ -392,6 +416,8 @@ export async function openSwapSaleChannel(args: {
     expectedEgress: channel.expectedEgress.toString(),
     // The least USDT the key must land: what the swap was quoted on, and the key's fee.
     amount: (size.usdtIn + SWAP_SALE_KEY_FEE_USDT).toString(),
+    // The egress pays this vault, so the worker verifies the trusted contract, not the provider.
+    ...(useVault ? { vaultAddress: args.vault!.contract } : {}),
   };
 }
 

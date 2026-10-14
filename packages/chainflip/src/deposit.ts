@@ -31,6 +31,8 @@ export async function requestDepositAddress(
           "3",
         retryDurationMinutes: args.fillOrKill?.retryDurationMinutes ?? 10,
       },
+      // Forwarded only for a CCM sale, so the egress calls SaleVault with the message.
+      ...(args.ccm ? { ccmParams: args.ccm } : {}),
     });
   } catch (err) {
     throw new Error("Failed to open swap deposit channel", { cause: err });

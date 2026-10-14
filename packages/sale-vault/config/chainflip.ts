@@ -12,7 +12,7 @@ export const ARBITRUM_ONE = {
   usdc: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
 } as const;
 
-// TODO(production): reconfirm these testnet addresses against Chainflip's Perseverance deployment.
+// Arbitrum Sepolia (Perseverance testnet) Chainflip Vault and USDC.
 export const ARBITRUM_SEPOLIA = {
   chainflipVault: "0x2bb150e6d4366A1BDBC4275D1F35892CD63F27e3",
   usdc: "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d",

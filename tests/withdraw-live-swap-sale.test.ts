@@ -60,6 +60,7 @@ vi.mock("@getsome/withdraw", async (importOriginal) => ({
 }));
 
 import { laneById } from "@getsome/offramp";
+import { encodeSaleMessage } from "@getsome/chainflip";
 import { psmRedeemOut } from "@getsome/withdraw";
 import { openSwapSaleChannel, sizeSwapSale } from "../lib/withdraw-live";
 
@@ -120,6 +121,53 @@ describe("a sale through an offramp lane", () => {
     });
     expect(channel).toBeNull();
     expect(cf.opened).toEqual([]);
+  });
+
+  it("opens an EVM lane to the SaleVault with a CCM message when a vault is named", async () => {
+    const arbitrum = laneById("usdc-arbitrum");
+    const provider = `0x${"11".repeat(20)}`;
+    const vault = { chainId: 421614, contract: `0x${"22".repeat(20)}` };
+    const home = `0x${"07".repeat(32)}`;
+    const { commit } = await sizeSwapSale(AMOUNT, arbitrum);
+    const channel = await openSwapSaleChannel({
+      amount: AMOUNT,
+      lane: arbitrum,
+      committed: commit,
+      providerAddress: provider,
+      keyPublicKeyHex: home,
+      fundingRequestId: "funding-9",
+      vault,
+    });
+    expect(channel?.vaultAddress).toBe(vault.contract);
+    expect(cf.opened[0]).toMatchObject({
+      destAddress: vault.contract,
+      ccmParams: {
+        gasBudget: "300000",
+        message: encodeSaleMessage({
+          fundingRequestId: "funding-9",
+          recipient: provider,
+          committed: commit,
+          home,
+        }),
+      },
+    });
+  });
+
+  it("opens a non-EVM lane straight to the provider even when a vault is named", async () => {
+    const { commit } = await sizeSwapSale(AMOUNT, lane);
+    await openSwapSaleChannel({
+      amount: AMOUNT,
+      lane,
+      committed: commit,
+      providerAddress: "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+      keyPublicKeyHex: `0x${"07".repeat(32)}`,
+      fundingRequestId: "funding-9",
+      vault: { chainId: 421614, contract: `0x${"22".repeat(20)}` },
+    });
+    expect(cf.opened[0]).toMatchObject({
+      destAddress: "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+    });
+    expect(cf.opened[0]).not.toHaveProperty("ccmParams");
   });
 
   it("keeps the lane's delivery-fee headroom out of the promise", async () => {

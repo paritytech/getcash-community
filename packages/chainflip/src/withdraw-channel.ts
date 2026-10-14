@@ -54,6 +54,7 @@ export async function quoteOutgoing(
   amount: bigint,
   destination: OutgoingDestination,
   source: SourceConfig = ASSET_HUB_DOT,
+  ccmParams?: { gasBudget: string; messageLengthBytes: number },
 ): Promise<OutgoingQuote> {
   const { quotes } = await backend.getQuoteV2({
     srcChain: source.chain,
@@ -61,6 +62,8 @@ export async function quoteOutgoing(
     destChain: destination.chain,
     destAsset: destination.asset,
     amount: amount.toString(),
+    // Priced in only for a CCM sale, so the quote covers the destination contract call.
+    ...(ccmParams ? { ccmParams } : {}),
   });
   const raw = pickRegularQuote(quotes);
   if (raw === null) {
@@ -88,6 +91,8 @@ export interface OpenWithdrawChannelArgs {
   refundAddress: string;
   /** Fill-or-kill terms; the quote's recommended slippage when absent. */
   fillOrKill?: OpenChannelArgs["fillOrKill"];
+  // CCM terms when the channel pays a destination contract, as a SaleVault offramp sale does.
+  ccm?: OpenChannelArgs["ccm"];
 }
 
 /** The channel a withdrawal pays: its id, the Asset Hub account, and when Chainflip closes it. */
@@ -104,7 +109,11 @@ export interface WithdrawChannel {
 export async function openWithdrawChannel(args: OpenWithdrawChannelArgs): Promise<WithdrawChannel> {
   if (args.amount <= 0n) throw new Error("nothing to quote a swap for");
   const source = args.source ?? ASSET_HUB_DOT;
-  const quoted = await quoteOutgoing(args.sdk, args.amount, args.destination, source);
+  // A CCM sale prices the message into the quote, so the floor covers the destination contract call.
+  const quoteCcm = args.ccm
+    ? { gasBudget: args.ccm.gasBudget, messageLengthBytes: (args.ccm.message.length - 2) / 2 }
+    : undefined;
+  const quoted = await quoteOutgoing(args.sdk, args.amount, args.destination, source, quoteCcm);
   const quote: Quote = {
     sourceId: source.sourceId,
     source: {
@@ -120,6 +129,7 @@ export async function openWithdrawChannel(args: OpenWithdrawChannelArgs): Promis
     destAddress: args.destination.address,
     refundAddress: args.refundAddress,
     ...(args.fillOrKill ? { fillOrKill: args.fillOrKill } : {}),
+    ...(args.ccm ? { ccm: args.ccm } : {}),
   });
   return {
     id: channel.depositChannelId,
