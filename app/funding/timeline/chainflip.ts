@@ -86,9 +86,14 @@ function stepParts(steps: Steps): [PhasePart, ...PhasePart[]] {
 
 /** Chainflip's own clock is more than `LATE_FACTOR` times its estimate for `stage` past `since`,
  *  one of Chainflip's own timestamps. Without Chainflip's estimate, nothing is late. */
-function pastEstimate(facts: ChainflipFacts, stage: Stage, since: number | undefined): boolean {
+function pastEstimate(
+  record: TopUpRecord,
+  facts: ChainflipFacts,
+  stage: Stage,
+  since: number | undefined,
+): boolean {
   const seconds = estimated(facts, stage);
-  const clock = facts.lastStatechainUpdateAt;
+  const clock = record.witnesses.chainflip?.lastStatechainUpdateAt;
   if (seconds === undefined || since === undefined || clock === undefined) return false;
   return clock - since > LATE_FACTOR * seconds * SECOND;
 }
@@ -124,7 +129,7 @@ function exchangePhase(record: TopUpRecord, facts: ChainflipFacts): PhaseInput {
   // Chainflip gives no time for a deposit before it witnesses it, so confirmations are never late.
   return {
     parts: [...confirmations, ...swap],
-    delayed: waitingForPrice(facts) || pastEstimate(facts, "swap", facts.swapScheduledAt),
+    delayed: waitingForPrice(facts) || pastEstimate(record, facts, "swap", facts.swapScheduledAt),
   };
 }
 
@@ -260,7 +265,7 @@ export const chainflipRoute: TimelineRoute = {
       parts: [
         { weight: 1, expectedMs: expectedMs(facts, "egress"), startedAt: facts.egressScheduledAt },
       ],
-      delayed: pastEstimate(facts, "egress", facts.egressScheduledAt),
+      delayed: pastEstimate(record, facts, "egress", facts.egressScheduledAt),
     };
   },
   seenExpectedMs: 30 * SECOND,

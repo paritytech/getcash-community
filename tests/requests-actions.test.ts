@@ -29,7 +29,7 @@ import { projectFundingTopUps } from "../app/funding/top-ups";
 import { useRequestsStore } from "../app/stores/requests";
 import { useSessionStore, type ActiveFlowRecord } from "../app/stores/session";
 import { requestRefKey, requestRefOf, type RequestRef } from "../app/utils/request-index";
-import { awaitingDepositCryptoRecord, FIXTURE_NOW } from "./fixtures/requests";
+import { awaitingDepositCryptoRecord, FIXTURE_NOW, submittedCardRecord } from "./fixtures/requests";
 
 /** How the mock world's Meld client answers a request to withdraw its pay page. Each card test
  *  sets it; the offline fake cancels without complaint. */
@@ -272,7 +272,7 @@ describe("requests store: foreground, clock and user actions", () => {
     const listed = row?.timeline?.view;
     expect(listed).toMatchObject({ state: "active", phase: 3 });
     expect(listed?.lines[3]).toBeGreaterThan(0);
-    expect(requests.foregroundTimeline(at(2))?.view.lines).toEqual(listed?.lines);
+    expect(requests.foregroundTimeline(at(2))?.view?.lines).toEqual(listed?.lines);
   });
 
   it.each([
@@ -642,17 +642,33 @@ describe("requests store: foreground, clock and user actions", () => {
     expect(requests.fundingError).toBe(DEPOSIT_EXPIRED_REASON);
   });
 
-  it("a refused hand-off ends the deposit wait while the record still awaits it", async () => {
+  it.each([
+    ["before any milestone", awaitingDepositCryptoRecord, {}],
+    [
+      "after Started",
+      submittedCardRecord,
+      { view: expect.objectContaining({ state: "delayed", phase: 0 }) },
+    ],
+  ])("a refused hand-off keeps the deposit wait and shows delayed %s", async (_, stored, drawn) => {
     setRequestsClock(() => FIXTURE_NOW);
     const requests = useRequestsStore();
-    await requests.create(AWAITING_REF, migrated(awaitingDepositCryptoRecord));
-    requests.setForeground(AWAITING_REF);
+    const ref = refOf(stored);
+    await requests.create(ref, migrated(stored));
+    requests.setForeground(ref);
     expect(requests.awaitingDeposit).toBe(true);
 
     requests.setTransientError({ message: "refused", source: "handoff" });
     expect(requests.handoffRefused).toBe(true);
-    expect(requests.awaitingDeposit).toBe(false);
-    expect(requests.get(AWAITING_REF)?.status).toEqual({ kind: "awaiting-deposit" });
+    expect(requests.awaitingDeposit).toBe(true);
+    expect(requests.get(ref)?.status).toEqual({ kind: "awaiting-deposit" });
+    expect(requests.phase).not.toBe("failed");
+    expect(requests.foregroundTimeline(at(1))).toEqual({
+      ...drawn,
+      message: {
+        text: "This is taking longer than usual. Your top-up will continue automatically.",
+        delay: true,
+      },
+    });
   });
 
   it("preview deck writes no session refs", () => {

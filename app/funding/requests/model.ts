@@ -215,8 +215,8 @@ export type ObservedFact =
   | "host-claiming";
 
 /** Chainflip's progress as the record keeps it: no count or time moves back, and a fact a later
- *  read leaves out stays. */
-export interface ChainflipFacts extends ChainflipProgressFacts {
+ *  read leaves out stays. Chainflip's clock is a witness, not a fact. */
+export interface ChainflipFacts extends Omit<ChainflipProgressFacts, "lastStatechainUpdateAt"> {
   /** When Chainflip scheduled the egress to Asset Hub. */
   egressScheduledAt?: number;
   /** When the current confirmation count was first observed. */
@@ -382,6 +382,8 @@ export interface TopUpRecord {
         }
       | { known: false; at: number };
     provider?: { status: string; at: number };
+    /** Chainflip's own clock at its latest status read. */
+    chainflip?: { lastStatechainUpdateAt: number };
     chain?: {
       best?: { burnerNative: string; block?: number; at: number };
       finalized?: { burnerNative: string; block?: number; at: number };

@@ -51,16 +51,23 @@ export function burnerSightingRetracted(record: TopUpRecord): TopUpRecord {
   return { ...record, observedAt: kept };
 }
 
+/** `current` when `next` holds the same value in each of its fields, else `next`. */
+function keptIfSame<T extends object>(current: T | undefined, next: T): T {
+  if (current === undefined) return next;
+  const fields = Object.keys(next) as (keyof T)[];
+  return fields.every((field) => next[field] === current[field]) ? current : next;
+}
+
 type Estimates = ChainflipFacts["estimatedDurationsSeconds"];
 
 /** Each stage's estimate from the latest read that gave one. */
 function estimatesKept(current: Estimates, read: Estimates): Estimates {
   if (current === undefined || read === undefined) return read ?? current;
-  return {
+  return keptIfSame(current, {
     deposit: read.deposit ?? current.deposit,
     swap: read.swap ?? current.swap,
     egress: read.egress ?? current.egress,
-  };
+  });
 }
 
 type ChainflipRead = Pick<
@@ -68,23 +75,24 @@ type ChainflipRead = Pick<
   "progress" | "egressScheduledAt"
 >;
 
-/** Folds one Chainflip status read into the facts kept so far. A DCA swap's chunks follow the
- *  read with the most executed. */
+/** Folds one Chainflip status read into the facts kept so far, and Chainflip's clock into the
+ *  witnesses. A DCA swap's chunks follow the read with the most executed. A read that changes
+ *  nothing returns `record`. */
 export function chainflipObserved(
   record: TopUpRecord,
   { progress, egressScheduledAt }: ChainflipRead,
   at: number,
 ): TopUpRecord {
   if (progress === undefined && egressScheduledAt === undefined) return record;
-  const read = progress ?? {};
+  const { lastStatechainUpdateAt, ...read } = progress ?? {};
   const current = record.chainflip;
   const depositConfirmations = latest(current?.depositConfirmations, read.depositConfirmations);
   const chunks =
     read.chunks !== undefined &&
     (current?.chunks === undefined || read.chunks.executed >= current.chunks.executed)
-      ? read.chunks
+      ? keptIfSame(current?.chunks, read.chunks)
       : current?.chunks;
-  const chainflip: ChainflipFacts = {
+  const chainflip = keptIfSame(current, {
     depositConfirmations,
     requiredConfirmations: read.requiredConfirmations ?? current?.requiredConfirmations,
     boostedAt: current?.boostedAt ?? read.boostedAt,
@@ -96,12 +104,18 @@ export function chainflipObserved(
       read.estimatedDurationsSeconds,
     ),
     egressScheduledAt: latest(current?.egressScheduledAt, egressScheduledAt),
-    lastStatechainUpdateAt: latest(current?.lastStatechainUpdateAt, read.lastStatechainUpdateAt),
     confirmationsAt:
       depositConfirmations === current?.depositConfirmations ? current?.confirmationsAt : at,
     chunksAt: chunks?.executed === current?.chunks?.executed ? current?.chunksAt : at,
+  });
+  const next = chainflip === current ? record : { ...record, chainflip };
+  const witnessed = record.witnesses.chainflip?.lastStatechainUpdateAt;
+  const clock = latest(witnessed, lastStatechainUpdateAt);
+  if (clock === undefined || clock === witnessed) return next;
+  return {
+    ...next,
+    witnesses: { ...next.witnesses, chainflip: { lastStatechainUpdateAt: clock } },
   };
-  return { ...record, chainflip };
 }
 
 function depositFollowed(record: TopUpRecord, seen: DepositInBlock): TopUpRecord {

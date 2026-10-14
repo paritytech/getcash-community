@@ -597,7 +597,7 @@ export const useSessionStore = defineStore("session", () => {
         // Shortfall, a refused hand-off, no worker: the session keeps waiting; say why.
         const reason = e instanceof Error ? e.message : String(e);
         console.error(`[coinage] funding: failed: ${reason}`);
-        // The screen shows the failure now; the record waits for the worker's verdict.
+        // The screen shows the delay now; the record waits for the worker's verdict.
         requests.setTransientError({ message: reason, source: "handoff" });
         recordDriverFailure(ref, reason);
       });

@@ -10,11 +10,12 @@ import {
   polkadotText,
   workerTickAt,
 } from "./polkadot";
-import type {
-  ProviderMilestones,
-  ProviderPhaseIndex,
-  TimelineMessage,
-  TimelineRoute,
+import {
+  delay,
+  type ProviderMilestones,
+  type ProviderPhaseIndex,
+  type TimelineMessage,
+  type TimelineRoute,
 } from "./route";
 import type { MilestoneIndex, PhaseIndex, TimelineView } from "./types";
 
@@ -28,6 +29,9 @@ export interface TopUpTimeline {
   /** The provider sent the funds, they are not seen yet, and the reads are fresh. */
   readonly awaitingSentFunds?: boolean;
 }
+
+/** A timeline as the journey shows it: before the first milestone, the message alone. */
+export type JourneyTimeline = Omit<TopUpTimeline, "view"> & { readonly view?: TimelineView };
 
 export interface TopUpTimelineOptions {
   readonly now: number;
@@ -104,5 +108,20 @@ export function topUpTimeline(
     ...(view.phase === 2 && !reconnecting && depositOnBurner(record) === undefined
       ? { awaitingSentFunds: true }
       : {}),
+  };
+}
+
+const HANDOFF_PENDING = delay(
+  "This is taking longer than usual. Your top-up will continue automatically.",
+);
+
+/** The timeline of a top-up the worker has not taken on yet: the current line shows the delay
+ *  and the text says the top-up continues, with or without a milestone reached. */
+export function handoffPending(timeline: TopUpTimeline | undefined): JourneyTimeline {
+  if (timeline === undefined) return { message: HANDOFF_PENDING };
+  const { view } = timeline;
+  return {
+    view: view.state === "active" ? { ...view, state: "delayed" } : view,
+    message: HANDOFF_PENDING,
   };
 }

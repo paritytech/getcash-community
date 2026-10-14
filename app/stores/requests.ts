@@ -94,7 +94,7 @@ import {
 } from "../funding/requests/views";
 import { CRYPTO_SOURCE_ID, MELD_SOURCE_IDS } from "../funding/source-ids";
 import { createTopUpTimelines } from "../funding/timeline/timelines";
-import type { TopUpTimeline } from "../funding/timeline/top-up";
+import { handoffPending, type JourneyTimeline } from "../funding/timeline/top-up";
 import { fmtCash, toCashBase } from "../utils/cash";
 import {
   parseRequestIndex,
@@ -1268,9 +1268,9 @@ export const useRequestsStore = defineStore("requests", () => {
     if (meldPoll !== null && meldPoll.key !== foreground.value) stopMeldPoll();
   }
 
-  /** A failure the record cannot carry: a hand-off the worker refused, or a faucet transfer that
-   *  failed, write nothing to the record, yet the screen shows them. Only the refused hand-off
-   *  also shows the request failed. Cleared when a drive starts and when the foreground leaves. */
+  /** An error the record cannot carry: a hand-off the worker refused, or a faucet transfer that
+   *  failed, write nothing to the record, yet the screen shows them. Cleared when a drive starts
+   *  and when the foreground leaves. */
   const transientError = ref<{ message: string; source: "handoff" | "faucet" } | null>(null);
   function setTransientError(
     value: { message: string; source: "handoff" | "faucet" } | null,
@@ -1309,21 +1309,27 @@ export const useRequestsStore = defineStore("requests", () => {
   const claiming = computed(() =>
     foregroundRecord.value ? claimingOf(foregroundRecord.value) : false,
   );
-  /** A hand-off the worker refused shows as failed on screen while the record, still awaiting its
-   *  deposit, waits for the worker's verdict. */
-  const handoffRefused = computed(() => {
-    const record = foregroundRecord.value;
-    return record !== null && rankOf(record) === 0 && transientError.value?.source === "handoff";
-  });
-  /** The request on screen still waits for its deposit, with nothing seen and nothing ended. */
+  /** The worker refused the hand-off of the request on screen, which still awaits its deposit and
+   *  is handed over again on a later pass: the screen shows it delayed, never failed. */
+  const handoffRefused = computed(
+    () =>
+      foregroundRecord.value?.status.kind === "awaiting-deposit" &&
+      transientError.value?.source === "handoff",
+  );
+  /** The request on screen still waits for its deposit, with nothing seen and nothing ended. A
+   *  refused hand-off does not end the wait: the buyer still needs the payment details. */
   const awaitingDeposit = computed(
-    () => foregroundRecord.value?.status.kind === "awaiting-deposit" && !handoffRefused.value,
+    () => foregroundRecord.value?.status.kind === "awaiting-deposit",
   );
   /** The timelines the list and the journey show, so that a top-up on both never moves back. */
   const topUpTimelineOf = createTopUpTimelines();
-  /** The timeline of the top-up on screen at `now`. */
-  const foregroundTimeline = (now: number): TopUpTimeline | undefined =>
-    foregroundRecord.value === null ? undefined : topUpTimelineOf(foregroundRecord.value, now);
+  /** The timeline of the top-up on screen at `now`, delayed while its hand-off is refused. */
+  function foregroundTimeline(now: number): JourneyTimeline | undefined {
+    const record = foregroundRecord.value;
+    if (record === null) return undefined;
+    const timeline = topUpTimelineOf(record, now);
+    return handoffRefused.value ? handoffPending(timeline) : timeline;
+  }
 
   // The Meld poll's views, read from the record on screen.
   /** The Meld payment's stage: `waiting` while the buyer is on the widget, `receiving` once the

@@ -464,6 +464,35 @@ describe("requests store", () => {
     expect(await stored(AWAITING_REF)).toMatchObject({ rev: 4 });
   });
 
+  it("a Chainflip read that moves only Chainflip's clock is witness-only", async () => {
+    const requests = useRequestsStore();
+    await requests.create(AWAITING_REF, migrated(awaitingDepositCryptoRecord));
+    const read = (time: number): Observation => ({
+      source: "core",
+      at: time,
+      state: {
+        phase: "swapping",
+        sourceId: "dot-assethub",
+        quote: null,
+        deposit: { address: "bc1q", amount: 1n, formatted: "1", assetSymbol: "BTC", expiresAt: 0 },
+        swap: "receiving",
+        progress: { depositConfirmations: 1, lastStatechainUpdateAt: time },
+      },
+    });
+    await requests.observe(AWAITING_REF, read(at(1)));
+    await requests.flush();
+    const rev = requests.get(AWAITING_REF)?.rev;
+    const writes = host.writesTo(requestKey(AWAITING_REF));
+
+    await requests.observe(AWAITING_REF, read(at(2)));
+    expect(requests.get(AWAITING_REF)).toMatchObject({
+      rev,
+      witnesses: { chainflip: { lastStatechainUpdateAt: at(2) } },
+    });
+    expect(host.writesTo(requestKey(AWAITING_REF))).toBe(writes);
+    expect(requests.entries[AWAITING_KEY]?.pendingWrite).toBe(false);
+  });
+
   it("a pressed Skip is persisted critically and survives a re-open", async () => {
     await seed([awaitingDepositCryptoRecord]);
     const requests = useRequestsStore();

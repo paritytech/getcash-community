@@ -23,6 +23,7 @@ import { currencyConfig } from "../../funding/config";
 import { fmtFiat, isMoneyAmount } from "../../utils/money";
 import { formatWhenShort, shortRef } from "../../utils/journey";
 import FundingTimeline from "../funding/timeline/FundingTimeline.vue";
+import TimelineBand from "../funding/timeline/TimelineBand.vue";
 import CashAmount from "../ui/CashAmount.vue";
 import DetailRows, { type DetailRow } from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
@@ -66,7 +67,7 @@ watch(finished, (done) => {
   success.value = done
     ? nextSuccessStage(success.value, {
         kind: "succeeded",
-        animate: timeline.value !== undefined && !reducedMotion(),
+        animate: timeline.value?.view !== undefined && !reducedMotion(),
       })
     : "none";
 });
@@ -109,9 +110,7 @@ const expired = computed(
 );
 
 /** Whether this journey's top-up stopped rather than finished, live or as history stored it. */
-const heroFailed = computed(
-  () => requests.handoffRefused || failure.value !== null || storedFailure.value !== null,
-);
+const heroFailed = computed(() => failure.value !== null || storedFailure.value !== null);
 
 /** Which money rows this ending shows; the rule is the design's, not this screen's. */
 const moneyRows = computed(() =>
@@ -293,8 +292,7 @@ const rateChangeNotice = computed(() =>
 );
 
 /** The band's text: the failure, then the rate-change notice, which explains the header's new
- *  amount, then the timeline's own message. A failure only this screen knows of, before the record
- *  ends, is the store's to word. */
+ *  amount, then the timeline's own message. A failure the timeline does not word is the store's. */
 const timelineMessage = computed(() => {
   if (timeline.value?.failure) return timeline.value.failure.text;
   if (heroFailed.value) return requests.fundingError;
@@ -361,11 +359,13 @@ watch([timelineMessage, timelineDetail], ([message, detail]) => {
         :class="{ 'journey-timeline-out': successPlaying }"
       >
         <FundingTimeline
+          v-if="timeline.view"
           :view="timeline.view"
           :message="band.message"
           :detail="band.detail"
           @added="success = nextSuccessStage(success, { kind: 'drawn' })"
         />
+        <TimelineBand v-else :message="band.message" :detail="band.detail" />
       </div>
 
       <!-- On a bank transfer the last row is Arrives, which fades as the success motion plays. -->

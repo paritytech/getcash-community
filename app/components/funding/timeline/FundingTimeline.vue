@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { lastReached } from "../../../funding/timeline/model";
 import type { TimelineView } from "../../../funding/timeline/types";
 import { TIMELINE_INSETS, timelineDrawing } from "./drawing";
-import FlipText from "./FlipText.vue";
+import TimelineBand from "./TimelineBand.vue";
 
 const props = defineProps<{
   view: TimelineView;
@@ -77,7 +77,7 @@ const insets = {
 </script>
 
 <template>
-  <section class="timeline" :class="{ 'timeline-failing': failing }" aria-label="Top-up progress">
+  <TimelineBand :message="message" :detail="detail" :class="{ 'timeline-failing': failing }">
     <ol class="timeline-card" :style="insets">
       <li
         v-for="({ milestone, line }, index) in steps"
@@ -132,28 +132,10 @@ const insets = {
         </span>
       </li>
     </ol>
-    <div v-if="message || detail">
-      <FlipText
-        :text="message"
-        variant="message"
-        class="text-caption text-fg-secondary"
-        role="status"
-      />
-      <FlipText :text="detail" variant="detail" class="text-body-s text-fg-tertiary" />
-    </div>
-  </section>
+  </TimelineBand>
 </template>
 
 <style scoped>
-.timeline {
-  /* The card bleeds past the 24px content gutter to an 8px inset. */
-  margin-inline: -1rem;
-  overflow: hidden;
-  /* 24px; the radius scale has no semantic step this size. */
-  border-radius: var(--scale-radius-large);
-  background: var(--bg-surface-nested);
-}
-
 .timeline-card {
   display: flex;
   height: 5rem;

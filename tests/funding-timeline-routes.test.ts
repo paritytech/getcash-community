@@ -454,18 +454,22 @@ describe("top-up timeline, Chainflip route", () => {
   const total = 3 * confirmation + swap;
   const swapping = { receiving: at(0), swapping: at(600) };
 
-  /** A swap paid as `paid` observed at `observedAt`, read by core 3 s before `now`. */
+  /** A swap paid as `paid` observed at `observedAt`, read by core 3 s before `now`. Chainflip's
+   *  clock goes to the witnesses. */
   function swapRecord(
     now: number,
     observedAt: TopUpRecord["observedAt"],
-    chainflip: ChainflipFacts,
+    { lastStatechainUpdateAt, ...chainflip }: ChainflipFacts & { lastStatechainUpdateAt?: number },
     paid?: Paid,
   ): TopUpRecord {
     return {
       ...cryptoRecord(paid),
       observedAt,
       chainflip,
-      witnesses: { core: { phase: "swapping", at: at(now) - 3 * SECOND } },
+      witnesses: {
+        core: { phase: "swapping", at: at(now) - 3 * SECOND },
+        ...(lastStatechainUpdateAt === undefined ? {} : { chainflip: { lastStatechainUpdateAt } }),
+      },
     };
   }
 

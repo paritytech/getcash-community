@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { ChainflipProgressFacts, PaymentState, SwapStatusResult } from "@getsome/core";
+import { chainflipObserved } from "../app/funding/requests/facts";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
   DEPOSIT_EXPIRED_REASON,
@@ -879,7 +880,11 @@ describe("request reducer: top-up timeline facts", () => {
       swapRescheduledAt: 8,
       lastStatechainUpdateAt: 9,
     };
-    replay(chainflipRecord(), (record) => record.chainflip ?? {}, [
+    const factsAndClock = (record: TopUpRecord) => ({
+      ...record.chainflip,
+      ...record.witnesses.chainflip,
+    });
+    replay(chainflipRecord(), factsAndClock, [
       [swapping(at(1), "receiving", first), { ...first, confirmationsAt: at(1) }],
       [swapping(at(2), "receiving", second), { ...second, confirmationsAt: at(2) }],
       [
@@ -893,6 +898,21 @@ describe("request reducer: top-up timeline facts", () => {
       [swapping(at(4), "swapping", stale), { swapRescheduledAt: 8 }],
       [swapping(at(5), "sending", undefined, 9), { egressScheduledAt: 9 }],
     ]);
+  });
+
+  it("returns the record a repeated Chainflip read leaves as it was; the clock is a witness", () => {
+    const progress = (clock: number): ChainflipProgressFacts => ({
+      depositConfirmations: 1,
+      chunks: { executed: 1, remaining: 3 },
+      estimatedDurationsSeconds: { swap: 12 },
+      lastStatechainUpdateAt: clock,
+    });
+    const first = chainflipObserved(topUp(chainflipRecord()), { progress: progress(10) }, at(1));
+    expect(chainflipObserved(first, { progress: progress(10) }, at(2))).toBe(first);
+
+    const ticked = chainflipObserved(first, { progress: progress(11) }, at(3));
+    expect(ticked.chainflip).toBe(first.chainflip);
+    expect(ticked.witnesses.chainflip).toEqual({ lastStatechainUpdateAt: 11 });
   });
 
   it("keeps Chainflip's code for a rejected deposit on the failure", () => {
