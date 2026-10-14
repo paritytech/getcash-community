@@ -9,7 +9,7 @@ const KEY = "flow-key";
 const RECORD = `coinage:settle:${KEY}`;
 const CTX = { secretKey: new Uint8Array(64).fill(7), address: "5Burner", amount: 1_000_000n };
 
-function surface(claims: (WorkerClaim | null)[] = [null]) {
+function surface(claims: (WorkerClaim | null)[] = [null], onRead?: (read: number) => void) {
   const store = new Map<string, string>();
   let reads = 0;
   const onProgress = vi.fn();
@@ -24,6 +24,7 @@ function surface(claims: (WorkerClaim | null)[] = [null]) {
     readWorkerClaim: async () => {
       const next = claims[Math.min(reads, claims.length - 1)] ?? null;
       reads += 1;
+      onRead?.(reads);
       return next;
     },
     onProgress,
@@ -73,6 +74,24 @@ describe("settle", () => {
     s.stop.aborted = true;
     await vi.advanceTimersByTimeAsync(10_000);
     expect(await outcome).toContain("disposed");
+    expect(s.readCount()).toBe(1);
+    expect(s.record()).toBeNull();
+    expect(s.onProgress).not.toHaveBeenCalledWith("crediting", expect.anything());
+  });
+
+  it("does not record a claim found by a read the dispose overlapped", async () => {
+    // The dispose lands while the second read is in flight, and that read finds the claim.
+    const s = surface([CLAIMING, CLAIMED], (read) => {
+      if (read === 2) s.stop.aborted = true;
+    });
+    const settled = s.handoff.settle(CTX, KEY);
+    const outcome = settled.then(
+      () => "resolved",
+      (e: Error) => e.message,
+    );
+    await vi.advanceTimersByTimeAsync(2_100);
+    expect(await outcome).toContain("disposed");
+    expect(s.readCount()).toBe(2);
     expect(s.record()).toBeNull();
     expect(s.onProgress).not.toHaveBeenCalledWith("crediting", expect.anything());
   });
