@@ -12,6 +12,15 @@ import { pickRegularQuote, type QuoteBackend } from "./quote";
 import type { SwapSdkLike } from "./sdk";
 import { ASSET_HUB_DOT, formatSourceAmount, type SourceConfig } from "./sources";
 
+/** One fee the quote already subtracted, in the asset it is charged in. */
+export interface IncludedFee {
+  /** Chainflip's fee kind: INGRESS, NETWORK, EGRESS, BROKER or BOOST. */
+  type: string;
+  chain: string;
+  asset: string;
+  amount: bigint;
+}
+
 /** What a forward quote says about selling `amount` of the source for the destination asset. */
 export interface OutgoingQuote {
   /** The quote as Chainflip returned it; what the channel is opened with. */
@@ -23,6 +32,12 @@ export interface OutgoingQuote {
   egressFee: bigint;
   /** Chainflip's own estimate of the swap, seconds; null when absent. */
   estimatedDurationSeconds: number | null;
+  /** The fees the egress already paid, each in its own asset; empty when the quote named none. */
+  includedFees: IncludedFee[];
+  /** The source the quote was asked for, base units. */
+  depositAmount: bigint;
+  /** The USDC leg of a two-leg swap, base units; null when the swap is one leg. */
+  intermediateAmount: bigint | null;
 }
 
 /** The destination as Chainflip names it. */
@@ -32,6 +47,29 @@ export interface OutgoingDestination {
 }
 
 const numberOrNull = (value: unknown): number | null => (typeof value === "number" ? value : null);
+
+const bigintOrNull = (value: unknown): bigint | null => {
+  if (typeof value !== "string" && typeof value !== "number" && typeof value !== "bigint")
+    return null;
+  try {
+    return BigInt(value);
+  } catch {
+    return null;
+  }
+};
+
+/** The quote's fee list, dropping any entry too malformed to price. */
+function parseIncludedFees(value: unknown): IncludedFee[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry: unknown) => {
+    if (typeof entry !== "object" || entry === null) return [];
+    const { type, chain, asset, amount } = entry as Record<string, unknown>;
+    const parsed = bigintOrNull(amount);
+    if (typeof type !== "string" || typeof chain !== "string" || typeof asset !== "string")
+      return [];
+    return parsed === null ? [] : [{ type, chain, asset, amount: parsed }];
+  });
+}
 
 /** The `EGRESS` line of a quote's `includedFees`, base units of the destination asset. */
 function egressFeeOf(raw: Record<string, unknown>): bigint {
@@ -73,6 +111,9 @@ export async function quoteOutgoing(
     egressAmount: BigInt(String(raw["egressAmount"] ?? "0")),
     egressFee: egressFeeOf(raw),
     estimatedDurationSeconds: numberOrNull(raw["estimatedDurationSeconds"]),
+    includedFees: parseIncludedFees(raw["includedFees"]),
+    depositAmount: bigintOrNull(raw["depositAmount"]) ?? amount,
+    intermediateAmount: bigintOrNull(raw["intermediateAmount"]),
   };
 }
 

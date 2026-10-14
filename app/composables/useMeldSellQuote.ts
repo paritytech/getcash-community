@@ -112,7 +112,18 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
   const quote = shallowRef<MeldSellQuote | null>(null);
   const loading = ref(false);
   const error = ref<string | null>(null);
+  /** Why the sale has no quote: the region pays out nothing by this method, or the price could not
+   *  be had, which is usually passing. */
+  const errorKind = ref<"unrouted" | "rate" | null>(null);
+  /** Price failures in a row; the screen gives up on retrying after the second. */
+  const rateFailures = ref(0);
   let epoch = 0;
+
+  function fail(kind: "unrouted" | "rate", message: string): void {
+    error.value = message;
+    errorKind.value = kind;
+    if (kind === "rate") rateFailures.value += 1;
+  }
 
   /** The off-ramp catalog, for the region picker. Null lists when discovery is unreachable. */
   async function loadCatalog(): Promise<void> {
@@ -151,16 +162,20 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
     return { fiat: region.fiat, paymentMethodType: FALLBACK_PAYOUT_METHOD[method] };
   }
 
-  /** Why nothing routes here: this region alone, or every region the catalog knows, which is the
-   *  account's doing and not the seller's. */
-  function unroutedReason(): string {
-    const noun = method === "bank" ? "Bank payouts" : "Card payouts";
+  /** Nothing routes here: this region alone, or every region the catalog knows, which is the
+   *  account's doing and not the seller's, so it reads as a passing failure. */
+  function failUnrouted(): void {
     const routedAnywhere =
       corridors.value === null ||
       [...corridors.value.values()].some((c) => methodFor(c, method) !== null);
-    return routedAnywhere
-      ? `${noun} are not available in this country. Choose another country.`
-      : `${noun} are not available right now.`;
+    if (routedAnywhere) {
+      fail(
+        "unrouted",
+        `${method === "bank" ? "Bank" : "Card"} payout isn't available in this region`,
+      );
+    } else {
+      fail("rate", `${method === "bank" ? "Bank" : "Card"} payouts are not available right now.`);
+    }
   }
 
   /** Prices the sale for the current region. A newer call supersedes an older one. */
@@ -168,11 +183,12 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
     const mine = ++epoch;
     loading.value = true;
     error.value = null;
+    errorKind.value = null;
     quote.value = null;
     try {
       const client = meldSellClient();
       if (client === null) {
-        error.value = "Card and bank withdrawals are not available right now.";
+        fail("rate", "Card and bank withdrawals are not available right now.");
         return;
       }
       const live = await import("~~/lib/withdraw-live");
@@ -180,7 +196,7 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
       const corridor = await corridorFor(country.value);
       if (mine !== epoch) return;
       if (corridor === null) {
-        error.value = unroutedReason();
+        failUnrouted();
         return;
       }
       // Best lane first; a lane whose providers will not quote falls through to the next.
@@ -223,15 +239,16 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
             ...(size.route === undefined ? {} : { route: size.route }),
             line,
           };
+          rateFailures.value = 0;
           return;
         } catch (e: unknown) {
           if (mine !== epoch) return;
           failure = e instanceof Error ? e.message : String(e);
         }
       }
-      error.value = failure;
+      fail("rate", failure);
     } catch (e: unknown) {
-      if (mine === epoch) error.value = e instanceof Error ? e.message : String(e);
+      if (mine === epoch) fail("rate", e instanceof Error ? e.message : String(e));
     } finally {
       if (mine === epoch) loading.value = false;
     }
@@ -242,5 +259,17 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
     void refresh();
   }
 
-  return { country, countries, corridors, quote, loading, error, loadCatalog, refresh, setCountry };
+  return {
+    country,
+    countries,
+    corridors,
+    quote,
+    loading,
+    error,
+    errorKind,
+    rateFailures,
+    loadCatalog,
+    refresh,
+    setCountry,
+  };
 }

@@ -1,7 +1,9 @@
 <script setup lang="ts">
 // Token picker: every coin on the chosen network, the ones that clear their floor for this
 // amount first and the rest greyed with why, under a reminder of the network already picked.
-// Picking a row starts the purchase.
+// While any of them is still being answered, skeleton rows stand in for the list, one per token.
+// Picking a row starts the purchase, and a pick in flight keeps its rows on screen, spinner and
+// all.
 import { computed } from "vue";
 import { networkIcon, tokenIcon } from "../../utils/icons";
 import { groupTokens, tokenSubtitle } from "../../funding/source-groups";
@@ -13,7 +15,8 @@ const flow = useFlowStore();
 const offers = useOffersStore();
 useFreshFloors();
 
-const groups = computed(() => groupTokens(offers.tokensOf(flow.srcChain.chain)));
+const tokens = computed(() => offers.tokensOf(flow.srcChain.chain));
+const groups = computed(() => groupTokens(tokens.value));
 
 function pick(token: TokenRow) {
   if (flow.starting) return;
@@ -25,23 +28,18 @@ function pick(token: TokenRow) {
 <template>
   <div class="flex min-h-0 flex-1 flex-col">
     <!-- The cards bleed past the 24px content gutter to the design's 16px inset. -->
-    <div
-      class="token-summary -mx-2 flex h-10 shrink-0 items-center justify-between bg-surface-container px-3 text-body-m text-fg-primary"
-    >
-      <span>Network selected</span>
-      <span class="flex items-center gap-2">
-        {{ flow.srcChain.label }}
-        <img :src="networkIcon(flow.srcChain.chain)" alt="" class="size-6 rounded-full" />
-      </span>
-    </div>
+    <NetworkRecapBar
+      class="-mx-2"
+      :label="flow.srcChain.label"
+      :icon="networkIcon(flow.srcChain.chain)"
+    />
 
-    <!-- Floors still being learned: skeleton rows stand in for the tokens. -->
     <ul
-      v-if="offers.awaitingFloors"
+      v-if="offers.awaitingTokens(flow.srcChain.chain) && !flow.starting"
       class="-mx-2 mt-4 flex flex-col gap-2"
       aria-label="Loading tokens"
     >
-      <OptionRow v-for="n in 2" :key="n" skeleton />
+      <OptionRow v-for="n in tokens.length" :key="n" skeleton />
     </ul>
 
     <div v-else class="-mx-2 mt-4 flex min-h-0 flex-col gap-4 overflow-y-auto pb-6">
@@ -68,10 +66,3 @@ function pick(token: TokenRow) {
     </div>
   </div>
 </template>
-
-<style scoped>
-/* 24px; the radius scale has no semantic step this size. */
-.token-summary {
-  border-radius: var(--scale-radius-large);
-}
-</style>

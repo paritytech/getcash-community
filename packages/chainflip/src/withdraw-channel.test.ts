@@ -15,6 +15,14 @@ const REGULAR = {
   egressAmount: "123456",
   recommendedSlippageTolerancePercent: "1.5",
   estimatedDurationSeconds: 900,
+  depositAmount: "40000000000",
+  intermediateAmount: "5000000",
+  includedFees: [
+    { chain: "Assethub", asset: "DOT", amount: "20000000", type: "INGRESS" },
+    { chain: "Ethereum", asset: "USDC", amount: "5000", type: "NETWORK" },
+    { chain: "Bitcoin", asset: "BTC", amount: "100", type: "EGRESS" },
+    { chain: "Bitcoin", asset: "BTC", amount: "oops", type: "MALFORMED" },
+  ],
 };
 
 /** An SDK that records what it was asked and answers from fixed replies. */
@@ -56,6 +64,14 @@ describe("the outgoing channel", () => {
     expect(quote.egressAmount).toBe(123_456n);
     expect(quote.estimatedDurationSeconds).toBe(900);
     expect(quote.raw).toBe(REGULAR); // the regular quote, not the DCA one
+    expect(quote.depositAmount).toBe(40_000_000_000n);
+    expect(quote.intermediateAmount).toBe(5_000_000n);
+    // The malformed entry is dropped; the priced ones come through in their own assets.
+    expect(quote.includedFees).toEqual([
+      { chain: "Assethub", asset: "DOT", amount: 20_000_000n, type: "INGRESS" },
+      { chain: "Ethereum", asset: "USDC", amount: 5_000n, type: "NETWORK" },
+      { chain: "Bitcoin", asset: "BTC", amount: 100n, type: "EGRESS" },
+    ]);
   });
 
   it("opens the channel with that quote, refunding to the key, paying the user", async () => {
@@ -146,7 +162,8 @@ describe("the outgoing channel", () => {
       ],
     };
     expect((await quoteOutgoing(scripted([withFee]).sdk, 1n, destination)).egressFee).toBe(25_124n);
-    expect((await quoteOutgoing(scripted().sdk, 1n, destination)).egressFee).toBe(0n);
+    const unitemised = { ...REGULAR, includedFees: [] };
+    expect((await quoteOutgoing(scripted([unitemised]).sdk, 1n, destination)).egressFee).toBe(0n);
     const garbled = { ...REGULAR, includedFees: [{ type: "EGRESS", amount: "n/a" }] };
     expect((await quoteOutgoing(scripted([garbled]).sdk, 1n, destination)).egressFee).toBe(0n);
   });
