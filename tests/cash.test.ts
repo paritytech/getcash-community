@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fmtCash, fmtCashDisplay, toCashBase } from "../app/utils/cash";
+import { fmtCash, fmtCashDisplay, isLongStatusAmount, toCashBase } from "../app/utils/cash";
 
 describe("CASH formatting", () => {
   it("fmtCash trims to the shortest exact form", () => {
@@ -22,5 +22,11 @@ describe("CASH formatting", () => {
       expect(base).not.toBeNull();
       expect(toCashBase(fmtCashDisplay(base!))).toBe(base);
     }
+  });
+
+  it("isLongStatusAmount steps down at four whole digits, or three with cents", () => {
+    for (const short of ["50", "50.52", "100"]) expect(isLongStatusAmount(short)).toBe(false);
+    for (const long of ["100.98", "1000", "1,000", "1000.98"])
+      expect(isLongStatusAmount(long)).toBe(true);
   });
 });

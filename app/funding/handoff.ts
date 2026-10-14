@@ -9,6 +9,8 @@ export type FundingPackageEmits = {
   back: [];
   handoff: [];
   switchRoute: [route: FundingRoute];
+  /** Back to the shell's amount screen, the amount kept. */
+  changeAmount: [];
 };
 
 /** A package's payment status line, shown above the shell's timeline. Null when there is none. */
