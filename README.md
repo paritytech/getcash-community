@@ -210,12 +210,20 @@ Next. Demo builds, and with them the faucet and Skip, need `"testnet": true`; th
 
 Copy `.env.example` to `.env` and fill in what you need. Nuxt reads `.env`, not `.env.local`.
 
-| Variable               | Purpose                                                                                                                     |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `VITE_FAUCET_SEED`     | demo faucet account, holding PAS, dotUSD, USDt and USDC on Asset Hub; inlined into the client bundle, use a testnet account |
-| `VITE_DEPLOYER_SEED`   | fallback for `MNEMONIC` in `deploy.sh`                                                                                      |
-| `VITE_MELD_BASE_URL`   | origin of the Meld adapter; unset, the offline fake Meld client runs instead                                                |
-| `VITE_MELD_PRODUCT_ID` | product id the adapter expects in the `x-dev-product-id` header                                                             |
+| Variable                        | Purpose                                                                                                                         |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `VITE_FAUCET_SEED`              | demo faucet account, holding PAS, dotUSD, USDt and USDC on Asset Hub; inlined into the client bundle, use a testnet account     |
+| `VITE_DEPLOYER_SEED`            | fallback for `MNEMONIC` in `deploy.sh`                                                                                          |
+| `VITE_MELD_BASE_URL`            | origin of the Meld adapter; unset, the offline fake Meld client runs instead                                                    |
+| `VITE_MELD_PRODUCT_ID`          | product id the adapter expects in the `x-dev-product-id` header                                                                 |
+| `VITE_CHAINFLIP_BROKER_API_KEY` | Broker-as-a-Service key the Chainflip deposit channels open on; unset, the crypto withdrawal destinations show as not available |
+
+`VITE_CHAINFLIP_BROKER_API_KEY` names an account on Broker-as-a-Service (chainflip-broker.io), one
+key per Chainflip network; this app uses mainnet. Chainflip's own backend refuses to open deposit
+channels on its default broker as of October 2026, so the channels open on the BaaS broker, which
+takes 5 bps of each swap on top of the commission set in its dashboard; ours is 0. BaaS treats the
+key as the account's name rather than a secret, so it is inlined into the client bundle like the
+other values; keep it out of the repo all the same.
 
 Two tests submit real transactions to the Paseo testnet and are skipped unless enabled:
 `PROD_PROOF=1` runs `tests/prod-proof.test.ts`, `VERIFY_AMOUNTS=1` runs
@@ -249,7 +257,8 @@ in `.env.local` or `.env`.
 
 CI does the same: a push to `main` deploys `getcash.paseo`, and every pull request gets a
 preview at `pr<N>-getcash.paseo`. Both are signed with the repository's `MNEMONIC` secret and
-build with `VITE_FAUCET_SEED` and `VITE_MELD_BASE_URL` from repository secrets.
+build with `VITE_FAUCET_SEED`, `VITE_MELD_BASE_URL`, `VITE_MELD_PRODUCT_ID` and
+`VITE_CHAINFLIP_BROKER_API_KEY` from repository secrets.
 
 ## License
 
