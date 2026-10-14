@@ -532,50 +532,53 @@ export async function readDepositOnAh(
   return held?.balance ?? 0n;
 }
 
-/** `readDepositOnAh` at every best block until the returned function is called. */
+/** The block a watch reads: each best block, or each finalized one. */
+export type Finality = "best" | "finalized";
+
+/** `readDepositOnAh` at every block of `at` until the returned function is called. */
 export function watchDepositOnAh(
   api: AssetHubApi,
   route: ConversionRoute,
   address: string,
+  at: Finality,
   onValue: (balance: bigint) => void,
   onError: (e: unknown) => void,
 ): () => void {
-  return watchTokenOnAh(api, depositTokenOf(route), address, onValue, onError);
+  return watchTokenOnAh(api, depositTokenOf(route), address, at, onValue, onError);
 }
 
-/** One token's balance on an account at every best block: the native's free balance, or the
+/** One token's balance on an account at every block of `at`: the native's free balance, or the
  *  pallet-assets holding the token names. */
 function watchTokenOnAh(
   api: AssetHubApi,
   token: TokenSpec,
   address: string,
+  at: Finality,
   onValue: (balance: bigint) => void,
   onError: (e: unknown) => void,
 ): () => void {
   const subscription =
     token.assetHubId === undefined
-      ? api.query.System.Account.watchValue(address, { at: "best" }).subscribe({
+      ? api.query.System.Account.watchValue(address, { at }).subscribe({
           next: ({ value: account }) => onValue(account?.data?.free ?? 0n),
           error: onError,
         })
-      : api.query.Assets.Account.watchValue(token.assetHubId, address, {
-          at: "best",
-        }).subscribe({
+      : api.query.Assets.Account.watchValue(token.assetHubId, address, { at }).subscribe({
           next: ({ value: held }) => onValue(held?.balance ?? 0n),
           error: onError,
         });
   return () => subscription.unsubscribe();
 }
 
-/** A Polkadot deposit account's balances at a best block: the token the route asks for, and
- *  another direct token found on it, named as the deposit screen names it. */
+/** A Polkadot deposit account's balances at a block: the token the route asks for, and another
+ *  direct token found on it, named as the deposit screen names it. */
 export interface DirectDepositReading {
   held: bigint;
   stray: { asset: string; amount: bigint } | null;
 }
 
 /**
- * Every direct token's balance on a burner at each best block, until the returned function is
+ * Every direct token's balance on a burner at each block of `at`, until the returned function is
  * called. A buyer can send any of them from any wallet, so a Polkadot deposit is followed in all
  * of them: the route's own token is the deposit, any other is one it was not asked for. Emits
  * once every balance has been read, then on every change.
@@ -584,6 +587,7 @@ export function watchDirectDepositOnAh(
   api: AssetHubApi,
   route: ConversionRoute,
   address: string,
+  at: Finality,
   onValue: (reading: DirectDepositReading) => void,
   onError: (e: unknown) => void,
 ): () => void {
@@ -609,6 +613,7 @@ export function watchDirectDepositOnAh(
       api,
       token,
       address,
+      at,
       (value) => {
         balances.set(token, value);
         emit();

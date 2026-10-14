@@ -25,13 +25,7 @@ export {
   type EgressConfig,
   type QuoteBackend,
 } from "./quote";
-export {
-  CHAINFLIP_PROGRESS_STATUSES,
-  getSwapStatus,
-  isImplicitFailure,
-  type ChainflipProgressStatus,
-  type StatusBackend,
-} from "./status";
+export { getSwapStatus, isImplicitFailure, type StatusBackend } from "./status";
 export { requestDepositAddress, type DepositBackend } from "./deposit";
 export { createLiquidityGate, type LiquidityGate } from "./gate";
 export {

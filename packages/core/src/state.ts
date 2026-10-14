@@ -1,6 +1,8 @@
 // The reactive state vocabulary. One discriminated union on `phase`; fields exist only where
 // meaningful.
 
+import type { ChainflipProgressFacts } from "./ports";
+
 /** Wire and storage ids for the source catalog. */
 export type SourceId =
   | "btc"
@@ -40,7 +42,7 @@ export type PaymentPhase =
   | "failed";
 
 /** Chainflip swap sub-status, mapped from the SDK. */
-export type SwapProgress = "waiting" | "receiving" | "swapping" | "sending" | "complete";
+export type SwapProgress = "waiting" | "receiving" | "swapping" | "sending" | "sent" | "complete";
 
 /**
  * Spend/handoff sub-status. 'awaiting-consent' and 'verifying' are handoff-only: the host
@@ -104,6 +106,9 @@ export interface PaymentFailure {
   readonly message: string;
   /** true only for kind === 'mint', the only kind retry() re-executes. */
   readonly recoverable: boolean;
+  /** The rail's own code for the ending (Chainflip's `BelowMinimumDeposit`, ...), when it named
+   *  one. */
+  readonly code?: string;
 }
 
 /** The refund Chainflip streams back after a failed swap, as far as the status poll has seen. */
@@ -130,6 +135,10 @@ export type PaymentState =
       quote: Quote | null;
       deposit: DepositInfo;
       swap: SwapProgress;
+      /** Chainflip's progress facts, as its last status read gave them. */
+      progress?: ChainflipProgressFacts;
+      /** When Chainflip scheduled the egress to Asset Hub. */
+      egressScheduledAt?: number;
     }
   | { phase: "funded"; sourceId: SourceId; deposit: DepositInfo | null; mint: MintProgress }
   | { phase: "working"; sourceId: SourceId; deposit: DepositInfo | null; mint: MintProgress }

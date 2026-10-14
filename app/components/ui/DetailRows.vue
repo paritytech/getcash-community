@@ -16,6 +16,8 @@ export interface DetailRow {
   fees?: boolean;
   /** The full text to copy, when the row is copyable. `value` may be a shortened form of it. */
   copy?: string;
+  /** The value is a raw identifier, set in the monospace face. */
+  mono?: boolean;
   /** A secondary line under the value (the rate caveat under an arrival estimate). */
   note?: string;
   /** The value is a bare CASH amount, drawn in the sum's own form ("$50 CASH"). */
@@ -64,7 +66,7 @@ async function copyRow(row: DetailRow) {
           :aria-label="`Copy ${row.label}`"
           @click="copyRow(row)"
         >
-          {{ row.value }}
+          <span :class="row.mono && 'font-mono'">{{ row.value }}</span>
           <Check
             v-if="copied && justCopied === row.label"
             class="size-5 text-fg-success"
