@@ -9,14 +9,9 @@ import {
   resolveFundingRoute,
   type FundingRoutePackages,
 } from "../app/funding/packages";
-import {
-  chainflipProgressProvider,
-  createFundingProgressSnapshot,
-  projectFundingProgress,
-} from "../app/funding/progress";
 import { resolveFundingTopUpDestination } from "../app/funding/navigation";
 import type { FundingSelection } from "../app/funding/selection";
-import type { FundingTopUp } from "../app/funding/top-ups";
+import type { FundingTopUp, FundingTopUpProgress } from "../app/funding/top-ups";
 
 // vitest has no Vue plugin, and this test never renders the status screens the packages bundle.
 vi.mock("../app/components/funding/routes/MeldFundingStatusRoute.vue", () => ({ default: {} }));
@@ -24,11 +19,7 @@ vi.mock("../app/components/funding/routes/ChainflipFundingStatusRoute.vue", () =
   default: {},
 }));
 
-const progress = projectFundingProgress({
-  snapshot: createFundingProgressSnapshot(chainflipProgressProvider.createProfile()),
-  createdAt: 0,
-  now: 0,
-});
+const progress: FundingTopUpProgress = { value: 0, tone: "waiting", delayed: false };
 
 describe("getcash funding packages", () => {
   it("maps crypto explicitly to the Chainflip package", () => {

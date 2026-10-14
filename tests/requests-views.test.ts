@@ -1,13 +1,11 @@
-// The views are the one table every screen reads a record through: the journey's step count,
-// the list row's state, and the values the session store exposed before them.
+// The views are the one table every screen reads a record through: the list row's state, and the
+// values the session store exposed before them.
 
 import { describe, expect, it } from "vitest";
 import { projectChainflipTopUps } from "../app/funding/chainflip-top-ups";
 import { fundingSelectorConfig } from "../app/funding/config";
-import { projectFundingProgress } from "../app/funding/progress";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
-  DEPOSIT_EXPIRED_REASON,
   PAYMENT_WATCH_MS,
   paymentWatchUntil,
   TOMBSTONE_GRACE_MS,
@@ -20,11 +18,9 @@ import {
 import { reduce } from "../app/funding/requests/reducer";
 import {
   claimingOf,
-  completedMarkers,
-  journeyStepsOf,
+  creditedAmountOf,
   meldHandedOffOf,
   meldStageOf,
-  milestonesOf,
   phaseLike,
   rowStateOf,
 } from "../app/funding/requests/views";
@@ -49,11 +45,6 @@ const at = (status: RequestStatus, extra: Extra = {}): RequestRecord => ({
   status,
   ...extra,
 });
-type DepositSeen = Extract<RequestStatus, { kind: "deposit-seen" }>;
-const seen = (
-  via: DepositSeen["via"],
-  assurance: DepositSeen["assurance"] = "provisional",
-): RequestStatus => ({ kind: "deposit-seen", at: AT, assurance, via });
 const rail = (
   provider: RailState["provider"],
   stage: RailState["stage"],
@@ -72,193 +63,8 @@ const shortfall: RequestFailure = {
   message: "shortfall: the deposit is below the swap minimum",
   recoverable: true,
 };
-const rejected: RequestFailure = {
-  kind: "deposit-rejected",
-  step: "deposit",
-  message: "Below minimum",
-  recoverable: false,
-};
-/** A Chainflip refund as the reducer stores it: core names the swap leg, the record the deposit
- *  it left from. */
-const refunded: RequestFailure = {
-  kind: "refunded",
-  step: "deposit",
-  message: "returned",
-  recoverable: false,
-  refunded: true,
-};
 
 describe("request views", () => {
-  // The scale is the caller's, not the record's, so both tables read the same builders; only the
-  // card table's first case needs a record of its own rail.
-  it("journeyStepsOf counts the crypto journey's three stops from the record", () => {
-    const cases: [string, RequestRecord, number][] = [
-      // The journey opens on the first sighting: before that the deposit screen is showing, so
-      // nothing is complete.
-      ["awaiting-deposit", at({ kind: "awaiting-deposit" }), 0],
-      ["expired", at({ kind: "expired", at: AT }, { failureReason: DEPOSIT_EXPIRED_REASON }), 0],
-      ["cancelled", at({ kind: "cancelled", at: AT }), 0],
-      // "Started" is the deposit seen at a best block, whatever confirmed it.
-      ["deposit-seen provisional via chain", at(seen("chain")), 1],
-      ["deposit-seen finalized via worker", at(seen("worker", "finalized")), 1],
-      // One program swaps and sends to People, so both steps sit inside "Conversion".
-      ["converting at the swap", at({ kind: "converting", at: AT, step: "swap" }), 1],
-      [
-        "converting, awaiting arrival",
-        at({ kind: "converting", at: AT, step: "await-arrival" }),
-        1,
-      ],
-      // The worker reported `done`: the conversion is behind the record and the claim has started.
-      ["claiming", at({ kind: "claiming", at: AT }), 2],
-      ["settled", at({ kind: "settled", at: AT }), 3],
-      [
-        "failed at the claim",
-        at({ kind: "failed", at: AT, recoverable: true }, { failure: mintFailure }),
-        2,
-      ],
-      [
-        "failed at the swap",
-        at({ kind: "failed", at: AT, recoverable: true }, { failure: shortfall }),
-        1,
-      ],
-      // The network took the deposit, so it was seen; a plain rejection means it never was.
-      [
-        "failed at the deposit, refunded",
-        at({ kind: "failed", at: AT, recoverable: false }, { failure: refunded, refunded: true }),
-        1,
-      ],
-      [
-        "failed at the deposit, rejected",
-        at({ kind: "failed", at: AT, recoverable: false }, { failure: rejected }),
-        0,
-      ],
-    ];
-    for (const [name, record, steps] of cases) {
-      expect(journeyStepsOf(record, "crypto"), name).toBe(steps);
-    }
-  });
-
-  it("journeyStepsOf counts the card journey's five stops from the record", () => {
-    const cases: [string, RequestRecord, number][] = [
-      // "Started" is the request itself: it exists, so the first marker is behind it.
-      ["awaiting-deposit", at({ kind: "awaiting-deposit" }), 1],
-      // A provisional sighting by any witness is a payment received; "Approved" waits for the
-      // deposit on the burner at finality, whatever the rail reports of its delivery.
-      [
-        "deposit-seen provisional via rail",
-        { ...card(), status: seen("rail"), rail: rail("meld", "received", "receiving") },
-        2,
-      ],
-      ["deposit-seen provisional via chain", at(seen("chain")), 2],
-      ["deposit-seen finalized via worker", at(seen("worker", "finalized")), 3],
-      ["deposit-seen finalized via faucet", at(seen("faucet", "finalized")), 3],
-      [
-        "deposit-seen provisional via rail, rail delivered",
-        at(seen("rail"), { rail: rail("chainflip", "delivered", "complete") }),
-        2,
-      ],
-      // One program swaps and sends to People, so both steps sit inside "Conversion".
-      ["converting at the swap", at({ kind: "converting", at: AT, step: "swap" }), 3],
-      [
-        "converting, awaiting arrival",
-        at({ kind: "converting", at: AT, step: "await-arrival" }),
-        3,
-      ],
-      // The worker reported `done`: the conversion is behind the record and the claim has started.
-      ["claiming", at({ kind: "claiming", at: AT }), 4],
-      ["settled", at({ kind: "settled", at: AT }), 5],
-      // A side exit reports the leg it left; from the deposit, the kind says whether the network
-      // took the payment.
-      [
-        "failed at the claim",
-        at({ kind: "failed", at: AT, recoverable: true }, { failure: mintFailure }),
-        4,
-      ],
-      [
-        "failed at the swap",
-        at({ kind: "failed", at: AT, recoverable: true }, { failure: shortfall }),
-        3,
-      ],
-      [
-        "failed at the deposit, refunded",
-        at({ kind: "failed", at: AT, recoverable: false }, { failure: refunded, refunded: true }),
-        2,
-      ],
-      [
-        "failed at the deposit, rejected",
-        at({ kind: "failed", at: AT, recoverable: false }, { failure: rejected }),
-        1,
-      ],
-      ["expired", at({ kind: "expired", at: AT }, { failureReason: DEPOSIT_EXPIRED_REASON }), 1],
-      ["cancelled", at({ kind: "cancelled", at: AT }), 1],
-    ];
-    for (const [name, record, steps] of cases) {
-      expect(journeyStepsOf(record, "card"), name).toBe(steps);
-    }
-  });
-
-  it("journeyStepsOf counts the bank journey's three stops from the record", () => {
-    const cases: [string, RequestRecord, number][] = [
-      // "Started" is the request itself: the buyer has the details to pay from, so the transfer
-      // still to arrive stands on the first marker.
-      ["awaiting-deposit", at({ kind: "awaiting-deposit" }), 1],
-      // The provider's word alone leaves the payment leg running: their delivery can still be
-      // stuck, which is what the design draws amber on "Payment".
-      ["deposit-seen provisional via rail", at(seen("rail")), 1],
-      // The money is ours: everything after it is one wait, so the marker does not move again
-      // until the CASH lands.
-      ["deposit-seen provisional via chain", at(seen("chain")), 2],
-      ["deposit-seen finalized via worker", at(seen("worker", "finalized")), 2],
-      ["converting at the swap", at({ kind: "converting", at: AT, step: "swap" }), 2],
-      ["claiming", at({ kind: "claiming", at: AT }), 2],
-      ["settled", at({ kind: "settled", at: AT }), 3],
-      // Past the deposit the transfer was taken, whatever the leg it then failed on.
-      [
-        "failed at the claim",
-        at({ kind: "failed", at: AT, recoverable: true }, { failure: mintFailure }),
-        2,
-      ],
-      [
-        "failed at the swap",
-        at({ kind: "failed", at: AT, recoverable: true }, { failure: shortfall }),
-        2,
-      ],
-      [
-        "failed at the deposit, refunded",
-        at({ kind: "failed", at: AT, recoverable: false }, { failure: refunded, refunded: true }),
-        2,
-      ],
-      // Nothing arrived: the transfer never was, so only "Started" is behind it.
-      [
-        "failed at the deposit, rejected",
-        at({ kind: "failed", at: AT, recoverable: false }, { failure: rejected }),
-        1,
-      ],
-      ["expired", at({ kind: "expired", at: AT }, { failureReason: DEPOSIT_EXPIRED_REASON }), 1],
-      ["cancelled", at({ kind: "cancelled", at: AT }), 1],
-    ];
-    for (const [name, record, steps] of cases) {
-      expect(journeyStepsOf(record, "bank"), name).toBe(steps);
-    }
-  });
-
-  it("completedMarkers keeps the fiat scales' first stop, and drops the crypto one", () => {
-    const nothingSeen = { failed: true, detected: false };
-    const seen = { failed: true, detected: true };
-    const running = { failed: false, detected: false };
-    // The bank's "Started" is the request itself: a declined transfer failed at "Payment", not at
-    // the beginning, so what the record counted stands.
-    expect(completedMarkers("bank", 1, nothingSeen)).toBe(1);
-    expect(completedMarkers("card", 1, nothingSeen)).toBe(1);
-    // The crypto timeline's first marker IS the deposit, so a failure that never saw one has
-    // nothing behind it.
-    expect(completedMarkers("crypto", 1, nothingSeen)).toBe(0);
-    expect(completedMarkers("crypto", 1, seen)).toBe(1);
-    expect(completedMarkers("crypto", 2, running)).toBe(2);
-    // A negative count never reads as a marker.
-    expect(completedMarkers("bank", -1, running)).toBe(0);
-  });
-
   it("paymentWatchUntil measures from the start, and a rail expiry only extends it", () => {
     const started = FIXTURE_NOW;
     const watch = started + PAYMENT_WATCH_MS + TOMBSTONE_GRACE_MS;
@@ -286,10 +92,7 @@ describe("request views", () => {
     ).toBe(late + TOMBSTONE_GRACE_MS);
   });
 
-  it("rowStateOf uses the same words as the journey", () => {
-    const now = AT + 60_000;
-    const projection = (record: RequestRecord) =>
-      projectFundingProgress({ snapshot: record.progress, createdAt: record.startedAt, now });
+  it("rowStateOf words a running row with its label and an ended one from the record", () => {
     const chainFunds: Observation = {
       source: "chain",
       at: AT,
@@ -303,28 +106,15 @@ describe("request views", () => {
       job: { phase: "swap", done: false, fundsSeenAt: AT, lastTickAt: AT + 30_000, claim: null },
     };
 
-    // The chain saw the deposit: the payment leg is complete on the row and in the ribbon alike.
     const funded = reduce(crypto(), chainFunds);
     expect(funded.status.kind).toBe("deposit-seen");
-    const fundedProjection = projection(funded);
-    const { profile } = funded.progress;
-    expect(fundedProjection.view.label).toBe(profile.routeCompletedLabel);
-    expect(fundedProjection.view.label).toBe("Payment received");
-    expect(rowStateOf(funded, fundedProjection)).toEqual({
-      kind: "finishing",
-      status: profile.routeCompletedLabel,
-    });
+    expect(rowStateOf(funded, "On its way")).toEqual({ kind: "finishing", status: "On its way" });
 
-    // The worker reports the swap: both now say the conversion is running.
     const converting = reduce(funded, workerSwap);
     expect(converting.status.kind).toBe("converting");
-    const convertingProjection = projection(converting);
-    const conversion = profile.stages.find((stage) => stage.key === "cash-conversion")!;
-    expect(convertingProjection.view.label).toBe(conversion.activeLabel);
-    expect(convertingProjection.view.label).toBe("Converting to $CASH");
-    expect(rowStateOf(converting, convertingProjection)).toEqual({
+    expect(rowStateOf(converting, "Adding to your balance")).toEqual({
       kind: "finishing",
-      status: conversion.activeLabel,
+      status: "Adding to your balance",
     });
 
     const settled: RequestRecord = {
@@ -333,14 +123,14 @@ describe("request views", () => {
       settledAt: AT,
       claimed: "25250000",
     };
-    expect(rowStateOf(settled, projection(settled))).toEqual({
+    expect(rowStateOf(settled, "")).toEqual({
       kind: "settled",
       at: AT,
       creditedAmount: "25.25",
     });
 
     const failed = at({ kind: "failed", at: AT, recoverable: true }, { failure: shortfall });
-    expect(rowStateOf(failed, projection(failed))).toEqual({
+    expect(rowStateOf(failed, "")).toEqual({
       kind: "failed",
       at: AT,
       reason: shortfall.message,
@@ -350,9 +140,6 @@ describe("request views", () => {
   it("a claiming record the host reported in a block reads as settled; a failed one ignores the stamp", () => {
     const CREDITED_AT = AT + 3_000;
     const now = AT + 60_000;
-    const projection = (record: RequestRecord) =>
-      projectFundingProgress({ snapshot: record.progress, createdAt: record.startedAt, now });
-    const scales = ["crypto", "card", "bank"] as const;
     const claiming = at({ kind: "claiming", at: AT });
     const credited: RequestRecord = { ...claiming, creditedAt: CREDITED_AT, claimed: "25250000" };
     const settled: RequestRecord = {
@@ -363,20 +150,15 @@ describe("request views", () => {
     };
 
     // Until the host's word the claim is in flight.
-    expect(rowStateOf(claiming, projection(claiming)).kind).toBe("finishing");
+    expect(rowStateOf(claiming, "").kind).toBe("finishing");
     expect(phaseLike(claiming)).toBe("working");
     expect(claimingOf(claiming)).toBe(true);
-    expect(milestonesOf(claiming)[5]).toBeUndefined();
 
-    // From it, every view reads as the settled record's: the row and its section, the journey's
-    // steps and milestones, the phase and the claim spinner.
-    const row = rowStateOf(credited, projection(credited));
+    // From it, every view reads as the settled record's: the row and its section, the phase and
+    // the claim spinner.
+    const row = rowStateOf(credited, "");
     expect(row).toEqual({ kind: "settled", at: CREDITED_AT, creditedAmount: "25.25" });
-    expect(row).toEqual(rowStateOf(settled, projection(settled)));
-    for (const scale of scales) {
-      expect(journeyStepsOf(credited, scale), scale).toBe(journeyStepsOf(settled, scale));
-    }
-    expect(milestonesOf(credited)[5]).toBe(CREDITED_AT);
+    expect(row).toEqual(rowStateOf(settled, ""));
     expect(phaseLike(credited)).toBe("done");
     expect(claimingOf(credited)).toBe(false);
     const sections = projectFundingTopUps(
@@ -399,21 +181,13 @@ describe("request views", () => {
       failure: mintFailure,
       failureReason: mintFailure.message,
     };
-    const unstamped = at(
-      { kind: "failed", at: failedAt, recoverable: true },
-      { failure: mintFailure },
-    );
-    expect(rowStateOf(failed, projection(failed))).toEqual({
+    expect(rowStateOf(failed, "")).toEqual({
       kind: "failed",
       at: failedAt,
       reason: mintFailure.message,
     });
-    for (const scale of scales) {
-      expect(journeyStepsOf(failed, scale), scale).toBe(journeyStepsOf(unstamped, scale));
-    }
     expect(phaseLike(failed)).toBe("failed");
     expect(claimingOf(failed)).toBe(false);
-    expect(milestonesOf(failed)[5]).toBeUndefined();
   });
 
   it("meldStageOf and meldHandedOffOf reproduce today's values", () => {
@@ -449,5 +223,45 @@ describe("request views", () => {
 
     expect(meldStageOf(meld(unstamped, "failed", "failed"))).toBe("failed");
     expect(meldHandedOffOf(meld(unstamped, "failed", "failed"))).toBe(false);
+  });
+
+  it("creditedAmountOf reads what the Host credited only once the top-up ended", () => {
+    const minted = (claimCredited: string): Pick<RequestRecord, "witnesses"> => ({
+      witnesses: {
+        worker: {
+          known: true,
+          phase: "failed",
+          done: false,
+          fundsSeenAt: AT,
+          lastTickAt: AT,
+          at: AT,
+          claimCredited,
+        },
+      },
+    });
+    const failed = { kind: "failed", at: AT, recoverable: true } as const;
+    const partial = { ...at(failed, { failure: mintFailure }), ...minted("30000000") };
+    const cases: [string, RequestRecord, string | undefined][] = [
+      ["claim in flight", { ...at({ kind: "claiming", at: AT }), claimed: "80120000" }, undefined],
+      [
+        "claim in a block",
+        { ...at({ kind: "claiming", at: AT }), claimed: "80120000", creditedAt: AT },
+        "80.12",
+      ],
+      ["settled", { ...at({ kind: "settled", at: AT }), claimed: "80120000" }, "80.12"],
+      ["settled with no claim", at({ kind: "settled", at: AT }), undefined],
+      ["partial claim", partial, "30"],
+      [
+        "failed with nothing minted",
+        { ...at(failed), ...minted("0"), claimed: "80120000" },
+        undefined,
+      ],
+    ];
+    for (const [name, record, credited] of cases) {
+      expect(creditedAmountOf(record), name).toBe(credited);
+    }
+
+    // A journey opened from history reads it off the list row.
+    expect(rowStateOf(partial, "")).toMatchObject({ kind: "failed", creditedAmount: "30" });
   });
 });

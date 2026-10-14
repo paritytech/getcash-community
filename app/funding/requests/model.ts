@@ -2,6 +2,7 @@
 // that move it, and the constants the store and the reducer share.
 
 import type {
+  ChainflipProgressFacts,
   FailureKind,
   FailureStep,
   PaymentPhase,
@@ -12,13 +13,13 @@ import type {
 } from "@getsome/core";
 import {
   DIRECT_SLIPPAGE_PCT,
+  recordedRoute,
   type ConversionRoute,
   type FundingStep,
   type Stable,
 } from "@getsome/funding";
 import type { WithdrawStep } from "@getsome/withdraw";
 import type { RequestRef } from "../../utils/request-index";
-import type { FundingProgressSnapshot } from "../progress";
 import { CRYPTO_SOURCE_ID, isDirectSourceId, isMeldSourceId, meldMethodFor } from "../source-ids";
 
 /** Trailing debounce per key for non-critical host writes. */
@@ -94,7 +95,9 @@ export type Freshness = "confirmed" | "reconciling" | "cached";
  *  the one program that swaps and sends together, `await-arrival` waits for the CASH sent to be
  *  credited on People. */
 export type ConvertingStep = Exclude<FundingStep, "await-native" | "done">;
-export type DepositSeenVia = "worker" | "chain" | "rail" | "core" | "faucet" | "pre-cancel";
+export type DepositSeenVia = "worker" | "chain" | "rail" | "core" | "pre-cancel";
+/** A sighting of the money on the burner itself; core and the rail only relay the provider's. */
+export const seenOnBurner = (via: DepositSeenVia): boolean => via !== "core" && via !== "rail";
 /** The worker's claim as it moves: sized, registered with the host, claiming, claimed. */
 export type WorkerClaimPhase = "sizing" | "registering" | "claiming" | "claimed";
 
@@ -141,6 +144,8 @@ export interface RequestFailure {
   recoverable: boolean;
   refunded?: boolean;
   refund?: RefundProgress;
+  /** The rail's own code for the ending, when it named one. */
+  code?: string;
 }
 
 /** A direct deposit that is not the one asked: less of the picked token, or a balance in another
@@ -198,6 +203,49 @@ export interface WorkerHandoffPayload {
   quotedDeposit?: string;
 }
 
+/** A fact the top-up timeline measures time from that has no time of its own on the record: a
+ *  provider status, the deposit first seen on the burner itself (kept once the status moves on),
+ *  the deposit first read final on the burner by the app, the CASH final on People (the worker's
+ *  funding leg done), and the host's `claiming`. */
+export type ObservedFact =
+  | Exclude<SwapProgress, "waiting">
+  | "on-burner"
+  | "final-on-burner"
+  | "cash-on-people"
+  | "host-claiming";
+
+/** Chainflip's progress as the record keeps it: no count or time moves back, and a fact a later
+ *  read leaves out stays. Chainflip's clock is a witness, not a fact. */
+export interface ChainflipFacts extends Omit<ChainflipProgressFacts, "lastStatechainUpdateAt"> {
+  /** When Chainflip scheduled the egress to Asset Hub. */
+  egressScheduledAt?: number;
+  /** When the current confirmation count was first observed. */
+  confirmationsAt?: number;
+  /** When the current count of executed chunks was first observed. */
+  chunksAt?: number;
+}
+
+/** The deposit in a best block on Asset Hub, as the worker follows it until it is final. */
+export interface DepositInBlock {
+  /** The best block that first held it. */
+  block: number;
+  /** The finalized block number when it was first seen there. */
+  finalizedAtSeen: number;
+  /** The finalized block number at the worker's latest tick. */
+  finalized: number;
+  /** The best block number at the worker's latest tick. */
+  best: number;
+}
+
+/** The conversion transaction in a best block: successful, with the tier's conversion event. */
+export interface ConvertedTx {
+  txHash: string;
+  block: number;
+  at: number;
+  /** The worker's working time when it saw the conversion (`WorkerJobView.workedMs`). */
+  workedMs: number;
+}
+
 /** What the store extracts from one job in the worker's blob. */
 export interface WorkerJobView {
   phase: string;
@@ -206,6 +254,9 @@ export interface WorkerJobView {
   lastError?: string;
   fundsSeenAt: number | null;
   lastTickAt: number | null;
+  /** The time the worker really ran since the deposit was final, until it registered the claim:
+   *  ticks apart by more than 30 s count as 30 s. */
+  workedMs?: number;
   claim: {
     phase: WorkerClaimPhase;
     amount?: string;
@@ -213,10 +264,19 @@ export interface WorkerJobView {
     credited?: string;
     /** The host's last word on the top-up. */
     status?: string;
+    /** When the worker registered the claim with the host. */
+    registeredAt?: number;
+    /** The time the worker really ran since it registered this attempt. */
+    workedMs?: number;
     at: number;
   } | null;
   /** As the worker records them on either branch. */
   txs?: { call: "swap" | "xcm"; txHash: string; block?: number }[];
+  /** The PSM's refusals of the mint so far, when there were any; the third holds the job. */
+  psmRefusals?: number;
+  depositSeen?: DepositInBlock;
+  /** When the conversion first passed its dry run, and its transaction once converted. */
+  conversion?: { preparedAt: number; converted?: ConvertedTx };
 }
 
 export interface TopUpRecord {
@@ -263,7 +323,6 @@ export interface TopUpRecord {
   refunded?: boolean;
   tradeN?: number;
   sourceId?: string;
-  progress: FundingProgressSnapshot;
   // Additive fields.
   route: "crypto" | "card" | "bank";
   deposit?: {
@@ -287,6 +346,16 @@ export interface TopUpRecord {
   /** When the host first reported the claim in a block with the full amount, before finality.
    *  Set once and never cleared; the screens show a `claiming` record done from here. */
   creditedAt?: number;
+  /** When the record first observed each fact the timeline measures time from. */
+  observedAt?: Partial<Record<ObservedFact, number>>;
+  /** A Chainflip swap's progress, from core's status reads. */
+  chainflip?: ChainflipFacts;
+  /** The worker's facts past the deposit, each kept from its first report. Only `finalized` and
+   *  `best` of the deposit move on. */
+  depositInBlock?: DepositInBlock;
+  conversionPreparedAt?: number;
+  converted?: ConvertedTx;
+  claimRegisteredAt?: number;
   status: RequestStatus;
   rail: RailState;
   failure?: RequestFailure;
@@ -299,14 +368,22 @@ export interface TopUpRecord {
           done: boolean;
           claimPhase?: WorkerClaimPhase;
           claimStatus?: string;
+          /** CASH the host minted on the claim so far. */
+          claimCredited?: string;
+          psmRefusals?: number;
           fundsSeenAt: number | null;
           lastTickAt: number | null;
+          /** The job's `workedMs` and its claim's, as the latest read gave them. */
+          workedMs?: number;
+          claimWorkedMs?: number;
           failure?: string;
           at: number;
           txs?: WorkerJobView["txs"];
         }
       | { known: false; at: number };
     provider?: { status: string; at: number };
+    /** Chainflip's own clock at its latest status read. */
+    chainflip?: { lastStatechainUpdateAt: number };
     chain?: {
       best?: { burnerNative: string; block?: number; at: number };
       finalized?: { burnerNative: string; block?: number; at: number };
@@ -316,6 +393,12 @@ export interface TopUpRecord {
   };
   confirmedAt?: number;
 }
+
+/** The tier a record was quoted on, read off what it persisted and never decided here: the
+ *  hand-off it froze at quote time, or the tier recorded beside it when the hand-off is missing.
+ *  A record with neither is from before tiers were recorded, and so a pool one. */
+export const conversionRouteOf = (record: TopUpRecord): ConversionRoute =>
+  recordedRoute(record.handoff ?? record.conversion ?? {});
 
 // The withdrawal: the purse pays CASH to a disposable key on People, the worker moves it to Asset
 // Hub as the token the user picked, or as PAS that a rail carries on to the destination they named.
@@ -651,7 +734,7 @@ export type Observation =
       burnerNative: string;
       finality: "best" | "finalized";
       block?: number;
-      via: "probe" | "pre-cancel" | "faucet";
+      via: "probe" | "pre-cancel";
       /** Polkadot deposits, from the deposit watch only: a balance in a direct token the request
        *  did not pick, or null when there is none. Absent from every other reading. */
       stray?: StrayDeposit | null;

@@ -1,6 +1,6 @@
 import type { FundingSelectorConfig } from "./config";
-import type { FundingProgressProjection } from "./progress";
 import type { FundingRoute } from "./selection";
+import type { TopUpTimeline } from "./timeline/top-up";
 
 export type FundingTopUpState =
   | { kind: "awaiting-transfer"; status: string }
@@ -18,6 +18,8 @@ export type FundingTopUpState =
        *  left to ask. Absent on records written before either was kept. */
       refundAmount?: string;
       refundTxRef?: string;
+      /** What the Host credited before the claim failed. */
+      creditedAmount?: string;
     };
 
 export type FundingTopUpDetail = Readonly<{
@@ -34,7 +36,14 @@ export type FundingTopUpDetails = Readonly<{
   /** The buyer's region, for a fiat rail (an ISO country code). */
   region?: string;
   depositAddress?: string;
-  arrivalEstimate?: string;
+}>;
+
+/** A running row's ring and status line: the ring's fill from 0 to 1 and its tone, and the words,
+ *  drawn amber when delayed. */
+export type FundingTopUpProgress = Readonly<{
+  value: number;
+  tone: "waiting" | "active" | "delayed" | "settled" | "failed";
+  delayed: boolean;
 }>;
 
 /** The rail's quote as the record kept it: the charge, the fee, and the components the fee
@@ -58,23 +67,17 @@ export type FundingTopUp = Readonly<{
   debit?: boolean;
   route: FundingRoute;
   startedAt: number;
-  progress: FundingProgressProjection;
+  progress: FundingTopUpProgress;
+  /** The top-up's timeline, once it opened with the deposit. */
+  timeline?: TopUpTimeline;
   details?: FundingTopUpDetails;
   /** What the buyer pays as the rail quoted it, for the journey's money row when the request is
    *  not (yet) live in the store — and for the fee breakdown behind it, which is why the fee's
    *  own components ride along. */
   quote?: StoredQuote;
-  /** The rail is retrying or running late: the list draws the status line amber. Never terminal.
-   *  Read off the record's own `rail.delayed`, which the foreground journey reads too, so the
-   *  list and the journey never disagree about the same request. */
-  delayed?: boolean;
   /** The request this top-up is, as the store names it. Lets a screen reach the request's own
    *  derived material — the refund key — without a live world behind it. */
   request?: Readonly<{ sourceId: string; tradeN: number }>;
-  /** How many of the journey's markers the record counted, on this route's own scale. The journey
-   *  opened from history has no live request to count them from, and a top-up that was paid and
-   *  converted before it failed must not redraw as though it never started. */
-  journeyDone?: number;
   /** The rail's own id for the payment, as the buyer would quote it to support. Persisted with
    *  the request, so a journey opened long after the session that made it still carries it. */
   reference?: string;
@@ -90,9 +93,9 @@ type FundingTopUpBase = Readonly<{
   routeIcon: string;
   estimate: string;
   startedAt: number;
-  progress: FundingProgressProjection;
+  progress: FundingTopUpProgress;
+  timeline?: TopUpTimeline;
   details?: FundingTopUpDetails;
-  delayed?: boolean;
 }>;
 
 export type InProgressFundingTopUp = FundingTopUpBase &
@@ -175,8 +178,8 @@ export function projectFundingTopUps(
       estimate: route?.estimate ?? "",
       startedAt: topUp.startedAt,
       progress: topUp.progress,
+      ...(topUp.timeline === undefined ? {} : { timeline: topUp.timeline }),
       ...(topUp.details === undefined ? {} : { details: topUp.details }),
-      ...(topUp.delayed === undefined ? {} : { delayed: topUp.delayed }),
     };
 
     switch (topUp.state.kind) {

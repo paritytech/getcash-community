@@ -5,11 +5,13 @@ const symbol = "$";
 const ticker = "CASH";
 
 /** The currency as every sum and every prose mention writes it: the symbol on the figure, the
- *  ticker after it, and the token's name where prose names it rather than counts it ("Converting
- *  to $CASH"). The one place any of them changes with the branding. */
+ *  ticker after it as a logo, the word a sentence uses instead ("Adding $50 Cash"), and the token's
+ *  name where prose names it rather than counts it ("Converting to $CASH"). The one place any of
+ *  them changes with the branding. */
 export const currencyConfig = {
   symbol,
   ticker,
+  word: "Cash",
   name: `${symbol}${ticker}`,
 } as const;
 
