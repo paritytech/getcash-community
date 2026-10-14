@@ -78,6 +78,8 @@ const { worker, manager, worlds, createWorld, LEGACY_HANDOFF } = vi.hoisted(() =
   const worlds = {
     builds: [] as { amount: bigint; tradeN?: number; sourceId?: string }[],
     disposed: 0,
+    /** The session each built world carries; null builds one with no flow slot. */
+    session: null as object | null,
   };
   const createWorld = async (args: { amount: bigint; tradeN?: number; sourceId?: string }) => {
     worlds.builds.push(args);
@@ -86,7 +88,7 @@ const { worker, manager, worlds, createWorld, LEGACY_HANDOFF } = vi.hoisted(() =
       dispose() {
         worlds.disposed += 1;
       },
-      session: { peek: () => null },
+      session: worlds.session ?? { peek: () => null },
     };
   };
   return { worker, manager, worlds, createWorld, LEGACY_HANDOFF };
@@ -253,6 +255,7 @@ describe("requests store: the hand-off step", () => {
     worker.calls.length = 0;
     worlds.builds.length = 0;
     worlds.disposed = 0;
+    worlds.session = null;
     vi.spyOn(console, "warn").mockImplementation(() => {});
   });
   afterEach(async () => {
@@ -518,6 +521,37 @@ describe("requests store: the hand-off step", () => {
     expect(skipped).toEqual([
       ["[requests] worker not running; 2 hand-off(s) wait for the next pass"],
     ]);
+  });
+
+  it("a re-open superseded while its resume waits returns false and leaves the newer one on screen", async () => {
+    const requests = useRequestsStore();
+    const session = useSessionStore();
+    await requests.create(AWAITING_REF, {
+      ...migrated(awaitingDepositCryptoRecord),
+      handoff: AWAITING_HANDOFF,
+    });
+    await requests.create(FUNDED_REF, { ...migrated(fundedCryptoRecord), handoff: FUNDED_HANDOFF });
+    let release = () => {};
+    const resumes = [new Promise<void>((resolve) => (release = resolve))];
+    worlds.session = {
+      ready: Promise.resolve(),
+      peek: () => ({}),
+      subscribe: () => ({ unsubscribe() {} }),
+      resume: () => resumes.shift() ?? Promise.resolve(),
+      getState: () => ({ phase: "working" }),
+    };
+
+    // The first open waits on a claim in flight; the second takes the screen meanwhile.
+    const first = session.openRequest(AWAITING_REF);
+    await until(() => resumes.length === 0);
+    expect(await session.openRequest(FUNDED_REF)).toBe(true);
+    release();
+
+    expect(await first).toBe(false);
+    expect(requests.foregroundRecord?.ref).toEqual(FUNDED_REF);
+    expect(worlds.disposed).toBe(1);
+    // Joins the background passes both opens started.
+    await requests.reconcile("refresh");
   });
 
   it("the preview deck writes nothing durable and hands nothing to the worker", async () => {

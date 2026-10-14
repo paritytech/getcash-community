@@ -23,12 +23,12 @@ const JOURNEY_PHASES = new Set([
 export type Step = "amount" | "method" | "network" | "token";
 
 /**
- * A drill-in a demo preview scene asked the Meld route to open over its screen.
+ * A drill-in a demo preview scene asked a route to open over its screen.
  *
  * The drill-ins are the route's own refs, so a scene has no way into them: this is the one door,
  * read behind `isDemoBuild()` and null in every build that is not the deck's.
  */
-export type PreviewDrillIn = "currency" | "fees";
+export type PreviewDrillIn = "currency" | "fees" | "refund";
 
 export const useFlowStore = defineStore("flow", () => {
   const session = useSessionStore();

@@ -110,7 +110,6 @@ const {
     return r ? `${r.sourceId}:${r.tradeN}` : null;
   },
   known: () => session.refundAddress,
-  autoReveal: () => session.revealRefund,
   resolve: async () => {
     const live = session.revealRefundKey();
     if (live) return live;

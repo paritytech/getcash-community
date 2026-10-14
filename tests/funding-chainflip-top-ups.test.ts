@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { chainflipRequestRef, projectChainflipTopUps } from "../app/funding/chainflip-top-ups";
-import { chainflipProgressProvider, createFundingProgressSnapshot } from "../app/funding/progress";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import type { Observation, RequestRecord, WorkerJobView } from "../app/funding/requests/model";
 import { reduce } from "../app/funding/requests/reducer";
@@ -45,24 +44,18 @@ describe("Chainflip top-up adapter", () => {
       amount: "25",
       route: "crypto",
       startedAt: 200,
-      progress: {
-        estimateText: "≈10 min after your transfer",
-        view: { kind: "waiting", label: "Waiting for your transfer" },
-      },
-      state: { kind: "awaiting-transfer", status: "Waiting for your transfer" },
+      progress: { tone: "waiting" },
+      state: { kind: "awaiting-transfer", status: "Waiting for your deposit" },
     });
     expect(topUps[1]).toMatchObject({
       id: "crypto:dot-assethub#3",
       amount: "50",
       route: "crypto",
       startedAt: 300,
-      progress: {
-        detectedAt: 350,
-        stageTimestamps: { "cash-conversion": 350 },
-        view: { kind: "active", activeStageKey: "cash-conversion" },
-      },
-      state: { kind: "finishing", status: "Converting to $CASH" },
+      progress: { tone: "waiting" },
+      state: { kind: "finishing", status: "Waiting for your deposit" },
     });
+    expect(topUps[0]).not.toHaveProperty("timeline");
   });
 
   it("reads the worker's claim ahead of the durable funded marker", () => {
@@ -76,7 +69,6 @@ describe("Chainflip top-up adapter", () => {
     );
 
     expect(projectChainflipTopUps([claimed], 500)[0]).toMatchObject({
-      progress: { view: { kind: "settled", label: "Ready to spend" }, settledAt: 450 },
       state: { kind: "settled", at: 450, creditedAmount: "20.25" },
     });
   });
@@ -116,7 +108,6 @@ describe("Chainflip top-up adapter", () => {
       network: { label: "Bitcoin", icon: "/icons/bitcoin.svg" },
       token: { label: "BTC", icon: "/icons/bitcoin.svg" },
       depositAddress: "bc1q-saved-deposit",
-      arrivalEstimate: "≈10 min after your transfer",
     });
   });
 
@@ -140,33 +131,10 @@ describe("Chainflip top-up adapter", () => {
       network: { label: "Polkadot", icon: "/icons/polkadot.svg" },
       token: { label: "USDC", icon: "/icons/usdc.svg" },
       depositAddress: "5BurnerOnAssetHub",
-      arrivalEstimate: "≈10 min after your transfer",
     });
     expect(chainflipRequestRef("crypto:usdc-assethub#3")).toEqual({
       sourceId: "usdc-assethub",
       tradeN: 3,
-    });
-  });
-
-  it("keeps a persisted failure time over the observation time", () => {
-    const failedAt = 700;
-    const failed = record(
-      {
-        tradeN: 8,
-        amountHuman: "40",
-        startedAt: 500,
-        failureReason: "Deposit expired",
-        progress: createFundingProgressSnapshot(chainflipProgressProvider.createProfile(), {
-          failedAt,
-        }),
-      },
-      900,
-    );
-
-    expect(projectChainflipTopUps([failed], 900)[0]?.state).toEqual({
-      kind: "failed",
-      at: failedAt,
-      reason: "Deposit expired",
     });
   });
 
@@ -192,12 +160,5 @@ describe("Chainflip top-up adapter", () => {
       record({ tradeN: 7, amountHuman: "30", startedAt: 110, sourceId: "dot-assethub" }, 200),
     ];
     expect(projectChainflipTopUps(records).map(({ id }) => id)).toEqual(["crypto:dot-assethub#7"]);
-  });
-
-  it("keeps route details available for legacy records", () => {
-    const legacy = record({ tradeN: 7, amountHuman: "25", startedAt: 100 }, 200);
-    expect(projectChainflipTopUps([legacy])[0]?.details).toEqual({
-      arrivalEstimate: "≈10 min after your transfer",
-    });
   });
 });

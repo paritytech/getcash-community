@@ -3,7 +3,6 @@
 
 import { computed, watch } from "vue";
 import { chainflipDepositPending } from "../funding/chainflip-handoff";
-import { projectFundingProgress } from "../funding/progress";
 import { useFlowStore } from "../stores/flow";
 import { useRequestsStore } from "../stores/requests";
 import { useSessionStore } from "../stores/session";
@@ -13,22 +12,12 @@ export function useChainflipHandoff(emit: (event: "handoff") => void) {
   const requests = useRequestsStore();
   const flow = useFlowStore();
 
-  const depositPending = computed(() => {
-    const foreground = requests.foregroundProgress;
-    // The view kind does not depend on the clock.
-    const progressKind = foreground
-      ? projectFundingProgress({
-          snapshot: foreground.snapshot,
-          createdAt: foreground.startedAt,
-          now: Date.now(),
-        }).view.kind
-      : null;
-    return chainflipDepositPending({
+  const depositPending = computed(() =>
+    chainflipDepositPending({
       fundsSeen: requests.fundsSeen,
-      phase: requests.phase,
-      progressKind,
-    });
-  });
+      awaitingDeposit: requests.awaitingDeposit,
+    }),
+  );
 
   // Not during a cancel or a resume.
   const confirmed = computed(

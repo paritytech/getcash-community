@@ -20,31 +20,31 @@ function clientReturning(
 }
 
 describe("getMeldStatus", () => {
-  it("maps settled to complete", async () => {
-    expect((await getMeldStatus(clientReturning("settled"), "funding-1")).status).toBe("complete");
-  });
+  it.each<[string, string | undefined, string, boolean | undefined]>([
+    ["created", undefined, "waiting", undefined],
+    ["session_opened", undefined, "waiting", undefined],
+    ["some_new_state", undefined, "waiting", undefined],
+    ["", undefined, "waiting", undefined],
+    ["transaction_seen", undefined, "receiving", undefined],
+    ["transaction_seen", "PENDING", "receiving", undefined],
+    ["transaction_seen", "SOME_NEW_STATUS", "receiving", undefined],
+    ["transaction_seen", "SETTLING", "sending", undefined],
+    ["transaction_seen", " settling ", "sending", undefined],
+    ["transaction_seen", "ERROR", "receiving", true],
+    ["settled", "ERROR", "complete", undefined],
+    ["failed", "ERROR", "failed", undefined],
+    ["expired", "SETTLING", "failed", undefined],
+  ])(
+    "maps %s with provider status %s to %s (delayed: %s)",
+    async (status, providerStatus, want, delayed) => {
+      const result = await getMeldStatus(
+        clientReturning(status, providerStatus === undefined ? {} : { providerStatus }),
+        "funding-1",
+      );
 
-  it("maps transaction_seen to receiving", async () => {
-    // The adapter has a transaction against this request but it has not concluded.
-    expect((await getMeldStatus(clientReturning("transaction_seen"), "funding-1")).status).toBe(
-      "receiving",
-    );
-  });
-
-  it("keeps the pre-payment states at waiting", async () => {
-    expect((await getMeldStatus(clientReturning("created"), "funding-1")).status).toBe("waiting");
-    expect((await getMeldStatus(clientReturning("session_opened"), "funding-1")).status).toBe(
-      "waiting",
-    );
-  });
-
-  it("does not guess a terminal state from a status it does not know", async () => {
-    // An unknown state reads as waiting.
-    expect((await getMeldStatus(clientReturning("some_new_state"), "funding-1")).status).toBe(
-      "waiting",
-    );
-    expect((await getMeldStatus(clientReturning(""), "funding-1")).status).toBe("waiting");
-  });
+      expect({ status: result.status, delayed: result.delayed }).toEqual({ status: want, delayed });
+    },
+  );
 
   it.each([
     ["failed", "Top-up didn't go through. No money was taken.", "deposit-rejected"],
@@ -57,7 +57,7 @@ describe("getMeldStatus", () => {
     ],
     [
       "unobserved",
-      "We could not confirm this payment. Contact support before trying again.",
+      "We can't confirm your payment with the provider. Check your card statement before you pay again.",
       "unknown",
     ],
   ])("maps %s to failed with a reason that says which", async (status, message, kind) => {
@@ -133,7 +133,10 @@ describe("getMeldStatus", () => {
   });
 
   it.each([
-    ["unobserved", "We could not confirm this payment. Contact support before trying again."],
+    [
+      "unobserved",
+      "We can't confirm your payment with the provider. Check your card statement before you pay again.",
+    ],
     ["expired", "The payment window closed before the payment arrived."],
     ["refused", "The payment was declined before it started."],
   ])(
