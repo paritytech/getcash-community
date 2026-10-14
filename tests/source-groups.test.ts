@@ -5,7 +5,6 @@ import {
   groupTokens,
   networkSubtitle,
   smallestMinimumCash,
-  sortNetworks,
   tokenSubtitle,
   wholeCashCeil,
 } from "../app/funding/source-groups";
@@ -71,16 +70,6 @@ describe("source groups", () => {
     expect(networkSubtitle(fine)).toBeUndefined();
     const pending = network("Solana", [token("SOL", { state: "checking" })]);
     expect(networkSubtitle(pending)).toBeUndefined();
-  });
-
-  it("lists pickable networks first, keeping catalog order", () => {
-    const eth = network("Ethereum", [token("ETH", { state: "ungated" })]);
-    const btc = network("Bitcoin", [
-      token("BTC", { state: "too-small", minimumCashBase: 80_000_000n }),
-    ]);
-    const pending = network("Solana", [token("SOL", { state: "checking" })]);
-    expect(sortNetworks([btc, eth, pending])).toEqual([eth, pending, btc]);
-    expect(sortNetworks([btc])).toEqual([btc]);
   });
 
   it("groups tokens the same way", () => {

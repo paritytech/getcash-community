@@ -56,7 +56,13 @@ describe("a row against its offer", () => {
     expect(rowState(btc, { state: "unavailable", reason: "down" }).subtitle).toBe(
       "Not available right now",
     );
-    expect(rowState(btc, TOO_SMALL)).toEqual({ pickable: false, subtitle: "Minimum is $13 CASH" });
+    expect(rowState(btc, TOO_SMALL)).toEqual({
+      pickable: false,
+      subtitle: "Minimum for this token is $13 CASH",
+    });
+    expect(rowState(btc, TOO_SMALL, "network").subtitle).toBe(
+      "Minimum for this network is $13 CASH",
+    );
     expect(rowState(btc, AVAILABLE)).toEqual({ pickable: true });
   });
 

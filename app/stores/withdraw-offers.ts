@@ -78,7 +78,11 @@ export const useWithdrawOffersStore = defineStore("withdraw-offers", () => {
     rowState(destination, offerFor(destination));
 
   const networkRowFor = (network: WithdrawNetwork): RowState =>
-    networkRow(network.destinations.map(rowFor));
+    networkRow(
+      network.destinations.map((destination) =>
+        rowState(destination, offerFor(destination), "network"),
+      ),
+    );
 
   /** A destination still being quoted is never drawn: a picker with one shows skeleton rows, one
    *  per row it will list, until every row on it has its answer. Asset Hub's own destinations
