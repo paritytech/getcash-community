@@ -2,7 +2,12 @@
 // reads, and the merge that keeps that stage monotonic. Shared by the deposit and the
 // withdrawal, whose rails differ only in the providers they name.
 
-import type { ChainflipFailureInfo, SwapProgress, SwapStatusResult } from "@getsome/core";
+import {
+  CHAINFLIP_SEND_FAILED_MESSAGE,
+  type ChainflipFailureInfo,
+  type SwapProgress,
+  type SwapStatusResult,
+} from "@getsome/core";
 import type { RailState } from "./model";
 
 type RailStage = RailState["stage"];
@@ -47,6 +52,7 @@ function stageOf(result: SwapStatusResult): RailStage {
       return "received";
     case "swapping":
     case "sending":
+    case "sent":
       return "processing";
     case "complete":
       return "delivered";
@@ -76,16 +82,14 @@ function railFailure(result: SwapStatusResult): RailFailure {
   if (result.swapEgressFailure) {
     return {
       kind: result.swapEgressFailure.kind ?? "egress-failed",
-      message:
-        result.swapEgressFailure.reason?.message ??
-        "Swap egress failed; funds stuck on Chainflip. Contact support",
+      message: result.swapEgressFailure.reason?.message ?? CHAINFLIP_SEND_FAILED_MESSAGE,
       ...code(result.swapEgressFailure),
     };
   }
   if (result.fallbackEgress) {
     return {
       kind: "fallback-egress",
-      message: "Funds routed to a fallback chain. Contact support",
+      message: CHAINFLIP_SEND_FAILED_MESSAGE,
     };
   }
   // Plain SDK failed: Chainflip streams the deposit back to the refund address.

@@ -168,6 +168,8 @@ export function createCoinageHandoff(opts: {
   readWorkerClaim: () => Promise<WorkerClaim | null>;
   /** Settle-internal progress for the UI: reports the claim amount once the worker made it. */
   onProgress?: (stage: "prompted" | "crediting", claimed?: bigint) => void;
+  /** Set on dispose: ends the settle wait so a torn-down session stops polling the claim. */
+  stop?: { aborted: boolean };
 }): HandoffAction {
   async function recordWorkerClaim(key: string, claim: WorkerClaim): Promise<void> {
     const record: SettleRecord = {
@@ -181,6 +183,7 @@ export function createCoinageHandoff(opts: {
   }
 
   const readClaim = () => opts.readWorkerClaim().catch(() => null);
+  const disposed = () => new Error("session disposed while awaiting the claim");
 
   return {
     async settle(_ctx, key) {
@@ -190,8 +193,16 @@ export function createCoinageHandoff(opts: {
       let claim = await readClaim();
       while (claim?.phase !== "claimed" && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 2_000));
+        // A disposed session must not keep watching: its claim would be reported against
+        // whatever request came after it. The worker claims on its own either way. Checked
+        // after the sleep, not before it, so a dispose during the sleep ends the wait without
+        // one more read.
+        if (opts.stop?.aborted) throw disposed();
         claim = await readClaim();
       }
+      // The dispose may also have landed while a read was in flight: whatever that read found
+      // is not this session's to record.
+      if (opts.stop?.aborted) throw disposed();
       if (claim?.phase === "claimed") {
         await recordWorkerClaim(key, claim);
         return;
@@ -521,50 +532,53 @@ export async function readDepositOnAh(
   return held?.balance ?? 0n;
 }
 
-/** `readDepositOnAh` at every best block until the returned function is called. */
+/** The block a watch reads: each best block, or each finalized one. */
+export type Finality = "best" | "finalized";
+
+/** `readDepositOnAh` at every block of `at` until the returned function is called. */
 export function watchDepositOnAh(
   api: AssetHubApi,
   route: ConversionRoute,
   address: string,
+  at: Finality,
   onValue: (balance: bigint) => void,
   onError: (e: unknown) => void,
 ): () => void {
-  return watchTokenOnAh(api, depositTokenOf(route), address, onValue, onError);
+  return watchTokenOnAh(api, depositTokenOf(route), address, at, onValue, onError);
 }
 
-/** One token's balance on an account at every best block: the native's free balance, or the
+/** One token's balance on an account at every block of `at`: the native's free balance, or the
  *  pallet-assets holding the token names. */
 function watchTokenOnAh(
   api: AssetHubApi,
   token: TokenSpec,
   address: string,
+  at: Finality,
   onValue: (balance: bigint) => void,
   onError: (e: unknown) => void,
 ): () => void {
   const subscription =
     token.assetHubId === undefined
-      ? api.query.System.Account.watchValue(address, { at: "best" }).subscribe({
+      ? api.query.System.Account.watchValue(address, { at }).subscribe({
           next: ({ value: account }) => onValue(account?.data?.free ?? 0n),
           error: onError,
         })
-      : api.query.Assets.Account.watchValue(token.assetHubId, address, {
-          at: "best",
-        }).subscribe({
+      : api.query.Assets.Account.watchValue(token.assetHubId, address, { at }).subscribe({
           next: ({ value: held }) => onValue(held?.balance ?? 0n),
           error: onError,
         });
   return () => subscription.unsubscribe();
 }
 
-/** A Polkadot deposit account's balances at a best block: the token the route asks for, and
- *  another direct token found on it, named as the deposit screen names it. */
+/** A Polkadot deposit account's balances at a block: the token the route asks for, and another
+ *  direct token found on it, named as the deposit screen names it. */
 export interface DirectDepositReading {
   held: bigint;
   stray: { asset: string; amount: bigint } | null;
 }
 
 /**
- * Every direct token's balance on a burner at each best block, until the returned function is
+ * Every direct token's balance on a burner at each block of `at`, until the returned function is
  * called. A buyer can send any of them from any wallet, so a Polkadot deposit is followed in all
  * of them: the route's own token is the deposit, any other is one it was not asked for. Emits
  * once every balance has been read, then on every change.
@@ -573,6 +587,7 @@ export function watchDirectDepositOnAh(
   api: AssetHubApi,
   route: ConversionRoute,
   address: string,
+  at: Finality,
   onValue: (reading: DirectDepositReading) => void,
   onError: (e: unknown) => void,
 ): () => void {
@@ -598,6 +613,7 @@ export function watchDirectDepositOnAh(
       api,
       token,
       address,
+      at,
       (value) => {
         balances.set(token, value);
         emit();
@@ -1178,6 +1194,9 @@ export async function createCoinageSession(
     );
   }
 
+  // Set on dispose: ends the worker poll and the settle wait for this session.
+  const stop = { aborted: false };
+
   const session = createPayment({
     // The burner is its own recipient; core uses this only to key the flow slot and the claim
     // record.
@@ -1191,6 +1210,7 @@ export async function createCoinageSession(
       // Same session id the hand-off uses.
       readWorkerClaim: () =>
         readWorkerClaim(args.hostLocalStorage, workerSessionId(args.sourceId, tradeN)),
+      stop,
     }),
     deriveKey,
     entropyLabel,
@@ -1241,9 +1261,7 @@ export async function createCoinageSession(
     };
   });
 
-  // Single-flight while running, resettable after failure. The stop signal ends the poll on
-  // dispose.
-  const stop = { aborted: false };
+  // Single-flight while running, resettable after failure.
   let funding: Promise<void> | null = null;
   const runFunding: CoinageWorld["runFunding"] = (hooks) => {
     if (!funding) {

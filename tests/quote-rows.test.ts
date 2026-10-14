@@ -1,11 +1,10 @@
-// The rows a top-up's money shows: the live quote while it is being bought, and what was actually
-// paid once a fiat top-up has ended.
+// The rows a top-up's money shows, and the details rows of a failure.
 
 import { describe, expect, it } from "vitest";
 import {
+  failureDetailRows,
   journeyMoneyRows,
   liveQuoteView,
-  paidDetailRows,
   quoteDetailRows,
   storedQuoteView,
   type QuoteView,
@@ -13,33 +12,19 @@ import {
 
 const card: QuoteView = { amount: "50.55", symbol: "EUR", fee: "0.55", crypto: false };
 
-describe("a concluded fiat top-up's rows", () => {
-  it("keeps the money row on a refund, because the charge happened", () => {
-    // The ribbon says what came back; this says what went out. They are different figures, and
-    // dropping the row with the quote would leave the buyer only the smaller one.
-    const rows = paidDetailRows(card, { provider: "Transak", reference: "a1f9c3d2-4c2e-4a71" });
-    expect(rows.map((r) => r.label)).toEqual(["You paid inc. fees", "Provider", "Transaction ID"]);
-    expect(rows[0]?.value).toContain("50.55");
-  });
-
-  it("elides the reference but copies it whole", () => {
-    const [row] = paidDetailRows(null, { reference: "b7e4a10c-9d31-4f62-8ab5-3c0f7e19d248" });
-    expect(row?.copy).toBe("b7e4a10c-9d31-4f62-8ab5-3c0f7e19d248");
-    expect(row?.value).not.toBe(row?.copy);
+describe("a failure's details rows", () => {
+  it("names the provider and its reason, and copies the whole reference from a short mono one", () => {
+    const reference = "b7e4a10c-9d31-4f62-8ab5-3c0f7e19d248";
+    expect(failureDetailRows({ provider: "Transak", reason: "DECLINED", reference })).toEqual([
+      { label: "Provider", value: "Transak" },
+      { label: "Reason", value: "DECLINED" },
+      { label: "Reference", value: "b7e4-d248", copy: reference, mono: true },
+    ]);
   });
 
   it("drops a row the record cannot fill rather than showing it blank", () => {
-    // Records written before the provider and the reference were kept.
-    expect(paidDetailRows(card).map((r) => r.label)).toEqual(["You paid inc. fees"]);
-    expect(paidDetailRows(null)).toEqual([]);
-  });
-
-  it("leaves the crypto rail's deposit figure to the deposit screen", () => {
-    // Restating what was sent beside a refund reads as a second charge. The refunded swap gets
-    // its context — the network and the rail — and the money's own story belongs to the guide.
-    const crypto = { amount: "0.00045", symbol: "BTC", crypto: true, fee: "0.00001" };
-    const rows = paidDetailRows(crypto, { network: "Bitcoin", provider: "Chainflip" });
-    expect(rows.map((r) => r.label)).toEqual(["Network", "Provider"]);
+    expect(failureDetailRows({ provider: "Chainflip" }).map((r) => r.label)).toEqual(["Provider"]);
+    expect(failureDetailRows({})).toEqual([]);
   });
 });
 
@@ -76,7 +61,7 @@ describe("a live quote's rows", () => {
 });
 
 describe("which money rows an ending shows", () => {
-  const fiat = { crypto: false, expired: false, failed: false, refunded: false };
+  const fiat = { crypto: false, expired: false, failed: false };
 
   it("shows the charge alone while a top-up runs and once it lands", () => {
     // The design's settled frames carry no provider or reference row: a buyer holding their CASH
@@ -86,7 +71,6 @@ describe("which money rows an ending shows", () => {
 
   it("replaces the quote with the receipt when a fiat top-up fails", () => {
     expect(journeyMoneyRows({ ...fiat, failed: true })).toBe("receipt");
-    expect(journeyMoneyRows({ ...fiat, failed: true, refunded: true })).toBe("receipt");
   });
 
   it("shows nothing for a top-up that expired, because nobody was charged", () => {
@@ -97,8 +81,6 @@ describe("which money rows an ending shows", () => {
     const crypto = { ...fiat, crypto: true };
     expect(journeyMoneyRows(crypto)).toBe("none");
     expect(journeyMoneyRows({ ...crypto, failed: true })).toBe("none");
-    // Except on a refund, where the receipt names the network and the rail that handled it.
-    expect(journeyMoneyRows({ ...crypto, failed: true, refunded: true })).toBe("receipt");
   });
 });
 

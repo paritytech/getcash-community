@@ -8,8 +8,7 @@ const waiting = {
   fundsSeen: false,
   meldHandedOff: false,
   meldStage: "waiting" as const,
-  phase: "awaiting-deposit",
-  progressKind: "waiting" as const,
+  awaitingDeposit: true,
 };
 
 describe("meldDepositPending", () => {
@@ -31,11 +30,9 @@ describe("meldDepositPending", () => {
 
   it("ends the wait on a failure, so the journey can say why", () => {
     expect(meldDepositPending({ ...waiting, meldStage: "failed" })).toBe(false);
-    expect(meldDepositPending({ ...waiting, progressKind: "failed" })).toBe(false);
   });
 
-  it("falls back to the phase when there is no foreground progress", () => {
-    expect(meldDepositPending({ ...waiting, progressKind: null })).toBe(true);
-    expect(meldDepositPending({ ...waiting, progressKind: null, phase: "swapping" })).toBe(false);
+  it("ends the wait once the request left its deposit", () => {
+    expect(meldDepositPending({ ...waiting, awaitingDeposit: false })).toBe(false);
   });
 });

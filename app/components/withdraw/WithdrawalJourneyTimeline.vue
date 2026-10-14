@@ -1,69 +1,41 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { Check, LoaderCircle, X } from "lucide-vue-next";
-import type { FundingProgressProjection } from "../../../funding/progress";
-import {
-  completedMarkers,
-  JOURNEY_STAGES,
-  type JourneyScale,
-} from "../../../funding/requests/views";
+import type { FundingProgressProjection } from "../../withdraw/progress/types";
 
 const props = withDefaults(
   defineProps<{
     progress: FundingProgressProjection;
-    /** How many markers are done, on the scale `scale` names. */
+    /** How many markers are done. */
     completedSteps: number;
-    /** Which stops the timeline draws: the card's five, the crypto or bank three. */
-    scale?: JourneyScale;
     /** The one line under the stepper: the ribbon only shows when there is something to say. */
     message?: string | null;
-    /** Temporarily stuck, not failed: the current step renders amber and keeps spinning. */
-    delayed?: boolean;
     /** Replaces the failed step's "<stage> failed" wording (the design's "Expired"). */
     failedLabel?: string | null;
-    /** The markers' labels, one per step; the top-up's by default. */
-    labels?: readonly string[] | null;
-    /** What is on its way, for the parts only a screen reader hears. */
-    subject?: string;
+    /** The markers' labels, one per step. */
+    labels: readonly string[];
   }>(),
   {
-    scale: "card",
     message: null,
-    delayed: false,
     failedLabel: null,
-    labels: null,
-    subject: "Top-up",
   },
 );
 
-// A caller with its own stops names them; a top-up takes its route's.
-const stages = computed<readonly string[]>(() => props.labels ?? JOURNEY_STAGES[props.scale]);
-
 const settled = computed(() => props.progress.view.kind === "settled");
 const failed = computed(() => props.progress.view.kind === "failed");
-/** Completed markers, as the record counted them and the scale reads them. */
-const completed = computed(() =>
-  completedMarkers(props.scale, props.completedSteps, {
-    failed: failed.value,
-    detected: props.progress.detectedAt !== undefined,
-  }),
-);
 const activeIndex = computed(() =>
-  settled.value ? -1 : Math.min(completed.value, stages.value.length - 1),
+  settled.value ? -1 : Math.min(props.completedSteps, props.labels.length - 1),
 );
 
-type StepState = "complete" | "current" | "delayed" | "failed" | "upcoming";
+type StepState = "complete" | "current" | "failed" | "upcoming";
 function stageState(index: number): StepState {
-  if (settled.value || index < completed.value) return "complete";
-  if (index === activeIndex.value) {
-    if (failed.value) return "failed";
-    return props.delayed ? "delayed" : "current";
-  }
+  if (settled.value || index < props.completedSteps) return "complete";
+  if (index === activeIndex.value) return failed.value ? "failed" : "current";
   return "upcoming";
 }
 
 function stageLabel(index: number): string {
-  const label = stages.value[index]!;
+  const label = props.labels[index]!;
   if (stageState(index) !== "failed") return label;
   return props.failedLabel ?? `${label} failed`;
 }
@@ -73,45 +45,43 @@ function stageLabel(index: number): string {
  *  do not announce. */
 const announcement = computed(() => {
   const stage = settled.value
-    ? `${props.subject} complete`
+    ? "Withdrawal complete"
     : failed.value
       ? stageLabel(activeIndex.value)
-      : `Step ${activeIndex.value + 1} of ${stages.value.length}: ${stages.value[activeIndex.value]!}`;
+      : `Step ${activeIndex.value + 1} of ${props.labels.length}: ${props.labels[activeIndex.value]!}`;
   return props.message ? `${stage}. ${props.message}` : stage;
 });
 </script>
 
 <template>
-  <section class="funding-journey" :aria-label="`${subject} progress`">
-    <div class="funding-journey-card" :style="{ '--funding-journey-gaps': stages.length - 1 }">
+  <section class="funding-journey" aria-label="Withdrawal progress">
+    <div class="funding-journey-card" :style="{ '--funding-journey-gaps': labels.length - 1 }">
       <ol class="funding-journey-steps">
         <!-- Connectors run centre to centre behind the markers; each takes the colour of the
              step it leads to. The marker's outer ring is the card surface, masking the line. -->
         <span
-          v-for="index in stages.length - 1"
+          v-for="index in labels.length - 1"
           :key="`connector-${index}`"
           class="funding-journey-connector"
           :class="`funding-journey-connector-${stageState(index)}`"
-          :style="{ left: `calc(1rem + ${index - 1} * (100% - 2rem) / ${stages.length - 1})` }"
+          :style="{ left: `calc(1rem + ${index - 1} * (100% - 2rem) / ${labels.length - 1})` }"
           aria-hidden="true"
         />
         <li
-          v-for="(stage, index) in stages"
+          v-for="(stage, index) in labels"
           :key="stage"
           class="funding-journey-step"
           :class="[
             `funding-journey-step-${stageState(index)}`,
             index === 0 ? 'funding-journey-step-first' : '',
-            index === stages.length - 1 ? 'funding-journey-step-last' : '',
+            index === labels.length - 1 ? 'funding-journey-step-last' : '',
           ]"
-          :aria-current="
-            stageState(index) === 'current' || stageState(index) === 'delayed' ? 'step' : undefined
-          "
+          :aria-current="stageState(index) === 'current' ? 'step' : undefined"
         >
           <span class="funding-journey-marker" aria-hidden="true">
             <!-- The default stroke (2 in the 24px viewBox) is the design's 1.3px at this size. -->
             <LoaderCircle
-              v-if="stageState(index) === 'current' || stageState(index) === 'delayed'"
+              v-if="stageState(index) === 'current'"
               class="funding-journey-spinner size-4"
             />
             <X v-else-if="stageState(index) === 'failed'" class="size-4" />
@@ -177,11 +147,6 @@ const announcement = computed(() => {
   background: var(--bg-status-error);
 }
 
-/* Delayed keeps the process alive in amber: nothing struck, no terminal red. */
-.funding-journey-connector-delayed {
-  background: linear-gradient(to right, var(--fg-success) 50%, var(--bg-status-warning) 50%);
-}
-
 .funding-journey-step {
   position: relative;
   z-index: 1;
@@ -212,11 +177,6 @@ const announcement = computed(() => {
 
 .funding-journey-step-failed .funding-journey-marker {
   background: var(--bg-status-error);
-  color: var(--fg-primary);
-}
-
-.funding-journey-step-delayed .funding-journey-marker {
-  background: var(--bg-status-warning);
   color: var(--fg-primary);
 }
 
@@ -253,10 +213,6 @@ const announcement = computed(() => {
 
 .funding-journey-step-failed .funding-journey-label {
   color: var(--fg-error);
-}
-
-.funding-journey-step-delayed .funding-journey-label {
-  color: var(--fg-warning);
 }
 
 /* The ribbon sits behind the card and extends 32px below it; the message is centred in the

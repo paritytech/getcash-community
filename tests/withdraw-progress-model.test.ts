@@ -3,19 +3,15 @@ import {
   CAP,
   DETECT,
   PRECAP,
-  chainflipProgressProvider,
-  composeFundingProgressProfile,
-  createFundingProgressRegistry,
   fundingProgress,
   fundingProgressFloors,
-  observeChainflipProgress,
-  observeSharedCashProgress,
-} from "../app/funding/progress";
+} from "../app/withdraw/progress/model";
+import { composeFundingProgressProfile } from "../app/withdraw/progress/profile";
 import type {
   FundingProgressProfile,
   FundingProgressRouteDefinition,
   FundingProgressSharedDefinition,
-} from "../app/funding/progress/types";
+} from "../app/withdraw/progress/types";
 
 const SECOND = 1_000;
 
@@ -30,7 +26,6 @@ function profile(): FundingProgressProfile {
         { key: "route-a", nodeLabel: "A", activeLabel: "Doing A", nominalMs: 60 * SECOND },
         { key: "route-b", nodeLabel: "B", activeLabel: "Doing B", nominalMs: 30 * SECOND },
       ],
-      observe: () => ({ kind: "hold" }),
     },
     {
       stages: [
@@ -225,72 +220,19 @@ describe("funding progress model", () => {
   });
 });
 
-describe("funding progress registry", () => {
-  it("composes Chainflip ingress with the shared CASH stages", () => {
-    const p = chainflipProgressProvider.createProfile();
-    expect(p.stages.map(({ key }) => key)).toEqual([
-      "chainflip-receiving",
-      "chainflip-swapping",
-      "chainflip-sending",
-      "cash-conversion",
-      "cash-top-up",
-    ]);
-    expect(p.stages).toHaveLength(5);
-    expect(p.routeStageCount).toBe(3);
-    expect(p.startedNodeLabel).toBe("Payment seen");
-    expect(p.stages[0]).toMatchObject({
-      nodeLabel: "Confirmed",
-      activeLabel: "Confirming your payment",
-    });
-    expect(p.routeCompletedLabel).toBe("Payment received");
-  });
-
-  it("scales only the ingress portion from a route estimate", () => {
-    const duration = 12 * 60 * SECOND;
-    const p = chainflipProgressProvider.createProfile({ ingressDurationMs: duration });
-    const ingress = p.stages.slice(0, 3).reduce((sum, stage) => sum + stage.nominalMs, 0);
-    expect(ingress).toBeCloseTo(duration);
-    expect(p.stages[3]?.nominalMs).toBe(8 * 60 * SECOND);
-  });
-
-  it("maps normalized route and shared statuses", () => {
-    expect(observeChainflipProgress("receiving")).toEqual({
-      kind: "stage",
-      stageKey: "chainflip-receiving",
-    });
-    expect(observeChainflipProgress("complete")).toEqual({ kind: "route-complete" });
-    expect(observeSharedCashProgress("await-native")).toEqual({ kind: "hold" });
-    expect(observeSharedCashProgress("swap")).toEqual({
-      kind: "stage",
-      stageKey: "cash-conversion",
-    });
-    // The swap and the send are one program, so both report the conversion.
-    expect(observeSharedCashProgress("await-arrival")).toEqual({
-      kind: "stage",
-      stageKey: "cash-conversion",
-    });
-    expect(observeSharedCashProgress("working")).toEqual({
-      kind: "stage",
-      stageKey: "cash-top-up",
-    });
-  });
-
-  it("rejects invalid profiles and duplicate providers", () => {
+describe("funding progress profile", () => {
+  it("rejects duplicate stage keys", () => {
     const route = {
       id: "duplicate",
       version: 1,
       expectedUserDelayMs: SECOND,
       cadenceMs: SECOND,
       stages: [{ key: "same", nodeLabel: "A", activeLabel: "A", nominalMs: SECOND }],
-      observe: () => ({ kind: "hold" as const }),
     } satisfies FundingProgressRouteDefinition;
     const shared = {
       stages: [{ key: "same", nodeLabel: "B", activeLabel: "B", nominalMs: SECOND }],
     } satisfies FundingProgressSharedDefinition;
 
     expect(() => composeFundingProgressProfile(route, shared)).toThrow(/unique/);
-    expect(() =>
-      createFundingProgressRegistry([chainflipProgressProvider, chainflipProgressProvider]),
-    ).toThrow(/duplicate/);
   });
 });

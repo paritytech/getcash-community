@@ -4,10 +4,10 @@ import {
   meldRequestRef,
   projectMeldTopUps,
 } from "../app/funding/meld-top-ups";
-import { createFundingProgressSnapshot, meldProgressProvider } from "../app/funding/progress";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import type { Observation, RequestRecord } from "../app/funding/requests/model";
 import { reduce } from "../app/funding/requests/reducer";
+import { createTopUpTimelines } from "../app/funding/timeline/timelines";
 import type { ActiveFlowRecord } from "../app/stores/session";
 import { requestRefOf } from "../app/utils/request-index";
 
@@ -63,17 +63,36 @@ describe("Meld top-up adapter", () => {
         method: { label: "Card", icon: "/icons/card.svg" },
         region: "DE",
       },
-      progress: { view: { kind: "waiting", label: "Waiting for your payment" } },
+      progress: { tone: "waiting" },
       state: { kind: "awaiting-transfer", status: "Waiting for your payment" },
     });
+    expect(topUps[0]).not.toHaveProperty("timeline");
     expect(topUps[0]?.details).not.toHaveProperty("network");
     expect(topUps[0]?.details).not.toHaveProperty("token");
     expect(topUps[1]).toMatchObject({
       id: "bank:meld-bank#1",
       route: "bank",
       details: { method: { label: "Bank transfer" } },
-      state: { kind: "finishing", status: "Converting to $CASH" },
+      state: { kind: "finishing", status: "Waiting for your bank transfer" },
     });
+  });
+
+  it("carries the timeline once the payment is submitted, never behind the line it showed", () => {
+    const submitted = record(
+      { tradeN: 2, amountHuman: "50", startedAt: 100, sourceId: "meld-card", meldSubmittedAt: 100 },
+      100,
+    );
+    if (submitted.kind !== "top-up") throw new Error("fixture is not a top-up");
+    const timelineOf = createTopUpTimelines();
+    const rowAt = (now: number) => projectMeldTopUps([submitted], now, timelineOf)[0];
+
+    const shown = rowAt(60_100)?.timeline;
+    expect(shown).toMatchObject({
+      view: { state: "active", phase: 0 },
+      message: { text: "Checking your payment" },
+    });
+    expect(shown?.view.lines[0]).toBeGreaterThan(0);
+    expect(rowAt(30_100)?.timeline?.view.lines[0]).toBe(shown?.view.lines[0]);
   });
 
   it("carries the reference and the provider a failed journey has to show", () => {
@@ -160,15 +179,14 @@ describe("Meld top-up adapter", () => {
   });
 
   it("shows the conversion running once the worker reports the swap", () => {
-    const snapshot = createFundingProgressSnapshot(meldProgressProvider.createProfile());
     const waiting = record(
-      { tradeN: 4, amountHuman: "20", startedAt: 400, sourceId: "meld-card", progress: snapshot },
+      { tradeN: 4, amountHuman: "20", startedAt: 400, sourceId: "meld-card" },
       500,
     );
     const converting = reduce(waiting, worker(450, "swap"));
     expect(projectMeldTopUps([converting], 500)[0]?.state).toEqual({
       kind: "finishing",
-      status: "Converting to $CASH",
+      status: "Adding to your balance",
     });
   });
 
@@ -182,9 +200,6 @@ describe("Meld top-up adapter", () => {
           startedAt: 500,
           sourceId: "meld-card",
           failureReason: "Top-up didn't go through. No money was taken.",
-          progress: createFundingProgressSnapshot(meldProgressProvider.createProfile(), {
-            failedAt: 700,
-          }),
         },
         now,
       ),
@@ -201,7 +216,7 @@ describe("Meld top-up adapter", () => {
       ),
     ];
     expect(projectMeldTopUps(records, now).map(({ state }) => state)).toEqual([
-      { kind: "failed", at: 700, reason: "Top-up didn't go through. No money was taken." },
+      { kind: "failed", at: 500, reason: "Top-up didn't go through. No money was taken." },
       { kind: "settled", at: 800, creditedAmount: "100.25" },
     ]);
   });
@@ -219,37 +234,6 @@ describe("Meld top-up adapter", () => {
       kind: "failed",
       reason: MELD_WINDOW_CLOSED_REASON,
     });
-  });
-
-  it("counts the journey's markers on the row, for a journey opened with nothing live", () => {
-    // The journey reads the count off the request on screen; opened from history there is none,
-    // and the row is the only thing that can say how far this top-up actually got. A card top-up
-    // whose payment landed and whose claim then failed stands on four of five markers.
-    const paid = reduce(
-      record({ tradeN: 9, amountHuman: "50", startedAt: 100, sourceId: "meld-card" }, 200),
-      worker(300, "done"),
-    );
-    const mintFailed = reduce(paid, {
-      source: "core",
-      at: 400,
-      state: {
-        phase: "failed",
-        sourceId: "meld-card",
-        failure: {
-          kind: "mint",
-          step: "mint",
-          message: "Settled, but verification failed.",
-          recoverable: true,
-        },
-      } as never,
-    });
-    expect(projectMeldTopUps([mintFailed], 500)[0]?.journeyDone).toBe(4);
-    // Nothing paid yet: the card scale's first marker alone.
-    const waiting = record(
-      { tradeN: 10, amountHuman: "50", startedAt: 100, sourceId: "meld-card" },
-      200,
-    );
-    expect(projectMeldTopUps([waiting], 500)[0]?.journeyDone).toBe(1);
   });
 
   it("leaves other rails' records alone and reads only its own ids", () => {
