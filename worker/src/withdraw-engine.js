@@ -170,8 +170,6 @@ function newRecord(input, nowMs) {
   if (input.rail === "meld" && channelOf(input.channel).amount === undefined) {
     throw new Error("startWithdraw: a Meld sale needs the exact amount its provider expects");
   }
-  // A sale through an offramp lane redeems the CASH for USDT and pays all of it into a Chainflip
-  // channel that pays the provider; the channel names the least USDT that must land for it.
   if (input.rail === "meld" && input.swap !== undefined) {
     if (!isChannel(input.swap) || channelOf(input.swap).amount === undefined) {
       throw new Error("startWithdraw: a swap sale needs its channel and the USDT it must land");
@@ -415,6 +413,7 @@ function rearm(record, nowMs) {
   record.phase = "starting";
   delete record.failure;
   delete record.lastError;
+  delete record.failedAt;
   record.armedAt = nowMs;
   record.state.workedMs = 0;
   if (failure === "rejected" || failure === "timeout") {
@@ -430,6 +429,7 @@ function fail(record, failure, reason) {
   record.phase = "failed";
   record.failure = failure;
   record.lastError = reason;
+  record.failedAt = Date.now();
 }
 
 /**
@@ -821,7 +821,8 @@ async function startWayHome(record) {
   if (started?.error) throw new Error(started.reason ?? started.error);
 }
 
-/** How long after a swap sale fails its key is read for the swap's refund: two hours. */
+/** How long after a swap sale fails its key is read for the swap's refund: the channel's
+ *  fill-or-kill retry window, then Chainflip's refund egress. */
 const SWAP_REFUND_WAIT_MS = 2 * 60 * 60 * 1000;
 
 const USDT_ID = STABLE_TOKENS.USDT.assetHubId;
@@ -834,8 +835,10 @@ const readKeyUsdt = (api, record) =>
     "key usdt read",
   );
 
-/** A swap sale failed after the key paid, recently enough that its refund may still land. */
+/** A swap sale failed after the key paid, before Chainflip delivered, recently enough that its
+ *  refund may still land. */
 function refundMayLand(record, nowMs = Date.now()) {
+  if (record.leg?.reading?.swapDelivered === true) return false;
   record.failedAt ??= nowMs;
   return nowMs - record.failedAt < SWAP_REFUND_WAIT_MS;
 }

@@ -368,6 +368,17 @@ describe("the sale as the rail leg reads it", () => {
     expect(sameSoldAsset("USDT_SOLANA", "USDT_ASSETHUB")).toBe(false);
   });
 
+  it("takes a deposit in any of the tokens it is offered, read in that token's decimals", () => {
+    const usdc = { symbol: "USDC", decimals: 6, meldCurrencyCode: "USDC_SOLANA" };
+    const usdt = { symbol: "USDT", decimals: 6, meldCurrencyCode: "USDT_SOLANA" };
+    const lane: MeldStatusResult = {
+      status: "transaction_seen",
+      deposit: { address: "9WzD", amount: "24.5", currency: "USDC_SOLANA", observedAt: 1 },
+    };
+    expect(saleChannelOf(lane, [usdt, usdc])?.expectedAmount).toBe(24_500_000n);
+    expect(saleChannelOf(lane, [usdt])).toBeNull();
+  });
+
   it("is closed once the adapter concludes it", () => {
     expect(saleChannelOf({ ...disclosed, status: "expired" })?.expired).toBe(true);
   });

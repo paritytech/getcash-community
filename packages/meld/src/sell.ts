@@ -127,16 +127,19 @@ export interface SaleChannelRecord {
 
 /**
  * The sale as a channel: where the key pays and how much the provider expects. Null when the
- * adapter is not disclosing a deposit, or discloses one the key must not pay: another asset, or
- * an amount that does not parse.
+ * adapter is not disclosing a deposit, or discloses one the key must not pay: an asset none of
+ * `tokens` names, or an amount that does not parse.
  */
 export function saleChannelOf(
   result: MeldStatusResult,
-  token: SellToken = SELL_TOKEN,
+  tokens: SellToken | readonly SellToken[] = SELL_TOKEN,
 ): SaleChannelRecord | null {
   const { deposit } = result;
-  if (deposit === undefined || !sameSoldAsset(deposit.currency, token.meldCurrencyCode))
-    return null;
+  if (deposit === undefined) return null;
+  const token = (Array.isArray(tokens) ? tokens : [tokens as SellToken]).find((t) =>
+    sameSoldAsset(deposit.currency, t.meldCurrencyCode),
+  );
+  if (token === undefined) return null;
   const expectedAmount = parseBaseUnits(token, deposit.amount);
   if (expectedAmount === null || expectedAmount <= 0n) return null;
   return {
@@ -208,14 +211,14 @@ export interface SaleReadMemory {
  * after. A sale the adapter keeps answering 404 for (a reset database, a product id that changed)
  * is gone after SALE_GONE_AFTER reads in a row spanning SALE_GONE_FOR_MS: no channel to pay, so the
  * key goes home, or, once paid, a payout nobody can confirm. Short of that, and on any other
- * failure, the read throws and the next tick reads again. `token` is what the sale sells, which
+ * failure, the read throws and the next tick reads again. `tokens` is what the sale may sell, which
  * the deposit is read in.
  */
 export function saleRail(
   client: MeldClientLike,
   memory: SaleReadMemory,
   now: () => number = Date.now,
-  token: SellToken = SELL_TOKEN,
+  tokens: SellToken | readonly SellToken[] = SELL_TOKEN,
 ) {
   const read = async (fundingRequestId: string): Promise<MeldStatusResult | null> => {
     try {
@@ -237,7 +240,7 @@ export function saleRail(
   return {
     channel: async (fundingRequestId: string): Promise<SaleChannelRecord | null> => {
       const result = await read(fundingRequestId);
-      return result === null ? null : saleChannelOf(result, token);
+      return result === null ? null : saleChannelOf(result, tokens);
     },
     status: async (fundingRequestId: string): Promise<SwapStatusResult> =>
       saleStatusView((await read(fundingRequestId)) ?? { status: "unobserved" }),

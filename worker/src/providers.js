@@ -13,7 +13,9 @@ import {
   SELL_TOKEN,
   USDT_SELL_TOKEN,
 } from "@getsome/meld";
+import { LANES, laneSellToken } from "@getsome/offramp";
 import {
+  ChannelMismatchError,
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
   DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
   exactPaymentLanded,
@@ -77,34 +79,55 @@ export function railFor(provider, record) {
         ? { productId: meld.productId }
         : {}),
     });
-    const sale = saleRail(
-      client,
-      record,
-      Date.now,
-      holdsUsdt(record) ? USDT_SELL_TOKEN : SELL_TOKEN,
-    );
-    return record?.swap ? swapSaleRail(sale, record) : sale;
+    if (record?.swap) return swapSaleRail(saleRail(client, record, Date.now, LANE_TOKENS), record);
+    return saleRail(client, record, Date.now, holdsUsdt(record) ? USDT_SELL_TOKEN : SELL_TOKEN);
   }
   return null;
 }
 
-/** What a sale's exact payment pays in: USDT for a key that holds it, PAS (undefined) otherwise. */
+/** What a sale's key pays in, fee included: USDT for a key that holds it, PAS (undefined) otherwise. */
 const exactAssetOf = (record) => (holdsUsdt(record) ? STABLE_TOKENS.USDT.assetHubId : undefined);
 
 /** Chainflip's network for a sale's swap: Perseverance on a test network, as the page opens it. */
 const SWAP_NETWORK = NETWORK.testnet ? "perseverance" : "mainnet";
 
+/** What a swap sale's provider may be paid in: any lane's asset. */
+const LANE_TOKENS = LANES.map(laneSellToken);
+
 /**
- * A sale through an offramp lane: the key pays a Chainflip channel, which pays the provider. The
- * channel is Chainflip's, checked before the key pays; the swap is followed until Chainflip
- * delivers, then the sale until the provider pays out.
+ * A sale through an offramp lane: the key pays a Chainflip channel, which pays the provider. Before
+ * the key pays, Meld's own record must name the deposit address and amount the hand-off carries,
+ * so the Chainflip channel's destination is checked against the provider, not against the page.
+ * The swap is followed until Chainflip delivers, then the sale until the provider pays out.
  */
 function swapSaleRail(sale, record) {
   return {
-    channel: (id) => readChannelRecord(id, undefined, SWAP_NETWORK),
+    channel: async (id) => {
+      const [swap, order] = await Promise.all([
+        readChannelRecord(id, undefined, SWAP_NETWORK),
+        sale.channel(record.channel.id),
+      ]);
+      if (swap === null) return null;
+      if (order === null) {
+        throw new ChannelMismatchError(`the provider cannot name sale ${record.channel.id}`);
+      }
+      if (order.depositAddress !== record.channel.address) {
+        throw new ChannelMismatchError(
+          `sale ${record.channel.id} takes deposits at ${order.depositAddress}, not ${record.channel.address}`,
+        );
+      }
+      if (order.expectedAmount !== BigInt(record.channel.amount)) {
+        throw new ChannelMismatchError(
+          `sale ${record.channel.id} expects ${order.expectedAmount}, not ${record.channel.amount}`,
+        );
+      }
+      return order.expired ? { ...swap, expired: true } : swap;
+    },
     status: async (id) => {
       const swap = await readSwapStatus(id, undefined, SWAP_NETWORK);
-      return swap.status === "complete" ? sale.status(record.channel.id) : swap;
+      // Once Chainflip has delivered, no refund comes back to the key (see `refundMayLand`).
+      if (swap.status !== "complete") return swap;
+      return { ...(await sale.status(record.channel.id)), swapDelivered: true };
     },
   };
 }
@@ -118,7 +141,6 @@ function swapSaleRail(sale, record) {
 export async function payRailExact(record, handoff, amount, exact, hooks = {}) {
   const key = await keypairFor(record.label);
   const client = await connectChain(record.assetHubGenesis, "asset hub");
-  // A sale of USDT pays in USDT, and pays its fee in it.
   const assetId = exactAssetOf(record);
   try {
     const assetHubApi = client.getTypedApi(paseo_next_v2);
@@ -181,8 +203,7 @@ export async function exactPaymentOut(record, amount, exact) {
 export async function payRail(record, handoff, sweep, hooks = {}) {
   const key = await keypairFor(record.label);
   const client = await connectChain(record.assetHubGenesis, "asset hub");
-  // A swap sale's key holds the USDT the PSM redeemed, and pays its fee in it.
-  const assetId = record.swap ? STABLE_TOKENS.USDT.assetHubId : undefined;
+  const assetId = exactAssetOf(record);
   try {
     const assetHubApi = client.getTypedApi(paseo_next_v2);
     await sweepOnce(

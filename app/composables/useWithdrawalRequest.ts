@@ -35,6 +35,10 @@ import { meldSellClient } from "../withdraw/meld-client";
 import { workerSessionId } from "~~/lib/coinage";
 import { isHosted } from "~~/lib/host-account";
 
+/** How long before a Chainflip channel closes it is opened afresh instead: room for the key's
+ *  payment to land. */
+const SWAP_REUSE_MARGIN_MS = 10 * 60_000;
+
 /** The withdrawals a cancel is under way for, by request key: a sale's purse is not asked
  *  meanwhile. Module scope, since each screen holds its own `useWithdrawalRequest`. */
 const cancelsUnderWay = new Set<string>();
@@ -356,9 +360,12 @@ export function useWithdrawalRequest() {
     let fundable: boolean;
     try {
       if (lane !== undefined) {
-        // The swap is opened now, to the address the provider named, on today's quote; a quote
-        // that no longer covers the sale throws, and nothing is opened or asked.
-        fundable = record.handoff.swap !== undefined || (await openSaleSwap(ref, lane, live));
+        // The swap is opened now, to the address the provider named, on today's quote. One opened
+        // on an earlier try is kept only while it still has time for the key's payment.
+        const swap = record.handoff.swap;
+        fundable =
+          (swap !== undefined && swapStillOpen(swap, requestsNow())) ||
+          (await openSaleSwap(ref, lane, live));
       } else if (isDirectUsdt(record.sale.sellCode)) {
         fundable = await live.usdtSaleFundable(
           BigInt(record.handoff.amount),
@@ -391,16 +398,18 @@ export function useWithdrawalRequest() {
   }
 
   /** Opens a lane sale's Chainflip channel to the provider's deposit address and records it.
-   *  False when the price moved too far for the sale's promise. */
+   *  False only when the price moved too far for the sale's promise. */
   async function openSaleSwap(
     ref: RequestRef,
     lane: LaneId,
     live: typeof import("~~/lib/withdraw-live"),
   ): Promise<boolean> {
     const record = requests.get(ref);
-    if (record?.kind !== "withdrawal" || record.sale === undefined) return false;
+    if (record?.kind !== "withdrawal" || record.sale === undefined) {
+      throw new Error("the sale is no longer on record");
+    }
     const provider = record.handoff.channel;
-    if (provider === undefined) return false;
+    if (provider === undefined) throw new Error("the provider has not named its deposit address");
     const swap = await live.openSwapSaleChannel({
       amount: BigInt(record.handoff.amount),
       lane: laneById(lane),
@@ -416,6 +425,11 @@ export function useWithdrawalRequest() {
       channel: swap,
     });
     return true;
+  }
+
+  /** A Chainflip channel the key can still pay before it closes. */
+  function swapStillOpen(swap: WithdrawalChannel, now: number): boolean {
+    return swap.expiresAt === 0 || swap.expiresAt - SWAP_REUSE_MARGIN_MS > now;
   }
 
   /** The sale on the record still waits for its purse to be asked, as the record stands now. */

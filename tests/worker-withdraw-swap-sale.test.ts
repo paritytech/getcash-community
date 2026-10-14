@@ -324,6 +324,32 @@ describe("a fiat sale through an offramp lane", () => {
     expect(mocks.startFunding.mock.calls[0]![0]).toMatchObject({ tier: "pool", external: "USDT" });
     expect(storedJob().residue).toMatchObject({ amount: "99000000", returning: true });
   });
+
+  it("waits for no refund once Chainflip has delivered to the provider", async () => {
+    const engine = await landed();
+    await engine.tickAllWithdraw();
+    mocks.status.mockResolvedValue({ status: "failed", raw: "failed", swapDelivered: true });
+    await engine.tickAllWithdraw();
+    expect(storedJob().residueError).toBeUndefined();
+    expect(storedJob().residue).toEqual({ amount: "0", returning: false });
+  });
+
+  it("gives up on the refund two hours after the swap failed", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const engine = await landed();
+      await engine.tickAllWithdraw();
+      mocks.status.mockResolvedValue({ status: "failed", raw: "FAILED" });
+      await engine.tickAllWithdraw();
+      expect(storedJob().failedAt).toBe(Date.now());
+      expect(storedJob().residueError).toMatch(/refund/);
+      vi.setSystemTime(Date.now() + 2 * 60 * 60 * 1000);
+      await engine.tickAllWithdraw();
+      expect(storedJob().residue).toEqual({ amount: "0", returning: false });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("a direct fiat sale of USDT", () => {
