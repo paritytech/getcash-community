@@ -3,7 +3,11 @@
 
 import { describe, expect, it } from "vitest";
 import type { SwapSdkLike } from "./sdk";
-import { openWithdrawChannel, quoteOutgoing } from "./withdraw-channel";
+import {
+  DEFAULT_CHANNEL_LIFETIME_MS,
+  openWithdrawChannel,
+  quoteOutgoing,
+} from "./withdraw-channel";
 
 const KEY_ON_ASSET_HUB = "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5";
 const BTC_ADDRESS = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
@@ -96,6 +100,26 @@ describe("the outgoing channel", () => {
         retryDurationMinutes: 10,
       },
     });
+  });
+
+  it("takes a channel the SDK names no expiry for as a day from now", async () => {
+    // The broker path returns no expiry time. The worker holds the channel to this figure, which
+    // stays short of the 26 hours Chainflip gives an Asset Hub channel today.
+    const { sdk } = scripted();
+    const broker: SwapSdkLike = {
+      ...sdk,
+      requestDepositAddressV2: async () => ({ depositAddress: "5Channel", depositChannelId: "42" }),
+    };
+    const before = Date.now();
+    const channel = await openWithdrawChannel({
+      sdk: broker,
+      amount: FOUR_DOT,
+      destination,
+      refundAddress: KEY_ON_ASSET_HUB,
+    });
+    expect(channel.expiresAt).toBeGreaterThanOrEqual(before + DEFAULT_CHANNEL_LIFETIME_MS);
+    expect(channel.expiresAt).toBeLessThanOrEqual(Date.now() + DEFAULT_CHANNEL_LIFETIME_MS);
+    expect(DEFAULT_CHANNEL_LIFETIME_MS).toBe(24 * 3_600_000);
   });
 
   it("refuses nothing to sell and a pair Chainflip cannot quote", async () => {

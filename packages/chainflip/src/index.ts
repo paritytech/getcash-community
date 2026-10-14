@@ -7,6 +7,7 @@ export {
   type SourceConfig,
 } from "./sources";
 export {
+  DEFAULT_CHANNEL_LIFETIME_MS,
   openWithdrawChannel,
   quoteOutgoing,
   type IncludedFee,
