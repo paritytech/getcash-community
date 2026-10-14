@@ -100,14 +100,10 @@ describe("preview scenes", () => {
         fundingNotice: requests.fundingNotice,
         claimStage: requests.claimStage,
         claimedBase: requests.claimedBase,
-        journeyDone: requests.journeyDone,
-        milestones: { ...requests.milestones },
         meldStage: requests.meldStage,
-        meldDelayed: requests.meldDelayed,
         meldFailureMessage: requests.meldFailureMessage,
         meldSubmitted: requests.meldSubmitted,
         meldHandedOff: requests.meldHandedOff,
-        foregroundSnapshot: requests.foregroundProgress?.snapshot,
       });
     }
     expect(views).toMatchSnapshot();
@@ -122,16 +118,12 @@ const REQUEST_VIEWS = [
   "fundingNotice",
   "claimStage",
   "claimedBase",
-  "foregroundProgress",
   "meldStage",
-  "meldDelayed",
   "meldFailureMessage",
   "meldSubmitted",
   "meldHandedOff",
   "fundsSeen",
   "claiming",
-  "journeyDone",
-  "milestones",
   "requestList",
   "requestStatus",
 ];

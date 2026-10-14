@@ -1,8 +1,6 @@
-import type { Component, Ref } from "vue";
+import type { Component } from "vue";
 import ChainflipFundingStatusRoute from "../components/funding/routes/ChainflipFundingStatusRoute.vue";
 import MeldFundingStatusRoute from "../components/funding/routes/MeldFundingStatusRoute.vue";
-import type { FundingJourneyStatus } from "./handoff";
-import { useMeldJourneyStatus } from "../composables/useMeldJourneyStatus";
 import { useChainflipTopUpAdapter } from "./chainflip-top-ups";
 import { useMeldTopUpAdapter } from "./meld-top-ups";
 import { useCryptoWithdrawalTopUpAdapter, useFiatWithdrawalTopUpAdapter } from "../withdraw/rows";
@@ -20,8 +18,6 @@ export interface FundingRoutePackage {
   packageId: string;
   load: () => Promise<Component>;
   topUps?: FundingRouteTopUps;
-  /** Composable giving the package's payment status line for the shell's journey. */
-  journeyStatus?: () => Readonly<Ref<FundingJourneyStatus | null>>;
 }
 
 export type FundingRoutePackages = Partial<Record<FundingRoute, FundingRoutePackage>>;
@@ -115,7 +111,6 @@ const meldPackage = {
     useAdapter: useMeldTopUpAdapter,
     loadStatus: async () => MeldFundingStatusRoute,
   },
-  journeyStatus: useMeldJourneyStatus,
 } satisfies FundingRoutePackage;
 
 const loadCryptoWithdrawRoute = () =>

@@ -3,22 +3,22 @@
 // its stamps are the milestones. A direct destination is sent by the XCM itself; a Chainflip one
 // waits on the rail after the conversion, and a fiat sale on the provider's payout.
 
-import {
-  composeFundingProgressProfile,
-  createFundingProgressSnapshot,
-  projectFundingProgress,
-  type FundingProgressProfile,
-  type FundingProgressProjection,
-  type FundingProgressRouteDefinition,
-  type FundingProgressSnapshotOptions,
-} from "../funding/progress";
-import { currencyConfig } from "../funding/config";
+import { currencyConfig } from "../../funding/config";
 import {
   saleAwaitingDeposit,
   withdrawalRankOf,
   type WithdrawalRailState,
   type WithdrawalRecord,
-} from "../funding/requests/model";
+} from "../../funding/requests/model";
+import { composeFundingProgressProfile } from "./profile";
+import { projectFundingProgress } from "./projection";
+import { createFundingProgressSnapshot } from "./snapshot";
+import type {
+  FundingProgressProfile,
+  FundingProgressProjection,
+  FundingProgressRouteDefinition,
+  FundingProgressSnapshotOptions,
+} from "./types";
 
 const MINUTE = 60_000;
 
@@ -53,8 +53,6 @@ const route = {
       nominalMs: 3 * MINUTE,
     },
   ],
-  // The record's status drives the projection; no rail status is observed here.
-  observe: () => ({ kind: "hold" }),
 } as const satisfies FundingProgressRouteDefinition;
 
 function sendingStage(nominalMs: number, activeLabel = "Sending to your address") {

@@ -4,6 +4,7 @@
 
 import { shortRef } from "../utils/journey";
 import { fmtFiat, isMoneyAmount } from "../utils/money";
+import type { FailureDetails } from "./timeline/failure";
 
 /**
  * A fee and the components behind it, named as every source of a quote names them.
@@ -63,6 +64,8 @@ export interface QuoteRow {
   fees?: boolean;
   /** The full text a copy control puts on the clipboard; `value` may be an elided form of it. */
   copy?: string;
+  /** The value is a raw identifier. */
+  mono?: boolean;
 }
 
 /**
@@ -98,52 +101,29 @@ export type JourneyMoneyRows = "quote" | "receipt" | "none";
  * Which money rows the journey shows for an ending.
  *
  * The design draws three cases. A top-up still running, or one that simply landed, shows the
- * charge and nothing else — a buyer with their CASH has nobody to chase, so the settled frames
- * carry no provider or reference row. A fiat top-up that failed gets the receipt instead: the
- * charge, who took it, and the id to quote them. An expired one shows nothing, because nobody was
- * ever charged.
+ * charge it runs against. A fiat top-up that failed shows the charge as its receipt. An expired one
+ * shows nothing, because nobody was ever charged.
  *
  * The crypto rail keeps its deposit figure on the deposit screen, which owns it, so it shows no
- * money rows at all — except on a refund, where the receipt names the network and the rail that
- * handled it and the guide tells the money's own story.
+ * money rows at all: restating it against a refund reads as a second charge.
  */
 export function journeyMoneyRows(ending: {
   crypto: boolean;
   expired: boolean;
   failed: boolean;
-  refunded: boolean;
 }): JourneyMoneyRows {
-  if (ending.expired) return "none";
-  if (ending.crypto) return ending.refunded ? "receipt" : "none";
+  if (ending.expired || ending.crypto) return "none";
   return ending.failed ? "receipt" : "quote";
 }
 
-/**
- * The rows a concluded fiat top-up shows instead of the live quote's own.
- *
- * Both rails end up here. A card payment that was refunded still charged the buyer, and the two
- * figures differ — the ribbon says what came back, this says what went out — so the design keeps
- * the money row on a refund rather than dropping it with the quote. The provider and the
- * reference ride with it: between them they are what a buyer hands support. The reference is the
- * funding request's own id, the only identifier the adapter surfaces — the rail's is held back
- * behind its DTO.
- */
-export function paidDetailRows(
-  quote: QuoteView | null,
-  paid: { provider?: string; reference?: string; network?: string } = {},
-): QuoteRow[] {
-  const rows: QuoteRow[] = [];
-  // Fiat only. The crypto rail's deposit figure belongs to the deposit screen, and restating it
-  // against a refund reads as a second charge rather than the one sum that went out and came back.
-  if (quote !== null && !quote.crypto) rows.push(paidRow(quote));
-  if (paid.network) rows.push({ label: "Network", value: paid.network });
-  if (paid.provider) rows.push({ label: "Provider", value: paid.provider });
-  if (paid.reference) {
-    rows.push({
-      label: "Transaction ID",
-      value: shortRef(paid.reference),
-      copy: paid.reference,
-    });
-  }
-  return rows;
+/** The failure details: the provider, its reason, and its reference for the payment, a raw value
+ *  shown short with the whole of it to copy. A detail with no value has no row. */
+export function failureDetailRows({ provider, reason, reference }: FailureDetails): QuoteRow[] {
+  return [
+    ...(provider ? [{ label: "Provider", value: provider }] : []),
+    ...(reason ? [{ label: "Reason", value: reason }] : []),
+    ...(reference
+      ? [{ label: "Reference", value: shortRef(reference), copy: reference, mono: true }]
+      : []),
+  ];
 }

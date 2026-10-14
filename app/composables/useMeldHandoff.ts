@@ -2,7 +2,6 @@
 
 import { computed, watch } from "vue";
 import { meldDepositPending } from "../funding/meld-handoff";
-import { projectFundingProgress } from "../funding/progress";
 import { useFlowStore } from "../stores/flow";
 import { useRequestsStore } from "../stores/requests";
 import { useSessionStore } from "../stores/session";
@@ -12,23 +11,14 @@ export function useMeldHandoff(emit: (event: "handoff") => void) {
   const requests = useRequestsStore();
   const flow = useFlowStore();
 
-  const depositPending = computed(() => {
-    const foreground = requests.foregroundProgress;
-    const progressKind = foreground
-      ? projectFundingProgress({
-          snapshot: foreground.snapshot,
-          createdAt: foreground.startedAt,
-          now: Date.now(),
-        }).view.kind
-      : null;
-    return meldDepositPending({
+  const depositPending = computed(() =>
+    meldDepositPending({
       fundsSeen: requests.fundsSeen,
       meldHandedOff: requests.meldHandedOff,
       meldStage: requests.meldStage,
-      phase: requests.phase,
-      progressKind,
-    });
-  });
+      awaitingDeposit: requests.awaitingDeposit,
+    }),
+  );
 
   const confirmed = computed(
     () =>

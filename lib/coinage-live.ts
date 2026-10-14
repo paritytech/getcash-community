@@ -49,6 +49,7 @@ import {
   watchDirectDepositOnAh,
   type CoinageWorld,
   type DirectDepositReading,
+  type Finality,
 } from "./coinage";
 import { ASSET_HUB, ASSET_HUB_GENESIS, connectChain, PEOPLE, PEOPLE_GENESIS } from "./host-chain";
 import type { FundingSizing } from "./funding-fees";
@@ -112,31 +113,43 @@ export async function probeRefundKey(
   return recoverRefundKey(entropy, sourceId, tradeN);
 }
 
-/** Follows a trade's burner balance in its route's deposit asset on Asset Hub at each best block
- *  until the returned function is called: every emission reaches `onValue`, a failed
- *  subscription `onError`. */
+/** Runs `watch` at the best and at the finalized block; the returned function ends both. */
+function atBestAndFinalized(watch: (at: Finality) => () => void): () => void {
+  const unsubscribes = (["best", "finalized"] as const).map(watch);
+  return () => {
+    for (const unsubscribe of unsubscribes) unsubscribe();
+  };
+}
+
+/** Follows a trade's burner balance in its route's deposit asset on Asset Hub at each best and
+ *  each finalized block until the returned function is called: every emission reaches `onValue`
+ *  with the block it was read at, a failed subscription `onError`. */
 export async function watchTradeBurner(
   sourceId: string,
   tradeN: number,
   route: ConversionRoute,
-  onValue: (free: bigint, address: string) => void,
+  onValue: (free: bigint, finality: Finality) => void,
   onError: (e: unknown) => void,
 ): Promise<() => void> {
   const { api, address } = await burnerOnAssetHub(sourceId, tradeN);
-  return watchDepositOnAh(api, route, address, (free) => onValue(free, address), onError);
+  return atBestAndFinalized((at) =>
+    watchDepositOnAh(api, route, address, at, (free) => onValue(free, at), onError),
+  );
 }
 
 /** `watchTradeBurner` for a Polkadot deposit: the route's own token and the first other direct
- *  token found, at each best block. */
+ *  token found, at each best and each finalized block. */
 export async function watchDirectTradeBurner(
   sourceId: string,
   tradeN: number,
   route: ConversionRoute,
-  onValue: (reading: DirectDepositReading) => void,
+  onValue: (reading: DirectDepositReading, finality: Finality) => void,
   onError: (e: unknown) => void,
 ): Promise<() => void> {
   const { api, address } = await burnerOnAssetHub(sourceId, tradeN);
-  return watchDirectDepositOnAh(api, route, address, onValue, onError);
+  return atBestAndFinalized((at) =>
+    watchDirectDepositOnAh(api, route, address, at, (reading) => onValue(reading, at), onError),
+  );
 }
 
 async function burnerOnAssetHub(sourceId: string, tradeN: number) {

@@ -4,16 +4,6 @@
 
 import type { FundingStep } from "@getsome/funding";
 import type { ActiveFlowRecord } from "../../app/stores/session";
-import {
-  advanceFundingProgressSnapshot,
-  createFundingProgressSnapshot,
-  fundingProgressSignalForSharedStep,
-  MELD_PAYMENT_STAGE,
-  progressProviderForSource,
-  type FundingProgressProfile,
-  type FundingProgressSignal,
-  type FundingProgressSnapshot,
-} from "../../app/funding/progress";
 import { CRYPTO_SOURCE_ID } from "../../app/funding/source-ids";
 
 const MINUTE = 60_000;
@@ -26,62 +16,6 @@ const minutesAgo = (minutes: number) => FIXTURE_NOW - minutes * MINUTE;
 /** The Asset Hub account a request's deposit lands on. */
 const BURNER_ADDRESS = "14uAyRtbeRsrgERPLETm72yFPKW3oi3m4RX93arNwGQhsduC";
 
-/** What `initialProgress` projects for the whole journey: the user's delay, then every stage. */
-const journeyDurationMs = (profile: FundingProgressProfile) =>
-  profile.expectedUserDelayMs + profile.stages.reduce((total, stage) => total + stage.nominalMs, 0);
-
-/** The crypto quote's ETA, which scales the route's ingress stages. */
-const CRYPTO_ETA_SECONDS = 600;
-
-/** The snapshot `persistActiveFlow` writes for a crypto request. */
-function initialCryptoProgress(startedAt: number): FundingProgressSnapshot {
-  const profile = progressProviderForSource(CRYPTO_SOURCE_ID).createProfile({
-    ingressDurationMs: CRYPTO_ETA_SECONDS * 1_000,
-  });
-  return createFundingProgressSnapshot(profile, {
-    preDetectionEstimateText: `≈${CRYPTO_ETA_SECONDS / 60} min after your transfer`,
-    estimatedCompletionAt: startedAt + journeyDurationMs(profile),
-  });
-}
-
-/** The snapshot `persistActiveFlow` writes for a card request. */
-function initialCardProgress(startedAt: number): FundingProgressSnapshot {
-  const profile = progressProviderForSource("meld-card").createProfile({
-    ingressDurationMs: 5 * MINUTE,
-  });
-  return createFundingProgressSnapshot(profile, {
-    preDetectionEstimateText: "≈ minutes after you pay",
-    estimatedCompletionAt: startedAt + journeyDurationMs(profile),
-  });
-}
-
-/** The signals the store recorded on the snapshot, in the order they landed. */
-function recorded(
-  snapshot: FundingProgressSnapshot,
-  events: readonly (readonly [FundingProgressSignal, number])[],
-): FundingProgressSnapshot {
-  return events.reduce(
-    (current, [signal, at]) => advanceFundingProgressSnapshot(current, { ...signal, at }),
-    snapshot,
-  );
-}
-
-/** The first payment state after a start, on either rail. */
-const WAITING: FundingProgressSignal = { observation: { kind: "waiting" }, routeStatus: "waiting" };
-/** The Meld poll once the buyer left the widget, then once the provider settled. */
-const MELD_RECEIVING: FundingProgressSignal = {
-  observation: { kind: "stage", stageKey: MELD_PAYMENT_STAGE },
-  routeStatus: "receiving",
-};
-const MELD_COMPLETE: FundingProgressSignal = {
-  observation: { kind: "route-complete" },
-  routeStatus: "complete",
-};
-/** The worker's first step past the deposit. */
-const SWAP = fundingProgressSignalForSharedStep("swap");
-const FAILED: FundingProgressSignal = { observation: { kind: "failed" } };
-const SETTLED: FundingProgressSignal = { observation: { kind: "settled" } };
-
 // (a) A crypto request still waiting for its deposit, inside the channel's window.
 const DOT3_STARTED = minutesAgo(30);
 export const awaitingDepositCryptoRecord: ActiveFlowRecord = {
@@ -92,7 +26,6 @@ export const awaitingDepositCryptoRecord: ActiveFlowRecord = {
   sourceSymbol: "BTC",
   startedAt: DOT3_STARTED,
   depositAddress: "bc1q-fixture-deposit-3",
-  progress: recorded(initialCryptoProgress(DOT3_STARTED), [[WAITING, DOT3_STARTED]]),
   tradeN: 3,
   sourceId: CRYPTO_SOURCE_ID,
   depositExpiresAt: DOT3_STARTED + DAY,
@@ -109,10 +42,6 @@ export const fundedCryptoRecord: ActiveFlowRecord = {
   sourceSymbol: "ETH",
   startedAt: DOT4_STARTED,
   depositAddress: "0x-fixture-deposit-4",
-  progress: recorded(initialCryptoProgress(DOT4_STARTED), [
-    [WAITING, DOT4_STARTED],
-    [SWAP, DOT4_FUNDED],
-  ]),
   tradeN: 4,
   sourceId: CRYPTO_SOURCE_ID,
   funded: DOT4_FUNDED,
@@ -131,10 +60,6 @@ export const submittedCardRecord: ActiveFlowRecord = {
   sourceNetworkFee: "0.01",
   startedAt: CARD2_STARTED,
   depositAddress: BURNER_ADDRESS,
-  progress: recorded(initialCardProgress(CARD2_STARTED), [
-    [WAITING, CARD2_STARTED],
-    [MELD_RECEIVING, CARD2_SUBMITTED],
-  ]),
   tradeN: 2,
   sourceId: "meld-card",
   meldFundingRequestId: "mfr-fixture-card-2",
@@ -157,13 +82,6 @@ export const settledCardRecord: ActiveFlowRecord = {
   sourceNetworkFee: "0.01",
   startedAt: CARD1_STARTED,
   depositAddress: BURNER_ADDRESS,
-  progress: recorded(initialCardProgress(CARD1_STARTED), [
-    [WAITING, CARD1_STARTED],
-    [MELD_RECEIVING, CARD1_SUBMITTED],
-    [MELD_COMPLETE, CARD1_FUNDED],
-    [SWAP, CARD1_FUNDED],
-    [SETTLED, CARD1_SETTLED],
-  ]),
   tradeN: 1,
   sourceId: "meld-card",
   meldFundingRequestId: "mfr-fixture-card-1",
@@ -186,10 +104,6 @@ export const failedCryptoRecord: ActiveFlowRecord = {
   sourceSymbol: "BTC",
   startedAt: DOT2_STARTED,
   depositAddress: "bc1q-fixture-deposit-2",
-  progress: recorded(initialCryptoProgress(DOT2_STARTED), [
-    [WAITING, DOT2_STARTED],
-    [FAILED, DOT2_FAILED],
-  ]),
   tradeN: 2,
   sourceId: CRYPTO_SOURCE_ID,
   funded: DOT2_FAILED,
@@ -207,14 +121,13 @@ export const cancelledCryptoRecord: ActiveFlowRecord = {
   sourceSymbol: "SOL",
   startedAt: DOT1_STARTED,
   depositAddress: "sol-fixture-deposit-1",
-  progress: recorded(initialCryptoProgress(DOT1_STARTED), [[WAITING, DOT1_STARTED]]),
   tradeN: 1,
   sourceId: CRYPTO_SOURCE_ID,
   depositExpiresAt: DOT1_STARTED + DAY,
   cancelledAt: DOT1_CANCELLED,
 };
 
-// (g) A record from before source ids and progress snapshots, stored under the bare key.
+// (g) A record from before source ids, stored under the bare key.
 const LEGACY7_STARTED = FIXTURE_NOW - 3 * DAY;
 export const LEGACY_BARE_REF_KEY = "getsome:request:7";
 export const legacyBareRefRecord: ActiveFlowRecord = {

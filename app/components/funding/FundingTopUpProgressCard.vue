@@ -70,7 +70,12 @@ const emit = defineEmits<{ open: [topUp: ProgressCardTopUp] }>();
         <ArrowUpRight v-if="settled && debit" class="size-4 text-fg-secondary" aria-hidden="true" />
         <Check v-else-if="settled" class="size-4 text-fg-success" aria-hidden="true" />
         <X v-else-if="failed" class="size-4 text-fg-error" aria-hidden="true" />
-        <FundingProgressRing v-else :progress="topUp.progress" :size="16" />
+        <FundingProgressRing
+          v-else
+          :value="topUp.progress.value"
+          :tone="topUp.progress.tone"
+          :size="16"
+        />
       </span>
       <span class="flex min-w-0 flex-col">
         <strong
@@ -83,7 +88,7 @@ const emit = defineEmits<{ open: [topUp: ProgressCardTopUp] }>();
         </strong>
         <span
           class="truncate text-body-m"
-          :class="topUp.delayed ? 'text-fg-warning' : 'text-fg-secondary'"
+          :class="topUp.progress.delayed ? 'text-fg-warning' : 'text-fg-secondary'"
         >
           {{ statusText }}
         </span>

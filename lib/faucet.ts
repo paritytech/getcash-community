@@ -9,7 +9,7 @@ import { deriveSeedKeypair } from "@getsome/ephemeral";
 import { depositTokenOf, type ConversionRoute } from "@getsome/funding";
 import { mnemonicToEntropy } from "@polkadot-labs/hdkd-helpers";
 import { MultiAddress, paseo_next_v2 } from "@polkadot-api/descriptors";
-import type { PolkadotSigner } from "polkadot-api";
+import type { PolkadotSigner, Transaction } from "polkadot-api";
 import { ASSET_HUB, connectChain } from "./host-chain";
 
 const RAW_SEED: string | undefined = import.meta.env.VITE_FAUCET_SEED;
@@ -33,15 +33,36 @@ function seedBytes(): Uint8Array {
   return mnemonicToEntropy(raw.replace(/\s+/g, " "));
 }
 
-/** Transfers `amount` of the route's deposit asset, in that asset's base units, to `address` on
- *  Asset Hub, and resolves with what was sent once the transfer is in a block. On the stable
- *  tiers an amount under the asset's `min_balance`, 70_000 for USDt and USDC, is raised to it: a
- *  smaller transfer would not create the burner's asset account, and nothing would land. */
+type TransferWatch = ReturnType<Transaction["signSubmitAndWatch"]>;
+
+/** Resolves once the transfer is broadcast, and rejects when it is refused before. The watch stays
+ *  subscribed, so that the transfer keeps being broadcast, but nothing after the broadcast is
+ *  read. */
+function broadcast(watch: TransferWatch, symbol: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const refused = (reason: string) =>
+      reject(
+        new Error(`faucet transfer refused (is the faucet funded with ${symbol}?): ${reason}`),
+      );
+    watch.subscribe({
+      next: (event) => {
+        if (event.type === "broadcasted") resolve();
+      },
+      error: (error: unknown) => refused(error instanceof Error ? error.message : String(error)),
+      complete: () => refused("the watch ended before the broadcast"),
+    });
+  });
+}
+
+/** Signs and submits a transfer of `amount` of the route's deposit asset, in that asset's base
+ *  units, to `address` on Asset Hub, and resolves once it is broadcast. On the stable tiers an
+ *  amount under the asset's `min_balance`, 70_000 for USDt and USDC, is raised to it: a smaller
+ *  transfer would not create the burner's asset account, and nothing would land. */
 export async function fundFromFaucet(args: {
   address: string;
   amount: bigint;
   route: ConversionRoute;
-}): Promise<bigint> {
+}): Promise<void> {
   if (!isFaucetConfigured()) {
     throw new Error("faucet not configured: set VITE_FAUCET_SEED (mnemonic or 0x hex entropy)");
   }
@@ -49,28 +70,13 @@ export async function fundFromFaucet(args: {
   // connectChain returns the shared cached client; never destroy it.
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
   const target = MultiAddress.Id(args.address);
-  const submit = async (
-    tx: { signAndSubmit(from: PolkadotSigner): Promise<{ ok: boolean }> },
-    symbol: string,
-  ) => {
-    const res = await tx.signAndSubmit(faucet.signer);
-    if (!res.ok) {
-      throw new Error(`faucet transfer failed on-chain (is the faucet funded with ${symbol}?)`);
-    }
-  };
   const token = depositTokenOf(args.route);
+  const submit = (tx: { signSubmitAndWatch(from: PolkadotSigner): TransferWatch }) =>
+    broadcast(tx.signSubmitAndWatch(faucet.signer), token.symbol);
   if (token.assetHubId === undefined) {
-    await submit(
-      api.tx.Balances.transfer_keep_alive({ dest: target, value: args.amount }),
-      token.symbol,
-    );
-    return args.amount;
+    return submit(api.tx.Balances.transfer_keep_alive({ dest: target, value: args.amount }));
   }
   const minBalance = (await api.query.Assets.Asset.getValue(token.assetHubId))?.min_balance ?? 0n;
   const amount = args.amount < minBalance ? minBalance : args.amount;
-  await submit(
-    api.tx.Assets.transfer_keep_alive({ id: token.assetHubId, target, amount }),
-    token.symbol,
-  );
-  return amount;
+  return submit(api.tx.Assets.transfer_keep_alive({ id: token.assetHubId, target, amount }));
 }
