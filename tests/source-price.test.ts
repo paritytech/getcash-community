@@ -38,7 +38,6 @@ describe("priceSourceLeg", () => {
     expect(result.kind).toBe("price");
     if (result.kind !== "price") return;
     expect(result.price.formatted).toMatch(/^\d/);
-    expect(result.price.etaSeconds).toBe(1009.5);
   });
 
   it("reports the floor in the asset's units and how far the ask fell short", async () => {
@@ -95,15 +94,8 @@ describe("priceSourceLeg", () => {
 });
 
 describe("sourcePriceOf", () => {
-  const source = { amount: 70_001n, formatted: "0.00070001", assetSymbol: "BTC", decimals: 8 };
-
-  it("reads the rail's figure and Chainflip's duration estimate off the quote", () => {
-    expect(
-      sourcePriceOf({ sourceId: "btc", source, raw: { estimatedDurationSeconds: 1009.5 } }),
-    ).toEqual({ formatted: "0.00070001", baseUnits: 70_001n, etaSeconds: 1009.5 });
-  });
-
-  it("carries no estimate when the quote names none", () => {
+  it("reads the rail's figure off the quote", () => {
+    const source = { amount: 70_001n, formatted: "0.00070001", assetSymbol: "BTC", decimals: 8 };
     expect(sourcePriceOf({ sourceId: "btc", source, raw: {} })).toEqual({
       formatted: "0.00070001",
       baseUnits: 70_001n,

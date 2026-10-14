@@ -24,10 +24,10 @@ import {
   withdrawalProgress,
   withdrawalProgressProfile,
 } from "../../withdraw/progress";
-import FundingJourneyTimeline from "../funding/progress/FundingJourneyTimeline.vue";
 import CashAmount from "../ui/CashAmount.vue";
 import DetailRows, { type DetailRow } from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
+import WithdrawalJourneyTimeline from "./WithdrawalJourneyTimeline.vue";
 
 const props = defineProps<{
   record: WithdrawalRecord;
@@ -197,14 +197,13 @@ const canRetry = computed(
           </dd>
         </div>
       </dl>
-      <FundingJourneyTimeline
+      <WithdrawalJourneyTimeline
         v-else
         :progress="progress"
         :labels="WITHDRAWAL_JOURNEY_LABELS"
         :completed-steps="done"
         :message="message"
         :failed-label="failedLabel"
-        subject="Withdrawal"
       />
       <p v-if="residueNote" class="text-body-s text-fg-secondary">{{ residueNote }}</p>
       <DetailRows v-if="saleRows.length > 0" :rows="saleRows" muted />

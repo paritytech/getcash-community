@@ -116,6 +116,27 @@ export interface EgressInfo {
   failure?: unknown;
 }
 
+/** Chainflip's progress facts for a swap, each present once its status reports it. Times are in
+ *  milliseconds since the epoch. */
+export interface ChainflipProgressFacts {
+  /** Source-chain confirmations of the deposit so far. */
+  depositConfirmations?: number;
+  /** Confirmations the source chain needs before Chainflip accepts a deposit. */
+  requiredConfirmations?: number;
+  /** When Chainflip boosted the deposit, accepting it before the confirmations. */
+  boostedAt?: number;
+  /** When the regular swap was scheduled. */
+  swapScheduledAt?: number;
+  /** A DCA swap's chunks. */
+  chunks?: { executed: number; remaining: number };
+  /** When Chainflip last moved the swap, or the current DCA chunk, to a later block. */
+  swapRescheduledAt?: number;
+  /** Chainflip's expected duration of each stage it gave. A completed swap carries only `swap`. */
+  estimatedDurationsSeconds?: { deposit?: number; swap?: number; egress?: number };
+  /** The time of the newest State Chain block Chainflip's API processed: Chainflip's own clock. */
+  lastStatechainUpdateAt?: number;
+}
+
 /**
  * Normalized swap status. `depositFailure`, `swapEgressFailure` and `fallbackEgress` are
  * implicit failure substates that do not flip the SDK's top-level status to failed.
@@ -128,6 +149,7 @@ export interface SwapStatusResult {
   swapEgressFailure?: ChainflipFailureInfo;
   fallbackEgress?: EgressInfo;
   refundEgress?: EgressInfo;
+  progress?: ChainflipProgressFacts;
   raw?: unknown;
 }
 

@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import type { FundingProgressProjection } from "../../../funding/progress";
+import type { FundingTopUpProgress } from "../../../funding/top-ups";
 
 const props = withDefaults(
   defineProps<{
-    progress: FundingProgressProjection;
+    /** From 0 to 1. */
+    value: number;
+    tone: FundingTopUpProgress["tone"];
     size?: number;
   }>(),
   { size: 30 },
@@ -13,13 +15,13 @@ const props = withDefaults(
 const stroke = 2.6;
 const radius = computed(() => (props.size - stroke) / 2);
 const circumference = computed(() => 2 * Math.PI * radius.value);
-const offset = computed(() => circumference.value * (1 - props.progress.view.value));
+const offset = computed(() => circumference.value * (1 - props.value));
 </script>
 
 <template>
   <svg
     class="funding-progress-ring"
-    :class="`funding-progress-ring-${progress.view.kind}`"
+    :class="`funding-progress-ring-${tone}`"
     :width="size"
     :height="size"
     :viewBox="`0 0 ${size} ${size}`"
@@ -44,7 +46,7 @@ const offset = computed(() => circumference.value * (1 - props.progress.view.val
       :transform="`rotate(-90 ${size / 2} ${size / 2})`"
     />
     <path
-      v-if="progress.view.kind === 'settled'"
+      v-if="tone === 'settled'"
       class="funding-progress-ring-tick"
       :d="`M${size * 0.31} ${size * 0.52} L${size * 0.44} ${size * 0.65} L${size * 0.69} ${size * 0.36}`"
     />
@@ -77,6 +79,11 @@ const offset = computed(() => circumference.value * (1 - props.progress.view.val
 
 .funding-progress-ring-waiting {
   --progress-ring-fill: var(--stroke-secondary);
+}
+
+/* The timeline's own delay tone. */
+.funding-progress-ring-delayed {
+  --progress-ring-fill: var(--fg-warning);
 }
 
 .funding-progress-ring-failed {

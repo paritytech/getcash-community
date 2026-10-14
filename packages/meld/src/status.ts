@@ -8,17 +8,28 @@ import type { MeldClientLike } from "./client";
 const SETTLED = "settled";
 
 /** Underway: a transaction exists against this request but has not concluded. */
-const RECEIVING = "transaction_seen";
-
-/**
- * Temporarily stuck, NOT terminal: the provider's crypto delivery failed and is being retried on
- * their side (Meld's TRANSACTION_CRYPTO_FAILED webhook). The poll keeps going and the journey
- * shows a delay notice; a payment that stays stuck concludes through one of the terminal states.
- */
-const DELAYED = new Set(["crypto_failed", "transaction_crypto_failed"]);
+const TRANSACTION_SEEN = "transaction_seen";
 
 /** A Meld status view: core's normalized status plus the transient delay marker. */
 export type MeldStatusView = SwapStatusResult & { delayed?: boolean };
+
+/**
+ * An underway transaction, refined by the provider's own status.
+ *
+ * - `SETTLING`: the provider approved the payment and is sending the crypto.
+ * - `ERROR`: a temporary error that the provider may retry. A delay, not an ending: a payment that
+ *   stays stuck concludes through one of the terminal states.
+ */
+function underway(providerStatus: string | undefined): MeldStatusView {
+  switch (providerStatus?.trim().toUpperCase()) {
+    case "SETTLING":
+      return { status: "sending", raw: TRANSACTION_SEEN };
+    case "ERROR":
+      return { status: "receiving", delayed: true, raw: TRANSACTION_SEEN };
+    default:
+      return { status: "receiving", raw: TRANSACTION_SEEN };
+  }
+}
 
 /**
  * Terminal with the money returned (Meld's REFUNDED: the charge was captured, then sent back to
@@ -58,7 +69,8 @@ const FAILURES: Readonly<Record<string, { message: string; kind: FailureKind }>>
     kind: "deposit-rejected",
   },
   unobserved: {
-    message: "We could not confirm this payment. Contact support before trying again.",
+    message:
+      "We can't confirm your payment with the provider. Check your card statement before you pay again.",
     kind: "unknown",
   },
 });
@@ -102,9 +114,7 @@ export async function getMeldStatus(
 ): Promise<MeldStatusView> {
   const { status, providerStatus, sourceAmount, fiat } = await client.getStatus(fundingRequestId);
   if (status === SETTLED) return { status: "complete", raw: status };
-  if (status === RECEIVING) return { status: "receiving", raw: status };
-  // The payment went through; only the crypto delivery is stuck and retrying.
-  if (DELAYED.has(status)) return { status: "receiving", delayed: true, raw: status };
+  if (status === TRANSACTION_SEEN) return underway(providerStatus);
   // Kept for an adapter whose lifecycle grows the state itself; today the refund arrives as
   // `failed` with a REFUNDED provider status, handled below.
   if (status === REFUNDED) {

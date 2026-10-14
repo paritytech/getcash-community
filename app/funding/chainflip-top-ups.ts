@@ -6,9 +6,14 @@ import { useSessionStore } from "../stores/session";
 import { networkIcon, tokenIcon } from "../utils/icons";
 import { parseRequestRefKey, requestRefKey, type RequestRef } from "../utils/request-index";
 import { CRYPTO_SOURCE_ID, isCryptoSourceId } from "./source-ids";
-import { projectFundingProgress, type FundingProgressSnapshot } from "./progress";
 import { effectiveSourceId, railProviderOf, type TopUpRecord } from "./requests/model";
-import { journeyScaleOf, journeyStepsOf, rowStateOf } from "./requests/views";
+import { rowStateOf } from "./requests/views";
+import { listHeadline, listProgress } from "./timeline/list";
+import {
+  createTopUpTimelines,
+  TIMELINE_CADENCE_MS,
+  type TopUpTimelineOf,
+} from "./timeline/timelines";
 import type { FundingTopUpAdapter } from "./top-up-adapter";
 import { quoteOf, type FundingTopUpRecord } from "./top-up-projection";
 import type { FundingTopUp, FundingTopUpDetails } from "./top-ups";
@@ -17,15 +22,12 @@ export type ChainflipTopUpRecord = FundingTopUpRecord;
 
 /** A top-up's id: the route, then the request's identity (`crypto:dot-assethub#12`). Parsed by
  *  `chainflipRequestRef`. */
-const topUpId = (ref: RequestRef) => `crypto:${requestRefKey(ref)}`;
+export const chainflipTopUpId = (ref: RequestRef) => `crypto:${requestRefKey(ref)}`;
 
 /** The rows whose progress no longer moves on its own. */
 const FINISHED = new Set<TopUpRecord["status"]["kind"]>(["settled", "failed", "expired"]);
 
-function topUpDetails(
-  record: ChainflipTopUpRecord,
-  snapshot: FundingProgressSnapshot,
-): FundingTopUpDetails {
+function topUpDetails(record: ChainflipTopUpRecord): FundingTopUpDetails {
   const network = record.chain
     ? {
         label: FUNDING_CHAINS.find(({ chain }) => chain === record.chain)?.label ?? record.chain,
@@ -43,7 +45,6 @@ function topUpDetails(
     ...(token === undefined ? {} : { token }),
     ...(provider === undefined ? {} : { provider }),
     ...(record.depositAddress ? { depositAddress: record.depositAddress } : {}),
-    arrivalEstimate: snapshot.preDetectionEstimateText ?? "≈10 min after your transfer",
   };
 }
 
@@ -55,25 +56,26 @@ export function isChainflipRecord(record: Pick<TopUpRecord, "ref">): boolean {
 export function projectChainflipTopUps(
   records: readonly TopUpRecord[],
   now = Date.now(),
+  timelineOf: TopUpTimelineOf = createTopUpTimelines(),
 ): FundingTopUp[] {
   return records.flatMap((record) => {
     if (!isChainflipRecord(record)) return [];
-    const { ref, progress: snapshot } = record;
-    const progress = projectFundingProgress({ snapshot, createdAt: record.startedAt, now });
+    const { ref } = record;
+    const timeline = timelineOf(record, now);
+    const progress = listProgress(timeline);
     return [
       {
-        id: topUpId(ref),
+        id: chainflipTopUpId(ref),
         amount: record.amountHuman,
         route: "crypto" as const,
         startedAt: record.startedAt,
         progress,
-        details: topUpDetails(record, snapshot),
+        ...(timeline === undefined ? {} : { timeline }),
+        details: topUpDetails(record),
         ...quoteOf(record),
         // The request's own identity, so a refund can be walked back to its key with no world.
         request: { sourceId: effectiveSourceId(ref), tradeN: ref.tradeN },
-        ...(record.rail.delayed === true ? { delayed: true } : {}),
-        journeyDone: journeyStepsOf(record, journeyScaleOf(record.route)),
-        state: rowStateOf(record, progress),
+        state: rowStateOf(record, listHeadline("crypto", timeline).text),
       },
     ];
   });
@@ -90,15 +92,15 @@ export function chainflipRequestRef(id: string): RequestRef | null {
 export function useChainflipTopUpAdapter(): FundingTopUpAdapter {
   const session = useSessionStore();
   const requests = useRequestsStore();
-  const cadence = computed(() => {
-    const cadences = requests.openTopUps.flatMap((record) =>
-      FINISHED.has(record.status.kind) ? [] : [record.progress.profile.cadenceMs],
-    );
-    return cadences.length === 0 ? null : Math.min(...cadences);
-  });
-  const now = useFundingProgressClock(cadence);
+  const now = useFundingProgressClock(() =>
+    requests.openTopUps.some((record) => !FINISHED.has(record.status.kind))
+      ? TIMELINE_CADENCE_MS
+      : null,
+  );
   return {
-    topUps: computed(() => projectChainflipTopUps(requests.openTopUps, now.value)),
+    topUps: computed(() =>
+      projectChainflipTopUps(requests.openTopUps, now.value, requests.topUpTimelineOf),
+    ),
     refresh: () => session.resumeOpenRequests("boot"),
     open: (topUp) => {
       const ref = chainflipRequestRef(topUp.id);

@@ -19,10 +19,8 @@ export interface FundingProgressProfile {
 }
 
 export interface FundingProgressSnapshot {
-  schemaVersion: number;
   profile: FundingProgressProfile;
   confirmedStageKey?: string;
-  latestRouteStatus?: string;
   routeCompletedAt?: number;
   detectedAt?: number;
   stageTimestamps: Readonly<Record<string, number>>;
@@ -34,7 +32,6 @@ export interface FundingProgressSnapshot {
 
 export interface FundingProgressSnapshotOptions {
   confirmedStageKey?: string;
-  latestRouteStatus?: string;
   routeCompletedAt?: number;
   detectedAt?: number;
   stageTimestamps?: Readonly<Record<string, number>>;
@@ -42,28 +39,6 @@ export interface FundingProgressSnapshotOptions {
   settledAt?: number;
   preDetectionEstimateText?: string;
   estimatedCompletionAt?: number;
-}
-
-export interface LegacyFundingProgressFacts {
-  fundedAt?: number;
-  settledAt?: number;
-}
-
-export type FundingProgressObservation =
-  | { kind: "waiting" }
-  | { kind: "stage"; stageKey: string }
-  | { kind: "hold" }
-  | { kind: "route-complete" }
-  | { kind: "failed" }
-  | { kind: "settled" };
-
-export interface FundingProgressSignal {
-  observation: FundingProgressObservation;
-  routeStatus?: string;
-}
-
-export interface FundingProgressEvent extends FundingProgressSignal {
-  at: number;
 }
 
 type ActiveProgressState = Readonly<{
@@ -132,13 +107,6 @@ export interface FundingProgressProjectionInput {
   now: number;
 }
 
-export interface FundingProgressProfileOptions {
-  ingressDurationMs?: number;
-  /** Overrides the route's own waiting label, for a route whose methods word the wait
-   *  differently: a card is paid, a bank transfer is sent. */
-  waitingLabel?: string;
-}
-
 export interface FundingProgressRouteDefinition {
   id: string;
   version: number;
@@ -152,16 +120,8 @@ export interface FundingProgressRouteDefinition {
   /** The label once everything is done. Defaults to "Ready to spend". */
   settledLabel?: string;
   stages: readonly FundingProgressStage[];
-  observe(status: string): FundingProgressObservation;
 }
 
 export interface FundingProgressSharedDefinition {
   stages: readonly FundingProgressStage[];
-}
-
-export interface FundingProgressProvider {
-  id: string;
-  version: number;
-  createProfile(options?: FundingProgressProfileOptions): FundingProgressProfile;
-  observeRoute(status: string): FundingProgressObservation;
 }

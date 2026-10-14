@@ -433,13 +433,28 @@ describe("createPayment session", () => {
     session.dispose();
   });
 
-  it("dual-poll: depositFailure maps to deposit-rejected at step deposit", async () => {
+  it("dual-poll: the swapping state carries Chainflip's progress and egress schedule", async () => {
+    const progress = { depositConfirmations: 2, requiredConfirmations: 3 };
     const { session } = setup({
-      rail: {
-        statusSequence: [
-          { status: "receiving", depositFailure: { reason: { message: "below minimum" } } },
-        ],
-      },
+      rail: { statusSequence: [{ status: "swapping", progress, egress: { scheduledAt: 9 } }] },
+    });
+    await session.quote();
+    await session.start({ refundAddress: "r", payload: PAYLOAD });
+    await flush();
+
+    expect(session.getState()).toMatchObject({
+      phase: "swapping",
+      swap: "swapping",
+      progress,
+      egressScheduledAt: 9,
+    });
+    session.dispose();
+  });
+
+  it("dual-poll: depositFailure maps to deposit-rejected at step deposit, with the rail's code", async () => {
+    const reason = { code: "BelowMinimumDeposit", message: "below minimum" };
+    const { session } = setup({
+      rail: { statusSequence: [{ status: "receiving", depositFailure: { reason } }] },
     });
     await session.quote();
     await session.start({ refundAddress: "r", payload: PAYLOAD });
@@ -451,6 +466,7 @@ describe("createPayment session", () => {
       expect(s.failure.kind).toBe("deposit-rejected");
       expect(s.failure.step).toBe("deposit");
       expect(s.failure.recoverable).toBe(false);
+      expect(s.failure.code).toBe("BelowMinimumDeposit");
     }
     session.dispose();
   });

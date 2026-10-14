@@ -34,9 +34,8 @@ vi.mock("../lib/host-account", () => ({ isHosted: () => true }));
 vi.mock("../lib/worker-rpc", () => ({ getStorageWorkerManager: () => manager }));
 vi.mock("../lib/faucet", () => ({
   isFaucetConfigured: () => true,
-  fundFromFaucet: async (args: { amount: bigint }) => {
+  fundFromFaucet: async (args: unknown) => {
     faucet.calls.push(args);
-    return args.amount;
   },
 }));
 // The hosted world over the offline fakes: the fake rail opens the channel, the budget is given.
@@ -46,9 +45,9 @@ vi.mock("../lib/coinage-live", async () => {
     chooseHostedRoute: async () => ({ tier: "pool" }),
     nextHostedTradeNumber: async () => 1,
     ensureChainSubmitGrant: async () => {},
-    // The requests store's own reads for a Polkadot deposit: the counter behind the gap sweep,
-    // a number with no flow slot, an empty burner, so no lost request to recover, and a watch
-    // that never reports a change.
+    // The requests store's own reads: the counter behind the gap sweep, a number with no flow
+    // slot, an empty burner, so no lost request to recover, and watches that never report a
+    // change.
     readHostedTradeCounter: async () => 1,
     readFlowSlot: async () => ({ address: BURNER, slot: null }),
     probeTradeBurner: async () => ({ address: BURNER, free: 0n }),
@@ -56,6 +55,7 @@ vi.mock("../lib/coinage-live", async () => {
       throw new Error("no lost request to recover");
     },
     watchDirectTradeBurner: async () => () => {},
+    watchTradeBurner: async () => () => {},
     createHostedCoinageWorld: async (args: {
       amount: bigint;
       route: { tier: "pool" };
@@ -204,10 +204,9 @@ describe("a hosted Chainflip pick", () => {
 
   // TODO(production): delete with the faucet and fundFaucet.
   it("Skip has the faucet send the burner the budget, in the route's token", async () => {
-    const { session, requests } = await startTopUp("Bitcoin", "BTC");
+    const { session } = await startTopUp("Bitcoin", "BTC");
     await session.fundFaucet();
     expect(faucet.calls).toEqual([{ address: BURNER, amount: BUDGET, route: { tier: "pool" } }]);
-    expect(requests.fundsSeen).toBe(true);
   });
 
   // TODO(production): delete with the faucet and fundFaucet.
@@ -215,9 +214,8 @@ describe("a hosted Chainflip pick", () => {
     // A world rebuilt on reopen sizes the budget again, and the pool may have moved; the deposit
     // still asks, and is checked against, the figure it was opened with.
     sizing.budget = BUDGET + 1n;
-    const { session, requests } = await startTopUp("Polkadot", "DOT");
+    const { session } = await startTopUp("Polkadot", "DOT");
     await session.fundFaucet();
     expect(faucet.calls).toEqual([{ address: BURNER, amount: BUDGET, route: { tier: "pool" } }]);
-    expect(requests.fundsSeen).toBe(true);
   });
 });

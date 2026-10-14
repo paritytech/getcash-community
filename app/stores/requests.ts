@@ -13,12 +13,6 @@ import {
   type MeldClientLike,
   type MeldStatusResult,
 } from "@getsome/meld";
-import {
-  advanceFundingProgressSnapshot,
-  createFundingProgressSnapshot,
-  progressProviderForSource,
-  type FundingProgressSnapshot,
-} from "../funding/progress";
 import { depositWindowFor } from "../funding/config";
 import { migrateRecord } from "../funding/requests/migrate";
 import {
@@ -38,6 +32,7 @@ import {
   WORKER_READY_MS,
   WORKER_STALE_MS,
   buyerPaid,
+  conversionRouteOf,
   effectiveSourceId,
   handoffSaleOf,
   isDirectDeposit,
@@ -54,6 +49,8 @@ import {
   routeOf,
   saleBeforePurse,
   withdrawalRouteOf,
+  type ConvertedTx,
+  type DepositInBlock,
   type Freshness,
   type HostPaymentStatus,
   type MeldSaleReading,
@@ -91,14 +88,13 @@ import {
   freshnessOf,
   fundingStepOf,
   fundsSeenOf,
-  journeyScaleOf,
-  journeyStepsOf,
   meldHandedOffOf,
   meldStageOf,
-  milestonesOf,
   phaseLike,
 } from "../funding/requests/views";
 import { CRYPTO_SOURCE_ID, MELD_SOURCE_IDS } from "../funding/source-ids";
+import { createTopUpTimelines } from "../funding/timeline/timelines";
+import { handoffPending, type JourneyTimeline } from "../funding/timeline/top-up";
 import { fmtCash, toCashBase } from "../utils/cash";
 import {
   parseRequestIndex,
@@ -109,7 +105,7 @@ import {
   serializeRequestIndex,
   type RequestRef,
 } from "../utils/request-index";
-import { sendHandoff, workerSessionId } from "~~/lib/coinage";
+import { sendHandoff, workerSessionId, type Finality } from "~~/lib/coinage";
 import { FUNDING_CHAINS, sourceIdFor, sourcePairFor } from "~~/lib/config";
 import { isHosted } from "~~/lib/host-account";
 
@@ -159,7 +155,7 @@ const WORKER_NOT_RUNNING =
 
 /** Today's message for a payment the adapter no longer knows; a 404 never self-heals. */
 const MELD_GONE_MESSAGE =
-  "We can no longer find this payment. Do not pay again. Contact support with your reference.";
+  "We can no longer find this payment. Do not pay again until you check your card statement.";
 /** Consecutive "not found" answers before a payment is declared gone: one 404 can be an adapter restart. */
 const MELD_GONE_AFTER = 3;
 
@@ -320,8 +316,6 @@ async function inParallel<T>(
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane));
 }
 
-const MINUTE = 60_000;
-
 /** Rank 0–3 in the design's sense: a request the worker is still moving. A withdrawal at
  *  `sending` is on the rail leg, which the worker drives and reads for the provider. */
 const WORKER_DRIVEN_KINDS = new Set<RequestRecord["status"]["kind"]>([
@@ -364,15 +358,27 @@ type WorkerJob = {
   failure?: string;
   lastError?: string;
   lastTickAt?: number | null;
-  state?: { fundsSeenAt?: number | null };
+  state?: { fundsSeenAt?: number | null; psmRefusals?: number; workedMs?: number };
   claim?: {
     phase?: string;
     amount?: string;
     credited?: string;
     status?: string;
     at?: number;
+    registeredAt?: number;
+    workedMs?: number;
   } | null;
   txs?: WorkerJobView["txs"];
+  depositSeen?: {
+    block?: number;
+    finalizedAtSeen?: number;
+    finalized?: number;
+    best?: number;
+  } | null;
+  conversion?: {
+    preparedAt?: number;
+    converted?: { txHash?: string; block?: number; at?: number; workedMs?: number };
+  } | null;
   // The hand-off the worker keeps, read back when the surface has no record of the job.
   label?: string;
   burnerAddress?: string;
@@ -402,9 +408,49 @@ async function readWorkerJobs(): Promise<Record<string, WorkerJob>> {
   }
 }
 
+/** The deposit the job followed in a best block, when every field is there. */
+function depositSeenOf(job: WorkerJob): DepositInBlock | undefined {
+  const seen = job.depositSeen;
+  if (
+    !isObject(seen) ||
+    !isNumber(seen.block) ||
+    !isNumber(seen.finalizedAtSeen) ||
+    !isNumber(seen.finalized) ||
+    !isNumber(seen.best)
+  ) {
+    return undefined;
+  }
+  return {
+    block: seen.block,
+    finalizedAtSeen: seen.finalizedAtSeen,
+    finalized: seen.finalized,
+    best: seen.best,
+  };
+}
+
+/** The job's conversion, once prepared, with its transaction when every field is there. */
+function conversionOf(job: WorkerJob): WorkerJobView["conversion"] {
+  const conversion = job.conversion;
+  if (!isObject(conversion) || !isNumber(conversion.preparedAt)) return undefined;
+  const tx = conversion.converted;
+  const converted: ConvertedTx | undefined =
+    isObject(tx) &&
+    isString(tx.txHash) &&
+    isNumber(tx.block) &&
+    isNumber(tx.at) &&
+    isNumber(tx.workedMs)
+      ? { txHash: tx.txHash, block: tx.block, at: tx.at, workedMs: tx.workedMs }
+      : undefined;
+  return { preparedAt: conversion.preparedAt, ...(converted === undefined ? {} : { converted }) };
+}
+
 /** The job as the record's reducer reads it. */
 function jobView(job: WorkerJob): WorkerJobView {
   const { claim } = job;
+  const depositSeen = depositSeenOf(job);
+  const conversion = conversionOf(job);
+  const refusals = job.state?.psmRefusals;
+  const workedMs = job.state?.workedMs;
   return {
     phase: job.phase ?? "",
     done: job.done === true,
@@ -412,6 +458,7 @@ function jobView(job: WorkerJob): WorkerJobView {
     ...(job.lastError === undefined ? {} : { lastError: job.lastError }),
     fundsSeenAt: job.state?.fundsSeenAt ?? null,
     lastTickAt: job.lastTickAt ?? null,
+    ...(isNumber(workedMs) ? { workedMs } : {}),
     claim:
       claim &&
       (claim.phase === "sizing" ||
@@ -423,10 +470,15 @@ function jobView(job: WorkerJob): WorkerJobView {
             ...(claim.amount === undefined ? {} : { amount: claim.amount }),
             ...(claim.credited === undefined ? {} : { credited: claim.credited }),
             ...(claim.status === undefined ? {} : { status: claim.status }),
+            ...(isNumber(claim.registeredAt) ? { registeredAt: claim.registeredAt } : {}),
+            ...(isNumber(claim.workedMs) ? { workedMs: claim.workedMs } : {}),
             at: claim.at ?? job.lastTickAt ?? Date.now(),
           }
         : null,
     ...(job.txs === undefined ? {} : { txs: job.txs }),
+    ...(isNumber(refusals) && refusals > 0 ? { psmRefusals: refusals } : {}),
+    ...(depositSeen === undefined ? {} : { depositSeen }),
+    ...(conversion === undefined ? {} : { conversion }),
   };
 }
 
@@ -531,6 +583,8 @@ function residueViewOf(
 const isString = (value: unknown): value is string => typeof value === "string";
 const isNumber = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value);
+const isObject = <T extends object>(value: T | null | undefined): value is T =>
+  typeof value === "object" && value !== null;
 
 /** A sale's order as the reducer reads it: the adapter's status and, when disclosed, the
  *  provider's deposit terms. */
@@ -575,32 +629,6 @@ function displaySourceOf(sourceId: string): { chain: string; asset: string } {
   const route = routeOf(sourceId);
   if (route !== "crypto") return { chain: "Meld", asset: route === "bank" ? "Bank" : "Card" };
   return sourcePairFor(sourceId) ?? { chain: sourceId, asset: sourceId };
-}
-
-/** The snapshot a request starts with when its record is built from the worker's job: today's
- *  defaults for the source, with no quote to size the ingress from. */
-function initialProgressForSource(sourceId: string, startedAt: number): FundingProgressSnapshot {
-  const route = routeOf(sourceId);
-  const provider = progressProviderForSource(sourceId);
-  // A card confirms within minutes; a bank transfer takes business days.
-  const profile =
-    route === "crypto"
-      ? provider.createProfile()
-      : provider.createProfile({
-          ingressDurationMs: route === "bank" ? 24 * 60 * MINUTE : 5 * MINUTE,
-        });
-  const journeyMs =
-    profile.expectedUserDelayMs +
-    profile.stages.reduce((total, stage) => total + stage.nominalMs, 0);
-  return createFundingProgressSnapshot(profile, {
-    preDetectionEstimateText:
-      route === "crypto"
-        ? "≈10 min after your transfer"
-        : route === "bank"
-          ? "1-2 business days after you pay"
-          : "≈ minutes after you pay",
-    estimatedCompletionAt: startedAt + journeyMs,
-  });
 }
 
 /** The hand-off the worker keeps on its job, when every field is there. */
@@ -807,7 +835,6 @@ function recordFromJob(sessionId: string, job: WorkerJob): TopUpRecord | null {
     ...displaySourceOf(sourceId),
     startedAt,
     ...(isString(job.burnerAddress) ? { depositAddress: job.burnerAddress } : {}),
-    progress: initialProgressForSource(sourceId, startedAt),
     tradeN: ref.tradeN,
     sourceId,
     ...(railExpiry === null ? {} : { depositExpiresAt: railExpiry }),
@@ -832,12 +859,6 @@ function recordFromJob(sessionId: string, job: WorkerJob): TopUpRecord | null {
 const hasHandoffAmount = (slot: FlowState | null): slot is FlowState & { handoffAmount: string } =>
   slot !== null && slot.handoffAmount !== undefined;
 
-/** The tier a record was quoted on, read off what it persisted and never decided here: the
- *  hand-off it froze at quote time, or the tier recorded beside it when the hand-off is missing.
- *  A record with neither is from before tiers were recorded, and so a pool one. */
-const conversionRouteOf = (record: TopUpRecord): ConversionRoute =>
-  recordedRoute(record.handoff ?? record.conversion ?? {});
-
 /** A record for a funded burner the surface lost every trace of, from the core flow slot that
  *  started it: the only thing left that knows the amount. Generic labels, like a job's record. */
 function recordFromFlowSlot(
@@ -861,7 +882,6 @@ function recordFromFlowSlot(
     ...displaySourceOf(sourceId),
     startedAt,
     depositAddress,
-    progress: initialProgressForSource(sourceId, startedAt),
     tradeN: ref.tradeN,
     sourceId,
     ...(railExpiry === null ? {} : { depositExpiresAt: railExpiry }),
@@ -1248,16 +1268,12 @@ export const useRequestsStore = defineStore("requests", () => {
     if (meldPoll !== null && meldPoll.key !== foreground.value) stopMeldPoll();
   }
 
-  /** A failure the record cannot carry: a hand-off the worker refused, or a faucet transfer that
-   *  failed, write nothing to the record, yet the screen shows them. Only the refused hand-off
-   *  also marks the progress failed. Cleared when a drive starts and when the foreground leaves. */
-  const transientError = ref<{
-    message: string;
-    at: number;
-    source: "handoff" | "faucet";
-  } | null>(null);
+  /** An error the record cannot carry: a hand-off the worker refused, or a faucet transfer that
+   *  failed, write nothing to the record, yet the screen shows them. Cleared when a drive starts
+   *  and when the foreground leaves. */
+  const transientError = ref<{ message: string; source: "handoff" | "faucet" } | null>(null);
   function setTransientError(
-    value: { message: string; at: number; source: "handoff" | "faucet" } | null,
+    value: { message: string; source: "handoff" | "faucet" } | null,
   ): void {
     transientError.value = value;
   }
@@ -1289,34 +1305,31 @@ export const useRequestsStore = defineStore("requests", () => {
     const claimed = foregroundRecord.value?.claimed;
     return claimed === undefined ? null : BigInt(claimed);
   });
-  /** When each journey step landed, in ms since epoch, by step number. */
-  const milestones = computed<Record<number, number>>(() =>
-    foregroundRecord.value ? milestonesOf(foregroundRecord.value) : {},
-  );
-  /** How many of the journey's steps are done, on the scale the record's own route shows. */
-  const journeyDone = computed(() => {
-    const record = foregroundRecord.value;
-    return record ? journeyStepsOf(record, journeyScaleOf(record.route)) : 1;
-  });
   /** True while a claim is in flight: the host's sheet is up, or the credit is being verified. */
   const claiming = computed(() =>
     foregroundRecord.value ? claimingOf(foregroundRecord.value) : false,
   );
-  /** The record's progress; a hand-off the worker refused shows as failed on screen while the
-   *  record, still awaiting its deposit, waits for the worker's verdict. */
-  const foregroundProgress = computed(() => {
+  /** The worker refused the hand-off of the request on screen, which still awaits its deposit and
+   *  is handed over again on a later pass: the screen shows it delayed, never failed. */
+  const handoffRefused = computed(
+    () =>
+      foregroundRecord.value?.status.kind === "awaiting-deposit" &&
+      transientError.value?.source === "handoff",
+  );
+  /** The request on screen still waits for its deposit, with nothing seen and nothing ended. A
+   *  refused hand-off does not end the wait: the buyer still needs the payment details. */
+  const awaitingDeposit = computed(
+    () => foregroundRecord.value?.status.kind === "awaiting-deposit",
+  );
+  /** The timelines the list and the journey show, so that a top-up on both never moves back. */
+  const topUpTimelineOf = createTopUpTimelines();
+  /** The timeline of the top-up on screen at `now`, delayed while its hand-off is refused. */
+  function foregroundTimeline(now: number): JourneyTimeline | undefined {
     const record = foregroundRecord.value;
-    if (!record) return null;
-    const failure = transientError.value;
-    const snapshot =
-      failure !== null && failure.source === "handoff" && rankOf(record) === 0
-        ? advanceFundingProgressSnapshot(record.progress, {
-            observation: { kind: "failed" },
-            at: failure.at,
-          })
-        : record.progress;
-    return { ref: record.ref, startedAt: record.startedAt, snapshot };
-  });
+    if (record === null) return undefined;
+    const timeline = topUpTimelineOf(record, now);
+    return handoffRefused.value ? handoffPending(timeline) : timeline;
+  }
 
   // The Meld poll's views, read from the record on screen.
   /** The Meld payment's stage: `waiting` while the buyer is on the widget, `receiving` once the
@@ -1324,9 +1337,6 @@ export const useRequestsStore = defineStore("requests", () => {
   const meldStage = computed(() =>
     foregroundRecord.value ? meldStageOf(foregroundRecord.value) : null,
   );
-  /** The Meld payment is temporarily stuck (provider retrying its crypto delivery). Transient:
-   *  the record's rail says so, never terminal on its own. */
-  const meldDelayed = computed(() => foregroundRecord.value?.rail.delayed === true);
   /** The rail has the money for the request on screen. What the buyer is still told to do, and
    *  what they can still call off, both end here. */
   const railSeen = computed(() =>
@@ -1371,10 +1381,12 @@ export const useRequestsStore = defineStore("requests", () => {
     clearInterval(foregroundClock);
     foregroundClock = null;
   }
-  // The deposit watch: while the request on screen awaits its deposit, the app follows its burner
-  // at each best block, so a direct deposit has an early witness in the app as a provider's
-  // payment does, and the worker's finalized sighting confirms it. Hosted only; it ends the
-  // moment coins show, and a failed subscription is let go until the next sync re-subscribes.
+  // The deposit watch: while the request on screen awaits its deposit, or has it seen but not yet
+  // read final on the burner, the app follows its burner at each best and each finalized block.
+  // The app is the early witness of the deposit, before or after a provider's word, and its own
+  // finalized read confirms it. Hosted only; it ends once the deposit is final on the burner or
+  // the request moves past it, and a failed subscription is let go until the next sync
+  // re-subscribes.
   let depositWatch: {
     key: RequestKey;
     unsubscribe: (() => void) | null;
@@ -1382,6 +1394,16 @@ export const useRequestsStore = defineStore("requests", () => {
   } | null = null;
   const foregroundAwaiting = (): boolean =>
     foregroundRecord.value?.status.kind === "awaiting-deposit";
+  /** The request on screen awaits its deposit, or has it seen but not yet final on the burner. */
+  function foregroundFollowsDeposit(): boolean {
+    const record = foregroundRecord.value;
+    if (record === null) return false;
+    const { kind } = record.status;
+    return (
+      kind === "awaiting-deposit" ||
+      (kind === "deposit-seen" && record.observedAt?.["final-on-burner"] === undefined)
+    );
+  }
   /** The tier a request's deposit arrives on, from what its record froze at quote time: it fixes
    *  the asset the burner is read in. A number with no record is read as a pool one. */
   const depositRouteOf = (ref: RequestRef): ConversionRoute => {
@@ -1391,7 +1413,7 @@ export const useRequestsStore = defineStore("requests", () => {
   function startDepositWatch(): void {
     if (sandboxed.value) return;
     const record = foregroundRecord.value;
-    if (record === null || record.status.kind !== "awaiting-deposit") return;
+    if (record === null || !foregroundFollowsDeposit()) return;
     const { ref } = record;
     const key = requestRefKey(ref);
     if (depositWatch !== null) {
@@ -1409,27 +1431,32 @@ export const useRequestsStore = defineStore("requests", () => {
       );
       stopDepositWatch();
     };
+    // Only a change is observed, since the watch emits at every block; each finality on its own.
+    const last: Partial<Record<Finality, string>> = {};
+    const changed = (finality: Finality, reading: string): boolean => {
+      if (watching.stopped || last[finality] === reading) return false;
+      last[finality] = reading;
+      return true;
+    };
     void import("~~/lib/coinage-live")
       .then((live) => {
         if (isDirectDeposit(record)) {
           // A Polkadot deposit is read in every direct token and followed until the request moves
           // on: a short or wrong-token deposit keeps it waiting, and the rest can still arrive.
-          // Only a change is observed, since the watch emits at every best block.
-          let last = "";
           return live.watchDirectTradeBurner(
             sourceId,
             ref.tradeN,
             depositRouteOf(ref),
-            ({ held, stray }) => {
-              if (watching.stopped) return;
-              const key = `${held}|${stray?.asset ?? ""}|${stray?.amount ?? ""}`;
-              if (key === last) return;
-              last = key;
+            ({ held, stray }, finality) => {
+              if (!changed(finality, `${held}|${stray?.asset ?? ""}|${stray?.amount ?? ""}`)) {
+                return;
+              }
               void observe(
                 ref,
                 chainReading(
                   held,
                   requestsNow(),
+                  finality,
                   stray === null ? null : { asset: stray.asset, amount: stray.amount.toString() },
                 ),
               );
@@ -1441,10 +1468,10 @@ export const useRequestsStore = defineStore("requests", () => {
           sourceId,
           ref.tradeN,
           depositRouteOf(ref),
-          (free) => {
-            if (watching.stopped) return;
-            void observe(ref, chainReading(free, requestsNow()));
-            if (free > 0n) stopDepositWatch();
+          (free, finality) => {
+            if (changed(finality, free.toString())) {
+              void observe(ref, chainReading(free, requestsNow(), finality));
+            }
           },
           failed,
         );
@@ -1467,10 +1494,10 @@ export const useRequestsStore = defineStore("requests", () => {
     watching.stopped = true;
     watching.unsubscribe?.();
   }
-  /** The watch follows the request on screen while it awaits its deposit, hosted, and not
-   *  otherwise. */
+  /** The watch follows the request on screen until its deposit is final on the burner, hosted,
+   *  and not otherwise. */
   function syncDepositWatch(): void {
-    if (isHosted() && foregroundAwaiting()) startDepositWatch();
+    if (isHosted() && foregroundFollowsDeposit()) startDepositWatch();
     else stopDepositWatch();
   }
   watch(
@@ -1478,8 +1505,12 @@ export const useRequestsStore = defineStore("requests", () => {
     (awaitingKey) => {
       if (awaitingKey !== null) startForegroundClock();
       else stopForegroundClock();
-      syncDepositWatch();
     },
+    { immediate: true },
+  );
+  watch(
+    () => (foregroundFollowsDeposit() ? foreground.value : null),
+    () => syncDepositWatch(),
     { immediate: true },
   );
 
@@ -2118,13 +2149,19 @@ export const useRequestsStore = defineStore("requests", () => {
     });
   }
 
-  /** A burner's balance as the chain's own sighting of the request. A direct deposit's watch
-   *  passes what it found in the other direct tokens too. */
-  const chainReading = (free: bigint, at: number, stray?: StrayDeposit | null): Observation => ({
+  /** A burner's balance as the chain's own sighting of the request, at a best block unless the
+   *  watch read it final. A direct deposit's watch passes what it found in the other direct tokens
+   *  too. */
+  const chainReading = (
+    free: bigint,
+    at: number,
+    finality: Finality = "best",
+    stray?: StrayDeposit | null,
+  ): Observation => ({
     source: "chain",
     at,
     burnerNative: free.toString(),
-    finality: "best",
+    finality,
     via: "probe",
     ...(stray === undefined ? {} : { stray }),
   });
@@ -2938,12 +2975,12 @@ export const useRequestsStore = defineStore("requests", () => {
     fundingError,
     claimStage,
     claimedBase,
-    milestones,
-    journeyDone,
     claiming,
-    foregroundProgress,
+    handoffRefused,
+    awaitingDeposit,
+    topUpTimelineOf,
+    foregroundTimeline,
     meldStage,
-    meldDelayed,
     railSeen,
     meldFailureMessage,
     meldFailureCode,

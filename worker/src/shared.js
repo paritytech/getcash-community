@@ -124,13 +124,14 @@ export async function signOptionsFor(client) {
   return { at: (await anchorFor(client)).hash };
 }
 
-/** The best block a submit is anchored at, its hash and its number. Throws when the tip cannot be
- *  read. */
+/** The best block a submit is anchored at, its hash and its number, and the number of the latest
+ *  finalized block. Throws when the tip cannot be read. */
 export async function anchorFor(client) {
   const best = await bounded(client.getBestBlocks(), ANCHOR_TIMEOUT_MS, "best block");
   const block = best?.[0];
   if (!block?.hash) throw new Error("no best block to anchor the submit against");
-  return { hash: block.hash, number: block.number };
+  // The client lists the best chain down to the latest finalized block, which comes last.
+  return { hash: block.hash, number: block.number, finalized: best.at(-1).number };
 }
 
 /** The keypair the entropy label `label` derives, from host entropy. Never persisted. */

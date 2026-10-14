@@ -16,8 +16,6 @@ export interface SourcePrice {
   formatted: string;
   /** The same figure in the asset's base units. */
   baseUnits: bigint;
-  /** Chainflip's own estimate for the whole swap, when it offers one. */
-  etaSeconds?: number;
 }
 
 /** This purchase is under Chainflip's floor for the asset. */
@@ -42,17 +40,9 @@ export type SourcePriceResult =
 /** Ceiling on the wait for a price. */
 const DEFAULT_TIMEOUT_MS = 6_000;
 
-/** The rail's own quote as the pay card's price: the figure, and Chainflip's duration estimate
- *  when the quote carries one. */
+/** The rail's own quote as the pay card's price. */
 export function sourcePriceOf(quote: Quote): SourcePrice {
-  const raw = quote.raw as { estimatedDurationSeconds?: unknown } | null;
-  const eta =
-    typeof raw?.estimatedDurationSeconds === "number" ? raw.estimatedDurationSeconds : null;
-  return {
-    formatted: quote.source.formatted,
-    baseUnits: quote.source.amount,
-    ...(eta !== null ? { etaSeconds: eta } : {}),
-  };
+  return { formatted: quote.source.formatted, baseUnits: quote.source.amount };
 }
 
 /** The floor Chainflip refused a purchase under, as the pay card's minimum. */
@@ -95,9 +85,12 @@ export async function priceSourceLeg(args: {
       deadline,
     ]);
     const price = sourcePriceOf(quote);
+    const raw = quote.raw as { estimatedDurationSeconds?: unknown } | null;
+    const eta =
+      typeof raw?.estimatedDurationSeconds === "number" ? raw.estimatedDurationSeconds : null;
     console.info(
       `[coinage] source price: ${price.formatted} ${source.shortName} for ${args.targetBaseUnits} ${args.egress.asset}` +
-        (price.etaSeconds === undefined ? "" : `, eta ${Math.round(price.etaSeconds)}s`),
+        (eta === null ? "" : `, eta ${Math.round(eta)}s`),
     );
     return { kind: "price", price };
   } catch (e) {
