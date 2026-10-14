@@ -1,8 +1,5 @@
 // The quote a fiat sale is confirmed on: the region and payout method from the adapter's off-ramp
-// catalog, the exact figure the key will pay, and the best provider line for that figure. The
-// catalog names, per region and method, what the sale sells: PAS on Asset Hub out of the pool sale,
-// USDT there out of the PSM, or, where no provider buys either, a lane's asset that Chainflip swaps
-// the key's USDT into. Priced
+// catalog, the exact figure the key will pay, and the best provider line for that figure. Priced
 // again whenever the region changes; nothing here opens a session.
 
 import { ref, shallowRef } from "vue";
@@ -193,7 +190,6 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
         return;
       }
       const live = await import("~~/lib/withdraw-live");
-      // The method decides what is sold, so the corridor is read before the sale is sized.
       const corridor = await corridorFor(country.value);
       if (mine !== epoch) return;
       if (corridor === null) {
@@ -201,7 +197,7 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
         return;
       }
       // Best lane first; a lane whose providers will not quote falls through to the next.
-      let failure = "No provider can pay out this sale right now.";
+      let failure: string | undefined;
       for (const code of laneCandidates(corridor.lanes, OFFRAMP_LANE_ORDER)) {
         const lane = saleLaneOf(code);
         if (lane === undefined) continue;
@@ -244,10 +240,13 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
           return;
         } catch (e: unknown) {
           if (mine !== epoch) return;
-          failure = e instanceof Error ? e.message : String(e);
+          const message = e instanceof Error ? e.message : String(e);
+          console.warn(`[sell] lane ${code} skipped: ${message}`);
+          // The best lane's failure says most about why the sale cannot be priced.
+          failure ??= message;
         }
       }
-      fail("rate", failure);
+      fail("rate", failure ?? "No provider can pay out this sale right now.");
     } catch (e: unknown) {
       if (mine === epoch) fail("rate", e instanceof Error ? e.message : String(e));
     } finally {

@@ -347,8 +347,6 @@ export async function meldCommitmentFundable(
 // the provider. The sale commits to Chainflip's fill-or-kill floor on the least USDT the key can
 // hold, so the provider is never underpaid; what Chainflip delivers above it the provider keeps.
 
-/** The key pays its swap in USDT, ChargeAssetTxPayment taking the fee from it: 0.1 USDT. */
-const SWAP_SALE_KEY_FEE_USDT = 100_000n;
 /** Room under the USDT the redeem lands, basis points, for the fees the estimate cannot see. */
 const USDT_SALE_LANDING_MARGIN_BPS = 20n;
 
@@ -379,7 +377,7 @@ export interface SwapSaleSize {
  *  cannot quote it, or the fees take it all. */
 export async function sizeSwapSale(amount: bigint, lane: OfframpLane): Promise<SwapSaleSize> {
   const { route, least } = await usdtSaleLanding(amount);
-  const usdtIn = least - SWAP_SALE_KEY_FEE_USDT;
+  const usdtIn = least - USDT_PAY_FEE_ALLOWANCE;
   if (usdtIn <= 0n) throw new Error("The amount does not cover the network fees.");
   const quote = await quoteOutgoing(await saleSwapSdk(), usdtIn, lane.chainflip, ASSET_HUB_USDT);
   // The lane's own buffer: its delivery fee can rise before the swap lands, by chain.
@@ -421,7 +419,7 @@ export async function openSwapSaleChannel(args: {
     expiresAt: channel.expiresAt,
     expectedEgress: channel.expectedEgress.toString(),
     // The least USDT the key must land: what the swap was quoted on, and the key's fee.
-    amount: (size.usdtIn + SWAP_SALE_KEY_FEE_USDT).toString(),
+    amount: (size.usdtIn + USDT_PAY_FEE_ALLOWANCE).toString(),
   };
 }
 

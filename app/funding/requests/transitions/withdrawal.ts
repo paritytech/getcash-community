@@ -429,7 +429,6 @@ function applySale(record: WithdrawalRecord, observation: SaleObservation): With
   return next;
 }
 
-/** Whether `deposit` is the channel's address, for the sale's asset and its exact amount. */
 /** What a sale sells: its offramp lane's asset, or the asset its code names on Asset Hub, PAS
  *  unless it names another. The code was checked when the sale opened; this never throws. */
 function sellTokenOf(sale: MeldSale): SellToken {
@@ -438,6 +437,7 @@ function sellTokenOf(sale: MeldSale): SellToken {
   return DIRECT_SELL_CODES.includes(code) ? directSellToken(code) : SELL_TOKEN;
 }
 
+/** Whether `deposit` is the channel's address, for the sale's asset and its exact amount. */
 function sameDeposit(
   token: SellToken,
   channel: WithdrawalChannel,

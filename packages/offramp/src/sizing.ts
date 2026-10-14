@@ -1,5 +1,5 @@
 // The sale commits to Chainflip's fill-or-kill floor: the least the swap may deliver to the
-// provider. Chainflip usually delivers a little above it; the provider keeps or credits the excess.
+// provider.
 
 /** The floor below the quoted output at `slippageBps`, rounded down, in the lane's base units. */
 export function saleFloor(expectedOut: bigint, slippageBps: number): bigint {
