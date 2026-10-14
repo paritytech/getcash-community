@@ -154,21 +154,29 @@ function returnFromPackage() {
   void purse.refresh({ spent: true });
 }
 
+/** The package's way back to the amount screen, with the amount still in it. */
+function changeAmount() {
+  loadEpoch += 1;
+  shellEntry.value = "amount";
+  returnToShell();
+}
+
 /**
- * Puts this page where a preview scene's state can be read: the crypto package for the
- * `withdraw / …` scenes, the shell for the list scenes. The stages of the top-up page's
+ * Puts this page where a preview scene's state can be read: the scene's withdrawal package for
+ * the `withdraw / …` scenes, the shell for the list scenes. The stages of the top-up page's
  * containers are ignored — they live on `#/`. Returns whether anything moved. Dev and demo
  * builds only — `previewStage` is null in every other.
  */
 async function stagePreview(stage: PreviewStage): Promise<boolean> {
   if (stage.kind === "withdraw-package") {
+    const route = stage.route ?? "crypto";
     // The package is up; the route itself reads the stage's step and skeletons.
-    if (activePackage.value !== null && selection.value?.route === "crypto") return false;
+    if (activePackage.value !== null && selection.value?.route === route) return false;
     cancelPendingLoad();
     activeTopUpPackage.value = null;
     activeTopUpId.value = null;
     // The section's design frames withdraw $25; a selection already on screen keeps its amount.
-    await continueToPackage({ amount: selection.value?.amount ?? "25", route: "crypto" });
+    await continueToPackage({ amount: selection.value?.amount ?? "25", route });
     return true;
   }
   if (stage.kind === "shell") {
@@ -231,6 +239,7 @@ onMounted(async () => {
     :selection="selection"
     @back="returnFromPackage"
     @switch-route="switchRoute"
+    @change-amount="changeAmount"
   />
   <FundingSelectorScreen
     v-else-if="topUpsReady"

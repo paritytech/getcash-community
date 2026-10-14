@@ -6,6 +6,7 @@
 // here, and `app/pages/index.vue` puts it there before the scene's state is applied.
 
 import { shallowRef } from "vue";
+import type { MeldSellQuote } from "../composables/useMeldSellQuote";
 import type { FundingRoute } from "../funding/selection";
 import type { WithdrawFeeView } from "../withdraw/offers";
 
@@ -18,12 +19,23 @@ export type PreviewStage =
    *  package handoff. */
   | { kind: "journey"; route: FundingRoute; topUpId?: string }
   /** The withdrawal package's steps, on `#/withdraw` — `app/pages/withdraw.vue` stages the
-   *  package and the route reads the rest: the step on screen, the network already picked, the
-   *  address seeded into the address step, the summary's canned estimate and fee split, and
-   *  whether the pickers show their skeletons. */
+   *  package of `route` (crypto when unsaid) and the route reads the rest: the step on screen,
+   *  the network already picked, the address seeded into the address step, the summary's canned
+   *  estimate and fee split, and whether the pickers show their skeletons. The fiat routes read
+   *  their own steps and the sale's canned quote instead. */
   | {
       kind: "withdraw-package";
-      step: "network" | "token" | "address" | "summary" | "fees" | "journey" | "return-funds";
+      route?: "crypto" | "card" | "bank";
+      step:
+        | "network"
+        | "token"
+        | "address"
+        | "summary"
+        | "fees"
+        | "journey"
+        | "return-funds"
+        | "quote"
+        | "region";
       chain?: string;
       address?: string;
       /** The summary's canned estimate: a string shows it, null shows it quoting, absent hides
@@ -33,6 +45,13 @@ export type PreviewStage =
       /** A canned secret for the return-funds step, so the revealed frame can be staged. */
       secret?: string;
       skeleton?: boolean;
+      /** A fiat route's canned sale: the quote shows it priced, null shows it pricing, and
+       *  `saleError` alone shows it refused, the rate after `attempts` failures in a row. The route
+       *  never asks the adapter while staged. */
+      sale?: MeldSellQuote | null;
+      saleError?: { kind: "unrouted" | "rate"; attempts?: number };
+      /** The fiat route's payout country, ISO code; GB when unsaid. */
+      country?: string;
     };
 
 /**
