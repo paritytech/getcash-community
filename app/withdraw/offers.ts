@@ -6,8 +6,7 @@
 // picker shows a skeleton row in its place. Asset Hub itself has no provider: the direct rail is
 // always pickable.
 
-import { wholeCashCeil } from "../funding/source-groups";
-import { cashAmount } from "../utils/cash";
+import { minimumLine } from "../funding/source-groups";
 import type { WithdrawDestination } from "./destinations";
 
 /** The Fees drill-in behind the summary, every figure already formatted for its row. */
@@ -52,9 +51,14 @@ export interface RowState {
 
 const PICKABLE: RowState = { pickable: true };
 
-/** One destination's row. Nothing is pickable until its quote is in: money is at stake, so the
- *  rows wait rather than guess. */
-export function rowState(destination: WithdrawDestination, offer: WithdrawOffer): RowState {
+/** One destination's row, worded for the picker it sits on: a token row on the token picker, or
+ *  the network row that stands for it. Nothing is pickable until its quote is in: money is at
+ *  stake, so the rows wait rather than guess. */
+export function rowState(
+  destination: WithdrawDestination,
+  offer: WithdrawOffer,
+  of: "token" | "network" = "token",
+): RowState {
   if (destination.rail === "direct") return PICKABLE;
   switch (offer.state) {
     case "checking":
@@ -64,12 +68,8 @@ export function rowState(destination: WithdrawDestination, offer: WithdrawOffer)
     case "unavailable":
       return { pickable: false, subtitle: "Not available right now" };
     case "too-small":
-      // The same line on a network row and on its token rows: the minimum is on the DOT sold,
-      // whatever it buys.
-      return {
-        pickable: false,
-        subtitle: `Minimum is ${cashAmount(wholeCashCeil(offer.minimumCash))}`,
-      };
+      // The minimum is on the DOT sold, whatever it buys, so a network's row carries its tokens'.
+      return { pickable: false, subtitle: minimumLine(of, offer.minimumCash) };
     case "available":
       return PICKABLE;
   }
