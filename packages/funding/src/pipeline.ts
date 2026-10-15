@@ -47,11 +47,13 @@
 // final on Asset Hub, and its finalized block before that; or its finalized block alone. A
 // shortfall ends the run, so it is confirmed at People's finalized block. A submit whose answer
 // was lost is settled from the chain: the nonce unmoved means nothing landed and the same nonce
-// may go out again. A best block can be replaced, so the nonce recorded before the send is kept,
-// through done, until the finalized nonce moves past it: the chain final past the block the
-// program was seen in with that nonce unmoved means the program was dropped, People drops the
-// arrival with it, and it goes out again the same way. The driver keeps ticking a done run until
-// its conversion is final, and takes the done back when the block was dropped.
+// may go out again. A best block can be replaced, so the block the program landed in is kept,
+// with its hash, through done, until the chain is final past it: the finalized chain holding
+// another hash at that height means the program was dropped, People drops the arrival with it,
+// and it goes out again under the same nonce. The nonce cannot tell the two apart: the
+// conversion empties the burner, the account is reaped, and a reaped account's nonce starts
+// over. The driver keeps ticking a done run until its conversion is final, and takes the done
+// back when the block was dropped.
 //
 // A PSM REFUSAL IS RETRIED THREE TIMES, THEN HELD. A mint the PSM refuses (the pair paused, or the
 // mint over its ceiling) is tried again on the next tick, and the third refusal stops the run with
@@ -457,13 +459,14 @@ export interface TickState {
   fundsSeenAt: number | null;
   /** The burner's nonce at the latest block before the last submit, kept until the chain's final
    *  word on it: with `xcmSubmitted` unset the answer is owed and a tick settles from the chain
-   *  what became of the submit; set, the finalized nonce moving past it makes the conversion
-   *  final. */
+   *  what became of the submit; set, the conversion's block going final lets it go. */
   nonceAtSubmit: number | null;
-  /** The block the program was seen in, or the latest block when a lost answer was settled as
-   *  landed; the chain final at or past it with the nonce unmoved means that block was replaced.
-   *  Null once the conversion is final or the block was replaced. */
+  /** The block the program was seen in and its hash, kept until the chain is final past it: the
+   *  finalized chain holding that hash at that height makes the conversion final, another hash
+   *  means the block was replaced. A lost answer settled as landed names the latest block with
+   *  no hash, and is taken as final once the chain is final past it. Null once settled. */
   inclusionBlock: number | null;
+  inclusionHash: string | null;
   /** Paid rejections in a row, with their answer in `lastRejection`. MAX_PROGRAM_REJECTIONS
    *  hold the run. A different answer starts over; a landed program clears both. */
   rejections: number;
@@ -478,6 +481,7 @@ export const freshTickState = (): TickState => ({
   fundsSeenAt: null,
   nonceAtSubmit: null,
   inclusionBlock: null,
+  inclusionHash: null,
   rejections: 0,
   lastRejection: null,
 });
@@ -646,9 +650,10 @@ function includedInBlock(watch: Watch, timeoutMs: number, what: string): Promise
 
 /** The program is in a block. The latch holds until finality settles it, and the rejection
  *  count starts over. */
-function markLanded(state: TickState, block: number): void {
+function markLanded(state: TickState, block: number, hash: string | null): void {
   state.xcmSubmitted = true;
   state.inclusionBlock = block;
+  state.inclusionHash = hash;
   state.rejections = 0;
   state.lastRejection = null;
 }
@@ -691,7 +696,7 @@ async function submitConversion<Options>(
     });
   }
   if (included.ok) {
-    markLanded(state, included.block.number);
+    markLanded(state, included.block.number, included.block.hash);
   } else {
     state.nonceAtSubmit = null;
   }
@@ -745,39 +750,43 @@ async function settleLostSubmit(
   markLanded(
     state,
     await bounded(readBlockNumber(api, "best"), input.tickTimeoutMs, "block number read (latest)"),
+    null,
   );
 }
 
-/** The program is in a best block the chain may yet replace, so the finalized block has the last
- *  word: the nonce moved there, the conversion is final and the pre-send record is let go; the
- *  chain final past the block the program was seen in with the nonce unmoved, that block was
- *  replaced, and the latch is released so the tick re-gates and sends again under the same
- *  nonce. */
+/** The program is in a best block the chain may yet replace, so the finalized chain has the last
+ *  word once it is past that block: the hash it holds at that height is the block's, the
+ *  conversion is final and the pre-send record is let go; another hash, the block was replaced,
+ *  and the latch is released so the tick re-gates and sends again under the same nonce. The
+ *  nonce cannot tell the two apart, since the conversion empties the burner and a reaped
+ *  account's nonce starts over. */
 async function settleInclusion(
   input: TickOnceInput,
   state: TickState,
-  nonceAtSubmit: number,
   inclusionBlock: number,
+  inclusionHash: string | null,
 ): Promise<void> {
-  const { api, address } = input;
+  const { api } = input;
   const finalizedBlock = await bounded(
     readBlockNumber(api, "finalized"),
     input.tickTimeoutMs,
     "block number read (finalized)",
   );
-  // After the block number: a nonce unmoved at a later finalized block is unmoved at this one.
-  const nonce = await bounded(
-    readNonce(api, address, "finalized"),
-    input.tickTimeoutMs,
-    "nonce read (finalized)",
-  );
-  if (nonce > nonceAtSubmit) {
+  if (finalizedBlock < inclusionBlock) return;
+  const final =
+    inclusionHash === null ||
+    (await bounded(
+      api.query.System.BlockHash.getValue(inclusionBlock, { at: "finalized" }),
+      input.tickTimeoutMs,
+      "block hash read (finalized)",
+    )) === inclusionHash;
+  if (final) {
     state.nonceAtSubmit = null;
-    state.inclusionBlock = null;
-  } else if (finalizedBlock >= inclusionBlock) {
+  } else {
     state.xcmSubmitted = false;
-    state.inclusionBlock = null;
   }
+  state.inclusionBlock = null;
+  state.inclusionHash = null;
 }
 
 /**
@@ -807,7 +816,7 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
         );
 
   if (state.xcmSubmitted && state.nonceAtSubmit !== null && state.inclusionBlock !== null) {
-    await settleInclusion(input, state, state.nonceAtSubmit, state.inclusionBlock);
+    await settleInclusion(input, state, state.inclusionBlock, state.inclusionHash);
   }
 
   const balances: FundingBalances = { depositAh, underlyingPeople: peopleHeld };
