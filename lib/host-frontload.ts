@@ -2,6 +2,8 @@
 // launch: Network (Remote) for the Chainflip domains, ChainSubmit for the funding pipeline, and
 // Balance through a one-shot purse read. Outside a host container this is a no-op.
 
+import { BAAS_BROKER_HOST } from "@getsome/chainflip";
+import { brokerConfigured } from "./chainflip-backend";
 import { isHosted } from "./host-account";
 import { readPurseBalance } from "./coinage";
 
@@ -12,6 +14,11 @@ const CHAINFLIP_DOMAINS = ["rpc.mainnet.chainflip.io", "chainflip-swap.chainflip
  *  Only the grant is front-loaded: the lookup itself runs when one of those screens opens, so a
  *  user who never goes there never sends their address. */
 const GEO_DOMAINS = ["get.geojs.io"];
+
+/** The broker the channels open on, when the build has a key for it. */
+function brokerDomains(): string[] {
+  return brokerConfigured() ? [BAAS_BROKER_HOST] : [];
+}
 
 /** The fiat rail's domain, read from the build-time base URL. A relative base yields nothing. */
 function meldDomains(): string[] {
@@ -31,7 +38,9 @@ export async function frontloadHostPermissions(): Promise<void> {
   // Network first: the amount screen's floor-learning fires as soon as this resolves.
   await requestPermission({
     tag: "Remote",
-    value: { domains: [...CHAINFLIP_DOMAINS, ...GEO_DOMAINS, ...meldDomains()] },
+    value: {
+      domains: [...CHAINFLIP_DOMAINS, ...brokerDomains(), ...GEO_DOMAINS, ...meldDomains()],
+    },
   }).catch((e) => console.warn("[host] network grant failed (continuing):", e));
 
   // These do not gate the first quote and queue behind the network dialog.
