@@ -334,6 +334,56 @@ describe("a fiat sale through an offramp lane", () => {
     expect(storedJob().residue).toEqual({ amount: "0", returning: false });
   });
 
+  it("keeps reading a key that failed before the purse paid, and sends the CASH home once it lands", async () => {
+    // Twelve minutes left on the channel: inside the worker's own margin as the hand-off arrives.
+    const engine = await engineWith({});
+    await engine.startWithdraw(swapHandoff({ swap: { ...swap, expiresAt: NOW + 12 * 60_000 } }));
+    await engine.tickAllWithdraw();
+    expect(storedJob()).toMatchObject({ phase: "failed", failure: "channel-expired" });
+    // Nothing on the key yet, and the purse's window is open: no books closed on an empty key.
+    expect(storedJob().residue).toBeUndefined();
+    expect(storedJob().residueError).toMatch(/purse's payment window/);
+    mocks.keyCash = 100_000_000n; // the purse pays a moment later
+    await engine.tickAllWithdraw();
+    expect(mocks.startFunding).toHaveBeenCalledTimes(1);
+    expect(storedJob().residue).toMatchObject({ whole: true, returning: true });
+  });
+
+  it("closes an empty key's books once the purse's window is over", async () => {
+    const engine = await engineWith({});
+    await engine.startWithdraw(
+      swapHandoff({
+        swap: { ...swap, expiresAt: NOW + 12 * 60_000 },
+        paymentExpiresAt: NOW + 60_000,
+      }),
+    );
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue).toBeUndefined();
+    vi.setSystemTime(NOW + 60_000 + 10 * 60_000);
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue).toEqual({ whole: true, returning: false });
+  });
+
+  it("re-arms a sale that failed before any CASH arrived on the fresh swap the page re-sends", async () => {
+    const engine = await engineWith({});
+    await engine.startWithdraw(swapHandoff({ swap: { ...swap, expiresAt: NOW + 12 * 60_000 } }));
+    await engine.tickAllWithdraw();
+    expect(storedJob()).toMatchObject({ phase: "failed", failure: "channel-expired" });
+    const fresh = { ...swap, id: "cf-channel-8", expiresAt: NOW + DAY };
+    await engine.startWithdraw(swapHandoff({ swap: fresh }));
+    expect(storedJob().phase).toBe("starting");
+    expect(storedJob().swap).toMatchObject({ id: "cf-channel-8" });
+    expect(storedJob().leg.handoff).toMatchObject({ id: "cf-channel-8", expiresAt: NOW + DAY });
+  });
+
+  it("never swaps the channel under a key that may already have paid it", async () => {
+    const engine = await landed();
+    await engine.tickAllWithdraw(); // the key pays the swap
+    await engine.startWithdraw(swapHandoff({ swap: { ...swap, id: "cf-channel-8" } }));
+    expect(storedJob().leg.handoff.id).toBe("cf-channel-7");
+    expect(storedJob().swap.id).toBe("cf-channel-7");
+  });
+
   it("gives up on the refund two hours after the swap failed", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {

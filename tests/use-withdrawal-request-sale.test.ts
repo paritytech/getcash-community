@@ -626,6 +626,20 @@ describe("a fiat sale from the page", () => {
       expect(openSwap).toHaveBeenCalledTimes(1);
       expect((useRequestsStore().get(ref) as WithdrawalRecord).handoff.swap?.id).toBe("cf-fresh");
     });
+
+    it("opens a fresh swap in place of one the worker would refuse once the purse has paid", async () => {
+      // Twenty minutes left: past the worker's own margin, but not past it plus the purse's window.
+      const ref = await laneSaleAtDeposit();
+      await useRequestsStore().observe(ref, {
+        source: "user",
+        at: FIXTURE_NOW,
+        event: "swap-opened",
+        channel: swapChannel("cf-short", FIXTURE_NOW + 20 * 60_000),
+      });
+      expect(await useWithdrawalRequest().paySale(ref)).toEqual({ ok: true });
+      expect(openSwap).toHaveBeenCalledTimes(1);
+      expect((useRequestsStore().get(ref) as WithdrawalRecord).handoff.swap?.id).toBe("cf-fresh");
+    });
   });
 
   describe("a fiat sale in a build that cannot run one", () => {

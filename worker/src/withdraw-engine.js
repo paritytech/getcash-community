@@ -365,9 +365,17 @@ export async function startWithdraw(params) {
       return { error: "invalid", reason: mismatchReason(existing.keyAddress, shown) };
     }
     // A sale whose key goes home whole never pays its provider again, whatever is re-sent, and
-    // one whose payment could not be confirmed waits for a person, not for a re-sent hand-off.
-    const held = goesHomeWhole(existing) || existing.failure === "unresolved";
+    // one whose payment could not be confirmed waits for a person, not for a re-sent hand-off. A
+    // swap sale that failed before any CASH reached its key is the exception: the page re-sends it
+    // with a fresh Chainflip channel, and nothing has moved that the new one could cross.
+    const freshSwap = freshSwapFor(existing, input);
+    const held =
+      existing.failure === "unresolved" || (freshSwap === null && goesHomeWhole(existing));
     if (existing.phase === "failed" && !held) rearm(existing, Date.now());
+    if (freshSwap !== null) {
+      existing.swap = freshSwap;
+      existing.leg = legFor(input, Date.now());
+    }
     // A re-sent hand-off carries the surface's current payment window: a retried payment gets a
     // fresh one, and the job must not expire on the old clock while the surface waits on the new.
     existing.paymentExpiresAt = paymentExpiryOf(input) ?? existing.paymentExpiresAt;
@@ -400,6 +408,21 @@ export async function startWithdraw(params) {
   all[record.sessionId] = record;
   await saveJobs();
   return describeWithdraw(record);
+}
+
+/** The Chainflip channel a re-sent hand-off brings for a swap sale, when it is a new one and the
+ *  old one was never paid nor could have been: no sweep tried, no CASH seen, nothing gone home.
+ *  Null otherwise, so a channel that may hold the key's USDT is never left behind. */
+function freshSwapFor(existing, input) {
+  if (swapOf(existing) === null || swapOf(input) === null) return null;
+  const swap = channelOf(input.swap);
+  if (swap.amount === undefined || swap.id === existing.leg?.handoff?.id) return null;
+  const untouched =
+    existing.leg?.paid !== true &&
+    (existing.leg?.sweep?.attempts ?? 0) === 0 &&
+    existing.state?.fundsSeenAt == null &&
+    existing.residue === undefined;
+  return untouched ? swap : null;
 }
 
 /**
@@ -798,7 +821,9 @@ async function sendHome(record, kind) {
       return;
     }
   } else if (!(await keyHoldsAnything(record))) {
-    // A sale that failed before anything reached its key: no way home to start.
+    // A sale that failed before anything reached its key: no way home to start. Not while the
+    // purse may still pay it, or the CASH would land on a key nothing reads again.
+    if (pursePayMayLand(record)) throw new Error("waiting for the purse's payment window to close");
     record.residue = { whole: true, returning: false };
     return;
   }
@@ -812,6 +837,15 @@ async function sendHome(record, kind) {
   };
   await saveJobs();
   await startWayHome(record);
+}
+
+/** The purse may still pay a sale's key: no CASH seen yet, and its payment window, with room for a
+ *  payment already on its way, is not over. */
+function pursePayMayLand(record, nowMs = Date.now()) {
+  if (record.state?.fundsSeenAt != null) return false;
+  const expiresAt =
+    record.paymentExpiresAt ?? (record.armedAt ?? record.createdAt) + PAYMENT_WINDOW_MS;
+  return nowMs < expiresAt + SUBMIT_SETTLE_MS;
 }
 
 /** Starts, or re-arms, the funding job that carries a sale's key home. Throws when it is refused,
