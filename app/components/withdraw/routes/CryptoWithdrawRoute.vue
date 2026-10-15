@@ -4,6 +4,7 @@
 // record. The record and the worker carry on when this screen is left.
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { depositTokenOf, type ConversionRoute } from "@getsome/funding";
+import { useDrillIn } from "../../../composables/useDrillIn";
 import { useStateDirector } from "../../../composables/useStateDirector";
 import { useWithdrawalRequest } from "../../../composables/useWithdrawalRequest";
 import type { FundingPackageEmits } from "../../../funding/handoff";
@@ -52,6 +53,10 @@ useStateDirector();
 type Step =
   "network" | "token" | "address" | "summary" | "fees" | "journey" | "cancel" | "return-funds";
 const step = ref<Step>(props.topUp ? "journey" : "network");
+/** The fee breakdown and where it was opened from, so back returns there. */
+const { from: feesFrom, open: openFees } = useDrillIn<"summary" | "journey">("summary", () => {
+  step.value = "fees";
+});
 const network = ref<WithdrawNetwork | null>(null);
 const destination = ref<WithdrawDestination | null>(null);
 const address = ref("");
@@ -141,7 +146,7 @@ function onBack() {
       step.value = "journey";
       return;
     case "fees":
-      step.value = "summary";
+      step.value = feesFrom.value;
       return;
     case "summary":
       step.value = "address";
@@ -422,13 +427,13 @@ onUnmounted(() => {
         :starting="starting"
         :error="startError"
         @confirm="confirm"
-        @fees="step = 'fees'"
+        @fees="openFees('summary')"
       />
       <WithdrawFeesScreen
         v-else-if="step === 'fees' && fees"
         :amount="amount"
         :fees="fees"
-        @back="step = 'summary'"
+        @back="step = feesFrom"
       />
       <WithdrawCancelScreen
         v-else-if="step === 'cancel'"
@@ -441,9 +446,11 @@ onUnmounted(() => {
         :record="record"
         :notice="notice"
         :busy="busy"
+        :fees-available="fees !== null"
         @cancel="step = 'cancel'"
         @retry="retry"
         @return-funds="step = 'return-funds'"
+        @fees="openFees('journey')"
         @close="emit('back')"
       />
       <WithdrawReturnFundsScreen

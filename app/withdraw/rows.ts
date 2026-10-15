@@ -7,10 +7,12 @@ import {
   WITHDRAW_SOURCE_PREFIX,
   isFinished,
   isWithdrawSourceId,
+  isWithdrawalSideExit,
   saleAwaitingDeposit,
   saleBeforePurse,
   type WithdrawalRecord,
 } from "../funding/requests/model";
+import { TIMELINE_CADENCE_MS } from "../funding/timeline/timelines";
 import type { FundingTopUpAdapter } from "../funding/top-up-adapter";
 import type {
   FundingListWording,
@@ -22,12 +24,9 @@ import { useRequestsStore } from "../stores/requests";
 import { parseRequestRefKey, requestRefKey, type RequestRef } from "../utils/request-index";
 import { destinationTokenIcon, withdrawDestination, withdrawNetwork } from "./destinations";
 import { withdrawalFailureText } from "./failure-copy";
-import {
-  SALE_KYC_LABEL,
-  SALE_READY_LABEL,
-  withdrawalProgress,
-  withdrawalProgressProfile,
-} from "./progress";
+import { withdrawalListProgress } from "./timeline/list";
+import { SALE_KYC_LABEL, SALE_READY_LABEL } from "./timeline/texts";
+import { createWithdrawalTimelines, type WithdrawalTimelineOf } from "./timeline/timelines";
 
 /** The words the rows use for a withdrawal. */
 export const WITHDRAWAL_WORDING: FundingTopUpWording = { settled: "Sent" };
@@ -69,7 +68,9 @@ export function withdrawalRowStateOf(record: WithdrawalRecord): FundingTopUpStat
       return {
         kind: "failed",
         at: status.at,
-        ...(record.failure === undefined ? {} : { reason: withdrawalFailureText(record.failure) }),
+        ...(record.failure === undefined
+          ? {}
+          : { reason: withdrawalFailureText(record.failure, record.route) }),
       };
     case "cancelled":
       return { kind: "failed", at: status.at, reason: "Cancelled" };
@@ -108,24 +109,24 @@ function detailsOf(record: WithdrawalRecord): FundingTopUp["details"] {
   };
 }
 
+/** The rows at `now`. `timelineOf` is the store's memo when the page lists, so a row's ring never
+ *  falls behind the journey's line; a fresh one serves tests and previews. */
 export function projectWithdrawalTopUps(
   records: readonly WithdrawalRecord[],
   now = Date.now(),
+  timelineOf: WithdrawalTimelineOf = createWithdrawalTimelines(),
 ): FundingTopUp[] {
-  return records.map((record) => {
-    const { view } = withdrawalProgress(record, now);
-    return {
-      id: rowId(record.ref),
-      amount: record.amountHuman,
-      debit: true,
-      // The route opens the package the withdrawal came from: crypto's, or the fiat sale's.
-      route: record.route,
-      startedAt: record.startedAt,
-      progress: { value: view.value, tone: view.kind, delayed: false },
-      details: detailsOf(record),
-      state: withdrawalRowStateOf(record),
-    };
-  });
+  return records.map((record) => ({
+    id: rowId(record.ref),
+    amount: record.amountHuman,
+    debit: true,
+    // The route opens the package the withdrawal came from: crypto's, or the fiat sale's.
+    route: record.route,
+    startedAt: record.startedAt,
+    progress: withdrawalListProgress(timelineOf(record, now), record),
+    details: detailsOf(record),
+    state: withdrawalRowStateOf(record),
+  }));
 }
 
 /** The store pass behind the lists' refresh. The page refreshes every package's list at once and
@@ -150,17 +151,18 @@ function useWithdrawalTopUpAdapterFor(
   const mine = computed(() =>
     requests.openWithdrawals.filter((record) => routes.includes(record.route)),
   );
-  const cadence = computed(() => {
-    const moving = mine.value.filter((record) => !isFinished(record));
-    return moving.length === 0
-      ? null
-      : Math.min(
-          ...moving.map((record) => withdrawalProgressProfile(record.rail.provider).cadenceMs),
-        );
-  });
+  // A record that ended, well or badly, draws the same at every tick: only a moving one keeps
+  // the clock running.
+  const cadence = computed(() =>
+    mine.value.some((record) => !isFinished(record) && !isWithdrawalSideExit(record))
+      ? TIMELINE_CADENCE_MS
+      : null,
+  );
   const now = useFundingProgressClock(cadence);
   return {
-    topUps: computed(() => projectWithdrawalTopUps(mine.value, now.value)),
+    topUps: computed(() =>
+      projectWithdrawalTopUps(mine.value, now.value, requests.withdrawalTimelineOf),
+    ),
     refresh: () => refreshWithdrawals(requests),
     // A withdrawal has no world to rebuild: bringing it to the front is the record itself.
     open: async (topUp) => {

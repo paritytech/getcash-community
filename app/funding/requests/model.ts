@@ -874,6 +874,13 @@ export const isTerminal = (status: RequestStatus): boolean => status.kind === "s
 export const isFinished = (record: RequestRecord): boolean =>
   record.kind === "top-up" ? record.status.kind === "settled" : record.status.kind === "sent";
 
+/** The withdrawal ended short of success: failed, expired or cancelled. Its rank stays at the leg
+ *  it left, and nothing moves it again but a retry. */
+export const isWithdrawalSideExit = (record: Pick<WithdrawalRecord, "status">): boolean =>
+  record.status.kind === "failed" ||
+  record.status.kind === "expired" ||
+  record.status.kind === "cancelled";
+
 /** The host took the payment, or has it in hand: such a withdrawal never expires and is never
  *  cancelled, however long the CASH takes to reach the key. */
 export const paymentTaken = (record: Pick<WithdrawalRecord, "payment">): boolean => {

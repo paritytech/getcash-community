@@ -5,6 +5,7 @@
 // the list loads this route onto its record. Nothing is asked of the balance until the provider
 // names where the funds go; from there the record and the worker carry the sale.
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { useDrillIn } from "../../../composables/useDrillIn";
 import { useMeldSellQuote } from "../../../composables/useMeldSellQuote";
 import { useStateDirector } from "../../../composables/useStateDirector";
 import { useWithdrawalRequest } from "../../../composables/useWithdrawalRequest";
@@ -20,6 +21,7 @@ import { localeCountry } from "../../../utils/locale";
 import type { RequestRef } from "../../../utils/request-index";
 import { meldSellClient } from "../../../withdraw/meld-client";
 import { withdrawalRequestRef } from "../../../withdraw/rows";
+import { saleFeeDetails } from "../../../withdraw/sale-fees";
 import { bankRailCountries } from "~~/lib/region";
 import {
   corridorOptions,
@@ -59,6 +61,10 @@ const sale = useMeldSellQuote(method, toCashBase(amount.value) ?? 0n);
 
 type Step = "quote" | "fees" | "region" | "kyc" | "journey" | "cancel";
 const step = ref<Step>(props.topUp ? "journey" : "quote");
+/** The fee breakdown and where it was opened from, so back returns there. */
+const { from: feesFrom, open: openFees } = useDrillIn<"quote" | "journey">("quote", () => {
+  step.value = "fees";
+});
 const starting = ref(false);
 const startError = ref<string | null>(null);
 const busy = ref(false);
@@ -66,6 +72,15 @@ const cancelling = ref(false);
 const notice = ref<string | null>(null);
 
 const record = computed(() => requests.foregroundWithdrawal);
+/** The fees behind the journey's receive row: the sale as the record committed it. The live quote
+ *  prices the current input and is empty while it refreshes, so the journey never reads it. */
+const journeyFees = computed(() =>
+  record.value?.sale === undefined ? null : saleFeeDetails(record.value.sale),
+);
+/** What the Fees step shows: the live quote from the quote screen, the sale from the journey. */
+const shownFees = computed(() =>
+  feesFrom.value === "journey" ? journeyFees.value : sale.quote.value,
+);
 /** A withdrawal opened from the list whose record the store no longer has. */
 const unavailable = computed(() => {
   if (!props.topUp || record.value !== null) return false;
@@ -93,6 +108,8 @@ const toolbar = computed<{ title: string; back: boolean }>(() => {
 function onBack() {
   switch (step.value) {
     case "fees":
+      step.value = feesFrom.value;
+      return;
     case "region":
       step.value = "quote";
       return;
@@ -464,10 +481,10 @@ onUnmounted(() => {
         @cancel="cancelSale"
       />
       <MeldSellFeeDetailsScreen
-        v-else-if="step === 'fees' && sale.quote.value"
-        :quote="sale.quote.value"
-        :cash-amount="amount"
-        @back="step = 'quote'"
+        v-else-if="step === 'fees' && shownFees"
+        :quote="shownFees"
+        :cash-amount="feesFrom === 'journey' && record ? record.amountHuman : amount"
+        @back="step = feesFrom"
       />
       <CurrencySelectScreen
         v-else-if="step === 'region'"
@@ -491,7 +508,7 @@ onUnmounted(() => {
         :starting="starting"
         :start-error="startError"
         @continue="confirm"
-        @fees="step = 'fees'"
+        @fees="openFees('quote')"
         @region="step = 'region'"
         @retry="retryQuote"
         @use-crypto="emit('switchRoute', 'crypto')"
@@ -508,8 +525,10 @@ onUnmounted(() => {
         :record="record"
         :notice="notice"
         :busy="busy"
+        :fees-available="journeyFees !== null"
         @cancel="openCancel"
         @retry="retry"
+        @fees="openFees('journey')"
         @close="emit('back')"
       />
       <div

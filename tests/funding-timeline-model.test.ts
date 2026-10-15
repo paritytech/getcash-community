@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import { LINE_LIMIT, timelineView } from "../app/funding/timeline/model";
+import { LINE_LIMIT, lastReached, timelineView } from "../app/funding/timeline/model";
+import { TOP_UP_TIMELINE } from "../app/funding/timeline/top-up-spec";
 import type {
   PhaseIndex,
   PhaseInput,
   PhasePart,
   ReachedMilestones,
   TimelineInput,
+  TimelineSpec,
   TimelineView,
 } from "../app/funding/timeline/types";
 
@@ -17,7 +19,7 @@ function part(overrides: Partial<PhasePart> = {}): PhasePart {
 }
 
 function evaluate(phase: PhaseInput, overrides: Partial<TimelineInput> = {}) {
-  return timelineView({
+  return timelineView(TOP_UP_TIMELINE, {
     reached: { started: { at: 0 } },
     phase: () => phase,
     now: 0,
@@ -104,7 +106,7 @@ describe("top-up timeline model", () => {
 
   it("makes every milestone before a reached one complete", () => {
     const phase = vi.fn(() => ({ parts: [part()] }) satisfies PhaseInput);
-    const view = timelineView({
+    const view = timelineView(TOP_UP_TIMELINE, {
       reached: { started: { at: 0 }, sent: { at: 5_000 } },
       phase,
       now: 5_000 + T,
@@ -186,7 +188,7 @@ describe("top-up timeline model", () => {
 
   it("is done when every milestone is reached", () => {
     const phase = vi.fn(() => ({ parts: [part()] }) satisfies PhaseInput);
-    const view = timelineView({
+    const view = timelineView(TOP_UP_TIMELINE, {
       reached: { started: {}, added: { at: 0 } },
       phase,
       failedAt: 0,
@@ -207,5 +209,52 @@ describe("top-up timeline model", () => {
     ["a fraction that is not a number", part({ fraction: Number.NaN })],
   ])("rejects %s", (_, invalid) => {
     expect(() => evaluate({ parts: [invalid] })).toThrow(RangeError);
+  });
+});
+
+describe("timeline model on another spec", () => {
+  const spec: TimelineSpec<"a" | "b" | "c"> = {
+    ariaLabel: "Progress",
+    failedLabel: "Failed",
+    designWidth: 100,
+    milestones: [
+      { id: "a", label: "A", centre: 16 },
+      { id: "b", centre: 50 },
+      { id: "c", label: "C", centre: 84 },
+    ],
+  };
+
+  it("has as many milestones and lines as the spec", () => {
+    const view = timelineView(spec, {
+      reached: { a: { at: 0 }, b: { at: 0 } },
+      phase: () => ({ parts: [part()] }),
+      now: 0,
+    });
+    expect(view).toEqual({
+      state: "active",
+      phase: 1,
+      milestones: ["complete", "complete", "upcoming"],
+      lines: [1, 0],
+    });
+  });
+
+  it("is done at the spec's last milestone", () => {
+    const view = timelineView(spec, {
+      reached: { c: {} },
+      phase: () => ({ parts: [part()] }),
+      now: 0,
+    })!;
+    expect(view).toEqual({ state: "done", milestones: Array(3).fill("complete"), lines: [1, 1] });
+    expect(lastReached(view)).toBe(2);
+  });
+
+  it("ignores a previous view of another length, which is another spec's", () => {
+    const view = timelineView(spec, {
+      reached: { a: { at: 0 } },
+      phase: () => ({ parts: [part()] }),
+      now: 0,
+      previous: { state: "active", phase: 0, milestones: [], lines: Array(6).fill(0.6) },
+    });
+    expect(view?.lines[0]).toBe(0);
   });
 });

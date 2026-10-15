@@ -21,6 +21,7 @@ import {
   SALE_PAY_WINDOW_MS,
   SENDING_STEP_ORDER,
   isSendingStep,
+  isWithdrawalSideExit,
   paymentTaken,
   saleBeforePurse,
   withdrawalRankOf,
@@ -105,11 +106,6 @@ function witnessed(record: WithdrawalRecord, patch: Partial<Witnesses>): Withdra
   return { ...record, witnesses: { ...record.witnesses, ...patch } };
 }
 
-const atSideExit = (record: WithdrawalRecord): boolean =>
-  record.status.kind === "failed" ||
-  record.status.kind === "expired" ||
-  record.status.kind === "cancelled";
-
 /** CASH on the key: completes the payment leg of a record still at rank 0, side exits included,
  *  and touches nothing past it. */
 function paidSeen(
@@ -185,9 +181,10 @@ function railRead(
   if (rail === record.rail) return record;
   const next = { ...record, rail };
   const rank = withdrawalRankOf(next);
-  if (rail.stage === "delivered") return rank < 4 && !atSideExit(next) ? sent(next, at) : next;
+  if (rail.stage === "delivered")
+    return rank < 4 && !isWithdrawalSideExit(next) ? sent(next, at) : next;
   if (rail.stage === "failed" && rail.failure !== undefined) {
-    if (rank >= 4 || atSideExit(next)) return next;
+    if (rank >= 4 || isWithdrawalSideExit(next)) return next;
     return failed(next, at, {
       kind: railFailureKind(rail.failure.kind),
       step: "send",
@@ -241,7 +238,7 @@ function applyWorker(
   if (job.rail !== undefined) next = railRead(next, job.rail, at);
   const rank = withdrawalRankOf(next);
   if (job.phase === "failed") {
-    if (atSideExit(next)) return next;
+    if (isWithdrawalSideExit(next)) return next;
     // A sale has one order, opened once: a failure before its provider is paid ends it, and the
     // worker sends the key's funds home rather than trying the same order again.
     if (next.rail.provider === "meld" && SALE_ENDING_FAILURES.has(job.failure ?? "")) {
@@ -314,7 +311,7 @@ function applyWorker(
     }
   }
   // The worker finished following the provider: delivered, whatever its last reading said.
-  if (job.done && rank < 4 && !atSideExit(next)) return sent(next, at);
+  if (job.done && rank < 4 && !isWithdrawalSideExit(next)) return sent(next, at);
   if (job.fundsSeenAt !== null && isSendingStep(job.phase)) {
     const { status } = next;
     const laterStep =
@@ -489,7 +486,7 @@ function applyHost(record: WithdrawalRecord, observation: HostObservation): With
           conflict: { source: "host", note: "payment failed after CASH was seen", at },
         });
       }
-      if (atSideExit(stamped)) return stamped;
+      if (isWithdrawalSideExit(stamped)) return stamped;
       return failed(stamped, at, {
         kind: "payment-failed",
         step: "payment",

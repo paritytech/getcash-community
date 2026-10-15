@@ -1,16 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
-  TIMELINE_INSETS,
+  timelineInsets,
   timelineDrawing,
   type LabelAlign,
   type TimelineDrawing,
 } from "../app/components/funding/timeline/drawing";
 import { listHeadline, listProgress, overallProgress } from "../app/funding/timeline/list";
 import { timelineView } from "../app/funding/timeline/model";
+import { TOP_UP_TIMELINE } from "../app/funding/timeline/top-up-spec";
 import {
   MILESTONES,
   type MilestoneIndex,
   type PhaseIndex,
+  type TimelineSpec,
   type TimelineView,
 } from "../app/funding/timeline/types";
 
@@ -44,7 +46,7 @@ const done: TimelineView = {
 };
 
 /** Received reached with Accepted and Sent never seen. */
-const skipped = timelineView({
+const skipped = timelineView(TOP_UP_TIMELINE, {
   reached: { started: { at: 0 }, received: { at: 0 } },
   phase: () => ({ parts: [{ weight: 1, expectedMs: 1_000 }] }),
   now: 0,
@@ -130,7 +132,7 @@ describe("top-up timeline drawing", () => {
       ["complete 1", "complete 1", "complete 1", "complete 1", "complete 1", "complete 1"],
     ],
   ])("draws %s", (_, view, shownReached, milestones, heading, halo, lines) => {
-    expect(summary(timelineDrawing(view, shownReached))).toEqual({
+    expect(summary(timelineDrawing(TOP_UP_TIMELINE, view, shownReached))).toEqual({
       milestones,
       current: heading,
       halo,
@@ -177,7 +179,7 @@ describe("top-up timeline drawing", () => {
   ] satisfies [string, TimelineView, string, string[], LabelAlign][])(
     "draws a failure at %s: red, large and labelled, the rest grey, no halo",
     (_, view, milestones, lines, labelAlign) => {
-      const drawing = timelineDrawing(view);
+      const drawing = timelineDrawing(TOP_UP_TIMELINE, view);
       const failed = drawing.milestones.find(({ state }) => state === "failed");
       expect({
         ...summary(drawing),
@@ -193,9 +195,27 @@ describe("top-up timeline drawing", () => {
   );
 
   it("keeps the designer's spacing between the rings", () => {
-    const { lines } = timelineDrawing(done);
+    const { lines } = timelineDrawing(TOP_UP_TIMELINE, done);
     expect(lines.map(({ weight }) => weight)).toEqual([18.5, 48, 22.5, 22.5, 48, 16]);
-    expect(TIMELINE_INSETS).toEqual({ start: 18.5, end: 16 });
+    expect(timelineInsets(TOP_UP_TIMELINE)).toEqual({ start: 18.5, end: 16 });
+  });
+
+  it("renames a milestone once the drawing reaches the spec's milestone", () => {
+    const spec: TimelineSpec = {
+      ...TOP_UP_TIMELINE,
+      milestones: TOP_UP_TIMELINE.milestones.map((milestone) =>
+        milestone.id === "received"
+          ? { ...milestone, label: "Converted", relabel: { from: 5, label: "Received" } }
+          : milestone,
+      ) as unknown as TimelineSpec["milestones"],
+    };
+    const labelAt = (view: TimelineView, shown?: number) =>
+      timelineDrawing(spec, view, shown).milestones[3]!.label;
+    expect(labelAt(current("active", 4, 0.5))).toBe("Converted");
+    expect(labelAt(current("active", 5, 0.5))).toBe("Received");
+    expect(labelAt(current("active", 5, 0.5), 4)).toBe("Converted");
+    expect(labelAt(failedAt(6, 0.2))).toBe("Received");
+    expect(labelAt(done)).toBe("Received");
   });
 });
 

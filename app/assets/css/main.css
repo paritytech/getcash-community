@@ -93,3 +93,126 @@ textarea {
   -webkit-user-select: text;
   user-select: text;
 }
+
+/* The journey screens: the hero stack, the failed hero, and the success motion timed from the
+ * timeline's last tick. Shared by the top-up and the withdrawal journeys. */
+/* The failed hero circle binds the red-alpha primitive in the design; no semantic
+ * token covers it (reported gap). */
+.journey-hero-failed {
+  background: var(--palette-red-alpha-24);
+}
+
+/* The hero's icons and amounts overlap while one turns into the other. */
+.journey-stack {
+  display: grid;
+  place-items: center;
+}
+
+.journey-stack > * {
+  grid-area: 1 / 1;
+}
+
+/* The success motion, timed from the timeline's last tick. */
+.journey-timeline-out {
+  display: grid;
+  animation: journey-collapse 820ms cubic-bezier(0.65, 0, 0.35, 1) 900ms both;
+}
+
+.journey-timeline-out > * {
+  animation: journey-dissolve 560ms ease-out 700ms both;
+}
+
+.journey-icon-out {
+  animation: journey-spin-out 700ms cubic-bezier(0.55, 0, 1, 0.45) 350ms both;
+}
+
+.journey-amount-out {
+  animation: journey-drop-out 360ms ease-in 1000ms both;
+}
+
+.journey-amount-in {
+  animation: journey-drop-in 480ms ease-out 1000ms both;
+}
+
+.journey-date-in {
+  display: grid;
+  animation: journey-expand 820ms cubic-bezier(0.65, 0, 0.35, 1) 900ms both;
+}
+
+.journey-date-in > p {
+  overflow: hidden;
+  animation: journey-drop-in 480ms ease-out 1000ms both;
+}
+
+.journey-last-row-out > :last-child {
+  animation: journey-fade-out 900ms ease-in-out 1300ms both;
+}
+
+.journey-close-in {
+  animation: journey-rise 400ms ease-out 1720ms both;
+}
+
+/* The column's gap-6 goes with the timeline, so the details end where the end state has them. */
+@keyframes journey-collapse {
+  from {
+    grid-template-rows: 1fr;
+  }
+  to {
+    grid-template-rows: 0fr;
+    margin-bottom: -1.5rem;
+    visibility: hidden;
+  }
+}
+
+@keyframes journey-expand {
+  from {
+    grid-template-rows: 0fr;
+  }
+  to {
+    grid-template-rows: 1fr;
+  }
+}
+
+@keyframes journey-dissolve {
+  to {
+    opacity: 0;
+    filter: blur(6px);
+    transform: translateY(-8px) scale(0.96);
+  }
+}
+
+@keyframes journey-spin-out {
+  to {
+    transform: rotate(900deg) scale(0);
+  }
+}
+
+@keyframes journey-drop-out {
+  to {
+    opacity: 0;
+    filter: blur(3px);
+    transform: translateY(8px);
+  }
+}
+
+@keyframes journey-drop-in {
+  from {
+    opacity: 0;
+    filter: blur(3px);
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes journey-fade-out {
+  to {
+    opacity: 0;
+    visibility: hidden;
+  }
+}
+
+@keyframes journey-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}

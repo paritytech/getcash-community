@@ -1,17 +1,18 @@
 <script setup lang="ts">
-// The Fees drill-in behind the sale's quote: the CASH withdrawn and its fiat worth, the provider's
-// fee split as it reported it, the total, what reaches the seller, and the rate. On a sale the fees
-// are fiat and come off the payout. Read-only; the toolbar and the bottom button both return to
-// the quote.
+// The Fees drill-in behind the sale's quote and the journey's receive row: the CASH withdrawn and
+// its fiat worth, the provider's fee split as it reported it, the total, what reaches the seller,
+// and the rate. On a sale the fees are fiat and come off the payout. Read-only; the toolbar and
+// the bottom button both return to the screen that opened it.
 import { computed } from "vue";
-import type { MeldSellQuote } from "../../composables/useMeldSellQuote";
+import type { SaleFeeDetails } from "../../withdraw/sale-fees";
 import { cashAmount, fmtCash, groupAmountDigits } from "../../utils/cash";
 import { fmtFiat, isMoneyAmount } from "../../utils/money";
 import DetailRows, { type DetailRow } from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
 
 const props = defineProps<{
-  quote: MeldSellQuote;
+  /** The live quote, or the sale as the record committed it. */
+  quote: SaleFeeDetails;
   /** The CASH leaving the balance, for the rate line. */
   cashAmount: string;
 }>();
@@ -55,8 +56,10 @@ const totalRows = computed(() => {
 
 const payout = computed(() => fmtFiat(props.quote.line.destinationAmount, fiat.value));
 
-/** Fiat per CASH the payout uses, fees taken: the CASH that comes back is not sold for it. */
+/** Fiat per CASH the payout uses, fees taken: the CASH that comes back is not sold for it, so
+ *  the rate needs to know it, and only a live quote does. */
 const rate = computed(() => {
+  if (props.quote.backCash === undefined) return null;
   const cash = Number(props.cashAmount.replace(/,/g, "")) - Number(fmtCash(props.quote.backCash));
   const out = Number(props.quote.line.destinationAmount);
   if (!Number.isFinite(cash) || cash <= 0 || !Number.isFinite(out) || out <= 0) return null;
