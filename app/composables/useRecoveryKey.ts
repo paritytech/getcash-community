@@ -21,8 +21,6 @@ export interface RecoveryKeyOptions {
   identity?: () => string | null;
   /** The address as it is known apart from the derivation; the derived one must agree with it. */
   known?: () => string | null | undefined;
-  /** Preview deck only: reveals without a tap, once the scene has installed what it needs. */
-  autoReveal?: () => boolean;
 }
 
 export function useRecoveryKey(options: RecoveryKeyOptions) {
@@ -87,26 +85,10 @@ export function useRecoveryKey(options: RecoveryKeyOptions) {
       masked.value = true;
       failed.value = false;
       resolving.value = false;
-      // A staged scene re-reveals after the reset; otherwise only a guide with no other source
-      // for the address derives without being asked.
-      if (options.autoReveal?.()) void toggle();
-      else if (knownAddress.value === null) void derive();
+      if (knownAddress.value === null) void derive();
     },
     { immediate: true },
   );
-
-  if (options.autoReveal) {
-    watch(
-      options.autoReveal,
-      (want, staged) => {
-        if (want && masked.value) void toggle();
-        // Stepping back off a staged scene puts the key away again; `staged` is undefined on the
-        // first run, so a guide that simply opens unstaged is left alone.
-        else if (!want && staged) masked.value = true;
-      },
-      { immediate: true },
-    );
-  }
 
   return {
     /** Where the funds are: the derived address once held, the independently known one before. */

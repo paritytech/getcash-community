@@ -8,7 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import type { PaymentState } from "@getsome/core";
 import type { MeldCancelResult } from "@getsome/meld";
-import type { FundingProgressSnapshot } from "../app/funding/progress";
+import { projectChainflipTopUps } from "../app/funding/chainflip-top-ups";
+import { fundingSelectorConfig } from "../app/funding/config";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
   CANCEL_CONFIRM_MS,
@@ -24,10 +25,11 @@ import {
   WORKER_JOBS_KEY,
   type KeyedStorage,
 } from "../app/funding/requests/storage";
+import { projectFundingTopUps } from "../app/funding/top-ups";
 import { useRequestsStore } from "../app/stores/requests";
 import { useSessionStore, type ActiveFlowRecord } from "../app/stores/session";
 import { requestRefKey, requestRefOf, type RequestRef } from "../app/utils/request-index";
-import { awaitingDepositCryptoRecord, FIXTURE_NOW } from "./fixtures/requests";
+import { awaitingDepositCryptoRecord, FIXTURE_NOW, submittedCardRecord } from "./fixtures/requests";
 
 /** How the mock world's Meld client answers a request to withdraw its pay page. Each card test
  *  sets it; the offline fake cancels without complaint. */
@@ -121,13 +123,6 @@ const workerFailed = (time: number, fundsSeenAt: number): Observation => ({
   },
 });
 
-/** The fields of a progress snapshot the views and the journey read. */
-function progressOf(snapshot: FundingProgressSnapshot | undefined) {
-  if (snapshot === undefined) return undefined;
-  const { confirmedStageKey, latestRouteStatus, detectedAt, stageTimestamps, settledAt } = snapshot;
-  return { confirmedStageKey, latestRouteStatus, detectedAt, stageTimestamps, settledAt };
-}
-
 const waitFor = async (predicate: () => boolean, ms: number) => {
   const until = Date.now() + ms;
   while (!predicate() && Date.now() < until) await new Promise((r) => setTimeout(r, 25));
@@ -180,20 +175,13 @@ describe("requests store: foreground, clock and user actions", () => {
       await waitFor(() => requests.get(ref)?.status.kind === "settled", 10_000);
       expect(requests.get(ref)?.status.kind).toBe("settled");
       expect(requests.phase).toBe("done");
-      // A crypto record counts on the journey's three-stop scale: settled is all three.
-      expect(requests.journeyDone).toBe(3);
-      expect(requests.foregroundProgress?.snapshot.confirmedStageKey).toBe("cash-top-up");
     },
   );
 
-  // The record is a crypto one, so `journeyDone` counts on the three-stop scale: it opens at 0
-  // because the journey only starts once the deposit is seen, and until then the deposit screen
-  // is showing.
   it("computed views match the milestone-1 table for a core-driven sequence", async () => {
     setRequestsClock(() => FIXTURE_NOW);
     const requests = useRequestsStore();
     const record = migrated(awaitingDepositCryptoRecord);
-    const { startedAt } = record;
     await requests.create(AWAITING_REF, record);
     requests.setForeground(AWAITING_REF);
     const views = () => ({
@@ -201,9 +189,6 @@ describe("requests store: foreground, clock and user actions", () => {
       fundsSeen: requests.fundsSeen,
       fundingStep: requests.fundingStep,
       claiming: requests.claiming,
-      journeyDone: requests.journeyDone,
-      milestones: requests.milestones,
-      progress: progressOf(requests.foregroundProgress?.snapshot),
     });
 
     await requests.observe(AWAITING_REF, coreAwaitingDeposit(at(1)));
@@ -212,15 +197,6 @@ describe("requests store: foreground, clock and user actions", () => {
       fundsSeen: false,
       fundingStep: null,
       claiming: false,
-      journeyDone: 0,
-      milestones: { 1: startedAt },
-      progress: {
-        confirmedStageKey: undefined,
-        latestRouteStatus: "waiting",
-        detectedAt: undefined,
-        stageTimestamps: {},
-        settledAt: undefined,
-      },
     });
 
     await requests.observe(AWAITING_REF, workerSwap(at(2)));
@@ -229,15 +205,6 @@ describe("requests store: foreground, clock and user actions", () => {
       fundsSeen: true,
       fundingStep: "swap",
       claiming: false,
-      journeyDone: 1,
-      milestones: { 1: startedAt, 2: at(2), 4: at(2) },
-      progress: {
-        confirmedStageKey: "cash-conversion",
-        latestRouteStatus: "complete",
-        detectedAt: at(2),
-        stageTimestamps: { "cash-conversion": at(2) },
-        settledAt: undefined,
-      },
     });
 
     await requests.observe(AWAITING_REF, workerDone(at(3), at(2)));
@@ -246,15 +213,6 @@ describe("requests store: foreground, clock and user actions", () => {
       fundsSeen: true,
       fundingStep: "done",
       claiming: true,
-      journeyDone: 2,
-      milestones: { 1: startedAt, 2: at(2), 4: at(2) },
-      progress: {
-        confirmedStageKey: "cash-top-up",
-        latestRouteStatus: "complete",
-        detectedAt: at(2),
-        stageTimestamps: { "cash-conversion": at(2), "cash-top-up": at(3) },
-        settledAt: undefined,
-      },
     });
     expect(requests.claimStage).toBe("prompted");
 
@@ -264,15 +222,6 @@ describe("requests store: foreground, clock and user actions", () => {
       fundsSeen: true,
       fundingStep: "done",
       claiming: false,
-      journeyDone: 3,
-      milestones: { 1: startedAt, 2: at(2), 4: at(2), 5: at(4) },
-      progress: {
-        confirmedStageKey: "cash-top-up",
-        latestRouteStatus: "complete",
-        detectedAt: at(2),
-        stageTimestamps: { "cash-conversion": at(2), "cash-top-up": at(3) },
-        settledAt: at(4),
-      },
     });
     expect(requests.claimStage).toBeNull();
     expect(requests.fundingError).toBeNull();
@@ -309,11 +258,105 @@ describe("requests store: foreground, clock and user actions", () => {
     expect(requests.phase).toBe("done");
     expect(requests.claiming).toBe(false);
     expect(requests.claimStage).toBeNull();
-    expect(requests.journeyDone).toBe(3);
-    expect(requests.milestones[5]).toBe(at(3));
-    // The snapshot settles on the final word only: a settled one is terminal and would hide a
-    // failure that followed.
-    expect(requests.foregroundProgress?.snapshot.settledAt).toBeUndefined();
+  });
+
+  it("never shows the journey's timeline behind the list's for the same top-up", async () => {
+    setRequestsClock(() => FIXTURE_NOW);
+    const requests = useRequestsStore();
+    await requests.create(AWAITING_REF, migrated(awaitingDepositCryptoRecord));
+    requests.setForeground(AWAITING_REF);
+    expect(requests.foregroundTimeline(at(1))).toBeUndefined();
+
+    await requests.observe(AWAITING_REF, workerSwap(at(2)));
+    const [row] = projectChainflipTopUps(requests.openTopUps, at(3), requests.topUpTimelineOf);
+    const listed = row?.timeline?.view;
+    expect(listed).toMatchObject({ state: "active", phase: 3 });
+    expect(listed?.lines[3]).toBeGreaterThan(0);
+    expect(requests.foregroundTimeline(at(2))?.view?.lines).toEqual(listed?.lines);
+  });
+
+  it.each([
+    ["it expired unseen", [{ source: "clock", at: FIXTURE_NOW + 2 * DAY }], 0],
+    [
+      "it failed after the app's own watch saw the deposit",
+      [
+        {
+          source: "chain",
+          at: at(2),
+          burnerNative: DEPOSIT.amount.toString(),
+          finality: "best",
+          via: "probe",
+        },
+        {
+          source: "core",
+          at: at(3),
+          state: {
+            phase: "failed",
+            sourceId: "dot-assethub",
+            failure: {
+              kind: "deposit-rejected",
+              step: "deposit",
+              message: "rejected",
+              recoverable: false,
+            },
+          },
+        },
+      ],
+      3,
+    ],
+  ] satisfies [string, Observation[], number][])(
+    "draws a direct deposit the same live and from history when %s",
+    async (_, observations, failed) => {
+      setRequestsClock(() => FIXTURE_NOW);
+      const requests = useRequestsStore();
+      const direct = { ...awaitingDepositCryptoRecord, chain: "Polkadot", asset: "DOT" };
+      await requests.create(AWAITING_REF, migrated(direct));
+      requests.setForeground(AWAITING_REF);
+      for (const observation of observations) await requests.observe(AWAITING_REF, observation);
+
+      const record = requests.get(AWAITING_REF);
+      if (record?.kind !== "top-up") throw new Error("the top-up is gone");
+      const { past } = projectFundingTopUps(
+        projectChainflipTopUps([record], at(5)),
+        fundingSelectorConfig,
+      );
+      const live = requests.foregroundTimeline(at(5))?.view;
+      expect(live).toMatchObject({ state: "failed", failed });
+      expect(past[0]?.timeline?.view).toEqual(live);
+    },
+  );
+
+  it("draws a swap from Bitcoin under its Asset Hub source the same live and from history", async () => {
+    setRequestsClock(() => FIXTURE_NOW);
+    const requests = useRequestsStore();
+    await requests.create(AWAITING_REF, migrated(awaitingDepositCryptoRecord));
+    requests.setForeground(AWAITING_REF);
+    await requests.observe(AWAITING_REF, {
+      source: "core",
+      at: at(2),
+      state: {
+        phase: "swapping",
+        sourceId: "dot-assethub",
+        quote: null,
+        deposit: DEPOSIT,
+        swap: "receiving",
+        progress: { requiredConfirmations: 3, depositConfirmations: 1 },
+      },
+    });
+
+    const record = requests.get(AWAITING_REF);
+    if (record?.kind !== "top-up") throw new Error("the top-up is gone");
+    const { inProgress } = projectFundingTopUps(
+      projectChainflipTopUps([record], at(3)),
+      fundingSelectorConfig,
+    );
+    const live = requests.foregroundTimeline(at(3));
+    expect(live).toMatchObject({
+      view: { state: "active", phase: 0 },
+      message: { text: "Confirming your BTC deposit" },
+      detail: "Confirmation 2 of 3",
+    });
+    expect(inProgress[0]?.timeline).toEqual(live);
   });
 
   it("cancel refuses on funds in the burner read", async () => {
@@ -597,7 +640,35 @@ describe("requests store: foreground, clock and user actions", () => {
     });
     expect(requests.phase).toBe("failed");
     expect(requests.fundingError).toBe(DEPOSIT_EXPIRED_REASON);
-    expect(requests.foregroundProgress?.snapshot.failedAt).toBe(now);
+  });
+
+  it.each([
+    ["before any milestone", awaitingDepositCryptoRecord, {}],
+    [
+      "after Started",
+      submittedCardRecord,
+      { view: expect.objectContaining({ state: "delayed", phase: 0 }) },
+    ],
+  ])("a refused hand-off keeps the deposit wait and shows delayed %s", async (_, stored, drawn) => {
+    setRequestsClock(() => FIXTURE_NOW);
+    const requests = useRequestsStore();
+    const ref = refOf(stored);
+    await requests.create(ref, migrated(stored));
+    requests.setForeground(ref);
+    expect(requests.awaitingDeposit).toBe(true);
+
+    requests.setTransientError({ message: "refused", source: "handoff" });
+    expect(requests.handoffRefused).toBe(true);
+    expect(requests.awaitingDeposit).toBe(true);
+    expect(requests.get(ref)?.status).toEqual({ kind: "awaiting-deposit" });
+    expect(requests.phase).not.toBe("failed");
+    expect(requests.foregroundTimeline(at(1))).toEqual({
+      ...drawn,
+      message: {
+        text: "This is taking longer than usual. Your top-up will continue automatically.",
+        delay: true,
+      },
+    });
   });
 
   it("preview deck writes no session refs", () => {
@@ -610,17 +681,15 @@ describe("requests store: foreground, clock and user actions", () => {
       written.add(match[1]!);
     }
     // Screen and demo flags only: request state belongs on the record, which the deck reaches
-    // through observations alone. `revealRefund` opens the refund-key panel unprompted, and the
-    // key it shows comes off the request's world, not its record. The supported catalog is the
-    // same kind of thing — what the adapter says the picker may list, not anything about a
-    // request — and a deck run has no adapter to answer for it.
+    // through observations alone. The supported catalog is the same kind of thing — what the
+    // adapter says the picker may list, not anything about a request — and a deck run has no
+    // adapter to answer for it.
     const allowed = new Set([
       "quoted",
       "method",
       "mock",
       "faucetState",
       "resuming",
-      "revealRefund",
       "supportedCountries",
       "corridorByCountry",
     ]);

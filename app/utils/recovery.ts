@@ -18,11 +18,6 @@ const SUGGESTED_GAS: Partial<Record<RefundChain, string>> = {
   Tron: "15 TRX",
 };
 
-/** A failure whose funds come back to the request's own refund key. */
-export function refundedFailure(kind: string): boolean {
-  return kind === "refunded" || kind === "refund-failed";
-}
-
 export interface RecoveryNotes {
   secretLabel: string;
   /** Step-one gas note for a refunded token; null when the refund is the chain's own coin. */

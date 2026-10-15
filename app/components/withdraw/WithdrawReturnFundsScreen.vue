@@ -14,7 +14,7 @@ import RecoveryKeyCard from "../ui/RecoveryKeyCard.vue";
 
 const props = defineProps<{
   record: WithdrawalRecord;
-  /** Preview deck only: a canned secret so the revealed frame can be staged. */
+  /** Preview deck only: a canned secret for the reveal. */
   previewSecret?: string;
 }>();
 const emit = defineEmits<{ back: [] }>();
@@ -33,7 +33,6 @@ const {
 } = useRecoveryKey({
   identity: () => props.record.key.label,
   known: () => recorded.value,
-  autoReveal: () => props.previewSecret !== undefined,
   resolve: async () => {
     if (props.previewSecret !== undefined) {
       return { address: recorded.value, secret: props.previewSecret };

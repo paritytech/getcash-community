@@ -11,6 +11,8 @@ import {
 import { networkRow, rowState, type WithdrawOffer } from "../app/withdraw/offers";
 
 vi.mock("../lib/withdraw-live", () => ({ quoteWithdrawOffers: vi.fn() }));
+// The rail is on, so what the store starts with is down to the broker key alone.
+vi.mock("../app/utils/rail", () => ({ chainflipRailOn: () => true }));
 
 import { quoteWithdrawOffers } from "../lib/withdraw-live";
 import { FLOORS_STALE_MS } from "../app/stores/offers";
@@ -56,7 +58,13 @@ describe("a row against its offer", () => {
     expect(rowState(btc, { state: "unavailable", reason: "down" }).subtitle).toBe(
       "Not available right now",
     );
-    expect(rowState(btc, TOO_SMALL)).toEqual({ pickable: false, subtitle: "Minimum is $13 CASH" });
+    expect(rowState(btc, TOO_SMALL)).toEqual({
+      pickable: false,
+      subtitle: "Minimum for this token is $13 CASH",
+    });
+    expect(rowState(btc, TOO_SMALL, "network").subtitle).toBe(
+      "Minimum for this network is $13 CASH",
+    );
     expect(rowState(btc, AVAILABLE)).toEqual({ pickable: true });
   });
 
@@ -162,5 +170,21 @@ describe("the withdraw offers store", () => {
     expect(store.awaitingNetworks).toBe(false);
     expect(store.rowFor(btc).subtitle).toBe("Not available yet");
     expect(store.rowFor(assetHub)).toEqual({ pickable: true });
+  });
+
+  it("starts with the rail off in a build with no broker key, and on with one", () => {
+    try {
+      vi.stubEnv("VITE_CHAINFLIP_BROKER_API_KEY", "");
+      const without = useWithdrawOffersStore();
+      expect(without.railOn).toBe(false);
+      expect(without.rowFor(btc).subtitle).toBe("Not available yet");
+      expect(without.rowFor(assetHub)).toEqual({ pickable: true });
+
+      vi.stubEnv("VITE_CHAINFLIP_BROKER_API_KEY", "abc123");
+      setActivePinia(createPinia());
+      expect(useWithdrawOffersStore().railOn).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

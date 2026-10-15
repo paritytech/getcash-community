@@ -4,8 +4,10 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
-import { directScene } from "../app/utils/dev-preview";
+import type { TimelineView } from "../app/funding/timeline/types";
+import { directScene, SCENES } from "../app/utils/dev-preview";
 import { previewStage, type PreviewStage } from "../app/utils/dev-preview-stage";
+import { previewTopUpScene } from "../app/utils/dev-preview-top-ups";
 import { useRequestsStore } from "../app/stores/requests";
 import { useSessionStore } from "../app/stores/session";
 
@@ -15,25 +17,32 @@ import { useSessionStore } from "../app/stores/session";
  */
 function sceneState(): string {
   const s = useSessionStore();
-  // The record on screen owns the payment now, the rail's own ids included; only the method and
-  // the reveal are still the session's.
+  // The record on screen owns the payment now, the rail's own ids included; only the method is
+  // still the session's.
   const r = useRequestsStore();
   return JSON.stringify({
     method: s.method,
-    revealRefund: s.revealRefund,
     meldServiceProvider: r.foregroundRecord?.meldServiceProvider ?? null,
     meldReference: r.foregroundRecord?.meldFundingRequestId ?? null,
     meldStage: r.meldStage,
     meldFailureCode: r.meldFailureCode,
     meldFailureMessage: r.meldFailureMessage,
     meldRefunded: r.meldRefunded,
-    meldDelayed: r.meldDelayed,
     fundingError: r.fundingError,
     fundingNotice: r.fundingNotice,
     claimStage: r.claimStage,
     fundsSeen: r.fundsSeen,
     phase: r.phase,
   });
+}
+
+/** The timeline the journey draws for the scene on stage: the live record's, else its row's. */
+function journeyView(): TimelineView | undefined {
+  const requests = useRequestsStore();
+  if (requests.foregroundRecord !== null) return requests.foregroundTimeline(Date.now())?.view;
+  const stage = previewStage.value;
+  const id = stage?.kind === "journey" ? stage.topUpId : undefined;
+  return previewTopUpScene.value?.topUps?.find((topUp) => topUp.id === id)?.timeline?.view;
 }
 
 /** Walks the whole ring once from wherever it starts, collecting what each scene leaves behind. */
@@ -78,6 +87,26 @@ describe("preview deck staging", () => {
     for (const { label, stage } of await walk(-1)) {
       expect(stage, label).toEqual(forward.get(label));
     }
+  });
+
+  it("draws the failed milestone on the journeys that failed", async () => {
+    // Started fails where nothing was paid; a card that failed after the payment fails Accepted.
+    const expected: Record<string, number> = {
+      "crypto / deposit: expired": 0,
+      "card / journey: payment failed": 1,
+      "crypto / expired: from history": 0,
+      "card / expired: from history": 0,
+      "card / journey: unconfirmed": 0,
+    };
+    const failed: Record<string, number | undefined> = {};
+    for (let n = 0; n < SCENES.length; n++) {
+      const label = await directScene(1);
+      const name = label.slice(label.indexOf(" ") + 1);
+      if (!(name in expected)) continue;
+      const view = journeyView();
+      failed[name] = view?.state === "failed" ? view.failed : undefined;
+    }
+    expect(failed).toEqual(expected);
   });
 
   it("leaves no state behind for the next scene to read as its own", async () => {

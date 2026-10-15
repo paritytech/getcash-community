@@ -4,7 +4,7 @@
 // The bug this pins: the running cards used to be hand-written rows whose ids ("p1") named no
 // request, so tapping one reached "Top-up unavailable" by construction. A row the adapters built
 // carries the request's own id, so the id has to parse back to a record the store holds — and the
-// status line has to be the progress machine's word on the stage, not a literal in the scene.
+// status line has to be the timeline's word on the stage, not a literal in the scene.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
@@ -76,27 +76,29 @@ describe("preview deck list scenes", () => {
     expect(running).toBeGreaterThan(0);
   });
 
-  it("words each stage as the progress machine does, not as the scene says", async () => {
+  it("words each stage as the timeline does, not as the scene says", async () => {
     const scenes = await listScenes();
     const lineOf = (name: string) => scenes.get(name)!.map(status);
-    expect(lineOf("list / top-up: waiting")).toEqual(["Waiting for your transfer"]);
-    expect(lineOf("list / top-up: converting")).toEqual(["Converting to $CASH"]);
+    expect(lineOf("list / top-up: waiting")).toEqual(["Waiting for your deposit"]);
+    expect(lineOf("list / top-up: converting")).toEqual(["Adding to your balance"]);
     expect(lineOf("list / top-up: adding")).toEqual(["Adding to your balance"]);
-    // The fiat rails word their own leg, and wait on a payment rather than a transfer.
-    expect(lineOf("list / top-up: retrying")).toEqual(["Confirming your payment"]);
-    expect(lineOf("list / top-up: taking longer")).toEqual(["Confirming your payment"]);
+    // A fiat provider that is late may still take the money: the line says not to pay again.
+    expect(lineOf("list / top-up: retrying")).toEqual(["Delayed, don't pay again"]);
+    expect(lineOf("list / top-up: taking longer")).toEqual(["Delayed, don't pay again"]);
   });
 
   it("ambers a delayed card off the record's own rail state", async () => {
     const scenes = await listScenes();
     for (const name of ["list / top-up: retrying", "list / top-up: taking longer"]) {
       expect(
-        scenes.get(name)!.map((row) => row.delayed),
+        scenes.get(name)!.map((row) => row.progress.delayed),
         name,
       ).toEqual([true]);
     }
     // Nothing else is amber: the flag comes off the rail, so a scene cannot assert it by hand.
-    expect(scenes.get("list / top-up: waiting")!.map((row) => row.delayed)).toEqual([undefined]);
+    expect(scenes.get("list / top-up: waiting")!.map((row) => row.progress.delayed)).toEqual([
+      false,
+    ]);
   });
 
   it("lists nothing on a scene that seeds nothing", async () => {

@@ -106,11 +106,19 @@ export interface OpenWithdrawChannelArgs {
   refundAddress: string;
 }
 
+/**
+ * What a channel is taken to live when Chainflip names no expiry, as the on-ramp assumes for a
+ * deposit window. Chainflip gives an Asset Hub channel 43200 blocks, about 26 hours at today's
+ * block time, and the worker stops paying a channel minutes before this figure, so it stays short
+ * of that.
+ */
+export const DEFAULT_CHANNEL_LIFETIME_MS = 86_400_000;
+
 /** The channel a withdrawal pays: its id, the Asset Hub account, and when Chainflip closes it. */
 export interface WithdrawChannel {
   id: string;
   address: string;
-  /** ms since the epoch; 0 when Chainflip gave none. */
+  /** ms since the epoch; a day from opening when Chainflip gave none, as the broker path does. */
   expiresAt: number;
   /** What the quote said would land, in the destination asset's base units. */
   expectedEgress: bigint;
@@ -138,7 +146,7 @@ export async function openWithdrawChannel(args: OpenWithdrawChannelArgs): Promis
   return {
     id: channel.depositChannelId,
     address: channel.deposit.address,
-    expiresAt: channel.deposit.expiresAt,
+    expiresAt: channel.deposit.expiresAt || Date.now() + DEFAULT_CHANNEL_LIFETIME_MS,
     expectedEgress: quoted.egressAmount,
   };
 }

@@ -16,8 +16,6 @@ export interface SourcePrice {
   formatted: string;
   /** The same figure in the asset's base units. */
   baseUnits: bigint;
-  /** Chainflip's own estimate for the whole swap, when it offers one. */
-  etaSeconds?: number;
 }
 
 /** This purchase is under Chainflip's floor for the asset. */
@@ -79,11 +77,7 @@ export async function priceSourceLeg(args: {
     );
     return {
       kind: "price",
-      price: {
-        formatted: quote.source.formatted,
-        baseUnits: quote.source.amount,
-        ...(eta !== null ? { etaSeconds: eta } : {}),
-      },
+      price: { formatted: quote.source.formatted, baseUnits: quote.source.amount },
     };
   } catch (e) {
     if (e instanceof SourceMinimumNotMetError) {
