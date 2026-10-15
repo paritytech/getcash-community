@@ -1,13 +1,13 @@
 <script setup lang="ts">
 // A finished top-up's receipt, opened from the list: what landed, when, and what it cost.
 import { computed } from "vue";
-import { Plus } from "lucide-vue-next";
 import { quoteDetailRows, storedQuoteView } from "../../funding/quote-rows";
 import type { FundingTopUp } from "../../funding/top-ups";
 import { formatWhenShort } from "../../utils/journey";
 import CashAmount from "../ui/CashAmount.vue";
 import DetailRows from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
+import TransactionIcon from "../ui/TransactionIcon.vue";
 
 const props = defineProps<{ topUp: FundingTopUp }>();
 // fees drills into the breakdown; close leaves the receipt.
@@ -28,9 +28,7 @@ const rows = computed(() =>
   <div class="flex min-h-0 flex-1 flex-col">
     <div class="min-h-0 flex-1 overflow-y-auto">
       <div class="flex flex-col items-center gap-2 text-center">
-        <span class="flex size-14 items-center justify-center rounded-full bg-surface-container">
-          <Plus class="size-6 text-fg-primary" aria-hidden="true" />
-        </span>
+        <TransactionIcon class="size-14" />
         <span>
           <p class="text-display-m text-fg-success">
             <CashAmount sign="+" :amount="creditedAmount" />

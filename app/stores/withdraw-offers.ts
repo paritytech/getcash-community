@@ -3,8 +3,8 @@
 
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef } from "vue";
+import { brokerConfigured } from "~~/lib/chainflip-backend";
 import { quoteWithdrawOffers } from "~~/lib/withdraw-live";
-import { chainflipRailOn } from "../utils/rail";
 import {
   WITHDRAW_NETWORKS,
   type WithdrawDestination,
@@ -32,8 +32,9 @@ export const useWithdrawOffersStore = defineStore("withdraw-offers", () => {
   const learnedAt = ref<number | null>(null);
   let inflight: Promise<void> | null = null;
 
-  /** Whether a pick can reach a provider at all; see `chainflipRailOn`. A ref so tests can pin it. */
-  const railOn = ref(chainflipRailOn());
+  /** Whether a pick can reach a provider at all: the build has a broker to open channels on. A
+   *  ref so tests can pin it. */
+  const railOn = ref(brokerConfigured());
 
   const fresh = () => learnedAt.value !== null && Date.now() - learnedAt.value < FLOORS_STALE_MS;
   /** An answer that was no answer for some destination is asked again on the next look. */
@@ -78,7 +79,11 @@ export const useWithdrawOffersStore = defineStore("withdraw-offers", () => {
     rowState(destination, offerFor(destination));
 
   const networkRowFor = (network: WithdrawNetwork): RowState =>
-    networkRow(network.destinations.map(rowFor));
+    networkRow(
+      network.destinations.map((destination) =>
+        rowState(destination, offerFor(destination), "network"),
+      ),
+    );
 
   /** A destination still being quoted is never drawn: a picker with one shows skeleton rows, one
    *  per row it will list, until every row on it has its answer. Asset Hub's own destinations

@@ -1,7 +1,7 @@
 // What the buyer sends for this purchase, priced by Chainflip. Display only: no deposit channel
 // is opened here.
 
-import type { SourceId } from "@getsome/core";
+import type { Quote, SourceId } from "@getsome/core";
 import {
   computeQuote,
   SOURCE_CONFIG_BY_ID,
@@ -16,8 +16,6 @@ export interface SourcePrice {
   formatted: string;
   /** The same figure in the asset's base units. */
   baseUnits: bigint;
-  /** Chainflip's own estimate for the whole swap, when it offers one. */
-  etaSeconds?: number;
 }
 
 /** This purchase is under Chainflip's floor for the asset. */
@@ -41,6 +39,22 @@ export type SourcePriceResult =
 
 /** Ceiling on the wait for a price. */
 const DEFAULT_TIMEOUT_MS = 6_000;
+
+/** The rail's own quote as the pay card's price. */
+export function sourcePriceOf(quote: Quote): SourcePrice {
+  return { formatted: quote.source.formatted, baseUnits: quote.source.amount };
+}
+
+/** The floor Chainflip refused a purchase under, as the pay card's minimum. */
+export function sourceMinimumOf(e: SourceMinimumNotMetError): SourceMinimum {
+  return {
+    minimumFormatted: e.minimumFormatted,
+    assetSymbol: e.assetSymbol,
+    minimumBaseUnits: e.minimumBaseUnits,
+    neededBaseUnits: e.neededBaseUnits === 0n ? 1n : e.neededBaseUnits,
+    neededFormatted: e.neededFormatted,
+  };
+}
 
 /**
  * Prices `targetBaseUnits`, what this purchase needs delivered in `egress`'s base units, in
@@ -70,36 +84,21 @@ export async function priceSourceLeg(args: {
       computeQuote(backend, source, args.targetBaseUnits, 0n, args.egress),
       deadline,
     ]);
+    const price = sourcePriceOf(quote);
     const raw = quote.raw as { estimatedDurationSeconds?: unknown } | null;
     const eta =
       typeof raw?.estimatedDurationSeconds === "number" ? raw.estimatedDurationSeconds : null;
     console.info(
-      `[coinage] source price: ${quote.source.formatted} ${source.shortName} for ${args.targetBaseUnits} ${args.egress.asset}` +
+      `[coinage] source price: ${price.formatted} ${source.shortName} for ${args.targetBaseUnits} ${args.egress.asset}` +
         (eta === null ? "" : `, eta ${Math.round(eta)}s`),
     );
-    return {
-      kind: "price",
-      price: {
-        formatted: quote.source.formatted,
-        baseUnits: quote.source.amount,
-        ...(eta !== null ? { etaSeconds: eta } : {}),
-      },
-    };
+    return { kind: "price", price };
   } catch (e) {
     if (e instanceof SourceMinimumNotMetError) {
       console.info(
         `[coinage] source price: below the ${e.assetSymbol} floor (${e.minimumFormatted} ${e.assetSymbol}); this purchase needs ${e.neededBaseUnits} base units`,
       );
-      return {
-        kind: "minimum",
-        minimum: {
-          minimumFormatted: e.minimumFormatted,
-          assetSymbol: e.assetSymbol,
-          minimumBaseUnits: e.minimumBaseUnits,
-          neededBaseUnits: e.neededBaseUnits === 0n ? 1n : e.neededBaseUnits,
-          neededFormatted: e.neededFormatted,
-        },
-      };
+      return { kind: "minimum", minimum: sourceMinimumOf(e) };
     }
     const reason = e instanceof Error ? e.message : String(e);
     console.warn(`[coinage] source price unavailable: ${reason}`);
