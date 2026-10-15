@@ -53,7 +53,8 @@
 // and it goes out again under the same nonce. The nonce cannot tell the two apart: the
 // conversion empties the burner, the account is reaped, and a reaped account's nonce starts
 // over. The driver keeps ticking a done run until its conversion is final, and takes the done
-// back when the block was dropped.
+// back when the block was dropped. A done run stays done while its block stands, whatever the
+// host has since taken off People; only a program sent again starts the arrival over.
 //
 // A PSM REFUSAL IS RETRIED THREE TIMES, THEN HELD. A mint the PSM refuses (the pair paused, or the
 // mint over its ceiling) is tried again on the next tick, and the third refusal stops the run with
@@ -467,6 +468,10 @@ export interface TickState {
    *  no hash, and is taken as final once the chain is final past it. Null once settled. */
   inclusionBlock: number | null;
   inclusionHash: string | null;
+  /** The target was seen on People at the block the arrival rule names. The run stays done on
+   *  it while the program's block stands, whatever the host has since taken off People; a program
+   *  sent again starts the arrival over. */
+  arrived: boolean;
   /** Paid rejections in a row, with their answer in `lastRejection`. MAX_PROGRAM_REJECTIONS
    *  hold the run. A different answer starts over; a landed program clears both. */
   rejections: number;
@@ -482,6 +487,7 @@ export const freshTickState = (): TickState => ({
   nonceAtSubmit: null,
   inclusionBlock: null,
   inclusionHash: null,
+  arrived: false,
   rejections: 0,
   lastRejection: null,
 });
@@ -678,6 +684,7 @@ async function submitConversion<Options>(
   }
   state.nonceAtSubmit = nonce;
   state.peopleAtXcm = balances.underlyingPeople;
+  state.arrived = false;
   // Counted before the broadcast, so a submit whose answer is lost is still counted.
   state.attempts += 1;
   input.onConversion?.({ type: "prepared" });
@@ -722,10 +729,12 @@ function rejected(
 }
 
 /** The last submit's answer was lost, to a worker killed mid-send or to the inclusion bound. The
- *  chain says what became of it: the nonce unmoved, nothing landed and the same nonce may go out
- *  again; moved, it landed unless the deposit can still be converted, in which case it failed at
- *  dispatch and the tick goes on to re-gate and retry. A program that landed is in the latest
- *  block or an earlier one, so that is the block finality is then checked against. */
+ *  balances say whether it landed: People up, or the deposit gone, and it did, whatever the
+ *  nonce says, since a program that landed reaped the burner and its nonce starts over. Nothing
+ *  landed and the nonce unmoved, the same nonce may go out again; the nonce moved with the
+ *  deposit still convertible, the program failed at dispatch and the tick goes on to re-gate and
+ *  retry. A program that landed is in the latest block or an earlier one, so that is the block
+ *  finality is then checked against. */
 async function settleLostSubmit(
   input: TickOnceInput,
   state: TickState,
@@ -735,7 +744,6 @@ async function settleLostSubmit(
 ): Promise<void> {
   const { api, route, address } = input;
   const nonce = await bounded(readNonce(api, address, "best"), input.tickTimeoutMs, "nonce read");
-  if (nonce <= nonceAtSubmit) return;
   const landed =
     balances.underlyingPeople > state.peopleAtXcm ||
     (await bounded(
@@ -744,7 +752,7 @@ async function settleLostSubmit(
       "deposit read (latest)",
     )) < depositNeeded;
   if (!landed) {
-    state.nonceAtSubmit = null;
+    if (nonce > nonceAtSubmit) state.nonceAtSubmit = null;
     return;
   }
   markLanded(
@@ -968,6 +976,13 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
     (await readFinalized()) < input.settleAmount
   ) {
     effective = "await-arrival";
+  }
+  // Once the arrival was seen the run stays done while the program's block stands: the host
+  // takes the CASH off People as soon as it is claimed.
+  if (effective === "done") {
+    state.arrived = true;
+  } else if (state.arrived && state.xcmSubmitted) {
+    effective = "done";
   }
   // Funds seen: from here the conversion is on the clock.
   if (state.fundsSeenAt === null && effective !== "await-native") state.fundsSeenAt = input.now();

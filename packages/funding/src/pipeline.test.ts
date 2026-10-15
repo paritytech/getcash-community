@@ -2524,6 +2524,60 @@ describe("the submit, and the arrival on People", () => {
     expect(state).toMatchObject({ attempts: 1, xcmSubmitted: true });
   });
 
+  it("stays done after the host takes the CASH off People while the program's block stands, and once it is final", async () => {
+    const world = funded({ arrivalAfterReads: 1 });
+    world.chain.finalityHeld = true;
+    world.people.finalityHeld = true;
+    const state = freshTickState();
+    expect((await drive(world, 2, state)).steps).toEqual(["swap", "done"]);
+    expect(state.arrived).toBe(true);
+
+    // Claimed: People holds nothing of it any more.
+    world.state.underlyingPeople = 0n;
+    world.people.unfinal = 0n;
+    expect((await drive(world, 1, state)).steps).toEqual(["done"]);
+    expect(state).toMatchObject({ xcmSubmitted: true, nonceAtSubmit: 0 });
+
+    world.chain.finalize();
+    expect((await drive(world, 1, state)).steps).toEqual(["done"]);
+    expect(state).toMatchObject({ xcmSubmitted: true, nonceAtSubmit: null, arrived: true });
+    const later = await drive(world, 1, state);
+    expect(later.steps).toEqual(["done"]);
+    expect(later.txs).toEqual(["swap"]);
+  });
+
+  it("starts the arrival over for a program sent again after its block was dropped", async () => {
+    const world = funded({ arrivalAfterReads: 2, quoteAfterXcm: true });
+    world.chain.finalityHeld = true;
+    world.people.finalityHeld = true;
+    const state = freshTickState();
+    expect((await drive(world, 3, state)).steps).toEqual(["swap", "await-arrival", "done"]);
+
+    world.discard();
+    const again = await drive(world, 3, state);
+    expect(again.steps).toEqual(["swap", "await-arrival", "done"]);
+    expect(again.txs).toEqual(["swap", "swap"]);
+  });
+
+  it("settles a lost answer as landed from the balances although the nonce reset, as a reaped burner's does", async () => {
+    const world = funded({ loseAnswer: "included", quoteAfterXcm: true, arrivalAfterReads: 4 });
+    world.chain.finalityHeld = true;
+    const state = freshTickState();
+    await lostTick(world, state);
+    // The program landed and reaped the burner: its nonce starts over.
+    world.nonce.latest = 0;
+    world.state.loseAnswer = null;
+    expect((await drive(world, 1, state)).steps).toEqual(["await-arrival"]);
+    expect(state).toMatchObject({
+      attempts: 1,
+      xcmSubmitted: true,
+      nonceAtSubmit: 0,
+      inclusionBlock: INCLUSION_BLOCK,
+      inclusionHash: null,
+    });
+    expect(world.state.txs).toHaveLength(1);
+  });
+
   it("takes a dropped program the chain re-included as landed, and does not send it twice", async () => {
     const { world, state } = await includedUnfinalized({
       replacedInclusions: 1,
