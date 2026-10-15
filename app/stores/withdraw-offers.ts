@@ -2,7 +2,8 @@
 // while fresh, and the rows of the withdraw pickers read off them.
 
 import { defineStore } from "pinia";
-import { ref, shallowRef } from "vue";
+import { computed, ref, shallowRef } from "vue";
+import { brokerConfigured } from "~~/lib/chainflip-backend";
 import { quoteWithdrawOffers } from "~~/lib/withdraw-live";
 import { chainflipRailOn } from "../utils/rail";
 import {
@@ -32,8 +33,9 @@ export const useWithdrawOffersStore = defineStore("withdraw-offers", () => {
   const learnedAt = ref<number | null>(null);
   let inflight: Promise<void> | null = null;
 
-  /** Whether a pick can reach a provider at all; see `chainflipRailOn`. A ref so tests can pin it. */
-  const railOn = ref(chainflipRailOn());
+  /** Whether a pick can reach a provider at all: the rail is on and the build has a broker to
+   *  open channels on; see `chainflipRailOn`. A ref so tests can pin it. */
+  const railOn = ref(chainflipRailOn() && brokerConfigured());
 
   const fresh = () => learnedAt.value !== null && Date.now() - learnedAt.value < FLOORS_STALE_MS;
   /** An answer that was no answer for some destination is asked again on the next look. */
@@ -78,7 +80,32 @@ export const useWithdrawOffersStore = defineStore("withdraw-offers", () => {
     rowState(destination, offerFor(destination));
 
   const networkRowFor = (network: WithdrawNetwork): RowState =>
-    networkRow(network.destinations.map(rowFor));
+    networkRow(
+      network.destinations.map((destination) =>
+        rowState(destination, offerFor(destination), "network"),
+      ),
+    );
 
-  return { offers, amount, sellable, railOn, learn, offerFor, rowFor, networkRowFor };
+  /** A destination still being quoted is never drawn: a picker with one shows skeleton rows, one
+   *  per row it will list, until every row on it has its answer. Asset Hub's own destinations
+   *  are never quoted, so a picker of those alone never waits. */
+  const awaiting = (destinations: readonly WithdrawDestination[]): boolean =>
+    destinations.some(
+      (destination) => destination.rail !== "direct" && offerFor(destination).state === "checking",
+    );
+  const awaitingNetworks = computed(() => awaiting(PROVIDER_DESTINATIONS));
+  const awaitingTokens = (network: WithdrawNetwork): boolean => awaiting(network.destinations);
+
+  return {
+    offers,
+    amount,
+    sellable,
+    railOn,
+    learn,
+    offerFor,
+    rowFor,
+    networkRowFor,
+    awaitingNetworks,
+    awaitingTokens,
+  };
 });

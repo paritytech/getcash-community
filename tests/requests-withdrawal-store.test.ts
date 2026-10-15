@@ -50,6 +50,7 @@ const handoff = {
   destination: DESTINATION,
   landingHex: LANDING_HEX,
   rail: "direct" as const,
+  tier: "pool" as const,
   assetHubGenesis: "0xah",
   peopleGenesis: "0xpe",
   peopleParaId: 1004,
@@ -96,7 +97,7 @@ function job(overrides: Record<string, unknown> = {}) {
       attempts: 0,
       rejections: 0,
       submitted: false,
-      destinationPasBefore: null,
+      destinationBefore: null,
       expectedLanding: null,
       fundsSeenAt: null,
       workedMs: 0,
@@ -268,6 +269,26 @@ describe("requests store: withdrawals", () => {
       rail: { provider: "direct" },
     });
     expect(await stored(REF)).not.toBeNull();
+  });
+
+  it("rebuilds the sale the job keeps, the PSM's fee rate included, and refuses a job without one", async () => {
+    await seed([], {
+      [SESSION]: job({ tier: "psm", external: "USDT", feeRate: 5_000, phase: "await-cash" }),
+    });
+    const requests = useRequestsStore();
+    await requests.reconcile("boot");
+    const record = requests.get(REF);
+    expect(record?.kind === "withdrawal" && record.handoff).toMatchObject({
+      tier: "psm",
+      external: "USDT",
+      feeRate: 5_000,
+    });
+
+    setActivePinia(createPinia());
+    await seed([], { [SESSION]: job({ tier: undefined }) });
+    const again = useRequestsStore();
+    await again.reconcile("boot");
+    expect(again.get(REF)).toBeUndefined();
   });
 
   it("does not sweep a cancelled withdrawal's job back into a record", async () => {

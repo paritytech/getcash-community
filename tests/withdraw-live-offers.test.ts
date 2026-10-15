@@ -19,6 +19,17 @@ vi.mock("../lib/host-payments", () => ({
   subscribePaymentStatus: vi.fn(),
 }));
 
+// The fee estimate asks the chains how CASH moves and reads People's pool; here the move is a
+// teleport and the fees are the 0.45 CASH the figures below assume.
+vi.mock("@getsome/funding", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@getsome/funding")>()),
+  chooseCashTransfer: async () => "teleport",
+}));
+vi.mock("@getsome/withdraw", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@getsome/withdraw")>()),
+  estimateDirectFeesCash: async () => 450_000n,
+}));
+
 /** A pool where one CASH unit sells for two planck, and the reverse. Counts its reverse quotes. */
 const poolReverseQuotes = { count: 0 };
 vi.mock("../lib/host-chain", () => ({
@@ -60,19 +71,39 @@ vi.mock("../lib/chainflip-backend", () => ({
   }),
 }));
 
-import { quoteWithdrawOffers } from "../lib/withdraw-live";
+import { chooseWithdrawRoute, quoteDirectReceive, quoteWithdrawOffers } from "../lib/withdraw-live";
 
 const PROVIDERS = WITHDRAW_NETWORKS.flatMap((n) => n.destinations).filter(
   (d) => d.rail !== "direct",
 );
 const CASH = 50_000_000n; // 50 CASH
-/** 50 CASH less the 0.45 CASH of fees sells for twice as many planck, less 6% headroom. */
+/** 50 CASH less the scripted 0.45 CASH of fees sells for twice as many planck, less 6% headroom. */
 const SELLABLE = (49_550_000n * 2n * 94n) / 100n;
 
 function reset() {
   asked.length = 0;
   poolReverseQuotes.count = 0;
 }
+
+describe("what a direct withdrawal lands per token", () => {
+  it("sells once for the native, twice for a stable, redeems at the PSM's rate, and lands dotUSD as it is", async () => {
+    const amount = 21_000_000n;
+    const sold = amount - 450_000n;
+    expect(await quoteDirectReceive(amount, { tier: "pool" })).toBe(sold * 2n);
+    expect(await quoteDirectReceive(amount, { tier: "pool", external: "USDC" })).toBe(sold * 4n);
+    expect(
+      await quoteDirectReceive(amount, { tier: "psm", external: "USDT", feeRate: 5_000 }),
+    ).toBe(sold - (sold * 5_000n + 999_999n) / 1_000_000n);
+    expect(await quoteDirectReceive(amount, { tier: "dotusd" })).toBe(sold);
+    // An amount the fees eat whole lands nothing on any tier.
+    expect(await quoteDirectReceive(400_000n, { tier: "dotusd" })).toBe(0n);
+  });
+
+  it("decides the native and dotUSD without a chain read", async () => {
+    expect(await chooseWithdrawRoute(21_000_000n, "native")).toEqual({ tier: "pool" });
+    expect(await chooseWithdrawRoute(21_000_000n, "dotUSD")).toEqual({ tier: "dotusd" });
+  });
+});
 
 describe("quoting the provider destinations for an amount", () => {
   it("asks every destination for the sellable native and formats what lands", async () => {
@@ -94,6 +125,82 @@ describe("quoting the provider destinations for an amount", () => {
       etaSeconds: 600,
     });
     expect(offers.get("usdc-eth")).toMatchObject({ state: "available", formatted: "5 USDC" });
+  });
+
+  it("prices the quote's fee split into the destination asset with the quote's own numbers", async () => {
+    reset();
+    script.quote = (asset, amount) =>
+      asset === "USDC"
+        ? {
+            type: "REGULAR",
+            egressAmount: "24190000",
+            estimatedDurationSeconds: 600,
+            depositAmount: amount,
+            includedFees: [
+              // A tenth of the deposit, so it prices to a tenth of the egress: 2.419 USDC.
+              { chain: "Assethub", asset: "DOT", amount: "9315400", type: "INGRESS" },
+              { chain: "Ethereum", asset: "USDC", amount: "210000", type: "NETWORK" },
+              { chain: "Ethereum", asset: "USDC", amount: "260000", type: "EGRESS" },
+            ],
+          }
+        : { type: "REGULAR", egressAmount: "123456", estimatedDurationSeconds: null };
+    const { offers } = await quoteWithdrawOffers(CASH, PROVIDERS);
+    expect(offers.get("usdc-eth")).toMatchObject({
+      state: "available",
+      fees: {
+        rows: [
+          // Ingress and egress under one name, each figure rounded up so a fee is never understated.
+          { label: "Network fee", value: "2.68 USDC" },
+          { label: "Swap fee", value: "0.21 USDC" },
+        ],
+        total: "2.89 USDC",
+        // The money figures keep the payout's own precision; only the charges read at cents.
+        equivalent: "≈ 27.079 USDC",
+        receive: "24.19 USDC",
+        rate: "$1 CASH ≈ 0.54 USDC",
+      },
+    });
+    // A quote naming no fees offers no split; the summary keeps its plain caption.
+    expect(offers.get("btc")).not.toHaveProperty("fees");
+  });
+
+  it("states what lands the same way on the summary and in the fee drill-in", async () => {
+    reset();
+    // A payout with more precision than cents: capped at two it would round *up*, promising a
+    // cent more than the swap pays out.
+    script.quote = (asset, amount) => ({
+      type: "REGULAR",
+      egressAmount: "24500001",
+      estimatedDurationSeconds: 600,
+      depositAmount: amount,
+      includedFees: [{ chain: "Ethereum", asset: "USDC", amount: "210000", type: "NETWORK" }],
+    });
+    const { offers } = await quoteWithdrawOffers(CASH, PROVIDERS);
+    const offer = offers.get("usdc-eth");
+    if (offer?.state !== "available") throw new Error("expected an available offer");
+
+    expect(offer.formatted).toBe("24.500001 USDC");
+    expect(offer.fees?.receive).toBe(offer.formatted);
+  });
+
+  it("drops the split whole when a fee cannot be priced into the destination asset", async () => {
+    reset();
+    script.quote = (asset, amount) => ({
+      type: "REGULAR",
+      egressAmount: "100000000",
+      estimatedDurationSeconds: null,
+      depositAmount: amount,
+      includedFees:
+        asset === "BTC"
+          ? // A USDC fee with no intermediate leg to price it through.
+            [{ chain: "Ethereum", asset: "USDC", amount: "210000", type: "NETWORK" }]
+          : // A fee kind the rows don't name.
+            [{ chain: "Ethereum", asset, amount: "1", type: "MYSTERY" }],
+    });
+    const { offers } = await quoteWithdrawOffers(CASH, PROVIDERS);
+    expect(offers.get("btc")?.state).toBe("available");
+    expect(offers.get("btc")).not.toHaveProperty("fees");
+    expect(offers.get("usdc-eth")).not.toHaveProperty("fees");
   });
 
   it("prices the provider's minimum back into CASH once, headroom included", async () => {

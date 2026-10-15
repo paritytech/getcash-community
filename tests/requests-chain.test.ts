@@ -59,7 +59,7 @@ const { chain, worker, manager, lostRequestHandoff, log } = vi.hoisted(() => {
     watchers: [] as {
       key: string;
       tier: string;
-      onValue: (free: bigint, address: string) => void;
+      onValue: (free: bigint, finality: "best" | "finalized") => void;
       onError: (e: unknown) => void;
       unsubscribed: boolean;
     }[],
@@ -114,7 +114,7 @@ vi.mock("../lib/coinage-live", () => ({
     sourceId: string,
     tradeN: number,
     route: { tier: string },
-    onValue: (free: bigint, address: string) => void,
+    onValue: (free: bigint, finality: "best" | "finalized") => void,
     onError: (e: unknown) => void,
   ) => {
     const watcher = {
@@ -528,7 +528,7 @@ describe("requests store: the chain step", () => {
     ]);
   });
 
-  it("the deposit watch subscribes to the burner at a best block and ends once the deposit is seen", async () => {
+  it("the deposit watch reports best and finalized reads, and ends once the deposit is final", async () => {
     const requests = useRequestsStore();
     await requests.create(AWAITING_REF, {
       ...migrated(awaitingDepositCryptoRecord),
@@ -539,41 +539,91 @@ describe("requests store: the chain step", () => {
     await settled();
     expect(watchers()).toEqual([{ key: "dot-assethub:3", unsubscribed: false }]);
     const watcher = chain.watchers[0]!;
+    const read = async (free: bigint, finality: "best" | "finalized") => {
+      watcher.onValue(free, finality);
+      await settled();
+      await nextTick();
+    };
 
     // An empty burner: the record only witnessed the reading, and the watch goes on.
-    watcher.onValue(0n, "burner-3");
-    await settled();
+    await read(0n, "best");
     expect(requests.get(AWAITING_REF)).toMatchObject({
       rev: 0,
       status: { kind: "awaiting-deposit" },
       witnesses: { chain: { best: { burnerNative: "0", at: FIXTURE_NOW } } },
     });
-    expect(watcher.unsubscribed).toBe(false);
 
-    // The coins show: the app is the early witness, provisionally, the journey moves on and the
-    // watch ends; the worker's finalized sighting follows on its own.
-    watcher.onValue(5_000_000_000n, "burner-3");
-    await settled();
+    // The coins show in a best block: the app is the early witness, provisionally, and the watch
+    // goes on until they are final. The same balance again is not observed.
+    await read(5_000_000_000n, "best");
+    await read(5_000_000_000n, "best");
+    await read(0n, "finalized");
     expect(requests.get(AWAITING_REF)).toMatchObject({
       rev: 1,
       status: { kind: "deposit-seen", at: FIXTURE_NOW, assurance: "provisional", via: "chain" },
-      funded: FIXTURE_NOW,
-      progress: { routeCompletedAt: FIXTURE_NOW },
-      witnesses: { chain: { best: { burnerNative: "5000000000", at: FIXTURE_NOW } } },
+      observedAt: { "on-burner": FIXTURE_NOW },
+      witnesses: {
+        chain: {
+          best: { burnerNative: "5000000000", at: FIXTURE_NOW },
+          finalized: { burnerNative: "0", at: FIXTURE_NOW },
+        },
+      },
+    });
+    expect(watcher.unsubscribed).toBe(false);
+
+    // The coins are final: the sighting is firmed up and the watch ends.
+    await read(5_000_000_000n, "finalized");
+    expect(requests.get(AWAITING_REF)).toMatchObject({
+      rev: 2,
+      status: { kind: "deposit-seen", assurance: "finalized" },
+      observedAt: { "on-burner": FIXTURE_NOW, "final-on-burner": FIXTURE_NOW },
     });
     expect(watcher.unsubscribed).toBe(true);
 
     // A late emission after the stop changes nothing, and nothing re-subscribes.
-    watcher.onValue(7_000_000_000n, "burner-3");
-    await settled();
+    await read(7_000_000_000n, "best");
     expect(requests.get(AWAITING_REF)).toMatchObject({
-      rev: 1,
+      rev: 2,
       witnesses: { chain: { best: { burnerNative: "5000000000", at: FIXTURE_NOW } } },
     });
     expect(watchers()).toEqual([{ key: "dot-assethub:3", unsubscribed: true }]);
     expect(chain.probes).toEqual([]);
     // A hand-off from before tiers were recorded is a pool one: the burner is read in the native.
     expect(watcher.tier).toBe("pool");
+  });
+
+  it("the deposit watch follows a deposit the provider saw, and ends with the request", async () => {
+    const requests = useRequestsStore();
+    await requests.create(AWAITING_REF, {
+      ...migrated(awaitingDepositCryptoRecord),
+      handoff: AWAITING_HANDOFF,
+      status: { kind: "deposit-seen", at: FIXTURE_NOW, assurance: "provisional", via: "core" },
+    });
+    requests.setForeground(AWAITING_REF);
+    await nextTick();
+    await settled();
+    const watcher = chain.watchers[0]!;
+
+    watcher.onValue(5_000_000_000n, "best");
+    await settled();
+    expect(requests.get(AWAITING_REF)).toMatchObject({
+      status: { kind: "deposit-seen", via: "core" },
+      observedAt: { "on-burner": FIXTURE_NOW },
+    });
+    expect(watcher.unsubscribed).toBe(false);
+
+    await requests.observe(AWAITING_REF, {
+      source: "core",
+      at: FIXTURE_NOW,
+      state: {
+        phase: "failed",
+        sourceId: "dot-assethub",
+        failure: { kind: "refunded", step: "deposit", message: "refunded", recoverable: false },
+      },
+    });
+    await nextTick();
+    expect(requests.get(AWAITING_REF)?.status.kind).toBe("failed");
+    expect(watcher.unsubscribed).toBe(true);
   });
 
   it("the deposit watch reads the burner in the tier the record froze at quote time", async () => {

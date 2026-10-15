@@ -49,6 +49,7 @@ const BATCH = {
   remoteFeesCash: 300_000n,
   beneficiaryHex: BENEFICIARY_HEX,
   peopleParaId: PEOPLE_PARA,
+  transfer: "teleport" as const,
 };
 
 describe("the PSM's rounding", () => {
@@ -305,10 +306,18 @@ describe("buildPsmBatch", () => {
       { id: TOKENS.CASH.location, fun: { type: "Fungible", value: BATCH.remoteFeesCash } },
     ]);
     expect(t.preserve_origin).toBe(false);
-    // The USDT sits in the fees register by now, so the holding is CASH alone and one counted
-    // asset is the whole of it.
+    // The transfer names the CASH, so USDT swept into the holding stays behind.
     expect(t.assets).toEqual([
-      { type: "Teleport", value: { type: "Wild", value: { type: "AllCounted", value: 1 } } },
+      {
+        type: "Teleport",
+        value: {
+          type: "Wild",
+          value: {
+            type: "AllOf",
+            value: { id: TOKENS.CASH.location, fun: { type: "Fungible", value: undefined } },
+          },
+        },
+      },
     ]);
     expect(t.remote_xcm.map((i) => i.type)).toEqual(["RefundSurplus", "DepositAsset"]);
     const deposit = t.remote_xcm[1]!.value as {
@@ -333,6 +342,33 @@ describe("buildPsmBatch", () => {
     });
   });
 
+  it("sends the CASH by reserve deposit when the chains allow no teleport: ReserveDeposit for the fees and the holding alike", () => {
+    const { api, seen } = recordingApi();
+    buildPsmBatch(api, { ...BATCH, transfer: "reserve" });
+    const execute = seen.execute as ExecuteArgs;
+    const transfer = execute.message.value.find((i) => i.type === "InitiateTransfer")!.value as {
+      remote_fees: { type: string; value: { type: string; value: Fungible[] } };
+      assets: unknown;
+    };
+    expect(transfer.remote_fees.type).toBe("ReserveDeposit");
+    expect(transfer.remote_fees.value).toEqual({
+      type: "Definite",
+      value: [{ id: TOKENS.CASH.location, fun: { type: "Fungible", value: BATCH.remoteFeesCash } }],
+    });
+    expect(transfer.assets).toEqual([
+      {
+        type: "ReserveDeposit",
+        value: {
+          type: "Wild",
+          value: {
+            type: "AllOf",
+            value: { id: TOKENS.CASH.location, fun: { type: "Fungible", value: undefined } },
+          },
+        },
+      },
+    ]);
+  });
+
   it("sorts the withdrawal as the runtime's Assets codec requires, whichever asset pays the fees", () => {
     const higher: XcmLocation = {
       parents: 0,
@@ -350,6 +386,7 @@ describe("buildPsmBatch", () => {
       remoteFeesCash: 1n,
       beneficiaryHex: BENEFICIARY_HEX,
       peopleParaId: PEOPLE_PARA,
+      transfer: "teleport",
     }) as unknown as ExecuteArgs;
     expect((program.message.value[0]!.value as Fungible[]).map((a) => a.id)).toEqual([
       TOKENS.CASH.location,
@@ -400,6 +437,7 @@ describe("estimatePsmBatchFees", () => {
     peopleParaId: PEOPLE_PARA,
     depositExternal: 5_300_000n,
     remoteFeesCash: BATCH.remoteFeesCash,
+    transfer: "teleport" as const,
     feeProbeAddress: "5Probe",
   };
   const usdtV5 = { type: "V5", value: TOKENS.USDT.location };
@@ -624,7 +662,7 @@ describe("dryRunPsmBatch", () => {
                 value: {
                   execution_result: {
                     type: "Incomplete",
-                    value: { used: {}, error: { type: opts.peopleError } },
+                    value: { used: {}, error: { index: 1, error: { type: opts.peopleError } } },
                   },
                   emitted_events: [],
                 },

@@ -5,7 +5,6 @@
 // there any balance is the deposit, since the provider delivers what was asked.
 
 import { describe, expect, it } from "vitest";
-import { createFundingProgressSnapshot, progressProviderForSource } from "../app/funding/progress";
 import { reduce } from "../app/funding/requests/reducer";
 import type {
   AcceptedDepositTerms,
@@ -38,9 +37,6 @@ function record(
     chain: opts.chain ?? "Polkadot",
     asset: assetSymbol,
     sourceId,
-    progress: createFundingProgressSnapshot(progressProviderForSource(sourceId).createProfile({}), {
-      preDetectionEstimateText: "",
-    }),
     route: "crypto",
     deposit: {
       address: "5Burner",
@@ -173,10 +169,10 @@ describe("a Polkadot deposit", () => {
       amountHuman: "7.9",
       asset: "dotUSD",
       deposit: { amount: "8000000", formatted: "8", assetSymbol: "dotUSD" },
-      conversion: { tier: "teleport" },
+      conversion: { tier: "dotusd" },
       handoff: {
         settleAmount: "7900000",
-        tier: "teleport",
+        tier: "dotusd",
         quotedDeposit: "8000000",
       } as AcceptedDepositTerms["handoff"],
     };
@@ -184,7 +180,7 @@ describe("a Polkadot deposit", () => {
     expect(accepted).toMatchObject({
       amountHuman: "7.9",
       sourceAmount: "8",
-      conversion: { tier: "teleport" },
+      conversion: { tier: "dotusd" },
       deposit: { amount: "8000000", address: "5Burner" },
     });
     expect(accepted.depositMismatch).toBeUndefined();

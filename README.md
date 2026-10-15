@@ -20,9 +20,10 @@ a static Nuxt 4 single-page app plus a background worker, both published to bull
 The **surface** (`app/`, `lib/`) is what the user sees. It quotes, shows a deposit address or
 opens the provider's widget, and tracks the request. The **worker** (`worker/`) runs in the
 background inside the host. Once a deposit has landed, the surface hands the job to the
-worker, which converts it to CASH and teleports it to the People chain in one transaction on
-Asset Hub, then, once that CASH is final on People, claims it through the host's top-up call. The
-top-up is registered under the ephemeral account's public key and driven by the host from there.
+worker, which converts it to CASH and sends it to the People chain in one transaction on Asset
+Hub (by teleport, or by reserve transfer where the chains do not trust the teleport), then, once
+that CASH is final on People, claims it through the host's top-up call. The top-up is registered
+under the ephemeral account's public key and driven by the host from there.
 The surface shows the top-up done as soon as the host reports the claim in a block; the worker
 follows the host's status over a subscription it holds open until the claim is final, and
 registers a further top-up for whatever a short claim left on the account. The worker keeps going
@@ -31,17 +32,17 @@ after the surface is closed.
 The conversion has two tiers, and the PSM is the default. Asset Hub's Peg Stability Module swaps
 an approved token for CASH at a given rate less its own fee, so what a purchase buys
 is known before it is quoted and cannot move before it settles: the provider delivers that
-token and the worker signs one `Utility.batch_all` that mints the CASH and teleports it to
-People. The AssetConversion pool is the fallback, priced at whatever it quotes at the time. It
+token and the worker signs one `Utility.batch_all` that mints the CASH and sends it to People.
+The AssetConversion pool is the fallback, priced at whatever it quotes at the time. It
 takes over whenever the PSM cannot serve a request (i.e.: no instance open for the pair, minting
 paused, the amount over the instance's debt ceiling or under its minimum) and then the provider
-delivers the native token and one XCM swaps and teleports it instead. Which tier a request takes
+delivers the native token and one XCM swaps and sends it instead. Which tier a request takes
 is decided at quote time, before the provider is told what to send, and recorded on the request
 with the fee rate it was quoted; the worker runs the tier it is handed and never chooses one.
 On the Polkadot route the token the buyer picks decides: DOT takes the pool, USDT the PSM (the
 pool through PAS when the PSM cannot serve), USDC a stable pool leg, one XCM that exchanges USDC
-for PAS and PAS for CASH inside the holding and teleports the CASH, every fee paid in the stable,
-and dotUSD, the underlying itself, a teleport with no conversion, its fees paid in dotUSD.
+for PAS and PAS for CASH inside the holding and sends the CASH on, every fee paid in the stable,
+and dotUSD, the underlying itself, sent as it is with no conversion, its fees paid in dotUSD.
 `@getsome/funding` holds the four programs, the routing rule and the tick.
 
 The two talk over host storage. `lib/worker-rpc.ts` (surface side) and `worker/src/rpc.js`
@@ -69,15 +70,42 @@ The off-ramp reuses the pieces above in the other direction. The page at `#/with
 fresh ephemeral key under a `wd:` label and asks the host to pay the CASH into it, under a payment
 id derived from the key. The worker watches that key on People and runs two transactions signed
 by it: a swap that buys the PAS the fees need, then one XCM that withdraws everything the key
-holds and lands PAS on the destination account on Asset Hub. The key is left empty and reaped.
-Arrival is a balance read at the head, like every other read in the engine: the destination's
-PAS is read just before the XCM leaves, and the run is done once it has grown by what the Asset
+holds and lands it on the destination account on Asset Hub. The key is left empty and reaped.
+On Asset Hub the destination takes DOT, dotUSD, USDT or USDC, and the sale inside the XCM follows
+the on-ramp's tiers the other way: the PSM redeems the CASH for USDT one to one less its fee,
+with the pool as the fallback when the PSM cannot serve; the pool sells the CASH for DOT, and for
+a stable sells that DOT again on the stable's pool; dotUSD is the CASH sent as it is. The
+PSM redeem runs inside the same XCM: the key's origin travels with it, the redeem runs as the
+key's account on Asset Hub, and the fee refund and the PAS that travelled are sold for USDT too.
+Whatever the tier, the fee PAS that travels with the CASH ends up in the landing token, so the
+destination is credited one asset.
+The sale is decided from the token picked at quote time with the on-ramp's own rule and frozen on
+the hand-off, so the worker never re-decides it. Arrival is a
+balance read at the head, like every other read in the engine: the destination's balance in that
+token is read just before the XCM leaves, and the run is done once it has grown by what the Asset
 Hub dry run said would land. Hosts serve the current head and nothing older, so nothing follows
 block history. `@getsome/withdraw` holds the program, the sizing and the tick;
 `worker/src/withdraw-engine.js` drives it.
 
 Withdrawals are a second record kind in the same request store as the top-ups, moved by the
 same observations and the same reconcile.
+
+A withdrawal to a bank or a card is a sale through Meld. The page quotes it for an exact PAS
+figure, sized from the pool with room for the seller's KYC, and opens the provider's SELL session
+for that figure; the seller does KYC on the provider's page. Nothing is asked of the purse until
+the provider names its deposit address, which the page reads off the adapter and checks against
+the figure agreed, and until the order and the price are checked once more. Then the purse pays
+the key, the worker's message leg lands the sale's PAS on the key's own Asset Hub account, and the
+rail leg pays the provider exactly that figure, once, at a nonce it pins, after the adapter
+confirms the address, the asset and the amount, and within an hour of the purse being asked. What
+the sale landed above the figure goes home as CASH when it is worth the way back (0.1 PAS or more;
+less stays on the key), and the quote says about how much: the worker hands the key to the funding
+engine, which converts and claims it into the purse as it does an on-ramp, and starts that job
+again if it fails, up to three times. A sale that ends before the provider is paid, because the
+price moved past the figure, the provider closed or changed the order, or the hour ran out, sends
+everything on the key home the same way. A payment whose answer was lost holds the job until the
+chain shows it landed or outlived its mortality; only a key whose chain state contradicts the
+payment stops the job for a person.
 
 ### Rails as packages
 
@@ -174,25 +202,34 @@ pnpm format             # prettier
 ```
 
 A build targets the network `packages/core/src/network.json` describes: whether it is a testnet,
-the native symbol and, for Asset Hub and People, the para id, genesis hash and endpoint, plus
-People's pool account. `.papi/` holds the metadata the calls are typed from and must name the same
-genesis hashes; the build refuses a mismatch. Both describe Paseo Next. Demo builds, and with them
-the faucet and Skip, need `"testnet": true`; the build refuses `VITE_FAUCET_SEED` otherwise.
+the native symbol and, for Asset Hub and People, the para id, genesis hash and endpoint, plus the
+CASH asset id on Asset Hub and People's pool account. `.papi/` holds the metadata the calls are
+typed from and must name the same genesis hashes; the build refuses a mismatch. Both describe Paseo
+Next. Demo builds, and with them the faucet and Skip, need `"testnet": true`; the build refuses
+`VITE_FAUCET_SEED` otherwise.
 
 Copy `.env.example` to `.env` and fill in what you need. Nuxt reads `.env`, not `.env.local`.
 
-| Variable               | Purpose                                                                                                                     |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `VITE_FAUCET_SEED`     | demo faucet account, holding PAS, dotUSD, USDt and USDC on Asset Hub; inlined into the client bundle, use a testnet account |
-| `VITE_DEPLOYER_SEED`   | fallback for `MNEMONIC` in `deploy.sh`                                                                                      |
-| `VITE_MELD_BASE_URL`   | origin of the Meld adapter; unset, the offline fake Meld client runs instead                                                |
-| `VITE_MELD_PRODUCT_ID` | product id the adapter expects in the `x-dev-product-id` header                                                             |
+| Variable                        | Purpose                                                                                                                         |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `VITE_FAUCET_SEED`              | demo faucet account, holding PAS, dotUSD, USDt and USDC on Asset Hub; inlined into the client bundle, use a testnet account     |
+| `VITE_DEPLOYER_SEED`            | fallback for `MNEMONIC` in `deploy.sh`                                                                                          |
+| `VITE_MELD_BASE_URL`            | origin of the Meld adapter; unset, the offline fake Meld client runs instead                                                    |
+| `VITE_MELD_PRODUCT_ID`          | product id the adapter expects in the `x-dev-product-id` header                                                                 |
+| `VITE_CHAINFLIP_BROKER_API_KEY` | Broker-as-a-Service key the Chainflip deposit channels open on; unset, the crypto withdrawal destinations show as not available |
+
+`VITE_CHAINFLIP_BROKER_API_KEY` names an account on Broker-as-a-Service (chainflip-broker.io), one
+key per Chainflip network; this app uses mainnet. Chainflip's own backend refuses to open deposit
+channels on its default broker as of October 2026, so the channels open on the BaaS broker, which
+takes 5 bps of each swap on top of the commission set in its dashboard; ours is 0. BaaS treats the
+key as the account's name rather than a secret, so it is inlined into the client bundle like the
+other values; keep it out of the repo all the same.
 
 Two tests submit real transactions to the Paseo testnet and are skipped unless enabled:
 `PROD_PROOF=1` runs `tests/prod-proof.test.ts`, `VERIFY_AMOUNTS=1` runs
 `tests/verify-amounts.test.ts`. `VERIFY_STABLE=1` runs `tests/verify-stable.test.ts`, which
 dry-runs the USDC and USDT programs from a rich account on Paseo and spends nothing, and
-`VERIFY_DOTUSD=1` runs `tests/verify-dotusd.test.ts`, the same for the dotUSD teleport.
+`VERIFY_DOTUSD=1` runs `tests/verify-dotusd.test.ts`, the same for the dotUSD tier.
 
 ### Demo-only paths
 
@@ -220,7 +257,8 @@ in `.env.local` or `.env`.
 
 CI does the same: a push to `main` deploys `getcash.paseo`, and every pull request gets a
 preview at `pr<N>-getcash.paseo`. Both are signed with the repository's `MNEMONIC` secret and
-build with `VITE_FAUCET_SEED` and `VITE_MELD_BASE_URL` from repository secrets.
+build with `VITE_FAUCET_SEED`, `VITE_MELD_BASE_URL`, `VITE_MELD_PRODUCT_ID` and
+`VITE_CHAINFLIP_BROKER_API_KEY` from repository secrets.
 
 ## License
 

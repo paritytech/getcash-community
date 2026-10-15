@@ -38,7 +38,6 @@ describe("priceSourceLeg", () => {
     expect(result.kind).toBe("price");
     if (result.kind !== "price") return;
     expect(result.price.formatted).toMatch(/^\d/);
-    expect(result.price.etaSeconds).toBe(1009.5);
   });
 
   it("reports the floor in the asset's units and how far the ask fell short", async () => {

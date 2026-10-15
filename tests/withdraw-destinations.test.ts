@@ -1,12 +1,13 @@
-// The withdrawal destinations: what the picker lists, how an address is checked, and where the
-// PAS lands for a direct destination.
+// The withdrawal destinations: what the picker lists, how an address is checked, what each sells
+// the CASH for, and where the funds land for a direct destination.
 
 import { describe, expect, it } from "vitest";
 import {
   assetHubAccountHex,
   isAssetHubAddress,
   landingAccountHex,
-  shortAddress,
+  matchesOtherNetwork,
+  shortDestinationAddress,
   WITHDRAW_NETWORKS,
   withdrawDestination,
   withdrawNetwork,
@@ -18,9 +19,19 @@ const ALICE_GENERIC = "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY";
 const ALICE_HEX = "0xd43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d";
 
 describe("withdrawal destinations", () => {
-  it("lists Asset Hub first on the direct rail, then the Chainflip networks", () => {
-    expect(WITHDRAW_NETWORKS[0]).toMatchObject({ chain: "AssetHub", label: "Asset Hub" });
-    expect(WITHDRAW_NETWORKS[0]!.destinations.map((d) => d.rail)).toEqual(["direct"]);
+  it("lists Polkadot first on the direct rail, with its tokens, then the Chainflip networks", () => {
+    expect(WITHDRAW_NETWORKS[0]).toMatchObject({ chain: "Polkadot", label: "Polkadot" });
+    const assetHub = WITHDRAW_NETWORKS[0]!.destinations;
+    expect(assetHub.every((d) => d.chainLabel === "Polkadot")).toBe(true);
+    expect(assetHub.map((d) => [d.id, d.asset, d.rail])).toEqual([
+      ["dot-assethub", "DOT", "direct"],
+      ["dotusd-assethub", "dotUSD", "direct"],
+      ["usdt-assethub", "USDT", "direct"],
+      ["usdc-assethub", "USDC", "direct"],
+    ]);
+    // Each lands its token, named the way the on-ramp names a deposit, so the quote decides the
+    // sale with the on-ramp's own rule.
+    expect(assetHub.map((d) => d.landing)).toEqual(["native", "dotUSD", "USDT", "USDC"]);
     const others = WITHDRAW_NETWORKS.slice(1);
     expect(others.map((network) => network.label)).toEqual([
       "Bitcoin",
@@ -28,9 +39,10 @@ describe("withdrawal destinations", () => {
       "Solana",
       "Tron",
     ]);
-    expect(
-      others.flatMap((network) => network.destinations).every((d) => d.rail === "chainflip"),
-    ).toBe(true);
+    const provided = others.flatMap((network) => network.destinations);
+    expect(provided.every((d) => d.rail === "chainflip")).toBe(true);
+    // A provider takes the native from the key, whatever it delivers.
+    expect(provided.every((d) => d.landing === "native")).toBe(true);
   });
 
   it("finds a network and a destination by id", () => {
@@ -51,6 +63,7 @@ describe("withdrawal destinations", () => {
     expect(isAssetHubAddress("15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp6")).toBe(false);
     expect(assetHubAccountHex(ALICE_GENERIC)).toBe(ALICE_HEX);
     expect(landingAccountHex(withdrawDestination("dot-assethub")!, ALICE_POLKADOT)).toBe(ALICE_HEX);
+    expect(landingAccountHex(withdrawDestination("usdc-assethub")!, ALICE_GENERIC)).toBe(ALICE_HEX);
   });
 
   it("checks a Chainflip destination's address with that chain's rule, and lands on the key", () => {
@@ -61,8 +74,21 @@ describe("withdrawal destinations", () => {
     expect(landingAccountHex(ethereum, "0x4B2c0000000000000000000000000000000C02db")).toBeNull();
   });
 
+  it("tells a wrong-network address from a malformed one", () => {
+    const ethereum = withdrawNetwork("Ethereum")!;
+    // The design's example: a Bitcoin address on the Ethereum step.
+    expect(matchesOtherNetwork(ethereum, "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2")).toBe(true);
+    expect(matchesOtherNetwork(ethereum, ` ${ALICE_POLKADOT} `)).toBe(true);
+    expect(matchesOtherNetwork(ethereum, "1BvBMSEYstWetq")).toBe(false);
+    // An Ethereum address on the Bitcoin step is the wrong network, not malformed.
+    const bitcoin = withdrawNetwork("Bitcoin")!;
+    expect(matchesOtherNetwork(bitcoin, "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db")).toBe(true);
+  });
+
   it("shortens an address around an ellipsis", () => {
-    expect(shortAddress(ALICE_POLKADOT)).toBe("15oF4…r6Sp5");
-    expect(shortAddress("short")).toBe("short");
+    expect(shortDestinationAddress(ALICE_POLKADOT)).toBe("15oF4…r6Sp5");
+    expect(shortDestinationAddress("short")).toBe("short");
+    // Five each end, against the six the shared `shortAddress` leads with elsewhere.
+    expect(shortDestinationAddress(`  ${ALICE_POLKADOT}  `)).toBe("15oF4…r6Sp5");
   });
 });

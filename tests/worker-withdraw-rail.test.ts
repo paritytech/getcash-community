@@ -27,6 +27,7 @@ vi.mock("../worker/src/host.js", () => ({
 
 // The provider and the sweep are the seams; the leg between them is the code under test.
 vi.mock("../worker/src/providers.js", () => ({
+  PAY_TIMEOUT_MS: 300_000,
   railFor: mocks.railFor,
   payRail: mocks.payRail,
 }));
@@ -65,6 +66,7 @@ function landedJob(overrides: { leg?: unknown; channel?: unknown } = {}): Stored
     destination: { chain: "Bitcoin", asset: "BTC", address: "bc1qw508" },
     landingHex: hash32(0x07),
     rail: "chainflip",
+    tier: "pool",
     assetHubGenesis: hash32(0x11),
     peopleGenesis: hash32(0x22),
     peopleParaId: 1004,
@@ -83,7 +85,7 @@ function landedJob(overrides: { leg?: unknown; channel?: unknown } = {}): Stored
       attempts: 1,
       rejections: 0,
       submitted: true,
-      destinationPasBefore: "0",
+      destinationBefore: "0",
       expectedLanding: "40000000000",
       fundsSeenAt: NOW - DAY,
       workedMs: 0,

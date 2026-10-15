@@ -35,10 +35,6 @@ describe("session store: mock-world quote", () => {
       await store.fetchQuote("Bitcoin", "BTC");
       await store.start();
       expect(requests.phase).toBe("awaiting-deposit");
-      expect(requests.foregroundProgress?.snapshot).toMatchObject({
-        latestRouteStatus: "waiting",
-        stageTimestamps: {},
-      });
       // The channel refunds to the request's own Bitcoin key, never to a typed address.
       const world = store.mock!;
       const slot = refundStorageKey("btc", 1);
@@ -60,10 +56,6 @@ describe("session store: mock-world quote", () => {
       store.approveClaim();
       await waitFor(() => requests.phase === "done", 10_000);
       expect(requests.phase).toBe("done");
-      expect(requests.foregroundProgress?.snapshot).toMatchObject({
-        confirmedStageKey: "cash-top-up",
-        settledAt: expect.any(Number),
-      });
     },
   );
 });
@@ -88,7 +80,7 @@ describe("session store: Polkadot direct deposit in the mock world", () => {
   });
 
   it(
-    "quotes dotUSD under its own source on the teleport tier, and runs to done",
+    "quotes dotUSD under its own source on the dotUSD tier, and runs to done",
     { timeout: 30_000 },
     async () => {
       const store = useSessionStore();
@@ -104,7 +96,7 @@ describe("session store: Polkadot direct deposit in the mock world", () => {
         nativeAmount: null,
       });
       expect(store.mock?.sourceId).toBe("dotusd-assethub");
-      expect(store.mock?.route).toEqual({ tier: "teleport" });
+      expect(store.mock?.route).toEqual({ tier: "dotusd" });
 
       await store.start();
       expect(requests.phase).toBe("awaiting-deposit");
@@ -164,7 +156,6 @@ describe("session store: Polkadot direct deposit in the mock world", () => {
       expect(record.deposit?.assetSymbol).toBe("USDC");
       // The deposit address is the mock burner itself, an Asset Hub account, not the fake rail's.
       expect(AccountId().enc(record.deposit!.address)).toHaveLength(32);
-      expect(record.progress.profile.id).toBe("direct");
       // A direct deposit has no refund leg.
       expect(store.refundAddress).toBeNull();
       expect(store.revealRefundKey()).toBeNull();
@@ -180,6 +171,31 @@ describe("session store: Polkadot direct deposit in the mock world", () => {
       expect(requests.phase).toBe("done");
     },
   );
+
+  it("keeps the same deposit address and amount when the top-up is re-opened from the list", async () => {
+    const store = useSessionStore();
+    const requests = useRequestsStore();
+    store.setAmount("10");
+    await store.fetchQuote("Polkadot", "USDC");
+    await store.start();
+    const record = requests.foregroundRecord;
+    if (record?.deposit === undefined) throw new Error("the started request has no deposit");
+    const { ref } = record;
+    const opened = { ...record.deposit };
+
+    // Leaving the screen drops the world, as walking back to the list does. The record stays.
+    store.reset();
+    expect(requests.foregroundRecord).toBeNull();
+
+    // Tapping the row rebuilds the world under the same trade, so the account is the same one.
+    expect(await store.openRequest(ref)).toBe(true);
+    expect(requests.phase).toBe("awaiting-deposit");
+    expect(requests.foregroundRecord?.deposit).toMatchObject({
+      address: opened.address,
+      amount: opened.amount,
+      assetSymbol: opened.assetSymbol,
+    });
+  });
 });
 
 describe("session store: Meld (card / bank) in the mock world", () => {
@@ -210,7 +226,7 @@ describe("session store: Meld (card / bank) in the mock world", () => {
     expect(store.quoted).toBeNull();
   });
 
-  it("start() reaches awaiting-deposit with the provider's pay page and the Meld progress profile", async () => {
+  it("start() reaches awaiting-deposit with the provider's pay page", async () => {
     const store = useSessionStore();
     const requests = useRequestsStore();
     store.setMethod("card");
@@ -219,10 +235,6 @@ describe("session store: Meld (card / bank) in the mock world", () => {
     await store.start();
     expect(requests.phase).toBe("awaiting-deposit");
     expect(store.meldPayUrl).toMatch(/^https:\/\//);
-    expect(requests.foregroundProgress?.snapshot.profile.id).toBe("meld");
-    expect(requests.foregroundProgress?.snapshot.preDetectionEstimateText).toBe(
-      "≈ minutes after you pay",
-    );
   });
 
   it("hides the pay widget once the buyer has submitted, so a re-open cannot re-charge", async () => {

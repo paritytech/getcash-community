@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // One row in a selection list, drawn as the design's card: icon plate, label, optional subtitle,
-// and a trailing chevron that becomes a spinner while this row's pick is being started.
+// and a trailing chevron that becomes a spinner while this row's pick is being started. A disabled
+// row is outlined instead of filled, with no chevron.
 // `skeleton` renders the same card as an empty loading placeholder.
 import { ChevronRight } from "lucide-vue-next";
 
@@ -35,7 +36,8 @@ const emit = defineEmits<{ select: [] }>();
   <li v-else>
     <button
       type="button"
-      class="option-card flex w-full items-center gap-3 bg-surface-nested p-4 text-left transition-opacity disabled:opacity-50"
+      class="option-card flex w-full items-center gap-3 border p-4 text-left"
+      :class="disabled ? 'bg-transparent' : 'border-transparent bg-surface-container'"
       :disabled="disabled"
       @click="emit('select')"
     >
@@ -43,8 +45,14 @@ const emit = defineEmits<{ select: [] }>();
         <img :src="icon" alt="" class="size-full" />
       </span>
       <span class="flex min-w-0 flex-1 flex-col">
-        <span class="text-heading-m text-fg-primary">{{ label }}</span>
-        <span v-if="subtitle" class="truncate text-body-s text-fg-secondary">
+        <span class="text-heading-m" :class="disabled ? 'text-fg-secondary' : 'text-fg-primary'">
+          {{ label }}
+        </span>
+        <span
+          v-if="subtitle"
+          class="truncate text-body-s"
+          :class="disabled ? 'text-fg-tertiary' : 'text-fg-secondary'"
+        >
           {{ subtitle }}
         </span>
       </span>
@@ -53,7 +61,11 @@ const emit = defineEmits<{ select: [] }>();
         class="size-5 shrink-0 animate-spin rounded-full border-[1.5px] border-fg-secondary border-r-transparent"
         aria-hidden="true"
       />
-      <ChevronRight v-else class="size-5 shrink-0 text-fg-secondary" aria-hidden="true" />
+      <ChevronRight
+        v-else-if="!disabled"
+        class="size-5 shrink-0 text-fg-secondary"
+        aria-hidden="true"
+      />
     </button>
   </li>
 </template>

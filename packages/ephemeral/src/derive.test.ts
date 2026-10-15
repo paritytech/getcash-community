@@ -1,5 +1,5 @@
 import { sr25519CreateDerive } from "@polkadot-labs/hdkd";
-import { DEV_PHRASE, mnemonicToMiniSecret } from "@polkadot-labs/hdkd-helpers";
+import { DEV_PHRASE, mnemonicToEntropy, mnemonicToMiniSecret } from "@polkadot-labs/hdkd-helpers";
 import { sign, verify } from "@scure/sr25519";
 import { describe, expect, it } from "vitest";
 import type { EntropyPort } from "@getsome/core";
@@ -7,9 +7,11 @@ import {
   ASSET_HUB_SS58_PREFIX,
   deriveKeypair,
   deriveKeypairWithSecret,
+  deriveSeedKeypair,
   toEphemeralSigner,
   toHandoffKey,
   toSchnorrkelSecret,
+  walletSeedHex,
 } from "./derive";
 import { createEphemeral } from "./ephemeral";
 
@@ -43,6 +45,22 @@ describe("deriveKeypair", () => {
     );
   });
 
+  it("hands out a raw seed a wallet imports to the same account", () => {
+    const seed = walletSeedHex(entropyA);
+    expect(seed).toMatch(/^0x[0-9a-f]{64}$/);
+    // A wallet treats the raw seed as the mini secret and derives with an empty path: the same
+    // construction deriveKeypair uses, so the accounts must match.
+    const mini = Uint8Array.from(
+      seed
+        .slice(2)
+        .match(/../g)!
+        .map((b) => parseInt(b, 16)),
+    );
+    const { publicKey } = sr25519CreateDerive(mini)("");
+    expect(publicKey).toEqual(deriveKeypair(entropyA).publicKey);
+    expect(walletSeedHex(entropyB)).not.toBe(seed);
+  });
+
   it("produces a signer whose publicKey matches the keypair and that signs", async () => {
     const kp = deriveKeypair(entropyA);
     expect(kp.signer.publicKey).toEqual(kp.publicKey);
@@ -51,6 +69,27 @@ describe("deriveKeypair", () => {
     const sig = await kp.signer.signBytes(new Uint8Array([1, 2, 3]));
     expect(sig).toBeInstanceOf(Uint8Array);
     expect(sig.length).toBe(64);
+  });
+});
+
+describe("deriveSeedKeypair", () => {
+  const hex = (u8: Uint8Array) => Array.from(u8, (b) => b.toString(16).padStart(2, "0")).join("");
+
+  it("derives the account deriveKeypair derives from 32 bytes", () => {
+    expect(deriveSeedKeypair(entropyA).publicKey).toEqual(deriveKeypair(entropyA).publicKey);
+    expect(deriveSeedKeypair(entropyA).address).toBe(deriveKeypair(entropyA).address);
+  });
+
+  it("derives a 12-word phrase's root account as subkey does", () => {
+    // `subkey inspect "<dev phrase>"`, with no derivation path.
+    const { publicKey } = deriveSeedKeypair(mnemonicToEntropy(DEV_PHRASE));
+    expect(hex(publicKey)).toBe("46ebddef8cd9bb167dc30878d7113b7e168e6f0646beffd77d69d39bad76b47a");
+  });
+
+  it.each([0, 15, 24, 33])("throws a clear error on %d-byte entropy", (len) => {
+    expect(() => deriveSeedKeypair(new Uint8Array(len))).toThrow(
+      new RegExp(`16 or 32 bytes, got ${len}`),
+    );
   });
 });
 

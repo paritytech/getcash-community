@@ -2,7 +2,6 @@
 
 import { describe, expect, it } from "vitest";
 import {
-  groupNetworks,
   groupTokens,
   networkSubtitle,
   smallestMinimumCash,
@@ -53,8 +52,9 @@ describe("source groups", () => {
     expect(tokenSubtitle({ state: "unavailable", reason: "maintenance" })).toBe(
       "Not available right now",
     );
-    expect(tokenSubtitle({ state: "checking" })).toBe("Checking…");
     expect(tokenSubtitle({ state: "ungated" })).toBeUndefined();
+    // Never drawn as a row: the picker shows a skeleton row in its place.
+    expect(tokenSubtitle({ state: "checking" })).toBeUndefined();
   });
 
   it("names a network's smallest minimum, or why none of its tokens answer", () => {
@@ -68,20 +68,8 @@ describe("source groups", () => {
     expect(networkSubtitle(down)).toBe("Not available right now");
     const fine = network("Ethereum", [token("ETH", { state: "ungated" })]);
     expect(networkSubtitle(fine)).toBeUndefined();
-  });
-
-  it("splits into the pickable group and the greyed one, dropping an empty group", () => {
-    const eth = network("Ethereum", [token("ETH", { state: "ungated" })]);
-    const btc = network("Bitcoin", [
-      token("BTC", { state: "too-small", minimumCashBase: 80_000_000n }),
-    ]);
     const pending = network("Solana", [token("SOL", { state: "checking" })]);
-    expect(groupNetworks([btc, eth, pending])).toEqual([
-      { label: "All networks", rows: [eth, pending] },
-      { label: "Unsupported network", rows: [btc] },
-    ]);
-    expect(groupNetworks([eth])).toEqual([{ label: "All networks", rows: [eth] }]);
-    expect(groupNetworks([btc])).toEqual([{ label: "Unsupported network", rows: [btc] }]);
+    expect(networkSubtitle(pending)).toBeUndefined();
   });
 
   it("groups tokens the same way", () => {

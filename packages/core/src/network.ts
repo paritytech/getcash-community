@@ -14,7 +14,10 @@ export interface Network {
   /** Allows demo builds, and with them the faucet and Skip. */
   testnet: boolean;
   nativeSymbol: string;
-  assetHub: ChainConfig;
+  assetHub: ChainConfig & {
+    /** The pallet-assets id of the coinage underlying, which the UI calls CASH and dotUSD. */
+    cashAssetId: number;
+  };
   people: ChainConfig & {
     /** The account holding the reserves of People's native/CASH pool. */
     poolAccount: string;
@@ -28,6 +31,7 @@ const NETWORK_FIELDS = [
   "people",
 ] satisfies (keyof Network)[];
 const CHAIN_FIELDS = ["paraId", "genesis", "rpc"] satisfies (keyof ChainConfig)[];
+const ASSET_HUB_FIELDS = [...CHAIN_FIELDS, "cashAssetId"] satisfies (keyof Network["assetHub"])[];
 const PEOPLE_FIELDS = [...CHAIN_FIELDS, "poolAccount"] satisfies (keyof Network["people"])[];
 
 const HASH = /^0x[0-9a-f]{64}$/;
@@ -43,6 +47,8 @@ const isHash = (value: unknown): value is `0x${string}` =>
 
 const isParaId = (value: unknown): value is number =>
   typeof value === "number" && Number.isInteger(value) && value > 0;
+
+const isAssetId = (value: unknown): value is number => isParaId(value) && value <= 0xffff_ffff;
 
 const matches = (value: unknown, pattern: RegExp): value is string =>
   typeof value === "string" && pattern.test(value);
@@ -74,6 +80,7 @@ function chainOf(fields: Record<string, unknown>, path: string): ChainConfig {
 export function parseNetwork(input: unknown): Network {
   const root = fieldsOf(input, "", NETWORK_FIELDS);
   const { testnet, nativeSymbol } = root;
+  const assetHub = fieldsOf(root.assetHub, "assetHub", ASSET_HUB_FIELDS);
   const people = fieldsOf(root.people, "people", PEOPLE_FIELDS);
   return {
     testnet: typeof testnet === "boolean" ? testnet : fail("testnet", "a boolean"),
@@ -81,7 +88,12 @@ export function parseNetwork(input: unknown): Network {
       typeof nativeSymbol === "string" && nativeSymbol.trim() !== ""
         ? nativeSymbol
         : fail("nativeSymbol", "a non-empty string"),
-    assetHub: chainOf(fieldsOf(root.assetHub, "assetHub", CHAIN_FIELDS), "assetHub"),
+    assetHub: {
+      ...chainOf(assetHub, "assetHub"),
+      cashAssetId: isAssetId(assetHub.cashAssetId)
+        ? assetHub.cashAssetId
+        : fail("assetHub.cashAssetId", "a positive 32-bit integer"),
+    },
     people: {
       ...chainOf(people, "people"),
       poolAccount: matches(people.poolAccount, SS58_ACCOUNT)

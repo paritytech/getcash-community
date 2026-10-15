@@ -8,6 +8,8 @@ import { shortAddress } from "../../utils/address";
 import { useFlowStore } from "../../stores/flow";
 import { useRequestsStore } from "../../stores/requests";
 import { useSessionStore } from "../../stores/session";
+import { depositQrValue } from "../../funding/deposit-qr";
+import { effectiveSourceId } from "../../funding/requests/model";
 import DepositMismatchSheet from "../funding/DepositMismatchSheet.vue";
 import RecoverDepositScreen from "./RecoverDepositScreen.vue";
 
@@ -50,7 +52,7 @@ const deposit = computed(() => {
   return requests.phase === "awaiting-deposit" && d ? { ...d, amount: BigInt(d.amount) } : null;
 });
 
-/** The address the QR and the copy row carry. */
+/** The address the copy row carries; the QR may wrap it in a payment URI. */
 const address = computed(() => deposit.value?.address ?? "");
 
 /** How much to send, split so the copy carries the bare number: the swap network's figure when it
@@ -97,6 +99,20 @@ const amount = computed<{ value: string; symbol: string; approx: boolean } | nul
 const amountText = computed(() => {
   const a = amount.value;
   return a ? `${a.approx ? "≈ " : ""}${a.value} ${a.symbol}` : "";
+});
+
+/** What the QR encodes: a payment URI a wallet can scan when the source has one and the figure
+ *  is the channel's own, the bare address otherwise. */
+const qrValue = computed(() => {
+  const record = requests.foregroundRecord;
+  const d = deposit.value;
+  if (!record || !d) return address.value;
+  return depositQrValue({
+    sourceId: effectiveSourceId(record.ref),
+    address: d.address,
+    amount: d.amount.toString(),
+    exact: amount.value?.approx === false,
+  });
 });
 
 const source = computed(() => {
@@ -151,7 +167,7 @@ function copy(target: "amount" | "address") {
     <!-- The one flexible block on the screen. Short webviews shrink the QR to a scannable
          floor. The basis carries the card's 288px plus this block's own 16px bottom gap. -->
     <div class="flex min-h-24 shrink basis-[19rem] justify-center pb-4">
-      <QrCard :value="address" />
+      <QrCard :value="qrValue" />
     </div>
 
     <!-- Each row copies its value; the pill above the buttons confirms. -->

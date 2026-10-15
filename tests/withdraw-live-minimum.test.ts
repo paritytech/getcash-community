@@ -18,6 +18,15 @@ vi.mock("../lib/host-payments", () => ({
   requestPayment: vi.fn(),
   subscribePaymentStatus: vi.fn(),
 }));
+// The fees before the sale, as the swap sale tests pin them, and the transfer the chains choose.
+vi.mock("@getsome/withdraw", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@getsome/withdraw")>()),
+  estimateDirectFeesCash: async () => 450_000n,
+}));
+vi.mock("@getsome/funding", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@getsome/funding")>()),
+  chooseCashTransfer: async () => "teleport",
+}));
 vi.mock("../lib/host-chain", () => ({
   ASSET_HUB: "asset-hub",
   PEOPLE: "people",

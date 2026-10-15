@@ -35,6 +35,7 @@ vi.mock("../lib/worker-rpc", () => ({
 }));
 vi.mock("../lib/withdraw-live", () => ({
   PaymentRefusedError: class PaymentRefusedError extends Error {},
+  cashCanMove: async () => true,
   nextWithdrawNumber: async () => 1,
   withdrawKeyFor: async () => ({ address: KEY_ADDRESS, publicKeyHex: KEY_HEX }),
   advanceWithdrawCounter: async () => {},
@@ -53,6 +54,7 @@ vi.mock("../lib/withdraw-live", () => ({
     destination: args.destination,
     landingHex: args.landingHex,
     rail: args.rail,
+    tier: (args.sale as { tier: string }).tier,
     assetHubGenesis: "0xah",
     peopleGenesis: "0xpe",
     peopleParaId: 1004,
@@ -91,6 +93,7 @@ const start = (expectedNative?: bigint) =>
     destination: DESTINATION,
     landingHex: null,
     rail: "chainflip",
+    sale: { tier: "pool" },
     ...(expectedNative === undefined ? {} : { expectedNative }),
   });
 

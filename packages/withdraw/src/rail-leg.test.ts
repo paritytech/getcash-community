@@ -331,3 +331,101 @@ describe("the provider leg", () => {
     expect(silentDriver.paid).toEqual([]);
   });
 });
+
+describe("the rail leg, for a payout off chain", () => {
+  const AMOUNT = 20_000_000_000n;
+  /** A fiat sale's record: no payout address, an exact figure instead. */
+  const SALE: RailChannelRecord = {
+    depositAddress: CHANNEL.address,
+    payout: "off-chain",
+    expired: false,
+    expectedAmount: AMOUNT,
+  };
+  const offChain = { payout: "off-chain" as const, amount: AMOUNT, destinationAddress: "" };
+
+  it("pays a sale whose provider expects exactly the figure the key pays", async () => {
+    const provider = checking(SALE);
+    const { input, paid } = world(provider.rail, offChain);
+    await railTickOnce(input, seeded());
+    expect(paid).toEqual([CHANNEL]);
+  });
+
+  it("refuses a provider that expects another figure, or none", async () => {
+    for (const record of [
+      { ...SALE, expectedAmount: AMOUNT + 1n },
+      { ...SALE, expectedAmount: undefined },
+    ]) {
+      const { input, paid } = world(checking(record).rail, offChain);
+      await expect(railTickOnce(input, seeded())).rejects.toBeInstanceOf(ChannelMismatchError);
+      expect(paid).toEqual([]);
+    }
+  });
+
+  it("refuses when the leg names no amount of its own", async () => {
+    const { input, paid } = world(checking(SALE).rail, { ...offChain, amount: undefined });
+    await expect(railTickOnce(input, seeded())).rejects.toThrow(/cannot be checked/);
+    expect(paid).toEqual([]);
+  });
+
+  it("refuses a record that pays out on chain while the withdrawal pays out off it", async () => {
+    const onChain = { ...RECORD, expectedAmount: AMOUNT };
+    const { input, paid } = world(checking(onChain).rail, offChain);
+    await expect(railTickOnce(input, seeded())).rejects.toThrow(/pays out on chain/);
+    expect(paid).toEqual([]);
+  });
+
+  it("still refuses a sale the provider has closed", async () => {
+    const { input, paid } = world(checking({ ...SALE, expired: true }).rail, offChain);
+    await expect(railTickOnce(input, seeded())).rejects.toBeInstanceOf(ChannelExpiredError);
+    expect(paid).toEqual([]);
+  });
+
+  it("does not let an off-chain record through a withdrawal that pays out to an address", async () => {
+    const { input, paid } = world(checking(SALE).rail);
+    await expect(railTickOnce(input, seeded())).rejects.toThrow(/cannot be checked/);
+    expect(paid).toEqual([]);
+  });
+
+  it("takes a payment the chain shows as landed, before the provider or the clock is asked", async () => {
+    // The answer to the payment was lost and the provider has since closed the order it filled:
+    // its record would read as unpaid, and the channel is past its expiry too. The chain decides.
+    const provider = checking(null);
+    const { input, paid } = world(provider.rail, {
+      ...offChain,
+      landed: async () => true,
+      now: () => CHANNEL.expiresAt + DAY,
+    });
+    const state = seeded();
+    expect(await railTickOnce(input, state)).toEqual({ step: "handoff", reading: null });
+    expect(state.paid).toBe(true);
+    expect(provider.asked).toEqual([]);
+    expect(paid).toEqual([]);
+  });
+
+  it("checks the provider and pays as usual while the chain shows nothing landed", async () => {
+    const provider = checking(SALE);
+    const { input, paid } = world(provider.rail, { ...offChain, landed: async () => false });
+    await railTickOnce(input, seeded());
+    expect(provider.asked).toEqual(["ch-1"]);
+    expect(paid).toEqual([CHANNEL]);
+  });
+
+  it("stops on what the chain cannot tell, and bounds the read", async () => {
+    const unresolved = world(checking(SALE).rail, {
+      ...offChain,
+      landed: async () => {
+        throw new Error("the key moved on");
+      },
+    });
+    await expect(railTickOnce(unresolved.input, seeded())).rejects.toThrow(/moved on/);
+    expect(unresolved.paid).toEqual([]);
+
+    const hung = world(checking(SALE).rail, {
+      ...offChain,
+      payTimeoutMs: 5,
+      landed: () => new Promise<boolean>(() => {}),
+    });
+    await expect(railTickOnce(hung.input, seeded())).rejects.toThrow(/earlier payment read/);
+    expect(hung.paid).toEqual([]);
+  });
+});

@@ -1,6 +1,6 @@
 // The PSM tier's funding call: one Utility.batch_all that mints CASH from the burner's USDT
-// through the PSM and teleports it to the burner's People address, with its sizing, its fee
-// estimate and its dry run.
+// through the PSM and sends it to the burner's People address, by teleport or by reserve transfer
+// as the network allows, with its sizing, its fee estimate and its dry run.
 //
 // A batch of two calls rather than one XCM with a Transact: no XCM instruction swaps through the
 // PSM (ExchangeAsset resolves to the pool), and a batch says what it means where a Transact
@@ -33,6 +33,7 @@
 import { TOKENS, type TokenSpec } from "@getsome/core";
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import type { TypedApi } from "polkadot-api";
+import type { CashTransfer } from "./cash-transfer";
 import {
   buildPsmFundingProgram,
   DepositBelowFeesError,
@@ -40,6 +41,7 @@ import {
   extractFungibleAmount,
   forwardedProgramStandIn,
   peopleDest,
+  priceDispatchFee,
   realForwardedProgram,
   withFeeMargin,
   type PeopleApi,
@@ -120,6 +122,8 @@ export interface PsmBatchArgs {
   remoteFeesCash: bigint;
   beneficiaryHex: string;
   peopleParaId: number;
+  /** How the CASH moves to People. */
+  transfer: CashTransfer;
   /** The declared weight ceiling of the execute. Defaults to FUNDING_PROGRAM_MAX_WEIGHT. */
   maxWeight?: Weight;
 }
@@ -134,6 +138,7 @@ export function buildPsmBatch(api: AssetHubApi, args: PsmBatchArgs) {
     remoteFeesCash: args.remoteFeesCash,
     beneficiaryHex: args.beneficiaryHex,
     peopleParaId: args.peopleParaId,
+    transfer: args.transfer,
     maxWeight: args.maxWeight,
   });
   const mint = api.tx.Psm.mint({
@@ -165,6 +170,8 @@ export async function estimatePsmBatchFees(args: {
   depositExternal: bigint;
   /** The destination fee allowance the program will carry, for the same reason. */
   remoteFeesCash: bigint;
+  /** How the CASH moves to People. */
+  transfer: CashTransfer;
   /** Any valid address for the dispatch fee read; the fee does not depend on the signer's
    *  balance. */
   feeProbeAddress: string;
@@ -196,6 +203,7 @@ export async function estimatePsmBatchFees(args: {
       remoteFeesCash: args.remoteFeesCash,
       beneficiaryHex: args.beneficiaryHex,
       peopleParaId: args.peopleParaId,
+      transfer: args.transfer,
       maxWeight,
     });
   };
@@ -229,6 +237,7 @@ export async function estimatePsmBatchFees(args: {
       INTERNAL.locationOnPeople,
       psmMintOut(args.depositExternal, args.route.feeRate),
       args.beneficiaryHex,
+      args.transfer,
     );
   const df = await args.api.apis.XcmPaymentApi.query_delivery_fees(
     { type: "V5", value: peopleDest(args.peopleParaId) } as never,
@@ -242,27 +251,14 @@ export async function estimatePsmBatchFees(args: {
   // Price the dispatch against the batch carrying the final amounts and the declared weight, so
   // the charge it predicts is the charge the submitted batch pays. The dispatch fee itself is not
   // yet known to keep out of the probe's mint; a few thousand units do not change a compact
-  // encoding's length.
-  const options = psmBatchTxOptions(args.route.external);
-  const dispatchNative = await probe(
-    localExternal + deliveryExternal,
-    0n,
-    maxWeight,
-  ).batch.getEstimatedFees(args.dryRunFrom ?? args.feeProbeAddress, options);
-  // ChargeAssetTxPayment swaps exactly the native fee out of the pool, so the external it takes is
-  // the exact-out quote for it, pool fee included.
-  const dispatchExternal =
-    await args.api.apis.AssetConversionApi.quote_price_tokens_for_exact_tokens(
-      options.asset,
-      asLocation(TOKENS.PAS.location),
-      dispatchNative,
-      true,
-    );
-  if (dispatchExternal === undefined) {
-    throw new Error(
-      "psm batch fee estimate: the pool cannot price the dispatch fee in the external",
-    );
-  }
+  // encoding's length. The submit prices the batch it sends once more.
+  const { dispatchNative, dispatchExternal } = await priceDispatchFee(
+    args.api,
+    probe(localExternal + deliveryExternal, 0n, maxWeight).batch,
+    args.dryRunFrom ?? args.feeProbeAddress,
+    psmBatchTxOptions(args.route.external),
+    "psm batch fee estimate",
+  );
 
   const feeAllowanceExternal = withFeeMargin(localExternal + deliveryExternal);
   const heldBackExternal = minBalance + feeAllowanceExternal;

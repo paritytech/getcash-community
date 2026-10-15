@@ -32,6 +32,12 @@ vi.mock("@getsome/withdraw", async (importOriginal) => ({
   withdrawTickOnce: mocks.tick,
 }));
 
+// How the CASH moves to Asset Hub is the chains' answer, and the mocked tick does not read it.
+vi.mock("@getsome/funding", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  chooseCashTransfer: async () => "teleport",
+}));
+
 vi.mock("@polkadot-api/descriptors", () => ({
   paseo_next_v2: { fake: "asset-hub" },
   paseo_people_next: { fake: "people" },
@@ -75,7 +81,7 @@ function paidJob(): StoredJob {
       attempts: 0,
       rejections: 0,
       submitted: false,
-      destinationPasBefore: null,
+      destinationBefore: null,
       expectedLanding: null,
       fundsSeenAt: null,
       workedMs: 0,

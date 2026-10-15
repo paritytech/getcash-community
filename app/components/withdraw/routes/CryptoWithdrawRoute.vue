@@ -3,25 +3,33 @@
 // purse was asked. Opened from the list with `topUp`, it goes straight to the journey of that
 // record. The record and the worker carry on when this screen is left.
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { depositTokenOf, type ConversionRoute } from "@getsome/funding";
+import { useStateDirector } from "../../../composables/useStateDirector";
 import { useWithdrawalRequest } from "../../../composables/useWithdrawalRequest";
 import type { FundingPackageEmits } from "../../../funding/handoff";
 import type { FundingSelection } from "../../../funding/selection";
 import type { FundingTopUp } from "../../../funding/top-ups";
+import { CASH_DECIMALS } from "@getsome/people";
 import { useRequestsStore } from "../../../stores/requests";
 import { useWithdrawOffersStore } from "../../../stores/withdraw-offers";
-import { toCashBase } from "../../../utils/cash";
+import { cashAmount, fmtCash, toCashBase } from "../../../utils/cash";
+import { previewStage } from "../../../utils/dev-preview-stage";
 import { isDemoBuild } from "../../../utils/demo";
 import {
   landingAccountHex,
+  withdrawNetwork,
   type WithdrawDestination,
   type WithdrawNetwork,
 } from "../../../withdraw/destinations";
+import type { WithdrawFeeView } from "../../../withdraw/offers";
 import { withdrawalRequestRef } from "../../../withdraw/rows";
 import Toolbar from "../../ui/Toolbar.vue";
 import WithdrawAddressScreen from "../WithdrawAddressScreen.vue";
 import WithdrawCancelScreen from "../WithdrawCancelScreen.vue";
+import WithdrawFeesScreen from "../WithdrawFeesScreen.vue";
 import WithdrawJourneyScreen from "../WithdrawJourneyScreen.vue";
 import WithdrawNetworkScreen from "../WithdrawNetworkScreen.vue";
+import WithdrawReturnFundsScreen from "../WithdrawReturnFundsScreen.vue";
 import WithdrawSummaryScreen from "../WithdrawSummaryScreen.vue";
 import WithdrawTokenScreen from "../WithdrawTokenScreen.vue";
 
@@ -39,14 +47,21 @@ if (props.selection && props.selection.route !== "crypto") {
 
 const requests = useRequestsStore();
 const withdrawal = useWithdrawalRequest();
+useStateDirector();
 
-type Step = "network" | "token" | "address" | "summary" | "journey" | "cancel";
+type Step =
+  "network" | "token" | "address" | "summary" | "fees" | "journey" | "cancel" | "return-funds";
 const step = ref<Step>(props.topUp ? "journey" : "network");
 const network = ref<WithdrawNetwork | null>(null);
 const destination = ref<WithdrawDestination | null>(null);
 const address = ref("");
 /** What arrives, formatted; null while quoting; undefined without a quote. */
 const receive = ref<string | null | undefined>(undefined);
+/** The quote's fee split behind the summary's caption; null when it brought none. */
+const fees = ref<WithdrawFeeView | null>(null);
+/** The sale on Asset Hub the estimate was made for, frozen into the hand-off at confirm; null
+ *  until the quote decided it. */
+const sale = ref<ConversionRoute | null>(null);
 /** The native the estimate is for; what a provider's channel is quoted with at confirm. */
 const expectedNative = ref<bigint | null>(null);
 const starting = ref(false);
@@ -84,13 +99,33 @@ function onSkipRail() {
   });
 }
 
+/** Demo Skip on the summary: a simulated journey plays conversion, sending and sent, without a
+ *  purse or a provider — the walkthrough a plain browser can give. */
+const canSkipSummary = computed(() => isDemoBuild() && step.value === "summary");
+
+async function onSkipSummary() {
+  const picked = destination.value;
+  const over = {
+    ...(amount.value === "" ? {} : { amountHuman: amount.value }),
+    ...(picked === null || address.value === ""
+      ? {}
+      : { destination: { chain: picked.chainLabel, asset: picked.asset, address: address.value } }),
+  };
+  step.value = "journey";
+  const preview = await import("../../../utils/dev-preview");
+  void preview.simulateWithdrawalJourney(over);
+}
+
 const toolbar = computed<{ title?: string; back: boolean }>(() => {
   switch (step.value) {
     case "network":
       return { title: "Select network", back: true };
     case "token":
       return { title: "Select token", back: true };
+    case "fees":
+      return { title: "Fees", back: true };
     case "cancel":
+    case "return-funds":
       return { back: true };
     case "journey":
       return { title: props.topUp ? "Status" : "Withdraw to crypto", back: true };
@@ -102,7 +137,11 @@ const toolbar = computed<{ title?: string; back: boolean }>(() => {
 function onBack() {
   switch (step.value) {
     case "cancel":
+    case "return-funds":
       step.value = "journey";
+      return;
+    case "fees":
+      step.value = "summary";
       return;
     case "summary":
       step.value = "address";
@@ -129,13 +168,20 @@ function pickToken(picked: WithdrawDestination) {
   step.value = "address";
 }
 
-/** Four decimals of the destination's native, the trailing zeros dropped. */
-function formatNative(planck: bigint, decimals: number): string {
+/** Four decimals of the landing asset, the trailing zeros dropped. */
+function formatLanding(units: bigint, decimals: number): string {
   const unit = 10n ** BigInt(decimals);
-  const whole = planck / unit;
-  const fraction = ((planck % unit) * 10_000n) / unit;
+  const whole = units / unit;
+  const fraction = ((units % unit) * 10_000n) / unit;
   const digits = fraction.toString().padStart(4, "0").replace(/0+$/, "");
   return digits === "" ? whole.toString() : `${whole}.${digits}`;
+}
+
+/** "$1 CASH ≈ 0.19 DOT": the gross rate the direct estimate implies, in the landing asset. */
+function directRate(units: bigint, decimals: number, base: bigint, asset: string): string | null {
+  const value = Number(units) / 10 ** decimals / (Number(base) / 10 ** CASH_DECIMALS);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return `${cashAmount("1")} ≈ ${value >= 0.01 ? value.toFixed(2) : value.toPrecision(2)} ${asset}`;
 }
 
 async function onAddress(entered: string) {
@@ -145,24 +191,46 @@ async function onAddress(entered: string) {
   const picked = destination.value;
   const base = toCashBase(amount.value);
   expectedNative.value = null;
+  fees.value = null;
+  sale.value = null;
   if (picked === null || base === null) {
     receive.value = undefined;
     return;
   }
   receive.value = null;
+  // A chain answer that lands after the user went back and picked another token is for nobody:
+  // the summary must still show the destination this run was started for.
+  const stale = () => step.value !== "summary" || destination.value !== picked;
   try {
     if (picked.rail === "direct") {
-      // What the CASH sells for on Asset Hub's pool: the direct rail lands exactly that.
+      // The sale the token picked takes, decided now and frozen at confirm, and what it lands
+      // on Asset Hub in that token's decimals: the direct rail lands exactly that. Its fees are
+      // taken in CASH before the sale, so the drill-in shows them as CASH.
       const live = await import("~~/lib/withdraw-live");
-      const planck = await live.quoteDirectReceive(base);
-      if (step.value !== "summary") return;
-      receive.value = `${formatNative(planck, 10)} ${picked.asset}`;
+      const route = await live.chooseWithdrawRoute(base, picked.landing);
+      if (stale()) return;
+      // The sale stands on its own: an estimate that cannot be priced hides the figure, as it
+      // always did, and does not hold the withdrawal back.
+      sale.value = route;
+      const [units, feesCash] = await Promise.all([
+        live.quoteDirectReceive(base, route),
+        live.directFeesCash(route),
+      ]);
+      if (stale()) return;
+      const landing = depositTokenOf(route);
+      receive.value = `${formatLanding(units, landing.decimals)} ${picked.asset}`;
+      fees.value = {
+        rows: [{ label: "Network fee", value: cashAmount(fmtCash(feesCash)) }],
+        receive: receive.value,
+        rate: directRate(units, landing.decimals, base, picked.asset),
+      };
       return;
     }
-    // A provider destination shows what its offer for this amount said would land, and the
-    // channel is opened at confirm for the native that offer was quoted for.
+    // A provider takes the native from the key. It shows what its offer for this amount said
+    // would land, and the channel is opened at confirm for the native that offer was quoted for.
+    sale.value = { tier: "pool" };
     await offers.learn(base);
-    if (step.value !== "summary") return;
+    if (stale()) return;
     const offer = offers.offerFor(picked);
     if (offer.state !== "available" || offers.sellable === null) {
       receive.value = undefined;
@@ -170,6 +238,7 @@ async function onAddress(entered: string) {
     }
     expectedNative.value = offers.sellable;
     receive.value = offer.formatted;
+    fees.value = offer.fees ?? null;
   } catch (error: unknown) {
     console.warn("[withdraw] receive estimate unavailable:", error);
     receive.value = undefined;
@@ -187,6 +256,13 @@ async function confirm() {
     startError.value = allowed.subtitle ?? "This destination cannot take the amount.";
     return;
   }
+  // The sale is the quote's decision; without one the worker would have to decide, which it
+  // never does.
+  const route = sale.value;
+  if (route === null) {
+    startError.value = "The estimate is not available right now.";
+    return;
+  }
   starting.value = true;
   startError.value = null;
   try {
@@ -196,6 +272,7 @@ async function confirm() {
       destination: { chain: picked.chainLabel, asset: picked.asset, address: address.value },
       landingHex: landingAccountHex(picked, address.value),
       rail: picked.rail,
+      sale: route,
       ...(expectedNative.value === null ? {} : { expectedNative: expectedNative.value }),
     });
     if (outcome.ref === null) {
@@ -253,6 +330,31 @@ watch(
   },
 );
 
+// The preview deck drives the step and the pickers' skeletons through the stage; a production
+// build never has one. Immediate: the deck may have staged this package before it mounted.
+const previewSkeleton = ref(false);
+const previewSecret = ref<string | undefined>(undefined);
+watch(
+  previewStage,
+  (stage) => {
+    if (stage?.kind !== "withdraw-package" || (stage.route ?? "crypto") !== "crypto") return;
+    // The fiat routes' own steps never reach this package.
+    if (stage.step === "quote" || stage.step === "region") return;
+    const staged = withdrawNetwork(stage.chain ?? "Ethereum") ?? null;
+    network.value = staged;
+    // The address step needs a destination; the section's frames show USDC.
+    destination.value =
+      staged?.destinations.find((d) => d.asset === "USDC") ?? staged?.destinations[0] ?? null;
+    address.value = stage.address ?? "";
+    receive.value = stage.receive;
+    fees.value = stage.fees ?? null;
+    previewSecret.value = stage.secret;
+    step.value = stage.step;
+    previewSkeleton.value = stage.skeleton === true;
+  },
+  { immediate: true },
+);
+
 onMounted(() => {
   const opened = props.topUp;
   if (!opened) return;
@@ -277,11 +379,11 @@ onUnmounted(() => {
     "
   >
     <Toolbar :title="toolbar.title" :back="toolbar.back" @back="onBack">
-      <template v-if="canSkipRail" #trailing>
+      <template v-if="canSkipRail || canSkipSummary" #trailing>
         <button
           type="button"
           class="rounded-medium px-4 py-3 text-label-l font-normal text-fg-primary transition-colors hover:bg-action-tertiary-hover"
-          @click="onSkipRail"
+          @click="canSkipRail ? onSkipRail() : onSkipSummary()"
         >
           Skip
         </button>
@@ -289,14 +391,22 @@ onUnmounted(() => {
     </Toolbar>
 
     <div class="flex min-h-0 flex-1 flex-col px-6 pt-6">
-      <WithdrawNetworkScreen v-if="step === 'network'" :amount="amountBase" @pick="pickNetwork" />
+      <WithdrawNetworkScreen
+        v-if="step === 'network'"
+        :amount="amountBase"
+        :skeleton="previewSkeleton"
+        @pick="pickNetwork"
+      />
       <WithdrawTokenScreen
         v-else-if="step === 'token' && network"
         :network="network"
+        :skeleton="previewSkeleton"
         @pick="pickToken"
       />
+      <!-- Keyed so a staged address replaces the screen's own typing state. -->
       <WithdrawAddressScreen
         v-else-if="step === 'address' && network && destination"
+        :key="address"
         :network="network"
         :destination="destination"
         :initial="address"
@@ -308,9 +418,17 @@ onUnmounted(() => {
         :destination="destination"
         :address="address"
         :receive="receive"
+        :fees="fees"
         :starting="starting"
         :error="startError"
         @confirm="confirm"
+        @fees="step = 'fees'"
+      />
+      <WithdrawFeesScreen
+        v-else-if="step === 'fees' && fees"
+        :amount="amount"
+        :fees="fees"
+        @back="step = 'summary'"
       />
       <WithdrawCancelScreen
         v-else-if="step === 'cancel'"
@@ -325,7 +443,14 @@ onUnmounted(() => {
         :busy="busy"
         @cancel="step = 'cancel'"
         @retry="retry"
+        @return-funds="step = 'return-funds'"
         @close="emit('back')"
+      />
+      <WithdrawReturnFundsScreen
+        v-else-if="step === 'return-funds' && record"
+        :record="record"
+        :preview-secret="previewSecret"
+        @back="step = 'journey'"
       />
       <div
         v-else-if="step === 'journey' && unavailable"
@@ -343,5 +468,6 @@ onUnmounted(() => {
         <p class="text-body-m text-fg-secondary">Opening your withdrawal…</p>
       </div>
     </div>
+    <PreviewSceneLabel />
   </main>
 </template>

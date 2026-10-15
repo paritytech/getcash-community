@@ -50,7 +50,7 @@ export const SOURCE_CHAINS = [
 ] as const;
 
 /** The direct network: the buyer sends the token from any wallet to the request's own account
- *  on Asset Hub. The token picks the tier: DOT the pool, dotUSD the teleport with no conversion,
+ *  on Asset Hub. The token picks the tier: DOT the pool, dotUSD sent as it is with no conversion,
  *  USDT the PSM with the pool through PAS as the fallback, USDC the pool through PAS. */
 export const POLKADOT_CHAIN = {
   chain: CHAINS.Polkadot,
@@ -69,6 +69,10 @@ export type FundingChain = (typeof FUNDING_CHAINS)[number];
  *  pickers keep listing the Chainflip routes, greyed and named as not yet available, so nothing
  *  can reach a deposit or a withdrawal that would have nowhere to go. */
 export const CHAINFLIP_RAIL_ENABLED = false;
+
+/** Whether this build sells CASH for fiat through Meld. Owned by the Meld package so the worker
+ *  holds the same line the page does. */
+export { MELD_SELL_ENABLED } from "@getsome/meld";
 
 /** UI pair to Chainflip SourceId, also the `?source=` deep-link vocabulary. A pair with no
  *  entry has no swap source. */

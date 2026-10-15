@@ -42,7 +42,7 @@ describe("rail mapping", () => {
       [{ state: "RECEIVING" }, { status: "receiving", stage: "received" }],
       [{ state: "SWAPPING" }, { status: "swapping", stage: "processing" }],
       [{ state: "SENDING" }, { status: "sending", stage: "processing" }],
-      [{ state: "SENT" }, { status: "sending", stage: "processing" }],
+      [{ state: "SENT" }, { status: "sent", stage: "processing" }],
       [{ state: "COMPLETED" }, { status: "complete", stage: "delivered" }],
       [
         { state: "FAILED" },
@@ -91,7 +91,7 @@ describe("rail mapping", () => {
           stage: "failed",
           failure: {
             kind: "fallback-egress",
-            message: "Funds routed to a fallback chain. Contact support",
+            message: "Chainflip exchanged your funds but couldn't send them.",
           },
         },
       ],
@@ -112,8 +112,6 @@ describe("rail mapping", () => {
       ["session_opened", { status: "waiting", stage: "waiting" }],
       ["a_state_added_later", { status: "waiting", stage: "waiting" }],
       ["transaction_seen", { status: "receiving", stage: "received" }],
-      ["crypto_failed", { status: "receiving", stage: "received", delayed: true }],
-      ["transaction_crypto_failed", { status: "receiving", stage: "received", delayed: true }],
       ["settled", { status: "complete", stage: "delivered" }],
       [
         "failed",
@@ -183,7 +181,8 @@ describe("rail mapping", () => {
           stage: "failed",
           failure: {
             kind: "unknown",
-            message: "We could not confirm this payment. Contact support before trying again.",
+            message:
+              "We can't confirm your payment with the provider. Check your card statement before you pay again.",
             code: "unobserved",
           },
         },

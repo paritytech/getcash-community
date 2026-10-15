@@ -28,7 +28,7 @@ const emit = defineEmits<{ back: [] }>();
  *
  * The network row is the exception: it is two fees under one name. The rail's own network fee ends
  * where its delivery does, at native on Asset Hub, and the buyer's money still has a swap and a
- * teleport to go before it is CASH on People — a leg the rail knows nothing about and cannot
+ * send to go before it is CASH on People — a leg the rail knows nothing about and cannot
  * price, so the store prices it onto the quote as `chainFee` (see `meldChainFeeFiat`). Different
  * legs, but one thing to the buyer: what the networks charged to move their money. No quote has
  * been seen carrying both, the rail's part being absent from every card quote observed so far, but

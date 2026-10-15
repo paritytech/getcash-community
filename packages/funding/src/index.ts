@@ -7,6 +7,7 @@ export {
   DIRECT_SLIPPAGE_PCT,
   FundingHeldError,
   FundingShortfallError,
+  MAX_PROGRAM_REJECTIONS,
   MAX_PSM_REFUSALS,
   discoverPool,
   discoverPools,
@@ -17,12 +18,13 @@ export {
   quoteStableForUnderlying,
   quoteStableIn,
   quoteUnderlyingOut,
+  readDeposit,
   sizeNativeBudget,
   stableDepositNeeded,
   tickOnce,
   withHeadroom,
 } from "./pipeline";
-export type { FundingStep, TickState } from "./pipeline";
+export type { ConversionFact, FundingStep, TickState } from "./pipeline";
 export {
   absorbableFlow,
   ADVERSE_FLOW_MULTIPLE,
@@ -50,18 +52,18 @@ export {
   buildFundingProgram,
   buildPsmFundingProgram,
   buildStableFundingProgram,
-  buildTeleportFundingProgram,
+  buildDotUsdFundingProgram,
   DepositBelowFeesError,
   destinationEarmark,
   dryRunFundingProgram,
   estimateDestinationFeeCash,
   estimateFundingProgramFees,
   estimateStableProgramFees,
-  estimateTeleportProgramFees,
+  estimateDotUsdProgramFees,
   FEE_MARGIN_BPS,
   FUNDING_PROGRAM_MAX_WEIGHT,
   ProgramRejectedError,
-  teleportTxOptions,
+  dotUsdTxOptions,
   withFeeMargin,
 } from "./funding-program";
 export type { FundingProgramFees, PeopleApi, Pool, StableLegFees } from "./funding-program";
@@ -90,10 +92,19 @@ export type {
   RouteQuery,
   Stable,
   StablePoolRoute,
-  TeleportRoute,
+  DotUsdRoute,
 } from "./route";
+export { chooseCashTransfer, NoCashTransferError } from "./cash-transfer";
+export type { CashTransfer } from "./cash-transfer";
 export { STABLE_TOKENS, isStable, stableTxOptions } from "./stable";
-export { creditedTo, forwardedTo, siblingOrigin, signedOrigin, trappedIn } from "./xcm-dry-run";
+export {
+  creditedTo,
+  forwardedTo,
+  siblingOrigin,
+  signedOrigin,
+  trappedIn,
+  xcmErrorName,
+} from "./xcm-dry-run";
 export { describeDispatchError, psmRefusalKind, type PsmRefusalKind } from "./dispatch-error";
 export {
   createManualRail,

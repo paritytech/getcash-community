@@ -26,7 +26,10 @@ const mocks = vi.hoisted(() => ({
   heldWrites: [] as Array<() => void>,
   tickOnce: vi.fn(),
   discoverPools: vi.fn(),
+  chooseCashTransfer: vi.fn(),
   settlementBalance: vi.fn(),
+  readDeposit: vi.fn(),
+  tip: { best: 0, finalized: 0 },
 }));
 
 // The worker's host adapter is the seam to mock; the SDK behind it never loads here.
@@ -64,6 +67,8 @@ vi.mock("@getsome/funding", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   tickOnce: mocks.tickOnce,
   discoverPools: mocks.discoverPools,
+  chooseCashTransfer: mocks.chooseCashTransfer,
+  readDeposit: mocks.readDeposit,
 }));
 
 vi.mock("@getsome/people", () => ({
@@ -78,6 +83,7 @@ const PEOPLE_GENESIS = hash32(0x22);
 const BEST_BLOCK = hash32(0x33);
 const OTHER_GENESIS = hash32(0x44);
 const SWAP_TX = hash32(0x55);
+const FINALIZED_BLOCK = hash32(0x66);
 
 vi.mock("polkadot-api", async (importOriginal) => ({
   // Partial mock: the ephemeral package needs AccountId and getPolkadotSigner from here.
@@ -85,7 +91,10 @@ vi.mock("polkadot-api", async (importOriginal) => ({
   // The fake provider carries its genesis through to connectChain's check.
   createClient: (provider: { genesis: string }) => ({
     getChainSpecData: async () => ({ genesisHash: provider.genesis }),
-    getBestBlocks: async () => [{ hash: BEST_BLOCK }],
+    getBestBlocks: async () => [
+      { hash: BEST_BLOCK, number: mocks.tip.best },
+      { hash: FINALIZED_BLOCK, number: mocks.tip.finalized },
+    ],
     getTypedApi: () => ({ fake: "asset-hub-api" }),
     destroy: () => {},
   }),
@@ -180,13 +189,18 @@ function armSeams() {
   mocks.getHostProvider.mockReset();
   mocks.discoverPools.mockReset();
   mocks.tickOnce.mockReset();
+  mocks.chooseCashTransfer.mockReset();
   mocks.registerTopUp.mockReset();
   mocks.settlementBalance.mockReset();
+  mocks.readDeposit.mockReset();
+  mocks.readDeposit.mockResolvedValue(0n);
+  mocks.tip = { best: 0, finalized: 0 };
   mocks.deriveEntropy.mockResolvedValue({ ok: true, value: SEED });
   mocks.getHostProvider.mockImplementation(async (genesis: string) => ({ genesis }));
   mocks.discoverPools.mockImplementation(async (_api: unknown, ids: number[]) =>
     ids.map(() => ({ native: "N", underlying: "U" })),
   );
+  mocks.chooseCashTransfer.mockResolvedValue("teleport");
   mocks.watches.length = 0;
   mocks.stored.clear();
   mocks.storageDown = false;
@@ -319,18 +333,18 @@ describe("worker funding engine", () => {
     expect(unknown.reason).toContain("deposit asset");
   });
 
-  it("hands a teleport job its route and frozen deposit with no pool to find", async () => {
+  it("hands a dotUSD job its route and frozen deposit with no pool to find", async () => {
     armSeams();
     const engine = await freshEngine();
     await engine.startFunding(
-      JSON.stringify({ ...HANDOFF, tier: "teleport", quotedDeposit: "5143041" }),
+      JSON.stringify({ ...HANDOFF, tier: "dotusd", quotedDeposit: "5143041" }),
     );
-    expect(storedJob()).toMatchObject({ tier: "teleport", quotedDeposit: "5143041" });
+    expect(storedJob()).toMatchObject({ tier: "dotusd", quotedDeposit: "5143041" });
     mocks.tickOnce.mockResolvedValue(outcome("swap"));
     await engine.tickAllFunding();
     expect(mocks.discoverPools).not.toHaveBeenCalled();
     expect(mocks.tickOnce.mock.calls[0]![0]).toMatchObject({
-      route: { tier: "teleport" },
+      route: { tier: "dotusd" },
       pool: undefined,
       stablePool: undefined,
       quotedDeposit: 5_143_041n,
@@ -343,21 +357,30 @@ describe("worker funding engine", () => {
     await engine.startFunding(
       JSON.stringify({ ...HANDOFF, tier: "psm", external: "USDT", feeRate: 5_000 }),
     );
-    // Two refusals so far: the tick throws as any transient, and the counter it bumped persists.
+    // Two refusals and one paid rejection so far: the tick throws as any transient, and the
+    // counters it bumped persist.
     mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
       state.psmRefusals = 2;
+      state.rejections = 1;
+      state.lastRejection = "InitiateTransfer failed with NotHoldingFees";
       throw new Error("not submitted: Asset Hub rejects the program: Psm.MintingStopped");
     });
     await engine.tickAllFunding();
     expect(storedJob()).toMatchObject({
       phase: "starting",
-      state: { psmRefusals: 2 },
+      state: {
+        psmRefusals: 2,
+        rejections: 1,
+        lastRejection: "InitiateTransfer failed with NotHoldingFees",
+      },
       lastError: expect.stringContaining("Psm.MintingStopped"),
     });
-    // The next wake restores the counter, and the third refusal is terminal: held, not failed
+    // The next wake restores the counters, and the third refusal is terminal: held, not failed
     // through the pool.
     mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
       expect(state.psmRefusals).toBe(2);
+      expect(state.rejections).toBe(1);
+      expect(state.lastRejection).toBe("InitiateTransfer failed with NotHoldingFees");
       state.psmRefusals = 3;
       throw new FundingHeldError("Psm.MintingStopped");
     });
@@ -371,11 +394,14 @@ describe("worker funding engine", () => {
     // A held job is not ticked again on its own.
     await engine.tickAllFunding();
     expect(mocks.tickOnce).toHaveBeenCalledTimes(2);
-    // A re-sent hand-off re-arms it with a fresh counter, for a ceiling raised since.
+    // A re-sent hand-off re-arms it with fresh counters, for a ceiling raised since.
     await engine.startFunding(
       JSON.stringify({ ...HANDOFF, tier: "psm", external: "USDT", feeRate: 5_000 }),
     );
-    expect(storedJob()).toMatchObject({ phase: "starting", state: { psmRefusals: 0 } });
+    expect(storedJob()).toMatchObject({
+      phase: "starting",
+      state: { psmRefusals: 0, rejections: 0, lastRejection: null },
+    });
     expect(storedJob().failure).toBeUndefined();
   });
 
@@ -581,6 +607,84 @@ describe("worker funding engine", () => {
     });
   });
 
+  it("follows the deposit from the best block it shows in until the pipeline sees it final", async () => {
+    armSeams();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    // [best, finalized, held at the best block, final this tick, finalized and best recorded,
+    //  reads so far]
+    const ticks: Array<[number, number, bigint, boolean, [number, number] | null, number]> = [
+      [100, 98, 0n, false, null, 1],
+      [105, 100, 5n, false, [100, 105], 2],
+      [107, 103, 5n, false, [103, 107], 2],
+      [109, 105, 5n, true, [105, 109], 2],
+      [111, 108, 0n, false, [105, 109], 2],
+    ];
+    for (const [best, finalized, held, final, recorded, reads] of ticks) {
+      mocks.tip = { best, finalized };
+      mocks.readDeposit.mockResolvedValue(held);
+      mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+        if (final) state.fundsSeenAt = Date.now();
+        return outcome(state.fundsSeenAt === null ? "await-native" : "swap");
+      });
+      await engine.tickAllFunding();
+      const depositSeen =
+        recorded === null
+          ? null
+          : { block: 105, finalizedAtSeen: 100, finalized: recorded[0], best: recorded[1] };
+      expect(storedJob().depositSeen ?? null).toEqual(depositSeen);
+      expect((await sessionStatus(engine)).depositSeen).toEqual(depositSeen);
+      expect(mocks.readDeposit).toHaveBeenCalledTimes(reads);
+    }
+    // Read at the tick's anchor, in the asset the route expects.
+    expect(mocks.readDeposit).toHaveBeenCalledWith(
+      expect.anything(),
+      { tier: "pool" },
+      BURNER.address,
+      BEST_BLOCK,
+    );
+  });
+
+  it("records the prepare with the submit and the conversion once in a block, and keeps the first prepare on a retry", async () => {
+    armSeams();
+    vi.useFakeTimers();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    const preparedAt = Date.now();
+    mocks.tickOnce.mockImplementationOnce(async (input, state) => {
+      state.fundsSeenAt = Date.now();
+      input.onConversion({ type: "prepared" });
+      await input.onBeforeSubmit("swap");
+      expect(storedJob().conversion).toEqual({ preparedAt });
+      input.onConversion({ type: "converted", txHash: SWAP_TX, block: 42 });
+      state.xcmSubmitted = true;
+      return outcome("await-arrival");
+    });
+    await engine.tickAllFunding();
+    expect(storedJob().conversion).toEqual({
+      preparedAt,
+      converted: { txHash: SWAP_TX, block: 42, at: preparedAt, workedMs: 0 },
+    });
+
+    // A block replaced under the conversion: the retry is prepared and converted again.
+    vi.advanceTimersByTime(30_000);
+    const retryTx = hash32(0x77);
+    mocks.tickOnce.mockImplementationOnce(async (input) => {
+      input.onConversion({ type: "prepared" });
+      await input.onBeforeSubmit("swap");
+      expect(storedJob().conversion.preparedAt).toBe(preparedAt);
+      input.onConversion({ type: "converted", txHash: retryTx, block: 50 });
+      return outcome("await-arrival");
+    });
+    await engine.tickAllFunding();
+    const conversion = {
+      preparedAt,
+      converted: { txHash: retryTx, block: 50, at: preparedAt + 30_000, workedMs: 30_000 },
+    };
+    expect(storedJob().conversion).toEqual(conversion);
+    expect((await sessionStatus(engine)).conversion).toEqual(conversion);
+  });
+
   it("reads the CASH behind done, and behind sizing every claim attempt, from the finalized People block", async () => {
     armSeams();
     const engine = await freshEngine();
@@ -694,6 +798,8 @@ describe("worker funding engine", () => {
       state.attempts = 1;
       state.xcmSubmitted = true;
       state.fundsSeenAt = Date.now();
+      state.rejections = 2;
+      state.lastRejection = "ExchangeAsset #1 failed with NoDeal";
       return { ...outcome("await-arrival"), submitted: true };
     });
     await started.tickAllFunding();
@@ -705,6 +811,7 @@ describe("worker funding engine", () => {
     expect(storedJob()).toMatchObject({ phase: "failed", failure: "timeout" });
     expect((await engine.tickAllFunding()).ticked).toBe(0);
 
+    // The latches and the attempts survive; the rejection count starts over.
     const rearmed = await engine.startFunding(JSON.stringify(HANDOFF));
     expect(rearmed).toMatchObject({ phase: "starting", done: false });
     expect(storedJob().lastError).toBeUndefined();
@@ -713,10 +820,13 @@ describe("worker funding engine", () => {
       attempts: 1,
       xcmSubmitted: true,
       fundsSeenAt: null,
+      rejections: 0,
+      lastRejection: null,
     });
 
     mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
       expect(state.xcmSubmitted).toBe(true);
+      expect(state.rejections).toBe(0);
       return outcome("await-arrival");
     });
     expect((await engine.tickAllFunding()).ticked).toBe(1);
@@ -790,7 +900,7 @@ describe("worker funding engine", () => {
       JSON.stringify({
         ...HANDOFF,
         settleAmount: "7900000",
-        tier: "teleport",
+        tier: "dotusd",
         quotedDeposit: "8000000",
       }),
     );
@@ -798,7 +908,7 @@ describe("worker funding engine", () => {
     const job = storedJob();
     expect(job).toMatchObject({
       settleAmount: "7900000",
-      tier: "teleport",
+      tier: "dotusd",
       quotedDeposit: "8000000",
     });
     // The old route's stable is gone with it, and the job's identity is kept.
@@ -832,7 +942,7 @@ describe("worker funding engine", () => {
     await engine.tickAllFunding();
     expect(storedJob()).toMatchObject({ phase: "failed", failure: "expired" });
     const expired = await engine.amendFunding(
-      JSON.stringify({ ...HANDOFF, settleAmount: "7900000", tier: "teleport" }),
+      JSON.stringify({ ...HANDOFF, settleAmount: "7900000", tier: "dotusd" }),
     );
     expect(expired).toMatchObject({ error: "invalid" });
     expect(storedJob().settleAmount).toBe(HANDOFF.settleAmount);
@@ -1116,6 +1226,28 @@ describe("worker funding engine", () => {
     expect(storedJob()).toMatchObject({ phase: "failed", failure: "timeout" });
   });
 
+  it("counts the worker's time on a registered claim apart from the run bound", async () => {
+    armSeams();
+    vi.useFakeTimers();
+    const engine = await engineWithLandedJob();
+    mocks.settlementBalance.mockResolvedValue(SETTLE);
+    mocks.registerTopUp.mockResolvedValue(undefined);
+    await engine.tickAllFunding();
+    expect(storedJob()).toMatchObject({ claim: { phase: "claiming", workedMs: 0 } });
+    const runClock = storedJob().state.workedMs;
+
+    // A suspended hour counts as one capped gap, then each running gap counts in full.
+    for (const gap of [3_600_000, 10_000]) {
+      vi.advanceTimersByTime(gap);
+      await engine.tickAllFunding();
+    }
+    expect(storedJob().claim.workedMs).toBe(40_000);
+    const status = await sessionStatus(engine);
+    expect(status.claim.workedMs).toBe(40_000);
+    // The run clock stops once the host owns the claim.
+    expect(status.workedMs).toBe(runClock);
+  });
+
   it("reads the chain before judging the bound: a conversion finished while frozen is done", async () => {
     armSeams();
     vi.useFakeTimers();
@@ -1200,6 +1332,50 @@ describe("worker funding engine", () => {
     expect(openWatches()).toHaveLength(0);
     await saved(() => expect(storedJob().claim.phase).toBe("claimed"));
     expect((await engine.tickAllFunding()).ticked).toBe(0);
+  });
+
+  it("claims a key sent home whole under ids past the ones it was paid under, held to the quote", async () => {
+    armSeams();
+    const engine = await freshEngine();
+    const OFFSET = 1_000_000;
+    // Refused up front: an offset the id's counter cannot hold, and a floor that is not a share.
+    for (const bad of [{ claimIdOffset: -1 }, { claimIdOffset: 2.5 }, { claimIdOffset: 2 ** 32 }]) {
+      const refused = await engine.startFunding(JSON.stringify({ ...HANDOFF, ...bad }));
+      expect(refused).toMatchObject({ error: "invalid" });
+      expect(refused.reason).toContain("claimIdOffset");
+    }
+    const noShare = await engine.startFunding(JSON.stringify({ ...HANDOFF, quoteFloorPct: 100 }));
+    expect(noShare.reason).toContain("quoteFloorPct");
+
+    await engine.startFunding(
+      JSON.stringify({
+        ...HANDOFF,
+        settleAmount: "10000",
+        claimIdOffset: OFFSET,
+        quoteFloorPct: 2.5,
+      }),
+    );
+    expect(storedJob()).toMatchObject({ claimIdOffset: OFFSET, quoteFloorPct: 2.5 });
+    mocks.tickOnce.mockResolvedValueOnce(outcome("done"));
+    mocks.settlementBalance.mockResolvedValueOnce(SETTLE);
+    mocks.registerTopUp.mockResolvedValue(undefined);
+    await engine.tickAllFunding();
+    expect(mocks.tickOnce.mock.calls[0]![0]).toMatchObject({ quoteFloorPct: 2.5 });
+    // Never the key's own public key, which its first payment was registered under.
+    const firstId = topUpIdFor(BURNER.publicKey, OFFSET);
+    expect(firstId).not.toEqual(BURNER.publicKey);
+    expect(mocks.registerTopUp.mock.calls[0]![2]).toEqual(firstId);
+    expect(storedJob().claim).toMatchObject({ phase: "claiming", attempt: 0, id: toHex(firstId) });
+
+    // The subscription follows the same id, and a short settle moves on to the next one past it.
+    expect(openWatch().id).toEqual(firstId);
+    pushStatus(partially(SETTLE / 2n));
+    expect((await sessionStatus(engine)).claim).toMatchObject({ phase: "sizing", attempt: 1 });
+    mocks.settlementBalance.mockResolvedValueOnce(SETTLE / 2n);
+    await engine.tickAllFunding();
+    const nextId = topUpIdFor(BURNER.publicKey, OFFSET + 1);
+    expect(mocks.registerTopUp.mock.calls[1]![2]).toEqual(nextId);
+    expect(openWatch().id).toEqual(nextId);
   });
 
   it("keeps the registering marker across a failed call and takes AlreadyExists as registered", async () => {

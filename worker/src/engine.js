@@ -10,8 +10,10 @@ import {
   FundingShortfallError,
   PASEO_ASSET_HUB_PARA_ID,
   STABLE_TOKENS,
+  chooseCashTransfer,
   discoverPools,
   freshTickState,
+  readDeposit,
   recordedRoute,
   tickOnce,
 } from "@getsome/funding";
@@ -20,13 +22,13 @@ import { PaymentTopUpErr, PaymentTopUpStatusErr } from "@novasamatech/host-api";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import { readParams } from "./params.js";
 import {
+  anchorFor,
   asBig,
   bounded,
   connectChain,
   createJobStore,
   fromHex,
   keypairFor,
-  signOptionsFor,
   toHex,
 } from "./shared.js";
 import { topUpIdFor } from "./topup-id.js";
@@ -65,11 +67,14 @@ const saveJobs = () => store.save();
  *   burnerAddress,                           // the address the surface showed
  *   depositExpiresAt: number|null,           // the rail's deposit deadline
  *   settleAmount, remoteFeeBuffer, keepNativeForFees, slippagePct,   // bigints as strings
- *   quotedDeposit?,                                    // psm, stable pool and teleport tiers
+ *   quotedDeposit?,                                    // psm, stable pool and dotUSD tiers
  *   underlyingAssetId, peopleParaId, assetHubGenesis, peopleGenesis,
- *   tier: "pool" | "psm" | "teleport", external?, feeRate?, // the conversion route the surface
+ *   tier: "pool" | "psm" | "dotusd", external?, feeRate?, // the conversion route the surface
  *                                            // decided at quote time; consumed here, never
  *                                            // re-decided
+ *   quoteFloorPct?, claimIdOffset?,          // a burner that is another job's key, sent home
+ *                                            // whole: its exchange held to the pool's quote,
+ *                                            // its claims under ids that key never used
  *   phase: "starting" | FundingStep | "failed",  // await-native: the route's deposit asset
  *   failure?: "shortfall" | "timeout" | "expired" | "cancelled" | "claim" | "held",
  *                                            // held: the PSM refused the mint three times; the
@@ -77,20 +82,39 @@ const saveJobs = () => store.save();
  *   done, createdAt, armedAt, lastTickAt, lastError?,
  *   state: { attempts, psmRefusals, xcmSubmitted, peopleAtXcm: string,
  *            fundsSeenAt: number|null, nonceAtSubmit: number|null,
- *            inclusionBlock: number|null, workedMs, parkedAtGate? },
+ *            inclusionBlock: number|null, workedMs, rejections, lastRejection,
+ *            parkedAtGate? },
  *                                            // attempts: submits so far
  *                                            // psmRefusals: PSM refusals so far, not transport
  *                                            // nonceAtSubmit: set from before a submit until
  *                                            // the conversion is final
  *                                            // inclusionBlock: the block the conversion was
  *                                            // seen in, while it is not final
+ *                                            // workedMs: worker time since the deposit was
+ *                                            // final, until the claim is registered (see
+ *                                            // accountWorkedTime)
+ *                                            // rejections, lastRejection: paid rejections in
+ *                                            // a row with the same answer
  *                                            // parkedAtGate: seen, under the gate, off the clock
  *   submitting?: { call: "swap", at },        // written before a submit, with the state
  *   txs: [{ call, txHash, block? }],
+ *   depositSeen?: { block, finalizedAtSeen, finalized, best },
+ *                                            // the deposit in a best block, followed until the
+ *                                            // pipeline sees it final: block: the best block it
+ *                                            // was first seen in; finalizedAtSeen: the finalized
+ *                                            // block number then; finalized and best: at the
+ *                                            // last tick
+ *   conversion?: { preparedAt, converted?: { txHash, block, at, workedMs } },
+ *                                            // preparedAt: the first submit past its dry run
+ *                                            // converted: the latest submit in a best block that
+ *                                            // succeeded and carried the tier's conversion event,
+ *                                            // with the worker time then
  *   claim?: { phase: "sizing"|"registering"|"claiming"|"claimed", attempt, credited,
- *             id?, amount?, at, attempts, registeredAt?, status?, partial?, error? },
+ *             id?, amount?, at, attempts, registeredAt?, workedMs?, status?, partial?, error? },
  *                                            // attempt: 0-based; each has its own id (hex)
  *                                            // credited: CASH the host minted so far
+ *                                            // workedMs: worker time since this attempt was
+ *                                            // registered
  *                                            // status: the host's last word on the top-up
  * }
  */
@@ -119,6 +143,20 @@ function newRecord(input, nowMs) {
   // The route is the surface's decision, taken once at quote time; a hand-off whose psm route
   // lacks its fee is refused here rather than guessed at.
   const route = recordedRoute(input);
+  const quoteFloorPct = input.quoteFloorPct === undefined ? undefined : Number(input.quoteFloorPct);
+  if (quoteFloorPct !== undefined && !(quoteFloorPct >= 0 && quoteFloorPct < 100)) {
+    throw new Error("startFunding: quoteFloorPct must be a percentage below 100");
+  }
+  const claimIdOffset = input.claimIdOffset === undefined ? 0 : Number(input.claimIdOffset);
+  if (
+    !Number.isInteger(claimIdOffset) ||
+    claimIdOffset < 0 ||
+    claimIdOffset > MAX_CLAIM_ID_OFFSET
+  ) {
+    throw new Error(
+      `startFunding: claimIdOffset must be a whole number up to ${MAX_CLAIM_ID_OFFSET}`,
+    );
+  }
   return {
     v: RECORD_V,
     sessionId,
@@ -137,6 +175,8 @@ function newRecord(input, nowMs) {
     assetHubGenesis,
     peopleGenesis,
     ...route,
+    ...(quoteFloorPct === undefined ? {} : { quoteFloorPct }),
+    ...(claimIdOffset === 0 ? {} : { claimIdOffset }),
     phase: "starting",
     done: false,
     createdAt: nowMs,
@@ -220,9 +260,10 @@ const depositExpiryOf = (input) => {
 
 /**
  * Re-arms a failed job on a re-sent hand-off. The run clock, the deposit window and the claim's
- * tracking window restart. Submit latches survive except after a shortfall; a held job gets a
- * fresh refusal counter, for a ceiling raised since; a claim that was still registering is
- * retried at once, and a claim the host settled short gets a fresh attempt.
+ * tracking window restart. Submit latches survive except after a shortfall; the rejection count
+ * starts over; a held job gets a fresh refusal counter, for a ceiling raised since; a claim that
+ * was still registering is retried at once, and a claim the host settled short gets a fresh
+ * attempt.
  */
 function rearm(record, nowMs) {
   record.phase = record.done ? "done" : "starting";
@@ -244,12 +285,16 @@ function rearm(record, nowMs) {
     record.state.inclusionBlock = null;
   }
   if (failure === "held") record.state.psmRefusals = 0;
+  record.state.rejections = 0;
+  record.state.lastRejection = null;
   if (record.claim?.phase === "registering") {
     record.claim = { ...record.claim, attempts: 0, at: 0 };
   }
   if (record.claim?.phase === "claiming") {
     record.claim =
-      failure === "claim" ? nextAttempt(record.claim) : { ...record.claim, registeredAt: nowMs };
+      failure === "claim"
+        ? nextAttempt(record.claim)
+        : { ...record.claim, registeredAt: nowMs, workedMs: 0 };
   }
 }
 
@@ -269,8 +314,7 @@ export async function cancelFunding(params) {
   const all = await loadJobs();
   const record = all[String(input.sessionId ?? "")];
   if (!record) return { sessionId: String(input.sessionId ?? ""), known: false };
-  const waitingForDeposit = !record.done && record.state.fundsSeenAt === null;
-  if (waitingForDeposit && record.phase !== "failed") {
+  if (waitingForDeposit(record) && record.phase !== "failed") {
     fail(record, "cancelled", "cancelled by the surface");
     await saveJobs();
   }
@@ -318,6 +362,9 @@ export async function amendFunding(params) {
   return describeFunding(record);
 }
 
+/** True while the funding leg waits for a deposit the pipeline has not yet seen final. */
+const waitingForDeposit = (record) => !record.done && record.state.fundsSeenAt === null;
+
 /** True once the CASH has landed and been claimed; `done` alone means the funding leg is over. */
 const isFinished = (record) => record.done === true && record.claim?.phase === "claimed";
 
@@ -335,7 +382,7 @@ async function claimableOn(peoplePort, burner, what) {
  * Claims are multiples of 0.01 CASH (6 decimals): the coinage instance's asset unit, so a
  * registered amount is exactly what the host can mint.
  */
-const CLAIM_UNIT = 10_000n;
+export const CLAIM_UNIT = 10_000n;
 /** Timeout for one host top-up call. */
 const CLAIM_TIMEOUT_MS = 45_000;
 /** Minimum wait before a failed registration is retried. */
@@ -344,6 +391,14 @@ const CLAIM_RETRY_MS = 180_000;
 const CLAIM_TRACK_WINDOW_MS = 5_400_000;
 /** Registrations a job makes on its own before it settles for what the host credited. */
 const MAX_CLAIM_ATTEMPTS = 3;
+/** The largest `claimIdOffset`: it leaves room above for every attempt a job can make, inside
+ *  the 32-bit counter an attempt's id is derived with. */
+const MAX_CLAIM_ID_OFFSET = 2 ** 31;
+
+/** The id claim attempt `attempt` is registered under. A burner that is another job's key starts
+ *  its attempts at an offset, so no claim takes an id that key was already paid under. */
+const claimIdFor = (record, burner, attempt) =>
+  topUpIdFor(burner.publicKey, (record.claimIdOffset ?? 0) + attempt);
 
 /**
  * Claims the burner's CASH into the purse once the funding leg is done. Each attempt sizes the
@@ -387,7 +442,7 @@ async function sizeClaim(record, burner, peoplePort) {
     phase: "registering",
     attempt,
     credited: claim?.credited ?? "0",
-    id: toHex(topUpIdFor(burner.publicKey, attempt)),
+    id: toHex(claimIdFor(record, burner, attempt)),
     amount: amount.toString(),
     at: 0,
     attempts: 0,
@@ -406,7 +461,7 @@ async function registerClaim(record, burner) {
       registerTopUp(
         asBig(record.claim.amount),
         hostSecret,
-        topUpIdFor(burner.publicKey, record.claim.attempt),
+        claimIdFor(record, burner, record.claim.attempt),
       ),
       CLAIM_TIMEOUT_MS,
       "topUp",
@@ -422,7 +477,7 @@ async function registerClaim(record, burner) {
     }
   }
   delete record.claim.error;
-  record.claim = { ...record.claim, phase: "claiming", registeredAt: Date.now() };
+  record.claim = { ...record.claim, phase: "claiming", registeredAt: Date.now(), workedMs: 0 };
   watchClaim(record);
 }
 
@@ -553,11 +608,14 @@ function describeFunding(record) {
     settleAmount: record.settleAmount,
     createdAt: record.createdAt,
     lastTickAt: record.lastTickAt,
+    workedMs: record.state?.workedMs ?? 0,
     lastError: record.lastError,
     failure: record.failure,
     submitting: record.submitting,
     txs: record.txs,
     fundsSeenAt: record.state?.fundsSeenAt ?? null,
+    depositSeen: record.depositSeen ?? null,
+    conversion: record.conversion ?? null,
     claim: record.claim ?? null,
   };
 }
@@ -586,13 +644,20 @@ const onTheClock = (record) =>
   !hostOwnsClaim(record) &&
   (record.done || (record.state.fundsSeenAt !== null && !parkedAtGate(record)));
 
-/** Adds this tick's gap, capped at MAX_TICK_GAP_MS, to the job's worked time while on the clock. */
+/**
+ * Adds this tick's gap, capped at MAX_TICK_GAP_MS, to the job's worked time while on the clock, or
+ * to the claim's while the host owns it.
+ */
 function accountWorkedTime(record, nowMs) {
   const previous = record.lastTickAt;
   record.lastTickAt = nowMs;
-  if (previous === null || !onTheClock(record)) return;
+  if (previous === null) return;
   const gap = Math.min(Math.max(nowMs - previous, 0), MAX_TICK_GAP_MS);
-  record.state.workedMs = (record.state.workedMs ?? 0) + gap;
+  if (onTheClock(record)) {
+    record.state.workedMs = (record.state.workedMs ?? 0) + gap;
+  } else if (hostOwnsClaim(record)) {
+    record.claim = { ...record.claim, workedMs: (record.claim.workedMs ?? 0) + gap };
+  }
 }
 
 /**
@@ -613,8 +678,7 @@ function judgeBounds(record, nowMs, read) {
   // The rail's deadline when the surface passed one, the default window otherwise.
   const armedAt = record.armedAt ?? record.createdAt;
   const expiresAt = record.depositExpiresAt ?? armedAt + DEPOSIT_WINDOW_MS;
-  const waitingForDeposit = !record.done && record.state.fundsSeenAt === null;
-  if (read && waitingForDeposit && nowMs > expiresAt) {
+  if (read && waitingForDeposit(record) && nowMs > expiresAt) {
     fail(record, "expired", "no deposit arrived within the deposit window");
     return;
   }
@@ -647,7 +711,7 @@ async function tickRecord(record, nowMs) {
     const api = ahClient.getTypedApi(paseo_next_v2);
     // Pool keys are re-discovered each wake and not persisted, in one read of the pool table: the
     // CASH pool, and for a pool job fed with a stable the stable's own pool too, under its
-    // pallet-assets id. The PSM and teleport tiers have no pool to find.
+    // pallet-assets id. The PSM and dotUSD tiers have no pool to find.
     const [pool, stablePool] =
       route.tier === "pool"
         ? await bounded(
@@ -661,12 +725,29 @@ async function tickRecord(record, nowMs) {
             "pool discovery",
           )
         : [];
+    // Asked on every dispatch, so a runtime upgrade between ticks is picked up before the next
+    // submit; a network with no transfer fails the tick like any other read.
+    const transfer = await bounded(
+      chooseCashTransfer({
+        assetHub: ahClient,
+        people: peopleClient,
+        assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
+        peopleParaId: record.peopleParaId,
+      }),
+      DEFAULT_TICK_TIMEOUT_MS,
+      "cash transfer choice",
+    );
+    // Every submit is on Asset Hub; one anchor per tick serves them all.
+    const anchor = await anchorFor(ahClient);
+    if (waitingForDeposit(record)) await followDeposit(record, api, route, burner.address, anchor);
 
     // Restore the persisted state into the shape tickOnce mutates. fundsSeenAt must be
     // exactly null when absent.
     const state = freshTickState();
     state.attempts = record.state.attempts;
     state.psmRefusals = record.state.psmRefusals ?? 0;
+    state.rejections = record.state.rejections ?? 0;
+    state.lastRejection = record.state.lastRejection ?? null;
     state.xcmSubmitted = !!record.state.xcmSubmitted;
     state.peopleAtXcm = asBig(record.state.peopleAtXcm);
     state.fundsSeenAt = record.state.fundsSeenAt ?? null;
@@ -678,6 +759,8 @@ async function tickRecord(record, nowMs) {
       record.state = {
         attempts: state.attempts,
         psmRefusals: state.psmRefusals,
+        rejections: state.rejections,
+        lastRejection: state.lastRejection,
         xcmSubmitted: state.xcmSubmitted,
         peopleAtXcm: state.peopleAtXcm.toString(),
         fundsSeenAt: state.fundsSeenAt,
@@ -696,6 +779,7 @@ async function tickRecord(record, nowMs) {
           api,
           peopleApi: peopleClient.getTypedApi(paseo_people_next),
           route,
+          transfer,
           pool,
           stablePool,
           address: burner.address,
@@ -711,11 +795,13 @@ async function tickRecord(record, nowMs) {
           ...(typeof record.quotedDeposit === "string"
             ? { quotedDeposit: asBig(record.quotedDeposit) }
             : {}),
+          ...(typeof record.quoteFloorPct === "number"
+            ? { quoteFloorPct: record.quoteFloorPct }
+            : {}),
           tickTimeoutMs: DEFAULT_TICK_TIMEOUT_MS,
           inclusionTimeoutMs: DEFAULT_INCLUSION_TIMEOUT_MS,
-          // Every submit is on Asset Hub; one anchor per tick serves them all. The PSM tier adds
-          // its fee asset itself.
-          signOptions: await signOptionsFor(ahClient),
+          // The PSM tier adds its fee asset itself.
+          signOptions: { at: anchor.hash },
           readFinalizedUnderlyingOnPeople: (ss58) =>
             peoplePort.settlementBalance(ss58, CASH_SETTLEMENT, { at: "finalized" }),
           now: Date.now,
@@ -732,6 +818,7 @@ async function tickRecord(record, nowMs) {
             delete record.submitting;
             record.txs.push(info);
           },
+          onConversion: (fact) => recordConversion(record, fact),
         },
         state,
       );
@@ -767,6 +854,50 @@ async function tickRecord(record, nowMs) {
       ahClient.destroy();
     }
   }
+}
+
+/**
+ * Follows the deposit while the pipeline waits for it to be final: it reads the burner at the
+ * anchor until the deposit shows there, then only moves the finalized block number on. The
+ * pipeline decides on the finalized deposit alone.
+ */
+async function followDeposit(record, api, route, address, anchor) {
+  if (record.depositSeen) {
+    record.depositSeen = {
+      ...record.depositSeen,
+      finalized: anchor.finalized,
+      best: anchor.number,
+    };
+    return;
+  }
+  const held = await bounded(
+    readDeposit(api, route, address, anchor.hash),
+    DEFAULT_TICK_TIMEOUT_MS,
+    "deposit read (best)",
+  );
+  if (held === 0n) return;
+  record.depositSeen = {
+    block: anchor.number,
+    finalizedAtSeen: anchor.finalized,
+    finalized: anchor.finalized,
+    best: anchor.number,
+  };
+}
+
+/** Records the conversion's progress. A retry is prepared again; the first time stands. */
+function recordConversion(record, fact) {
+  const preparedAt = record.conversion?.preparedAt ?? Date.now();
+  if (fact.type === "prepared") {
+    record.conversion = { ...record.conversion, preparedAt };
+    return;
+  }
+  const converted = {
+    txHash: fact.txHash,
+    block: fact.block,
+    at: Date.now(),
+    workedMs: record.state.workedMs ?? 0,
+  };
+  record.conversion = { ...record.conversion, preparedAt, converted };
 }
 
 // A pass already running answers a second entry with "busy".

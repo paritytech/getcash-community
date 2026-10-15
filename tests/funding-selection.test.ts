@@ -14,7 +14,7 @@ import {
 const rules = fundingSelectorConfig.amount;
 
 function enter(keys: readonly FundingKey[]): string {
-  return keys.reduce((amount, key) => reduceFundingAmount(amount, key, rules.decimals), "0");
+  return keys.reduce((amount, key) => reduceFundingAmount(amount, key, rules).amount, "0");
 }
 
 describe("funding selection configuration", () => {
@@ -79,22 +79,45 @@ describe("funding keypad", () => {
   });
 
   it("deletes back to an empty amount", () => {
-    expect(reduceFundingAmount("20", "delete", 6)).toBe("2");
-    expect(reduceFundingAmount("2", "delete", 6)).toBe("");
-    expect(reduceFundingAmount("", "delete", 6)).toBe("");
+    expect(reduceFundingAmount("20", "delete", rules).amount).toBe("2");
+    expect(reduceFundingAmount("2", "delete", rules).amount).toBe("");
+    expect(reduceFundingAmount("", "delete", rules).amount).toBe("");
   });
 
   it("starts decimal input from zero", () => {
-    expect(reduceFundingAmount("", ".", 6)).toBe("0.");
+    expect(reduceFundingAmount("", ".", rules).amount).toBe("0.");
+  });
+
+  it("turns away a digit that would pass the maximum, and reports it", () => {
+    expect(reduceFundingAmount("5000", "1", rules)).toEqual({ amount: "5000", hitMaximum: true });
+    expect(reduceFundingAmount("500", "0", rules)).toEqual({ amount: "5000", hitMaximum: false });
+    // The bound is inclusive: cents still write up to the maximum itself, and no further.
+    expect(enter(["5", "0", "0", "0", ".", "0", "0"])).toBe("5000.00");
+    expect(reduceFundingAmount("5000.0", "1", rules)).toEqual({
+      amount: "5000.0",
+      hitMaximum: true,
+    });
+  });
+
+  it("recovers from an amount written in over the maximum from outside", () => {
+    // The Available pill writes the purse straight in, which can land past the maximum: digits
+    // stay rejected, delete backs out.
+    expect(reduceFundingAmount("6000", "1", rules)).toEqual({ amount: "6000", hitMaximum: true });
+    expect(reduceFundingAmount("6000", "delete", rules).amount).toBe("600");
   });
 
   it("caps the whole part so a runaway entry cannot outgrow the display", () => {
+    // A maximum roomier than the display cap, so only the digit-count cap can be the gate here.
+    const roomy = { decimals: 2, minimum: "10", maximum: "9999999999" };
     const nineDigits = "999999999";
-    expect(reduceFundingAmount(nineDigits, "9", 2)).toBe(nineDigits);
+    expect(reduceFundingAmount(nineDigits, "9", roomy)).toEqual({
+      amount: nineDigits,
+      hitMaximum: false,
+    });
     // The cap holds the whole part only: the fraction and a delete still edit.
-    expect(reduceFundingAmount(nineDigits, ".", 2)).toBe(`${nineDigits}.`);
-    expect(reduceFundingAmount(`${nineDigits}.9`, "9", 2)).toBe(`${nineDigits}.99`);
-    expect(reduceFundingAmount(nineDigits, "delete", 2)).toBe("99999999");
+    expect(reduceFundingAmount(nineDigits, ".", roomy).amount).toBe(`${nineDigits}.`);
+    expect(reduceFundingAmount(`${nineDigits}.9`, "9", roomy).amount).toBe(`${nineDigits}.99`);
+    expect(reduceFundingAmount(nineDigits, "delete", roomy).amount).toBe("99999999");
   });
 });
 

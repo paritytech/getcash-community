@@ -1,4 +1,4 @@
-// Checks saleBounds, saleReserves and readDestinationPas, the pieces behind the sale's bound,
+// Checks saleBounds, saleReserves and readDestinationBalance, the pieces behind the sale's bound,
 // against scripted answers.
 
 import { describe, expect, it } from "vitest";
@@ -8,7 +8,7 @@ import {
   withdrawalBounds,
   type OrientedReserves,
 } from "@getsome/funding";
-import { readDestinationPas } from "./destination";
+import { readDestinationBalance } from "./destination";
 import {
   ASSET_HUB_FEE_BUFFER_CASH,
   SALE_READ_AT,
@@ -103,7 +103,7 @@ describe("sizeXcm's bound selection", () => {
   });
 });
 
-describe("readDestinationPas", () => {
+describe("readDestinationBalance", () => {
   it("reads at the best head, where the sale is sized", async () => {
     // The arrival check, the sweep and the refund all read here.
     const seen: unknown[][] = [];
@@ -119,7 +119,7 @@ describe("readDestinationPas", () => {
         },
       },
     };
-    expect(await readDestinationPas(api as never, `0x${"aa".repeat(32)}`)).toBe(42n);
+    expect(await readDestinationBalance(api as never, `0x${"aa".repeat(32)}`)).toBe(42n);
     expect(seen[0]![1]).toEqual(SALE_READ_AT);
   });
 });

@@ -30,16 +30,15 @@ describe("simulateMeldPayment", () => {
 
     store.simulateMeldPayment();
     await vi.advanceTimersByTimeAsync(0);
-    // The buyer has left the widget: the journey takes over from the iframe at once, with only
-    // "Started" behind it.
+    // The buyer has left the widget: the journey takes over from the iframe at once.
     expect(requests.meldSubmitted).toBe(true);
     expect(requests.meldHandedOff).toBe(true);
     expect(requests.meldStage).toBe("receiving");
-    expect(requests.journeyDone).toBe(1);
+    expect(requests.foregroundRecord?.status.kind).toBe("awaiting-deposit");
 
     // The provider sees the transaction: the payment lands on the record.
     await vi.advanceTimersByTimeAsync(2_500);
-    expect(requests.journeyDone).toBe(2);
+    expect(requests.foregroundRecord?.status.kind).toBe("deposit-seen");
 
     // It approves it: the rail's leg is delivered.
     await vi.advanceTimersByTimeAsync(2_500);
@@ -60,16 +59,21 @@ describe("simulateMeldPayment", () => {
 
     store.simulateMeldPayment();
     await vi.advanceTimersByTimeAsync(0);
-    const rung = () => `${requests.meldStage ?? "none"}/${String(requests.journeyDone)}`;
+    const rung = () =>
+      `${requests.meldStage ?? "none"}/${requests.foregroundRecord?.status.kind ?? "none"}`;
     const seen = [rung()];
     for (let i = 0; i < 3; i++) {
       await vi.advanceTimersByTimeAsync(2_500);
       seen.push(rung());
     }
 
-    // "Approved" waits for the deposit on the burner at finality, so the provider's own delivery
-    // leaves the count on the payment step.
-    expect(seen).toEqual(["receiving/1", "receiving/2", "complete/2", "complete/2"]);
+    // The provider's own delivery leaves the record on the payment it saw.
+    expect(seen).toEqual([
+      "receiving/awaiting-deposit",
+      "receiving/deposit-seen",
+      "complete/deposit-seen",
+      "complete/deposit-seen",
+    ]);
   });
 
   it("does nothing on the crypto rail, which has no fiat payment to play", async () => {
@@ -96,6 +100,5 @@ describe("simulateMeldPayment", () => {
 
     // The request left the screen with the world it belonged to; nothing was played behind it.
     expect(requests.meldStage).toBeNull();
-    expect(requests.journeyDone).toBe(1);
   });
 });

@@ -5,7 +5,8 @@
 // The destination is the conversion route's deposit token, not a constant: the pool tier is paid
 // in the native and the PSM tier in the PSM's external, and Meld's regions, methods and limits
 // differ between them. A catalog read for one and a quote placed for the other is how a supported
-// region produces an unquotable request. Every cache is therefore keyed by destination.
+// region produces an unquotable request. Every cache is therefore keyed by destination, and by
+// direction: a sale reads Meld's off-ramp catalog, whose regions and payout methods are its own.
 
 /** The catalog's default destination: what the pool tier's rail asks Meld to deliver. */
 export const DEFAULT_MELD_DESTINATION = "DOT_ASSETHUB";
@@ -68,13 +69,25 @@ function headers(): Record<string, string> {
   };
 }
 
-// All three keyed by destination currency code; a second destination is a second catalog.
+/** Which way value moves through a corridor: a buy delivers the crypto, a sale takes it. The two
+ *  are separate catalogs on Meld's side, with their own regions, methods and limits. */
+export type SupportedDirection = "buy" | "sell";
+
+// All three keyed by direction and destination currency code; a second destination is a second
+// catalog.
 const countriesCache = new Map<string, SupportedCountry[]>();
 const corridorCache = new Map<string, SupportedCorridor>();
 const corridorsCache = new Map<string, Map<string, SupportedCorridor>>();
 
+/** Cache key for a catalog: a buy keeps the bare destination it always had. */
+const catalogKey = (destination: string, direction: SupportedDirection) =>
+  direction === "buy" ? destination : `sell:${destination}`;
 /** Cache key for the per-country corridor, which varies by both. */
-const corridorKey = (destination: string, country: string) => `${destination}:${country}`;
+const corridorKey = (destination: string, country: string, direction: SupportedDirection) =>
+  `${catalogKey(destination, direction)}:${country}`;
+/** The query tail a direction adds; a buy adds none, as the adapter's default. */
+const directionQuery = (direction: SupportedDirection) =>
+  direction === "buy" ? "" : `&direction=${direction}`;
 
 function isCategory(value: unknown): value is SupportedMethodCategory {
   return value === "card" || value === "bank" || value === "wallet" || value === "other";
@@ -97,14 +110,15 @@ function toMethod(raw: Record<string, unknown>, fiat: string): SupportedMethod {
  */
 export async function fetchSupportedCountries(
   destination: string,
+  direction: SupportedDirection = "buy",
 ): Promise<SupportedCountry[] | null> {
-  const cached = countriesCache.get(destination);
+  const cached = countriesCache.get(catalogKey(destination, direction));
   if (cached !== undefined) return cached;
   const base = baseUrl();
   if (base === undefined) return null;
   try {
     const res = await fetch(
-      `${base.replace(/\/$/, "")}/supported/countries?destinationCurrencyCode=${encodeURIComponent(destination)}`,
+      `${base.replace(/\/$/, "")}/supported/countries?destinationCurrencyCode=${encodeURIComponent(destination)}${directionQuery(direction)}`,
       { headers: headers() },
     );
     if (!res.ok) return null;
@@ -114,7 +128,7 @@ export async function fetchSupportedCountries(
       name: String(r.name ?? r.country ?? ""),
     }));
     // Only a non-empty catalog is cached; an empty one is fetched again next call.
-    if (rows.length > 0) countriesCache.set(destination, rows);
+    if (rows.length > 0) countriesCache.set(catalogKey(destination, direction), rows);
     return rows;
   } catch {
     return null;
@@ -128,14 +142,15 @@ export async function fetchSupportedCountries(
 export async function fetchCorridor(
   destination: string,
   country: string,
+  direction: SupportedDirection = "buy",
 ): Promise<SupportedCorridor | null> {
-  const hit = corridorCache.get(corridorKey(destination, country));
+  const hit = corridorCache.get(corridorKey(destination, country, direction));
   if (hit !== undefined) return hit;
   const base = baseUrl();
   if (base === undefined) return null;
   try {
     const res = await fetch(
-      `${base.replace(/\/$/, "")}/supported?country=${encodeURIComponent(country)}&destinationCurrencyCode=${encodeURIComponent(destination)}`,
+      `${base.replace(/\/$/, "")}/supported?country=${encodeURIComponent(country)}&destinationCurrencyCode=${encodeURIComponent(destination)}${directionQuery(direction)}`,
       { headers: headers() },
     );
     if (!res.ok) return null;
@@ -151,7 +166,7 @@ export async function fetchCorridor(
       fiat,
       methods: (data.methods ?? []).map((m) => toMethod(m, fiat)),
     };
-    corridorCache.set(corridorKey(destination, country), corridor);
+    corridorCache.set(corridorKey(destination, country, direction), corridor);
     return corridor;
   } catch {
     return null;
@@ -161,14 +176,15 @@ export async function fetchCorridor(
 // Every supported corridor as a country -> corridor map, DB-backed and tab-cached; null when unreachable.
 export async function fetchSupportedCorridors(
   destination: string,
+  direction: SupportedDirection = "buy",
 ): Promise<Map<string, SupportedCorridor> | null> {
-  const cached = corridorsCache.get(destination);
+  const cached = corridorsCache.get(catalogKey(destination, direction));
   if (cached !== undefined) return cached;
   const base = baseUrl();
   if (base === undefined) return null;
   try {
     const res = await fetch(
-      `${base.replace(/\/$/, "")}/supported/corridors?destinationCurrencyCode=${encodeURIComponent(destination)}`,
+      `${base.replace(/\/$/, "")}/supported/corridors?destinationCurrencyCode=${encodeURIComponent(destination)}${directionQuery(direction)}`,
       { headers: headers() },
     );
     if (!res.ok) return null;
@@ -183,7 +199,7 @@ export async function fetchSupportedCorridors(
       map.set(country, { country, fiat, methods: (c.methods ?? []).map((m) => toMethod(m, fiat)) });
     }
     // Only a non-empty result is cached; an empty one (cold cache) is retried next call.
-    if (map.size > 0) corridorsCache.set(destination, map);
+    if (map.size > 0) corridorsCache.set(catalogKey(destination, direction), map);
     return map;
   } catch {
     return null;

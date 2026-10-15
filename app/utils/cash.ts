@@ -21,16 +21,22 @@ export function fmtCash(base: bigint): string {
   return `${s.slice(0, -CASH_DECIMALS)}.${s.slice(-CASH_DECIMALS)}`.replace(/\.?0+$/, "") || "0";
 }
 
+const withSymbol = (human: string, unit: string): string =>
+  `${currencyConfig.symbol}${human} ${unit}`;
+
 /**
- * A CASH amount as the designs write it, wherever it can only be a string: the symbol on the
- * number, the ticker beside it ("$50 CASH", "+$50 CASH"). Anywhere markup can render, use
- * `<CashAmount>` instead — it carries the same form plus the ticker's small-caps treatment.
+ * A CASH amount as a logo, wherever it can only be a string: the symbol on the number, the ticker
+ * beside it ("$50 CASH", "+$50 CASH"). Anywhere markup can render, use `<CashAmount>` instead: it
+ * carries the same form plus the ticker's small-caps treatment. Inside a sentence, use `cashInText`.
  *
- * The bare token in prose keeps its own form — "Converting to $CASH", "Final $CASH depends on the
- * rate on arrival" — because there it is a name, not a sum.
+ * The bare token in prose keeps its own form ("Converting to $CASH", "Final $CASH depends on the
+ * rate on arrival"), because there it is a name, not a sum.
  */
-export const cashAmount = (human: string): string =>
-  `${currencyConfig.symbol}${human} ${currencyConfig.ticker}`;
+export const cashAmount = (human: string): string => withSymbol(human, currencyConfig.ticker);
+
+/** A CASH amount inside a sentence, the word in place of the ticker ("Adding $50 Cash to your
+ *  balance"). */
+export const cashInText = (human: string): string => withSymbol(human, currencyConfig.word);
 
 /** CASH base units truncated down to the keypad's `decimals` scale. */
 export function cashToRuleUnits(base: bigint, decimals: number): bigint {
@@ -60,4 +66,10 @@ export function groupAmountDigits(value: string): string {
   const [whole = "0", fraction] = value.split(".");
   const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   return fraction === undefined ? grouped : `${grouped}.${fraction}`;
+}
+
+/** Status-screen sizing: four whole digits, or three with cents, steps the figure down to display-s. */
+export function isLongStatusAmount(value: string): boolean {
+  const [whole = "", fraction] = value.replace(/,/g, "").split(".");
+  return whole.length >= 4 || (whole.length === 3 && fraction !== undefined);
 }

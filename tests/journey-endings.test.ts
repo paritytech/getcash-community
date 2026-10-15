@@ -1,12 +1,11 @@
-// The ending rules the journey reads: what the stepper calls a failure, and what the bank
-// transfer says about one the adapter worded for a card.
+// The ending rules the journey reads: whether a top-up expired, and the amount its header shows.
 
 import { describe, expect, it } from "vitest";
-import { bankEndingText, endingLabel, isExpiredEnding } from "../app/funding/journey-endings";
+import { headerAmount, isExpiredEnding } from "../app/funding/journey-endings";
 import { DEPOSIT_EXPIRED_REASON } from "../app/funding/requests/model";
 
 describe("journey endings", () => {
-  it("names an expired top-up from its own failure, not from the stepper's label", () => {
+  it("names an expired top-up from its own failure", () => {
     expect(isExpiredEnding("expired", null)).toBe(true);
     expect(isExpiredEnding("stale", null)).toBe(true);
     expect(isExpiredEnding(undefined, DEPOSIT_EXPIRED_REASON)).toBe(true);
@@ -14,33 +13,28 @@ describe("journey endings", () => {
     expect(isExpiredEnding("deposit-rejected", "Top-up didn't go through.")).toBe(false);
     expect(isExpiredEnding(undefined, null)).toBe(false);
   });
+});
 
-  it("gives each rail ending its own step name", () => {
-    expect(endingLabel(true, null)).toBe("Expired");
-    // An expiry outranks whatever the rail called it.
-    expect(endingLabel(true, "declined")).toBe("Expired");
-    expect(endingLabel(false, "declined")).toBe("Payment declined");
-    expect(endingLabel(false, "refunded")).toBe("Refunded");
-    // A plain failure keeps the stepper's own "<stage> failed".
-    expect(endingLabel(false, "failed")).toBeNull();
-    expect(endingLabel(false, "unobserved")).toBeNull();
-    expect(endingLabel(false, null)).toBeNull();
-  });
-
-  it("words the endings the adapter wrote for a card as a transfer's own", () => {
-    expect(bankEndingText("declined", "€50.55")).toBe(
-      "Your bank rejected the transfer. Check with your bank or try another account.",
-    );
-    expect(bankEndingText("refunded", "€50.55")).toBe(
-      "Your €50.55 has been returned to your bank account.",
-    );
-    // No quote to name the charge: the sentence still stands.
-    expect(bankEndingText("refunded", null)).toBe(
-      "Your transfer has been returned to your bank account.",
-    );
-    // The adapter's own message already fits these, so nothing is invented over it.
-    expect(bankEndingText("failed", "€50.55")).toBeNull();
-    expect(bankEndingText("unobserved", "€50.55")).toBeNull();
-    expect(bankEndingText(null, "€50.55")).toBeNull();
+describe("journey header amount", () => {
+  it("shows the asked amount until the end, then what the Host credited", () => {
+    const amounts = { asked: "50", credited: "50.12" };
+    const cases: [string, Parameters<typeof headerAmount>, ReturnType<typeof headerAmount>][] = [
+      ["before the end", [null, amounts], { sign: "", amount: "50" }],
+      [
+        "bank claim off the quote",
+        [null, { ...amounts, revised: "48.2" }],
+        { sign: "", amount: "48.2" },
+      ],
+      ["success", ["success", amounts], { sign: "+", amount: "50.12" }],
+      ["success with no claim", ["success", { asked: "50" }], { sign: "+", amount: "50" }],
+      [
+        "bank success",
+        ["success", { asked: "50", revised: "48.2", credited: "48.2" }],
+        { sign: "+", amount: "48.2" },
+      ],
+      ["partial claim", ["failure", { asked: "50", credited: "30" }], { sign: "", amount: "30" }],
+      ["failure with no credit", ["failure", { asked: "50" }], { sign: "", amount: "50" }],
+    ];
+    for (const [name, args, shown] of cases) expect(headerAmount(...args), name).toEqual(shown);
   });
 });

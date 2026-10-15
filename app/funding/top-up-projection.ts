@@ -1,8 +1,5 @@
-// Shared top-up adapter helpers: the durable record as the adapters read it, and the amount a
-// claim credited.
+// Shared top-up adapter helpers: the durable record as the adapters read it.
 
-import { fmtCash } from "../utils/cash";
-import type { FundingProgressSnapshot } from "./progress";
 import type { FundingTopUp } from "./top-ups";
 
 /** The durable request record as the adapters read it. */
@@ -46,7 +43,6 @@ export interface FundingTopUpRecord {
   refunded?: boolean;
   refundAmount?: string;
   refundTxRef?: string;
-  progress?: FundingProgressSnapshot;
 }
 
 /**
@@ -54,7 +50,7 @@ export interface FundingTopUpRecord {
  * names. Only an all-caps value is re-cased: anything carrying a lowercase letter already arrived
  * spelled the way somebody meant it, and re-casing it would be us overruling them.
  */
-function asName(provider: string): string {
+export function asName(provider: string): string {
   if (/[a-z]/.test(provider)) return provider;
   return provider
     .toLowerCase()
@@ -85,6 +81,12 @@ export function providerNameOf(record: {
   return provider ? asName(provider) : undefined;
 }
 
+/** The provider of a Meld payment, or the aggregator when the record kept neither of its names. */
+export const meldProviderName = (record: {
+  meldServiceProvider?: string;
+  sourceProvider?: string;
+}): string => providerNameOf(record) ?? "Meld";
+
 /** The rail's persisted quote, spread onto the top-up when the record carries one. */
 export function quoteOf(record: FundingTopUpRecord): Pick<FundingTopUp, "quote"> {
   return record.sourceAmount && record.sourceSymbol
@@ -114,13 +116,4 @@ export function quoteOf(record: FundingTopUpRecord): Pick<FundingTopUp, "quote">
  */
 export function referenceOf(record: FundingTopUpRecord): Pick<FundingTopUp, "reference"> {
   return record.meldFundingRequestId ? { reference: record.meldFundingRequestId } : {};
-}
-
-export function creditedAmount(record: FundingTopUpRecord): string {
-  if (record.claimed === undefined) return record.amountHuman;
-  try {
-    return fmtCash(BigInt(record.claimed));
-  } catch {
-    return record.amountHuman;
-  }
 }

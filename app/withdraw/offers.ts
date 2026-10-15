@@ -2,12 +2,27 @@
 // The amount is known before any route is picked, so every Chainflip destination is quoted for
 // it once: the quote says whether the route answers at all, whether the amount is under the
 // provider's minimum, and what would land. A row is greyed with the reason; the confirm judges
-// once more before the channel is opened. Asset Hub itself has no provider: the direct rail is
+// once more before the channel is opened. A row still being quoted is not drawn at all: the
+// picker shows a skeleton row in its place. Asset Hub itself has no provider: the direct rail is
 // always pickable.
 
-import { wholeCashCeil } from "../funding/source-groups";
-import { cashAmount } from "../utils/cash";
+import { minimumLine } from "../funding/source-groups";
 import type { WithdrawDestination } from "./destinations";
+
+/** The Fees drill-in behind the summary, every figure already formatted for its row. */
+export interface WithdrawFeeView {
+  /** The split, largest legs first; a fee the quote does not name has no row. */
+  rows: { label: string; value: string }[];
+  /** The sum of the split; absent when there is no split to sum. */
+  total?: string;
+  /** What the amount is worth before the fees ("≈ 24.75 USDC"); absent on the direct rail,
+   *  whose fee is taken in CASH before the sale. */
+  equivalent?: string;
+  /** What lands, the same figure the summary shows. */
+  receive: string;
+  /** The gross rate the equivalent implies ("$1 CASH ≈ 0.99 USDC"); null when unpriceable. */
+  rate: string | null;
+}
 
 export type WithdrawOffer =
   /** Still being quoted. */
@@ -18,8 +33,15 @@ export type WithdrawOffer =
   | { state: "unavailable"; reason: string }
   /** Under the provider's minimum; `minimumCash` is the smallest withdrawal it takes. */
   | { state: "too-small"; minimumCash: bigint }
-  /** What lands on the destination, in its asset's base units, and formatted for the summary. */
-  | { state: "available"; egress: bigint; formatted: string; etaSeconds: number | null };
+  /** What lands on the destination, in its asset's base units, and formatted for the summary.
+   *  `fees` is the quote's own split, absent when a fee could not be priced. */
+  | {
+      state: "available";
+      egress: bigint;
+      formatted: string;
+      etaSeconds: number | null;
+      fees?: WithdrawFeeView;
+    };
 
 export interface RowState {
   pickable: boolean;
@@ -29,24 +51,25 @@ export interface RowState {
 
 const PICKABLE: RowState = { pickable: true };
 
-/** One destination's row. Nothing is pickable until its quote is in: money is at stake, so the
- *  rows wait rather than guess. */
-export function rowState(destination: WithdrawDestination, offer: WithdrawOffer): RowState {
+/** One destination's row, worded for the picker it sits on: a token row on the token picker, or
+ *  the network row that stands for it. Nothing is pickable until its quote is in: money is at
+ *  stake, so the rows wait rather than guess. */
+export function rowState(
+  destination: WithdrawDestination,
+  offer: WithdrawOffer,
+  of: "token" | "network" = "token",
+): RowState {
   if (destination.rail === "direct") return PICKABLE;
   switch (offer.state) {
     case "checking":
-      return { pickable: false, subtitle: "Checking…" };
+      return { pickable: false };
     case "rail-off":
       return { pickable: false, subtitle: "Not available yet" };
     case "unavailable":
       return { pickable: false, subtitle: "Not available right now" };
     case "too-small":
-      // The same line on a network row and on its token rows: the minimum is on the DOT sold,
-      // whatever it buys.
-      return {
-        pickable: false,
-        subtitle: `Minimum is ${cashAmount(wholeCashCeil(offer.minimumCash))}`,
-      };
+      // The minimum is on the DOT sold, whatever it buys, so a network's row carries its tokens'.
+      return { pickable: false, subtitle: minimumLine(of, offer.minimumCash) };
     case "available":
       return PICKABLE;
   }
