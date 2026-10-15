@@ -23,6 +23,7 @@ import {
   PaymentUnresolvedError,
   RailFailedError,
   railTickOnce,
+  readAssetHubAccount,
   readDestinationBalance,
   RedeemTooSmallError,
   residueReturnFloor,
@@ -35,6 +36,7 @@ import { CLAIM_UNIT, fundingStatus, startFunding } from "./engine.js";
 import { readParams } from "./params.js";
 import { exactPaymentOut, PAY_TIMEOUT_MS, payRail, payRailExact, railFor } from "./providers.js";
 import {
+  anchorFor,
   asBig,
   bounded,
   connectChain,
@@ -109,12 +111,15 @@ const saveJobs = () => store.save();
  *   landed,                                  // the message leg is done: the funds are on Asset Hub
  *   done, createdAt, armedAt, lastTickAt, lastError?,
  *   state: { attempts, rejections, submitted, destinationBefore, expectedLanding,
- *            fundsSeenAt, psmRefusals, waitingSince, exit?, redeemSubmitted?, workedMs },
+ *            fundsSeenAt, psmRefusals, waitingSince, exit?, redeemSubmitted?, redeemNonce?,
+ *            redeemAnchor?, workedMs },
  *                                            // the two balances as decimal strings or null;
  *                                            // exit: where the PSM tier's CASH leaves the key
  *                                            // on Asset Hub, "psm" unless the user chose the
  *                                            // pool from a hold; redeemSubmitted: that exit's
- *                                            // transaction went out
+ *                                            // transaction went out; redeemNonce, redeemAnchor:
+ *                                            // the key's Asset Hub nonce it is signed at and the
+ *                                            // block it is anchored at, null while none is out
  *   leg: { handoff, paid, sweep, exact?, reading },  // the rail leg, for a provider rail;
  *                                            // exact: the Meld payment's nonce, in flight or
  *                                            // not, and the block its attempt is anchored at
@@ -948,6 +953,8 @@ async function tickRecord(record, nowMs) {
     state.waitingSince = record.state.waitingSince ?? null;
     state.exit = exitOf(record.state);
     state.redeemSubmitted = record.state.redeemSubmitted === true;
+    state.redeemNonce = record.state.redeemNonce ?? null;
+    state.redeemAnchor = record.state.redeemAnchor ?? null;
 
     // Written before a submit and after every tick, thrown ones included; withdrawTickOnce
     // mutates the state as it works and a lost submit answer must keep its baseline.
@@ -964,6 +971,8 @@ async function tickRecord(record, nowMs) {
         waitingSince: state.waitingSince,
         exit: state.exit,
         redeemSubmitted: state.redeemSubmitted,
+        redeemNonce: state.redeemNonce,
+        redeemAnchor: state.redeemAnchor,
         workedMs: record.state.workedMs ?? 0,
       };
     };
@@ -998,9 +1007,11 @@ async function tickRecord(record, nowMs) {
             : {}),
           tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
           submitTimeoutMs: DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
-          // One anchor per chain per tick serves every submit on it.
+          // One anchor on People per tick serves every submit there; the exit on Asset Hub takes
+          // its own as it is signed, and keeps its number.
           signOptions: await signOptionsFor(peopleClient),
-          assetHubSignOptions: await signOptionsFor(ahClient),
+          assetHubAnchor: () => anchorFor(ahClient),
+          readFinalizedNumber: async () => (await ahClient.getFinalizedBlock()).number,
           readKeyOnPeople: async (ss58) => {
             const [asset, native] = await Promise.all([
               peopleApi.query.Assets.Account.getValue(CASH_LOCATION, ss58),
@@ -1011,11 +1022,11 @@ async function tickRecord(record, nowMs) {
           readDestinationOnAssetHub: (hex) =>
             readDestinationBalance(assetHubApi, hex, landingToken.assetHubId),
           readKeyOnAssetHub: async (hex) => {
-            const [cash, usdt] = await Promise.all([
-              readDestinationBalance(assetHubApi, hex, TOKENS.CASH.assetHubId),
+            const [{ free: cash, nonce }, usdt] = await Promise.all([
+              readAssetHubAccount(assetHubApi, hex, TOKENS.CASH),
               readDestinationBalance(assetHubApi, hex, landingToken.assetHubId),
             ]);
-            return { cash, usdt };
+            return { cash, usdt, nonce };
           },
           now: Date.now,
           // Persisted before the broadcast leaves.

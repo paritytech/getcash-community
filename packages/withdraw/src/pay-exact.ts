@@ -26,6 +26,7 @@ import {
 } from "@getsome/funding";
 import { bounded } from "./bounded";
 import type { AssetHubApi } from "./fees";
+import { mayStillLand, PAY_MORTAL_PERIOD } from "./mortality";
 import { MAX_REJECTIONS, WithdrawRejectedError } from "./tick";
 
 /** Headroom on the payment's fee estimate, percent. */
@@ -44,11 +45,6 @@ function stableOf(token: TokenSpec): { symbol: Stable; assetHubId: number } | nu
   if (!isStable(token.symbol)) throw new Error(`no exact payment can be made in ${token.symbol}`);
   return { symbol: token.symbol, assetHubId: token.assetHubId };
 }
-
-/** Blocks a payment stays valid after the block it is anchored at. Signed into the payment
- *  rather than left to papi's default, since `exactPaymentLanded` counts on it to call an
- *  unlanded attempt dead. */
-const PAY_MORTAL_PERIOD = 64;
 
 /** Cross-tick memory for the payment. The driver persists it; `payExactOnce` mutates it. */
 export interface ExactPayState {
@@ -216,7 +212,7 @@ export async function exactPaymentLanded(
       input.tickTimeoutMs,
       "finalized head read",
     );
-    if (finalized > anchor + PAY_MORTAL_PERIOD) {
+    if (!mayStillLand(anchor, finalized)) {
       state.inFlight = false;
       state.balanceBefore = null;
       state.anchor = null;

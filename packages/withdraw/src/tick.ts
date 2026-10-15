@@ -23,12 +23,13 @@
 //
 // BALANCE-DRIVEN AND RE-ENTRANT: every tick reads the key's CASH and PAS and acts at most once.
 // PAS on the key means the swap happened; the XCM is next; CASH on the key's Asset Hub account
-// means the XCM landed and the redeem is next. A reload resumes from the persisted state. A tick
-// that throws is retried on the next tick. Terminal is a transaction rejected at inclusion after
-// the dry run passed, three times over, since each rejection costs a fee and the same transaction
-// will not pass on the fourth try; and, on the PSM tier, the PSM refusing the redeem three times
-// for a reason waiting cannot clear, or once for one no retry can. A PSM short of room is not
-// terminal: the run waits on Asset Hub, spending nothing, until a mint makes room.
+// means the XCM landed and the redeem is next, signed once at the key's nonce there, which says
+// whether it went out. A reload resumes from the persisted state. A tick that throws is retried
+// on the next tick. Terminal is a transaction rejected at inclusion after the dry run passed,
+// three times over, since each rejection costs a fee and the same transaction will not pass on
+// the fourth try; and, on the PSM tier, the PSM refusing the redeem three times for a reason
+// waiting cannot clear, or once for one no retry can. A PSM short of room is not terminal: the
+// run waits on Asset Hub, spending nothing, until a mint makes room.
 
 import type { PolkadotSigner } from "polkadot-api";
 import {
@@ -53,6 +54,7 @@ import {
   type AssetHubApi,
 } from "./fees";
 import { buildSwap, buildWithdrawXcm, withdrawMessage, type PeopleApi } from "./program";
+import { mayStillLand, PAY_MORTAL_PERIOD } from "./mortality";
 import {
   addressOf,
   buildPoolExit,
@@ -146,6 +148,12 @@ export interface WithdrawTickState {
   exit: "psm" | "pool";
   /** Set before the redeem or the pool swap is broadcast; holds the run on its landing. */
   redeemSubmitted: boolean;
+  /** The nonce that exit is signed at, the key's on Asset Hub at the finalized head just before
+   *  it; null while none is in flight. A key past it signed the exit. */
+  redeemNonce: number | null;
+  /** The block that exit is anchored at: it can land only within PAY_MORTAL_PERIOD blocks of it,
+   *  so once the finalized chain is past that with the nonce unmoved, it never will. */
+  redeemAnchor: number | null;
 }
 
 export const freshWithdrawTickState = (): WithdrawTickState => ({
@@ -159,6 +167,8 @@ export const freshWithdrawTickState = (): WithdrawTickState => ({
   waitingSince: null,
   exit: "psm",
   redeemSubmitted: false,
+  redeemNonce: null,
+  redeemAnchor: null,
 });
 
 export interface WithdrawTickInput {
@@ -191,13 +201,16 @@ export interface WithdrawTickInput {
   /** Extra options merged into every submit on People, after its signed extension and, for the
    *  swap, its CASH fee asset. */
   signOptions?: Record<string, unknown>;
-  /** Extra options merged into the exit's submit on Asset Hub, after its CASH fee asset. An
-   *  anchor from People is not valid there, so the two chains' options never share a field. */
-  assetHubSignOptions?: Record<string, unknown>;
+  /** The best block on Asset Hub the exit is anchored at, read once just before it is signed. An
+   *  anchor from People is not valid there, so the two chains' submits never share an option. */
+  assetHubAnchor: () => Promise<{ hash: string; number: number }>;
+  /** The finalized head's number on Asset Hub. */
+  readFinalizedNumber: () => Promise<number>;
   /** The key's CASH and PAS on People. */
   readKeyOnPeople: (ss58: string) => Promise<{ cash: bigint; pas: bigint }>;
-  /** The key's CASH and USDT on Asset Hub at the finalized head, for the PSM tier. */
-  readKeyOnAssetHub: (hex: string) => Promise<{ cash: bigint; usdt: bigint }>;
+  /** The key's CASH and USDT on Asset Hub, and its nonce there, at the finalized head, for the
+   *  PSM tier. */
+  readKeyOnAssetHub: (hex: string) => Promise<{ cash: bigint; usdt: bigint; nonce: number }>;
   /** The destination's balance in the landing asset on Asset Hub at the finalized head
    *  (`readDestinationBalance`). */
   readDestinationOnAssetHub: (destinationHex: string) => Promise<bigint>;
@@ -372,11 +385,62 @@ export async function withdrawTickOnce(
   return { step: "swap", balances, submitted: true };
 }
 
+/** Takes the exit out of flight: nothing of it can land any more. The baseline stays until the
+ *  next sizing takes its own. */
+function exitNeverLands(state: WithdrawTickState): void {
+  state.redeemSubmitted = false;
+  state.redeemNonce = null;
+  state.redeemAnchor = null;
+}
+
+/**
+ * What the chain says of an exit that was broadcast, whatever became of its answer. A key past
+ * the exit's nonce signed it, and the landing says whether it paid: `done` once the landing grew
+ * by what the exit pays; otherwise the exit was refused at inclusion, since the nonce and the
+ * landing are read at the same finalized head, and null frees the run to size afresh. A key at
+ * that nonce has not signed it: the exit may land until its mortality is out, and nothing is
+ * sent meanwhile; past it unlanded, it never will, and null again. A record from before the
+ * nonce was kept is judged by the landing alone, and never sent again.
+ */
+async function settleExit(
+  input: WithdrawTickInput,
+  state: WithdrawTickState,
+  nonce: number,
+  readLanding: () => Promise<bigint>,
+): Promise<"done" | "redeem" | null> {
+  const pinned = state.redeemNonce;
+  if (pinned !== null && nonce < pinned) {
+    throw new Error(`the key is at nonce ${nonce} on Asset Hub, behind the exit's ${pinned}`);
+  }
+  if (pinned !== null && nonce === pinned) {
+    const finalized = await bounded(
+      input.readFinalizedNumber(),
+      input.tickTimeoutMs,
+      "finalized head read",
+    );
+    if (state.redeemAnchor !== null && !mayStillLand(state.redeemAnchor, finalized)) {
+      exitNeverLands(state);
+      return null;
+    }
+    return "redeem";
+  }
+  if (state.destinationBefore === null || state.expectedLanding === null) return "redeem";
+  const landed = (await readLanding()) - state.destinationBefore >= state.expectedLanding;
+  if (landed) return "done";
+  if (pinned === null) return "redeem";
+  // Refused at inclusion with the answer lost: the batch rolled back whole and the nonce is
+  // spent. Not counted as a rejection, since the reason is unknown; the dry run before the next
+  // submit catches a refusal that stands.
+  exitNeverLands(state);
+  return null;
+}
+
 /**
  * The PSM tier once its XCM has left People: waits for the CASH to show on the key's Asset Hub
  * account, then redeems it through the PSM, or sells it on the pool when the user chose that,
- * and reads the stable's arrival. Idempotent by balance: the CASH is on the key until the exit
- * takes it, and a lost answer is read back from the key and the landing.
+ * and reads the stable's arrival. The exit is signed once at the key's nonce, under a mortality:
+ * the CASH stays on the key until the exit takes it, so a lost answer is settled from the nonce
+ * and the landing, and nothing is sized or sent again while that exit can still land.
  */
 async function exitFromAssetHub(
   input: WithdrawTickInput,
@@ -404,20 +468,15 @@ async function exitFromAssetHub(
           input.tickTimeoutMs,
           "destination balance read",
         );
+  if (state.redeemSubmitted) {
+    const settled = await settleExit(input, state, onKey.nonce, readLanding);
+    if (settled !== null) return { step: settled, balances, submitted: false };
+  }
   const floors = await bounded(
     readRedeemFloors(assetHubApi, route),
     input.tickTimeoutMs,
     "redeem floors read",
   );
-  // Below the PSM's minimum nothing can leave the key through it: what is there is what the exit
-  // left behind, so the exit landed or is landing. CASH still there says the submit never did.
-  if (state.redeemSubmitted && onKey.cash < floors.minSwapAmount) {
-    if (state.destinationBefore === null || state.expectedLanding === null) {
-      return { step: "redeem", balances, submitted: false };
-    }
-    const landed = (await readLanding()) - state.destinationBefore >= state.expectedLanding;
-    return { step: landed ? "done" : "redeem", balances, submitted: false };
-  }
 
   const waiting = (): WithdrawTickOutcome => {
     state.waitingSince ??= input.now();
@@ -500,24 +559,31 @@ async function exitFromAssetHub(
     throw error;
   }
   // Read before the submit, so what the exit adds is measured from what was there. Set before
-  // the driver persists, so a submit whose answer is lost keeps its baseline.
+  // the driver persists, with the nonce and the anchor the exit is signed under, so a submit
+  // whose answer is lost keeps its baseline and is settled before another is sized.
+  const anchor = await bounded(input.assetHubAnchor(), input.tickTimeoutMs, "anchor read");
   state.destinationBefore = await readLanding();
   state.expectedLanding = net;
+  state.redeemNonce = onKey.nonce;
+  state.redeemAnchor = anchor.number;
   state.redeemSubmitted = true;
   await input.onBeforeSubmit?.(call);
   state.attempts += 1;
   const res = await bounded(
     exit.signAndSubmit(key.signer, {
       ...ASSET_HUB_CASH_TX_OPTIONS,
-      ...input.assetHubSignOptions,
+      at: anchor.hash,
+      nonce: state.redeemNonce,
+      mortality: { mortal: true, period: PAY_MORTAL_PERIOD },
     } as never),
     input.submitTimeoutMs,
     `${call} submit`,
   );
   input.onTx?.({ call, txHash: res.txHash, block: res.block?.number });
   if (!res.ok) {
-    // Included and refused: the batch rolled back whole, and the CASH is still on the key.
-    state.redeemSubmitted = false;
+    // Included and refused: the batch rolled back whole, the CASH is still on the key, and the
+    // nonce is spent.
+    exitNeverLands(state);
     return refusal(res.dispatchError);
   }
   return { step: "redeem", balances, submitted: true };

@@ -1,11 +1,13 @@
 // The worker's redeem step, offline: the chains are scripted through the clients the engine opens,
 // the tick and the records are real. What this pins is the glue the tick's own tests cannot see:
-// the exit is signed with Asset Hub's anchor, not People's, the exit's state is persisted and
-// read back, and the user's switch makes the same step sell on the pool.
+// the exit is signed at the key's Asset Hub nonce with Asset Hub's anchor, not People's, the
+// exit's state, nonce and anchor included, is persisted and read back, and the user's switch
+// makes the same step sell on the pool.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AccountId } from "polkadot-api";
 import { TOKENS } from "@getsome/core";
+import { PAY_MORTAL_PERIOD } from "@getsome/withdraw";
 
 const mocks = vi.hoisted(() => ({
   stored: new Map<string, unknown>(),
@@ -13,6 +15,8 @@ const mocks = vi.hoisted(() => ({
   holdings: new Map<string, bigint>(),
   /** The PSM's debt against USDT: the room for a redeem. */
   psmDebt: 0n,
+  /** The key's nonce on Asset Hub. */
+  keyNonce: 0,
   /** The transactions the key signed on Asset Hub. */
   submits: [] as { pallet: string; name: string; args: unknown; options: unknown }[],
 }));
@@ -62,6 +66,9 @@ vi.mock("../worker/src/shared.js", async (importOriginal) => {
       Psm: {
         PsmDebt: { getValue: async () => mocks.psmDebt },
         Psm: { getValue: async () => ({ min_swap_amount: 1_000_000n }) },
+      },
+      System: {
+        Account: { getValue: async () => ({ nonce: mocks.keyNonce, data: { free: 0n } }) },
       },
       Assets: {
         Asset: {
@@ -193,8 +200,14 @@ const storedJob = (): StoredJob =>
 const hold = (id: number, ss58: string, balance: bigint) =>
   mocks.holdings.set(`${id}:${ss58}`, balance);
 
-/** The exit's options: the fee in CASH, anchored on Asset Hub. */
-const EXIT_OPTIONS = { asset: TOKENS.CASH.location, at: "0xah-best" };
+/** The exit's options: the fee in CASH, anchored on Asset Hub, signed at the key's nonce there
+ *  and mortal. */
+const EXIT_OPTIONS = {
+  asset: TOKENS.CASH.location,
+  at: "0xah-best",
+  nonce: 0,
+  mortality: { mortal: true, period: PAY_MORTAL_PERIOD },
+};
 /** What 10 CASH on the key leaves for the exit once the fee's margin (3,577) and the account's
  *  minimum (1) stay behind. */
 const CASH_IN = 9_996_422n;
@@ -205,6 +218,7 @@ describe("the worker's redeem step", () => {
     mocks.holdings.clear();
     mocks.submits.length = 0;
     mocks.psmDebt = 500_000_000n;
+    mocks.keyNonce = 0;
     hold(CASH_ID, KEY_SS58, 10_000_000n);
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
@@ -258,6 +272,8 @@ describe("the worker's redeem step", () => {
         attempts: 3,
         exit: "psm",
         redeemSubmitted: true,
+        redeemNonce: 0,
+        redeemAnchor: 1,
         destinationBefore: "0",
         expectedLanding: "9946439",
         waitingSince: null,
@@ -265,7 +281,9 @@ describe("the worker's redeem step", () => {
       txs: [{ call: "redeem", txHash: "0x1", block: 7 }],
     });
 
-    // The redeem landed: the key keeps its dust, the destination has the net.
+    // The redeem landed: the key signed past the exit's nonce and keeps its dust, the destination
+    // has the net.
+    mocks.keyNonce = 1;
     hold(CASH_ID, KEY_SS58, 327n);
     hold(USDT_ID, LANDING_SS58, 9_946_439n);
     await engine.tickAllWithdraw();

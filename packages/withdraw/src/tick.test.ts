@@ -14,6 +14,7 @@ import {
   XCM_TX_FEE_HEADROOM_PCT,
 } from "./fees";
 import { PASEO_PEOPLE_POOL_ACCOUNT } from "./paseo";
+import { PAY_MORTAL_PERIOD } from "./mortality";
 import { cashInFor } from "./pool";
 import { psmRedeemOut } from "./program";
 import {
@@ -64,6 +65,18 @@ const AH_TX_FEE_CASH = AH_TX_FEE_PAS / AH_RATE;
 const CASH_MIN_BALANCE = 1n;
 const USDT_MIN_BALANCE = 70_000n;
 const PSM_MIN_SWAP = 1_000_000n;
+/** Asset Hub's best block when the exit is first signed, and its finalized head then. */
+const AH_ANCHOR = 1_000;
+const AH_FINALIZED = 998;
+const anchorHash = (number: number) => `0xah-${number}`;
+/** The exit's options: the fee in CASH, anchored at `anchor` on Asset Hub, signed at `nonce` and
+ *  mortal. */
+const exitOptions = (anchor: number, nonce: number) => ({
+  asset: TOKENS.CASH.location,
+  at: anchorHash(anchor),
+  nonce,
+  mortality: { mortal: true, period: PAY_MORTAL_PERIOD },
+});
 
 type Instruction = { type: string; value?: unknown };
 type Fungible = { id: unknown; fun: { type: string; value: bigint } };
@@ -145,6 +158,12 @@ function scriptedWorld(
     trapOnAssetHubDryRun?: bigint;
     /** The PSM refuses the redeem with this error of its own, at the dry run and at inclusion. */
     refuseRedeem?: string;
+    /** The exit is broadcast, never included, and the submit's answer never comes back. */
+    dropExit?: boolean;
+    /** The exit is included and refused, and the submit's answer never comes back. */
+    refuseExitLost?: boolean;
+    /** The exit lands but the submit's answer never comes back. */
+    loseExitAnswer?: boolean;
   } = {},
 ) {
   const state = {
@@ -161,6 +180,10 @@ function scriptedWorld(
      *  redeem leaves there. */
     keyCashAh: 0n,
     keyUsdtAh: 0n,
+    /** The key's nonce on Asset Hub: what it signed there and the chain included. */
+    keyNonceAh: 0,
+    anchorAh: AH_ANCHOR,
+    finalizedAh: AH_FINALIZED,
     destinationPas: DESTINATION_PAS,
     /** What the last Asset Hub dry run credited to the program's beneficiary. */
     lastDryRunLanded: 0n,
@@ -407,8 +430,13 @@ function scriptedWorld(
       getEstimatedFees: async () => AH_TX_FEE_PAS,
       signAndSubmit: async (_signer: unknown, options: Record<string, unknown>) => {
         state.submits.push({ call: name, args, options });
+        const lostAnswer = () => new Error("redeem submit timed out after 1s");
+        if (opts.dropExit) throw lostAnswer();
+        state.keyNonceAh += 1;
         state.keyCashAh -= AH_TX_FEE_CASH;
+        if (opts.refuseExitLost) throw lostAnswer();
         const dispatchError = apply(decodedCall);
+        if (opts.loseExitAnswer) throw lostAnswer();
         if (dispatchError) return { ok: false, txHash: txHashFor(), dispatchError, events: [] };
         return { ok: true, txHash: txHashFor(), block: { number: 501 }, events: [] };
       },
@@ -515,7 +543,11 @@ function scriptedWorld(
     return state.destinationPas;
   };
 
-  const readKeyOnAssetHub = async () => ({ cash: state.keyCashAh, usdt: state.keyUsdtAh });
+  const readKeyOnAssetHub = async () => ({
+    cash: state.keyCashAh,
+    usdt: state.keyUsdtAh,
+    nonce: state.keyNonceAh,
+  });
 
   return { state, peopleApi, assetHubApi, readDestinationOnAssetHub, readKeyOnAssetHub };
 }
@@ -552,6 +584,11 @@ async function drive(
         readKeyOnPeople: async () => ({ cash: world.state.keyCash, pas: world.state.keyPas }),
         readKeyOnAssetHub: world.readKeyOnAssetHub,
         readDestinationOnAssetHub: world.readDestinationOnAssetHub,
+        assetHubAnchor: async () => ({
+          hash: anchorHash(world.state.anchorAh),
+          number: world.state.anchorAh,
+        }),
+        readFinalizedNumber: async () => world.state.finalizedAh,
         now: () => now,
         onTransientError: (e) => transients.push(e instanceof Error ? e.message : String(e)),
       },
@@ -698,11 +735,14 @@ describe("withdrawTickOnce", () => {
         },
       ],
     });
-    expect(batch.options).toEqual({ asset: TOKENS.CASH.location });
+    // Signed at the key's nonce on Asset Hub, anchored there and mortal, both kept with the state.
+    expect(batch.options).toEqual(exitOptions(AH_ANCHOR, 0));
     expect(state).toMatchObject({
       attempts: 3,
       exit: "psm",
       redeemSubmitted: true,
+      redeemNonce: 0,
+      redeemAnchor: AH_ANCHOR,
       waitingSince: null,
       psmRefusals: 0,
       destinationBefore: DESTINATION_PAS,
@@ -810,11 +850,107 @@ describe("withdrawTickOnce", () => {
       send_to: DESTINATION_SS58,
       keep_alive: false,
     });
-    expect(swap.options).toEqual({ asset: TOKENS.CASH.location });
+    expect(swap.options).toEqual(exitOptions(AH_ANCHOR, 0));
     // Held to the quote less the headroom; the destination gained the quote itself.
     expect(state).toMatchObject({ expectedLanding: minOut, redeemSubmitted: true });
     expect(world.state.destinationPas).toBe(DESTINATION_PAS + quote);
     expect(world.state.psmDebt).toBe(0n);
+  });
+
+  it("sends nothing while an exit whose answer was lost may still land: the key at its nonce, finality within its mortality", async () => {
+    const world = scriptedWorld({ dropExit: true });
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state, PSM_SALE);
+    const { net } = sizedExit(world);
+    world.state.psmDebt = net;
+    await expect(drive(world, 1, state, PSM_SALE)).rejects.toThrow(/timed out/);
+    const inFlight = {
+      attempts: 3,
+      redeemSubmitted: true,
+      redeemNonce: 0,
+      redeemAnchor: AH_ANCHOR,
+      destinationBefore: DESTINATION_PAS,
+      expectedLanding: net,
+    };
+    expect(state).toMatchObject(inFlight);
+    // Finality reaches the last block the exit is valid in: still nothing to do.
+    world.state.finalizedAh = AH_ANCHOR + PAY_MORTAL_PERIOD;
+    const held = await drive(world, 1, state, PSM_SALE);
+    expect(held.outcomes[0]).toEqual({
+      step: "redeem",
+      balances: { cash: 0n, pas: 0n },
+      submitted: false,
+    });
+    expect(state).toMatchObject(inFlight);
+    expect(world.state.exitDryRuns).toBe(1);
+    expect(world.state.submits.map((s) => s.call)).toEqual(["swap", "execute", "batch_all"]);
+  });
+
+  it("sizes and signs the exit afresh once the lost one is past its mortality with the key still at its nonce", async () => {
+    const world = scriptedWorld({ dropExit: true });
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state, PSM_SALE);
+    const { net } = sizedExit(world);
+    world.state.psmDebt = net;
+    await expect(drive(world, 1, state, PSM_SALE)).rejects.toThrow(/timed out/);
+    world.state.finalizedAh = AH_ANCHOR + PAY_MORTAL_PERIOD + 1;
+    world.state.anchorAh = AH_ANCHOR + PAY_MORTAL_PERIOD + 3;
+    // The destination is not ours: a deposit from elsewhere meanwhile moves the baseline.
+    world.state.destinationPas += 5n;
+    await expect(drive(world, 1, state, PSM_SALE)).rejects.toThrow(/timed out/);
+    const calls = world.state.submits.map((s) => s.call);
+    expect(calls).toEqual(["swap", "execute", "batch_all", "batch_all"]);
+    expect(world.state.submits[3]!.options).toEqual(exitOptions(world.state.anchorAh, 0));
+    expect(state).toMatchObject({
+      attempts: 4,
+      redeemSubmitted: true,
+      redeemNonce: 0,
+      redeemAnchor: world.state.anchorAh,
+      destinationBefore: DESTINATION_PAS + 5n,
+      expectedLanding: net,
+    });
+  });
+
+  it("sizes and submits again when the exit was included and refused with its answer lost: the key past the exit's nonce, the landing not grown", async () => {
+    const world = scriptedWorld({ refuseExitLost: true });
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state, PSM_SALE);
+    const first = sizedExit(world);
+    world.state.psmDebt = first.net;
+    await expect(drive(world, 1, state, PSM_SALE)).rejects.toThrow(/timed out/);
+    expect(world.state.keyNonceAh).toBe(1);
+    // The refused exit cost its fee; the next is sized from what is left, at the nonce after it.
+    const second = sizedExit(world);
+    expect(second.cashIn).toBe(first.cashIn - AH_TX_FEE_CASH);
+    world.state.anchorAh = AH_ANCHOR + 2;
+    world.state.destinationPas += 5n;
+    await expect(drive(world, 1, state, PSM_SALE)).rejects.toThrow(/timed out/);
+    const calls = world.state.submits.map((s) => s.call);
+    expect(calls).toEqual(["swap", "execute", "batch_all", "batch_all"]);
+    expect(world.state.submits[3]!.options).toEqual(exitOptions(AH_ANCHOR + 2, 1));
+    expect(state).toMatchObject({
+      attempts: 4,
+      rejections: 0,
+      redeemSubmitted: true,
+      redeemNonce: 1,
+      redeemAnchor: AH_ANCHOR + 2,
+      destinationBefore: DESTINATION_PAS + 5n,
+      expectedLanding: second.net,
+    });
+  });
+
+  it("finishes when the exit landed but its answer was lost: the key past the exit's nonce and the landing grown by its net, with nothing sent again", async () => {
+    const world = scriptedWorld({ loseExitAnswer: true });
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state, PSM_SALE);
+    const { net } = sizedExit(world);
+    world.state.psmDebt = net;
+    await expect(drive(world, 1, state, PSM_SALE)).rejects.toThrow(/timed out/);
+    expect(world.state.keyNonceAh).toBe(1);
+    const later = await drive(world, 1, state, PSM_SALE);
+    expect(later.steps).toEqual(["done"]);
+    expect(world.state.submits.map((s) => s.call)).toEqual(["swap", "execute", "batch_all"]);
+    expect(world.state.destinationPas).toBe(DESTINATION_PAS + net);
   });
 
   it("redeems alone for a provider rail, the stable staying on the key as the landing", async () => {

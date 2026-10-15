@@ -89,6 +89,7 @@ export {
   PaymentUnresolvedError,
   residueReturnFloor,
 } from "./pay-exact";
+export { PAY_MORTAL_PERIOD } from "./mortality";
 export { cashInFor, pasOutFor } from "./pool";
 export type { PoolReserves } from "./pool";
 export {

@@ -25,8 +25,8 @@ export async function readDestinationBalance(
 }
 
 /** The account's balance in `token` and its nonce on Asset Hub at the finalized head; both 0 for
- *  an account the chain does not know. The exact payment reads the nonce to tell whether it
- *  already went out. */
+ *  an account the chain does not know. The exact payment and the PSM tier's exit read the nonce
+ *  to tell whether they already went out. */
 export async function readAssetHubAccount(
   api: AssetHubApi,
   accountHex: string,
