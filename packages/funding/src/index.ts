@@ -24,7 +24,7 @@ export {
   tickOnce,
   withHeadroom,
 } from "./pipeline";
-export type { ConversionFact, FundingStep, TickState } from "./pipeline";
+export type { ArrivalRule, ConversionFact, FundingStep, TickState } from "./pipeline";
 export {
   buildFundingProgram,
   buildPsmFundingProgram,
