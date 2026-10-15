@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { TOKENS } from "@getsome/core";
 import { BelowMinimumSwapAmountError, egressFor, type QuoteBackend } from "@getsome/chainflip";
-import { priceSourceLeg } from "../lib/source-price";
+import { priceSourceLeg, sourcePriceOf } from "../lib/source-price";
 
 /** The pool tier's egress: the native. */
 const NATIVE = egressFor(TOKENS.PAS);
@@ -90,6 +90,16 @@ describe("priceSourceLeg", () => {
       backend: backend(() => []),
     });
     expect(result.kind).toBe("unavailable");
+  });
+});
+
+describe("sourcePriceOf", () => {
+  it("reads the rail's figure off the quote", () => {
+    const source = { amount: 70_001n, formatted: "0.00070001", assetSymbol: "BTC", decimals: 8 };
+    expect(sourcePriceOf({ sourceId: "btc", source, raw: {} })).toEqual({
+      formatted: "0.00070001",
+      baseUnits: 70_001n,
+    });
   });
 });
 

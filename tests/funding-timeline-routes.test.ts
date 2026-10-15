@@ -67,10 +67,10 @@ function cardRecord(): TopUpRecord {
 type Paid = Pick<TopUpRecord, "chain" | "asset">;
 const POLKADOT_DOT: Paid = { chain: "Polkadot", asset: "DOT" };
 
-/** A crypto top-up as the session stores it: under the Asset Hub source the funds arrive as, paid
- *  from Bitcoin unless `paid` names another network and token. */
-function cryptoRecord(paid?: Paid): TopUpRecord {
-  const ref = requestRefOf("dot-assethub", 3);
+/** A crypto top-up as the session stores it: under the source of the network it is paid from,
+ *  Bitcoin unless `paid` names another network and token. */
+function cryptoRecord(paid: Paid = { chain: "Bitcoin", asset: "BTC" }): TopUpRecord {
+  const ref = requestRefOf(paid.chain === "Polkadot" ? "dot-assethub" : "btc", 3);
   const record = migrateRecord(awaitingDepositCryptoRecord, ref, FIXTURE_NOW);
   if (record?.kind !== "top-up") throw new Error("fixture did not migrate");
   return { ...record, ...paid };
@@ -934,8 +934,12 @@ describe("top-up timeline, route by record", () => {
       meldBankRoute,
     ],
     ["a direct deposit on Polkadot", cryptoRecord(POLKADOT_DOT), directRoute],
-    ["a swap from Bitcoin under an Asset Hub source", cryptoRecord(), chainflipRoute],
-    ["a swap with no source id", { ...cryptoRecord(), ref: { tradeN: 3 } }, chainflipRoute],
+    ["a swap from Bitcoin", cryptoRecord(), chainflipRoute],
+    [
+      "a deposit with no source id",
+      { ...cryptoRecord(POLKADOT_DOT), ref: { tradeN: 3 } },
+      directRoute,
+    ],
   ] satisfies [string, TopUpRecord, TimelineRoute][])(
     "picks for %s its route",
     (_, topUp, route) => {
