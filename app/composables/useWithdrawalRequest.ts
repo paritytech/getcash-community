@@ -6,7 +6,7 @@
 // its own wake, so a cancelled record cannot cause a payment.
 
 import { computed } from "vue";
-import { depositTokenOf, recordedRoute, type ConversionRoute } from "@getsome/funding";
+import { depositTokenOf, recordedRoute, type ConversionRoute, type Stable } from "@getsome/funding";
 import { formatSellAmount, meldTokenOf, type MeldQuoteEntry } from "@getsome/meld";
 import {
   MELD_WITHDRAW_DESTINATIONS,
@@ -22,7 +22,12 @@ import {
 import { paymentIdFor } from "../funding/requests/payment-id";
 import { useRequestsStore } from "../stores/requests";
 import { fmtCash } from "../utils/cash";
-import { requestRefKey, requestRefOf, type RequestRef } from "../utils/request-index";
+import {
+  requestRefKey,
+  requestRefOf,
+  sameRequestRef,
+  type RequestRef,
+} from "../utils/request-index";
 import { formatLanding } from "../withdraw/destinations";
 import { meldSellClient } from "../withdraw/meld-client";
 import { workerSessionId } from "~~/lib/coinage";
@@ -78,18 +83,44 @@ export type MeldSaleStartOutcome =
   /** Nothing was created. */
   | { ok: false; reason: string };
 
-/** The CASH this app's own PSM-tier withdrawals have yet to redeem, base units: every open one
- *  the worker has not seen through, counted whole. A new route is chosen with this much of the
- *  PSM's room already spoken for, since the chain learns of each only as its XCM lands. */
-export function psmReserved(withdrawals: readonly WithdrawalRecord[]): bigint {
+/** The CASH this app's own PSM-tier withdrawals against `external` have yet to redeem, base
+ *  units, counted whole, leaving out `except`, the withdrawal being decided for. A route is
+ *  chosen with this much of the pair's room already spoken for, since the chain learns of each
+ *  redeem only as the worker submits it. */
+export function psmReserved(
+  withdrawals: readonly WithdrawalRecord[],
+  external: Stable,
+  except?: RequestRef,
+): bigint {
   let reserved = 0n;
   for (const record of withdrawals) {
-    if (record.handoff.tier !== "psm" || record.status.kind === "sent") continue;
-    const { worker } = record.witnesses;
-    if (worker?.known === true && worker.done) continue;
-    reserved += BigInt(record.handoff.amount);
+    if (except !== undefined && sameRequestRef(record.ref, except)) continue;
+    if (record.handoff.tier !== "psm" || record.handoff.external !== external) continue;
+    if (redeemAhead(record)) reserved += BigInt(record.handoff.amount);
   }
   return reserved;
+}
+
+/** The worker's phases past the exit from the key: the CASH has left it, through the PSM or the
+ *  pool, and draws on the PSM's room no more. */
+const EXITED_PHASES: ReadonlySet<string> = new Set(["done", "handoff", "follow"]);
+
+/** Whether a withdrawal's redeem is still to come: it waits for its payment, holds the CASH or
+ *  is moving it, or failed in a way a retry redeems from (a hold leaves the CASH on the key);
+ *  and the worker has neither sent the CASH out of the key, by the redeem or the pool exit, nor
+ *  seen the job past that. Sent, expired, cancelled and ended for good never redeem. */
+function redeemAhead(record: WithdrawalRecord): boolean {
+  const { status } = record;
+  const pending =
+    status.kind === "awaiting-payment" ||
+    status.kind === "paid" ||
+    status.kind === "converting" ||
+    (status.kind === "failed" && status.recoverable);
+  if (!pending) return false;
+  const { worker } = record.witnesses;
+  if (worker?.known !== true) return true;
+  if (worker.done || EXITED_PHASES.has(worker.phase)) return false;
+  return !(worker.txs ?? []).some((tx) => tx.call === "redeem" || tx.call === "pool-exit");
 }
 
 export function useWithdrawalRequest() {
@@ -339,13 +370,15 @@ export function useWithdrawalRequest() {
       return { ok: false, reason: "The sale could not be checked with the provider." };
     }
     if (!unasked(ref)) return { ok: false, reason: "The sale is no longer waiting for payment." };
+    const sale = recordedRoute(record.handoff);
     let fundable: boolean;
     try {
       fundable = await live.meldCommitmentFundable(
         BigInt(record.handoff.amount),
         BigInt(record.sale.cryptoAmount),
         channel.address,
-        recordedRoute(record.handoff),
+        sale,
+        sale.tier === "psm" ? psmReserved(requests.openWithdrawals, sale.external, ref) : 0n,
       );
     } catch (e: unknown) {
       // Not knowing is not a no: the sale waits, and the seller can try again.

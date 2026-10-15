@@ -7,7 +7,7 @@
 // Nothing is asked of the balance until the provider names where the funds go; from there the
 // record and the worker carry the sale.
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import type { ConversionRoute } from "@getsome/funding";
+import { PSM_EXTERNAL, type ConversionRoute } from "@getsome/funding";
 import { useMeldSellQuote } from "../../../composables/useMeldSellQuote";
 import { useStateDirector } from "../../../composables/useStateDirector";
 import { psmReserved, useWithdrawalRequest } from "../../../composables/useWithdrawalRequest";
@@ -216,7 +216,7 @@ async function openQuote() {
       route.value = await live.chooseWithdrawRoute(
         base,
         undefined,
-        psmReserved(requests.openWithdrawals),
+        psmReserved(requests.openWithdrawals, PSM_EXTERNAL),
       );
     } catch (error: unknown) {
       console.warn("[withdraw] the sale could not be decided:", error);

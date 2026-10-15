@@ -3,7 +3,7 @@
 // purse was asked. Opened from the list with `topUp`, it goes straight to the journey of that
 // record. The record and the worker carry on when this screen is left.
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { depositTokenOf, type ConversionRoute } from "@getsome/funding";
+import { depositTokenOf, PSM_EXTERNAL, type ConversionRoute } from "@getsome/funding";
 import { useStateDirector } from "../../../composables/useStateDirector";
 import { psmReserved, useWithdrawalRequest } from "../../../composables/useWithdrawalRequest";
 import type { FundingPackageEmits } from "../../../funding/handoff";
@@ -201,11 +201,13 @@ async function onAddress(entered: string) {
     // The sale the destination takes, decided now and frozen at confirm: the token picked for
     // Asset Hub itself, the fiat rule for a provider, which lands the sale's token on the key.
     const live = await import("~~/lib/withdraw-live");
-    const route = await live.chooseWithdrawRoute(
-      base,
-      picked.landing,
-      psmReserved(requests.openWithdrawals),
-    );
+    // The PSM's room this app's own redeems have spoken for, against the stable the destination
+    // lands or the fiat rule's external for a provider; the native and dotUSD read no PSM.
+    const reserved =
+      picked.landing === "native" || picked.landing === "dotUSD"
+        ? 0n
+        : psmReserved(requests.openWithdrawals, picked.landing ?? PSM_EXTERNAL);
+    const route = await live.chooseWithdrawRoute(base, picked.landing, reserved);
     if (stale()) return;
     // The sale stands on its own: an estimate that cannot be priced hides the figure, as it
     // always did, and does not hold the withdrawal back.

@@ -73,8 +73,9 @@ const FEE_ROUNDS = 3;
 const LONGEST_AMOUNT = 2n ** 63n;
 
 /** The CASH a PSM-tier withdrawal has to redeem out of what the key holds on People: all of it
- *  but the earmark for Asset Hub's fees. The figure a sale is quoted on; the redeem itself is
- *  sized from what reaches the key on Asset Hub. */
+ *  but the earmark for Asset Hub's fees. The figure the PSM's room is judged on at quote time;
+ *  the redeem itself, and what a sale is quoted, are sized from what reaches the key on Asset
+ *  Hub. */
 export const redeemAmountOf = (cashOnKey: bigint): bigint =>
   cashOnKey - destinationEarmark(cashOnKey, ASSET_HUB_FEE_BUFFER_CASH);
 

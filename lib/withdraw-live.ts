@@ -18,6 +18,7 @@ import {
   STABLE_TOKENS,
   type ConversionRoute,
   type DepositAsset,
+  type PsmRoute,
 } from "@getsome/funding";
 import { sellAmountOf } from "@getsome/meld";
 import {
@@ -27,16 +28,22 @@ import {
 } from "@getsome/host";
 import { CASH_DECIMALS, CASH_LOCATION } from "@getsome/people";
 import {
+  buildRedeemBatch,
   CASH_ON_ASSET_HUB,
+  cashToExit,
   DEFAULT_WITHDRAW_SLIPPAGE_PCT,
   estimateDirectFeesCash,
+  estimateRedeemFeeCash,
   exactPaymentFloor,
   PASEO_PEOPLE_POOL_ACCOUNT,
   PEOPLE_NATIVE,
   psmRedeemOut,
   readDestinationBalance,
+  readRedeemFloors,
   redeemAmountOf,
+  RedeemTooSmallError,
   residueReturnFloor,
+  type AssetHubApi,
 } from "@getsome/withdraw";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import {
@@ -223,17 +230,42 @@ export async function chooseWithdrawRoute(
   });
 }
 
+/** Stands in for the key and the provider in a fee estimate before either is known: the fee
+ *  depends on the call, not on who makes it. */
+const FEE_ESTIMATE_ACCOUNT = "13ENScfFZXQ8avXf6cphack516B8YCjdL4MJbodm7VxK8GE9";
+
+/** What the PSM tier lands of `sold` CASH in its stable, sized as the worker sizes the redeem
+ *  from what reaches the key: the batch's own fee with its margin and the CASH account's minimum
+ *  stay on the key, the rest is redeemed at the frozen rate. The redeem alone is priced, as a
+ *  provider rail runs it. 0 when the fee and the minimum take the whole amount. */
+async function psmLanding(api: AssetHubApi, sold: bigint, sale: PsmRoute): Promise<bigint> {
+  const [floors, feeCash] = await Promise.all([
+    readRedeemFloors(api, sale),
+    estimateRedeemFeeCash(
+      api,
+      buildRedeemBatch(api, { route: sale, cashIn: sold }),
+      FEE_ESTIMATE_ACCOUNT,
+    ),
+  ]);
+  try {
+    return psmRedeemOut(cashToExit(sold, feeCash, floors), sale.feeRate);
+  } catch (e) {
+    if (e instanceof RedeemTooSmallError) return 0n;
+    throw e;
+  }
+}
+
 /** What a direct withdrawal of `amount` CASH lands on Asset Hub in the asset `sale` ends in,
  *  base units, at today's prices: the amount less the fees, sold as the program sells it,
- *  redeemed at the PSM's fee rate, or landed as it is on the dotUSD tier. An estimate for the
- *  summary, not what the program is held to. */
+ *  redeemed as the batch redeems it from the key, or landed as it is on the dotUSD tier. An
+ *  estimate for the summary, not what the program is held to. */
 export async function quoteDirectReceive(amount: bigint, sale: ConversionRoute): Promise<bigint> {
   const sold = amount - (await directFeesCash(sale));
   if (sold <= 0n) return 0n;
   if (sale.tier === "dotusd") return sold;
-  if (sale.tier === "psm") return psmRedeemOut(sold, sale.feeRate);
   const { connectChain, ASSET_HUB } = await import("./host-chain");
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
+  if (sale.tier === "psm") return psmLanding(api, sold, sale);
   const native = await api.apis.AssetConversionApi.quote_price_exact_tokens_for_tokens(
     CASH_ON_ASSET_HUB as never,
     PEOPLE_NATIVE as never,
@@ -272,15 +304,13 @@ export async function quoteDirectCashFor(native: bigint): Promise<bigint> {
 // floor of DEFAULT_WITHDRAW_SLIPPAGE_PCT below the quote of its moment, so the figure is what the
 // sale lands today less that floor, less the margin the check before the purse keeps, less a point
 // for the price to move while the seller verifies, less what the payment itself costs the key. On
-// the PSM tier the rate is frozen on the sale, so the figure is what the redeem lands less the
-// payment's cost and nothing else. What the sale lands above the figure is the residue, which the
-// worker sends home once the provider is paid. Before the purse is asked the figure is checked
-// again, on the pool tier with that margin under the floor, since the worker sizes the sale a few
-// minutes later; a price that moved too far meanwhile ends the sale with nothing taken.
-
-/** Stands in for the key and the provider in the payment's fee estimate before either is known:
- *  the fee depends on the call, not on who makes it. */
-const FEE_ESTIMATE_ACCOUNT = "13ENScfFZXQ8avXf6cphack516B8YCjdL4MJbodm7VxK8GE9";
+// the PSM tier the rate is frozen on the sale, so the figure is what the batch pays out of what
+// the key holds, less the payment's cost and nothing else. What the sale lands above the figure is
+// the residue, which the worker sends home once the provider is paid. Before the purse is asked
+// the figure is checked again, on the pool tier with that margin under the floor, since the worker
+// sizes the sale a few minutes later, and on the PSM tier with the pair decided again as it stands,
+// since the seller's verification can take hours; a price that moved too far meanwhile, or a PSM
+// that can no longer serve the sale, ends it with nothing taken.
 
 /** Room the check before the purse keeps under the worker's floor, percent: the worker sizes the
  *  sale minutes later, after the purse pays and the fee swap runs. */
@@ -299,18 +329,15 @@ function saleFloor(expected: bigint, sale: ConversionRoute, marginPct: number): 
 
 /** What `sale` lands of `amount` CASH today in its token, as the worker will size it, the fees it
  *  takes first and the Asset Hub it was read on; null when the fees take the whole amount. The
- *  pool tiers land the quote for everything the fees leave; the PSM redeems that less Asset Hub's
- *  earmark, the figure `priceSale` redeems and the only one the exact payment can be held to. */
+ *  summary's own figure: the pool tiers land the quote for everything the fees leave, the PSM
+ *  what the batch redeems of it from the key. */
 async function saleNow(amount: bigint, sale: ConversionRoute) {
   const fees = await directFeesCash(sale);
   const sold = amount - fees;
   if (sold <= 0n) return null;
   const { connectChain, ASSET_HUB } = await import("./host-chain");
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
-  const expected =
-    sale.tier === "psm"
-      ? psmRedeemOut(redeemAmountOf(sold), sale.feeRate)
-      : await quoteDirectReceive(amount, sale);
+  const expected = await quoteDirectReceive(amount, sale);
   return { api, fees, expected };
 }
 
@@ -355,13 +382,27 @@ export async function sizeMeldCommitment(
 
 /** Whether `amount` CASH through `sale` still covers a sale's `planck` at today's price: the floor
  *  the worker would ship covers the payment to `depositAddress`, its fee and what the key keeps to
- *  stay alive, as the worker itself will require. Asked before the purse is. */
+ *  stay alive, as the worker itself will require. On the PSM tier the sale is decided again first,
+ *  with `reserved` of the pair's room spoken for by this app's other redeems: a pair that filled
+ *  up, stopped or repriced since the quote cannot run the worker's redeem at the frozen rate.
+ *  Asked before the purse is. */
 export async function meldCommitmentFundable(
   amount: bigint,
   planck: bigint,
   depositAddress: string,
   sale: ConversionRoute,
+  reserved: bigint,
 ): Promise<boolean> {
+  if (sale.tier === "psm") {
+    const today = await chooseWithdrawRoute(amount, sale.external, reserved);
+    if (
+      today.tier !== "psm" ||
+      today.external !== sale.external ||
+      today.feeRate !== sale.feeRate
+    ) {
+      return false;
+    }
+  }
   const now = await saleNow(amount, sale);
   if (now === null) return false;
   const needed = await exactPaymentFloor(
