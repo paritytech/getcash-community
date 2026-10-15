@@ -413,21 +413,57 @@ describe("a fiat sale through an offramp lane", () => {
     expect(storedJob().swap.id).toBe("cf-channel-7");
   });
 
-  it("gives up on the refund two hours after the swap failed", async () => {
+  it("waits as long as Chainflip's refund is pending, two hours and well past", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       const engine = await landed();
       await engine.tickAllWithdraw();
       mocks.status.mockResolvedValue({ status: "failed", raw: "FAILED" });
       await engine.tickAllWithdraw();
-      expect(storedJob().failedAt).toBe(Date.now());
+      vi.setSystemTime(Date.now() + 6 * 60 * 60 * 1000); // an egress incident
+      await engine.tickAllWithdraw();
+      expect(storedJob().residue).toBeUndefined();
       expect(storedJob().residueError).toMatch(/refund/);
-      vi.setSystemTime(Date.now() + 2 * 60 * 60 * 1000);
+      mocks.keyCash = 99_000_000n; // the refund lands at last
+      await engine.tickAllWithdraw();
+      expect(storedJob().residue).toMatchObject({ amount: "99000000", returning: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops waiting once Chainflip witnessed the refund and the key still reads empty", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const engine = await landed();
+      await engine.tickAllWithdraw();
+      mocks.status.mockResolvedValue({
+        status: "failed",
+        raw: "FAILED",
+        refundEgress: { witnessedAt: Date.now() },
+      });
+      await engine.tickAllWithdraw();
+      expect(storedJob().residueError).toMatch(/refund/);
+      vi.setSystemTime(Date.now() + 10 * 60 * 1000);
       await engine.tickAllWithdraw();
       expect(storedJob().residue).toEqual({ amount: "0", returning: false });
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("leaves a refund Chainflip could not send for a person", async () => {
+    const engine = await landed();
+    await engine.tickAllWithdraw();
+    mocks.status.mockResolvedValue({
+      status: "failed",
+      raw: "FAILED",
+      refundEgress: { failure: { mode: "TRANSACTION_REJECTED_BY_BROKER" } },
+    });
+    await engine.tickAllWithdraw();
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue).toEqual({ amount: "0", returning: false, stuck: true });
+    expect(mocks.startFunding).not.toHaveBeenCalled();
   });
 });
 

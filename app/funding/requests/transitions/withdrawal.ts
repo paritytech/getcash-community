@@ -197,6 +197,17 @@ function railRead(
   if (rail.stage === "delivered") return rank < 4 && !atSideExit(next) ? sent(next, at) : next;
   if (rail.stage === "failed" && rail.failure !== undefined) {
     if (rank >= 4 || atSideExit(next)) return next;
+    // A sale's swap refunds its USDT to the key, and the worker brings it home itself: nothing
+    // reached the provider, there is nothing for the seller to move, and the order cannot be
+    // tried again.
+    if (record.rail.provider === "meld" && rail.failure.kind === "refunded") {
+      return failed(next, at, {
+        kind: "sale-closed",
+        step: "send",
+        message: rail.failure.message,
+        recoverable: false,
+      });
+    }
     return failed(next, at, {
       kind: railFailureKind(rail.failure.kind),
       step: "send",
