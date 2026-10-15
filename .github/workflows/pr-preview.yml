@@ -27,6 +27,7 @@ jobs:
           chainflip-broker-api-key: ${{ secrets.VITE_CHAINFLIP_BROKER_API_KEY }}
           meld-base-url: ${{ secrets.VITE_MELD_BASE_URL }}
           meld-product-id: ${{ secrets.VITE_MELD_PRODUCT_ID }}
+          offramp-lanes: ${{ vars.VITE_OFFRAMP_LANES }}
           # Fork and Dependabot PRs cannot read repo secrets and skip the deploy job; empty
           # values do not fail their build.
           require-secrets: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]' }}
