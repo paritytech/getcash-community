@@ -39,16 +39,19 @@
 // and the next tick re-prices and retries. Chain reads are lazy: the gating quote or fee estimate
 // only when the decision needs it, the dry run only at the submitting step.
 //
-// THE SUBMIT WAITS FOR INCLUSION; PEOPLE IS READ FINAL. The submit resolves once the program is
-// in a best block with its outcome, so a conversion holds the tick for one inclusion at most.
-// Every People read is of the finalized block, and People can process the program's message only
-// once the Asset Hub block that sent it is in the relay chain, so CASH final on People proves the
-// conversion final too: the run is done, and the claim registered, on nothing less. A submit whose
-// answer was lost is settled from the chain: the nonce unmoved means nothing landed and the same
-// nonce may go out again. A best block can be replaced, so the nonce recorded before the send is
-// kept until the finalized nonce moves past it: the chain final past the block the program was
-// seen in with that nonce unmoved means the program was dropped, and it goes out again the same
-// way.
+// THE SUBMIT WAITS FOR INCLUSION; THE ARRIVAL IS READ WHERE THE INPUT SAYS. The submit
+// resolves once the program is in a best block with its outcome, so a conversion holds the tick
+// for one inclusion at most. The deposit is read at Asset Hub's finalized block. The input's
+// `arrival` names the People block that ends the run: its best block, so the run is done and the
+// claim registered as soon as it holds the target; its best block only once the conversion is
+// final on Asset Hub, and its finalized block before that; or its finalized block alone. A
+// shortfall ends the run, so it is confirmed at People's finalized block. A submit whose answer
+// was lost is settled from the chain: the nonce unmoved means nothing landed and the same nonce
+// may go out again. A best block can be replaced, so the nonce recorded before the send is kept,
+// through done, until the finalized nonce moves past it: the chain final past the block the
+// program was seen in with that nonce unmoved means the program was dropped, People drops the
+// arrival with it, and it goes out again the same way. The driver keeps ticking a done run until
+// its conversion is final, and takes the done back when the block was dropped.
 //
 // A PSM REFUSAL IS RETRIED THREE TIMES, THEN HELD. A mint the PSM refuses (the pair paused, or the
 // mint over its ceiling) is tried again on the next tick, and the third refusal stops the run with
@@ -123,7 +126,7 @@ type AssetLocation = Parameters<AssetHubApi["query"]["AssetConversion"]["Pools"]
 /** The step a tick performs or waits in. 'await-native' waits for the deposit the route expects,
  *  the native on the pool tier and the external on the PSM tier; 'swap' submits the one
  *  transaction that converts it and sends the result, an exchange or a mint; 'await-arrival'
- *  holds while that XCM has not yet credited People in a finalized block. The two names predate
+ *  holds until that XCM has credited People at the block the arrival rule names. The two names predate
  *  the PSM tier and are persisted in TopUpRecord and the worker's job blob, so they keep their
  *  names and widen their meaning. */
 export type FundingStep = "await-native" | "swap" | "await-arrival" | "done";
@@ -157,8 +160,8 @@ export const MAX_PSM_REFUSALS = 3;
  *  dies without rejecting leaves reads pending forever; unbounded, one such tick would
  *  freeze the loop silently, with no transient ever reported. */
 export const DEFAULT_TICK_TIMEOUT_MS = 20_000;
-/** Bound on a submitted extrinsic reaching a best block. Later ticks read the CASH final on
- *  People, so this is the longest a conversion holds the tick. */
+/** Bound on a submitted extrinsic reaching a best block. Later ticks wait for the arrival, so
+ *  this is the longest a conversion holds the tick. */
 export const DEFAULT_INCLUSION_TIMEOUT_MS = 60_000;
 
 function bounded<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
@@ -521,10 +524,12 @@ export interface TickOnceInput {
   inclusionTimeoutMs: number;
   /** Extra options merged into the submit this tick makes, after the PSM tier's fee asset. */
   signOptions?: Record<string, unknown>;
-  /** The burner's CASH on People in the FINALIZED block. The one People read the tick makes, for
-   *  the arrival, the shortfall and the gate alike: the claim is registered on what it returns,
-   *  and a final arrival is also the proof that the conversion is final on Asset Hub. */
-  readFinalizedUnderlyingOnPeople: (ss58: string) => Promise<bigint>;
+  /** The burner's CASH on People at the given block. */
+  readUnderlyingOnPeople: (ss58: string, at: BlockTag) => Promise<bigint>;
+  /** The People block that ends the run: `best` as soon as it holds the target; `best-after-final`
+   *  the same once the conversion is final on Asset Hub, and the finalized block before that;
+   *  `finalized` the finalized block alone. */
+  arrival: ArrivalRule;
   now: () => number;
   /** The submit's hash and block, reported at inclusion. */
   onTx?: (info: { call: "swap"; txHash: string; block?: number }) => void;
@@ -551,6 +556,8 @@ export interface TickOutcome {
 }
 
 type BlockTag = "best" | "finalized";
+
+export type ArrivalRule = "best" | "best-after-final" | "finalized";
 
 /** The burner's deposit on Asset Hub in the asset the route expects, at a block tag or a block
  *  hash: the native's free balance, or the holding of the pallet-assets id the route's token
@@ -781,27 +788,36 @@ async function settleInclusion(
 export async function tickOnce(input: TickOnceInput, state: TickState): Promise<TickOutcome> {
   const { api, route, address } = input;
   const buyAmount = input.settleAmount + input.remoteFeeBuffer;
-  const [depositAh, underlyingPeople] = await bounded(
+  const peopleAt: BlockTag = input.arrival === "finalized" ? "finalized" : "best";
+  const [depositAh, peopleHeld] = await bounded(
     Promise.all([
       readDeposit(api, route, address, "finalized"),
-      input.readFinalizedUnderlyingOnPeople(address),
+      input.readUnderlyingOnPeople(address, peopleAt),
     ]),
     input.tickTimeoutMs,
     "tick balance reads",
   );
-  const balances: FundingBalances = { depositAh, underlyingPeople };
-
-  if (
-    state.xcmSubmitted &&
-    balances.underlyingPeople > state.peopleAtXcm &&
-    balances.underlyingPeople < input.settleAmount
-  ) {
-    // The transfer arrived yet the target is missed: the destination fee ate past the buffer.
-    throw new FundingShortfallError(balances.underlyingPeople, input.settleAmount);
-  }
+  const readFinalized = () =>
+    peopleAt === "finalized"
+      ? Promise.resolve(peopleHeld)
+      : bounded(
+          input.readUnderlyingOnPeople(address, "finalized"),
+          input.tickTimeoutMs,
+          "People read (finalized)",
+        );
 
   if (state.xcmSubmitted && state.nonceAtSubmit !== null && state.inclusionBlock !== null) {
     await settleInclusion(input, state, state.nonceAtSubmit, state.inclusionBlock);
+  }
+
+  const balances: FundingBalances = { depositAh, underlyingPeople: peopleHeld };
+
+  const arrivedShort = (held: bigint) => held > state.peopleAtXcm && held < input.settleAmount;
+  if (state.xcmSubmitted && arrivedShort(peopleHeld)) {
+    // The transfer arrived yet the target is missed: the destination fee ate past the buffer.
+    // The verdict ends the run, so People's finalized block gives it.
+    const finalized = await readFinalized();
+    if (arrivedShort(finalized)) throw new FundingShortfallError(finalized, input.settleAmount);
   }
 
   // Only the convert-vs-await-native decision needs the pool price or the PSM batch's fees.
@@ -931,15 +947,23 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
   const step = decideStep(balances, { settleAmount: input.settleAmount, depositNeeded });
   // Hold in await-arrival while the submitted XCM has not yet credited People. A stale read right
   // after the submit still shows the native, and without this latch it would be converted twice.
-  const effective = state.xcmSubmitted && step !== "done" ? "await-arrival" : step;
+  let effective = state.xcmSubmitted && step !== "done" ? "await-arrival" : step;
+  // Under best-after-final the best block is trusted once the conversion is final on Asset Hub;
+  // before that People's finalized block has to show the target itself.
+  if (
+    effective === "done" &&
+    input.arrival === "best-after-final" &&
+    state.nonceAtSubmit !== null &&
+    (await readFinalized()) < input.settleAmount
+  ) {
+    effective = "await-arrival";
+  }
   // Funds seen: from here the conversion is on the clock.
   if (state.fundsSeenAt === null && effective !== "await-native") state.fundsSeenAt = input.now();
 
-  if (effective === "done") {
-    state.nonceAtSubmit = null;
-    state.inclusionBlock = null;
-    return { step: "done", balances, submitted: false };
-  }
+  // The pre-send record stays until the conversion is final: a later tick settles it, and sends
+  // again if the chain discards the block.
+  if (effective === "done") return { step: "done", balances, submitted: false };
 
   if (effective === "swap" && route.tier === "dotusd") {
     // The gate priced the program this very tick: a deposit past the bare target always did.

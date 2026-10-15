@@ -2,6 +2,7 @@ import {
   amendFunding,
   cancelFunding,
   fundingStatus,
+  fundingWaitingTickMs,
   startFunding,
   tickAllFunding,
 } from "./engine.js";
@@ -56,7 +57,8 @@ void keepAlive.restore(async () => {
   }
 });
 
-/** Interval between passes on this worker's own timer. */
+/** Interval between passes on this worker's own timer, while no funding job waits on a block
+ *  about to come. A job that does names its own interval through its mode. */
 const TICK_MS = 6_000;
 
 /** Runs one pass and holds the keep-alive while there is work left. */
@@ -74,7 +76,16 @@ async function pump() {
   }
 }
 
-setInterval(() => void pump(), TICK_MS);
+/** Runs a pass, then the next one an interval after this one started, or at once when the pass
+ *  took longer than that. */
+async function loop() {
+  const startedAt = Date.now();
+  await pump();
+  const every = fundingWaitingTickMs() ?? TICK_MS;
+  setTimeout(() => void loop(), Math.max(0, startedAt + every - Date.now()));
+}
+
+setTimeout(() => void loop(), TICK_MS);
 
 /** A hand-off takes the keep-alive itself. A refusal creates no job and takes nothing. */
 const handoff = (start) => async (params) => {

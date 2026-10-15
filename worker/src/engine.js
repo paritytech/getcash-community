@@ -75,11 +75,14 @@ const saveJobs = () => store.save();
  *   quoteFloorPct?, claimIdOffset?,          // a burner that is another job's key, sent home
  *                                            // whole: its exchange held to the pool's quote,
  *                                            // its claims under ids that key never used
+ *   mode: "A" | "B" | "C" | "D",              // the timing mode under test, see MODES
  *   phase: "starting" | FundingStep | "failed",  // await-native: the route's deposit asset
  *   failure?: "shortfall" | "timeout" | "expired" | "cancelled" | "claim" | "held",
  *                                            // held: the PSM refused the mint three times; the
  *                                            // deposit stays on the burner
  *   done, createdAt, armedAt, lastTickAt, lastError?,
+ *                                            // done: the CASH is on People; taken back while
+ *                                            // the conversion's block is discarded and resent
  *   state: { attempts, psmRefusals, xcmSubmitted, peopleAtXcm: string,
  *            fundsSeenAt: number|null, nonceAtSubmit: number|null,
  *            inclusionBlock: number|null, workedMs, rejections, lastRejection },
@@ -197,6 +200,25 @@ const freshRecordState = () => ({
 });
 
 /**
+ * The timing modes under test: where the pipeline reads the arrival on People, and how often the
+ * worker ticks while a job waits on a block about to come. Each new job takes the next mode in
+ * turn and keeps it on its record, so a run's figures can be grouped by mode.
+ */
+export const MODES = {
+  A: { arrival: "finalized", waitingTickMs: 6_000 },
+  B: { arrival: "finalized", waitingTickMs: 2_000 },
+  C: { arrival: "best-after-final", waitingTickMs: 2_000 },
+  D: { arrival: "best", waitingTickMs: 2_000 },
+};
+const MODE_ORDER = Object.keys(MODES);
+
+/** The mode the next job takes: the modes in turn, by how many jobs took one. */
+function nextMode(all) {
+  const taken = Object.values(all).filter((record) => MODES[record?.mode] !== undefined).length;
+  return MODE_ORDER[taken % MODE_ORDER.length];
+}
+
+/**
  * Registers a session handed over by the surface. Idempotent on sessionId.
  * Returns the record's public view; driving happens on wakes.
  */
@@ -215,6 +237,8 @@ export async function startFunding(params) {
       rearm(existing, Date.now());
       existing.depositExpiresAt = depositExpiryOf(input) ?? existing.depositExpiresAt;
     }
+    // A job from before the modes takes one on its re-sent hand-off.
+    if (existing.mode === undefined) existing.mode = nextMode(all);
     await saveJobs();
     return describeFunding(existing);
   }
@@ -230,6 +254,7 @@ export async function startFunding(params) {
   if (burner.address !== record.burnerAddress) {
     return { error: "invalid", reason: mismatchReason(burner.address, record.burnerAddress) };
   }
+  record.mode = nextMode(all);
   all[record.sessionId] = record;
   await saveJobs();
   return describeFunding(record);
@@ -365,10 +390,16 @@ const waitingForDeposit = (record) => !record.done && record.state.fundsSeenAt =
 /** True once the CASH has landed and been claimed; `done` alone means the funding leg is over. */
 const isFinished = (record) => record.done === true && record.claim?.phase === "claimed";
 
-/** The burner's CASH on People in the finalized block, floored to the claim unit. */
+/** The conversion was seen in a block the chain can still discard. A done job with it pending
+ *  keeps ticking, so a discarded block takes the done back and the conversion goes out again. */
+const conversionPending = (record) => record.state.nonceAtSubmit !== null;
+
+/** The burner's CASH on People at the best block, floored to the claim unit. The run is done once
+ *  the block its mode names shows the arrival, and the best block holds whatever the finalized
+ *  one does. */
 async function claimableOn(peoplePort, burner, what) {
   const held = await bounded(
-    peoplePort.settlementBalance(burner.address, CASH_SETTLEMENT, { at: "finalized" }),
+    peoplePort.settlementBalance(burner.address, CASH_SETTLEMENT, { at: "best" }),
     DEFAULT_TICK_TIMEOUT_MS,
     what,
   );
@@ -599,6 +630,7 @@ function describeFunding(record) {
   return {
     v: RECORD_V,
     sessionId: record.sessionId,
+    mode: record.mode,
     phase: record.phase,
     done: record.done,
     percent: PHASE_PERCENT[record.phase] ?? 0,
@@ -679,7 +711,7 @@ function judgeBounds(record, nowMs, read) {
 /** One tick for one record: read what it needs, act at most once, persist, let go. */
 async function tickRecord(record, nowMs) {
   accountWorkedTime(record, nowMs);
-  if (record.done) {
+  if (record.done && !conversionPending(record)) {
     await claimFor(record);
     return;
   }
@@ -784,8 +816,9 @@ async function tickRecord(record, nowMs) {
           inclusionTimeoutMs: DEFAULT_INCLUSION_TIMEOUT_MS,
           // The PSM tier adds its fee asset itself.
           signOptions: { at: anchor.hash },
-          readFinalizedUnderlyingOnPeople: (ss58) =>
-            peoplePort.settlementBalance(ss58, CASH_SETTLEMENT, { at: "finalized" }),
+          readUnderlyingOnPeople: (ss58, at) =>
+            peoplePort.settlementBalance(ss58, CASH_SETTLEMENT, { at }),
+          arrival: MODES[record.mode].arrival,
           now: Date.now,
           // Persisted before the broadcast leaves, so a wake mid-send knows a conversion may be
           // in flight.
@@ -811,10 +844,17 @@ async function tickRecord(record, nowMs) {
     delete record.lastError;
     // A completed tick clears any stale submitting marker.
     delete record.submitting;
-    if (outcome.step === "done") {
-      record.done = true;
-      // Claim in the same tick the CASH lands, over this tick's People connection.
-      await sizeClaim(record, burner, peoplePort);
+    // Done follows the latest tick: a discarded block takes it back while the conversion goes
+    // out again, and the claim already registered waits with the host for the CASH.
+    record.done = outcome.step === "done";
+    if (record.done) {
+      // Claim in the same tick the CASH lands, over this tick's People connection. A claim
+      // already registered is followed, not registered again.
+      if (record.claim == null || record.claim.phase === "sizing") {
+        await sizeClaim(record, burner, peoplePort);
+      } else {
+        await claimFor(record);
+      }
     }
   } finally {
     try {
@@ -871,6 +911,21 @@ function recordConversion(record, fact) {
 
 // A pass already running answers a second entry with "busy".
 let ticking = false;
+// The shortest waiting tick among the jobs the last pass left waiting on a block, or null.
+let waitingTickMs = null;
+
+/** A job whose next step waits on a block about to come: a deposit in a best block that is not
+ *  final yet, or a conversion sent and waiting for its arrival. */
+const waitsOnBlock = (record) =>
+  !record.done &&
+  record.phase !== "failed" &&
+  ((waitingForDeposit(record) && record.depositSeen !== undefined) ||
+    record.phase === "swap" ||
+    record.phase === "await-arrival");
+
+/** How soon the next pass should come for the jobs the last pass left waiting on a block, by
+ *  their modes; null when none waits. */
+export const fundingWaitingTickMs = () => waitingTickMs;
 
 /**
  * Drives every live job one tick. Per-job errors are recorded on the job and contained.
@@ -881,11 +936,16 @@ export async function tickAllFunding() {
   ticking = true;
   try {
     const all = await loadJobs();
-    // A job is live until claimed.
+    // A job is live until claimed. One from before the modes waits for its re-sent hand-off.
     const live = Object.values(all).filter(
-      (record) => record?.v === RECORD_V && !isFinished(record) && record.phase !== "failed",
+      (record) =>
+        record?.v === RECORD_V &&
+        MODES[record.mode] !== undefined &&
+        !isFinished(record) &&
+        record.phase !== "failed",
     );
     let ticked = 0;
+    let waiting = null;
     for (const record of live) {
       if (record.phase === "failed") continue; // cancelled since this pass began
       const nowMs = Date.now();
@@ -906,9 +966,14 @@ export async function tickAllFunding() {
         }
       }
       judgeBounds(record, nowMs, read);
+      if (waitsOnBlock(record)) {
+        const tick = MODES[record.mode].waitingTickMs;
+        waiting = waiting === null ? tick : Math.min(waiting, tick);
+      }
       ticked += 1;
       await saveJobs();
     }
+    waitingTickMs = waiting;
     return { ticked, busy: false };
   } finally {
     ticking = false;

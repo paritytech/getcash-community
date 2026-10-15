@@ -363,13 +363,44 @@ function scriptedChain() {
   return chain;
 }
 
+type BlockTag = "best" | "finalized";
+
+/** People as the fakes script it. The CASH in flight shows at the best block after `arrivalIn`
+ *  reads, one a tick. The finalized block shows what the best block shows, unless People's
+ *  finality is held: then an arrival stays out of it until `finalize`. */
+function scriptedPeopleChain(state: {
+  underlyingPeople: bigint;
+  inFlight: bigint;
+  arrivalIn: number;
+}) {
+  const people = {
+    finalityHeld: false,
+    /** Arrived at the best block, not final yet. */
+    unfinal: 0n,
+    /** Every People read, by block. */
+    reads: [] as BlockTag[],
+    finalize() {
+      people.unfinal = 0n;
+    },
+    read: async (_ss58: string, at: BlockTag) => {
+      people.reads.push(at);
+      if (state.arrivalIn > 0 && --state.arrivalIn === 0) {
+        state.underlyingPeople += state.inFlight;
+        if (people.finalityHeld) people.unfinal += state.inFlight;
+        state.inFlight = 0n;
+      }
+      return at === "finalized" ? state.underlyingPeople - people.unfinal : state.underlyingPeople;
+    },
+  };
+  return people;
+}
+
 /** Scripted Asset Hub + People. XCM arrival is counted in People reads, not wall-clock. */
 function scriptedWorld(
   opts: {
     /** What People's execution takes from the arrival. */
     remoteFee?: bigint;
-    /** Finalized People reads until the in-flight CASH is final there; the latest block shows it
-     *  as soon as it is in flight. */
+    /** Best People reads, one a tick, until the CASH in flight shows on People. */
     arrivalAfterReads?: number;
     /** Delay the funding program's native debit by N AH balance reads (a stale-read window). */
     staleDebitReads?: number;
@@ -412,10 +443,12 @@ function scriptedWorld(
     nativeAh: 0n,
     underlyingPeople: 0n,
     inFlight: 0n,
-    arrivalIn: 0, // People reads remaining until the in-flight amount credits
+    arrivalIn: 0, // best People reads remaining until the in-flight amount credits
     pendingDebit: 0n,
     debitIn: 0, // AH balance reads remaining until the funding program's debit becomes visible
     xcmLanded: false, // a SUCCESSFUL send; a rejected submit leaves the run still quoting
+    /** What the last landed program took from the burner and sent to People. */
+    lastLanding: null as { debit: bigint; arrived: bigint } | null,
     priceAtSubmitBps: opts.priceAtSubmitBps,
     quoteCalls: 0,
     loseAnswer: (opts.loseAnswer ?? null) as LoseAnswer | null,
@@ -499,6 +532,7 @@ function scriptedWorld(
         state.inFlight = out - remoteFee;
         state.arrivalIn = opts.arrivalAfterReads ?? 3;
         state.xcmLanded = true;
+        state.lastLanding = { debit, arrived: state.inFlight };
         return { ok: true, events: [SWAPPED] };
       };
       if (state.loseAnswer === "included") land();
@@ -526,7 +560,7 @@ function scriptedWorld(
       System: {
         Number: chain.Number,
         Account: {
-          getValue: async () => {
+          getValue: async (_who: unknown) => {
             if (state.debitIn > 0 && --state.debitIn === 0) {
               state.nativeAh -= state.pendingDebit;
               state.pendingDebit = 0n;
@@ -569,22 +603,35 @@ function scriptedWorld(
       PolkadotXcm: { execute },
     },
   };
-  const readFinalizedPeople = async () => {
-    if (state.arrivalIn > 0 && --state.arrivalIn === 0) {
-      state.underlyingPeople += state.inFlight;
-      state.inFlight = 0n;
-    }
-    return state.underlyingPeople;
-  };
+  const people = scriptedPeopleChain(state);
   return {
     state,
     chain,
     nonce: chain.nonce,
-    readFinalizedPeople,
-    /** What the latest People block shows: the in-flight CASH too. */
-    latestPeople: () => state.underlyingPeople + state.inFlight,
+    people,
+    readPeople: people.read,
     peopleApi,
     client: { getTypedApi: () => api } as unknown as PolkadotClient,
+    /** The chain discards the block the last program landed in, with held finality: the debit
+     *  and the arrival are undone on both chains, the nonce at the latest block falls back, the
+     *  finalized height passes the block, and finality runs on from here. */
+    discard() {
+      const landing = state.lastLanding;
+      if (landing === null) throw new Error("nothing landed");
+      state.lastLanding = null;
+      state.nativeAh += landing.debit;
+      if (state.inFlight > 0n) {
+        state.inFlight = 0n;
+        state.arrivalIn = 0;
+      } else {
+        state.underlyingPeople -= landing.arrived;
+        people.unfinal = 0n;
+      }
+      state.xcmLanded = false;
+      chain.nonce.latest = chain.nonce.finalized;
+      chain.finalizedBlock = INCLUSION_BLOCK;
+      chain.finalityHeld = false;
+    },
   };
 }
 
@@ -812,17 +859,12 @@ function scriptedPsmWorld(
       Utility: { batch_all: batchAll },
     },
   };
-  const readFinalizedPeople = async () => {
-    if (state.arrivalIn > 0 && --state.arrivalIn === 0) {
-      state.underlyingPeople += state.inFlight;
-      state.inFlight = 0n;
-    }
-    return state.underlyingPeople;
-  };
+  const people = scriptedPeopleChain(state);
   return {
     state,
     nonce: chain.nonce,
-    readFinalizedPeople,
+    people,
+    readPeople: people.read,
     peopleApi: scriptedPeople({ fee: () => remoteFee, error: () => state.peopleError }),
     client: { getTypedApi: () => api } as unknown as PolkadotClient,
   };
@@ -1076,17 +1118,12 @@ function scriptedStableWorld(
     },
     tx: { PolkadotXcm: { execute } },
   };
-  const readFinalizedPeople = async () => {
-    if (state.arrivalIn > 0 && --state.arrivalIn === 0) {
-      state.underlyingPeople += state.inFlight;
-      state.inFlight = 0n;
-    }
-    return state.underlyingPeople;
-  };
+  const people = scriptedPeopleChain(state);
   return {
     state,
     nonce: chain.nonce,
-    readFinalizedPeople,
+    people,
+    readPeople: people.read,
     peopleApi: scriptedPeople({
       fee: () => remoteFee,
       error: () => opts.peopleDryRunError ?? state.peopleError,
@@ -1096,7 +1133,7 @@ function scriptedStableWorld(
   };
 }
 
-type Driveable = Pick<World, "client" | "peopleApi" | "readFinalizedPeople" | "nonce"> & {
+type Driveable = Pick<World, "client" | "peopleApi" | "readPeople" | "nonce"> & {
   state: { txs: Array<{ call: string; watch: WatchLog }> };
 };
 
@@ -1144,7 +1181,8 @@ async function drive(
         tickTimeoutMs: 1_000,
         inclusionTimeoutMs: 1_000,
         signOptions: SIGN_OPTIONS,
-        readFinalizedUnderlyingOnPeople: world.readFinalizedPeople,
+        readUnderlyingOnPeople: world.readPeople,
+        arrival: "best",
         now: () => now,
         onTransientError: (e) => transients.push(e instanceof Error ? e.message : String(e)),
         ...overrides,
@@ -1970,17 +2008,12 @@ function scriptedDotUsdWorld(
     },
     tx: { PolkadotXcm: { execute } },
   };
-  const readFinalizedPeople = async () => {
-    if (state.arrivalIn > 0 && --state.arrivalIn === 0) {
-      state.underlyingPeople += state.inFlight;
-      state.inFlight = 0n;
-    }
-    return state.underlyingPeople;
-  };
+  const people = scriptedPeopleChain(state);
   return {
     state,
     nonce: chain.nonce,
-    readFinalizedPeople,
+    people,
+    readPeople: people.read,
     peopleApi: scriptedPeople({ fee: () => remoteFee, error: () => opts.peopleDryRunError }),
     client: { getTypedApi: () => api } as unknown as PolkadotClient,
   };
@@ -2080,7 +2113,7 @@ describe("tickOnce on the dotUSD tier", () => {
   });
 });
 
-describe("the submit, and the CASH read final on People", () => {
+describe("the submit, and the arrival on People", () => {
   /** The pool world set to convert on its first tick. */
   function funded(opts: Parameters<typeof scriptedWorld>[0] = {}) {
     const world = scriptedWorld({ arrivalAfterReads: 1, ...opts });
@@ -2130,14 +2163,113 @@ describe("the submit, and the CASH read final on People", () => {
     }
   });
 
-  it("stays in await-arrival while only the latest People block shows the CASH, and is done once the finalized one does", async () => {
-    const world = funded({ arrivalAfterReads: 2 });
+  it("is done at People's best block before either chain finalizes, and keeps the pre-send record until Asset Hub does", async () => {
+    const world = funded({ arrivalAfterReads: 1 });
+    world.chain.finalityHeld = true;
+    world.people.finalityHeld = true;
     const state = freshTickState();
-    expect((await drive(world, 2, state)).steps).toEqual(["swap", "await-arrival"]);
-    // The latest block already shows the CASH; the finalized block the tick reads does not yet.
-    expect(world.latestPeople()).toBeGreaterThanOrEqual(SETTLE);
-    expect(world.state.underlyingPeople).toBe(0n);
-    expect((await drive(world, 2, state)).steps).toEqual(["done"]);
+    const run = await drive(world, 2, state);
+    expect(run.steps).toEqual(["swap", "done"]);
+    // The finalized People block was never asked, and does not show the CASH yet.
+    expect(world.people.reads).not.toContain("finalized");
+    expect(await world.readPeople("5Burner", "finalized")).toBe(0n);
+    expect(state).toMatchObject({
+      xcmSubmitted: true,
+      nonceAtSubmit: 0,
+      inclusionBlock: INCLUSION_BLOCK,
+    });
+
+    // Done again once the chain is final, with the record let go.
+    world.chain.finalize();
+    expect((await drive(world, 1, state)).steps).toEqual(["done"]);
+    expect(state).toMatchObject({ xcmSubmitted: true, nonceAtSubmit: null, inclusionBlock: null });
+  });
+
+  it("under arrival finalized, is done only once People's finalized block shows the target, and never reads the best block", async () => {
+    const world = funded({ arrivalAfterReads: 1 });
+    world.people.finalityHeld = true;
+    const state = freshTickState();
+    const held = await drive(world, 3, state, POOL, undefined, { arrival: "finalized" });
+    expect(held.steps).toEqual(["swap", "await-arrival", "await-arrival"]);
+    expect(world.people.reads).not.toContain("best");
+    expect(world.state.underlyingPeople).toBeGreaterThanOrEqual(SETTLE);
+
+    world.people.finalize();
+    const final = await drive(world, 1, state, POOL, undefined, { arrival: "finalized" });
+    expect(final.steps).toEqual(["done"]);
+  });
+
+  it("under arrival best-after-final, trusts the best block once Asset Hub finalized the conversion", async () => {
+    const world = funded({ arrivalAfterReads: 1 });
+    world.chain.finalityHeld = true;
+    world.people.finalityHeld = true;
+    const state = freshTickState();
+    const held = await drive(world, 2, state, POOL, undefined, { arrival: "best-after-final" });
+    expect(held.steps).toEqual(["swap", "await-arrival"]);
+    expect(world.state.underlyingPeople).toBeGreaterThanOrEqual(SETTLE);
+    expect(world.people.reads).toEqual(["best", "best", "finalized"]);
+
+    world.chain.finalize();
+    const final = await drive(world, 1, state, POOL, undefined, { arrival: "best-after-final" });
+    expect(final.steps).toEqual(["done"]);
+    expect(world.people.reads).toEqual(["best", "best", "finalized", "best"]);
+    expect(state).toMatchObject({ nonceAtSubmit: null, inclusionBlock: null });
+  });
+
+  it("under arrival best-after-final, People's finalized block ends the run before Asset Hub is final", async () => {
+    const world = funded({ arrivalAfterReads: 1 });
+    world.chain.finalityHeld = true;
+    world.people.finalityHeld = true;
+    const state = freshTickState();
+    const held = await drive(world, 2, state, POOL, undefined, { arrival: "best-after-final" });
+    expect(held.steps).toEqual(["swap", "await-arrival"]);
+
+    world.people.finalize();
+    const final = await drive(world, 1, state, POOL, undefined, { arrival: "best-after-final" });
+    expect(final.steps).toEqual(["done"]);
+    expect(state).toMatchObject({ nonceAtSubmit: 0, inclusionBlock: INCLUSION_BLOCK });
+  });
+
+  it("sends again under the same nonce when the chain discards the block after done, and is done again on the new arrival", async () => {
+    const world = funded({ arrivalAfterReads: 1, quoteAfterXcm: true });
+    world.chain.finalityHeld = true;
+    world.people.finalityHeld = true;
+    const state = freshTickState();
+    const sentAt: Array<number | null> = [];
+    const onBeforeSubmit = () => {
+      sentAt.push(state.nonceAtSubmit);
+    };
+    const first = await drive(world, 2, state, POOL, undefined, { onBeforeSubmit });
+    expect(first.steps).toEqual(["swap", "done"]);
+
+    // The block is gone from both chains: the deposit is back, the CASH is not.
+    world.discard();
+    expect(world.state.nativeAh).toBe(MAX_IN + KEEP);
+    expect(await world.readPeople("5Burner", "best")).toBe(0n);
+    const again = await drive(world, 3, state, POOL, undefined, { onBeforeSubmit });
+    expect(again.steps).toEqual(["swap", "done"]);
+    expect(again.txs).toEqual(["swap", "swap"]);
+    expect(sentAt).toEqual([0, 0]);
+    expect(world.nonce.latest).toBe(1);
+    expect(state).toMatchObject({ attempts: 2, nonceAtSubmit: null, inclusionBlock: null });
+  });
+
+  it("ends the run on a short arrival only once People's finalized block shows it", async () => {
+    const world = funded({
+      remoteFee: BUFFER * 3n,
+      remoteFeeAtDryRun: BUFFER,
+      arrivalAfterReads: 1,
+    });
+    world.people.finalityHeld = true;
+    const state = freshTickState();
+    const held = await drive(world, 3, state);
+    expect(held.steps).toEqual(["swap", "await-arrival", "await-arrival"]);
+    expect(world.state.underlyingPeople).toBeLessThan(SETTLE);
+    expect(world.state.underlyingPeople).toBeGreaterThan(0n);
+
+    world.people.finalize();
+    await expect(drive(world, 1, state)).rejects.toBeInstanceOf(FundingShortfallError);
+    expect(held.txs).toEqual(["swap"]);
   });
 
   it("records the nonce and the People balance before the submit leaves, and keeps them with the block it landed in", async () => {
