@@ -65,11 +65,6 @@ export type FundingChain = (typeof FUNDING_CHAINS)[number];
 
 // The destination is always CASH; this app has no other destination assets.
 
-/** Whether this build moves money through Chainflip. Off until the channel rail lands: the
- *  pickers keep listing the Chainflip routes, greyed and named as not yet available, so nothing
- *  can reach a deposit or a withdrawal that would have nowhere to go. */
-export const CHAINFLIP_RAIL_ENABLED = false;
-
 /** Whether this build sells CASH for fiat through Meld. Owned by the Meld package so the worker
  *  holds the same line the page does. */
 export { MELD_SELL_ENABLED } from "@getsome/meld";

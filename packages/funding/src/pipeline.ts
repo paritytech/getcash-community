@@ -73,6 +73,7 @@
 
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import type {
+  HexString,
   PolkadotClient,
   PolkadotSigner,
   Transaction,
@@ -531,7 +532,15 @@ export interface TickOnceInput {
   onTransientError?: (error: unknown) => void;
   /** Runs right before the broadcast, once `state` holds what a wake mid-send needs. */
   onBeforeSubmit?: (call: "swap") => Promise<void> | void;
+  /** The conversion's progress as its submit shows it. */
+  onConversion?: (fact: ConversionFact) => void;
 }
+
+/** `prepared`: the fees are estimated and both chains passed the dry run, so the conversion goes
+ *  out next. `converted`: it is in a best block, succeeded and carries the tier's conversion
+ *  event. A submit whose answer was lost and is settled from the nonce reports no `converted`. */
+export type ConversionFact =
+  { type: "prepared" } | { type: "converted"; txHash: string; block: number };
 
 export interface TickOutcome {
   /** The effective step after the in-flight override. */
@@ -543,14 +552,15 @@ export interface TickOutcome {
 
 type BlockTag = "best" | "finalized";
 
-/** The burner's deposit on Asset Hub in the asset the route expects: the native's free balance,
- *  or the holding of the pallet-assets id the route's token names. */
-async function readDeposit(
+/** The burner's deposit on Asset Hub in the asset the route expects, at a block tag or a block
+ *  hash: the native's free balance, or the holding of the pallet-assets id the route's token
+ *  names. */
+export async function readDeposit(
   api: AssetHubApi,
   route: ConversionRoute,
   address: string,
-  at: BlockTag,
-) {
+  at: BlockTag | HexString,
+): Promise<bigint> {
   const token = depositTokenOf(route);
   if (token.assetHubId === undefined) {
     const account = await api.query.System.Account.getValue(address, { at });
@@ -569,6 +579,29 @@ const readBlockNumber = (api: AssetHubApi, at: BlockTag) =>
 
 /** A submit's outcome in the first block it was seen in. */
 type Inclusion = { txHash: string } & TxEventsPayload;
+
+/** The event a successful transaction of each tier carries once it converted the deposit. A fee
+ *  paid in an asset other than the native is swapped through the pool as well, so on the PSM tier
+ *  only the mint counts. The dotUSD tier exchanges nothing: its successful send is the conversion. */
+const CONVERSION_EVENT: Record<ConversionRoute["tier"], { pallet: string; name: string } | null> = {
+  psm: { pallet: "Psm", name: "Minted" },
+  pool: { pallet: "AssetConversion", name: "SwapCreditExecuted" },
+  dotusd: null,
+};
+
+/** Whether an inclusion converted the deposit: the transaction succeeded and its events hold the
+ *  tier's conversion event. */
+export function isConverted(
+  route: ConversionRoute,
+  inclusion: { ok: boolean; events: ReadonlyArray<{ type: string; value: { type: string } }> },
+): boolean {
+  if (!inclusion.ok) return false;
+  const expected = CONVERSION_EVENT[route.tier];
+  return (
+    expected === null ||
+    inclusion.events.some((e) => e.type === expected.pallet && e.value.type === expected.name)
+  );
+}
 
 type Watch = ReturnType<Transaction["signSubmitAndWatch"]>;
 
@@ -635,6 +668,7 @@ async function submitConversion<Options>(
   state.peopleAtXcm = balances.underlyingPeople;
   // Counted before the broadcast, so a submit whose answer is lost is still counted.
   state.attempts += 1;
+  input.onConversion?.({ type: "prepared" });
   await input.onBeforeSubmit?.("swap");
   const included = await includedInBlock(
     tx.signSubmitAndWatch(input.signer, options),
@@ -642,6 +676,13 @@ async function submitConversion<Options>(
     `${what} submit`,
   );
   input.onTx?.({ call: "swap", txHash: included.txHash, block: included.block.number });
+  if (isConverted(input.route, included)) {
+    input.onConversion?.({
+      type: "converted",
+      txHash: included.txHash,
+      block: included.block.number,
+    });
+  }
   if (included.ok) {
     markLanded(state, included.block.number);
   } else {

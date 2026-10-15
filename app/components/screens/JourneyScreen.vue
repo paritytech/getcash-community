@@ -1,44 +1,36 @@
 <script setup lang="ts">
 // The finish of a top-up: the timeline from a confirmed deposit to CASH in the balance, shared by
 // every package.
-import { computed } from "vue";
-import { Plus, RefreshCcw, X } from "lucide-vue-next";
-import type { SourceId } from "@getsome/core";
-import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
+import { computed, ref, watch } from "vue";
+import { RefreshCcw, X } from "lucide-vue-next";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
 import { useJourneyQuote } from "../../composables/useJourneyQuote";
-import type { FundingJourneyStatus } from "../../funding/handoff";
-import { projectFundingProgress, type FundingProgressProjection } from "../../funding/progress";
-import { effectiveSourceId, isDirectDeposit } from "../../funding/requests/model";
-import { bankEndingText, endingLabel, isExpiredEnding } from "../../funding/journey-endings";
+import { headerAmount, isExpiredEnding } from "../../funding/journey-endings";
 import {
+  failureDetailRows,
   journeyMoneyRows,
-  paidDetailRows,
   quoteDetailRows,
   type QuoteRow,
 } from "../../funding/quote-rows";
-import { journeyScaleOf, type JourneyScale } from "../../funding/requests/views";
-import { providerNameOf } from "../../funding/top-up-projection";
+import { creditedAmountOf } from "../../funding/requests/views";
+import { CLOSE, type FailureAction } from "../../funding/timeline/failure";
+import { TIMELINE_CADENCE_MS } from "../../funding/timeline/timelines";
 import type { FundingTopUp } from "../../funding/top-ups";
 import { useRequestsStore } from "../../stores/requests";
 import { useSessionStore } from "../../stores/session";
-import { cashAmount, fmtCash, toCashBase } from "../../utils/cash";
+import { cashInText, fmtCash, toCashBase } from "../../utils/cash";
 import { currencyConfig } from "../../funding/config";
 import { fmtFiat, isMoneyAmount } from "../../utils/money";
 import { formatWhenShort, shortRef } from "../../utils/journey";
-import { refundedFailure } from "../../utils/recovery";
-import FundingJourneyTimeline from "../funding/progress/FundingJourneyTimeline.vue";
+import FundingTimeline from "../funding/timeline/FundingTimeline.vue";
+import TimelineBand from "../funding/timeline/TimelineBand.vue";
 import CashAmount from "../ui/CashAmount.vue";
 import DetailRows, { type DetailRow } from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
+import TransactionIcon from "../ui/TransactionIcon.vue";
+import { nextSuccessStage, openingSuccessStage } from "./success-stage";
 
 const props = defineProps<{
-  /**
-   * A stored projection for a request not (yet) on screen; the live foreground wins when present.
-   */
-  progress?: FundingProgressProjection | null;
-  /** The package's own word on its payment, shown above the timeline. */
-  status?: FundingJourneyStatus | null;
   /** The top-up as the list knows it; its stored quote backs the detail rows until the request
    *  is live in the store. */
   topUp?: FundingTopUp | null;
@@ -57,29 +49,35 @@ const emit = defineEmits<{
 const session = useSessionStore();
 const requests = useRequestsStore();
 
-const cadence = computed(
-  () =>
-    requests.foregroundProgress?.snapshot.profile.cadenceMs ?? props.progress?.cadenceMs ?? null,
+const now = useFundingProgressClock(() =>
+  requests.foregroundRecord !== null ? TIMELINE_CADENCE_MS : null,
 );
-const now = useFundingProgressClock(cadence);
-const progress = computed(() => {
-  const foreground = requests.foregroundProgress;
-  if (foreground) {
-    return projectFundingProgress({
-      snapshot: foreground.snapshot,
-      createdAt: foreground.startedAt,
-      now: now.value,
-    });
-  }
-  return props.progress ?? null;
-});
-
+/** The top-up's timeline once it opened or ended: the live record's, else the list's for a journey
+ *  opened from history. */
+const timeline = computed(() =>
+  requests.foregroundRecord !== null
+    ? requests.foregroundTimeline(now.value)
+    : props.topUp?.timeline,
+);
 const finished = computed(() => requests.phase === "done");
+
+const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+const success = ref(openingSuccessStage(finished.value));
+watch(finished, (done) => {
+  success.value = done
+    ? nextSuccessStage(success.value, {
+        kind: "succeeded",
+        animate: timeline.value?.view !== undefined && !reducedMotion(),
+      })
+    : "none";
+});
+const successShown = computed(() => success.value === "playing" || success.value === "shown");
+const successPlaying = computed(() => success.value === "playing");
+/** The success motion brings the transaction icon in as the refresh icon spins out. */
+const SUCCESS_ICON_DELAY_MS = 910;
 const failure = computed(() =>
   requests.phase === "failed" ? (requests.foregroundRecord?.failure ?? null) : null,
 );
-const failedText = computed(() => requests.fundingError ?? failure.value?.message ?? null);
-
 /**
  * What the list stored about a top-up that already failed. A journey opened from history often has
  * no live request behind it — the world was torn down, or the record outlived it — and this is then
@@ -94,26 +92,14 @@ const storedEndedAt = computed(() => {
   return stored?.kind === "settled" || stored?.kind === "failed" ? stored.at : null;
 });
 
-/**
- * The route's own timeline: the card rail shows five stops, crypto and bank three of their own.
- *
- * The store owns the scale whenever a request is on screen; the list's word on the route only
- * stands in before the top-up is live. `requests.journeyDone` counts on that same scale.
- */
-const scale = computed<JourneyScale>(() => {
-  if (requests.foregroundRecord !== null || !props.topUp) return session.journeyScale;
-  return journeyScaleOf(props.topUp.route);
-});
-const crypto = computed(() => scale.value === "crypto");
-const bank = computed(() => scale.value === "bank");
-
-/** How many markers the timeline draws as done, counted on `scale`. The request on screen counts
- *  them; a journey opened from history has none, and takes the count the list's own record made —
- *  a top-up that was paid and converted before it failed must not redraw as though it never
- *  started. */
-const completedSteps = computed(() =>
-  requests.foregroundRecord !== null ? requests.journeyDone : (props.topUp?.journeyDone ?? 1),
+/** The route of the top-up on screen. The store owns it whenever a request is on screen; the
+ *  list's word on the route only stands in before the top-up is live, and the selected method
+ *  before there is either. */
+const route = computed(
+  () => requests.foregroundRecord?.route ?? props.topUp?.route ?? session.method,
 );
+const crypto = computed(() => route.value === "crypto");
+const bank = computed(() => route.value === "bank");
 
 /** Nothing was paid on an expired top-up, so it carries no quote rows. Opened from history there
  *  is no live failure to read, so the record's own word stands in. */
@@ -122,31 +108,9 @@ const expired = computed(
     isExpiredEnding(failure.value?.kind, requests.fundingError) ||
     storedFailure.value?.expired === true,
 );
-/** The design names the ending itself, not "<stage> failed": a window that closed, a bank that
- *  said no, a payment that came back. */
-const failedLabel = computed(() => endingLabel(expired.value, requests.meldFailureCode));
-
-/**
- * Whether this top-up's money came back rather than being kept.
- *
- * Crypto refunds land at the request's own key; a card refund goes to the card. Either way the
- * buyer was charged and then made whole, which is a different ending from a decline — where no
- * money moved at all — and the screen says different things about the two.
- */
-const refundedEnding = computed(
-  () =>
-    (failure.value !== null && refundedFailure(failure.value.kind)) ||
-    requests.meldRefunded ||
-    storedFailure.value?.refunded === true,
-);
 
 /** Whether this journey's top-up stopped rather than finished, live or as history stored it. */
-const heroFailed = computed(
-  () =>
-    progress.value?.view.kind === "failed" ||
-    failure.value !== null ||
-    storedFailure.value !== null,
-);
+const heroFailed = computed(() => failure.value !== null || storedFailure.value !== null);
 
 /** Which money rows this ending shows; the rule is the design's, not this screen's. */
 const moneyRows = computed(() =>
@@ -154,22 +118,19 @@ const moneyRows = computed(() =>
     crypto: crypto.value,
     expired: expired.value,
     failed: heroFailed.value,
-    refunded: refundedEnding.value,
   }),
 );
 
-/**
- * A refunded crypto top-up gets rows too, naming the network and the rail that handled it.
- *
- * Not the deposit figure: that belongs to the deposit screen, and repeating it beside a refund
- * reads as a second charge. What became of the money — how much came back and the transaction
- * that returned it — is the refund guide's to tell, where it can be linked and copied.
- */
-const cryptoRefund = computed(() => crypto.value && refundedEnding.value);
-
-const creditedAmount = computed(() =>
-  requests.claimedBase != null ? fmtCash(requests.claimedBase) : session.amountHuman,
-);
+/** What the Host credited, once the top-up ended with a credit: the live record's, else what the
+ *  list stored for a journey opened from history. */
+const creditedAmount = computed(() => {
+  const record = requests.foregroundRecord;
+  if (record !== null) return creditedAmountOf(record);
+  const stored = props.topUp?.state;
+  return stored?.kind === "settled" || stored?.kind === "failed"
+    ? stored.creditedAmount
+    : undefined;
+});
 /** What the buyer asked for. The store's amount is empty until the request is live; the list's
  *  word on it fills in. */
 const quotedAmount = computed(() => session.amountHuman || (props.topUp?.amount ?? ""));
@@ -196,51 +157,28 @@ const revisedAmount = computed<string | null>(() => {
   return fmtCash(claimed);
 });
 
-const amountParts = computed(() => {
-  if (finished.value) return { sign: "+", amount: creditedAmount.value };
-  // A rate that moved is news the hero carries too: the figure the buyer is owed, not the one
-  // they were quoted.
-  return { sign: "", amount: revisedAmount.value ?? quotedAmount.value };
-});
+const amounts = computed(() => ({
+  asked: quotedAmount.value,
+  credited: creditedAmount.value,
+  revised: revisedAmount.value,
+}));
+/** The header until the success screen shows; the success motion turns it into `successAmount`. */
+const pendingAmount = computed(() =>
+  headerAmount(heroFailed.value ? "failure" : null, amounts.value),
+);
+const successAmount = computed(() => headerAmount("success", amounts.value));
 
-/** When the top-up reached its end, under the hero: the live milestone (stamped at the route's
- *  last step) for a credit that just landed, else the list's own timestamp. A failed top-up gets
- *  one too — when it stopped is part of what a buyer opens this screen to find out. */
+/** When the top-up reached its end, under the hero: the live record's credit for one that just
+ *  landed, else the list's own timestamp. A failed top-up gets one too: when it stopped is part
+ *  of what a buyer opens this screen to find out. */
 const settledWhen = computed(() => {
-  // The store stamps the credit at the card scale's last step, whatever scale the route draws.
-  const at = finished.value ? (requests.milestones[5] ?? storedEndedAt.value) : storedEndedAt.value;
+  const record = requests.foregroundRecord;
+  const at = successShown.value
+    ? (record?.settledAt ?? record?.creditedAt ?? storedEndedAt.value)
+    : storedEndedAt.value;
   return at != null ? formatWhenShort(at) : null;
 });
 
-/**
- * Whether this top-up's deposit went back to the request's own key — the one ending that needs the
- * recovery guide.
- *
- * The crypto rail only. A refunded card goes back to the card with nothing for the buyer to do,
- * and the guide has no chain, key or address to draw for it; offering it there is a button into an
- * empty screen.
- *
- * Either account will do. A live request answers from its world; one opened out of history answers
- * from the record, and the guide re-derives the address and key from the request's own identity —
- * they are a pure function of it, so the world being gone does not put the money out of reach.
- */
-const refunded = computed(() => {
-  if (!crypto.value) return false;
-  if (failure.value !== null && refundedFailure(failure.value.kind)) return true;
-  return storedFailure.value?.refunded === true && props.topUp?.request !== undefined;
-});
-/** An expired Polkadot top-up: whatever the buyer sent sits on its own account, short or in the
- *  wrong token, and the recovery guide hands over that account's key. */
-const recoverable = computed(() => {
-  const record = requests.foregroundRecord;
-  return expired.value && record !== null && isDirectDeposit(record);
-});
-const asset = computed(() => {
-  const record = requests.foregroundRecord;
-  if (!record) return "";
-  // A direct source has no swap config; the record names the token the buyer picked.
-  return SOURCE_CONFIG_BY_ID.get(effectiveSourceId(record.ref) as SourceId)?.asset ?? record.asset;
-});
 /** The quote the rows read, resolved the same way the fee breakdown behind them resolves it. */
 const { quote: quoteView } = useJourneyQuote(() => props.topUp);
 
@@ -266,22 +204,24 @@ const wordForBank = (rows: QuoteRow[]): QuoteRow[] =>
 
 /**
  * The rows come from the shared helper, so the journey and the settled receipt present the same
- * quote identically — except a bank transfer still in flight, which restates the transfer itself:
- * what to send, what to quote with it, and when it lands. The buyer may still be in their banking
- * app, and this is the only place those three survive once the provider's page is behind them. A
- * transfer that has arrived or failed is past instructing anyone, and reads as the receipt every
- * other rail leaves.
+ * quote identically — except a bank transfer, which restates the transfer itself: what to send,
+ * what to quote with it, and when it lands. The buyer may still be in their banking app, and this
+ * is the only place those three survive once the provider's page is behind them. On success the
+ * arrival row goes and the others stay.
  */
 const detailRows = computed<DetailRow[]>(() => {
   if (moneyRows.value !== "quote") return [];
   const q = quoteView.value;
-  if (bank.value && !finished.value && !heroFailed.value) {
+  if (bank.value) {
     const rows: DetailRow[] = [];
     if (q)
       rows.push({
         // Once the rail has the money there is nothing left to instruct, so the line reads as the
         // concluded journeys word it: what was sent, not what to send.
-        label: requests.railSeen ? "Sent inc. fees" : "Send this exact amount inc. fees",
+        label:
+          requests.railSeen || finished.value
+            ? "Sent inc. fees"
+            : "Send this exact amount inc. fees",
         value: fmtFiat(q.amount, q.symbol),
         fees: isMoneyAmount(q.fee ?? ""),
       });
@@ -291,45 +231,24 @@ const detailRows = computed<DetailRow[]>(() => {
         value: shortRef(reference.value),
         copy: reference.value,
       });
-    rows.push({
-      label: "Arrives",
-      value: "1–2 business days",
-      note: `Final ${currencyConfig.name} depends on the rate on arrival`,
-    });
+    // Last, so the success motion can fade it out.
+    if (success.value !== "shown")
+      rows.push({
+        label: "Arrives",
+        value: "1–2 business days",
+        note: `Final ${currencyConfig.name} depends on the rate on arrival`,
+      });
     return rows;
   }
-  return wordForBank(quoteDetailRows(q));
+  return quoteDetailRows(q);
 });
 
-/** The request on screen's provider and reference, else the list's own record. */
-const paidRows = computed(() => {
-  if (moneyRows.value !== "receipt") return [];
-  const live = requests.foregroundRecord;
-  const details = props.topUp?.details;
-  // The live record and the list's row have to name the provider identically, so both go
-  // through `providerNameOf`; the row's label is already its output.
-  const provider = (live ? providerNameOf(live) : undefined) ?? details?.provider?.label;
-  // The crypto rail has no id to show: its refund transaction is the chain's, and nothing
-  // persists it. The network stands in its place as the fact the record can answer.
-  const paidReference = cryptoRefund.value
-    ? undefined
-    : (live?.meldFundingRequestId ?? props.topUp?.reference);
-  const network = cryptoRefund.value ? details?.network?.label : undefined;
-  return wordForBank(
-    paidDetailRows(quoteView.value, {
-      ...(provider ? { provider } : {}),
-      ...(paidReference ? { reference: paidReference } : {}),
-      ...(network ? { network } : {}),
-    }),
-  );
-});
-
-/** The bank transfer's own wording for an ending the adapter words for a card. */
-const bankFailureText = computed(() => {
-  if (!bank.value) return null;
-  const q = quoteView.value;
-  return bankEndingText(requests.meldFailureCode, q ? fmtFiat(q.amount, q.symbol) : null);
-});
+/** What an ended top-up cost, then its failure details: who took the payment, why it ended, and
+ *  the reference to quote them. */
+const endedRows = computed<DetailRow[]>(() => [
+  ...(moneyRows.value === "receipt" ? wordForBank(quoteDetailRows(quoteView.value)) : []),
+  ...failureDetailRows(timeline.value?.failure?.details ?? {}),
+]);
 
 /**
  * Cancel, bank only: the provider's pay page can still be withdrawn while no money has arrived.
@@ -353,61 +272,37 @@ const canCancel = computed(
 );
 
 /**
- * Whether to offer a fresh attempt at a card or bank top-up that ended.
- *
- * The failed request itself cannot be re-entered — its pay page is dead and the provider will not
- * take a second payment against it — so the offer is a new funding request, which is why the
- * button says "Start over" rather than "Try again".
- *
- * Withheld on `unobserved` alone: there the rail could not tell whether the buyer was charged, so
- * inviting a second payment risks charging them twice.
+ * The way on from a failure. Trying again and the top-up's own account's guide act on the request
+ * on screen, so without one the journey can only close.
  */
-const canStartOver = computed(
-  () =>
-    session.method !== "crypto" &&
-    requests.meldStage === "failed" &&
-    requests.meldFailureCode !== "unobserved",
+const failureAction = computed<FailureAction | null>(() => {
+  const action = timeline.value?.failure?.action;
+  if (action === undefined) return null;
+  const needsRequest =
+    action.kind === "try-again" ||
+    (action.kind === "get-back" && action.from === "deposit-account");
+  return needsRequest && requests.foregroundRecord === null ? CLOSE : action;
+});
+
+/** Explains a header amount that moved off the quote. */
+const rateChangeNotice = computed(() =>
+  revisedAmount.value
+    ? `Rates changed while your money was on its way. You'll get ${cashInText(revisedAmount.value)} instead of ${cashInText(quotedAmount.value)}`
+    : null,
 );
 
-/** Temporarily stuck (the provider is retrying): amber on the stepper, never terminal. */
-const delayed = computed(() => requests.meldDelayed && !finished.value && !heroFailed.value);
-
-/** The one ribbon line under the stepper: a failure reason, an out-of-band notice, a transient
- *  delay, or the rail's own word on its payment. The last matters most on the bank rail, where
- *  "Confirming your bank transfer…" can be the state for days. */
-const message = computed(() => {
-  // The stored reason is the terse "Channel expired"; the design spells out what it means.
-  if (expired.value) return "This top-up expired because no funds arrived in time";
-  // Chainflip refunds when the swap cannot execute within the quote's price bounds, so the rate
-  // is the cause by construction; the deposit returns minus the refund transfer's network fees.
-  if (failure.value?.kind === "refunded") {
-    return `The rate moved too far to complete the swap. Your ${asset.value || "crypto"} was sent back, minus network fees.`;
-  }
-  if (bankFailureText.value) return bankFailureText.value;
-  if (failedText.value) return failedText.value;
-  // Nothing live to ask: the record's own reason is the only account of the failure left.
-  if (storedFailure.value?.reason) return storedFailure.value.reason;
-  if (requests.fundingNotice) return requests.fundingNotice;
-  if (delayed.value) {
-    // Each rail waits on something else: the card provider's retry vs chain confirmations.
-    return crypto.value
-      ? "Waiting for network confirmations. This can take a while"
-      : "Taking a little longer than usual";
-  }
-  // The rate moved under a payment that is still on its way: say so before the hero's new figure
-  // is read as a mistake, and name both amounts so the difference is the buyer's to check. Above
-  // the rail's own line, which by then reads "Bank transfer confirmed" — true, and not the news.
-  // Below the notices, which are what a buyer has to act on.
-  if (revisedAmount.value) {
-    return `Rates changed while your money was on its way. You'll get ${cashAmount(revisedAmount.value)} instead of ${cashAmount(quotedAmount.value)}`;
-  }
-  if (props.status) return props.status.text;
-  // Nothing has been reported on a bank transfer yet: days can pass here, so the ribbon says what
-  // the silence means rather than leaving the stepper to speak for itself.
-  if (bank.value && !finished.value) {
-    return "If you've sent the money from your bank, it's on its way to us. We'll let you know when it's arrived.";
-  }
-  return null;
+/** The band's text: the failure, then the rate-change notice, which explains the header's new
+ *  amount, then the timeline's own message. A failure the timeline does not word is the store's. */
+const timelineMessage = computed(() => {
+  if (timeline.value?.failure) return timeline.value.failure.text;
+  if (heroFailed.value) return requests.fundingError;
+  return rateChangeNotice.value ?? timeline.value?.message?.text ?? null;
+});
+const timelineDetail = computed(() => (heroFailed.value ? null : (timeline.value?.detail ?? null)));
+/** The band keeps its last words while the timeline completes and leaves on success. */
+const band = ref({ message: timelineMessage.value, detail: timelineDetail.value });
+watch([timelineMessage, timelineDetail], ([message, detail]) => {
+  if (!finished.value) band.value = { message, detail };
 });
 </script>
 
@@ -417,61 +312,105 @@ const message = computed(() => {
   <div class="-mx-4 flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-6">
     <div class="flex flex-col items-center text-center">
       <span
-        class="flex size-14 items-center justify-center rounded-full"
+        class="journey-stack size-14 rounded-full"
         :class="heroFailed ? 'journey-hero-failed' : 'bg-surface-container'"
       >
         <X v-if="heroFailed" class="size-6 text-fg-error" aria-hidden="true" />
-        <Plus v-else-if="finished" class="size-6 text-fg-primary" aria-hidden="true" />
-        <RefreshCcw v-else class="size-6 text-fg-primary" aria-hidden="true" />
+        <template v-else>
+          <RefreshCcw
+            v-if="!successShown || successPlaying"
+            class="size-6 text-fg-primary"
+            :class="{ 'journey-icon-out': successPlaying }"
+            aria-hidden="true"
+          />
+          <TransactionIcon
+            v-if="successShown"
+            class="size-14"
+            :animate="successPlaying"
+            :delay="SUCCESS_ICON_DELAY_MS"
+          />
+        </template>
       </span>
-      <p
-        class="mt-2 text-display-m"
-        :class="finished ? 'text-fg-success' : heroFailed ? 'text-fg-secondary' : 'text-fg-primary'"
-      >
-        <CashAmount :sign="amountParts.sign" :amount="amountParts.amount" />
+      <p class="journey-stack mt-2 text-display-m">
+        <CashAmount
+          v-if="!successShown || successPlaying"
+          v-bind="pendingAmount"
+          :class="[
+            heroFailed ? 'text-fg-secondary' : 'text-fg-primary',
+            { 'journey-amount-out': successPlaying },
+          ]"
+        />
+        <CashAmount
+          v-if="successShown"
+          v-bind="successAmount"
+          class="text-fg-success"
+          :class="{ 'journey-amount-in': successPlaying }"
+        />
       </p>
-      <p v-if="settledWhen" class="text-paragraph-l text-fg-secondary">{{ settledWhen }}</p>
+      <div v-if="settledWhen" :class="{ 'journey-date-in': successPlaying }">
+        <p class="text-paragraph-l text-fg-secondary">{{ settledWhen }}</p>
+      </div>
     </div>
 
     <div class="mt-6 flex flex-1 flex-col gap-6">
-      <!-- The stepper leaves once the CASH lands. -->
-      <FundingJourneyTimeline
-        v-if="progress && !finished"
-        :progress="progress"
-        :scale="scale"
-        :completed-steps="completedSteps"
-        :message="message"
-        :delayed="delayed"
-        :failed-label="failedLabel"
+      <!-- The timeline leaves once the CASH lands. -->
+      <div
+        v-if="timeline && success !== 'shown'"
+        :class="{ 'journey-timeline-out': successPlaying }"
+      >
+        <FundingTimeline
+          v-if="timeline.view"
+          :view="timeline.view"
+          :message="band.message"
+          :detail="band.detail"
+          @added="success = nextSuccessStage(success, { kind: 'drawn' })"
+        />
+        <TimelineBand v-else :message="band.message" :detail="band.detail" />
+      </div>
+
+      <!-- On a bank transfer the last row is Arrives, which fades as the success motion plays. -->
+      <DetailRows
+        v-if="detailRows.length"
+        :rows="detailRows"
+        :class="{ 'journey-last-row-out': bank && successPlaying }"
+        @fees="emit('fees')"
       />
 
-      <DetailRows v-if="detailRows.length" :rows="detailRows" @fees="emit('fees')" />
+      <!-- The reference copies, so the screen carries the confirmation. -->
+      <DetailRows v-if="endedRows.length" :rows="endedRows" @fees="emit('fees')" />
+      <CopiedPill v-if="endedRows.length" />
 
-      <!-- What an ended top-up actually cost: the charge and its handles on a fiat rail, the sum
-           sent and its network on a refunded crypto one. The transaction id copies, so the screen
-           carries the confirmation. -->
-      <DetailRows v-if="paidRows.length" :rows="paidRows" @fees="emit('fees')" />
-      <CopiedPill v-if="paidRows.length" />
-
-      <!-- The way back to a refunded deposit drills into the recovery guide, which carries the
-           refund's own status line and the key that moves it. -->
-      <PillButton v-if="refunded" class="mt-auto" @click="emit('refund')"> Refund info </PillButton>
-      <PillButton v-else-if="recoverable" class="mt-auto" @click="emit('recover')">
-        Recover funds
+      <!-- The refund guide for money the provider returned to the refund key, the recovery guide
+           for money on the top-up's own account. -->
+      <PillButton
+        v-if="failureAction?.kind === 'get-back'"
+        class="mt-auto"
+        @click="failureAction.from === 'refund-key' ? emit('refund') : emit('recover')"
+      >
+        Get your {{ failureAction.source }} back
       </PillButton>
-
-      <!-- A recoverable failure comes first on either rail: the payment landed and only the credit
-           is outstanding, so re-entering it is the fix. Starting a second payment there would
-           charge the buyer twice. -->
-      <PillButton v-if="failure?.recoverable" class="mt-auto" @click="session.retry()">
+      <PillButton
+        v-else-if="failureAction?.kind === 'try-again'"
+        class="mt-auto"
+        @click="session.retry()"
+      >
         Try again
       </PillButton>
-
-      <PillButton v-else-if="canStartOver" class="mt-auto" @click="emit('startOver')">
+      <PillButton
+        v-else-if="failureAction?.kind === 'start-over'"
+        class="mt-auto"
+        @click="emit('startOver')"
+      >
         Start over
       </PillButton>
 
-      <PillButton v-if="finished" variant="tertiary" class="mt-auto" @click="emit('close')">
+      <PillButton
+        v-if="successShown || failureAction?.kind === 'close'"
+        variant="tertiary"
+        class="mt-auto"
+        :class="{ 'journey-close-in': successPlaying }"
+        @click="emit('close')"
+      >
         Close
       </PillButton>
 
@@ -489,5 +428,120 @@ const message = computed(() => {
  * token covers it (reported gap). */
 .journey-hero-failed {
   background: var(--palette-red-alpha-24);
+}
+
+/* The hero's icons and amounts overlap while one turns into the other. */
+.journey-stack {
+  display: grid;
+  place-items: center;
+}
+
+.journey-stack > * {
+  grid-area: 1 / 1;
+}
+
+/* The success motion, timed from the timeline's last tick. */
+.journey-timeline-out {
+  display: grid;
+  animation: journey-collapse 820ms cubic-bezier(0.65, 0, 0.35, 1) 900ms both;
+}
+
+.journey-timeline-out > * {
+  animation: journey-dissolve 560ms ease-out 700ms both;
+}
+
+.journey-icon-out {
+  animation: journey-spin-out 700ms cubic-bezier(0.55, 0, 1, 0.45) 350ms both;
+}
+
+.journey-amount-out {
+  animation: journey-drop-out 360ms ease-in 1000ms both;
+}
+
+.journey-amount-in {
+  animation: journey-drop-in 480ms ease-out 1000ms both;
+}
+
+.journey-date-in {
+  display: grid;
+  animation: journey-expand 820ms cubic-bezier(0.65, 0, 0.35, 1) 900ms both;
+}
+
+.journey-date-in > p {
+  overflow: hidden;
+  animation: journey-drop-in 480ms ease-out 1000ms both;
+}
+
+.journey-last-row-out > :deep(:last-child) {
+  animation: journey-fade-out 900ms ease-in-out 1300ms both;
+}
+
+.journey-close-in {
+  animation: journey-rise 400ms ease-out 1720ms both;
+}
+
+/* The column's gap-6 goes with the timeline, so the details end where the end state has them. */
+@keyframes journey-collapse {
+  from {
+    grid-template-rows: 1fr;
+  }
+  to {
+    grid-template-rows: 0fr;
+    margin-bottom: -1.5rem;
+    visibility: hidden;
+  }
+}
+
+@keyframes journey-expand {
+  from {
+    grid-template-rows: 0fr;
+  }
+  to {
+    grid-template-rows: 1fr;
+  }
+}
+
+@keyframes journey-dissolve {
+  to {
+    opacity: 0;
+    filter: blur(6px);
+    transform: translateY(-8px) scale(0.96);
+  }
+}
+
+@keyframes journey-spin-out {
+  to {
+    transform: rotate(900deg) scale(0);
+  }
+}
+
+@keyframes journey-drop-out {
+  to {
+    opacity: 0;
+    filter: blur(3px);
+    transform: translateY(8px);
+  }
+}
+
+@keyframes journey-drop-in {
+  from {
+    opacity: 0;
+    filter: blur(3px);
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes journey-fade-out {
+  to {
+    opacity: 0;
+    visibility: hidden;
+  }
+}
+
+@keyframes journey-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
 }
 </style>

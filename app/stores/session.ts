@@ -8,14 +8,20 @@ import {
   TOKENS,
   type ChainflipRail,
   type PaymentState,
+  type Quote,
   type SourceId,
   type TokenSpec,
 } from "@getsome/core";
-import { egressFor, SOURCE_CONFIG_BY_ID, type ChainflipToken } from "@getsome/chainflip";
+import {
+  chainflipTokenOf,
+  egressFor,
+  SOURCE_CONFIG_BY_ID,
+  SourceMinimumNotMetError,
+  type ChainflipToken,
+} from "@getsome/chainflip";
 import type { RefundKey } from "@getsome/ephemeral";
 import {
   createManualRail,
-  manualSourceIdOf,
   NoCashTransferError,
   PERMILL,
   PSM_EXTERNAL,
@@ -23,13 +29,6 @@ import {
   type ConversionRoute,
   type FundingStep,
 } from "@getsome/funding";
-import {
-  advanceFundingProgressSnapshot,
-  createFundingProgressSnapshot,
-  fundingProgressSignalForPaymentState,
-  progressProviderForSource,
-  type FundingProgressSnapshot,
-} from "../funding/progress";
 import { depositWindowFor } from "../funding/config";
 import { formatFundingAmount } from "../funding/selection";
 import {
@@ -62,9 +61,13 @@ import {
   type SupportedCountry,
 } from "~~/lib/supported";
 import { requestRefKey, requestRefOf, type RequestRef } from "../utils/request-index";
-import { journeyScaleOf, type JourneyScale } from "../funding/requests/views";
-import { estimateSourceAmount, estimateSourceFromCash } from "~~/lib/demo-rates";
-import { priceSourceLeg, type SourcePriceResult } from "~~/lib/source-price";
+import { estimateSourceFromCash } from "~~/lib/demo-rates";
+import {
+  priceSourceLeg,
+  sourceMinimumOf,
+  sourcePriceOf,
+  type SourcePriceResult,
+} from "~~/lib/source-price";
 import {
   createMockCoinageSession,
   depositTokenOf,
@@ -80,7 +83,7 @@ import type {
   PsmFundingSizing,
 } from "~~/lib/funding-fees";
 import { isDemoBuild } from "../utils/demo";
-import { isMeldSourceId, meldSourceIdFor } from "../funding/source-ids";
+import { isMeldSourceId } from "../funding/source-ids";
 import { fmtCash, toCashBase } from "../utils/cash";
 import { isMoneyAmount, sumMoney } from "../utils/money";
 import { fundFromFaucet, isFaucetConfigured } from "~~/lib/faucet";
@@ -97,11 +100,6 @@ export { DEPOSIT_EXPIRED_REASON } from "../funding/requests/model";
 
 /** Stand-in address for the mock world, which never touches a chain. */
 const DEV_RECIPIENT = "13ENScfFZXQ8avXf6cphack516B8YCjdL4MJbodm7VxK8GE9";
-
-/** The deposit token as the Chainflip pricing and floors read it; undefined for a token Chainflip
- *  cannot deliver, such as USDC, which prices nothing through it. */
-const chainflipTokenOf = (token: TokenSpec): ChainflipToken | undefined =>
-  token.chainflipAsset === undefined ? undefined : (token as ChainflipToken);
 
 /** The deposit token as Meld delivers it. Throws for a token Meld cannot deliver. */
 function meldTokenOf(token: TokenSpec): Parameters<typeof createMeldRail>[0]["token"] {
@@ -131,7 +129,6 @@ export interface ActiveFlowRecord {
   sourceMintFee?: string;
   startedAt: number;
   depositAddress?: string;
-  progress?: FundingProgressSnapshot;
   tradeN?: number;
   /** Timestamp of the first deposit seen on the burner. */
   funded?: number;
@@ -390,8 +387,6 @@ export const useSessionStore = defineStore("session", () => {
   const cancelling = ref(false);
   /** Set when a cancel was refused because the payment is already on its way; shown to the buyer. */
   const cancelNotice = ref<string | null>(null);
-  /** Asks the journey to open its refund-key panel unprompted; only the preview deck sets it. */
-  const revealRefund = ref(false);
 
   // Monotonic guard for async quote work. Every fetchQuote and reset bumps it; a resolution
   // with a stale token disposes what it built.
@@ -471,13 +466,6 @@ export const useSessionStore = defineStore("session", () => {
     }
     return highest + 1;
   }
-
-  /** The journey's scale for the request on screen: the card timeline runs five stops, the crypto
-   *  and bank ones three. The record on screen owns its route; the selected method stands in on the
-   *  entry screens, before there is a record. */
-  const journeyScale = computed<JourneyScale>(() =>
-    journeyScaleOf(requests.foregroundRecord?.route ?? method.value),
-  );
 
   /**
    * TODO: remove this cap once the deposit is real money. Any replacement must clear the swap
@@ -559,7 +547,6 @@ export const useSessionStore = defineStore("session", () => {
     // Cleared with the epoch bump: a `pending` set by the outgoing quote is never resolved.
     sourcePrice.value = null;
     faucetState.value = "idle";
-    revealRefund.value = false;
     foregroundRef = null;
     requests.leave();
     // No reconcile here; reset(), start(), openRequest() and boot reconcile.
@@ -616,8 +603,8 @@ export const useSessionStore = defineStore("session", () => {
         // Shortfall, a refused hand-off, no worker: the session keeps waiting; say why.
         const reason = e instanceof Error ? e.message : String(e);
         console.error(`[coinage] funding: failed: ${reason}`);
-        // The screen shows the failure now; the record waits for the worker's verdict.
-        requests.setTransientError({ message: reason, at: Date.now(), source: "handoff" });
+        // The screen shows the delay now; the record waits for the worker's verdict.
+        requests.setTransientError({ message: reason, source: "handoff" });
         recordDriverFailure(ref, reason);
       });
   }
@@ -644,6 +631,9 @@ export const useSessionStore = defineStore("session", () => {
     // No account lookup: the burner comes from the host's entropy root and the claim credits
     // whoever the host authenticated.
     const { createHostedCoinageWorld } = await import("~~/lib/coinage-live");
+    // This world's own request, not `foregroundRef`: a claim can land after the foreground has
+    // moved on to the next request, and it must never be recorded against that one (#62).
+    let claimRef: RequestRef | null = null;
     // Outer bound sized above the sum of the setup's inner stage bounds.
     const world = await step(
       "create session + size budget",
@@ -658,8 +648,8 @@ export const useSessionStore = defineStore("session", () => {
         ...(rail ? { rail } : {}),
         ...(sourceId ? { sourceId } : {}),
         onClaimProgress: (stage, claimed) => {
-          if (foregroundRef === null) return;
-          void requests.observe(foregroundRef, {
+          if (claimRef === null) return;
+          void requests.observe(claimRef, {
             source: "core",
             at: Date.now(),
             claim: { stage, ...(claimed === undefined ? {} : { claimed: claimed.toString() }) },
@@ -667,6 +657,7 @@ export const useSessionStore = defineStore("session", () => {
         },
       }),
     );
+    claimRef = requestRefOf(world.sourceId, world.tradeN);
     if (epoch !== quoteEpoch) {
       world.dispose();
       return null;
@@ -1013,10 +1004,13 @@ export const useSessionStore = defineStore("session", () => {
       `[coinage] quoting in the ${isHosted() ? "LIVE (hosted)" : "MOCK (browser)"} world`,
     );
     try {
-      // A direct Polkadot pick names the token it deposits; a demo Chainflip pick leaves the
-      // route to the amount. Either way the world runs under the source of the token the route
-      // has the buyer deposit.
+      // A direct Polkadot pick names the token it deposits; a Chainflip pick leaves the route to
+      // the amount. Either way the world runs under the pick's own source.
       const sourceId = sourceIdFor(chain, asset);
+      if (!sourceId) {
+        loading.value = false;
+        return;
+      }
       const direct = isDirectSourceId(sourceId) ? sourceId : null;
       const route = await chooseQuoteRoute(
         amountBase.value,
@@ -1025,11 +1019,10 @@ export const useSessionStore = defineStore("session", () => {
       if (epoch !== quoteEpoch) return;
       if (isHosted()) {
         const { nextHostedTradeNumber } = await import("~~/lib/coinage-live");
-        const liveSourceId: SourceId = manualSourceIdOf(depositTokenOf(route));
         const tradeN = await step(
           "trade number",
           10_000,
-          nextHostedTradeNumber(liveSourceId, (n) => requests.hasTrace(liveSourceId, n)),
+          nextHostedTradeNumber(sourceId, (n) => requests.hasTrace(sourceId, n)),
         );
         const world = await createLiveWorld(
           epoch,
@@ -1037,36 +1030,55 @@ export const useSessionStore = defineStore("session", () => {
           route,
           tradeN,
           undefined,
-          liveSourceId,
+          sourceId,
         );
         if (!world) return; // superseded by a newer quote
         if (epoch !== quoteEpoch) {
           world.dispose();
           return;
         }
-        const quote = await step("quote", 20_000, world.session.quote());
+        let quote: Quote;
+        const depositToken = chainflipTokenOf(depositTokenOf(route));
+        try {
+          quote = await step("quote", 20_000, world.session.quote());
+        } catch (e) {
+          // Chainflip can refuse, on a floor or an outage: the world and its burner are let go.
+          world.dispose();
+          if (!(e instanceof SourceMinimumNotMetError)) throw e;
+          if (epoch !== quoteEpoch) return;
+          console.info(
+            `[coinage] quote: below the ${e.assetSymbol} floor (${e.minimumFormatted} ${e.assetSymbol}); this purchase needs ${e.neededFormatted}`,
+          );
+          // Under the source's floor is not an error to show: the picker greys the row, held
+          // against the budget the world sized before Chainflip was asked, and the other sources
+          // stay open.
+          quoted.value = {
+            send: e.neededFormatted,
+            symbol: e.assetSymbol,
+            nativeAmount: depositToken === undefined ? null : world.budget,
+            ...(depositToken === undefined ? {} : { depositToken }),
+            sourceAsset: asset,
+            sourceChain: chain,
+          };
+          sourcePrice.value = { kind: "minimum", minimum: sourceMinimumOf(e) };
+          return;
+        }
         if (epoch !== quoteEpoch) {
           world.dispose();
           return;
         }
         live.value = world;
-        const depositToken = chainflipTokenOf(depositTokenOf(route));
         quoted.value = {
           send: quote.source.formatted,
           symbol: quote.source.assetSymbol,
-          nativeAmount: depositToken === undefined ? null : quote.source.amount,
+          nativeAmount: depositToken === undefined ? null : world.budget,
           ...(depositToken === undefined ? {} : { depositToken }),
           sourceAsset: asset,
           sourceChain: chain,
         };
-        if (depositToken !== undefined) {
-          priceSelectedSource(chain, asset, quote.source.amount, depositToken, epoch);
-        }
+        // The rail's own figure is the pay card's price; a direct deposit has no swap to price.
+        if (direct === null) sourcePrice.value = { kind: "price", price: sourcePriceOf(quote) };
       } else {
-        if (!sourceId) {
-          loading.value = false;
-          return;
-        }
         // Real pricing outside the host: the pool leg is a public chain read over a standalone
         // WebSocket. Skipped in node test runs; falls back to demo rates when the RPC is
         // unreachable. A stable deposit has nothing to read, the fakes take it one to one.
@@ -1221,56 +1233,6 @@ export const useSessionStore = defineStore("session", () => {
     void reconcileBackground();
   }
 
-  /** The source the request on screen runs under: the world's, or before there is one the one
-   *  the chosen method implies. */
-  function foregroundSourceId(): string | undefined {
-    const world = mock.value ?? live.value;
-    if (world) return world.sourceId;
-    return method.value === "crypto" ? undefined : meldSourceIdFor(method.value);
-  }
-
-  function initialProgress(startedAt: number): FundingProgressSnapshot {
-    const sourceId = foregroundSourceId();
-    const provider = progressProviderForSource(sourceId);
-    if (isMeldSourceId(sourceId)) {
-      // A card confirms within minutes; a bank transfer takes business days.
-      const bank = method.value === "bank";
-      const profile = provider.createProfile({
-        ingressDurationMs: bank ? 24 * 60 * 60_000 : 5 * 60_000,
-        // The rail's own label is the card's ("your payment"); a transfer is sent, not paid.
-        ...(bank ? { waitingLabel: "Waiting for your transfer" } : {}),
-      });
-      const estimatedDurationMs =
-        profile.expectedUserDelayMs +
-        profile.stages.reduce((total, stage) => total + stage.nominalMs, 0);
-      return createFundingProgressSnapshot(profile, {
-        preDetectionEstimateText: bank
-          ? "1-2 business days after you pay"
-          : "≈ minutes after you pay",
-        estimatedCompletionAt: startedAt + estimatedDurationMs,
-      });
-    }
-    const quotedEtaSeconds =
-      sourcePrice.value?.kind === "price" ? sourcePrice.value.price.etaSeconds : undefined;
-    const etaSeconds =
-      quotedEtaSeconds !== undefined && Number.isFinite(quotedEtaSeconds) && quotedEtaSeconds > 0
-        ? quotedEtaSeconds
-        : undefined;
-    const profile = provider.createProfile({
-      ...(etaSeconds === undefined ? {} : { ingressDurationMs: etaSeconds * 1_000 }),
-    });
-    const estimatedDurationMs =
-      profile.expectedUserDelayMs +
-      profile.stages.reduce((total, stage) => total + stage.nominalMs, 0);
-    return createFundingProgressSnapshot(profile, {
-      preDetectionEstimateText:
-        etaSeconds === undefined
-          ? "≈10 min after your transfer"
-          : `≈${Math.max(1, Math.round(etaSeconds / 60))} min after your transfer`,
-      estimatedCompletionAt: startedAt + estimatedDurationMs,
-    });
-  }
-
   /** A funding step the worker reached, recorded as the worker's own sighting of the request. */
   function recordSharedFundingStep(ref: RequestRef, step: FundingStep): void {
     const at = Date.now();
@@ -1327,22 +1289,12 @@ export const useSessionStore = defineStore("session", () => {
       };
     }
     // A direct Polkadot pick is paid in the token the rail quoted: the figure is exact, not an
-    // estimate. A demo Chainflip pick runs under the same default source but keeps its estimate.
+    // estimate.
     const picked = lastQuoteParams
       ? sourceIdFor(lastQuoteParams.chain, lastQuoteParams.asset)
       : undefined;
     if (isDirectSourceId(picked) && quoted.value) {
       return { sourceAmount: quoted.value.send, sourceSymbol: quoted.value.symbol };
-    }
-    const state = lastState.value;
-    const deposit = state && "deposit" in state ? state.deposit : null;
-    if (live.value && deposit) {
-      const estimate = estimateSourceAmount(
-        deposit.amount,
-        depositTokenOf(live.value.route),
-        sourceSymbol,
-      );
-      if (estimate) return { sourceAmount: `≈ ${estimate}`, sourceSymbol };
     }
     if (!live.value && amountBase.value !== null) {
       const estimate = estimateSourceFromCash(amountBase.value, sourceSymbol);
@@ -1362,19 +1314,6 @@ export const useSessionStore = defineStore("session", () => {
     const ref = requestRefOf(world.sourceId, tradeN);
     try {
       const state = lastState.value;
-      // Core's first state arrived before the record existed; the snapshot starts where it
-      // would have moved it.
-      const opening =
-        state === null
-          ? null
-          : fundingProgressSignalForPaymentState(progressProviderForSource(world.sourceId), state);
-      const progress =
-        opening === null
-          ? initialProgress(startedAt)
-          : advanceFundingProgressSnapshot(initialProgress(startedAt), {
-              ...opening,
-              at: startedAt,
-            });
       // What the buyer pays: the fiat quote for a Meld request, the source-coin figure otherwise.
       const sourceDisplay = isMeldSourceId(world.sourceId)
         ? quoted.value
@@ -1413,7 +1352,6 @@ export const useSessionStore = defineStore("session", () => {
         ...(sourceDisplay ?? {}),
         startedAt,
         ...(deposit ? { depositAddress: deposit.address } : {}),
-        progress,
         tradeN,
         // The session's source id; a resume re-enters under it.
         sourceId: world.sourceId,
@@ -1573,8 +1511,9 @@ export const useSessionStore = defineStore("session", () => {
           : "crypto";
     if (isMeldSourceId(record.sourceId)) meldCountry.value = record.meldCountry ?? null;
     lastQuoteParams = { chain: record.chain, asset: record.asset };
+    teardownWorld();
+    const epoch = quoteEpoch;
     try {
-      teardownWorld();
       foregroundRef = ref; // after teardown, which clears it
       // On screen from its record at once; the world builds behind it.
       requests.setForeground(ref);
@@ -1590,7 +1529,6 @@ export const useSessionStore = defineStore("session", () => {
       console.warn(
         `[coinage] reopen request #${record.tradeN}: funded=${record.funded ?? "no"} status=${status} submitted=${record.meldSubmittedAt !== undefined}`,
       );
-      const epoch = quoteEpoch;
       // Display context for the journey, from the record itself; neither path re-quotes.
       const displayQuote: QuotedView = {
         send: record.sourceAmount ?? "",
@@ -1699,6 +1637,8 @@ export const useSessionStore = defineStore("session", () => {
       });
       // No time bound: resuming a claim in flight blocks on the host's Claim sheet.
       await world.session.resume();
+      // A newer quote or open already disposed this world and owns the screen.
+      if (epoch !== quoteEpoch) return false;
       // Meld rail: rebuild a status-only client from the persisted funding-request id and resume
       // the poll.
       if (record.meldFundingRequestId) {
@@ -1746,6 +1686,7 @@ export const useSessionStore = defineStore("session", () => {
       void reconcileBackground();
       return true;
     } catch (e) {
+      if (epoch !== quoteEpoch) return false; // a newer quote owns the state now
       // The record survives a failed resume.
       console.warn("[coinage] resume failed, falling back to a fresh start:", e);
       reset();
@@ -1758,8 +1699,8 @@ export const useSessionStore = defineStore("session", () => {
   // Demo faucet
   async function fundFaucet(): Promise<void> {
     const s = lastState.value;
-    // "sent" blocks too: a resolved faucet transfer is in a block. A failed transfer resets to
-    // "idle".
+    // "sent" blocks too: the transfer was broadcast, and the deposit watch takes it from there.
+    // A refused transfer resets to "idle".
     if (
       !live.value ||
       !s ||
@@ -1771,30 +1712,20 @@ export const useSessionStore = defineStore("session", () => {
     faucetState.value = "funding";
     void markDepositSkipped();
     try {
-      const tradeN = live.value.tradeN;
-      const faucetRef = requestRefOf(live.value.sourceId, tradeN);
-      // The world's route fixes the asset the faucet sends: the one the pipeline reads the burner
-      // for.
-      const sent = await fundFromFaucet({
-        address: s.deposit.address,
-        amount: s.deposit.amount,
+      // The faucet stands in for the rail: it sends the burner what the rail would deliver, in
+      // the route's token, the one the pipeline reads the burner for. A Polkadot deposit asks the
+      // burner for that figure itself and is checked against it, so it is read off the deposit,
+      // not off a world rebuilt on reopen, whose sizing may have moved with the pool.
+      await fundFromFaucet({
+        address: live.value.burnerAddress,
+        amount: isDirectSourceId(live.value.sourceId) ? s.deposit.amount : live.value.budget,
         route: live.value.route,
       });
       faucetState.value = "sent";
-      // The transfer is in a block: the chain's own sighting of the deposit.
-      await requests.observe(faucetRef, {
-        source: "chain",
-        at: Date.now(),
-        burnerNative: sent.toString(),
-        finality: "finalized",
-        via: "faucet",
-      });
-      driveFunding(); // joins the running leg, or restarts one that had failed
     } catch (e: unknown) {
       faucetState.value = "idle";
       requests.setTransientError({
         message: e instanceof Error ? e.message : String(e),
-        at: Date.now(),
         source: "faucet",
       });
     }
@@ -2062,10 +1993,10 @@ export const useSessionStore = defineStore("session", () => {
    * provider settling, instead of dropping a deposit on the burner mid-journey.
    *
    * Skipping straight to the deposit left the timeline starting halfway: the payment steps never
-   * happened, so the journey opened on "Approved" with nothing behind it. Feeding the record the
-   * observations the status poll would have written gets the stepper from Started to Added, which
-   * is the point of a demo. The record counts the steps either way, so the real pipeline overtakes
-   * the play without the stepper ever stepping backwards.
+   * happened, so the journey opened with nothing behind it. Feeding the record the observations
+   * the status poll would have written draws the timeline from Started to Added, which is the
+   * point of a demo. The record only moves forward, so the real pipeline overtakes the play
+   * without the timeline ever moving back.
    *
    * The poll is stopped first. It re-reads the rail on its own cadence and would overwrite these
    * stages with whatever the (unpaid, or faked) request really says.
@@ -2280,7 +2211,6 @@ export const useSessionStore = defineStore("session", () => {
     loading,
     resuming,
     faucetState,
-    revealRefund,
     canSkipDeposit,
     cancelReady,
     cancelling,
@@ -2308,7 +2238,6 @@ export const useSessionStore = defineStore("session", () => {
     resumeOpenRequests,
     openRequests,
     openRequest,
-    journeyScale,
     fundFaucet,
     simulateDeposit,
     depositMismatch,

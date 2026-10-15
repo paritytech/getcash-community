@@ -16,6 +16,7 @@ import {
   freshTickState,
   FundingHeldError,
   FundingShortfallError,
+  isConverted,
   MAX_PROGRAM_REJECTIONS,
   MAX_PSM_REFUSALS,
   psmDepositNeeded,
@@ -24,6 +25,7 @@ import {
   sizeNativeBudget,
   stableDepositNeeded,
   tickOnce,
+  type ConversionFact,
   type FundingStep,
   type TickOnceInput,
   type TickState,
@@ -260,7 +262,11 @@ const xcmPaymentApi = {
   }),
 };
 
-type Outcome = { ok: true } | { ok: false; dispatchError: unknown };
+type Outcome = { ok: true; events?: unknown[] } | { ok: false; dispatchError: unknown };
+
+/** The conversion events a successful transaction carries, as polkadot-api flattens them. */
+const SWAPPED = { type: "AssetConversion", value: { type: "SwapCreditExecuted", value: {} } };
+const MINTED = { type: "Psm", value: { type: "Minted", value: {} } };
 /** What became of a submit's watch: let go, and whether it got as far as reporting finality. */
 type WatchLog = { open: boolean; finalityReported: boolean };
 type Observer = {
@@ -493,7 +499,7 @@ function scriptedWorld(
         state.inFlight = out - remoteFee;
         state.arrivalIn = opts.arrivalAfterReads ?? 3;
         state.xcmLanded = true;
-        return { ok: true };
+        return { ok: true, events: [SWAPPED] };
       };
       if (state.loseAnswer === "included") land();
       if (state.loseAnswer === "dropped") state.lost = land;
@@ -722,7 +728,8 @@ function scriptedPsmWorld(
           state.usdtAh = outcome.usdtLeft;
           state.inFlight = outcome.teleported - remoteFee;
           state.arrivalIn = opts.arrivalAfterReads ?? 3;
-          return { ok: true };
+          // The dispatch fee's swap to the native, then the mint.
+          return { ok: true, events: [SWAPPED, MINTED] };
         });
       },
     };
@@ -981,7 +988,7 @@ function scriptedStableWorld(
         state.stableAh = outcome.stableLeft;
         state.inFlight = outcome.teleported - remoteFee;
         state.arrivalIn = opts.arrivalAfterReads ?? 3;
-        return { ok: true };
+        return { ok: true, events: [SWAPPED, SWAPPED] };
       });
     },
   });
@@ -1303,9 +1310,11 @@ describe("tickOnce", () => {
     const world = scriptedWorld({ priceAtSubmitBps: 10_600n });
     world.state.nativeAh = ASK + KEEP;
     const state = freshTickState();
-    await expect(drive(world, 1, state)).rejects.toThrow(
-      /funding program dispatch rejected: ExchangeAsset failed with NoDeal/,
-    );
+    const facts: ConversionFact[] = [];
+    await expect(
+      drive(world, 1, state, POOL, undefined, { onConversion: (fact) => facts.push(fact) }),
+    ).rejects.toThrow(/funding program dispatch rejected: ExchangeAsset failed with NoDeal/);
+    expect(facts).toEqual([{ type: "prepared" }]);
     expect(world.state.nativeAh).toBe(ASK + KEEP - DISPATCH);
     expect(state).toMatchObject({ attempts: 1, xcmSubmitted: false });
 
@@ -2086,7 +2095,7 @@ describe("the submit, and the CASH read final on People", () => {
     expect(world.state.txs.at(-1)!.watch).toEqual({ open: false, finalityReported: false });
   }
 
-  it("resolves every tier's submit at inclusion and lets the watch go before finality", async () => {
+  it("resolves every tier's submit at inclusion as prepared then converted, and lets the watch go before finality", async () => {
     const psm = scriptedPsmWorld({ arrivalAfterReads: 1 });
     psm.state.usdtAh = PSM_DEPOSIT;
     const stable = scriptedStableWorld({ arrivalAfterReads: 1 });
@@ -2100,8 +2109,15 @@ describe("the submit, and the CASH read final on People", () => {
       [dotUsd, DOTUSD_ROUTE],
     ];
     for (const [world, route] of tiers) {
-      const run = await drive(world, 3, freshTickState(), route);
+      const facts: ConversionFact[] = [];
+      const run = await drive(world, 3, freshTickState(), route, undefined, {
+        onConversion: (fact) => facts.push(fact),
+      });
       expect(run.steps).toEqual(["swap", "done"]);
+      expect(facts).toEqual([
+        { type: "prepared" },
+        { type: "converted", txHash: `0x${"1".padStart(64, "0")}`, block: INCLUSION_BLOCK },
+      ]);
       expect(run.state).toMatchObject({
         xcmSubmitted: true,
         nonceAtSubmit: null,
@@ -2433,6 +2449,25 @@ describe("the submit, and the CASH read final on People", () => {
   });
 });
 
+describe("isConverted", () => {
+  const cases: Array<[string, ConversionRoute, boolean, Array<typeof SWAPPED>, boolean]> = [
+    ["the PSM's mint", ROUTE, true, [SWAPPED, MINTED], true],
+    ["a PSM batch with the fee swap only", ROUTE, true, [SWAPPED], false],
+    ["a failed PSM batch", ROUTE, false, [MINTED], false],
+    ["the pool's exchange", POOL, true, [SWAPPED], true],
+    ["a pool program without an exchange", POOL, true, [MINTED], false],
+    ["a failed pool program", POOL, false, [SWAPPED], false],
+    ["the stable pool's exchanges", STABLE_ROUTE, true, [SWAPPED, SWAPPED], true],
+    ["a stable pool program without an exchange", STABLE_ROUTE, true, [], false],
+    ["a failed stable pool program", STABLE_ROUTE, false, [SWAPPED], false],
+    ["the dotUSD send", DOTUSD_ROUTE, true, [], true],
+    ["a failed dotUSD send", DOTUSD_ROUTE, false, [], false],
+  ];
+  it.each(cases)("%s", (_name, route, ok, events, converted) => {
+    expect(isConverted(route, { ok, events })).toBe(converted);
+  });
+});
+
 describe("stableDepositNeeded", () => {
   it("is the two-hop quote, the held-back min_balance, and one cushion over every fee", () => {
     const fees = {
@@ -2476,7 +2511,11 @@ describe("the dry run before the submit", () => {
   async function refuses(world: World, reason: RegExp, balance = ASK + KEEP) {
     world.state.nativeAh = balance;
     const state = freshTickState();
-    await expect(drive(world, 1, state)).rejects.toThrow(reason);
+    const facts: ConversionFact[] = [];
+    await expect(
+      drive(world, 1, state, POOL, undefined, { onConversion: (fact) => facts.push(fact) }),
+    ).rejects.toThrow(reason);
+    expect(facts).toEqual([]);
     expect(world.state.txs).toEqual([]);
     expect(world.state.nativeAh).toBe(balance); // no dispatch fee paid
     expect(state).toMatchObject({ attempts: 0, xcmSubmitted: false });

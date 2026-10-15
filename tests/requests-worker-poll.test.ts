@@ -4,7 +4,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { projectChainflipTopUps } from "../app/funding/chainflip-top-ups";
-import { progressProviderForSource } from "../app/funding/progress";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
   JOB_POLL_CLAIMING_MS,
@@ -264,6 +263,54 @@ describe("requests store: the worker poll", () => {
     });
   });
 
+  it("poll carries the worker's facts past the deposit and drops a malformed one", async () => {
+    vi.useFakeTimers();
+    await seed([awaitingDepositCryptoRecord], AWAITING_JOB_BLOB);
+    const requests = useRequestsStore();
+    await requests.reconcile("boot");
+
+    const tickAt = FIXTURE_NOW + 3_000;
+    const job = doneJob(AWAITING_JOB, tickAt, {
+      phase: "claiming",
+      amount: "25250000",
+      at: tickAt,
+      attempts: 1,
+    });
+    // The worker's blob as it stores it, with a conversion block that is not a number.
+    await host.storage.write(
+      WORKER_JOBS_KEY,
+      JSON.stringify({
+        "dot-assethub:3": {
+          ...job,
+          state: { ...job.state, psmRefusals: 2, workedMs: 45_000 },
+          claim: { ...job.claim, registeredAt: tickAt, workedMs: 6_000, credited: "10000000" },
+          depositSeen: { block: 10, finalizedAtSeen: 8, finalized: 10, best: 12 },
+          conversion: {
+            preparedAt: tickAt,
+            converted: { txHash: "0xaa", block: "12", at: tickAt, workedMs: 30_000 },
+          },
+        },
+      }),
+    );
+    await elapse(JOB_POLL_MS);
+
+    const record = requests.get(AWAITING_REF);
+    expect(record).toMatchObject({
+      depositInBlock: { block: 10, finalizedAtSeen: 8, finalized: 10, best: 12 },
+      conversionPreparedAt: tickAt,
+      claimRegisteredAt: tickAt,
+      witnesses: {
+        worker: {
+          psmRefusals: 2,
+          claimCredited: "10000000",
+          workedMs: 45_000,
+          claimWorkedMs: 6_000,
+        },
+      },
+    });
+    expect(record).not.toHaveProperty("converted");
+  });
+
   it("a job without a record creates a record with the job's amount and deadline", async () => {
     await seed(fixtureRecords);
     const requests = useRequestsStore();
@@ -305,17 +352,6 @@ describe("requests store: the worker poll", () => {
       },
       confirmedAt: FIXTURE_NOW,
     });
-    // Today's default crypto snapshot: no quote to size the ingress from.
-    const profile = progressProviderForSource("dot-assethub").createProfile();
-    const journeyMs =
-      profile.expectedUserDelayMs +
-      profile.stages.reduce((total, stage) => total + stage.nominalMs, 0);
-    expect(record?.progress).toMatchObject({
-      profile: { id: "direct" },
-      stageTimestamps: {},
-      preDetectionEstimateText: "≈10 min after your transfer",
-      estimatedCompletionAt: job.createdAt + journeyMs,
-    });
     expect(record).not.toHaveProperty("deposit");
     expect(record).not.toHaveProperty("refundAddress");
     expect(record).not.toHaveProperty("sourceAmount");
@@ -351,7 +387,6 @@ describe("requests store: the worker poll", () => {
         network: { label: "Polkadot" },
         token: { label: "DOT" },
         depositAddress: job.burnerAddress,
-        arrivalEstimate: "≈10 min after your transfer",
       },
     });
     expect(row).not.toHaveProperty("quote");
