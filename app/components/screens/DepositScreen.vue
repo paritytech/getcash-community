@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { Copy } from "lucide-vue-next";
-import { estimateSourceAmount, estimateSourceFromCash } from "~~/lib/demo-rates";
+import { estimateSourceFromCash } from "~~/lib/demo-rates";
 import { FUNDING_CHAINS } from "~~/lib/config";
 import { useCopyToClipboard } from "../../composables/useCopyToClipboard";
 import { shortAddress } from "../../utils/address";
@@ -66,8 +66,8 @@ const amount = computed<{ value: string; symbol: string; approx: boolean } | nul
   if (priced?.kind === "price" && q?.sourceAsset) {
     return { value: priced.price.formatted, symbol: q.sourceAsset, approx: false };
   }
-  // TODO(production): the branches below the precise price are demo conveniences; remove them with
-  // the faucet and the estimateSource* helpers.
+  // TODO(production): the floor and browser estimates below are demo conveniences; remove them
+  // with estimateSourceFromCash.
   // Below the floor: the floor quote's rate, scaled linearly to this purchase.
   if (priced?.kind === "minimum") {
     return {
@@ -76,15 +76,11 @@ const amount = computed<{ value: string; symbol: string; approx: boolean } | nul
       approx: true,
     };
   }
-  // A direct Polkadot deposit lands here: the manual rail quotes the exact deposit in the token
-  // the buyer picked.
+  // The figure is the rail's own, exact: a direct Polkadot deposit in the token the buyer picked,
+  // or a reopened swap in the channel's asset, read back off the record.
   if (q?.send && q.symbol === q.sourceAsset) {
     const bare = q.send.endsWith(q.symbol) ? q.send.slice(0, -q.symbol.length).trim() : q.send;
     return { value: bare, symbol: q.symbol, approx: false };
-  }
-  if (session.live && q?.sourceAsset && q.depositToken) {
-    const estimate = estimateSourceAmount(d.amount, q.depositToken, q.sourceAsset);
-    if (estimate) return { value: estimate, symbol: q.sourceAsset, approx: true };
   }
   // The browser world's estimate scales from the CASH amount.
   if (!session.live && q?.sourceAsset && session.amountBase !== null) {

@@ -153,6 +153,24 @@ describe("Chainflip top-up adapter", () => {
     expect(chainflipRequestRef("crypto:#not-a-number")).toBeNull();
   });
 
+  it("lists a Chainflip pick under its own source", () => {
+    const btc = record(
+      {
+        tradeN: 5,
+        amountHuman: "40",
+        startedAt: 500,
+        sourceId: "btc",
+        chain: "Bitcoin",
+        asset: "BTC",
+      },
+      600,
+    );
+    const [row] = projectChainflipTopUps([btc], 600);
+    expect(row?.id).toBe("crypto:btc#5");
+    expect(row?.request).toEqual({ sourceId: "btc", tradeN: 5 });
+    expect(chainflipRequestRef("crypto:btc#5")).toEqual({ sourceId: "btc", tradeN: 5 });
+  });
+
   it("leaves another rail's records to that rail's adapter", () => {
     // The trade counter is per source: meld-card #7 and dot-assethub #7 are different purchases.
     const records = [

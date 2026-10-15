@@ -26,7 +26,8 @@ export function createHostStorageAdapter(
 
   return {
     async read(key) {
-      return (await host.readString(full(key))) ?? null;
+      const value = await host.readString(full(key));
+      return value ? value : null;
     },
     async write(key, value) {
       await host.writeString(full(key), value);
