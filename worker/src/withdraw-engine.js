@@ -619,7 +619,13 @@ async function tickRailLeg(record) {
         destinationAddress:
           swapOf(record) === null ? record.destination?.address : record.channel?.address,
         ...(exactAmount === null
-          ? {}
+          ? swapOf(record) === null
+            ? {}
+            : {
+                // As for the exact payment: a sweep whose answer was lost is read off the chain
+                // before Meld, whose order may have closed once the swap paid it.
+                landed: () => swapSweptOut(record, state.sweep),
+              }
           : {
               payout: "off-chain",
               amount: exactAmount,
@@ -868,6 +874,18 @@ const readKeyUsdt = (api, record) =>
     DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
     "key usdt read",
   );
+
+/** A swap sale's sweep went out: one was tried, and the key holds no USDT. The sweep's own rule,
+ *  since it moves everything and reaps the key behind it. */
+async function swapSweptOut(record, sweep) {
+  if ((sweep?.attempts ?? 0) === 0) return false;
+  const client = await connectChain(record.assetHubGenesis, "asset hub");
+  try {
+    return (await readKeyUsdt(client.getTypedApi(paseo_next_v2), record)) === 0n;
+  } finally {
+    client.destroy();
+  }
+}
 
 /** A swap sale failed after the key paid, before Chainflip delivered, recently enough that its
  *  refund may still land. */

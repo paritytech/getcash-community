@@ -334,6 +334,35 @@ describe("a fiat sale through an offramp lane", () => {
     expect(storedJob().residue).toEqual({ amount: "0", returning: false });
   });
 
+  it("reads a sweep whose answer was lost off the chain before Meld's closed order", async () => {
+    await landed();
+    const job = storedJob();
+    job.leg.sweep = { attempts: 1, rejections: 0 }; // the sweep left; its answer did not come back
+    mocks.keyCash = 0n; // and the key is empty behind it
+    mocks.channel.mockResolvedValue({
+      depositAddress: CF_DEPOSIT,
+      destinationAddress: SOLANA_DEPOSIT,
+      expired: true, // Meld closed the order once the swap paid it
+    });
+    const resumed = await engineWith({ "s-1": job });
+    await resumed.tickAllWithdraw();
+    expect(storedJob().phase).not.toBe("failed");
+    expect(storedJob().leg.paid).toBe(true);
+    expect(mocks.channel).not.toHaveBeenCalled();
+    expect(mocks.payRail).not.toHaveBeenCalled();
+  });
+
+  it("still checks Meld before paying when the key holds the USDT a tried sweep left", async () => {
+    await landed();
+    const job = storedJob();
+    job.leg.sweep = { attempts: 1, rejections: 1 }; // refused at inclusion: nothing left
+    mocks.keyCash = 99_000_000n;
+    const resumed = await engineWith({ "s-1": job });
+    await resumed.tickAllWithdraw();
+    expect(mocks.channel).toHaveBeenCalledWith("cf-channel-7");
+    expect(mocks.payRail).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps reading a key that failed before the purse paid, and sends the CASH home once it lands", async () => {
     // Twelve minutes left on the channel: inside the worker's own margin as the hand-off arrives.
     const engine = await engineWith({});
