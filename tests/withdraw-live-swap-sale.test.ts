@@ -97,14 +97,16 @@ describe("a sale through an offramp lane", () => {
     const floor = (((USDT_IN * 993_000n) / 1_000_000n) * 9_950n) / 10_000n;
     // Cut to the four decimals a sale commits.
     expect(size.commit).toBe((floor / 100n) * 100n);
+    // What the provider is promised keeps 1% under that for the seller's KYC.
+    expect(size.promise).toBe(((size.commit * 9_900n) / 10_000n / 100n) * 100n);
   });
 
   it("opens the swap to the provider's address with the promise's slippage", async () => {
-    const { commit } = await sizeSwapSale(AMOUNT, lane);
+    const { promise } = await sizeSwapSale(AMOUNT, lane);
     const channel = await openSwapSaleChannel({
       amount: AMOUNT,
       lane,
-      committed: commit,
+      committed: promise,
       providerAddress: "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
       keyPublicKeyHex: `0x${"07".repeat(32)}`,
     });
@@ -119,13 +121,26 @@ describe("a sale through an offramp lane", () => {
     });
   });
 
+  it("still opens after the quote slipped while the seller verified, within the KYC margin", async () => {
+    const { promise } = await sizeSwapSale(AMOUNT, lane);
+    cf.rate = 988_000n; // half a percent worse than at confirm
+    const channel = await openSwapSaleChannel({
+      amount: AMOUNT,
+      lane,
+      committed: promise,
+      providerAddress: "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+      keyPublicKeyHex: `0x${"07".repeat(32)}`,
+    });
+    expect(channel).not.toBeNull();
+  });
+
   it("opens nothing once today's floor no longer covers the promise", async () => {
-    const { commit } = await sizeSwapSale(AMOUNT, lane);
+    const { promise } = await sizeSwapSale(AMOUNT, lane);
     cf.rate = 980_000n;
     const channel = await openSwapSaleChannel({
       amount: AMOUNT,
       lane,
-      committed: commit,
+      committed: promise,
       providerAddress: "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
       keyPublicKeyHex: `0x${"07".repeat(32)}`,
     });

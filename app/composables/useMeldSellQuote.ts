@@ -208,7 +208,7 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
             lane === null
               ? await sizeDirectSale(live, code, amount)
               : await live.sizeSwapSale(amount, lane).then((swap) => ({
-                  planck: swap.commit,
+                  planck: swap.promise,
                   backCash: 0n,
                   swap: { lane: lane.id, route: swap.route },
                 }));
