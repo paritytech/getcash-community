@@ -15,11 +15,10 @@ import {
   type SourceOffer,
 } from "@getsome/chainflip";
 import { PSM_EXTERNAL } from "@getsome/funding";
+import { brokerConfigured } from "~~/lib/chainflip-backend";
 import { FUNDING_CHAINS, isDirectSourceId, sourceIdFor } from "~~/lib/config";
 import { learnSourceFloors } from "~~/lib/source-floors";
 import { isHosted } from "~~/lib/host-account";
-import { isDemoBuild } from "../utils/demo";
-import { chainflipRailOn } from "../utils/rail";
 import type { DocumentLike } from "./requests";
 import { useSessionStore } from "./session";
 
@@ -120,12 +119,9 @@ export const useOffersStore = defineStore("offers", () => {
   /** Every learned source is unavailable: Chainflip is paused or unreachable. */
   const paused = computed(() => floors.value !== null && answeredForNothing(floors.value));
 
-  /** TODO(production): remove. Demo builds carry on with every source ungated when Chainflip
-   *  answers for nothing. A ref so tests can pin it either way. */
-  const demoFallback = ref(isDemoBuild());
-
-  /** Whether a pick can lead anywhere; see `chainflipRailOn`. A ref so tests can pin it. */
-  const railEnabled = ref(chainflipRailOn());
+  /** Whether a pick can lead anywhere: the browser's mock rail opens its fake channels without a
+   *  key, and a hosted build needs the broker key to open a real one. A ref so tests can pin it. */
+  const railEnabled = ref(!isHosted() || brokerConfigured());
 
   const fresh = (learned: Learned) => Date.now() - learned.learnedAt < FLOORS_STALE_MS;
 
@@ -171,6 +167,15 @@ export const useOffersStore = defineStore("offers", () => {
   watch(
     () => egress.value.asset,
     () => void learn(),
+  );
+
+  // Chainflip refused a pick under a floor the rows did not show: the floors have moved since
+  // they were learned, so they are asked again and the row greys with the fresh one.
+  watch(
+    () => session.sourcePrice,
+    (priced) => {
+      if (priced?.kind === "minimum" && railEnabled.value) void ask(egress.value);
+    },
   );
 
   // The retry loop runs only while something on screen is watching the floors, and only while
@@ -244,11 +249,7 @@ export const useOffersStore = defineStore("offers", () => {
     if (!railEnabled.value) return { state: "rail-off" };
     const learned = floors.value?.get(sourceId);
     if (learned === undefined) return { state: "checking" };
-    if (learned.kind === "unavailable") {
-      // TODO(production): remove the fallback; see demoFallback.
-      if (paused.value && demoFallback.value) return { state: "ungated" };
-      return { state: "unavailable", reason: learned.reason };
-    }
+    if (learned.kind === "unavailable") return { state: "unavailable", reason: learned.reason };
     // No figure to hold the floor against once the quote is in: the row is open as it is, and
     // the quote after a pick, sized in this source's own egress, is what says no.
     if (target.value === null) return sized.value ? { state: "ungated" } : { state: "checking" };
@@ -322,7 +323,6 @@ export const useOffersStore = defineStore("offers", () => {
     awaitingNetworks,
     awaitingTokens,
     paused,
-    demoFallback,
     railEnabled,
     networks,
     tokensOf,

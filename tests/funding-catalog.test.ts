@@ -70,7 +70,9 @@ describe("the funding catalog", () => {
   it("runs every direct source on the crypto route over the manual rail", () => {
     expect(isCryptoSourceId(undefined)).toBe(true);
     expect(isCryptoSourceId("usdt-assethub")).toBe(true);
-    expect(isCryptoSourceId("btc")).toBe(false);
+    expect(isCryptoSourceId("btc")).toBe(true);
+    expect(isCryptoSourceId("meld-card")).toBe(false);
+    expect(isCryptoSourceId("nope")).toBe(false);
     for (const sourceId of DIRECT_SOURCE_IDS) {
       expect(railProviderOf(sourceId)).toBe("manual");
       expect(routeOf(sourceId)).toBe("crypto");

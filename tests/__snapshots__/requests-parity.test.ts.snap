@@ -1613,11 +1613,8 @@ exports[`request list projection > projects the fixture records exactly as today
           "action": {
             "kind": "close",
           },
-          "details": {
-            "provider": "Chainflip",
-            "reason": undefined,
-          },
-          "text": "Chainflip couldn't accept your BTC.",
+          "details": {},
+          "text": "shortfall: the deposit is below the swap minimum",
         },
         "view": {
           "failed": 0,
@@ -1876,10 +1873,7 @@ exports[`request list projection > projects the fixture records with live status
           "action": {
             "kind": "try-again",
           },
-          "details": {
-            "provider": "Chainflip",
-            "reason": undefined,
-          },
+          "details": {},
           "text": "We received less Cash than expected. Your money is safe, and you won't need to pay again.",
         },
         "view": {
@@ -2006,11 +2000,8 @@ exports[`request list projection > projects the fixture records with live status
           "action": {
             "kind": "close",
           },
-          "details": {
-            "provider": "Chainflip",
-            "reason": undefined,
-          },
-          "text": "Chainflip couldn't accept your BTC.",
+          "details": {},
+          "text": "shortfall: the deposit is below the swap minimum",
         },
         "view": {
           "failed": 0,
