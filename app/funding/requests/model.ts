@@ -779,10 +779,9 @@ export type Observation =
 /** The source a request runs under: a bare legacy ref means the crypto rail's. */
 export const effectiveSourceId = (ref: RequestRef): string => ref.sourceId ?? CRYPTO_SOURCE_ID;
 
-/** A top-up the buyer pays by sending a Polkadot token straight to its account. Decided from the
- *  network the buyer picked, since other crypto picks can run under the same source ids. */
-export const isDirectDeposit = (record: Pick<TopUpRecord, "chain" | "ref">): boolean =>
-  record.chain === "Polkadot" && isDirectSourceId(effectiveSourceId(record.ref));
+/** A top-up the buyer pays by sending a Polkadot token straight to its account. */
+export const isDirectDeposit = (record: Pick<TopUpRecord, "ref">): boolean =>
+  isDirectSourceId(effectiveSourceId(record.ref));
 
 /**
  * The balance at which a direct deposit counts as arrived: the figure the worker converts at, not
