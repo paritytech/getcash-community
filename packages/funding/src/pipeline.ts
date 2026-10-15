@@ -772,7 +772,9 @@ async function settleInclusion(
     input.tickTimeoutMs,
     "block number read (finalized)",
   );
-  if (finalizedBlock < inclusionBlock) return;
+  // Strictly past: a block's hash is recorded by the block after it, so at the block's own
+  // height the entry is not there yet.
+  if (finalizedBlock <= inclusionBlock) return;
   const final =
     inclusionHash === null ||
     (await bounded(

@@ -325,9 +325,9 @@ function scriptedWatch(txHash: string, log: WatchLog, land?: () => Outcome, erro
 /** Asset Hub's height and the burner's nonce as the fakes script it. An inclusion raises the
  *  nonce at the latest block, and the finalized block follows at once, nonce, height and the
  *  block's hash, unless finality is held, where `finalize` brings it up when the test says. Until
- *  then the finalized height is one block short of INCLUSION_BLOCK; a test that moves it past
- *  without `finalize` replaces the block the program was in, since the finalized chain holds
- *  another hash there. */
+ *  then the finalized height is one block short of INCLUSION_BLOCK; `finalize` takes it one past,
+ *  where the block's hash is on record, and a test that moves it there without `finalize`
+ *  replaces the block the program was in, since the finalized chain holds another hash there. */
 function scriptedChain() {
   const nonce = { latest: 0, finalized: 0 };
   const tagOf = (options?: { at?: string }) => {
@@ -349,7 +349,7 @@ function scriptedChain() {
     },
     finalize() {
       nonce.finalized = nonce.latest;
-      chain.finalizedBlock = INCLUSION_BLOCK;
+      chain.finalizedBlock = INCLUSION_BLOCK + 1;
       chain.finalHash = INCLUSION_HASH;
     },
     BlockHash: {
@@ -644,7 +644,7 @@ function scriptedWorld(
       }
       state.xcmLanded = false;
       chain.nonce.latest = chain.nonce.finalized;
-      chain.finalizedBlock = INCLUSION_BLOCK;
+      chain.finalizedBlock = INCLUSION_BLOCK + 1;
       chain.finalHash = OTHER_HASH;
       chain.finalityHeld = false;
     },
@@ -2447,7 +2447,7 @@ describe("the submit, and the arrival on People", () => {
     expect(world.nonce).toEqual({ latest: 0, finalized: 0 });
 
     // Final past the block the program was seen in, holding another hash there: it was dropped.
-    world.chain.finalizedBlock = INCLUSION_BLOCK;
+    world.chain.finalizedBlock = INCLUSION_BLOCK + 1;
     const again = await drive(world, 3, state, POOL, undefined, { onBeforeSubmit });
     expect(again.steps).toEqual(["swap", "done"]);
     expect(again.txs).toEqual(["swap", "swap"]);
@@ -2476,6 +2476,19 @@ describe("the submit, and the arrival on People", () => {
     });
     // The height alone while the chain is short of the block.
     expect(world.chain.reads).toEqual(Array<string>(3).fill("number@finalized"));
+  });
+
+  it("does not judge the block while the finalized height is the block's own, whose hash only the next block records", async () => {
+    const { world, state } = await includedUnfinalized();
+    world.chain.finalizedBlock = INCLUSION_BLOCK;
+    world.chain.reads.length = 0;
+    expect((await drive(world, 1, state)).steps).toEqual(["await-arrival"]);
+    expect(state).toMatchObject({
+      xcmSubmitted: true,
+      nonceAtSubmit: 0,
+      inclusionBlock: INCLUSION_BLOCK,
+    });
+    expect(world.chain.reads).toEqual(["number@finalized"]);
   });
 
   it("lets the pre-send record go once the finalized chain holds the block's hash, and reads finality no more", async () => {
@@ -2518,7 +2531,7 @@ describe("the submit, and the arrival on People", () => {
     });
     // Final past the block it was seen in without it, and back in a later best block when the
     // tick looks.
-    world.chain.finalizedBlock = INCLUSION_BLOCK;
+    world.chain.finalizedBlock = INCLUSION_BLOCK + 1;
     world.state.lost!();
     expect(world.nonce).toEqual({ latest: 1, finalized: 0 });
     world.chain.reads.length = 0;
@@ -2550,7 +2563,7 @@ describe("the submit, and the arrival on People", () => {
       replacedInclusions: 1,
       quoteAfterXcm: true,
     });
-    world.chain.finalizedBlock = INCLUSION_BLOCK;
+    world.chain.finalizedBlock = INCLUSION_BLOCK + 1;
     // The program is back in a best block between the tick's look at the nonce and its send: the
     // tick's second nonce read is the send's own.
     const api = (world.client as unknown as { getTypedApi: () => never }).getTypedApi() as {
