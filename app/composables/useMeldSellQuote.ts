@@ -1,23 +1,31 @@
-// The quote a fiat sale is confirmed on: the region and payout method from the adapter's sell
-// catalog, the exact figure the key will pay out of the pool sale, and the best provider line for
-// that figure. Priced again whenever the region changes; nothing here opens a session.
+// The quote a fiat sale is confirmed on: the region and payout method from the adapter's off-ramp
+// catalog, the exact figure the key will pay, and the best provider line for that figure. Priced
+// again whenever the region changes; nothing here opens a session.
 
 import { ref, shallowRef } from "vue";
 import {
+  DIRECT_SELL_CODES,
+  directSellToken,
   formatSellAmount,
+  isDirectUsdt,
   pickBestQuote,
   SELL_TOKEN,
   sellQuoteUsable,
   type MeldQuoteEntry,
 } from "@getsome/meld";
+import type { ConversionRoute } from "@getsome/funding";
+import { laneByMeldCode, laneSellToken, type LaneId, type OfframpLane } from "@getsome/offramp";
+import { OFFRAMP_LANE_ORDER } from "~~/lib/config";
 import { bankRailCountries, regionForCountry } from "~~/lib/region";
 import {
-  fetchCorridor,
-  fetchSupportedCorridors,
-  fetchSupportedCountries,
+  countryName,
+  fetchOfframpCorridor,
+  fetchOfframpCorridors,
   methodFor,
+  type OfframpLaneRef,
   type SupportedCorridor,
   type SupportedCountry,
+  type SupportedMethod,
 } from "~~/lib/supported";
 import { localeCountry } from "../utils/locale";
 import { meldSellClient } from "../withdraw/meld-client";
@@ -27,13 +35,30 @@ export interface MeldSellQuote {
   country: string;
   fiat: string;
   paymentMethodType: string;
-  /** Exactly what the key pays the provider, planck. */
+  /** Exactly what the provider is paid, base units of the sold asset: PAS, or the lane's. */
   cryptoAmount: bigint;
+  /** A sale through an offramp lane: the lane, and the USDT redeem the withdrawal runs. */
+  swap?: { lane: LaneId; route: ConversionRoute };
+  /** A direct sale quoted under a code other than DOT_ASSETHUB, which the session must name too:
+   *  DOT_STATEMINT, Meld's older code for DOT on Asset Hub, or USDT_ASSETHUB or USDT_STATEMINT for
+   *  USDT there. */
+  sellCode?: string;
+  /** A direct sale of USDT: the PSM redeem the withdrawal runs for the USDT the key pays. */
+  route?: ConversionRoute;
   /** The CASH expected back once the provider is paid, before the way back's fees; 0 when it is
    *  too small to send back. */
   backCash: bigint;
   line: MeldQuoteEntry;
 }
+
+/** What a sale commits to its provider, and its lane when it sells through one, or its redeem when
+ *  it sells USDT directly. */
+type SizedSale = {
+  planck: bigint;
+  backCash: bigint;
+  swap?: MeldSellQuote["swap"];
+  route?: ConversionRoute;
+};
 
 /** How a sale pays out when the live catalog cannot say: Meld's payout codes, which the sell
  *  catalog names its methods by, not the buy side's card and bank codes. */
@@ -45,6 +70,87 @@ function startingCountry(method: "card" | "bank"): string {
   const detected = localeCountry();
   if (detected === null) return "DE";
   return method === "card" || bankRailCountries().includes(detected) ? detected : "DE";
+}
+
+/** What a sale of Meld code `code` sells: an asset on Asset Hub with no swap (null), PAS under
+ *  either of Meld's codes for it or USDT, a lane this build can swap into, or `undefined` for a
+ *  code it cannot sell. */
+export function saleLaneOf(code: string): OfframpLane | null | undefined {
+  if (DIRECT_SELL_CODES.includes(code)) return null;
+  return laneByMeldCode(code) ?? undefined;
+}
+
+/** Sizes a direct sale under `code`: USDT out of the PSM, or PAS out of the pool. */
+async function sizeDirectSale(
+  live: typeof import("~~/lib/withdraw-live"),
+  code: string,
+  amount: bigint,
+): Promise<SizedSale> {
+  if (!isDirectUsdt(code)) return live.sizeMeldCommitment(amount);
+  const size = await live.sizeUsdtSale(amount);
+  return { planck: size.commit, backCash: size.backCash, route: size.route };
+}
+
+/**
+ * The lanes a sale tries, best first: the ones the adapter found routing the method, in this
+ * build's order (OFFRAMP_LANE_ORDER), any other dropped. A method with no lanes, from the static
+ * fallback when the catalog is unreachable, sells PAS on Asset Hub as it always has.
+ */
+export function laneCandidates(
+  lanes: readonly OfframpLaneRef[] | undefined,
+  order: readonly string[],
+): string[] {
+  if (lanes === undefined) return [SELL_TOKEN.meldCurrencyCode];
+  return order.filter((code) => lanes.some((l) => l.code === code));
+}
+
+/** The smallest and largest of the lanes' limits, or the method's own when a lane names none. */
+function laneLimits(
+  lanes: readonly OfframpLaneRef[],
+  method: SupportedMethod,
+): { min: string; max: string } {
+  const pick = (
+    values: (string | undefined)[],
+    fallback: string,
+    better: (a: number, b: number) => boolean,
+  ) => {
+    if (values.some((v) => v === undefined || !Number.isFinite(Number(v)))) return fallback;
+    return (values as string[]).reduce((best, v) => (better(Number(v), Number(best)) ? v : best));
+  };
+  return {
+    min: pick(
+      lanes.map((l) => l.min),
+      method.min,
+      (a, b) => a < b,
+    ),
+    max: pick(
+      lanes.map((l) => l.max),
+      method.max,
+      (a, b) => a > b,
+    ),
+  };
+}
+
+/**
+ * A corridor cut down to what this build sells: each method keeps only the lanes in `order` that
+ * this build can sell, and a method left with none is dropped. The picker then greys the region and
+ * the quote says the payout isn't available there, rather than trying no lane and calling it a
+ * passing failure. A method that came without lanes is kept: it sells PAS on Asset Hub.
+ */
+export function sellableCorridor(
+  corridor: SupportedCorridor,
+  order: readonly string[],
+): SupportedCorridor {
+  const methods = corridor.methods.flatMap((method): SupportedMethod[] => {
+    if (method.lanes === undefined) return [method];
+    const lanes = method.lanes.filter(
+      (l) => order.includes(l.code) && saleLaneOf(l.code) !== undefined,
+    );
+    if (lanes.length === 0) return [];
+    if (lanes.length === method.lanes.length) return [method];
+    return [{ ...method, ...laneLimits(lanes, method), lanes }];
+  });
+  return { ...corridor, methods };
 }
 
 export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
@@ -67,15 +173,22 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
     if (kind === "rate") rateFailures.value += 1;
   }
 
-  /** The sell catalog, for the region picker. Null lists when discovery is unreachable. */
+  /** The off-ramp catalog, for the region picker. Null lists when discovery is unreachable. */
   async function loadCatalog(): Promise<void> {
-    const code = SELL_TOKEN.meldCurrencyCode;
-    const [listed, routed] = await Promise.all([
-      fetchSupportedCountries(code, "sell"),
-      fetchSupportedCorridors(code, "sell"),
-    ]);
-    countries.value = listed;
+    const fetched = await fetchOfframpCorridors();
+    // Only the lanes this build sells: a region routed by none of them is greyed, not offered.
+    const routed =
+      fetched === null
+        ? null
+        : new Map([...fetched].map(([cc, c]) => [cc, sellableCorridor(c, OFFRAMP_LANE_ORDER)]));
     corridors.value = routed;
+    countries.value =
+      routed === null
+        ? null
+        : [...routed.values()].map((c) => ({
+            country: c.country,
+            name: c.name ?? countryName(c.country),
+          }));
   }
 
   /**
@@ -85,14 +198,18 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
    */
   async function corridorFor(
     cc: string,
-  ): Promise<{ fiat: string; paymentMethodType: string } | null> {
-    const code = SELL_TOKEN.meldCurrencyCode;
-    const live = corridors.value?.get(cc) ?? (await fetchCorridor(code, cc, "sell"));
+  ): Promise<{ fiat: string; paymentMethodType: string; lanes?: OfframpLaneRef[] } | null> {
+    const read = corridors.value?.get(cc) ?? (await fetchOfframpCorridor(cc));
+    const live = read === null ? null : sellableCorridor(read, OFFRAMP_LANE_ORDER);
     if (live !== null) {
       const found = methodFor(live, method);
       return found === null
         ? null
-        : { fiat: live.fiat, paymentMethodType: found.paymentMethodType };
+        : {
+            fiat: live.fiat,
+            paymentMethodType: found.paymentMethodType,
+            ...(found.lanes === undefined ? {} : { lanes: found.lanes }),
+          };
     }
     const region = regionForCountry(cc);
     if (method === "bank" && !bankRailCountries().includes(region.country)) return null;
@@ -129,38 +246,69 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
         return;
       }
       const live = await import("~~/lib/withdraw-live");
-      const [corridor, size] = await Promise.all([
-        corridorFor(country.value),
-        live.sizeMeldCommitment(amount),
-      ]);
+      const corridor = await corridorFor(country.value);
       if (mine !== epoch) return;
       if (corridor === null) {
         failUnrouted();
         return;
       }
-      const { quotes } = await client.getSellQuote({
-        country: country.value,
-        sourceCurrencyCode: SELL_TOKEN.meldCurrencyCode,
-        sourceAmount: formatSellAmount(size.planck),
-        destinationCurrencyCode: corridor.fiat,
-        paymentMethodType: corridor.paymentMethodType,
-      });
-      if (mine !== epoch) return;
-      // The best line pays the seller the most; the fees come off the payout. Only providers that
-      // send the seller back for the key to pay, and only a payout that is a number.
-      const line = pickBestQuote(quotes.filter(sellQuoteUsable));
-      if (line === null) {
-        fail("rate", "No provider can pay out this sale right now.");
+      // Best lane first; a lane whose providers will not quote falls through to the next.
+      const candidates = laneCandidates(corridor.lanes, OFFRAMP_LANE_ORDER);
+      // No lane this build sells routes here: the region's payout is unavailable, not passing.
+      if (candidates.length === 0) {
+        failUnrouted();
         return;
       }
-      quote.value = {
-        country: country.value,
-        ...corridor,
-        cryptoAmount: size.planck,
-        backCash: size.backCash,
-        line,
-      };
-      rateFailures.value = 0;
+      let failure: string | undefined;
+      for (const code of candidates) {
+        const lane = saleLaneOf(code);
+        if (lane === undefined) continue;
+        // A direct sale is quoted under the code the catalog routed, which its providers buy.
+        const token = lane === null ? directSellToken(code) : laneSellToken(lane);
+        try {
+          const size: SizedSale =
+            lane === null
+              ? await sizeDirectSale(live, code, amount)
+              : await live.sizeSwapSale(amount, lane).then((swap) => ({
+                  planck: swap.promise,
+                  backCash: 0n,
+                  swap: { lane: lane.id, route: swap.route },
+                }));
+          if (mine !== epoch) return;
+          const { quotes } = await client.getSellQuote({
+            country: country.value,
+            sourceCurrencyCode: token.meldCurrencyCode,
+            sourceAmount: formatSellAmount(size.planck, token),
+            destinationCurrencyCode: corridor.fiat,
+            paymentMethodType: corridor.paymentMethodType,
+          });
+          if (mine !== epoch) return;
+          // The best line pays the seller the most; the fees come off the payout. Only providers
+          // that send the seller back for the key to pay, and only a payout that is a number.
+          const line = pickBestQuote(quotes.filter(sellQuoteUsable));
+          if (line === null) continue;
+          quote.value = {
+            country: country.value,
+            fiat: corridor.fiat,
+            paymentMethodType: corridor.paymentMethodType,
+            cryptoAmount: size.planck,
+            backCash: size.backCash,
+            ...(size.swap === undefined ? {} : { swap: size.swap }),
+            ...(lane === null && code !== SELL_TOKEN.meldCurrencyCode ? { sellCode: code } : {}),
+            ...(size.route === undefined ? {} : { route: size.route }),
+            line,
+          };
+          rateFailures.value = 0;
+          return;
+        } catch (e: unknown) {
+          if (mine !== epoch) return;
+          const message = e instanceof Error ? e.message : String(e);
+          console.warn(`[sell] lane ${code} skipped: ${message}`);
+          // The best lane's failure says most about why the sale cannot be priced.
+          failure ??= message;
+        }
+      }
+      fail("rate", failure ?? "No provider can pay out this sale right now.");
     } catch (e: unknown) {
       if (mine === epoch) fail("rate", e instanceof Error ? e.message : String(e));
     } finally {

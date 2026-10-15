@@ -58,6 +58,7 @@ const script: { quote: (asset: string, amount: string) => unknown } = { quote: (
 const asked: string[] = [];
 vi.mock("../lib/chainflip-backend", () => ({
   NETWORK: "mainnet",
+  saleChannelsOpen: () => true,
   mainnetSdk: async (): Promise<SwapSdkLike> => ({
     getQuoteV2: async (args) => {
       asked.push(args.destAsset);
