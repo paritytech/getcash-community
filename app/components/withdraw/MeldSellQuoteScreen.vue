@@ -18,6 +18,8 @@ import SkeletonBlock from "../ui/SkeletonBlock.vue";
 
 const props = defineProps<{
   method: "card" | "bank";
+  /** The other fiat method, when the country pays out by it. */
+  other: "card" | "bank" | null;
   /** The CASH leaving the balance, as typed. */
   amount: string;
   quote: MeldSellQuote | null;
@@ -38,6 +40,7 @@ const emit = defineEmits<{
   continue: [];
   fees: [];
   region: [];
+  useOther: [];
   retry: [];
   useCrypto: [];
   changeAmount: [];
@@ -64,8 +67,10 @@ const canContinue = computed(
     :country="country"
     :country-name="countryName"
     :minimum="minimum"
+    :other="other"
     @region="emit('region')"
     @use-crypto="emit('useCrypto')"
+    @use-other="emit('useOther')"
   />
 
   <div v-else-if="rateFailed" class="flex min-h-0 flex-1 flex-col">

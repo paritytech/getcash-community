@@ -4,7 +4,7 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { ChevronRight } from "lucide-vue-next";
 import { useSessionStore } from "../../../stores/session";
-import { methodMinimum, namedCountry } from "~~/lib/supported";
+import { methodMinimum, namedCountry, otherMethod } from "~~/lib/supported";
 import { localeCountry } from "../../../utils/locale";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import type { FundingRoute } from "../../../funding/selection";
@@ -57,6 +57,8 @@ watch(
 );
 
 const meldMethod = computed(() => (session.method === "bank" ? "bank" : "card"));
+/** The other fiat method, when this region routes it and not the chosen one. */
+const switchMethod = computed(() => otherMethod(session.meldCorridor, meldMethod.value));
 
 // The charged total is the hero; the toolbar already names the method, so no Via row.
 const heroAmount = computed(() => {
@@ -132,8 +134,10 @@ async function next() {
     :country="selectedCountry"
     :country-name="countryLabel"
     :minimum="methodMinimum(session.meldCorridor, meldMethod)"
+    :other="switchMethod"
     @region="emit('currency')"
     @use-crypto="emit('switchRoute', 'crypto')"
+    @use-other="switchMethod && emit('switchRoute', switchMethod)"
   />
   <div v-else class="flex min-h-0 flex-1 flex-col">
     <!-- The hero: the total the card will be charged. The toolbar already names the method. -->

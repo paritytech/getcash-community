@@ -12,7 +12,7 @@
 import { computed, onUnmounted, ref, watch } from "vue";
 import { ChevronRight, CircleAlert } from "lucide-vue-next";
 import { regionForCountry } from "~~/lib/region";
-import { methodMinimum, namedCountry } from "~~/lib/supported";
+import { methodMinimum, namedCountry, otherMethod } from "~~/lib/supported";
 import { useRequestsStore } from "../../../stores/requests";
 import { useSessionStore } from "../../../stores/session";
 import { currencyConfig } from "../../../funding/config";
@@ -181,8 +181,10 @@ function confirmSent() {
       :country="country"
       :country-name="countryLabel"
       :minimum="methodMinimum(session.meldCorridor, 'bank')"
+      :other="otherMethod(session.meldCorridor, 'bank')"
       @region="emit('currency')"
       @use-crypto="emit('switchRoute', 'crypto')"
+      @use-other="emit('switchRoute', 'card')"
     />
     <template v-else-if="step === 'summary'">
       <!-- The hero, in each of its three states: pricing, unpriced, priced. -->
