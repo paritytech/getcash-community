@@ -213,12 +213,15 @@ function workerWitness(job: WithdrawJobView, at: number): Witnesses["worker"] {
   };
 }
 
-/** The worker's failures that end a sale before its provider is paid, with the key going home. */
+/** The worker's failures that end a sale before its provider is paid, with the key going home. A
+ *  hold among them: a sale has one order, so the retry and the pool switch a crypto withdrawal
+ *  takes from a hold have nothing to sell for. */
 const SALE_ENDING_FAILURES: ReadonlySet<string> = new Set([
   "channel-expired",
   "channel-mismatch",
   "rejected",
   "timeout",
+  "held",
   "no-rail",
 ]);
 
@@ -264,8 +267,8 @@ function applyWorker(
           recoverable: true,
         });
       case "held":
-        // The PSM refused the redeem three times with room for it, so waiting cannot clear it.
-        // The CASH is still on the key; a retry re-arms the worker's count.
+        // The PSM refused the redeem three times for a reason waiting cannot clear. The CASH is
+        // still on the key; a retry re-arms the worker's count.
         if (rank < 1) return next;
         return failed(next, at, {
           kind: "held",

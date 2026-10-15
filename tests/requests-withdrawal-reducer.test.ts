@@ -431,6 +431,33 @@ describe("withdrawal: the worker", () => {
     expect(held.failure).toMatchObject({ kind: "held", step: "convert" });
   });
 
+  it("ends a sale for good when the PSM would not redeem: one order, and the key goes home", () => {
+    const seen = at(1);
+    const sale = record({
+      payment: { attempt: 0, requestedAt: at(0), id: "pay-1" },
+      rail: { provider: "meld", stage: "waiting", updatedAt: STARTED },
+    });
+    const held = run(
+      sale,
+      worker(
+        at(3),
+        job({
+          phase: "failed",
+          failure: "held",
+          lastError: "withdrawal held: the PSM refused the redeem 3 times",
+          fundsSeenAt: seen,
+        }),
+      ),
+    );
+    expect(held.status).toEqual({ kind: "failed", at: at(3), recoverable: false });
+    expect(held.failure).toEqual({
+      kind: "sale-closed",
+      step: "convert",
+      message: "withdrawal held: the PSM refused the redeem 3 times",
+      recoverable: false,
+    });
+  });
+
   it("fails for good at the conversion when the CASH left on the key is too small to redeem", () => {
     const seen = at(1);
     const small = run(

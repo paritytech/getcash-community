@@ -28,13 +28,14 @@
 // on the next tick. Terminal is a transaction rejected at inclusion after the dry run passed,
 // three times over, since each rejection costs a fee and the same transaction will not pass on
 // the fourth try; and, on the PSM tier, the PSM refusing the redeem three times for a reason
-// waiting cannot clear, or once for one no retry can. A PSM short of room is not terminal: the
-// run waits on Asset Hub, spending nothing, until a mint makes room.
+// waiting cannot clear, or once for one no retry can. A PSM short of room is not terminal while
+// the pair still mints: the run waits on Asset Hub, spending nothing, until a mint makes room.
 
 import type { PolkadotSigner } from "polkadot-api";
 import {
   describeDispatchError,
   MAX_PSM_REFUSALS,
+  mintingOpen,
   ProgramRejectedError,
   psmRefusalKind,
   readRedeemCapacity,
@@ -104,9 +105,10 @@ export class WithdrawRejectedError extends Error {
 }
 
 /** Terminal: the PSM refused the redeem for a reason waiting cannot clear: MAX_PSM_REFUSALS
- *  times with the pair paused, or once with the fee moved past the frozen `max_fee` or an amount
- *  the pallet will not take. The CASH is still on the key on Asset Hub, and a resume with a fresh
- *  count tries again, or the user's switch sells it on the pool. */
+ *  times with the pair paused or short of room with minting stopped, or once with the fee moved
+ *  past the frozen `max_fee` or an amount the pallet will not take. The CASH is still on the key
+ *  on Asset Hub, and a resume with a fresh count tries again, or the user's switch sells it on
+ *  the pool. */
 export class WithdrawHeldError extends Error {
   constructor(
     readonly reason: string,
@@ -137,8 +139,9 @@ export interface WithdrawTickState {
   expectedLanding: bigint | null;
   /** When the first tick saw CASH (ms); null while the payment is still awaited. */
   fundsSeenAt: number | null;
-  /** PSM refusals of the redeem the pair's pause explains; MAX_PSM_REFUSALS hold the run. A
-   *  shortfall of room, a transport error or another rejection does not count. */
+  /** PSM refusals of the redeem waiting cannot clear, the pair's pause or a shortfall of room
+   *  with minting stopped; MAX_PSM_REFUSALS hold the run. A shortfall the next mint may fill, a
+   *  transport error or another rejection does not count. */
   psmRefusals: number;
   /** Since when the PSM has had no room for the redeem (ms); null while it fits. The driver keeps
    *  a waiting run off its clock. */
@@ -483,6 +486,12 @@ async function exitFromAssetHub(
     return { step: "redeem", balances, submitted: false, waiting: true };
   };
   const call: TickCall = state.exit === "psm" ? "redeem" : "pool-exit";
+  /** A refusal waiting cannot clear: counted, and the run held at MAX_PSM_REFUSALS. */
+  const unavailable = (reason: string): never => {
+    state.psmRefusals += 1;
+    if (state.psmRefusals >= MAX_PSM_REFUSALS) throw new WithdrawHeldError(reason);
+    throw new Error(`${call} refused: ${reason}`);
+  };
   /** The PSM's own refusal is waited out, counted or held by its kind; any other is a
    *  rejection. */
   const refusal = (dispatchError: unknown): WithdrawTickOutcome => {
@@ -490,11 +499,7 @@ async function exitFromAssetHub(
     const kind = psmRefusalKind(dispatchError);
     if (kind === "capacity") return waiting();
     if (kind === "will-not-serve") throw new WithdrawHeldError(reason, kind);
-    if (kind === "unavailable") {
-      state.psmRefusals += 1;
-      if (state.psmRefusals >= MAX_PSM_REFUSALS) throw new WithdrawHeldError(reason);
-      throw new Error(`${call} refused: ${reason}`);
-    }
+    if (kind === "unavailable") return unavailable(reason);
     return rejected(state, call, reason);
   };
 
@@ -519,13 +524,25 @@ async function exitFromAssetHub(
   if (state.exit === "psm") {
     const sized = sizeRedeem(onKey.cash, feeCash, route, floors);
     // The PSM redeems only against the pair's debt. Short of the net, the run waits where it is,
-    // with nothing spent and without bound: room comes back with every mint.
+    // with nothing spent and without bound, since room comes back with every mint; but only
+    // while the pair still mints. The route admits a redeem with minting stopped, and then no
+    // mint will ever make room, so the shortfall is refused as the pair's pause is: counted,
+    // and held at MAX_PSM_REFUSALS, the run back on the driver's clock.
     const capacity = await bounded(
       readRedeemCapacity(assetHubApi, route.external),
       input.tickTimeoutMs,
       "PSM capacity read",
     );
-    if (capacity < sized.net) return waiting();
+    if (capacity < sized.net) {
+      const minting = await bounded(
+        mintingOpen(assetHubApi, route.external),
+        input.tickTimeoutMs,
+        "PSM minting status read",
+      );
+      if (minting) return waiting();
+      state.waitingSince = null;
+      return unavailable("the PSM has no room for the redeem and minting is stopped");
+    }
     net = sized.net;
     exit = buildRedeemBatch(assetHubApi, {
       route,

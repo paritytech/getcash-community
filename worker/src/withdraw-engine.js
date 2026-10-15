@@ -354,10 +354,7 @@ export async function startWithdraw(params) {
     if (shown && shown !== existing.keyAddress) {
       return { error: "invalid", reason: mismatchReason(existing.keyAddress, shown) };
     }
-    // A sale whose key goes home whole never pays its provider again, whatever is re-sent, and
-    // one whose payment could not be confirmed waits for a person, not for a re-sent hand-off.
-    const held = goesHomeWhole(existing) || existing.failure === "unresolved";
-    if (existing.phase === "failed" && !held) rearm(existing, Date.now());
+    if (existing.phase === "failed" && !unrevivable(existing)) rearm(existing, Date.now());
     // A re-sent hand-off carries the surface's current payment window: a retried payment gets a
     // fresh one, and the job must not expire on the old clock while the surface waits on the new.
     existing.paymentExpiresAt = paymentExpiryOf(input) ?? existing.paymentExpiresAt;
@@ -406,6 +403,13 @@ export async function switchWithdrawToPool(params) {
   if (!record) return { sessionId, known: false };
   if (record.phase !== "failed" || record.failure !== "held") {
     return { error: "invalid", reason: "only a withdrawal the PSM holds can move to the pool" };
+  }
+  if (unrevivable(record)) {
+    return { error: "invalid", reason: "a withdrawal whose funds go home cannot move to the pool" };
+  }
+  // A sale has one order, and its hold ends it (see `returnDue`).
+  if (record.rail === "meld") {
+    return { error: "invalid", reason: "a sale cannot move to the pool" };
   }
   record.state.exit = "pool";
   rearm(record, Date.now());
@@ -743,6 +747,10 @@ const submitMayLand = (record, nowMs) =>
 const unsubmitted = (record, nowMs) =>
   record.state?.submitted !== true && !submitMayLand(record, nowMs);
 
+/** The PSM tier's CASH sits on the key's Asset Hub account with no exit out for it. */
+const idleAtRedeem = (record) =>
+  record.phase === "redeem" && record.state?.redeemSubmitted !== true;
+
 /** The sale's time to pay its provider is up, by the same margin the rail leg holds it to. */
 function saleOverdue(record, nowMs) {
   const expiresAt = Number(record.leg?.handoff?.expiresAt ?? record.channel?.expiresAt ?? 0);
@@ -761,6 +769,11 @@ const wayHomeOpen = (record) =>
 
 /** The sale's key goes home whole, or already is on its way. */
 const goesHomeWhole = (record) => record.residue?.whole === true || returnDue(record) === "whole";
+
+/** A failed job neither a re-sent hand-off nor the user's switch revives: a sale whose key goes
+ *  home whole never pays its provider again, and one whose payment could not be confirmed waits
+ *  for a person. */
+const unrevivable = (record) => goesHomeWhole(record) || record.failure === "unresolved";
 
 /**
  * Sends what a Meld sale left on its key home as CASH, through the funding engine, as it does an
@@ -907,9 +920,15 @@ async function tickRecord(record, nowMs) {
     return;
   }
   // A sale past its time to pay the provider is not sold at all: its key goes home as the CASH it
-  // holds, rather than as PAS bought for a payment that will not be made. Only while nothing has
-  // been submitted for it, so no message is on its way.
-  if (record.rail === "meld" && saleOverdue(record, nowMs) && unsubmitted(record, nowMs)) {
+  // holds, rather than as PAS bought for a payment that will not be made. Only while nothing is
+  // on its way: before anything was submitted for it, or at the redeem with no exit out, where
+  // the CASH sits on the key's Asset Hub account and goes home from there (see `wayHomeRoute`).
+  // Never while the XCM may still land, nor once the exit is out.
+  if (
+    record.rail === "meld" &&
+    saleOverdue(record, nowMs) &&
+    (unsubmitted(record, nowMs) || idleAtRedeem(record))
+  ) {
     fail(
       record,
       "channel-expired",
@@ -1114,8 +1133,8 @@ export async function tickAllWithdraw() {
           if (error instanceof WithdrawRejectedError) {
             fail(record, "rejected", error.message);
           } else if (error instanceof WithdrawHeldError) {
-            // The PSM refused the redeem with room for it, three times over: the CASH stays on
-            // the key until a re-sent hand-off re-arms the count.
+            // The PSM refused the redeem for a reason waiting cannot clear, three times over:
+            // the CASH stays on the key until a re-sent hand-off re-arms the count.
             fail(record, "held", error.message);
           } else if (error instanceof RedeemTooSmallError) {
             // Once the exit's fee and the account's minimum are left behind, the CASH on the key

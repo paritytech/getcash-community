@@ -176,6 +176,8 @@ function scriptedWorld(
     exitDryRuns: 0,
     /** The PSM's room for a redeem, the pair's debt; the PSM tier's tests set it. */
     psmDebt: 0n,
+    /** The pair's circuit breaker: whether a mint may still add to that debt. */
+    psmStatus: "AllEnabled" as "AllEnabled" | "MintingDisabled" | "AllDisabled",
     /** The key's own Asset Hub account: the CASH the PSM tier's XCM lands and the stable its
      *  redeem leaves there. */
     keyCashAh: 0n,
@@ -457,6 +459,7 @@ function scriptedWorld(
       Psm: {
         PsmDebt: { getValue: async () => state.psmDebt },
         Psm: { getValue: async () => ({ min_swap_amount: PSM_MIN_SWAP }) },
+        ExternalAssets: { getValue: async () => ({ status: { type: state.psmStatus } }) },
       },
       Assets: {
         Asset: {
@@ -794,6 +797,31 @@ describe("withdrawTickOnce", () => {
       destinationBefore: null,
     });
     expect(world.state.exitDryRuns).toBe(1);
+    expect(world.state.submits.map((s) => s.call)).toEqual(["swap", "execute"]);
+  });
+
+  it("counts a shortfall of room towards the hold once the pair no longer mints, since no mint will make room, and holds the run on the third", async () => {
+    const world = scriptedWorld();
+    const state = freshWithdrawTickState();
+    await drive(world, 2, state, PSM_SALE);
+    world.state.psmDebt = sizedExit(world).net - 1n;
+    const waited = await drive(world, 1, state, PSM_SALE);
+    expect(waited.outcomes[0]).toMatchObject({ step: "redeem", waiting: true });
+    expect(state).toMatchObject({ waitingSince: 2_000, psmRefusals: 0 });
+
+    world.state.psmStatus = "MintingDisabled";
+    for (let refusal = 1; refusal < MAX_PSM_REFUSALS; refusal += 1) {
+      await expect(drive(world, 1, state, PSM_SALE)).rejects.toThrow(
+        /redeem refused: the PSM has no room for the redeem and minting is stopped/,
+      );
+      expect(state).toMatchObject({ waitingSince: null, psmRefusals: refusal });
+    }
+    await expect(drive(world, 1, state, PSM_SALE)).rejects.toThrow(
+      /withdrawal held: the PSM refused the redeem 3 times, last: the PSM has no room for the redeem and minting is stopped/,
+    );
+    expect(state).toMatchObject({ waitingSince: null, psmRefusals: 3, redeemSubmitted: false });
+    expect(world.state.exitDryRuns).toBe(0);
+    expect(world.state.keyCashAh).toBe(world.state.lastDryRunLanded);
     expect(world.state.submits.map((s) => s.call)).toEqual(["swap", "execute"]);
   });
 

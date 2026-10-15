@@ -60,6 +60,7 @@ export {
   chooseRoute,
   depositTokenOf,
   isStablePoolRoute,
+  mintingOpen,
   readRedeemCapacity,
   recordedRoute,
 } from "./route";

@@ -201,6 +201,31 @@ describe("the worker's switch of a held withdrawal to the pool", () => {
       known: false,
     });
   });
+
+  it("refuses a held sale whose key goes home whole, leaving its way home alone", async () => {
+    const residue = { whole: true, returning: true, sessionId: "s-1/residue" };
+    mocks.stored.set(WITHDRAW_KEY, { "s-1": { ...heldJob(), rail: "meld", residue } });
+    const engine = await freshEngine();
+    expect(await engine.switchWithdrawToPool(JSON.stringify({ sessionId: "s-1" }))).toEqual({
+      error: "invalid",
+      reason: "a withdrawal whose funds go home cannot move to the pool",
+    });
+    expect(storedJobs()["s-1"]).toMatchObject({ phase: "failed", failure: "held", residue });
+    expect((storedJobs()["s-1"]!.state as Record<string, unknown>).exit).toBeUndefined();
+  });
+
+  it("refuses a held sale before its key is sent home, since a sale has one order", async () => {
+    // The hold's record still carries a fresh submit marker, so the key is not yet going home.
+    const sale = { ...heldJob(), rail: "meld", submitting: { call: "redeem", at: NOW - 1_000 } };
+    mocks.stored.set(WITHDRAW_KEY, { "s-1": sale });
+    const engine = await freshEngine();
+    expect(await engine.switchWithdrawToPool(JSON.stringify({ sessionId: "s-1" }))).toEqual({
+      error: "invalid",
+      reason: "a sale cannot move to the pool",
+    });
+    expect(storedJobs()["s-1"]).toMatchObject({ phase: "failed", failure: "held" });
+    expect((storedJobs()["s-1"]!.state as Record<string, unknown>).exit).toBeUndefined();
+  });
 });
 
 describe("the worker's clock on a withdrawal waiting for PSM room", () => {

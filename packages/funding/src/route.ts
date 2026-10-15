@@ -119,6 +119,16 @@ export function readRedeemCapacity(api: AssetHubApi, external: PsmExternal): Pro
   return api.query.Psm.PsmDebt.getValue(INTERNAL, EXTERNAL_LOCATIONS[external]);
 }
 
+/** Whether the pair still mints. Only a mint adds to the debt a redeem draws on, so a redeem
+ *  short of room has something to wait for only while this holds. */
+export async function mintingOpen(api: AssetHubApi, external: PsmExternal): Promise<boolean> {
+  const approval = await api.query.Psm.ExternalAssets.getValue(
+    INTERNAL,
+    EXTERNAL_LOCATIONS[external],
+  );
+  return approval?.status.type === "AllEnabled";
+}
+
 /** Internal units a mint against this external may still add: the smaller of the instance's
  *  aggregate headroom and the external's own. The per-external ceiling is a normalised share,
  *  `(weight / Σ weight over the instance's externals) × max_debt`, so a zero weight or a zero

@@ -1066,6 +1066,7 @@ describe("a sale on the PSM tier, in USDT", () => {
       mocks.channel,
       mocks.startFunding,
       mocks.chooseRoute,
+      mocks.withdrawTickOnce,
     ]) {
       fn.mockReset();
     }
@@ -1127,6 +1128,36 @@ describe("a sale on the PSM tier, in USDT", () => {
     expect(mocks.submits).toHaveLength(1);
     expect(mocks.submits[0]!.options).toMatchObject({ nonce: 2 });
     expect(exact).toMatchObject({ nonce: 2, inFlight: true, balanceBefore: "27000000" });
+  });
+
+  /** A sale whose CASH is on the key's Asset Hub account, due to pay its provider by `expiresAt`,
+   *  with its exit out or not. */
+  const atRedeem = (expiresAt: number, redeemSubmitted: boolean): StoredJob => {
+    const job = psmJob();
+    Object.assign(job, { landed: false, phase: "redeem" });
+    job.state = { ...job.state, redeemSubmitted };
+    job.channel = { ...job.channel, expiresAt };
+    job.leg.handoff = { ...job.leg.handoff, expiresAt };
+    return job;
+  };
+
+  it("does not redeem for a sale whose time is up while no exit is out, and sends the key home from Asset Hub", async () => {
+    const engine = await engineWith({ "s-1": atRedeem(NOW + 60_000, false) });
+    await engine.tickAllWithdraw();
+    expect(mocks.withdrawTickOnce).not.toHaveBeenCalled();
+    expect(storedJob()).toMatchObject({ phase: "failed", failure: "channel-expired" });
+    expect(storedJob().residue).toMatchObject({ whole: true, returning: true });
+    expect(mocks.startFunding).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets a sale's exit that is out settle, whatever the clock says", async () => {
+    mocks.withdrawTickOnce.mockResolvedValue({ step: "redeem", submitted: false });
+    const engine = await engineWith({ "s-1": atRedeem(NOW + 60_000, true) });
+    await engine.tickAllWithdraw();
+    expect(mocks.withdrawTickOnce).toHaveBeenCalledTimes(1);
+    expect(storedJob()).toMatchObject({ phase: "redeem" });
+    expect(storedJob().failure).toBeUndefined();
+    expect(mocks.startFunding).not.toHaveBeenCalled();
   });
 
   it("sends the USDT residue home on the mint route the worker chose for it", async () => {
