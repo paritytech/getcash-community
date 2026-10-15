@@ -65,7 +65,7 @@ import { AccountId } from "polkadot-api";
 import { cashAmount } from "../app/utils/cash";
 import { isDemoBuild } from "../app/utils/demo";
 import type { WithdrawFeeView, WithdrawOffer } from "../app/withdraw/offers";
-import { mainnetSdk, saleSwapSdk } from "./chainflip-backend";
+import { mainnetSdk, saleChannelsOpen, saleSwapSdk } from "./chainflip-backend";
 import { withTimeout } from "./timeout";
 import { hostSafeEntropy, nextFreeTradeNumber, readTradeCounter, tradeCounterKey } from "./coinage";
 import {
@@ -376,9 +376,11 @@ export interface SwapSaleSize {
   promise: bigint;
 }
 
-/** Sizes a sale of `amount` CASH through `lane`. Throws when the PSM cannot redeem it, Chainflip
- *  cannot quote it, or the fees take it all. */
+/** Sizes a sale of `amount` CASH through `lane`. Throws when this build cannot open the swap's
+ *  channel, the PSM cannot redeem it, Chainflip cannot quote it, or the fees take it all. */
 export async function sizeSwapSale(amount: bigint, lane: OfframpLane): Promise<SwapSaleSize> {
+  // Refused here, at the quote, so the sale falls through to the next lane before any KYC.
+  if (!saleChannelsOpen()) throw new Error("Swap channels cannot be opened in this build.");
   const { route, least } = await usdtSaleLanding(amount);
   const usdtIn = least - USDT_PAY_FEE_ALLOWANCE;
   if (usdtIn <= 0n) throw new Error("The amount does not cover the network fees.");

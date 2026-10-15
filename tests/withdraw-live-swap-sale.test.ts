@@ -21,6 +21,7 @@ const cf = vi.hoisted(() => ({
   egressFee: 0n,
   quoted: [] as string[],
   opened: [] as unknown[],
+  channelsOpen: true,
 }));
 vi.mock("../lib/chainflip-backend", () => {
   const sdk = {
@@ -41,7 +42,12 @@ vi.mock("../lib/chainflip-backend", () => {
       return { depositAddress: "15ChannelOnAssetHub", depositChannelId: "cf-7" };
     },
   };
-  return { NETWORK: "mainnet", mainnetSdk: vi.fn(), saleSwapSdk: async () => sdk };
+  return {
+    NETWORK: "mainnet",
+    mainnetSdk: vi.fn(),
+    saleSwapSdk: async () => sdk,
+    saleChannelsOpen: () => cf.channelsOpen,
+  };
 });
 vi.mock("../lib/host-chain", () => ({
   ASSET_HUB: "asset-hub",
@@ -85,6 +91,7 @@ describe("a sale through an offramp lane", () => {
   beforeEach(() => {
     cf.rate = 993_000n;
     cf.egressFee = 0n;
+    cf.channelsOpen = true;
     cf.quoted.length = 0;
     cf.opened.length = 0;
   });
@@ -146,6 +153,12 @@ describe("a sale through an offramp lane", () => {
     });
     expect(channel).toBeNull();
     expect(cf.opened).toEqual([]);
+  });
+
+  it("refuses to size a lane sale whose channel this build cannot open, before any quote", async () => {
+    cf.channelsOpen = false;
+    await expect(sizeSwapSale(AMOUNT, lane)).rejects.toThrow("Swap channels cannot be opened");
+    expect(cf.quoted).toEqual([]);
   });
 
   it("keeps the lane's delivery-fee headroom out of the promise", async () => {
