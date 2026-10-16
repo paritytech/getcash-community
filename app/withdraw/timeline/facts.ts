@@ -29,7 +29,10 @@ const railFailureKind = (record: WithdrawalRecord): WithdrawalFailureKind | unde
   record.failure?.step === "send" ? record.failure.kind : undefined;
 
 /** The worker filed a transaction of this call from the key. */
-function workerFiled(record: WithdrawalRecord, call: "swap" | "withdraw" | "pay"): boolean {
+function workerFiled(
+  record: WithdrawalRecord,
+  call: "swap" | "withdraw" | "pay" | "sweep",
+): boolean {
   const worker = record.witnesses.worker;
   return worker?.known === true && (worker.txs?.some((tx) => tx.call === call) ?? false);
 }
@@ -42,17 +45,24 @@ function railSawPayment(record: WithdrawalRecord): boolean {
   return stageAt?.received !== undefined || stageAt?.processing !== undefined;
 }
 
-/** The key paid the rail: the worker filed the payment, the rail saw it, or the rail ended in a
- *  way only possible with the funds. A sale's provider is only followed once paid, so any ending
- *  it reports is one. */
-export function handedToRail(record: WithdrawalRecord): boolean {
-  if (railSawPayment(record)) return true;
+/** The pool and dotUSD tiers sell nothing that lands on the key: their one XCM both converts and
+ *  pays the rail, so the funds are there the moment that leg opens. Only the PSM tier lands on
+ *  the key first and pays the rail as a leg of its own. */
+const landedAtRail = (record: WithdrawalRecord): boolean =>
+  record.status.kind === "sending" && record.handoff.tier !== "psm";
+
+/** The rail has the funds: its one XCM landed there directly, the worker filed the payment (Meld)
+ *  or swept the key to it (Chainflip), the rail saw it, or the rail ended in a way only possible
+ *  with the funds. A sale's provider is only followed once paid, so any ending it reports is
+ *  one. */
+export function receivedByRail(record: WithdrawalRecord): boolean {
+  if (railSawPayment(record) || landedAtRail(record)) return true;
   const { rail } = record;
   if (rail.provider === "meld" && rail.stage === "failed" && rail.failure !== undefined)
     return true;
   const kind = railFailureKind(record);
   if (kind !== undefined && RAIL_HAD_FUNDS.has(kind)) return true;
-  return workerFiled(record, "pay");
+  return workerFiled(record, "pay") || workerFiled(record, "sweep");
 }
 
 /** The rail is sending on, or tried to: the swap is done, the payout approved. */
@@ -70,10 +80,9 @@ function railDispatched(record: WithdrawalRecord): boolean {
   return stage === "delivered" || status === "sent" || status === "complete";
 }
 
-/** The conversion on the key is done and the arrival on Asset Hub awaited: the worker is at that
- *  step, or it filed the XCM out of People, which outlives a failure on the way and the retry
- *  after it. */
-function arrivalAwaited(record: WithdrawalRecord): boolean {
+/** The key filed the XCM out of People and the arrival on Asset Hub is awaited: the worker is at
+ *  that step, or it filed the call, which outlives a failure on the way and the retry after it. */
+function xcmDeparted(record: WithdrawalRecord): boolean {
   const { status } = record;
   if (
     status.kind === "converting" &&
@@ -110,12 +119,12 @@ export function withdrawalMilestones(
         (status.kind === "paid" ? status.at : undefined),
     );
   }
-  if (rank >= 2 && arrivalAwaited(record)) {
-    reached.converted = fact(legOpenedAt(record));
+  if (rank >= 2 && xcmDeparted(record)) {
+    reached.departed = fact(legOpenedAt(record));
   }
   if (rank >= 3) {
-    reached.converted = {};
-    reached.moved = fact(legOpenedAt(record));
+    reached.departed = {};
+    reached.converted = fact(legOpenedAt(record));
     // The last milestone reached dates the current line. The rail stamps the stages it saw;
     // its last change dates a hand-off the worker alone vouches for, which is then the leg's
     // opening, so the line moves rather than standing still until the rail reports. A failure
@@ -125,14 +134,14 @@ export function withdrawalMilestones(
     const received = stageAt?.received ?? stageAt?.processing ?? lastChange ?? legOpenedAt(record);
     const processing = stageAt?.processing ?? lastChange ?? received;
     if (railDispatched(record)) {
-      reached.handed = {};
+      reached.received = {};
       reached.processed = {};
       reached.dispatched = fact(rail.updatedAt);
     } else if (railSendingOn(record)) {
-      reached.handed = {};
+      reached.received = {};
       reached.processed = fact(processing);
-    } else if (handedToRail(record)) {
-      reached.handed = fact(received);
+    } else if (receivedByRail(record)) {
+      reached.received = fact(received);
     }
   }
   return reached;
