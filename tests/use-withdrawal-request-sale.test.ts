@@ -286,6 +286,8 @@ describe("a fiat sale from the page", () => {
       const record = useRequestsStore().get(outcome.ref) as WithdrawalRecord;
       expect(record.sale).toMatchObject({
         sellCode,
+        // The asset too, which the record is read by if Meld renames the code during KYC.
+        asset: "usdt@assethub",
         cryptoAmount: USDT_COMMITTED.toString(),
       });
       expect(record.sale?.lane).toBeUndefined();

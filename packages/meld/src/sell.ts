@@ -54,6 +54,12 @@ export const isDirectSellCode = (code: string | undefined): boolean => {
 export const directSellCodes = (): string[] =>
   [...DIRECT_SELL_TOKENS.values()].map((token) => token.meldCurrencyCode);
 
+/** What a direct sale of `asset` sells, or undefined for an asset no direct sale sells. Read by
+ *  the app's name for the asset, so a sale opened under a code Meld has since renamed still reads
+ *  as what it sold. */
+export const directSellTokenOf = (asset: MeldAssetId): MeldToken | undefined =>
+  DIRECT_SELL_TOKENS.get(asset);
+
 /** The direct sale's asset under `code`, one `isDirectSellCode` accepts. */
 export function directSellToken(code: string): MeldToken {
   const asset = meldAssetOf(code);

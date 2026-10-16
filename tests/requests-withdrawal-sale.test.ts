@@ -233,6 +233,23 @@ describe("a fiat sale in KYC", () => {
     expect(dot.handoff.channel).toBeUndefined();
   });
 
+  it("reads a USDT sale by its asset after Meld renamed the code it opened under", () => {
+    // Opened under a code the adapter's table has since dropped for USDT_DOT: read by the code, the
+    // sale would be PAS, the USDT deposit a mismatch, and the seller's KYC wasted.
+    const base = sale();
+    const renamed = sale({
+      sale: {
+        ...base.sale!,
+        sellCode: "USDT_RETIRED",
+        asset: "usdt@assethub",
+        cryptoAmount: "25000000",
+      },
+    });
+    const next = reduce(renamed, read(at(5), disclosed("25", "USDT_DOT"))) as WithdrawalRecord;
+    expect(next.status.kind).toBe("awaiting-payment");
+    expect(next.handoff.channel).toMatchObject({ address: DEPOSIT, amount: "25000000" });
+  });
+
   it("refuses an address for another amount or asset, and nothing is asked of the balance", () => {
     for (const reading of [disclosed("23.4522"), disclosed("23.4521", "USDT_DOT")]) {
       const next = reduce(sale(), read(at(5), reading)) as WithdrawalRecord;

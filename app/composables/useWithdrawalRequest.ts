@@ -6,6 +6,7 @@
 // its own wake, so a cancelled record cannot cause a payment.
 
 import { computed } from "vue";
+import { meldAssetOf } from "@getsome/core";
 import { depositTokenOf, recordedRoute, type ConversionRoute, type Stable } from "@getsome/funding";
 import {
   directSellToken,
@@ -268,6 +269,9 @@ export function useWithdrawalRequest() {
     if (input.sellCode !== undefined && !isDirectSellCode(input.sellCode)) {
       return { ok: false, reason: `A sale cannot sell ${input.sellCode}.` };
     }
+    // What the sale sells, by the app's name for it: the record reads it by this, since Meld may
+    // rename the code while the seller is in KYC.
+    const soldAsset = meldAssetOf(input.sellCode);
     // A direct sale of USDT runs the PSM redeem for it, and a direct sale of DOT the pool.
     const sellsUsdt = isDirectUsdt(input.sellCode);
     const redeemsUsdt = input.route?.tier === "psm" && input.route.external === "USDT";
@@ -372,6 +376,7 @@ export function useWithdrawalRequest() {
         cryptoAmount: input.cryptoAmount.toString(),
         ...(input.swap === undefined ? {} : { lane: input.swap.lane }),
         ...(input.sellCode === undefined ? {} : { sellCode: input.sellCode }),
+        ...(soldAsset === undefined ? {} : { asset: soldAsset }),
         quotedPayout: quote.destinationAmount,
         ...(Object.keys(fees).length === 0 ? {} : { fees }),
       },
