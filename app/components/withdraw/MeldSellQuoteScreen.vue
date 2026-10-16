@@ -46,7 +46,6 @@ const emit = defineEmits<{
   useOther: [];
   retry: [];
   useCrypto: [];
-  changeAmount: [];
 }>();
 
 const rateFailed = computed(() => !props.loading && props.errorKind === "rate");
@@ -81,8 +80,8 @@ const canContinue = computed(
     v-else-if="rateFailed"
     :failures="rateFailures"
     @retry="emit('retry')"
+    @change-country="emit('region')"
     @use-crypto="emit('useCrypto')"
-    @change-amount="emit('changeAmount')"
   />
 
   <div v-else class="flex min-h-0 flex-1 flex-col">

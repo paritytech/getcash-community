@@ -157,13 +157,6 @@ function returnFromPackage() {
   void purse.refresh({ spent: true });
 }
 
-/** The package's way back to the amount screen, with the amount still in it. */
-function changeAmount() {
-  loadEpoch += 1;
-  shellEntry.value = "amount";
-  returnToShell();
-}
-
 /**
  * Puts this page where a preview scene's state can be read: the scene's withdrawal package for
  * the `withdraw / …` scenes (crypto, card or bank), the shell for the list scenes. The stages of
@@ -255,7 +248,6 @@ onMounted(async () => {
     :selection="selection"
     @back="returnFromPackage"
     @switch-route="switchRoute"
-    @change-amount="changeAmount"
   />
   <FundingSelectorScreen
     v-else-if="topUpsReady"

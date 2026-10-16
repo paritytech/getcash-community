@@ -529,7 +529,6 @@ onUnmounted(() => {
         @retry="retryQuote"
         @use-crypto="emit('switchRoute', 'crypto')"
         @use-other="switchMethod && emit('switchRoute', switchMethod)"
-        @change-amount="emit('changeAmount')"
       />
       <WithdrawCancelScreen
         v-else-if="step === 'cancel'"

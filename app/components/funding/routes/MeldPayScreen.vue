@@ -19,14 +19,8 @@ import MethodUnavailable from "../MethodUnavailable.vue";
 
 const session = useSessionStore();
 // switchRoute asks the shell to swap to the crypto package when this region does not route the
-// method; fees opens the fee-breakdown drill-in, currency the region picker; changeAmount asks for
-// the shell's amount screen when the quote keeps failing for this amount.
-const emit = defineEmits<{
-  switchRoute: [route: FundingRoute];
-  fees: [];
-  currency: [];
-  changeAmount: [];
-}>();
+// method; fees opens the fee-breakdown drill-in, currency the region picker.
+const emit = defineEmits<{ switchRoute: [route: FundingRoute]; fees: []; currency: [] }>();
 
 // The adapter's buyer-facing refusal message, shown under the quote and blocking Continue.
 const startError = ref<string | null>(null);
@@ -156,8 +150,8 @@ async function next() {
     v-else-if="session.quoteError !== null && !session.loading"
     :failures="session.quoteFailures"
     @retry="requote"
+    @change-country="emit('currency')"
     @use-crypto="emit('switchRoute', 'crypto')"
-    @change-amount="emit('changeAmount')"
   />
   <div v-else class="flex min-h-0 flex-1 flex-col">
     <!-- The hero: the total the card will be charged. The toolbar already names the method. -->

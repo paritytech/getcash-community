@@ -11,7 +11,7 @@
 // first, because the details behind it take longer to read than the button takes to reach.
 //
 // A price that could not be had takes the summary step whole, in the two steps every quote
-// screen shows: a retry, then a change of amount or of rail.
+// screen shows: a retry, then a change of country or of rail.
 import { computed, onUnmounted, ref, watch } from "vue";
 import { ChevronRight, CircleAlert } from "lucide-vue-next";
 import { methodMinimum, namedCountry, otherMethod } from "~~/lib/supported";
@@ -47,8 +47,6 @@ const emit = defineEmits<{
   /** Leave the screen without touching the request: a lapsed transfer may still be arriving. */
   leave: [];
   switchRoute: [route: FundingRoute];
-  /** Back to the shell's amount screen, when the quote keeps failing for this amount. */
-  changeAmount: [];
 }>();
 
 const session = useSessionStore();
@@ -193,8 +191,8 @@ function confirmSent() {
       v-else-if="step === 'summary' && blocked"
       :failures="session.quoteFailures"
       @retry="requote"
+      @change-country="emit('currency')"
       @use-crypto="emit('switchRoute', 'crypto')"
-      @change-amount="emit('changeAmount')"
     />
     <template v-else-if="step === 'summary'">
       <!-- The hero, pricing or priced. -->
