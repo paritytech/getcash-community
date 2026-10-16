@@ -2,7 +2,7 @@
 // catalog, the exact figure the key will pay, and the best provider line for that figure. Priced
 // again whenever the region changes; nothing here opens a session.
 
-import { ref, shallowRef } from "vue";
+import { ref, shallowRef, watch } from "vue";
 import {
   DIRECT_SELL_CODES,
   directSellToken,
@@ -64,10 +64,14 @@ type SizedSale = {
  *  catalog names its methods by, not the buy side's card and bank codes. */
 const FALLBACK_PAYOUT_METHOD = { card: "PAYOUT_TO_CARD", bank: "PAYOUT_TO_BANK" } as const;
 
-/** The region a sale starts from: the device's own where this method pays out there, else a
- *  SEPA one, until geolocation lands. */
+/** The payout country the last sale was on. A route switch (bank to card) mounts a new sale, and
+ *  the seller's choice should outlive it. */
+let lastCountry: string | null = null;
+
+/** The region a sale starts from: the one chosen before, else the device's own, where this method
+ *  pays out there, else a SEPA one, until geolocation lands. */
 function startingCountry(method: "card" | "bank"): string {
-  const detected = localeCountry();
+  const detected = lastCountry ?? localeCountry();
   if (detected === null) return "DE";
   return method === "card" || bankRailCountries().includes(detected) ? detected : "DE";
 }
@@ -155,6 +159,9 @@ export function sellableCorridor(
 
 export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
   const country = ref(startingCountry(method));
+  watch(country, (next) => {
+    lastCountry = next;
+  });
   const countries = shallowRef<SupportedCountry[] | null>(null);
   const corridors = shallowRef<Map<string, SupportedCorridor> | null>(null);
   const quote = shallowRef<MeldSellQuote | null>(null);

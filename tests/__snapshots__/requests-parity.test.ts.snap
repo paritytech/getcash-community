@@ -14,7 +14,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "1/107 list / top-up: waiting",
+    "scene": "1/112 list / top-up: waiting",
   },
   {
     "claimStage": null,
@@ -28,7 +28,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "2/107 list / top-up: converting",
+    "scene": "2/112 list / top-up: converting",
   },
   {
     "claimStage": null,
@@ -42,7 +42,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "3/107 list / top-up: adding",
+    "scene": "3/112 list / top-up: adding",
   },
   {
     "claimStage": null,
@@ -56,7 +56,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "4/107 list / top-up: retrying",
+    "scene": "4/112 list / top-up: retrying",
   },
   {
     "claimStage": null,
@@ -70,7 +70,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "5/107 list / top-up: taking longer",
+    "scene": "5/112 list / top-up: taking longer",
   },
   {
     "claimStage": null,
@@ -84,7 +84,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "6/107 list / top-up: settled",
+    "scene": "6/112 list / top-up: settled",
   },
   {
     "claimStage": null,
@@ -98,7 +98,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "7/107 list / top-up: all settled",
+    "scene": "7/112 list / top-up: all settled",
   },
   {
     "claimStage": null,
@@ -112,7 +112,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "8/107 list / top-ups: show more",
+    "scene": "8/112 list / top-ups: show more",
   },
   {
     "claimStage": null,
@@ -126,7 +126,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "9/107 list / top-ups: loading",
+    "scene": "9/112 list / top-ups: loading",
   },
   {
     "claimStage": null,
@@ -140,7 +140,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "10/107 list / history",
+    "scene": "10/112 list / history",
   },
   {
     "claimStage": null,
@@ -154,7 +154,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "11/107 list / history: empty",
+    "scene": "11/112 list / history: empty",
   },
   {
     "claimStage": null,
@@ -168,7 +168,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "12/107 list / history: loading",
+    "scene": "12/112 list / history: loading",
   },
   {
     "claimStage": null,
@@ -182,7 +182,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "13/107 list / history: error",
+    "scene": "13/112 list / history: error",
   },
   {
     "claimStage": null,
@@ -196,7 +196,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "14/107 crypto / network",
+    "scene": "14/112 crypto / network",
   },
   {
     "claimStage": null,
@@ -210,7 +210,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "15/107 crypto / network: loading",
+    "scene": "15/112 crypto / network: loading",
   },
   {
     "claimStage": null,
@@ -224,7 +224,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "16/107 crypto / network: too small",
+    "scene": "16/112 crypto / network: too small",
   },
   {
     "claimStage": null,
@@ -238,7 +238,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "17/107 crypto / network: paused",
+    "scene": "17/112 crypto / network: paused",
   },
   {
     "claimStage": null,
@@ -252,7 +252,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "18/107 crypto / network: not available yet",
+    "scene": "18/112 crypto / network: not available yet",
   },
   {
     "claimStage": null,
@@ -266,7 +266,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "19/107 crypto / token",
+    "scene": "19/112 crypto / token",
   },
   {
     "claimStage": null,
@@ -280,7 +280,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "20/107 crypto / deposit: opening",
+    "scene": "20/112 crypto / deposit: opening",
   },
   {
     "claimStage": null,
@@ -294,7 +294,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "awaiting-deposit",
-    "scene": "21/107 crypto / deposit: waiting",
+    "scene": "21/112 crypto / deposit: waiting",
   },
   {
     "claimStage": null,
@@ -308,7 +308,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "awaiting-deposit",
-    "scene": "22/107 crypto / deposit: cancel confirm",
+    "scene": "22/112 crypto / deposit: cancel confirm",
   },
   {
     "claimStage": null,
@@ -322,7 +322,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "awaiting-deposit",
-    "scene": "23/107 crypto / deposit: less than asked",
+    "scene": "23/112 crypto / deposit: less than asked",
   },
   {
     "claimStage": null,
@@ -336,7 +336,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "awaiting-deposit",
-    "scene": "24/107 crypto / deposit: different token",
+    "scene": "24/112 crypto / deposit: different token",
   },
   {
     "claimStage": null,
@@ -350,7 +350,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "awaiting-deposit",
-    "scene": "25/107 crypto / deposit: faucet sent",
+    "scene": "25/112 crypto / deposit: faucet sent",
   },
   {
     "claimStage": null,
@@ -364,7 +364,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "awaiting-deposit",
-    "scene": "26/107 crypto / deposit: faucet failed",
+    "scene": "26/112 crypto / deposit: faucet failed",
   },
   {
     "claimStage": null,
@@ -378,7 +378,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "awaiting-deposit",
-    "scene": "27/107 crypto / deposit: expiring",
+    "scene": "27/112 crypto / deposit: expiring",
   },
   {
     "claimStage": null,
@@ -392,7 +392,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "failed",
-    "scene": "28/107 crypto / deposit: expired",
+    "scene": "28/112 crypto / deposit: expired",
   },
   {
     "claimStage": null,
@@ -406,7 +406,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "awaiting-deposit",
-    "scene": "29/107 crypto / convert: receiving",
+    "scene": "29/112 crypto / convert: receiving",
   },
   {
     "claimStage": null,
@@ -420,7 +420,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "awaiting-deposit",
-    "scene": "30/107 crypto / convert: delayed",
+    "scene": "30/112 crypto / convert: delayed",
   },
   {
     "claimStage": null,
@@ -434,7 +434,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "31/107 card / summary: payment country",
+    "scene": "31/112 card / summary: payment country",
   },
   {
     "claimStage": null,
@@ -448,7 +448,35 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "32/107 card / picker: choose payment country",
+    "scene": "32/112 card / picker: choose payment country",
+  },
+  {
+    "claimStage": null,
+    "claimedBase": null,
+    "fundingError": null,
+    "fundingNotice": null,
+    "fundingStep": null,
+    "fundsSeen": false,
+    "meldFailureMessage": null,
+    "meldHandedOff": false,
+    "meldStage": null,
+    "meldSubmitted": false,
+    "phase": null,
+    "scene": "33/112 card / summary: not available in region",
+  },
+  {
+    "claimStage": null,
+    "claimedBase": null,
+    "fundingError": null,
+    "fundingNotice": null,
+    "fundingStep": null,
+    "fundsSeen": false,
+    "meldFailureMessage": null,
+    "meldHandedOff": false,
+    "meldStage": null,
+    "meldSubmitted": false,
+    "phase": null,
+    "scene": "34/112 card / summary: not available in region, bank offered",
   },
   {
     "claimStage": null,
@@ -462,7 +490,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": "waiting",
     "meldSubmitted": false,
     "phase": "swapping",
-    "scene": "33/107 card / journey: payment",
+    "scene": "35/112 card / journey: payment",
   },
   {
     "claimStage": null,
@@ -476,7 +504,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": "complete",
     "meldSubmitted": false,
     "phase": "swapping",
-    "scene": "34/107 card / journey: converting",
+    "scene": "36/112 card / journey: converting",
   },
   {
     "claimStage": null,
@@ -490,7 +518,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": "waiting",
     "meldSubmitted": false,
     "phase": "swapping",
-    "scene": "35/107 card / journey: delayed",
+    "scene": "37/112 card / journey: delayed",
   },
   {
     "claimStage": null,
@@ -504,7 +532,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": "waiting",
     "meldSubmitted": false,
     "phase": "swapping",
-    "scene": "36/107 card / journey: retrying (future)",
+    "scene": "38/112 card / journey: retrying (future)",
   },
   {
     "claimStage": null,
@@ -518,7 +546,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": "waiting",
     "meldSubmitted": false,
     "phase": "failed",
-    "scene": "37/107 card / journey: payment failed",
+    "scene": "39/112 card / journey: payment failed",
   },
   {
     "claimStage": null,
@@ -532,7 +560,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": "waiting",
     "meldSubmitted": false,
     "phase": "failed",
-    "scene": "38/107 card / journey: declined",
+    "scene": "40/112 card / journey: declined",
   },
   {
     "claimStage": null,
@@ -546,7 +574,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": "waiting",
     "meldSubmitted": false,
     "phase": "failed",
-    "scene": "39/107 card / journey: refunded",
+    "scene": "41/112 card / journey: refunded",
   },
   {
     "claimStage": null,
@@ -560,7 +588,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "40/107 card / refunded: from history",
+    "scene": "42/112 card / refunded: from history",
   },
   {
     "claimStage": null,
@@ -574,7 +602,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "41/107 card / refunded: provider unknown",
+    "scene": "43/112 card / refunded: provider unknown",
   },
   {
     "claimStage": null,
@@ -588,7 +616,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "42/107 crypto / expired: from history",
+    "scene": "44/112 crypto / expired: from history",
   },
   {
     "claimStage": null,
@@ -602,7 +630,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "43/107 card / expired: from history",
+    "scene": "45/112 card / expired: from history",
   },
   {
     "claimStage": null,
@@ -616,7 +644,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": "failed",
     "meldSubmitted": false,
     "phase": "failed",
-    "scene": "44/107 card / journey: unconfirmed",
+    "scene": "46/112 card / journey: unconfirmed",
   },
   {
     "claimStage": null,
@@ -630,7 +658,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": "complete",
     "meldSubmitted": false,
     "phase": "done",
-    "scene": "45/107 card / journey: success",
+    "scene": "47/112 card / journey: success",
   },
   {
     "claimStage": null,
@@ -644,7 +672,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "46/107 bank / summary: payment country",
+    "scene": "48/112 bank / summary: payment country",
   },
   {
     "claimStage": null,
@@ -658,7 +686,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "47/107 bank / picker: choose payment country",
+    "scene": "49/112 bank / picker: choose payment country",
   },
   {
     "claimStage": null,
@@ -672,7 +700,21 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "48/107 bank / journey: opening",
+    "scene": "50/112 bank / summary: not available in region",
+  },
+  {
+    "claimStage": null,
+    "claimedBase": null,
+    "fundingError": null,
+    "fundingNotice": null,
+    "fundingStep": null,
+    "fundsSeen": false,
+    "meldFailureMessage": null,
+    "meldHandedOff": false,
+    "meldStage": null,
+    "meldSubmitted": false,
+    "phase": null,
+    "scene": "51/112 bank / journey: opening",
   },
   {
     "claimStage": null,
@@ -686,7 +728,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": "receiving",
     "meldSubmitted": true,
     "phase": "awaiting-deposit",
-    "scene": "49/107 bank / journey: transfer sent",
+    "scene": "52/112 bank / journey: transfer sent",
   },
   {
     "claimStage": null,
@@ -700,7 +742,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": "receiving",
     "meldSubmitted": true,
     "phase": "awaiting-deposit",
-    "scene": "50/107 bank / journey: cancel confirm",
+    "scene": "53/112 bank / journey: cancel confirm",
   },
   {
     "claimStage": null,
@@ -714,7 +756,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": "receiving",
     "meldSubmitted": true,
     "phase": "swapping",
-    "scene": "51/107 bank / journey: delayed",
+    "scene": "54/112 bank / journey: delayed",
   },
   {
     "claimStage": null,
@@ -728,7 +770,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": "complete",
     "meldSubmitted": true,
     "phase": "swapping",
-    "scene": "52/107 bank / journey: transfer arrived",
+    "scene": "55/112 bank / journey: transfer arrived",
   },
   {
     "claimStage": null,
@@ -742,7 +784,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": "complete",
     "meldSubmitted": true,
     "phase": "done",
-    "scene": "53/107 bank / journey: success",
+    "scene": "56/112 bank / journey: success",
   },
   {
     "claimStage": null,
@@ -756,7 +798,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": "complete",
     "meldSubmitted": true,
     "phase": "swapping",
-    "scene": "54/107 bank / journey: success, live",
+    "scene": "57/112 bank / journey: success, live",
   },
   {
     "claimStage": null,
@@ -770,7 +812,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": "failed",
     "meldSubmitted": true,
     "phase": "failed",
-    "scene": "55/107 bank / journey: payment failed",
+    "scene": "58/112 bank / journey: payment failed",
   },
   {
     "claimStage": null,
@@ -784,7 +826,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": "failed",
     "meldSubmitted": true,
     "phase": "failed",
-    "scene": "56/107 bank / journey: declined",
+    "scene": "59/112 bank / journey: declined",
   },
   {
     "claimStage": null,
@@ -798,7 +840,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": "complete",
     "meldSubmitted": true,
     "phase": "swapping",
-    "scene": "57/107 bank / journey: rate changed",
+    "scene": "60/112 bank / journey: rate changed",
   },
   {
     "claimStage": null,
@@ -812,7 +854,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": "failed",
     "meldSubmitted": true,
     "phase": "failed",
-    "scene": "58/107 bank / journey: refunded",
+    "scene": "61/112 bank / journey: refunded",
   },
   {
     "claimStage": null,
@@ -826,7 +868,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "awaiting-deposit",
-    "scene": "59/107 crypto / convert: swapping",
+    "scene": "62/112 crypto / convert: swapping",
   },
   {
     "claimStage": null,
@@ -840,7 +882,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "awaiting-deposit",
-    "scene": "60/107 crypto / convert: sending",
+    "scene": "63/112 crypto / convert: sending",
   },
   {
     "claimStage": null,
@@ -854,7 +896,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "swapping",
-    "scene": "61/107 crypto / pipeline: swap",
+    "scene": "64/112 crypto / pipeline: swap",
   },
   {
     "claimStage": null,
@@ -868,7 +910,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "swapping",
-    "scene": "62/107 crypto / pipeline: arrival wait",
+    "scene": "65/112 crypto / pipeline: arrival wait",
   },
   {
     "claimStage": null,
@@ -882,7 +924,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "swapping",
-    "scene": "63/107 crypto / heal: reconnecting",
+    "scene": "66/112 crypto / heal: reconnecting",
   },
   {
     "claimStage": "prompted",
@@ -896,7 +938,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "working",
-    "scene": "64/107 crypto / claim: consent",
+    "scene": "67/112 crypto / claim: consent",
   },
   {
     "claimStage": "crediting",
@@ -910,7 +952,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "working",
-    "scene": "65/107 crypto / claim: crediting",
+    "scene": "68/112 crypto / claim: crediting",
   },
   {
     "claimStage": "prompted",
@@ -924,7 +966,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "working",
-    "scene": "66/107 crypto / claim: verifying",
+    "scene": "69/112 crypto / claim: verifying",
   },
   {
     "claimStage": null,
@@ -938,7 +980,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "failed",
-    "scene": "67/107 crypto / failed: recoverable",
+    "scene": "70/112 crypto / failed: recoverable",
   },
   {
     "claimStage": null,
@@ -952,7 +994,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "failed",
-    "scene": "68/107 crypto / failed: conversion held",
+    "scene": "71/112 crypto / failed: conversion held",
   },
   {
     "claimStage": null,
@@ -966,7 +1008,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "failed",
-    "scene": "69/107 crypto / failed: refunded",
+    "scene": "72/112 crypto / failed: refunded",
   },
   {
     "claimStage": null,
@@ -980,7 +1022,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "70/107 crypto / refunded: from history",
+    "scene": "73/112 crypto / refunded: from history",
   },
   {
     "claimStage": null,
@@ -994,7 +1036,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "71/107 crypto / success: from history",
+    "scene": "74/112 crypto / success: from history",
   },
   {
     "claimStage": null,
@@ -1008,7 +1050,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "failed",
-    "scene": "72/107 crypto / refund key: USDT on Tron",
+    "scene": "75/112 crypto / refund key: USDT on Tron",
   },
   {
     "claimStage": null,
@@ -1022,7 +1064,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "failed",
-    "scene": "73/107 crypto / refund key: TRX on Tron",
+    "scene": "76/112 crypto / refund key: TRX on Tron",
   },
   {
     "claimStage": null,
@@ -1036,7 +1078,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "failed",
-    "scene": "74/107 crypto / refund key: BTC on Bitcoin",
+    "scene": "77/112 crypto / refund key: BTC on Bitcoin",
   },
   {
     "claimStage": null,
@@ -1050,7 +1092,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "failed",
-    "scene": "75/107 crypto / refund key: ETH on Ethereum",
+    "scene": "78/112 crypto / refund key: ETH on Ethereum",
   },
   {
     "claimStage": null,
@@ -1064,7 +1106,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "failed",
-    "scene": "76/107 crypto / refund key: USDC on Ethereum",
+    "scene": "79/112 crypto / refund key: USDC on Ethereum",
   },
   {
     "claimStage": null,
@@ -1078,7 +1120,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "failed",
-    "scene": "77/107 crypto / refund key: USDT on Ethereum",
+    "scene": "80/112 crypto / refund key: USDT on Ethereum",
   },
   {
     "claimStage": null,
@@ -1092,7 +1134,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "failed",
-    "scene": "78/107 crypto / refund key: SOL on Solana",
+    "scene": "81/112 crypto / refund key: SOL on Solana",
   },
   {
     "claimStage": null,
@@ -1106,7 +1148,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "failed",
-    "scene": "79/107 crypto / refund key: USDC on Solana",
+    "scene": "82/112 crypto / refund key: USDC on Solana",
   },
   {
     "claimStage": null,
@@ -1120,7 +1162,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "failed",
-    "scene": "80/107 crypto / refund key: USDT on Solana",
+    "scene": "83/112 crypto / refund key: USDT on Solana",
   },
   {
     "claimStage": null,
@@ -1134,7 +1176,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": "done",
-    "scene": "81/107 crypto / success",
+    "scene": "84/112 crypto / success",
   },
   {
     "claimStage": null,
@@ -1148,7 +1190,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "82/107 crypto / resume spinner",
+    "scene": "85/112 crypto / resume spinner",
   },
   {
     "claimStage": null,
@@ -1162,7 +1204,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "83/107 withdraw / network: loaded",
+    "scene": "86/112 withdraw / network: loaded",
   },
   {
     "claimStage": null,
@@ -1176,7 +1218,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "84/107 withdraw / network: skeleton",
+    "scene": "87/112 withdraw / network: skeleton",
   },
   {
     "claimStage": null,
@@ -1190,7 +1232,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "85/107 withdraw / token: loaded",
+    "scene": "88/112 withdraw / token: loaded",
   },
   {
     "claimStage": null,
@@ -1204,7 +1246,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "86/107 withdraw / token: skeleton",
+    "scene": "89/112 withdraw / token: skeleton",
   },
   {
     "claimStage": null,
@@ -1218,7 +1260,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "87/107 withdraw / address: empty",
+    "scene": "90/112 withdraw / address: empty",
   },
   {
     "claimStage": null,
@@ -1232,7 +1274,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "88/107 withdraw / address: wrong network",
+    "scene": "91/112 withdraw / address: wrong network",
   },
   {
     "claimStage": null,
@@ -1246,7 +1288,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "89/107 withdraw / address: incorrect",
+    "scene": "92/112 withdraw / address: incorrect",
   },
   {
     "claimStage": null,
@@ -1260,7 +1302,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "90/107 withdraw / address: entered",
+    "scene": "93/112 withdraw / address: entered",
   },
   {
     "claimStage": null,
@@ -1274,7 +1316,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "91/107 withdraw / summary",
+    "scene": "94/112 withdraw / summary",
   },
   {
     "claimStage": null,
@@ -1288,7 +1330,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "92/107 withdraw / fees",
+    "scene": "95/112 withdraw / fees",
   },
   {
     "claimStage": null,
@@ -1302,7 +1344,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "93/107 withdraw / summary: quoting",
+    "scene": "96/112 withdraw / summary: quoting",
   },
   {
     "claimStage": null,
@@ -1316,7 +1358,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "94/107 withdraw / summary: no quote",
+    "scene": "97/112 withdraw / summary: no quote",
   },
   {
     "claimStage": null,
@@ -1330,7 +1372,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "95/107 withdraw / journey: conversion",
+    "scene": "98/112 withdraw / journey: conversion",
   },
   {
     "claimStage": null,
@@ -1344,7 +1386,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "96/107 withdraw / journey: sending",
+    "scene": "99/112 withdraw / journey: sending",
   },
   {
     "claimStage": null,
@@ -1358,7 +1400,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "97/107 withdraw / journey: success",
+    "scene": "100/112 withdraw / journey: success",
   },
   {
     "claimStage": null,
@@ -1372,7 +1414,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "98/107 withdraw / journey: refunded",
+    "scene": "101/112 withdraw / journey: refunded",
   },
   {
     "claimStage": null,
@@ -1386,7 +1428,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "99/107 withdraw / return funds",
+    "scene": "102/112 withdraw / return funds",
   },
   {
     "claimStage": null,
@@ -1400,7 +1442,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "100/107 withdraw / return funds: revealed",
+    "scene": "103/112 withdraw / return funds: revealed",
   },
   {
     "claimStage": null,
@@ -1414,7 +1456,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "101/107 withdraw card / quote",
+    "scene": "104/112 withdraw card / quote",
   },
   {
     "claimStage": null,
@@ -1428,7 +1470,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "102/107 withdraw card / quote: quoting",
+    "scene": "105/112 withdraw card / quote: quoting",
   },
   {
     "claimStage": null,
@@ -1442,7 +1484,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "103/107 withdraw card / quote: couldn't get the rate",
+    "scene": "106/112 withdraw card / quote: couldn't get the rate",
   },
   {
     "claimStage": null,
@@ -1456,7 +1498,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "104/107 withdraw card / quote: still not working",
+    "scene": "107/112 withdraw card / quote: still not working",
   },
   {
     "claimStage": null,
@@ -1470,7 +1512,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "105/107 withdraw card / quote: region not supported",
+    "scene": "108/112 withdraw card / quote: not available in region",
   },
   {
     "claimStage": null,
@@ -1484,7 +1526,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "106/107 withdraw card / fees",
+    "scene": "109/112 withdraw card / quote: not available in region, bank offered",
   },
   {
     "claimStage": null,
@@ -1498,7 +1540,35 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "107/107 withdraw card / payout country",
+    "scene": "110/112 withdraw bank / quote: not available in region",
+  },
+  {
+    "claimStage": null,
+    "claimedBase": null,
+    "fundingError": null,
+    "fundingNotice": null,
+    "fundingStep": null,
+    "fundsSeen": false,
+    "meldFailureMessage": null,
+    "meldHandedOff": false,
+    "meldStage": null,
+    "meldSubmitted": false,
+    "phase": null,
+    "scene": "111/112 withdraw card / fees",
+  },
+  {
+    "claimStage": null,
+    "claimedBase": null,
+    "fundingError": null,
+    "fundingNotice": null,
+    "fundingStep": null,
+    "fundsSeen": false,
+    "meldFailureMessage": null,
+    "meldHandedOff": false,
+    "meldStage": null,
+    "meldSubmitted": false,
+    "phase": null,
+    "scene": "112/112 withdraw card / payout country",
   },
 ]
 `;

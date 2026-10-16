@@ -24,6 +24,8 @@ import { bankRailCountries } from "~~/lib/region";
 import {
   corridorOptions,
   countryName,
+  methodMinimum,
+  otherMethod,
   namedCountry,
   type SupportedCountry,
 } from "~~/lib/supported";
@@ -136,6 +138,10 @@ const detectedCountry = computed(() => {
 });
 
 const countryLabel = computed(() => namedCountry(sale.country.value, sale.countries.value));
+const corridor = computed(() => sale.corridors.value?.get(sale.country.value) ?? null);
+const minimum = computed(() => methodMinimum(corridor.value, method));
+/** The other fiat method, when the payout country routes it and not this one. */
+const switchMethod = computed(() => otherMethod(corridor.value, method));
 
 function pickCountry(country: string) {
   step.value = "quote";
@@ -154,6 +160,7 @@ watch(
     if (stage?.kind !== "withdraw-package" || (stage.route ?? "crypto") !== method) return;
     previewed = true;
     sale.country.value = stage.country ?? stage.sale?.country ?? "GB";
+    sale.corridors.value = stage.corridors ?? null;
     sale.quote.value = stage.sale ?? null;
     sale.loading.value = stage.sale === null;
     const failed = stage.saleError;
@@ -489,6 +496,8 @@ onUnmounted(() => {
         :error="sale.error.value"
         :error-kind="sale.errorKind.value"
         :rate-failures="sale.rateFailures.value"
+        :minimum="minimum"
+        :other="switchMethod"
         :country="sale.country.value"
         :country-name="countryLabel"
         :starting="starting"
@@ -498,6 +507,7 @@ onUnmounted(() => {
         @region="step = 'region'"
         @retry="retryQuote"
         @use-crypto="emit('switchRoute', 'crypto')"
+        @use-other="switchMethod && emit('switchRoute', switchMethod)"
         @change-amount="emit('changeAmount')"
       />
       <WithdrawCancelScreen

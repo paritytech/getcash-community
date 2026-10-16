@@ -3,12 +3,13 @@
 // the provider says it pays out, and how long it takes. The caption opens the fee drill-in once the
 // sale is priced. Continue opens the provider's page for KYC; nothing is asked of the balance until
 // the provider names where the funds go. A price that could not be had takes the whole screen, and
-// a region this method does not pay out in says so under the amount.
+// a region this method does not pay out in shows the view the top-up rails share.
 import { computed } from "vue";
 import { ChevronRight } from "lucide-vue-next";
 import type { MeldSellQuote } from "../../composables/useMeldSellQuote";
 import { groupAmountDigits } from "../../utils/cash";
 import { fmtFiat } from "../../utils/money";
+import MethodUnavailable from "../funding/MethodUnavailable.vue";
 import CashAmount from "../ui/CashAmount.vue";
 import ErrorState from "../ui/ErrorState.vue";
 import PillButton from "../ui/PillButton.vue";
@@ -17,6 +18,8 @@ import SkeletonBlock from "../ui/SkeletonBlock.vue";
 
 const props = defineProps<{
   method: "card" | "bank";
+  /** The other fiat method, when the country pays out by it. */
+  other: "card" | "bank" | null;
   /** The CASH leaving the balance, as typed. */
   amount: string;
   quote: MeldSellQuote | null;
@@ -25,6 +28,8 @@ const props = defineProps<{
   errorKind: "unrouted" | "rate" | null;
   /** Price failures in a row: the second stops offering another try. */
   rateFailures: number;
+  /** In the country's fiat, when the catalog prices one. */
+  minimum: { amount: string; fiat: string } | null;
   /** The payout country, as an ISO code, and its name. */
   country: string;
   countryName: string;
@@ -35,6 +40,7 @@ const emit = defineEmits<{
   continue: [];
   fees: [];
   region: [];
+  useOther: [];
   retry: [];
   useCrypto: [];
   changeAmount: [];
@@ -53,7 +59,21 @@ const canContinue = computed(
 </script>
 
 <template>
-  <div v-if="rateFailed" class="flex min-h-0 flex-1 flex-col">
+  <MethodUnavailable
+    v-if="unrouted"
+    direction="withdraw"
+    :method="method"
+    :amount="groupAmountDigits(amount)"
+    :country="country"
+    :country-name="countryName"
+    :minimum="minimum"
+    :other="other"
+    @region="emit('region')"
+    @use-crypto="emit('useCrypto')"
+    @use-other="emit('useOther')"
+  />
+
+  <div v-else-if="rateFailed" class="flex min-h-0 flex-1 flex-col">
     <ErrorState
       v-if="rateFailures < 2"
       class="my-auto"
@@ -82,9 +102,8 @@ const canContinue = computed(
       <p class="text-display-xl text-fg-primary">
         <CashAmount :amount="groupAmountDigits(amount)" />
       </p>
-      <p v-if="unrouted" class="text-body-m text-fg-error" role="alert">{{ error }}</p>
       <button
-        v-else-if="quote"
+        v-if="quote"
         type="button"
         class="flex items-center gap-2 text-body-m text-fg-secondary"
         @click="emit('fees')"
@@ -96,37 +115,31 @@ const canContinue = computed(
     </div>
 
     <div class="mt-8 flex flex-col gap-4">
-      <!-- Live even while the region is refused: another country is the way out of it. -->
       <RegionRow
         label="Payout country"
         :value="countryName"
         :country="country"
         @open="emit('region')"
       />
-      <template v-if="!unrouted">
-        <div class="flex items-start justify-between gap-4">
-          <span class="text-paragraph-l text-fg-primary">Min. Payout</span>
-          <SkeletonBlock v-if="loading || !minPayout" class="mt-1 h-4 w-1/5" />
-          <span v-else class="text-heading-m text-fg-primary">{{ minPayout }}</span>
-        </div>
-        <div class="flex items-start justify-between gap-4">
-          <span class="text-paragraph-l text-fg-primary">Arrives</span>
-          <span v-if="method === 'card'" class="text-right text-heading-m text-fg-primary">
-            A few minutes
-          </span>
-          <span v-else class="text-right text-heading-m text-fg-primary">
-            Your bank can take up to<br />2 days to process
-          </span>
-        </div>
-      </template>
+      <div class="flex items-start justify-between gap-4">
+        <span class="text-paragraph-l text-fg-primary">Min. Payout</span>
+        <SkeletonBlock v-if="loading || !minPayout" class="mt-1 h-4 w-1/5" />
+        <span v-else class="text-heading-m text-fg-primary">{{ minPayout }}</span>
+      </div>
+      <div class="flex items-start justify-between gap-4">
+        <span class="text-paragraph-l text-fg-primary">Arrives</span>
+        <span v-if="method === 'card'" class="text-right text-heading-m text-fg-primary">
+          A few minutes
+        </span>
+        <span v-else class="text-right text-heading-m text-fg-primary">
+          Your bank can take up to<br />2 days to process
+        </span>
+      </div>
     </div>
 
     <p v-if="startError" class="mt-4 text-body-m text-fg-error" role="alert">{{ startError }}</p>
 
-    <PillButton v-if="unrouted" class="mt-auto w-full" @click="emit('useCrypto')">
-      Use crypto
-    </PillButton>
-    <PillButton v-else class="mt-auto w-full" :disabled="!canContinue" @click="emit('continue')">
+    <PillButton class="mt-auto w-full" :disabled="!canContinue" @click="emit('continue')">
       {{ starting ? "Starting…" : "Continue" }}
     </PillButton>
     <PoweredBy class="mt-3 mb-4" provider="Meld" />

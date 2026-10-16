@@ -36,17 +36,20 @@ import { projectFundingTopUps, type FundingTopUp } from "../funding/top-ups";
 import { useRequestsStore } from "../stores/requests";
 import { applyCurrentScene } from "../utils/dev-preview";
 import { previewStage, type PreviewStage } from "../utils/dev-preview-stage";
+import { useRouter } from "vue-router";
 import { WITHDRAWAL_LIST_WORDING, WITHDRAWAL_WORDING } from "../withdraw/rows";
 import { frontloadHostPermissions } from "~~/lib/host-frontload";
 
 useVisualViewportHeight();
 const requests = useRequestsStore();
+const router = useRouter();
 
 const routeLabel = (route: FundingRoute): string =>
   withdrawalSelectorConfig.routes.find(({ id }) => id === route)?.label ?? route;
 const {
   selection,
   activePackage,
+  activeRoute,
   loading,
   routeError,
   continueToPackage: loadPackage,
@@ -163,11 +166,16 @@ function changeAmount() {
 
 /**
  * Puts this page where a preview scene's state can be read: the scene's withdrawal package for
- * the `withdraw / …` scenes, the shell for the list scenes. The stages of the top-up page's
- * containers are ignored — they live on `#/`. Returns whether anything moved. Dev and demo
+ * the `withdraw / …` scenes (crypto, card or bank), the shell for the list scenes. The stages of
+ * the top-up page's containers are ignored — they live on `#/`. Returns whether anything moved. Dev and demo
  * builds only — `previewStage` is null in every other.
  */
 async function stagePreview(stage: PreviewStage): Promise<boolean> {
+  // A top-up package or journey stages on `#/`, which picks the stage up as it mounts.
+  if (stage.kind === "package" || stage.kind === "journey") {
+    await router.push("/");
+    return false;
+  }
   if (stage.kind === "withdraw-package") {
     const route = stage.route ?? "crypto";
     // The package is up; the route itself reads the stage's step and skeletons.
@@ -192,12 +200,17 @@ async function stagePreview(stage: PreviewStage): Promise<boolean> {
   return false;
 }
 
-watch(previewStage, async (stage) => {
-  if (stage === null || !(await stagePreview(stage))) return;
-  // The container is up; its own mount ran as it changed, so the scene's state goes on top again.
-  await nextTick();
-  await applyCurrentScene();
-});
+// Immediate: the deck may have sent this page here from `#/` with the stage already set.
+watch(
+  previewStage,
+  async (stage) => {
+    if (stage === null || !(await stagePreview(stage))) return;
+    // The container is up; its own mount ran as it changed, so the scene's state goes on top again.
+    await nextTick();
+    await applyCurrentScene();
+  },
+  { immediate: true },
+);
 
 /** Upper bound on the permission front-load at launch. */
 const FRONTLOAD_TIMEOUT_MS = 20_000;
@@ -233,9 +246,12 @@ onMounted(async () => {
     :top-up="activeTopUp"
     @back="returnFromTopUp"
   />
+  <!-- Keyed by the loaded route: card and bank share one package, which reads its method once, at
+       setup. Not `selection.route`, which changes before the new package has loaded. -->
   <component
     :is="activePackage"
     v-else-if="activePackage && selection"
+    :key="activeRoute ?? undefined"
     :selection="selection"
     @back="returnFromPackage"
     @switch-route="switchRoute"

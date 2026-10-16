@@ -25,6 +25,7 @@ import {
 import { applyTopUp } from "../funding/requests/transitions/top-up";
 import { createTopUpTimelines } from "../funding/timeline/timelines";
 import { createMockCoinageSession } from "~~/lib/coinage";
+import type { SupportedCorridor } from "~~/lib/supported";
 import { isDemoBuild } from "./demo";
 import type { MeldSellQuote } from "../composables/useMeldSellQuote";
 import { previewQuote, previewTopUpScene, type PreviewTopUpScene } from "./dev-preview-top-ups";
@@ -215,8 +216,8 @@ const PREVIEW_COUNTRIES = [
 
 /** The SEPA rails, every one of them routed and priced the same: the bank picker lists its rails
  *  whether or not the catalog priced them, and a rail missing from this fixture would grey as
- *  unsupported for no reason a reviewer could act on. */
-const SEPA_PREVIEW = ["DE", "PT", "FR", "ES", "IT", "NL", "IE", "AT", "BE", "FI", "GR", "LU"];
+ *  unsupported for no reason a reviewer could act on. Luxembourg is the exception below. */
+const SEPA_PREVIEW = ["DE", "PT", "FR", "ES", "IT", "NL", "IE", "AT", "BE", "FI", "GR"];
 
 function previewMethod(category: "card" | "bank", min: string, currency: string) {
   const paymentMethodType = category === "card" ? "CREDIT_DEBIT_CARD" : "SEPA";
@@ -234,15 +235,16 @@ const PREVIEW_CORRIDORS: readonly [string, string, string | null, string | null]
     "4.00",
   ]),
   ["BR", "BRL", "26.00", null],
+  // Bank only, the mirror of Brazil: the card scenes' way to offer bank before crypto.
+  ["LU", "EUR", null, "4.00"],
   ["GG", "GBP", "40.00", "40.00"],
   ["VA", "EUR", null, null],
   ["EC", "USD", null, null],
 ];
 
-/** Stages that catalog on the session, the way `loadSupported*` would once the adapter answers. */
-function meldCatalog(session: Session) {
-  session.supportedCountries = [...PREVIEW_COUNTRIES];
-  session.corridorByCountry = new Map(
+/** The catalog as `fetchSupportedCorridors` would map it. */
+function previewCorridors(): Map<string, SupportedCorridor> {
+  return new Map(
     PREVIEW_CORRIDORS.map(([country, fiat, card, bank]) => [
       country,
       {
@@ -255,6 +257,12 @@ function meldCatalog(session: Session) {
       },
     ]),
   );
+}
+
+/** Stages that catalog on the session, the way `loadSupported*` would once the adapter answers. */
+function meldCatalog(session: Session) {
+  session.supportedCountries = [...PREVIEW_COUNTRIES];
+  session.corridorByCountry = previewCorridors();
 }
 
 /** What the record shows for each source the scenes use, unless a scene says what was sent. */
@@ -1030,6 +1038,8 @@ function base(session: Session, flow: Flow) {
   flow.previewMismatch = null;
   session.supportedCountries = null;
   session.corridorByCountry = null;
+  session.meldCorridor = null;
+  session.meldMethodUnavailable = false;
   // The shell reads the adapters again unless a top-ups scene says otherwise.
   previewTopUpScene.value = null;
   // Bitcoin, matching the canned quote.
@@ -1085,6 +1095,15 @@ function cardSummary(session: Session, flow: Flow) {
     partnerFee: "0.12",
   };
   meldCatalog(session);
+}
+
+/** The chosen method routes nothing from the region: the hero keeps the typed amount, the quote
+ *  is gone, and crypto is the way out. */
+function methodUnavailable(session: Session, country: string) {
+  session.setMeldCountry(country);
+  session.quoted = null;
+  session.meldCorridor = session.corridorByCountry?.get(country) ?? null;
+  session.meldMethodUnavailable = true;
 }
 
 /** Baseline for the bank summary scenes: the bank frames' own quote, against the same catalog. */
@@ -1309,6 +1328,8 @@ function topUpList(
 const CRYPTO_PACKAGE: PreviewStage = { kind: "package", route: "crypto" };
 const CRYPTO_JOURNEY: PreviewStage = { kind: "journey", route: "crypto" };
 const CARD_JOURNEY: PreviewStage = { kind: "journey", route: "card" };
+const CARD_PACKAGE: PreviewStage = { kind: "package", route: "card" };
+const BANK_PACKAGE: PreviewStage = { kind: "package", route: "bank" };
 
 /**
  * The scene families, in the order they are matched: the first prefix a scene's name starts with
@@ -1324,6 +1345,11 @@ const STAGE_BY_PREFIX: readonly (readonly [string, PreviewStage])[] = [
   ["crypto / deposit", CRYPTO_PACKAGE],
   ["crypto / resume spinner", CRYPTO_PACKAGE],
   ["crypto / ", CRYPTO_JOURNEY],
+  // The Meld packages own the summary and its region picker.
+  ["card / summary", CARD_PACKAGE],
+  ["card / picker", CARD_PACKAGE],
+  ["bank / summary", BANK_PACKAGE],
+  ["bank / picker", BANK_PACKAGE],
   ["card / ", CARD_JOURNEY],
 ];
 
@@ -1669,8 +1695,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    // The design's card summary: the region row above the quote's own terms. Cycle to it from
-    // inside the card package — the deck stages what a route shows, not which route is mounted.
+    // The design's card summary: the region row above the quote's own terms.
     name: "card / summary: payment country",
     apply: (s, f) => {
       cardSummary(s, f);
@@ -1683,6 +1708,22 @@ export const SCENES: Scene[] = [
     apply: (s, f) => {
       cardSummary(s, f);
       f.previewDrillIn = "currency";
+    },
+  },
+  {
+    // Ecuador routes neither method: the region's own line, the picker still live, crypto offered.
+    name: "card / summary: not available in region",
+    apply: (s, f) => {
+      cardSummary(s, f);
+      methodUnavailable(s, "EC");
+    },
+  },
+  {
+    // Luxembourg routes bank but not card: bank is offered under crypto.
+    name: "card / summary: not available in region, bank offered",
+    apply: (s, f) => {
+      cardSummary(s, f);
+      methodUnavailable(s, "LU");
     },
   },
   {
@@ -1824,6 +1865,14 @@ export const SCENES: Scene[] = [
     apply: (s, f) => {
       bankSummary(s, f);
       f.previewDrillIn = "currency";
+    },
+  },
+  {
+    // Brazil routes card but no bank rail.
+    name: "bank / summary: not available in region",
+    apply: (s, f) => {
+      bankSummary(s, f);
+      methodUnavailable(s, "BR");
     },
   },
   {
@@ -2351,11 +2400,40 @@ export const SCENES: Scene[] = [
     apply: (s, f) => base(s, f),
   },
   {
-    name: "withdraw card / quote: region not supported",
+    // Ecuador routes neither method: the shared "not available in this region" view.
+    name: "withdraw card / quote: not available in region",
     stage: {
       kind: "withdraw-package",
       route: "card",
       step: "quote",
+      country: "EC",
+      corridors: previewCorridors(),
+      saleError: { kind: "unrouted" },
+    },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    // Luxembourg routes bank but not card: bank is offered under crypto.
+    name: "withdraw card / quote: not available in region, bank offered",
+    stage: {
+      kind: "withdraw-package",
+      route: "card",
+      step: "quote",
+      country: "LU",
+      corridors: previewCorridors(),
+      saleError: { kind: "unrouted" },
+    },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    // Brazil routes card but no bank rail, so card is offered under crypto.
+    name: "withdraw bank / quote: not available in region",
+    stage: {
+      kind: "withdraw-package",
+      route: "bank",
+      step: "quote",
+      country: "BR",
+      corridors: previewCorridors(),
       saleError: { kind: "unrouted" },
     },
     apply: (s, f) => base(s, f),
