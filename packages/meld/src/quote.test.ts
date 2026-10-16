@@ -14,6 +14,7 @@ const CTX: MeldQuoteContext = {
  *  `reqs`. */
 function rateClient(rate: number, reqs?: MeldQuoteRequest[]): MeldClientLike {
   return {
+    getAssets: async () => [],
     getQuote: async (req) => {
       reqs?.push(req);
       const fiat = Number(req.sourceAmount);
@@ -42,6 +43,7 @@ function rateClient(rate: number, reqs?: MeldQuoteRequest[]): MeldClientLike {
 /** A fake returning fixed quotes. */
 function fixedClient(quotes: MeldQuoteEntry[]): MeldClientLike {
   return {
+    getAssets: async () => [],
     getQuote: async () => ({ quotes }),
     createSession: async () => ({
       fundingRequestId: "funding-1",
@@ -80,7 +82,7 @@ describe("computeMeldQuote (forward inversion)", () => {
     expect(reqs[0]).toEqual({
       country: "US",
       sourceCurrencyCode: "USD",
-      destinationCurrencyCode: "DOT_ASSETHUB",
+      destinationCurrencyCode: "DOT",
       sourceAmount: "20.00",
       paymentMethodType: "CREDIT_DEBIT_CARD",
     });
@@ -146,6 +148,7 @@ describe("computeMeldQuote (forward inversion)", () => {
   it("refuses a solve that never reaches the target rather than under-delivering", async () => {
     // Every probe comes back short, however much fiat is offered.
     const capped: MeldClientLike = {
+      getAssets: async () => [],
       getQuote: async (req) => ({
         quotes: [line("TRANSAK", Number(req.sourceAmount).toFixed(2), "19.00")],
       }),

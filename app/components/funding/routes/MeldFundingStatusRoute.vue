@@ -42,11 +42,9 @@ useVisibilityReconcile();
 const { handedOff } = useMeldHandoff(emit);
 
 const isBank = props.topUp.route === "bank";
-/** The bank route's screens are titled in lower case, as the design writes them. */
 const title = computed(() => {
-  if (isBank) return "Add funds via bank";
   const label = fundingSelectorConfig.routes.find(({ id }) => id === props.topUp.route)?.label;
-  return label ? `Add funds via ${label}` : "Status";
+  return label ? `Top up via ${label.toLowerCase()}` : "Status";
 });
 /** The fee-breakdown drill-in over the transfer's details. Back returns to them. */
 const showingFees = ref(false);

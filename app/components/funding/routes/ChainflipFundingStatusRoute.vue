@@ -83,7 +83,7 @@ onUnmounted(() => {
   >
     <Toolbar
       :back="!waiting && !requests.claiming"
-      :title="flow.confirmingCancel || flow.recoveringDeposit ? undefined : 'Add funds via Crypto'"
+      :title="flow.confirmingCancel || flow.recoveringDeposit ? undefined : 'Top up via crypto'"
       @back="onBack"
     >
       <template

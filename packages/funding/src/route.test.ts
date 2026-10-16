@@ -5,6 +5,7 @@
 import { TOKENS } from "@getsome/core";
 import { describe, expect, it } from "vitest";
 import {
+  REDEEM_MARGIN_FLOOR,
   ROUTE_MARGIN_FLOOR,
   chooseRoute,
   depositTokenOf,
@@ -108,7 +109,7 @@ describe("chooseRoute", () => {
       ["ExternalAssets", TOKENS.CASH.location, TOKENS.USDT.location],
     ]);
     // Enough debt to redeem from; the redemption fee, not the minting one.
-    const { api: withDebt } = scriptedPsm({ redemptionFee: 7_000, debts: [60n * CASH] });
+    const { api: withDebt } = scriptedPsm({ redemptionFee: 7_000, debts: [70n * CASH] });
     expect(await chooseRoute(withDebt, redeem(50n * CASH))).toEqual({
       tier: "psm",
       external: "USDT",
@@ -168,14 +169,51 @@ describe("chooseRoute", () => {
   });
 
   it("check 3, redeem: only debt minted through the pair can come back out", async () => {
-    expect(await chooseRoute(scriptedPsm({ debts: [55n * CASH] }).api, redeem(50n * CASH))).toEqual(
+    // 50 CASH needs 70 of debt: the cushion, since 10% of it is less.
+    expect(await chooseRoute(scriptedPsm({ debts: [70n * CASH] }).api, redeem(50n * CASH))).toEqual(
       PSM_AT_DEFAULT_FEE,
     );
     expect(
-      await chooseRoute(scriptedPsm({ debts: [55n * CASH - 1n] }).api, redeem(50n * CASH)),
+      await chooseRoute(scriptedPsm({ debts: [70n * CASH - 1n] }).api, redeem(50n * CASH)),
     ).toEqual(POOL);
     // Today's chain: nothing minted yet, so nothing redeemable, however open the breaker.
     expect(await chooseRoute(scriptedPsm().api, redeem(CASH))).toEqual(POOL);
+  });
+
+  it("check 3, redeem: the cushion is absolute, so it binds where ten percent would not", async () => {
+    // A debt just past 50 CASH plus 10% clears the mint's rule and not the redeem's.
+    const tenPercentClear = scriptedPsm({ debts: [55n * CASH + 1n] }).api;
+    expect(await chooseRoute(tenPercentClear, redeem(50n * CASH))).toEqual(POOL);
+    // 1 CASH needs 21 of debt.
+    expect(await chooseRoute(scriptedPsm({ debts: [21n * CASH] }).api, redeem(CASH))).toEqual(
+      PSM_AT_DEFAULT_FEE,
+    );
+    expect(await chooseRoute(scriptedPsm({ debts: [21n * CASH - 1n] }).api, redeem(CASH))).toEqual(
+      POOL,
+    );
+    // Past 200 CASH ten percent is the larger of the two and takes over: 300 needs 330.
+    expect(
+      await chooseRoute(scriptedPsm({ debts: [330n * CASH] }).api, redeem(300n * CASH)),
+    ).toEqual(PSM_AT_DEFAULT_FEE);
+    expect(
+      await chooseRoute(scriptedPsm({ debts: [330n * CASH - 1n] }).api, redeem(300n * CASH)),
+    ).toEqual(POOL);
+  });
+
+  it("check 3, redeem: our own in-flight redeems are taken out of the debt first", async () => {
+    // 70 of debt serves 50 CASH exactly; one unit already spoken for and it does not.
+    const exact = scriptedPsm({ debts: [70n * CASH] }).api;
+    expect(await chooseRoute(exact, { ...redeem(50n * CASH), reserved: 0n })).toEqual(
+      PSM_AT_DEFAULT_FEE,
+    );
+    expect(await chooseRoute(exact, { ...redeem(50n * CASH), reserved: 1n })).toEqual(POOL);
+    // More reserved than there is debt is no capacity at all, not a negative one.
+    expect(await chooseRoute(exact, { ...redeem(CASH), reserved: 100n * CASH })).toEqual(POOL);
+    // A mint is judged on headroom, which nothing of ours reserves.
+    const clears = scriptedPsm({ debts: [45n * CASH] }).api;
+    expect(await chooseRoute(clears, { ...mint(50n * CASH), reserved: 100n * CASH })).toEqual(
+      PSM_AT_DEFAULT_FEE,
+    );
   });
 
   it("the margin has a floor: a small amount still needs a whole CASH of headroom", async () => {
@@ -184,18 +222,12 @@ describe("chooseRoute", () => {
     expect(await chooseRoute(twoLeft, mint(CASH))).toEqual(PSM_AT_DEFAULT_FEE);
     const underTwo = scriptedPsm({ debts: [98n * CASH + 1n] }).api;
     expect(await chooseRoute(underTwo, mint(CASH))).toEqual(POOL);
-    expect(await chooseRoute(scriptedPsm({ debts: [2n * CASH] }).api, redeem(CASH))).toEqual(
-      PSM_AT_DEFAULT_FEE,
-    );
-    expect(await chooseRoute(scriptedPsm({ debts: [2n * CASH - 1n] }).api, redeem(CASH))).toEqual(
-      POOL,
-    );
   });
 
   it("check 4: below the instance's minimum swap is the pool, whatever the headroom", async () => {
     expect(await chooseRoute(scriptedPsm().api, mint(CASH - 1n))).toEqual(POOL);
     expect(await chooseRoute(scriptedPsm().api, mint(CASH))).toEqual(PSM_AT_DEFAULT_FEE);
-    const redeemable = scriptedPsm({ debts: [10n * CASH] }).api;
+    const redeemable = scriptedPsm({ debts: [30n * CASH] }).api;
     expect(await chooseRoute(redeemable, redeem(CASH - 1n))).toEqual(POOL);
     expect(await chooseRoute(redeemable, redeem(CASH))).toEqual(PSM_AT_DEFAULT_FEE);
   });
@@ -278,6 +310,10 @@ describe("withMargin and mintHeadroom", () => {
     expect(withMargin(10n * CASH)).toBe(10n * CASH + ROUTE_MARGIN_FLOOR); // exactly the floor
     expect(withMargin(CASH)).toBe(CASH + ROUTE_MARGIN_FLOOR);
     expect(withMargin(0n)).toBe(ROUTE_MARGIN_FLOOR);
+    // The redeem's floor is twenty CASH, and ten percent still wins past two hundred.
+    expect(withMargin(CASH, REDEEM_MARGIN_FLOOR)).toBe(CASH + REDEEM_MARGIN_FLOOR);
+    expect(withMargin(200n * CASH, REDEEM_MARGIN_FLOOR)).toBe(220n * CASH);
+    expect(withMargin(300n * CASH, REDEEM_MARGIN_FLOOR)).toBe(330n * CASH);
   });
 
   it("takes the smaller of the aggregate and the normalised own headroom, floored at zero", () => {

@@ -3,7 +3,6 @@ export {
   buildWithdrawXcm,
   CASH_ON_ASSET_HUB,
   forwardedStandIn,
-  originOnAssetHub,
   psmRedeemOut,
   withdrawMessage,
   WITHDRAW_XCM_MAX_WEIGHT,
@@ -17,11 +16,24 @@ export {
   NeedsSwapError,
   priceSale,
   readPoolReserves,
+  redeemAmountOf,
   sizeSwap,
   sizeXcm,
   SWAP_HEADROOM_PCT,
   XCM_TX_FEE_HEADROOM_PCT,
 } from "./fees";
+export {
+  buildPoolExit,
+  buildRedeemBatch,
+  cashToExit,
+  dryRunRedeem,
+  estimateRedeemFeeCash,
+  quotePoolExit,
+  readRedeemFloors,
+  RedeemTooSmallError,
+  sizeRedeem,
+} from "./redeem";
+export type { ExitCall, PoolExitArgs, RedeemBatchArgs, RedeemFloors } from "./redeem";
 export type {
   AssetHubApi,
   EstimateDirectFeesInput,
@@ -38,6 +50,7 @@ export {
   landingFloor,
   MAX_REJECTIONS,
   withdrawTickOnce,
+  WithdrawHeldError,
   WithdrawRejectedError,
 } from "./tick";
 export type {
@@ -69,19 +82,18 @@ export type {
 export { buildSweep, freshSweepState, sweepOnce } from "./sweep";
 export type { SweepInput, SweepState } from "./sweep";
 export {
-  exactAssetPaymentFloor,
   exactPaymentFloor,
   exactPaymentLanded,
   freshExactPayState,
   payExactOnce,
   PaymentUnresolvedError,
-  SALE_RESIDUE_RETURN_FLOOR,
-  USDT_PAY_FEE_ALLOWANCE,
-  USDT_RESIDUE_RETURN_FLOOR,
+  residueReturnFloor,
 } from "./pay-exact";
+export { PAY_MORTAL_PERIOD } from "./mortality";
 export { cashInFor, pasOutFor } from "./pool";
 export type { PoolReserves } from "./pool";
 export {
+  ASSET_HUB_CASH_TX_OPTIONS,
   PASEO_PEOPLE_POOL_ACCOUNT,
   PEOPLE_NATIVE,
   PEOPLE_POOL_FEE_PPM,

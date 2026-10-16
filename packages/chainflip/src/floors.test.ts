@@ -69,6 +69,8 @@ describe("learnFloors", () => {
         minimumBaseUnits: 40_000n,
         minimumEgressBaseUnits: 160_000_000_000n, // 16 DOT
         etaSeconds: 900,
+        // No recommendation in the quote: the channel's own half point.
+        slippagePct: 0.5,
       },
     });
     expect(floors.get("eth")?.kind).toBe("floor");
@@ -82,6 +84,32 @@ describe("learnFloors", () => {
       kind: "unavailable",
       reason: expect.stringContaining("Tron TRX") as unknown as string,
     });
+  });
+
+  it("does not offer a source whose quote asks an unusable tolerance, keeping the rest", async () => {
+    // From 100% no buffer covers the worst fill; one such answer must grey its own row only.
+    const { backend: b } = backend({
+      async getQuoteV2(args) {
+        const egressAmount = (BigInt(args.amount) * (RATE[args.srcAsset] ?? 1n)).toString();
+        return {
+          quotes: [
+            {
+              type: "REGULAR",
+              egressAmount,
+              recommendedSlippageTolerancePercent: args.srcAsset === "BTC" ? 100 : 1,
+            },
+          ],
+        };
+      },
+    });
+    const floors = await learnFloors(b, [BTC, ETH]);
+    expect(floors.get("btc")).toEqual({
+      kind: "unavailable",
+      reason: expect.stringContaining("100% tolerance") as unknown as string,
+    });
+    const eth = floors.get("eth");
+    expect(eth?.kind).toBe("floor");
+    if (eth?.kind === "floor") expect(eth.floor.slippagePct).toBe(1);
   });
 
   it("keeps one source's failure to itself", async () => {
@@ -195,23 +223,31 @@ describe("offerFor", () => {
   });
 
   it("does not let the slippage buffer argue a purchase over the floor", () => {
-    // 4% under the floor's worth: inside the 5% buffer, still unavailable.
-    expect(offerFor(BTC, floor, 153_600_000_000n).available).toBe(false);
+    // Half a point under the floor's worth: inside the buffer, still unavailable.
+    expect(offerFor(BTC, floor, 159_200_000_000n).available).toBe(false);
   });
 
   it("scales the send amount linearly from the floor, buffered like the precise quote", () => {
-    // Twice the floor's worth -> twice the minimum, plus 5%.
+    // Twice the floor's worth -> twice the minimum, buffered for a half-point channel:
+    // 80000 x 1.0025 / 0.995 = 80603.02 -> 80604.
     const offer = offerFor(BTC, floor, 320_000_000_000n);
-    expect(offer.sendBaseUnits).toBe(84_000n);
-    expect(offer.sendFormatted).toBe("0.00084");
+    expect(offer.sendBaseUnits).toBe(80_604n);
+    expect(offer.sendFormatted).toBe("0.00080604");
     expect(offer.etaSeconds).toBe(900);
     expect(offer.minimumEgressBaseUnits).toBe(160_000_000_000n);
   });
 
+  it("buffers by the tolerance learned with the floor", () => {
+    // BTC's quote recommends 2%: 80000 x 1.0025 / 0.98 = 81836.73 -> 81837.
+    const offer = offerFor(BTC, { ...floor, slippagePct: 2 }, 320_000_000_000n);
+    expect(offer.sendBaseUnits).toBe(81_837n);
+  });
+
   it("rounds the exact amount up, never down", () => {
-    // 1 planck over an exact multiple must not vanish into the division.
+    // 1 planck over an exact multiple must not vanish into the division: 40001 buffered is 40303,
+    // where 40000 would give 40302.
     const offer = offerFor(BTC, floor, 160_000_000_001n);
-    expect(offer.sendBaseUnits).toBeGreaterThan(42_000n);
+    expect(offer.sendBaseUnits).toBe(40_303n);
   });
 
   it("adds the on-chain overhead to what must be covered", () => {
@@ -221,6 +257,6 @@ describe("offerFor", () => {
 
   it("caps display decimals when asked", () => {
     const offer = offerFor(BTC, floor, 320_000_000_000n, 0n, { maxDecimals: 4 });
-    expect(offer.sendFormatted).toBe("0.0009"); // ceil of 0.00084 at 4 places
+    expect(offer.sendFormatted).toBe("0.0009"); // ceil of 0.00080604 at 4 places
   });
 });
