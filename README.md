@@ -232,13 +232,14 @@ Next. Demo builds, and with them the faucet and Skip, need `"testnet": true`; th
 
 Copy `.env.example` to `.env` and fill in what you need. Nuxt reads `.env`, not `.env.local`.
 
-| Variable                        | Purpose                                                                                                                                                                         |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `VITE_FAUCET_SEED`              | demo faucet account, holding PAS, dotUSD, USDt and USDC on Asset Hub; inlined into the client bundle, use a testnet account                                                     |
-| `VITE_DEPLOYER_SEED`            | fallback for `MNEMONIC` in `deploy.sh`                                                                                                                                          |
-| `VITE_MELD_BASE_URL`            | origin of the Meld adapter; unset, the offline fake Meld client runs instead                                                                                                    |
-| `VITE_MELD_PRODUCT_ID`          | product id the adapter expects in the `x-dev-product-id` header                                                                                                                 |
-| `VITE_CHAINFLIP_BROKER_API_KEY` | Broker-as-a-Service key the Chainflip deposit channels open on; unset, the crypto withdrawal destinations show as not available, and so do the crypto sources in a hosted build |
+| Variable                        | Purpose                                                                                                                                                                                       |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VITE_FAUCET_SEED`              | demo faucet account, holding PAS, dotUSD, USDt and USDC on Asset Hub; inlined into the client bundle, use a testnet account                                                                   |
+| `VITE_DEPLOYER_SEED`            | fallback for `MNEMONIC` in `deploy.sh`                                                                                                                                                        |
+| `VITE_MELD_BASE_URL`            | origin of the Meld adapter; unset, the offline fake Meld client runs instead. Meld's currency codes are read from its `GET /assets` at runtime, never written in this app                     |
+| `VITE_MELD_PRODUCT_ID`          | product id the adapter expects in the `x-dev-product-id` header                                                                                                                               |
+| `VITE_OFFRAMP_LANES`            | card and bank sales: the off-ramp lanes sold through, best first, by asset id (`usdt@assethub,dot@assethub,usdc@arbitrum,usdc@solana`), not Meld code; unset, the direct Asset Hub sales only |
+| `VITE_CHAINFLIP_BROKER_API_KEY` | Broker-as-a-Service key the Chainflip deposit channels open on; unset, the crypto withdrawal destinations show as not available, and so do the crypto sources in a hosted build               |
 
 `VITE_CHAINFLIP_BROKER_API_KEY` names an account on Broker-as-a-Service (chainflip-broker.io), one
 key per Chainflip network; this app uses mainnet. Chainflip's own backend refuses to open deposit

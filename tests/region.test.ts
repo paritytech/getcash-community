@@ -34,14 +34,14 @@ describe("meldPaymentMethod", () => {
   });
 
   it("bank resolves to the country's rail where a provider serves this asset", () => {
-    // For DOT_ASSETHUB the eurozone quotes SEPA and GB quotes OPEN_BANKING.
+    // For DOT the eurozone quotes SEPA and GB quotes OPEN_BANKING.
     expect(meldPaymentMethod("bank", "DE")).toBe("SEPA");
     expect(meldPaymentMethod("bank", "FR")).toBe("SEPA");
     expect(meldPaymentMethod("bank", "GB")).toBe("OPEN_BANKING");
   });
 
   it("bank is null where no provider offers a bank rail for this asset (card-only)", () => {
-    // US (no ACH for DOT_ASSETHUB), IN, BR all fall through to card only.
+    // US (no ACH for DOT), IN, BR all fall through to card only.
     expect(meldPaymentMethod("bank", "US")).toBeNull();
     expect(meldPaymentMethod("bank", "IN")).toBeNull();
     expect(meldPaymentMethod("bank", "BR")).toBeNull();
