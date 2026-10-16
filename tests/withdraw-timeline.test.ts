@@ -753,8 +753,8 @@ describe("withdrawal timeline", () => {
   });
 
   it("keeps the arrival on a retry once the XCM left People", () => {
-    // A retry from the conversion starts at the swap until the worker reports its step again. The
-    // old witness still carries the failure's reason as its last error, as the worker leaves it.
+    // A retry from the conversion starts at the swap until the worker reports its step again,
+    // with the failed attempt's transactions on its witness and its ending dropped.
     const worker = {
       known: true as const,
       phase: "failed",
@@ -762,8 +762,6 @@ describe("withdrawal timeline", () => {
       fundsSeenAt: at(1),
       lastTickAt: at(5),
       at: at(5),
-      failure: "held",
-      lastError: "withdrawal held: the PSM refused the redeem 3 times",
     };
     const retried = (calls: ("swap" | "withdraw")[]) =>
       record({

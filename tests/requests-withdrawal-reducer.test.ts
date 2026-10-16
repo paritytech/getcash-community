@@ -13,6 +13,7 @@ import {
 } from "../app/funding/requests/model";
 import { reduce } from "../app/funding/requests/reducer";
 import { requestRefOf } from "../app/utils/request-index";
+import { withdrawalTimeline } from "../app/withdraw/timeline/withdrawal";
 
 const MINUTE = 60_000;
 const STARTED = Date.UTC(2026, 8, 17, 10, 0, 0);
@@ -520,6 +521,36 @@ describe("withdrawal: the worker", () => {
     const again = run(rejected, { source: "user", at: at(4), event: "retry" });
     expect(again.status).toEqual({ kind: "converting", at: at(4), step: "swap" });
     expect(again.failure).toBeUndefined();
+  });
+
+  it("drops the failed attempt's ending from its witness on a retry, keeping what it filed", () => {
+    const seen = at(1);
+    const txs = [
+      { call: "swap" as const, txHash: "0x1", ok: true },
+      { call: "withdraw" as const, txHash: "0x2", ok: true },
+    ];
+    const timedOut = run(
+      prompted(),
+      worker(
+        at(3),
+        job({
+          phase: "failed",
+          failure: "timeout",
+          lastError: "conversion exceeded 1800000ms of worker time",
+          fundsSeenAt: seen,
+          txs,
+        }),
+      ),
+    );
+    const again = run(timedOut, { source: "user", at: at(4), event: "retry" });
+    expect(again.witnesses.worker).toMatchObject({ known: true, txs });
+    expect(again.witnesses.worker).not.toHaveProperty("failure");
+    expect(again.witnesses.worker).not.toHaveProperty("lastError");
+    // The journey reads the retry as running past the XCM it filed, not as the failed attempt
+    // still stuck.
+    const timeline = withdrawalTimeline(again, { now: at(4) + 1_000 });
+    expect(timeline.view?.state).toBe("active");
+    expect(timeline.message).toEqual({ text: "Sending your PAS to your wallet", delay: false });
   });
 });
 

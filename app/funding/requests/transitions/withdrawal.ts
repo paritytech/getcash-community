@@ -672,7 +672,14 @@ function applyUser(record: WithdrawalRecord, observation: UserObservation): With
       const worker = record.witnesses.worker;
       const step: SendingStep =
         worker?.known && isSendingStep(worker.phase) ? worker.phase : "swap";
-      return { ...rest, status: { kind: "converting", at, step } };
+      if (worker?.known !== true) return { ...rest, status: { kind: "converting", at, step } };
+      // The failed attempt's ending is over with the retry; the transactions it filed still stand.
+      const { failure: _failure, lastError: _lastError, ...kept } = worker;
+      return {
+        ...rest,
+        status: { kind: "converting", at, step },
+        witnesses: { ...rest.witnesses, worker: kept },
+      };
     }
     case "channel-opened":
       // A fresh channel for the rail leg; the hand-off the worker is re-armed with carries it.
