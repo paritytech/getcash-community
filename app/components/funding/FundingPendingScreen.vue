@@ -8,12 +8,9 @@ import {
   TOP_UP_LIST_WORDING,
   type FundingListWording,
   type InProgressFundingTopUp,
-  type SettledFundingTopUp,
 } from "../../funding/top-ups";
 import PillButton from "../ui/PillButton.vue";
 import FundingTopUpProgressCard from "./FundingTopUpProgressCard.vue";
-
-type PendingTopUp = InProgressFundingTopUp | SettledFundingTopUp;
 
 /** How many cards the list shows before the collapse. Three is what the design's loading frame
  *  lays out, and it is the most that clears the New top-up button on a short webview. */
@@ -23,7 +20,6 @@ const props = withDefaults(
   defineProps<{
     config: FundingSelectorConfig;
     topUps?: readonly InProgressFundingTopUp[];
-    latestTopUp?: SettledFundingTopUp | null;
     openingTopUpId?: string | null;
     error?: string | null;
     /** Launch-load placeholder: the screen's own shapes instead of the list. */
@@ -33,7 +29,6 @@ const props = withDefaults(
   }>(),
   {
     topUps: () => [],
-    latestTopUp: null,
     openingTopUpId: null,
     error: null,
     skeleton: false,
@@ -44,12 +39,11 @@ const props = withDefaults(
 const emit = defineEmits<{
   history: [];
   newTopUp: [];
-  open: [topUp: PendingTopUp];
+  open: [topUp: InProgressFundingTopUp];
 }>();
 
-// The settled card gets a section of its own, on the history frame's shape: appended to the one
-// list it rode behind the collapse whenever three top-ups were still running, and the buyer never
-// saw their money land. Only the running cards collapse; the Completed section stays visible.
+// Only what is running is listed: a finished top-up is history's, and the design draws this
+// screen without a section heading over the rows.
 const expanded = ref(false);
 const collapsible = computed(() => props.topUps.length > COLLAPSED_CARDS);
 const visible = computed(() =>
@@ -87,8 +81,7 @@ const busy = computed(() => Boolean(props.openingTopUpId));
     <div v-else class="flex min-h-0 flex-1 flex-col px-4 pt-4 pb-6">
       <div class="-mx-4 min-h-0 flex-1 overflow-y-auto px-4">
         <section v-if="topUps.length > 0">
-          <h2 class="text-heading-l text-fg-primary">In progress</h2>
-          <ul class="mt-4 flex flex-col gap-2">
+          <ul class="flex flex-col gap-2">
             <li v-for="topUp in visible" :key="topUp.id">
               <FundingTopUpProgressCard
                 :top-up="topUp"
@@ -114,20 +107,6 @@ const busy = computed(() => Boolean(props.openingTopUpId));
               />
             </button>
           </div>
-        </section>
-
-        <section v-if="latestTopUp" :class="{ 'mt-8': topUps.length > 0 }">
-          <h2 class="text-heading-l text-fg-primary">Completed</h2>
-          <ul class="mt-4 flex flex-col gap-2">
-            <li>
-              <FundingTopUpProgressCard
-                :top-up="latestTopUp"
-                :opening="openingTopUpId === latestTopUp.id"
-                :disabled="busy"
-                @open="emit('open', latestTopUp)"
-              />
-            </li>
-          </ul>
         </section>
       </div>
 

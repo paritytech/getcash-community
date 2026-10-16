@@ -34,7 +34,7 @@ export const WITHDRAWAL_WORDING: FundingTopUpWording = { settled: "Sent" };
 
 /** The words the shell's list screens use on the withdrawal page. */
 export const WITHDRAWAL_LIST_WORDING: FundingListWording = {
-  pendingTitle: "Withdrawal in progress",
+  pendingTitle: "Withdrawals in progress",
   pendingCta: "Withdraw",
   emptyHistory: "Nothing here yet. Your withdrawals will appear as you make them.",
 };

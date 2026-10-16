@@ -2,7 +2,7 @@
 // catalog, the exact figure the key will pay, and the best provider line for that figure. Priced
 // again whenever the region changes; nothing here opens a session.
 
-import { ref, shallowRef } from "vue";
+import { ref, shallowRef, watch } from "vue";
 import {
   DIRECT_SELL_CODES,
   directSellToken,
@@ -27,7 +27,7 @@ import {
   type SupportedCountry,
   type SupportedMethod,
 } from "~~/lib/supported";
-import { localeCountry } from "../utils/locale";
+import { detectedCountryNow } from "./useDetectedCountry";
 import { meldSellClient } from "../withdraw/meld-client";
 
 /** A priced sale: where it pays out, what the key pays, and the provider line for it. */
@@ -64,12 +64,16 @@ type SizedSale = {
  *  catalog names its methods by, not the buy side's card and bank codes. */
 const FALLBACK_PAYOUT_METHOD = { card: "PAYOUT_TO_CARD", bank: "PAYOUT_TO_BANK" } as const;
 
-/** The region a sale starts from: the device's own where this method pays out there, else a
- *  SEPA one, until geolocation lands. */
-function startingCountry(method: "card" | "bank"): string {
-  const detected = localeCountry();
-  if (detected === null) return "DE";
-  return method === "card" || bankRailCountries().includes(detected) ? detected : "DE";
+/** The payout country the last sale was on. A route switch (bank to card) mounts a new sale, and
+ *  the seller's choice should outlive it. */
+let lastCountry: string | null = null;
+
+/** The region a sale starts from: the one chosen before, else the geo cache where detection has
+ *  already answered, else the device locale, UNfiltered — a region with no payout rail still
+ *  prices as "choose another country", which is the truth about the seller. The route re-commits
+ *  once the async lookup lands (MeldWithdrawRoute), unless the seller chose before. */
+function startingCountry(): string {
+  return lastCountry ?? detectedCountryNow() ?? "DE";
 }
 
 /** What a sale of Meld code `code` sells: an asset on Asset Hub with no swap (null), PAS under
@@ -154,7 +158,12 @@ export function sellableCorridor(
 }
 
 export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
-  const country = ref(startingCountry(method));
+  /** The starting region is one the seller chose on the other method, not a detected one. */
+  const chosenBefore = lastCountry !== null;
+  const country = ref(startingCountry());
+  watch(country, (next) => {
+    lastCountry = next;
+  });
   const countries = shallowRef<SupportedCountry[] | null>(null);
   const corridors = shallowRef<Map<string, SupportedCorridor> | null>(null);
   const quote = shallowRef<MeldSellQuote | null>(null);
@@ -323,6 +332,7 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
 
   return {
     country,
+    chosenBefore,
     countries,
     corridors,
     quote,

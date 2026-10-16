@@ -10,6 +10,11 @@ import { readPurseBalance } from "./coinage";
 /** The two Chainflip hosts that serve quotes, floors and prices. */
 const CHAINFLIP_DOMAINS = ["rpc.mainnet.chainflip.io", "chainflip-swap.chainflip.io"];
 
+/** The IP→country service the card and bank screens default the buyer's region from (lib/geo.ts).
+ *  Only the grant is front-loaded: the lookup itself runs when one of those screens opens, so a
+ *  user who never goes there never sends their address. */
+const GEO_DOMAINS = ["get.geojs.io"];
+
 /** The broker the channels open on, when the build has a key for it. */
 function brokerDomains(): string[] {
   return brokerConfigured() ? [BAAS_BROKER_HOST] : [];
@@ -33,7 +38,9 @@ export async function frontloadHostPermissions(): Promise<void> {
   // Network first: the amount screen's floor-learning fires as soon as this resolves.
   await requestPermission({
     tag: "Remote",
-    value: { domains: [...CHAINFLIP_DOMAINS, ...brokerDomains(), ...meldDomains()] },
+    value: {
+      domains: [...CHAINFLIP_DOMAINS, ...brokerDomains(), ...GEO_DOMAINS, ...meldDomains()],
+    },
   }).catch((e) => console.warn("[host] network grant failed (continuing):", e));
 
   // These do not gate the first quote and queue behind the network dialog.

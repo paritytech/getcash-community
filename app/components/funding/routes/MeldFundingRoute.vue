@@ -6,12 +6,12 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { bankRailCountries } from "~~/lib/region";
 import { corridorOptions, countryName, type CountryOption } from "~~/lib/supported";
+import { detectCountry, useDetectedCountry } from "../../../composables/useDetectedCountry";
 import { useMeldHandoff } from "../../../composables/useMeldHandoff";
 import { useStateDirector } from "../../../composables/useStateDirector";
 import { useVisibilityReconcile } from "../../../composables/useVisibilityReconcile";
 import { fundingSelectorConfig } from "../../../funding/config";
 import { isDemoBuild } from "../../../utils/demo";
-import { localeCountry } from "../../../utils/locale";
 import { isMoneyAmount } from "../../../utils/money";
 import type { FundingPackageEmits } from "../../../funding/handoff";
 import type { FundingSelection } from "../../../funding/selection";
@@ -165,13 +165,15 @@ const pickerCountries = computed<CountryOption[]>(() => {
   );
 });
 
-/** The device's own region, when this route can be paid from it. The card picker judges that for
- *  itself — it pins the region only while it is pickable — so only bank filters here. */
+// IP-geo first, the device locale otherwise; live, so a late geo answer updates the pin in place.
+const detected = useDetectedCountry();
+
+/** The buyer's detected region, when this route can be paid from it. The card picker judges that
+ *  for itself — it pins the region only while it is pickable — so only bank filters here. */
 const detectedCountry = computed(() => {
-  const detected = localeCountry();
-  if (detected === null) return null;
-  if (!isBank) return detected;
-  return bankRailCountries().includes(detected) ? detected : null;
+  if (detected.value === null) return null;
+  if (!isBank) return detected.value;
+  return bankRailCountries().includes(detected.value) ? detected.value : null;
 });
 
 /**
@@ -201,18 +203,24 @@ function onSkip() {
   session.simulateMeldPayment();
 }
 
-onMounted(() => {
+onMounted(async () => {
   flow.startOver();
   session.setMethod(route);
   session.setAmount(props.selection.amount);
-  // The bank route starts from a region that can quote it: the buyer's own where a transfer can be
-  // made from it, else a SEPA one, until geolocation lands.
-  if (isBank && session.meldCountry === null) session.setMeldCountry(detectedCountry.value ?? "DE");
   // The catalog belongs to the route, not to one of its screens: the picker is the route's, and
   // both rails read the same corridors for what a region charges and whether it routes at all.
   void session.loadSupportedCountries();
   void session.loadSupportedCorridors();
   void import("~~/lib/host-chain").then((hostChain) => hostChain.prewarmChains());
+  // The bank route starts from the buyer's own region, UNfiltered: a detected region with no
+  // transfer rail is still the truth about the buyer, and the pay screen says so ("isn't
+  // supported... change payment country") rather than silently quoting a SEPA default. The geo
+  // answer is awaited (bounded, lib/geo.ts) — committed synchronously, the locale always outran
+  // it and the detection never showed. The picker still offers only rail-capable regions.
+  if (isBank && session.meldCountry === null) {
+    const country = await detectCountry();
+    if (session.meldCountry === null) session.setMeldCountry(country ?? "DE");
+  }
   void session.fetchMeldQuote();
 });
 onUnmounted(() => {

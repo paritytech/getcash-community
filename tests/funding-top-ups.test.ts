@@ -3,7 +3,6 @@ import { fundingSelectorConfig } from "../app/funding/config";
 import type { TopUpTimeline } from "../app/funding/timeline/top-up";
 import { MILESTONES } from "../app/funding/timeline/types";
 import {
-  hasFundingPendingContent,
   projectFundingTopUps,
   type FundingTopUp,
   type FundingTopUpProgress,
@@ -57,8 +56,7 @@ describe("funding top-up projections", () => {
 
     expect(sections.inProgress.map(({ id }) => id)).toEqual(["crypto:2", "bank:1"]);
     expect(sections.past.map(({ id }) => id)).toEqual(["crypto:4", "card:3"]);
-    expect(sections.latestSettled?.id).toBe("card:3");
-    expect(sections.latestSettled?.details?.depositAddress).toBe("bc1q-saved-deposit");
+    expect(sections.past[1]?.details?.depositAddress).toBe("bc1q-saved-deposit");
   });
 
   it("carries each top-up's timeline to the row the list and history draw", () => {
@@ -112,27 +110,17 @@ describe("funding top-up projections", () => {
     });
   });
 
-  it("keeps Pending available for active and latest-settled combinations", () => {
-    const both = projectFundingTopUps(topUps, fundingSelectorConfig);
-    const activeOnly = projectFundingTopUps(topUps.slice(0, 2), fundingSelectorConfig);
+  it("lists a settled top-up as history only, never as running", () => {
     const settledOnly = projectFundingTopUps([topUps[2]!], fundingSelectorConfig);
-    const failedOnly = projectFundingTopUps([topUps[3]!], fundingSelectorConfig);
-
-    expect(hasFundingPendingContent(both.inProgress, both.latestSettled)).toBe(true);
-    expect(hasFundingPendingContent(activeOnly.inProgress, activeOnly.latestSettled)).toBe(true);
-    expect(hasFundingPendingContent(settledOnly.inProgress, settledOnly.latestSettled)).toBe(true);
-    expect(hasFundingPendingContent(failedOnly.inProgress, failedOnly.latestSettled)).toBe(false);
-  });
-
-  it("keeps Pending in place when its final active top-up settles", () => {
-    const active = projectFundingTopUps([topUps[0]!], fundingSelectorConfig);
     const settled = projectFundingTopUps(
       [{ ...topUps[0]!, state: { kind: "settled", at: 900 } }],
       fundingSelectorConfig,
     );
 
-    expect(hasFundingPendingContent(active.inProgress, active.latestSettled)).toBe(true);
-    expect(hasFundingPendingContent(settled.inProgress, settled.latestSettled)).toBe(true);
+    expect(settledOnly.inProgress).toEqual([]);
+    expect(settledOnly.past.map(({ id }) => id)).toEqual(["card:3"]);
+    expect(settled.inProgress).toEqual([]);
+    expect(settled.past[0]?.state).toMatchObject({ kind: "settled", at: 900 });
   });
 
   it("uses the requested amount when settlement has no credited amount", () => {
@@ -179,7 +167,6 @@ describe("funding top-up projections", () => {
       at: 1_000,
       reason: "Unavailable",
     });
-    expect(sections.latestSettled).toBeNull();
   });
 
   it("does not mutate provider ordering", () => {
