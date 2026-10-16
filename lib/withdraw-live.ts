@@ -281,10 +281,13 @@ const PURSE_CHECK_MARGIN_PCT = 0.5;
 /** Room for the price to move while the seller verifies with the provider, percent. */
 const SALE_KYC_MARGIN_PCT = 1;
 
-/** The program's floor under a sale that lands `native` planck, as `sizeXcm` computes it, with
- *  `marginPct` more under it. */
-const saleFloor = (native: bigint, marginPct: number): bigint =>
-  (native * BigInt(Math.round((100 - DEFAULT_WITHDRAW_SLIPPAGE_PCT - marginPct) * 100))) / 10_000n;
+/** The program's floor under a sale that lands `native` planck, as `sizeXcm` computes it at
+ *  `slippagePct`, with `marginPct` more under it. */
+const saleFloor = (
+  native: bigint,
+  marginPct: number,
+  slippagePct: number = DEFAULT_WITHDRAW_SLIPPAGE_PCT,
+): bigint => (native * BigInt(Math.round((100 - slippagePct - marginPct) * 100))) / 10_000n;
 
 /** A fiat sale takes DOT from the key, so it is sized on the pool sale for the native. */
 const FIAT_SALE: ConversionRoute = { tier: "pool" };
@@ -330,16 +333,18 @@ export async function sizeMeldCommitment(amount: bigint): Promise<MeldSaleSize> 
 
 /** Whether `amount` CASH still covers a sale's `planck` at today's price: the floor the worker
  *  would ship covers the payment to `depositAddress`, its fee and the key's existential deposit,
- *  as the worker itself will require. Asked before the purse is. */
+ *  as the worker itself will require. Asked before the purse is, at the `slippagePct` the sale's
+ *  hand-off holds the worker to, which a sale started before a change of the default keeps. */
 export async function meldCommitmentFundable(
   amount: bigint,
   planck: bigint,
   depositAddress: string,
+  slippagePct: number = DEFAULT_WITHDRAW_SLIPPAGE_PCT,
 ): Promise<boolean> {
   const now = await saleNow(amount);
   if (now === null) return false;
   const needed = await exactPaymentFloor(now.api, FEE_ESTIMATE_ACCOUNT, depositAddress, planck);
-  return saleFloor(now.expected, PURSE_CHECK_MARGIN_PCT) >= needed;
+  return saleFloor(now.expected, PURSE_CHECK_MARGIN_PCT, slippagePct) >= needed;
 }
 
 // A sale through an offramp lane sells USDT, not PAS: the PSM redeems the CASH at a fixed rate,
@@ -490,7 +495,7 @@ export function meldHandoffConfig(): NonNullable<WithdrawalHandoffPayload["meld"
  *  Hub may slip by up to the program's own tolerance and still go through, and the sweep's fee
  *  comes off the deposit after that. The provider is quoted for the worst case the program
  *  allows, so a withdrawal that passes here lands enough to swap. */
-const PROVIDER_QUOTE_HEADROOM_PCT = BigInt(DEFAULT_WITHDRAW_SLIPPAGE_PCT) + 1n;
+const PROVIDER_QUOTE_HEADROOM_BPS = BigInt(Math.round((DEFAULT_WITHDRAW_SLIPPAGE_PCT + 1) * 100));
 /** Ceiling on the wait for the offers. */
 const OFFERS_TIMEOUT_MS = 15_000;
 
@@ -583,9 +588,9 @@ function offerFees(
 }
 
 const withHeadroom = (native: bigint): bigint =>
-  native + (native * PROVIDER_QUOTE_HEADROOM_PCT) / 100n;
+  native + (native * PROVIDER_QUOTE_HEADROOM_BPS) / 10_000n;
 const lessHeadroom = (native: bigint): bigint =>
-  native - (native * PROVIDER_QUOTE_HEADROOM_PCT) / 100n;
+  native - (native * PROVIDER_QUOTE_HEADROOM_BPS) / 10_000n;
 
 /**
  * What every provider destination offers for `amountCash`: the pool prices the CASH into native,

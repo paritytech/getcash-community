@@ -378,6 +378,7 @@ export function useWithdrawalRequest() {
           BigInt(record.handoff.amount),
           BigInt(record.sale.cryptoAmount),
           channel.address,
+          record.handoff.slippagePct,
         );
       }
     } catch (e: unknown) {

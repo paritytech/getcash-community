@@ -353,7 +353,13 @@ describe("a fiat sale from the page", () => {
 
     const paid = await useWithdrawalRequest().paySale(outcome.ref);
     expect(paid).toEqual({ ok: true });
-    expect(fundable).toHaveBeenCalledWith(100_000_000n, COMMITTED, known.handoff.channel!.address);
+    // Checked at the slippage the hand-off holds the worker to.
+    expect(fundable).toHaveBeenCalledWith(
+      100_000_000n,
+      COMMITTED,
+      known.handoff.channel!.address,
+      known.handoff.slippagePct,
+    );
     expect(asked).toHaveBeenCalledWith(expect.objectContaining({ amount: 100_000_000n }));
     expect(handedOff).toHaveBeenCalledTimes(1);
     const [, , payload] = handedOff.mock.calls[0]!;
