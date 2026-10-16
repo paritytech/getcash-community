@@ -66,6 +66,23 @@ describe("lib/supported", () => {
     expect(methodFor(null, "card")).toBeNull();
   });
 
+  it("otherMethod names the other fiat method only when the corridor routes it", async () => {
+    const { otherMethod } = await import("../lib/supported");
+    const card = {
+      paymentMethodType: "CREDIT_DEBIT_CARD",
+      category: "card" as const,
+      min: "26",
+      max: "5000",
+      currency: "BRL",
+      providers: ["TRANSAK"],
+    };
+    const cardOnly: SupportedCorridor = { country: "BR", fiat: "BRL", methods: [card] };
+    expect(otherMethod(cardOnly, "bank")).toBe("card");
+    expect(otherMethod(cardOnly, "card")).toBeNull();
+    expect(otherMethod({ country: "EC", fiat: "USD", methods: [] }, "bank")).toBeNull();
+    expect(otherMethod(null, "bank")).toBeNull();
+  });
+
   it("fetchCorridor parses methods, and returns null when the adapter has no such corridor", async () => {
     vi.stubGlobal(
       "fetch",
@@ -434,5 +451,82 @@ describe("lib/supported", () => {
     // No pin, and the search's answer leads without a heading; the reasons keep theirs.
     expect(groups.map((g) => g.title)).toEqual([null, "Unsupported country"]);
     expect(groups[0]?.rows.map((r) => r.country)).toEqual(["GB"]);
+  });
+
+  it("reads the off-ramp catalog with each method's lane, and caches only a non-empty one", async () => {
+    const body = {
+      corridors: [
+        {
+          country: "DE",
+          name: "Germany",
+          fiat: "EUR",
+          methods: [
+            {
+              paymentMethodType: "SEPA",
+              category: "bank",
+              min: "20",
+              max: "5000",
+              currency: "EUR",
+              lanes: [{ code: "DOT_ASSETHUB", chain: "assethub", min: "20", max: "5000" }],
+            },
+            {
+              paymentMethodType: "PAYOUT_TO_CARD",
+              category: "card",
+              min: "10",
+              max: "2000",
+              currency: "EUR",
+              lanes: [
+                { code: "USDC_ARBITRUM", chain: "arbitrum", min: "10", max: "2000" },
+                { code: "USDC_SOLANA", chain: "solana" },
+              ],
+            },
+          ],
+        },
+        { country: "", fiat: "EUR", methods: [] },
+      ],
+    };
+    const fetchMock = stubFetch({ "/supported/offramp/corridors": body });
+    vi.stubGlobal("fetch", fetchMock);
+    const { fetchOfframpCorridors } = await import("../lib/supported");
+    const map = await fetchOfframpCorridors();
+    expect([...map!.keys()]).toEqual(["DE"]);
+    expect(map!.get("DE")).toMatchObject({ name: "Germany", fiat: "EUR" });
+    expect(map!.get("DE")!.methods.map((m) => m.lanes)).toEqual([
+      [{ code: "DOT_ASSETHUB", chain: "assethub", min: "20", max: "5000" }],
+      [
+        { code: "USDC_ARBITRUM", chain: "arbitrum", min: "10", max: "2000" },
+        { code: "USDC_SOLANA", chain: "solana" },
+      ],
+    ]);
+    await fetchOfframpCorridors();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads one country's off-ramp corridor, dropping malformed lanes", async () => {
+    vi.stubGlobal(
+      "fetch",
+      stubFetch({
+        "/supported/offramp?country=BR": {
+          country: "BR",
+          fiat: "BRL",
+          methods: [
+            {
+              paymentMethodType: "PIX",
+              category: "bank",
+              min: "5",
+              max: "900",
+              lanes: [{ code: "" }, null, { code: "USDC_SOLANA", chain: "solana" }],
+            },
+          ],
+        },
+      }),
+    );
+    const { fetchOfframpCorridor, fetchOfframpCorridors } = await import("../lib/supported");
+    const corridor = await fetchOfframpCorridor("BR");
+    expect(corridor).toMatchObject({ country: "BR", fiat: "BRL" });
+    expect(corridor!.methods[0]!.lanes).toEqual([{ code: "USDC_SOLANA", chain: "solana" }]);
+    expect(corridor!.methods[0]!.currency).toBe("BRL");
+    // An unreachable catalog is null, not empty.
+    expect(await fetchOfframpCorridors()).toBeNull();
   });
 });

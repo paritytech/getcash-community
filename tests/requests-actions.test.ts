@@ -685,7 +685,7 @@ describe("requests store: foreground, clock and user actions", () => {
     // Screen and demo flags only: request state belongs on the record, which the deck reaches
     // through observations alone. The supported catalog is the same kind of thing — what the
     // adapter says the picker may list, not anything about a request — and a deck run has no
-    // adapter to answer for it.
+    // adapter to answer for it; so is the quote's word that the region routes no such method.
     const allowed = new Set([
       "quoted",
       "method",
@@ -694,6 +694,8 @@ describe("requests store: foreground, clock and user actions", () => {
       "resuming",
       "supportedCountries",
       "corridorByCountry",
+      "meldCorridor",
+      "meldMethodUnavailable",
     ]);
     expect([...written].filter((name) => !allowed.has(name))).toEqual([]);
   });

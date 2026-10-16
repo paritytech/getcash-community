@@ -4,8 +4,8 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { ChevronRight } from "lucide-vue-next";
 import { useSessionStore } from "../../../stores/session";
-import { namedCountry } from "~~/lib/supported";
-import { localeCountry } from "../../../utils/locale";
+import { methodMinimum, namedCountry, otherMethod } from "~~/lib/supported";
+import { detectCountry } from "../../../composables/useDetectedCountry";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import type { FundingRoute } from "../../../funding/selection";
 import DetailRows from "../../ui/DetailRows.vue";
@@ -13,10 +13,12 @@ import PillButton from "../../ui/PillButton.vue";
 import RegionRow from "../../ui/RegionRow.vue";
 import SecondaryButton from "../../ui/SecondaryButton.vue";
 import SkeletonBlock from "../../ui/SkeletonBlock.vue";
+import SkeletonRow from "../../ui/SkeletonRow.vue";
+import MethodUnavailable from "../MethodUnavailable.vue";
 
 const session = useSessionStore();
-// switchRoute asks the shell to swap to the crypto package when this region routes neither card
-// nor bank; fees opens the fee-breakdown drill-in, currency the region picker.
+// switchRoute asks the shell to swap to the crypto package when this region does not route the
+// method; fees opens the fee-breakdown drill-in, currency the region picker.
 const emit = defineEmits<{ switchRoute: [route: FundingRoute]; fees: []; currency: [] }>();
 
 // The adapter's buyer-facing refusal message, shown under the quote and blocking Continue.
@@ -33,10 +35,15 @@ const countryLabel = computed(() =>
 );
 
 // Adopts the default region and quotes when none is chosen, then loads the full catalog. A catalog
-// failure leaves the fallback list in place.
-onMounted(() => {
+// failure leaves the fallback list in place. IP-geo over the device locale: the locale is the
+// buyer's region setting, not where their card is from (the mispriced-corridor decline this
+// ordering exists to avoid). Answered from the cache when the route's own lookup has landed.
+onMounted(async () => {
+  if (session.meldCountry !== null) return;
+  const detected = await detectCountry();
+  // Re-checked after the await: the buyer may have picked a region while the lookup ran.
   if (session.meldCountry === null) {
-    session.setMeldCountry(localeCountry() ?? DEFAULT_COUNTRY);
+    session.setMeldCountry(detected ?? DEFAULT_COUNTRY);
     requote();
   }
 });
@@ -55,21 +62,9 @@ watch(
   },
 );
 
-// When the chosen method is not routed for this region, offers the other method if the corridor has
-// it, otherwise the crypto route.
-const otherMethod = computed<"card" | "bank">(() => (session.method === "bank" ? "card" : "bank"));
-const otherMethodAvailable = computed(() =>
-  (session.meldCorridor?.methods ?? []).some((m) => m.category === otherMethod.value),
-);
-const methodLabel = (m: "card" | "bank") => (m === "bank" ? "Bank transfer" : "Card");
-function useOtherMethod() {
-  // Through the shell, not `setMethod`: each method has its own package screen, and swapping the
-  // method under this one would leave a bank transfer being made on the card screen.
-  emit("switchRoute", otherMethod.value);
-}
-function useCryptoRoute() {
-  emit("switchRoute", "crypto");
-}
+const meldMethod = computed(() => (session.method === "bank" ? "bank" : "card"));
+/** The other fiat method, when this region routes it and not the chosen one. */
+const switchMethod = computed(() => otherMethod(session.meldCorridor, meldMethod.value));
 
 // The charged total is the hero; the toolbar already names the method, so no Via row.
 const heroAmount = computed(() => {
@@ -137,12 +132,22 @@ async function next() {
 </script>
 
 <template>
-  <div class="flex min-h-0 flex-1 flex-col">
+  <MethodUnavailable
+    v-if="session.meldMethodUnavailable"
+    direction="top-up"
+    :method="meldMethod"
+    :amount="session.amountHuman"
+    :country="selectedCountry"
+    :country-name="countryLabel"
+    :minimum="methodMinimum(session.meldCorridor, meldMethod)"
+    :other="switchMethod"
+    @region="emit('currency')"
+    @use-crypto="emit('switchRoute', 'crypto')"
+    @use-other="switchMethod && emit('switchRoute', switchMethod)"
+  />
+  <div v-else class="flex min-h-0 flex-1 flex-col">
     <!-- The hero: the total the card will be charged. The toolbar already names the method. -->
-    <div
-      v-if="!session.meldMethodUnavailable && !session.quoteError"
-      class="flex flex-col items-center text-center"
-    >
+    <div v-if="!session.quoteError" class="flex flex-col items-center text-center">
       <template v-if="heroAmount">
         <p class="text-display-xl text-fg-primary">{{ heroAmount }}</p>
         <button
@@ -165,7 +170,11 @@ async function next() {
     <!-- The region the card is registered in leads the terms, and is live even while the quote
          below it is blocked: changing it is the way out of a region that routes nothing. -->
     <div class="mt-6 flex flex-col gap-4">
+      <!-- Undecided until geo or the locale fallback answers (onMounted): a skeleton, not a
+           default the buyer could mistake for a decision. -->
+      <SkeletonRow v-if="session.meldCountry === null" value-width="w-1/4" />
       <RegionRow
+        v-else
         label="Payment country"
         :value="countryLabel"
         :country="selectedCountry"
@@ -173,47 +182,21 @@ async function next() {
       />
 
       <!-- The quote's own rows, bare on the surface. -->
-      <template v-if="!session.meldMethodUnavailable && !session.quoteError">
+      <template v-if="!session.quoteError">
         <div v-if="session.loading || !session.quoted" class="flex flex-col gap-4">
-          <div v-for="n in 2" :key="n" class="flex h-6 items-center justify-between">
-            <SkeletonBlock class="h-4 w-2/5" />
-            <SkeletonBlock class="h-4 w-1/5" />
-          </div>
+          <SkeletonRow v-for="n in 2" :key="n" />
         </div>
         <DetailRows v-else :rows="quoteRows" />
       </template>
     </div>
 
-    <!-- Why there is no quote. These states have no design; they keep the card treatment. -->
+    <!-- The quote failed. No design; keeps the card treatment. -->
     <div
-      v-if="session.meldMethodUnavailable || session.quoteError"
-      class="mt-6 rounded-container bg-surface-container p-4 shadow-1"
+      v-if="session.quoteError"
+      class="mt-6 flex flex-col gap-3 rounded-container bg-surface-container p-4 shadow-1"
     >
-      <!-- The chosen method is not routed for this region: offer the other method or the crypto
-           route. -->
-      <div v-if="session.meldMethodUnavailable" class="flex flex-col gap-3">
-        <p v-if="otherMethodAvailable" class="text-body-m text-fg-secondary">
-          {{ methodLabel(session.method === "bank" ? "bank" : "card") }} isn't available in this
-          region, but {{ methodLabel(otherMethod).toLowerCase() }} is.
-        </p>
-        <p v-else class="text-body-m text-fg-secondary">
-          This region isn't supported for card or bank right now. You can buy with crypto instead.
-        </p>
-        <SecondaryButton
-          class="self-start"
-          @click="otherMethodAvailable ? useOtherMethod() : useCryptoRoute()"
-        >
-          {{
-            otherMethodAvailable
-              ? `Use ${methodLabel(otherMethod).toLowerCase()}`
-              : "Use crypto instead"
-          }}
-        </SecondaryButton>
-      </div>
-      <div v-else class="flex flex-col gap-3">
-        <p class="text-body-m text-fg-error">Quote failed: {{ session.quoteError }}</p>
-        <SecondaryButton class="self-start" @click="requote">Retry quote</SecondaryButton>
-      </div>
+      <p class="text-body-m text-fg-error">Quote failed: {{ session.quoteError }}</p>
+      <SecondaryButton class="self-start" @click="requote">Retry quote</SecondaryButton>
     </div>
 
     <p v-if="startError" class="mt-4 text-body-m text-fg-error">{{ startError }}</p>

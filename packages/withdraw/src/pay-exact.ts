@@ -33,9 +33,12 @@ import { MAX_REJECTIONS, WithdrawRejectedError } from "./tick";
 export const PAY_FEE_HEADROOM_PCT = 25;
 
 /** The least a sale's key must hold of `token` once the provider is paid for the worker to send it
- *  home, base units: a tenth of the token. Below it the fees of the way back take most of it, and
- *  it stays on the key. */
-export const residueReturnFloor = (token: TokenSpec): bigint => 10n ** BigInt(token.decimals) / 10n;
+ *  home, base units: a whole unit of a stable, a tenth of the native. Below it the fees of the way
+ *  back take most of it, and it stays on the key. */
+export const residueReturnFloor = (token: TokenSpec): bigint => {
+  const unit = 10n ** BigInt(token.decimals);
+  return isStable(token.symbol) ? unit : unit / 10n;
+};
 
 /** The stable the key pays in and is charged in, by its token-table symbol and pallet-assets id;
  *  null for the native. A pallet-assets token that is not a stable cannot pay its own fee, so no

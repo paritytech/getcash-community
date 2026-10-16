@@ -2,19 +2,24 @@
 // back, the offline script, and the sale as the withdrawal's rail leg sees it.
 
 import { describe, expect, it } from "vitest";
-import { TOKENS } from "@getsome/core";
 import { createMeldClient } from "./client";
 import { createFakeMeldClient } from "./fake";
 import type { MeldClientLike, MeldQuoteEntry, MeldStatusResult } from "./client";
 import {
+  DIRECT_SELL_CODES,
   formatSellAmount,
+  isDirectUsdt,
   SALE_GONE_AFTER,
   SALE_GONE_FOR_MS,
+  directSellToken,
   saleChannelOf,
   saleRail,
   saleStatusView,
+  sameSoldAsset,
   sellAmountOf,
   sellQuoteUsable,
+  SELL_TOKEN,
+  USDT_SELL_TOKEN,
   type SaleReadMemory,
 } from "./sell";
 import { parseBaseUnits } from "./units";
@@ -338,7 +343,7 @@ describe("the sale as the rail leg reads it", () => {
   };
 
   it("is a channel to an address for an exact figure, paid out off chain", () => {
-    expect(saleChannelOf(disclosed, TOKENS.PAS)).toEqual({
+    expect(saleChannelOf(disclosed, SELL_TOKEN)).toEqual({
       depositAddress: "14Kt",
       payout: "off-chain",
       expired: false,
@@ -346,25 +351,52 @@ describe("the sale as the rail leg reads it", () => {
     });
   });
 
+  it("takes a deposit for DOT on Asset Hub under either of Meld's codes for it", () => {
+    const statemint = {
+      ...disclosed,
+      deposit: { ...disclosed.deposit, currency: "DOT_STATEMINT" },
+    };
+    expect(saleChannelOf(statemint, SELL_TOKEN)?.expectedAmount).toBe(234_521_000_000n);
+    // And a sale quoted under DOT_STATEMINT takes a deposit named DOT_ASSETHUB.
+    expect(saleChannelOf(disclosed, directSellToken("DOT_STATEMINT"))?.depositAddress).toBe("14Kt");
+    expect(sameSoldAsset("DOT_STATEMINT", "DOT_ASSETHUB")).toBe(true);
+    expect(sameSoldAsset("USDC_SOLANA", "DOT_ASSETHUB")).toBe(false);
+    expect(sameSoldAsset("USDT_STATEMINT", "DOT_ASSETHUB")).toBe(false);
+    // USDT the same way: either of Meld's codes for it on Asset Hub.
+    expect(sameSoldAsset("USDT_STATEMINT", "USDT_ASSETHUB")).toBe(true);
+    expect(sameSoldAsset("USDT_ASSETHUB", "USDT_STATEMINT")).toBe(true);
+    expect(sameSoldAsset("USDT_SOLANA", "USDT_ASSETHUB")).toBe(false);
+  });
+
+  it("takes a deposit in any of the tokens it is offered, read in that token's decimals", () => {
+    const usdc = { symbol: "USDC", decimals: 6, meldCurrencyCode: "USDC_SOLANA" };
+    const usdt = { symbol: "USDT", decimals: 6, meldCurrencyCode: "USDT_SOLANA" };
+    const lane: MeldStatusResult = {
+      status: "transaction_seen",
+      deposit: { address: "9WzD", amount: "24.5", currency: "USDC_SOLANA", observedAt: 1 },
+    };
+    expect(saleChannelOf(lane, [usdt, usdc])?.expectedAmount).toBe(24_500_000n);
+    expect(saleChannelOf(lane, [usdt])).toBeNull();
+  });
+
   it("is closed once the adapter concludes it", () => {
-    expect(saleChannelOf({ ...disclosed, status: "expired" }, TOKENS.PAS)?.expired).toBe(true);
+    expect(saleChannelOf({ ...disclosed, status: "expired" }, SELL_TOKEN)?.expired).toBe(true);
   });
 
   it("is no channel without a disclosure, for another asset, or for an unreadable amount", () => {
-    expect(saleChannelOf({ status: "session_opened" }, TOKENS.PAS)).toBeNull();
-    const usdt = { ...disclosed, deposit: { ...disclosed.deposit, currency: "USDT_ASSETHUB" } };
-    expect(saleChannelOf(usdt, TOKENS.PAS)).toBeNull();
+    expect(saleChannelOf({ status: "session_opened" }, SELL_TOKEN)).toBeNull();
+    expect(
+      saleChannelOf(
+        { ...disclosed, deposit: { ...disclosed.deposit, currency: "USDT_ASSETHUB" } },
+        SELL_TOKEN,
+      ),
+    ).toBeNull();
     expect(
       saleChannelOf(
         { ...disclosed, deposit: { ...disclosed.deposit, amount: "1.00000000001" } },
-        TOKENS.PAS,
+        SELL_TOKEN,
       ),
     ).toBeNull();
-  });
-
-  it("reads a USDT sale's deposit at the token's six decimals", () => {
-    const usdt = { ...disclosed, deposit: { ...disclosed.deposit, currency: "USDT_ASSETHUB" } };
-    expect(saleChannelOf(usdt, TOKENS.USDT)?.expectedAmount).toBe(23_452_100n);
   });
 
   it("ends the follow when the provider changed the deposit after the key paid", () => {
@@ -390,28 +422,26 @@ describe("the sale as the rail leg reads it", () => {
 
 describe("sale amounts", () => {
   it("cuts a figure to the sale's decimals, never up", () => {
-    expect(sellAmountOf(TOKENS.PAS, 234_521_987_654n)).toBe(234_521_000_000n);
-    expect(formatSellAmount(TOKENS.PAS, 234_521_000_000n)).toBe("23.4521");
-    expect(sellAmountOf(TOKENS.USDT, 23_452_199n)).toBe(23_452_100n);
-    expect(formatSellAmount(TOKENS.USDT, 23_452_100n)).toBe("23.4521");
+    expect(sellAmountOf(234_521_987_654n, SELL_TOKEN)).toBe(234_521_000_000n);
+    expect(formatSellAmount(234_521_000_000n, SELL_TOKEN)).toBe("23.4521");
   });
 
   it("parses a decimal exactly, refusing more precision than the token has", () => {
-    expect(parseBaseUnits(TOKENS.PAS, "23.4521")).toBe(234_521_000_000n);
-    expect(parseBaseUnits(TOKENS.PAS, "7")).toBe(70_000_000_000n);
-    expect(parseBaseUnits(TOKENS.PAS, "0.00000000001")).toBeNull();
-    expect(parseBaseUnits(TOKENS.PAS, "-1")).toBeNull();
-    expect(parseBaseUnits(TOKENS.PAS, "1e3")).toBeNull();
+    expect(parseBaseUnits(SELL_TOKEN, "23.4521")).toBe(234_521_000_000n);
+    expect(parseBaseUnits(SELL_TOKEN, "7")).toBe(70_000_000_000n);
+    expect(parseBaseUnits(SELL_TOKEN, "0.00000000001")).toBeNull();
+    expect(parseBaseUnits(SELL_TOKEN, "-1")).toBeNull();
+    expect(parseBaseUnits(SELL_TOKEN, "1e3")).toBeNull();
   });
 
   it("reads trailing zeros as no value, as a provider may pad its amount", () => {
-    expect(parseBaseUnits(TOKENS.PAS, "23.452100000000000000")).toBe(234_521_000_000n);
-    expect(parseBaseUnits(TOKENS.PAS, "7.0")).toBe(70_000_000_000n);
-    expect(parseBaseUnits(TOKENS.PAS, "7.")).toBe(70_000_000_000n);
-    expect(parseBaseUnits(TOKENS.PAS, "0.00000000010")).toBe(1n);
+    expect(parseBaseUnits(SELL_TOKEN, "23.452100000000000000")).toBe(234_521_000_000n);
+    expect(parseBaseUnits(SELL_TOKEN, "7.0")).toBe(70_000_000_000n);
+    expect(parseBaseUnits(SELL_TOKEN, "7.")).toBe(70_000_000_000n);
+    expect(parseBaseUnits(SELL_TOKEN, "0.00000000010")).toBe(1n);
     // A digit past the token's own is still refused, however it is padded.
-    expect(parseBaseUnits(TOKENS.PAS, "0.000000000010")).toBeNull();
-    expect(parseBaseUnits(TOKENS.PAS, "0.00000000001")).toBeNull();
+    expect(parseBaseUnits(SELL_TOKEN, "0.000000000010")).toBeNull();
+    expect(parseBaseUnits(SELL_TOKEN, "0.00000000001")).toBeNull();
   });
 });
 
@@ -441,15 +471,26 @@ describe("the sale's reads for the worker", () => {
   }
 
   it("reads the channel and the status through the adapter", async () => {
-    const rail = saleRail(scripted([live, { status: "settled" }]), TOKENS.PAS, {});
+    const rail = saleRail(scripted([live, { status: "settled" }]), {}, Date.now, SELL_TOKEN);
     expect(await rail.channel("funding-1")).toMatchObject({ expectedAmount: 234_521_000_000n });
     expect(await rail.status("funding-1")).toMatchObject({ status: "complete" });
+  });
+
+  it("reads the deposit of a sale of USDT in USDT's units", async () => {
+    const usdt = {
+      status: "transaction_seen",
+      deposit: { address: "14Kt", amount: "25", currency: "USDT_STATEMINT", observedAt: 1 },
+    };
+    const rail = saleRail(scripted([usdt]), {}, Date.now, USDT_SELL_TOKEN);
+    expect(await rail.channel("funding-1")).toMatchObject({ expectedAmount: 25_000_000n });
+    // A deposit for DOT is not this sale's.
+    expect(await saleRail(scripted([live]), {}, Date.now, USDT_SELL_TOKEN).channel("f")).toBeNull();
   });
 
   it("takes a sale the adapter keeps answering 404 for as gone, and only then", async () => {
     const memory: SaleReadMemory = {};
     let clock = 1_000_000;
-    const rail = saleRail(scripted([notFound]), TOKENS.PAS, memory, () => clock);
+    const rail = saleRail(scripted([notFound]), memory, () => clock, SELL_TOKEN);
     for (let read = 1; read < SALE_GONE_AFTER; read += 1) {
       await expect(rail.channel("funding-1")).rejects.toBe(notFound);
       expect(memory.saleNotFound).toBe(read);
@@ -472,7 +513,12 @@ describe("the sale's reads for the worker", () => {
   it("starts the count again after an answer, and throws any other failure as it is", async () => {
     const memory: SaleReadMemory = {};
     const boom = Object.assign(new Error("bad gateway"), { status: 502 });
-    const rail = saleRail(scripted([notFound, notFound, live, notFound, boom]), TOKENS.PAS, memory);
+    const rail = saleRail(
+      scripted([notFound, notFound, live, notFound, boom]),
+      memory,
+      Date.now,
+      SELL_TOKEN,
+    );
     await expect(rail.channel("funding-1")).rejects.toBe(notFound);
     await expect(rail.channel("funding-1")).rejects.toBe(notFound);
     expect(await rail.channel("funding-1")).not.toBeNull();
@@ -505,5 +551,63 @@ describe("which quote lines can carry a sale", () => {
     for (const payout of ["", "0", "-1", "abc"]) {
       expect(sellQuoteUsable(line("TRANSAK", payout))).toBe(false);
     }
+  });
+});
+
+describe("what a direct sale sells", () => {
+  it("is USDT or DOT, each under either of Meld's codes for it", () => {
+    expect(DIRECT_SELL_CODES).toEqual([
+      "USDT_ASSETHUB",
+      "USDT_STATEMINT",
+      "DOT_ASSETHUB",
+      "DOT_STATEMINT",
+    ]);
+    expect(directSellToken("USDT_ASSETHUB")).toEqual(USDT_SELL_TOKEN);
+    expect(isDirectUsdt("USDT_ASSETHUB")).toBe(true);
+    expect(isDirectUsdt("USDT_STATEMINT")).toBe(true);
+    expect(isDirectUsdt("DOT_STATEMINT")).toBe(false);
+    expect(isDirectUsdt(undefined)).toBe(false);
+    expect(directSellToken("DOT_ASSETHUB")).toEqual(SELL_TOKEN);
+    expect(directSellToken("DOT_STATEMINT")).toEqual({
+      ...SELL_TOKEN,
+      meldCurrencyCode: "DOT_STATEMINT",
+    });
+    expect(directSellToken("USDT_STATEMINT")).toEqual({
+      symbol: "USDT",
+      decimals: 6,
+      meldCurrencyCode: "USDT_STATEMINT",
+    });
+    expect(formatSellAmount(25_000_000n, USDT_SELL_TOKEN)).toBe("25");
+  });
+
+  it("is nothing else, a lane's code included", () => {
+    expect(() => directSellToken("USDC_STATEMINT")).toThrow("cannot sell USDC_STATEMINT");
+    expect(() => directSellToken("USDC_ARBITRUM")).toThrow("cannot sell USDC_ARBITRUM");
+  });
+});
+
+describe("a sale of another asset", () => {
+  const USDT_SOLANA = { symbol: "USDT", decimals: 6, meldCurrencyCode: "USDT_SOLANA" };
+
+  it("commits, formats and reads its deposit in that asset's units", () => {
+    expect(sellAmountOf(98_852_550n, USDT_SOLANA)).toBe(98_852_500n);
+    expect(formatSellAmount(98_850_000n, USDT_SOLANA)).toBe("98.85");
+    const deposit = {
+      address: "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+      amount: "98.85",
+      observedAt: 1,
+    };
+    expect(
+      saleChannelOf(
+        { status: "transaction_seen", deposit: { ...deposit, currency: "USDT_SOLANA" } },
+        USDT_SOLANA,
+      ),
+    ).toMatchObject({ depositAddress: deposit.address, expectedAmount: 98_850_000n });
+    expect(
+      saleChannelOf(
+        { status: "transaction_seen", deposit: { ...deposit, currency: "DOT_ASSETHUB" } },
+        USDT_SOLANA,
+      ),
+    ).toBeNull();
   });
 });

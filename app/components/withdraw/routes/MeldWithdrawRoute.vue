@@ -2,12 +2,10 @@
 // The fiat withdrawal package, card or bank through Meld: the quote with its payout country and
 // fees, KYC on the provider's page, then the journey. Shaped like the crypto package: the shell
 // took the amount, the journey is the shared WithdrawJourneyScreen, and a withdrawal opened from
-// the list loads this route onto its record. The sale on Asset Hub is decided here, once for the
-// amount and before the provider's catalog is read, and frozen into the hand-off at confirm.
-// Nothing is asked of the balance until the provider names where the funds go; from there the
-// record and the worker carry the sale.
+// the list loads this route onto its record. Nothing is asked of the balance until the provider
+// names where the funds go; from there the record and the worker carry the sale.
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { PSM_EXTERNAL, type ConversionRoute } from "@getsome/funding";
+import { PSM_EXTERNAL } from "@getsome/funding";
 import { useMeldSellQuote } from "../../../composables/useMeldSellQuote";
 import { useStateDirector } from "../../../composables/useStateDirector";
 import { psmReserved, useWithdrawalRequest } from "../../../composables/useWithdrawalRequest";
@@ -18,8 +16,8 @@ import type { FundingTopUp } from "../../../funding/top-ups";
 import { useRequestsStore } from "../../../stores/requests";
 import { toCashBase } from "../../../utils/cash";
 import { isDemoBuild } from "../../../utils/demo";
+import { detectCountry, useDetectedCountry } from "../../../composables/useDetectedCountry";
 import { previewStage } from "../../../utils/dev-preview-stage";
-import { localeCountry } from "../../../utils/locale";
 import type { RequestRef } from "../../../utils/request-index";
 import { meldSellClient } from "../../../withdraw/meld-client";
 import { withdrawalRequestRef } from "../../../withdraw/rows";
@@ -27,6 +25,8 @@ import { bankRailCountries } from "~~/lib/region";
 import {
   corridorOptions,
   countryName,
+  methodMinimum,
+  otherMethod,
   namedCountry,
   type SupportedCountry,
 } from "~~/lib/supported";
@@ -58,10 +58,10 @@ const method = ((): "card" | "bank" => {
 const requests = useRequestsStore();
 const withdrawal = useWithdrawalRequest();
 const amount = computed(() => props.selection?.amount ?? props.topUp?.amount ?? "");
-/** The sale on Asset Hub the figure is sized on and the provider is asked for: the fiat rule,
- *  decided once the screen opens; null until then, and when it could not be decided. */
-const route = ref<ConversionRoute | null>(null);
-const sale = useMeldSellQuote(method, toCashBase(amount.value) ?? 0n, route);
+/** The CASH this app's other PSM withdrawals have yet to redeem: the PSM's room is judged without
+ *  it for every candidate the quote tries. */
+const reserved = computed(() => psmReserved(requests.openWithdrawals, PSM_EXTERNAL));
+const sale = useMeldSellQuote(method, toCashBase(amount.value) ?? 0n, reserved);
 
 type Step = "quote" | "fees" | "region" | "kyc" | "journey" | "cancel";
 const step = ref<Step>(props.topUp ? "journey" : "quote");
@@ -135,13 +135,25 @@ const pickerCountries = computed(() => {
   return corridorOptions(base, sale.corridors.value, method);
 });
 
+// IP-geo first, the device locale otherwise; live, so a late geo answer updates the pin in place.
+const detected = useDetectedCountry();
+
+/** False until the payout region is decided (geo answered, or the bounded wait fell back to the
+ *  locale): undecided, the quote screen shows the row as a skeleton, not a provisional region. */
+const countryDecided = ref(false);
+
+/** The seller's detected region, pinned in the picker only while it is pickable there: a bank
+ *  payout needs a rail, so only bank filters. */
 const detectedCountry = computed(() => {
-  const detected = localeCountry();
-  if (detected === null) return null;
-  return method === "card" || bankRailCountries().includes(detected) ? detected : null;
+  if (detected.value === null) return null;
+  return method === "card" || bankRailCountries().includes(detected.value) ? detected.value : null;
 });
 
 const countryLabel = computed(() => namedCountry(sale.country.value, sale.countries.value));
+const corridor = computed(() => sale.corridors.value?.get(sale.country.value) ?? null);
+const minimum = computed(() => methodMinimum(corridor.value, method));
+/** The other fiat method, when the payout country routes it and not this one. */
+const switchMethod = computed(() => otherMethod(corridor.value, method));
 
 function pickCountry(country: string) {
   step.value = "quote";
@@ -160,6 +172,8 @@ watch(
     if (stage?.kind !== "withdraw-package" || (stage.route ?? "crypto") !== method) return;
     previewed = true;
     sale.country.value = stage.country ?? stage.sale?.country ?? "GB";
+    countryDecided.value = true;
+    sale.corridors.value = stage.corridors ?? null;
     sale.quote.value = stage.sale ?? null;
     sale.loading.value = stage.sale === null;
     const failed = stage.saleError;
@@ -179,10 +193,9 @@ watch(
 );
 
 /** Another try at the price; a staged one only counts the failure, so the deck can walk on to the
- *  screen that stops offering it. A sale that could not be decided is decided again first. */
+ *  screen that stops offering it. */
 function retryQuote() {
   if (previewed) sale.rateFailures.value += 1;
-  else if (route.value === null) void openQuote();
   else void sale.refresh();
 }
 
@@ -206,27 +219,6 @@ async function onSkipQuote() {
  *  screen. */
 let alive = true;
 
-/** Decides the sale for the amount, then reads the provider's catalog and prices the figure for
- *  its token. A sale that cannot be decided leaves the quote unavailable. */
-async function openQuote() {
-  const base = toCashBase(amount.value);
-  if (base !== null) {
-    try {
-      const live = await import("~~/lib/withdraw-live");
-      route.value = await live.chooseWithdrawRoute(
-        base,
-        undefined,
-        psmReserved(requests.openWithdrawals, PSM_EXTERNAL),
-      );
-    } catch (error: unknown) {
-      console.warn("[withdraw] the sale could not be decided:", error);
-    }
-  }
-  if (!alive) return;
-  void sale.loadCatalog();
-  void sale.refresh();
-}
-
 async function confirm() {
   const quoted = sale.quote.value;
   const amountBase = toCashBase(amount.value);
@@ -241,8 +233,10 @@ async function confirm() {
       fiat: quoted.fiat,
       paymentMethodType: quoted.paymentMethodType,
       quote: quoted.line,
-      sale: quoted.sale,
       cryptoAmount: quoted.cryptoAmount,
+      ...(quoted.swap === undefined ? {} : { swap: quoted.swap }),
+      ...(quoted.sellCode === undefined ? {} : { sellCode: quoted.sellCode }),
+      ...(quoted.route === undefined ? {} : { route: quoted.route }),
     });
     if (!outcome.ok) {
       startError.value = outcome.reason;
@@ -430,9 +424,22 @@ onMounted(() => {
   const opened = props.topUp;
   if (!opened) {
     if (previewed) return;
-    void openQuote();
+    void sale.loadCatalog();
+    // The first pricing waits for the geo answer (bounded, lib/geo.ts), or the locale starting
+    // region it already holds prices a sale the seller never asked for.
+    void (async () => {
+      const country = await detectCountry();
+      // setCountry reprices; an unchanged region just prices the starting one. A region the seller
+      // chose on the other method outlives the switch: geo decides only a sale nobody chose for.
+      if (!sale.chosenBefore && country !== null && country !== sale.country.value) {
+        sale.setCountry(country);
+      } else void sale.refresh();
+      countryDecided.value = true;
+    })();
     return;
   }
+  // A resumed sale carries the region it was opened with; there is nothing left to decide.
+  countryDecided.value = true;
   const ref = withdrawalRequestRef(opened.id);
   if (ref === null || !requests.has(ref)) return;
   requests.setForeground(ref);
@@ -510,12 +517,14 @@ onUnmounted(() => {
         :method="method"
         :amount="amount"
         :quote="sale.quote.value"
-        :loading="sale.loading.value"
+        :loading="sale.loading.value || !countryDecided"
         :error="sale.error.value"
         :error-kind="sale.errorKind.value"
         :rate-failures="sale.rateFailures.value"
-        :country="sale.country.value"
-        :country-name="countryLabel"
+        :minimum="minimum"
+        :other="switchMethod"
+        :country="countryDecided ? sale.country.value : null"
+        :country-name="countryDecided ? countryLabel : null"
         :starting="starting"
         :start-error="startError"
         @continue="confirm"
@@ -523,6 +532,7 @@ onUnmounted(() => {
         @region="step = 'region'"
         @retry="retryQuote"
         @use-crypto="emit('switchRoute', 'crypto')"
+        @use-other="switchMethod && emit('switchRoute', switchMethod)"
         @change-amount="emit('changeAmount')"
       />
       <WithdrawCancelScreen

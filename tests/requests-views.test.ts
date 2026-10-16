@@ -166,7 +166,7 @@ describe("request views", () => {
       fundingSelectorConfig,
     );
     expect(sections.inProgress).toEqual([]);
-    expect(sections.latestSettled?.state).toEqual({
+    expect(sections.past[0]?.state).toEqual({
       kind: "settled",
       status: "Added",
       at: CREDITED_AT,

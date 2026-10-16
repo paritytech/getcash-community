@@ -125,15 +125,7 @@ export type PastFundingTopUp = SettledFundingTopUp | FailedFundingTopUp;
 export type FundingTopUpSections = Readonly<{
   inProgress: readonly InProgressFundingTopUp[];
   past: readonly PastFundingTopUp[];
-  latestSettled: SettledFundingTopUp | null;
 }>;
-
-export function hasFundingPendingContent(
-  inProgress: readonly InProgressFundingTopUp[],
-  latestSettled: SettledFundingTopUp | null,
-): boolean {
-  return inProgress.length > 0 || latestSettled !== null;
-}
 
 /** The words the rows use for a finished request: a top-up is added, a withdrawal is sent. */
 export interface FundingTopUpWording {
@@ -234,8 +226,5 @@ export function projectFundingTopUps(
 
   inProgress.sort((a, b) => b.startedAt - a.startedAt);
   past.sort((a, b) => b.state.at - a.state.at);
-  const latestSettled = past.find(
-    (topUp): topUp is SettledFundingTopUp => topUp.state.kind === "settled",
-  );
-  return { inProgress, past, latestSettled: latestSettled ?? null };
+  return { inProgress, past };
 }

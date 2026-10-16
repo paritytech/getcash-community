@@ -6,27 +6,15 @@
 import type { TokenSpec } from "@getsome/core";
 
 /**
- * A token Meld can deliver: it must have a Meld currency code for the wire, and the Chainflip
- * identifier the rail port's SourceDescriptor and Quote name delivered assets by.
+ * An asset as Meld names and sizes it: its currency code on the wire and the decimals its amounts
+ * carry. A token of the table, or a lane's asset on another chain, which no TokenSpec describes.
  */
-export type MeldToken = TokenSpec &
-  Required<Pick<TokenSpec, "chainflipAsset" | "meldCurrencyCode">>;
-
-/** `token` as Meld names it on the wire. Throws for a token Meld does not list. */
-export function meldTokenOf(token: TokenSpec): MeldToken {
-  if (token.chainflipAsset === undefined || token.meldCurrencyCode === undefined) {
-    throw new Error(`Meld does not list ${token.symbol}`);
-  }
-  return {
-    ...token,
-    chainflipAsset: token.chainflipAsset,
-    meldCurrencyCode: token.meldCurrencyCode,
-  };
-}
+export type MeldToken = Pick<TokenSpec, "symbol" | "decimals"> &
+  Required<Pick<TokenSpec, "meldCurrencyCode">>;
 
 /** Ceil-normalize a reverse-quote target to `token` base units (never under-target). */
 export function toBaseUnits(
-  token: TokenSpec,
+  token: Pick<TokenSpec, "decimals">,
   target: { amount: bigint; decimals: number },
 ): bigint {
   if (target.decimals === token.decimals) return target.amount;
@@ -39,7 +27,7 @@ export function toBaseUnits(
 
 /** A whole-token decimal string in `token` base units, exactly; null for anything that is not a
  *  plain non-negative decimal or carries more significant fraction digits than the token has. */
-export function parseBaseUnits(token: TokenSpec, text: string): bigint | null {
+export function parseBaseUnits(token: Pick<TokenSpec, "decimals">, text: string): bigint | null {
   const match = /^(\d+)(?:\.(\d*))?$/.exec(text.trim());
   if (match === null) return null;
   // Trailing zeros carry no value: a provider's `23.452100000000000000` is `23.4521`.
@@ -49,7 +37,7 @@ export function parseBaseUnits(token: TokenSpec, text: string): bigint | null {
 }
 
 /** `token` base units to a whole-token decimal string, trailing zeros trimmed. */
-export function formatBaseUnits(token: TokenSpec, base: bigint): string {
+export function formatBaseUnits(token: Pick<TokenSpec, "decimals">, base: bigint): string {
   const s = base.toString().padStart(token.decimals + 1, "0");
   const out = `${s.slice(0, -token.decimals)}.${s.slice(-token.decimals)}`.replace(/\.?0+$/, "");
   return out === "" ? "0" : out;

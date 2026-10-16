@@ -15,7 +15,11 @@ vi.mock("../lib/host-payments", () => ({
   requestPayment: vi.fn(),
   subscribePaymentStatus: vi.fn(),
 }));
-vi.mock("../lib/chainflip-backend", () => ({ NETWORK: "testnet", mainnetSdk: vi.fn() }));
+vi.mock("../lib/chainflip-backend", () => ({
+  NETWORK: "testnet",
+  mainnetSdk: vi.fn(),
+  saleChannelsOpen: () => true,
+}));
 
 /** A pool that sells one CASH unit for `price` planck and prices the native at a thousandth in
  *  USDT or CASH, the payment's fee, the redeem's fee, the key's existential deposit, the CASH and

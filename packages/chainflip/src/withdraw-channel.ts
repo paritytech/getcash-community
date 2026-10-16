@@ -7,7 +7,7 @@
 // Opened on the page, at confirm, while the user is there: the quote they were shown is the
 // quote the channel is opened with. The worker then only pays the channel and reads the swap.
 
-import type { Quote } from "@getsome/core";
+import type { OpenChannelArgs, Quote } from "@getsome/core";
 import { requestDepositAddress } from "./deposit";
 import { pickRegularQuote, type QuoteBackend } from "./quote";
 import type { SwapSdkLike } from "./sdk";
@@ -28,11 +28,14 @@ export interface OutgoingQuote {
   raw: Record<string, unknown>;
   /** What lands on the destination, in the destination asset's base units. */
   egressAmount: bigint;
+  /** The destination chain's delivery fee inside that figure, same units; 0 when not itemised.
+   *  It moves with the chain's gas between the quote and the delivery. */
+  egressFee: bigint;
   /** Chainflip's own estimate of the swap, seconds; null when absent. */
   estimatedDurationSeconds: number | null;
   /** The fees the egress already paid, each in its own asset; empty when the quote named none. */
   includedFees: IncludedFee[];
-  /** The DOT the quote was asked for, base units. */
+  /** The source the quote was asked for, base units. */
   depositAmount: bigint;
   /** The USDC leg of a two-leg swap, base units; null when the swap is one leg. */
   intermediateAmount: bigint | null;
@@ -69,8 +72,22 @@ function parseIncludedFees(value: unknown): IncludedFee[] {
   });
 }
 
-/** Quotes selling `amount` of `source` on Asset Hub for the destination asset. Throws when
- *  Chainflip has no quote for the pair. */
+/** The `EGRESS` line of a quote's `includedFees`, base units of the destination asset. */
+function egressFeeOf(raw: Record<string, unknown>): bigint {
+  const fees = Array.isArray(raw["includedFees"]) ? (raw["includedFees"] as unknown[]) : [];
+  const egress = fees.find(
+    (f): f is { amount: unknown } =>
+      typeof f === "object" && f !== null && (f as { type?: unknown }).type === "EGRESS",
+  );
+  try {
+    return egress === undefined ? 0n : BigInt(String(egress.amount));
+  } catch {
+    return 0n;
+  }
+}
+
+/** Quotes selling `amount` of `source` (DOT on Asset Hub unless named) for the destination asset.
+ *  Throws when Chainflip has no quote for the pair. */
 export async function quoteOutgoing(
   backend: QuoteBackend,
   amount: bigint,
@@ -93,6 +110,7 @@ export async function quoteOutgoing(
   return {
     raw,
     egressAmount: BigInt(String(raw["egressAmount"] ?? "0")),
+    egressFee: egressFeeOf(raw),
     estimatedDurationSeconds: numberOrNull(raw["estimatedDurationSeconds"]),
     includedFees: parseIncludedFees(raw["includedFees"]),
     depositAmount: bigintOrNull(raw["depositAmount"]) ?? amount,
@@ -110,6 +128,8 @@ export interface OpenWithdrawChannelArgs {
   destination: OutgoingDestination & { address: string };
   /** Where the swap refunds when it cannot fill at the quoted price: the key on Asset Hub, SS58. */
   refundAddress: string;
+  /** Fill-or-kill terms; the quote's recommended slippage when absent. */
+  fillOrKill?: OpenChannelArgs["fillOrKill"];
 }
 
 /**
@@ -149,6 +169,7 @@ export async function openWithdrawChannel(args: OpenWithdrawChannelArgs): Promis
     quote,
     destAddress: args.destination.address,
     refundAddress: args.refundAddress,
+    ...(args.fillOrKill ? { fillOrKill: args.fillOrKill } : {}),
   });
   return {
     id: channel.depositChannelId,

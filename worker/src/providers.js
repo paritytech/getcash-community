@@ -7,7 +7,9 @@ import { readChannelRecord, readSwapStatus } from "@getsome/chainflip/swap-statu
 import { NETWORK } from "@getsome/core";
 import { depositTokenOf, recordedRoute, stableTxOptions } from "@getsome/funding";
 import { createMeldClient, MELD_SELL_ENABLED, saleRail } from "@getsome/meld";
+import { LANES, laneSellToken } from "@getsome/offramp";
 import {
+  ChannelMismatchError,
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
   DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
   exactPaymentLanded,
@@ -71,9 +73,55 @@ export function railFor(provider, record) {
         ? { productId: meld.productId }
         : {}),
     });
-    return saleRail(client, depositTokenOf(recordedRoute(record)), record);
+    if (record?.swap) return swapSaleRail(saleRail(client, record, Date.now, LANE_TOKENS), record);
+    // A direct sale is paid in the token the hand-off's sale lands on the key.
+    return saleRail(client, record, Date.now, depositTokenOf(recordedRoute(record)));
   }
   return null;
+}
+
+/** Chainflip's network for a sale's swap: Perseverance on a test network, as the page opens it. */
+const SWAP_NETWORK = NETWORK.testnet ? "perseverance" : "mainnet";
+
+/** What a swap sale's provider may be paid in: any lane's asset. */
+const LANE_TOKENS = LANES.map(laneSellToken);
+
+/**
+ * A sale through an offramp lane: the key pays a Chainflip channel, which pays the provider. Before
+ * the key pays, Meld's own record must name the deposit address and amount the hand-off carries,
+ * so the Chainflip channel's destination is checked against the provider, not against the page.
+ * The swap is followed until Chainflip delivers, then the sale until the provider pays out.
+ */
+function swapSaleRail(sale, record) {
+  return {
+    channel: async (id) => {
+      const [swap, order] = await Promise.all([
+        readChannelRecord(id, undefined, SWAP_NETWORK),
+        sale.channel(record.channel.id),
+      ]);
+      if (swap === null) return null;
+      if (order === null) {
+        throw new ChannelMismatchError(`the provider cannot name sale ${record.channel.id}`);
+      }
+      if (order.depositAddress !== record.channel.address) {
+        throw new ChannelMismatchError(
+          `sale ${record.channel.id} takes deposits at ${order.depositAddress}, not ${record.channel.address}`,
+        );
+      }
+      if (order.expectedAmount !== BigInt(record.channel.amount)) {
+        throw new ChannelMismatchError(
+          `sale ${record.channel.id} expects ${order.expectedAmount}, not ${record.channel.amount}`,
+        );
+      }
+      return order.expired ? { ...swap, expired: true } : swap;
+    },
+    status: async (id) => {
+      const swap = await readSwapStatus(id, undefined, SWAP_NETWORK);
+      // Once Chainflip has delivered, no refund comes back to the key (see `refundMayLand`).
+      if (swap.status !== "complete") return swap;
+      return { ...(await sale.status(record.channel.id)), swapDelivered: true };
+    },
+  };
 }
 
 /**

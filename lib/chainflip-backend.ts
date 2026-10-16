@@ -9,6 +9,7 @@ import {
   type ChainflipNetworkId,
   type SwapSdkLike,
 } from "@getsome/chainflip";
+import { NETWORK as CHAIN_NETWORK } from "@getsome/core";
 
 export const NETWORK: ChainflipNetworkId = "mainnet";
 
@@ -59,4 +60,32 @@ async function buildSdk(): Promise<SwapSdkLike> {
       throw new Error("Chainflip channels are not available in this build");
     },
   };
+}
+
+/** The network a fiat sale's swap runs on: Perseverance on a test build, where its quotes and
+ *  channels are real but no chain the build runs on is watched, so the key cannot pay one. */
+export const SALE_SWAP_NETWORK: ChainflipNetworkId = CHAIN_NETWORK.testnet
+  ? "perseverance"
+  : "mainnet";
+
+/** Whether Perseverance still opens channels on Chainflip's default broker. The BaaS broker is
+ *  mainnet's only; mainnet refuses the default one since #92. Not yet confirmed for Perseverance:
+ *  set false if it starts refusing too, and test builds stop offering the swap lanes. */
+const PERSEVERANCE_DEFAULT_BROKER_OPENS = true;
+
+/** Whether a fiat sale's swap channel can be opened in this build. Asked before a lane is quoted,
+ *  so a sale whose channel would be refused at pay is never offered, and no seller does KYC for it. */
+export const saleChannelsOpen = (): boolean =>
+  SALE_SWAP_NETWORK === NETWORK ? brokerConfigured() : PERSEVERANCE_DEFAULT_BROKER_OPENS;
+
+let saleSdkPromise: Promise<SwapSdkLike> | null = null;
+
+/** The SDK for a fiat sale's swap, built once and lazily. A failed build is not cached. */
+export function saleSwapSdk(): Promise<SwapSdkLike> {
+  if (SALE_SWAP_NETWORK === NETWORK) return mainnetSdk();
+  saleSdkPromise ??= createSwapSdk(SALE_SWAP_NETWORK).catch((e: unknown) => {
+    saleSdkPromise = null;
+    throw e;
+  });
+  return saleSdkPromise;
 }

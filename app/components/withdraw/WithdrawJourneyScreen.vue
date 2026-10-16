@@ -3,8 +3,8 @@
 // Everything shown is read from the record; the actions go back to the route.
 import { computed } from "vue";
 import { ArrowUpRight, RefreshCcw, X } from "lucide-vue-next";
+import { TOKENS } from "@getsome/core";
 import { formatSourceAmount, SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
-import { depositTokenOf, recordedRoute } from "@getsome/funding";
 import { formatBaseUnits, sellAmountOf } from "@getsome/meld";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
 import {
@@ -12,6 +12,7 @@ import {
   saleAwaitingDeposit,
   type WithdrawalRecord,
 } from "../../funding/requests/model";
+import { sellTokenOf } from "../../funding/requests/transitions/withdrawal";
 import { asName } from "../../funding/top-up-projection";
 import { formatWhenShort, shortRef } from "../../utils/journey";
 import { fmtFiat } from "../../utils/money";
@@ -118,12 +119,13 @@ const residueNote = computed(() => {
   if (residue.stuck === true) {
     return "What was left could not come back to your balance on its own. Contact support with your reference.";
   }
+  const sale = props.record.sale;
+  if (sale === undefined) return null;
   // In the token the sale sold, shown to the sale's decimals; a remainder below them is not worth
   // a line.
-  const token = depositTokenOf(recordedRoute(props.record.handoff));
-  const shown = residue.amount === undefined ? 0n : sellAmountOf(token, BigInt(residue.amount));
-  const symbol = props.record.sale?.token ?? token.symbol;
-  const amount = shown === 0n ? null : `${formatBaseUnits(token, shown)} ${symbol}`;
+  const token = sellTokenOf(sale);
+  const shown = residue.amount === undefined ? 0n : sellAmountOf(BigInt(residue.amount), token);
+  const amount = shown === 0n ? null : `${formatBaseUnits(token, shown)} ${token.symbol}`;
   if (!residue.returning) {
     return amount === null
       ? null

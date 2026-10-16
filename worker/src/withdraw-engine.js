@@ -100,7 +100,8 @@ const saveJobs = () => store.save();
  *   amount, destination, landingHex, rail,   // what the surface asked for; kept for its records
  *   tier, external?, feeRate?,               // the sale on Asset Hub the surface froze
  *   channel?,                                // the provider's channel the page opened; for Meld
- *                                            // its `amount` is the exact planck the key pays
+ *                                            // its `amount` is exactly what the key pays, PAS
+ *                                            // or, for a sale of USDT, USDT
  *   meld?: { baseUrl?, productId?, offline? }, // Meld only: the adapter the sale is read from
  *   assetHubGenesis, peopleGenesis, peopleParaId, assetHubParaId, poolAccount, slippagePct,
  *   paymentExpiresAt: number|null,
@@ -179,6 +180,14 @@ function newRecord(input, nowMs) {
   if (input.rail === "meld" && channelOf(input.channel).amount === undefined) {
     throw new Error("startWithdraw: a Meld sale needs the exact amount its provider expects");
   }
+  if (input.rail === "meld" && input.swap !== undefined) {
+    if (!isChannel(input.swap) || channelOf(input.swap).amount === undefined) {
+      throw new Error("startWithdraw: a swap sale needs its channel and the USDT it must land");
+    }
+    if (input.tier !== "psm" || input.external !== "USDT") {
+      throw new Error("startWithdraw: a swap sale redeems its CASH for USDT");
+    }
+  }
   if (input.rail === "meld" && meldOf(input.meld) === null) {
     throw new Error("startWithdraw: a Meld sale needs the adapter it is read from");
   }
@@ -202,6 +211,15 @@ function newRecord(input, nowMs) {
   // route missing its fee rate, is refused here rather than guessed at.
   if (typeof input.tier !== "string") throw new Error("startWithdraw: the sale tier is required");
   const sale = recordedRoute(input);
+  // A direct sale pays its provider in what its sale lands: PAS from the pool, or the USDT the PSM
+  // redeemed. A key landed with anything else would have nothing to pay with.
+  if (input.rail === "meld" && input.swap === undefined) {
+    const pas = sale.tier === "pool" && sale.external === undefined;
+    const usdt = sale.tier === "psm" && sale.external === "USDT";
+    if (!pas && !usdt) {
+      throw new Error("startWithdraw: a sale lands PAS from the pool or USDT from the PSM");
+    }
+  }
   return {
     v: RECORD_V,
     sessionId,
@@ -227,6 +245,7 @@ function newRecord(input, nowMs) {
     // Kept as handed over, so a surface that lost its record can rebuild the hand-off whole.
     ...(isChannel(input.channel) ? { channel: channelOf(input.channel) } : {}),
     ...(input.rail === "meld" ? { meld: meldOf(input.meld) } : {}),
+    ...(swapOf(input) === null ? {} : { swap: channelOf(swapOf(input)) }),
     phase: "starting",
     landed: false,
     done: false,
@@ -284,13 +303,18 @@ function meldOf(meld) {
  *  key's first nonce on Asset Hub. */
 function legFor(input, nowMs) {
   const leg = freshRailLegState();
-  if (isChannel(input.channel)) {
-    const { id, address, openedAt, expiresAt } = channelOf(input.channel);
+  // A swap sale's key pays the Chainflip channel, which pays the provider's deposit address.
+  const pays = swapOf(input) ?? input.channel;
+  if (isChannel(pays)) {
+    const { id, address, openedAt, expiresAt } = channelOf(pays);
     leg.handoff = { id, address, openedAt: openedAt || nowMs, expiresAt };
   }
-  if (input.rail === "meld") leg.exact = freshExactPayState();
+  if (input.rail === "meld" && swapOf(input) === null) leg.exact = freshExactPayState();
   return leg;
 }
+
+/** A Meld sale's Chainflip channel, when it sells through an offramp lane; null otherwise. */
+const swapOf = (job) => (job.rail === "meld" && isChannel(job.swap) ? job.swap : null);
 
 /** Moves the deadline of a sale's unpaid channel out to the one `channel` carries for the same id,
  *  when that is later. A Chainflip channel's expiry is the provider's, and never moves. */
@@ -354,7 +378,17 @@ export async function startWithdraw(params) {
     if (shown && shown !== existing.keyAddress) {
       return { error: "invalid", reason: mismatchReason(existing.keyAddress, shown) };
     }
-    if (existing.phase === "failed" && !unrevivable(existing)) rearm(existing, Date.now());
+    // A swap sale that failed before any CASH reached its key is revived by a re-sent hand-off
+    // with a fresh Chainflip channel, even when its key would go home whole: nothing has moved
+    // that the new channel could cross. A payment that could not be confirmed still waits for a
+    // person.
+    const freshSwap = freshSwapFor(existing, input);
+    const held = freshSwap === null ? unrevivable(existing) : existing.failure === "unresolved";
+    if (existing.phase === "failed" && !held) rearm(existing, Date.now());
+    if (freshSwap !== null) {
+      existing.swap = freshSwap;
+      existing.leg = legFor(input, Date.now());
+    }
     // A re-sent hand-off carries the surface's current payment window: a retried payment gets a
     // fresh one, and the job must not expire on the old clock while the surface waits on the new.
     existing.paymentExpiresAt = paymentExpiryOf(input) ?? existing.paymentExpiresAt;
@@ -387,6 +421,21 @@ export async function startWithdraw(params) {
   all[record.sessionId] = record;
   await saveJobs();
   return describeWithdraw(record);
+}
+
+/** The Chainflip channel a re-sent hand-off brings for a swap sale, when it is a new one and the
+ *  old one was never paid nor could have been: no sweep tried, no CASH seen, nothing gone home.
+ *  Null otherwise, so a channel that may hold the key's USDT is never left behind. */
+function freshSwapFor(existing, input) {
+  if (swapOf(existing) === null || swapOf(input) === null) return null;
+  const swap = channelOf(input.swap);
+  if (swap.amount === undefined || swap.id === existing.leg?.handoff?.id) return null;
+  const untouched =
+    existing.leg?.paid !== true &&
+    (existing.leg?.sweep?.attempts ?? 0) === 0 &&
+    existing.state?.fundsSeenAt == null &&
+    existing.residue === undefined;
+  return untouched ? swap : null;
 }
 
 /**
@@ -428,6 +477,8 @@ function rearm(record, nowMs) {
   record.phase = "starting";
   delete record.failure;
   delete record.lastError;
+  delete record.failedAt;
+  delete record.refundSeenAt;
   record.armedAt = nowMs;
   record.state.workedMs = 0;
   if (failure === "rejected" || failure === "timeout") {
@@ -447,6 +498,7 @@ function fail(record, failure, reason) {
   record.phase = "failed";
   record.failure = failure;
   record.lastError = reason;
+  record.failedAt = Date.now();
 }
 
 /**
@@ -577,8 +629,10 @@ async function tickRailLeg(record) {
     fail(record, "no-rail", `no ${record.rail} provider in this build`);
     return;
   }
-  // A Meld sale pays the exact figure its provider quoted, never everything the key holds.
-  const exactAmount = record.rail === "meld" ? asBig(record.channel?.amount, 0n) : null;
+  // A Meld sale pays the exact figure its provider quoted, never everything the key holds. A swap
+  // sale pays everything into its Chainflip channel, whose fill-or-kill floor covers the figure.
+  const exactAmount =
+    record.rail === "meld" && swapOf(record) === null ? asBig(record.channel?.amount, 0n) : null;
   if (exactAmount !== null && exactAmount <= 0n) {
     fail(record, "channel-mismatch", "the sale carries no amount to pay its provider");
     return;
@@ -615,9 +669,17 @@ async function tickRailLeg(record) {
             ? payRail(record, handoff, sweep, hooks)
             : payRailExact(record, handoff, exactAmount, exact, hooks),
         tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
-        destinationAddress: record.destination?.address,
+        // The Chainflip channel of a swap sale must pay out to the provider's deposit address.
+        destinationAddress:
+          swapOf(record) === null ? record.destination?.address : record.channel?.address,
         ...(exactAmount === null
-          ? {}
+          ? swapOf(record) === null
+            ? {}
+            : {
+                // As for the exact payment: a sweep whose answer was lost is read off the chain
+                // before Meld, whose order may have closed once the swap paid it.
+                landed: () => swapSweptOut(record, state.sweep),
+              }
           : {
               payout: "off-chain",
               amount: exactAmount,
@@ -685,7 +747,9 @@ const residueSessionId = (record) => `${record.sessionId}/residue`;
  */
 function returnDue(record, nowMs = Date.now()) {
   if (record.rail !== "meld" || record.residue !== undefined) return null;
-  if (record.leg?.paid === true) return "residue";
+  // A swap sale's key is empty once paid, until the swap ends: a refund comes back to it.
+  if (record.leg?.paid === true)
+    return swapOf(record) !== null && isLive(record) ? null : "residue";
   if (record.phase !== "failed" || KEPT_ON_FAILURE.has(record.failure)) return null;
   if (record.leg?.exact?.inFlight === true || submitMayLand(record, nowMs)) return null;
   return "whole";
@@ -804,16 +868,33 @@ async function sendHome(record, kind) {
       token.assetHubId,
       kind === "residue" ? "residue read" : "key read on asset hub",
     );
-    if (kind === "residue" && held < residueReturnFloor(token)) {
-      record.residue = { amount: held.toString(), returning: false };
-      return;
+    if (kind === "residue") {
+      // A swap that failed after the key paid refunds its USDT to the key: the key is read again
+      // until Chainflip says the refund will not come, however long its egress takes.
+      if (swapOf(record) !== null && held === 0n && record.phase === "failed") {
+        const refund = await swapRefund(record);
+        if (refund === "pending") throw new Error("waiting for the swap's refund to reach the key");
+        if (refund === "failed") {
+          // Chainflip could not send it back: a person must, so the key is not read again.
+          record.residue = { amount: "0", returning: false, stuck: true };
+          return;
+        }
+      }
+      if (held < residueReturnFloor(token)) {
+        record.residue = { amount: held.toString(), returning: false };
+        return;
+      }
     }
     // Only a sale that ended unpaid can have its CASH still on the key: a paid one has redeemed
     // it, and what the redeem left is dust.
     const cash =
       kind === "whole" ? await readKey(TOKENS.CASH.assetHubId, "key cash read on asset hub") : 0n;
     if (kind === "whole" && !(await keyHoldsAnything(record, held, token, cash))) {
-      // A sale that failed before anything reached its key: no way home to start.
+      // A sale that failed before anything reached its key: no way home to start. Not while the
+      // purse may still pay it, or the CASH would land on a key nothing reads again.
+      if (pursePayMayLand(record)) {
+        throw new Error("waiting for the purse's payment window to close");
+      }
       record.residue = { whole: true, returning: false };
       return;
     }
@@ -860,11 +941,72 @@ async function wayHomeRoute(assetHubApi, sale, held, cash) {
   );
 }
 
+/** The purse may still pay a sale's key: no CASH seen yet, and its payment window, with room for a
+ *  payment already on its way, is not over. */
+function pursePayMayLand(record, nowMs = Date.now()) {
+  if (record.state?.fundsSeenAt != null) return false;
+  const expiresAt =
+    record.paymentExpiresAt ?? (record.armedAt ?? record.createdAt) + PAYMENT_WINDOW_MS;
+  return nowMs < expiresAt + SUBMIT_SETTLE_MS;
+}
+
 /** Starts, or re-arms, the funding job that carries a sale's key home. Throws when it is refused,
  *  and the next pass tries again. */
 async function startWayHome(record) {
   const started = await startFunding(wayHomeParams(record, record.residue.route ?? {}));
   if (started?.error) throw new Error(started.reason ?? started.error);
+}
+
+/** How long after Chainflip witnessed a refund the key is read for it, should the key's read lag
+ *  the chain Chainflip watched. */
+const REFUND_SETTLE_MS = 600_000;
+
+/** A swap sale's sweep went out: one was tried, and the key holds none of the sale's token. The
+ *  sweep's own rule, since it moves everything and reaps the key behind it. */
+async function swapSweptOut(record, sweep) {
+  if ((sweep?.attempts ?? 0) === 0) return false;
+  const client = await connectChain(record.assetHubGenesis, "asset hub");
+  try {
+    const held = await bounded(
+      readDestinationBalance(
+        client.getTypedApi(paseo_next_v2),
+        record.keyPublicKeyHex,
+        depositTokenOf(recordedRoute(record)).assetHubId,
+      ),
+      DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+      "key read on asset hub",
+    );
+    return held === 0n;
+  } finally {
+    client.destroy();
+  }
+}
+
+/**
+ * Where a failed swap sale's refund stands, by Chainflip's own word, read afresh: "none" when the
+ * swap delivered to the provider, or the refund was witnessed long enough ago to be on the key;
+ * "failed" when its egress failed; "pending" until one of those, with no clock of its own, since a
+ * refund held up by an egress incident still lands. A read that fails throws, and the next pass
+ * asks again.
+ */
+async function swapRefund(record, nowMs = Date.now()) {
+  if (record.leg?.reading?.swapDelivered === true) return "none";
+  const rail = railFor(record.rail, record);
+  if (rail === null) return "none";
+  const reading = await bounded(
+    rail.status(record.leg.handoff.id),
+    DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+    "swap refund read",
+  );
+  record.leg = { ...record.leg, reading };
+  if (reading.swapDelivered === true) return "none";
+  const refund = reading.refundEgress;
+  if (refund?.failure !== undefined) return "failed";
+  if (refund?.witnessedAt !== undefined) {
+    record.refundSeenAt ??= nowMs;
+    return nowMs - record.refundSeenAt < REFUND_SETTLE_MS ? "pending" : "none";
+  }
+  return "pending";
 }
 
 /** The funding job that carries a sale's key home: a job on the key through `route`, held to the
@@ -1011,19 +1153,22 @@ async function tickRecord(record, nowMs) {
           slippagePct: record.slippagePct,
           transfer,
           // A Meld sale promised its provider an exact figure out of what lands: the sale must
-          // cover it, its fee and what the key keeps to stay alive, or nothing leaves People.
-          ...(record.rail === "meld"
-            ? {
-                minLanding: () =>
-                  exactPaymentFloor(
-                    assetHubApi,
-                    key.address,
-                    record.channel.address,
-                    asBig(record.channel.amount, 0n),
-                    landingToken,
-                  ),
-              }
-            : {}),
+          // cover it, its fee and what the key keeps to stay alive, or nothing leaves People. A
+          // sale through a swap promised what its channel was quoted on, the key's fee included.
+          ...(swapOf(record) !== null
+            ? { minLanding: async () => asBig(record.swap.amount, 0n) }
+            : record.rail === "meld"
+              ? {
+                  minLanding: () =>
+                    exactPaymentFloor(
+                      assetHubApi,
+                      key.address,
+                      record.channel.address,
+                      asBig(record.channel.amount, 0n),
+                      landingToken,
+                    ),
+                }
+              : {}),
           tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
           submitTimeoutMs: DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
           // One anchor on People per tick serves every submit there; the exit on Asset Hub takes

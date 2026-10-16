@@ -34,6 +34,13 @@ inputs:
       that does not list it refuses with 401 on every call — a quote that cannot be
       fetched, and a country catalog that silently empties to its fallback list.
     default: ""
+  offramp-lanes:
+    description: >
+      Optional VITE_OFFRAMP_LANES, the off-ramp lanes card and bank sales go through, best first,
+      by Meld code (e.g. USDT_ASSETHUB,USDT_STATEMINT,DOT_ASSETHUB,DOT_STATEMINT,USDC_ARBITRUM,
+      USDC_SOLANA). Empty uses the build's default, the direct Asset Hub sales only: the
+      Chainflip swap lanes (USDC_ARBITRUM, USDC_SOLANA) are offered only when listed here.
+    default: ""
   require-secrets:
     description: >
       Whether an empty meld-base-url, meld-product-id or chainflip-broker-api-key is a
@@ -93,6 +100,7 @@ runs:
         VITE_CHAINFLIP_BROKER_API_KEY: ${{ inputs.chainflip-broker-api-key }}
         VITE_MELD_BASE_URL: ${{ inputs.meld-base-url }}
         VITE_MELD_PRODUCT_ID: ${{ inputs.meld-product-id }}
+        VITE_OFFRAMP_LANES: ${{ inputs.offramp-lanes }}
         REQUIRE_SECRETS: ${{ inputs.require-secrets }}
       run: |
         if [ -z "$VITE_MELD_BASE_URL" ]; then

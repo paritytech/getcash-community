@@ -1,7 +1,7 @@
 // Meld quotes are source-denominated (fiat in, crypto out). The rail's port is reverse, so this
 // solves the fiat: probe Meld's rate, then correct until the delivered crypto clears the target.
 
-import type { Quote, ReverseQuoteInput } from "@getsome/core";
+import type { Quote, ReverseQuoteInput, TokenSpec } from "@getsome/core";
 import type { MeldClientLike, MeldQuoteEntry } from "./client";
 import { formatBaseUnits, toBaseUnits, type MeldToken } from "./units";
 
@@ -9,8 +9,9 @@ import { formatBaseUnits, toBaseUnits, type MeldToken } from "./units";
 export interface MeldQuoteContext {
   readonly country: string;
   readonly fiat: string;
-  /** The token Meld delivers; its `meldCurrencyCode` is the wire destination. */
-  readonly token: MeldToken;
+  /** The token Meld delivers; its `meldCurrencyCode` is the wire destination, and its Chainflip
+   *  identifier is what the rail port's SourceDescriptor and Quote name delivered assets by. */
+  readonly token: MeldToken & Required<Pick<TokenSpec, "chainflipAsset">>;
   readonly method: string;
 }
 
