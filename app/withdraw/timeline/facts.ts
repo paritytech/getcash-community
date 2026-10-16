@@ -28,13 +28,16 @@ const RAIL_SENT_ON: ReadonlySet<WithdrawalFailureKind> = new Set([
 const railFailureKind = (record: WithdrawalRecord): WithdrawalFailureKind | undefined =>
   record.failure?.step === "send" ? record.failure.kind : undefined;
 
-/** The worker filed a transaction of this call from the key. */
+/** The worker filed a transaction of this call from the key, with nothing gone wrong since: a
+ *  dispatch the chain refused is recorded the same as one that landed, and a lingering error is
+ *  the only word the worker has that an attempt did not. */
 function workerFiled(
   record: WithdrawalRecord,
   call: "swap" | "withdraw" | "pay" | "sweep",
 ): boolean {
   const worker = record.witnesses.worker;
-  return worker?.known === true && (worker.txs?.some((tx) => tx.call === call) ?? false);
+  if (worker?.known !== true || worker.lastError !== undefined) return false;
+  return worker.txs?.some((tx) => tx.call === call) ?? false;
 }
 
 /** The rail saw the key's payment: it reports the deposit at or past `received`, or did before
@@ -45,18 +48,12 @@ function railSawPayment(record: WithdrawalRecord): boolean {
   return stageAt?.received !== undefined || stageAt?.processing !== undefined;
 }
 
-/** The pool and dotUSD tiers sell nothing that lands on the key: their one XCM both converts and
- *  pays the rail, so the funds are there the moment that leg opens. Only the PSM tier lands on
- *  the key first and pays the rail as a leg of its own. */
-const landedAtRail = (record: WithdrawalRecord): boolean =>
-  record.status.kind === "sending" && record.handoff.tier !== "psm";
-
-/** The rail has the funds: its one XCM landed there directly, the worker filed the payment (Meld)
- *  or swept the key to it (Chainflip), the rail saw it, or the rail ended in a way only possible
- *  with the funds. A sale's provider is only followed once paid, so any ending it reports is
- *  one. */
+/** The rail has the funds: the worker filed the payment (Meld) or swept the key to it (Chainflip),
+ *  the rail saw it, or the rail ended in a way only possible with the funds. Every tier lands the
+ *  sale on the key first, provider rails included: only a `direct` destination is paid by the XCM
+ *  itself. A sale's provider is only followed once paid, so any ending it reports is one. */
 export function receivedByRail(record: WithdrawalRecord): boolean {
-  if (railSawPayment(record) || landedAtRail(record)) return true;
+  if (railSawPayment(record)) return true;
   const { rail } = record;
   if (rail.provider === "meld" && rail.stage === "failed" && rail.failure !== undefined)
     return true;

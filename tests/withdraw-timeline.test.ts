@@ -126,12 +126,6 @@ function sale(overrides: Partial<WithdrawalRecord> = {}): WithdrawalRecord {
   });
 }
 
-/** The PSM tier's hand-off: unlike the pool tier, it lands on the key before paying the rail. */
-const psm = (rec: WithdrawalRecord): WithdrawalRecord => ({
-  ...rec,
-  handoff: { ...rec.handoff, tier: "psm", external: "USDT" },
-});
-
 const failure = (
   kind: WithdrawalFailure["kind"],
   step: WithdrawalFailure["step"],
@@ -182,51 +176,36 @@ describe("withdrawal timeline", () => {
       "●●○○○○○",
     ],
     [
-      "sending on the pool tier, its one XCM already at the rail",
+      "sending with the rail waiting",
       chainflip({ status: { kind: "sending", at: at(3) } }),
-      3,
-      "●●●●○○○",
-    ],
-    [
-      "sending on the PSM tier, before the rail has anything",
-      psm(chainflip({ status: { kind: "sending", at: at(3) } })),
       2,
       "●●●○○○○",
     ],
     [
-      "sending on the PSM tier with the key's sweep filed",
-      psm(
-        chainflip({
-          status: { kind: "sending", at: at(3) },
-          witnesses: {
-            worker: {
-              known: true,
-              phase: "rail",
-              done: false,
-              fundsSeenAt: at(1),
-              lastTickAt: at(3),
-              at: at(3),
-              txs: [{ call: "sweep", txHash: "0x1" }],
-            },
+      "sending with the key's sweep filed",
+      chainflip({
+        status: { kind: "sending", at: at(3) },
+        witnesses: {
+          worker: {
+            known: true,
+            phase: "rail",
+            done: false,
+            fundsSeenAt: at(1),
+            lastTickAt: at(3),
+            at: at(3),
+            txs: [{ call: "sweep", txHash: "0x1" }],
           },
-        }),
-      ),
+        },
+      }),
       3,
       "●●●●○○○",
     ],
     [
-      "sending on the PSM tier with the rail reporting it",
-      psm(
-        chainflip({
-          status: { kind: "sending", at: at(3) },
-          rail: {
-            provider: "chainflip",
-            stage: "received",
-            status: "receiving",
-            updatedAt: at(4),
-          },
-        }),
-      ),
+      "sending with the rail receiving",
+      chainflip({
+        status: { kind: "sending", at: at(3) },
+        rail: { provider: "chainflip", stage: "received", status: "receiving", updatedAt: at(4) },
+      }),
       3,
       "●●●●○○○",
     ],
@@ -387,11 +366,9 @@ describe("withdrawal timeline", () => {
   });
 
   it("fills the current line from the status that opened the leg", () => {
-    // The pool tier's hand-off is instant, so only the PSM tier still has this phase open.
-    const { view } = withdrawalTimeline(
-      psm(chainflip({ status: { kind: "sending", at: at(3) } })),
-      { now: at(3) + 60_000 },
-    );
+    const { view } = withdrawalTimeline(chainflip({ status: { kind: "sending", at: at(3) } }), {
+      now: at(3) + 60_000,
+    });
     expect(view?.lines[2]).toBeCloseTo(LINE_LIMIT * (1 - Math.exp(-3)), 10);
   });
 
@@ -491,6 +468,28 @@ describe("withdrawal timeline", () => {
     expect(view?.lines[3]).toBeCloseTo(LINE_LIMIT * (1 - Math.exp(-3)), 10);
   });
 
+  it("does not take a sweep or pay the chain refused as the rail having the funds", () => {
+    // The worker records the attempt before it knows whether the chain took it; a lingering error
+    // is the only word it has that this one did not land.
+    const refused = chainflip({
+      status: { kind: "sending", at: at(3) },
+      rail: { provider: "chainflip", stage: "waiting", updatedAt: at(3) },
+      witnesses: {
+        worker: {
+          known: true,
+          phase: "rail",
+          done: false,
+          fundsSeenAt: at(1),
+          lastTickAt: at(4),
+          lastError: "sweep rejected: funds too low",
+          at: at(4),
+          txs: [{ call: "sweep", txHash: "0x1" }],
+        },
+      },
+    });
+    expect(marks(withdrawalTimeline(refused, { now: at(5) }).view!)).toBe("●●●○○○○");
+  });
+
   it.each([
     [
       "crypto",
@@ -529,49 +528,42 @@ describe("withdrawal timeline", () => {
       ],
     ],
   ])("words each phase of a %s withdrawal", (_, make, texts) => {
-    // The PSM tier, so the hand-off phase stays open long enough to word.
     const phases: WithdrawalRecord[] = [
-      psm(make({ status: { kind: "paid", at: at(1), via: "worker" } })),
-      psm(make({ status: { kind: "converting", at: at(2), step: "await-arrival" } })),
-      psm(make({ status: { kind: "sending", at: at(3) } })),
-      psm(
-        make({
-          status: { kind: "sending", at: at(3) },
-          witnesses: {
-            worker: {
-              known: true,
-              phase: "rail",
-              done: false,
-              fundsSeenAt: at(1),
-              lastTickAt: at(3),
-              at: at(3),
-              txs: [{ call: make === chainflip ? "sweep" : "pay", txHash: "0x1" }],
-            },
+      make({ status: { kind: "paid", at: at(1), via: "worker" } }),
+      make({ status: { kind: "converting", at: at(2), step: "await-arrival" } }),
+      make({ status: { kind: "sending", at: at(3) } }),
+      make({
+        status: { kind: "sending", at: at(3) },
+        witnesses: {
+          worker: {
+            known: true,
+            phase: "rail",
+            done: false,
+            fundsSeenAt: at(1),
+            lastTickAt: at(3),
+            at: at(3),
+            txs: [{ call: make === chainflip ? "sweep" : "pay", txHash: "0x1" }],
           },
-        }),
-      ),
-      psm(
-        make({
-          status: { kind: "sending", at: at(3) },
-          rail: {
-            provider: make === chainflip ? "chainflip" : "meld",
-            stage: "received",
-            status: "sending",
-            updatedAt: at(4),
-          },
-        }),
-      ),
-      psm(
-        make({
-          status: { kind: "sending", at: at(3) },
-          rail: {
-            provider: make === chainflip ? "chainflip" : "meld",
-            stage: "processing",
-            status: "sent",
-            updatedAt: at(5),
-          },
-        }),
-      ),
+        },
+      }),
+      make({
+        status: { kind: "sending", at: at(3) },
+        rail: {
+          provider: make === chainflip ? "chainflip" : "meld",
+          stage: "received",
+          status: "sending",
+          updatedAt: at(4),
+        },
+      }),
+      make({
+        status: { kind: "sending", at: at(3) },
+        rail: {
+          provider: make === chainflip ? "chainflip" : "meld",
+          stage: "processing",
+          status: "sent",
+          updatedAt: at(5),
+        },
+      }),
     ];
     expect(phases.map((rec) => withdrawalTimeline(rec, { now: at(6) }).message?.text)).toEqual(
       texts,
@@ -746,14 +738,11 @@ describe("withdrawal timeline", () => {
 
   it("starts the rail leg over on a retry, with nothing of the old job", () => {
     // The old job's payment and failure are gone with the retry: the line is at the hand-off.
-    // The pool tier's hand-off needs no witness of its own, so this is the PSM tier's.
-    const retried = psm(
-      chainflip({
-        status: { kind: "sending", at: at(12) },
-        rail: { provider: "chainflip", stage: "waiting", updatedAt: at(12) },
-        witnesses: { worker: { known: false, at: at(12) } },
-      }),
-    );
+    const retried = chainflip({
+      status: { kind: "sending", at: at(12) },
+      rail: { provider: "chainflip", stage: "waiting", updatedAt: at(12) },
+      witnesses: { worker: { known: false, at: at(12) } },
+    });
     const { view, message } = withdrawalTimeline(retried, { now: at(13) });
     expect(marks(view!)).toBe("●●●○○○○");
     expect(view?.state).toBe("active");
