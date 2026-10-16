@@ -106,6 +106,10 @@ const residueNote = computed(() => {
 
 /** The way on from an ending: the refund guide, a retry, or nothing more than closing. */
 const action = computed(() => timeline.value.failure?.action ?? null);
+/** The design's word on a sale that ended for good: the seller starts another from the quote. */
+const closeLabel = computed(() =>
+  action.value === "close" && props.record.route !== "crypto" ? "Start over" : "Close",
+);
 /** Cancel is offered only while nothing was paid and the host has nothing in hand. */
 const canCancel = computed(
   () => status.value.kind === "awaiting-payment" && !paymentTaken(props.record),
@@ -213,7 +217,7 @@ const canCancel = computed(
         :class="{ 'journey-close-in': successPlaying }"
         @click="emit('close')"
       >
-        Close
+        {{ closeLabel }}
       </PillButton>
     </div>
   </div>
