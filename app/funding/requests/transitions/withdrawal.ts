@@ -43,6 +43,7 @@ import {
   type WithdrawalChannel,
   type WithdrawalFailure,
   type WithdrawalFailureKind,
+  type WithdrawalRailState,
   type WithdrawalRecord,
   type WithdrawalStatus,
 } from "../model";
