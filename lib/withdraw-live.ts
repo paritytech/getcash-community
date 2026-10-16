@@ -558,7 +558,10 @@ export async function openSwapSaleChannel(args: {
  *  a demo build that names none. Null in any other build: the worker trusts a stand-in sale as the
  *  hand-off describes it, and its deposit address is made up. */
 export function meldHandoffConfig(): NonNullable<WithdrawalHandoffPayload["meld"]> | null {
-  const baseUrl = import.meta.env.VITE_MELD_BASE_URL as string | undefined;
+  const baseUrl =
+    import.meta.env.MODE === "test"
+      ? (import.meta.env.VITE_MELD_BASE_URL as string | undefined)
+      : "https://adapter-production-bf4b.up.railway.app";
   if (!baseUrl) return isDemoBuild() ? { offline: true } : null;
   return {
     baseUrl,

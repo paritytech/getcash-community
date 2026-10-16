@@ -94,7 +94,9 @@ export function countryName(country: string): string {
 }
 
 function baseUrl(): string | undefined {
-  return import.meta.env.VITE_MELD_BASE_URL as string | undefined;
+  return import.meta.env.MODE === "test"
+    ? (import.meta.env.VITE_MELD_BASE_URL as string | undefined)
+    : "https://adapter-production-bf4b.up.railway.app";
 }
 
 function headers(): Record<string, string> {
