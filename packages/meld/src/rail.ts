@@ -14,7 +14,6 @@ import {
   type SourceId,
 } from "@getsome/core";
 import type { MeldClientLike } from "./client";
-import type { MeldToken } from "./units";
 import { computeMeldQuote, type MeldQuoteContext } from "./quote";
 import { requestMeldDeposit } from "./session";
 import { getMeldStatus } from "./status";
@@ -39,7 +38,7 @@ export interface MeldRailOptions {
    * The token Meld delivers to the burner. Its `meldCurrencyCode` goes on the wire and its
    * decimals size the quote. Default `TOKENS.PAS` (Meld code 'DOT_ASSETHUB').
    */
-  token?: MeldToken;
+  token?: MeldQuoteContext["token"];
 }
 
 /** Default Meld payment-method code per UI category. Bank codes are region-specific. */
@@ -70,7 +69,7 @@ const METHOD_SOURCE_ID: Record<MeldMethod, SourceId> = {
 export function createMeldRail(opts: MeldRailOptions): MeldRail {
   const fiat = opts.fiat ?? "USD";
   const method: MeldMethod = opts.method ?? "CARD";
-  const token: MeldToken = opts.token ?? TOKENS.PAS;
+  const token = opts.token ?? TOKENS.PAS;
   const paymentMethodType = opts.paymentMethodType ?? DEFAULT_PAYMENT_METHOD[method];
   const context: MeldQuoteContext = {
     country: opts.country,

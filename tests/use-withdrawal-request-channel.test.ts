@@ -19,6 +19,9 @@ const KEY_HEX = `0x${"07".repeat(32)}`;
 const KEY_ADDRESS = "1jN9roH2QfHPSCurNcuCz4V58fXS2HPTGidJGQnT7dPthdZ";
 const BTC_ADDRESS = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
 const FOUR_DOT = 40_000_000_000n;
+const TWENTY_USDT = 20_000_000n;
+const POOL = { tier: "pool" } as const;
+const PSM = { tier: "psm", external: "USDT", feeRate: 5_000 } as const;
 const DESTINATION = { chain: "Bitcoin", asset: "BTC", address: BTC_ADDRESS };
 const CHANNEL = {
   id: "42",
@@ -42,7 +45,7 @@ vi.mock("../lib/withdraw-live", () => ({
   requestKeyPayment: async () => {},
   nudgeWithdrawTicks: () => {},
   openWithdrawChannelFor: vi.fn(async () => CHANNEL),
-  readWithdrawKeyNativeOnAssetHub: vi.fn(async () => FOUR_DOT),
+  readWithdrawKeyBalanceOnAssetHub: vi.fn(async () => FOUR_DOT),
   sendWithdrawHandoff: vi.fn(async () => {}),
   withdrawHandoff: (
     args: Record<string, unknown> & { key: { address: string; publicKeyHex: string } },
@@ -54,7 +57,7 @@ vi.mock("../lib/withdraw-live", () => ({
     destination: args.destination,
     landingHex: args.landingHex,
     rail: args.rail,
-    tier: (args.sale as { tier: string }).tier,
+    ...(args.sale as { tier: string; external?: string; feeRate?: number }),
     assetHubGenesis: "0xah",
     peopleGenesis: "0xpe",
     peopleParaId: 1004,
@@ -70,7 +73,7 @@ import * as live from "../lib/withdraw-live";
 import { useWithdrawalRequest } from "../app/composables/useWithdrawalRequest";
 
 const opened = vi.mocked(live.openWithdrawChannelFor);
-const readKey = vi.mocked(live.readWithdrawKeyNativeOnAssetHub);
+const readKey = vi.mocked(live.readWithdrawKeyBalanceOnAssetHub);
 const handedOff = vi.mocked(live.sendWithdrawHandoff);
 
 function fakeWebStorage(): WebStorageLike {
@@ -86,15 +89,15 @@ function fakeWebStorage(): WebStorageLike {
   };
 }
 
-const start = (expectedNative?: bigint) =>
+const start = (expectedLanding?: bigint, sale: typeof POOL | typeof PSM = POOL) =>
   useWithdrawalRequest().start({
     destinationId: "btc",
     amount: 21_000_000n,
     destination: DESTINATION,
     landingHex: null,
     rail: "chainflip",
-    sale: { tier: "pool" },
-    ...(expectedNative === undefined ? {} : { expectedNative }),
+    sale,
+    ...(expectedLanding === undefined ? {} : { expectedLanding }),
   });
 
 describe("a provider withdrawal from the page", () => {
@@ -121,14 +124,15 @@ describe("a provider withdrawal from the page", () => {
     const outcome = await start(FOUR_DOT);
     expect(outcome.ok).toBe(true);
     expect(opened).toHaveBeenCalledWith({
-      amountNative: FOUR_DOT,
+      amount: FOUR_DOT,
       destination: { id: "btc", ...DESTINATION },
       keyPublicKeyHex: KEY_HEX,
+      sale: POOL,
     });
     const record = useRequestsStore().get(requestRefOf("wd:btc", 1)) as WithdrawalRecord;
     expect(record.rail.provider).toBe("chainflip");
     expect(record.handoff.channel).toEqual(CHANNEL);
-    // The native lands on the key itself; the key pays the channel from there.
+    // The sale's token lands on the key itself; the key pays the channel from there.
     expect(record.handoff.landingHex).toBe(KEY_HEX);
     expect(handedOff).toHaveBeenCalledTimes(1);
     expect(handedOff.mock.calls[0]?.[2]).toMatchObject({ channel: CHANNEL, rail: "chainflip" });
@@ -184,11 +188,12 @@ describe("a provider withdrawal from the page", () => {
     handedOff.mockClear();
 
     expect(await useWithdrawalRequest().retry(ref)).toBe(true);
-    expect(readKey).toHaveBeenCalledWith(KEY_HEX);
+    expect(readKey).toHaveBeenCalledWith(KEY_HEX, POOL);
     expect(opened).toHaveBeenLastCalledWith({
-      amountNative: 39_000_000_000n,
+      amount: 39_000_000_000n,
       destination: { id: "btc", ...DESTINATION },
       keyPublicKeyHex: KEY_HEX,
+      sale: POOL,
     });
     const after = requests.get(ref) as WithdrawalRecord;
     expect(after.status).toEqual({ kind: "sending", at: FIXTURE_NOW });
@@ -196,5 +201,39 @@ describe("a provider withdrawal from the page", () => {
     expect(after.handoff.channel).toEqual(fresh);
     expect(handedOff).toHaveBeenCalledTimes(1);
     expect(handedOff.mock.calls[0]?.[2]).toMatchObject({ channel: fresh });
+  });
+
+  it("opens the channel for the sale's token, at confirm and again on a retry", async () => {
+    await start(TWENTY_USDT, PSM);
+    expect(opened).toHaveBeenCalledWith({
+      amount: TWENTY_USDT,
+      destination: { id: "btc", ...DESTINATION },
+      keyPublicKeyHex: KEY_HEX,
+      sale: PSM,
+    });
+    const ref = requestRefOf("wd:btc", 1);
+    const requests = useRequestsStore();
+    expect(requests.get(ref)).toMatchObject({ handoff: PSM });
+    await requests.observe(ref, {
+      source: "worker",
+      at: FIXTURE_NOW + 60_000,
+      withdrawJob: {
+        phase: "failed",
+        failure: "rail-failed",
+        landed: true,
+        done: false,
+        fundsSeenAt: FIXTURE_NOW + 30_000,
+        lastTickAt: FIXTURE_NOW + 60_000,
+        rail: { status: "failed" },
+      },
+    });
+    readKey.mockResolvedValueOnce(19_500_000n);
+
+    expect(await useWithdrawalRequest().retry(ref)).toBe(true);
+    // The key is read, and the fresh channel quoted, in the token the recorded sale landed.
+    expect(readKey).toHaveBeenCalledWith(KEY_HEX, PSM);
+    expect(opened).toHaveBeenLastCalledWith(
+      expect.objectContaining({ amount: 19_500_000n, sale: PSM }),
+    );
   });
 });

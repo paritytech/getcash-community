@@ -1,7 +1,6 @@
 // The exact payment: a provider that quoted a fixed figure, a fiat sale through Meld, is paid that
 // figure from the key on Asset Hub and nothing else. What the sale landed above it stays on the
-// key. The figure is PAS, or USDT for a sale of USDT, whose key holds nothing else and pays the
-// transfer's fee in it.
+// key.
 //
 // NEVER TWICE. The key keeps funds after this payment, so an empty key cannot say it went out the
 // way it does for the sweep. The nonce says it instead. The key signs nothing on Asset Hub before
@@ -15,29 +14,40 @@
 // takes the next one. A dry run before every broadcast keeps that rare.
 
 import type { PolkadotSigner } from "polkadot-api";
-import { describeDispatchError, signedOrigin } from "@getsome/funding";
+import type { TokenSpec } from "@getsome/core";
+import {
+  describeDispatchError,
+  isStable,
+  priceNativeFeeIn,
+  signedOrigin,
+  stableLocation,
+  stableTxOptions,
+  type Stable,
+} from "@getsome/funding";
 import { bounded } from "./bounded";
 import type { AssetHubApi } from "./fees";
+import { mayStillLand, PAY_MORTAL_PERIOD } from "./mortality";
 import { MAX_REJECTIONS, WithdrawRejectedError } from "./tick";
 
 /** Headroom on the payment's fee estimate, percent. */
 export const PAY_FEE_HEADROOM_PCT = 25;
 
-/** The least a sale's key must hold once the provider is paid for the worker to send it home,
- *  planck: 0.1 PAS. Below it the fees of the way back take most of it, and it stays on the key. */
-export const SALE_RESIDUE_RETURN_FLOOR = 1_000_000_000n;
+/** The least a sale's key must hold of `token` once the provider is paid for the worker to send it
+ *  home, base units: a whole unit of a stable, a tenth of the native. Below it the fees of the way
+ *  back take most of it, and it stays on the key. */
+export const residueReturnFloor = (token: TokenSpec): bigint => {
+  const unit = 10n ** BigInt(token.decimals);
+  return isStable(token.symbol) ? unit : unit / 10n;
+};
 
-/** The same floor for a sale's key that holds USDT, base units: 1 USDT. */
-export const USDT_RESIDUE_RETURN_FLOOR = 1_000_000n;
-
-/** What a payment in USDT keeps for its own fee, which the key pays in USDT through the pool: 0.1
- *  USDT, many times what a transfer costs on Asset Hub. */
-export const USDT_PAY_FEE_ALLOWANCE = 100_000n;
-
-/** Blocks a payment stays valid after the block it is anchored at. Signed into the payment
- *  rather than left to papi's default, since `exactPaymentLanded` counts on it to call an
- *  unlanded attempt dead. */
-const PAY_MORTAL_PERIOD = 64;
+/** The stable the key pays in and is charged in, by its token-table symbol and pallet-assets id;
+ *  null for the native. A pallet-assets token that is not a stable cannot pay its own fee, so no
+ *  payment is made in it. */
+function stableOf(token: TokenSpec): { symbol: Stable; assetHubId: number } | null {
+  if (token.assetHubId === undefined) return null;
+  if (!isStable(token.symbol)) throw new Error(`no exact payment can be made in ${token.symbol}`);
+  return { symbol: token.symbol, assetHubId: token.assetHubId };
+}
 
 /** Cross-tick memory for the payment. The driver persists it; `payExactOnce` mutates it. */
 export interface ExactPayState {
@@ -46,7 +56,7 @@ export interface ExactPayState {
   nonce: number;
   /** An attempt at `nonce` may have left: set before its broadcast. */
   inFlight: boolean;
-  /** The key's balance of what it pays when that attempt left, base units. */
+  /** The key's balance in the token when that attempt left, base units. */
   balanceBefore: string | null;
   /** The block that attempt is anchored at: it can land only within PAY_MORTAL_PERIOD blocks of
    *  it, so once the finalized chain is past that with the nonce unmoved, it never will. */
@@ -81,18 +91,17 @@ export interface ExactPayInput {
   key: { address: string; signer: PolkadotSigner };
   /** The provider's deposit address, SS58. */
   to: string;
-  /** Exactly what the provider expects, base units. */
+  /** Exactly what the provider expects, base units of `token`. */
   amount: bigint;
-  /** A pallet-assets id to pay in instead of PAS. The fee is then the caller's to arrange through
-   *  `signOptions` (ChargeAssetTxPayment in the same asset), since the key holds no PAS. */
-  assetId?: number;
+  /** The token the key holds and the provider takes: the native, or a stable, which pays the
+   *  transfer's fee itself. */
+  token: TokenSpec;
   tickTimeoutMs: number;
   submitTimeoutMs: number;
   signOptions?: Record<string, unknown>;
   /** The number of the block `signOptions` anchors the payment at. */
   anchorNumber?: number;
-  /** The key's balance of what it pays, free PAS or its holding of `assetId`, and its nonce on
-   *  Asset Hub, at the finalized head. */
+  /** The key's balance in `token` and its nonce on Asset Hub, at the finalized head. */
   readKey: () => Promise<{ free: bigint; nonce: number }>;
   /** The finalized head's number on Asset Hub. */
   readFinalizedNumber?: () => Promise<number>;
@@ -101,47 +110,57 @@ export interface ExactPayInput {
   onTx?: (info: { call: "pay"; txHash: string; block?: number }) => void;
 }
 
-/** The transfer: `amount` to `to`, of PAS or of the asset `assetId` names, the key kept alive with
- *  what is left. */
-export function buildExactPay(api: AssetHubApi, to: string, amount: bigint, assetId?: number) {
-  const dest = { type: "Id", value: to } as const;
-  return assetId === undefined
-    ? api.tx.Balances.transfer_keep_alive({ dest, value: amount })
-    : api.tx.Assets.transfer_keep_alive({ id: assetId, target: dest, amount });
+/** The transfer: `amount` of `token` to `to`, the key kept alive with what is left. */
+export function buildExactPay(api: AssetHubApi, to: string, amount: bigint, token: TokenSpec) {
+  const target = { type: "Id" as const, value: to };
+  if (token.assetHubId === undefined) {
+    return api.tx.Balances.transfer_keep_alive({ dest: target, value: amount });
+  }
+  return api.tx.Assets.transfer_keep_alive({ id: token.assetHubId, target, amount });
 }
 
+/** The options a payment in `token` is signed and priced with: a stable charges the fee in
+ *  itself, the native needs nothing. */
+const feeOptionsOf = (token: TokenSpec): Record<string, unknown> => {
+  const stable = stableOf(token);
+  return stable === null ? {} : stableTxOptions(stable.symbol);
+};
+
 /**
- * The least the key must hold on Asset Hub to pay `amount` to `to`: the amount, the transfer's
- * fee with headroom, and the existential deposit the key keeps. The sale is held to it before
- * anything leaves People.
+ * The least the key must hold of `token` on Asset Hub to pay `amount` to `to`: the amount, the
+ * transfer's fee with headroom, priced into a stable through its pool, and what the key keeps to
+ * stay alive: the existential deposit in the native, the asset's min_balance in a stable, read
+ * live. The sale is held to it before anything leaves People.
  */
 export async function exactPaymentFloor(
   api: AssetHubApi,
   from: string,
   to: string,
   amount: bigint,
+  token: TokenSpec,
 ): Promise<bigint> {
-  const [fee, ed] = await Promise.all([
-    buildExactPay(api, to, amount).getEstimatedFees(from),
-    api.constants.Balances.ExistentialDeposit(),
+  const stable = stableOf(token);
+  const feeNative = await buildExactPay(api, to, amount, token).getEstimatedFees(
+    from,
+    feeOptionsOf(token) as never,
+  );
+  const [fee, keep] = await Promise.all([
+    stable === null
+      ? feeNative
+      : priceNativeFeeIn(api, stableLocation(stable.symbol), feeNative, stable.symbol),
+    stable === null ? api.constants.Balances.ExistentialDeposit() : minBalanceOf(api, stable),
   ]);
-  return amount + (fee * BigInt(100 + PAY_FEE_HEADROOM_PCT)) / 100n + ed;
+  return amount + (fee * BigInt(100 + PAY_FEE_HEADROOM_PCT)) / 100n + keep;
 }
 
-/**
- * The least the key must hold of the asset `assetId` to pay `amount` of it: the amount, `fee` for
- * the transfer's fee, which the key pays in the same asset, and the asset's minimum balance, which
- * the key keeps. The sale is held to it before anything leaves People.
- */
-export async function exactAssetPaymentFloor(
+/** A stable's `min_balance` on Asset Hub, below which an account of it is reaped. */
+async function minBalanceOf(
   api: AssetHubApi,
-  assetId: number,
-  amount: bigint,
-  fee: bigint,
+  stable: { symbol: Stable; assetHubId: number },
 ): Promise<bigint> {
-  const asset = await api.query.Assets.Asset.getValue(assetId);
-  if (asset === undefined) throw new Error(`asset ${assetId} is not on Asset Hub`);
-  return amount + fee + asset.min_balance;
+  const details = await api.query.Assets.Asset.getValue(stable.assetHubId);
+  if (details === undefined) throw new Error(`${stable.symbol} is not an asset on Asset Hub`);
+  return details.min_balance;
 }
 
 /**
@@ -196,7 +215,7 @@ export async function exactPaymentLanded(
       input.tickTimeoutMs,
       "finalized head read",
     );
-    if (finalized > anchor + PAY_MORTAL_PERIOD) {
+    if (!mayStillLand(anchor, finalized)) {
       state.inFlight = false;
       state.balanceBefore = null;
       state.anchor = null;
@@ -214,7 +233,7 @@ export async function payExactOnce(input: ExactPayInput, state: ExactPayState): 
   const key = await bounded(input.readKey(), input.tickTimeoutMs, "key read");
   if (judge(key, state, input.amount) === "paid") return;
 
-  const tx = buildExactPay(input.assetHubApi, input.to, input.amount, input.assetId);
+  const tx = buildExactPay(input.assetHubApi, input.to, input.amount, input.token);
   const dr = await bounded(
     input.assetHubApi.apis.DryRunApi.dry_run_call(
       signedOrigin(input.key.address) as never,
@@ -239,6 +258,7 @@ export async function payExactOnce(input: ExactPayInput, state: ExactPayState): 
   await input.onBeforeSubmit?.();
   const res = await bounded(
     tx.signAndSubmit(input.key.signer, {
+      ...feeOptionsOf(input.token),
       ...input.signOptions,
       nonce: state.nonce,
       mortality: { mortal: true, period: PAY_MORTAL_PERIOD },

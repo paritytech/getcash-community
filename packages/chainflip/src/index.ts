@@ -4,6 +4,7 @@ export {
   SOURCES,
   SOURCE_CONFIGS,
   SOURCE_CONFIG_BY_ID,
+  assetHubSourceFor,
   formatSourceAmount,
   type SourceConfig,
 } from "./sources";

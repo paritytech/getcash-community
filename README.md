@@ -10,8 +10,9 @@ If you experience problems with any product or service that was built on or depl
 A prototype funding surface for Polkadot App mobile hosts. It receives an inbound asset, crypto or
 fiat-sourced, on an ephemeral account on Asset Hub, converts it into CASH on the People chain,
 and hands the result to the host. The same surface runs the other way at `#/withdraw`: it takes
-CASH out of the host's purse and delivers PAS to an Asset Hub address. The prototype consists of
-a static Nuxt 4 single-page app plus a background worker, both published to bulletin/DotNS.
+CASH out of the host's purse and delivers DOT, dotUSD, USDT or USDC to an Asset Hub address, or
+carries it on through Chainflip or Meld. The prototype consists of a static Nuxt 4 single-page
+app plus a background worker, both published to bulletin/DotNS.
 
 ## Architecture
 
@@ -70,42 +71,63 @@ The off-ramp reuses the pieces above in the other direction. The page at `#/with
 fresh ephemeral key under a `wd:` label and asks the host to pay the CASH into it, under a payment
 id derived from the key. The worker watches that key on People and runs two transactions signed
 by it: a swap that buys the PAS the fees need, then one XCM that withdraws everything the key
-holds and lands it on the destination account on Asset Hub. The key is left empty and reaped.
-On Asset Hub the destination takes DOT, dotUSD, USDT or USDC, and the sale inside the XCM follows
-the on-ramp's tiers the other way: the PSM redeems the CASH for USDT one to one less its fee,
-with the pool as the fallback when the PSM cannot serve; the pool sells the CASH for DOT, and for
-a stable sells that DOT again on the stable's pool; dotUSD is the CASH sent as it is. The
-PSM redeem runs inside the same XCM: the key's origin travels with it, the redeem runs as the
-key's account on Asset Hub, and the fee refund and the PAS that travelled are sold for USDT too.
-Whatever the tier, the fee PAS that travels with the CASH ends up in the landing token, so the
-destination is credited one asset.
-The sale is decided from the token picked at quote time with the on-ramp's own rule and frozen on
-the hand-off, so the worker never re-decides it. Arrival is a
-balance read at the head, like every other read in the engine: the destination's balance in that
-token is read just before the XCM leaves, and the run is done once it has grown by what the Asset
-Hub dry run said would land. Hosts serve the current head and nothing older, so nothing follows
-block history. `@getsome/withdraw` holds the program, the sizing and the tick;
-`worker/src/withdraw-engine.js` drives it.
+holds and lands it on Asset Hub. The key's People account is left empty and reaped.
+On Asset Hub the destination takes DOT, dotUSD, USDT or USDC, and the sale follows the on-ramp's
+tiers the other way: the PSM redeems the CASH for USDT one to one less its fee, with the pool as
+the fallback when the PSM cannot serve; the pool sells the CASH for DOT inside the XCM, and for a
+stable sells that DOT again on the stable's pool; dotUSD is the CASH sent as it is. Whatever the
+tier, the fee PAS that travels with the CASH ends up in the landing token, so the destination is
+credited one asset.
+The sale is decided at quote time, from the token the user picks for Asset Hub or, for a
+Chainflip or Meld destination, under the on-ramp's fiat rule: USDT through the PSM when it can
+serve, PAS through the pool otherwise. The PSM serves when it has room for the amount plus a tenth
+of it, 20 CASH at the least, once the app's own open PSM withdrawals are counted against that
+room. The sale is frozen on the hand-off, and the worker never re-decides it.
+On the PSM tier the XCM makes no sale: it lands the CASH on the key's own Asset Hub account, the
+PAS that travelled sold for CASH, and the key signs one more transaction there, a
+`Utility.batch_all` of `Psm.redeem` and `Assets.transfer_all` of the USDT to the destination, or
+the redeem alone for a provider, its fee paid in CASH. `batch_all` reverts whole on a refusal, and
+the dry run before it names the PSM's own error. When the PSM has no room for the redeem the
+worker waits on Asset Hub, spending nothing, off its run clock and without bound, and the journey
+shows its ordinary status; room comes back with every mint. A refusal that waiting cannot clear,
+the pair paused three times over, or once the fee moved past the quoted rate or an amount the
+pallet will not take, holds the withdrawal with the CASH safe on the key. The journey then offers
+"Try again", which starts the count over, and "Sell on the pool", one swap from CASH through PAS
+to USDT paid to the same destination; the worker never takes the pool by itself.
+Arrival is a balance read at the head, like every other read in the engine: the destination's
+balance in the landing token is read just before the XCM, or on the PSM tier the redeem, leaves,
+and the run is done once it has grown by what the Asset Hub dry run said would land. Hosts serve
+the current head and nothing older, so nothing follows block history. `@getsome/withdraw` holds
+the program, the sizing, the redeem and the tick; `worker/src/withdraw-engine.js` drives it.
 
 Withdrawals are a second record kind in the same request store as the top-ups, moved by the
 same observations and the same reconcile.
 
-A withdrawal to a bank or a card is a sale through Meld. The page quotes it for an exact PAS
-figure, sized from the pool with room for the seller's KYC, and opens the provider's SELL session
-for that figure; the seller does KYC on the provider's page. Nothing is asked of the purse until
-the provider names its deposit address, which the page reads off the adapter and checks against
-the figure agreed, and until the order and the price are checked once more. Then the purse pays
-the key, the worker's message leg lands the sale's PAS on the key's own Asset Hub account, and the
-rail leg pays the provider exactly that figure, once, at a nonce it pins, after the adapter
-confirms the address, the asset and the amount, and within an hour of the purse being asked. What
-the sale landed above the figure goes home as CASH when it is worth the way back (0.1 PAS or more;
-less stays on the key), and the quote says about how much: the worker hands the key to the funding
-engine, which converts and claims it into the purse as it does an on-ramp, and starts that job
-again if it fails, up to three times. A sale that ends before the provider is paid, because the
-price moved past the figure, the provider closed or changed the order, or the hour ran out, sends
-everything on the key home the same way. A payment whose answer was lost holds the job until the
-chain shows it landed or outlived its mortality; only a key whose chain state contradicts the
-payment stops the job for a person.
+A withdrawal to a Chainflip network or through Meld lands the sale's token on the key's own Asset
+Hub account and pays the provider from there. For Chainflip the page opens the channel for USDT
+or DOT on Asset Hub, whichever the sale lands, and the worker sweeps the key into it once the
+token is there.
+
+A withdrawal to a bank or a card is a sale through Meld. The page quotes it for an exact figure in
+the sale's token, sized from what the sale lands, on the pool tier under its floor with room for
+the seller's KYC and on the PSM tier at the redeem's exact rate, and opens the provider's SELL
+session in that token for that figure; the seller does KYC on the provider's page. Nothing is
+asked of the purse until the provider names its deposit address, which the page reads off the
+adapter and checks against the figure agreed, and until the order and the price are checked once
+more. Then the purse pays the key, the worker's message leg lands the sale's token on the key's
+own Asset Hub account, on the PSM tier through the redeem, and the rail leg pays the provider
+exactly that figure, once, at a nonce it pins, after the adapter confirms the address, the asset
+and the amount, and within an hour of the purse being asked. What the sale landed above the
+figure goes home as CASH when it is worth the way back (a tenth of the token or more; less stays
+on the key), and the quote says about how much: the worker hands the key to the funding engine,
+which converts and claims it into the purse as it does an on-ramp, and starts that job again if
+it fails, up to three times. The residue's route is the one tier the worker decides, since no
+user was quoted a figure for it: USDT goes back through the PSM when it can serve and through the
+stable pool otherwise, PAS through the pool. A sale that ends before the provider is paid, because
+the price moved past the figure, the provider closed or changed the order, or the hour ran out,
+sends everything on the key home the same way, wherever it is. A payment whose answer was lost
+holds the job until the chain shows it landed or outlived its mortality; only a key whose chain
+state contradicts the payment stops the job for a person.
 
 ### Rails as packages
 
@@ -165,7 +187,7 @@ brand/        the product icon used in the bulletin manifest
 | `@getsome/core`      | session state machine, flow store, re-entry logic, port types    |
 | `@getsome/ephemeral` | seed to keypair derivation, handoff secret encoding, refund keys |
 | `@getsome/funding`   | the funding program the worker runs on Asset Hub                 |
-| `@getsome/withdraw`  | the withdrawal legs the worker runs on People, swap then XCM     |
+| `@getsome/withdraw`  | withdrawal legs: swap and XCM on People, the redeem on Asset Hub |
 | `@getsome/chainflip` | crypto rail over the Chainflip SDK                               |
 | `@getsome/meld`      | card and bank rail over the Meld adapter                         |
 | `@getsome/people`    | People chain port: CASH balances and the handoff submit          |
