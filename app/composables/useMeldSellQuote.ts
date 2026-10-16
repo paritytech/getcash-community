@@ -27,7 +27,7 @@ import {
   type SupportedCountry,
   type SupportedMethod,
 } from "~~/lib/supported";
-import { localeCountry } from "../utils/locale";
+import { detectedCountryNow } from "./useDetectedCountry";
 import { meldSellClient } from "../withdraw/meld-client";
 
 /** A priced sale: where it pays out, what the key pays, and the provider line for it. */
@@ -68,12 +68,12 @@ const FALLBACK_PAYOUT_METHOD = { card: "PAYOUT_TO_CARD", bank: "PAYOUT_TO_BANK" 
  *  the seller's choice should outlive it. */
 let lastCountry: string | null = null;
 
-/** The region a sale starts from: the one chosen before, else the device's own, where this method
- *  pays out there, else a SEPA one, until geolocation lands. */
-function startingCountry(method: "card" | "bank"): string {
-  const detected = lastCountry ?? localeCountry();
-  if (detected === null) return "DE";
-  return method === "card" || bankRailCountries().includes(detected) ? detected : "DE";
+/** The region a sale starts from: the one chosen before, else the geo cache where detection has
+ *  already answered, else the device locale, UNfiltered — a region with no payout rail still
+ *  prices as "choose another country", which is the truth about the seller. The route re-commits
+ *  once the async lookup lands (MeldWithdrawRoute), unless the seller chose before. */
+function startingCountry(): string {
+  return lastCountry ?? detectedCountryNow() ?? "DE";
 }
 
 /** What a sale of Meld code `code` sells: an asset on Asset Hub with no swap (null), PAS under
@@ -158,7 +158,9 @@ export function sellableCorridor(
 }
 
 export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
-  const country = ref(startingCountry(method));
+  /** The starting region is one the seller chose on the other method, not a detected one. */
+  const chosenBefore = lastCountry !== null;
+  const country = ref(startingCountry());
   watch(country, (next) => {
     lastCountry = next;
   });
@@ -330,6 +332,7 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
 
   return {
     country,
+    chosenBefore,
     countries,
     corridors,
     quote,

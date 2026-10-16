@@ -230,6 +230,50 @@ describe("createMeldClient error mapping", () => {
     ).rejects.toThrow(/5\.00 USD/);
   });
 
+  it("names the asked region on BelowMinimum, since the geo default picked it", async () => {
+    const { impl } = stubFetch(400, {
+      error: { tag: "BelowMinimum", value: { amount: "5.00", currency: "USD" } },
+    });
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+    await expect(
+      client.getQuote({
+        country: "US",
+        sourceCurrencyCode: "USD",
+        destinationCurrencyCode: "DOT_ASSETHUB",
+        sourceAmount: "1.00",
+        paymentMethodType: "CREDIT_DEBIT_CARD",
+      }),
+    ).rejects.toThrow(/your region \(United States\)/);
+  });
+
+  it("names the asked region on RegionUnavailable", async () => {
+    const { impl } = stubFetch(400, { error: { tag: "RegionUnavailable" } });
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+    await expect(
+      client.getQuote({
+        country: "DE",
+        sourceCurrencyCode: "EUR",
+        destinationCurrencyCode: "DOT_ASSETHUB",
+        sourceAmount: "50.00",
+        paymentMethodType: "CREDIT_DEBIT_CARD",
+      }),
+    ).rejects.toThrow(/Not available in your region \(Germany\) yet\./);
+  });
+
+  it("names a region Intl cannot, by its own code", async () => {
+    const { impl } = stubFetch(400, { error: { tag: "RegionUnavailable" } });
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+    await expect(
+      client.getQuote({
+        country: "ZZ",
+        sourceCurrencyCode: "USD",
+        destinationCurrencyCode: "DOT_ASSETHUB",
+        sourceAmount: "50.00",
+        paymentMethodType: "CREDIT_DEBIT_CARD",
+      }),
+    ).rejects.toThrow(/your region \(ZZ\)/);
+  });
+
   it("names the failing call for a tag it does not know", async () => {
     const { impl } = stubFetch(500, { error: { tag: "SomethingNew" } });
     const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
