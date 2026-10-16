@@ -17,7 +17,8 @@
 // again on the stable's pool; the PSM redeems the CASH for its stable one to one less the
 // redemption fee; the dotUSD tier keeps the CASH and lands it as it is. Whatever the tier, the PAS
 // that travelled with the CASH ends up in the landing asset too, so one asset is deposited. The
-// program names an asset claimer so a trap on Asset Hub is recoverable.
+// program names an asset claimer so a trap on Asset Hub is recoverable: the key, as its own signed
+// origin names it there, so the key itself can claim the trap back.
 //
 // The PSM redeem is a signed call, so the XCM keeps the key's origin across the hop: on Asset Hub
 // the origin is the key's account under People, which has an account of its own there. The CASH
@@ -84,6 +85,17 @@ const account = (hex: string) => ({
     type: "X1",
     // papi encodes fixed-size binaries from their hex-string form; a raw Uint8Array mis-encodes.
     value: { type: "AccountId32", value: { network: undefined, id: hex } },
+  },
+});
+
+/** The claimer as Asset Hub names a signed account: under the relay network, Polkadot on Polkadot
+ *  and on Paseo alike. claim_assets looks a trap up by the claimant's own origin, so a claimer
+ *  without the network matches no signed account, and only Root could recover the trap. */
+const claimer = (hex: string) => ({
+  parents: 0,
+  interior: {
+    type: "X1",
+    value: { type: "AccountId32", value: { network: { type: "Polkadot" }, id: hex } },
   },
 });
 
@@ -154,7 +166,7 @@ export function buildSwap(peopleApi: PeopleApi, args: SwapArgs) {
 function remoteProgram(destinationHex: string, claimerHex: string, sale: Sale) {
   const hints = {
     type: "SetHints",
-    value: { hints: [{ type: "AssetClaimer", value: { location: account(claimerHex) } }] },
+    value: { hints: [{ type: "AssetClaimer", value: { location: claimer(claimerHex) } }] },
   };
   if (sale.tier === "psm") {
     const stable = STABLE_TOKENS[sale.external].location;
