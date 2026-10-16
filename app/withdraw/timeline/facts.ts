@@ -34,16 +34,22 @@ function workerFiled(record: WithdrawalRecord, call: "swap" | "withdraw" | "pay"
   return worker?.known === true && (worker.txs?.some((tx) => tx.call === call) ?? false);
 }
 
-/** The rail saw the key's payment: it reports the deposit at or past `received`. */
+/** The rail saw the key's payment: it reports the deposit at or past `received`, or did before
+ *  it failed. */
 function railSawPayment(record: WithdrawalRecord): boolean {
-  const { stage } = record.rail;
-  return stage === "received" || stage === "processing" || stage === "delivered";
+  const { stage, stageAt } = record.rail;
+  if (stage === "received" || stage === "processing" || stage === "delivered") return true;
+  return stageAt?.received !== undefined || stageAt?.processing !== undefined;
 }
 
 /** The key paid the rail: the worker filed the payment, the rail saw it, or the rail ended in a
- *  way only possible with the funds. */
+ *  way only possible with the funds. A sale's provider is only followed once paid, so any ending
+ *  it reports is one. */
 export function handedToRail(record: WithdrawalRecord): boolean {
   if (railSawPayment(record)) return true;
+  const { rail } = record;
+  if (rail.provider === "meld" && rail.stage === "failed" && rail.failure !== undefined)
+    return true;
   const kind = railFailureKind(record);
   if (kind !== undefined && RAIL_HAD_FUNDS.has(kind)) return true;
   return workerFiled(record, "pay");
@@ -76,6 +82,12 @@ function arrivalAwaited(record: WithdrawalRecord): boolean {
 
 const fact = (at: number | null | undefined): Fact => (at == null ? {} : { at });
 
+/** When the leg the record is on opened: the status's own stamp, or the one a failure kept. */
+function legOpenedAt({ status }: WithdrawalRecord): number | undefined {
+  if (status.kind === "failed") return status.legAt;
+  return status.kind === "converting" || status.kind === "sending" ? status.at : undefined;
+}
+
 export function withdrawalMilestones(
   record: WithdrawalRecord,
 ): ReachedMilestones<WithdrawalMilestone> {
@@ -95,24 +107,28 @@ export function withdrawalMilestones(
     );
   }
   if (rank >= 2 && arrivalAwaited(record)) {
-    reached.converted = fact(status.kind === "converting" ? status.at : undefined);
+    reached.converted = fact(legOpenedAt(record));
   }
   if (rank >= 3) {
     reached.converted = {};
-    reached.moved = fact(status.kind === "sending" ? status.at : undefined);
-    // The rail's stamp is its last change, so it dates the last of its milestones reached, which
-    // is the one the current line is timed from. Before the rail sees the key's payment its last
-    // change is the leg's opening, so a hand-off the worker alone vouches for is timed from there
-    // rather than standing still until the rail reports.
+    reached.moved = fact(legOpenedAt(record));
+    // The last milestone reached dates the current line. The rail stamps the stages it saw;
+    // its last change dates a hand-off the worker alone vouches for, which is then the leg's
+    // opening, so the line moves rather than standing still until the rail reports. A failure
+    // overwrites that stamp, so a failed rail falls back to the stage stamps and the leg.
+    const { stageAt } = rail;
+    const lastChange = rail.stage === "failed" ? undefined : rail.updatedAt;
+    const received = stageAt?.received ?? stageAt?.processing ?? lastChange ?? legOpenedAt(record);
+    const processing = stageAt?.processing ?? lastChange ?? received;
     if (railDispatched(record)) {
       reached.handed = {};
       reached.processed = {};
       reached.dispatched = fact(rail.updatedAt);
     } else if (railSendingOn(record)) {
       reached.handed = {};
-      reached.processed = fact(rail.updatedAt);
+      reached.processed = fact(processing);
     } else if (handedToRail(record)) {
-      reached.handed = fact(rail.updatedAt);
+      reached.handed = fact(received);
     }
   }
   return reached;

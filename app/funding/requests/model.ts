@@ -442,7 +442,8 @@ export type WithdrawalStatus =
   | { kind: "converting"; at: number; step: SendingStep }
   | { kind: "sending"; at: number }
   | { kind: "sent"; at: number }
-  | { kind: "failed"; at: number; recoverable: boolean }
+  /** `legAt` is when the leg that failed opened, for the line the failure stopped. */
+  | { kind: "failed"; at: number; recoverable: boolean; legAt?: number }
   | { kind: "expired"; at: number }
   | { kind: "cancelled"; at: number };
 
@@ -663,6 +664,8 @@ export interface WithdrawalRailState {
   delayed?: boolean;
   failure?: RailState["failure"];
   updatedAt: number;
+  /** When the rail first reported each stage; kept through a failure, which `updatedAt` is not. */
+  stageAt?: { received?: number; processing?: number };
 }
 
 export interface WithdrawalRecord {

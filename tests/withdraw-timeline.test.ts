@@ -354,6 +354,15 @@ describe("withdrawal timeline", () => {
     expect(rail.message?.delay).toBe(true);
   });
 
+  it("sends to the wallet on the direct rail, where nothing is exchanged", () => {
+    const arriving = record({
+      status: { kind: "converting", at: at(3), step: "await-arrival" },
+    });
+    expect(withdrawalTimeline(arriving, { now: at(4) }).message?.text).toBe(
+      "Sending your DOT to your wallet",
+    );
+  });
+
   it("words a delay on the rail leg as the rail's, not the conversion's", () => {
     // The rail is slow to see the key's payment: the conversion itself is long done.
     const handing = withdrawalTimeline(
@@ -526,16 +535,17 @@ describe("withdrawal timeline", () => {
       "return-funds",
     ],
     [
-      "the card declined the payout",
-      failed(sale(), "egress-failed", "send", false, {
+      // The sale rail reports every ending as unknown, once the provider was paid.
+      "the provider ended the sale",
+      failed(sale(), "unknown", "send", false, {
         rail: {
           provider: "meld",
           stage: "failed",
           updatedAt: at(5),
-          failure: { kind: "egress-failed", message: "declined" },
+          failure: { kind: "unknown", message: "The provider could not complete the payout." },
         },
       }),
-      5,
+      4,
       "close",
     ],
   ] as const)("fails the milestone after the last reached on %s", (_, rec, index, action) => {
@@ -568,6 +578,63 @@ describe("withdrawal timeline", () => {
   it("tries a refunded sale again rather than walking it into a wallet", () => {
     const refunded = failed(sale(), "refunded", "send", true);
     expect(withdrawalTimeline(refunded, { now: at(6) }).failure?.action).toBe("try-again");
+  });
+
+  it("keeps the fill a rail failure stopped the line at, without the memo", () => {
+    // Chainflip saw the payment at minute 4, and failed the swap at minute 9.
+    const ended = chainflip({
+      status: { kind: "failed", at: at(9), recoverable: true, legAt: at(3) },
+      failure: failure("refunded", "send", true),
+      rail: {
+        provider: "chainflip",
+        stage: "failed",
+        status: "failed",
+        updatedAt: at(9),
+        failure: { kind: "refunded", message: "refunded" },
+        stageAt: { received: at(4) },
+      },
+    });
+    const { view } = withdrawalTimeline(ended, { now: at(10) });
+    expect(marks(view!)).toBe("●●●●✕○○");
+    // Five minutes into the three-minute exchange phase when it stopped.
+    expect(view?.lines[3]).toBeCloseTo(LINE_LIMIT * (1 - Math.exp(-5)), 10);
+    // A sale's rail stamps nothing before it fails: the line is timed from the leg's opening.
+    const unseen = failed(sale(), "unknown", "send", false, {
+      status: { kind: "failed", at: at(9), recoverable: false, legAt: at(3) },
+      rail: {
+        provider: "meld",
+        stage: "failed",
+        updatedAt: at(9),
+        failure: { kind: "unknown", message: "ended" },
+      },
+    });
+    expect(withdrawalTimeline(unseen, { now: at(10) }).view?.lines[3]).toBeGreaterThan(0);
+  });
+
+  it("keeps a sale's hand-off once the provider ended it, whatever the worker remembers", () => {
+    const ended = failed(sale(), "unknown", "send", false, {
+      rail: {
+        provider: "meld",
+        stage: "failed",
+        updatedAt: at(5),
+        failure: { kind: "unknown", message: "ended" },
+      },
+      witnesses: { worker: { known: false, at: at(6) } },
+    });
+    expect(marks(withdrawalTimeline(ended, { now: at(6) }).view!)).toBe("●●●●✕○○");
+  });
+
+  it("starts the rail leg over on a retry, with nothing of the old job", () => {
+    // The old job's payment and failure are gone with the retry: the line is at the hand-off.
+    const retried = chainflip({
+      status: { kind: "sending", at: at(12) },
+      rail: { provider: "chainflip", stage: "waiting", updatedAt: at(12) },
+      witnesses: { worker: { known: false, at: at(12) } },
+    });
+    const { view, message } = withdrawalTimeline(retried, { now: at(13) });
+    expect(marks(view!)).toBe("●●●○○○○");
+    expect(view?.state).toBe("active");
+    expect(message?.text).toBe("Handing your money to the exchange");
   });
 
   it("never moves a line back once shown", () => {

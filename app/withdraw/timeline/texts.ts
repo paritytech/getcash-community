@@ -38,7 +38,10 @@ function phaseText(record: WithdrawalRecord, index: number): string {
       case 0:
         return CONVERTING;
       case 1:
-        return "Moving your money to the exchange";
+        // The direct rail delivers with the arrival itself: nothing is exchanged.
+        return record.rail.provider === "direct"
+          ? `Sending your ${asset} to your wallet`
+          : "Moving your money to the exchange";
       case 2:
         return "Handing your money to the exchange";
       case 3:

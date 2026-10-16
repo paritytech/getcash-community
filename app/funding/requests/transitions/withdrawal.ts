@@ -137,7 +137,12 @@ function failed(
   at: number,
   failure: WithdrawalFailure,
 ): WithdrawalRecord {
-  const status: WithdrawalStatus = { kind: "failed", at, recoverable: failure.recoverable };
+  const status: WithdrawalStatus = {
+    kind: "failed",
+    at,
+    recoverable: failure.recoverable,
+    ...("at" in record.status ? { legAt: record.status.at } : {}),
+  };
   return { ...record, status, failure };
 }
 
@@ -178,6 +183,23 @@ function railFailureKind(kind: FailureKind): WithdrawalFailureKind {
   }
 }
 
+/** The rail's first report of each stage, carried past later reads and the failure that
+ *  overwrites `updatedAt`. */
+function stageStamps(
+  before: WithdrawalRailState,
+  read: WithdrawalRailState,
+  at: number,
+): Pick<WithdrawalRailState, "stageAt"> {
+  const { stage } = read;
+  const stamped = stage === "received" || stage === "processing";
+  if (!stamped && before.stageAt === undefined) return {};
+  const stageAt = {
+    ...before.stageAt,
+    ...(stamped && before.stageAt?.[stage] === undefined ? { [stage]: at } : {}),
+  };
+  return { stageAt };
+}
+
 /** The provider's word on the swap, folded onto the rail: delivered completes the request, a
  *  failure ends the rail leg, and only a refund can be tried again. */
 function railRead(
@@ -186,8 +208,9 @@ function railRead(
   at: number,
 ): WithdrawalRecord {
   if (record.rail.provider === "direct") return record;
-  const rail = mergeRail(record.rail, railFromSwapStatus(record.rail.provider, reading, at));
-  if (rail === record.rail) return record;
+  const read = mergeRail(record.rail, railFromSwapStatus(record.rail.provider, reading, at));
+  if (read === record.rail) return record;
+  const rail = { ...read, ...stageStamps(record.rail, read, at) };
   const next = { ...record, rail };
   const rank = withdrawalRankOf(next);
   if (rail.stage === "delivered")
@@ -608,11 +631,13 @@ function applyUser(record: WithdrawalRecord, observation: UserObservation): With
         };
       }
       if (record.failure?.step === "send") {
-        // The PAS is back on the key: the rail leg starts over with a fresh channel.
+        // The PAS is back on the key: the rail leg starts over with a fresh channel and a fresh
+        // job, so the old job's payment and failure say nothing about it.
         return {
           ...rest,
           status: { kind: "sending", at },
           rail: { provider: record.rail.provider, stage: "waiting", updatedAt: at },
+          witnesses: { ...rest.witnesses, worker: { known: false, at } },
         };
       }
       const worker = record.witnesses.worker;

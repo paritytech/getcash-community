@@ -271,6 +271,15 @@ describe("withdrawal: the worker", () => {
     const swapping = run(railed(), worker(at(3), { ...landed, rail: reading("swapping") }));
     expect(swapping.status).toEqual({ kind: "sending", at: at(3) });
     expect(swapping.rail).toMatchObject({ stage: "processing", status: "swapping" });
+    // Each stage keeps the time it was first seen; a read that moves nothing stamps nothing.
+    expect(swapping.rail.stageAt).toEqual({ processing: at(3) });
+    expect(
+      run(
+        railed(),
+        worker(at(2), { ...landed, rail: reading("receiving") }),
+        worker(at(3), { ...landed, rail: reading("swapping") }),
+      ).rail.stageAt,
+    ).toEqual({ received: at(2), processing: at(3) });
 
     // A read that says the same again moves nothing but the witness: the rail is kept as is.
     const same = run(swapping, worker(at(4), { ...landed, rail: reading("swapping") }));
@@ -315,15 +324,17 @@ describe("withdrawal: the worker", () => {
         }),
       ),
     );
-    expect(refunded.status).toEqual({ kind: "failed", at: at(4), recoverable: true });
+    // The failure keeps the leg's opening and the stages the rail saw, which its stamp loses.
+    expect(refunded.status).toEqual({ kind: "failed", at: at(4), recoverable: true, legAt: at(3) });
     expect(refunded.failure).toMatchObject({ kind: "refunded", step: "send" });
-    expect(refunded.rail.stage).toBe("failed");
+    expect(refunded.rail).toMatchObject({ stage: "failed", stageAt: { processing: at(3) } });
 
-    // A retry starts the rail leg over with a fresh channel.
+    // A retry starts the rail leg over with a fresh channel, and nothing of the old job.
     const again = run(refunded, { source: "user", at: at(5), event: "retry" });
     expect(again.status).toEqual({ kind: "sending", at: at(5) });
     expect(again.rail).toEqual({ provider: "chainflip", stage: "waiting", updatedAt: at(5) });
     expect(again.failure).toBeUndefined();
+    expect(again.witnesses.worker).toEqual({ known: false, at: at(5) });
 
     const stuck = run(
       following,
@@ -338,7 +349,7 @@ describe("withdrawal: the worker", () => {
         }),
       ),
     );
-    expect(stuck.status).toEqual({ kind: "failed", at: at(4), recoverable: false });
+    expect(stuck.status).toEqual({ kind: "failed", at: at(4), recoverable: false, legAt: at(3) });
     expect(stuck.failure).toMatchObject({
       kind: "egress-failed",
       step: "send",
@@ -362,7 +373,7 @@ describe("withdrawal: the worker", () => {
         }),
       ),
     );
-    expect(stale.status).toEqual({ kind: "failed", at: at(3), recoverable: true });
+    expect(stale.status).toEqual({ kind: "failed", at: at(3), recoverable: true, legAt: at(3) });
     expect(stale.failure).toMatchObject({
       kind: "channel-expired",
       step: "send",
@@ -390,7 +401,7 @@ describe("withdrawal: the worker", () => {
         }),
       ),
     );
-    expect(none.status).toEqual({ kind: "failed", at: at(3), recoverable: false });
+    expect(none.status).toEqual({ kind: "failed", at: at(3), recoverable: false, legAt: at(3) });
     expect(none.failure).toMatchObject({
       kind: "unknown",
       step: "send",
@@ -417,7 +428,7 @@ describe("withdrawal: the worker", () => {
       prompted(),
       worker(at(3), job({ phase: "failed", failure: "rejected", fundsSeenAt: seen })),
     );
-    expect(rejected.status).toEqual({ kind: "failed", at: at(3), recoverable: true });
+    expect(rejected.status).toEqual({ kind: "failed", at: at(3), recoverable: true, legAt: at(1) });
     expect(rejected.failure?.step).toBe("convert");
   });
 
