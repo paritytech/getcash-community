@@ -326,17 +326,19 @@ describe("requests store: foreground, clock and user actions", () => {
     },
   );
 
-  it("draws a swap from Bitcoin under its Asset Hub source the same live and from history", async () => {
+  it("draws a swap from Bitcoin the same live and from history", async () => {
     setRequestsClock(() => FIXTURE_NOW);
     const requests = useRequestsStore();
-    await requests.create(AWAITING_REF, migrated(awaitingDepositCryptoRecord));
-    requests.setForeground(AWAITING_REF);
-    await requests.observe(AWAITING_REF, {
+    const swap: ActiveFlowRecord = { ...awaitingDepositCryptoRecord, sourceId: "btc" };
+    const ref = refOf(swap);
+    await requests.create(ref, migrated(swap));
+    requests.setForeground(ref);
+    await requests.observe(ref, {
       source: "core",
       at: at(2),
       state: {
         phase: "swapping",
-        sourceId: "dot-assethub",
+        sourceId: "btc",
         quote: null,
         deposit: DEPOSIT,
         swap: "receiving",
@@ -344,7 +346,7 @@ describe("requests store: foreground, clock and user actions", () => {
       },
     });
 
-    const record = requests.get(AWAITING_REF);
+    const record = requests.get(ref);
     if (record?.kind !== "top-up") throw new Error("the top-up is gone");
     const { inProgress } = projectFundingTopUps(
       projectChainflipTopUps([record], at(3)),
@@ -683,7 +685,7 @@ describe("requests store: foreground, clock and user actions", () => {
     // Screen and demo flags only: request state belongs on the record, which the deck reaches
     // through observations alone. The supported catalog is the same kind of thing — what the
     // adapter says the picker may list, not anything about a request — and a deck run has no
-    // adapter to answer for it.
+    // adapter to answer for it; so is the quote's word that the region routes no such method.
     const allowed = new Set([
       "quoted",
       "method",
@@ -692,6 +694,8 @@ describe("requests store: foreground, clock and user actions", () => {
       "resuming",
       "supportedCountries",
       "corridorByCountry",
+      "meldCorridor",
+      "meldMethodUnavailable",
     ]);
     expect([...written].filter((name) => !allowed.has(name))).toEqual([]);
   });

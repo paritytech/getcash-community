@@ -4,7 +4,14 @@
 // route.
 import { computed } from "vue";
 import { RefreshCcw, X } from "lucide-vue-next";
-import { formatBaseUnits, sellAmountOf, SELL_TOKEN } from "@getsome/meld";
+import { TOKENS } from "@getsome/core";
+import {
+  formatBaseUnits,
+  isDirectUsdt,
+  sellAmountOf,
+  SELL_TOKEN,
+  type SellToken,
+} from "@getsome/meld";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
 import { SUCCESS_ICON_DELAY_MS, useJourneySuccess } from "../../composables/useJourneySuccess";
 import {
@@ -76,9 +83,14 @@ const residueNote = computed(() => {
   if (residue.stuck === true) {
     return "What was left could not come back to your balance on its own.";
   }
+  // A sale that redeemed its CASH for USDT, through an offramp lane or sold directly, leaves USDT on
+  // the key, the rest PAS.
+  const sale = props.record.sale;
+  const usdt = sale?.lane !== undefined || isDirectUsdt(sale?.sellCode);
+  const token = usdt ? (TOKENS.USDT as SellToken) : SELL_TOKEN;
   // Shown to the sale's decimals; a remainder below them is not worth a line.
-  const shown = residue.amount === undefined ? 0n : sellAmountOf(BigInt(residue.amount));
-  const amount = shown === 0n ? null : `${formatBaseUnits(SELL_TOKEN, shown)} ${SELL_TOKEN.symbol}`;
+  const shown = residue.amount === undefined ? 0n : sellAmountOf(BigInt(residue.amount), token);
+  const amount = shown === 0n ? null : `${formatBaseUnits(token, shown)} ${token.symbol}`;
   if (!residue.returning) {
     return amount === null
       ? null

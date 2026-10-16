@@ -80,7 +80,9 @@ describe("preview deck staging", () => {
       const name = label.slice(label.indexOf(" ") + 1);
       if (name.startsWith("top-up / list") || name.startsWith("top-up / history")) {
         expect(stage, name).toEqual({ kind: "shell" });
-      } else if (name.startsWith("top-up / card / ")) expect(stage?.kind, name).toBe("journey");
+      } else if (/^top-up \/ (card|bank) \/ (summary|picker)/.test(name))
+        expect(stage, name).toEqual({ kind: "package", route: name.split(" / ")[1] });
+      else if (name.startsWith("top-up / card / ")) expect(stage?.kind, name).toBe("journey");
       else if (name.startsWith("top-up / crypto / ")) expect(stage?.route, name).toBe("crypto");
       else if (name.startsWith("withdrawal / ")) expect(stage?.kind, name).toBe("withdraw-package");
     }

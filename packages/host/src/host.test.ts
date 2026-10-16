@@ -38,6 +38,16 @@ describe("createHostStorageAdapter", () => {
     expect(await adapter.read("k")).toBeNull();
   });
 
+  it("reads a key the host answers with an empty string as absent", async () => {
+    // The product SDK's readString answers "" for a key never written, not null.
+    const adapter = createHostStorageAdapter({
+      readString: async () => "",
+      writeString: async () => {},
+      clear: async () => {},
+    });
+    expect(await adapter.read("k")).toBeNull();
+  });
+
   it("emits local subscribe events on write and clear (unprefixed keys)", async () => {
     const { host } = fakeHostStorage();
     const adapter = createHostStorageAdapter(host);

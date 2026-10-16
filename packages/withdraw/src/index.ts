@@ -69,12 +69,15 @@ export type {
 export { buildSweep, freshSweepState, sweepOnce } from "./sweep";
 export type { SweepInput, SweepState } from "./sweep";
 export {
+  exactAssetPaymentFloor,
   exactPaymentFloor,
   exactPaymentLanded,
   freshExactPayState,
   payExactOnce,
   PaymentUnresolvedError,
   SALE_RESIDUE_RETURN_FLOOR,
+  USDT_PAY_FEE_ALLOWANCE,
+  USDT_RESIDUE_RETURN_FLOOR,
 } from "./pay-exact";
 export { cashInFor, pasOutFor } from "./pool";
 export type { PoolReserves } from "./pool";
