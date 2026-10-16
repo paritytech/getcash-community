@@ -25,8 +25,10 @@ jobs:
         with:
           faucet-seed: ${{ secrets.VITE_FAUCET_SEED }}
           chainflip-broker-api-key: ${{ secrets.VITE_CHAINFLIP_BROKER_API_KEY }}
-          meld-base-url: ${{ secrets.VITE_MELD_BASE_URL }}
-          meld-product-id: ${{ secrets.VITE_MELD_PRODUCT_ID }}
+          # TEST ONLY (combined testing branch): hardcoded at the Railway adapter deploy so this
+          # preview talks to it rather than the repo-secret adapter. Revert with the branch.
+          meld-base-url: https://adapter-production-bf4b.up.railway.app
+          meld-product-id: getcash.dev
           offramp-lanes: ${{ vars.VITE_OFFRAMP_LANES }}
           # Fork and Dependabot PRs cannot read repo secrets and skip the deploy job; empty
           # values do not fail their build.
