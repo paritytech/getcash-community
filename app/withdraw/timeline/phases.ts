@@ -23,6 +23,10 @@ const NOMINAL: Readonly<Record<WithdrawalRailProvider, readonly [number, ...numb
   meld: [90 * SECOND, 90 * SECOND, 5 * MINUTE, 10 * MINUTE, HOUR, 23 * HOUR],
 };
 
+/** The expected time of the PSM tier's redeem on Asset Hub, after the arrival. Initial value:
+ *  measure it. */
+const REDEEM_MS = MINUTE;
+
 /** The expected time of a phase on a rail. A rail with no figure for the phase runs on its last:
  *  the direct rail has no rail leg, yet a failure or a retry can leave a direct record on it. */
 export function nominalMs(provider: WithdrawalRailProvider, index: number): number {
@@ -57,22 +61,42 @@ function conversionParts(record: WithdrawalRecord, expectedMs: number): PhaseInp
   return [part("swap"), part("convert")];
 }
 
-/** When the leg the phase is on opened, for the phases the status itself stamps: the arrival
- *  (phase 1) from the step that awaits it, the hand-off (phase 2) from the rail leg's start. The
- *  later phases are timed from the milestone that opened them, which the facts stamp. */
-function legOpenedAt({ status }: WithdrawalRecord, index: number): number | undefined {
-  if (index === 1) return status.kind === "converting" ? status.at : undefined;
-  if (index === 2) return status.kind === "sending" ? status.at : undefined;
-  return undefined;
+/** The arrival's parts: the funds reaching Asset Hub, then on the PSM tier the redeem there.
+ *  Each is timed from when the worker reached its step. The arrival is complete once the worker
+ *  is at the redeem, or once the PSM held it there. */
+function arrivalParts(record: WithdrawalRecord, expectedMs: number): PhaseInput["parts"] {
+  const { status } = record;
+  const startedAt = status.kind === "converting" ? status.at : undefined;
+  if (record.handoff.tier !== "psm") {
+    return [{ weight: 1, expectedMs, ...(startedAt === undefined ? {} : { startedAt }) }];
+  }
+  const redeemAt = status.kind === "converting" && status.step === "redeem" ? status.at : undefined;
+  const arrived = redeemAt !== undefined || record.failure?.kind === "held";
+  return [
+    {
+      weight: 1,
+      expectedMs,
+      ...(arrived ? { completed: {} } : startedAt === undefined ? {} : { startedAt }),
+    },
+    {
+      weight: 1,
+      expectedMs: REDEEM_MS,
+      ...(redeemAt === undefined ? {} : { startedAt: redeemAt }),
+    },
+  ];
 }
 
 export function withdrawalPhase(record: WithdrawalRecord, index: number): PhaseInput {
   const expectedMs = nominalMs(record.rail.provider, index);
   const stuck = workerStuck(record);
   if (index === 0) return { parts: conversionParts(record, expectedMs), delayed: stuck };
-  const startedAt = legOpenedAt(record, index);
+  if (index === 1) return { parts: arrivalParts(record, expectedMs), delayed: stuck };
+  // The hand-off is timed from the rail leg's start; the later phases from the milestone that
+  // opened them, which the facts stamp.
+  const { status } = record;
+  const startedAt = index === 2 && status.kind === "sending" ? status.at : undefined;
   return {
     parts: [{ weight: 1, expectedMs, ...(startedAt === undefined ? {} : { startedAt }) }],
-    delayed: stuck || (index >= 2 && record.rail.delayed === true),
+    delayed: stuck || record.rail.delayed === true,
   };
 }

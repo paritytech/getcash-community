@@ -299,6 +299,66 @@ describe("withdrawal timeline", () => {
     expect(convert.parts[1]!.startedAt).toBe(at(2));
   });
 
+  it("times the PSM tier's redeem after the arrival, each from the step that opened it", () => {
+    const psm = { ...record().handoff, tier: "psm" as const, external: "USDT" as const };
+    const arriving = record({
+      handoff: psm,
+      status: { kind: "converting", at: at(3), step: "await-arrival" },
+    });
+    const arrival = withdrawalPhase(arriving, 1);
+    expect(arrival.parts.map((part) => part.completed)).toEqual([undefined, undefined]);
+    expect(arrival.parts[0]!.startedAt).toBe(at(3));
+
+    const redeeming = record({
+      handoff: psm,
+      status: { kind: "converting", at: at(5), step: "redeem" },
+    });
+    const redeem = withdrawalPhase(redeeming, 1);
+    expect(redeem.parts.map((part) => part.completed)).toEqual([{}, undefined]);
+    expect(redeem.parts[1]!.startedAt).toBe(at(5));
+    // Through the memo the journey uses, the line keeps moving once the redeem begins rather
+    // than standing still until a clock started over catches up.
+    const timelineOf = createWithdrawalTimelines();
+    timelineOf(arriving, at(4));
+    const atRedeem = timelineOf(redeeming, at(5)).view!.lines[1]!;
+    expect(timelineOf(redeeming, at(5) + 15_000).view!.lines[1]!).toBeGreaterThan(atRedeem);
+
+    // The pool tier has no redeem: the arrival is the whole phase.
+    expect(withdrawalPhase(record({ status: arriving.status }), 1).parts).toHaveLength(1);
+  });
+
+  it("fails a held PSM withdrawal past the arrival and offers a retry", () => {
+    const held = failed(
+      record({ handoff: { ...record().handoff, tier: "psm", external: "USDT" } }),
+      "held",
+      "convert",
+      true,
+      {
+        witnesses: {
+          worker: {
+            known: true,
+            phase: "failed",
+            done: false,
+            fundsSeenAt: at(1),
+            lastTickAt: at(5),
+            at: at(5),
+            failure: "held",
+            txs: [
+              { call: "swap", txHash: "0x1" },
+              { call: "withdraw", txHash: "0x2" },
+            ],
+          },
+        },
+      },
+    );
+    const timeline = withdrawalTimeline(held, { now: at(6) });
+    expect(marks(timeline.view!)).toBe("●●✕○○○○");
+    expect(timeline.failure?.action).toBe("try-again");
+    // The hold is at the redeem, so the stopped line reads past the arrival with nothing shown
+    // before.
+    expect(timeline.view!.lines[1]).toBeGreaterThanOrEqual(LINE_LIMIT / 2);
+  });
+
   it("fills the current line from the status that opened the leg", () => {
     const { view } = withdrawalTimeline(chainflip({ status: { kind: "sending", at: at(3) } }), {
       now: at(3) + 60_000,

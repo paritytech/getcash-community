@@ -442,6 +442,8 @@ async function core(request: PreviewRequest, step: number, state: PaymentState) 
 type WithdrawalPreviewState =
   | "awaiting-payment"
   | "converting"
+  | "redeeming"
+  | "held"
   | "sending"
   | "handed"
   | "rail-sending"
@@ -467,6 +469,25 @@ function paidRailWitness(at: number): WithdrawalRecord["witnesses"] {
   };
 }
 
+/** The worker's witness of a hold: the XCM left People and the PSM refused the redeem. */
+function heldWitness(at: number): WithdrawalRecord["witnesses"] {
+  return {
+    worker: {
+      known: true,
+      phase: "failed",
+      done: false,
+      fundsSeenAt: at,
+      lastTickAt: at,
+      at,
+      failure: "held",
+      txs: [
+        { call: "swap", txHash: `0x${"7b".repeat(32)}` },
+        { call: "withdraw", txHash: `0x${"7c".repeat(32)}` },
+      ],
+    },
+  };
+}
+
 async function previewWithdrawal(
   index: number,
   state: WithdrawalPreviewState,
@@ -483,15 +504,17 @@ async function previewWithdrawal(
       ? { kind: "awaiting-payment" }
       : state === "converting"
         ? { kind: "converting", at, step: "swap" }
-        : state === "sent"
-          ? { kind: "sent", at }
-          : state === "refunded" || state === "payment-failed"
-            ? { kind: "failed", at, recoverable: true }
-            : state === "expired"
-              ? { kind: "expired", at }
-              : state === "cancelled"
-                ? { kind: "cancelled", at }
-                : { kind: "sending", at };
+        : state === "redeeming"
+          ? { kind: "converting", at, step: "redeem" }
+          : state === "sent"
+            ? { kind: "sent", at }
+            : state === "refunded" || state === "payment-failed" || state === "held"
+              ? { kind: "failed", at, recoverable: true }
+              : state === "expired"
+                ? { kind: "expired", at }
+                : state === "cancelled"
+                  ? { kind: "cancelled", at }
+                  : { kind: "sending", at };
   const failure: WithdrawalRecord["failure"] =
     state === "refunded"
       ? { kind: "refunded", step: "send", message: "the swap refunded", recoverable: true }
@@ -502,9 +525,16 @@ async function previewWithdrawal(
             message: "The payment from your balance did not go through.",
             recoverable: true,
           }
-        : state === "expired"
-          ? { kind: "expired", step: "payment", message: "expired", recoverable: false }
-          : undefined;
+        : state === "held"
+          ? {
+              kind: "held",
+              step: "convert",
+              message: "withdrawal held: the PSM refused the redeem 3 times",
+              recoverable: true,
+            }
+          : state === "expired"
+            ? { kind: "expired", step: "payment", message: "expired", recoverable: false }
+            : undefined;
   const railStatus =
     state === "rail-sending" ? "sending" : state === "rail-sent" ? "sent" : undefined;
   const key = {
@@ -543,7 +573,10 @@ async function previewWithdrawal(
       destination,
       landingHex: `0x${"5d".repeat(32)}`,
       rail: "chainflip",
-      tier: "pool",
+      // The redeem and its hold are the PSM tier's.
+      ...(state === "redeeming" || state === "held"
+        ? { tier: "psm" as const, external: "USDT" as const }
+        : { tier: "pool" as const }),
       assetHubGenesis: "0xah",
       peopleGenesis: "0xpe",
       peopleParaId: 1004,
@@ -579,7 +612,7 @@ async function previewWithdrawal(
     },
     ...(failure === undefined ? {} : { failure }),
     ...(state === "awaiting-payment" ? {} : { paidAmount: "25000000" }),
-    witnesses: state === "handed" ? paidRailWitness(at) : {},
+    witnesses: state === "handed" ? paidRailWitness(at) : state === "held" ? heldWitness(at) : {},
   };
   await requests.create(ref, record);
   requests.setForeground(ref);
@@ -2511,6 +2544,23 @@ export const SCENES: Scene[] = [
     apply: async (s, f) => {
       base(s, f);
       await previewWithdrawal(0, "converting");
+    },
+  },
+  {
+    name: "withdrawal / crypto / journey: redeeming",
+    stage: { kind: "withdraw-package", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewWithdrawal(13, "redeeming");
+    },
+  },
+  {
+    // The PSM refused the redeem three times: Try again, or the pool for what it would land.
+    name: "withdrawal / crypto / journey: held",
+    stage: { kind: "withdraw-package", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewWithdrawal(14, "held");
     },
   },
   {
