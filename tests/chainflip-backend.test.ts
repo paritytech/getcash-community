@@ -37,6 +37,31 @@ describe("the Chainflip SDK the app builds", () => {
     await expect(sdk.requestDepositAddressV2({} as never)).resolves.toBe("opened");
   });
 
+  it("offers a sale's swap on mainnet only with a broker, so no seller does KYC for a refused channel", async () => {
+    vi.doMock("@getsome/core", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("@getsome/core")>();
+      return { ...actual, NETWORK: { ...actual.NETWORK, testnet: false } };
+    });
+    try {
+      expect((await backendWith("abc123")).saleChannelsOpen()).toBe(true);
+      expect((await backendWith("")).saleChannelsOpen()).toBe(false);
+    } finally {
+      vi.doUnmock("@getsome/core");
+    }
+  });
+
+  it("offers a sale's swap on Perseverance, which still takes the default broker", async () => {
+    vi.doMock("@getsome/core", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("@getsome/core")>();
+      return { ...actual, NETWORK: { ...actual.NETWORK, testnet: true } };
+    });
+    try {
+      expect((await backendWith("")).saleChannelsOpen()).toBe(true);
+    } finally {
+      vi.doUnmock("@getsome/core");
+    }
+  });
+
   it("tells the pickers and the host whether a broker is configured", async () => {
     expect((await backendWith("abc123")).brokerConfigured()).toBe(true);
     expect((await backendWith("")).brokerConfigured()).toBe(false);

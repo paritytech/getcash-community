@@ -210,6 +210,29 @@ describe("a fiat sale in KYC", () => {
     expect(later.status.kind).toBe("awaiting-payment");
   });
 
+  it("takes a deposit named DOT_STATEMINT for a direct sale: Meld's older code for the same DOT", () => {
+    const next = reduce(
+      sale(),
+      read(at(5), disclosed("23.4521", "DOT_STATEMINT")),
+    ) as WithdrawalRecord;
+    expect(next.status.kind).toBe("awaiting-payment");
+    expect(next.handoff.channel).toMatchObject({ address: DEPOSIT, amount: COMMITTED });
+  });
+
+  it("takes a USDT deposit for a direct sale of USDT, read in USDT's units", () => {
+    const base = sale();
+    const usdt = sale({
+      sale: { ...base.sale!, sellCode: "USDT_STATEMINT", cryptoAmount: "25000000" },
+    });
+    const next = reduce(usdt, read(at(5), disclosed("25", "USDT_STATEMINT"))) as WithdrawalRecord;
+    expect(next.status.kind).toBe("awaiting-payment");
+    expect(next.handoff.channel).toMatchObject({ address: DEPOSIT, amount: "25000000" });
+    // DOT for the same figure is not this sale's deposit.
+    const dot = reduce(usdt, read(at(5), disclosed("25", "DOT_STATEMINT"))) as WithdrawalRecord;
+    expect(dot.failure?.kind).toBe("sale-mismatch");
+    expect(dot.handoff.channel).toBeUndefined();
+  });
+
   it("refuses an address for another amount or asset, and nothing is asked of the balance", () => {
     for (const reading of [disclosed("23.4522"), disclosed("23.4521", "USDT_ASSETHUB")]) {
       const next = reduce(sale(), read(at(5), reading)) as WithdrawalRecord;
@@ -337,6 +360,26 @@ describe("the worker's words for a sale", () => {
     // The worker sends the CASH home: there is no order left to try again.
     expect(next.failure).toMatchObject({ kind: "unfundable", step: "convert", recoverable: false });
     expect(withdrawalFailureText(next.failure!)).toMatch(/coming back to your balance/);
+  });
+
+  it("tells the seller a refunded swap comes home on its own, and offers no retry", () => {
+    const landed = reduce(
+      moving(),
+      worker(at(10), { fundsSeenAt: at(7), landed: true, phase: "follow" }),
+    ) as WithdrawalRecord;
+    const next = reduce(
+      landed,
+      worker(at(11), {
+        fundsSeenAt: at(7),
+        landed: true,
+        phase: "failed",
+        failure: "rail-failed",
+        rail: { status: "failed" },
+      }),
+    ) as WithdrawalRecord;
+    expect(next.failure).toMatchObject({ kind: "sale-closed", step: "send", recoverable: false });
+    expect(withdrawalFailureText(next.failure!)).toMatch(/coming back to your balance/);
+    expect(withdrawalFailureText(next.failure!)).not.toMatch(/DOT|yourself/);
   });
 
   it("does not try a closed or lost order again: the key goes home whole", () => {
@@ -470,5 +513,72 @@ describe("the worker's words for a sale", () => {
     ) as WithdrawalRecord;
     expect(stuck.residue).toEqual({ amount: "7000000000", returning: true, stuck: true });
     expect(stuck.status.kind).toBe("sent");
+  });
+});
+
+describe("a fiat sale through an offramp lane", () => {
+  const SOLANA_DEPOSIT = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
+  const laneSale = () =>
+    sale({
+      sale: { ...sale().sale!, lane: "usdt-solana", cryptoAmount: "98850000" },
+    });
+  const laneDisclosed = (currency = "USDT_SOLANA"): MeldSaleReading => ({
+    status: "transaction_seen",
+    deposit: { address: SOLANA_DEPOSIT, amount: "98.85", currency },
+  });
+  const swap = {
+    id: "cf-channel-7",
+    address: "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5",
+    openedAt: at(6),
+    expiresAt: at(6) + 24 * 60 * MINUTE,
+    expectedEgress: "99150000",
+    amount: "99800000",
+  };
+
+  it("takes a deposit in the lane's asset, sized to its decimals", () => {
+    const next = reduce(laneSale(), read(at(5), laneDisclosed())) as WithdrawalRecord;
+    expect(next.handoff.channel).toMatchObject({ address: SOLANA_DEPOSIT, amount: "98850000" });
+  });
+
+  it("refuses a deposit in any other asset", () => {
+    const next = reduce(laneSale(), read(at(5), laneDisclosed("DOT_ASSETHUB"))) as WithdrawalRecord;
+    expect(next.failure?.kind).toBe("sale-mismatch");
+    expect(next.handoff.channel).toBeUndefined();
+  });
+
+  it("keeps the swap the page opened before the purse is asked, and no later one", () => {
+    const known = reduce(laneSale(), read(at(5), laneDisclosed()));
+    const opened = reduce(known, {
+      source: "user",
+      at: at(6),
+      event: "swap-opened",
+      channel: swap,
+    }) as WithdrawalRecord;
+    expect(opened.handoff.swap).toEqual(swap);
+    const asked = reduce(opened, {
+      source: "user",
+      at: at(7),
+      event: "payment-requested",
+      attempt: 0,
+      id: "pay-1",
+    });
+    const late = reduce(asked, {
+      source: "user",
+      at: at(8),
+      event: "swap-opened",
+      channel: { ...swap, id: "cf-channel-8" },
+    }) as WithdrawalRecord;
+    expect(late.handoff.swap?.id).toBe("cf-channel-7");
+  });
+
+  it("ignores a swap for a sale with no lane", () => {
+    const known = reduce(sale(), read(at(5), disclosed()));
+    const next = reduce(known, {
+      source: "user",
+      at: at(6),
+      event: "swap-opened",
+      channel: swap,
+    }) as WithdrawalRecord;
+    expect(next.handoff.swap).toBeUndefined();
   });
 });

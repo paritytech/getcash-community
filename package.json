@@ -29,6 +29,7 @@
     "@getsome/funding": "workspace:*",
     "@getsome/host": "workspace:*",
     "@getsome/meld": "workspace:*",
+    "@getsome/offramp": "workspace:*",
     "@getsome/people": "workspace:*",
     "@getsome/testing": "workspace:*",
     "@getsome/withdraw": "workspace:*",
