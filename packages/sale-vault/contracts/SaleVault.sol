@@ -207,10 +207,14 @@ contract SaleVault is ICFReceiver, ReentrancyGuard {
     }
 
     /**
-     * @notice Send a held amount back to its sale's own Asset Hub account. Permissionless: the home
-     *         was fixed when the delivery arrived, so anyone paying the gas can only help the seller.
+     * @notice Send a held amount back to its sale's own Asset Hub account. Operator-only: the swap's
+     *         `cfParameters` carry the source-chain refund address and the minimum price, so a caller
+     *         who supplied their own could set the refund to themselves and an impossible price and
+     *         have the kill refund the USDC to them on Arbitrum while the sale reads Returned. The
+     *         `home` destination is fixed on delivery, but the refund path is not, so this stays with
+     *         the operator; the app already returns through the operator-signed adapter, never here.
      */
-    function returnHeld(bytes32 ref, bytes calldata cfParameters) external nonReentrant {
+    function returnHeld(bytes32 ref, bytes calldata cfParameters) external onlyOperator nonReentrant {
         Sale storage sale = sales[ref];
         if (sale.status != Status.Held) revert NotHeld();
         uint256 amount = sale.held;
@@ -222,9 +226,10 @@ contract SaleVault is ICFReceiver, ReentrancyGuard {
     }
 
     /**
-     * @notice After Meld reports a paid sale refunded, send the refund to the seller's home from dust.
-     * @dev    Bounded by dust, not the sale amount: the sale's own amount already left to the provider,
-     *         so refunding more would break solvency.
+     * @notice After Meld reports a paid sale refunded, send the refund to the seller's home.
+     * @dev    Drawn from the free (unclaimed) USDC the refund arrived as, and capped at the sale's own
+     *         amount: that amount already left to the provider, so refunding more than it (or more than
+     *         the free balance holds) would break solvency.
      */
     function returnRefund(
         bytes32 ref,
@@ -234,9 +239,12 @@ contract SaleVault is ICFReceiver, ReentrancyGuard {
         Sale storage sale = sales[ref];
         if (sale.status != Status.Paid) revert NotPaid();
         if (amount == 0 || amount > sale.amount) revert BadAmount();
-        if (amount > dust) revert InsufficientDust();
+        // The provider's refund arrives as free (unclaimed) USDC, so it is sent from that, not from
+        // dust (the operator's gas float): a refund can exceed accumulated dust, and drawing it from
+        // dust would strand the refund in the contract while dust is short.
+        uint256 free = USDC.balanceOf(address(this)) - dust - heldTotal - stuck;
+        if (amount > free) revert InsufficientDust();
         sale.status = Status.Returned;
-        dust -= amount;
         _returnToHome(sale.home, amount, cfParameters);
         emit Returned(ref, amount, "refund");
     }

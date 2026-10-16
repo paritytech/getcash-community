@@ -283,9 +283,15 @@ function vaultOf(v: unknown): SaleVaultTarget | undefined {
   const o = v as Record<string, unknown>;
   if (
     typeof o.chain !== "string" ||
+    o.chain === "" ||
     typeof o.chainId !== "number" ||
     typeof o.contract !== "string"
   ) {
+    return undefined;
+  }
+  // The address becomes a swap's egress destination, so a malformed one is dropped rather than used:
+  // a positive integer chain id and a 20-byte EVM address, since the vault lives on an EVM chain.
+  if (!Number.isInteger(o.chainId) || o.chainId <= 0 || !/^0x[0-9a-fA-F]{40}$/.test(o.contract)) {
     return undefined;
   }
   return { chain: o.chain, chainId: o.chainId, contract: o.contract };

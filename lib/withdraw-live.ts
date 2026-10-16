@@ -352,6 +352,8 @@ export async function meldCommitmentFundable(
 const USDT_SALE_LANDING_MARGIN_BPS = 20n;
 // Destination gas the CCM egress runs SaleVault.cfReceive with, well over its worst-case path.
 const SALE_VAULT_CCM_GAS_BUDGET = "300000";
+// The SaleVault message is four 32-byte words; its length priced into the CCM quote.
+const SALE_VAULT_CCM_MESSAGE_BYTES = 128;
 
 /** The USDT a sale of `amount` CASH lands on the key: the PSM redeem it runs, the CASH it sells
  *  once the fees are out, what the redeem pays out, and the least of that a promise counts on, with
@@ -387,7 +389,14 @@ export async function sizeSwapSale(amount: bigint, lane: OfframpLane): Promise<S
   const { route, least } = await usdtSaleLanding(amount);
   const usdtIn = least - USDT_PAY_FEE_ALLOWANCE;
   if (usdtIn <= 0n) throw new Error("The amount does not cover the network fees.");
-  const quote = await quoteOutgoing(await saleSwapSdk(), usdtIn, lane.chainflip, ASSET_HUB_USDT);
+  // Arbitrum delivers into the SaleVault through a CCM call, and Chainflip takes that gas out of the
+  // egress. Size the sale on a quote that already includes it, so `commit` is what actually lands and
+  // the delivery does not fall below `committed` and strand every Arbitrum sale as Held.
+  const saleCcm =
+    lane.chainflip.chain === "Arbitrum"
+      ? { gasBudget: SALE_VAULT_CCM_GAS_BUDGET, messageLengthBytes: SALE_VAULT_CCM_MESSAGE_BYTES }
+      : undefined;
+  const quote = await quoteOutgoing(await saleSwapSdk(), usdtIn, lane.chainflip, ASSET_HUB_USDT, saleCcm);
   const token = laneSellToken(lane);
   // The lane's own buffer: its delivery fee can rise before the swap lands, by chain.
   const commit = sellAmountOf(laneCommit(lane, quote.egressAmount, quote.egressFee), token);

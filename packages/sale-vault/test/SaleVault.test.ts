@@ -200,13 +200,18 @@ describe("SaleVault", () => {
   });
 
   describe("returns", () => {
-    it("returnHeld swaps a held amount home and marks it Returned", async () => {
+    it("returnHeld swaps a held amount home and marks it Returned, operator only", async () => {
       const f = await loadFixture(deploy);
       await f.usdc.setBlocked(f.recipient.address, true);
       const ref = refOf("rh");
       const home = homeOf("rh");
       await deliver(f, encodeMessage(ref, f.recipient.address, 100_000_000n, home), 100_500_000n);
-      await expect(f.sale.connect(f.stranger).returnHeld(ref, CF)).to.emit(f.sale, "Returned");
+      // A stranger cannot supply their own cfParameters to redirect the kill-refund to themselves.
+      await expect(f.sale.connect(f.stranger).returnHeld(ref, CF)).to.be.revertedWithCustomError(
+        f.sale,
+        "NotOperator",
+      );
+      await expect(f.sale.connect(f.operator).returnHeld(ref, CF)).to.emit(f.sale, "Returned");
       expect(await f.sale.heldTotal()).to.equal(0n);
       expect((await f.sale.sales(ref)).status).to.equal(3); // Returned
       const swap = await f.vault.lastSwap();
@@ -216,7 +221,7 @@ describe("SaleVault", () => {
       expect(swap.dstAddress).to.equal(home);
     });
 
-    it("returnRefund pays from dust, operator only, at most once", async () => {
+    it("returnRefund sends home the free USDC a refund arrived as, operator only, at most once", async () => {
       const f = await loadFixture(deploy);
       const ref = refOf("rr");
       await deliver(
@@ -224,12 +229,9 @@ describe("SaleVault", () => {
         encodeMessage(ref, f.recipient.address, 100_000_000n, homeOf("rr")),
         100_500_000n,
       );
-      // Build up dust so a refund is solvent.
-      await deliver(
-        f,
-        encodeMessage(refOf("rr2"), f.recipient.address, 100_000_000n, homeOf("rr2")),
-        200_000_000n,
-      );
+      const dustBefore = await f.sale.dust();
+      // Meld sends the paid amount back: it lands as free (unclaimed) USDC on the vault, not as dust.
+      await f.usdc.mint(await f.sale.getAddress(), 100_000_000n);
       await expect(
         f.sale.connect(f.stranger).returnRefund(ref, 100_000_000n, CF),
       ).to.be.revertedWithCustomError(f.sale, "NotOperator");
@@ -237,6 +239,8 @@ describe("SaleVault", () => {
         f.sale,
         "Returned",
       );
+      // The refund came from the free balance, so the operator's dust float is untouched.
+      expect(await f.sale.dust()).to.equal(dustBefore);
       await expect(
         f.sale.connect(f.operator).returnRefund(ref, 1n, CF),
       ).to.be.revertedWithCustomError(f.sale, "NotPaid");

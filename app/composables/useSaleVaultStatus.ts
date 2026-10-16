@@ -20,7 +20,13 @@ export function useSaleVaultStatus(fundingRequestId: () => string | undefined) {
     const id = fundingRequestId();
     if (id === undefined) return;
     const next = await fetchSaleVaultStatus(id);
-    if (next !== null) status.value = next;
+    if (next !== null) {
+      status.value = next;
+      // Nothing more changes once the provider was paid or the hold was fully returned: stop polling.
+      if (next.status === "paid" || next.status === "returned" || next.returnStatus === "returned") {
+        stop();
+      }
+    }
   }
 
   /** Asks the adapter to return a held sale to its home, folding the outcome into the view. */
@@ -32,9 +38,15 @@ export function useSaleVaultStatus(fundingRequestId: () => string | undefined) {
     const out = await requestSaleVaultReturn(id);
     returning.value = false;
     if (out.outcome === "returning") status.value = out.status;
-    else if (out.outcome === "not-returnable")
-      error.value = "There is nothing to return for this sale.";
-    else if (out.outcome === "not-found") error.value = "This sale could not be found.";
+    else if (out.outcome === "not-returnable") {
+      // A 409 also lands when a return is already in flight (the sale is no longer Held). Re-read so
+      // the view shows the in-flight return rather than telling the seller there is nothing to return.
+      await refresh();
+      error.value =
+        status.value?.returnStatus === "returning" || status.value?.returnStatus === "returned"
+          ? "A return is already in progress for this sale."
+          : "There is nothing to return for this sale.";
+    } else if (out.outcome === "not-found") error.value = "This sale could not be found.";
     else error.value = "The return could not be started. Try again.";
   }
 
