@@ -596,6 +596,10 @@ type SalePreviewState =
   | "sending"
   | "preparing"
   | "paying-out"
+  /** The rail is taking longer than usual on the payout. */
+  | "delayed"
+  /** The provider sent; the funds are on their way to the card or bank. */
+  | "sent-on"
   | "sent"
   | "declined"
   | "provider-cancelled"
@@ -700,7 +704,7 @@ async function previewSale(
       stage:
         state === "sent"
           ? "delivered"
-          : state === "paying-out"
+          : state === "paying-out" || state === "delayed" || state === "sent-on"
             ? "processing"
             : state === "declined" || state === "provider-cancelled"
               ? "failed"
@@ -708,14 +712,18 @@ async function previewSale(
       updatedAt: at,
       ...(state === "paying-out"
         ? { status: "sending" as const }
-        : state === "declined"
-          ? { status: "failed" as const, failure: { kind: "unknown", message: "declined" } }
-          : state === "provider-cancelled"
-            ? {
-                status: "failed" as const,
-                failure: { kind: "deposit-rejected", message: "cancelled" },
-              }
-            : {}),
+        : state === "delayed"
+          ? { status: "sending" as const, delayed: true }
+          : state === "sent-on"
+            ? { status: "sent" as const }
+            : state === "declined"
+              ? { status: "failed" as const, failure: { kind: "unknown", message: "declined" } }
+              : state === "provider-cancelled"
+                ? {
+                    status: "failed" as const,
+                    failure: { kind: "deposit-rejected", message: "cancelled" },
+                  }
+                : {}),
     },
     ...(failure === undefined ? {} : { failure }),
     sale: {
@@ -740,7 +748,11 @@ async function previewSale(
             fundsSeenAt: startedAt,
             lastTickAt: at,
             at,
-            ...(state === "preparing" || state === "paying-out" || state === "sent"
+            ...(state === "preparing" ||
+            state === "paying-out" ||
+            state === "delayed" ||
+            state === "sent-on" ||
+            state === "sent"
               ? { txs: [{ call: "pay" as const, txHash: `0x${"7a".repeat(32)}` }] }
               : {}),
           },
@@ -2671,6 +2683,22 @@ export const SCENES: Scene[] = [
     },
   },
   {
+    name: "withdrawal / card / journey: delayed",
+    stage: { kind: "withdraw-package", route: "card", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewSale(13, "card", "delayed");
+    },
+  },
+  {
+    name: "withdrawal / card / journey: sent on",
+    stage: { kind: "withdraw-package", route: "card", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewSale(9, "card", "sent-on");
+    },
+  },
+  {
     name: "withdrawal / card / journey: paid out",
     stage: { kind: "withdraw-package", route: "card", step: "journey" },
     apply: async (s, f) => {
@@ -2708,6 +2736,22 @@ export const SCENES: Scene[] = [
     apply: async (s, f) => {
       base(s, f);
       await previewSale(10, "bank", "paying-out");
+    },
+  },
+  {
+    name: "withdrawal / bank / journey: delayed",
+    stage: { kind: "withdraw-package", route: "bank", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewSale(15, "bank", "delayed");
+    },
+  },
+  {
+    name: "withdrawal / bank / journey: sent on",
+    stage: { kind: "withdraw-package", route: "bank", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewSale(14, "bank", "sent-on");
     },
   },
   {
