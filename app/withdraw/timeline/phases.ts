@@ -14,18 +14,22 @@ const SECOND = 1_000;
 const MINUTE = 60 * SECOND;
 const HOUR = 60 * MINUTE;
 
+/** The expected time of the XCM from People to Asset Hub, the same leg on every rail. About
+ *  twice the 30 s measured on a device, so the line does not wait at its end on a slow block. */
+const ARRIVAL_MS = MINUTE;
+
 /** The expected time `T` of each phase per rail, in ms. Initial values: measure them. */
 const NOMINAL: Readonly<Record<WithdrawalRailProvider, readonly [number, ...number[]]>> = {
   // The direct rail lands with the XCM itself: its arrival absorbs the send.
-  direct: [90 * SECOND, 150 * SECOND],
-  chainflip: [90 * SECOND, 90 * SECOND, MINUTE, 3 * MINUTE, 2 * MINUTE, 15 * MINUTE],
+  direct: [90 * SECOND, ARRIVAL_MS],
+  chainflip: [90 * SECOND, ARRIVAL_MS, MINUTE, 3 * MINUTE, 2 * MINUTE, 15 * MINUTE],
   // A payout the provider settles in its own time, a bank's included.
-  meld: [90 * SECOND, 90 * SECOND, 5 * MINUTE, 10 * MINUTE, HOUR, 23 * HOUR],
+  meld: [90 * SECOND, ARRIVAL_MS, 5 * MINUTE, 10 * MINUTE, HOUR, 23 * HOUR],
 };
 
-/** The expected time of the PSM tier's redeem on Asset Hub, after the arrival. Initial value:
- *  measure it. */
-const REDEEM_MS = MINUTE;
+/** The expected time of the PSM tier's redeem on Asset Hub, after the arrival. About twice the
+ *  10 s measured on a device. */
+const REDEEM_MS = 20 * SECOND;
 
 /** The expected time of a phase on a rail. A rail with no figure for the phase runs on its last:
  *  the direct rail has no rail leg, yet a failure or a retry can leave a direct record on it. */
@@ -62,8 +66,9 @@ function conversionParts(record: WithdrawalRecord, expectedMs: number): PhaseInp
 }
 
 /** The arrival's parts: the funds reaching Asset Hub, then on the PSM tier the redeem there.
- *  Each is timed from when the worker reached its step. The arrival is complete once the worker
- *  is at the redeem, or once the PSM held it there. */
+ *  Each is timed from when the worker reached its step and takes the share of the line its
+ *  expected time does. The arrival is complete once the worker is at the redeem, or once the PSM
+ *  held it there. */
 function arrivalParts(record: WithdrawalRecord, expectedMs: number): PhaseInput["parts"] {
   const { status } = record;
   const startedAt = status.kind === "converting" ? status.at : undefined;
@@ -74,12 +79,12 @@ function arrivalParts(record: WithdrawalRecord, expectedMs: number): PhaseInput[
   const arrived = redeemAt !== undefined || record.failure?.kind === "held";
   return [
     {
-      weight: 1,
+      weight: expectedMs,
       expectedMs,
       ...(arrived ? { completed: {} } : startedAt === undefined ? {} : { startedAt }),
     },
     {
-      weight: 1,
+      weight: REDEEM_MS,
       expectedMs: REDEEM_MS,
       ...(redeemAt === undefined ? {} : { startedAt: redeemAt }),
     },

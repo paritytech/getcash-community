@@ -248,8 +248,8 @@ describe("withdrawal timeline", () => {
   });
 
   it("draws a direct record a failure left on the rail leg, which it has no phases of its own for", () => {
-    expect(withdrawalPhase(record(), 1).parts[0]!.expectedMs).toBe(150_000);
-    expect(withdrawalPhase(record(), 5).parts[0]!.expectedMs).toBe(150_000);
+    expect(withdrawalPhase(record(), 1).parts[0]!.expectedMs).toBe(60_000);
+    expect(withdrawalPhase(record(), 5).parts[0]!.expectedMs).toBe(60_000);
     const stranded = failed(record(), "unknown", "send");
     const { view } = withdrawalTimeline(stranded, { now: at(6) });
     expect(view?.state).toBe("failed");
@@ -316,6 +316,12 @@ describe("withdrawal timeline", () => {
     const redeem = withdrawalPhase(redeeming, 1);
     expect(redeem.parts.map((part) => part.completed)).toEqual([{}, undefined]);
     expect(redeem.parts[1]!.startedAt).toBe(at(5));
+    // The arrival's minute takes three quarters of the line and the redeem's 20 s the rest, so
+    // the line keeps one pace across the two.
+    expect(withdrawalTimeline(redeeming, { now: at(5) }).view?.lines[1]).toBeCloseTo(
+      (LINE_LIMIT * 3) / 4,
+      10,
+    );
     // Through the memo the journey uses, the line keeps moving once the redeem begins rather
     // than standing still until a clock started over catches up.
     const timelineOf = createWithdrawalTimelines();
@@ -356,7 +362,7 @@ describe("withdrawal timeline", () => {
     expect(timeline.failure?.action).toBe("try-again");
     // The hold is at the redeem, so the stopped line reads past the arrival with nothing shown
     // before.
-    expect(timeline.view!.lines[1]).toBeGreaterThanOrEqual(LINE_LIMIT / 2);
+    expect(timeline.view!.lines[1]).toBeGreaterThanOrEqual((LINE_LIMIT * 3) / 4);
   });
 
   it("fills the current line from the status that opened the leg", () => {
