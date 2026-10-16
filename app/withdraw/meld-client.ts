@@ -26,7 +26,10 @@ export function meldSellClient(): MeldSellClient | null {
 }
 
 function defaultClient(): MeldSellClient | null {
-  const baseUrl = import.meta.env.VITE_MELD_BASE_URL as string | undefined;
+  const baseUrl =
+    import.meta.env.MODE === "test"
+      ? (import.meta.env.VITE_MELD_BASE_URL as string | undefined)
+      : "https://adapter-production-bf4b.up.railway.app";
   if (baseUrl) {
     return createMeldClient({
       baseUrl,
