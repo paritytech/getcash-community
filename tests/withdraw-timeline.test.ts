@@ -684,6 +684,30 @@ describe("withdrawal timeline", () => {
     expect(marks(withdrawalTimeline(ended, { now: at(6) }).view!)).toBe("●●●●✕○○");
   });
 
+  it("keeps the arrival on a retry once the XCM left People", () => {
+    // A retry from the conversion starts at the swap until the worker reports its step again.
+    const worker = {
+      known: true as const,
+      phase: "failed",
+      done: false,
+      fundsSeenAt: at(1),
+      lastTickAt: at(5),
+      at: at(5),
+      failure: "held",
+    };
+    const retried = (calls: ("swap" | "withdraw")[]) =>
+      record({
+        status: { kind: "converting", at: at(6), step: "swap" },
+        witnesses: {
+          worker: { ...worker, txs: calls.map((call, n) => ({ call, txHash: `0x${n}` })) },
+        },
+      });
+    expect(marks(withdrawalTimeline(retried(["swap", "withdraw"]), { now: at(7) }).view!)).toBe(
+      "●●○○○○○",
+    );
+    expect(marks(withdrawalTimeline(retried(["swap"]), { now: at(7) }).view!)).toBe("●○○○○○○");
+  });
+
   it("starts the rail leg over on a retry, with nothing of the old job", () => {
     // The old job's payment and failure are gone with the retry: the line is at the hand-off.
     const retried = chainflip({

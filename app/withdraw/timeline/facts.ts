@@ -71,11 +71,15 @@ function railDispatched(record: WithdrawalRecord): boolean {
 }
 
 /** The conversion on the key is done and the arrival on Asset Hub awaited: the worker is at that
- *  step, or it filed the XCM out of People, which outlives a failure on the way. */
+ *  step, or it filed the XCM out of People, which outlives a failure on the way and the retry
+ *  after it. */
 function arrivalAwaited(record: WithdrawalRecord): boolean {
   const { status } = record;
-  if (status.kind === "converting") {
-    return SENDING_STEP_ORDER[status.step] >= SENDING_STEP_ORDER["await-arrival"];
+  if (
+    status.kind === "converting" &&
+    SENDING_STEP_ORDER[status.step] >= SENDING_STEP_ORDER["await-arrival"]
+  ) {
+    return true;
   }
   return workerFiled(record, "withdraw");
 }
