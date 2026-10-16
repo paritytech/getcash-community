@@ -438,9 +438,60 @@ async function core(request: PreviewRequest, step: number, state: PaymentState) 
  * frames draw it. Built by hand like the finished top-ups: the journey has to stand on the
  * record alone, with no live run behind it.
  */
+/** The crypto journey's states, each one frame of the section. */
+type WithdrawalPreviewState =
+  | "awaiting-payment"
+  | "converting"
+  | "redeeming"
+  | "held"
+  | "sending"
+  | "handed"
+  | "rail-sending"
+  | "rail-sent"
+  | "sent"
+  | "refunded"
+  | "payment-failed"
+  | "expired"
+  | "cancelled";
+
+/** The worker's witness with the key's payment to the rail filed. */
+function paidRailWitness(at: number): WithdrawalRecord["witnesses"] {
+  return {
+    worker: {
+      known: true,
+      phase: "rail",
+      done: false,
+      fundsSeenAt: at,
+      lastTickAt: at,
+      at,
+      txs: [{ call: "pay", txHash: `0x${"7a".repeat(32)}`, ok: true }],
+    },
+  };
+}
+
+/** The worker's witness of a hold: the XCM left People and the PSM refused the redeem. */
+function heldWitness(at: number): WithdrawalRecord["witnesses"] {
+  return {
+    worker: {
+      known: true,
+      phase: "failed",
+      done: false,
+      fundsSeenAt: at,
+      lastTickAt: at,
+      at,
+      failure: "held",
+      lastError: "withdrawal held: the PSM refused the redeem 3 times",
+      txs: [
+        { call: "swap", txHash: `0x${"7b".repeat(32)}`, ok: true },
+        { call: "withdraw", txHash: `0x${"7c".repeat(32)}`, ok: true },
+      ],
+    },
+  };
+}
+
 async function previewWithdrawal(
   index: number,
-  state: "converting" | "sending" | "sent" | "refunded",
+  state: WithdrawalPreviewState,
   over?: { amountHuman?: string; destination?: WithdrawalRecord["destination"] },
 ): Promise<void> {
   const requests = useRequestsStore();
@@ -450,13 +501,43 @@ async function previewWithdrawal(
   const startedAt = now - 6 * 60_000;
   const at = now - 2 * 60_000;
   const status: WithdrawalStatus =
-    state === "converting"
-      ? { kind: "converting", at, step: "swap" }
-      : state === "sending"
-        ? { kind: "sending", at }
-        : state === "sent"
-          ? { kind: "sent", at }
-          : { kind: "failed", at, recoverable: true };
+    state === "awaiting-payment"
+      ? { kind: "awaiting-payment" }
+      : state === "converting"
+        ? { kind: "converting", at, step: "swap" }
+        : state === "redeeming"
+          ? { kind: "converting", at, step: "redeem" }
+          : state === "sent"
+            ? { kind: "sent", at }
+            : state === "refunded" || state === "payment-failed" || state === "held"
+              ? { kind: "failed", at, recoverable: true }
+              : state === "expired"
+                ? { kind: "expired", at }
+                : state === "cancelled"
+                  ? { kind: "cancelled", at }
+                  : { kind: "sending", at };
+  const failure: WithdrawalRecord["failure"] =
+    state === "refunded"
+      ? { kind: "refunded", step: "send", message: "the swap refunded", recoverable: true }
+      : state === "payment-failed"
+        ? {
+            kind: "payment-failed",
+            step: "payment",
+            message: "The payment from your balance did not go through.",
+            recoverable: true,
+          }
+        : state === "held"
+          ? {
+              kind: "held",
+              step: "convert",
+              message: "withdrawal held: the PSM refused the redeem 3 times",
+              recoverable: true,
+            }
+          : state === "expired"
+            ? { kind: "expired", step: "payment", message: "expired", recoverable: false }
+            : undefined;
+  const railStatus =
+    state === "rail-sending" ? "sending" : state === "rail-sent" ? "sent" : undefined;
   const key = {
     label: `wd:eph:usdc-eth:${ref.tradeN}`,
     address: "13cKp88mpAujXcqAxDMFEpvDACJyWLXSTbKf6cwHTn92FGGF",
@@ -478,7 +559,12 @@ async function previewWithdrawal(
     route: "crypto",
     destination,
     key,
-    payment: { attempt: 1, requestedAt: startedAt, updatedAt: startedAt },
+    payment: {
+      attempt: 1,
+      requestedAt: startedAt,
+      updatedAt: startedAt,
+      ...(state === "payment-failed" ? { status: "failed" } : {}),
+    },
     deadline: { paymentExpiresAt: now + 3_600_000 },
     handoff: {
       label: key.label,
@@ -488,7 +574,10 @@ async function previewWithdrawal(
       destination,
       landingHex: `0x${"5d".repeat(32)}`,
       rail: "chainflip",
-      tier: "pool",
+      // The redeem and its hold are the PSM tier's.
+      ...(state === "redeeming" || state === "held"
+        ? { tier: "psm" as const, external: "USDT" as const }
+        : { tier: "pool" as const }),
       assetHubGenesis: "0xah",
       peopleGenesis: "0xpe",
       peopleParaId: 1004,
@@ -507,24 +596,24 @@ async function previewWithdrawal(
     status,
     rail: {
       provider: "chainflip",
-      stage: state === "refunded" ? "failed" : state === "sent" ? "delivered" : "processing",
+      stage:
+        state === "refunded"
+          ? "failed"
+          : state === "sent"
+            ? "delivered"
+            : railStatus === undefined
+              ? "waiting"
+              : "processing",
       updatedAt: at,
       ...(state === "refunded"
         ? { status: "failed" as const, failure: { kind: "refunded", message: "refunded" } }
-        : {}),
+        : railStatus === undefined
+          ? {}
+          : { status: railStatus }),
     },
-    ...(state === "refunded"
-      ? {
-          failure: {
-            kind: "refunded",
-            step: "send",
-            message: "the swap refunded",
-            recoverable: true,
-          },
-        }
-      : {}),
-    paidAmount: "25000000",
-    witnesses: {},
+    ...(failure === undefined ? {} : { failure }),
+    ...(state === "awaiting-payment" ? {} : { paidAmount: "25000000" }),
+    witnesses: state === "handed" ? paidRailWitness(at) : state === "held" ? heldWitness(at) : {},
   };
   await requests.create(ref, record);
   requests.setForeground(ref);
@@ -535,10 +624,26 @@ async function previewWithdrawal(
  * Kingdom, as the card frames draw it. The provider has named where the funds go and the purse
  * has paid the key; the worker is paying the provider or has.
  */
+/** The sale journey's states, each one frame of the card and bank sections. */
+type SalePreviewState =
+  | "kyc"
+  | "converting"
+  | "sending"
+  | "preparing"
+  | "paying-out"
+  /** The rail is taking longer than usual on the payout. */
+  | "delayed"
+  /** The provider sent; the funds are on their way to the card or bank. */
+  | "sent-on"
+  | "sent"
+  | "declined"
+  | "provider-cancelled"
+  | "sale-ended";
+
 async function previewSale(
   index: number,
   method: "card" | "bank",
-  state: "sending" | "sent",
+  state: SalePreviewState,
   over?: { amountHuman?: string; quote?: MeldSellQuote },
 ): Promise<void> {
   const requests = useRequestsStore();
@@ -558,6 +663,32 @@ async function previewSale(
     asset: quote.fiat,
     address: "",
   };
+  // Before the provider names its deposit address, nothing is asked of the purse.
+  const beforePurse = state === "kyc" || state === "sale-ended";
+  const status: WithdrawalStatus =
+    state === "kyc"
+      ? { kind: "awaiting-payment" }
+      : state === "converting"
+        ? { kind: "converting", at, step: "swap" }
+        : state === "sent"
+          ? { kind: "sent", at }
+          : state === "declined" || state === "provider-cancelled" || state === "sale-ended"
+            ? { kind: "failed", at, recoverable: false }
+            : { kind: "sending", at };
+  const failure: WithdrawalRecord["failure"] =
+    state === "declined"
+      ? // The sale rail reports every ending as unknown; the band names the provider.
+        { kind: "unknown", step: "send", message: "declined", recoverable: false }
+      : state === "provider-cancelled"
+        ? { kind: "deposit-rejected", step: "send", message: "cancelled", recoverable: false }
+        : state === "sale-ended"
+          ? {
+              kind: "sale-ended",
+              step: "payment",
+              message: "The provider ended the sale.",
+              recoverable: false,
+            }
+          : undefined;
   const record: WithdrawalRecord = {
     schema: 2,
     kind: "withdrawal",
@@ -569,7 +700,9 @@ async function previewSale(
     route: method,
     destination,
     key,
-    payment: { attempt: 1, requestedAt: startedAt, updatedAt: startedAt },
+    payment: beforePurse
+      ? { attempt: 0 }
+      : { attempt: 1, requestedAt: startedAt, updatedAt: startedAt },
     deadline: { paymentExpiresAt: now + 3_600_000 },
     handoff: {
       label: key.label,
@@ -587,21 +720,47 @@ async function previewSale(
       poolAccount: "13UVJyLnbVp9RBZYFwFGyDvVd1y27Tt8tkntv6Q7JVPhFsTB",
       slippagePct: 2,
       paymentExpiresAt: now + 3_600_000,
-      channel: {
-        id: PREVIEW_MELD.fundingRequestId,
-        address: "14E5nqKAp3oAJcmzgZhUD2RcptBeUBScxKHgJKU4HPNcKVf3",
-        openedAt: startedAt,
-        expiresAt: now + 3_600_000,
-        expectedEgress: quote.cryptoAmount.toString(),
-      },
+      ...(beforePurse
+        ? {}
+        : {
+            channel: {
+              id: PREVIEW_MELD.fundingRequestId,
+              address: "14E5nqKAp3oAJcmzgZhUD2RcptBeUBScxKHgJKU4HPNcKVf3",
+              openedAt: startedAt,
+              expiresAt: now + 3_600_000,
+              expectedEgress: quote.cryptoAmount.toString(),
+            },
+          }),
       meld: { offline: true },
     },
-    status: state === "sent" ? { kind: "sent", at } : { kind: "sending", at },
+    status,
     rail: {
       provider: "meld",
-      stage: state === "sent" ? "delivered" : "processing",
+      stage:
+        state === "sent"
+          ? "delivered"
+          : state === "paying-out" || state === "delayed" || state === "sent-on"
+            ? "processing"
+            : state === "declined" || state === "provider-cancelled"
+              ? "failed"
+              : "waiting",
       updatedAt: at,
+      ...(state === "paying-out"
+        ? { status: "sending" as const }
+        : state === "delayed"
+          ? { status: "sending" as const, delayed: true }
+          : state === "sent-on"
+            ? { status: "sent" as const }
+            : state === "declined"
+              ? { status: "failed" as const, failure: { kind: "unknown", message: "declined" } }
+              : state === "provider-cancelled"
+                ? {
+                    status: "failed" as const,
+                    failure: { kind: "deposit-rejected", message: "cancelled" },
+                  }
+                : {}),
     },
+    ...(failure === undefined ? {} : { failure }),
     sale: {
       fundingRequestId: PREVIEW_MELD.fundingRequestId,
       serviceProvider: quote.line.serviceProvider,
@@ -613,24 +772,33 @@ async function previewSale(
       quotedPayout: quote.line.destinationAmount,
       ...(quote.line.totalFee === undefined ? {} : { fees: { total: quote.line.totalFee } }),
     },
-    paidAmount: "25000000",
-    witnesses: {
-      worker: {
-        known: true,
-        phase: state === "sent" ? "done" : "follow",
-        done: state === "sent",
-        fundsSeenAt: startedAt,
-        lastTickAt: at,
-        at,
-      },
-    },
+    ...(beforePurse ? {} : { paidAmount: "25000000" }),
+    witnesses: beforePurse
+      ? {}
+      : {
+          worker: {
+            known: true,
+            phase: state === "sent" ? "done" : "follow",
+            done: state === "sent",
+            fundsSeenAt: startedAt,
+            lastTickAt: at,
+            at,
+            ...(state === "preparing" ||
+            state === "paying-out" ||
+            state === "delayed" ||
+            state === "sent-on" ||
+            state === "sent"
+              ? { txs: [{ call: "pay" as const, txHash: `0x${"7a".repeat(32)}`, ok: true }] }
+              : {}),
+          },
+        },
   };
   await requests.create(ref, record);
   requests.setForeground(ref);
 }
 
-/** Which slot the summary's demo Skip plays its journey in; away from the scenes' 950..955. */
-const SKIP_SLOT = 9;
+/** Which slot the demo Skips play their journeys in; away from the scenes' own slots. */
+const SKIP_SLOT = 20;
 
 /**
  * The quote's demo Skip on a fiat withdrawal: the sale walked through the journey — paying the
@@ -649,7 +817,7 @@ export async function simulateSaleJourney(
     requests.foregroundWithdrawal?.ref.tradeN === ref.tradeN &&
     requests.foregroundWithdrawal?.ref.sourceId === ref.sourceId;
   const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-  await previewSale(SKIP_SLOT, method, "sending", over);
+  await previewSale(SKIP_SLOT, method, "paying-out", over);
   await delay(4_000);
   if (!stillUp()) return;
   await previewSale(SKIP_SLOT, method, "sent", over);
@@ -674,7 +842,7 @@ export async function simulateWithdrawalJourney(over?: {
   await previewWithdrawal(SKIP_SLOT, "converting", over);
   await delay(3_000);
   if (!stillUp()) return;
-  await previewWithdrawal(SKIP_SLOT, "sending", over);
+  await previewWithdrawal(SKIP_SLOT, "rail-sending", over);
   await delay(3_000);
   if (!stillUp()) return;
   await previewWithdrawal(SKIP_SLOT, "sent", over);
@@ -1342,24 +1510,27 @@ const BANK_PACKAGE: PreviewStage = { kind: "package", route: "bank" };
 
 /**
  * The scene families, in the order they are matched: the first prefix a scene's name starts with
- * wins. The names are already a taxonomy — "crypto / deposit: waiting" belongs to the package that
- * owns the deposit, "crypto / claim: consent" to the journey that owns the claim — so the stage is
- * read off them rather than repeated on all fifty-odd scenes.
+ * wins. The names are a taxonomy, `<top-up | withdrawal> / <crypto | card | bank> /
+ * <screen>: <state>`, or `top-up / <list | history>: <state>` for the shell's own screens — "top-up / crypto / deposit: waiting" belongs to the package that owns the
+ * deposit, "top-up / crypto / claim: consent" to the journey that owns the claim — so the stage is
+ * read off them rather than repeated on all hundred-odd scenes.
  */
 const STAGE_BY_PREFIX: readonly (readonly [string, PreviewStage])[] = [
-  ["list / ", { kind: "shell" }],
+  // The lists live on the shell, outside any package.
+  ["top-up / list", { kind: "shell" }],
+  ["top-up / history", { kind: "shell" }],
   // The crypto package owns everything up to and including the deposit.
-  ["crypto / network", CRYPTO_PACKAGE],
-  ["crypto / token", CRYPTO_PACKAGE],
-  ["crypto / deposit", CRYPTO_PACKAGE],
-  ["crypto / resume spinner", CRYPTO_PACKAGE],
-  ["crypto / ", CRYPTO_JOURNEY],
+  ["top-up / crypto / network", CRYPTO_PACKAGE],
+  ["top-up / crypto / token", CRYPTO_PACKAGE],
+  ["top-up / crypto / deposit", CRYPTO_PACKAGE],
+  ["top-up / crypto / resume spinner", CRYPTO_PACKAGE],
+  ["top-up / crypto / ", CRYPTO_JOURNEY],
   // The Meld packages own the summary and its region picker.
-  ["card / summary", CARD_PACKAGE],
-  ["card / picker", CARD_PACKAGE],
-  ["bank / summary", BANK_PACKAGE],
-  ["bank / picker", BANK_PACKAGE],
-  ["card / ", CARD_JOURNEY],
+  ["top-up / card / summary", CARD_PACKAGE],
+  ["top-up / card / picker", CARD_PACKAGE],
+  ["top-up / bank / summary", BANK_PACKAGE],
+  ["top-up / bank / picker", BANK_PACKAGE],
+  ["top-up / card / ", CARD_JOURNEY],
 ];
 
 function stageFor(scene: Scene): PreviewStage {
@@ -1413,19 +1584,19 @@ export const SCENES: Scene[] = [
   {
     // The shell's landing screen: one crypto top-up still waiting on its transfer. Seeded as a
     // record, so the card is the chainflip adapter's own row and opening it opens the request.
-    name: "list / top-up: waiting",
+    name: "top-up / list: waiting",
     apply: topUpList({
       running: [{ ...BITCOIN_SWAP, amount: "50", stage: "waiting" }],
     }),
   },
   {
-    name: "list / top-up: converting",
+    name: "top-up / list: converting",
     apply: topUpList({
       running: [{ ...BITCOIN_SWAP, amount: "50", stage: "converting" }],
     }),
   },
   {
-    name: "list / top-up: adding",
+    name: "top-up / list: adding",
     apply: topUpList({
       running: [{ ...BITCOIN_SWAP, amount: "50", stage: "adding" }],
     }),
@@ -1433,14 +1604,14 @@ export const SCENES: Scene[] = [
   {
     // The amber line: the card rail has the payment but its crypto delivery is retrying, which is
     // never terminal. The words stay the rail's own stage — the amber is the whole difference.
-    name: "list / top-up: retrying",
+    name: "top-up / list: retrying",
     apply: topUpList({
       running: [{ sourceId: "meld-card", amount: "50", stage: "confirming", delayed: true }],
     }),
   },
   {
     // The bank rail accepted the transfer, then reported a temporary error while sending it.
-    name: "list / top-up: taking longer",
+    name: "top-up / list: taking longer",
     apply: topUpList({
       running: [{ sourceId: "meld-bank", amount: "50", stage: "confirming", delayed: true }],
     }),
@@ -1448,7 +1619,7 @@ export const SCENES: Scene[] = [
   {
     // The settled one is history's: the pending list draws only the running card, and the clock
     // opens the screen that lists what landed.
-    name: "list / top-up: settled",
+    name: "top-up / list: settled",
     apply: topUpList({
       running: [{ ...BITCOIN_SWAP, amount: "50", stage: "waiting" }],
       finished: [SETTLED_CARD],
@@ -1459,14 +1630,14 @@ export const SCENES: Scene[] = [
     // after your last top-up landed used to do. The entry rule now sends it to the amount screen
     // with the clock instead, so this scene is the review comment's fix rather than the bug: a
     // list titled "Topping up" must never open with no top-up in progress.
-    name: "list / top-up: all settled",
+    name: "top-up / list: all settled",
     apply: topUpList({
       finished: [SETTLED_CARD],
     }),
   },
   {
     // Past the collapse: three cards and the Show more pill.
-    name: "list / top-ups: show more",
+    name: "top-up / list: show more",
     apply: topUpList({
       running: [
         { sourceId: "meld-bank", amount: "50", stage: "waiting" },
@@ -1488,7 +1659,7 @@ export const SCENES: Scene[] = [
   },
   {
     // The screen's own shapes while the top-ups are still being read.
-    name: "list / top-ups: loading",
+    name: "top-up / list: loading",
     apply: topUpList({
       running: [{ ...BITCOIN_SWAP, amount: "50", stage: "waiting" }],
       skeleton: true,
@@ -1498,7 +1669,7 @@ export const SCENES: Scene[] = [
     // Behind the clock: finished top-ups, credited and failed. The refunded Bitcoin card opens the
     // recovery guide, so its world is installed here too — tapping through is how the screen is
     // actually reached.
-    name: "list / history",
+    name: "top-up / history",
     apply: async (s, f, i) => {
       await topUpList({ finished: PREVIEW_HISTORY, entry: "history" })(s, f, i);
       installPreviewRefundWorld(s);
@@ -1506,18 +1677,18 @@ export const SCENES: Scene[] = [
   },
   {
     // Nothing has ever been topped up.
-    name: "list / history: empty",
+    name: "top-up / history: empty",
     apply: topUpList({ finished: [], entry: "history" }),
   },
   {
-    name: "list / history: loading",
+    name: "top-up / history: loading",
     apply: topUpList({ finished: [], entry: "history", skeleton: true }),
   },
   {
     // A top-up that would not open, with the list long enough to scroll. The review comment on
     // `FundingHistoryScreen` is about where the line lands: it is the last thing in the scroller,
     // so the buyer who just tapped a card at the top never sees it.
-    name: "list / history: error",
+    name: "top-up / history: error",
     apply: topUpList({
       finished: PREVIEW_HISTORY,
       entry: "history",
@@ -1525,14 +1696,14 @@ export const SCENES: Scene[] = [
     }),
   },
   {
-    name: "crypto / network",
+    name: "top-up / crypto / network",
     apply: (s, f) => {
       selection(s, f);
       f.step = "network";
     },
   },
   {
-    name: "crypto / network: loading",
+    name: "top-up / crypto / network: loading",
     apply: (s, f) => {
       selection(s, f);
       useOffersStore().floors = null; // still learning: the skeleton rows
@@ -1540,7 +1711,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "crypto / network: too small",
+    name: "top-up / crypto / network: too small",
     apply: (s, f) => {
       selection(s, f);
       s.setAmount("5");
@@ -1549,7 +1720,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "crypto / network: paused",
+    name: "top-up / crypto / network: paused",
     apply: (s, f) => {
       selection(s, f);
       const offers = useOffersStore();
@@ -1564,7 +1735,7 @@ export const SCENES: Scene[] = [
   },
   {
     // A build with no channel rail: every route listed, none pickable.
-    name: "crypto / network: not available yet",
+    name: "top-up / crypto / network: not available yet",
     apply: (s, f) => {
       selection(s, f);
       useOffersStore().railEnabled = false;
@@ -1572,7 +1743,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "crypto / network: couldn't get the rate",
+    name: "top-up / crypto / network: couldn't get the rate",
     apply: (s, f) => {
       selection(s, f);
       rateFailed(s, 1);
@@ -1580,7 +1751,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "crypto / network: still not working",
+    name: "top-up / crypto / network: still not working",
     apply: (s, f) => {
       selection(s, f);
       rateFailed(s, 2);
@@ -1588,7 +1759,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "crypto / token",
+    name: "top-up / crypto / token",
     apply: (s, f) => {
       selection(s, f);
       f.step = "token";
@@ -1596,14 +1767,14 @@ export const SCENES: Scene[] = [
   },
   {
     // The deposit screen's skeleton shapes while the request is being opened.
-    name: "crypto / deposit: opening",
+    name: "top-up / crypto / deposit: opening",
     apply: (s, f) => {
       base(s, f);
       s.resuming = true;
     },
   },
   {
-    name: "crypto / deposit: waiting",
+    name: "top-up / crypto / deposit: waiting",
     apply: async (s, f, i) => {
       base(s, f);
       const r = await previewRequest(s, { ...BITCOIN_SWAP, index: i });
@@ -1612,7 +1783,7 @@ export const SCENES: Scene[] = [
   },
   {
     // The full-screen confirmation over an open deposit.
-    name: "crypto / deposit: cancel confirm",
+    name: "top-up / crypto / deposit: cancel confirm",
     apply: async (s, f, i) => {
       base(s, f);
       const r = await previewRequest(s, { ...BITCOIN_SWAP, index: i });
@@ -1622,7 +1793,7 @@ export const SCENES: Scene[] = [
   },
   {
     // A direct deposit short of the figure asked: the sheet with what arrived and what it gives.
-    name: "crypto / deposit: less than asked",
+    name: "top-up / crypto / deposit: less than asked",
     apply: async (s, f, i) => {
       polkadotDeposit(s, f, "USDC", "10");
       const r = await previewRequest(s, { sourceId: "usdc-assethub", index: i });
@@ -1638,7 +1809,7 @@ export const SCENES: Scene[] = [
   },
   {
     // A direct deposit in the wrong token: the same sheet, worded for the token.
-    name: "crypto / deposit: different token",
+    name: "top-up / crypto / deposit: different token",
     apply: async (s, f, i) => {
       polkadotDeposit(s, f, "USDC", "10");
       const r = await previewRequest(s, { sourceId: "usdc-assethub", index: i });
@@ -1653,7 +1824,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "crypto / deposit: faucet sent",
+    name: "top-up / crypto / deposit: faucet sent",
     apply: async (s, f, i) => {
       base(s, f);
       const r = await previewRequest(s, { ...BITCOIN_SWAP, index: i });
@@ -1662,7 +1833,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "crypto / deposit: faucet failed",
+    name: "top-up / crypto / deposit: faucet failed",
     apply: async (s, f, i) => {
       base(s, f);
       const r = await previewRequest(s, { ...BITCOIN_SWAP, index: i });
@@ -1675,7 +1846,7 @@ export const SCENES: Scene[] = [
   },
   {
     // The channel deadline as a ticking countdown row.
-    name: "crypto / deposit: expiring",
+    name: "top-up / crypto / deposit: expiring",
     apply: async (s, f, i) => {
       base(s, f);
       const expiresAt = Date.now() + 4 * 60_000 + 59_000;
@@ -1685,7 +1856,7 @@ export const SCENES: Scene[] = [
   },
   {
     // The window closed with nothing sent: the clock expires the request.
-    name: "crypto / deposit: expired",
+    name: "top-up / crypto / deposit: expired",
     apply: async (s, f, i) => {
       base(s, f);
       const expiresAt = Date.now() - 60_000;
@@ -1695,7 +1866,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "crypto / convert: receiving",
+    name: "top-up / crypto / convert: receiving",
     apply: async (s, f, i) => {
       base(s, f);
       const r = await previewRequest(s, { ...BITCOIN_SWAP, index: i });
@@ -1704,7 +1875,7 @@ export const SCENES: Scene[] = [
   },
   {
     // Chainflip moved the swap to a later block to wait for a stable price: amber, never terminal.
-    name: "crypto / convert: delayed",
+    name: "top-up / crypto / convert: delayed",
     apply: async (s, f, i) => {
       base(s, f);
       const r = await previewRequest(s, { ...BITCOIN_SWAP, index: i });
@@ -1721,7 +1892,7 @@ export const SCENES: Scene[] = [
   },
   {
     // The design's card summary: the region row above the quote's own terms.
-    name: "card / summary: payment country",
+    name: "top-up / card / summary: payment country",
     apply: (s, f) => {
       cardSummary(s, f);
     },
@@ -1729,7 +1900,7 @@ export const SCENES: Scene[] = [
   {
     // The picker over that summary, with one region of each kind: pickable, under its minimum
     // (Guernsey at £40 against a £12.50 purchase), and not routed at all.
-    name: "card / picker: choose payment country",
+    name: "top-up / card / picker: choose payment country",
     apply: (s, f) => {
       cardSummary(s, f);
       f.previewDrillIn = "currency";
@@ -1737,7 +1908,7 @@ export const SCENES: Scene[] = [
   },
   {
     // Ecuador routes neither method: the region's own line, the picker still live, crypto offered.
-    name: "card / summary: not available in region",
+    name: "top-up / card / summary: not available in region",
     apply: (s, f) => {
       cardSummary(s, f);
       methodUnavailable(s, "EC");
@@ -1745,21 +1916,21 @@ export const SCENES: Scene[] = [
   },
   {
     // Luxembourg routes bank but not card: bank is offered under crypto.
-    name: "card / summary: not available in region, bank offered",
+    name: "top-up / card / summary: not available in region, bank offered",
     apply: (s, f) => {
       cardSummary(s, f);
       methodUnavailable(s, "LU");
     },
   },
   {
-    name: "card / summary: couldn't get the rate",
+    name: "top-up / card / summary: couldn't get the rate",
     apply: (s, f) => {
       cardSummary(s, f);
       rateFailed(s, 1);
     },
   },
   {
-    name: "card / summary: still not working",
+    name: "top-up / card / summary: still not working",
     apply: (s, f) => {
       cardSummary(s, f);
       rateFailed(s, 2);
@@ -1767,13 +1938,13 @@ export const SCENES: Scene[] = [
   },
   {
     // The design's card journey at the Payment step: Fees and Total quoted in fiat.
-    name: "card / journey: payment",
+    name: "top-up / card / journey: payment",
     apply: async (s, f, i) => {
       await cardPayment(s, f, i);
     },
   },
   {
-    name: "card / journey: converting",
+    name: "top-up / card / journey: converting",
     apply: async (s, f, i) => {
       // The provider delivered the DOT and the worker started the swap.
       const r = await cardPayment(s, f, i);
@@ -1784,7 +1955,7 @@ export const SCENES: Scene[] = [
   {
     // The provider reports a temporary error (Meld's ERROR) and may still retry: amber current
     // line, delay text in the band, nothing terminal.
-    name: "card / journey: delayed",
+    name: "top-up / card / journey: delayed",
     apply: async (s, f, i) => {
       const r = await cardPayment(s, f, i);
       await meldError(r, 1, "meld-card");
@@ -1794,7 +1965,7 @@ export const SCENES: Scene[] = [
     // After "Try again" on a failed payment: the new attempt in flight on the provider's line,
     // amber like the delayed state, the retry text in the band, no button.
     // FUTURE: our retry flow does not exist yet, so the app cannot reach this state.
-    name: "card / journey: retrying (future)",
+    name: "top-up / card / journey: retrying (future)",
     apply: async (s, f, i) => {
       const r = await cardPayment(s, f, i);
       await meldError(r, 1, "meld-card");
@@ -1803,7 +1974,7 @@ export const SCENES: Scene[] = [
   },
   {
     // Meld FAILED: terminal, nothing was charged, so the way on is a fresh top-up.
-    name: "card / journey: payment failed",
+    name: "top-up / card / journey: payment failed",
     apply: async (s, f, i) => {
       const r = await cardPayment(s, f, i);
       await core(r, 1, CARD_PAYMENT_FAILED);
@@ -1812,7 +1983,7 @@ export const SCENES: Scene[] = [
   {
     // Meld DECLINED: the bank refused the card. The adapter emitting `declined` is unconfirmed
     // (today it flattens to `failed`).
-    name: "card / journey: declined",
+    name: "top-up / card / journey: declined",
     apply: async (s, f, i) => {
       const r = await cardPayment(s, f, i);
       await core(r, 1, CARD_DECLINED);
@@ -1821,7 +1992,7 @@ export const SCENES: Scene[] = [
   {
     // Meld REFUNDED: terminal, the charge was captured and returned; per Meld it cannot be
     // retried, only replaced by a fresh top-up. The adapter emitting `refunded` is unconfirmed.
-    name: "card / journey: refunded",
+    name: "top-up / card / journey: refunded",
     apply: async (s, f, i) => {
       const r = await cardPayment(s, f, i);
       await core(r, 1, CARD_REFUNDED);
@@ -1830,7 +2001,7 @@ export const SCENES: Scene[] = [
   {
     // The same refund read off the list's own record, with nothing live behind it. The receipt
     // and the failure details must survive the request being gone: they come from the record.
-    name: "card / refunded: from history",
+    name: "top-up / card / refunded: from history",
     stage: { kind: "journey", route: "card", topUpId: finishedTopUpId(HISTORY.refundedCard) },
     apply: topUpList({ finished: PREVIEW_HISTORY, entry: "history" }),
   },
@@ -1838,7 +2009,7 @@ export const SCENES: Scene[] = [
     // A record that kept neither of the provider's names — no create call captured one and no
     // quote was stored to fall back on — so the row can only name the aggregator. The
     // funding-request id was always persisted, so the reference beside it is still real.
-    name: "card / refunded: provider unknown",
+    name: "top-up / card / refunded: provider unknown",
     stage: {
       kind: "journey",
       route: "card",
@@ -1850,19 +2021,19 @@ export const SCENES: Scene[] = [
     // An expiry read off the list's own record: Started fails on the timeline, the band spells out
     // that no funds arrived, and there are no money rows — nobody was charged. The card twin below
     // is the review comment's case: without the record's own word it drew the failure receipt.
-    name: "crypto / expired: from history",
+    name: "top-up / crypto / expired: from history",
     stage: { kind: "journey", route: "crypto", topUpId: finishedTopUpId(HISTORY.expiredSwap) },
     apply: topUpList({ finished: PREVIEW_HISTORY, entry: "history" }),
   },
   {
-    name: "card / expired: from history",
+    name: "top-up / card / expired: from history",
     stage: { kind: "journey", route: "card", topUpId: finishedTopUpId(HISTORY.expiredCard) },
     apply: topUpList({ finished: PREVIEW_HISTORY, entry: "history" }),
   },
   {
     // Close, not Start over: the rail could not tell whether the buyer was charged, and a second
     // payment would risk charging them twice.
-    name: "card / journey: unconfirmed",
+    name: "top-up / card / journey: unconfirmed",
     apply: async (s, f, i) => {
       cardJourney(s, f);
       const r = await previewRequest(s, { sourceId: "meld-card", index: i, meld: PREVIEW_MELD });
@@ -1879,7 +2050,7 @@ export const SCENES: Scene[] = [
   },
   {
     // The design's card success screen: the credited amount over the fiat Fees and Total.
-    name: "card / journey: success",
+    name: "top-up / card / journey: success",
     apply: async (s, f, i) => {
       const r = await cardPayment(s, f, i);
       // The provider delivered the payment before the leg settled.
@@ -1893,14 +2064,14 @@ export const SCENES: Scene[] = [
   },
   {
     // The design's bank summary: the same region row, the transfer's own terms under it.
-    name: "bank / summary: payment country",
+    name: "top-up / bank / summary: payment country",
     apply: (s, f) => {
       bankSummary(s, f);
     },
   },
   {
     // The bank picker: its rails only, but carrying the same minimums the card list does.
-    name: "bank / picker: choose payment country",
+    name: "top-up / bank / picker: choose payment country",
     apply: (s, f) => {
       bankSummary(s, f);
       f.previewDrillIn = "currency";
@@ -1908,21 +2079,21 @@ export const SCENES: Scene[] = [
   },
   {
     // Brazil routes card but no bank rail.
-    name: "bank / summary: not available in region",
+    name: "top-up / bank / summary: not available in region",
     apply: (s, f) => {
       bankSummary(s, f);
       methodUnavailable(s, "BR");
     },
   },
   {
-    name: "bank / summary: couldn't get the rate",
+    name: "top-up / bank / summary: couldn't get the rate",
     apply: (s, f) => {
       bankSummary(s, f);
       rateFailed(s, 1);
     },
   },
   {
-    name: "bank / summary: still not working",
+    name: "top-up / bank / summary: still not working",
     apply: (s, f) => {
       bankSummary(s, f);
       rateFailed(s, 2);
@@ -1931,7 +2102,7 @@ export const SCENES: Scene[] = [
   {
     // The journey's skeleton: the store is bringing a bank top-up back to the foreground and the
     // screen holds its own shapes until the record lands.
-    name: "bank / journey: opening",
+    name: "top-up / bank / journey: opening",
     apply: (s, f) => {
       bankJourney(s, f);
       s.resuming = true;
@@ -1940,14 +2111,14 @@ export const SCENES: Scene[] = [
   {
     // The design's bank pending frame: the transfer is the buyer's word until the money lands, so
     // the timeline waits on it and the rows restate what to send and what to quote with it.
-    name: "bank / journey: transfer sent",
+    name: "top-up / bank / journey: transfer sent",
     apply: async (s, f, i) => {
       await bankTransfer(s, f, i);
     },
   },
   {
     // The design's "Cancel top-up?" frame: the full-screen confirmation over the pending transfer.
-    name: "bank / journey: cancel confirm",
+    name: "top-up / bank / journey: cancel confirm",
     apply: async (s, f, i) => {
       await bankTransfer(s, f, i);
       f.confirmingCancel = true;
@@ -1956,7 +2127,7 @@ export const SCENES: Scene[] = [
   {
     // The provider has the money and reports a temporary error, retrying on their side. Nothing
     // is left to instruct or to call off, and the timeline goes amber rather than red.
-    name: "bank / journey: delayed",
+    name: "top-up / bank / journey: delayed",
     apply: async (s, f, i) => {
       const r = await bankTransfer(s, f, i);
       await meldError(r, 1, "meld-bank");
@@ -1965,7 +2136,7 @@ export const SCENES: Scene[] = [
   {
     // The transfer landed: the provider delivered it and the worker has the deposit. The wait is
     // off the buyer now, so the timeline moves on and the cancel goes with it.
-    name: "bank / journey: transfer arrived",
+    name: "top-up / bank / journey: transfer arrived",
     apply: async (s, f, i) => {
       const r = await bankTransfer(s, f, i);
       await r.observe({
@@ -1979,7 +2150,7 @@ export const SCENES: Scene[] = [
   },
   {
     // The design's bank success frame: the credit in green over its one past-tense row.
-    name: "bank / journey: success",
+    name: "top-up / bank / journey: success",
     apply: async (s, f, i) => {
       const r = await bankTransfer(s, f, i);
       await r.observe({
@@ -1999,7 +2170,7 @@ export const SCENES: Scene[] = [
   {
     // The claim lands while the arrived transfer is on screen: the timeline completes, then the
     // success motion plays.
-    name: "bank / journey: success, live",
+    name: "top-up / bank / journey: success, live",
     apply: async (s, f, i) => {
       const r = await bankTransfer(s, f, i);
       await r.observe({
@@ -2023,7 +2194,7 @@ export const SCENES: Scene[] = [
   {
     // The design's bank failure frame: nothing was taken, so the rows are the handles for asking
     // about it and the way on is a fresh top-up.
-    name: "bank / journey: payment failed",
+    name: "top-up / bank / journey: payment failed",
     apply: async (s, f, i) => {
       await bankEnding(s, f, i, "failed", "Top-up didn't go through. No money was taken.");
     },
@@ -2031,7 +2202,7 @@ export const SCENES: Scene[] = [
   {
     // The bank refused the transfer. The adapter words this one for a card; the journey says what
     // it means for a transfer.
-    name: "bank / journey: declined",
+    name: "top-up / bank / journey: declined",
     apply: async (s, f, i) => {
       await bankEnding(
         s,
@@ -2045,7 +2216,7 @@ export const SCENES: Scene[] = [
   {
     // The rate moved between the payment and the claim: the hero corrects itself to what will
     // actually land, and the band names both figures so the difference is the buyer's to check.
-    name: "bank / journey: rate changed",
+    name: "top-up / bank / journey: rate changed",
     apply: async (s, f, i) => {
       const r = await bankTransfer(s, f, i);
       await r.observe({
@@ -2065,7 +2236,7 @@ export const SCENES: Scene[] = [
   {
     // The money was taken and sent back. Terminal: the provider will not retry it, and a fresh
     // top-up is the only way on.
-    name: "bank / journey: refunded",
+    name: "top-up / bank / journey: refunded",
     apply: async (s, f, i) => {
       await bankEnding(
         s,
@@ -2077,7 +2248,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "crypto / convert: swapping",
+    name: "top-up / crypto / convert: swapping",
     apply: async (s, f, i) => {
       base(s, f);
       const r = await previewRequest(s, { ...BITCOIN_SWAP, index: i });
@@ -2085,7 +2256,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "crypto / convert: sending",
+    name: "top-up / crypto / convert: sending",
     apply: async (s, f, i) => {
       base(s, f);
       const r = await previewRequest(s, { ...BITCOIN_SWAP, index: i });
@@ -2093,32 +2264,32 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "crypto / pipeline: swap",
+    name: "top-up / crypto / pipeline: swap",
     apply: async (s, f, i) => {
       await pipeline(s, f, i, "swap");
     },
   },
   {
-    name: "crypto / pipeline: arrival wait",
+    name: "top-up / crypto / pipeline: arrival wait",
     apply: async (s, f, i) => {
       await pipeline(s, f, i, "await-arrival");
     },
   },
   {
-    name: "crypto / heal: reconnecting",
+    name: "top-up / crypto / heal: reconnecting",
     apply: async (s, f, i) => {
       await pipeline(s, f, i, "swap");
       useRequestsStore().fundingNotice = "connection lost, reconnecting…";
     },
   },
   {
-    name: "crypto / claim: consent",
+    name: "top-up / crypto / claim: consent",
     apply: async (s, f, i) => {
       await claimConsent(s, f, i);
     },
   },
   {
-    name: "crypto / claim: crediting",
+    name: "top-up / crypto / claim: crediting",
     apply: async (s, f, i) => {
       const r = await claimConsent(s, f, i);
       await r.observe({
@@ -2129,7 +2300,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "crypto / claim: verifying",
+    name: "top-up / crypto / claim: verifying",
     apply: async (s, f, i) => {
       base(s, f);
       const r = await previewRequest(s, { ...BITCOIN_SWAP, index: i });
@@ -2138,7 +2309,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "crypto / failed: recoverable",
+    name: "top-up / crypto / failed: recoverable",
     apply: async (s, f, i) => {
       const r = await claimConsent(s, f, i);
       await core(r, 2, {
@@ -2156,7 +2327,7 @@ export const SCENES: Scene[] = [
   {
     // The PSM refused the mint three times and the worker held the deposit: Converted fails, the
     // money stays on the top-up's account, and Try again re-runs the conversion.
-    name: "crypto / failed: conversion held",
+    name: "top-up / crypto / failed: conversion held",
     apply: async (s, f, i) => {
       const r = await pipeline(s, f, i, "swap");
       await r.observe({
@@ -2175,7 +2346,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "crypto / failed: refunded",
+    name: "top-up / crypto / failed: refunded",
     apply: async (s, f, i) => {
       base(s, f);
       f.setSourceByName("Tron", "USDT"); // a token refund, with the gas note
@@ -2213,7 +2384,7 @@ export const SCENES: Scene[] = [
     // could not be resumed, so the journey has only what history stored. This is the state the
     // review comment is about — the rows are hidden because the deposit went back, and the guide
     // behind "Refund info" is driven by the request's world, which is gone.
-    name: "crypto / refunded: from history",
+    name: "top-up / crypto / refunded: from history",
     stage: { kind: "journey", route: "crypto", topUpId: finishedTopUpId(HISTORY.refundedSwap) },
     apply: async (s, f, i) => {
       await topUpList({ finished: PREVIEW_HISTORY, entry: "history" })(s, f, i);
@@ -2222,7 +2393,7 @@ export const SCENES: Scene[] = [
   },
   {
     // A credit read from history: the end state at once, with what the Host credited.
-    name: "crypto / success: from history",
+    name: "top-up / crypto / success: from history",
     stage: { kind: "journey", route: "crypto", topUpId: finishedTopUpId(HISTORY.creditedSwap) },
     apply: topUpList({ finished: PREVIEW_HISTORY, entry: "history" }),
   },
@@ -2232,7 +2403,7 @@ export const SCENES: Scene[] = [
     const source = SOURCE_CONFIG_BY_ID.get(sourceId)!;
     const apply = refunded(sourceId, send);
     return {
-      name: `crypto / refund key: ${source.asset} on ${source.chain}`,
+      name: `top-up / crypto / refund key: ${source.asset} on ${source.chain}`,
       apply: async (s: Session, f: Flow, index: number) => {
         await apply(s, f, index);
         f.previewDrillIn = "refund";
@@ -2240,7 +2411,7 @@ export const SCENES: Scene[] = [
     };
   }),
   {
-    name: "crypto / success",
+    name: "top-up / crypto / success",
     apply: async (s, f, i) => {
       base(s, f);
       const r = await previewRequest(s, { ...BITCOIN_SWAP, index: i });
@@ -2253,7 +2424,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "crypto / resume spinner",
+    name: "top-up / crypto / resume spinner",
     apply: (s, f) => {
       base(s, f);
       s.resuming = true;
@@ -2264,34 +2435,34 @@ export const SCENES: Scene[] = [
   // the step on screen and the skeletons — and the screens read static data, so `base` only
   // clears what a neighbouring scene seeded.
   {
-    name: "withdraw / network: loaded",
+    name: "withdrawal / crypto / network: loaded",
     stage: { kind: "withdraw-package", step: "network" },
     apply: (s, f) => base(s, f),
   },
   {
-    name: "withdraw / network: skeleton",
+    name: "withdrawal / crypto / network: skeleton",
     stage: { kind: "withdraw-package", step: "network", skeleton: true },
     apply: (s, f) => base(s, f),
   },
   {
-    name: "withdraw / token: loaded",
+    name: "withdrawal / crypto / token: loaded",
     stage: { kind: "withdraw-package", step: "token", chain: "Ethereum" },
     apply: (s, f) => base(s, f),
   },
   {
-    name: "withdraw / token: skeleton",
+    name: "withdrawal / crypto / token: skeleton",
     stage: { kind: "withdraw-package", step: "token", chain: "Ethereum", skeleton: true },
     apply: (s, f) => base(s, f),
   },
   // The address step's four states: empty, an address another network would take, one no network
   // takes, and a valid one. The screen itself judges the seeded address.
   {
-    name: "withdraw / address: empty",
+    name: "withdrawal / crypto / address: empty",
     stage: { kind: "withdraw-package", step: "address", chain: "Ethereum" },
     apply: (s, f) => base(s, f),
   },
   {
-    name: "withdraw / address: wrong network",
+    name: "withdrawal / crypto / address: wrong network",
     stage: {
       kind: "withdraw-package",
       step: "address",
@@ -2301,7 +2472,7 @@ export const SCENES: Scene[] = [
     apply: (s, f) => base(s, f),
   },
   {
-    name: "withdraw / address: incorrect",
+    name: "withdrawal / crypto / address: incorrect",
     stage: {
       kind: "withdraw-package",
       step: "address",
@@ -2311,7 +2482,7 @@ export const SCENES: Scene[] = [
     apply: (s, f) => base(s, f),
   },
   {
-    name: "withdraw / address: entered",
+    name: "withdrawal / crypto / address: entered",
     stage: {
       kind: "withdraw-package",
       step: "address",
@@ -2323,7 +2494,7 @@ export const SCENES: Scene[] = [
   // The summary and its fee drill-in, on the section's canned quote: the route never asks
   // Chainflip while the stage carries the estimate.
   {
-    name: "withdraw / summary",
+    name: "withdrawal / crypto / summary",
     stage: {
       kind: "withdraw-package",
       step: "summary",
@@ -2335,7 +2506,7 @@ export const SCENES: Scene[] = [
     apply: (s, f) => base(s, f),
   },
   {
-    name: "withdraw / fees",
+    name: "withdrawal / crypto / fees",
     stage: {
       kind: "withdraw-package",
       step: "fees",
@@ -2347,7 +2518,7 @@ export const SCENES: Scene[] = [
     apply: (s, f) => base(s, f),
   },
   {
-    name: "withdraw / summary: quoting",
+    name: "withdrawal / crypto / summary: quoting",
     stage: {
       kind: "withdraw-package",
       step: "summary",
@@ -2358,7 +2529,7 @@ export const SCENES: Scene[] = [
     apply: (s, f) => base(s, f),
   },
   {
-    name: "withdraw / summary: no quote",
+    name: "withdrawal / crypto / summary: no quote",
     stage: {
       kind: "withdraw-package",
       step: "summary",
@@ -2369,7 +2540,7 @@ export const SCENES: Scene[] = [
   },
   // ——— The journey and the refund guide, on a hand-made record; see `previewWithdrawal`.
   {
-    name: "withdraw / journey: conversion",
+    name: "withdrawal / crypto / journey: conversion",
     stage: { kind: "withdraw-package", step: "journey" },
     apply: async (s, f) => {
       base(s, f);
@@ -2377,15 +2548,32 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "withdraw / journey: sending",
+    name: "withdrawal / crypto / journey: redeeming",
     stage: { kind: "withdraw-package", step: "journey" },
     apply: async (s, f) => {
       base(s, f);
-      await previewWithdrawal(1, "sending");
+      await previewWithdrawal(13, "redeeming");
     },
   },
   {
-    name: "withdraw / journey: success",
+    // The PSM refused the redeem three times: Try again, or the pool for what it would land.
+    name: "withdrawal / crypto / journey: held",
+    stage: { kind: "withdraw-package", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewWithdrawal(14, "held");
+    },
+  },
+  {
+    name: "withdrawal / crypto / journey: sending",
+    stage: { kind: "withdraw-package", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewWithdrawal(1, "rail-sending");
+    },
+  },
+  {
+    name: "withdrawal / crypto / journey: success",
     stage: { kind: "withdraw-package", step: "journey" },
     apply: async (s, f) => {
       base(s, f);
@@ -2393,7 +2581,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "withdraw / journey: refunded",
+    name: "withdrawal / crypto / journey: refunded",
     stage: { kind: "withdraw-package", step: "journey" },
     apply: async (s, f) => {
       base(s, f);
@@ -2401,7 +2589,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "withdraw / return funds",
+    name: "withdrawal / crypto / return funds",
     stage: { kind: "withdraw-package", step: "return-funds" },
     apply: async (s, f) => {
       base(s, f);
@@ -2409,7 +2597,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    name: "withdraw / return funds: revealed",
+    name: "withdrawal / crypto / return funds: revealed",
     stage: {
       kind: "withdraw-package",
       step: "return-funds",
@@ -2420,20 +2608,76 @@ export const SCENES: Scene[] = [
       await previewWithdrawal(5, "refunded");
     },
   },
+  {
+    name: "withdrawal / crypto / journey: awaiting payment",
+    stage: { kind: "withdraw-package", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewWithdrawal(6, "awaiting-payment");
+    },
+  },
+  {
+    name: "withdrawal / crypto / journey: handing",
+    stage: { kind: "withdraw-package", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewWithdrawal(7, "sending");
+    },
+  },
+  {
+    name: "withdrawal / crypto / journey: exchanging",
+    stage: { kind: "withdraw-package", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewWithdrawal(8, "handed");
+    },
+  },
+  {
+    name: "withdrawal / crypto / journey: on its way",
+    stage: { kind: "withdraw-package", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewWithdrawal(9, "rail-sent");
+    },
+  },
+  {
+    name: "withdrawal / crypto / journey: payment failed",
+    stage: { kind: "withdraw-package", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewWithdrawal(10, "payment-failed");
+    },
+  },
+  {
+    name: "withdrawal / crypto / journey: expired",
+    stage: { kind: "withdraw-package", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewWithdrawal(11, "expired");
+    },
+  },
+  {
+    name: "withdrawal / crypto / journey: cancelled",
+    stage: { kind: "withdraw-package", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewWithdrawal(12, "cancelled");
+    },
+  },
   // ——— The card withdrawal: the sale's quote priced, pricing and refused, its fee drill-in, and
   // the payout country picker.
   {
-    name: "withdraw card / quote",
+    name: "withdrawal / card / quote",
     stage: { kind: "withdraw-package", route: "card", step: "quote", sale: SALE_PREVIEW_QUOTE },
     apply: (s, f) => base(s, f),
   },
   {
-    name: "withdraw card / quote: quoting",
+    name: "withdrawal / card / quote: quoting",
     stage: { kind: "withdraw-package", route: "card", step: "quote", sale: null },
     apply: (s, f) => base(s, f),
   },
   {
-    name: "withdraw card / quote: couldn't get the rate",
+    name: "withdrawal / card / quote: couldn't get the rate",
     stage: {
       kind: "withdraw-package",
       route: "card",
@@ -2443,7 +2687,7 @@ export const SCENES: Scene[] = [
     apply: (s, f) => base(s, f),
   },
   {
-    name: "withdraw card / quote: still not working",
+    name: "withdrawal / card / quote: still not working",
     stage: {
       kind: "withdraw-package",
       route: "card",
@@ -2454,7 +2698,7 @@ export const SCENES: Scene[] = [
   },
   {
     // Ecuador routes neither method: the shared "not available in this region" view.
-    name: "withdraw card / quote: not available in region",
+    name: "withdrawal / card / quote: not available in region",
     stage: {
       kind: "withdraw-package",
       route: "card",
@@ -2467,7 +2711,7 @@ export const SCENES: Scene[] = [
   },
   {
     // Luxembourg routes bank but not card: bank is offered under crypto.
-    name: "withdraw card / quote: not available in region, bank offered",
+    name: "withdrawal / card / quote: not available in region, bank offered",
     stage: {
       kind: "withdraw-package",
       route: "card",
@@ -2480,7 +2724,7 @@ export const SCENES: Scene[] = [
   },
   {
     // Brazil routes card but no bank rail, so card is offered under crypto.
-    name: "withdraw bank / quote: not available in region",
+    name: "withdrawal / bank / quote: not available in region",
     stage: {
       kind: "withdraw-package",
       route: "bank",
@@ -2492,14 +2736,143 @@ export const SCENES: Scene[] = [
     apply: (s, f) => base(s, f),
   },
   {
-    name: "withdraw card / fees",
+    name: "withdrawal / card / fees",
     stage: { kind: "withdraw-package", route: "card", step: "fees", sale: SALE_PREVIEW_QUOTE },
     apply: (s, f) => base(s, f),
   },
   {
-    name: "withdraw card / payout country",
+    name: "withdrawal / card / payout country",
     stage: { kind: "withdraw-package", route: "card", step: "region", sale: SALE_PREVIEW_QUOTE },
     apply: (s, f) => base(s, f),
+  },
+  // ——— The card and bank journeys, on hand-made sale records; see `previewSale`.
+  {
+    name: "withdrawal / card / journey: kyc",
+    stage: { kind: "withdraw-package", route: "card", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewSale(0, "card", "kyc");
+    },
+  },
+  {
+    name: "withdrawal / card / journey: converting",
+    stage: { kind: "withdraw-package", route: "card", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewSale(1, "card", "converting");
+    },
+  },
+  {
+    name: "withdrawal / card / journey: handing",
+    stage: { kind: "withdraw-package", route: "card", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewSale(2, "card", "sending");
+    },
+  },
+  {
+    name: "withdrawal / card / journey: preparing",
+    stage: { kind: "withdraw-package", route: "card", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewSale(3, "card", "preparing");
+    },
+  },
+  {
+    name: "withdrawal / card / journey: paying out",
+    stage: { kind: "withdraw-package", route: "card", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewSale(4, "card", "paying-out");
+    },
+  },
+  {
+    name: "withdrawal / card / journey: delayed",
+    stage: { kind: "withdraw-package", route: "card", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewSale(13, "card", "delayed");
+    },
+  },
+  {
+    name: "withdrawal / card / journey: sent on",
+    stage: { kind: "withdraw-package", route: "card", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewSale(9, "card", "sent-on");
+    },
+  },
+  {
+    name: "withdrawal / card / journey: paid out",
+    stage: { kind: "withdraw-package", route: "card", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewSale(5, "card", "sent");
+    },
+  },
+  {
+    name: "withdrawal / card / journey: declined",
+    stage: { kind: "withdraw-package", route: "card", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewSale(6, "card", "declined");
+    },
+  },
+  {
+    name: "withdrawal / card / journey: provider cancelled",
+    stage: { kind: "withdraw-package", route: "card", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewSale(7, "card", "provider-cancelled");
+    },
+  },
+  {
+    name: "withdrawal / card / journey: sale ended",
+    stage: { kind: "withdraw-package", route: "card", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewSale(8, "card", "sale-ended");
+    },
+  },
+  {
+    name: "withdrawal / bank / journey: paying out",
+    stage: { kind: "withdraw-package", route: "bank", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewSale(10, "bank", "paying-out");
+    },
+  },
+  {
+    name: "withdrawal / bank / journey: delayed",
+    stage: { kind: "withdraw-package", route: "bank", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewSale(15, "bank", "delayed");
+    },
+  },
+  {
+    name: "withdrawal / bank / journey: sent on",
+    stage: { kind: "withdraw-package", route: "bank", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewSale(14, "bank", "sent-on");
+    },
+  },
+  {
+    name: "withdrawal / bank / journey: paid out",
+    stage: { kind: "withdraw-package", route: "bank", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewSale(11, "bank", "sent");
+    },
+  },
+  {
+    name: "withdrawal / bank / journey: declined",
+    stage: { kind: "withdraw-package", route: "bank", step: "journey" },
+    apply: async (s, f) => {
+      base(s, f);
+      await previewSale(12, "bank", "declined");
+    },
   },
 ];
 

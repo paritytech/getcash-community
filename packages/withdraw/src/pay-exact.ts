@@ -107,7 +107,7 @@ export interface ExactPayInput {
   readFinalizedNumber?: () => Promise<number>;
   /** Runs before the broadcast, so the driver can persist the attempt about to be made. */
   onBeforeSubmit?: () => Promise<void> | void;
-  onTx?: (info: { call: "pay"; txHash: string; block?: number }) => void;
+  onTx?: (info: { call: "pay"; txHash: string; block?: number; ok: boolean }) => void;
 }
 
 /** The transfer: `amount` of `token` to `to`, the key kept alive with what is left. */
@@ -266,7 +266,7 @@ export async function payExactOnce(input: ExactPayInput, state: ExactPayState): 
     input.submitTimeoutMs,
     "payment submit",
   );
-  input.onTx?.({ call: "pay", txHash: res.txHash, block: res.block?.number });
+  input.onTx?.({ call: "pay", txHash: res.txHash, block: res.block?.number, ok: res.ok });
   if (res.ok) return;
   // Included and refused: the nonce is spent and nothing moved, so the next attempt takes the
   // next nonce.

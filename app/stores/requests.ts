@@ -95,6 +95,7 @@ import {
 } from "../funding/requests/views";
 import { CRYPTO_SOURCE_ID, MELD_SOURCE_IDS } from "../funding/source-ids";
 import { createTopUpTimelines } from "../funding/timeline/timelines";
+import { createWithdrawalTimelines } from "../withdraw/timeline/timelines";
 import { handoffPending, type JourneyTimeline } from "../funding/timeline/top-up";
 import { fmtCash, toCashBase } from "../utils/cash";
 import {
@@ -1334,6 +1335,8 @@ export const useRequestsStore = defineStore("requests", () => {
   );
   /** The timelines the list and the journey show, so that a top-up on both never moves back. */
   const topUpTimelineOf = createTopUpTimelines();
+  /** The withdrawals' timelines, shared by the list and the journey the same way. */
+  const withdrawalTimelineOf = createWithdrawalTimelines();
   /** The timeline of the top-up on screen at `now`, delayed while its hand-off is refused. */
   function foregroundTimeline(now: number): JourneyTimeline | undefined {
     const record = foregroundRecord.value;
@@ -3045,6 +3048,7 @@ export const useRequestsStore = defineStore("requests", () => {
     handoffRefused,
     awaitingDeposit,
     topUpTimelineOf,
+    withdrawalTimelineOf,
     foregroundTimeline,
     meldStage,
     railSeen,

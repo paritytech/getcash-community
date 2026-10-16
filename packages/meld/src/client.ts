@@ -690,13 +690,12 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
           ["destinationCurrencyCode", found.destinationCurrencyCode, req.destinationCurrencyCode],
         ],
         askedAmount: req.sourceAmount,
-        mismatchMessage:
-          "We found a payment for a different order. Contact support before starting another.",
+        mismatchMessage: "We found a payment for a different order. Do not start another.",
         reopenedMessage:
-          "This purchase is already open and can no longer be paid here. Contact support with your reference. Do not start another.",
+          "This purchase is already open and can no longer be paid here. Do not start another.",
         noSurfaceMessage: (fundingRequestId) =>
           `[meld] the adapter returned no pay page for funding request ${fundingRequestId}; there is nothing for the buyer to pay on`,
-        exhaustedMessage: `This purchase has already been opened and closed ${MAX_ATTEMPTS} times. If you are expecting funds that have not arrived, contact support with your wallet address. Starting another will not help.`,
+        exhaustedMessage: `This purchase has already been opened and closed ${MAX_ATTEMPTS} times. Starting another will not help.`,
       });
     },
 
@@ -723,8 +722,7 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
           ["destinationCurrencyCode", found.destinationCurrencyCode, req.sourceCurrencyCode],
           ["cryptoAmount", found.cryptoAmount, req.sourceAmount],
         ],
-        mismatchMessage:
-          "We found a sale for a different order. Contact support before starting another.",
+        mismatchMessage: "We found a sale for a different order. Do not start another.",
         reopenedMessage:
           "This sale is already open and can no longer be continued here. Nothing was sent. Start a new withdrawal.",
         noSurfaceMessage: (fundingRequestId) =>

@@ -39,6 +39,8 @@ function sceneState(): string {
 /** The timeline the journey draws for the scene on stage: the live record's, else its row's. */
 function journeyView(): TimelineView | undefined {
   const requests = useRequestsStore();
+  const withdrawal = requests.foregroundWithdrawal;
+  if (withdrawal !== null) return requests.withdrawalTimelineOf(withdrawal, Date.now()).view;
   if (requests.foregroundRecord !== null) return requests.foregroundTimeline(Date.now())?.view;
   const stage = previewStage.value;
   const id = stage?.kind === "journey" ? stage.topUpId : undefined;
@@ -76,11 +78,13 @@ describe("preview deck staging", () => {
   it("puts a scene on the container its name belongs to", async () => {
     for (const { label, stage } of await walk(1)) {
       const name = label.slice(label.indexOf(" ") + 1);
-      if (name.startsWith("list / ")) expect(stage, name).toEqual({ kind: "shell" });
-      else if (/^(card|bank) \/ (summary|picker)/.test(name))
-        expect(stage, name).toEqual({ kind: "package", route: name.split(" ")[0] });
-      else if (name.startsWith("card / ")) expect(stage?.kind, name).toBe("journey");
-      else if (name.startsWith("crypto / ")) expect(stage?.route, name).toBe("crypto");
+      if (name.startsWith("top-up / list") || name.startsWith("top-up / history")) {
+        expect(stage, name).toEqual({ kind: "shell" });
+      } else if (/^top-up \/ (card|bank) \/ (summary|picker)/.test(name))
+        expect(stage, name).toEqual({ kind: "package", route: name.split(" / ")[1] });
+      else if (name.startsWith("top-up / card / ")) expect(stage?.kind, name).toBe("journey");
+      else if (name.startsWith("top-up / crypto / ")) expect(stage?.route, name).toBe("crypto");
+      else if (name.startsWith("withdrawal / ")) expect(stage?.kind, name).toBe("withdraw-package");
     }
   });
 
@@ -94,11 +98,23 @@ describe("preview deck staging", () => {
   it("draws the failed milestone on the journeys that failed", async () => {
     // Started fails where nothing was paid; a card that failed after the payment fails Accepted.
     const expected: Record<string, number> = {
-      "crypto / deposit: expired": 0,
-      "card / journey: payment failed": 1,
-      "crypto / expired: from history": 0,
-      "card / expired: from history": 0,
-      "card / journey: unconfirmed": 0,
+      "top-up / crypto / deposit: expired": 0,
+      "top-up / card / journey: payment failed": 1,
+      "top-up / crypto / expired: from history": 0,
+      "top-up / card / expired: from history": 0,
+      "top-up / card / journey: unconfirmed": 0,
+      // A withdrawal fails the milestone after the last the record evidences.
+      "withdrawal / crypto / journey: payment failed": 0,
+      "withdrawal / crypto / journey: expired": 0,
+      "withdrawal / crypto / journey: cancelled": 0,
+      "withdrawal / crypto / journey: refunded": 4,
+      // The XCM left People, so a hold fails the arrival on Asset Hub.
+      "withdrawal / crypto / journey: held": 2,
+      "withdrawal / card / journey: sale ended": 0,
+      // The sale rail reports every ending as unknown, so a decline fails the hand-off's next.
+      "withdrawal / card / journey: provider cancelled": 4,
+      "withdrawal / card / journey: declined": 4,
+      "withdrawal / bank / journey: declined": 4,
     };
     const failed: Record<string, number | undefined> = {};
     for (let n = 0; n < SCENES.length; n++) {

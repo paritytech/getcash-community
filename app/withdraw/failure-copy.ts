@@ -1,9 +1,33 @@
 // What the journey says about a failed withdrawal, from the failure's kind rather than the
-// worker's own words.
+// worker's own words. A sale's rail endings name the card or bank the payout was for.
 
-import type { WithdrawalFailure } from "../funding/requests/model";
+import type { WithdrawalFailure, WithdrawalRecord } from "../funding/requests/model";
 
-export function withdrawalFailureText(failure: WithdrawalFailure): string {
+/** The provider's endings on a sale once it was paid, as the design words them. */
+function saleRailFailureText(
+  failure: WithdrawalFailure,
+  route: "card" | "bank",
+): string | undefined {
+  if (failure.step !== "send") return undefined;
+  switch (failure.kind) {
+    case "egress-failed":
+      return `Your ${route} didn't accept the payout.`;
+    case "deposit-rejected":
+    case "unknown":
+      return "The provider couldn't complete your payout.";
+    default:
+      return undefined;
+  }
+}
+
+export function withdrawalFailureText(
+  failure: WithdrawalFailure,
+  route: WithdrawalRecord["route"] = "crypto",
+): string {
+  if (route !== "crypto") {
+    const text = saleRailFailureText(failure, route);
+    if (text !== undefined) return text;
+  }
   switch (failure.kind) {
     case "payment-failed":
       return failure.message || "The payment from your balance did not go through.";
@@ -20,7 +44,7 @@ export function withdrawalFailureText(failure: WithdrawalFailure): string {
     case "deposit-rejected":
       return "The provider did not accept the funds.";
     case "fallback-egress":
-      return "The provider sent the funds somewhere else. Contact support.";
+      return "The provider sent the funds somewhere else.";
     case "refunded":
       return "The rate moved too far to complete the conversion. Your DOT is waiting, you'll need to move it yourself.";
     case "channel-expired":
@@ -33,7 +57,7 @@ export function withdrawalFailureText(failure: WithdrawalFailure): string {
         ? "The price moved too far while you verified. Nothing was taken from your balance."
         : "The price moved too far after your payment, so nothing was sent to the provider. Your funds are coming back to your balance.";
     case "unresolved":
-      return "We could not confirm the payment to the provider. Contact support with your reference.";
+      return "We could not confirm the payment to the provider.";
     case "sale-ended":
       return `${failure.message || "The provider ended the sale."} Nothing was taken from your balance.`;
     case "sale-expired":
