@@ -78,9 +78,9 @@ const account = (hex: string) => ({
   },
 });
 
-/** The claimer as Asset Hub names a signed account: under the relay network, Polkadot on Polkadot
- *  and on Paseo alike. claim_assets looks a trap up by the claimant's own origin, so a claimer
- *  without the network matches no signed account, and only Root could recover the trap. */
+/** The claimer as Asset Hub names a signed account: under the relay network, which Paseo names
+ *  Polkadot. claim_assets looks a trap up by the claimant's own origin, so a claimer without the
+ *  network matches no signed account, and only Root could recover the trap. */
 const claimer = (hex: string) => ({
   parents: 0,
   interior: {

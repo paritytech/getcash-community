@@ -83,9 +83,9 @@ type TickCall = "swap" | "withdraw" | "redeem" | "pool-exit";
 export const DEFAULT_WITHDRAW_TICK_TIMEOUT_MS = 30_000;
 /** Bound on a submitted transaction's resolution. */
 export const DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS = 180_000;
-/** Headroom below the quoted sale on Asset Hub before the program fails there, percent: 1, the V1
- *  figure agreed on 2026-10-15. The sale is quoted and dry-run on Asset Hub just before the XCM
- *  leaves, so the headroom only covers the move until the program runs there. */
+/** Headroom below the quoted sale on Asset Hub before the program fails there, percent. The sale
+ *  is quoted and dry-run on Asset Hub just before the XCM leaves, so the headroom only covers the
+ *  move until the program runs there. */
 export const DEFAULT_WITHDRAW_SLIPPAGE_PCT = 1;
 /** Rejections at inclusion after a passing dry run before the run is given up. */
 export const MAX_REJECTIONS = 3;

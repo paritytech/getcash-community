@@ -1,14 +1,13 @@
-// The V1 slippage against the conditions set on the 15 Oct call, on the pools the app trades on.
-//
-// The conditions: a Chainflip channel asks about half a point, and a purchase through the PSM pays
-// about 0.5 to 0.75% over what it needs; the routes through the Polkadot pool run on a dry-run
-// figure with 0.7 to 1% headroom, and a purchase through it pays about 1.5% over spot; and about
-// 0.5% works for the Polkadot liquidity expected, which the robot tests showed.
+// The slippage figures against what they are meant to hold to: a Chainflip channel asks about half
+// a point, and a purchase through the PSM pays about 0.5 to 0.75% over what it needs; the routes
+// through the Asset Hub pool run on a dry-run figure with 0.7 to 1% headroom, and a purchase
+// through it pays about 1.5% over spot.
 //
 // Each pool is a snapshot of its reserves at one block, with the chain's own quotes at that block:
-// Polkadot Asset Hub's DOT/dotUSD pool, where V1 goes, and Paseo's PAS/CASH pool, where it is
-// tested. The pool model here is pallet-asset-conversion's own constant-product math and must give
-// the chain's answers to the planck before anything is judged on it. The app's own code then runs
+// Paseo Asset Hub next v2's PAS/CASH pool, the one the app trades on, and Polkadot Asset Hub's
+// DOT/dotUSD pool, some 28 times deeper, to see the figures hold with more liquidity behind them.
+// The pool model here is pallet-asset-conversion's own constant-product math and must give the
+// chain's answers to the planck before anything is judged on it. The app's own code then runs
 // against it: priceSale for a withdrawal's sale, sizeNativeBudget and the conversion gate for a
 // deposit on the pool tier, computeQuote and the channel for a Chainflip deposit, against a
 // Chainflip modelled on its live quotes.
@@ -230,7 +229,7 @@ describe("the pool snapshots", () => {
   });
 });
 
-describe("the agreed figures", () => {
+describe("the slippage figures", () => {
   it("keep every pool route's headroom inside 0.7 to 1%", () => {
     for (const figure of [
       DEFAULT_SLIPPAGE_PCT,
@@ -243,7 +242,7 @@ describe("the agreed figures", () => {
   });
 });
 
-describe("a top-up through the Polkadot pool", () => {
+describe("a top-up through the deeper DOT/dotUSD pool", () => {
   it("pays about 1.5% over spot: the 1% headroom, the 0.3% pool fee and its own impact", async () => {
     for (const dollars of [10, 100, 1_000, 5_000]) {
       const pool = new Pool(POLKADOT);
@@ -283,7 +282,7 @@ describe("a top-up through the Polkadot pool", () => {
   });
 });
 
-describe("a withdrawal's sale on the Polkadot pool", () => {
+describe("a withdrawal's sale on the deeper DOT/dotUSD pool", () => {
   it("lands over its 1% floor at every size: the quote already counts the sale's own impact", async () => {
     for (const dollars of [10, 100, 1_000, 10_000]) {
       const pool = new Pool(POLKADOT);
@@ -306,13 +305,13 @@ describe("a withdrawal's sale on the Polkadot pool", () => {
       const atOne = threshold(traps(floors.one), USD(1_000_000));
       const atHalf = threshold(traps(floors.half), USD(1_000_000));
       expect(atOne).toBeGreaterThan(USD(13_000));
-      // The robot tests' half point holds too, against about half as much.
+      // Half a point holds too, against about half as much.
       expect(atHalf).toBeGreaterThan(USD(6_500));
       expect(atOne).toBeGreaterThan((atHalf * 19n) / 10n);
     }
   });
 
-  it("rides out the largest 30 s move seen on the pool in the week to 15 Oct, which half a point would not", async () => {
+  it("rides out the largest 30 s move seen on the pool in a week, which half a point would not", async () => {
     // 0.565%: the pool's own price, sampled every block or so from 8 to 15 Oct.
     const sale = USD(100);
     const flowFor = (movePct: number) =>
@@ -330,8 +329,8 @@ describe("a withdrawal's sale on the Polkadot pool", () => {
   });
 });
 
-describe("on Paseo, where V1 is tested", () => {
-  it("prices a pool top-up of 10 to 200 CASH, V1's range, at 1.3 to 1.5% over spot too", async () => {
+describe("on Paseo Asset Hub next v2's pool, the one the app trades on", () => {
+  it("prices a pool top-up of 10 to 200 CASH at 1.3 to 1.5% over spot too", async () => {
     // 1.31% at 10 CASH up to 1.50% at 200, where the shallower pool's own impact adds 0.2%.
     for (const cash of [10, 50, 200]) {
       const pool = new Pool(PASEO);

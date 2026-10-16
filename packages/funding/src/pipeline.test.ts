@@ -2690,7 +2690,7 @@ describe("sizeNativeBudget", () => {
       keepNativeForFees: KEEP,
     });
     expect(budget).toBe(ASK + KEEP);
-    expect(ASK).toBe((QUOTED * 10_100n) / 10_000n); // 1%: the V1 headroom
+    expect(ASK).toBe((QUOTED * 10_100n) / 10_000n); // 1% of headroom
   });
 
   it("quotes the same ask whatever the burner already holds", async () => {

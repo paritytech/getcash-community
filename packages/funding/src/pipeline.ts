@@ -144,9 +144,9 @@ export const DEFAULT_KEEP_NATIVE_FOR_FEES = 200_000_000n;
  *  deposit is sized: the conversion gate checks the plain quote, so this is exactly how far the
  *  pool may move against the deposit between sizing and converting before it stops clearing the
  *  gate. The surplus is converted and claimed with the rest, so the buyer never receives less
- *  than the target and receives up to this much more. 1, the V1 figure agreed on 2026-10-15: the
- *  worker converts on a dry run of the live pool, so the headroom only covers the move between
- *  sizing and converting. Pool tier only: the PSM's rate does not move. */
+ *  than the target and receives up to this much more. 1, as the worker converts on a dry run of
+ *  the live pool and the headroom only covers the move between sizing and converting. Pool tier
+ *  only: the PSM's rate does not move. */
 export const DEFAULT_SLIPPAGE_PCT = 1;
 /** The same headroom for a deposit the buyer sends straight to the burner on Asset Hub. The funds
  *  land as soon as they are sent, so the pool has only that long to move, not the minutes or hours
