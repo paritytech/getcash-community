@@ -691,8 +691,9 @@ export interface WithdrawalRailState {
   delayed?: boolean;
   failure?: RailState["failure"];
   updatedAt: number;
-  /** When the rail first reported each stage; kept through a failure, which `updatedAt` is not. */
-  stageAt?: { received?: number; processing?: number };
+  /** When the rail first reported each stage, and when it first reported sending on, which the
+   *  processing stage folds in with the swap; kept through a failure, which `updatedAt` is not. */
+  stageAt?: { received?: number; processing?: number; sending?: number };
 }
 
 export interface WithdrawalRecord {

@@ -126,14 +126,15 @@ export function withdrawalMilestones(
     const { stageAt } = rail;
     const lastChange = rail.stage === "failed" ? undefined : rail.updatedAt;
     const received = stageAt?.received ?? stageAt?.processing ?? lastChange ?? legOpenedAt(record);
-    const processing = stageAt?.processing ?? lastChange ?? received;
+    // Sending on, not the swap the processing stage also covers.
+    const sendingOn = stageAt?.sending ?? lastChange ?? received;
     if (railDispatched(record)) {
       reached.received = {};
       reached.processed = {};
       reached.dispatched = fact(rail.updatedAt);
     } else if (railSendingOn(record)) {
       reached.received = {};
-      reached.processed = fact(processing);
+      reached.processed = fact(sendingOn);
     } else if (receivedByRail(record)) {
       reached.received = fact(received);
     }

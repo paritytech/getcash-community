@@ -185,21 +185,22 @@ function railFailureKind(kind: FailureKind): WithdrawalFailureKind {
   }
 }
 
-/** The rail's first report of each stage, carried past later reads and the failure that
- *  overwrites `updatedAt`. */
+/** The rail's first report of each stage and of sending on, carried past later reads and the
+ *  failure that overwrites `updatedAt`. */
 function stageStamps(
   before: WithdrawalRailState,
   read: WithdrawalRailState,
   at: number,
 ): Pick<WithdrawalRailState, "stageAt"> {
-  const { stage } = read;
-  const stamped = stage === "received" || stage === "processing";
-  if (!stamped && before.stageAt === undefined) return {};
-  const stageAt = {
-    ...before.stageAt,
-    ...(stamped && before.stageAt?.[stage] === undefined ? { [stage]: at } : {}),
-  };
-  return { stageAt };
+  const { stage, status } = read;
+  const stageAt = { ...before.stageAt };
+  if ((stage === "received" || stage === "processing") && stageAt[stage] === undefined) {
+    stageAt[stage] = at;
+  }
+  if ((status === "sending" || status === "sent") && stageAt.sending === undefined) {
+    stageAt.sending = at;
+  }
+  return Object.keys(stageAt).length === 0 ? {} : { stageAt };
 }
 
 /** The provider's word on the swap, folded onto the rail: delivered completes the request, a

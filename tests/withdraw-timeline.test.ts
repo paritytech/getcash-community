@@ -383,6 +383,22 @@ describe("withdrawal timeline", () => {
     expect(view?.lines[4]).toBeCloseTo(LINE_LIMIT * (1 - Math.exp(-1.5)), 10);
   });
 
+  it("times the sending line from when the rail began sending, not from the swap", () => {
+    const sendingOn = chainflip({
+      status: { kind: "sending", at: at(3) },
+      rail: {
+        provider: "chainflip",
+        stage: "processing",
+        status: "sending",
+        updatedAt: at(9),
+        stageAt: { processing: at(6), sending: at(9) },
+      },
+    });
+    const { view } = withdrawalTimeline(sendingOn, { now: at(9) + 60_000 });
+    // A minute into the two-minute phase, not the four minutes since the swap began.
+    expect(view?.lines[4]).toBeCloseTo(LINE_LIMIT * (1 - Math.exp(-1.5)), 10);
+  });
+
   it("is delayed on the worker's error and on the rail's word", () => {
     const stuck = record({
       status: { kind: "converting", at: at(1), step: "swap" },

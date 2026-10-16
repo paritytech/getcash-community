@@ -280,6 +280,14 @@ describe("withdrawal: the worker", () => {
         worker(at(3), { ...landed, rail: reading("swapping") }),
       ).rail.stageAt,
     ).toEqual({ received: at(2), processing: at(3) });
+    // Sending on is stamped apart from the swap the processing stage folds it in with, once.
+    expect(
+      run(
+        swapping,
+        worker(at(6), { ...landed, rail: reading("sending") }),
+        worker(at(8), { ...landed, rail: reading("sent") }),
+      ).rail.stageAt,
+    ).toEqual({ processing: at(3), sending: at(6) });
 
     // A read that says the same again moves nothing but the witness: the rail is kept as is.
     const same = run(swapping, worker(at(4), { ...landed, rail: reading("swapping") }));
