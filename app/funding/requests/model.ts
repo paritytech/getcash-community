@@ -807,7 +807,11 @@ export function directDepositGate(record: Pick<TopUpRecord, "deposit" | "handoff
   if (handoff?.quotedDeposit !== undefined) return BigInt(handoff.quotedDeposit);
   if (handoff !== undefined && handoff.tier === "pool" && handoff.external === undefined) {
     const keep = BigInt(handoff.keepNativeForFees);
-    if (asked > keep) return keep + ((asked - keep) * 100n) / BigInt(100 + DIRECT_SLIPPAGE_PCT);
+    if (asked > keep) {
+      return (
+        keep + ((asked - keep) * 10_000n) / BigInt(Math.round((100 + DIRECT_SLIPPAGE_PCT) * 100))
+      );
+    }
   }
   return asked;
 }
