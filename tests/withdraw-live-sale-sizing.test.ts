@@ -13,7 +13,11 @@ vi.mock("../lib/host-payments", () => ({
   requestPayment: vi.fn(),
   subscribePaymentStatus: vi.fn(),
 }));
-vi.mock("../lib/chainflip-backend", () => ({ NETWORK: "testnet", mainnetSdk: vi.fn() }));
+vi.mock("../lib/chainflip-backend", () => ({
+  NETWORK: "testnet",
+  mainnetSdk: vi.fn(),
+  saleChannelsOpen: () => true,
+}));
 
 /** A pool that sells one CASH unit for `price` planck, and the payment's fee and the key's
  *  existential deposit as Asset Hub states them. Keeps who each fee estimate paid. */

@@ -129,3 +129,21 @@ const PAIR_BY_SOURCE_ID: ReadonlyMap<string, { chain: string; asset: string }> =
 /** The UI pair a source id names, in either catalog; undefined for a Meld or unknown id. */
 export const sourcePairFor = (sourceId: string): { chain: string; asset: string } | undefined =>
   PAIR_BY_SOURCE_ID.get(sourceId);
+
+/** The off-ramp lanes this build sells through, in preference order, by Meld code. By default only
+ *  the direct Asset Hub sales, USDT before DOT since the PSM redeems the CASH for USDT at a fixed
+ *  rate where DOT takes the pool's price, each under either of Meld's codes for it. The Chainflip
+ *  swap lanes (USDC_ARBITRUM, USDC_SOLANA) are opt-in: a build sells through one only when
+ *  VITE_OFFRAMP_LANES names it.
+ *  VITE_OFFRAMP_LANES overrides the list, comma separated; a code left out is not offered, whatever
+ *  the adapter lists. */
+export const OFFRAMP_LANE_ORDER: readonly string[] = (() => {
+  const raw = import.meta.env.VITE_OFFRAMP_LANES as string | undefined;
+  const listed = (raw ?? "")
+    .split(",")
+    .map((code) => code.trim().toUpperCase())
+    .filter((code) => code !== "");
+  return listed.length > 0
+    ? listed
+    : ["USDT_ASSETHUB", "USDT_STATEMINT", "DOT_ASSETHUB", "DOT_STATEMINT"];
+})();

@@ -14,7 +14,15 @@
 // payment window starts when the purse is asked, not when the address is named.
 
 import type { FailureKind } from "@getsome/core";
-import { parseBaseUnits, SELL_TOKEN } from "@getsome/meld";
+import {
+  DIRECT_SELL_CODES,
+  directSellToken,
+  parseBaseUnits,
+  sameSoldAsset,
+  SELL_TOKEN,
+  type SellToken,
+} from "@getsome/meld";
+import { laneById, laneSellToken } from "@getsome/offramp";
 import {
   PAYMENT_EXPIRED_REASON,
   PAYMENT_WINDOW_MS,
@@ -25,6 +33,7 @@ import {
   saleBeforePurse,
   withdrawalRankOf,
   type HostPayment,
+  type MeldSale,
   type MeldSaleReading,
   type Observation,
   type PaidVia,
@@ -188,6 +197,17 @@ function railRead(
   if (rail.stage === "delivered") return rank < 4 && !atSideExit(next) ? sent(next, at) : next;
   if (rail.stage === "failed" && rail.failure !== undefined) {
     if (rank >= 4 || atSideExit(next)) return next;
+    // A sale's swap refunds its USDT to the key, and the worker brings it home itself: nothing
+    // reached the provider, there is nothing for the seller to move, and the order cannot be
+    // tried again.
+    if (record.rail.provider === "meld" && rail.failure.kind === "refunded") {
+      return failed(next, at, {
+        kind: "sale-closed",
+        step: "send",
+        message: rail.failure.message,
+        recoverable: false,
+      });
+    }
     return failed(next, at, {
       kind: railFailureKind(rail.failure.kind),
       step: "send",
@@ -409,7 +429,7 @@ function applySale(record: WithdrawalRecord, observation: SaleObservation): With
   // The address taken must still be the provider's word. The adapter stops naming one the
   // provider moved away from and shows the terms the provider states now, so a deposit that is
   // gone or changed ends the sale before anything is asked of the purse.
-  if (channel !== undefined && !sameDeposit(channel, reading.deposit)) {
+  if (channel !== undefined && !sameDeposit(sellTokenOf(sale), channel, reading.deposit)) {
     return failed(next, at, {
       kind: "sale-mismatch",
       step: "payment",
@@ -420,13 +440,25 @@ function applySale(record: WithdrawalRecord, observation: SaleObservation): With
   return next;
 }
 
+/** What a sale sells: its offramp lane's asset, or the asset its code names on Asset Hub, PAS
+ *  unless it names another. The code was checked when the sale opened; this never throws. */
+function sellTokenOf(sale: MeldSale): SellToken {
+  if (sale.lane !== undefined) return laneSellToken(laneById(sale.lane));
+  const code = sale.sellCode ?? SELL_TOKEN.meldCurrencyCode;
+  return DIRECT_SELL_CODES.includes(code) ? directSellToken(code) : SELL_TOKEN;
+}
+
 /** Whether `deposit` is the channel's address, for the sale's asset and its exact amount. */
-function sameDeposit(channel: WithdrawalChannel, deposit: MeldSaleReading["deposit"]): boolean {
+function sameDeposit(
+  token: SellToken,
+  channel: WithdrawalChannel,
+  deposit: MeldSaleReading["deposit"],
+): boolean {
   return (
     deposit !== undefined &&
     deposit.address === channel.address &&
-    deposit.currency === SELL_TOKEN.meldCurrencyCode &&
-    parseBaseUnits(SELL_TOKEN, deposit.amount) === BigInt(channel.amount ?? "0")
+    sameSoldAsset(deposit.currency, token.meldCurrencyCode) &&
+    parseBaseUnits(token, deposit.amount) === BigInt(channel.amount ?? "0")
   );
 }
 
@@ -441,9 +473,10 @@ function depositKnown(
   at: number,
 ): WithdrawalRecord {
   const sale = record.sale!;
+  const token = sellTokenOf(sale);
   const expected = BigInt(sale.cryptoAmount);
-  const asked = parseBaseUnits(SELL_TOKEN, deposit.amount);
-  if (deposit.currency !== SELL_TOKEN.meldCurrencyCode || asked !== expected) {
+  const asked = parseBaseUnits(token, deposit.amount);
+  if (!sameSoldAsset(deposit.currency, token.meldCurrencyCode) || asked !== expected) {
     return failed(record, at, {
       kind: "sale-mismatch",
       step: "payment",
@@ -593,6 +626,11 @@ function applyUser(record: WithdrawalRecord, observation: UserObservation): With
     case "channel-opened":
       // A fresh channel for the rail leg; the hand-off the worker is re-armed with carries it.
       return { ...record, handoff: { ...record.handoff, channel: observation.channel } };
+    case "swap-opened":
+      // Only before the purse is asked: a key already paying keeps the swap it was handed.
+      if (record.sale?.lane === undefined || record.payment.requestedAt !== undefined)
+        return record;
+      return { ...record, handoff: { ...record.handoff, swap: observation.channel } };
     case "sale-unfundable":
       // Only before the purse was asked: after that the worker's own floor decides.
       if (
