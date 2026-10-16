@@ -1,23 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { fundingSelectorConfig } from "../app/funding/config";
+import type { TopUpTimeline } from "../app/funding/timeline/top-up";
+import { MILESTONES } from "../app/funding/timeline/types";
 import {
-  chainflipProgressProvider,
-  createFundingProgressSnapshot,
-  projectFundingProgress,
-} from "../app/funding/progress";
-import {
-  hasFundingPendingContent,
   projectFundingTopUps,
   type FundingTopUp,
+  type FundingTopUpProgress,
 } from "../app/funding/top-ups";
 
-function progress(startedAt: number) {
-  return projectFundingProgress({
-    snapshot: createFundingProgressSnapshot(chainflipProgressProvider.createProfile()),
-    createdAt: startedAt,
-    now: startedAt,
-  });
-}
+const progress: FundingTopUpProgress = { value: 0, tone: "waiting", delayed: false };
 
 const topUps = [
   {
@@ -25,7 +16,7 @@ const topUps = [
     amount: "25",
     route: "bank",
     startedAt: 100,
-    progress: progress(100),
+    progress,
     state: { kind: "awaiting-transfer", status: "Waiting for your transfer" },
   },
   {
@@ -33,7 +24,7 @@ const topUps = [
     amount: "50",
     route: "crypto",
     startedAt: 400,
-    progress: progress(400),
+    progress,
     state: { kind: "finishing", status: "Received, finishing up" },
   },
   {
@@ -41,7 +32,7 @@ const topUps = [
     amount: "20",
     route: "card",
     startedAt: 200,
-    progress: progress(200),
+    progress,
     details: {
       network: { label: "Bitcoin", icon: "/icons/bitcoin.svg" },
       token: { label: "BTC", icon: "/icons/bitcoin.svg" },
@@ -54,7 +45,7 @@ const topUps = [
     amount: "40",
     route: "crypto",
     startedAt: 500,
-    progress: progress(500),
+    progress,
     state: { kind: "failed", at: 800, reason: "Deposit expired" },
   },
 ] as const satisfies readonly FundingTopUp[];
@@ -65,8 +56,24 @@ describe("funding top-up projections", () => {
 
     expect(sections.inProgress.map(({ id }) => id)).toEqual(["crypto:2", "bank:1"]);
     expect(sections.past.map(({ id }) => id)).toEqual(["crypto:4", "card:3"]);
-    expect(sections.latestSettled?.id).toBe("card:3");
-    expect(sections.latestSettled?.details?.depositAddress).toBe("bc1q-saved-deposit");
+    expect(sections.past[1]?.details?.depositAddress).toBe("bc1q-saved-deposit");
+  });
+
+  it("carries each top-up's timeline to the row the list and history draw", () => {
+    const timeline: TopUpTimeline = {
+      view: {
+        state: "done",
+        milestones: MILESTONES.map(() => "complete"),
+        lines: MILESTONES.slice(1).map(() => 1),
+      },
+    };
+    const sections = projectFundingTopUps(
+      topUps.map((topUp) => ({ ...topUp, timeline })),
+      fundingSelectorConfig,
+    );
+    for (const row of [...sections.inProgress, ...sections.past]) {
+      expect(row.timeline, row.id).toBe(timeline);
+    }
   });
 
   it("says a refunded crypto top-up was returned, not that it failed", () => {
@@ -103,27 +110,17 @@ describe("funding top-up projections", () => {
     });
   });
 
-  it("keeps Pending available for active and latest-settled combinations", () => {
-    const both = projectFundingTopUps(topUps, fundingSelectorConfig);
-    const activeOnly = projectFundingTopUps(topUps.slice(0, 2), fundingSelectorConfig);
+  it("lists a settled top-up as history only, never as running", () => {
     const settledOnly = projectFundingTopUps([topUps[2]!], fundingSelectorConfig);
-    const failedOnly = projectFundingTopUps([topUps[3]!], fundingSelectorConfig);
-
-    expect(hasFundingPendingContent(both.inProgress, both.latestSettled)).toBe(true);
-    expect(hasFundingPendingContent(activeOnly.inProgress, activeOnly.latestSettled)).toBe(true);
-    expect(hasFundingPendingContent(settledOnly.inProgress, settledOnly.latestSettled)).toBe(true);
-    expect(hasFundingPendingContent(failedOnly.inProgress, failedOnly.latestSettled)).toBe(false);
-  });
-
-  it("keeps Pending in place when its final active top-up settles", () => {
-    const active = projectFundingTopUps([topUps[0]!], fundingSelectorConfig);
     const settled = projectFundingTopUps(
       [{ ...topUps[0]!, state: { kind: "settled", at: 900 } }],
       fundingSelectorConfig,
     );
 
-    expect(hasFundingPendingContent(active.inProgress, active.latestSettled)).toBe(true);
-    expect(hasFundingPendingContent(settled.inProgress, settled.latestSettled)).toBe(true);
+    expect(settledOnly.inProgress).toEqual([]);
+    expect(settledOnly.past.map(({ id }) => id)).toEqual(["card:3"]);
+    expect(settled.inProgress).toEqual([]);
+    expect(settled.past[0]?.state).toMatchObject({ kind: "settled", at: 900 });
   });
 
   it("uses the requested amount when settlement has no credited amount", () => {
@@ -134,7 +131,7 @@ describe("funding top-up projections", () => {
           amount: "100",
           route: "crypto",
           startedAt: 800,
-          progress: progress(800),
+          progress,
           state: { kind: "settled", at: 900 },
         },
       ],
@@ -157,7 +154,7 @@ describe("funding top-up projections", () => {
           amount: "15",
           route: "crypto",
           startedAt: 1_000,
-          progress: progress(1_000),
+          progress,
           state: { kind: "failed", reason: "Unavailable" },
         },
       ],
@@ -170,7 +167,6 @@ describe("funding top-up projections", () => {
       at: 1_000,
       reason: "Unavailable",
     });
-    expect(sections.latestSettled).toBeNull();
   });
 
   it("does not mutate provider ordering", () => {
@@ -185,11 +181,7 @@ describe("fiat routes in the shell list", () => {
     const base = {
       amount: "100",
       startedAt: 100,
-      progress: projectFundingProgress({
-        snapshot: createFundingProgressSnapshot(chainflipProgressProvider.createProfile()),
-        createdAt: 100,
-        now: 200,
-      }),
+      progress,
       state: { kind: "awaiting-transfer" as const, status: "Waiting for your payment" },
     };
     const sections = projectFundingTopUps(

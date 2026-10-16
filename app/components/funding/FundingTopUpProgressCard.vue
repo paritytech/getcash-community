@@ -3,7 +3,7 @@
 // what the rail is doing, and the route as a quiet pill on the right. Shared by the top-up screen
 // and history, which differ only in which states they can hand it.
 import { computed } from "vue";
-import { ArrowUpRight, Check, X } from "lucide-vue-next";
+import { ArrowDownLeft, ArrowUpRight, X } from "lucide-vue-next";
 import type {
   FailedFundingTopUp,
   InProgressFundingTopUp,
@@ -65,12 +65,22 @@ const emit = defineEmits<{ open: [topUp: ProgressCardTopUp] }>();
     @click="emit('open', topUp)"
   >
     <span class="flex min-w-0 items-start gap-2">
-      <!-- The glyph sits on the middle of the amount's 24px line, not on its cap. -->
+      <!-- The glyph sits on the middle of the amount's 24px line, not on its cap. Money that
+           arrived points up and out in the credit's green; money that left points down and in. -->
       <span class="mt-1 flex size-4 shrink-0 items-center justify-center">
-        <ArrowUpRight v-if="settled && debit" class="size-4 text-fg-secondary" aria-hidden="true" />
-        <Check v-else-if="settled" class="size-4 text-fg-success" aria-hidden="true" />
+        <ArrowDownLeft
+          v-if="settled && debit"
+          class="size-4 text-fg-secondary"
+          aria-hidden="true"
+        />
+        <ArrowUpRight v-else-if="settled" class="size-4 text-fg-success" aria-hidden="true" />
         <X v-else-if="failed" class="size-4 text-fg-error" aria-hidden="true" />
-        <FundingProgressRing v-else :progress="topUp.progress" :size="16" />
+        <FundingProgressRing
+          v-else
+          :value="topUp.progress.value"
+          :tone="topUp.progress.tone"
+          :size="16"
+        />
       </span>
       <span class="flex min-w-0 flex-col">
         <strong
@@ -83,7 +93,7 @@ const emit = defineEmits<{ open: [topUp: ProgressCardTopUp] }>();
         </strong>
         <span
           class="truncate text-body-m"
-          :class="topUp.delayed ? 'text-fg-warning' : 'text-fg-secondary'"
+          :class="topUp.progress.delayed ? 'text-fg-warning' : 'text-fg-secondary'"
         >
           {{ statusText }}
         </span>

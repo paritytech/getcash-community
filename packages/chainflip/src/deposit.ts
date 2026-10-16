@@ -35,7 +35,8 @@ export async function requestDepositAddress(
       ...(args.ccm ? { ccmParams: args.ccm } : {}),
     });
   } catch (err) {
-    throw new Error("Failed to open swap deposit channel", { cause: err });
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to open swap deposit channel: ${reason}`, { cause: err });
   }
 
   const typed = result as {

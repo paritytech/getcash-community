@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { TOKENS } from "@getsome/core";
 import {
+  chainflipTokenOf,
   computeQuote,
   ON_CHAIN_OVERHEAD_PLANCKS,
   pickRegularQuote,
@@ -199,5 +201,13 @@ describe("pickRegularQuote", () => {
 
   it("returns null on an empty list", () => {
     expect(pickRegularQuote([])).toBeNull();
+  });
+});
+
+describe("chainflipTokenOf", () => {
+  it("names the tokens Chainflip delivers and none of the others", () => {
+    expect(chainflipTokenOf(TOKENS.PAS)?.chainflipAsset).toBe("DOT");
+    expect(chainflipTokenOf(TOKENS.USDT)?.chainflipAsset).toBe("USDT");
+    expect(chainflipTokenOf(TOKENS.USDC)).toBeUndefined();
   });
 });

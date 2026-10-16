@@ -34,7 +34,7 @@ export const WITHDRAWAL_WORDING: FundingTopUpWording = { settled: "Sent" };
 
 /** The words the shell's list screens use on the withdrawal page. */
 export const WITHDRAWAL_LIST_WORDING: FundingListWording = {
-  pendingTitle: "Withdrawal in progress",
+  pendingTitle: "Withdrawals in progress",
   pendingCta: "Withdraw",
   emptyHistory: "Nothing here yet. Your withdrawals will appear as you make them.",
 };
@@ -113,7 +113,7 @@ export function projectWithdrawalTopUps(
   now = Date.now(),
 ): FundingTopUp[] {
   return records.map((record) => {
-    const progress = withdrawalProgress(record, now);
+    const { view } = withdrawalProgress(record, now);
     return {
       id: rowId(record.ref),
       amount: record.amountHuman,
@@ -121,7 +121,7 @@ export function projectWithdrawalTopUps(
       // The route opens the package the withdrawal came from: crypto's, or the fiat sale's.
       route: record.route,
       startedAt: record.startedAt,
-      progress,
+      progress: { value: view.value, tone: view.kind, delayed: false },
       details: detailsOf(record),
       state: withdrawalRowStateOf(record),
     };

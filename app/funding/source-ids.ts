@@ -1,6 +1,6 @@
 // Maps a request's source id to its rail. Records with no source id belong to the crypto rail.
 
-import { isDirectSourceId } from "~~/lib/config";
+import { isDirectSourceId, sourcePairFor } from "~~/lib/config";
 
 export { isDirectSourceId };
 export type { DirectSourceId } from "~~/lib/config";
@@ -23,6 +23,6 @@ export const meldSourceIdFor = (method: MeldMethod): MeldSourceId =>
 export const meldMethodFor = (sourceId: MeldSourceId): MeldMethod =>
   sourceId === "meld-card" ? "card" : "bank";
 
-/** A source the crypto rail serves: a direct Asset Hub deposit, or none. */
+/** A source the crypto rail serves: a direct Asset Hub deposit, a Chainflip swap, or none. */
 export const isCryptoSourceId = (sourceId: string | undefined): boolean =>
-  sourceId === undefined || isDirectSourceId(sourceId);
+  sourceId === undefined || sourcePairFor(sourceId) !== undefined;

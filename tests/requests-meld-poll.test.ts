@@ -60,6 +60,7 @@ vi.mock("../lib/coinage-live", () => ({
  *  reached by a status poll. */
 interface FakeMeldClient extends MeldClientLike {
   status: string;
+  providerStatus?: string;
   /** Thrown by the next status reads instead of answering, when set. */
   failure: Error | null;
   /** Status reads so far, by funding-request id. */
@@ -80,7 +81,8 @@ function fakeMeldClient(status: string): FakeMeldClient {
     getStatus: async (fundingRequestId) => {
       client.reads[fundingRequestId] = (client.reads[fundingRequestId] ?? 0) + 1;
       if (client.failure !== null) throw client.failure;
-      return { status: client.status };
+      const { status, providerStatus } = client;
+      return providerStatus === undefined ? { status } : { status, providerStatus };
     },
     cancel: async () => {
       throw new Error("unused");
@@ -120,7 +122,7 @@ function fakeWebStorage(): WebStorageLike {
 
 const MINUTE = 60_000;
 const MELD_GONE =
-  "We can no longer find this payment. Do not pay again. Contact support with your reference.";
+  "We can no longer find this payment. Do not pay again until you check your card statement.";
 
 /** The ref a fixture is stored under: its own source id and trade number. */
 const refOf = (record: ActiveFlowRecord): RequestRef =>
@@ -210,7 +212,7 @@ describe("requests store: the Meld poll", () => {
     client.status = "transaction_seen";
     await nextPoll();
     expect(requests.meldStage).toBe("waiting");
-    expect(requests.meldDelayed).toBe(false);
+    expect(requests.get(CARD_REF)?.rail.delayed === true).toBe(false);
     expect(requests.get(CARD_REF)?.rail.stage).toBe("received");
 
     await requests.markMeldSubmitted(CARD_REF);
@@ -218,12 +220,18 @@ describe("requests store: the Meld poll", () => {
     expect(requests.meldHandedOff).toBe(true);
     expect(requests.meldSubmitted).toBe(true);
 
-    // The provider's crypto delivery is stuck and retrying: a delay, nothing terminal.
-    client.status = "crypto_failed";
+    // The provider approved the payment: the stage reads as before.
+    client.providerStatus = "SETTLING";
+    await nextPoll();
+    expect(requests.meldStage).toBe("receiving");
+    expect(requests.get(CARD_REF)?.rail.delayed === true).toBe(false);
+
+    // A temporary provider error: a delay, nothing terminal.
+    client.providerStatus = "ERROR";
     await nextPoll();
     await nextTick();
     expect(requests.meldStage).toBe("receiving");
-    expect(requests.meldDelayed).toBe(true);
+    expect(requests.get(CARD_REF)?.rail.delayed === true).toBe(true);
 
     client.status = "settled";
     await nextPoll();
@@ -309,7 +317,7 @@ describe("requests store: the Meld poll", () => {
       status: { kind: "awaiting-deposit" },
       rail: { stage: "waiting" },
     });
-    expect(requests.meldDelayed).toBe(false);
+    expect(requests.get(CARD_REF)?.rail.delayed === true).toBe(false);
     expect(notFoundWarnings()).toEqual(["[meld] status for mfr not found (1/3)"]);
     // A miss keeps the 3s cadence; only other failures back off.
     await nextPoll();
@@ -319,7 +327,7 @@ describe("requests store: the Meld poll", () => {
       status: { kind: "awaiting-deposit" },
       rail: { stage: "waiting" },
     });
-    expect(requests.meldDelayed).toBe(false);
+    expect(requests.get(CARD_REF)?.rail.delayed === true).toBe(false);
     expect(notFoundWarnings()).toEqual([
       "[meld] status for mfr not found (1/3)",
       "[meld] status for mfr not found (2/3)",

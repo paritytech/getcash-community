@@ -18,12 +18,13 @@ export {
   quoteStableForUnderlying,
   quoteStableIn,
   quoteUnderlyingOut,
+  readDeposit,
   sizeNativeBudget,
   stableDepositNeeded,
   tickOnce,
   withHeadroom,
 } from "./pipeline";
-export type { FundingStep, TickState } from "./pipeline";
+export type { ConversionFact, FundingStep, TickState } from "./pipeline";
 export {
   buildFundingProgram,
   buildPsmFundingProgram,

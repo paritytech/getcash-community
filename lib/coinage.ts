@@ -21,7 +21,12 @@ import {
   type TokenSpec,
 } from "@getsome/core";
 import { blake2b } from "@noble/hashes/blake2.js";
-import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
+import {
+  chainflipTokenOf,
+  createChainflipRail,
+  egressFor,
+  SOURCE_CONFIG_BY_ID,
+} from "@getsome/chainflip";
 import {
   deriveKeypairWithSecret,
   deriveRefundKey,
@@ -70,7 +75,7 @@ import {
   type FakeHandoff,
   type Harness,
 } from "@getsome/testing";
-import { NETWORK } from "./chainflip-backend";
+import { mainnetSdk, NETWORK } from "./chainflip-backend";
 import type { WorkerHandoffPayload } from "../app/funding/requests/model";
 
 const BITCOIN_NETWORK: BitcoinNetwork = NETWORK === "mainnet" ? "mainnet" : "testnet";
@@ -532,50 +537,53 @@ export async function readDepositOnAh(
   return held?.balance ?? 0n;
 }
 
-/** `readDepositOnAh` at every best block until the returned function is called. */
+/** The block a watch reads: each best block, or each finalized one. */
+export type Finality = "best" | "finalized";
+
+/** `readDepositOnAh` at every block of `at` until the returned function is called. */
 export function watchDepositOnAh(
   api: AssetHubApi,
   route: ConversionRoute,
   address: string,
+  at: Finality,
   onValue: (balance: bigint) => void,
   onError: (e: unknown) => void,
 ): () => void {
-  return watchTokenOnAh(api, depositTokenOf(route), address, onValue, onError);
+  return watchTokenOnAh(api, depositTokenOf(route), address, at, onValue, onError);
 }
 
-/** One token's balance on an account at every best block: the native's free balance, or the
+/** One token's balance on an account at every block of `at`: the native's free balance, or the
  *  pallet-assets holding the token names. */
 function watchTokenOnAh(
   api: AssetHubApi,
   token: TokenSpec,
   address: string,
+  at: Finality,
   onValue: (balance: bigint) => void,
   onError: (e: unknown) => void,
 ): () => void {
   const subscription =
     token.assetHubId === undefined
-      ? api.query.System.Account.watchValue(address, { at: "best" }).subscribe({
+      ? api.query.System.Account.watchValue(address, { at }).subscribe({
           next: ({ value: account }) => onValue(account?.data?.free ?? 0n),
           error: onError,
         })
-      : api.query.Assets.Account.watchValue(token.assetHubId, address, {
-          at: "best",
-        }).subscribe({
+      : api.query.Assets.Account.watchValue(token.assetHubId, address, { at }).subscribe({
           next: ({ value: held }) => onValue(held?.balance ?? 0n),
           error: onError,
         });
   return () => subscription.unsubscribe();
 }
 
-/** A Polkadot deposit account's balances at a best block: the token the route asks for, and
- *  another direct token found on it, named as the deposit screen names it. */
+/** A Polkadot deposit account's balances at a block: the token the route asks for, and another
+ *  direct token found on it, named as the deposit screen names it. */
 export interface DirectDepositReading {
   held: bigint;
   stray: { asset: string; amount: bigint } | null;
 }
 
 /**
- * Every direct token's balance on a burner at each best block, until the returned function is
+ * Every direct token's balance on a burner at each block of `at`, until the returned function is
  * called. A buyer can send any of them from any wallet, so a Polkadot deposit is followed in all
  * of them: the route's own token is the deposit, any other is one it was not asked for. Emits
  * once every balance has been read, then on every change.
@@ -584,6 +592,7 @@ export function watchDirectDepositOnAh(
   api: AssetHubApi,
   route: ConversionRoute,
   address: string,
+  at: Finality,
   onValue: (reading: DirectDepositReading) => void,
   onError: (e: unknown) => void,
 ): () => void {
@@ -609,6 +618,7 @@ export function watchDirectDepositOnAh(
       api,
       token,
       address,
+      at,
       (value) => {
         balances.set(token, value);
         emit();
@@ -830,6 +840,9 @@ export interface CoinageWorld extends RefundKeyHold {
   fundingSizing: FundingSizing;
   /** This request's burner (SS58). It receives the deposit and holds the CASH until the claim. */
   burnerAddress: string;
+  /** What the rail delivers to the burner, in the route's deposit token: the figure the rail was
+   *  asked to quote for, and what the faucet sends in its place. */
+  budget: bigint;
   /**
    * The session's source id: the key under which this request's trade counter and burner entropy
    * label live.
@@ -1037,6 +1050,16 @@ export function hostSafeEntropy(deriveEntropy: ParityDeriveEntropy) {
   };
 }
 
+/** The rail a source runs on: Chainflip's, delivering the route's deposit token to the burner,
+ *  for a swap source; the manual rail, a direct deposit of that token, for every other. */
+export async function railFor(sourceId: SourceId, route: ConversionRoute): Promise<ChainflipRail> {
+  const token = depositTokenOf(route);
+  if (!SOURCE_CONFIG_BY_ID.has(sourceId)) return createManualRail({ token });
+  const delivered = chainflipTokenOf(token);
+  if (delivered === undefined) throw new Error(`Chainflip cannot deliver ${token.symbol}`);
+  return createChainflipRail({ sdk: await mainnetSdk(), egress: egressFor(delivered) });
+}
+
 export async function createCoinageSession(
   args: CoinageSessionArgs & {
     hostLocalStorage: unknown;
@@ -1050,11 +1073,18 @@ export async function createCoinageSession(
   },
 ): Promise<CoinageWorld> {
   // The live world serves the sources that land the route's deposit token on the burner: the
-  // manual rail, one source per token, and the Meld rails.
-  const LIVE_SOURCES = new Set<SourceId>([...MANUAL_SOURCE_IDS, "meld-card", "meld-bank"]);
+  // manual rail, one source per token, the Chainflip swap sources, and the Meld rails.
+  const LIVE_SOURCES = new Set<SourceId>([
+    ...MANUAL_SOURCE_IDS,
+    ...SOURCE_CONFIG_BY_ID.keys(),
+    "meld-card",
+    "meld-bank",
+  ]);
   if (!LIVE_SOURCES.has(args.sourceId)) {
     throw new Error(`live mode does not serve source '${args.sourceId}'`);
   }
+  // The Meld rail when the fiat route injected one; the source's own rail otherwise.
+  const chainflip = args.rail ?? (await railFor(args.sourceId, args.route));
   const { connectChain, evictChains, PEOPLE, ASSET_HUB } = await import("./host-chain");
   const [peopleClient] = await Promise.all([connectChain(PEOPLE), connectChain(ASSET_HUB)]);
   const peoplePort = resilientPeoplePort();
@@ -1064,9 +1094,7 @@ export async function createCoinageSession(
     // Required by the input type but unread: `chain` below supplies the port.
     client: peopleClient,
     chain: peoplePort,
-    // The Meld rail when the fiat route injected one; the manual rail (direct deposit of the
-    // route's token, under the token's own source) otherwise.
-    chainflip: args.rail ?? createManualRail({ token: depositTokenOf(args.route) }),
+    chainflip,
     // The host's storage matches the readString/writeString/clear shape createHostDeps wants.
     hostLocalStorage: args.hostLocalStorage as Parameters<
       typeof createHostDeps
@@ -1283,6 +1311,7 @@ export async function createCoinageSession(
     session,
     fundingSizing: sizing,
     burnerAddress: burnerKey.address,
+    budget,
     ...holdRefundKey(session, deps.storage, args.sourceId, tradeN, refundKey),
     sourceId: args.sourceId,
     tradeN,

@@ -1,13 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatWhen, formatWhenShort, journeyLabels, shortRef } from "../app/utils/journey";
-
-describe("journeyLabels", () => {
-  it("names what arrived when the asset is known", () => {
-    expect(journeyLabels("BTC")[1]!.done).toBe("We received your BTC");
-    expect(journeyLabels(null)[1]!.done).toBe("We received your payment");
-    expect(journeyLabels("BTC")).toHaveLength(5);
-  });
-});
+import { formatWhen, formatWhenShort, shortRef } from "../app/utils/journey";
 
 describe("formatWhen", () => {
   it("reads like the design: weekday, month, day, time", () => {

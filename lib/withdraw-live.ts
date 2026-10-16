@@ -66,7 +66,7 @@ import { AccountId } from "polkadot-api";
 import { cashAmount } from "../app/utils/cash";
 import { isDemoBuild } from "../app/utils/demo";
 import type { WithdrawFeeView, WithdrawOffer } from "../app/withdraw/offers";
-import { mainnetSdk, saleSwapSdk } from "./chainflip-backend";
+import { mainnetSdk, saleChannelsOpen, saleSwapSdk } from "./chainflip-backend";
 import { withTimeout } from "./timeout";
 import { hostSafeEntropy, nextFreeTradeNumber, readTradeCounter, tradeCounterKey } from "./coinage";
 import {
@@ -372,24 +372,33 @@ export interface SwapSaleSize {
   route: Extract<ConversionRoute, { tier: "psm" }>;
   /** The least USDT the key pays the channel, base units: what the swap is quoted on. */
   usdtIn: bigint;
-  /** Exactly what the provider is promised, in the lane's base units. */
+  /** What the swap delivers today, in the lane's base units, less the lane's delivery buffer. */
   commit: bigint;
+  /** Exactly what the provider is promised at confirm, the lane's base units: `commit` with
+   *  SALE_KYC_MARGIN_PCT under it, for the price to move while the seller verifies. */
+  promise: bigint;
 }
 
-/** Sizes a sale of `amount` CASH through `lane`. Throws when the PSM cannot redeem it, Chainflip
- *  cannot quote it, or the fees take it all. */
+/** Sizes a sale of `amount` CASH through `lane`. Throws when this build cannot open the swap's
+ *  channel, the PSM cannot redeem it, Chainflip cannot quote it, or the fees take it all. */
 export async function sizeSwapSale(amount: bigint, lane: OfframpLane): Promise<SwapSaleSize> {
+  // Refused here, at the quote, so the sale falls through to the next lane before any KYC.
+  if (!saleChannelsOpen()) throw new Error("Swap channels cannot be opened in this build.");
   const { route, least } = await usdtSaleLanding(amount);
   const usdtIn = least - USDT_PAY_FEE_ALLOWANCE;
   if (usdtIn <= 0n) throw new Error("The amount does not cover the network fees.");
   const quote = await quoteOutgoing(await saleSwapSdk(), usdtIn, lane.chainflip, ASSET_HUB_USDT);
+  const token = laneSellToken(lane);
   // The lane's own buffer: its delivery fee can rise before the swap lands, by chain.
-  const commit = sellAmountOf(
-    laneCommit(lane, quote.egressAmount, quote.egressFee),
-    laneSellToken(lane),
+  const commit = sellAmountOf(laneCommit(lane, quote.egressAmount, quote.egressFee), token);
+  // As for a sale of PAS: the seller verifies between confirm and pay, and the check at pay holds
+  // today's `commit` to this, so a small move in the quote or the fee meanwhile still sells.
+  const promise = sellAmountOf(
+    (commit * BigInt(Math.round((100 - SALE_KYC_MARGIN_PCT) * 100))) / 10_000n,
+    token,
   );
-  if (commit <= 0n) throw new Error("The amount does not cover the network fees.");
-  return { route, usdtIn, commit };
+  if (promise <= 0n) throw new Error("The amount does not cover the network fees.");
+  return { route, usdtIn, commit, promise };
 }
 
 /** Opens a lane sale's Chainflip channel: the key's USDT in, the lane's asset out to the provider's

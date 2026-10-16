@@ -16,6 +16,7 @@ import {
   type MeldQuoteEntry,
 } from "@getsome/meld";
 import { laneById, laneSellToken, type LaneId } from "@getsome/offramp";
+import { CHANNEL_EXPIRY_MARGIN_MS } from "@getsome/withdraw";
 import {
   MELD_WITHDRAW_DESTINATIONS,
   PAYMENT_WINDOW_MS,
@@ -35,9 +36,10 @@ import { meldSellClient } from "../withdraw/meld-client";
 import { workerSessionId } from "~~/lib/coinage";
 import { isHosted } from "~~/lib/host-account";
 
-/** How long before a Chainflip channel closes it is opened afresh instead: room for the key's
- *  payment to land. */
-const SWAP_REUSE_MARGIN_MS = 10 * 60_000;
+/** How long before a Chainflip channel closes it is opened afresh instead: the purse's whole
+ *  payment window for the CASH to reach the key, then the margin the worker itself refuses to pay
+ *  a channel within. Any shorter and the page keeps a channel the worker will not pay. */
+const SWAP_REUSE_MARGIN_MS = PAYMENT_WINDOW_MS + CHANNEL_EXPIRY_MARGIN_MS;
 
 /** The withdrawals a cancel is under way for, by request key: a sale's purse is not asked
  *  meanwhile. Module scope, since each screen holds its own `useWithdrawalRequest`. */

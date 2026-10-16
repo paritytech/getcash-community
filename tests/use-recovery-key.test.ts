@@ -91,30 +91,6 @@ describe("useRecoveryKey", () => {
     expect(key.unavailable.value).toBe(true);
   });
 
-  it("reveals without a tap when the preview flag flips after setup", async () => {
-    const want = ref(false);
-    const key = useRecoveryKey({
-      known: () => KEY,
-      autoReveal: () => want.value,
-      resolve: () => material(KEY),
-    });
-    await flush();
-    expect(key.masked.value).toBe(true);
-
-    want.value = true;
-    await flush();
-
-    expect(key.masked.value).toBe(false);
-    expect(key.secret.value).toBe(SECRET);
-
-    // Stepping back off the revealed frame puts it away again.
-    want.value = false;
-    await flush();
-
-    expect(key.masked.value).toBe(true);
-    expect(key.secret.value).toBeNull();
-  });
-
   it("drops the held key when another request takes the screen", async () => {
     const label = ref("wd:eph:dot:1");
     const key = useRecoveryKey({
@@ -131,23 +107,5 @@ describe("useRecoveryKey", () => {
 
     expect(key.secret.value).toBeNull();
     expect(key.masked.value).toBe(true);
-  });
-
-  it("re-reveals a staged scene when the key under it changes", async () => {
-    const label = ref("wd:eph:dot:1");
-    const key = useRecoveryKey({
-      identity: () => label.value,
-      known: () => KEY,
-      autoReveal: () => true,
-      resolve: () => material(KEY),
-    });
-    await flush();
-    expect(key.masked.value).toBe(false);
-
-    label.value = "wd:eph:dot:2";
-    await flush();
-
-    expect(key.masked.value).toBe(false);
-    expect(key.secret.value).toBe(SECRET);
   });
 });

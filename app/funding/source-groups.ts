@@ -1,15 +1,9 @@
-// The deposit pickers' two groups: the sources a buyer can pick for the amount on screen, then
-// the ones that cannot take it, each greyed with the line that says why. The same split the
-// country picker draws, so the two pickers read alike. Pure, so both screens share one wording.
+// The deposit pickers' wording: the line under a row that cannot take the amount on screen, and
+// the token picker's two labelled groups. The network picker's order is OptionList's. Pure, so
+// both screens share one wording.
 
 import { CASH_DECIMALS } from "@getsome/people";
-import {
-  isNetworkPickable,
-  isPickable,
-  type NetworkRow,
-  type TokenOffer,
-  type TokenRow,
-} from "../stores/offers";
+import { isPickable, type NetworkRow, type TokenOffer, type TokenRow } from "../stores/offers";
 import { cashAmount } from "../utils/cash";
 
 export interface PickerGroup<T> {
@@ -22,6 +16,11 @@ const CASH_BASE = 10n ** BigInt(CASH_DECIMALS);
 /** Whole CASH, rounded up: a minimum is never understated. */
 export const wholeCashCeil = (base: bigint): string =>
   ((base + CASH_BASE - 1n) / CASH_BASE).toString();
+
+/** The line under a row whose amount is under a provider's minimum, the same on every picker:
+ *  "Minimum for this network is $80 CASH". */
+export const minimumLine = (of: "token" | "network", base: bigint): string =>
+  `Minimum for this ${of} is ${cashAmount(wholeCashCeil(base))}`;
 
 /** The smallest purchase any of these tokens would take, in CASH base units; null when none
  *  reported one. */
@@ -45,7 +44,7 @@ export function tokenSubtitle(offer: TokenOffer): string | undefined {
     case "too-small":
       return offer.minimumCashBase === null
         ? "Amount too small"
-        : `Minimum for this token is ${cashAmount(wholeCashCeil(offer.minimumCashBase))}`;
+        : minimumLine("token", offer.minimumCashBase);
     case "available":
     case "ungated":
     case "direct":
@@ -61,7 +60,7 @@ export function networkSubtitle(network: NetworkRow): string | undefined {
   const states = new Set(network.tokens.map((t) => t.offer.state));
   if (states.has("rail-off")) return "Not available yet";
   const minimum = smallestMinimumCash(network.tokens);
-  if (minimum !== null) return `Minimum for this network is ${cashAmount(wholeCashCeil(minimum))}`;
+  if (minimum !== null) return minimumLine("network", minimum);
   if (states.has("too-small")) return "Amount too small";
   return "Not available right now";
 }
@@ -78,12 +77,6 @@ function split<T>(
   if (unsupported.length > 0) groups.push({ label: labels.unsupported, rows: unsupported });
   return groups;
 }
-
-export const groupNetworks = (networks: readonly NetworkRow[]): PickerGroup<NetworkRow>[] =>
-  split(networks, isNetworkPickable, {
-    supported: "All networks",
-    unsupported: "Unsupported network",
-  });
 
 export const groupTokens = (tokens: readonly TokenRow[]): PickerGroup<TokenRow>[] =>
   split(tokens, (token) => isPickable(token.offer), {

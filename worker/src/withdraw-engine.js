@@ -371,9 +371,17 @@ export async function startWithdraw(params) {
       return { error: "invalid", reason: mismatchReason(existing.keyAddress, shown) };
     }
     // A sale whose key goes home whole never pays its provider again, whatever is re-sent, and
-    // one whose payment could not be confirmed waits for a person, not for a re-sent hand-off.
-    const held = goesHomeWhole(existing) || existing.failure === "unresolved";
+    // one whose payment could not be confirmed waits for a person, not for a re-sent hand-off. A
+    // swap sale that failed before any CASH reached its key is the exception: the page re-sends it
+    // with a fresh Chainflip channel, and nothing has moved that the new one could cross.
+    const freshSwap = freshSwapFor(existing, input);
+    const held =
+      existing.failure === "unresolved" || (freshSwap === null && goesHomeWhole(existing));
     if (existing.phase === "failed" && !held) rearm(existing, Date.now());
+    if (freshSwap !== null) {
+      existing.swap = freshSwap;
+      existing.leg = legFor(input, Date.now());
+    }
     // A re-sent hand-off carries the surface's current payment window: a retried payment gets a
     // fresh one, and the job must not expire on the old clock while the surface waits on the new.
     existing.paymentExpiresAt = paymentExpiryOf(input) ?? existing.paymentExpiresAt;
@@ -408,6 +416,21 @@ export async function startWithdraw(params) {
   return describeWithdraw(record);
 }
 
+/** The Chainflip channel a re-sent hand-off brings for a swap sale, when it is a new one and the
+ *  old one was never paid nor could have been: no sweep tried, no CASH seen, nothing gone home.
+ *  Null otherwise, so a channel that may hold the key's USDT is never left behind. */
+function freshSwapFor(existing, input) {
+  if (swapOf(existing) === null || swapOf(input) === null) return null;
+  const swap = channelOf(input.swap);
+  if (swap.amount === undefined || swap.id === existing.leg?.handoff?.id) return null;
+  const untouched =
+    existing.leg?.paid !== true &&
+    (existing.leg?.sweep?.attempts ?? 0) === 0 &&
+    existing.state?.fundsSeenAt == null &&
+    existing.residue === undefined;
+  return untouched ? swap : null;
+}
+
 /**
  * Re-arms a failed job on a re-sent hand-off. The run clock and the payment window restart. A
  * rejected job sizes and submits afresh; a job whose XCM landed keeps following its message; a
@@ -420,6 +443,7 @@ function rearm(record, nowMs) {
   delete record.failure;
   delete record.lastError;
   delete record.failedAt;
+  delete record.refundSeenAt;
   record.armedAt = nowMs;
   record.state.workedMs = 0;
   if (failure === "rejected" || failure === "timeout") {
@@ -604,7 +628,13 @@ async function tickRailLeg(record) {
             ? record.destination?.address
             : (swapOf(record)?.vaultAddress ?? record.channel?.address),
         ...(exactAmount === null
-          ? {}
+          ? swapOf(record) === null
+            ? {}
+            : {
+                // As for the exact payment: a sweep whose answer was lost is read off the chain
+                // before Meld, whose order may have closed once the swap paid it.
+                landed: () => swapSweptOut(record, state.sweep),
+              }
           : {
               payout: "off-chain",
               amount: exactAmount,
@@ -796,17 +826,25 @@ async function sendHome(record, kind) {
     } finally {
       client.destroy();
     }
-    // A swap that failed after the key paid refunds its USDT to the key, some time after
-    // Chainflip says so: the key is read again until it lands, or the wait is up.
-    if (swap && amount === 0n && record.phase === "failed" && refundMayLand(record)) {
-      throw new Error("waiting for the swap's refund to reach the key");
+    // A swap that failed after the key paid refunds its USDT to the key: the key is read again
+    // until Chainflip says the refund will not come, however long its egress takes.
+    if (swap && amount === 0n && record.phase === "failed") {
+      const refund = await swapRefund(record);
+      if (refund === "pending") throw new Error("waiting for the swap's refund to reach the key");
+      if (refund === "failed") {
+        // Chainflip could not send it back: a person must, so the key is not read again.
+        record.residue = { amount: "0", returning: false, stuck: true };
+        return;
+      }
     }
     if (amount < (usdt ? USDT_RESIDUE_RETURN_FLOOR : SALE_RESIDUE_RETURN_FLOOR)) {
       record.residue = { amount: amount.toString(), returning: false };
       return;
     }
   } else if (!(await keyHoldsAnything(record))) {
-    // A sale that failed before anything reached its key: no way home to start.
+    // A sale that failed before anything reached its key: no way home to start. Not while the
+    // purse may still pay it, or the CASH would land on a key nothing reads again.
+    if (pursePayMayLand(record)) throw new Error("waiting for the purse's payment window to close");
     record.residue = { whole: true, returning: false };
     return;
   }
@@ -822,6 +860,15 @@ async function sendHome(record, kind) {
   await startWayHome(record);
 }
 
+/** The purse may still pay a sale's key: no CASH seen yet, and its payment window, with room for a
+ *  payment already on its way, is not over. */
+function pursePayMayLand(record, nowMs = Date.now()) {
+  if (record.state?.fundsSeenAt != null) return false;
+  const expiresAt =
+    record.paymentExpiresAt ?? (record.armedAt ?? record.createdAt) + PAYMENT_WINDOW_MS;
+  return nowMs < expiresAt + SUBMIT_SETTLE_MS;
+}
+
 /** Starts, or re-arms, the funding job that carries a sale's key home. Throws when it is refused,
  *  and the next pass tries again. */
 async function startWayHome(record) {
@@ -829,9 +876,9 @@ async function startWayHome(record) {
   if (started?.error) throw new Error(started.reason ?? started.error);
 }
 
-/** How long after a swap sale fails its key is read for the swap's refund: the channel's
- *  fill-or-kill retry window, then Chainflip's refund egress. */
-const SWAP_REFUND_WAIT_MS = 2 * 60 * 60 * 1000;
+/** How long after Chainflip witnessed a refund the key is read for it, should the key's read lag
+ *  the chain Chainflip watched. */
+const REFUND_SETTLE_MS = 600_000;
 
 const USDT_ID = STABLE_TOKENS.USDT.assetHubId;
 
@@ -843,12 +890,43 @@ const readKeyUsdt = (api, record) =>
     "key usdt read",
   );
 
-/** A swap sale failed after the key paid, before Chainflip delivered, recently enough that its
- *  refund may still land. */
-function refundMayLand(record, nowMs = Date.now()) {
-  if (record.leg?.reading?.swapDelivered === true) return false;
-  record.failedAt ??= nowMs;
-  return nowMs - record.failedAt < SWAP_REFUND_WAIT_MS;
+/** A swap sale's sweep went out: one was tried, and the key holds no USDT. The sweep's own rule,
+ *  since it moves everything and reaps the key behind it. */
+async function swapSweptOut(record, sweep) {
+  if ((sweep?.attempts ?? 0) === 0) return false;
+  const client = await connectChain(record.assetHubGenesis, "asset hub");
+  try {
+    return (await readKeyUsdt(client.getTypedApi(paseo_next_v2), record)) === 0n;
+  } finally {
+    client.destroy();
+  }
+}
+
+/**
+ * Where a failed swap sale's refund stands, by Chainflip's own word, read afresh: "none" when the
+ * swap delivered to the provider, or the refund was witnessed long enough ago to be on the key;
+ * "failed" when its egress failed; "pending" until one of those, with no clock of its own, since a
+ * refund held up by an egress incident still lands. A read that fails throws, and the next pass
+ * asks again.
+ */
+async function swapRefund(record, nowMs = Date.now()) {
+  if (record.leg?.reading?.swapDelivered === true) return "none";
+  const rail = railFor(record.rail, record);
+  if (rail === null) return "none";
+  const reading = await bounded(
+    rail.status(record.leg.handoff.id),
+    DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+    "swap refund read",
+  );
+  record.leg = { ...record.leg, reading };
+  if (reading.swapDelivered === true) return "none";
+  const refund = reading.refundEgress;
+  if (refund?.failure !== undefined) return "failed";
+  if (refund?.witnessedAt !== undefined) {
+    record.refundSeenAt ??= nowMs;
+    return nowMs - record.refundSeenAt < REFUND_SETTLE_MS ? "pending" : "none";
+  }
+  return "pending";
 }
 
 /** The funding job that carries a sale's key home: a pool job on the key, held to the bound the

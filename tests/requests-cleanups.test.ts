@@ -62,6 +62,7 @@ vi.mock("../lib/coinage-live", () => ({
       },
       sourceId: args.sourceId ?? "dot-assethub",
       tradeN: args.tradeN ?? 1,
+      budget: 10n,
       refundAddress: null,
       revealRefundKey: () => null,
       runFunding: async () => {},
@@ -195,7 +196,7 @@ describe("requests cleanups", () => {
 
     // A fresh hosted quote: the route's window, under the number the quote reserved.
     session.setAmount("1");
-    await session.fetchQuote("Nowhere", "X");
+    await session.fetchQuote("Polkadot", "DOT");
     expect(session.quoteError).toBeNull();
     expect(worlds).toHaveLength(2);
     expect(worlds[1]).toMatchObject({

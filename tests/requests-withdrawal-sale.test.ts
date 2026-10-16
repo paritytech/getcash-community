@@ -362,6 +362,26 @@ describe("the worker's words for a sale", () => {
     expect(withdrawalFailureText(next.failure!)).toMatch(/coming back to your balance/);
   });
 
+  it("tells the seller a refunded swap comes home on its own, and offers no retry", () => {
+    const landed = reduce(
+      moving(),
+      worker(at(10), { fundsSeenAt: at(7), landed: true, phase: "follow" }),
+    ) as WithdrawalRecord;
+    const next = reduce(
+      landed,
+      worker(at(11), {
+        fundsSeenAt: at(7),
+        landed: true,
+        phase: "failed",
+        failure: "rail-failed",
+        rail: { status: "failed" },
+      }),
+    ) as WithdrawalRecord;
+    expect(next.failure).toMatchObject({ kind: "sale-closed", step: "send", recoverable: false });
+    expect(withdrawalFailureText(next.failure!)).toMatch(/coming back to your balance/);
+    expect(withdrawalFailureText(next.failure!)).not.toMatch(/DOT|yourself/);
+  });
+
   it("does not try a closed or lost order again: the key goes home whole", () => {
     const landed = reduce(
       moving(),

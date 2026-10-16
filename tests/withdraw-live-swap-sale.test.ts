@@ -21,6 +21,7 @@ const cf = vi.hoisted(() => ({
   egressFee: 0n,
   quoted: [] as string[],
   opened: [] as unknown[],
+  channelsOpen: true,
 }));
 vi.mock("../lib/chainflip-backend", () => {
   const sdk = {
@@ -41,7 +42,12 @@ vi.mock("../lib/chainflip-backend", () => {
       return { depositAddress: "15ChannelOnAssetHub", depositChannelId: "cf-7" };
     },
   };
-  return { NETWORK: "mainnet", mainnetSdk: vi.fn(), saleSwapSdk: async () => sdk };
+  return {
+    NETWORK: "mainnet",
+    mainnetSdk: vi.fn(),
+    saleSwapSdk: async () => sdk,
+    saleChannelsOpen: () => cf.channelsOpen,
+  };
 });
 vi.mock("../lib/host-chain", () => ({
   ASSET_HUB: "asset-hub",
@@ -86,6 +92,7 @@ describe("a sale through an offramp lane", () => {
   beforeEach(() => {
     cf.rate = 993_000n;
     cf.egressFee = 0n;
+    cf.channelsOpen = true;
     cf.quoted.length = 0;
     cf.opened.length = 0;
   });
@@ -98,14 +105,16 @@ describe("a sale through an offramp lane", () => {
     const floor = (((USDT_IN * 993_000n) / 1_000_000n) * 9_950n) / 10_000n;
     // Cut to the four decimals a sale commits.
     expect(size.commit).toBe((floor / 100n) * 100n);
+    // What the provider is promised keeps 1% under that for the seller's KYC.
+    expect(size.promise).toBe(((size.commit * 9_900n) / 10_000n / 100n) * 100n);
   });
 
   it("opens the swap to the provider's address with the promise's slippage", async () => {
-    const { commit } = await sizeSwapSale(AMOUNT, lane);
+    const { promise } = await sizeSwapSale(AMOUNT, lane);
     const channel = await openSwapSaleChannel({
       amount: AMOUNT,
       lane,
-      committed: commit,
+      committed: promise,
       providerAddress: "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
       keyPublicKeyHex: `0x${"07".repeat(32)}`,
     });
@@ -120,13 +129,26 @@ describe("a sale through an offramp lane", () => {
     });
   });
 
+  it("still opens after the quote slipped while the seller verified, within the KYC margin", async () => {
+    const { promise } = await sizeSwapSale(AMOUNT, lane);
+    cf.rate = 988_000n; // half a percent worse than at confirm
+    const channel = await openSwapSaleChannel({
+      amount: AMOUNT,
+      lane,
+      committed: promise,
+      providerAddress: "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+      keyPublicKeyHex: `0x${"07".repeat(32)}`,
+    });
+    expect(channel).not.toBeNull();
+  });
+
   it("opens nothing once today's floor no longer covers the promise", async () => {
-    const { commit } = await sizeSwapSale(AMOUNT, lane);
+    const { promise } = await sizeSwapSale(AMOUNT, lane);
     cf.rate = 980_000n;
     const channel = await openSwapSaleChannel({
       amount: AMOUNT,
       lane,
-      committed: commit,
+      committed: promise,
       providerAddress: "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
       keyPublicKeyHex: `0x${"07".repeat(32)}`,
     });
@@ -139,11 +161,11 @@ describe("a sale through an offramp lane", () => {
     const provider = `0x${"11".repeat(20)}`;
     const vault = { chainId: 421614, contract: `0x${"22".repeat(20)}` };
     const home = `0x${"07".repeat(32)}`;
-    const { commit } = await sizeSwapSale(AMOUNT, arbitrum);
+    const { promise } = await sizeSwapSale(AMOUNT, arbitrum);
     const channel = await openSwapSaleChannel({
       amount: AMOUNT,
       lane: arbitrum,
-      committed: commit,
+      committed: promise,
       providerAddress: provider,
       keyPublicKeyHex: home,
       fundingRequestId: "funding-9",
@@ -157,7 +179,7 @@ describe("a sale through an offramp lane", () => {
         message: encodeSaleMessage({
           fundingRequestId: "funding-9",
           recipient: provider,
-          committed: commit,
+          committed: promise,
           home,
         }),
       },
@@ -165,11 +187,11 @@ describe("a sale through an offramp lane", () => {
   });
 
   it("opens a non-EVM lane straight to the provider even when a vault is named", async () => {
-    const { commit } = await sizeSwapSale(AMOUNT, lane);
+    const { promise } = await sizeSwapSale(AMOUNT, lane);
     await openSwapSaleChannel({
       amount: AMOUNT,
       lane,
-      committed: commit,
+      committed: promise,
       providerAddress: "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
       keyPublicKeyHex: `0x${"07".repeat(32)}`,
       fundingRequestId: "funding-9",
@@ -179,6 +201,12 @@ describe("a sale through an offramp lane", () => {
       destAddress: "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
     });
     expect(cf.opened[0]).not.toHaveProperty("ccmParams");
+  });
+
+  it("refuses to size a lane sale whose channel this build cannot open, before any quote", async () => {
+    cf.channelsOpen = false;
+    await expect(sizeSwapSale(AMOUNT, lane)).rejects.toThrow("Swap channels cannot be opened");
+    expect(cf.quoted).toEqual([]);
   });
 
   it("keeps the lane's delivery-fee headroom out of the promise", async () => {

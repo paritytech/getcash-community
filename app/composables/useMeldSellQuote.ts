@@ -2,7 +2,7 @@
 // catalog, the exact figure the key will pay, and the best provider line for that figure. Priced
 // again whenever the region changes; nothing here opens a session.
 
-import { ref, shallowRef } from "vue";
+import { ref, shallowRef, watch } from "vue";
 import {
   DIRECT_SELL_CODES,
   directSellToken,
@@ -26,6 +26,7 @@ import {
   type OfframpLaneRef,
   type SupportedCorridor,
   type SupportedCountry,
+  type SupportedMethod,
 } from "~~/lib/supported";
 import { localeCountry } from "../utils/locale";
 import { meldSellClient } from "../withdraw/meld-client";
@@ -64,10 +65,14 @@ type SizedSale = {
  *  catalog names its methods by, not the buy side's card and bank codes. */
 const FALLBACK_PAYOUT_METHOD = { card: "PAYOUT_TO_CARD", bank: "PAYOUT_TO_BANK" } as const;
 
-/** The region a sale starts from: the device's own where this method pays out there, else a
- *  SEPA one, until geolocation lands. */
+/** The payout country the last sale was on. A route switch (bank to card) mounts a new sale, and
+ *  the seller's choice should outlive it. */
+let lastCountry: string | null = null;
+
+/** The region a sale starts from: the one chosen before, else the device's own, where this method
+ *  pays out there, else a SEPA one, until geolocation lands. */
 function startingCountry(method: "card" | "bank"): string {
-  const detected = localeCountry();
+  const detected = lastCountry ?? localeCountry();
   if (detected === null) return "DE";
   return method === "card" || bankRailCountries().includes(detected) ? detected : "DE";
 }
@@ -104,8 +109,60 @@ export function laneCandidates(
   return order.filter((code) => lanes.some((l) => l.code === code));
 }
 
+/** The smallest and largest of the lanes' limits, or the method's own when a lane names none. */
+function laneLimits(
+  lanes: readonly OfframpLaneRef[],
+  method: SupportedMethod,
+): { min: string; max: string } {
+  const pick = (
+    values: (string | undefined)[],
+    fallback: string,
+    better: (a: number, b: number) => boolean,
+  ) => {
+    if (values.some((v) => v === undefined || !Number.isFinite(Number(v)))) return fallback;
+    return (values as string[]).reduce((best, v) => (better(Number(v), Number(best)) ? v : best));
+  };
+  return {
+    min: pick(
+      lanes.map((l) => l.min),
+      method.min,
+      (a, b) => a < b,
+    ),
+    max: pick(
+      lanes.map((l) => l.max),
+      method.max,
+      (a, b) => a > b,
+    ),
+  };
+}
+
+/**
+ * A corridor cut down to what this build sells: each method keeps only the lanes in `order` that
+ * this build can sell, and a method left with none is dropped. The picker then greys the region and
+ * the quote says the payout isn't available there, rather than trying no lane and calling it a
+ * passing failure. A method that came without lanes is kept: it sells PAS on Asset Hub.
+ */
+export function sellableCorridor(
+  corridor: SupportedCorridor,
+  order: readonly string[],
+): SupportedCorridor {
+  const methods = corridor.methods.flatMap((method): SupportedMethod[] => {
+    if (method.lanes === undefined) return [method];
+    const lanes = method.lanes.filter(
+      (l) => order.includes(l.code) && saleLaneOf(l.code) !== undefined,
+    );
+    if (lanes.length === 0) return [];
+    if (lanes.length === method.lanes.length) return [method];
+    return [{ ...method, ...laneLimits(lanes, method), lanes }];
+  });
+  return { ...corridor, methods };
+}
+
 export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
   const country = ref(startingCountry(method));
+  watch(country, (next) => {
+    lastCountry = next;
+  });
   const countries = shallowRef<SupportedCountry[] | null>(null);
   const corridors = shallowRef<Map<string, SupportedCorridor> | null>(null);
   const quote = shallowRef<MeldSellQuote | null>(null);
@@ -126,7 +183,12 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
 
   /** The off-ramp catalog, for the region picker. Null lists when discovery is unreachable. */
   async function loadCatalog(): Promise<void> {
-    const routed = await fetchOfframpCorridors();
+    const fetched = await fetchOfframpCorridors();
+    // Only the lanes this build sells: a region routed by none of them is greyed, not offered.
+    const routed =
+      fetched === null
+        ? null
+        : new Map([...fetched].map(([cc, c]) => [cc, sellableCorridor(c, OFFRAMP_LANE_ORDER)]));
     corridors.value = routed;
     countries.value =
       routed === null
@@ -145,7 +207,8 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
   async function corridorFor(
     cc: string,
   ): Promise<{ fiat: string; paymentMethodType: string; lanes?: OfframpLaneRef[] } | null> {
-    const live = corridors.value?.get(cc) ?? (await fetchOfframpCorridor(cc));
+    const read = corridors.value?.get(cc) ?? (await fetchOfframpCorridor(cc));
+    const live = read === null ? null : sellableCorridor(read, OFFRAMP_LANE_ORDER);
     if (live !== null) {
       const found = methodFor(live, method);
       return found === null
@@ -198,8 +261,14 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
         return;
       }
       // Best lane first; a lane whose providers will not quote falls through to the next.
+      const candidates = laneCandidates(corridor.lanes, OFFRAMP_LANE_ORDER);
+      // No lane this build sells routes here: the region's payout is unavailable, not passing.
+      if (candidates.length === 0) {
+        failUnrouted();
+        return;
+      }
       let failure: string | undefined;
-      for (const code of laneCandidates(corridor.lanes, OFFRAMP_LANE_ORDER)) {
+      for (const code of candidates) {
         const lane = saleLaneOf(code);
         if (lane === undefined) continue;
         // A direct sale is quoted under the code the catalog routed, which its providers buy.
@@ -212,7 +281,7 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
                   // Only the Arbitrum lane routes through the SaleVault, so only it carries one.
                   const v = lane.chainflip.chain === "Arbitrum" ? getOfframpVault() : null;
                   return {
-                    planck: swap.commit,
+                    planck: swap.promise,
                     backCash: 0n,
                     swap: {
                       lane: lane.id,

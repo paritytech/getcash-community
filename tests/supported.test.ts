@@ -66,6 +66,23 @@ describe("lib/supported", () => {
     expect(methodFor(null, "card")).toBeNull();
   });
 
+  it("otherMethod names the other fiat method only when the corridor routes it", async () => {
+    const { otherMethod } = await import("../lib/supported");
+    const card = {
+      paymentMethodType: "CREDIT_DEBIT_CARD",
+      category: "card" as const,
+      min: "26",
+      max: "5000",
+      currency: "BRL",
+      providers: ["TRANSAK"],
+    };
+    const cardOnly: SupportedCorridor = { country: "BR", fiat: "BRL", methods: [card] };
+    expect(otherMethod(cardOnly, "bank")).toBe("card");
+    expect(otherMethod(cardOnly, "card")).toBeNull();
+    expect(otherMethod({ country: "EC", fiat: "USD", methods: [] }, "bank")).toBeNull();
+    expect(otherMethod(null, "bank")).toBeNull();
+  });
+
   it("fetchCorridor parses methods, and returns null when the adapter has no such corridor", async () => {
     vi.stubGlobal(
       "fetch",

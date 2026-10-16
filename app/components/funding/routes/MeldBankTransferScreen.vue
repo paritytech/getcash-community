@@ -12,7 +12,7 @@
 import { computed, onUnmounted, ref, watch } from "vue";
 import { ChevronRight, CircleAlert } from "lucide-vue-next";
 import { regionForCountry } from "~~/lib/region";
-import { namedCountry } from "~~/lib/supported";
+import { methodMinimum, namedCountry, otherMethod } from "~~/lib/supported";
 import { useRequestsStore } from "../../../stores/requests";
 import { useSessionStore } from "../../../stores/session";
 import { currencyConfig } from "../../../funding/config";
@@ -22,6 +22,7 @@ import CashAmount from "../../ui/CashAmount.vue";
 import PillButton from "../../ui/PillButton.vue";
 import RegionRow from "../../ui/RegionRow.vue";
 import SkeletonBlock from "../../ui/SkeletonBlock.vue";
+import MethodUnavailable from "../MethodUnavailable.vue";
 import MeldPaySheet from "./MeldPaySheet.vue";
 
 const props = defineProps<{
@@ -48,8 +49,8 @@ const emit = defineEmits<{
 const session = useSessionStore();
 const requests = useRequestsStore();
 
-/** No quote, or one that cannot be paid from here. */
-const blocked = computed(() => session.meldMethodUnavailable || session.quoteError !== null);
+/** The quote failed. The method not routing from here is its own screen. */
+const blocked = computed(() => session.quoteError !== null);
 /** A request exists: the provider has a pay page for this quote. */
 const requestOpen = computed(() => requests.phase !== null);
 /** The summary has nothing to price yet. */
@@ -114,20 +115,6 @@ function requote() {
   void session.fetchMeldQuote();
 }
 
-/** Bank is not routed from this region: offer card if the corridor has it, else crypto. */
-const cardAvailable = computed(() =>
-  (session.meldCorridor?.methods ?? []).some((m) => m.category === "card"),
-);
-/**
- * The line under the zeroed hero. A quote that failed can be asked for again; a region that routes
- * no transfer cannot, and says so instead of inviting a retry that would fail the same way.
- */
-const blockedText = computed(() =>
-  session.meldMethodUnavailable
-    ? "Bank transfer isn't available in this region"
-    : "Error fetching quote, retry again",
-);
-
 /** How long the confirmation waits, in seconds, from the moment the details are on screen. */
 const CONFIRM_DELAY_S = 5;
 /** Seconds still to wait; 0 once the confirmation is the buyer's to give. */
@@ -186,7 +173,20 @@ function confirmSent() {
 
 <template>
   <div class="flex min-h-0 flex-1 flex-col">
-    <template v-if="step === 'summary'">
+    <MethodUnavailable
+      v-if="step === 'summary' && session.meldMethodUnavailable"
+      direction="top-up"
+      method="bank"
+      :amount="session.amountHuman"
+      :country="country"
+      :country-name="countryLabel"
+      :minimum="methodMinimum(session.meldCorridor, 'bank')"
+      :other="otherMethod(session.meldCorridor, 'bank')"
+      @region="emit('currency')"
+      @use-crypto="emit('switchRoute', 'crypto')"
+      @use-other="emit('switchRoute', 'card')"
+    />
+    <template v-else-if="step === 'summary'">
       <!-- The hero, in each of its three states: pricing, unpriced, priced. -->
       <div class="flex shrink-0 flex-col items-center text-center">
         <template v-if="pricing">
@@ -197,7 +197,7 @@ function confirmSent() {
           <p class="text-display-xl text-fg-disabled">{{ heroAmount }}</p>
           <p class="mt-1 flex items-center gap-1 text-body-m text-fg-error">
             <CircleAlert class="size-4 shrink-0" aria-hidden="true" />
-            {{ blockedText }}
+            Error fetching quote, retry again
           </p>
         </template>
         <template v-else>
@@ -253,24 +253,14 @@ function confirmSent() {
         </div>
       </div>
 
-      <!-- Blocked, the button is the way out of the state; otherwise it commits to the transfer. -->
+      <!-- A failed quote, the button retries it; otherwise it commits to the transfer. -->
       <PillButton
         v-if="blocked"
         variant="secondary"
         class="mt-auto w-full shrink-0"
-        @click="
-          session.meldMethodUnavailable
-            ? emit('switchRoute', cardAvailable ? 'card' : 'crypto')
-            : requote()
-        "
+        @click="requote"
       >
-        {{
-          session.meldMethodUnavailable
-            ? cardAvailable
-              ? "Use card instead"
-              : "Use crypto instead"
-            : "Retry quote"
-        }}
+        Retry quote
       </PillButton>
       <SkeletonBlock v-else-if="pricing" class="mt-auto h-12 w-full shrink-0" />
       <PillButton v-else class="mt-auto w-full shrink-0" @click="onContinue"> Continue </PillButton>

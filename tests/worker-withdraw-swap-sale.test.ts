@@ -371,21 +371,136 @@ describe("a fiat sale through an offramp lane", () => {
     expect(storedJob().residue).toEqual({ amount: "0", returning: false });
   });
 
-  it("gives up on the refund two hours after the swap failed", async () => {
+  it("reads a sweep whose answer was lost off the chain before Meld's closed order", async () => {
+    await landed();
+    const job = storedJob();
+    job.leg.sweep = { attempts: 1, rejections: 0 }; // the sweep left; its answer did not come back
+    mocks.keyCash = 0n; // and the key is empty behind it
+    mocks.channel.mockResolvedValue({
+      depositAddress: CF_DEPOSIT,
+      destinationAddress: SOLANA_DEPOSIT,
+      expired: true, // Meld closed the order once the swap paid it
+    });
+    const resumed = await engineWith({ "s-1": job });
+    await resumed.tickAllWithdraw();
+    expect(storedJob().phase).not.toBe("failed");
+    expect(storedJob().leg.paid).toBe(true);
+    expect(mocks.channel).not.toHaveBeenCalled();
+    expect(mocks.payRail).not.toHaveBeenCalled();
+  });
+
+  it("still checks Meld before paying when the key holds the USDT a tried sweep left", async () => {
+    await landed();
+    const job = storedJob();
+    job.leg.sweep = { attempts: 1, rejections: 1 }; // refused at inclusion: nothing left
+    mocks.keyCash = 99_000_000n;
+    const resumed = await engineWith({ "s-1": job });
+    await resumed.tickAllWithdraw();
+    expect(mocks.channel).toHaveBeenCalledWith("cf-channel-7");
+    expect(mocks.payRail).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps reading a key that failed before the purse paid, and sends the CASH home once it lands", async () => {
+    // Twelve minutes left on the channel: inside the worker's own margin as the hand-off arrives.
+    const engine = await engineWith({});
+    await engine.startWithdraw(swapHandoff({ swap: { ...swap, expiresAt: NOW + 12 * 60_000 } }));
+    await engine.tickAllWithdraw();
+    expect(storedJob()).toMatchObject({ phase: "failed", failure: "channel-expired" });
+    // Nothing on the key yet, and the purse's window is open: no books closed on an empty key.
+    expect(storedJob().residue).toBeUndefined();
+    expect(storedJob().residueError).toMatch(/purse's payment window/);
+    mocks.keyCash = 100_000_000n; // the purse pays a moment later
+    await engine.tickAllWithdraw();
+    expect(mocks.startFunding).toHaveBeenCalledTimes(1);
+    expect(storedJob().residue).toMatchObject({ whole: true, returning: true });
+  });
+
+  it("closes an empty key's books once the purse's window is over", async () => {
+    const engine = await engineWith({});
+    await engine.startWithdraw(
+      swapHandoff({
+        swap: { ...swap, expiresAt: NOW + 12 * 60_000 },
+        paymentExpiresAt: NOW + 60_000,
+      }),
+    );
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue).toBeUndefined();
+    vi.setSystemTime(NOW + 60_000 + 10 * 60_000);
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue).toEqual({ whole: true, returning: false });
+  });
+
+  it("re-arms a sale that failed before any CASH arrived on the fresh swap the page re-sends", async () => {
+    const engine = await engineWith({});
+    await engine.startWithdraw(swapHandoff({ swap: { ...swap, expiresAt: NOW + 12 * 60_000 } }));
+    await engine.tickAllWithdraw();
+    expect(storedJob()).toMatchObject({ phase: "failed", failure: "channel-expired" });
+    const fresh = { ...swap, id: "cf-channel-8", expiresAt: NOW + DAY };
+    await engine.startWithdraw(swapHandoff({ swap: fresh }));
+    expect(storedJob().phase).toBe("starting");
+    expect(storedJob().swap).toMatchObject({ id: "cf-channel-8" });
+    expect(storedJob().leg.handoff).toMatchObject({ id: "cf-channel-8", expiresAt: NOW + DAY });
+  });
+
+  it("never swaps the channel under a key that may already have paid it", async () => {
+    const engine = await landed();
+    await engine.tickAllWithdraw(); // the key pays the swap
+    await engine.startWithdraw(swapHandoff({ swap: { ...swap, id: "cf-channel-8" } }));
+    expect(storedJob().leg.handoff.id).toBe("cf-channel-7");
+    expect(storedJob().swap.id).toBe("cf-channel-7");
+  });
+
+  it("waits as long as Chainflip's refund is pending, two hours and well past", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       const engine = await landed();
       await engine.tickAllWithdraw();
       mocks.status.mockResolvedValue({ status: "failed", raw: "FAILED" });
       await engine.tickAllWithdraw();
-      expect(storedJob().failedAt).toBe(Date.now());
+      vi.setSystemTime(Date.now() + 6 * 60 * 60 * 1000); // an egress incident
+      await engine.tickAllWithdraw();
+      expect(storedJob().residue).toBeUndefined();
       expect(storedJob().residueError).toMatch(/refund/);
-      vi.setSystemTime(Date.now() + 2 * 60 * 60 * 1000);
+      mocks.keyCash = 99_000_000n; // the refund lands at last
+      await engine.tickAllWithdraw();
+      expect(storedJob().residue).toMatchObject({ amount: "99000000", returning: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops waiting once Chainflip witnessed the refund and the key still reads empty", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const engine = await landed();
+      await engine.tickAllWithdraw();
+      mocks.status.mockResolvedValue({
+        status: "failed",
+        raw: "FAILED",
+        refundEgress: { witnessedAt: Date.now() },
+      });
+      await engine.tickAllWithdraw();
+      expect(storedJob().residueError).toMatch(/refund/);
+      vi.setSystemTime(Date.now() + 10 * 60 * 1000);
       await engine.tickAllWithdraw();
       expect(storedJob().residue).toEqual({ amount: "0", returning: false });
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("leaves a refund Chainflip could not send for a person", async () => {
+    const engine = await landed();
+    await engine.tickAllWithdraw();
+    mocks.status.mockResolvedValue({
+      status: "failed",
+      raw: "FAILED",
+      refundEgress: { failure: { mode: "TRANSACTION_REJECTED_BY_BROKER" } },
+    });
+    await engine.tickAllWithdraw();
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue).toEqual({ amount: "0", returning: false, stuck: true });
+    expect(mocks.startFunding).not.toHaveBeenCalled();
   });
 });
 

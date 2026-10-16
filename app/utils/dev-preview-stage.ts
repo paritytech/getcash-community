@@ -6,6 +6,7 @@
 // here, and `app/pages/index.vue` puts it there before the scene's state is applied.
 
 import { shallowRef } from "vue";
+import type { SupportedCorridor } from "~~/lib/supported";
 import type { MeldSellQuote } from "../composables/useMeldSellQuote";
 import type { FundingRoute } from "../funding/selection";
 import type { WithdrawFeeView } from "../withdraw/offers";
@@ -52,6 +53,8 @@ export type PreviewStage =
       saleError?: { kind: "unrouted" | "rate"; attempts?: number };
       /** The fiat route's payout country, ISO code; GB when unsaid. */
       country?: string;
+      /** The sell catalog the route would have loaded, for the other method's offer. */
+      corridors?: Map<string, SupportedCorridor>;
     };
 
 /**

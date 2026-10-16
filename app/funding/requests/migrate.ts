@@ -6,7 +6,6 @@
 import type { ActiveFlowRecord } from "../../stores/session";
 import { toCashBase } from "../../utils/cash";
 import type { RequestRef } from "../../utils/request-index";
-import { progressProviderForSource, resolveFundingProgressSnapshot } from "../progress";
 import {
   DEFAULT_DEPOSIT_WINDOW_MS,
   DEPOSIT_EXPIRED_REASON,
@@ -19,7 +18,6 @@ import {
   type TopUpRecord,
   type WithdrawalRecord,
 } from "./model";
-import type { FundingProgressSnapshot } from "../progress";
 
 /** A stored record of either schema; only the legacy fields are trusted before migration. */
 type StoredRecord = ActiveFlowRecord & { schema?: unknown; kind?: unknown };
@@ -69,28 +67,15 @@ export function migrateRecord(raw: unknown, ref: RequestRef, now: number): Reque
   if (raw.kind === "withdrawal") return withdrawalRecord(raw, ref);
   const upgraded = upgradeLegacyRecord(raw, ref, now);
   if (raw.schema !== 2) return upgraded;
-  // Stored additive fields win; the upgrade fills whatever a partial write left out. The stored
-  // progress is the app's own record of it, normalised but never advanced; the funded guess is
-  // for legacy records. The key the record was read under is its identity.
+  // Stored additive fields win; the upgrade fills whatever a partial write left out. The funded
+  // guess is for legacy records. The key the record was read under is its identity.
   const stored = raw as Partial<TopUpRecord> & ActiveFlowRecord;
-  const progress =
-    stored.progress === undefined
-      ? upgraded.progress
-      : resolveFundingProgressSnapshot(
-          stored.progress,
-          progressProviderForSource(effectiveSourceId(ref)).createProfile(),
-        );
-  return { ...upgraded, ...stored, schema: 2, kind: "top-up", ref, progress };
+  return { ...upgraded, ...stored, schema: 2, kind: "top-up", ref };
 }
 
 function upgradeLegacyRecord(raw: ActiveFlowRecord, ref: RequestRef, now: number): TopUpRecord {
   const sourceId = effectiveSourceId(ref);
-  const progress = resolveFundingProgressSnapshot(
-    raw.progress,
-    progressProviderForSource(sourceId).createProfile(),
-    { fundedAt: raw.funded, settledAt: raw.settledAt },
-  );
-  const { status, failure } = legacyStatus(raw, progress);
+  const { status, failure } = legacyStatus(raw);
   return {
     ...raw,
     schema: 2,
@@ -98,7 +83,6 @@ function upgradeLegacyRecord(raw: ActiveFlowRecord, ref: RequestRef, now: number
     ref,
     rev: 0,
     updatedAt: now,
-    progress,
     route: routeOf(sourceId),
     ...(raw.depositAddress
       ? {
@@ -128,10 +112,7 @@ function upgradeLegacyRecord(raw: ActiveFlowRecord, ref: RequestRef, now: number
 }
 
 /** What the legacy fields say the request is doing, first match wins. */
-function legacyStatus(
-  raw: ActiveFlowRecord,
-  progress: FundingProgressSnapshot,
-): { status: RequestStatus; failure?: RequestFailure } {
+function legacyStatus(raw: ActiveFlowRecord): { status: RequestStatus; failure?: RequestFailure } {
   if (raw.settledAt !== undefined) return { status: { kind: "settled", at: raw.settledAt } };
   if (raw.cancelledAt !== undefined) return { status: { kind: "cancelled", at: raw.cancelledAt } };
   if (raw.failureReason === DEPOSIT_EXPIRED_REASON) {
@@ -139,7 +120,7 @@ function legacyStatus(
   }
   if (raw.failureReason !== undefined) {
     return {
-      status: { kind: "failed", at: progress.failedAt ?? raw.startedAt, recoverable: false },
+      status: { kind: "failed", at: raw.startedAt, recoverable: false },
       failure: {
         kind: raw.refunded ? "refunded" : "unknown",
         step: "deposit",
