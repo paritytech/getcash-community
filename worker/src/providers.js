@@ -6,7 +6,7 @@
 import { readChannelRecord, readSwapStatus } from "@getsome/chainflip/swap-status";
 import { NETWORK } from "@getsome/core";
 import { depositTokenOf, recordedRoute, stableTxOptions } from "@getsome/funding";
-import { createMeldClient, MELD_SELL_ENABLED, saleRail } from "@getsome/meld";
+import { createMeldClient, ensureMeldAssets, MELD_SELL_ENABLED, saleRail } from "@getsome/meld";
 import { LANES, laneSellToken } from "@getsome/offramp";
 import {
   ChannelMismatchError,
@@ -73,11 +73,31 @@ export function railFor(provider, record) {
         ? { productId: meld.productId }
         : {}),
     });
-    if (record?.swap) return swapSaleRail(saleRail(client, record, Date.now, LANE_TOKENS), record);
     // A direct sale is paid in the token the hand-off's sale lands on the key.
-    return saleRail(client, record, Date.now, depositTokenOf(recordedRoute(record)));
+    const rail = record?.swap
+      ? swapSaleRail(saleRail(client, record, Date.now, LANE_TOKENS), record)
+      : saleRail(client, record, Date.now, depositTokenOf(recordedRoute(record)));
+    return withMeldAssets(rail, client);
   }
   return null;
+}
+
+/**
+ * A sale's reads, each first reading the adapter's asset table (once per worker): the deposit
+ * Meld discloses is matched against Meld's code for the asset, which the adapter names and Meld
+ * renames. A failed read throws like any other, and the next tick asks again.
+ */
+function withMeldAssets(rail, client) {
+  return {
+    channel: async (id) => {
+      await ensureMeldAssets(client);
+      return rail.channel(id);
+    },
+    status: async (id) => {
+      await ensureMeldAssets(client);
+      return rail.status(id);
+    },
+  };
 }
 
 /** Chainflip's network for a sale's swap: Perseverance on a test network, as the page opens it. */

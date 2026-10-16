@@ -14,12 +14,13 @@ export {
   type MeldCancelResult,
 } from "./client";
 export { formatBaseUnits, parseBaseUnits, toBaseUnits, type MeldToken } from "./units";
+export { ensureMeldAssets } from "./assets";
 export {
-  ASSET_HUB_DOT_CODES,
-  ASSET_HUB_USDT_CODES,
-  DIRECT_SELL_CODES,
+  directSellCodes,
   directSellToken,
+  directSellTokenOf,
   formatSellAmount,
+  isDirectSellCode,
   isDirectUsdt,
   MELD_SELL_ENABLED,
   SALE_GONE_AFTER,

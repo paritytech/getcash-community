@@ -8,6 +8,7 @@ import { recordedRoute, type ConversionRoute } from "@getsome/funding";
 import type { FlowState, SourceId, SwapStatusResult } from "@getsome/core";
 import {
   createMeldClient,
+  ensureMeldAssets,
   getMeldStatus,
   shareStatusReads,
   type MeldClientLike,
@@ -2016,6 +2017,11 @@ export const useRequestsStore = defineStore("requests", () => {
     const at = requestsNow();
     const key = requestRefKey(ref);
     try {
+      // A sale's reading is checked against Meld's code for its asset, so the table is read first,
+      // here and only here: the rest of the reconcile, top-ups and CASH withdrawals included,
+      // never waits on the adapter. Unread, the sale is left for the next pass rather than judged
+      // against no code.
+      await ensureMeldAssets(client);
       const result = await client.getStatus(fundingRequestId);
       saleNotFound.delete(key);
       await observe(ref, { source: "provider", provider: "meld", at, sale: saleReadingOf(result) });

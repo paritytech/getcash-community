@@ -10,6 +10,9 @@
       "default": "./src/index.ts"
     }
   },
+  "dependencies": {
+    "@getsome/core": "workspace:*"
+  },
   "devDependencies": {
     "@getsome/chainflip": "workspace:*"
   }

@@ -37,9 +37,9 @@ inputs:
   offramp-lanes:
     description: >
       Optional VITE_OFFRAMP_LANES, the off-ramp lanes card and bank sales go through, best first,
-      by Meld code (e.g. USDT_ASSETHUB,USDT_STATEMINT,DOT_ASSETHUB,DOT_STATEMINT,USDC_ARBITRUM,
-      USDC_SOLANA). Empty uses the build's default, the direct Asset Hub sales only: the
-      Chainflip swap lanes (USDC_ARBITRUM, USDC_SOLANA) are offered only when listed here.
+      by asset id, not Meld code (e.g. usdt@assethub,dot@assethub,usdc@arbitrum,usdc@solana).
+      Empty uses the build's default, the direct Asset Hub sales only: the Chainflip swap lanes
+      (usdc@arbitrum, usdc@solana) are offered only when listed here.
     default: ""
   require-secrets:
     description: >

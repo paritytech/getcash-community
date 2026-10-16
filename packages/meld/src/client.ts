@@ -2,6 +2,8 @@
 // against. `createMeldClient` talks to the onramp adapter service, which holds the Meld API key;
 // `createFakeMeldClient` is the offline stand-in.
 
+import { parseMeldAssets, type MeldAsset } from "@getsome/core";
+
 /** Forward-quote request. Meld quotes are source-denominated: the buyer names the fiat they pay
  *  and Meld returns the crypto delivered. `computeMeldQuote` iterates this for a reverse target. */
 export interface MeldQuoteRequest {
@@ -9,7 +11,7 @@ export interface MeldQuoteRequest {
   country: string;
   /** Fiat the user pays in, e.g. 'USD'. */
   sourceCurrencyCode: string;
-  /** Meld destination currency code, e.g. 'USDC_ASSETHUB'. */
+  /** Meld destination currency code, as the adapter's `GET /assets` names it, e.g. 'USDC_DOT'. */
   destinationCurrencyCode: string;
   /** Fiat the user pays, whole-currency decimal string (≤2 fraction digits), e.g. '20.00'. */
   sourceAmount: string;
@@ -23,7 +25,7 @@ export interface MeldQuoteRequest {
 export interface MeldSellQuoteRequest {
   /** ISO country of the seller, e.g. 'DE'. */
   country: string;
-  /** The crypto sold, e.g. 'DOT_ASSETHUB'. */
+  /** The crypto sold, as the adapter's `GET /assets` names it, e.g. 'DOT'. */
   sourceCurrencyCode: string;
   /** The crypto the seller sends, whole-token decimal string, e.g. '23.4521'. */
   sourceAmount: string;
@@ -100,7 +102,7 @@ export interface MeldSellSessionRequest {
    *  into the first. Sent only inside that key, never as a field of its own. */
   readonly orderRef: string;
   readonly country: string;
-  /** The crypto sold, e.g. 'DOT_ASSETHUB'. */
+  /** The crypto sold, as the adapter's `GET /assets` names it, e.g. 'DOT'. */
   readonly sourceCurrencyCode: string;
   /** The exact crypto committed, whole-token decimal string. The key pays exactly this. */
   readonly sourceAmount: string;
@@ -119,7 +121,7 @@ export interface MeldDepositDisclosure {
   readonly address: string;
   /** The crypto the provider expects, decimal string as disclosed. */
   readonly amount: string;
-  /** Meld's code for the asset, e.g. 'DOT_ASSETHUB'. */
+  /** Meld's code for the asset, e.g. 'DOT'. */
   readonly currency: string;
   /** When the adapter first read these terms, epoch ms. */
   readonly observedAt: number;
@@ -184,6 +186,9 @@ export interface MeldSellClientLike {
 }
 
 export interface MeldClientLike extends Partial<MeldSellClientLike> {
+  /** What Meld calls each asset the adapter serves (`GET /assets`). Read once, before any call that
+   *  names a code; see `ensureMeldAssets`. */
+  getAssets(): Promise<MeldAsset[]>;
   getQuote(req: MeldQuoteRequest): Promise<{ quotes: MeldQuoteEntry[] }>;
   createSession(req: MeldSessionRequest): Promise<MeldSessionResult>;
   getStatus(fundingRequestId: string): Promise<MeldStatusResult>;
@@ -292,6 +297,9 @@ function retryAfterMsOf(res: Response): number | undefined {
 
 /** How long a status read may take before it fails: every poller of an id waits on the same read. */
 const STATUS_TIMEOUT_MS = 10_000;
+
+/** How long the asset table read waits for the adapter before giving up; the next call asks again. */
+const ASSETS_TIMEOUT_MS = 10_000;
 
 /** How many finished attempts, concluded or cancelled, a session create walks past before
  *  giving up. */
@@ -726,6 +734,16 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
     },
 
     getStatus: getFundingStatus,
+
+    async getAssets(): Promise<MeldAsset[]> {
+      // Bounded like the status read: every caller shares this one read, so an adapter that hangs
+      // rather than refusing must not hold them until the browser drops the socket.
+      const res = await doFetch(`${base}/assets`, {
+        headers: headers(),
+        signal: AbortSignal.timeout(ASSETS_TIMEOUT_MS),
+      });
+      return parseMeldAssets(await read(res, "The asset table"));
+    },
 
     async cancel(fundingRequestId): Promise<MeldCancelResult> {
       try {

@@ -5,10 +5,12 @@
 // it can serve the sale and sizes the figure.
 
 import { ref, shallowRef, toValue, watch, type MaybeRefOrGetter } from "vue";
+import { meldAssetOf, type MeldAssetId } from "@getsome/core";
 import {
-  DIRECT_SELL_CODES,
   directSellToken,
+  ensureMeldAssets,
   formatSellAmount,
+  isDirectSellCode,
   isDirectUsdt,
   pickBestQuote,
   SELL_TOKEN,
@@ -41,9 +43,8 @@ export interface MeldSellQuote {
   cryptoAmount: bigint;
   /** A sale through an offramp lane: the lane, and the USDT redeem the withdrawal runs. */
   swap?: { lane: LaneId; route: ConversionRoute };
-  /** A direct sale quoted under a code other than DOT_ASSETHUB, which the session must name too:
-   *  DOT_STATEMINT, Meld's older code for DOT on Asset Hub, or USDT_ASSETHUB or USDT_STATEMINT for
-   *  USDT there. */
+  /** A direct sale quoted under a code other than Meld's code for DOT, which the session must name
+   *  too: its code for USDT on Asset Hub. */
   sellCode?: string;
   /** The sale the worker makes for a direct sale, as the chain decided it for the candidate: the
    *  PSM redeem for USDT, the pool for PAS. */
@@ -79,13 +80,17 @@ function startingCountry(): string {
   return lastCountry ?? detectedCountryNow() ?? "DE";
 }
 
-/** What a sale of Meld code `code` sells: an asset on Asset Hub with no swap (null), PAS under
- *  either of Meld's codes for it or USDT, a lane this build can swap into, or `undefined` for a
- *  code it cannot sell. */
+/** What a sale of Meld code `code` sells: an asset on Asset Hub with no swap (null), PAS or USDT,
+ *  a lane this build can swap into, or `undefined` for a code it cannot sell. */
 export function saleLaneOf(code: string): OfframpLane | null | undefined {
-  if (DIRECT_SELL_CODES.includes(code)) return null;
+  if (isDirectSellCode(code)) return null;
   return laneByMeldCode(code) ?? undefined;
 }
+
+/** The asset a lane sells: the adapter's own name for it, or the one the asset table gives its
+ *  code, for an adapter that sends none. */
+const laneAsset = (lane: OfframpLaneRef): MeldAssetId | undefined =>
+  lane.asset ?? meldAssetOf(lane.code);
 
 /** Sizes a direct sale under `code` on the route the chain decides for its token, with `reserved`
  *  of the PSM's room spoken for: USDT out of the PSM, or PAS out of the pool. A USDT sale the PSM
@@ -112,10 +117,10 @@ async function sizeDirectSale(
  */
 export function laneCandidates(
   lanes: readonly OfframpLaneRef[] | undefined,
-  order: readonly string[],
+  order: readonly MeldAssetId[],
 ): string[] {
   if (lanes === undefined) return [SELL_TOKEN.meldCurrencyCode];
-  return order.filter((code) => lanes.some((l) => l.code === code));
+  return order.flatMap((asset) => lanes.find((l) => laneAsset(l) === asset)?.code ?? []);
 }
 
 /** The smallest and largest of the lanes' limits, or the method's own when a lane names none. */
@@ -153,13 +158,14 @@ function laneLimits(
  */
 export function sellableCorridor(
   corridor: SupportedCorridor,
-  order: readonly string[],
+  order: readonly MeldAssetId[],
 ): SupportedCorridor {
   const methods = corridor.methods.flatMap((method): SupportedMethod[] => {
     if (method.lanes === undefined) return [method];
-    const lanes = method.lanes.filter(
-      (l) => order.includes(l.code) && saleLaneOf(l.code) !== undefined,
-    );
+    const lanes = method.lanes.filter((l) => {
+      const asset = laneAsset(l);
+      return asset !== undefined && order.includes(asset) && saleLaneOf(l.code) !== undefined;
+    });
     if (lanes.length === 0) return [];
     if (lanes.length === method.lanes.length) return [method];
     return [{ ...method, ...laneLimits(lanes, method), lanes }];
@@ -198,8 +204,17 @@ export function useMeldSellQuote(
     if (kind === "rate") rateFailures.value += 1;
   }
 
+  /** Meld's codes for the assets a sale names, read once from the adapter the sale goes through. */
+  async function assetsRead(): Promise<void> {
+    const client = meldSellClient();
+    if (client !== null) await ensureMeldAssets(client);
+  }
+
   /** The off-ramp catalog, for the region picker. Null lists when discovery is unreachable. */
   async function loadCatalog(): Promise<void> {
+    // Unread, a lane is matched by the asset the adapter names for it, and one it names none for
+    // is not sold; the quote below asks again.
+    await assetsRead().catch(() => undefined);
     const fetched = await fetchOfframpCorridors();
     // Only the lanes this build sells: a region routed by none of them is greyed, not offered.
     const routed =
@@ -270,6 +285,7 @@ export function useMeldSellQuote(
         fail("rate", "Card and bank withdrawals are not available right now.");
         return;
       }
+      await ensureMeldAssets(client);
       const live = await import("~~/lib/withdraw-live");
       const corridor = await corridorFor(country.value);
       if (mine !== epoch) return;

@@ -5,6 +5,7 @@ import type {
   ChainflipProgressFacts,
   FailureKind,
   FailureStep,
+  MeldAssetId,
   PaymentPhase,
   PaymentState,
   RefundProgress,
@@ -594,9 +595,15 @@ export interface MeldSale {
   cryptoAmount: string;
   /** A sale through an offramp lane: the asset the provider buys, delivered by Chainflip. */
   lane?: LaneId;
-  /** A direct sale under a code other than DOT_ASSETHUB: DOT_STATEMINT, or USDT_ASSETHUB or USDT_STATEMINT for USDT
-   *  the PSM redeemed, which the key pays and `cryptoAmount` is in. */
+  /** A direct sale under a code other than Meld's code for DOT: its code for the USDT the PSM
+   *  redeemed, which the key pays and `cryptoAmount` is in. The code as the adapter named the asset
+   *  when the sale opened, kept for the wire; what the sale sells is `asset`. */
   sellCode?: string;
+  /** The asset a direct sale under `sellCode` sells, by the app's own name for it, fixed when the
+   *  sale opened. Meld renames codes and the adapter's table then no longer knows the old one, so
+   *  the sale is read by this, not by its code. A record from before it was kept has only the
+   *  code. */
+  asset?: MeldAssetId;
   /** The fiat the quote said reaches the seller, decimal text in `fiat`. An estimate: the
    *  provider prices the payout again. */
   quotedPayout: string;
