@@ -192,7 +192,7 @@ describe("the worker's rail leg", () => {
       },
     ]);
     expect(storedJob()).toMatchObject({ phase: "handoff", leg: { paid: true } });
-    expect(storedJob().txs).toEqual([{ call: "sweep", txHash: "0x1", block: 7 }]);
+    expect(storedJob().txs).toEqual([{ call: "sweep", txHash: "0x1", block: 7, ok: true }]);
   });
 
   it("pays a channel that is open, and follows the swap after it", async () => {
@@ -339,5 +339,16 @@ describe("the worker's rail leg", () => {
     expect(stored.phase).toBe("handoff");
     expect(stored.failure).toBeUndefined();
     expect(stored.lastError).toMatch(/provider unreachable/);
+  });
+
+  it("clears the error a transient tick left once a tick completes", async () => {
+    mocks.channel.mockRejectedValueOnce(new Error("provider unreachable"));
+    const engine = await engineWith(landedJob());
+
+    await engine.tickAllWithdraw();
+    expect(storedJob().lastError).toMatch(/provider unreachable/);
+    await engine.tickAllWithdraw();
+    expect(storedJob()).toMatchObject({ phase: "handoff", leg: { paid: true } });
+    expect(storedJob().lastError).toBeUndefined();
   });
 });

@@ -651,6 +651,8 @@ export interface WithdrawJobView {
     call: "swap" | "withdraw" | "redeem" | "pool-exit" | "sweep" | "pay";
     txHash: string;
     block?: number;
+    /** The chain took it: false for one included and refused. */
+    ok: boolean;
   }[];
   /** The provider's latest word on the swap, once the worker has paid it. */
   rail?: SwapStatusResult;

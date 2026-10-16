@@ -193,7 +193,7 @@ describe("withdrawal timeline", () => {
             fundsSeenAt: at(1),
             lastTickAt: at(3),
             at: at(3),
-            txs: [{ call: "sweep", txHash: "0x1" }],
+            txs: [{ call: "sweep", txHash: "0x1", ok: true }],
           },
         },
       }),
@@ -271,15 +271,15 @@ describe("withdrawal timeline", () => {
         worker: {
           ...worker,
           txs: [
-            { call: "swap", txHash: "0x1" },
-            { call: "withdraw", txHash: "0x2" },
+            { call: "swap", txHash: "0x1", ok: true },
+            { call: "withdraw", txHash: "0x2", ok: true },
           ],
         },
       },
     });
     expect(marks(withdrawalTimeline(onTheWay, { now: at(6) }).view!)).toBe("●●✕○○○○");
     const beforeIt = failed(record(), "timeout", "convert", true, {
-      witnesses: { worker: { ...worker, txs: [{ call: "swap", txHash: "0x1" }] } },
+      witnesses: { worker: { ...worker, txs: [{ call: "swap", txHash: "0x1", ok: true }] } },
     });
     expect(marks(withdrawalTimeline(beforeIt, { now: at(6) }).view!)).toBe("●✕○○○○○");
   });
@@ -349,9 +349,10 @@ describe("withdrawal timeline", () => {
             lastTickAt: at(5),
             at: at(5),
             failure: "held",
+            lastError: "withdrawal held: the PSM refused the redeem 3 times",
             txs: [
-              { call: "swap", txHash: "0x1" },
-              { call: "withdraw", txHash: "0x2" },
+              { call: "swap", txHash: "0x1", ok: true },
+              { call: "withdraw", txHash: "0x2", ok: true },
             ],
           },
         },
@@ -458,7 +459,7 @@ describe("withdrawal timeline", () => {
           fundsSeenAt: at(1),
           lastTickAt: at(4),
           at: at(4),
-          txs: [{ call: "pay", txHash: "0x1" }],
+          txs: [{ call: "pay", txHash: "0x1", ok: true }],
         },
       },
     });
@@ -469,8 +470,7 @@ describe("withdrawal timeline", () => {
   });
 
   it("does not take a sweep or pay the chain refused as the rail having the funds", () => {
-    // The worker records the attempt before it knows whether the chain took it; a lingering error
-    // is the only word it has that this one did not land.
+    // The worker records the attempt with whether the chain took it.
     const refused = chainflip({
       status: { kind: "sending", at: at(3) },
       rail: { provider: "chainflip", stage: "waiting", updatedAt: at(3) },
@@ -481,13 +481,37 @@ describe("withdrawal timeline", () => {
           done: false,
           fundsSeenAt: at(1),
           lastTickAt: at(4),
-          lastError: "sweep rejected: funds too low",
           at: at(4),
-          txs: [{ call: "sweep", txHash: "0x1" }],
+          txs: [{ call: "sweep", txHash: "0x1", ok: false }],
         },
       },
     });
     expect(marks(withdrawalTimeline(refused, { now: at(5) }).view!)).toBe("●●●○○○○");
+  });
+
+  it("keeps a sweep the chain took as the rail having the funds through a failure after it", () => {
+    // The rail leg ran out of time before Chainflip reported: its error is the failure's reason,
+    // and the sweep that landed still says the provider has the funds.
+    const timedOut = failed(chainflip(), "timeout", "send", true, {
+      witnesses: {
+        worker: {
+          known: true,
+          phase: "failed",
+          done: false,
+          fundsSeenAt: at(1),
+          lastTickAt: at(5),
+          lastError: "conversion exceeded 1800000ms of worker time",
+          at: at(5),
+          failure: "timeout",
+          txs: [
+            { call: "swap", txHash: "0x1", ok: true },
+            { call: "withdraw", txHash: "0x2", ok: true },
+            { call: "sweep", txHash: "0x3", ok: true },
+          ],
+        },
+      },
+    });
+    expect(marks(withdrawalTimeline(timedOut, { now: at(6) }).view!)).toBe("●●●●✕○○");
   });
 
   it.each([
@@ -542,7 +566,7 @@ describe("withdrawal timeline", () => {
             fundsSeenAt: at(1),
             lastTickAt: at(3),
             at: at(3),
-            txs: [{ call: make === chainflip ? "sweep" : "pay", txHash: "0x1" }],
+            txs: [{ call: make === chainflip ? "sweep" : "pay", txHash: "0x1", ok: true }],
           },
         },
       }),
@@ -713,7 +737,8 @@ describe("withdrawal timeline", () => {
   });
 
   it("keeps the arrival on a retry once the XCM left People", () => {
-    // A retry from the conversion starts at the swap until the worker reports its step again.
+    // A retry from the conversion starts at the swap until the worker reports its step again. The
+    // old witness still carries the failure's reason as its last error, as the worker leaves it.
     const worker = {
       known: true as const,
       phase: "failed",
@@ -722,12 +747,16 @@ describe("withdrawal timeline", () => {
       lastTickAt: at(5),
       at: at(5),
       failure: "held",
+      lastError: "withdrawal held: the PSM refused the redeem 3 times",
     };
     const retried = (calls: ("swap" | "withdraw")[]) =>
       record({
         status: { kind: "converting", at: at(6), step: "swap" },
         witnesses: {
-          worker: { ...worker, txs: calls.map((call, n) => ({ call, txHash: `0x${n}` })) },
+          worker: {
+            ...worker,
+            txs: calls.map((call, n) => ({ call, txHash: `0x${n}`, ok: true })),
+          },
         },
       });
     expect(marks(withdrawalTimeline(retried(["swap", "withdraw"]), { now: at(7) }).view!)).toBe(

@@ -118,7 +118,7 @@ describe("the exact payment", () => {
       },
     ]);
     expect(events).toEqual(["persist", "submit"]);
-    expect(txs).toEqual([{ call: "pay", txHash: "0x1", block: 201 }]);
+    expect(txs).toEqual([{ call: "pay", txHash: "0x1", block: 201, ok: true }]);
     expect(state).toMatchObject({ nonce: 0, inFlight: true, balanceBefore: "21000000000" });
   });
 

@@ -135,7 +135,7 @@ const saveJobs = () => store.save();
  *   residueError?,                           // why the way home's last step failed; the
  *                                            // next pass tries it again
  *   submitting?: { call, at },               // written before a submit
- *   txs: [{ call, txHash, block? }],
+ *   txs: [{ call, txHash, block?, ok }],
  * }
  */
 function newRecord(input, nowMs) {
@@ -731,6 +731,8 @@ async function tickRailLeg(record) {
   // A cancel that landed during this tick stands.
   if (record.phase === "failed") return;
   record.phase = outcome.step;
+  // A completed tick clears the error an earlier one left.
+  delete record.lastError;
   if (outcome.step === "done") record.done = true;
 }
 
@@ -1217,8 +1219,9 @@ async function tickRecord(record, nowMs) {
     // A cancel that landed during this tick stands.
     if (record.phase === "failed") return;
     record.phase = outcome.step;
-    // A completed tick clears any stale submitting marker.
+    // A completed tick clears any stale submitting marker, and the error an earlier one left.
     delete record.submitting;
+    delete record.lastError;
     if (outcome.step === "done") {
       // The funds are on Asset Hub. That is the whole job for a direct rail; a provider rail
       // carries on from the key on the next tick.

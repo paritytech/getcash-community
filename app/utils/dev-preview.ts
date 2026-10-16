@@ -464,7 +464,7 @@ function paidRailWitness(at: number): WithdrawalRecord["witnesses"] {
       fundsSeenAt: at,
       lastTickAt: at,
       at,
-      txs: [{ call: "pay", txHash: `0x${"7a".repeat(32)}` }],
+      txs: [{ call: "pay", txHash: `0x${"7a".repeat(32)}`, ok: true }],
     },
   };
 }
@@ -480,9 +480,10 @@ function heldWitness(at: number): WithdrawalRecord["witnesses"] {
       lastTickAt: at,
       at,
       failure: "held",
+      lastError: "withdrawal held: the PSM refused the redeem 3 times",
       txs: [
-        { call: "swap", txHash: `0x${"7b".repeat(32)}` },
-        { call: "withdraw", txHash: `0x${"7c".repeat(32)}` },
+        { call: "swap", txHash: `0x${"7b".repeat(32)}`, ok: true },
+        { call: "withdraw", txHash: `0x${"7c".repeat(32)}`, ok: true },
       ],
     },
   };
@@ -787,7 +788,7 @@ async function previewSale(
             state === "delayed" ||
             state === "sent-on" ||
             state === "sent"
-              ? { txs: [{ call: "pay" as const, txHash: `0x${"7a".repeat(32)}` }] }
+              ? { txs: [{ call: "pay" as const, txHash: `0x${"7a".repeat(32)}`, ok: true }] }
               : {}),
           },
         },

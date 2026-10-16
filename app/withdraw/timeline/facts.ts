@@ -28,16 +28,13 @@ const RAIL_SENT_ON: ReadonlySet<WithdrawalFailureKind> = new Set([
 const railFailureKind = (record: WithdrawalRecord): WithdrawalFailureKind | undefined =>
   record.failure?.step === "send" ? record.failure.kind : undefined;
 
-/** The worker filed a transaction of this call from the key, with nothing gone wrong since: a
- *  dispatch the chain refused is recorded the same as one that landed, and a lingering error is
- *  the only word the worker has that an attempt did not. */
+/** The worker filed a transaction of this call from the key and the chain took it. */
 function workerFiled(
   record: WithdrawalRecord,
   call: "swap" | "withdraw" | "pay" | "sweep",
 ): boolean {
   const worker = record.witnesses.worker;
-  if (worker?.known !== true || worker.lastError !== undefined) return false;
-  return worker.txs?.some((tx) => tx.call === call) ?? false;
+  return worker?.known === true && (worker.txs?.some((tx) => tx.call === call && tx.ok) ?? false);
 }
 
 /** The rail saw the key's payment: it reports the deposit at or past `received`, or did before
