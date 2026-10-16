@@ -667,6 +667,8 @@ describe("the asset table", () => {
     expect(await client.getAssets()).toEqual([{ asset: "dot@assethub", code: "DOT" }]);
     expect(calls[0]?.url).toBe("https://adapter.test/assets");
     expect(new Headers(calls[0]?.init?.headers).get("x-dev-product-id")).toBe("app.dot");
+    // Bounded, so an adapter that hangs cannot hold every caller sharing the read.
+    expect(calls[0]?.init?.signal).toBeInstanceOf(AbortSignal);
   });
 
   it("is a refusal when the adapter will not answer", async () => {

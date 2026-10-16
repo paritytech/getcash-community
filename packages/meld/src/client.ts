@@ -298,6 +298,9 @@ function retryAfterMsOf(res: Response): number | undefined {
 /** How long a status read may take before it fails: every poller of an id waits on the same read. */
 const STATUS_TIMEOUT_MS = 10_000;
 
+/** How long the asset table read waits for the adapter before giving up; the next call asks again. */
+const ASSETS_TIMEOUT_MS = 10_000;
+
 /** How many finished attempts, concluded or cancelled, a session create walks past before
  *  giving up. */
 const MAX_ATTEMPTS = 5;
@@ -733,7 +736,12 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
     getStatus: getFundingStatus,
 
     async getAssets(): Promise<MeldAsset[]> {
-      const res = await doFetch(`${base}/assets`, { headers: headers() });
+      // Bounded like the status read: every caller shares this one read, so an adapter that hangs
+      // rather than refusing must not hold them until the browser drops the socket.
+      const res = await doFetch(`${base}/assets`, {
+        headers: headers(),
+        signal: AbortSignal.timeout(ASSETS_TIMEOUT_MS),
+      });
       return parseMeldAssets(await read(res, "The asset table"));
     },
 
