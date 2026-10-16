@@ -20,7 +20,7 @@ import {
   parseBaseUnits,
   sameSoldAsset,
   SELL_TOKEN,
-  type SellToken,
+  type MeldToken,
 } from "@getsome/meld";
 import { laneById, laneSellToken } from "@getsome/offramp";
 import {
@@ -232,12 +232,15 @@ function workerWitness(job: WithdrawJobView, at: number): Witnesses["worker"] {
   };
 }
 
-/** The worker's failures that end a sale before its provider is paid, with the key going home. */
+/** The worker's failures that end a sale before its provider is paid, with the key going home. A
+ *  hold among them: a sale has one order, so the retry and the pool switch a crypto withdrawal
+ *  takes from a hold have nothing to sell for. */
 const SALE_ENDING_FAILURES: ReadonlySet<string> = new Set([
   "channel-expired",
   "channel-mismatch",
   "rejected",
   "timeout",
+  "held",
   "no-rail",
 ]);
 
@@ -282,6 +285,16 @@ function applyWorker(
           message: job.lastError ?? "the conversion failed in the background",
           recoverable: true,
         });
+      case "held":
+        // The PSM refused the redeem three times for a reason waiting cannot clear. The CASH is
+        // still on the key; a retry re-arms the worker's count.
+        if (rank < 1) return next;
+        return failed(next, at, {
+          kind: "held",
+          step: "convert",
+          message: job.lastError ?? "the PSM would not redeem the CASH",
+          recoverable: true,
+        });
       case "expired":
         return rank === 0 && !paymentTaken(next) ? expired(next, at) : next;
       case "channel-expired":
@@ -309,6 +322,16 @@ function applyWorker(
           kind: "unknown",
           step: "send",
           message: job.lastError ?? "no provider can carry this withdrawal in this build",
+          recoverable: false,
+        });
+      case "too-small":
+        // Once the exit's fee and the account's minimum are left behind, the CASH on the key's
+        // Asset Hub account is under what any exit can take; it stays there for a person.
+        if (rank < 1) return next;
+        return failed(next, at, {
+          kind: "unknown",
+          step: "convert",
+          message: job.lastError ?? "the CASH left on the key is too small to redeem",
           recoverable: false,
         });
       case "unfundable":
@@ -442,7 +465,7 @@ function applySale(record: WithdrawalRecord, observation: SaleObservation): With
 
 /** What a sale sells: its offramp lane's asset, or the asset its code names on Asset Hub, PAS
  *  unless it names another. The code was checked when the sale opened; this never throws. */
-function sellTokenOf(sale: MeldSale): SellToken {
+export function sellTokenOf(sale: MeldSale): MeldToken {
   if (sale.lane !== undefined) return laneSellToken(laneById(sale.lane));
   const code = sale.sellCode ?? SELL_TOKEN.meldCurrencyCode;
   return DIRECT_SELL_CODES.includes(code) ? directSellToken(code) : SELL_TOKEN;
@@ -450,7 +473,7 @@ function sellTokenOf(sale: MeldSale): SellToken {
 
 /** Whether `deposit` is the channel's address, for the sale's asset and its exact amount. */
 function sameDeposit(
-  token: SellToken,
+  token: MeldToken,
   channel: WithdrawalChannel,
   deposit: MeldSaleReading["deposit"],
 ): boolean {

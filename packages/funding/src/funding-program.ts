@@ -54,7 +54,14 @@ import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import type { TypedApi } from "polkadot-api";
 import type { CashTransfer } from "./cash-transfer";
 import { describeDispatchError } from "./dispatch-error";
-import { STABLE_TOKENS, asLocation, stableTxOptions, type Location, type Stable } from "./stable";
+import {
+  STABLE_TOKENS,
+  asLocation,
+  priceNativeFeeIn,
+  stableTxOptions,
+  type Location,
+  type Stable,
+} from "./stable";
 import {
   creditedTo,
   forwardedTo,
@@ -749,16 +756,14 @@ export async function priceDispatchFee(
   what: string,
 ): Promise<{ dispatchNative: bigint; dispatchExternal: bigint }> {
   const dispatchNative = await tx.getEstimatedFees(from, options);
-  const dispatchExternal = await api.apis.AssetConversionApi.quote_price_tokens_for_exact_tokens(
-    options.asset,
-    asLocation(TOKENS.PAS.location),
-    dispatchNative,
-    true,
-  );
-  if (dispatchExternal === undefined) {
-    throw new Error(`${what}: the pool cannot price the dispatch fee in the fee asset`);
+  try {
+    return {
+      dispatchNative,
+      dispatchExternal: await priceNativeFeeIn(api, options.asset, dispatchNative),
+    };
+  } catch (error) {
+    throw new Error(`${what}: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return { dispatchNative, dispatchExternal };
 }
 
 /** Every cost of the stable pool tier's program, measured against the program itself, all in the

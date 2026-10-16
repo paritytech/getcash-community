@@ -15,6 +15,7 @@ import ErrorState from "../ui/ErrorState.vue";
 import PillButton from "../ui/PillButton.vue";
 import RegionRow from "../ui/RegionRow.vue";
 import SkeletonBlock from "../ui/SkeletonBlock.vue";
+import SkeletonRow from "../ui/SkeletonRow.vue";
 
 const props = defineProps<{
   method: "card" | "bank";
@@ -30,9 +31,10 @@ const props = defineProps<{
   rateFailures: number;
   /** In the country's fiat, when the catalog prices one. */
   minimum: { amount: string; fiat: string } | null;
-  /** The payout country, as an ISO code, and its name. */
-  country: string;
-  countryName: string;
+  /** The payout country, as an ISO code, and its name. Null while it is still being decided
+   *  (geo, or the bounded locale fallback), which the row shows as a skeleton. */
+  country: string | null;
+  countryName: string | null;
   starting: boolean;
   startError: string | null;
 }>();
@@ -59,13 +61,14 @@ const canContinue = computed(
 </script>
 
 <template>
+  <!-- A refusal is only ever for a decided region: pricing waits for it (the route). -->
   <MethodUnavailable
-    v-if="unrouted"
+    v-if="unrouted && country !== null"
     direction="withdraw"
     :method="method"
     :amount="groupAmountDigits(amount)"
     :country="country"
-    :country-name="countryName"
+    :country-name="countryName ?? country"
     :minimum="minimum"
     :other="other"
     @region="emit('region')"
@@ -115,9 +118,14 @@ const canContinue = computed(
     </div>
 
     <div class="mt-8 flex flex-col gap-4">
+      <!-- Live even while the region is refused: another country is the way out of it. Undecided
+           (null), the row is a skeleton rather than a provisional region the seller could mistake
+           for a decision. -->
+      <SkeletonRow v-if="country === null" value-width="w-1/4" />
       <RegionRow
+        v-else
         label="Payout country"
-        :value="countryName"
+        :value="countryName ?? country"
         :country="country"
         @open="emit('region')"
       />

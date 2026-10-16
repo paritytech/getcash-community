@@ -4,7 +4,7 @@
 
 import { NETWORK, TOKENS, type SwapStatusResult } from "@getsome/core";
 import type { MeldClientLike, MeldQuoteEntry, MeldStatusResult } from "./client";
-import { formatBaseUnits, parseBaseUnits } from "./units";
+import { formatBaseUnits, parseBaseUnits, type MeldToken } from "./units";
 
 /** Whether this build sells CASH for fiat through Meld, the card and bank withdrawals. On a test
  *  network the sale only ever moves test funds. On a live one it stays off until a small real sale
@@ -13,16 +13,9 @@ import { formatBaseUnits, parseBaseUnits } from "./units";
  *  it, so neither trusts the other to hold the line. */
 export const MELD_SELL_ENABLED = NETWORK.testnet;
 
-/** What a sale sells by default: the native on Asset Hub, which Meld names DOT_ASSETHUB. */
-export const SELL_TOKEN = TOKENS.PAS as SellToken;
-
-/** An asset a sale can sell: how Meld names it and its base-unit decimals. A sale through an
- *  offramp lane sells the lane's asset on another chain. */
-export interface SellToken {
-  symbol: string;
-  decimals: number;
-  meldCurrencyCode: string;
-}
+/** What a sale sells unless its code names another asset: the native on Asset Hub, which Meld
+ *  names DOT_ASSETHUB. */
+export const SELL_TOKEN: MeldToken = TOKENS.PAS;
 
 /** Meld's two codes for the DOT a direct sale sells on Polkadot Asset Hub: DOT_ASSETHUB, and the
  *  older DOT_STATEMINT (Statemint was Asset Hub's name), which some providers still buy under. */
@@ -34,7 +27,7 @@ export const ASSET_HUB_DOT_CODES: readonly string[] = [
 /** USDT on Asset Hub as a direct sale sells it: the PSM redeems the CASH for it, and the key pays
  *  the provider in it. Meld names it USDT_ASSETHUB, or USDT_STATEMINT for the providers that buy it
  *  only under Asset Hub's older name. */
-export const USDT_SELL_TOKEN: SellToken = {
+export const USDT_SELL_TOKEN: MeldToken = {
   symbol: TOKENS.USDT.symbol,
   decimals: TOKENS.USDT.decimals,
   meldCurrencyCode: "USDT_ASSETHUB",
@@ -51,12 +44,12 @@ export const isDirectUsdt = (code: string | undefined): boolean =>
   code !== undefined && ASSET_HUB_USDT_CODES.includes(code);
 
 /** What a direct sale sells, on Asset Hub with no swap, by the Meld code a provider buys it under. */
-const DIRECT_SELL_TOKENS: ReadonlyMap<string, SellToken> = new Map([
-  ...ASSET_HUB_USDT_CODES.map((code): [string, SellToken] => [
+const DIRECT_SELL_TOKENS: ReadonlyMap<string, MeldToken> = new Map([
+  ...ASSET_HUB_USDT_CODES.map((code): [string, MeldToken] => [
     code,
     { ...USDT_SELL_TOKEN, meldCurrencyCode: code },
   ]),
-  ...ASSET_HUB_DOT_CODES.map((code): [string, SellToken] => [
+  ...ASSET_HUB_DOT_CODES.map((code): [string, MeldToken] => [
     code,
     { ...SELL_TOKEN, meldCurrencyCode: code },
   ]),
@@ -66,7 +59,7 @@ const DIRECT_SELL_TOKENS: ReadonlyMap<string, SellToken> = new Map([
 export const DIRECT_SELL_CODES: readonly string[] = [...DIRECT_SELL_TOKENS.keys()];
 
 /** The direct sale's asset under one of DIRECT_SELL_CODES, as the provider quoting it names it. */
-export function directSellToken(code: string): SellToken {
+export function directSellToken(code: string): MeldToken {
   const token = DIRECT_SELL_TOKENS.get(code);
   if (token === undefined) throw new Error(`A sale cannot sell ${code} directly.`);
   return token;
@@ -81,17 +74,17 @@ export const sameSoldAsset = (depositCode: string, soldCode: string): boolean =>
   );
 
 /** The fraction digits a committed amount carries. Few enough that no provider rounds it, and the
- *  planck below them stay with the rest of the sale. */
+ *  base units below them stay with the rest of the sale. */
 const SELL_AMOUNT_DECIMALS = 4;
 
 /** `base` units of `token` cut down to what a sale may commit, rounded down. */
-export function sellAmountOf(base: bigint, token: SellToken = SELL_TOKEN): bigint {
+export function sellAmountOf(base: bigint, token: Pick<MeldToken, "decimals">): bigint {
   const step = 10n ** BigInt(Math.max(token.decimals - SELL_AMOUNT_DECIMALS, 0));
   return (base / step) * step;
 }
 
 /** The committed amount as the adapter and the provider see it. */
-export const formatSellAmount = (base: bigint, token: SellToken = SELL_TOKEN): string =>
+export const formatSellAmount = (base: bigint, token: Pick<MeldToken, "decimals">): string =>
   formatBaseUnits(token, base);
 
 /**
@@ -132,11 +125,11 @@ export interface SaleChannelRecord {
  */
 export function saleChannelOf(
   result: MeldStatusResult,
-  tokens: SellToken | readonly SellToken[] = SELL_TOKEN,
+  tokens: MeldToken | readonly MeldToken[],
 ): SaleChannelRecord | null {
   const { deposit } = result;
   if (deposit === undefined) return null;
-  const token = (Array.isArray(tokens) ? tokens : [tokens as SellToken]).find((t) =>
+  const token = (Array.isArray(tokens) ? tokens : [tokens as MeldToken]).find((t) =>
     sameSoldAsset(deposit.currency, t.meldCurrencyCode),
   );
   if (token === undefined) return null;
@@ -217,8 +210,8 @@ export interface SaleReadMemory {
 export function saleRail(
   client: MeldClientLike,
   memory: SaleReadMemory,
-  now: () => number = Date.now,
-  tokens: SellToken | readonly SellToken[] = SELL_TOKEN,
+  now: () => number,
+  tokens: MeldToken | readonly MeldToken[],
 ) {
   const read = async (fundingRequestId: string): Promise<MeldStatusResult | null> => {
     try {

@@ -343,7 +343,7 @@ describe("the sale as the rail leg reads it", () => {
   };
 
   it("is a channel to an address for an exact figure, paid out off chain", () => {
-    expect(saleChannelOf(disclosed)).toEqual({
+    expect(saleChannelOf(disclosed, SELL_TOKEN)).toEqual({
       depositAddress: "14Kt",
       payout: "off-chain",
       expired: false,
@@ -356,7 +356,7 @@ describe("the sale as the rail leg reads it", () => {
       ...disclosed,
       deposit: { ...disclosed.deposit, currency: "DOT_STATEMINT" },
     };
-    expect(saleChannelOf(statemint)?.expectedAmount).toBe(234_521_000_000n);
+    expect(saleChannelOf(statemint, SELL_TOKEN)?.expectedAmount).toBe(234_521_000_000n);
     // And a sale quoted under DOT_STATEMINT takes a deposit named DOT_ASSETHUB.
     expect(saleChannelOf(disclosed, directSellToken("DOT_STATEMINT"))?.depositAddress).toBe("14Kt");
     expect(sameSoldAsset("DOT_STATEMINT", "DOT_ASSETHUB")).toBe(true);
@@ -380,16 +380,22 @@ describe("the sale as the rail leg reads it", () => {
   });
 
   it("is closed once the adapter concludes it", () => {
-    expect(saleChannelOf({ ...disclosed, status: "expired" })?.expired).toBe(true);
+    expect(saleChannelOf({ ...disclosed, status: "expired" }, SELL_TOKEN)?.expired).toBe(true);
   });
 
   it("is no channel without a disclosure, for another asset, or for an unreadable amount", () => {
-    expect(saleChannelOf({ status: "session_opened" })).toBeNull();
+    expect(saleChannelOf({ status: "session_opened" }, SELL_TOKEN)).toBeNull();
     expect(
-      saleChannelOf({ ...disclosed, deposit: { ...disclosed.deposit, currency: "USDT_ASSETHUB" } }),
+      saleChannelOf(
+        { ...disclosed, deposit: { ...disclosed.deposit, currency: "USDT_ASSETHUB" } },
+        SELL_TOKEN,
+      ),
     ).toBeNull();
     expect(
-      saleChannelOf({ ...disclosed, deposit: { ...disclosed.deposit, amount: "1.00000000001" } }),
+      saleChannelOf(
+        { ...disclosed, deposit: { ...disclosed.deposit, amount: "1.00000000001" } },
+        SELL_TOKEN,
+      ),
     ).toBeNull();
   });
 
@@ -416,8 +422,8 @@ describe("the sale as the rail leg reads it", () => {
 
 describe("sale amounts", () => {
   it("cuts a figure to the sale's decimals, never up", () => {
-    expect(sellAmountOf(234_521_987_654n)).toBe(234_521_000_000n);
-    expect(formatSellAmount(234_521_000_000n)).toBe("23.4521");
+    expect(sellAmountOf(234_521_987_654n, SELL_TOKEN)).toBe(234_521_000_000n);
+    expect(formatSellAmount(234_521_000_000n, SELL_TOKEN)).toBe("23.4521");
   });
 
   it("parses a decimal exactly, refusing more precision than the token has", () => {
@@ -465,7 +471,7 @@ describe("the sale's reads for the worker", () => {
   }
 
   it("reads the channel and the status through the adapter", async () => {
-    const rail = saleRail(scripted([live, { status: "settled" }]), {});
+    const rail = saleRail(scripted([live, { status: "settled" }]), {}, Date.now, SELL_TOKEN);
     expect(await rail.channel("funding-1")).toMatchObject({ expectedAmount: 234_521_000_000n });
     expect(await rail.status("funding-1")).toMatchObject({ status: "complete" });
   });
@@ -484,7 +490,7 @@ describe("the sale's reads for the worker", () => {
   it("takes a sale the adapter keeps answering 404 for as gone, and only then", async () => {
     const memory: SaleReadMemory = {};
     let clock = 1_000_000;
-    const rail = saleRail(scripted([notFound]), memory, () => clock);
+    const rail = saleRail(scripted([notFound]), memory, () => clock, SELL_TOKEN);
     for (let read = 1; read < SALE_GONE_AFTER; read += 1) {
       await expect(rail.channel("funding-1")).rejects.toBe(notFound);
       expect(memory.saleNotFound).toBe(read);
@@ -507,7 +513,12 @@ describe("the sale's reads for the worker", () => {
   it("starts the count again after an answer, and throws any other failure as it is", async () => {
     const memory: SaleReadMemory = {};
     const boom = Object.assign(new Error("bad gateway"), { status: 502 });
-    const rail = saleRail(scripted([notFound, notFound, live, notFound, boom]), memory);
+    const rail = saleRail(
+      scripted([notFound, notFound, live, notFound, boom]),
+      memory,
+      Date.now,
+      SELL_TOKEN,
+    );
     await expect(rail.channel("funding-1")).rejects.toBe(notFound);
     await expect(rail.channel("funding-1")).rejects.toBe(notFound);
     expect(await rail.channel("funding-1")).not.toBeNull();

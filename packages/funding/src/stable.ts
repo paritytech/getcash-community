@@ -35,3 +35,24 @@ export const stableLocation = (stable: Stable): Location =>
 export function stableTxOptions(stable: Stable): { asset: Location } {
   return { asset: stableLocation(stable) };
 }
+
+/** `feeNative` as ChargeAssetTxPayment takes it in the asset at `location`: the pallet swaps
+ *  exactly the native fee out of the asset's pool, so the charge is the exact-out quote for it,
+ *  pool fee included. Throws, naming `symbol`, when the pool cannot price it. */
+export async function priceNativeFeeIn(
+  api: AssetHubApi,
+  location: Location,
+  feeNative: bigint,
+  symbol = "the fee asset",
+): Promise<bigint> {
+  const priced = await api.apis.AssetConversionApi.quote_price_tokens_for_exact_tokens(
+    location,
+    asLocation(TOKENS.PAS.location),
+    feeNative,
+    true,
+  );
+  if (priced === undefined) {
+    throw new Error(`the pool cannot price the dispatch fee in ${symbol}`);
+  }
+  return priced;
+}

@@ -1,8 +1,10 @@
 // The quote a fiat sale is confirmed on: the region and payout method from the adapter's off-ramp
 // catalog, the exact figure the key will pay, and the best provider line for that figure. Priced
-// again whenever the region changes; nothing here opens a session.
+// again whenever the region changes; nothing here opens a session. The catalog's candidates decide
+// what the sale sells and in which order they are tried; the chain decides, per candidate, whether
+// it can serve the sale and sizes the figure.
 
-import { ref, shallowRef, watch } from "vue";
+import { ref, shallowRef, toValue, watch, type MaybeRefOrGetter } from "vue";
 import {
   DIRECT_SELL_CODES,
   directSellToken,
@@ -28,7 +30,7 @@ import {
   type SupportedCountry,
   type SupportedMethod,
 } from "~~/lib/supported";
-import { localeCountry } from "../utils/locale";
+import { detectedCountryNow } from "./useDetectedCountry";
 import { meldSellClient } from "../withdraw/meld-client";
 
 /** A priced sale: where it pays out, what the key pays, and the provider line for it. */
@@ -44,7 +46,8 @@ export interface MeldSellQuote {
    *  DOT_STATEMINT, Meld's older code for DOT on Asset Hub, or USDT_ASSETHUB or USDT_STATEMINT for
    *  USDT there. */
   sellCode?: string;
-  /** A direct sale of USDT: the PSM redeem the withdrawal runs for the USDT the key pays. */
+  /** The sale the worker makes for a direct sale, as the chain decided it for the candidate: the
+   *  PSM redeem for USDT, the pool for PAS. */
   route?: ConversionRoute;
   /** The CASH expected back once the provider is paid, before the way back's fees; 0 when it is
    *  too small to send back. */
@@ -69,12 +72,12 @@ const FALLBACK_PAYOUT_METHOD = { card: "PAYOUT_TO_CARD", bank: "PAYOUT_TO_BANK" 
  *  the seller's choice should outlive it. */
 let lastCountry: string | null = null;
 
-/** The region a sale starts from: the one chosen before, else the device's own, where this method
- *  pays out there, else a SEPA one, until geolocation lands. */
-function startingCountry(method: "card" | "bank"): string {
-  const detected = lastCountry ?? localeCountry();
-  if (detected === null) return "DE";
-  return method === "card" || bankRailCountries().includes(detected) ? detected : "DE";
+/** The region a sale starts from: the one chosen before, else the geo cache where detection has
+ *  already answered, else the device locale, UNfiltered — a region with no payout rail still
+ *  prices as "choose another country", which is the truth about the seller. The route re-commits
+ *  once the async lookup lands (MeldWithdrawRoute), unless the seller chose before. */
+function startingCountry(): string {
+  return lastCountry ?? detectedCountryNow() ?? "DE";
 }
 
 /** What a sale of Meld code `code` sells: an asset on Asset Hub with no swap (null), PAS under
@@ -85,15 +88,22 @@ export function saleLaneOf(code: string): OfframpLane | null | undefined {
   return laneByMeldCode(code) ?? undefined;
 }
 
-/** Sizes a direct sale under `code`: USDT out of the PSM, or PAS out of the pool. */
+/** Sizes a direct sale under `code` on the route the chain decides for its token, with `reserved`
+ *  of the PSM's room spoken for: USDT out of the PSM, or PAS out of the pool. A USDT sale the PSM
+ *  cannot serve is refused, so the next candidate is tried: this build does not sell USDT to a
+ *  provider through the pool. */
 async function sizeDirectSale(
   live: typeof import("~~/lib/withdraw-live"),
   code: string,
   amount: bigint,
+  reserved: bigint,
 ): Promise<SizedSale> {
-  if (!isDirectUsdt(code)) return live.sizeMeldCommitment(amount);
-  const size = await live.sizeUsdtSale(amount);
-  return { planck: size.commit, backCash: size.backCash, route: size.route };
+  const usdt = isDirectUsdt(code);
+  const route = await live.chooseWithdrawRoute(amount, usdt ? "USDT" : "native", reserved);
+  if (usdt && route.tier !== "psm") {
+    throw new Error("USDT cannot be redeemed for this sale right now.");
+  }
+  return { ...(await live.sizeMeldCommitment(amount, route)), route };
 }
 
 /**
@@ -158,8 +168,16 @@ export function sellableCorridor(
   return { ...corridor, methods };
 }
 
-export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
-  const country = ref(startingCountry(method));
+/** `reserved` is the CASH this app's other PSM withdrawals have yet to redeem, which the PSM's room
+ *  is judged without for every candidate. */
+export function useMeldSellQuote(
+  method: "card" | "bank",
+  amount: bigint,
+  reserved: MaybeRefOrGetter<bigint>,
+) {
+  /** The starting region is one the seller chose on the other method, not a detected one. */
+  const chosenBefore = lastCountry !== null;
+  const country = ref(startingCountry());
   watch(country, (next) => {
     lastCountry = next;
   });
@@ -276,8 +294,8 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
         try {
           const size: SizedSale =
             lane === null
-              ? await sizeDirectSale(live, code, amount)
-              : await live.sizeSwapSale(amount, lane).then((swap) => {
+              ? await sizeDirectSale(live, code, amount, toValue(reserved))
+              : await live.sizeSwapSale(amount, lane, toValue(reserved)).then((swap) => {
                   // Only the Arbitrum lane routes through the SaleVault, so only it carries one.
                   const v = lane.chainflip.chain === "Arbitrum" ? getOfframpVault() : null;
                   return {
@@ -339,6 +357,7 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
 
   return {
     country,
+    chosenBefore,
     countries,
     corridors,
     quote,

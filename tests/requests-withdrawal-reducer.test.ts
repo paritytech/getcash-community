@@ -421,6 +421,66 @@ describe("withdrawal: the worker", () => {
     expect(rejected.failure?.step).toBe("convert");
   });
 
+  it("fails recoverably at the conversion when the PSM would not redeem", () => {
+    const seen = at(1);
+    const held = run(
+      prompted(),
+      worker(at(3), job({ phase: "failed", failure: "held", fundsSeenAt: seen })),
+    );
+    expect(held.status).toEqual({ kind: "failed", at: at(3), recoverable: true });
+    expect(held.failure).toMatchObject({ kind: "held", step: "convert" });
+  });
+
+  it("ends a sale for good when the PSM would not redeem: one order, and the key goes home", () => {
+    const seen = at(1);
+    const sale = record({
+      payment: { attempt: 0, requestedAt: at(0), id: "pay-1" },
+      rail: { provider: "meld", stage: "waiting", updatedAt: STARTED },
+    });
+    const held = run(
+      sale,
+      worker(
+        at(3),
+        job({
+          phase: "failed",
+          failure: "held",
+          lastError: "withdrawal held: the PSM refused the redeem 3 times",
+          fundsSeenAt: seen,
+        }),
+      ),
+    );
+    expect(held.status).toEqual({ kind: "failed", at: at(3), recoverable: false });
+    expect(held.failure).toEqual({
+      kind: "sale-closed",
+      step: "convert",
+      message: "withdrawal held: the PSM refused the redeem 3 times",
+      recoverable: false,
+    });
+  });
+
+  it("fails for good at the conversion when the CASH left on the key is too small to redeem", () => {
+    const seen = at(1);
+    const small = run(
+      prompted(),
+      worker(
+        at(3),
+        job({
+          phase: "failed",
+          failure: "too-small",
+          lastError: "redeem sizing: 9000 CASH on the key cannot fund an exit of at least 1000000",
+          fundsSeenAt: seen,
+        }),
+      ),
+    );
+    expect(small.status).toEqual({ kind: "failed", at: at(3), recoverable: false });
+    expect(small.failure).toEqual({
+      kind: "unknown",
+      step: "convert",
+      message: "redeem sizing: 9000 CASH on the key cannot fund an exit of at least 1000000",
+      recoverable: false,
+    });
+  });
+
   it("expires an unpaid request on the worker's word, but not one the host took", () => {
     const expired = run(prompted(), worker(at(40), job({ phase: "failed", failure: "expired" })));
     expect(expired.status).toEqual({ kind: "expired", at: at(40) });
