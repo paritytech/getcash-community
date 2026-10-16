@@ -18,6 +18,7 @@ import {
   type FundingStep,
   type Stable,
 } from "@getsome/funding";
+import type { LaneId } from "@getsome/offramp";
 import type { WithdrawStep } from "@getsome/withdraw";
 import type { RequestRef } from "../../utils/request-index";
 import { CRYPTO_SOURCE_ID, isDirectSourceId, isMeldSourceId, meldMethodFor } from "../source-ids";
@@ -535,6 +536,10 @@ export interface WithdrawalHandoffPayload {
   /** A fiat sale only: the adapter the worker reads the sale from, or `offline` for a build that
    *  ran the stand-in sale and has no adapter. */
   meld?: { baseUrl?: string; productId?: string; offline?: boolean };
+  /** A fiat sale through an offramp lane only: the Chainflip channel the key pays, swapping its
+   *  USDT for the lane's asset and paying it to the provider's deposit address (`channel`). Opened
+   *  by the page once that address is known. */
+  swap?: WithdrawalChannel;
 }
 
 /** The sale's fields as the hand-off carries them, spread from the route decided at quote time. */
@@ -580,8 +585,14 @@ export interface MeldSale {
   paymentMethodType: string;
   /** Where the seller does KYC and names the payout account. */
   widgetUrl: string;
-  /** The exact planck the key pays the provider. */
+  /** The exact amount the provider is paid, base units of the sold asset: PAS, USDT for a direct
+   *  sale of it, or the lane's asset for a sale through an offramp lane. */
   cryptoAmount: string;
+  /** A sale through an offramp lane: the asset the provider buys, delivered by Chainflip. */
+  lane?: LaneId;
+  /** A direct sale under a code other than DOT_ASSETHUB: DOT_STATEMINT, or USDT_ASSETHUB or USDT_STATEMINT for USDT
+   *  the PSM redeemed, which the key pays and `cryptoAmount` is in. */
+  sellCode?: string;
   /** The fiat the quote said reaches the seller, decimal text in `fiat`. An estimate: the
    *  provider prices the payout again. */
   quotedPayout: string;
@@ -774,7 +785,9 @@ export type Observation =
    *  asked; the sale ends with nothing taken. */
   | { source: "user"; at: number; event: "sale-unfundable" }
   /** The page opened a fresh provider channel for a retry; the hand-off carries it next. */
-  | { source: "user"; at: number; event: "channel-opened"; channel: WithdrawalChannel };
+  | { source: "user"; at: number; event: "channel-opened"; channel: WithdrawalChannel }
+  /** The page opened a lane sale's Chainflip channel to the provider's deposit address. */
+  | { source: "user"; at: number; event: "swap-opened"; channel: WithdrawalChannel };
 
 /** The source a request runs under: a bare legacy ref means the crypto rail's. */
 export const effectiveSourceId = (ref: RequestRef): string => ref.sourceId ?? CRYPTO_SOURCE_ID;

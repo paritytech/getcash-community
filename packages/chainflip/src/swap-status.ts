@@ -2,14 +2,20 @@
 // same mapping the page uses. Nothing else of Chainflip's is needed there, and its SDK brings
 // half of Node along, so this module stays clear of it and is exported on its own path.
 //
-// Mainnet only. Chainflip's test network serves none of the chains this app runs on, so there is
-// no other network to name.
+// Mainnet by default. A test build reads Perseverance, Chainflip's test network: it opens real
+// channels and quotes, though it watches none of the chains this app runs on.
 
 import type { SwapStatusResult } from "@getsome/core";
+import type { ChainflipNetworkId } from "./sdk";
 import { getSwapStatus, type StatusBackend } from "./status";
 
 /** Chainflip's swap API; the SDK's own default. */
 export const CHAINFLIP_SWAP_API = "https://chainflip-swap.chainflip.io";
+/** The same API on Perseverance. */
+export const CHAINFLIP_SWAP_API_PERSEVERANCE = "https://chainflip-swap-perseverance.chainflip.io";
+
+const swapApiFor = (network: ChainflipNetworkId): string =>
+  network === "perseverance" ? CHAINFLIP_SWAP_API_PERSEVERANCE : CHAINFLIP_SWAP_API;
 
 export type FetchLike = (
   url: string,
@@ -18,10 +24,11 @@ export type FetchLike = (
 /** A status backend over fetch; throws on anything but a 2xx, so a tick retries later. */
 export function createFetchStatusBackend(
   fetchImpl: FetchLike = (url) => fetch(url),
+  network: ChainflipNetworkId = "mainnet",
 ): StatusBackend {
   return {
     async getStatusV2({ id }) {
-      const response = await fetchImpl(`${CHAINFLIP_SWAP_API}/v2/swaps/${id}`);
+      const response = await fetchImpl(`${swapApiFor(network)}/v2/swaps/${id}`);
       if (!response.ok) throw new Error(`Chainflip status read failed: HTTP ${response.status}`);
       return response.json();
     },
@@ -32,7 +39,9 @@ export function createFetchStatusBackend(
 export const readSwapStatus = (
   channelId: string,
   fetchImpl?: FetchLike,
-): Promise<SwapStatusResult> => getSwapStatus(createFetchStatusBackend(fetchImpl), channelId);
+  network: ChainflipNetworkId = "mainnet",
+): Promise<SwapStatusResult> =>
+  getSwapStatus(createFetchStatusBackend(fetchImpl, network), channelId);
 
 /** Chainflip's own record of a channel, for checking a withdrawal against before the key pays it.
  *  Every field is served from the moment the channel opens, before any deposit. */
@@ -60,8 +69,9 @@ const str = (value: unknown): string => (typeof value === "string" ? value : "")
 export async function readChannelRecord(
   channelId: string,
   fetchImpl: FetchLike = (url) => fetch(url),
+  network: ChainflipNetworkId = "mainnet",
 ): Promise<ChainflipChannelRecord | null> {
-  const response = await fetchImpl(`${CHAINFLIP_SWAP_API}/v2/swaps/${channelId}`);
+  const response = await fetchImpl(`${swapApiFor(network)}/v2/swaps/${channelId}`);
   if (!response.ok) throw new Error(`Chainflip channel read failed: HTTP ${response.status}`);
   const body = (await response.json()) as {
     destAddress?: unknown;

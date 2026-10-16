@@ -5,8 +5,17 @@
 
 import { readChannelRecord, readSwapStatus } from "@getsome/chainflip/swap-status";
 import { NETWORK } from "@getsome/core";
-import { createMeldClient, MELD_SELL_ENABLED, saleRail } from "@getsome/meld";
+import { STABLE_TOKENS, stableTxOptions } from "@getsome/funding";
 import {
+  createMeldClient,
+  MELD_SELL_ENABLED,
+  saleRail,
+  SELL_TOKEN,
+  USDT_SELL_TOKEN,
+} from "@getsome/meld";
+import { LANES, laneSellToken } from "@getsome/offramp";
+import {
+  ChannelMismatchError,
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
   DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
   exactPaymentLanded,
@@ -21,6 +30,7 @@ import {
   anchorFor,
   CONNECT_TIMEOUT_MS,
   connectChain,
+  holdsUsdt,
   keypairFor,
   signOptionsFor,
 } from "./shared.js";
@@ -69,19 +79,69 @@ export function railFor(provider, record) {
         ? { productId: meld.productId }
         : {}),
     });
-    return saleRail(client, record);
+    if (record?.swap) return swapSaleRail(saleRail(client, record, Date.now, LANE_TOKENS), record);
+    return saleRail(client, record, Date.now, holdsUsdt(record) ? USDT_SELL_TOKEN : SELL_TOKEN);
   }
   return null;
 }
 
+/** What a sale's key pays in, fee included: USDT for a key that holds it, PAS (undefined) otherwise. */
+const exactAssetOf = (record) => (holdsUsdt(record) ? STABLE_TOKENS.USDT.assetHubId : undefined);
+
+/** Chainflip's network for a sale's swap: Perseverance on a test network, as the page opens it. */
+const SWAP_NETWORK = NETWORK.testnet ? "perseverance" : "mainnet";
+
+/** What a swap sale's provider may be paid in: any lane's asset. */
+const LANE_TOKENS = LANES.map(laneSellToken);
+
 /**
- * Pays the channel exactly `amount` from the key on Asset Hub, at the nonce `exact` keeps.
+ * A sale through an offramp lane: the key pays a Chainflip channel, which pays the provider. Before
+ * the key pays, Meld's own record must name the deposit address and amount the hand-off carries,
+ * so the Chainflip channel's destination is checked against the provider, not against the page.
+ * The swap is followed until Chainflip delivers, then the sale until the provider pays out.
+ */
+function swapSaleRail(sale, record) {
+  return {
+    channel: async (id) => {
+      const [swap, order] = await Promise.all([
+        readChannelRecord(id, undefined, SWAP_NETWORK),
+        sale.channel(record.channel.id),
+      ]);
+      if (swap === null) return null;
+      if (order === null) {
+        throw new ChannelMismatchError(`the provider cannot name sale ${record.channel.id}`);
+      }
+      if (order.depositAddress !== record.channel.address) {
+        throw new ChannelMismatchError(
+          `sale ${record.channel.id} takes deposits at ${order.depositAddress}, not ${record.channel.address}`,
+        );
+      }
+      if (order.expectedAmount !== BigInt(record.channel.amount)) {
+        throw new ChannelMismatchError(
+          `sale ${record.channel.id} expects ${order.expectedAmount}, not ${record.channel.amount}`,
+        );
+      }
+      return order.expired ? { ...swap, expired: true } : swap;
+    },
+    status: async (id) => {
+      const swap = await readSwapStatus(id, undefined, SWAP_NETWORK);
+      // Once Chainflip has delivered, no refund comes back to the key (see `refundMayLand`).
+      if (swap.status !== "complete") return swap;
+      return { ...(await sale.status(record.channel.id)), swapDelivered: true };
+    },
+  };
+}
+
+/**
+ * Pays the channel exactly `amount` from the key on Asset Hub, at the nonce `exact` keeps: PAS, or
+ * USDT from a key that holds it.
  * Resolves once the payment is on chain. `hooks.onBeforeSubmit` runs before the broadcast, so the
  * driver can persist the attempt; `hooks.onTx` takes the transaction as it lands.
  */
 export async function payRailExact(record, handoff, amount, exact, hooks = {}) {
   const key = await keypairFor(record.label);
   const client = await connectChain(record.assetHubGenesis, "asset hub");
+  const assetId = exactAssetOf(record);
   try {
     const assetHubApi = client.getTypedApi(paseo_next_v2);
     const anchor = await anchorFor(client);
@@ -91,11 +151,15 @@ export async function payRailExact(record, handoff, amount, exact, hooks = {}) {
         key: { address: key.address, signer: key.signer },
         to: handoff.address,
         amount,
+        ...(assetId === undefined ? {} : { assetId }),
         tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
         submitTimeoutMs: DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
-        signOptions: { at: anchor.hash },
+        signOptions: {
+          at: anchor.hash,
+          ...(assetId === undefined ? {} : stableTxOptions("USDT")),
+        },
         anchorNumber: anchor.number,
-        readKey: () => readAssetHubAccount(assetHubApi, record.keyPublicKeyHex),
+        readKey: () => readAssetHubAccount(assetHubApi, record.keyPublicKeyHex, assetId),
         onBeforeSubmit: hooks.onBeforeSubmit,
         onTx: hooks.onTx,
       },
@@ -120,7 +184,8 @@ export async function exactPaymentOut(record, amount, exact) {
       {
         amount,
         tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
-        readKey: () => readAssetHubAccount(assetHubApi, record.keyPublicKeyHex),
+        readKey: () =>
+          readAssetHubAccount(assetHubApi, record.keyPublicKeyHex, exactAssetOf(record)),
         readFinalizedNumber: async () => (await client.getFinalizedBlock()).number,
       },
       exact,
@@ -138,6 +203,7 @@ export async function exactPaymentOut(record, amount, exact) {
 export async function payRail(record, handoff, sweep, hooks = {}) {
   const key = await keypairFor(record.label);
   const client = await connectChain(record.assetHubGenesis, "asset hub");
+  const assetId = exactAssetOf(record);
   try {
     const assetHubApi = client.getTypedApi(paseo_next_v2);
     await sweepOnce(
@@ -145,10 +211,15 @@ export async function payRail(record, handoff, sweep, hooks = {}) {
         assetHubApi,
         key: { signer: key.signer },
         to: handoff.address,
+        ...(assetId === undefined ? {} : { assetId }),
         tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
         submitTimeoutMs: DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
-        signOptions: await signOptionsFor(client),
-        readKeyOnAssetHub: () => readDestinationBalance(assetHubApi, record.keyPublicKeyHex),
+        signOptions: {
+          ...(await signOptionsFor(client)),
+          ...(assetId === undefined ? {} : stableTxOptions("USDT")),
+        },
+        readKeyOnAssetHub: () =>
+          readDestinationBalance(assetHubApi, record.keyPublicKeyHex, assetId),
         onBeforeSubmit: hooks.onBeforeSubmit,
         onTx: hooks.onTx,
       },
