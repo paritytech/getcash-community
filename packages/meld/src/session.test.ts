@@ -26,6 +26,7 @@ function capturingClient(
 ) {
   let captured: MeldSessionRequest | undefined;
   const client: MeldClientLike = {
+    getAssets: async () => [],
     getQuote: async () => ({ quotes: [] }),
     createSession: async (req) => {
       captured = req;
@@ -52,7 +53,7 @@ describe("requestMeldDeposit", () => {
       country: "US",
       sourceCurrencyCode: "USD",
       sourceAmount: "141.89",
-      destinationCurrencyCode: "DOT_ASSETHUB",
+      destinationCurrencyCode: "DOT",
       destinationAmount: "20.63",
       walletAddress: BURNER,
       paymentMethodType: "CARD",
@@ -81,6 +82,7 @@ describe("requestMeldDeposit", () => {
   it("uses the rail's own expiry when the adapter published one", async () => {
     const at = Date.now() + 9 * 60 * 60 * 1000;
     const client: MeldClientLike = {
+      getAssets: async () => [],
       getQuote: async () => ({ quotes: [] }),
       createSession: async () => ({
         fundingRequestId: "funding-1",

@@ -7,6 +7,7 @@ import {
   NETWORK,
   TOKENS,
   type ChainflipRail,
+  type MeldAssetId,
   type PaymentState,
   type Quote,
   type SourceId,
@@ -44,6 +45,7 @@ import {
   createFakeMeldClient,
   createMeldClient,
   createMeldRail,
+  ensureMeldAssets,
   pickBestQuote,
   shareStatusReads,
   type MeldClientLike,
@@ -360,8 +362,8 @@ export const useSessionStore = defineStore("session", () => {
    *  exists and so before a route can be chosen, so it assumes the PSM tier's external rather than
    *  the fallback's. A route that comes back `pool` — the PSM paused, at its ceiling, or below its
    *  minimum — moves it to the native and the watch below reloads. Off-host there is no PSM. */
-  const meldDestination = ref<string>(
-    isHosted() ? TOKENS[PSM_EXTERNAL].meldCurrencyCode : DEFAULT_MELD_DESTINATION,
+  const meldDestination = ref<MeldAssetId>(
+    (isHosted() ? TOKENS[PSM_EXTERNAL].meldAsset : undefined) ?? DEFAULT_MELD_DESTINATION,
   );
   /** Every Meld on-ramp country from the adapter's live catalog; null until loaded. */
   const supportedCountries = ref<SupportedCountry[] | null>(null);
@@ -693,8 +695,8 @@ export const useSessionStore = defineStore("session", () => {
     // against one destination and quoted against another is how a supported region yields an
     // unquotable request, so the dropdown follows the route rather than a constant. A token Meld
     // cannot deliver leaves it as it was.
-    const code = depositTokenOf(route).meldCurrencyCode;
-    if (code !== undefined) meldDestination.value = code;
+    const asset = depositTokenOf(route).meldAsset;
+    if (asset !== undefined) meldDestination.value = asset;
     return route;
   }
 
@@ -776,10 +778,13 @@ export const useSessionStore = defineStore("session", () => {
           ...(redirectUrl ? { redirectUrl } : {}),
         })
       : createFakeMeldClient();
+    // The quote and the session below name Meld's code for the deposit token.
+    await ensureMeldAssets(baseClient);
     // Core's status poll (the rail) and the store's poll read the same id; they share each read.
     const statusReads = shareStatusReads(baseClient);
     // Capture the funding-request id on create so the pay sheet can poll this payment's status.
     const meldClient: MeldClientLike = {
+      getAssets: () => baseClient.getAssets(),
       getQuote: (r) => baseClient.getQuote(r),
       createSession: async (r) => {
         const s = await baseClient.createSession(r);

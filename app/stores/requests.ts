@@ -108,6 +108,7 @@ import {
 import { sendHandoff, workerSessionId, type Finality } from "~~/lib/coinage";
 import { FUNDING_CHAINS, sourceIdFor, sourcePairFor } from "~~/lib/config";
 import { isHosted } from "~~/lib/host-account";
+import { pageMeldAssets } from "~~/lib/meld-assets";
 
 export interface RequestEntry {
   record: RequestRecord;
@@ -2759,6 +2760,11 @@ export const useRequestsStore = defineStore("requests", () => {
       return;
     }
     storage.value = "ok";
+    // A sale's reading is checked against Meld's code for its asset. Unread, the sale is left for
+    // the next pass rather than judged against no code.
+    await pageMeldAssets().catch((e: unknown) => {
+      console.warn(`[requests] reconcile (${reason}): Meld asset codes unread: ${messageOf(e)}`);
+    });
     let indexed: RequestRef[] | null;
     try {
       indexed = parseRequestIndex(await store.read(REQUEST_INDEX_KEY));

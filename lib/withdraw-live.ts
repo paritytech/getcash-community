@@ -432,7 +432,7 @@ export async function openSwapSaleChannel(args: {
   };
 }
 
-// A direct sale of USDT, for a provider that buys USDT on Asset Hub (USDT_ASSETHUB or USDT_STATEMINT), runs the same
+// A direct sale of USDT, for a provider that buys USDT on Asset Hub, runs the same
 // redeem with no swap after it: the key pays the provider the figure exactly, as a sale of PAS
 // does, pays the transfer's fee in USDT and keeps USDT's minimum balance. The redeem's rate is
 // fixed, so the figure needs no room for a price; what it leaves above the payment is the residue,

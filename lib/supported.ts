@@ -8,8 +8,19 @@
 // region produces an unquotable request. Every cache is therefore keyed by destination, and by
 // direction: a sale reads Meld's off-ramp catalog, whose regions and payout methods are its own.
 
-/** The catalog's default destination: what the pool tier's rail asks Meld to deliver. */
-export const DEFAULT_MELD_DESTINATION = "DOT_ASSETHUB";
+import { isMeldAssetId, meldCodeOf, type MeldAssetId } from "@getsome/core";
+import { pageMeldAssets } from "./meld-assets";
+
+/** The catalog's default destination: what the pool tier's rail asks Meld to deliver. By the app's
+ *  name for the asset; Meld's code for it is read from the adapter when a catalog is fetched. */
+export const DEFAULT_MELD_DESTINATION: MeldAssetId = "dot@assethub";
+
+/** Meld's code for `asset`, once the page has the adapter's table. Throws when it cannot be read,
+ *  which every caller below turns into its `null`. */
+async function destinationCode(asset: MeldAssetId): Promise<string> {
+  await pageMeldAssets();
+  return meldCodeOf(asset);
+}
 
 export type SupportedMethodCategory = "card" | "bank" | "wallet" | "other";
 
@@ -28,9 +39,11 @@ export interface SupportedMethod {
   lanes?: OfframpLaneRef[];
 }
 
-/** An off-ramp lane as the adapter names it: the Meld code sold, its chain and its limits. A chain
- *  other than `assethub` means the sale swaps through Chainflip first. */
+/** An off-ramp lane as the adapter names it: the asset sold and Meld's code for it, its chain and
+ *  its limits. A chain other than `assethub` means the sale swaps through Chainflip first. */
 export interface OfframpLaneRef {
+  /** The app's name for the asset, from an adapter that sends one. */
+  asset?: MeldAssetId;
   code: string;
   chain: string;
   min?: string;
@@ -87,17 +100,16 @@ function headers(): Record<string, string> {
  *  are separate catalogs on Meld's side, with their own regions, methods and limits. */
 export type SupportedDirection = "buy" | "sell";
 
-// All three keyed by direction and destination currency code; a second destination is a second
-// catalog.
+// All three keyed by direction and destination asset; a second destination is a second catalog.
 const countriesCache = new Map<string, SupportedCountry[]>();
 const corridorCache = new Map<string, SupportedCorridor>();
 const corridorsCache = new Map<string, Map<string, SupportedCorridor>>();
 
 /** Cache key for a catalog: a buy keeps the bare destination it always had. */
-const catalogKey = (destination: string, direction: SupportedDirection) =>
+const catalogKey = (destination: MeldAssetId, direction: SupportedDirection) =>
   direction === "buy" ? destination : `sell:${destination}`;
 /** Cache key for the per-country corridor, which varies by both. */
-const corridorKey = (destination: string, country: string, direction: SupportedDirection) =>
+const corridorKey = (destination: MeldAssetId, country: string, direction: SupportedDirection) =>
   `${catalogKey(destination, direction)}:${country}`;
 /** The query tail a direction adds; a buy adds none, as the adapter's default. */
 const directionQuery = (direction: SupportedDirection) =>
@@ -124,11 +136,12 @@ function lanesOf(raw: unknown): { lanes?: OfframpLaneRef[] } {
   const lanes: OfframpLaneRef[] = [];
   for (const entry of raw) {
     if (typeof entry !== "object" || entry === null) continue;
-    const { code, chain, min, max } = entry as Record<string, unknown>;
+    const { asset, code, chain, min, max } = entry as Record<string, unknown>;
     if (typeof code !== "string" || code === "" || typeof chain !== "string" || chain === "") {
       continue;
     }
     lanes.push({
+      ...(isMeldAssetId(asset) ? { asset } : {}),
       code,
       chain,
       ...(typeof min === "string" ? { min } : {}),
@@ -143,7 +156,7 @@ function lanesOf(raw: unknown): { lanes?: OfframpLaneRef[] } {
  * discovery is unreachable or unconfigured.
  */
 export async function fetchSupportedCountries(
-  destination: string,
+  destination: MeldAssetId,
   direction: SupportedDirection = "buy",
 ): Promise<SupportedCountry[] | null> {
   const cached = countriesCache.get(catalogKey(destination, direction));
@@ -152,7 +165,7 @@ export async function fetchSupportedCountries(
   if (base === undefined) return null;
   try {
     const res = await fetch(
-      `${base.replace(/\/$/, "")}/supported/countries?destinationCurrencyCode=${encodeURIComponent(destination)}${directionQuery(direction)}`,
+      `${base.replace(/\/$/, "")}/supported/countries?destinationCurrencyCode=${encodeURIComponent(await destinationCode(destination))}${directionQuery(direction)}`,
       { headers: headers() },
     );
     if (!res.ok) return null;
@@ -174,7 +187,7 @@ export async function fetchSupportedCountries(
  * discovery is unreachable; an empty `methods` array means nothing routes here.
  */
 export async function fetchCorridor(
-  destination: string,
+  destination: MeldAssetId,
   country: string,
   direction: SupportedDirection = "buy",
 ): Promise<SupportedCorridor | null> {
@@ -184,7 +197,7 @@ export async function fetchCorridor(
   if (base === undefined) return null;
   try {
     const res = await fetch(
-      `${base.replace(/\/$/, "")}/supported?country=${encodeURIComponent(country)}&destinationCurrencyCode=${encodeURIComponent(destination)}${directionQuery(direction)}`,
+      `${base.replace(/\/$/, "")}/supported?country=${encodeURIComponent(country)}&destinationCurrencyCode=${encodeURIComponent(await destinationCode(destination))}${directionQuery(direction)}`,
       { headers: headers() },
     );
     if (!res.ok) return null;
@@ -209,7 +222,7 @@ export async function fetchCorridor(
 
 // Every supported corridor as a country -> corridor map, DB-backed and tab-cached; null when unreachable.
 export async function fetchSupportedCorridors(
-  destination: string,
+  destination: MeldAssetId,
   direction: SupportedDirection = "buy",
 ): Promise<Map<string, SupportedCorridor> | null> {
   const cached = corridorsCache.get(catalogKey(destination, direction));
@@ -218,7 +231,7 @@ export async function fetchSupportedCorridors(
   if (base === undefined) return null;
   try {
     const res = await fetch(
-      `${base.replace(/\/$/, "")}/supported/corridors?destinationCurrencyCode=${encodeURIComponent(destination)}${directionQuery(direction)}`,
+      `${base.replace(/\/$/, "")}/supported/corridors?destinationCurrencyCode=${encodeURIComponent(await destinationCode(destination))}${directionQuery(direction)}`,
       { headers: headers() },
     );
     if (!res.ok) return null;

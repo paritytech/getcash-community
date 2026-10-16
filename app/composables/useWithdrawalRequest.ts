@@ -8,9 +8,10 @@
 import { computed } from "vue";
 import type { ConversionRoute } from "@getsome/funding";
 import {
-  DIRECT_SELL_CODES,
   directSellToken,
+  ensureMeldAssets,
   formatSellAmount,
+  isDirectSellCode,
   isDirectUsdt,
   SELL_TOKEN,
   type MeldQuoteEntry,
@@ -83,9 +84,8 @@ export interface MeldSaleStart {
   cryptoAmount: bigint;
   /** A sale through an offramp lane: the lane, and the USDT redeem the withdrawal runs. */
   swap?: { lane: LaneId; route: ConversionRoute };
-  /** A direct sale quoted under a code other than DOT_ASSETHUB: DOT_STATEMINT, Meld's older code
-   *  for DOT on Asset Hub, or USDT_ASSETHUB or USDT_STATEMINT for USDT there. The session names
-   *  the same code. */
+  /** A direct sale quoted under a code other than Meld's code for DOT: its code for USDT on Asset
+   *  Hub. The session names the same code. */
   sellCode?: string;
   /** A direct sale of USDT: the PSM redeem the withdrawal runs for the USDT the key pays. */
   route?: ConversionRoute;
@@ -212,7 +212,12 @@ export function useWithdrawalRequest() {
     if (client === null || meld === null) {
       return { ok: false, reason: "Card and bank withdrawals are not available right now." };
     }
-    if (input.sellCode !== undefined && !DIRECT_SELL_CODES.includes(input.sellCode)) {
+    try {
+      await ensureMeldAssets(client);
+    } catch (e: unknown) {
+      return { ok: false, reason: messageOf(e) };
+    }
+    if (input.sellCode !== undefined && !isDirectSellCode(input.sellCode)) {
       return { ok: false, reason: `A sale cannot sell ${input.sellCode}.` };
     }
     // A direct sale of USDT runs the PSM redeem for it, and a direct sale of DOT names no route.

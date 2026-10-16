@@ -590,8 +590,9 @@ export interface MeldSale {
   cryptoAmount: string;
   /** A sale through an offramp lane: the asset the provider buys, delivered by Chainflip. */
   lane?: LaneId;
-  /** A direct sale under a code other than DOT_ASSETHUB: DOT_STATEMINT, or USDT_ASSETHUB or USDT_STATEMINT for USDT
-   *  the PSM redeemed, which the key pays and `cryptoAmount` is in. */
+  /** A direct sale under a code other than Meld's code for DOT: its code for the USDT the PSM
+   *  redeemed, which the key pays and `cryptoAmount` is in. The code as the adapter named the asset
+   *  when the sale opened. */
   sellCode?: string;
   /** The fiat the quote said reaches the seller, decimal text in `fiat`. An estimate: the
    *  provider prices the payout again. */

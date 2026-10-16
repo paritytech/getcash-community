@@ -15,7 +15,7 @@
 
 import type { FailureKind } from "@getsome/core";
 import {
-  DIRECT_SELL_CODES,
+  isDirectSellCode,
   directSellToken,
   parseBaseUnits,
   sameSoldAsset,
@@ -444,8 +444,8 @@ function applySale(record: WithdrawalRecord, observation: SaleObservation): With
  *  unless it names another. The code was checked when the sale opened; this never throws. */
 function sellTokenOf(sale: MeldSale): SellToken {
   if (sale.lane !== undefined) return laneSellToken(laneById(sale.lane));
-  const code = sale.sellCode ?? SELL_TOKEN.meldCurrencyCode;
-  return DIRECT_SELL_CODES.includes(code) ? directSellToken(code) : SELL_TOKEN;
+  const code = sale.sellCode;
+  return code !== undefined && isDirectSellCode(code) ? directSellToken(code) : SELL_TOKEN;
 }
 
 /** Whether `deposit` is the channel's address, for the sale's asset and its exact amount. */

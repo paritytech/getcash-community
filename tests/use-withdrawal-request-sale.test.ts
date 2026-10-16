@@ -166,7 +166,7 @@ describe("a fiat sale from the page", () => {
     return requests.get(ref) as WithdrawalRecord;
   }
 
-  it("opens a direct sale quoted under DOT_STATEMINT under that code", async () => {
+  it("opens a direct sale of DOT under the code the adapter's table names it by", async () => {
     const spy = vi.spyOn(meld, "createSellSession");
     const outcome = await useWithdrawalRequest().startSale({
       method: "bank",
@@ -176,13 +176,13 @@ describe("a fiat sale from the page", () => {
       paymentMethodType: "UK_FASTER_PAYMENTS",
       quote: { ...QUOTE, serviceProvider: "ONRAMPMONEY" },
       cryptoAmount: COMMITTED,
-      sellCode: "DOT_STATEMINT",
+      sellCode: "DOT",
     });
     expect(outcome.ok).toBe(true);
     expect(spy).toHaveBeenCalledWith(
       expect.objectContaining({
         serviceProvider: "ONRAMPMONEY",
-        sourceCurrencyCode: "DOT_STATEMINT",
+        sourceCurrencyCode: "DOT",
         sourceAmount: "23.4521",
         destinationCurrencyCode: "GBP",
       }),
@@ -199,9 +199,9 @@ describe("a fiat sale from the page", () => {
       paymentMethodType: "UK_FASTER_PAYMENTS",
       quote: QUOTE,
       cryptoAmount: COMMITTED,
-      sellCode: "USDC_STATEMINT",
+      sellCode: "USDC_DOT",
     });
-    expect(outcome).toEqual({ ok: false, reason: "A sale cannot sell USDC_STATEMINT." });
+    expect(outcome).toEqual({ ok: false, reason: "A sale cannot sell USDC_DOT." });
     expect(spy).not.toHaveBeenCalled();
     expect(advanced).not.toHaveBeenCalled();
   });
@@ -220,12 +220,12 @@ describe("a fiat sale from the page", () => {
       paymentMethodType: "UK_FASTER_PAYMENTS",
       quote: { ...QUOTE, serviceProvider: "ONRAMPMONEY" },
       cryptoAmount: USDT_COMMITTED,
-      sellCode: "USDT_STATEMINT",
+      sellCode: "USDT_DOT",
       route: REDEEM,
       ...over,
     });
 
-  it.each(["USDT_ASSETHUB", "USDT_STATEMINT"])(
+  it.each(["USDT_DOT"])(
     "opens a direct sale of USDT under %s, the CASH redeemed for it",
     async (sellCode) => {
       const spy = vi.spyOn(meld, "createSellSession");
@@ -250,7 +250,7 @@ describe("a fiat sale from the page", () => {
     },
   );
 
-  it.each(["USDT_ASSETHUB", "USDT_STATEMINT"])(
+  it.each(["USDT_DOT"])(
     "takes a %s deposit for its exact figure and checks the redeem before the purse",
     async (sellCode) => {
       const outcome = await startUsdtSale({ sellCode });
@@ -290,7 +290,7 @@ describe("a fiat sale from the page", () => {
     const mismatch = { ok: false, reason: "The sale's asset and its conversion do not match." };
     expect(await startUsdtSale({ route: undefined })).toEqual(mismatch);
     expect(await startUsdtSale({ route: { tier: "pool" } })).toEqual(mismatch);
-    expect(await startUsdtSale({ sellCode: "DOT_STATEMINT" })).toEqual(mismatch);
+    expect(await startUsdtSale({ sellCode: "DOT" })).toEqual(mismatch);
     expect(await startUsdtSale({ sellCode: undefined })).toEqual(mismatch);
     expect(spy).not.toHaveBeenCalled();
   });
@@ -303,7 +303,7 @@ describe("a fiat sale from the page", () => {
       expect.objectContaining({
         serviceProvider: "TRANSAK",
         orderRef: KEY_ADDRESS,
-        sourceCurrencyCode: "DOT_ASSETHUB",
+        sourceCurrencyCode: "DOT",
         sourceAmount: "23.4521",
         destinationCurrencyCode: "EUR",
         paymentMethodType: "SEPA",

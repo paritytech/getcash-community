@@ -8,6 +8,7 @@ import { NETWORK } from "@getsome/core";
 import { STABLE_TOKENS, stableTxOptions } from "@getsome/funding";
 import {
   createMeldClient,
+  ensureMeldAssets,
   MELD_SELL_ENABLED,
   saleRail,
   SELL_TOKEN,
@@ -79,10 +80,30 @@ export function railFor(provider, record) {
         ? { productId: meld.productId }
         : {}),
     });
-    if (record?.swap) return swapSaleRail(saleRail(client, record, Date.now, LANE_TOKENS), record);
-    return saleRail(client, record, Date.now, holdsUsdt(record) ? USDT_SELL_TOKEN : SELL_TOKEN);
+    const rail = record?.swap
+      ? swapSaleRail(saleRail(client, record, Date.now, LANE_TOKENS), record)
+      : saleRail(client, record, Date.now, holdsUsdt(record) ? USDT_SELL_TOKEN : SELL_TOKEN);
+    return withMeldAssets(rail, client);
   }
   return null;
+}
+
+/**
+ * A sale's reads, each first reading the adapter's asset table (once per worker): the deposit
+ * Meld discloses is matched against Meld's code for the asset, which the adapter names and Meld
+ * renames. A failed read throws like any other, and the next tick asks again.
+ */
+function withMeldAssets(rail, client) {
+  return {
+    channel: async (id) => {
+      await ensureMeldAssets(client);
+      return rail.channel(id);
+    },
+    status: async (id) => {
+      await ensureMeldAssets(client);
+      return rail.status(id);
+    },
+  };
 }
 
 /** What a sale's key pays in, fee included: USDT for a key that holds it, PAS (undefined) otherwise. */

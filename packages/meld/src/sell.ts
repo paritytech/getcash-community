@@ -2,7 +2,14 @@
 // provider's channel before the key pays and as its status after. The worker asks both through
 // the same `GET /funding/:id` the page polls during KYC.
 
-import { NETWORK, TOKENS, type SwapStatusResult } from "@getsome/core";
+import {
+  meldAssetOf,
+  meldCodeOf,
+  NETWORK,
+  TOKENS,
+  type MeldAssetId,
+  type SwapStatusResult,
+} from "@getsome/core";
 import type { MeldClientLike, MeldQuoteEntry, MeldStatusResult } from "./client";
 import { formatBaseUnits, parseBaseUnits } from "./units";
 
@@ -13,72 +20,63 @@ import { formatBaseUnits, parseBaseUnits } from "./units";
  *  it, so neither trusts the other to hold the line. */
 export const MELD_SELL_ENABLED = NETWORK.testnet;
 
-/** What a sale sells by default: the native on Asset Hub, which Meld names DOT_ASSETHUB. */
+/** What a sale sells by default: the native on Asset Hub. */
 export const SELL_TOKEN = TOKENS.PAS as SellToken;
 
 /** An asset a sale can sell: how Meld names it and its base-unit decimals. A sale through an
- *  offramp lane sells the lane's asset on another chain. */
+ *  offramp lane sells the lane's asset on another chain. `meldCurrencyCode` is read from the
+ *  adapter's asset table when used, so a Meld rename reaches every sale without a release. */
 export interface SellToken {
   symbol: string;
   decimals: number;
-  meldCurrencyCode: string;
+  readonly meldCurrencyCode: string;
 }
 
-/** Meld's two codes for the DOT a direct sale sells on Polkadot Asset Hub: DOT_ASSETHUB, and the
- *  older DOT_STATEMINT (Statemint was Asset Hub's name), which some providers still buy under. */
-export const ASSET_HUB_DOT_CODES: readonly string[] = [
-  SELL_TOKEN.meldCurrencyCode,
-  "DOT_STATEMINT",
-];
-
 /** USDT on Asset Hub as a direct sale sells it: the PSM redeems the CASH for it, and the key pays
- *  the provider in it. Meld names it USDT_ASSETHUB, or USDT_STATEMINT for the providers that buy it
- *  only under Asset Hub's older name. */
+ *  the provider in it. */
 export const USDT_SELL_TOKEN: SellToken = {
   symbol: TOKENS.USDT.symbol,
   decimals: TOKENS.USDT.decimals,
-  meldCurrencyCode: "USDT_ASSETHUB",
+  get meldCurrencyCode(): string {
+    return meldCodeOf("usdt@assethub");
+  },
 };
 
-/** Meld's two codes for the USDT a direct sale sells on Polkadot Asset Hub. */
-export const ASSET_HUB_USDT_CODES: readonly string[] = [
-  USDT_SELL_TOKEN.meldCurrencyCode,
-  "USDT_STATEMINT",
-];
-
-/** Whether a direct sale under `code` sells USDT, under either of Meld's codes for it. */
-export const isDirectUsdt = (code: string | undefined): boolean =>
-  code !== undefined && ASSET_HUB_USDT_CODES.includes(code);
-
-/** What a direct sale sells, on Asset Hub with no swap, by the Meld code a provider buys it under. */
-const DIRECT_SELL_TOKENS: ReadonlyMap<string, SellToken> = new Map([
-  ...ASSET_HUB_USDT_CODES.map((code): [string, SellToken] => [
-    code,
-    { ...USDT_SELL_TOKEN, meldCurrencyCode: code },
-  ]),
-  ...ASSET_HUB_DOT_CODES.map((code): [string, SellToken] => [
-    code,
-    { ...SELL_TOKEN, meldCurrencyCode: code },
-  ]),
+/** What a direct sale sells, on Asset Hub with no swap, by the app's name for the asset. */
+const DIRECT_SELL_TOKENS: ReadonlyMap<MeldAssetId, SellToken> = new Map<MeldAssetId, SellToken>([
+  ["usdt@assethub", USDT_SELL_TOKEN],
+  ["dot@assethub", SELL_TOKEN],
 ]);
 
-/** The Meld codes a direct sale can sell. */
-export const DIRECT_SELL_CODES: readonly string[] = [...DIRECT_SELL_TOKENS.keys()];
+/** Whether a direct sale under `code` sells USDT. */
+export const isDirectUsdt = (code: string | undefined): boolean =>
+  meldAssetOf(code) === "usdt@assethub";
 
-/** The direct sale's asset under one of DIRECT_SELL_CODES, as the provider quoting it names it. */
+/** Whether `code` is one a direct sale can sell: Meld's current code for USDT or DOT on Asset Hub. */
+export const isDirectSellCode = (code: string | undefined): boolean => {
+  const asset = meldAssetOf(code);
+  return asset !== undefined && DIRECT_SELL_TOKENS.has(asset);
+};
+
+/** The Meld codes a direct sale can sell, as the adapter names them now. */
+export const directSellCodes = (): string[] =>
+  [...DIRECT_SELL_TOKENS.values()].map((token) => token.meldCurrencyCode);
+
+/** The direct sale's asset under `code`, one `isDirectSellCode` accepts. */
 export function directSellToken(code: string): SellToken {
-  const token = DIRECT_SELL_TOKENS.get(code);
+  const asset = meldAssetOf(code);
+  const token = asset === undefined ? undefined : DIRECT_SELL_TOKENS.get(asset);
   if (token === undefined) throw new Error(`A sale cannot sell ${code} directly.`);
   return token;
 }
 
-/** Whether a deposit's asset code names what the sale sells: the same code, or either of Meld's
- *  two names for DOT, or for USDT, on Asset Hub. */
-export const sameSoldAsset = (depositCode: string, soldCode: string): boolean =>
-  depositCode === soldCode ||
-  [ASSET_HUB_DOT_CODES, ASSET_HUB_USDT_CODES].some(
-    (codes) => codes.includes(depositCode) && codes.includes(soldCode),
-  );
+/** Whether a deposit's asset code names what the sale sells: the same code, or another code the
+ *  adapter's table gives the same asset. */
+export const sameSoldAsset = (depositCode: string, soldCode: string): boolean => {
+  if (depositCode === soldCode) return true;
+  const asset = meldAssetOf(depositCode);
+  return asset !== undefined && asset === meldAssetOf(soldCode);
+};
 
 /** The fraction digits a committed amount carries. Few enough that no provider rounds it, and the
  *  planck below them stay with the rest of the sale. */

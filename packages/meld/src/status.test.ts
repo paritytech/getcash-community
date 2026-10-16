@@ -7,6 +7,7 @@ function clientReturning(
   extra?: { providerStatus?: string; sourceAmount?: string; fiat?: string },
 ): MeldClientLike {
   return {
+    getAssets: async () => [],
     getQuote: async () => ({ quotes: [] }),
     createSession: async () => ({
       fundingRequestId: "funding-1",
