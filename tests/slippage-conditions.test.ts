@@ -4,8 +4,8 @@
 // through it pays about 1.5% over spot.
 //
 // Each pool is a snapshot of its reserves at one block, with the chain's own quotes at that block:
-// Paseo Asset Hub next v2's PAS/CASH pool, the one the app trades on, and Polkadot Asset Hub's
-// DOT/dotUSD pool, some 28 times deeper, to see the figures hold with more liquidity behind them.
+// Paseo Asset Hub next v2's PAS/CASH pool, the one the app trades on, and a pool some 28 times
+// deeper, to see the figures hold with more liquidity behind them.
 // The pool model here is pallet-asset-conversion's own constant-product math and must give the
 // chain's answers to the planck before anything is judged on it. The app's own code then runs
 // against it: priceSale for a withdrawal's sale, sizeNativeBudget and the conversion gate for a
@@ -50,8 +50,8 @@ interface Snapshot {
   buys: [bigint, bigint][];
 }
 
-/** Polkadot Asset Hub, block 21,894,052 (16 Oct): DOT/dotUSD, asset 7873. */
-const POLKADOT: Snapshot = {
+/** A deep pool: 2.5M native against 2.87M of the stable, 0.3% fee. */
+const DEEP: Snapshot = {
   native: 24_959_851_829_157_957n,
   other: 2_866_264_095_489n,
   fee: 3_000n,
@@ -69,7 +69,7 @@ const POLKADOT: Snapshot = {
   ],
 };
 
-/** Paseo Asset Hub next, block 1,876,814 (16 Oct): PAS/CASH, asset 50000413. */
+/** Paseo Asset Hub next, block 1,876,814: PAS/CASH, asset 50000413. */
 const PASEO: Snapshot = {
   native: 429_197_930_148_321n,
   other: 102_087_165_793n,
@@ -91,7 +91,7 @@ const PASEO: Snapshot = {
 const NATIVE = { parents: 1, interior: { type: "Here" } };
 const isNative = (location: unknown) =>
   (location as { interior?: { type?: string } }).interior?.type === "Here";
-const UNDERLYING_ID = 7873;
+const UNDERLYING_ID = 50_000_413;
 const UNDERLYING = {
   parents: 0,
   interior: {
@@ -221,7 +221,7 @@ async function depositAsked(pool: Pool, settle: bigint): Promise<bigint> {
 
 describe("the pool snapshots", () => {
   it("are modelled to the planck: the model gives the chain's own quotes", () => {
-    for (const snapshot of [POLKADOT, PASEO]) {
+    for (const snapshot of [DEEP, PASEO]) {
       const pool = new Pool(snapshot);
       for (const [cash, native] of snapshot.sells) expect(pool.sell(cash)).toBe(native);
       for (const [cash, native] of snapshot.buys) expect(pool.costOf(cash)).toBe(native);
@@ -242,10 +242,10 @@ describe("the slippage figures", () => {
   });
 });
 
-describe("a top-up through the deeper DOT/dotUSD pool", () => {
+describe("a top-up through the deep pool", () => {
   it("pays about 1.5% over spot: the 1% headroom, the 0.3% pool fee and its own impact", async () => {
     for (const dollars of [10, 100, 1_000, 5_000]) {
-      const pool = new Pool(POLKADOT);
+      const pool = new Pool(DEEP);
       const asked = await depositAsked(pool, USD(dollars));
       const atSpot = (USD(dollars) * pool.spot()) / 1_000_000_000_000n;
       const over = pct(asked - atSpot, atSpot);
@@ -256,10 +256,10 @@ describe("a top-up through the deeper DOT/dotUSD pool", () => {
 
   it("converts while others' buying moved the pool less than the headroom, and waits beyond it", async () => {
     const settle = USD(100);
-    const asked = await depositAsked(new Pool(POLKADOT), settle);
+    const asked = await depositAsked(new Pool(DEEP), settle);
     // The gate asks the plain quote at conversion time, from the pool as others left it.
     const step = async (othersBought: bigint) => {
-      const pool = new Pool(POLKADOT).othersBuy(othersBought);
+      const pool = new Pool(DEEP).othersBuy(othersBought);
       const needed = await quoteNativeIn(
         pool.api() as never,
         { native: NATIVE, underlying: UNDERLYING } as never,
@@ -271,7 +271,7 @@ describe("a top-up through the deeper DOT/dotUSD pool", () => {
       );
     };
     const blocked = threshold(
-      (flow) => new Pool(POLKADOT).othersBuy(flow).costOf(settle) > asked,
+      (flow) => new Pool(DEEP).othersBuy(flow).costOf(settle) > asked,
       USD(1_000_000),
     );
     // About $14k of other buying in the window before the deposit converts.
@@ -282,10 +282,10 @@ describe("a top-up through the deeper DOT/dotUSD pool", () => {
   });
 });
 
-describe("a withdrawal's sale on the deeper DOT/dotUSD pool", () => {
+describe("a withdrawal's sale on the deep pool", () => {
   it("lands over its 1% floor at every size: the quote already counts the sale's own impact", async () => {
     for (const dollars of [10, 100, 1_000, 10_000]) {
-      const pool = new Pool(POLKADOT);
+      const pool = new Pool(DEEP);
       const floor = await saleFloor(pool, USD(dollars), DEFAULT_WITHDRAW_SLIPPAGE_PCT);
       const fill = pool.sell(USD(dollars));
       expect(fill).toBeGreaterThanOrEqual(floor);
@@ -297,11 +297,11 @@ describe("a withdrawal's sale on the deeper DOT/dotUSD pool", () => {
     for (const dollars of [100, 1_000]) {
       const sale = USD(dollars);
       const floors = {
-        one: await saleFloor(new Pool(POLKADOT), sale, DEFAULT_WITHDRAW_SLIPPAGE_PCT),
-        half: await saleFloor(new Pool(POLKADOT), sale, 0.5),
+        one: await saleFloor(new Pool(DEEP), sale, DEFAULT_WITHDRAW_SLIPPAGE_PCT),
+        half: await saleFloor(new Pool(DEEP), sale, 0.5),
       };
       const traps = (floor: bigint) => (flow: bigint) =>
-        new Pool(POLKADOT).othersSell(flow).sell(sale) < floor;
+        new Pool(DEEP).othersSell(flow).sell(sale) < floor;
       const atOne = threshold(traps(floors.one), USD(1_000_000));
       const atHalf = threshold(traps(floors.half), USD(1_000_000));
       expect(atOne).toBeGreaterThan(USD(13_000));
@@ -312,20 +312,20 @@ describe("a withdrawal's sale on the deeper DOT/dotUSD pool", () => {
   });
 
   it("rides out the largest 30 s move seen on the pool in a week, which half a point would not", async () => {
-    // 0.565%: the pool's own price, sampled every block or so from 8 to 15 Oct.
+    // 0.565%: the pool's own price, sampled every block or so over a week.
     const sale = USD(100);
     const flowFor = (movePct: number) =>
       threshold(
         (flow) =>
-          new Pool(POLKADOT).othersSell(flow).sell(sale) * 1_000_000n <
-          new Pool(POLKADOT).sell(sale) * BigInt(Math.round((100 - movePct) * 10_000)),
+          new Pool(DEEP).othersSell(flow).sell(sale) * 1_000_000n <
+          new Pool(DEEP).sell(sale) * BigInt(Math.round((100 - movePct) * 10_000)),
         USD(1_000_000),
       );
-    const move = new Pool(POLKADOT).othersSell(flowFor(0.565));
+    const move = new Pool(DEEP).othersSell(flowFor(0.565));
     expect(move.sell(sale)).toBeGreaterThanOrEqual(
-      await saleFloor(new Pool(POLKADOT), sale, DEFAULT_WITHDRAW_SLIPPAGE_PCT),
+      await saleFloor(new Pool(DEEP), sale, DEFAULT_WITHDRAW_SLIPPAGE_PCT),
     );
-    expect(move.sell(sale)).toBeLessThan(await saleFloor(new Pool(POLKADOT), sale, 0.5));
+    expect(move.sell(sale)).toBeLessThan(await saleFloor(new Pool(DEEP), sale, 0.5));
   });
 });
 
@@ -355,7 +355,7 @@ describe("on Paseo Asset Hub next v2's pool, the one the app trades on", () => {
 });
 
 /**
- * Chainflip as its live quotes price a stable into Asset Hub USDT (Ethereum USDC, 15 Oct): the
+ * Chainflip as its live quotes price a stable into Asset Hub USDT (Ethereum USDC): the
  * deposit less the ingress fee, less the network fee (0.1%, 0.5 USDC at least), less the broker's
  * 5 bps, swapped at 0.9999, less the egress fee; 0.5% recommended, 20 USDC the minimum.
  */
