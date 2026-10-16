@@ -60,6 +60,7 @@ import {
   assetHubSourceFor,
   BelowMinimumSwapAmountError,
   ChainflipRequestError,
+  encodeSaleMessage,
   formatSourceAmount,
   openWithdrawChannel,
   quoteOutgoing,
@@ -428,6 +429,11 @@ export async function meldCommitmentFundable(
 // the provider. The sale commits to Chainflip's fill-or-kill floor on the least USDT the key can
 // hold, so the provider is never underpaid; what Chainflip delivers above it the provider keeps.
 
+// Destination gas the CCM egress runs SaleVault.cfReceive with, well over its worst-case path.
+const SALE_VAULT_CCM_GAS_BUDGET = "300000";
+// The SaleVault message is four 32-byte words; its length priced into the CCM quote.
+const SALE_VAULT_CCM_MESSAGE_BYTES = 128;
+
 /** What a sale through `lane` sells and commits to. */
 export interface SwapSaleSize {
   /** The PSM redeem the withdrawal runs, landing USDT on the key. */
@@ -464,11 +470,19 @@ export async function sizeSwapSale(
   const usdtToken = depositTokenOf(route);
   const usdtIn = now.expected - (await paymentCost(now.api, now.expected, usdtToken));
   if (usdtIn <= 0n) throw new Error("The amount does not cover the network fees.");
+  // Arbitrum delivers into the SaleVault through a CCM call, and Chainflip takes that gas out of the
+  // egress. Size the sale on a quote that already includes it, so `commit` is what actually lands and
+  // the delivery does not fall below `committed` and strand every Arbitrum sale as Held.
+  const saleCcm =
+    lane.chainflip.chain === "Arbitrum"
+      ? { gasBudget: SALE_VAULT_CCM_GAS_BUDGET, messageLengthBytes: SALE_VAULT_CCM_MESSAGE_BYTES }
+      : undefined;
   const quote = await quoteOutgoing(
     await saleSwapSdk(),
     usdtIn,
     lane.chainflip,
     assetHubSourceFor(usdtToken),
+    saleCcm,
   );
   const token = laneSellToken(lane);
   // The lane's own buffer: its delivery fee can rise before the swap lands, by chain.
@@ -492,20 +506,41 @@ export async function openSwapSaleChannel(args: {
   committed: bigint;
   providerAddress: string;
   keyPublicKeyHex: string;
+  fundingRequestId: string;
+  vault?: { chainId: number; contract: string };
   reserved: bigint;
 }): Promise<WithdrawalChannel | null> {
   const size = await sizeSwapSale(args.amount, args.lane, args.reserved);
   if (size.commit < args.committed) return null;
+  // The SaleVault is on Arbitrum, so a lane is vault-routed only when it delivers there and the
+  // recipient is an EVM address. Any other lane stays a direct provider pay, never the Arbitrum vault.
+  const useVault =
+    args.vault !== undefined &&
+    args.lane.chainflip.chain === "Arbitrum" &&
+    /^0x[0-9a-fA-F]{40}$/.test(args.providerAddress);
+  const destAddress = useVault ? args.vault!.contract : args.providerAddress;
+  const ccm = useVault
+    ? {
+        gasBudget: SALE_VAULT_CCM_GAS_BUDGET,
+        message: encodeSaleMessage({
+          fundingRequestId: args.fundingRequestId,
+          recipient: args.providerAddress,
+          committed: args.committed,
+          home: args.keyPublicKeyHex,
+        }),
+      }
+    : undefined;
   const channel = await openWithdrawChannel({
     sdk: await saleSwapSdk(),
     source: assetHubSourceFor(depositTokenOf(size.route)),
     amount: size.usdtIn,
-    destination: { ...args.lane.chainflip, address: args.providerAddress },
+    destination: { ...args.lane.chainflip, address: destAddress },
     refundAddress: AccountId(0).dec(args.keyPublicKeyHex as `0x${string}`),
     fillOrKill: {
       slippageTolerancePercent: (args.lane.slippageBps / 100).toString(),
       retryDurationMinutes: 30,
     },
+    ...(ccm ? { ccm } : {}),
   });
   return {
     id: channel.id,
@@ -514,6 +549,8 @@ export async function openSwapSaleChannel(args: {
     expiresAt: channel.expiresAt,
     expectedEgress: channel.expectedEgress.toString(),
     amount: size.landing.toString(),
+    // The egress pays this vault, so the worker verifies the trusted contract, not the provider.
+    ...(useVault ? { vaultAddress: args.vault!.contract } : {}),
   };
 }
 

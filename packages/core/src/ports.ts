@@ -92,6 +92,8 @@ export interface OpenChannelArgs {
    *  caller that commits to the swap's floor elsewhere (an offramp sale) must set them, so the
    *  floor Chainflip enforces is the one it committed to. */
   fillOrKill?: { slippageTolerancePercent: string; retryDurationMinutes: number };
+  // CCM terms when the swap must call a destination contract, as an offramp sale through SaleVault does.
+  ccm?: { gasBudget: string; message: string; ccmAdditionalData?: string };
 }
 
 export interface DepositChannel {

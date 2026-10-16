@@ -31,6 +31,7 @@ export {
 } from "./quote";
 export { getSwapStatus, isImplicitFailure, type StatusBackend } from "./status";
 export { requestDepositAddress, type DepositBackend } from "./deposit";
+export { encodeSaleMessage, saleRef, type SaleMessage } from "./ccm";
 export { createLiquidityGate, type LiquidityGate } from "./gate";
 export {
   learnFloors,

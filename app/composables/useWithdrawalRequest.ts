@@ -87,8 +87,8 @@ export interface MeldSaleStart {
   quote: MeldQuoteEntry;
   /** Exactly what the provider is paid, base units of the sold asset: PAS, USDT, or the lane's. */
   cryptoAmount: bigint;
-  /** A sale through an offramp lane: the lane, and the USDT redeem the withdrawal runs. */
-  swap?: { lane: LaneId; route: ConversionRoute };
+  /** A sale through an offramp lane: the lane, the USDT redeem, and the SaleVault to deliver to. */
+  swap?: { lane: LaneId; route: ConversionRoute; vault?: { chainId: number; contract: string } };
   /** A direct sale quoted under a code other than DOT_ASSETHUB: DOT_STATEMINT, Meld's older code
    *  for DOT on Asset Hub, or USDT_ASSETHUB or USDT_STATEMINT for USDT there. The session names
    *  the same code. */
@@ -367,6 +367,7 @@ export function useWithdrawalRequest() {
         cryptoAmount: input.cryptoAmount.toString(),
         ...(input.swap === undefined ? {} : { lane: input.swap.lane }),
         ...(input.sellCode === undefined ? {} : { sellCode: input.sellCode }),
+        ...(input.swap?.vault ? { vault: input.swap.vault } : {}),
         quotedPayout: quote.destinationAmount,
         ...(Object.keys(fees).length === 0 ? {} : { fees }),
       },
@@ -467,6 +468,8 @@ export function useWithdrawalRequest() {
       committed: BigInt(record.sale.cryptoAmount),
       providerAddress: provider.address,
       keyPublicKeyHex: record.key.publicKeyHex,
+      fundingRequestId: record.sale.fundingRequestId,
+      ...(record.sale.vault ? { vault: record.sale.vault } : {}),
       reserved: reservedFor(recordedRoute(record.handoff), ref),
     });
     if (swap === null) return false;

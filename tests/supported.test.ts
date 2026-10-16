@@ -502,6 +502,42 @@ describe("lib/supported", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("caches the SaleVault named on the bulk off-ramp read", async () => {
+    const vault = {
+      chain: "arbitrum-sepolia",
+      chainId: 421614,
+      contract: "0x81949127042930F8e7A1723385A2F76213C72ee9",
+    };
+    vi.stubGlobal(
+      "fetch",
+      stubFetch({
+        "/supported/offramp/corridors": {
+          corridors: [{ country: "DE", fiat: "EUR", methods: [] }],
+          vault,
+        },
+      }),
+    );
+    const { fetchOfframpCorridors, getOfframpVault } = await import("../lib/supported");
+    expect(getOfframpVault()).toBeNull();
+    await fetchOfframpCorridors();
+    expect(getOfframpVault()).toEqual(vault);
+  });
+
+  it("ignores a malformed vault on the bulk read", async () => {
+    vi.stubGlobal(
+      "fetch",
+      stubFetch({
+        "/supported/offramp/corridors": {
+          corridors: [{ country: "DE", fiat: "EUR", methods: [] }],
+          vault: { chain: "x", contract: "y" },
+        },
+      }),
+    );
+    const { fetchOfframpCorridors, getOfframpVault } = await import("../lib/supported");
+    await fetchOfframpCorridors();
+    expect(getOfframpVault()).toBeNull();
+  });
+
   it("reads one country's off-ramp corridor, dropping malformed lanes", async () => {
     vi.stubGlobal(
       "fetch",
