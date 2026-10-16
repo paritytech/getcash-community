@@ -133,9 +133,9 @@ const toolbar = computed<{ title?: string; back: boolean }>(() => {
     case "return-funds":
       return { back: true };
     case "journey":
-      return { title: props.topUp ? "Status" : "Withdraw to crypto", back: true };
+      return { title: props.topUp ? "Status" : "Send to crypto", back: true };
     default:
-      return { title: "Withdraw to crypto", back: true };
+      return { title: "Send to crypto", back: true };
   }
 });
 

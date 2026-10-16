@@ -145,7 +145,7 @@ export interface FundingListWording {
 }
 
 export const TOP_UP_LIST_WORDING: FundingListWording = {
-  pendingTitle: "Top-up in progress",
+  pendingTitle: "Topping up",
   pendingCta: "New top-up",
   emptyHistory: "Nothing here yet. Your top-ups will appear as you make them.",
 };

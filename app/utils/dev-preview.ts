@@ -1450,7 +1450,7 @@ export const SCENES: Scene[] = [
     // The scene asks for the top-ups screen with nothing running, which is what closing a journey
     // after your last top-up landed used to do. The entry rule now sends it to the amount screen
     // with the clock instead, so this scene is the review comment's fix rather than the bug: a
-    // list titled "Top-up in progress" must never open with no top-up in progress.
+    // list titled "Topping up" must never open with no top-up in progress.
     name: "list / top-up: all settled",
     apply: topUpList({
       finished: [SETTLED_CARD],

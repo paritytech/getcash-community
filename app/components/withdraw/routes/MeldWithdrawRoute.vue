@@ -90,9 +90,9 @@ const toolbar = computed<{ title: string; back: boolean }>(() => {
     case "cancel":
       return { title: "", back: true };
     case "journey":
-      return { title: props.topUp ? "Status" : `Withdraw to ${methodLabel}`, back: true };
+      return { title: props.topUp ? "Status" : `Send to ${methodLabel}`, back: true };
     default:
-      return { title: `Withdraw to ${methodLabel}`, back: true };
+      return { title: `Send to ${methodLabel}`, back: true };
   }
 });
 
