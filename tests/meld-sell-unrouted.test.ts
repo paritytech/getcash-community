@@ -9,7 +9,10 @@ const getSellQuote = vi.fn();
 const sizeSwapSale = vi.fn();
 
 vi.mock("../app/utils/locale", () => ({ localeCountry: () => "DE" }));
-vi.mock("../app/withdraw/meld-client", () => ({ meldSellClient: () => ({ getSellQuote }) }));
+vi.mock("../app/withdraw/meld-client", async () => {
+  const { TEST_MELD_ASSETS } = await import("./setup-meld-assets");
+  return { meldSellClient: () => ({ getSellQuote, getAssets: async () => TEST_MELD_ASSETS }) };
+});
 vi.mock("../lib/withdraw-live", () => ({ sizeSwapSale, sizeMeldCommitment: vi.fn() }));
 vi.mock("../lib/supported", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/supported")>()),
@@ -49,14 +52,14 @@ describe("a region only a swap routes", () => {
     corridors.set("FR", {
       country: "FR",
       fiat: "EUR",
-      methods: [card("DOT_ASSETHUB", "assethub")],
+      methods: [card("DOT", "assethub")],
     });
     getSellQuote.mockReset();
     sizeSwapSale.mockReset();
   });
 
   it("reads as not available there when the build sells no swap", async () => {
-    const sale = await quoteFor("USDT_ASSETHUB,DOT_ASSETHUB");
+    const sale = await quoteFor("usdt@assethub,dot@assethub");
     expect(sale.errorKind.value).toBe("unrouted");
     expect(sale.error.value).toBe("Card payout isn't available in this region");
     expect(sale.corridors.value?.get("DE")?.methods).toEqual([]);
@@ -67,7 +70,7 @@ describe("a region only a swap routes", () => {
 
   it("tries the swap when the build lists it", async () => {
     sizeSwapSale.mockRejectedValue(new Error("no channel"));
-    const sale = await quoteFor("DOT_ASSETHUB,USDC_ARBITRUM");
+    const sale = await quoteFor("dot@assethub,usdc@arbitrum");
     expect(sizeSwapSale).toHaveBeenCalledOnce();
     expect(sale.errorKind.value).toBe("rate");
   });

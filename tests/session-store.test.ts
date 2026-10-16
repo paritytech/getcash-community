@@ -2,6 +2,7 @@
 // plain localhost:3000 visitor exercises.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { installTestMeldAssets } from "./setup-meld-assets";
 import { createPinia, setActivePinia } from "pinia";
 import { AccountId } from "polkadot-api";
 import type { FakeRail } from "@getsome/testing";
@@ -309,6 +310,8 @@ describe("session store: supported corridors loader against a live adapter", () 
 
   it("fills corridorByCountry from the bulk endpoint", async () => {
     vi.resetModules();
+    // The reset leaves a fresh, empty asset table, as on a page that has not read the adapter's.
+    await installTestMeldAssets();
     vi.stubEnv("VITE_MELD_BASE_URL", "https://adapter.test");
     vi.stubGlobal(
       "fetch",

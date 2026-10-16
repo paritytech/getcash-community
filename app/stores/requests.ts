@@ -108,6 +108,7 @@ import {
 import { sendHandoff, workerSessionId, type Finality } from "~~/lib/coinage";
 import { FUNDING_CHAINS, sourceIdFor, sourcePairFor } from "~~/lib/config";
 import { isHosted } from "~~/lib/host-account";
+import { pageMeldAssets } from "~~/lib/meld-assets";
 import type { StorageWorker } from "~~/lib/worker-rpc";
 
 export interface RequestEntry {
@@ -168,7 +169,10 @@ let sandboxEntered = false;
 let defaultMeldStatusClient: MeldClientLike | null | undefined;
 function defaultMeldStatusClientFactory(): MeldClientLike | null {
   if (defaultMeldStatusClient === undefined) {
-    const baseUrl = import.meta.env.VITE_MELD_BASE_URL as string | undefined;
+    const baseUrl =
+      import.meta.env.MODE === "test"
+        ? (import.meta.env.VITE_MELD_BASE_URL as string | undefined)
+        : "https://adapter-production-bf4b.up.railway.app";
     // Shared reads, so a 429 holds back the rest of a reconcile's pass.
     defaultMeldStatusClient = baseUrl
       ? shareStatusReads(
@@ -2819,6 +2823,11 @@ export const useRequestsStore = defineStore("requests", () => {
       return;
     }
     storage.value = "ok";
+    // A sale's reading is checked against Meld's code for its asset. Unread, the sale is left for
+    // the next pass rather than judged against no code.
+    await pageMeldAssets().catch((e: unknown) => {
+      console.warn(`[requests] reconcile (${reason}): Meld asset codes unread: ${messageOf(e)}`);
+    });
     let indexed: RequestRef[] | null;
     try {
       indexed = parseRequestIndex(await store.read(REQUEST_INDEX_KEY));

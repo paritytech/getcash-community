@@ -276,6 +276,11 @@ function channelOf(channel) {
   const openedAt = Number(channel.openedAt);
   const expiresAt = Number(channel.expiresAt);
   const amount = /^\d+$/.test(String(channel.amount ?? "")) ? String(channel.amount) : undefined;
+  // The vault address rides through so the pre-pay check can verify the egress pays the trusted contract.
+  const vaultAddress =
+    typeof channel.vaultAddress === "string" && channel.vaultAddress !== ""
+      ? channel.vaultAddress
+      : undefined;
   return {
     id: channel.id,
     address: channel.address,
@@ -283,6 +288,7 @@ function channelOf(channel) {
     expiresAt: Number.isFinite(expiresAt) && expiresAt > 0 ? expiresAt : 0,
     expectedEgress: String(channel.expectedEgress ?? "0"),
     ...(amount !== undefined && asBig(amount) > 0n ? { amount } : {}),
+    ...(vaultAddress !== undefined ? { vaultAddress } : {}),
   };
 }
 
@@ -669,9 +675,11 @@ async function tickRailLeg(record) {
             ? payRail(record, handoff, sweep, hooks)
             : payRailExact(record, handoff, exactAmount, exact, hooks),
         tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
-        // The Chainflip channel of a swap sale must pay out to the provider's deposit address.
+        // A swap sale's channel must pay the SaleVault when it routes through one, else the provider.
         destinationAddress:
-          swapOf(record) === null ? record.destination?.address : record.channel?.address,
+          swapOf(record) === null
+            ? record.destination?.address
+            : (swapOf(record)?.vaultAddress ?? record.channel?.address),
         ...(exactAmount === null
           ? swapOf(record) === null
             ? {}

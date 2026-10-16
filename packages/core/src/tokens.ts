@@ -3,6 +3,7 @@
 // so the wire code and the arithmetic cannot disagree about which asset is in flight.
 
 import { NETWORK } from "./network";
+import { meldCodeOf, type MeldAssetId } from "./meld-assets";
 
 // XCM v5 asset locations as plain data, no papi Enum. Papi's Enum values are plain `{type, value}`
 // objects, so a precisely typed literal in this shape is accepted wherever the descriptors expect
@@ -35,8 +36,11 @@ export interface TokenSpec {
   assetHubId?: number;
   /** Chainflip egress asset name, when the rail can deliver it. */
   chainflipAsset?: string;
-  /** Meld destinationCurrencyCode, when Meld can deliver it. */
-  meldCurrencyCode?: string;
+  /** The app's own name for the asset on Meld's rail, when Meld can deliver it. */
+  meldAsset?: MeldAssetId;
+  /** Meld destinationCurrencyCode, when Meld can deliver it: whatever the adapter currently names
+   *  `meldAsset` (see `meld-assets.ts`), read at use, never written here. */
+  readonly meldCurrencyCode?: string;
 }
 
 export type TokenTable = Readonly<Record<"PAS" | "CASH" | "DOTUSD" | "USDT" | "USDC", TokenSpec>>;
@@ -84,7 +88,10 @@ export const TOKENS = {
     locationOnPeople: RELAY_NATIVE,
     // Both rails name the native after its Polkadot counterpart.
     chainflipAsset: "DOT",
-    meldCurrencyCode: "DOT_ASSETHUB",
+    meldAsset: "dot@assethub",
+    get meldCurrencyCode(): string {
+      return meldCodeOf("dot@assethub");
+    },
   },
   CASH: {
     symbol: "CASH",
@@ -109,7 +116,10 @@ export const TOKENS = {
     assetHubId: 1984,
     location: assetHubLocal(1984),
     chainflipAsset: "USDT",
-    meldCurrencyCode: "USDT_ASSETHUB",
+    meldAsset: "usdt@assethub",
+    get meldCurrencyCode(): string {
+      return meldCodeOf("usdt@assethub");
+    },
   },
   USDC: {
     symbol: "USDC",

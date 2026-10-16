@@ -1,13 +1,16 @@
 // The sale's side of the Meld boundary: what the client sends the adapter for a sell, what it reads
 // back, the offline script, and the sale as the withdrawal's rail leg sees it.
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { installMeldAssets, MeldAssetsUnavailable } from "@getsome/core";
+import { TEST_MELD_ASSETS } from "../../../tests/setup-meld-assets";
 import { createMeldClient } from "./client";
 import { createFakeMeldClient } from "./fake";
 import type { MeldClientLike, MeldQuoteEntry, MeldStatusResult } from "./client";
 import {
-  DIRECT_SELL_CODES,
+  directSellCodes,
   formatSellAmount,
+  isDirectSellCode,
   isDirectUsdt,
   SALE_GONE_AFTER,
   SALE_GONE_FOR_MS,
@@ -45,7 +48,7 @@ const SELL_REQ = {
   serviceProvider: "TRANSAK",
   orderRef: "5KeyAddress",
   country: "DE",
-  sourceCurrencyCode: "DOT_ASSETHUB",
+  sourceCurrencyCode: "DOT",
   sourceAmount: "23.4521",
   destinationCurrencyCode: "EUR",
   paymentMethodType: "SEPA",
@@ -80,7 +83,7 @@ describe("createMeldClient sell quotes", () => {
     const client = createMeldClient({ baseUrl: "https://adapter.test/", fetchImpl: impl });
     const { quotes } = await client.getSellQuote({
       country: "DE",
-      sourceCurrencyCode: "DOT_ASSETHUB",
+      sourceCurrencyCode: "DOT",
       sourceAmount: "23.4521",
       destinationCurrencyCode: "EUR",
       paymentMethodType: "SEPA",
@@ -90,7 +93,7 @@ describe("createMeldClient sell quotes", () => {
       direction: "sell",
       country: "DE",
       fiat: "EUR",
-      destinationCurrencyCode: "DOT_ASSETHUB",
+      destinationCurrencyCode: "DOT",
       // Never `sourceAmount`, which the adapter validates as fiat.
       cryptoAmount: "23.4521",
       paymentMethodType: "SEPA",
@@ -121,7 +124,7 @@ describe("createMeldClient sell sessions", () => {
       direction: "sell",
       country: "DE",
       fiat: "EUR",
-      destinationCurrencyCode: "DOT_ASSETHUB",
+      destinationCurrencyCode: "DOT",
       cryptoAmount: "23.4521",
       paymentMethodType: "SEPA",
       serviceProvider: "TRANSAK",
@@ -148,7 +151,7 @@ describe("createMeldClient sell sessions", () => {
       country: "DE",
       sourceCurrencyCode: "EUR",
       sourceAmount: "90.00",
-      destinationCurrencyCode: "DOT_ASSETHUB",
+      destinationCurrencyCode: "DOT",
       destinationAmount: "23",
       walletAddress: SELL_REQ.orderRef,
       paymentMethodType: "SEPA",
@@ -178,7 +181,7 @@ describe("createMeldClient sell sessions", () => {
             status: "session_opened",
             serviceProviderWidgetUrl: "https://kyc.test/resume",
             fiat: "EUR",
-            destinationCurrencyCode: "DOT_ASSETHUB",
+            destinationCurrencyCode: "DOT",
             cryptoAmount: "50",
           },
         },
@@ -210,7 +213,7 @@ describe("createMeldClient sell sessions", () => {
             status: "session_opened",
             serviceProviderWidgetUrl: "https://kyc.test/resume",
             fiat: "EUR",
-            destinationCurrencyCode: "DOT_ASSETHUB",
+            destinationCurrencyCode: "DOT",
             cryptoAmount: "23.4521",
           },
         },
@@ -243,7 +246,7 @@ describe("createMeldClient sell status", () => {
       funding({
         address: "14Kt4HmnCzMqUKvWcGZdLaWkLNcL4TcUSXYvKyKdbMhsvRxM",
         amount: "23.4521",
-        currency: "DOT_ASSETHUB",
+        currency: "DOT",
         observedAt: 1_800,
       }),
     ]);
@@ -254,7 +257,7 @@ describe("createMeldClient sell status", () => {
       deposit: {
         address: "14Kt4HmnCzMqUKvWcGZdLaWkLNcL4TcUSXYvKyKdbMhsvRxM",
         amount: "23.4521",
-        currency: "DOT_ASSETHUB",
+        currency: "DOT",
         observedAt: 1_800,
       },
     });
@@ -262,10 +265,10 @@ describe("createMeldClient sell status", () => {
 
   it("takes half a disclosure as none", async () => {
     for (const deposit of [
-      { address: "", amount: "23.4521", currency: "DOT_ASSETHUB", observedAt: 1 },
-      { address: "14Kt", amount: "", currency: "DOT_ASSETHUB", observedAt: 1 },
+      { address: "", amount: "23.4521", currency: "DOT", observedAt: 1 },
+      { address: "14Kt", amount: "", currency: "DOT", observedAt: 1 },
       { address: "14Kt", amount: "1", currency: "", observedAt: 1 },
-      { address: "14Kt", amount: "1", currency: "DOT_ASSETHUB" },
+      { address: "14Kt", amount: "1", currency: "DOT" },
     ]) {
       const { impl } = stubSequence([funding(deposit)]);
       const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
@@ -295,7 +298,7 @@ describe("the offline sale", () => {
     expect((await client.getStatus(session.fundingRequestId)).deposit).toBeUndefined();
     expect((await client.getStatus(session.fundingRequestId)).deposit).toBeUndefined();
     const disclosed = await client.getStatus(session.fundingRequestId);
-    expect(disclosed.deposit).toMatchObject({ amount: "23.4521", currency: "DOT_ASSETHUB" });
+    expect(disclosed.deposit).toMatchObject({ amount: "23.4521", currency: "DOT" });
     // Once the address is out the sale cannot be withdrawn.
     expect(await client.cancel(session.fundingRequestId)).toEqual({ outcome: "not-cancellable" });
   });
@@ -322,7 +325,7 @@ describe("the offline sale", () => {
     const client = createFakeMeldClient({ usdPerToken: 4, feePct: 2 });
     const { quotes } = await client.getSellQuote({
       country: "DE",
-      sourceCurrencyCode: "DOT_ASSETHUB",
+      sourceCurrencyCode: "DOT",
       sourceAmount: "10",
       destinationCurrencyCode: "EUR",
       paymentMethodType: "SEPA",
@@ -339,7 +342,7 @@ describe("the offline sale", () => {
 describe("the sale as the rail leg reads it", () => {
   const disclosed = {
     status: "transaction_seen",
-    deposit: { address: "14Kt", amount: "23.4521", currency: "DOT_ASSETHUB", observedAt: 1 },
+    deposit: { address: "14Kt", amount: "23.4521", currency: "DOT", observedAt: 1 },
   };
 
   it("is a channel to an address for an exact figure, paid out off chain", () => {
@@ -351,21 +354,15 @@ describe("the sale as the rail leg reads it", () => {
     });
   });
 
-  it("takes a deposit for DOT on Asset Hub under either of Meld's codes for it", () => {
-    const statemint = {
-      ...disclosed,
-      deposit: { ...disclosed.deposit, currency: "DOT_STATEMINT" },
-    };
-    expect(saleChannelOf(statemint, SELL_TOKEN)?.expectedAmount).toBe(234_521_000_000n);
-    // And a sale quoted under DOT_STATEMINT takes a deposit named DOT_ASSETHUB.
-    expect(saleChannelOf(disclosed, directSellToken("DOT_STATEMINT"))?.depositAddress).toBe("14Kt");
-    expect(sameSoldAsset("DOT_STATEMINT", "DOT_ASSETHUB")).toBe(true);
-    expect(sameSoldAsset("USDC_SOLANA", "DOT_ASSETHUB")).toBe(false);
-    expect(sameSoldAsset("USDT_STATEMINT", "DOT_ASSETHUB")).toBe(false);
-    // USDT the same way: either of Meld's codes for it on Asset Hub.
-    expect(sameSoldAsset("USDT_STATEMINT", "USDT_ASSETHUB")).toBe(true);
-    expect(sameSoldAsset("USDT_ASSETHUB", "USDT_STATEMINT")).toBe(true);
-    expect(sameSoldAsset("USDT_SOLANA", "USDT_ASSETHUB")).toBe(false);
+  it("takes a deposit only under the code the adapter's table gives the sold asset", () => {
+    expect(sameSoldAsset("DOT", "DOT")).toBe(true);
+    expect(sameSoldAsset("USDC_SOLANA", "DOT")).toBe(false);
+    expect(sameSoldAsset("USDT_DOT", "DOT")).toBe(false);
+    expect(sameSoldAsset("USDT_SOLANA", "USDT_DOT")).toBe(false);
+    // The codes Meld retired name nothing any more, so a deposit under one is not this sale's.
+    const retired = { ...disclosed, deposit: { ...disclosed.deposit, currency: "DOT_ASSETHUB" } };
+    expect(saleChannelOf(retired, SELL_TOKEN)).toBeNull();
+    expect(sameSoldAsset("DOT_STATEMINT", "DOT")).toBe(false);
   });
 
   it("takes a deposit in any of the tokens it is offered, read in that token's decimals", () => {
@@ -387,7 +384,7 @@ describe("the sale as the rail leg reads it", () => {
     expect(saleChannelOf({ status: "session_opened" }, SELL_TOKEN)).toBeNull();
     expect(
       saleChannelOf(
-        { ...disclosed, deposit: { ...disclosed.deposit, currency: "USDT_ASSETHUB" } },
+        { ...disclosed, deposit: { ...disclosed.deposit, currency: "USDT_DOT" } },
         SELL_TOKEN,
       ),
     ).toBeNull();
@@ -451,7 +448,7 @@ describe("the sale's reads for the worker", () => {
     deposit: {
       address: "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5",
       amount: "23.4521",
-      currency: "DOT_ASSETHUB",
+      currency: "DOT",
       observedAt: 1,
     },
   };
@@ -479,7 +476,7 @@ describe("the sale's reads for the worker", () => {
   it("reads the deposit of a sale of USDT in USDT's units", async () => {
     const usdt = {
       status: "transaction_seen",
-      deposit: { address: "14Kt", amount: "25", currency: "USDT_STATEMINT", observedAt: 1 },
+      deposit: { address: "14Kt", amount: "25", currency: "USDT_DOT", observedAt: 1 },
     };
     const rail = saleRail(scripted([usdt]), {}, Date.now, USDT_SELL_TOKEN);
     expect(await rail.channel("funding-1")).toMatchObject({ expectedAmount: 25_000_000n });
@@ -555,34 +552,49 @@ describe("which quote lines can carry a sale", () => {
 });
 
 describe("what a direct sale sells", () => {
-  it("is USDT or DOT, each under either of Meld's codes for it", () => {
-    expect(DIRECT_SELL_CODES).toEqual([
-      "USDT_ASSETHUB",
-      "USDT_STATEMINT",
-      "DOT_ASSETHUB",
-      "DOT_STATEMINT",
-    ]);
-    expect(directSellToken("USDT_ASSETHUB")).toEqual(USDT_SELL_TOKEN);
-    expect(isDirectUsdt("USDT_ASSETHUB")).toBe(true);
-    expect(isDirectUsdt("USDT_STATEMINT")).toBe(true);
-    expect(isDirectUsdt("DOT_STATEMINT")).toBe(false);
+  afterEach(() => {
+    installMeldAssets(TEST_MELD_ASSETS);
+  });
+
+  it("is USDT or DOT, under the codes the adapter's table names them by", () => {
+    expect(directSellCodes()).toEqual(["USDT_DOT", "DOT"]);
+    expect(directSellToken("USDT_DOT")).toBe(USDT_SELL_TOKEN);
+    expect(directSellToken("DOT")).toBe(SELL_TOKEN);
+    expect(isDirectSellCode("USDT_DOT")).toBe(true);
+    expect(isDirectSellCode("DOT")).toBe(true);
+    expect(isDirectSellCode(undefined)).toBe(false);
+    expect(isDirectUsdt("USDT_DOT")).toBe(true);
+    expect(isDirectUsdt("DOT")).toBe(false);
     expect(isDirectUsdt(undefined)).toBe(false);
-    expect(directSellToken("DOT_ASSETHUB")).toEqual(SELL_TOKEN);
-    expect(directSellToken("DOT_STATEMINT")).toEqual({
-      ...SELL_TOKEN,
-      meldCurrencyCode: "DOT_STATEMINT",
-    });
-    expect(directSellToken("USDT_STATEMINT")).toEqual({
+    expect(USDT_SELL_TOKEN).toMatchObject({
       symbol: "USDT",
       decimals: 6,
-      meldCurrencyCode: "USDT_STATEMINT",
+      meldCurrencyCode: "USDT_DOT",
     });
     expect(formatSellAmount(25_000_000n, USDT_SELL_TOKEN)).toBe("25");
   });
 
-  it("is nothing else, a lane's code included", () => {
-    expect(() => directSellToken("USDC_STATEMINT")).toThrow("cannot sell USDC_STATEMINT");
+  it("follows the adapter when Meld renames a code, with no release", () => {
+    installMeldAssets([
+      { asset: "dot@assethub", code: "DOT_V3" },
+      { asset: "usdt@assethub", code: "USDT_V3" },
+    ]);
+    expect(SELL_TOKEN.meldCurrencyCode).toBe("DOT_V3");
+    expect(USDT_SELL_TOKEN.meldCurrencyCode).toBe("USDT_V3");
+    expect(directSellCodes()).toEqual(["USDT_V3", "DOT_V3"]);
+    expect(isDirectSellCode("DOT")).toBe(false);
+  });
+
+  it("names no code before the adapter's table is read", () => {
+    installMeldAssets([]);
+    expect(() => SELL_TOKEN.meldCurrencyCode).toThrow(MeldAssetsUnavailable);
+    expect(isDirectSellCode("DOT")).toBe(false);
+  });
+
+  it("is nothing else, a lane's code and a retired code included", () => {
+    expect(() => directSellToken("USDC_DOT")).toThrow("cannot sell USDC_DOT");
     expect(() => directSellToken("USDC_ARBITRUM")).toThrow("cannot sell USDC_ARBITRUM");
+    expect(() => directSellToken("DOT_STATEMINT")).toThrow("cannot sell DOT_STATEMINT");
   });
 });
 
@@ -605,7 +617,7 @@ describe("a sale of another asset", () => {
     ).toMatchObject({ depositAddress: deposit.address, expectedAmount: 98_850_000n });
     expect(
       saleChannelOf(
-        { status: "transaction_seen", deposit: { ...deposit, currency: "DOT_ASSETHUB" } },
+        { status: "transaction_seen", deposit: { ...deposit, currency: "DOT" } },
         USDT_SOLANA,
       ),
     ).toBeNull();
