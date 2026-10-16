@@ -1119,7 +1119,7 @@ export const useSessionStore = defineStore("session", () => {
                   settleAmount: settleForPricing,
                   remoteFeeBuffer: priced.remoteFeeBuffer,
                   keepNativeForFees: priced.keepNativeForFees,
-                  // A direct deposit carries the smaller headroom, as the hosted sizing does.
+                  // A direct deposit carries its own headroom, as the hosted sizing does.
                   ...(direct === null ? {} : { slippagePct: DIRECT_SLIPPAGE_PCT }),
                 }))(),
             );

@@ -20,9 +20,10 @@ type PsmAssetId = Parameters<AssetHubApi["query"]["Psm"]["Psm"]["getValue"]>[0];
 
 /** Headroom demanded ABOVE the amount before the PSM tier is chosen, in basis points. A margin
  *  on the amount, not on the ceiling: the amount is what moves between quote and execution.
- *  The pipeline converts everything the burner holds and both rails over-deliver (Chainflip 5%,
- *  Meld about 1% plus budget headroom), so the swap actually submitted can exceed the figure
- *  checked here by roughly this much. */
+ *  The pipeline converts everything the burner holds and both rails over-deliver (Chainflip its
+ *  channel's tolerance and a quarter point, a few points more on a small purchase with a large
+ *  fixed fee; Meld about 1% plus budget headroom), so the swap actually submitted can exceed the
+ *  figure checked here by roughly this much. */
 export const ROUTE_MARGIN_BPS = 1_000n;
 /** The margin's absolute floor, internal units (1 CASH at 6 decimals), so the tier is never
  *  chosen when the PSM is within a hair of full however small the amount. */
