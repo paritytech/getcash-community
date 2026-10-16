@@ -1,6 +1,7 @@
 // Chain facts for the withdrawal pipeline.
 
 import { NETWORK, TOKENS } from "@getsome/core";
+import { asLocation } from "@getsome/funding";
 import { CASH_LOCATION } from "@getsome/people";
 
 /** The account holding the CASH and native reserves of People's pool. Every pool pairs with the
@@ -20,3 +21,7 @@ export const PEOPLE_TX_OPTIONS = {
   asset: CASH_LOCATION,
   customSignedExtensions: { VerifyMultiSignature: { value: { type: "Disabled" } } },
 } as const;
+
+/** Signing on Asset Hub from a key that holds only CASH: the fee is charged in CASH through its
+ *  pool. The same options price the fee. */
+export const ASSET_HUB_CASH_TX_OPTIONS = { asset: asLocation(TOKENS.CASH.location) };

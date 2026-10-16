@@ -1,7 +1,8 @@
-// The outgoing channel: an Asset Hub asset (DOT by default, USDT for an offramp sale) sold for a
-// destination asset and paid out to the given address. The mirror of the deposit rail, which quotes backwards from a wanted DOT amount and
-// opens channels that end on Asset Hub. This quotes forwards from the DOT a withdrawal expects to
-// land and opens the channel with the withdrawal's own key as the refund address.
+// The outgoing channel: the token a withdrawal lands on Asset Hub, DOT or USDT, sold for a
+// destination asset and paid out to the user's address. The mirror of the deposit rail, which
+// quotes backwards from a wanted DOT amount and opens channels that end on Asset Hub. This quotes
+// forwards from what a withdrawal expects to land and opens the channel with the withdrawal's own
+// key as the refund address.
 //
 // Opened on the page, at confirm, while the user is there: the quote they were shown is the
 // quote the channel is opened with. The worker then only pays the channel and reads the swap.
@@ -119,11 +120,11 @@ export async function quoteOutgoing(
 
 export interface OpenWithdrawChannelArgs {
   sdk: SwapSdkLike;
-  /** What is sold. DOT on Asset Hub unless named. */
-  source?: SourceConfig;
   /** The source the withdrawal expects to land on its key, base units: what the quote is for. The
    *  channel takes whatever then arrives; the quote sets the price it must fill at. */
   amount: bigint;
+  /** The Asset Hub source the key pays the channel in; DOT when none is named. */
+  source?: SourceConfig;
   destination: OutgoingDestination & { address: string };
   /** Where the swap refunds when it cannot fill at the quoted price: the key on Asset Hub, SS58. */
   refundAddress: string;

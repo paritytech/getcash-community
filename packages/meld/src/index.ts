@@ -29,7 +29,6 @@ export {
   type SaleReadMemory,
   sameSoldAsset,
   SELL_TOKEN,
-  type SellToken,
   sellAmountOf,
   sellQuoteUsable,
   USDT_SELL_TOKEN,

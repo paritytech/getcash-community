@@ -1,8 +1,10 @@
 // The quote a fiat sale is confirmed on: the region and payout method from the adapter's off-ramp
 // catalog, the exact figure the key will pay, and the best provider line for that figure. Priced
-// again whenever the region changes; nothing here opens a session.
+// again whenever the region changes; nothing here opens a session. The catalog's candidates decide
+// what the sale sells and in which order they are tried; the chain decides, per candidate, whether
+// it can serve the sale and sizes the figure.
 
-import { ref, shallowRef, watch } from "vue";
+import { ref, shallowRef, toValue, watch, type MaybeRefOrGetter } from "vue";
 import { meldAssetOf, type MeldAssetId } from "@getsome/core";
 import {
   directSellToken,
@@ -44,7 +46,8 @@ export interface MeldSellQuote {
   /** A direct sale quoted under a code other than Meld's code for DOT, which the session must name
    *  too: its code for USDT on Asset Hub. */
   sellCode?: string;
-  /** A direct sale of USDT: the PSM redeem the withdrawal runs for the USDT the key pays. */
+  /** The sale the worker makes for a direct sale, as the chain decided it for the candidate: the
+   *  PSM redeem for USDT, the pool for PAS. */
   route?: ConversionRoute;
   /** The CASH expected back once the provider is paid, before the way back's fees; 0 when it is
    *  too small to send back. */
@@ -89,15 +92,22 @@ export function saleLaneOf(code: string): OfframpLane | null | undefined {
 const laneAsset = (lane: OfframpLaneRef): MeldAssetId | undefined =>
   lane.asset ?? meldAssetOf(lane.code);
 
-/** Sizes a direct sale under `code`: USDT out of the PSM, or PAS out of the pool. */
+/** Sizes a direct sale under `code` on the route the chain decides for its token, with `reserved`
+ *  of the PSM's room spoken for: USDT out of the PSM, or PAS out of the pool. A USDT sale the PSM
+ *  cannot serve is refused, so the next candidate is tried: this build does not sell USDT to a
+ *  provider through the pool. */
 async function sizeDirectSale(
   live: typeof import("~~/lib/withdraw-live"),
   code: string,
   amount: bigint,
+  reserved: bigint,
 ): Promise<SizedSale> {
-  if (!isDirectUsdt(code)) return live.sizeMeldCommitment(amount);
-  const size = await live.sizeUsdtSale(amount);
-  return { planck: size.commit, backCash: size.backCash, route: size.route };
+  const usdt = isDirectUsdt(code);
+  const route = await live.chooseWithdrawRoute(amount, usdt ? "USDT" : "native", reserved);
+  if (usdt && route.tier !== "psm") {
+    throw new Error("USDT cannot be redeemed for this sale right now.");
+  }
+  return { ...(await live.sizeMeldCommitment(amount, route)), route };
 }
 
 /**
@@ -163,7 +173,13 @@ export function sellableCorridor(
   return { ...corridor, methods };
 }
 
-export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
+/** `reserved` is the CASH this app's other PSM withdrawals have yet to redeem, which the PSM's room
+ *  is judged without for every candidate. */
+export function useMeldSellQuote(
+  method: "card" | "bank",
+  amount: bigint,
+  reserved: MaybeRefOrGetter<bigint>,
+) {
   /** The starting region is one the seller chose on the other method, not a detected one. */
   const chosenBefore = lastCountry !== null;
   const country = ref(startingCountry());
@@ -293,8 +309,8 @@ export function useMeldSellQuote(method: "card" | "bank", amount: bigint) {
         try {
           const size: SizedSale =
             lane === null
-              ? await sizeDirectSale(live, code, amount)
-              : await live.sizeSwapSale(amount, lane).then((swap) => ({
+              ? await sizeDirectSale(live, code, amount, toValue(reserved))
+              : await live.sizeSwapSale(amount, lane, toValue(reserved)).then((swap) => ({
                   planck: swap.promise,
                   backCash: 0n,
                   swap: { lane: lane.id, route: swap.route },

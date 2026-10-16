@@ -10,6 +10,7 @@ import { describe, it } from "vitest";
 import { AccountId, createClient } from "polkadot-api";
 import { getWsProvider } from "polkadot-api/ws";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
+import { TOKENS } from "@getsome/core";
 import { deriveKeypairWithSecret } from "@getsome/ephemeral";
 import {
   chooseCashTransfer,
@@ -21,6 +22,7 @@ import {
 } from "@getsome/funding";
 import { CASH_LOCATION } from "@getsome/people";
 import {
+  readAssetHubAccount,
   readDestinationBalance,
   DEFAULT_WITHDRAW_SLIPPAGE_PCT,
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
@@ -123,7 +125,25 @@ describe.runIf(process.env.PROD_PROOF_WITHDRAW === "1")("withdrawal production p
                 cash: await readCash(ss58),
                 pas: await readPas(ss58),
               }),
+              readKeyOnAssetHub: async (hex) => {
+                const { free: cash, nonce } = await readAssetHubAccount(
+                  assetHubApi,
+                  hex,
+                  TOKENS.CASH,
+                );
+                return {
+                  cash,
+                  usdt: await readDestinationBalance(assetHubApi, hex, TOKENS.USDT.assetHubId),
+                  nonce,
+                };
+              },
               readDestinationOnAssetHub: readAlice,
+              assetHubAnchor: async () => {
+                const [best] = await ahC.getBestBlocks();
+                if (best === undefined) throw new Error("no best block on Asset Hub");
+                return { hash: best.hash, number: best.number };
+              },
+              readFinalizedNumber: async () => (await ahC.getFinalizedBlock()).number,
               now: Date.now,
               onTx: (i) => console.log(`  TX ${i.call} block=${i.block} hash=${i.txHash}`),
               onTransientError: (e) =>

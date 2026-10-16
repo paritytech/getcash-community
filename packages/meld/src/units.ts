@@ -6,15 +6,15 @@
 import type { TokenSpec } from "@getsome/core";
 
 /**
- * A token Meld can deliver: it must have a Meld currency code for the wire, and the Chainflip
- * identifier the rail port's SourceDescriptor and Quote name delivered assets by.
+ * An asset as Meld names and sizes it: its currency code on the wire and the decimals its amounts
+ * carry. A token of the table, or a lane's asset on another chain, which no TokenSpec describes.
  */
-export type MeldToken = TokenSpec &
-  Required<Pick<TokenSpec, "chainflipAsset" | "meldCurrencyCode">>;
+export type MeldToken = Pick<TokenSpec, "symbol" | "decimals"> &
+  Required<Pick<TokenSpec, "meldCurrencyCode">>;
 
 /** Ceil-normalize a reverse-quote target to `token` base units (never under-target). */
 export function toBaseUnits(
-  token: TokenSpec,
+  token: Pick<TokenSpec, "decimals">,
   target: { amount: bigint; decimals: number },
 ): bigint {
   if (target.decimals === token.decimals) return target.amount;
