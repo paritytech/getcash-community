@@ -17,12 +17,10 @@ import {
 } from "../../funding/selection";
 import { useStateDirector } from "../../composables/useStateDirector";
 import {
-  hasFundingPendingContent,
   TOP_UP_LIST_WORDING,
   type FundingListWording,
   type InProgressFundingTopUp,
   type PastFundingTopUp,
-  type SettledFundingTopUp,
 } from "../../funding/top-ups";
 
 type OpenableFundingTopUp = InProgressFundingTopUp | PastFundingTopUp;
@@ -44,7 +42,6 @@ const props = withDefaults(
     loading?: boolean;
     topUps?: readonly InProgressFundingTopUp[];
     pastTopUps?: readonly PastFundingTopUp[];
-    latestTopUp?: SettledFundingTopUp | null;
     initialScreen?: FundingShellEntryScreen;
     historyReturn?: FundingHistoryReturnScreen;
     openingTopUpId?: string | null;
@@ -69,7 +66,6 @@ const props = withDefaults(
     loading: false,
     topUps: () => [],
     pastTopUps: () => [],
-    latestTopUp: null,
     initialScreen: "auto",
     historyReturn: "amount",
     openingTopUpId: null,
@@ -95,7 +91,6 @@ const emit = defineEmits<{
 const amountScreen = computed<AmountScreenComponent>(
   () => props.amountScreen ?? FundingAmountScreen,
 );
-const hasPendingContent = computed(() => hasFundingPendingContent(props.topUps, props.latestTopUp));
 // The clock only opens a screen that has something on it: with nothing running and nothing
 // finished, history is a dead end, so the control is not drawn at all.
 const hasHistoryContent = computed(() => props.topUps.length > 0 || props.pastTopUps.length > 0);
@@ -149,11 +144,10 @@ function continueToPackage() {
   if (selection !== null) emit("continue", selection);
 }
 
-// Leaving is gated on the settled card too, not just on what is running: a top-up that lands
-// while the buyer is watching it should leave its "Added to your balance" card up until they go,
-// rather than throwing them to the amount screen at the moment it succeeds.
-watch(hasPendingContent, (hasContent) => {
-  if (screen.value === "pending" && !hasContent) showAmount();
+// The screen is titled for work in progress, so it leaves with the last running top-up: the one
+// that just landed is listed in history, not here.
+watch(hasTopUpInProgress, (running) => {
+  if (screen.value === "pending" && !running) showAmount();
 });
 
 // A fresh entry request from the host (a journey closing back to the list, a preview scene)
@@ -195,7 +189,6 @@ watch(
       v-else-if="screen === 'pending'"
       :config="config"
       :top-ups="topUps"
-      :latest-top-up="latestTopUp"
       :opening-top-up-id="openingTopUpId"
       :error="topUpError"
       :wording="wording"
