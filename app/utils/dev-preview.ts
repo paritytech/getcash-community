@@ -63,6 +63,7 @@ const SALE_PREVIEW_QUOTE: MeldSellQuote = {
   fiat: "GBP",
   paymentMethodType: "PAYOUT_TO_CARD",
   cryptoAmount: 1_254_321_000_000n,
+  route: { tier: "pool" },
   backCash: 420_000n,
   line: {
     serviceProvider: "TRANSAK",

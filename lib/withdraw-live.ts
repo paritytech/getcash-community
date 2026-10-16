@@ -6,19 +6,22 @@
 
 import { PaymentRequestErr, PaymentStatusErr } from "@novasamatech/host-api";
 import { deriveEntropy, getHostLocalStorage } from "@parity/product-sdk-host";
+import type { TokenSpec } from "@getsome/core";
 import { deriveKeypair, walletSeedHex } from "@getsome/ephemeral";
 import {
   chooseCashTransfer,
   chooseRoute,
-  destinationEarmark,
+  depositTokenOf,
   NoCashTransferError,
   PASEO_ASSET_HUB_PARA_ID,
   PASEO_PEOPLE_PARA_ID,
+  psmGrossFor,
   STABLE_TOKENS,
   type ConversionRoute,
   type DepositAsset,
+  type PsmRoute,
 } from "@getsome/funding";
-import { sellAmountOf, USDT_SELL_TOKEN } from "@getsome/meld";
+import { sellAmountOf } from "@getsome/meld";
 import { laneCommit, laneSellToken, type OfframpLane } from "@getsome/offramp";
 import {
   createHostEntropyPort,
@@ -27,19 +30,22 @@ import {
 } from "@getsome/host";
 import { CASH_DECIMALS, CASH_LOCATION } from "@getsome/people";
 import {
-  ASSET_HUB_FEE_BUFFER_CASH,
+  buildRedeemBatch,
   CASH_ON_ASSET_HUB,
+  cashToExit,
   DEFAULT_WITHDRAW_SLIPPAGE_PCT,
   estimateDirectFeesCash,
-  exactAssetPaymentFloor,
+  estimateRedeemFeeCash,
   exactPaymentFloor,
   PASEO_PEOPLE_POOL_ACCOUNT,
   PEOPLE_NATIVE,
   psmRedeemOut,
   readDestinationBalance,
-  SALE_RESIDUE_RETURN_FLOOR,
-  USDT_PAY_FEE_ALLOWANCE,
-  USDT_RESIDUE_RETURN_FLOOR,
+  readRedeemFloors,
+  redeemAmountOf,
+  RedeemTooSmallError,
+  residueReturnFloor,
+  type AssetHubApi,
 } from "@getsome/withdraw";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import {
@@ -51,7 +57,7 @@ import {
   type WithdrawalHandoffPayload,
 } from "../app/funding/requests/model";
 import {
-  ASSET_HUB_USDT,
+  assetHubSourceFor,
   BelowMinimumSwapAmountError,
   ChainflipRequestError,
   formatSourceAmount,
@@ -60,6 +66,7 @@ import {
   SOURCE_CONFIG_BY_ID,
   type IncludedFee,
   type OutgoingQuote,
+  type SourceConfig,
 } from "@getsome/chainflip";
 import { AccountId } from "polkadot-api";
 import { cashAmount } from "../app/utils/cash";
@@ -161,16 +168,16 @@ export async function cashCanMove(): Promise<boolean> {
 const FEES_FRESH_MS = 60_000;
 const feesBySale = new Map<string, { at: number; fees: Promise<bigint> }>();
 
-/** The sales whose XCM has one shape, and so one fee: a pool sale fed through a stable has a hop
- *  more than one for the native, so the two are kept apart. */
-const feesKeyOf = (sale: ConversionRoute): string =>
+/** The sales one quote serves, as a key: a pool sale fed through a stable has a hop more than one
+ *  for the native, and the PSM lands its own figure, so each is kept apart from the others. */
+export const saleKeyOf = (sale: ConversionRoute): string =>
   sale.tier === "dotusd" ? sale.tier : `${sale.tier}:${sale.external ?? "native"}`;
 
 /** The CASH the fees take from a direct withdrawal before the sale on Asset Hub, priced now on
  *  People and kept for a minute: the swap that buys the fee PAS, its own fee and Asset Hub's
  *  buffer, as the worker will size them. An estimate for the summary, on the safe side. */
 export async function directFeesCash(sale: ConversionRoute): Promise<bigint> {
-  const key = feesKeyOf(sale);
+  const key = saleKeyOf(sale);
   const cached = feesBySale.get(key);
   if (cached !== undefined && Date.now() - cached.at < FEES_FRESH_MS) return cached.fees;
   const fees = (async () => {
@@ -202,10 +209,14 @@ export async function directFeesCash(sale: ConversionRoute): Promise<bigint> {
 /** The sale a direct withdrawal of `amount` CASH makes for the token it lands, decided the way
  *  the on-ramp decides a deposit's tier the other way round: the native takes the pool and
  *  dotUSD the teleport, with no chain read; a stable takes the PSM when it is approved for
- *  redeeming and can serve the amount, the pool fed through the native otherwise. */
+ *  redeeming and can serve the amount, the pool fed through the native otherwise. No landing is
+ *  the fiat rails' rule: the PSM's own external when it can serve, the native otherwise.
+ *  `reserved` is the CASH this app's own in-flight PSM withdrawals have yet to redeem, which the
+ *  PSM's room is judged without. */
 export async function chooseWithdrawRoute(
   amount: bigint,
-  landing: DepositAsset,
+  landing: DepositAsset | undefined,
+  reserved: bigint,
 ): Promise<ConversionRoute> {
   if (landing === "native") return { tier: "pool" };
   if (landing === "dotUSD") return { tier: "dotusd" };
@@ -213,21 +224,50 @@ export async function chooseWithdrawRoute(
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
   // Judged on what the redeem will take: the amount less the fees and Asset Hub's earmark.
   const sold = amount - (await directFeesCash({ tier: "pool" }));
-  const redeemed = sold - destinationEarmark(sold, ASSET_HUB_FEE_BUFFER_CASH);
-  return chooseRoute(api, { direction: "redeem", internalAmount: redeemed, deposit: landing });
+  return chooseRoute(api, {
+    direction: "redeem",
+    internalAmount: redeemAmountOf(sold),
+    reserved,
+    ...(landing === undefined ? {} : { deposit: landing }),
+  });
+}
+
+/** Stands in for the key and the provider in a fee estimate before either is known: the fee
+ *  depends on the call, not on who makes it. */
+const FEE_ESTIMATE_ACCOUNT = "13ENScfFZXQ8avXf6cphack516B8YCjdL4MJbodm7VxK8GE9";
+
+/** What the PSM tier lands of `sold` CASH in its stable, sized as the worker sizes the redeem
+ *  from what reaches the key: the batch's own fee with its margin and the CASH account's minimum
+ *  stay on the key, the rest is redeemed at the frozen rate. The redeem alone is priced, as a
+ *  provider rail runs it. 0 when the fee and the minimum take the whole amount. */
+async function psmLanding(api: AssetHubApi, sold: bigint, sale: PsmRoute): Promise<bigint> {
+  const [floors, feeCash] = await Promise.all([
+    readRedeemFloors(api, sale),
+    estimateRedeemFeeCash(
+      api,
+      buildRedeemBatch(api, { route: sale, cashIn: sold }),
+      FEE_ESTIMATE_ACCOUNT,
+    ),
+  ]);
+  try {
+    return psmRedeemOut(cashToExit(sold, feeCash, floors), sale.feeRate);
+  } catch (e) {
+    if (e instanceof RedeemTooSmallError) return 0n;
+    throw e;
+  }
 }
 
 /** What a direct withdrawal of `amount` CASH lands on Asset Hub in the asset `sale` ends in,
  *  base units, at today's prices: the amount less the fees, sold as the program sells it,
- *  redeemed at the PSM's fee rate, or landed as it is on the dotUSD tier. An estimate for the
- *  summary, not what the program is held to. */
+ *  redeemed as the batch redeems it from the key, or landed as it is on the dotUSD tier. An
+ *  estimate for the summary, not what the program is held to. */
 export async function quoteDirectReceive(amount: bigint, sale: ConversionRoute): Promise<bigint> {
   const sold = amount - (await directFeesCash(sale));
   if (sold <= 0n) return 0n;
   if (sale.tier === "dotusd") return sold;
-  if (sale.tier === "psm") return psmRedeemOut(sold, sale.feeRate);
   const { connectChain, ASSET_HUB } = await import("./host-chain");
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
+  if (sale.tier === "psm") return psmLanding(api, sold, sale);
   const native = await api.apis.AssetConversionApi.quote_price_exact_tokens_for_tokens(
     CASH_ON_ASSET_HUB as never,
     PEOPLE_NATIVE as never,
@@ -261,19 +301,18 @@ export async function quoteDirectCashFor(native: bigint): Promise<bigint> {
   return quoted + (await directFeesCash({ tier: "pool" }));
 }
 
-// A fiat sale promises its provider an exact figure before the seller's KYC and pays it after,
-// out of a pool sale that only runs then, held to the program's floor of
-// DEFAULT_WITHDRAW_SLIPPAGE_PCT below the quote of its moment. So the figure is what the sale lands
-// today less that floor, less the margin the check before the purse keeps, less a point for the
-// price to move while the seller verifies, less what the payment itself costs the key. What the
-// sale lands above it is the residue, which the worker sends home once the provider is paid.
-// Before the purse is asked the figure is checked again, with that margin under the floor, since
-// the worker sizes the sale a few minutes later; a price that moved too far meanwhile ends the sale
-// with nothing taken.
-
-/** Stands in for the key and the provider in the payment's fee estimate before either is known:
- *  the fee depends on the call, not on who makes it. */
-const FEE_ESTIMATE_ACCOUNT = "13ENScfFZXQ8avXf6cphack516B8YCjdL4MJbodm7VxK8GE9";
+// A fiat sale promises its provider an exact figure before the seller's KYC and pays it after, out
+// of a sale on Asset Hub that only runs then. On the pool tier that sale is held to the program's
+// floor of DEFAULT_WITHDRAW_SLIPPAGE_PCT below the quote of its moment, so the figure is what the
+// sale lands today less that floor, less the margin the check before the purse keeps, less a point
+// for the price to move while the seller verifies, less what the payment itself costs the key. On
+// the PSM tier the rate is frozen on the sale, so the figure is what the batch pays out of what
+// the key holds, less the payment's cost and nothing else. What the sale lands above the figure is
+// the residue, which the worker sends home once the provider is paid. Before the purse is asked
+// the figure is checked again, on the pool tier with that margin under the floor, since the worker
+// sizes the sale a few minutes later, and on the PSM tier with the pair decided again as it stands,
+// since the seller's verification can take hours; a price that moved too far meanwhile, or a PSM
+// that can no longer serve the sale, ends it with nothing taken.
 
 /** Room the check before the purse keeps under the worker's floor, percent: the worker sizes the
  *  sale minutes later, after the purse pays and the fee swap runs. */
@@ -281,27 +320,32 @@ const PURSE_CHECK_MARGIN_PCT = 0.5;
 /** Room for the price to move while the seller verifies with the provider, percent. */
 const SALE_KYC_MARGIN_PCT = 1;
 
-/** The program's floor under a sale that lands `native` planck, as `sizeXcm` computes it, with
- *  `marginPct` more under it. */
-const saleFloor = (native: bigint, marginPct: number): bigint =>
-  (native * BigInt(Math.round((100 - DEFAULT_WITHDRAW_SLIPPAGE_PCT - marginPct) * 100))) / 10_000n;
+/** The least `sale` lands of `expected`, in its token, as the worker will hold it: the program's
+ *  floor of the slippage under it on the pool tiers, with `marginPct` more under that; the figure
+ *  itself on the PSM tier, whose rate is frozen on the sale. */
+function saleFloor(expected: bigint, sale: ConversionRoute, marginPct: number): bigint {
+  if (sale.tier === "psm") return expected;
+  const keptPct = BigInt(Math.round((100 - DEFAULT_WITHDRAW_SLIPPAGE_PCT - marginPct) * 100));
+  return (expected * keptPct) / 10_000n;
+}
 
-/** A fiat sale takes DOT from the key, so it is sized on the pool sale for the native. */
-const FIAT_SALE: ConversionRoute = { tier: "pool" };
-
-/** What a sale of `amount` CASH lands today, the fees it takes first and the Asset Hub it was
- *  read on; null when the fees take the whole amount. */
-async function saleNow(amount: bigint) {
-  const fees = await directFeesCash(FIAT_SALE);
-  if (amount - fees <= 0n) return null;
+/** What `sale` lands of `amount` CASH today in its token, as the worker will size it, the fees it
+ *  takes first and the Asset Hub it was read on; null when the fees take the whole amount. The
+ *  summary's own figure: the pool tiers land the quote for everything the fees leave, the PSM
+ *  what the batch redeems of it from the key. */
+async function saleNow(amount: bigint, sale: ConversionRoute) {
+  const fees = await directFeesCash(sale);
+  const sold = amount - fees;
+  if (sold <= 0n) return null;
   const { connectChain, ASSET_HUB } = await import("./host-chain");
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
-  return { api, fees, expected: await quoteDirectReceive(amount, FIAT_SALE) };
+  const expected = await quoteDirectReceive(amount, sale);
+  return { api, fees, expected };
 }
 
 /** What a sale of some CASH promises its provider, and what it is expected to send back. */
 export interface MeldSaleSize {
-  /** Exactly what the key pays the provider, planck, cut to the sale's decimals. */
+  /** Exactly what the key pays the provider, in the sale's token, cut to the sale's decimals. */
   planck: bigint;
   /** The CASH expected back once the provider is paid: the share of the sale the figure and the
    *  payment do not use, at today's price and before the way back's own fees. 0 when that share is
@@ -309,37 +353,74 @@ export interface MeldSaleSize {
   backCash: bigint;
 }
 
-/** The figure a sale of `amount` CASH promises its provider, and what it should send back. Throws
- *  when nothing is left for the figure. */
-export async function sizeMeldCommitment(amount: bigint): Promise<MeldSaleSize> {
-  const now = await saleNow(amount);
+/** What paying `amount` of `token` out of the key costs beyond the amount, as the worker holds
+ *  the sale to it: the transfer's fee with its headroom and what the key keeps to stay alive. */
+async function paymentCost(api: AssetHubApi, amount: bigint, token: TokenSpec): Promise<bigint> {
+  const floor = await exactPaymentFloor(
+    api,
+    FEE_ESTIMATE_ACCOUNT,
+    FEE_ESTIMATE_ACCOUNT,
+    amount,
+    token,
+  );
+  return floor - amount;
+}
+
+/** The figure a sale of `amount` CASH through `sale` promises its provider, in the sale's token,
+ *  and what it should send back. Throws when nothing is left for the figure. */
+export async function sizeMeldCommitment(
+  amount: bigint,
+  sale: ConversionRoute,
+): Promise<MeldSaleSize> {
+  const now = await saleNow(amount, sale);
   if (now === null) throw new Error("The amount does not cover the network fees.");
-  const cost =
-    (await exactPaymentFloor(now.api, FEE_ESTIMATE_ACCOUNT, FEE_ESTIMATE_ACCOUNT, now.expected)) -
-    now.expected;
+  const token = depositTokenOf(sale);
+  const cost = await paymentCost(now.api, now.expected, token);
   const planck = sellAmountOf(
-    saleFloor(now.expected, PURSE_CHECK_MARGIN_PCT + SALE_KYC_MARGIN_PCT) - cost,
+    saleFloor(now.expected, sale, PURSE_CHECK_MARGIN_PCT + SALE_KYC_MARGIN_PCT) - cost,
+    token,
   );
   if (planck <= 0n) throw new Error("The amount does not cover the network fees.");
   // The worker sends home what the key holds once the provider is paid, as it judges it then.
   const left = now.expected - planck - cost;
   const backCash =
-    left < SALE_RESIDUE_RETURN_FLOOR ? 0n : ((amount - now.fees) * left) / now.expected;
+    left < residueReturnFloor(token) ? 0n : ((amount - now.fees) * left) / now.expected;
   return { planck, backCash };
 }
 
-/** Whether `amount` CASH still covers a sale's `planck` at today's price: the floor the worker
- *  would ship covers the payment to `depositAddress`, its fee and the key's existential deposit,
- *  as the worker itself will require. Asked before the purse is. */
+/** Whether `amount` CASH through `sale` still covers a sale's `planck` at today's price: the floor
+ *  the worker would ship covers the payment to `depositAddress`, its fee and what the key keeps to
+ *  stay alive, as the worker itself will require. On the PSM tier the sale is decided again first,
+ *  with `reserved` of the pair's room spoken for by this app's other redeems: a pair that filled
+ *  up, stopped or repriced since the quote cannot run the worker's redeem at the frozen rate.
+ *  Asked before the purse is. */
 export async function meldCommitmentFundable(
   amount: bigint,
   planck: bigint,
   depositAddress: string,
+  sale: ConversionRoute,
+  reserved: bigint,
 ): Promise<boolean> {
-  const now = await saleNow(amount);
+  if (sale.tier === "psm") {
+    const today = await chooseWithdrawRoute(amount, sale.external, reserved);
+    if (
+      today.tier !== "psm" ||
+      today.external !== sale.external ||
+      today.feeRate !== sale.feeRate
+    ) {
+      return false;
+    }
+  }
+  const now = await saleNow(amount, sale);
   if (now === null) return false;
-  const needed = await exactPaymentFloor(now.api, FEE_ESTIMATE_ACCOUNT, depositAddress, planck);
-  return saleFloor(now.expected, PURSE_CHECK_MARGIN_PCT) >= needed;
+  const needed = await exactPaymentFloor(
+    now.api,
+    FEE_ESTIMATE_ACCOUNT,
+    depositAddress,
+    planck,
+    depositTokenOf(sale),
+  );
+  return saleFloor(now.expected, sale, PURSE_CHECK_MARGIN_PCT) >= needed;
 }
 
 // A sale through an offramp lane sells USDT, not PAS: the PSM redeems the CASH at a fixed rate,
@@ -347,26 +428,13 @@ export async function meldCommitmentFundable(
 // the provider. The sale commits to Chainflip's fill-or-kill floor on the least USDT the key can
 // hold, so the provider is never underpaid; what Chainflip delivers above it the provider keeps.
 
-/** Room under the USDT the redeem lands, basis points, for the fees the estimate cannot see. */
-const USDT_SALE_LANDING_MARGIN_BPS = 20n;
-
-/** The USDT a sale of `amount` CASH lands on the key: the PSM redeem it runs, the CASH it sells
- *  once the fees are out, what the redeem pays out, and the least of that a promise counts on, with
- *  room for the fees the estimate cannot see. Throws when the PSM cannot redeem it. */
-async function usdtSaleLanding(amount: bigint) {
-  const route = await chooseWithdrawRoute(amount, "USDT");
-  if (route.tier !== "psm") throw new Error("USDT cannot be redeemed for this sale right now.");
-  const sold = amount - (await directFeesCash(route));
-  const redeemed = sold - destinationEarmark(sold, ASSET_HUB_FEE_BUFFER_CASH);
-  const landed = psmRedeemOut(redeemed, route.feeRate);
-  const least = (landed * (10_000n - USDT_SALE_LANDING_MARGIN_BPS)) / 10_000n;
-  return { route, sold, landed, least };
-}
-
 /** What a sale through `lane` sells and commits to. */
 export interface SwapSaleSize {
   /** The PSM redeem the withdrawal runs, landing USDT on the key. */
-  route: Extract<ConversionRoute, { tier: "psm" }>;
+  route: PsmRoute;
+  /** The least USDT the key must land for the sweep into the channel, base units: what the swap is
+   *  quoted on and the sweep's own cost. */
+  landing: bigint;
   /** The least USDT the key pays the channel, base units: what the swap is quoted on. */
   usdtIn: bigint;
   /** What the swap delivers today, in the lane's base units, less the lane's delivery buffer. */
@@ -376,15 +444,32 @@ export interface SwapSaleSize {
   promise: bigint;
 }
 
-/** Sizes a sale of `amount` CASH through `lane`. Throws when this build cannot open the swap's
- *  channel, the PSM cannot redeem it, Chainflip cannot quote it, or the fees take it all. */
-export async function sizeSwapSale(amount: bigint, lane: OfframpLane): Promise<SwapSaleSize> {
+/** Sizes a sale of `amount` CASH through `lane`, with `reserved` of the PSM's room spoken for.
+ *  Throws when this build cannot open the swap's channel, the PSM cannot redeem it, Chainflip
+ *  cannot quote it, or the fees take it all. */
+export async function sizeSwapSale(
+  amount: bigint,
+  lane: OfframpLane,
+  reserved: bigint,
+): Promise<SwapSaleSize> {
   // Refused here, at the quote, so the sale falls through to the next lane before any KYC.
   if (!saleChannelsOpen()) throw new Error("Swap channels cannot be opened in this build.");
-  const { route, least } = await usdtSaleLanding(amount);
-  const usdtIn = least - USDT_PAY_FEE_ALLOWANCE;
+  // The redeem the swap sells out of: this build sells no USDT out of the pool.
+  const route = await chooseWithdrawRoute(amount, "USDT", reserved);
+  if (route.tier !== "psm") throw new Error("USDT cannot be redeemed for this sale right now.");
+  const now = await saleNow(amount, route);
+  if (now === null) throw new Error("The amount does not cover the network fees.");
+  // The key sweeps the whole landing into the channel, so what the swap is quoted on is the landing
+  // less what the key's own transfer costs it.
+  const usdtToken = depositTokenOf(route);
+  const usdtIn = now.expected - (await paymentCost(now.api, now.expected, usdtToken));
   if (usdtIn <= 0n) throw new Error("The amount does not cover the network fees.");
-  const quote = await quoteOutgoing(await saleSwapSdk(), usdtIn, lane.chainflip, ASSET_HUB_USDT);
+  const quote = await quoteOutgoing(
+    await saleSwapSdk(),
+    usdtIn,
+    lane.chainflip,
+    assetHubSourceFor(usdtToken),
+  );
   const token = laneSellToken(lane);
   // The lane's own buffer: its delivery fee can rise before the swap lands, by chain.
   const commit = sellAmountOf(laneCommit(lane, quote.egressAmount, quote.egressFee), token);
@@ -395,7 +480,7 @@ export async function sizeSwapSale(amount: bigint, lane: OfframpLane): Promise<S
     token,
   );
   if (promise <= 0n) throw new Error("The amount does not cover the network fees.");
-  return { route, usdtIn, commit, promise };
+  return { route, landing: now.expected, usdtIn, commit, promise };
 }
 
 /** Opens a lane sale's Chainflip channel: the key's USDT in, the lane's asset out to the provider's
@@ -407,12 +492,13 @@ export async function openSwapSaleChannel(args: {
   committed: bigint;
   providerAddress: string;
   keyPublicKeyHex: string;
+  reserved: bigint;
 }): Promise<WithdrawalChannel | null> {
-  const size = await sizeSwapSale(args.amount, args.lane);
+  const size = await sizeSwapSale(args.amount, args.lane, args.reserved);
   if (size.commit < args.committed) return null;
   const channel = await openWithdrawChannel({
     sdk: await saleSwapSdk(),
-    source: ASSET_HUB_USDT,
+    source: assetHubSourceFor(depositTokenOf(size.route)),
     amount: size.usdtIn,
     destination: { ...args.lane.chainflip, address: args.providerAddress },
     refundAddress: AccountId(0).dec(args.keyPublicKeyHex as `0x${string}`),
@@ -427,51 +513,8 @@ export async function openSwapSaleChannel(args: {
     openedAt: Date.now(),
     expiresAt: channel.expiresAt,
     expectedEgress: channel.expectedEgress.toString(),
-    // The least USDT the key must land: what the swap was quoted on, and the key's fee.
-    amount: (size.usdtIn + USDT_PAY_FEE_ALLOWANCE).toString(),
+    amount: size.landing.toString(),
   };
-}
-
-// A direct sale of USDT, for a provider that buys USDT on Asset Hub (USDT_ASSETHUB or USDT_STATEMINT), runs the same
-// redeem with no swap after it: the key pays the provider the figure exactly, as a sale of PAS
-// does, pays the transfer's fee in USDT and keeps USDT's minimum balance. The redeem's rate is
-// fixed, so the figure needs no room for a price; what it leaves above the payment is the residue,
-// which the worker sends home once the provider is paid.
-
-const USDT_ID = STABLE_TOKENS.USDT.assetHubId;
-
-/** What a direct sale of USDT promises its provider. */
-export interface UsdtSaleSize {
-  /** The PSM redeem the withdrawal runs, landing USDT on the key. */
-  route: Extract<ConversionRoute, { tier: "psm" }>;
-  /** Exactly what the key pays the provider, USDT base units, cut to the sale's decimals. */
-  commit: bigint;
-  /** The CASH expected back once the provider is paid, before the way back's own fees; 0 when what
-   *  is left is too small to send back, and stays with the withdrawal. */
-  backCash: bigint;
-}
-
-/** Sizes a direct sale of `amount` CASH as USDT. Throws when the PSM cannot redeem it, or when the
- *  fees take it all. */
-export async function sizeUsdtSale(amount: bigint): Promise<UsdtSaleSize> {
-  const { route, sold, landed, least } = await usdtSaleLanding(amount);
-  const { connectChain, ASSET_HUB } = await import("./host-chain");
-  const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
-  // The fee and the minimum balance, as the worker holds the sale to them.
-  const cost = await exactAssetPaymentFloor(api, USDT_ID, 0n, USDT_PAY_FEE_ALLOWANCE);
-  const commit = sellAmountOf(least - cost, USDT_SELL_TOKEN);
-  if (commit <= 0n) throw new Error("The amount does not cover the network fees.");
-  // The worker sends home what the key holds once the provider is paid, as it judges it then: the
-  // margin and the minimum balance, less at most the fee allowance.
-  const left = landed - commit - USDT_PAY_FEE_ALLOWANCE;
-  const backCash = left < USDT_RESIDUE_RETURN_FLOOR ? 0n : (sold * left) / landed;
-  return { route, commit, backCash };
-}
-
-/** Whether `amount` CASH still covers a direct USDT sale's `committed` figure at today's redeem.
- *  Asked before the purse is. */
-export async function usdtSaleFundable(amount: bigint, committed: bigint): Promise<boolean> {
-  return (await sizeUsdtSale(amount)).commit >= committed;
 }
 
 /** Where the worker reads a fiat sale from: the adapter this build names, or the stand-in sale in
@@ -489,7 +532,8 @@ export function meldHandoffConfig(): NonNullable<WithdrawalHandoffPayload["meld"
 /** Headroom between the pool's answer and what the provider is asked to take: the sale on Asset
  *  Hub may slip by up to the program's own tolerance and still go through, and the sweep's fee
  *  comes off the deposit after that. The provider is quoted for the worst case the program
- *  allows, so a withdrawal that passes here lands enough to swap. */
+ *  allows, so a withdrawal that passes here lands enough to swap. The pool tier's alone: the
+ *  PSM's rate is frozen on the sale, so its figure is exact. */
 const PROVIDER_QUOTE_HEADROOM_PCT = BigInt(DEFAULT_WITHDRAW_SLIPPAGE_PCT) + 1n;
 /** Ceiling on the wait for the offers. */
 const OFFERS_TIMEOUT_MS = 15_000;
@@ -543,12 +587,13 @@ function grossRate(
  */
 function offerFees(
   config: { asset: string; decimals: number },
+  source: SourceConfig,
   quote: OutgoingQuote,
   amountCash: bigint,
 ): WithdrawFeeView | undefined {
   const inDest = (fee: IncludedFee): bigint | null => {
     if (fee.asset === config.asset) return fee.amount;
-    if (fee.asset === "DOT" && quote.depositAmount > 0n)
+    if (fee.asset === source.asset && quote.depositAmount > 0n)
       return (fee.amount * quote.egressAmount) / quote.depositAmount;
     if (fee.asset === "USDC" && quote.intermediateAmount !== null && quote.intermediateAmount > 0n)
       return (fee.amount * quote.egressAmount) / quote.intermediateAmount;
@@ -582,20 +627,35 @@ function offerFees(
   };
 }
 
-const withHeadroom = (native: bigint): bigint =>
-  native + (native * PROVIDER_QUOTE_HEADROOM_PCT) / 100n;
-const lessHeadroom = (native: bigint): bigint =>
-  native - (native * PROVIDER_QUOTE_HEADROOM_PCT) / 100n;
+const withHeadroom = (units: bigint): bigint =>
+  units + (units * PROVIDER_QUOTE_HEADROOM_PCT) / 100n;
+const lessHeadroom = (units: bigint): bigint =>
+  units - (units * PROVIDER_QUOTE_HEADROOM_PCT) / 100n;
+
+/** What `sale` lands for `amountCash` in its token, as a provider is asked to take it. */
+async function sellableOf(amountCash: bigint, sale: ConversionRoute): Promise<bigint> {
+  const landed = await quoteDirectReceive(amountCash, sale);
+  return sale.tier === "psm" ? landed : lessHeadroom(landed);
+}
+
+/** The CASH a withdrawal must take for a provider's `minimum` in the sale's token to land: the
+ *  PSM's gross for it at the frozen rate plus the fees, or the pool's price with the headroom. */
+function cashForMinimum(minimum: bigint, sale: ConversionRoute): Promise<bigint> {
+  if (sale.tier !== "psm") return quoteDirectCashFor(withHeadroom(minimum));
+  return directFeesCash(sale).then((fees) => psmGrossFor(minimum, sale.feeRate) + fees);
+}
 
 /**
- * What every provider destination offers for `amountCash`: the pool prices the CASH into native,
- * the headroom comes off, and each destination is quoted for what is left. One refused quote
- * says the amount is under the provider's minimum, priced back into CASH; a provider that is not
- * answering marks every destination after the first, without asking the rest. Never throws.
+ * What every provider destination offers for `amountCash` sold through `sale`: the sale is priced
+ * into its token, the headroom comes off on the pool tier, and each destination is quoted for
+ * what is left from that token's Asset Hub source. One refused quote says the amount is under the
+ * provider's minimum, priced back into CASH; a provider that is not answering marks every
+ * destination after the first, without asking the rest. Never throws.
  */
 export async function quoteWithdrawOffers(
   amountCash: bigint,
   destinations: readonly { id: string; chain: string; asset: string }[],
+  sale: ConversionRoute,
 ): Promise<{ sellable: bigint | null; offers: ReadonlyMap<string, WithdrawOffer> }> {
   const offers = new Map<string, WithdrawOffer>();
   const allUnavailable = (reason: string) => {
@@ -605,14 +665,13 @@ export async function quoteWithdrawOffers(
     return { sellable: null, offers };
   };
 
+  let source: SourceConfig;
   let sellable: bigint;
   let sdk: Awaited<ReturnType<typeof mainnetSdk>>;
   try {
+    source = assetHubSourceFor(depositTokenOf(sale));
     [sellable, sdk] = await withTimeout(
-      Promise.all([
-        quoteDirectReceive(amountCash, { tier: "pool" }).then(lessHeadroom),
-        mainnetSdk(),
-      ]),
+      Promise.all([sellableOf(amountCash, sale), mainnetSdk()]),
       OFFERS_TIMEOUT_MS,
       "withdraw offers",
     );
@@ -620,15 +679,15 @@ export async function quoteWithdrawOffers(
     return allUnavailable(messageOf(e));
   }
 
-  // An amount the fees eat whole sells for nothing; a quote for one planck still makes Chainflip
+  // An amount the fees eat whole sells for nothing; a quote for one unit still makes Chainflip
   // name its minimum, which is the answer such a row needs.
   const probe = sellable > 0n ? sellable : 1n;
-  // The minimum is on the DOT sold, so every destination names the same one: priced once.
+  // The minimum is on the token sold, so every destination names the same one: priced once.
   const minimumCashFor = new Map<bigint, Promise<bigint>>();
   const tooSmall = async (minimum: bigint): Promise<WithdrawOffer> => {
     let priced = minimumCashFor.get(minimum);
     if (priced === undefined) {
-      priced = quoteDirectCashFor(withHeadroom(minimum));
+      priced = cashForMinimum(minimum, sale);
       minimumCashFor.set(minimum, priced);
     }
     try {
@@ -646,11 +705,11 @@ export async function quoteWithdrawOffers(
     const config = providerDestination(destination);
     try {
       const quote = await withTimeout(
-        quoteOutgoing(sdk, probe, config),
+        quoteOutgoing(sdk, probe, config, source),
         OFFERS_TIMEOUT_MS,
         `${config.asset} offer`,
       );
-      const fees = offerFees(config, quote, amountCash);
+      const fees = offerFees(config, source, quote, amountCash);
       return {
         offer: {
           state: "available",
@@ -726,12 +785,15 @@ export async function advanceWithdrawCounter(sourceId: string, n: number): Promi
   }
 }
 
-/** The key's free native on Asset Hub at the current head: what a provider refunded, when the
+/** The key's balance on Asset Hub in the token `sale` lands: what a provider refunded, when the
  *  swap could not fill, and what a fresh channel is quoted for. */
-export async function readWithdrawKeyNativeOnAssetHub(keyPublicKeyHex: string): Promise<bigint> {
+export async function readWithdrawKeyBalanceOnAssetHub(
+  keyPublicKeyHex: string,
+  sale: ConversionRoute,
+): Promise<bigint> {
   const { connectChain, ASSET_HUB } = await import("./host-chain");
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
-  return readDestinationBalance(api, keyPublicKeyHex);
+  return readDestinationBalance(api, keyPublicKeyHex, depositTokenOf(sale).assetHubId);
 }
 
 /** A provider destination's asset and chain, as Chainflip names them, with the asset's decimals
@@ -744,16 +806,19 @@ function providerDestination(destination: { id: string; chain: string; asset: st
   return config;
 }
 
-/** Opens the provider's channel for a withdrawal, with the key on Asset Hub as the refund. */
+/** Opens the provider's channel for a withdrawal selling `amount` of the token `sale` lands, with
+ *  the key on Asset Hub as the refund. */
 export async function openWithdrawChannelFor(args: {
-  amountNative: bigint;
+  amount: bigint;
   destination: { id: string; chain: string; asset: string; address: string };
   keyPublicKeyHex: string;
+  sale: ConversionRoute;
 }): Promise<WithdrawalChannel> {
   const config = providerDestination(args.destination);
   const channel = await openWithdrawChannel({
     sdk: await mainnetSdk(),
-    amount: args.amountNative,
+    amount: args.amount,
+    source: assetHubSourceFor(depositTokenOf(args.sale)),
     destination: { chain: config.chain, asset: config.asset, address: args.destination.address },
     refundAddress: AccountId(0).dec(args.keyPublicKeyHex as `0x${string}`),
   });
@@ -838,6 +903,13 @@ export function cancelWithdrawJob(worker: WorkerLike, sessionId: string): Promis
  *  the provider's channel is real but cannot be paid, so the walk ends here by hand. */
 export function skipWithdrawRail(worker: WorkerLike, sessionId: string): Promise<unknown> {
   return worker.call("skipWithdrawRail", { sessionId });
+}
+
+/** Tells the worker to sell a held withdrawal's CASH on the pool instead of redeeming it: the
+ *  job's exit changes and the job is re-armed; its sale stays as the hand-off froze it. The worker
+ *  refuses a job that is not held. */
+export function switchWithdrawToPool(worker: WorkerLike, sessionId: string): Promise<unknown> {
+  return worker.call("switchWithdrawToPool", { sessionId });
 }
 
 /** Nudges the worker into a pass over its withdrawals. A run has stalled between wakes while the

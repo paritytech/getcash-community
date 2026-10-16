@@ -79,6 +79,7 @@ export function shareStatusReads(
   }
 
   return {
+    getAssets: () => client.getAssets(),
     getQuote: (req) => client.getQuote(req),
     createSession: (req) => client.createSession(req),
     getStatus,

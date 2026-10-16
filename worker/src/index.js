@@ -11,6 +11,7 @@ import {
   cancelWithdraw,
   skipWithdrawRail,
   startWithdraw,
+  switchWithdrawToPool,
   tickAllWithdraw,
   withdrawStatus,
 } from "./withdraw-engine.js";
@@ -31,6 +32,7 @@ export {
   cancelWithdraw,
   skipWithdrawRail,
   startWithdraw,
+  switchWithdrawToPool,
   tickAllWithdraw,
   withdrawStatus,
 } from "./withdraw-engine.js";
@@ -96,6 +98,7 @@ startRpcDispatcher({
     withdrawStatus: (params) => withdrawStatus(params),
     cancelWithdraw: (params) => cancelWithdraw(params),
     skipWithdrawRail: (params) => skipWithdrawRail(params),
+    switchWithdrawToPool: (params) => switchWithdrawToPool(params),
   },
 });
 

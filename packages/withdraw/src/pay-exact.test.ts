@@ -3,8 +3,8 @@
 // cases the chain cannot decide stopping instead of paying again; refusals moving the nonce on.
 
 import { describe, expect, it } from "vitest";
+import { TOKENS } from "@getsome/core";
 import {
-  exactAssetPaymentFloor,
   exactPaymentFloor,
   exactPaymentLanded,
   freshExactPayState,
@@ -18,7 +18,6 @@ const DEPOSIT = "5Deposit";
 const KEY = "5Key";
 const AMOUNT = 20_000_000_000n;
 const SIGNER = {} as never;
-const USDT = 1984;
 
 type Outcome = { ok: true } | { ok: false; error: string };
 type Reading = { free: bigint; nonce: number };
@@ -30,13 +29,13 @@ function world(
   outcomes: Outcome[] = [],
   opts: { dryRunFails?: string; overrides?: Partial<ExactPayInput> } = {},
 ) {
-  const submits: { args: unknown; options: unknown }[] = [];
+  const submits: { pallet: string; args: unknown; options: unknown }[] = [];
   const events: string[] = [];
-  const transfer = (args: unknown) => ({
+  const transferKeepAlive = (pallet: string) => (args: unknown) => ({
     decodedCall: { transfer: args },
     getEstimatedFees: async () => 1_000_000n,
     signAndSubmit: async (_signer: unknown, options: unknown) => {
-      submits.push({ args, options });
+      submits.push({ pallet, args, options });
       events.push("submit");
       const outcome = outcomes.shift() ?? { ok: true };
       return outcome.ok
@@ -46,24 +45,23 @@ function world(
             txHash: `0x${submits.length}`,
             dispatchError: {
               type: "Module",
-              value: { type: "Balances", value: { type: outcome.error } },
+              value: { type: pallet, value: { type: outcome.error } },
             },
           };
     },
   });
   const api = {
     tx: {
-      Balances: { transfer_keep_alive: transfer },
-      Assets: { transfer_keep_alive: transfer },
+      Balances: { transfer_keep_alive: transferKeepAlive("Balances") },
+      Assets: { transfer_keep_alive: transferKeepAlive("Assets") },
     },
-    query: {
-      Assets: {
-        Asset: {
-          getValue: async (id: number) => (id === USDT ? { min_balance: 70_000n } : undefined),
-        },
-      },
-    },
+    query: { Assets: { Asset: { getValue: async () => ({ min_balance: 70_000n }) } } },
     apis: {
+      // The native fee at a thousandth in the stable.
+      AssetConversionApi: {
+        quote_price_tokens_for_exact_tokens: async (_a: unknown, _b: unknown, fee: bigint) =>
+          fee / 1_000n,
+      },
       DryRunApi: {
         dry_run_call: async () =>
           opts.dryRunFails === undefined
@@ -92,6 +90,7 @@ function world(
     key: { address: KEY, signer: SIGNER },
     to: DEPOSIT,
     amount: AMOUNT,
+    token: TOKENS.PAS,
     tickTimeoutMs: 1_000,
     submitTimeoutMs: 1_000,
     signOptions: { at: "0xbest" },
@@ -112,6 +111,7 @@ describe("the exact payment", () => {
     await payExactOnce(input, state);
     expect(submits).toEqual([
       {
+        pallet: "Balances",
         args: { dest: { type: "Id", value: DEPOSIT }, value: AMOUNT },
         // Mortal for the period `exactPaymentLanded` counts on, whatever papi defaults to.
         options: { at: "0xbest", nonce: 0, mortality: { mortal: true, period: 64 } },
@@ -216,40 +216,37 @@ describe("the exact payment", () => {
 
   it("sizes the floor as the amount, the fee with its headroom, and the existential deposit", async () => {
     const { input } = world([]);
-    const floor = await exactPaymentFloor(input.assetHubApi, KEY, DEPOSIT, AMOUNT);
+    const floor = await exactPaymentFloor(input.assetHubApi, KEY, DEPOSIT, AMOUNT, TOKENS.PAS);
     expect(floor).toBe(AMOUNT + 1_250_000n + 100_000_000n);
   });
 
-  it("pays a sale of USDT in USDT at the same nonce, its fee in the caller's options", async () => {
-    const usdtFee = { asset: { parents: 0, interior: { type: "Here" } } };
-    const { input, submits } = world([{ free: 25_300_000n, nonce: 0 }], [], {
-      overrides: { assetId: USDT, amount: 25_000_000n, signOptions: { at: "0xbest", ...usdtFee } },
+  it("pays a stable through its own transfer with the fee charged in it, floored on its min_balance", async () => {
+    const { input, submits } = world([{ free: 21_000_000n, nonce: 0 }], [], {
+      overrides: { amount: 20_000_000n, token: TOKENS.USDT },
     });
-    const state = freshExactPayState();
-    await payExactOnce(input, state);
+    await payExactOnce(input, freshExactPayState());
     expect(submits).toEqual([
       {
-        args: { id: USDT, target: { type: "Id", value: DEPOSIT }, amount: 25_000_000n },
+        pallet: "Assets",
+        args: { id: 1984, target: { type: "Id", value: DEPOSIT }, amount: 20_000_000n },
         options: {
+          asset: TOKENS.USDT.location,
           at: "0xbest",
-          ...usdtFee,
           nonce: 0,
           mortality: { mortal: true, period: 64 },
         },
       },
     ]);
-    // The balance it is judged by is the USDT's, read back after a lost answer the same way.
-    expect(state).toMatchObject({ inFlight: true, balanceBefore: "25300000" });
-  });
-
-  it("sizes a USDT floor as the amount, the fee allowance and USDT's minimum balance", async () => {
-    const { input } = world([]);
-    expect(await exactAssetPaymentFloor(input.assetHubApi, USDT, 25_000_000n, 100_000n)).toBe(
-      25_000_000n + 100_000n + 70_000n,
+    // The fee priced into USDT with its headroom, and the asset's min_balance in place of the
+    // existential deposit.
+    const floor = await exactPaymentFloor(
+      input.assetHubApi,
+      KEY,
+      DEPOSIT,
+      20_000_000n,
+      TOKENS.USDT,
     );
-    await expect(exactAssetPaymentFloor(input.assetHubApi, 7, 1n, 1n)).rejects.toThrow(
-      "asset 7 is not on Asset Hub",
-    );
+    expect(floor).toBe(20_000_000n + 1_250n + 70_000n);
   });
 });
 

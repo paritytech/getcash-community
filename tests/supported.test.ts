@@ -3,10 +3,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SupportedCorridor } from "../lib/supported";
+import { installTestMeldAssets } from "./setup-meld-assets";
 
-/** The catalog is keyed by destination; these cases all read the pool tier's.
- *  See lib/supported.ts. */
-const DEST = "DOT_ASSETHUB";
+/** The catalog is keyed by destination asset; these cases all read the pool tier's, which Meld
+ *  calls DOT. See lib/supported.ts. */
+const DEST = "dot@assethub";
 
 const BASE = "https://adapter.test";
 
@@ -27,8 +28,9 @@ function stubFetch(routes: Record<string, unknown>) {
 }
 
 describe("lib/supported", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
+    await installTestMeldAssets();
     vi.stubEnv("VITE_MELD_BASE_URL", BASE);
   });
   afterEach(() => {
@@ -81,6 +83,33 @@ describe("lib/supported", () => {
     expect(otherMethod(cardOnly, "card")).toBeNull();
     expect(otherMethod({ country: "EC", fiat: "USD", methods: [] }, "bank")).toBeNull();
     expect(otherMethod(null, "bank")).toBeNull();
+  });
+
+  it("asks for a destination under the code the adapter's table names it by", async () => {
+    const fetchSpy = stubFetch({
+      "/supported/countries": { countries: [{ country: "US", name: "US" }] },
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const { fetchSupportedCountries } = await import("../lib/supported");
+    await fetchSupportedCountries(DEST);
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toContain("destinationCurrencyCode=DOT");
+  });
+
+  it("reads the table from the adapter first when the page has none, and asks nothing without it", async () => {
+    vi.resetModules();
+    const fetchSpy = stubFetch({
+      "/assets": { assets: [{ asset: "dot@assethub", code: "DOT_FROM_ADAPTER" }] },
+      "/supported/countries": { countries: [{ country: "US", name: "US" }] },
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const { fetchSupportedCountries, fetchCorridor } = await import("../lib/supported");
+    expect(await fetchSupportedCountries(DEST)).toHaveLength(1);
+    const urls = fetchSpy.mock.calls.map(([url]) => String(url));
+    expect(urls[0]).toBe(`${BASE}/assets`);
+    expect(urls[1]).toContain("destinationCurrencyCode=DOT_FROM_ADAPTER");
+    // An asset the adapter does not serve has no code to ask under: no catalog, and no request.
+    expect(await fetchCorridor("usdt@assethub", "US")).toBeNull();
+    expect(fetchSpy.mock.calls).toHaveLength(2);
   });
 
   it("fetchCorridor parses methods, and returns null when the adapter has no such corridor", async () => {
@@ -467,7 +496,7 @@ describe("lib/supported", () => {
               min: "20",
               max: "5000",
               currency: "EUR",
-              lanes: [{ code: "DOT_ASSETHUB", chain: "assethub", min: "20", max: "5000" }],
+              lanes: [{ code: "DOT", chain: "assethub", min: "20", max: "5000" }],
             },
             {
               paymentMethodType: "PAYOUT_TO_CARD",
@@ -492,7 +521,7 @@ describe("lib/supported", () => {
     expect([...map!.keys()]).toEqual(["DE"]);
     expect(map!.get("DE")).toMatchObject({ name: "Germany", fiat: "EUR" });
     expect(map!.get("DE")!.methods.map((m) => m.lanes)).toEqual([
-      [{ code: "DOT_ASSETHUB", chain: "assethub", min: "20", max: "5000" }],
+      [{ code: "DOT", chain: "assethub", min: "20", max: "5000" }],
       [
         { code: "USDC_ARBITRUM", chain: "arbitrum", min: "10", max: "2000" },
         { code: "USDC_SOLANA", chain: "solana" },

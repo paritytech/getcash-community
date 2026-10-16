@@ -5,19 +5,14 @@ import { computed } from "vue";
 import { ArrowUpRight, RefreshCcw, X } from "lucide-vue-next";
 import { TOKENS } from "@getsome/core";
 import { formatSourceAmount, SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
-import {
-  formatBaseUnits,
-  isDirectUsdt,
-  sellAmountOf,
-  SELL_TOKEN,
-  type SellToken,
-} from "@getsome/meld";
+import { formatBaseUnits, sellAmountOf } from "@getsome/meld";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
 import {
   paymentTaken,
   saleAwaitingDeposit,
   type WithdrawalRecord,
 } from "../../funding/requests/model";
+import { sellTokenOf } from "../../funding/requests/transitions/withdrawal";
 import { asName } from "../../funding/top-up-projection";
 import { formatWhenShort, shortRef } from "../../utils/journey";
 import { fmtFiat } from "../../utils/money";
@@ -41,8 +36,10 @@ const props = defineProps<{
   /** A line the record does not carry: a refused cancel, a retry that could not start. */
   notice: string | null;
   busy: boolean;
+  /** What the pool would land for a held withdrawal, formatted; null until quoted. */
+  poolFigure?: string | null;
 }>();
-const emit = defineEmits<{ cancel: []; retry: []; close: []; "return-funds": [] }>();
+const emit = defineEmits<{ cancel: []; retry: []; pool: []; close: []; "return-funds": [] }>();
 
 const now = useFundingProgressClock(
   () => withdrawalProgressProfile(props.record.rail.provider).cadenceMs,
@@ -122,12 +119,11 @@ const residueNote = computed(() => {
   if (residue.stuck === true) {
     return "What was left could not come back to your balance on its own. Contact support with your reference.";
   }
-  // A sale that redeemed its CASH for USDT, through an offramp lane or sold directly, leaves USDT on
-  // the key, the rest PAS.
   const sale = props.record.sale;
-  const usdt = sale?.lane !== undefined || isDirectUsdt(sale?.sellCode);
-  const token = usdt ? (TOKENS.USDT as SellToken) : SELL_TOKEN;
-  // Shown to the sale's decimals; a remainder below them is not worth a line.
+  if (sale === undefined) return null;
+  // In the token the sale sold, shown to the sale's decimals; a remainder below them is not worth
+  // a line.
+  const token = sellTokenOf(sale);
   const shown = residue.amount === undefined ? 0n : sellAmountOf(BigInt(residue.amount), token);
   const amount = shown === 0n ? null : `${formatBaseUnits(token, shown)} ${token.symbol}`;
   if (!residue.returning) {
@@ -171,6 +167,10 @@ const refunded = computed(
 );
 const canRetry = computed(
   () => status.value.kind === "failed" && status.value.recoverable && !refunded.value,
+);
+/** The pool is offered only where waiting cannot help: the PSM refused with room for the redeem. */
+const canSwitchToPool = computed(
+  () => status.value.kind === "failed" && failure.value?.kind === "held",
 );
 </script>
 
@@ -223,9 +223,17 @@ const canRetry = computed(
       <PillButton v-if="refunded" class="mt-auto" @click="emit('return-funds')">
         Return funds
       </PillButton>
-      <PillButton v-else-if="canRetry" class="mt-auto" :disabled="busy" @click="emit('retry')">
-        Try again
-      </PillButton>
+      <div v-else-if="canRetry" class="mt-auto flex flex-col gap-3">
+        <PillButton :disabled="busy" @click="emit('retry')">Try again</PillButton>
+        <PillButton
+          v-if="canSwitchToPool"
+          variant="tertiary"
+          :disabled="busy || !poolFigure"
+          @click="emit('pool')"
+        >
+          Sell on the pool{{ poolFigure ? ` for about ${poolFigure}` : "" }}
+        </PillButton>
+      </div>
       <!-- Cancel and retry never show together: cancel is for an unpaid request, retry for a
            failed one. -->
       <PillButton

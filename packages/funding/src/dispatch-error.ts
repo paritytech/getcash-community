@@ -1,5 +1,5 @@
 // Describes a rejected PolkadotXcm.execute by naming the instruction that failed and the XCM
-// error, and recognises the PSM's refusals of a mint. The decoded shape comes from the runtime's
+// error, and recognises the PSM's refusals of a swap. The decoded shape comes from the runtime's
 // metadata, so every field is read structurally and nothing here throws on a shape it has not
 // seen.
 
@@ -59,6 +59,10 @@ export function describeDispatchError(dispatchError: unknown, execArgs?: unknown
   return "unrecognised dispatch error";
 }
 
+/** The pair's debt is short of the redeem. A mint refills it, so this is waited out rather than
+ *  counted. */
+const PSM_NO_ROOM = new Set(["InsufficientReserve"]);
+
 /** The pair paused for minting or for everything, or the mint over its ceiling. Waiting clears
  *  these: a breaker comes down, and redemptions free the ceiling. */
 const PSM_UNAVAILABLE = new Set(["MintingStopped", "AllSwapsStopped", "ExceedsMaxPsmDebt"]);
@@ -72,7 +76,7 @@ const PSM_WILL_NOT_SERVE = new Set([
   "AmountTooSmallAfterConversion",
 ]);
 
-export type PsmRefusalKind = "unavailable" | "will-not-serve";
+export type PsmRefusalKind = "capacity" | "unavailable" | "will-not-serve";
 
 /** Which refusal the PSM gave, or null when it did not refuse. A transport error, a timeout or
  *  any other pallet's error is not a refusal. */
@@ -81,6 +85,7 @@ export function psmRefusalKind(dispatchError: unknown): PsmRefusalKind | null {
   const pallet = tagged(outer?.value);
   if (outer?.type !== "Module" || name(pallet) !== "Psm") return null;
   const variant = name(pallet?.value) ?? "";
+  if (PSM_NO_ROOM.has(variant)) return "capacity";
   if (PSM_UNAVAILABLE.has(variant)) return "unavailable";
   return PSM_WILL_NOT_SERVE.has(variant) ? "will-not-serve" : null;
 }

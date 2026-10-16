@@ -1,9 +1,9 @@
 // The worker's side of a fiat sale through an offramp lane, offline: the hand-off carries the
 // Chainflip channel the key pays, the key pays all its USDT into it once Chainflip's record names
 // the provider's deposit address, and a swap that failed after the key paid waits for its refund
-// to reach the key before the key goes home through the pool. And a direct sale of USDT, which
-// runs the same redeem with no swap: the key pays the provider the exact USDT figure, and what is
-// left goes home through the pool as USDT.
+// to reach the key before the key goes home. And a direct sale of USDT, which runs the same redeem
+// with no swap: the key pays the provider the exact USDT figure, and what is left goes home as
+// USDT. The PSM in this script has no room to mint the USDT back, so every way home takes the pool.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -19,6 +19,8 @@ const mocks = vi.hoisted(() => ({
   fundingStatus: vi.fn(),
   withdrawTickOnce: vi.fn(),
   keyFree: 0n,
+  /** The key's USDT on Asset Hub, and its CASH there. */
+  keyUsdt: 0n,
   keyCash: 0n,
   keyReadHangs: false,
 }));
@@ -63,6 +65,7 @@ vi.mock("@getsome/withdraw", async (importOriginal) => ({
 vi.mock("@getsome/funding", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   chooseCashTransfer: async () => "teleport",
+  chooseRoute: async () => ({ tier: "pool", external: "USDT" }),
 }));
 
 // The residue is read off the key on Asset Hub through a client the engine opens for it.
@@ -74,9 +77,21 @@ vi.mock("../worker/src/shared.js", async (importOriginal) => {
     connectChain: async () => ({
       getBestBlocks: async () => [{ hash: "0xbest", number: 1 }],
       getTypedApi: () => ({
+        apis: {
+          AssetConversionApi: {
+            quote_price_tokens_for_exact_tokens: async (_a: unknown, _b: unknown, fee: bigint) =>
+              fee / 1_000n,
+          },
+        },
+        tx: {
+          Assets: { transfer_keep_alive: () => ({ getEstimatedFees: async () => 160_000_000n }) },
+        },
         query: {
           Assets: {
-            Account: { getValue: () => Promise.resolve({ balance: mocks.keyCash }) },
+            Account: {
+              getValue: (id: number) =>
+                Promise.resolve({ balance: id === 1984 ? mocks.keyUsdt : mocks.keyCash }),
+            },
             Asset: { getValue: () => Promise.resolve({ min_balance: 70_000n }) },
           },
           System: {
@@ -234,6 +249,7 @@ describe("a fiat sale through an offramp lane", () => {
     mocks.status.mockResolvedValue({ status: "receiving" });
     mocks.startFunding.mockResolvedValue({ sessionId: "s-1/residue" });
     mocks.keyFree = 0n;
+    mocks.keyUsdt = 0n;
     mocks.keyCash = 0n;
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
@@ -318,7 +334,7 @@ describe("a fiat sale through an offramp lane", () => {
     expect(storedJob()).toMatchObject({ phase: "failed", failure: "rail-failed" });
     expect(storedJob().residueError).toMatch(/refund/);
     expect(mocks.startFunding).not.toHaveBeenCalled();
-    mocks.keyCash = 99_000_000n; // the refund lands on the key
+    mocks.keyUsdt = 99_000_000n; // the refund lands on the key
     await engine.tickAllWithdraw();
     expect(mocks.startFunding).toHaveBeenCalledTimes(1);
     expect(mocks.startFunding.mock.calls[0]![0]).toMatchObject({ tier: "pool", external: "USDT" });
@@ -338,7 +354,7 @@ describe("a fiat sale through an offramp lane", () => {
     await landed();
     const job = storedJob();
     job.leg.sweep = { attempts: 1, rejections: 0 }; // the sweep left; its answer did not come back
-    mocks.keyCash = 0n; // and the key is empty behind it
+    mocks.keyUsdt = 0n; // and the key is empty behind it
     mocks.channel.mockResolvedValue({
       depositAddress: CF_DEPOSIT,
       destinationAddress: SOLANA_DEPOSIT,
@@ -356,7 +372,7 @@ describe("a fiat sale through an offramp lane", () => {
     await landed();
     const job = storedJob();
     job.leg.sweep = { attempts: 1, rejections: 1 }; // refused at inclusion: nothing left
-    mocks.keyCash = 99_000_000n;
+    mocks.keyUsdt = 99_000_000n;
     const resumed = await engineWith({ "s-1": job });
     await resumed.tickAllWithdraw();
     expect(mocks.channel).toHaveBeenCalledWith("cf-channel-7");
@@ -375,6 +391,8 @@ describe("a fiat sale through an offramp lane", () => {
     mocks.keyCash = 100_000_000n; // the purse pays a moment later
     await engine.tickAllWithdraw();
     expect(mocks.startFunding).toHaveBeenCalledTimes(1);
+    // CASH that never redeemed goes home as it is.
+    expect(mocks.startFunding.mock.calls[0]![0]).toMatchObject({ tier: "dotusd" });
     expect(storedJob().residue).toMatchObject({ whole: true, returning: true });
   });
 
@@ -424,7 +442,7 @@ describe("a fiat sale through an offramp lane", () => {
       await engine.tickAllWithdraw();
       expect(storedJob().residue).toBeUndefined();
       expect(storedJob().residueError).toMatch(/refund/);
-      mocks.keyCash = 99_000_000n; // the refund lands at last
+      mocks.keyUsdt = 99_000_000n; // the refund lands at last
       await engine.tickAllWithdraw();
       expect(storedJob().residue).toMatchObject({ amount: "99000000", returning: true });
     } finally {
@@ -503,6 +521,7 @@ describe("a direct fiat sale of USDT", () => {
     mocks.status.mockResolvedValue({ status: "receiving" });
     mocks.startFunding.mockResolvedValue({ sessionId: "s-1/residue" });
     mocks.keyFree = 0n;
+    mocks.keyUsdt = 0n;
     mocks.keyCash = 0n;
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
@@ -540,13 +559,14 @@ describe("a direct fiat sale of USDT", () => {
     expect(mocks.stored.get(WITHDRAW_KEY)).toEqual({});
   });
 
-  it("holds the message to the payment, its fee allowance and USDT's minimum balance", async () => {
+  it("holds the message to the payment, its fee priced in USDT and USDT's minimum balance", async () => {
     const engine = await engineWith({});
     await engine.startWithdraw(usdtHandoff());
     mocks.withdrawTickOnce.mockResolvedValue({ step: "await-cash" });
     await engine.tickAllWithdraw();
     const [input] = mocks.withdrawTickOnce.mock.calls[0]!;
-    expect(await input.minLanding()).toBe(25_000_000n + 100_000n + 70_000n);
+    // The 0.16 USDT fee with its quarter of headroom, and the minimum balance.
+    expect(await input.minLanding()).toBe(25_000_000n + 200_000n + 70_000n);
   });
 
   it("pays the provider exactly the USDT figure once its record matches", async () => {
@@ -576,7 +596,7 @@ describe("a direct fiat sale of USDT", () => {
 
   it("sends what the payment left home as USDT through the pool", async () => {
     const engine = await landed();
-    mocks.keyCash = 1_500_000n; // 1.5 USDT left on the key once it paid
+    mocks.keyUsdt = 1_500_000n; // 1.5 USDT left on the key once it paid
     await engine.tickAllWithdraw(); // the key pays the provider, then what is left goes home
     expect(mocks.startFunding).toHaveBeenCalledTimes(1);
     expect(mocks.startFunding.mock.calls[0]![0]).toMatchObject({ tier: "pool", external: "USDT" });
@@ -585,7 +605,7 @@ describe("a direct fiat sale of USDT", () => {
 
   it("keeps less than a USDT on the key rather than pay the way home", async () => {
     const engine = await landed();
-    mocks.keyCash = 170_000n;
+    mocks.keyUsdt = 170_000n;
     await engine.tickAllWithdraw();
     expect(mocks.startFunding).not.toHaveBeenCalled();
     expect(storedJob().residue).toEqual({ amount: "170000", returning: false });
@@ -594,7 +614,7 @@ describe("a direct fiat sale of USDT", () => {
   it("sends the whole key home as USDT when the sale ends before the provider is paid", async () => {
     mocks.channel.mockResolvedValue(null);
     const engine = await landed();
-    mocks.keyCash = 25_300_000n;
+    mocks.keyUsdt = 25_300_000n;
     await engine.tickAllWithdraw();
     expect(mocks.payRailExact).not.toHaveBeenCalled();
     expect(storedJob()).toMatchObject({ phase: "failed", failure: "channel-mismatch" });

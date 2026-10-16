@@ -11,6 +11,7 @@ function countingClient() {
     answer: async () => ({ status: "session_opened" }),
   };
   const client: MeldClientLike = {
+    getAssets: async () => [],
     getQuote: async () => ({ quotes: [] }),
     createSession: async () => {
       throw new Error("unused");

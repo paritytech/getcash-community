@@ -1,10 +1,9 @@
-// The hand that pays a direct sale of USDT: the provider's deposit is read in USDT, and the key
-// pays the exact figure in USDT, its fee in USDT, judged by its USDT balance and its nonce. A sale
-// of PAS keeps paying PAS.
+// The hand that pays a direct sale: the provider's deposit is read in the token the hand-off's
+// sale lands, and the key pays the exact figure in it, judged by its balance of it and its nonce.
+// USDT out of the PSM, or PAS out of the pool.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { SELL_TOKEN, USDT_SELL_TOKEN } from "@getsome/meld";
-import { stableTxOptions } from "@getsome/funding";
+import { TOKENS } from "@getsome/core";
 
 const mocks = vi.hoisted(() => ({
   saleRail: vi.fn(),
@@ -79,34 +78,33 @@ describe("a direct sale's provider and payment", () => {
   it("reads a sale of USDT's deposit in USDT, and a sale of PAS's in PAS", async () => {
     const { railFor } = await import("../worker/src/providers.js");
     railFor("meld", usdtSale);
-    expect(mocks.saleRail.mock.calls[0]![3]).toEqual(USDT_SELL_TOKEN);
+    expect(mocks.saleRail.mock.calls[0]![3]).toEqual(TOKENS.USDT);
     railFor("meld", dotSale);
-    expect(mocks.saleRail.mock.calls[1]![3]).toEqual(SELL_TOKEN);
+    expect(mocks.saleRail.mock.calls[1]![3]).toEqual(TOKENS.PAS);
   });
 
-  it("pays a sale of USDT in USDT, its fee in USDT, and reads the key's USDT", async () => {
+  it("pays a sale of USDT in USDT and reads the key's USDT", async () => {
     const { payRailExact } = await import("../worker/src/providers.js");
     await payRailExact(usdtSale, handoff, 25_000_000n, exact());
     const [input] = mocks.payExactOnce.mock.calls[0]!;
     expect(input).toMatchObject({
       to: DEPOSIT,
       amount: 25_000_000n,
-      assetId: 1984,
-      signOptions: { at: "0xbest", ...stableTxOptions("USDT") },
+      token: TOKENS.USDT,
+      signOptions: { at: "0xbest" },
       anchorNumber: 7,
     });
     await input.readKey();
-    expect(mocks.readAssetHubAccount).toHaveBeenCalledWith(API, KEY_HEX, 1984);
+    expect(mocks.readAssetHubAccount).toHaveBeenCalledWith(API, KEY_HEX, TOKENS.USDT);
   });
 
   it("pays a sale of PAS in PAS, as it always has", async () => {
     const { payRailExact } = await import("../worker/src/providers.js");
     await payRailExact(dotSale, handoff, 234_521_000_000n, exact());
     const [input] = mocks.payExactOnce.mock.calls[0]!;
-    expect(input).not.toHaveProperty("assetId");
-    expect(input.signOptions).toEqual({ at: "0xbest" });
+    expect(input).toMatchObject({ token: TOKENS.PAS, signOptions: { at: "0xbest" } });
     await input.readKey();
-    expect(mocks.readAssetHubAccount).toHaveBeenCalledWith(API, KEY_HEX, undefined);
+    expect(mocks.readAssetHubAccount).toHaveBeenCalledWith(API, KEY_HEX, TOKENS.PAS);
   });
 
   it("reads whether an earlier USDT payment landed from the key's USDT", async () => {
@@ -114,6 +112,6 @@ describe("a direct sale's provider and payment", () => {
     await exactPaymentOut(usdtSale, 25_000_000n, exact());
     const [input] = mocks.exactPaymentLanded.mock.calls[0]!;
     await input.readKey();
-    expect(mocks.readAssetHubAccount).toHaveBeenCalledWith(API, KEY_HEX, 1984);
+    expect(mocks.readAssetHubAccount).toHaveBeenCalledWith(API, KEY_HEX, TOKENS.USDT);
   });
 });

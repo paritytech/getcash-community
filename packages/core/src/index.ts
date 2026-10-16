@@ -9,3 +9,4 @@ export * from "./hash";
 export * from "./session";
 export * from "./network";
 export * from "./tokens";
+export * from "./meld-assets";

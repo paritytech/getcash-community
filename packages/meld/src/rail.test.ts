@@ -11,6 +11,7 @@ function fakeClient(over: Partial<MeldClientLike> = {}): MeldClientLike {
     { serviceProvider: "TRANSAK", sourceAmount: "141.89", destinationAmount: "20.63" },
   ];
   return {
+    getAssets: async () => [],
     getQuote: async () => ({ quotes }),
     createSession: async () => ({
       fundingRequestId: "funding-1",
@@ -48,6 +49,7 @@ describe("createMeldRail", () => {
     const sentQuote: string[] = [];
     let sentSession: MeldSessionRequest | undefined;
     const client = fakeClient({
+      getAssets: async () => [],
       getQuote: async (req) => {
         sentQuote.push(req.destinationCurrencyCode);
         return {
@@ -80,15 +82,16 @@ describe("createMeldRail", () => {
       assetSymbol: "USDT",
       decimals: 6,
     });
-    expect(sentQuote).toEqual(["USDT_ASSETHUB"]);
+    expect(sentQuote).toEqual(["USDT_DOT"]);
 
     await rail.requestDepositAddress({ quote, destAddress: BURNER, refundAddress: "" });
-    expect(sentSession?.destinationCurrencyCode).toBe("USDT_ASSETHUB");
+    expect(sentSession?.destinationCurrencyCode).toBe("USDT_DOT");
   });
 
   it("quotes through Meld with the rail-configured country/fiat/method", async () => {
     let sentMethod: string | undefined;
     const client = fakeClient({
+      getAssets: async () => [],
       getQuote: async (req) => {
         sentMethod = req.paymentMethodType;
         return {
@@ -132,6 +135,7 @@ describe("createMeldRail", () => {
   it("BANK_TRANSFER also opens a Meld session (widget), like card", async () => {
     let sentMethod: string | undefined;
     const client = fakeClient({
+      getAssets: async () => [],
       getQuote: async (req) => {
         sentMethod = req.paymentMethodType;
         return {

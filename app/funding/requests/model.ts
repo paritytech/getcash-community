@@ -5,6 +5,7 @@ import type {
   ChainflipProgressFacts,
   FailureKind,
   FailureStep,
+  MeldAssetId,
   PaymentPhase,
   PaymentState,
   RefundProgress,
@@ -423,10 +424,12 @@ export function withdrawalRouteOf(sourceId: string | undefined): "crypto" | "car
 
 /** The worker's steps between the payment and the arrival on Asset Hub. */
 export type SendingStep = Exclude<WithdrawStep, "await-cash" | "done">;
-export const SENDING_STEP_ORDER = { swap: 0, convert: 1, "await-arrival": 2 } satisfies Record<
-  SendingStep,
-  number
->;
+export const SENDING_STEP_ORDER = {
+  swap: 0,
+  convert: 1,
+  "await-arrival": 2,
+  redeem: 3,
+} satisfies Record<SendingStep, number>;
 export const isSendingStep = (step: string): step is SendingStep =>
   Object.hasOwn(SENDING_STEP_ORDER, step);
 
@@ -453,6 +456,8 @@ export type WithdrawalFailureKind =
   | "payment-failed"
   | "rejected"
   | "timeout"
+  /** The PSM refused the redeem three times with room for it; the CASH is still on the key. */
+  | "held"
   | "expired"
   | "unknown"
   | "deposit-rejected"
@@ -590,9 +595,15 @@ export interface MeldSale {
   cryptoAmount: string;
   /** A sale through an offramp lane: the asset the provider buys, delivered by Chainflip. */
   lane?: LaneId;
-  /** A direct sale under a code other than DOT_ASSETHUB: DOT_STATEMINT, or USDT_ASSETHUB or USDT_STATEMINT for USDT
-   *  the PSM redeemed, which the key pays and `cryptoAmount` is in. */
+  /** A direct sale under a code other than Meld's code for DOT: its code for the USDT the PSM
+   *  redeemed, which the key pays and `cryptoAmount` is in. The code as the adapter named the asset
+   *  when the sale opened, kept for the wire; what the sale sells is `asset`. */
   sellCode?: string;
+  /** The asset a direct sale under `sellCode` sells, by the app's own name for it, fixed when the
+   *  sale opened. Meld renames codes and the adapter's table then no longer knows the old one, so
+   *  the sale is read by this, not by its code. A record from before it was kept has only the
+   *  code. */
+  asset?: MeldAssetId;
   /** The fiat the quote said reaches the seller, decimal text in `fiat`. An estimate: the
    *  provider prices the payout again. */
   quotedPayout: string;
@@ -625,7 +636,21 @@ export interface WithdrawJobView {
   lastError?: string;
   fundsSeenAt: number | null;
   lastTickAt: number | null;
-  txs?: { call: "swap" | "withdraw" | "sweep" | "pay"; txHash: string; block?: number }[];
+  /** Since when the PSM has had no room for the redeem; the worker waits, off its clock, and
+   *  the journey shows the ordinary status. Diagnostics only. */
+  waitingSince?: number | null;
+  /** PSM refusals of the redeem with room for it, towards the hold. */
+  psmRefusals?: number;
+  /** The sale's tier as the job recorded it. */
+  tier?: string;
+  /** Where a PSM-tier job's CASH leaves the key on Asset Hub: the PSM, or the pool once the user
+   *  chose it from a hold. */
+  exit?: "psm" | "pool";
+  txs?: {
+    call: "swap" | "withdraw" | "redeem" | "pool-exit" | "sweep" | "pay";
+    txHash: string;
+    block?: number;
+  }[];
   /** The provider's latest word on the swap, once the worker has paid it. */
   rail?: SwapStatusResult;
   /** A fiat sale only: what the sale left on the key once the provider was paid, planck, and its
