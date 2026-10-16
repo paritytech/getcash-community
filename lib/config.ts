@@ -138,6 +138,11 @@ export const sourcePairFor = (sourceId: string): { chain: string; asset: string 
  *  VITE_OFFRAMP_LANES overrides the list, comma separated; an asset left out is not offered,
  *  whatever the adapter lists, and an entry that is not an asset id is dropped with a warning. */
 export const OFFRAMP_LANE_ORDER: readonly MeldAssetId[] = (() => {
+  // TEST ONLY (combined testing branch): force the Arbitrum SaleVault lane into real builds so the
+  // off-ramp SaleVault path is reachable regardless of the deploy's env. Tests keep the env list.
+  if (import.meta.env.MODE !== "test") {
+    return ["usdt@assethub", "dot@assethub", "usdc@arbitrum"];
+  }
   const raw = import.meta.env.VITE_OFFRAMP_LANES as string | undefined;
   const listed = (raw ?? "")
     .split(",")
