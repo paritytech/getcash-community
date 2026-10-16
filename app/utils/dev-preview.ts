@@ -638,7 +638,8 @@ async function previewSale(
             : { kind: "sending", at };
   const failure: WithdrawalRecord["failure"] =
     state === "declined"
-      ? { kind: "egress-failed", step: "send", message: "declined", recoverable: false }
+      ? // The sale rail reports every ending as unknown; the band names the provider.
+        { kind: "unknown", step: "send", message: "declined", recoverable: false }
       : state === "provider-cancelled"
         ? { kind: "deposit-rejected", step: "send", message: "cancelled", recoverable: false }
         : state === "sale-ended"
@@ -708,7 +709,7 @@ async function previewSale(
       ...(state === "paying-out"
         ? { status: "sending" as const }
         : state === "declined"
-          ? { status: "failed" as const, failure: { kind: "egress-failed", message: "declined" } }
+          ? { status: "failed" as const, failure: { kind: "unknown", message: "declined" } }
           : state === "provider-cancelled"
             ? {
                 status: "failed" as const,

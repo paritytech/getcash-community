@@ -109,9 +109,10 @@ describe("preview deck staging", () => {
       "withdrawal / crypto / journey: cancelled": 0,
       "withdrawal / crypto / journey: refunded": 4,
       "withdrawal / card / journey: sale ended": 0,
+      // The sale rail reports every ending as unknown, so a decline fails the hand-off's next.
       "withdrawal / card / journey: provider cancelled": 4,
-      "withdrawal / card / journey: declined": 5,
-      "withdrawal / bank / journey: declined": 5,
+      "withdrawal / card / journey: declined": 4,
+      "withdrawal / bank / journey: declined": 4,
     };
     const failed: Record<string, number | undefined> = {};
     for (let n = 0; n < SCENES.length; n++) {
