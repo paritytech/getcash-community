@@ -4,6 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  exactAssetPaymentFloor,
   exactPaymentFloor,
   exactPaymentLanded,
   freshExactPayState,
@@ -17,6 +18,7 @@ const DEPOSIT = "5Deposit";
 const KEY = "5Key";
 const AMOUNT = 20_000_000_000n;
 const SIGNER = {} as never;
+const USDT = 1984;
 
 type Outcome = { ok: true } | { ok: false; error: string };
 type Reading = { free: bigint; nonce: number };
@@ -30,28 +32,35 @@ function world(
 ) {
   const submits: { args: unknown; options: unknown }[] = [];
   const events: string[] = [];
+  const transfer = (args: unknown) => ({
+    decodedCall: { transfer: args },
+    getEstimatedFees: async () => 1_000_000n,
+    signAndSubmit: async (_signer: unknown, options: unknown) => {
+      submits.push({ args, options });
+      events.push("submit");
+      const outcome = outcomes.shift() ?? { ok: true };
+      return outcome.ok
+        ? { ok: true, txHash: `0x${submits.length}`, block: { number: 200 + submits.length } }
+        : {
+            ok: false,
+            txHash: `0x${submits.length}`,
+            dispatchError: {
+              type: "Module",
+              value: { type: "Balances", value: { type: outcome.error } },
+            },
+          };
+    },
+  });
   const api = {
     tx: {
-      Balances: {
-        transfer_keep_alive: (args: unknown) => ({
-          decodedCall: { transfer: args },
-          getEstimatedFees: async () => 1_000_000n,
-          signAndSubmit: async (_signer: unknown, options: unknown) => {
-            submits.push({ args, options });
-            events.push("submit");
-            const outcome = outcomes.shift() ?? { ok: true };
-            return outcome.ok
-              ? { ok: true, txHash: `0x${submits.length}`, block: { number: 200 + submits.length } }
-              : {
-                  ok: false,
-                  txHash: `0x${submits.length}`,
-                  dispatchError: {
-                    type: "Module",
-                    value: { type: "Balances", value: { type: outcome.error } },
-                  },
-                };
-          },
-        }),
+      Balances: { transfer_keep_alive: transfer },
+      Assets: { transfer_keep_alive: transfer },
+    },
+    query: {
+      Assets: {
+        Asset: {
+          getValue: async (id: number) => (id === USDT ? { min_balance: 70_000n } : undefined),
+        },
       },
     },
     apis: {
@@ -209,6 +218,38 @@ describe("the exact payment", () => {
     const { input } = world([]);
     const floor = await exactPaymentFloor(input.assetHubApi, KEY, DEPOSIT, AMOUNT);
     expect(floor).toBe(AMOUNT + 1_250_000n + 100_000_000n);
+  });
+
+  it("pays a sale of USDT in USDT at the same nonce, its fee in the caller's options", async () => {
+    const usdtFee = { asset: { parents: 0, interior: { type: "Here" } } };
+    const { input, submits } = world([{ free: 25_300_000n, nonce: 0 }], [], {
+      overrides: { assetId: USDT, amount: 25_000_000n, signOptions: { at: "0xbest", ...usdtFee } },
+    });
+    const state = freshExactPayState();
+    await payExactOnce(input, state);
+    expect(submits).toEqual([
+      {
+        args: { id: USDT, target: { type: "Id", value: DEPOSIT }, amount: 25_000_000n },
+        options: {
+          at: "0xbest",
+          ...usdtFee,
+          nonce: 0,
+          mortality: { mortal: true, period: 64 },
+        },
+      },
+    ]);
+    // The balance it is judged by is the USDT's, read back after a lost answer the same way.
+    expect(state).toMatchObject({ inFlight: true, balanceBefore: "25300000" });
+  });
+
+  it("sizes a USDT floor as the amount, the fee allowance and USDT's minimum balance", async () => {
+    const { input } = world([]);
+    expect(await exactAssetPaymentFloor(input.assetHubApi, USDT, 25_000_000n, 100_000n)).toBe(
+      25_000_000n + 100_000n + 70_000n,
+    );
+    await expect(exactAssetPaymentFloor(input.assetHubApi, 7, 1n, 1n)).rejects.toThrow(
+      "asset 7 is not on Asset Hub",
+    );
   });
 });
 

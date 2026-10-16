@@ -77,6 +77,8 @@ describe("preview deck staging", () => {
     for (const { label, stage } of await walk(1)) {
       const name = label.slice(label.indexOf(" ") + 1);
       if (name.startsWith("list / ")) expect(stage, name).toEqual({ kind: "shell" });
+      else if (/^(card|bank) \/ (summary|picker)/.test(name))
+        expect(stage, name).toEqual({ kind: "package", route: name.split(" ")[0] });
       else if (name.startsWith("card / ")) expect(stage?.kind, name).toBe("journey");
       else if (name.startsWith("crypto / ")) expect(stage?.route, name).toBe("crypto");
     }

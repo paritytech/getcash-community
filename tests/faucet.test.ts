@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { TOKENS } from "@getsome/core";
 
 /** The faucet transfer's watch: the test emits its events. */
 const watch = vi.hoisted(() => ({
@@ -83,7 +84,7 @@ describe("fundFromFaucet", () => {
     observer.error(new Error("Invalid: Payment"));
 
     await expect(sent).rejects.toThrow(
-      "faucet transfer refused (is the faucet funded with PAS?): Invalid: Payment",
+      `faucet transfer refused (is the faucet funded with ${TOKENS.PAS.symbol}?): Invalid: Payment`,
     );
   });
 });

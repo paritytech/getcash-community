@@ -1,5 +1,6 @@
 export {
   ASSET_HUB_DOT,
+  ASSET_HUB_USDT,
   SOURCES,
   SOURCE_CONFIGS,
   SOURCE_CONFIG_BY_ID,
@@ -17,6 +18,7 @@ export {
   type WithdrawChannel,
 } from "./withdraw-channel";
 export {
+  chainflipTokenOf,
   computeQuote,
   egressFor,
   pickRegularQuote,

@@ -12,6 +12,8 @@ export function useRoutePackageLoader(
 ) {
   const selection = ref<FundingSelection | null>(null);
   const activePackage = shallowRef<Component | null>(null);
+  /** The route `activePackage` was loaded for; `selection` moves ahead of it while a load runs. */
+  const activeRoute = ref<FundingRoute | null>(null);
   const loading = ref(false);
   const routeError = ref<string | null>(null);
   let epoch = 0;
@@ -28,6 +30,7 @@ export function useRoutePackageLoader(
     loading.value = false;
     if (result.kind === "loaded") {
       activePackage.value = markRaw(result.component);
+      activeRoute.value = next.route;
       return;
     }
     if (result.kind === "unavailable") {
@@ -54,6 +57,7 @@ export function useRoutePackageLoader(
   function returnToShell(): void {
     epoch += 1;
     activePackage.value = null;
+    activeRoute.value = null;
     loading.value = false;
     routeError.value = null;
   }
@@ -61,6 +65,7 @@ export function useRoutePackageLoader(
   return {
     selection,
     activePackage,
+    activeRoute,
     loading,
     routeError,
     continueToPackage,

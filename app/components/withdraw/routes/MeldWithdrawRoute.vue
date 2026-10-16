@@ -24,6 +24,8 @@ import { bankRailCountries } from "~~/lib/region";
 import {
   corridorOptions,
   countryName,
+  methodMinimum,
+  otherMethod,
   namedCountry,
   type SupportedCountry,
 } from "~~/lib/supported";
@@ -144,6 +146,10 @@ const detectedCountry = computed(() => {
 });
 
 const countryLabel = computed(() => namedCountry(sale.country.value, sale.countries.value));
+const corridor = computed(() => sale.corridors.value?.get(sale.country.value) ?? null);
+const minimum = computed(() => methodMinimum(corridor.value, method));
+/** The other fiat method, when the payout country routes it and not this one. */
+const switchMethod = computed(() => otherMethod(corridor.value, method));
 
 function pickCountry(country: string) {
   step.value = "quote";
@@ -163,6 +169,7 @@ watch(
     previewed = true;
     sale.country.value = stage.country ?? stage.sale?.country ?? "GB";
     countryDecided.value = true;
+    sale.corridors.value = stage.corridors ?? null;
     sale.quote.value = stage.sale ?? null;
     sale.loading.value = stage.sale === null;
     const failed = stage.saleError;
@@ -223,6 +230,9 @@ async function confirm() {
       paymentMethodType: quoted.paymentMethodType,
       quote: quoted.line,
       cryptoAmount: quoted.cryptoAmount,
+      ...(quoted.swap === undefined ? {} : { swap: quoted.swap }),
+      ...(quoted.sellCode === undefined ? {} : { sellCode: quoted.sellCode }),
+      ...(quoted.route === undefined ? {} : { route: quoted.route }),
     });
     if (!outcome.ok) {
       startError.value = outcome.reason;
@@ -415,9 +425,11 @@ onMounted(() => {
     // region it already holds prices a sale the seller never asked for.
     void (async () => {
       const country = await detectCountry();
-      // setCountry reprices; an unchanged region just prices the starting one.
-      if (country !== null && country !== sale.country.value) sale.setCountry(country);
-      else void sale.refresh();
+      // setCountry reprices; an unchanged region just prices the starting one. A region the seller
+      // chose on the other method outlives the switch: geo decides only a sale nobody chose for.
+      if (!sale.chosenBefore && country !== null && country !== sale.country.value) {
+        sale.setCountry(country);
+      } else void sale.refresh();
       countryDecided.value = true;
     })();
     return;
@@ -505,6 +517,8 @@ onUnmounted(() => {
         :error="sale.error.value"
         :error-kind="sale.errorKind.value"
         :rate-failures="sale.rateFailures.value"
+        :minimum="minimum"
+        :other="switchMethod"
         :country="countryDecided ? sale.country.value : null"
         :country-name="countryDecided ? countryLabel : null"
         :starting="starting"
@@ -514,6 +528,7 @@ onUnmounted(() => {
         @region="step = 'region'"
         @retry="retryQuote"
         @use-crypto="emit('switchRoute', 'crypto')"
+        @use-other="switchMethod && emit('switchRoute', switchMethod)"
         @change-amount="emit('changeAmount')"
       />
       <WithdrawCancelScreen

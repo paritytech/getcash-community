@@ -29,6 +29,10 @@ export interface EgressConfig {
 /** A token Chainflip can deliver: it must have a Chainflip asset name for the wire. */
 export type ChainflipToken = TokenSpec & Required<Pick<TokenSpec, "chainflipAsset">>;
 
+/** The token as Chainflip delivers it; undefined for one it cannot, such as USDC. */
+export const chainflipTokenOf = (token: TokenSpec): ChainflipToken | undefined =>
+  token.chainflipAsset === undefined ? undefined : (token as ChainflipToken);
+
 /** Chainflip's name for Asset Hub, where every token in the table is delivered. */
 const EGRESS_CHAIN = "Assethub";
 

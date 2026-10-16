@@ -18,7 +18,8 @@ import {
   type ConversionRoute,
   type DepositAsset,
 } from "@getsome/funding";
-import { sellAmountOf } from "@getsome/meld";
+import { sellAmountOf, USDT_SELL_TOKEN } from "@getsome/meld";
+import { laneCommit, laneSellToken, type OfframpLane } from "@getsome/offramp";
 import {
   createHostEntropyPort,
   createHostStorageAdapter,
@@ -30,12 +31,15 @@ import {
   CASH_ON_ASSET_HUB,
   DEFAULT_WITHDRAW_SLIPPAGE_PCT,
   estimateDirectFeesCash,
+  exactAssetPaymentFloor,
   exactPaymentFloor,
   PASEO_PEOPLE_POOL_ACCOUNT,
   PEOPLE_NATIVE,
   psmRedeemOut,
   readDestinationBalance,
   SALE_RESIDUE_RETURN_FLOOR,
+  USDT_PAY_FEE_ALLOWANCE,
+  USDT_RESIDUE_RETURN_FLOOR,
 } from "@getsome/withdraw";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import {
@@ -47,6 +51,7 @@ import {
   type WithdrawalHandoffPayload,
 } from "../app/funding/requests/model";
 import {
+  ASSET_HUB_USDT,
   BelowMinimumSwapAmountError,
   ChainflipRequestError,
   formatSourceAmount,
@@ -60,7 +65,7 @@ import { AccountId } from "polkadot-api";
 import { cashAmount } from "../app/utils/cash";
 import { isDemoBuild } from "../app/utils/demo";
 import type { WithdrawFeeView, WithdrawOffer } from "../app/withdraw/offers";
-import { mainnetSdk } from "./chainflip-backend";
+import { mainnetSdk, saleChannelsOpen, saleSwapSdk } from "./chainflip-backend";
 import { withTimeout } from "./timeout";
 import { hostSafeEntropy, nextFreeTradeNumber, readTradeCounter, tradeCounterKey } from "./coinage";
 import {
@@ -335,6 +340,138 @@ export async function meldCommitmentFundable(
   if (now === null) return false;
   const needed = await exactPaymentFloor(now.api, FEE_ESTIMATE_ACCOUNT, depositAddress, planck);
   return saleFloor(now.expected, PURSE_CHECK_MARGIN_PCT) >= needed;
+}
+
+// A sale through an offramp lane sells USDT, not PAS: the PSM redeems the CASH at a fixed rate,
+// the key pays all of it into a Chainflip channel, and Chainflip pays the lane's asset straight to
+// the provider. The sale commits to Chainflip's fill-or-kill floor on the least USDT the key can
+// hold, so the provider is never underpaid; what Chainflip delivers above it the provider keeps.
+
+/** Room under the USDT the redeem lands, basis points, for the fees the estimate cannot see. */
+const USDT_SALE_LANDING_MARGIN_BPS = 20n;
+
+/** The USDT a sale of `amount` CASH lands on the key: the PSM redeem it runs, the CASH it sells
+ *  once the fees are out, what the redeem pays out, and the least of that a promise counts on, with
+ *  room for the fees the estimate cannot see. Throws when the PSM cannot redeem it. */
+async function usdtSaleLanding(amount: bigint) {
+  const route = await chooseWithdrawRoute(amount, "USDT");
+  if (route.tier !== "psm") throw new Error("USDT cannot be redeemed for this sale right now.");
+  const sold = amount - (await directFeesCash(route));
+  const redeemed = sold - destinationEarmark(sold, ASSET_HUB_FEE_BUFFER_CASH);
+  const landed = psmRedeemOut(redeemed, route.feeRate);
+  const least = (landed * (10_000n - USDT_SALE_LANDING_MARGIN_BPS)) / 10_000n;
+  return { route, sold, landed, least };
+}
+
+/** What a sale through `lane` sells and commits to. */
+export interface SwapSaleSize {
+  /** The PSM redeem the withdrawal runs, landing USDT on the key. */
+  route: Extract<ConversionRoute, { tier: "psm" }>;
+  /** The least USDT the key pays the channel, base units: what the swap is quoted on. */
+  usdtIn: bigint;
+  /** What the swap delivers today, in the lane's base units, less the lane's delivery buffer. */
+  commit: bigint;
+  /** Exactly what the provider is promised at confirm, the lane's base units: `commit` with
+   *  SALE_KYC_MARGIN_PCT under it, for the price to move while the seller verifies. */
+  promise: bigint;
+}
+
+/** Sizes a sale of `amount` CASH through `lane`. Throws when this build cannot open the swap's
+ *  channel, the PSM cannot redeem it, Chainflip cannot quote it, or the fees take it all. */
+export async function sizeSwapSale(amount: bigint, lane: OfframpLane): Promise<SwapSaleSize> {
+  // Refused here, at the quote, so the sale falls through to the next lane before any KYC.
+  if (!saleChannelsOpen()) throw new Error("Swap channels cannot be opened in this build.");
+  const { route, least } = await usdtSaleLanding(amount);
+  const usdtIn = least - USDT_PAY_FEE_ALLOWANCE;
+  if (usdtIn <= 0n) throw new Error("The amount does not cover the network fees.");
+  const quote = await quoteOutgoing(await saleSwapSdk(), usdtIn, lane.chainflip, ASSET_HUB_USDT);
+  const token = laneSellToken(lane);
+  // The lane's own buffer: its delivery fee can rise before the swap lands, by chain.
+  const commit = sellAmountOf(laneCommit(lane, quote.egressAmount, quote.egressFee), token);
+  // As for a sale of PAS: the seller verifies between confirm and pay, and the check at pay holds
+  // today's `commit` to this, so a small move in the quote or the fee meanwhile still sells.
+  const promise = sellAmountOf(
+    (commit * BigInt(Math.round((100 - SALE_KYC_MARGIN_PCT) * 100))) / 10_000n,
+    token,
+  );
+  if (promise <= 0n) throw new Error("The amount does not cover the network fees.");
+  return { route, usdtIn, commit, promise };
+}
+
+/** Opens a lane sale's Chainflip channel: the key's USDT in, the lane's asset out to the provider's
+ *  deposit address, refunded to the key on Asset Hub. Null, with nothing opened, when today's floor
+ *  no longer covers what the sale promised. */
+export async function openSwapSaleChannel(args: {
+  amount: bigint;
+  lane: OfframpLane;
+  committed: bigint;
+  providerAddress: string;
+  keyPublicKeyHex: string;
+}): Promise<WithdrawalChannel | null> {
+  const size = await sizeSwapSale(args.amount, args.lane);
+  if (size.commit < args.committed) return null;
+  const channel = await openWithdrawChannel({
+    sdk: await saleSwapSdk(),
+    source: ASSET_HUB_USDT,
+    amount: size.usdtIn,
+    destination: { ...args.lane.chainflip, address: args.providerAddress },
+    refundAddress: AccountId(0).dec(args.keyPublicKeyHex as `0x${string}`),
+    fillOrKill: {
+      slippageTolerancePercent: (args.lane.slippageBps / 100).toString(),
+      retryDurationMinutes: 30,
+    },
+  });
+  return {
+    id: channel.id,
+    address: channel.address,
+    openedAt: Date.now(),
+    expiresAt: channel.expiresAt,
+    expectedEgress: channel.expectedEgress.toString(),
+    // The least USDT the key must land: what the swap was quoted on, and the key's fee.
+    amount: (size.usdtIn + USDT_PAY_FEE_ALLOWANCE).toString(),
+  };
+}
+
+// A direct sale of USDT, for a provider that buys USDT on Asset Hub (USDT_ASSETHUB or USDT_STATEMINT), runs the same
+// redeem with no swap after it: the key pays the provider the figure exactly, as a sale of PAS
+// does, pays the transfer's fee in USDT and keeps USDT's minimum balance. The redeem's rate is
+// fixed, so the figure needs no room for a price; what it leaves above the payment is the residue,
+// which the worker sends home once the provider is paid.
+
+const USDT_ID = STABLE_TOKENS.USDT.assetHubId;
+
+/** What a direct sale of USDT promises its provider. */
+export interface UsdtSaleSize {
+  /** The PSM redeem the withdrawal runs, landing USDT on the key. */
+  route: Extract<ConversionRoute, { tier: "psm" }>;
+  /** Exactly what the key pays the provider, USDT base units, cut to the sale's decimals. */
+  commit: bigint;
+  /** The CASH expected back once the provider is paid, before the way back's own fees; 0 when what
+   *  is left is too small to send back, and stays with the withdrawal. */
+  backCash: bigint;
+}
+
+/** Sizes a direct sale of `amount` CASH as USDT. Throws when the PSM cannot redeem it, or when the
+ *  fees take it all. */
+export async function sizeUsdtSale(amount: bigint): Promise<UsdtSaleSize> {
+  const { route, sold, landed, least } = await usdtSaleLanding(amount);
+  const { connectChain, ASSET_HUB } = await import("./host-chain");
+  const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
+  // The fee and the minimum balance, as the worker holds the sale to them.
+  const cost = await exactAssetPaymentFloor(api, USDT_ID, 0n, USDT_PAY_FEE_ALLOWANCE);
+  const commit = sellAmountOf(least - cost, USDT_SELL_TOKEN);
+  if (commit <= 0n) throw new Error("The amount does not cover the network fees.");
+  // The worker sends home what the key holds once the provider is paid, as it judges it then: the
+  // margin and the minimum balance, less at most the fee allowance.
+  const left = landed - commit - USDT_PAY_FEE_ALLOWANCE;
+  const backCash = left < USDT_RESIDUE_RETURN_FLOOR ? 0n : (sold * left) / landed;
+  return { route, commit, backCash };
+}
+
+/** Whether `amount` CASH still covers a direct USDT sale's `committed` figure at today's redeem.
+ *  Asked before the purse is. */
+export async function usdtSaleFundable(amount: bigint, committed: bigint): Promise<boolean> {
+  return (await sizeUsdtSale(amount)).commit >= committed;
 }
 
 /** Where the worker reads a fiat sale from: the adapter this build names, or the stand-in sale in

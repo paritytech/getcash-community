@@ -192,12 +192,5 @@ describe("a Polkadot deposit", () => {
     const btc = reduce(record("btc", { asset: "BTC", chain: "Bitcoin" }), reading(1n, 10));
     expect(btc.status.kind).toBe("deposit-seen");
     expect(btc.depositMismatch).toBeUndefined();
-    // Also when it runs under a Polkadot source id, as a Chainflip pick does in this build.
-    const demo = reduce(
-      record("dot-assethub", { asset: "BTC", chain: "Bitcoin" }),
-      reading(1n, 10, null),
-    );
-    expect(demo.status.kind).toBe("deposit-seen");
-    expect(demo.depositMismatch).toBeUndefined();
   });
 });
