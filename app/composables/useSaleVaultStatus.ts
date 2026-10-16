@@ -23,7 +23,11 @@ export function useSaleVaultStatus(fundingRequestId: () => string | undefined) {
     if (next !== null) {
       status.value = next;
       // Nothing more changes once the provider was paid or the hold was fully returned: stop polling.
-      if (next.status === "paid" || next.status === "returned" || next.returnStatus === "returned") {
+      if (
+        next.status === "paid" ||
+        next.status === "returned" ||
+        next.returnStatus === "returned"
+      ) {
         stop();
       }
     }

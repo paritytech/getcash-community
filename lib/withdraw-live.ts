@@ -396,7 +396,13 @@ export async function sizeSwapSale(amount: bigint, lane: OfframpLane): Promise<S
     lane.chainflip.chain === "Arbitrum"
       ? { gasBudget: SALE_VAULT_CCM_GAS_BUDGET, messageLengthBytes: SALE_VAULT_CCM_MESSAGE_BYTES }
       : undefined;
-  const quote = await quoteOutgoing(await saleSwapSdk(), usdtIn, lane.chainflip, ASSET_HUB_USDT, saleCcm);
+  const quote = await quoteOutgoing(
+    await saleSwapSdk(),
+    usdtIn,
+    lane.chainflip,
+    ASSET_HUB_USDT,
+    saleCcm,
+  );
   const token = laneSellToken(lane);
   // The lane's own buffer: its delivery fee can rise before the swap lands, by chain.
   const commit = sellAmountOf(laneCommit(lane, quote.egressAmount, quote.egressFee), token);
