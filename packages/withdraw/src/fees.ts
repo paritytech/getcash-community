@@ -363,7 +363,13 @@ async function weighed(
   return w.success ? { ref_time: w.value.ref_time, proof_size: w.value.proof_size } : undefined;
 }
 
-/** What `amountIn` of one asset sells for in another on Asset Hub's pools, now. */
+/** Where the sale on Asset Hub is quoted and dry-run: at the best head, since the finalized one
+ *  lags 12 to 60 s and the sale's floor sits only DEFAULT_WITHDRAW_SLIPPAGE_PCT under the quote.
+ *  The balances an arrival is judged on are still read at the finalized head; only the figure
+ *  they are held to comes from these reads. */
+export const SALE_READ_AT = { at: "best" } as const;
+
+/** What `amountIn` of one asset sells for in another on Asset Hub's pools, now, at the best head. */
 async function quoted(
   assetHubApi: AssetHubApi,
   give: unknown,
@@ -376,6 +382,7 @@ async function quoted(
     want as never,
     amountIn,
     true,
+    SALE_READ_AT,
   );
   if (out === undefined) throw new Error(`withdraw sizing: Asset Hub cannot quote ${what}`);
   return out;
@@ -457,7 +464,7 @@ export async function priceSale(input: PriceSaleInput): Promise<Sale> {
 
 /** The least the sale lands in its asset, the floor the program holds it to; none on the dotUSD
  *  tier, which sells nothing it could hold to a price. */
-function saleFloor(sale: Sale): bigint | undefined {
+export function saleFloor(sale: Sale): bigint | undefined {
   if (sale.tier === "dotusd") return undefined;
   if (sale.tier === "psm") return sale.externalOut;
   return sale.external === undefined ? sale.minNativeOut : sale.minOut;
@@ -579,9 +586,11 @@ export async function dryRunOnAssetHub(
   destinationHex: string,
   sale: ConversionRoute,
 ): Promise<bigint> {
+  // At the best head, as the quote is, so the landing is priced near the program's floor.
   const dr = await assetHubApi.apis.DryRunApi.dry_run_xcm(
     siblingOrigin(peopleParaId) as never,
     forwarded as never,
+    SALE_READ_AT,
   );
   if (!dr.success) throw new Error("not submitted: Asset Hub would not dry-run the program");
   const outcome = dr.value.execution_result;

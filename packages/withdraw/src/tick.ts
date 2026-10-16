@@ -10,8 +10,9 @@
 // ARRIVAL IS A BALANCE READ AT THE HEAD, like every other read here. The destination account is
 // not ours, so its balance in the landing asset is measured against a baseline taken just before
 // the XCM leaves, and the arrival is what the Asset Hub dry run said would land, less the
-// slippage the program itself allows: a sale that slips further fails the program, so nothing
-// less can be a landing. The key must hold no CASH too, which says the XCM executed on People; a
+// slippage the program itself allows, or the program's own floor when that is lower: a sale that
+// slips further fails the program, so nothing less can be a landing. The key must hold no CASH
+// too, which says the XCM executed on People; a
 // deposit from elsewhere alone does not count. Nothing is followed through block history: hosts
 // serve the current head and nothing older, and a run that resumes after a reload has no memory
 // but the persisted state. A program that fails on Asset Hub traps its assets there and never
@@ -28,7 +29,14 @@ import type { PolkadotSigner } from "polkadot-api";
 import { describeDispatchError, type CashTransfer, type ConversionRoute } from "@getsome/funding";
 import { bounded } from "./bounded";
 import { PEOPLE_TX_OPTIONS } from "./paseo";
-import { NeedsSwapError, sizeSwap, sizeXcm, type AssetHubApi } from "./fees";
+import {
+  NeedsSwapError,
+  saleFloor,
+  sizeSwap,
+  sizeXcm,
+  type AssetHubApi,
+  type XcmSizing,
+} from "./fees";
 import { buildSwap, buildWithdrawXcm, withdrawMessage, type PeopleApi } from "./program";
 
 /** 'swap' buys the PAS the fees need; 'convert' submits the XCM; 'await-arrival' holds while the
@@ -39,8 +47,10 @@ export type WithdrawStep = "await-cash" | "swap" | "convert" | "await-arrival" |
 export const DEFAULT_WITHDRAW_TICK_TIMEOUT_MS = 30_000;
 /** Bound on a submitted transaction's resolution. */
 export const DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS = 180_000;
-/** Headroom below the quoted sale on Asset Hub before the program fails there. */
-export const DEFAULT_WITHDRAW_SLIPPAGE_PCT = 5;
+/** Headroom below the quoted sale on Asset Hub before the program fails there, percent: 1, the V1
+ *  figure agreed on 2026-10-15. The sale is quoted and dry-run on Asset Hub just before the XCM
+ *  leaves, so the headroom only covers the move until the program runs there. */
+export const DEFAULT_WITHDRAW_SLIPPAGE_PCT = 1;
 /** Rejections at inclusion after a passing dry run before the run is given up. */
 export const MAX_REJECTIONS = 3;
 /** The least the destination must gain for the funds to count as arrived: the dry run's landing
@@ -49,6 +59,17 @@ export const MAX_REJECTIONS = 3;
  *  covers Asset Hub's fee moving between the dry run and inclusion. */
 export const landingFloor = (landed: bigint, slippagePct: number): bigint =>
   landed - (landed * BigInt(Math.round(slippagePct * 100))) / 10_000n;
+
+/** The least the destination must gain for a sized XCM to count as arrived: its landing less the
+ *  slippage, or the floor the program holds the sale to when that is lower. A program that runs
+ *  lands at least its floor and one that fails lands nothing, so a sale that went through is
+ *  never judged lost. The landing also sells the PAS that travelled with the CASH, which a
+ *  stable's floor leaves out, so on that tier a sale can complete under the first figure. */
+export const arrivalFloor = (sizing: Pick<XcmSizing, "args" | "landed">, slippagePct: number) => {
+  const byLanding = landingFloor(sizing.landed, slippagePct);
+  const floor = saleFloor(sizing.args.sale);
+  return floor !== undefined && floor < byLanding ? floor : byLanding;
+};
 
 /** Terminal: People rejected the transaction at inclusion MAX_REJECTIONS times after its dry run
  *  passed each time. Something the dry run cannot see differs at inclusion. */
@@ -76,6 +97,10 @@ export interface WithdrawTickState {
   /** What the Asset Hub dry run credited to the destination, in the landing asset, for the XCM
    *  that left. */
   expectedLanding: bigint | null;
+  /** The least the destination must gain for that XCM to count as arrived (`arrivalFloor`);
+   *  null on a run submitted before it was kept, which falls back to the landing less the
+   *  slippage. */
+  arrivalFloor: bigint | null;
   /** When the first tick saw CASH (ms); null while the payment is still awaited. */
   fundsSeenAt: number | null;
 }
@@ -86,6 +111,7 @@ export const freshWithdrawTickState = (): WithdrawTickState => ({
   submitted: false,
   destinationBefore: null,
   expectedLanding: null,
+  arrivalFloor: null,
   fundsSeenAt: null,
 });
 
@@ -167,7 +193,7 @@ export async function withdrawTickOnce(
     const cashGone = balances.cash === 0n;
     const landed =
       destination - state.destinationBefore >=
-      landingFloor(state.expectedLanding, input.slippagePct);
+      (state.arrivalFloor ?? landingFloor(state.expectedLanding, input.slippagePct));
     return { step: cashGone && landed ? "done" : "await-arrival", balances, submitted: false };
   }
 
@@ -232,6 +258,7 @@ export async function withdrawTickOnce(
         "destination balance read",
       );
       state.expectedLanding = sizing.landed;
+      state.arrivalFloor = arrivalFloor(sizing, input.slippagePct);
       await input.onBeforeSubmit?.("withdraw");
       // Counted before the broadcast, so a submit whose answer is lost is still counted.
       state.attempts += 1;

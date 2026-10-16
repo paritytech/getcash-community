@@ -112,7 +112,7 @@ const saveJobs = () => store.save();
  *   landed,                                  // the message leg is done: the funds are on Asset Hub
  *   done, createdAt, armedAt, lastTickAt, lastError?,
  *   state: { attempts, rejections, submitted, destinationBefore, expectedLanding,
- *            fundsSeenAt, workedMs },       // the two balances as decimal strings or null
+ *            arrivalFloor, fundsSeenAt, workedMs }, // the three amounts as decimal strings or null
  *   leg: { handoff, paid, sweep, exact?, reading },  // the rail leg, for a provider rail;
  *                                            // exact: the Meld payment's nonce, in flight or
  *                                            // not, and the block its attempt is anchored at
@@ -1016,6 +1016,7 @@ async function tickRecord(record, nowMs) {
     state.submitted = !!record.state.submitted;
     state.destinationBefore = asBig(record.state.destinationBefore, null);
     state.expectedLanding = asBig(record.state.expectedLanding, null);
+    state.arrivalFloor = asBig(record.state.arrivalFloor, null);
     state.fundsSeenAt = record.state.fundsSeenAt ?? null;
 
     // Written before a submit and after every tick, thrown ones included; withdrawTickOnce
@@ -1028,6 +1029,7 @@ async function tickRecord(record, nowMs) {
         destinationBefore:
           state.destinationBefore === null ? null : String(state.destinationBefore),
         expectedLanding: state.expectedLanding === null ? null : String(state.expectedLanding),
+        arrivalFloor: state.arrivalFloor === null ? null : String(state.arrivalFloor),
         fundsSeenAt: state.fundsSeenAt,
         workedMs: record.state.workedMs ?? 0,
       };

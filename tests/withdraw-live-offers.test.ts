@@ -78,8 +78,8 @@ const PROVIDERS = WITHDRAW_NETWORKS.flatMap((n) => n.destinations).filter(
   (d) => d.rail !== "direct",
 );
 const CASH = 50_000_000n; // 50 CASH
-/** 50 CASH less the scripted 0.45 CASH of fees sells for twice as many planck, less 6% headroom. */
-const SELLABLE = (49_550_000n * 2n * 94n) / 100n;
+/** 50 CASH less the scripted 0.45 CASH of fees sells for twice as many planck, less 2% headroom. */
+const SELLABLE = (49_550_000n * 2n * 98n) / 100n;
 
 function reset() {
   asked.length = 0;
@@ -139,7 +139,7 @@ describe("quoting the provider destinations for an amount", () => {
             depositAmount: amount,
             includedFees: [
               // A tenth of the deposit, so it prices to a tenth of the egress: 2.419 USDC.
-              { chain: "Assethub", asset: "DOT", amount: "9315400", type: "INGRESS" },
+              { chain: "Assethub", asset: "DOT", amount: "9711800", type: "INGRESS" },
               { chain: "Ethereum", asset: "USDC", amount: "210000", type: "NETWORK" },
               { chain: "Ethereum", asset: "USDC", amount: "260000", type: "EGRESS" },
             ],
@@ -209,8 +209,8 @@ describe("quoting the provider destinations for an amount", () => {
     const minimum = 40_000_000_000n; // 4 DOT
     script.quote = () => new BelowMinimumSwapAmountError(minimum);
     const { offers } = await quoteWithdrawOffers(CASH, PROVIDERS);
-    // 4.24 DOT at two planck per CASH unit, plus the 0.45 CASH of fees.
-    const expected = (minimum + (minimum * 6n) / 100n) / 2n + 450_000n;
+    // 4.08 DOT at two planck per CASH unit, plus the 0.45 CASH of fees.
+    const expected = (minimum + (minimum * 2n) / 100n) / 2n + 450_000n;
     for (const destination of PROVIDERS) {
       expect(offers.get(destination.id)).toEqual({ state: "too-small", minimumCash: expected });
     }
