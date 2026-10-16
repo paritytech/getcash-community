@@ -1106,6 +1106,14 @@ function methodUnavailable(session: Session, country: string) {
   session.meldMethodUnavailable = true;
 }
 
+/** The price could not be had, `failures` times in a row for this amount: the first offers another
+ *  try, the second a change of amount or of rail. */
+function rateFailed(session: Session, failures: number) {
+  session.quoted = null;
+  session.quoteError = "The rate could not be read.";
+  session.quoteFailures = failures;
+}
+
 /** Baseline for the bank summary scenes: the bank frames' own quote, against the same catalog. */
 function bankSummary(session: Session, flow: Flow) {
   bankJourney(session, flow);
@@ -1563,6 +1571,22 @@ export const SCENES: Scene[] = [
     },
   },
   {
+    name: "crypto / network: couldn't get the rate",
+    apply: (s, f) => {
+      selection(s, f);
+      rateFailed(s, 1);
+      f.step = "network";
+    },
+  },
+  {
+    name: "crypto / network: still not working",
+    apply: (s, f) => {
+      selection(s, f);
+      rateFailed(s, 2);
+      f.step = "network";
+    },
+  },
+  {
     name: "crypto / token",
     apply: (s, f) => {
       selection(s, f);
@@ -1727,6 +1751,20 @@ export const SCENES: Scene[] = [
     },
   },
   {
+    name: "card / summary: couldn't get the rate",
+    apply: (s, f) => {
+      cardSummary(s, f);
+      rateFailed(s, 1);
+    },
+  },
+  {
+    name: "card / summary: still not working",
+    apply: (s, f) => {
+      cardSummary(s, f);
+      rateFailed(s, 2);
+    },
+  },
+  {
     // The design's card journey at the Payment step: Fees and Total quoted in fiat.
     name: "card / journey: payment",
     apply: async (s, f, i) => {
@@ -1873,6 +1911,20 @@ export const SCENES: Scene[] = [
     apply: (s, f) => {
       bankSummary(s, f);
       methodUnavailable(s, "BR");
+    },
+  },
+  {
+    name: "bank / summary: couldn't get the rate",
+    apply: (s, f) => {
+      bankSummary(s, f);
+      rateFailed(s, 1);
+    },
+  },
+  {
+    name: "bank / summary: still not working",
+    apply: (s, f) => {
+      bankSummary(s, f);
+      rateFailed(s, 2);
     },
   },
   {

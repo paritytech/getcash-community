@@ -351,6 +351,9 @@ export const useSessionStore = defineStore("session", () => {
   const meldCountry = ref<string | null>(null);
   const quoted = shallowRef<QuotedView | null>(null);
   const quoteError = ref<string | null>(null);
+  /** Quote failures in a row for one amount, method, region and source: the screens stop offering
+   *  another try after the second. Changing any of those starts the count over. */
+  const quoteFailures = ref(0);
   /** True when the selected card or bank method is not routed for the chosen region. Not a quote
    *  failure; nothing to retry. */
   const meldMethodUnavailable = ref(false);
@@ -505,6 +508,7 @@ export const useSessionStore = defineStore("session", () => {
     quoted.value = null;
     sourcePrice.value = null;
     quoteError.value = null;
+    quoteFailures.value = 0;
     meldMethodUnavailable.value = false;
   }
 
@@ -514,6 +518,7 @@ export const useSessionStore = defineStore("session", () => {
     method.value = next;
     quoted.value = null;
     quoteError.value = null;
+    quoteFailures.value = 0;
     meldMethodUnavailable.value = false;
   }
 
@@ -523,6 +528,7 @@ export const useSessionStore = defineStore("session", () => {
     meldCountry.value = code;
     quoted.value = null;
     quoteError.value = null;
+    quoteFailures.value = 0;
     meldMethodUnavailable.value = false;
   }
 
@@ -863,6 +869,13 @@ export const useSessionStore = defineStore("session", () => {
     });
   }
 
+  /** A quote that could not be had: the message for the screen, and one more failure in a row. */
+  function failQuote(message: string): void {
+    quoted.value = null;
+    quoteError.value = message;
+    quoteFailures.value += 1;
+  }
+
   /** (Re)quotes the Meld rail for the current CASH amount and region. The mock world simulates
    *  settlement through the harness; the hosted world runs the rail over the real host seams. */
   function fetchMeldQuote(): Promise<void> {
@@ -917,7 +930,7 @@ export const useSessionStore = defineStore("session", () => {
         );
         if (epoch !== quoteEpoch) return;
         if (quotedBudget === null) {
-          quoteError.value = "No provider offers this payment method or region. Try another.";
+          failQuote("No provider offers this payment method or region. Try another.");
           return;
         }
         const nativeBudget = quotedBudget + sizing.keepNativeForFees;
@@ -939,6 +952,7 @@ export const useSessionStore = defineStore("session", () => {
         }
         mock.value = world;
         quoted.value = meldQuotedView(quote.raw as MeldQuoteRaw, world.fundingSizing);
+        quoteFailures.value = 0;
         return;
       }
       // Hosted world: the same rail over the real host seams. The provider delivers the route's
@@ -969,13 +983,13 @@ export const useSessionStore = defineStore("session", () => {
       }
       live.value = world;
       quoted.value = meldQuotedView(quote.raw as MeldQuoteRaw, world.fundingSizing);
+      quoteFailures.value = 0;
     } catch (e: unknown) {
       if (epoch !== quoteEpoch) return; // a newer quote owns the state now
       // The host logger renders an Error as `{}`; log the message, as the transient
       // hooks above already do, or a failed quote is undiagnosable from a device log.
       console.error(`[meld] quote failed: ${e instanceof Error ? e.message : String(e)}`);
-      quoted.value = null;
-      quoteError.value = e instanceof Error ? e.message : String(e);
+      failQuote(e instanceof Error ? e.message : String(e));
     } finally {
       if (epoch === quoteEpoch) loading.value = false;
     }
@@ -991,6 +1005,10 @@ export const useSessionStore = defineStore("session", () => {
 
   async function runQuote(chain: string, asset: string, isRetry: boolean): Promise<void> {
     teardownWorld();
+    // Another source is another quote: its failures are its own.
+    if (lastQuoteParams?.chain !== chain || lastQuoteParams.asset !== asset) {
+      quoteFailures.value = 0;
+    }
     lastQuoteParams = { chain, asset };
     const epoch = quoteEpoch;
     quoteError.value = null;
@@ -1068,6 +1086,7 @@ export const useSessionStore = defineStore("session", () => {
           return;
         }
         live.value = world;
+        quoteFailures.value = 0;
         quoted.value = {
           send: quote.source.formatted,
           symbol: quote.source.assetSymbol,
@@ -1153,6 +1172,7 @@ export const useSessionStore = defineStore("session", () => {
           return;
         }
         mock.value = world;
+        quoteFailures.value = 0;
         // The fake rail returns a fixed quote regardless of source, so a Chainflip pick shows a
         // source-appropriate estimate. A direct pick shows the rail's own figure.
         const cfg = SOURCE_CONFIG_BY_ID.get(sourceId);
@@ -1186,8 +1206,7 @@ export const useSessionStore = defineStore("session", () => {
         return fetchQuote(chain, asset, true);
       }
       console.error(`[coinage] quote failed: ${e instanceof Error ? e.message : String(e)}`);
-      quoted.value = null;
-      quoteError.value = msg;
+      failQuote(msg);
     } finally {
       if (epoch === quoteEpoch) loading.value = false;
     }
@@ -1227,6 +1246,7 @@ export const useSessionStore = defineStore("session", () => {
     teardownWorld();
     loading.value = false;
     quoteError.value = null;
+    quoteFailures.value = 0;
     resuming.value = false;
     method.value = "crypto";
     // The record survives: its burner may hold funds, and the worker keeps its job.
@@ -2200,6 +2220,7 @@ export const useSessionStore = defineStore("session", () => {
     meldCountry,
     quoted,
     quoteError,
+    quoteFailures,
     meldMethodUnavailable,
     supportedCountries,
     corridorByCountry,

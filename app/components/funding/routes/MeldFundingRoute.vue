@@ -308,6 +308,7 @@ onUnmounted(() => {
           @continue="bankStep = 'details'"
           @leave="emit('back')"
           @switch-route="emit('switchRoute', $event)"
+          @change-amount="emit('changeAmount')"
         />
       </template>
       <template v-else-if="paying">
@@ -350,6 +351,7 @@ onUnmounted(() => {
         @fees="showingFees = true"
         @currency="showingCurrency = true"
         @switch-route="emit('switchRoute', $event)"
+        @change-amount="emit('changeAmount')"
       />
     </div>
 

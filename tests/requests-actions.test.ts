@@ -685,9 +685,12 @@ describe("requests store: foreground, clock and user actions", () => {
     // Screen and demo flags only: request state belongs on the record, which the deck reaches
     // through observations alone. The supported catalog is the same kind of thing — what the
     // adapter says the picker may list, not anything about a request — and a deck run has no
-    // adapter to answer for it; so is the quote's word that the region routes no such method.
+    // adapter to answer for it; so is the quote's word that the region routes no such method, or
+    // that the rate could not be had, and how many times in a row.
     const allowed = new Set([
       "quoted",
+      "quoteError",
+      "quoteFailures",
       "method",
       "mock",
       "faucetState",
