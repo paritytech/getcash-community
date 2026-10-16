@@ -16,7 +16,7 @@ export function resolveFundingTopUpDestination(state: FundingTopUpState): Fundin
 }
 
 /**
- * Where the shell lands. The design titles the top-ups screen "Top-up in progress", so it is only
+ * Where the shell lands. The design titles the top-ups screen "Topping up", so it is only
  * ever entered with one running: a settled top-up is history, and the amount screen's clock is the
  * way to it. That holds for a launch ("auto") and for a return from a journey or from history
  * ("pending") alike — the buyer whose last top-up just landed gets the input screen back, not a
