@@ -39,7 +39,7 @@ const BUY = SETTLE + BUFFER;
 const QUOTED = 1_281_000_000n; // native the pool quotes for BUY
 const MAX_IN = (QUOTED * 10_200n) / 10_000n; // +2%, the headroom `drive` passes
 /** What the page asks for at the default headroom: the quote plus DEFAULT_SLIPPAGE_PCT. */
-const ASK = (QUOTED * BigInt(10_000 + DEFAULT_SLIPPAGE_PCT * 100)) / 10_000n;
+const ASK = (QUOTED * BigInt(Math.round((100 + DEFAULT_SLIPPAGE_PCT) * 100))) / 10_000n;
 
 // The scripted runtime's fee answers for the funding program.
 const DISPATCH = 1_000n; // the execute() dispatch fee, native
@@ -2690,7 +2690,7 @@ describe("sizeNativeBudget", () => {
       keepNativeForFees: KEEP,
     });
     expect(budget).toBe(ASK + KEEP);
-    expect(ASK).toBe((QUOTED * 10_500n) / 10_000n); // 5%: shallow liquidity on Paseo
+    expect(ASK).toBe((QUOTED * 10_100n) / 10_000n); // 1% of headroom
   });
 
   it("quotes the same ask whatever the burner already holds", async () => {
@@ -2725,10 +2725,10 @@ describe("the headroom survives a price move", () => {
     world.state.nativeAh = budget; // exactly what was asked, as the faucet and rails deliver
   }
 
-  it("converts a deposit sized before the pool moved 3% against it, and still lands the target", async () => {
+  it("converts a deposit sized before the pool moved 0.8% against it, and still lands the target", async () => {
     const world = scriptedWorld({ arrivalAfterReads: 1 });
     await deposit(world);
-    world.state.priceBps = 10_300n;
+    world.state.priceBps = 10_080n;
     const run = await drive(world, 4);
     expect(run.steps).toEqual(["swap", "done"]);
     // The floor is the requirement itself, not a slice of the expected fill.
@@ -2740,7 +2740,7 @@ describe("the headroom survives a price move", () => {
   it("still waits when the pool moved past the headroom: the deposit no longer buys the target", async () => {
     const world = scriptedWorld();
     await deposit(world);
-    world.state.priceBps = 10_600n;
+    world.state.priceBps = 10_150n;
     const run = await drive(world, 1);
     expect(run.steps).toEqual(["await-native"]);
     expect(world.state.txs).toEqual([]);

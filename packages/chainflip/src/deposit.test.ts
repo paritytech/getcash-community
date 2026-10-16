@@ -53,10 +53,17 @@ describe("requestDepositAddress", () => {
     });
   });
 
-  it("defaults slippageTolerancePercent to '3' when the quote has no recommendation", async () => {
+  it("asks half a point when the quote recommends nothing or less", async () => {
     const { backend, captured } = capturingBackend(CHANNEL_RESULT);
     await requestDepositAddress(backend, btc, args(makeQuote({})));
-    expect(captured()!.fillOrKillParams.slippageTolerancePercent).toBe("3");
+    expect(captured()!.fillOrKillParams.slippageTolerancePercent).toBe("0.5");
+    const lower = capturingBackend(CHANNEL_RESULT);
+    await requestDepositAddress(
+      lower.backend,
+      btc,
+      args(makeQuote({ recommendedSlippageTolerancePercent: "0.25" })),
+    );
+    expect(lower.captured()!.fillOrKillParams.slippageTolerancePercent).toBe("0.5");
   });
 
   it("maps the SDK result to a core DepositChannel (expiry in ms, ceil formatting)", async () => {

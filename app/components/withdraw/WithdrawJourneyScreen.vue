@@ -4,14 +4,7 @@
 // route.
 import { computed } from "vue";
 import { RefreshCcw, X } from "lucide-vue-next";
-import { TOKENS } from "@getsome/core";
-import {
-  formatBaseUnits,
-  isDirectUsdt,
-  sellAmountOf,
-  SELL_TOKEN,
-  type SellToken,
-} from "@getsome/meld";
+import { formatBaseUnits, sellAmountOf } from "@getsome/meld";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
 import { SUCCESS_ICON_DELAY_MS, useJourneySuccess } from "../../composables/useJourneySuccess";
 import {
@@ -19,6 +12,7 @@ import {
   paymentTaken,
   type WithdrawalRecord,
 } from "../../funding/requests/model";
+import { sellTokenOf } from "../../funding/requests/transitions/withdrawal";
 import { TIMELINE_CADENCE_MS } from "../../funding/timeline/timelines";
 import { useRequestsStore } from "../../stores/requests";
 import { formatWhenShort } from "../../utils/journey";
@@ -39,8 +33,17 @@ const props = defineProps<{
   busy: boolean;
   /** The route still holds the quote behind the receive row, so the row can open its fees. */
   feesAvailable?: boolean;
+  /** What the pool would land for a held withdrawal, formatted; null until quoted. */
+  poolFigure?: string | null;
 }>();
-const emit = defineEmits<{ cancel: []; retry: []; close: []; "return-funds": []; fees: [] }>();
+const emit = defineEmits<{
+  cancel: [];
+  retry: [];
+  pool: [];
+  close: [];
+  "return-funds": [];
+  fees: [];
+}>();
 const requests = useRequestsStore();
 
 const status = computed(() => props.record.status);
@@ -83,12 +86,11 @@ const residueNote = computed(() => {
   if (residue.stuck === true) {
     return "What was left could not come back to your balance on its own.";
   }
-  // A sale that redeemed its CASH for USDT, through an offramp lane or sold directly, leaves USDT on
-  // the key, the rest PAS.
   const sale = props.record.sale;
-  const usdt = sale?.lane !== undefined || isDirectUsdt(sale?.sellCode);
-  const token = usdt ? (TOKENS.USDT as SellToken) : SELL_TOKEN;
-  // Shown to the sale's decimals; a remainder below them is not worth a line.
+  if (sale === undefined) return null;
+  // In the token the sale sold, shown to the sale's decimals; a remainder below them is not worth
+  // a line.
+  const token = sellTokenOf(sale);
   const shown = residue.amount === undefined ? 0n : sellAmountOf(BigInt(residue.amount), token);
   const amount = shown === 0n ? null : `${formatBaseUnits(token, shown)} ${token.symbol}`;
   if (!residue.returning) {
@@ -109,6 +111,10 @@ const action = computed(() => timeline.value.failure?.action ?? null);
 /** The design's word on a sale that ended for good: the seller starts another from the quote. */
 const closeLabel = computed(() =>
   action.value === "close" && props.record.route !== "crypto" ? "Start over" : "Close",
+);
+/** The pool is offered only where waiting cannot help: the PSM refused with room for the redeem. */
+const canSwitchToPool = computed(
+  () => action.value === "try-again" && props.record.failure?.kind === "held",
 );
 /** Cancel is offered only while nothing was paid and the host has nothing in hand. */
 const canCancel = computed(
@@ -191,14 +197,17 @@ const canCancel = computed(
       <PillButton v-if="action === 'return-funds'" class="mt-auto" @click="emit('return-funds')">
         Return funds
       </PillButton>
-      <PillButton
-        v-else-if="action === 'try-again'"
-        class="mt-auto"
-        :disabled="busy"
-        @click="emit('retry')"
-      >
-        Try again
-      </PillButton>
+      <div v-else-if="action === 'try-again'" class="mt-auto flex flex-col gap-3">
+        <PillButton :disabled="busy" @click="emit('retry')">Try again</PillButton>
+        <PillButton
+          v-if="canSwitchToPool"
+          variant="tertiary"
+          :disabled="busy || !poolFigure"
+          @click="emit('pool')"
+        >
+          Sell on the pool{{ poolFigure ? ` for about ${poolFigure}` : "" }}
+        </PillButton>
+      </div>
       <!-- Cancel and retry never show together: cancel is for an unpaid request, retry for a
            failed one. -->
       <PillButton

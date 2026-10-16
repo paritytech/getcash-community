@@ -5,10 +5,11 @@
 // the list loads this route onto its record. Nothing is asked of the balance until the provider
 // names where the funds go; from there the record and the worker carry the sale.
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { PSM_EXTERNAL } from "@getsome/funding";
 import { useDrillIn } from "../../../composables/useDrillIn";
 import { useMeldSellQuote } from "../../../composables/useMeldSellQuote";
 import { useStateDirector } from "../../../composables/useStateDirector";
-import { useWithdrawalRequest } from "../../../composables/useWithdrawalRequest";
+import { psmReserved, useWithdrawalRequest } from "../../../composables/useWithdrawalRequest";
 import type { FundingPackageEmits } from "../../../funding/handoff";
 import { paymentTaken, saleAwaitingDeposit } from "../../../funding/requests/model";
 import type { FundingSelection } from "../../../funding/selection";
@@ -59,7 +60,10 @@ const method = ((): "card" | "bank" => {
 const requests = useRequestsStore();
 const withdrawal = useWithdrawalRequest();
 const amount = computed(() => props.selection?.amount ?? props.topUp?.amount ?? "");
-const sale = useMeldSellQuote(method, toCashBase(amount.value) ?? 0n);
+/** The CASH this app's other PSM withdrawals have yet to redeem: the PSM's room is judged without
+ *  it for every candidate the quote tries. */
+const reserved = computed(() => psmReserved(requests.openWithdrawals, PSM_EXTERNAL));
+const sale = useMeldSellQuote(method, toCashBase(amount.value) ?? 0n, reserved);
 
 type Step = "quote" | "fees" | "region" | "kyc" | "journey" | "cancel";
 const step = ref<Step>(props.topUp ? "journey" : "quote");
@@ -101,9 +105,9 @@ const toolbar = computed<{ title: string; back: boolean }>(() => {
     case "cancel":
       return { title: "", back: true };
     case "journey":
-      return { title: props.topUp ? "Status" : `Withdraw to ${methodLabel}`, back: true };
+      return { title: props.topUp ? "Status" : `Send to ${methodLabel}`, back: true };
     default:
-      return { title: `Withdraw to ${methodLabel}`, back: true };
+      return { title: `Send to ${methodLabel}`, back: true };
   }
 });
 
@@ -546,7 +550,6 @@ onUnmounted(() => {
         @retry="retryQuote"
         @use-crypto="emit('switchRoute', 'crypto')"
         @use-other="switchMethod && emit('switchRoute', switchMethod)"
-        @change-amount="emit('changeAmount')"
       />
       <WithdrawCancelScreen
         v-else-if="step === 'cancel'"

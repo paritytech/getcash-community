@@ -173,9 +173,10 @@ describe("offers store", () => {
     const eth = offers.offeredTokens("Ethereum")[0]!.offer;
     expect(eth.state).toBe("available");
     if (eth.state !== "available") return;
-    // 100 DOT at 0.01 ETH per 25 DOT = 0.04 ETH, plus the 5% buffer.
-    expect(eth.offer.sendBaseUnits).toBe(42_000_000_000_000_000n);
-    expect(eth.offer.sendFormatted).toBe("0.042");
+    // 100 DOT at 0.01 ETH per 25 DOT = 0.04 ETH, buffered for a half-point channel:
+    // 0.04 x 1.0025 / 0.995 = 0.0403015..., shown rounded up at 6 places.
+    expect(eth.offer.sendBaseUnits).toBe(40_301_507_537_688_443n);
+    expect(eth.offer.sendFormatted).toBe("0.040302");
     expect(eth.offer.etaSeconds).toBe(600);
   });
 
@@ -306,8 +307,8 @@ describe("offers store", () => {
     ]);
     const eth = offers.offeredTokens("Ethereum")[0]!.offer;
     expect(eth.state).toBe("available");
-    // 50 USDT at 0.01 ETH per 25 USDT = 0.02 ETH, plus the 5% buffer.
-    if (eth.state === "available") expect(eth.offer.sendBaseUnits).toBe(21_000_000_000_000_000n);
+    // 50 USDT at 0.01 ETH per 25 USDT = 0.02 ETH, buffered for a half-point channel.
+    if (eth.state === "available") expect(eth.offer.sendBaseUnits).toBe(20_150_753_768_844_222n);
     const btc = offers.networks.find((n) => n.chain === "Bitcoin")!.tokens[0]!.offer;
     // 50 CASH bought 50 USDT and the floor is worth 160 USDT: the smallest purchase is 160 CASH.
     expect(btc).toEqual({ state: "too-small", minimumCashBase: 160_000_000n });

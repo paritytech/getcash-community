@@ -88,7 +88,8 @@ export interface OpenChannelArgs {
   destAddress: string;
   /** Source-chain refund address. Required by rails with a refund leg. */
   refundAddress?: string;
-  /** Fill-or-kill terms. Absent, the quote's recommended slippage and a 10-minute retry apply. A
+  /** Fill-or-kill terms. Absent, the quote's recommended slippage (half a point at least) and a
+   *  10-minute retry apply. A
    *  caller that commits to the swap's floor elsewhere (an offramp sale) must set them, so the
    *  floor Chainflip enforces is the one it committed to. */
   fillOrKill?: { slippageTolerancePercent: string; retryDurationMinutes: number };

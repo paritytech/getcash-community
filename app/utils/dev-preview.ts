@@ -63,6 +63,7 @@ const SALE_PREVIEW_QUOTE: MeldSellQuote = {
   fiat: "GBP",
   paymentMethodType: "PAYOUT_TO_CARD",
   cryptoAmount: 1_254_321_000_000n,
+  route: { tier: "pool" },
   backCash: 420_000n,
   line: {
     serviceProvider: "TRANSAK",
@@ -1240,6 +1241,14 @@ function methodUnavailable(session: Session, country: string) {
   session.meldMethodUnavailable = true;
 }
 
+/** The price could not be had, `failures` times in a row for this amount: the first offers another
+ *  try, the second a change of amount or of rail. */
+function rateFailed(session: Session, failures: number) {
+  session.quoted = null;
+  session.quoteError = "The rate could not be read.";
+  session.quoteFailures = failures;
+}
+
 /** Baseline for the bank summary scenes: the bank frames' own quote, against the same catalog. */
 function bankSummary(session: Session, flow: Flow) {
   bankJourney(session, flow);
@@ -1586,7 +1595,7 @@ export const SCENES: Scene[] = [
     // The scene asks for the top-ups screen with nothing running, which is what closing a journey
     // after your last top-up landed used to do. The entry rule now sends it to the amount screen
     // with the clock instead, so this scene is the review comment's fix rather than the bug: a
-    // list titled "Top-up in progress" must never open with no top-up in progress.
+    // list titled "Topping up" must never open with no top-up in progress.
     name: "top-up / list: all settled",
     apply: topUpList({
       finished: [SETTLED_CARD],
@@ -1696,6 +1705,22 @@ export const SCENES: Scene[] = [
     apply: (s, f) => {
       selection(s, f);
       useOffersStore().railEnabled = false;
+      f.step = "network";
+    },
+  },
+  {
+    name: "top-up / crypto / network: couldn't get the rate",
+    apply: (s, f) => {
+      selection(s, f);
+      rateFailed(s, 1);
+      f.step = "network";
+    },
+  },
+  {
+    name: "top-up / crypto / network: still not working",
+    apply: (s, f) => {
+      selection(s, f);
+      rateFailed(s, 2);
       f.step = "network";
     },
   },
@@ -1864,6 +1889,20 @@ export const SCENES: Scene[] = [
     },
   },
   {
+    name: "top-up / card / summary: couldn't get the rate",
+    apply: (s, f) => {
+      cardSummary(s, f);
+      rateFailed(s, 1);
+    },
+  },
+  {
+    name: "top-up / card / summary: still not working",
+    apply: (s, f) => {
+      cardSummary(s, f);
+      rateFailed(s, 2);
+    },
+  },
+  {
     // The design's card journey at the Payment step: Fees and Total quoted in fiat.
     name: "top-up / card / journey: payment",
     apply: async (s, f, i) => {
@@ -2010,6 +2049,20 @@ export const SCENES: Scene[] = [
     apply: (s, f) => {
       bankSummary(s, f);
       methodUnavailable(s, "BR");
+    },
+  },
+  {
+    name: "top-up / bank / summary: couldn't get the rate",
+    apply: (s, f) => {
+      bankSummary(s, f);
+      rateFailed(s, 1);
+    },
+  },
+  {
+    name: "top-up / bank / summary: still not working",
+    apply: (s, f) => {
+      bankSummary(s, f);
+      rateFailed(s, 2);
     },
   },
   {

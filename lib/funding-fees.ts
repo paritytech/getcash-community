@@ -361,7 +361,8 @@ export async function quoteDepositValue(
     { ...args, settleAmount: deposit },
     stableAssetId,
   );
-  const keepBack = (cash: bigint) => (cash * BigInt(100 - args.slippagePct)) / 100n;
+  const keepBack = (cash: bigint) =>
+    (cash * BigInt(Math.round((100 - args.slippagePct) * 100))) / 10_000n;
   const earmark = destinationEarmark(deposit, destinationFee);
   const common = {
     api,

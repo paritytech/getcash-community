@@ -11,7 +11,7 @@ describe("funding shell entry navigation", () => {
   });
 
   it("sends a buyer whose top-ups have all settled to the amount screen", () => {
-    // Nothing is running, so there is no "Top-up in progress" to title: the receipt is history,
+    // Nothing is running, so there is no "Topping up" to title: the receipt is history,
     // and the amount screen's clock is how the buyer reaches it. This is the case a journey
     // closing back to the list ("pending") lands in once the last top-up has landed.
     expect(resolveFundingShellScreen("pending", false)).toBe("amount");

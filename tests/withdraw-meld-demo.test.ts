@@ -29,7 +29,7 @@ const SALE = {
   serviceProvider: "TRANSAK",
   orderRef: "1jN9roH2QfHPSCurNcuCz4V58fXS2HPTGidJGQnT7dPthdZ",
   country: "DE",
-  sourceCurrencyCode: "DOT_ASSETHUB",
+  sourceCurrencyCode: "DOT",
   sourceAmount: "23.4521",
   destinationCurrencyCode: "EUR",
   paymentMethodType: "SEPA",

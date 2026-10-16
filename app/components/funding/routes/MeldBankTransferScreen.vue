@@ -9,9 +9,11 @@
 // Nothing here can see whether the transfer was actually made — the provider only learns of it
 // when the money lands — so "I've sent funds" is the buyer's word. It waits out a short countdown
 // first, because the details behind it take longer to read than the button takes to reach.
+//
+// A price that could not be had takes the summary step whole, in the two steps every quote
+// screen shows: a retry, then a change of country or of rail.
 import { computed, onUnmounted, ref, watch } from "vue";
 import { ChevronRight, CircleAlert } from "lucide-vue-next";
-import { regionForCountry } from "~~/lib/region";
 import { methodMinimum, namedCountry, otherMethod } from "~~/lib/supported";
 import { useRequestsStore } from "../../../stores/requests";
 import { useSessionStore } from "../../../stores/session";
@@ -20,6 +22,7 @@ import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import type { FundingRoute } from "../../../funding/selection";
 import CashAmount from "../../ui/CashAmount.vue";
 import PillButton from "../../ui/PillButton.vue";
+import RateErrorScreen from "../../ui/RateErrorScreen.vue";
 import RegionRow from "../../ui/RegionRow.vue";
 import SkeletonBlock from "../../ui/SkeletonBlock.vue";
 import MethodUnavailable from "../MethodUnavailable.vue";
@@ -50,18 +53,16 @@ const session = useSessionStore();
 const requests = useRequestsStore();
 
 /** The quote failed. The method not routing from here is its own screen. */
-const blocked = computed(() => session.quoteError !== null);
+const blocked = computed(() => session.quoteError !== null && !session.loading);
 /** A request exists: the provider has a pay page for this quote. */
 const requestOpen = computed(() => requests.phase !== null);
 /** The summary has nothing to price yet. */
 const pricing = computed(() => !blocked.value && !session.quoted);
 
-/** The fiat the screen is denominated in. Known from the region even when no quote priced it. */
-const fiat = computed(() => session.quoted?.symbol ?? regionForCountry(props.country).fiat);
-/** The hero: the exact total to transfer, fees included; zeroed when there is no quote. */
+/** The hero: the exact total to transfer, fees included. Shown only once a quote priced it. */
 const heroAmount = computed(() => {
   const q = session.quoted;
-  return q ? fmtFiat(q.send, q.symbol) : fmtFiat("0", fiat.value);
+  return q ? fmtFiat(q.send, q.symbol) : null;
 });
 /** The caption drills into the breakdown only when the fee is a number it can split. */
 const feesKnown = computed(() => isMoneyAmount(session.quoted?.fee));
@@ -186,19 +187,19 @@ function confirmSent() {
       @use-crypto="emit('switchRoute', 'crypto')"
       @use-other="emit('switchRoute', 'card')"
     />
+    <RateErrorScreen
+      v-else-if="step === 'summary' && blocked"
+      :failures="session.quoteFailures"
+      @retry="requote"
+      @change-country="emit('currency')"
+      @use-crypto="emit('switchRoute', 'crypto')"
+    />
     <template v-else-if="step === 'summary'">
-      <!-- The hero, in each of its three states: pricing, unpriced, priced. -->
+      <!-- The hero, pricing or priced. -->
       <div class="flex shrink-0 flex-col items-center text-center">
         <template v-if="pricing">
           <SkeletonBlock class="h-16 w-40" />
           <SkeletonBlock class="mt-3 h-4 w-52" />
-        </template>
-        <template v-else-if="blocked">
-          <p class="text-display-xl text-fg-disabled">{{ heroAmount }}</p>
-          <p class="mt-1 flex items-center gap-1 text-body-m text-fg-error">
-            <CircleAlert class="size-4 shrink-0" aria-hidden="true" />
-            Error fetching quote, retry again
-          </p>
         </template>
         <template v-else>
           <p class="text-display-xl text-fg-primary">{{ heroAmount }}</p>
@@ -222,8 +223,7 @@ function confirmSent() {
         </div>
       </div>
       <div v-else class="mt-6 flex flex-col gap-4">
-        <!-- The region the transfer is priced in, named by the currency it charges. Live even
-             while blocked: changing it is the other way out. -->
+        <!-- The region the transfer is priced in, named by the currency it charges. -->
         <RegionRow
           label="Payment country"
           :value="countryLabel"
@@ -233,16 +233,12 @@ function confirmSent() {
 
         <div class="flex items-baseline justify-between gap-4">
           <span class="text-paragraph-l text-fg-primary">You’ll receive</span>
-          <span v-if="blocked" class="text-heading-m text-fg-disabled"
-            ><CashAmount amount="0"
-          /></span>
-          <span v-else class="text-heading-m text-fg-primary">
+          <span class="text-heading-m text-fg-primary">
             <CashAmount :amount="session.amountHuman" />
           </span>
         </div>
 
-        <!-- Nothing is arriving while there is no quote, so the row goes with it. -->
-        <div v-if="!blocked" class="flex items-start justify-between gap-4">
+        <div class="flex items-start justify-between gap-4">
           <span class="text-paragraph-l text-fg-primary">Arrives</span>
           <span class="flex flex-col items-end text-right">
             <span class="text-heading-m text-fg-primary">1–2 business days</span>
@@ -253,16 +249,7 @@ function confirmSent() {
         </div>
       </div>
 
-      <!-- A failed quote, the button retries it; otherwise it commits to the transfer. -->
-      <PillButton
-        v-if="blocked"
-        variant="secondary"
-        class="mt-auto w-full shrink-0"
-        @click="requote"
-      >
-        Retry quote
-      </PillButton>
-      <SkeletonBlock v-else-if="pricing" class="mt-auto h-12 w-full shrink-0" />
+      <SkeletonBlock v-if="pricing" class="mt-auto h-12 w-full shrink-0" />
       <PillButton v-else class="mt-auto w-full shrink-0" @click="onContinue"> Continue </PillButton>
       <PoweredBy class="mt-3 mb-4" provider="Meld" />
     </template>

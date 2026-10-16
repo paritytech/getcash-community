@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // The pill CTA: primary carries the screen's one main action, secondary a recovery from a state
-// that is not the buyer's fault (Retry quote), tertiary the quiet exits (Back, Close), danger the
+// that is not the buyer's fault (Use crypto), tertiary the quiet exits (Back, Close), danger the
 // one that undoes a top-up (Cancel). Layout (width, margins) belongs to the call site.
 withDefaults(defineProps<{ variant?: "primary" | "secondary" | "tertiary" | "danger" }>(), {
   variant: "primary",
