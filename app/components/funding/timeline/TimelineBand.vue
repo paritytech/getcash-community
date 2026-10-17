@@ -3,13 +3,15 @@
 import FlipText from "./FlipText.vue";
 
 defineProps<{
+  /** The accessible name of the timeline. */
+  label: string;
   message: string | null;
   detail: string | null;
 }>();
 </script>
 
 <template>
-  <section class="timeline" aria-label="Top-up progress">
+  <section class="timeline" :aria-label="label">
     <slot />
     <div v-if="message || detail">
       <FlipText

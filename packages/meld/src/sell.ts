@@ -148,14 +148,12 @@ export function saleChannelOf(
 
 /** Endings after the key paid, each in the seller's words. The payout is the provider's now. */
 const ENDINGS: Readonly<Record<string, string>> = Object.freeze({
-  failed: "The provider could not complete the payout. Contact support with your reference.",
-  expired:
-    "The sale closed at the provider before it saw the funds. Contact support with your reference.",
-  refused: "The provider did not accept this sale. Contact support with your reference.",
-  refunded: "The provider returned the funds instead of paying out. Contact support.",
-  unobserved:
-    "We could not confirm the payout with the provider. Contact support with your reference.",
-  changed: "The provider changed the sale after your payment. Contact support with your reference.",
+  failed: "The provider could not complete the payout.",
+  expired: "The sale closed at the provider before it saw the funds.",
+  refused: "The provider did not accept this sale.",
+  refunded: "The provider returned the funds instead of paying out.",
+  unobserved: "We could not confirm the payout with the provider.",
+  changed: "The provider changed the sale after your payment.",
 });
 
 /** The sale's status as the rail leg follows it once the key has paid. A deposit the provider

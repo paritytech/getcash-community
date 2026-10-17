@@ -445,7 +445,8 @@ export type WithdrawalStatus =
   | { kind: "converting"; at: number; step: SendingStep }
   | { kind: "sending"; at: number }
   | { kind: "sent"; at: number }
-  | { kind: "failed"; at: number; recoverable: boolean }
+  /** `legAt` is when the leg that failed opened, for the line the failure stopped. */
+  | { kind: "failed"; at: number; recoverable: boolean; legAt?: number }
   | { kind: "expired"; at: number }
   | { kind: "cancelled"; at: number };
 
@@ -650,6 +651,8 @@ export interface WithdrawJobView {
     call: "swap" | "withdraw" | "redeem" | "pool-exit" | "sweep" | "pay";
     txHash: string;
     block?: number;
+    /** The chain took it: false for one included and refused. */
+    ok: boolean;
   }[];
   /** The provider's latest word on the swap, once the worker has paid it. */
   rail?: SwapStatusResult;
@@ -688,6 +691,9 @@ export interface WithdrawalRailState {
   delayed?: boolean;
   failure?: RailState["failure"];
   updatedAt: number;
+  /** When the rail first reported each stage, and when it first reported sending on, which the
+   *  processing stage folds in with the swap; kept through a failure, which `updatedAt` is not. */
+  stageAt?: { received?: number; processing?: number; sending?: number };
 }
 
 export interface WithdrawalRecord {
@@ -914,6 +920,13 @@ export const isTerminal = (status: RequestStatus): boolean => status.kind === "s
 /** The record reached its end: a top-up settled, a withdrawal sent. Nothing moves it again. */
 export const isFinished = (record: RequestRecord): boolean =>
   record.kind === "top-up" ? record.status.kind === "settled" : record.status.kind === "sent";
+
+/** The withdrawal ended short of success: failed, expired or cancelled. Its rank stays at the leg
+ *  it left, and nothing moves it again but a retry. */
+export const isWithdrawalSideExit = (record: Pick<WithdrawalRecord, "status">): boolean =>
+  record.status.kind === "failed" ||
+  record.status.kind === "expired" ||
+  record.status.kind === "cancelled";
 
 /** The host took the payment, or has it in hand: such a withdrawal never expires and is never
  *  cancelled, however long the CASH takes to reach the key. */

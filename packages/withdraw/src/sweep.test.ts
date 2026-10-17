@@ -71,7 +71,7 @@ describe("the sweep", () => {
       },
     ]);
     expect(events).toEqual(["persist", "submit"]);
-    expect(txs).toEqual([{ call: "sweep", txHash: "0x1", block: 101 }]);
+    expect(txs).toEqual([{ call: "sweep", txHash: "0x1", block: 101, ok: true }]);
     expect(state).toEqual({ attempts: 1, rejections: 0 });
   });
 

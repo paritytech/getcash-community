@@ -1,114 +1,81 @@
 <script setup lang="ts">
-// The withdrawal's journey: from the payment out of the balance to the funds at the destination.
-// Everything shown is read from the record; the actions go back to the route.
+// The withdrawal's journey: from the payment out of the balance to the funds at the destination,
+// on the shared timeline. Everything shown is read from the record; the actions go back to the
+// route.
 import { computed } from "vue";
-import { ArrowUpRight, RefreshCcw, X } from "lucide-vue-next";
-import { TOKENS } from "@getsome/core";
-import { formatSourceAmount, SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
+import { RefreshCcw, X } from "lucide-vue-next";
 import { formatBaseUnits, sellAmountOf } from "@getsome/meld";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
+import { SUCCESS_ICON_DELAY_MS, useJourneySuccess } from "../../composables/useJourneySuccess";
 import {
+  isWithdrawalSideExit,
   paymentTaken,
-  saleAwaitingDeposit,
   type WithdrawalRecord,
 } from "../../funding/requests/model";
 import { sellTokenOf } from "../../funding/requests/transitions/withdrawal";
-import { asName } from "../../funding/top-up-projection";
-import { formatWhenShort, shortRef } from "../../utils/journey";
-import { fmtFiat } from "../../utils/money";
-import { shortDestinationAddress } from "../../withdraw/destinations";
-import { sourceIdFor } from "~~/lib/config";
-import { withdrawalFailureText } from "../../withdraw/failure-copy";
-import {
-  SALE_KYC_LABEL,
-  WITHDRAWAL_JOURNEY_LABELS,
-  withdrawalJourneyDone,
-  withdrawalProgress,
-  withdrawalProgressProfile,
-} from "../../withdraw/progress";
+import { TIMELINE_CADENCE_MS } from "../../funding/timeline/timelines";
+import { useRequestsStore } from "../../stores/requests";
+import { formatWhenShort } from "../../utils/journey";
+import { withdrawalJourneyRows } from "../../withdraw/timeline/journey-rows";
+import { WITHDRAWAL_TIMELINE } from "../../withdraw/timeline/spec";
+import FundingTimeline from "../funding/timeline/FundingTimeline.vue";
+import TimelineBand from "../funding/timeline/TimelineBand.vue";
 import CashAmount from "../ui/CashAmount.vue";
-import DetailRows, { type DetailRow } from "../ui/DetailRows.vue";
+import CopiedPill from "../ui/CopiedPill.vue";
+import DetailRows from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
-import WithdrawalJourneyTimeline from "./WithdrawalJourneyTimeline.vue";
+import TransactionIcon from "../ui/TransactionIcon.vue";
 
 const props = defineProps<{
   record: WithdrawalRecord;
   /** A line the record does not carry: a refused cancel, a retry that could not start. */
   notice: string | null;
   busy: boolean;
+  /** The route still holds the quote behind the receive row, so the row can open its fees. */
+  feesAvailable?: boolean;
   /** What the pool would land for a held withdrawal, formatted; null until quoted. */
   poolFigure?: string | null;
 }>();
-const emit = defineEmits<{ cancel: []; retry: []; pool: []; close: []; "return-funds": [] }>();
-
-const now = useFundingProgressClock(
-  () => withdrawalProgressProfile(props.record.rail.provider).cadenceMs,
-);
-const progress = computed(() => withdrawalProgress(props.record, now.value));
-const done = computed(() => withdrawalJourneyDone(props.record));
+const emit = defineEmits<{
+  cancel: [];
+  retry: [];
+  pool: [];
+  close: [];
+  "return-funds": [];
+  fees: [];
+}>();
+const requests = useRequestsStore();
 
 const status = computed(() => props.record.status);
 const sent = computed(() => status.value.kind === "sent");
-const failure = computed(() => props.record.failure ?? null);
-const sideExit = computed(
-  () =>
-    status.value.kind === "failed" ||
-    status.value.kind === "expired" ||
-    status.value.kind === "cancelled",
-);
+const sideExit = computed(() => isWithdrawalSideExit(props.record));
 
-/** The design names the expired step itself, not "<stage> failed". */
-const failedLabel = computed(() => {
-  if (status.value.kind === "expired") return "Expired";
-  if (status.value.kind === "cancelled") return "Cancelled";
-  if (failure.value?.step !== "payment") return null;
-  // A sale that ended before its balance was asked had no payment to fail.
-  const unasked = props.record.sale !== undefined && props.record.payment.requestedAt === undefined;
-  return unasked ? "Sale ended" : "Payment failed";
+const now = useFundingProgressClock(() =>
+  sent.value || sideExit.value ? null : TIMELINE_CADENCE_MS,
+);
+/** The store's memo, so the journey never falls behind the line the list showed. */
+const timeline = computed(() => requests.withdrawalTimelineOf(props.record, now.value));
+
+/** The band's text: the route's notice, then the failure, then the timeline's own words. */
+const timelineMessage = computed(
+  () => props.notice ?? timeline.value.failure?.text ?? timeline.value.message?.text ?? null,
+);
+const timelineDetail = computed(() => timeline.value.detail ?? null);
+const { success, successShown, successPlaying, drawn, band } = useJourneySuccess({
+  succeeded: sent,
+  view: () => timeline.value.view,
+  message: timelineMessage,
+  detail: timelineDetail,
 });
 
 const sentWhen = computed(() =>
-  status.value.kind === "sent" ? formatWhenShort(status.value.at) : null,
+  status.value.kind === "sent" && successShown.value ? formatWhenShort(status.value.at) : null,
 );
 
-/** What the quote said would land, formatted in the destination asset: an estimate, so `≈`.
- *  Nothing for the direct rail, which stores no channel and no promised figure. */
-const sentEgress = computed(() => {
-  const egress = props.record.handoff.channel?.expectedEgress;
-  if (egress === undefined) return null;
-  const { chain, asset } = props.record.destination;
-  const id = sourceIdFor(chain, asset);
-  const config = id === undefined ? undefined : SOURCE_CONFIG_BY_ID.get(id);
-  if (config === undefined) return null;
-  try {
-    return `≈ ${formatSourceAmount(config, egress, { maxDecimals: 6 })} ${asset}`;
-  } catch {
-    return null;
-  }
-});
-
-/** The one line under the stepper: the endings and the payment wait speak, the design's
- *  in-flight frames carry no ribbon. */
-const message = computed(() => {
-  if (props.notice) return props.notice;
-  if (status.value.kind === "cancelled") return "This withdrawal was cancelled.";
-  if (failure.value) return withdrawalFailureText(failure.value);
-  // The funding product is approved without a sheet, so a requested payment is processing.
-  if (status.value.kind === "awaiting-payment") {
-    // A sale asks the balance only once the provider knows where the funds go.
-    if (saleAwaitingDeposit(props.record)) return SALE_KYC_LABEL;
-    return props.record.payment.requestedAt === undefined
-      ? "Waiting for your payment"
-      : "Your payment is being processed";
-  }
-  // The design's in-flight crypto frames carry no ribbon, and crypto's sent ending trades the
-  // stepper for the summary rows; a sale keeps the stepper and speaks the journey's line.
-  if (props.record.route === "crypto") return null;
-  if (status.value.kind === "sent") {
-    return props.record.route === "bank" ? "Paid out to your bank" : "Paid out to your card";
-  }
-  return progress.value.view.label;
-});
+const rows = computed(() =>
+  withdrawalJourneyRows(props.record, { feesAvailable: props.feesAvailable === true }),
+);
+const copyable = computed(() => rows.value.some((row) => row.copy !== undefined));
 
 /** What a sale left over once the provider was paid, and where it is. A sale that ended unpaid
  *  sends everything back, which its failure already says, so only the arrival is added. A way
@@ -117,7 +84,7 @@ const residueNote = computed(() => {
   const residue = props.record.residue;
   if (residue === undefined) return null;
   if (residue.stuck === true) {
-    return "What was left could not come back to your balance on its own. Contact support with your reference.";
+    return "What was left could not come back to your balance on its own.";
   }
   const sale = props.record.sale;
   if (sale === undefined) return null;
@@ -139,91 +106,98 @@ const residueNote = computed(() => {
     : `The ${amount} left over is on its way back to your balance.`;
 });
 
-/** A sale's payout as quoted and its reference, the id support finds the order by on both sides:
- *  the adapter files it with Meld as the session's external id. */
-const saleRows = computed<DetailRow[]>(() => {
-  const sale = props.record.sale;
-  if (sale === undefined) return [];
-  return [
-    {
-      label: "Payout",
-      value: `≈ ${fmtFiat(sale.quotedPayout, sale.fiat)} via ${asName(sale.serviceProvider)}`,
-    },
-    { label: "Reference", value: shortRef(sale.fundingRequestId), copy: sale.fundingRequestId },
-  ];
-});
-
+/** The way on from an ending: the refund guide, a retry, or nothing more than closing. */
+const action = computed(() => timeline.value.failure?.action ?? null);
+/** The design's word on a sale that ended for good: the seller starts another from the quote. */
+const closeLabel = computed(() =>
+  action.value === "close" && props.record.route !== "crypto" ? "Start over" : "Close",
+);
+/** The pool is offered only where waiting cannot help: the PSM refused with room for the redeem. */
+const canSwitchToPool = computed(
+  () => action.value === "try-again" && props.record.failure?.kind === "held",
+);
 /** Cancel is offered only while nothing was paid and the host has nothing in hand. */
 const canCancel = computed(
   () => status.value.kind === "awaiting-payment" && !paymentTaken(props.record),
 );
-/** A refund leaves the DOT on the withdrawal's own key: the design walks it into a wallet.
- *  Only the crypto route mounts that walk-through. */
-const refunded = computed(
-  () =>
-    props.record.route === "crypto" &&
-    status.value.kind === "failed" &&
-    failure.value?.kind === "refunded",
-);
-const canRetry = computed(
-  () => status.value.kind === "failed" && status.value.recoverable && !refunded.value,
-);
-/** The pool is offered only where waiting cannot help: the PSM refused with room for the redeem. */
-const canSwitchToPool = computed(
-  () => status.value.kind === "failed" && failure.value?.kind === "held",
-);
 </script>
 
 <template>
+  <!-- The scroller carries -mx-4/px-4 so the timeline card's bleed isn't clipped: overflow-y-auto
+       also clips x, and the clip runs at the padding box. -->
   <div class="-mx-4 flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-6">
     <div class="flex flex-col items-center text-center">
       <span
-        class="flex size-14 items-center justify-center rounded-full"
+        class="journey-stack size-14 rounded-full"
         :class="sideExit ? 'journey-hero-failed' : 'bg-surface-container'"
       >
         <X v-if="sideExit" class="size-6 text-fg-error" aria-hidden="true" />
-        <ArrowUpRight v-else-if="sent" class="size-6 text-fg-primary" aria-hidden="true" />
-        <RefreshCcw v-else class="size-6 text-fg-primary" aria-hidden="true" />
+        <template v-else>
+          <RefreshCcw
+            v-if="!successShown || successPlaying"
+            class="size-6 text-fg-primary"
+            :class="{ 'journey-icon-out': successPlaying }"
+            aria-hidden="true"
+          />
+          <TransactionIcon
+            v-if="successShown"
+            class="size-14"
+            :animate="successPlaying"
+            :delay="SUCCESS_ICON_DELAY_MS"
+          />
+        </template>
       </span>
-      <p class="mt-2 text-display-m" :class="sideExit ? 'text-fg-secondary' : 'text-fg-primary'">
-        <CashAmount :amount="record.amountHuman" :sign="sent ? '-' : ''" />
+      <p class="journey-stack mt-2 text-display-m">
+        <CashAmount
+          v-if="!successShown || successPlaying"
+          :amount="record.amountHuman"
+          sign=""
+          :class="[
+            sideExit ? 'text-fg-secondary' : 'text-fg-primary',
+            { 'journey-amount-out': successPlaying },
+          ]"
+        />
+        <CashAmount
+          v-if="successShown"
+          :amount="record.amountHuman"
+          sign="-"
+          class="text-fg-primary"
+          :class="{ 'journey-amount-in': successPlaying }"
+        />
       </p>
-      <p v-if="sentWhen" class="text-paragraph-l text-fg-secondary">{{ sentWhen }}</p>
+      <div v-if="sentWhen" :class="{ 'journey-date-in': successPlaying }">
+        <p class="text-paragraph-l text-fg-secondary">{{ sentWhen }}</p>
+      </div>
     </div>
 
     <div class="mt-6 flex flex-1 flex-col gap-6">
-      <!-- Crypto's sent ending trades the stepper for the summary's own rows; a sale has no
-           destination address to show, so its stepper stays. -->
-      <dl v-if="sent && record.route === 'crypto'" class="flex flex-col gap-4">
-        <div v-if="sentEgress" class="flex items-baseline justify-between gap-4">
-          <dt class="text-paragraph-l text-fg-primary">Sent inc. fees</dt>
-          <dd class="text-heading-m text-fg-primary">{{ sentEgress }}</dd>
-        </div>
-        <div class="flex items-baseline justify-between gap-4">
-          <dt class="text-paragraph-l text-fg-primary">
-            To this address<br />
-            on <strong class="font-semibold">{{ record.destination.chain }} Network</strong>
-          </dt>
-          <dd class="text-heading-m text-fg-primary" :title="record.destination.address">
-            {{ shortDestinationAddress(record.destination.address) }}
-          </dd>
-        </div>
-      </dl>
-      <WithdrawalJourneyTimeline
-        v-else
-        :progress="progress"
-        :labels="WITHDRAWAL_JOURNEY_LABELS"
-        :completed-steps="done"
-        :message="message"
-        :failed-label="failedLabel"
-      />
-      <p v-if="residueNote" class="text-body-s text-fg-secondary">{{ residueNote }}</p>
-      <DetailRows v-if="saleRows.length > 0" :rows="saleRows" muted />
+      <!-- The timeline leaves once the funds are sent. -->
+      <div v-if="success !== 'shown'" :class="{ 'journey-timeline-out': successPlaying }">
+        <FundingTimeline
+          v-if="timeline.view"
+          :spec="WITHDRAWAL_TIMELINE"
+          :view="timeline.view"
+          :message="band.message"
+          :detail="band.detail"
+          @completed="drawn"
+        />
+        <TimelineBand
+          v-else
+          :label="WITHDRAWAL_TIMELINE.ariaLabel"
+          :message="band.message"
+          :detail="band.detail"
+        />
+      </div>
 
-      <PillButton v-if="refunded" class="mt-auto" @click="emit('return-funds')">
+      <DetailRows v-if="rows.length" :rows="rows" @fees="emit('fees')" />
+      <!-- The reference copies, so the screen carries the confirmation. -->
+      <CopiedPill v-if="copyable" />
+      <p v-if="residueNote" class="text-body-s text-fg-secondary">{{ residueNote }}</p>
+
+      <PillButton v-if="action === 'return-funds'" class="mt-auto" @click="emit('return-funds')">
         Return funds
       </PillButton>
-      <div v-else-if="canRetry" class="mt-auto flex flex-col gap-3">
+      <div v-else-if="action === 'try-again'" class="mt-auto flex flex-col gap-3">
         <PillButton :disabled="busy" @click="emit('retry')">Try again</PillButton>
         <PillButton
           v-if="canSwitchToPool"
@@ -246,20 +220,14 @@ const canSwitchToPool = computed(
         Cancel withdrawal
       </PillButton>
       <PillButton
-        v-if="sent || (sideExit && !canRetry && !refunded)"
+        v-if="successShown || action === 'close'"
         variant="tertiary"
         class="mt-auto"
+        :class="{ 'journey-close-in': successPlaying }"
         @click="emit('close')"
       >
-        Close
+        {{ closeLabel }}
       </PillButton>
     </div>
   </div>
 </template>
-
-<style scoped>
-/* The failed hero circle binds the red-alpha primitive in the design; no semantic token covers it. */
-.journey-hero-failed {
-  background: var(--palette-red-alpha-24);
-}
-</style>

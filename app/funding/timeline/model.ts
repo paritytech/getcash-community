@@ -1,16 +1,13 @@
-import {
-  MILESTONES,
-  type MilestoneIndex,
-  type MilestoneState,
-  type PhaseIndex,
-  type PhaseInput,
-  type PhasePart,
-  type TimelineInput,
-  type TimelineView,
+import type {
+  MilestoneState,
+  PhaseInput,
+  PhasePart,
+  TimelineInput,
+  TimelineSpec,
+  TimelineView,
 } from "./types";
 
 const FILL_RATE = 3;
-const PHASE_COUNT = MILESTONES.length - 1;
 
 /** The most a line fills before its end milestone is reached. */
 export const LINE_LIMIT = 0.65;
@@ -55,36 +52,41 @@ function lineFill({ parts }: PhaseInput, phaseStartedAt: number | undefined, at:
   return LINE_LIMIT * (before + share * clamp(within, 0, 1));
 }
 
-/** The index of the last milestone the view reached, -1 when Started failed. */
+/** The index of the last milestone the view reached, -1 when the first milestone failed. */
 export function lastReached(view: TimelineView): number {
-  if (view.state === "done") return PHASE_COUNT;
+  if (view.state === "done") return view.lines.length;
   return view.state === "failed" ? view.failed - 1 : view.phase;
 }
 
 /** Milestones up to `last` complete, the one after it failed when `failed`, the rest upcoming. */
-const milestoneStates = (last: number, failed: boolean): MilestoneState[] =>
-  MILESTONES.map((_, index) =>
+const milestoneStates = (count: number, last: number, failed: boolean): MilestoneState[] =>
+  Array.from({ length: count }, (_, index) =>
     index <= last ? "complete" : index === last + 1 && failed ? "failed" : "upcoming",
   );
 
 /** Lines before `phase` full, the line of `phase` at `fill`, the rest empty. */
-const lineFills = (phase: number, fill: number): number[] =>
-  Array.from({ length: PHASE_COUNT }, (_, index) =>
-    index < phase ? 1 : index === phase ? fill : 0,
-  );
+const lineFills = (count: number, phase: number, fill: number): number[] =>
+  Array.from({ length: count }, (_, index) => (index < phase ? 1 : index === phase ? fill : 0));
 
 /**
- * Evaluates the timeline: milestone states, the fill of each phase line and the overall state.
- * Absent while no milestone is reached, unless the top-up failed there: then Started fails.
+ * Evaluates a timeline on its spec: milestone states, the fill of each phase line and the overall
+ * state. Absent while no milestone is reached, unless the journey failed there: then the first
+ * milestone fails.
  */
-export function timelineView(input: TimelineInput): TimelineView | undefined {
+export function timelineView<Id extends string>(
+  spec: TimelineSpec<Id>,
+  input: TimelineInput<Id>,
+): TimelineView | undefined {
   const { reached, failedAt } = input;
-  const last = MILESTONES.reduce(
-    (found, milestone, index) => (reached[milestone] ? index : found),
-    -1,
-  );
-  if (last === PHASE_COUNT) {
-    return { state: "done", milestones: milestoneStates(last, false), lines: lineFills(last, 1) };
+  const { milestones } = spec;
+  const phaseCount = milestones.length - 1;
+  const last = milestones.reduce((found, { id }, index) => (reached[id] ? index : found), -1);
+  if (last === phaseCount) {
+    return {
+      state: "done",
+      milestones: milestoneStates(milestones.length, last, false),
+      lines: lineFills(phaseCount, last, 1),
+    };
   }
   const failed = failedAt !== undefined;
   if (last < 0) {
@@ -92,19 +94,22 @@ export function timelineView(input: TimelineInput): TimelineView | undefined {
       ? {
           state: "failed",
           failed: 0,
-          milestones: milestoneStates(last, true),
-          lines: lineFills(last, 0),
+          milestones: milestoneStates(milestones.length, last, true),
+          lines: lineFills(phaseCount, last, 0),
         }
       : undefined;
   }
 
-  const phase = last as PhaseIndex;
+  const phase = last;
   const phaseInput = input.phase(phase);
-  const fill = lineFill(phaseInput, reached[MILESTONES[phase]]?.at, failedAt ?? input.now);
+  const fill = lineFill(phaseInput, reached[milestones[phase]!.id]?.at, failedAt ?? input.now);
+  // The view shown before is this timeline's own: each keeps its own memo, and specs of equal
+  // length are told apart by nothing else. A view of another length is plainly another spec's.
   const { previous } = input;
-  const shown = previous && lastReached(previous) === phase ? (previous.lines[phase] ?? 0) : 0;
-  const milestones = milestoneStates(phase, failed);
-  const lines = lineFills(phase, Math.max(fill, shown));
-  if (failed) return { state: "failed", failed: (phase + 1) as MilestoneIndex, milestones, lines };
-  return { state: phaseInput.delayed ? "delayed" : "active", phase, milestones, lines };
+  const comparable = previous !== undefined && previous.lines.length === phaseCount;
+  const shown = comparable && lastReached(previous) === phase ? (previous.lines[phase] ?? 0) : 0;
+  const states = milestoneStates(milestones.length, phase, failed);
+  const lines = lineFills(phaseCount, phase, Math.max(fill, shown));
+  if (failed) return { state: "failed", failed: phase + 1, milestones: states, lines };
+  return { state: phaseInput.delayed ? "delayed" : "active", phase, milestones: states, lines };
 }

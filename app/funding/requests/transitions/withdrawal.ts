@@ -30,6 +30,7 @@ import {
   SALE_PAY_WINDOW_MS,
   SENDING_STEP_ORDER,
   isSendingStep,
+  isWithdrawalSideExit,
   paymentTaken,
   saleBeforePurse,
   withdrawalRankOf,
@@ -43,6 +44,7 @@ import {
   type WithdrawalChannel,
   type WithdrawalFailure,
   type WithdrawalFailureKind,
+  type WithdrawalRailState,
   type WithdrawalRecord,
   type WithdrawalStatus,
 } from "../model";
@@ -115,11 +117,6 @@ function witnessed(record: WithdrawalRecord, patch: Partial<Witnesses>): Withdra
   return { ...record, witnesses: { ...record.witnesses, ...patch } };
 }
 
-const atSideExit = (record: WithdrawalRecord): boolean =>
-  record.status.kind === "failed" ||
-  record.status.kind === "expired" ||
-  record.status.kind === "cancelled";
-
 /** CASH on the key: completes the payment leg of a record still at rank 0, side exits included,
  *  and touches nothing past it. */
 function paidSeen(
@@ -142,7 +139,12 @@ function failed(
   at: number,
   failure: WithdrawalFailure,
 ): WithdrawalRecord {
-  const status: WithdrawalStatus = { kind: "failed", at, recoverable: failure.recoverable };
+  const status: WithdrawalStatus = {
+    kind: "failed",
+    at,
+    recoverable: failure.recoverable,
+    ...("at" in record.status ? { legAt: record.status.at } : {}),
+  };
   return { ...record, status, failure };
 }
 
@@ -183,6 +185,24 @@ function railFailureKind(kind: FailureKind): WithdrawalFailureKind {
   }
 }
 
+/** The rail's first report of each stage and of sending on, carried past later reads and the
+ *  failure that overwrites `updatedAt`. */
+function stageStamps(
+  before: WithdrawalRailState,
+  read: WithdrawalRailState,
+  at: number,
+): Pick<WithdrawalRailState, "stageAt"> {
+  const { stage, status } = read;
+  const stageAt = { ...before.stageAt };
+  if ((stage === "received" || stage === "processing") && stageAt[stage] === undefined) {
+    stageAt[stage] = at;
+  }
+  if ((status === "sending" || status === "sent") && stageAt.sending === undefined) {
+    stageAt.sending = at;
+  }
+  return Object.keys(stageAt).length === 0 ? {} : { stageAt };
+}
+
 /** The provider's word on the swap, folded onto the rail: delivered completes the request, a
  *  failure ends the rail leg, and only a refund can be tried again. */
 function railRead(
@@ -191,13 +211,15 @@ function railRead(
   at: number,
 ): WithdrawalRecord {
   if (record.rail.provider === "direct") return record;
-  const rail = mergeRail(record.rail, railFromSwapStatus(record.rail.provider, reading, at));
-  if (rail === record.rail) return record;
+  const read = mergeRail(record.rail, railFromSwapStatus(record.rail.provider, reading, at));
+  if (read === record.rail) return record;
+  const rail = { ...read, ...stageStamps(record.rail, read, at) };
   const next = { ...record, rail };
   const rank = withdrawalRankOf(next);
-  if (rail.stage === "delivered") return rank < 4 && !atSideExit(next) ? sent(next, at) : next;
+  if (rail.stage === "delivered")
+    return rank < 4 && !isWithdrawalSideExit(next) ? sent(next, at) : next;
   if (rail.stage === "failed" && rail.failure !== undefined) {
-    if (rank >= 4 || atSideExit(next)) return next;
+    if (rank >= 4 || isWithdrawalSideExit(next)) return next;
     // A sale's swap refunds its USDT to the key, and the worker brings it home itself: nothing
     // reached the provider, there is nothing for the seller to move, and the order cannot be
     // tried again.
@@ -265,7 +287,7 @@ function applyWorker(
   if (job.rail !== undefined) next = railRead(next, job.rail, at);
   const rank = withdrawalRankOf(next);
   if (job.phase === "failed") {
-    if (atSideExit(next)) return next;
+    if (isWithdrawalSideExit(next)) return next;
     // A sale has one order, opened once: a failure before its provider is paid ends it, and the
     // worker sends the key's funds home rather than trying the same order again.
     if (next.rail.provider === "meld" && SALE_ENDING_FAILURES.has(job.failure ?? "")) {
@@ -358,7 +380,7 @@ function applyWorker(
     }
   }
   // The worker finished following the provider: delivered, whatever its last reading said.
-  if (job.done && rank < 4 && !atSideExit(next)) return sent(next, at);
+  if (job.done && rank < 4 && !isWithdrawalSideExit(next)) return sent(next, at);
   if (job.fundsSeenAt !== null && isSendingStep(job.phase)) {
     const { status } = next;
     const laterStep =
@@ -549,7 +571,7 @@ function applyHost(record: WithdrawalRecord, observation: HostObservation): With
           conflict: { source: "host", note: "payment failed after CASH was seen", at },
         });
       }
-      if (atSideExit(stamped)) return stamped;
+      if (isWithdrawalSideExit(stamped)) return stamped;
       return failed(stamped, at, {
         kind: "payment-failed",
         step: "payment",
@@ -638,17 +660,26 @@ function applyUser(record: WithdrawalRecord, observation: UserObservation): With
         };
       }
       if (record.failure?.step === "send") {
-        // The PAS is back on the key: the rail leg starts over with a fresh channel.
+        // The PAS is back on the key: the rail leg starts over with a fresh channel and a fresh
+        // job, so the old job's payment and failure say nothing about it.
         return {
           ...rest,
           status: { kind: "sending", at },
           rail: { provider: record.rail.provider, stage: "waiting", updatedAt: at },
+          witnesses: { ...rest.witnesses, worker: { known: false, at } },
         };
       }
       const worker = record.witnesses.worker;
       const step: SendingStep =
         worker?.known && isSendingStep(worker.phase) ? worker.phase : "swap";
-      return { ...rest, status: { kind: "converting", at, step } };
+      if (worker?.known !== true) return { ...rest, status: { kind: "converting", at, step } };
+      // The failed attempt's ending is over with the retry; the transactions it filed still stand.
+      const { failure: _failure, lastError: _lastError, ...kept } = worker;
+      return {
+        ...rest,
+        status: { kind: "converting", at, step },
+        witnesses: { ...rest.witnesses, worker: kept },
+      };
     }
     case "channel-opened":
       // A fresh channel for the rail leg; the hand-off the worker is re-armed with carries it.

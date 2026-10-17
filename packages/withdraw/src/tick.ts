@@ -238,7 +238,7 @@ export interface WithdrawTickInput {
    *  (`readDestinationBalance`). */
   readDestinationOnAssetHub: (destinationHex: string) => Promise<bigint>;
   now: () => number;
-  onTx?: (info: { call: TickCall; txHash: string; block?: number }) => void;
+  onTx?: (info: { call: TickCall; txHash: string; block?: number; ok: boolean }) => void;
   onTransientError?: (error: unknown) => void;
   onBeforeSubmit?: (call: TickCall) => Promise<void> | void;
 }
@@ -365,7 +365,7 @@ export async function withdrawTickOnce(
         input.submitTimeoutMs,
         "withdrawal submit",
       );
-      input.onTx?.({ call: "withdraw", txHash: res.txHash, block: res.block?.number });
+      input.onTx?.({ call: "withdraw", txHash: res.txHash, block: res.block?.number, ok: res.ok });
       if (!res.ok) {
         rejected(
           state,
@@ -404,7 +404,7 @@ export async function withdrawTickOnce(
     input.submitTimeoutMs,
     "swap submit",
   );
-  input.onTx?.({ call: "swap", txHash: res.txHash, block: res.block?.number });
+  input.onTx?.({ call: "swap", txHash: res.txHash, block: res.block?.number, ok: res.ok });
   if (!res.ok) rejected(state, "swap", describeDispatchError(res.dispatchError));
   return { step: "swap", balances, submitted: true };
 }
@@ -617,7 +617,7 @@ async function exitFromAssetHub(
     input.submitTimeoutMs,
     `${call} submit`,
   );
-  input.onTx?.({ call, txHash: res.txHash, block: res.block?.number });
+  input.onTx?.({ call, txHash: res.txHash, block: res.block?.number, ok: res.ok });
   if (!res.ok) {
     // Included and refused: the batch rolled back whole, the CASH is still on the key, and the
     // nonce is spent.
