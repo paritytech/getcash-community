@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
+import { installMeldAssets } from "@getsome/core";
+import { TEST_MELD_ASSETS } from "../../../tests/setup-meld-assets";
 import { isLaneId, LANES, laneById, laneByMeldCode, laneSellToken } from "./lanes";
 
 describe("lane catalog", () => {
@@ -28,8 +30,20 @@ describe("lane catalog", () => {
 });
 
 describe("laneByMeldCode", () => {
+  afterEach(() => {
+    installMeldAssets(TEST_MELD_ASSETS);
+  });
+
   it("finds the lane a Meld code sells through, and none for an Asset Hub code", () => {
     expect(laneByMeldCode("USDC_SOLANA")?.id).toBe("usdc-solana");
-    expect(laneByMeldCode("DOT_ASSETHUB")).toBeNull();
+    expect(laneByMeldCode("DOT")).toBeNull();
+    expect(laneByMeldCode("NOT_A_CODE")).toBeNull();
+  });
+
+  it("follows the adapter's table when Meld renames a lane's code", () => {
+    installMeldAssets([{ asset: "usdc@solana", code: "USDC_SOL" }]);
+    expect(laneByMeldCode("USDC_SOL")?.id).toBe("usdc-solana");
+    expect(laneByMeldCode("USDC_SOLANA")).toBeNull();
+    expect(laneSellToken(laneById("usdc-solana")).meldCurrencyCode).toBe("USDC_SOL");
   });
 });

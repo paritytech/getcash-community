@@ -5,6 +5,7 @@ import type {
   ChainflipProgressFacts,
   FailureKind,
   FailureStep,
+  MeldAssetId,
   PaymentPhase,
   PaymentState,
   RefundProgress,
@@ -444,7 +445,8 @@ export type WithdrawalStatus =
   | { kind: "converting"; at: number; step: SendingStep }
   | { kind: "sending"; at: number }
   | { kind: "sent"; at: number }
-  | { kind: "failed"; at: number; recoverable: boolean }
+  /** `legAt` is when the leg that failed opened, for the line the failure stopped. */
+  | { kind: "failed"; at: number; recoverable: boolean; legAt?: number }
   | { kind: "expired"; at: number }
   | { kind: "cancelled"; at: number };
 
@@ -596,11 +598,17 @@ export interface MeldSale {
   cryptoAmount: string;
   /** A sale through an offramp lane: the asset the provider buys, delivered by Chainflip. */
   lane?: LaneId;
-  /** A direct sale under a code other than DOT_ASSETHUB: DOT_STATEMINT, or USDT_ASSETHUB or USDT_STATEMINT for USDT
-   *  the PSM redeemed, which the key pays and `cryptoAmount` is in. */
+  /** A direct sale under a code other than Meld's code for DOT: its code for the USDT the PSM
+   *  redeemed, which the key pays and `cryptoAmount` is in. The code as the adapter named the asset
+   *  when the sale opened, kept for the wire; what the sale sells is `asset`. */
   sellCode?: string;
   // The SaleVault a lane sale delivers to, when it routes through a sale contract with CCM.
   vault?: { chainId: number; contract: string };
+  /** The asset a direct sale under `sellCode` sells, by the app's own name for it, fixed when the
+   *  sale opened. Meld renames codes and the adapter's table then no longer knows the old one, so
+   *  the sale is read by this, not by its code. A record from before it was kept has only the
+   *  code. */
+  asset?: MeldAssetId;
   /** The fiat the quote said reaches the seller, decimal text in `fiat`. An estimate: the
    *  provider prices the payout again. */
   quotedPayout: string;
@@ -647,6 +655,8 @@ export interface WithdrawJobView {
     call: "swap" | "withdraw" | "redeem" | "pool-exit" | "sweep" | "pay";
     txHash: string;
     block?: number;
+    /** The chain took it: false for one included and refused. */
+    ok: boolean;
   }[];
   /** The provider's latest word on the swap, once the worker has paid it. */
   rail?: SwapStatusResult;
@@ -685,6 +695,9 @@ export interface WithdrawalRailState {
   delayed?: boolean;
   failure?: RailState["failure"];
   updatedAt: number;
+  /** When the rail first reported each stage, and when it first reported sending on, which the
+   *  processing stage folds in with the swap; kept through a failure, which `updatedAt` is not. */
+  stageAt?: { received?: number; processing?: number; sending?: number };
 }
 
 export interface WithdrawalRecord {
@@ -829,7 +842,11 @@ export function directDepositGate(record: Pick<TopUpRecord, "deposit" | "handoff
   if (handoff?.quotedDeposit !== undefined) return BigInt(handoff.quotedDeposit);
   if (handoff !== undefined && handoff.tier === "pool" && handoff.external === undefined) {
     const keep = BigInt(handoff.keepNativeForFees);
-    if (asked > keep) return keep + ((asked - keep) * 100n) / BigInt(100 + DIRECT_SLIPPAGE_PCT);
+    if (asked > keep) {
+      return (
+        keep + ((asked - keep) * 10_000n) / BigInt(Math.round((100 + DIRECT_SLIPPAGE_PCT) * 100))
+      );
+    }
   }
   return asked;
 }
@@ -907,6 +924,13 @@ export const isTerminal = (status: RequestStatus): boolean => status.kind === "s
 /** The record reached its end: a top-up settled, a withdrawal sent. Nothing moves it again. */
 export const isFinished = (record: RequestRecord): boolean =>
   record.kind === "top-up" ? record.status.kind === "settled" : record.status.kind === "sent";
+
+/** The withdrawal ended short of success: failed, expired or cancelled. Its rank stays at the leg
+ *  it left, and nothing moves it again but a retry. */
+export const isWithdrawalSideExit = (record: Pick<WithdrawalRecord, "status">): boolean =>
+  record.status.kind === "failed" ||
+  record.status.kind === "expired" ||
+  record.status.kind === "cancelled";
 
 /** The host took the payment, or has it in hand: such a withdrawal never expires and is never
  *  cancelled, however long the CASH takes to reach the key. */

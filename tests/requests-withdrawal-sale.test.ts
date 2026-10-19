@@ -86,7 +86,7 @@ const read = (time: number, reading: MeldSaleReading): Observation => ({
   at: time,
   sale: reading,
 });
-const disclosed = (amount = "23.4521", currency = "DOT_ASSETHUB"): MeldSaleReading => ({
+const disclosed = (amount = "23.4521", currency = "DOT"): MeldSaleReading => ({
   status: "transaction_seen",
   deposit: { address: DEPOSIT, amount, currency },
 });
@@ -157,14 +157,14 @@ describe("a fiat sale in KYC", () => {
       deposit: {
         address: "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5",
         amount: "23.4521",
-        currency: "DOT_ASSETHUB",
+        currency: "DOT",
       },
     };
     for (const reading of [
       { status: "transaction_seen" },
       elsewhere,
       disclosed("23.4522"),
-      disclosed("23.4521", "USDT_ASSETHUB"),
+      disclosed("23.4521", "USDT_DOT"),
     ]) {
       const later = reduce(first, read(at(6), reading)) as WithdrawalRecord;
       expect(later.handoff.channel?.address).toBe(DEPOSIT);
@@ -210,31 +210,48 @@ describe("a fiat sale in KYC", () => {
     expect(later.status.kind).toBe("awaiting-payment");
   });
 
-  it("takes a deposit named DOT_STATEMINT for a direct sale: Meld's older code for the same DOT", () => {
+  it("refuses a deposit named by a code Meld retired: the adapter's table no longer names it", () => {
     const next = reduce(
       sale(),
       read(at(5), disclosed("23.4521", "DOT_STATEMINT")),
     ) as WithdrawalRecord;
-    expect(next.status.kind).toBe("awaiting-payment");
-    expect(next.handoff.channel).toMatchObject({ address: DEPOSIT, amount: COMMITTED });
+    expect(next.failure?.kind).toBe("sale-mismatch");
+    expect(next.handoff.channel).toBeUndefined();
   });
 
   it("takes a USDT deposit for a direct sale of USDT, read in USDT's units", () => {
     const base = sale();
     const usdt = sale({
-      sale: { ...base.sale!, sellCode: "USDT_STATEMINT", cryptoAmount: "25000000" },
+      sale: { ...base.sale!, sellCode: "USDT_DOT", cryptoAmount: "25000000" },
     });
-    const next = reduce(usdt, read(at(5), disclosed("25", "USDT_STATEMINT"))) as WithdrawalRecord;
+    const next = reduce(usdt, read(at(5), disclosed("25", "USDT_DOT"))) as WithdrawalRecord;
     expect(next.status.kind).toBe("awaiting-payment");
     expect(next.handoff.channel).toMatchObject({ address: DEPOSIT, amount: "25000000" });
     // DOT for the same figure is not this sale's deposit.
-    const dot = reduce(usdt, read(at(5), disclosed("25", "DOT_STATEMINT"))) as WithdrawalRecord;
+    const dot = reduce(usdt, read(at(5), disclosed("25", "DOT"))) as WithdrawalRecord;
     expect(dot.failure?.kind).toBe("sale-mismatch");
     expect(dot.handoff.channel).toBeUndefined();
   });
 
+  it("reads a USDT sale by its asset after Meld renamed the code it opened under", () => {
+    // Opened under a code the adapter's table has since dropped for USDT_DOT: read by the code, the
+    // sale would be PAS, the USDT deposit a mismatch, and the seller's KYC wasted.
+    const base = sale();
+    const renamed = sale({
+      sale: {
+        ...base.sale!,
+        sellCode: "USDT_RETIRED",
+        asset: "usdt@assethub",
+        cryptoAmount: "25000000",
+      },
+    });
+    const next = reduce(renamed, read(at(5), disclosed("25", "USDT_DOT"))) as WithdrawalRecord;
+    expect(next.status.kind).toBe("awaiting-payment");
+    expect(next.handoff.channel).toMatchObject({ address: DEPOSIT, amount: "25000000" });
+  });
+
   it("refuses an address for another amount or asset, and nothing is asked of the balance", () => {
-    for (const reading of [disclosed("23.4522"), disclosed("23.4521", "USDT_ASSETHUB")]) {
+    for (const reading of [disclosed("23.4522"), disclosed("23.4521", "USDT_DOT")]) {
       const next = reduce(sale(), read(at(5), reading)) as WithdrawalRecord;
       expect(next.status).toEqual({ kind: "failed", at: at(5), recoverable: false });
       expect(next.failure?.kind).toBe("sale-mismatch");
@@ -541,7 +558,7 @@ describe("a fiat sale through an offramp lane", () => {
   });
 
   it("refuses a deposit in any other asset", () => {
-    const next = reduce(laneSale(), read(at(5), laneDisclosed("DOT_ASSETHUB"))) as WithdrawalRecord;
+    const next = reduce(laneSale(), read(at(5), laneDisclosed("DOT"))) as WithdrawalRecord;
     expect(next.failure?.kind).toBe("sale-mismatch");
     expect(next.handoff.channel).toBeUndefined();
   });

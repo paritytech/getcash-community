@@ -93,8 +93,9 @@ describe("createChainflipRail", () => {
       target: { amount: 5_000n * 10n ** 10n, decimals: 10 },
     });
     expect(quoteCalls.map((c) => c.destAsset)).toEqual(["USDT", "USDT"]);
-    // 5e9 egress units needed; fake rate 1:1e7 -> 500 src, x1.05 buffer = 525, zero overhead.
-    expect(quoteCalls[1]?.amount).toBe("525");
+    // 5e9 egress units needed; fake rate 1:1e7 -> 500 src. The fake quote recommends 2%, so the
+    // buffer is x 1.0025 / 0.98: 511.48, rounded up to 512. Zero overhead.
+    expect(quoteCalls[1]?.amount).toBe("512");
     expect(quote.sourceId).toBe("usdt-tron");
   });
 

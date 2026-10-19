@@ -8,6 +8,7 @@ import { recordedRoute, type ConversionRoute } from "@getsome/funding";
 import type { FlowState, SourceId, SwapStatusResult } from "@getsome/core";
 import {
   createMeldClient,
+  ensureMeldAssets,
   getMeldStatus,
   shareStatusReads,
   type MeldClientLike,
@@ -94,6 +95,7 @@ import {
 } from "../funding/requests/views";
 import { CRYPTO_SOURCE_ID, MELD_SOURCE_IDS } from "../funding/source-ids";
 import { createTopUpTimelines } from "../funding/timeline/timelines";
+import { createWithdrawalTimelines } from "../withdraw/timeline/timelines";
 import { handoffPending, type JourneyTimeline } from "../funding/timeline/top-up";
 import { fmtCash, toCashBase } from "../utils/cash";
 import {
@@ -1333,6 +1335,8 @@ export const useRequestsStore = defineStore("requests", () => {
   );
   /** The timelines the list and the journey show, so that a top-up on both never moves back. */
   const topUpTimelineOf = createTopUpTimelines();
+  /** The withdrawals' timelines, shared by the list and the journey the same way. */
+  const withdrawalTimelineOf = createWithdrawalTimelines();
   /** The timeline of the top-up on screen at `now`, delayed while its hand-off is refused. */
   function foregroundTimeline(now: number): JourneyTimeline | undefined {
     const record = foregroundRecord.value;
@@ -2016,6 +2020,11 @@ export const useRequestsStore = defineStore("requests", () => {
     const at = requestsNow();
     const key = requestRefKey(ref);
     try {
+      // A sale's reading is checked against Meld's code for its asset, so the table is read first,
+      // here and only here: the rest of the reconcile, top-ups and CASH withdrawals included,
+      // never waits on the adapter. Unread, the sale is left for the next pass rather than judged
+      // against no code.
+      await ensureMeldAssets(client);
       const result = await client.getStatus(fundingRequestId);
       saleNotFound.delete(key);
       await observe(ref, { source: "provider", provider: "meld", at, sale: saleReadingOf(result) });
@@ -3039,6 +3048,7 @@ export const useRequestsStore = defineStore("requests", () => {
     handoffRefused,
     awaitingDeposit,
     topUpTimelineOf,
+    withdrawalTimelineOf,
     foregroundTimeline,
     meldStage,
     railSeen,

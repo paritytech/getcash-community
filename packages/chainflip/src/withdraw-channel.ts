@@ -131,7 +131,7 @@ export interface OpenWithdrawChannelArgs {
   destination: OutgoingDestination & { address: string };
   /** Where the swap refunds when it cannot fill at the quoted price: the key on Asset Hub, SS58. */
   refundAddress: string;
-  /** Fill-or-kill terms; the quote's recommended slippage when absent. */
+  /** Fill-or-kill terms; the quote's recommended slippage, half a point at least, when absent. */
   fillOrKill?: OpenChannelArgs["fillOrKill"];
   // CCM terms when the channel pays a destination contract, as a SaleVault offramp sale does.
   ccm?: OpenChannelArgs["ccm"];

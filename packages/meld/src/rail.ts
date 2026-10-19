@@ -36,7 +36,7 @@ export interface MeldRailOptions {
   paymentMethodType?: string;
   /**
    * The token Meld delivers to the burner. Its `meldCurrencyCode` goes on the wire and its
-   * decimals size the quote. Default `TOKENS.PAS` (Meld code 'DOT_ASSETHUB').
+   * decimals size the quote. Default `TOKENS.PAS` (Meld's code for DOT on Asset Hub).
    */
   token?: MeldQuoteContext["token"];
 }

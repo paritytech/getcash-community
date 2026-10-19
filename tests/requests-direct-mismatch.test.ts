@@ -5,6 +5,7 @@
 // there any balance is the deposit, since the provider delivers what was asked.
 
 import { describe, expect, it } from "vitest";
+import { DIRECT_SLIPPAGE_PCT } from "@getsome/funding";
 import { reduce } from "../app/funding/requests/reducer";
 import type {
   AcceptedDepositTerms,
@@ -108,7 +109,8 @@ describe("a Polkadot deposit", () => {
       amount: askedDot,
       handoff: { tier: "pool", keepNativeForFees: keep.toString() },
     });
-    const plain = keep + ((askedDot - keep) * 100n) / 102n;
+    const plain =
+      keep + ((askedDot - keep) * 10_000n) / BigInt(Math.round((100 + DIRECT_SLIPPAGE_PCT) * 100));
     expect(reduce(native, reading(plain, 10, null)).status.kind).toBe("deposit-seen");
     expect(reduce(native, reading(plain - 1n, 10, null)).depositMismatch?.kind).toBe("short");
   });

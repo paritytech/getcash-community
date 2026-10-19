@@ -95,12 +95,12 @@ describe("liquidity gate", () => {
 
     await createLiquidityGate(backend, usdt).probe(btc);
     // Default depth = 250 whole 6-dec units = 250e6; rate 1:1e7, zero non-DOT overhead
-    // -> src 25, x1.05 buffer = 26.
+    // -> src 25, buffered for a half-point channel (x 1.0025 / 0.995) and rounded up = 26.
     expect(amounts[1]).toBe("26");
 
     amounts.length = 0;
     await createLiquidityGate(backend, usdt, 100_000_000n).probe(btc);
-    // Explicit override 100e6 -> src 10, x1.05 = 10 (bigint floor).
-    expect(amounts[1]).toBe("10");
+    // Explicit override 100e6 -> src 10, buffered and rounded up = 11.
+    expect(amounts[1]).toBe("11");
   });
 });

@@ -365,6 +365,7 @@ onMounted(async () => {
     :key="selection.route"
     :selection="selection"
     @back="returnToSelector()"
+    @change-amount="returnToSelector()"
     @handoff="handOffToJourney"
     @switch-route="switchRoute"
   />

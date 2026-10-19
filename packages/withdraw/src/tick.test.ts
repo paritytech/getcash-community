@@ -1045,6 +1045,46 @@ describe("withdrawTickOnce", () => {
     expect(landingFloor(1_000n, 0.5)).toBe(995n);
   });
 
+  it("counts a stable sale that ran over its own floor, though under the landing less the slippage", async () => {
+    // The dry run sells the PAS that travelled for the stable too, which the hop's floor leaves
+    // out: a fill can pass the program's floor and still fall under the landing less 5%.
+    const route = { tier: "pool", external: "USDC" } as const;
+    const sized = scriptedWorld();
+    await drive(sized, 2, freshWithdrawTickState(), route);
+    const landed = sized.state.lastDryRunLanded;
+    const hops = sentXcm(sized).program.filter((i) => i.type === "ExchangeAsset");
+    const minOut = (hops[1]!.value as Exchange).want[0]!.fun.value;
+    expect(minOut).toBeLessThan(landingFloor(landed, 5));
+
+    const atFloor = scriptedWorld({ landShort: landed - minOut });
+    const run = await drive(atFloor, 3, freshWithdrawTickState(), route);
+    expect(run.steps).toEqual(["swap", "convert", "done"]);
+    expect(run.state.arrivalFloor).toBe(minOut);
+
+    const underFloor = scriptedWorld({ landShort: landed - minOut + 1n });
+    const waiting = await drive(underFloor, 3, freshWithdrawTickState(), route);
+    expect(waiting.steps).toEqual(["swap", "convert", "await-arrival"]);
+  });
+
+  it("holds a run submitted before its arrival floor was kept to the landing less the slippage", async () => {
+    const sized = scriptedWorld();
+    await drive(sized, 2);
+    const landed = sized.state.lastDryRunLanded;
+    const hop = sentXcm(sized).program.find((i) => i.type === "ExchangeAsset")!;
+    const minNativeOut = (hop.value as Exchange).want[0]!.fun.value;
+    // The native sale's own floor sits under the landing less 5%; a landing at it ran.
+    expect(minNativeOut).toBeLessThan(landingFloor(landed, 5));
+    const kept = scriptedWorld({ landShort: landed - minNativeOut });
+    expect((await drive(kept, 3)).steps).toEqual(["swap", "convert", "done"]);
+
+    // A run persisted before the floor was kept has none, and holds to the landing less 5%.
+    const old = scriptedWorld({ landShort: landed - minNativeOut });
+    const state = freshWithdrawTickState();
+    await drive(old, 2, state);
+    state.arrivalFloor = null;
+    expect((await drive(old, 1, state)).steps).toEqual(["await-arrival"]);
+  });
+
   it("leaves no CASH: the XCM withdraws the whole balance read after the swap, and only PAS dust stays", async () => {
     const world = scriptedWorld();
     await drive(world, 2);

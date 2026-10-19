@@ -1,10 +1,11 @@
 <script setup lang="ts">
 // The finish of a top-up: the timeline from a confirmed deposit to CASH in the balance, shared by
 // every package.
-import { computed, ref, watch } from "vue";
+import { computed } from "vue";
 import { RefreshCcw, X } from "lucide-vue-next";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
 import { useJourneyQuote } from "../../composables/useJourneyQuote";
+import { SUCCESS_ICON_DELAY_MS, useJourneySuccess } from "../../composables/useJourneySuccess";
 import { headerAmount, isExpiredEnding } from "../../funding/journey-endings";
 import {
   failureDetailRows,
@@ -15,6 +16,7 @@ import {
 import { creditedAmountOf } from "../../funding/requests/views";
 import { CLOSE, type FailureAction } from "../../funding/timeline/failure";
 import { TIMELINE_CADENCE_MS } from "../../funding/timeline/timelines";
+import { TOP_UP_TIMELINE } from "../../funding/timeline/top-up-spec";
 import type { FundingTopUp } from "../../funding/top-ups";
 import { useRequestsStore } from "../../stores/requests";
 import { useSessionStore } from "../../stores/session";
@@ -28,7 +30,6 @@ import CashAmount from "../ui/CashAmount.vue";
 import DetailRows, { type DetailRow } from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
 import TransactionIcon from "../ui/TransactionIcon.vue";
-import { nextSuccessStage, openingSuccessStage } from "./success-stage";
 
 const props = defineProps<{
   /** The top-up as the list knows it; its stored quote backs the detail rows until the request
@@ -61,20 +62,6 @@ const timeline = computed(() =>
 );
 const finished = computed(() => requests.phase === "done");
 
-const reducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-const success = ref(openingSuccessStage(finished.value));
-watch(finished, (done) => {
-  success.value = done
-    ? nextSuccessStage(success.value, {
-        kind: "succeeded",
-        animate: timeline.value?.view !== undefined && !reducedMotion(),
-      })
-    : "none";
-});
-const successShown = computed(() => success.value === "playing" || success.value === "shown");
-const successPlaying = computed(() => success.value === "playing");
-/** The success motion brings the transaction icon in as the refresh icon spins out. */
-const SUCCESS_ICON_DELAY_MS = 910;
 const failure = computed(() =>
   requests.phase === "failed" ? (requests.foregroundRecord?.failure ?? null) : null,
 );
@@ -299,10 +286,11 @@ const timelineMessage = computed(() => {
   return rateChangeNotice.value ?? timeline.value?.message?.text ?? null;
 });
 const timelineDetail = computed(() => (heroFailed.value ? null : (timeline.value?.detail ?? null)));
-/** The band keeps its last words while the timeline completes and leaves on success. */
-const band = ref({ message: timelineMessage.value, detail: timelineDetail.value });
-watch([timelineMessage, timelineDetail], ([message, detail]) => {
-  if (!finished.value) band.value = { message, detail };
+const { success, successShown, successPlaying, drawn, band } = useJourneySuccess({
+  succeeded: finished,
+  view: () => timeline.value?.view,
+  message: timelineMessage,
+  detail: timelineDetail,
 });
 </script>
 
@@ -360,12 +348,18 @@ watch([timelineMessage, timelineDetail], ([message, detail]) => {
       >
         <FundingTimeline
           v-if="timeline.view"
+          :spec="TOP_UP_TIMELINE"
           :view="timeline.view"
           :message="band.message"
           :detail="band.detail"
-          @added="success = nextSuccessStage(success, { kind: 'drawn' })"
+          @completed="drawn"
         />
-        <TimelineBand v-else :message="band.message" :detail="band.detail" />
+        <TimelineBand
+          v-else
+          :label="TOP_UP_TIMELINE.ariaLabel"
+          :message="band.message"
+          :detail="band.detail"
+        />
       </div>
 
       <!-- On a bank transfer the last row is Arrives, which fades as the success motion plays. -->
@@ -422,126 +416,3 @@ watch([timelineMessage, timelineDetail], ([message, detail]) => {
     </div>
   </div>
 </template>
-
-<style scoped>
-/* The failed hero circle binds the red-alpha primitive in the design; no semantic
- * token covers it (reported gap). */
-.journey-hero-failed {
-  background: var(--palette-red-alpha-24);
-}
-
-/* The hero's icons and amounts overlap while one turns into the other. */
-.journey-stack {
-  display: grid;
-  place-items: center;
-}
-
-.journey-stack > * {
-  grid-area: 1 / 1;
-}
-
-/* The success motion, timed from the timeline's last tick. */
-.journey-timeline-out {
-  display: grid;
-  animation: journey-collapse 820ms cubic-bezier(0.65, 0, 0.35, 1) 900ms both;
-}
-
-.journey-timeline-out > * {
-  animation: journey-dissolve 560ms ease-out 700ms both;
-}
-
-.journey-icon-out {
-  animation: journey-spin-out 700ms cubic-bezier(0.55, 0, 1, 0.45) 350ms both;
-}
-
-.journey-amount-out {
-  animation: journey-drop-out 360ms ease-in 1000ms both;
-}
-
-.journey-amount-in {
-  animation: journey-drop-in 480ms ease-out 1000ms both;
-}
-
-.journey-date-in {
-  display: grid;
-  animation: journey-expand 820ms cubic-bezier(0.65, 0, 0.35, 1) 900ms both;
-}
-
-.journey-date-in > p {
-  overflow: hidden;
-  animation: journey-drop-in 480ms ease-out 1000ms both;
-}
-
-.journey-last-row-out > :deep(:last-child) {
-  animation: journey-fade-out 900ms ease-in-out 1300ms both;
-}
-
-.journey-close-in {
-  animation: journey-rise 400ms ease-out 1720ms both;
-}
-
-/* The column's gap-6 goes with the timeline, so the details end where the end state has them. */
-@keyframes journey-collapse {
-  from {
-    grid-template-rows: 1fr;
-  }
-  to {
-    grid-template-rows: 0fr;
-    margin-bottom: -1.5rem;
-    visibility: hidden;
-  }
-}
-
-@keyframes journey-expand {
-  from {
-    grid-template-rows: 0fr;
-  }
-  to {
-    grid-template-rows: 1fr;
-  }
-}
-
-@keyframes journey-dissolve {
-  to {
-    opacity: 0;
-    filter: blur(6px);
-    transform: translateY(-8px) scale(0.96);
-  }
-}
-
-@keyframes journey-spin-out {
-  to {
-    transform: rotate(900deg) scale(0);
-  }
-}
-
-@keyframes journey-drop-out {
-  to {
-    opacity: 0;
-    filter: blur(3px);
-    transform: translateY(8px);
-  }
-}
-
-@keyframes journey-drop-in {
-  from {
-    opacity: 0;
-    filter: blur(3px);
-    transform: translateY(-8px);
-  }
-}
-
-@keyframes journey-fade-out {
-  to {
-    opacity: 0;
-    visibility: hidden;
-  }
-}
-
-@keyframes journey-rise {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-}
-</style>

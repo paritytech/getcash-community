@@ -12,14 +12,14 @@
 // ARRIVAL IS A BALANCE READ AT THE HEAD, like every other read here. The destination account is
 // not ours, so its balance in the landing asset is measured against a baseline taken just before
 // the XCM leaves, and the arrival is what the Asset Hub dry run said would land, less the
-// slippage the program itself allows: a sale that slips further fails the program, so nothing
-// less can be a landing. The key must hold no CASH too, which says the XCM executed on People; a
-// deposit from elsewhere alone does not count. The redeem's landing is read the same way, exact,
-// since the PSM's rate is fixed. Nothing is followed through block history: hosts serve the
-// current head and nothing older, and a run that resumes after a reload has no memory but the
-// persisted state. A program that fails on Asset Hub traps its assets there and never shows on
-// the destination; the run holds until the driver's bound, and the claimer named in the program
-// can recover the assets.
+// slippage the program itself allows, or the program's own floor when that is lower: a sale that
+// slips further fails the program, so nothing less can be a landing. The key must hold no CASH
+// too, which says the XCM executed on People; a deposit from elsewhere alone does not count. The
+// redeem's landing is read the same way, exact, since the PSM's rate is fixed. Nothing is followed
+// through block history: hosts serve the current head and nothing older, and a run that resumes
+// after a reload has no memory but the persisted state. A program that fails on Asset Hub traps
+// its assets there and never shows on the destination; the run holds until the driver's bound,
+// and the claimer named in the program can recover the assets.
 //
 // BALANCE-DRIVEN AND RE-ENTRANT: every tick reads the key's CASH and PAS and acts at most once.
 // PAS on the key means the swap happened; the XCM is next; CASH on the key's Asset Hub account
@@ -50,9 +50,11 @@ import {
   CommitmentUnfundableError,
   lessHeadroom,
   NeedsSwapError,
+  saleFloor,
   sizeSwap,
   sizeXcm,
   type AssetHubApi,
+  type XcmSizing,
 } from "./fees";
 import { buildSwap, buildWithdrawXcm, withdrawMessage, type PeopleApi } from "./program";
 import { mayStillLand, PAY_MORTAL_PERIOD } from "./mortality";
@@ -81,8 +83,10 @@ type TickCall = "swap" | "withdraw" | "redeem" | "pool-exit";
 export const DEFAULT_WITHDRAW_TICK_TIMEOUT_MS = 30_000;
 /** Bound on a submitted transaction's resolution. */
 export const DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS = 180_000;
-/** Headroom below the quoted sale on Asset Hub before the program fails there. */
-export const DEFAULT_WITHDRAW_SLIPPAGE_PCT = 5;
+/** Headroom below the quoted sale on Asset Hub before the program fails there, percent. The sale
+ *  is quoted and dry-run on Asset Hub just before the XCM leaves, so the headroom only covers the
+ *  move until the program runs there. */
+export const DEFAULT_WITHDRAW_SLIPPAGE_PCT = 1;
 /** Rejections at inclusion after a passing dry run before the run is given up. */
 export const MAX_REJECTIONS = 3;
 /** The least the destination must gain for the funds to count as arrived: the dry run's landing
@@ -91,6 +95,17 @@ export const MAX_REJECTIONS = 3;
  *  covers Asset Hub's fee moving between the dry run and inclusion. */
 export const landingFloor = (landed: bigint, slippagePct: number): bigint =>
   landed - (landed * BigInt(Math.round(slippagePct * 100))) / 10_000n;
+
+/** The least the destination must gain for a sized XCM to count as arrived: its landing less the
+ *  slippage, or the floor the program holds the sale to when that is lower. A program that runs
+ *  lands at least its floor and one that fails lands nothing, so a sale that went through is
+ *  never judged lost. The landing also sells the PAS that travelled with the CASH, which a
+ *  stable's floor leaves out, so on that tier a sale can complete under the first figure. */
+export const arrivalFloor = (sizing: Pick<XcmSizing, "args" | "landed">, slippagePct: number) => {
+  const byLanding = landingFloor(sizing.landed, slippagePct);
+  const floor = saleFloor(sizing.args.sale);
+  return floor !== undefined && floor < byLanding ? floor : byLanding;
+};
 
 /** Terminal: the chain rejected the transaction at inclusion MAX_REJECTIONS times after its dry
  *  run passed each time. Something the dry run cannot see differs at inclusion. */
@@ -137,6 +152,10 @@ export interface WithdrawTickState {
   /** What the Asset Hub dry run credited to the destination, in the landing asset, for the XCM
    *  that left; on the PSM tier, what the redeem pays out. */
   expectedLanding: bigint | null;
+  /** The least the destination must gain for that XCM to count as arrived (`arrivalFloor`);
+   *  null on a run submitted before it was kept, which falls back to the landing less the
+   *  slippage. */
+  arrivalFloor: bigint | null;
   /** When the first tick saw CASH (ms); null while the payment is still awaited. */
   fundsSeenAt: number | null;
   /** PSM refusals of the redeem waiting cannot clear, the pair's pause or a shortfall of room
@@ -165,6 +184,7 @@ export const freshWithdrawTickState = (): WithdrawTickState => ({
   submitted: false,
   destinationBefore: null,
   expectedLanding: null,
+  arrivalFloor: null,
   fundsSeenAt: null,
   psmRefusals: 0,
   waitingSince: null,
@@ -218,7 +238,7 @@ export interface WithdrawTickInput {
    *  (`readDestinationBalance`). */
   readDestinationOnAssetHub: (destinationHex: string) => Promise<bigint>;
   now: () => number;
-  onTx?: (info: { call: TickCall; txHash: string; block?: number }) => void;
+  onTx?: (info: { call: TickCall; txHash: string; block?: number; ok: boolean }) => void;
   onTransientError?: (error: unknown) => void;
   onBeforeSubmit?: (call: TickCall) => Promise<void> | void;
 }
@@ -272,7 +292,7 @@ export async function withdrawTickOnce(
     const cashGone = balances.cash === 0n;
     const landed =
       destination - state.destinationBefore >=
-      landingFloor(state.expectedLanding, input.slippagePct);
+      (state.arrivalFloor ?? landingFloor(state.expectedLanding, input.slippagePct));
     return { step: cashGone && landed ? "done" : "await-arrival", balances, submitted: false };
   }
 
@@ -335,6 +355,7 @@ export async function withdrawTickOnce(
           "destination balance read",
         );
         state.expectedLanding = sizing.landed;
+        state.arrivalFloor = arrivalFloor(sizing, input.slippagePct);
       }
       await input.onBeforeSubmit?.("withdraw");
       // Counted before the broadcast, so a submit whose answer is lost is still counted.
@@ -344,7 +365,7 @@ export async function withdrawTickOnce(
         input.submitTimeoutMs,
         "withdrawal submit",
       );
-      input.onTx?.({ call: "withdraw", txHash: res.txHash, block: res.block?.number });
+      input.onTx?.({ call: "withdraw", txHash: res.txHash, block: res.block?.number, ok: res.ok });
       if (!res.ok) {
         rejected(
           state,
@@ -383,7 +404,7 @@ export async function withdrawTickOnce(
     input.submitTimeoutMs,
     "swap submit",
   );
-  input.onTx?.({ call: "swap", txHash: res.txHash, block: res.block?.number });
+  input.onTx?.({ call: "swap", txHash: res.txHash, block: res.block?.number, ok: res.ok });
   if (!res.ok) rejected(state, "swap", describeDispatchError(res.dispatchError));
   return { step: "swap", balances, submitted: true };
 }
@@ -596,7 +617,7 @@ async function exitFromAssetHub(
     input.submitTimeoutMs,
     `${call} submit`,
   );
-  input.onTx?.({ call, txHash: res.txHash, block: res.block?.number });
+  input.onTx?.({ call, txHash: res.txHash, block: res.block?.number, ok: res.ok });
   if (!res.ok) {
     // Included and refused: the batch rolled back whole, the CASH is still on the key, and the
     // nonce is spent.

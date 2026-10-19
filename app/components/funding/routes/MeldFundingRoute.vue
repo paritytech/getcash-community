@@ -44,11 +44,11 @@ useVisibilityReconcile();
 useStateDirector();
 const { handedOff } = useMeldHandoff(emit);
 
-// "Add funds via card" / "Add funds via bank": the toolbar names the whole action, since the
+// "Top up via card" / "Top up via bank": the toolbar names the whole action, since the
 // screen below it no longer spells out the provider or the method.
 const title = computed(() => {
   const label = fundingSelectorConfig.routes.find(({ id }) => id === route)?.label ?? route;
-  return `Add funds via ${label.toLowerCase()}`;
+  return `Top up via ${label.toLowerCase()}`;
 });
 /** The fee-breakdown drill-in over the pay screen. Back (toolbar or bottom button) returns to it. */
 const showingFees = ref(false);

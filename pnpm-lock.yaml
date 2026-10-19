@@ -236,6 +236,10 @@ importers:
         version: link:../core
 
   packages/offramp:
+    dependencies:
+      '@getsome/core':
+        specifier: workspace:*
+        version: link:../core
     devDependencies:
       '@getsome/chainflip':
         specifier: workspace:*

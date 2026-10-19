@@ -322,11 +322,16 @@ const PURSE_CHECK_MARGIN_PCT = 0.5;
 const SALE_KYC_MARGIN_PCT = 1;
 
 /** The least `sale` lands of `expected`, in its token, as the worker will hold it: the program's
- *  floor of the slippage under it on the pool tiers, with `marginPct` more under that; the figure
+ *  floor of `slippagePct` under it on the pool tiers, with `marginPct` more under that; the figure
  *  itself on the PSM tier, whose rate is frozen on the sale. */
-function saleFloor(expected: bigint, sale: ConversionRoute, marginPct: number): bigint {
+function saleFloor(
+  expected: bigint,
+  sale: ConversionRoute,
+  marginPct: number,
+  slippagePct: number = DEFAULT_WITHDRAW_SLIPPAGE_PCT,
+): bigint {
   if (sale.tier === "psm") return expected;
-  const keptPct = BigInt(Math.round((100 - DEFAULT_WITHDRAW_SLIPPAGE_PCT - marginPct) * 100));
+  const keptPct = BigInt(Math.round((100 - slippagePct - marginPct) * 100));
   return (expected * keptPct) / 10_000n;
 }
 
@@ -394,13 +399,15 @@ export async function sizeMeldCommitment(
  *  stay alive, as the worker itself will require. On the PSM tier the sale is decided again first,
  *  with `reserved` of the pair's room spoken for by this app's other redeems: a pair that filled
  *  up, stopped or repriced since the quote cannot run the worker's redeem at the frozen rate.
- *  Asked before the purse is. */
+ *  Asked before the purse is, at the `slippagePct` the sale's hand-off holds the worker to, which
+ *  a sale started before a change of the default keeps. */
 export async function meldCommitmentFundable(
   amount: bigint,
   planck: bigint,
   depositAddress: string,
   sale: ConversionRoute,
   reserved: bigint,
+  slippagePct: number = DEFAULT_WITHDRAW_SLIPPAGE_PCT,
 ): Promise<boolean> {
   if (sale.tier === "psm") {
     const today = await chooseWithdrawRoute(amount, sale.external, reserved);
@@ -421,7 +428,7 @@ export async function meldCommitmentFundable(
     planck,
     depositTokenOf(sale),
   );
-  return saleFloor(now.expected, sale, PURSE_CHECK_MARGIN_PCT) >= needed;
+  return saleFloor(now.expected, sale, PURSE_CHECK_MARGIN_PCT, slippagePct) >= needed;
 }
 
 // A sale through an offramp lane sells USDT, not PAS: the PSM redeems the CASH at a fixed rate,
@@ -571,7 +578,7 @@ export function meldHandoffConfig(): NonNullable<WithdrawalHandoffPayload["meld"
  *  comes off the deposit after that. The provider is quoted for the worst case the program
  *  allows, so a withdrawal that passes here lands enough to swap. The pool tier's alone: the
  *  PSM's rate is frozen on the sale, so its figure is exact. */
-const PROVIDER_QUOTE_HEADROOM_PCT = BigInt(DEFAULT_WITHDRAW_SLIPPAGE_PCT) + 1n;
+const PROVIDER_QUOTE_HEADROOM_BPS = BigInt(Math.round((DEFAULT_WITHDRAW_SLIPPAGE_PCT + 1) * 100));
 /** Ceiling on the wait for the offers. */
 const OFFERS_TIMEOUT_MS = 15_000;
 
@@ -665,9 +672,9 @@ function offerFees(
 }
 
 const withHeadroom = (units: bigint): bigint =>
-  units + (units * PROVIDER_QUOTE_HEADROOM_PCT) / 100n;
+  units + (units * PROVIDER_QUOTE_HEADROOM_BPS) / 10_000n;
 const lessHeadroom = (units: bigint): bigint =>
-  units - (units * PROVIDER_QUOTE_HEADROOM_PCT) / 100n;
+  units - (units * PROVIDER_QUOTE_HEADROOM_BPS) / 10_000n;
 
 /** What `sale` lands for `amountCash` in its token, as a provider is asked to take it. */
 async function sellableOf(amountCash: bigint, sale: ConversionRoute): Promise<bigint> {

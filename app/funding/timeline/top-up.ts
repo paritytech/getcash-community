@@ -7,6 +7,7 @@ import {
   polkadotFailure,
   polkadotMilestones,
   polkadotPhase,
+  polkadotPhaseOf,
   polkadotText,
   workerTickAt,
 } from "./polkadot";
@@ -17,7 +18,8 @@ import {
   type TimelineMessage,
   type TimelineRoute,
 } from "./route";
-import type { MilestoneIndex, PhaseIndex, TimelineView } from "./types";
+import { TOP_UP_TIMELINE } from "./top-up-spec";
+import type { TimelineView } from "./types";
 
 export interface TopUpTimeline {
   readonly view: TimelineView;
@@ -49,7 +51,7 @@ export interface TopUpTimelineOptions {
 /** How long the reads that move the current phase may go without success before we say so. */
 export const RECONNECT_AFTER_MS = 60_000;
 
-const isProviderPhase = (index: PhaseIndex): index is ProviderPhaseIndex => index < 2;
+const isProviderPhase = (index: number): index is ProviderPhaseIndex => index < 2;
 
 /** When the top-up ended short of success, which stops the current line. */
 function failedAt({ status }: TopUpRecord): number | undefined {
@@ -64,11 +66,7 @@ function providerMilestones(record: TopUpRecord, route: TimelineRoute): Provider
 }
 
 /** The failure of a top-up whose `failed` milestone is red. */
-function failureOf(
-  record: TopUpRecord,
-  route: TimelineRoute,
-  failed: MilestoneIndex,
-): TimelineFailure {
+function failureOf(record: TopUpRecord, route: TimelineRoute, failed: number): TimelineFailure {
   const part = polkadotFailure(record, failed) ?? route.failure(record);
   return { ...part, details: route.failureDetails(record) };
 }
@@ -80,12 +78,15 @@ export function topUpTimeline(
   route: TimelineRoute,
   { now, watchingSince, locale, previous, sentUnseenMs = 0 }: TopUpTimelineOptions,
 ): TopUpTimeline | undefined {
-  const view = timelineView({
+  const view = timelineView(TOP_UP_TIMELINE, {
     reached: { ...providerMilestones(record, route), ...polkadotMilestones(record) },
     phase: (index) =>
       isProviderPhase(index)
         ? route.phase(record, index)
-        : polkadotPhase(record, index, { seenExpectedMs: route.seenExpectedMs, sentUnseenMs }),
+        : polkadotPhase(record, polkadotPhaseOf(index), {
+            seenExpectedMs: route.seenExpectedMs,
+            sentUnseenMs,
+          }),
     failedAt: failedAt(record),
     now,
     previous,
@@ -98,7 +99,7 @@ export function topUpTimeline(
   const providerPhase = isProviderPhase(view.phase);
   const text = providerPhase
     ? route.text(record, view.phase, state)
-    : polkadotText(record, view.phase, state);
+    : polkadotText(record, polkadotPhaseOf(view.phase), state);
   const lastReadAt = (providerPhase ? route.lastReadAt(record) : workerTickAt(record)) ?? -Infinity;
   const reconnecting = now - Math.max(lastReadAt, watchingSince) > RECONNECT_AFTER_MS;
   return {
