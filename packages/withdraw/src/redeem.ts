@@ -23,7 +23,7 @@ import {
   withFeeMargin,
   type PsmRoute,
 } from "@getsome/funding";
-import { type AssetHubApi, quoted } from "./fees";
+import { type AssetHubApi, quoted, SALE_READ_AT } from "./fees";
 import { ASSET_HUB_CASH_TX_OPTIONS } from "./paseo";
 import { psmRedeemOut } from "./program";
 import { buildSweep } from "./sweep";
@@ -172,10 +172,12 @@ export async function dryRunRedeem(
   call: ExitCall,
   keyAddress: string,
 ): Promise<void> {
+  // At the best head, as the pool exit's quote is, so its floor is judged on the same state.
   const dr = await api.apis.DryRunApi.dry_run_call(
     signedOrigin(keyAddress) as never,
     call.decodedCall as never,
     5,
+    SALE_READ_AT,
   );
   if (!dr.success) throw new Error("not submitted: Asset Hub would not dry-run the exit");
   if (!dr.value.execution_result.success) {

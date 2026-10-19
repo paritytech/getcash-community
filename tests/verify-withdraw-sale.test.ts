@@ -21,6 +21,7 @@ import {
 import {
   ASSET_HUB_FEE_BUFFER_CASH,
   CASH_ON_ASSET_HUB,
+  DEFAULT_WITHDRAW_SLIPPAGE_PCT,
   dryRunOnAssetHub,
   forwardedStandIn,
   PEOPLE_NATIVE,
@@ -38,7 +39,7 @@ const KEY_HEX = `0x${"07".repeat(32)}`;
 /** What a 5 CASH withdrawal carries by the time it reaches Asset Hub. */
 const CASH_TO_TELEPORT = 5_000_000n;
 const PAS_TRAVELLING = 700_000_000n;
-const SLIPPAGE_PCT = 5;
+const SLIPPAGE_PCT = DEFAULT_WITHDRAW_SLIPPAGE_PCT;
 
 const fungible = (id: unknown, value: bigint) => ({ id, fun: { type: "Fungible", value } });
 const cash = (v: bigint) => fungible(CASH_ON_ASSET_HUB, v);

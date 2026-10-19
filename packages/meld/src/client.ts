@@ -298,6 +298,9 @@ function retryAfterMsOf(res: Response): number | undefined {
 /** How long a status read may take before it fails: every poller of an id waits on the same read. */
 const STATUS_TIMEOUT_MS = 10_000;
 
+/** How long the asset table read waits for the adapter before giving up; the next call asks again. */
+const ASSETS_TIMEOUT_MS = 10_000;
+
 /** How many finished attempts, concluded or cancelled, a session create walks past before
  *  giving up. */
 const MAX_ATTEMPTS = 5;
@@ -687,13 +690,12 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
           ["destinationCurrencyCode", found.destinationCurrencyCode, req.destinationCurrencyCode],
         ],
         askedAmount: req.sourceAmount,
-        mismatchMessage:
-          "We found a payment for a different order. Contact support before starting another.",
+        mismatchMessage: "We found a payment for a different order. Do not start another.",
         reopenedMessage:
-          "This purchase is already open and can no longer be paid here. Contact support with your reference. Do not start another.",
+          "This purchase is already open and can no longer be paid here. Do not start another.",
         noSurfaceMessage: (fundingRequestId) =>
           `[meld] the adapter returned no pay page for funding request ${fundingRequestId}; there is nothing for the buyer to pay on`,
-        exhaustedMessage: `This purchase has already been opened and closed ${MAX_ATTEMPTS} times. If you are expecting funds that have not arrived, contact support with your wallet address. Starting another will not help.`,
+        exhaustedMessage: `This purchase has already been opened and closed ${MAX_ATTEMPTS} times. Starting another will not help.`,
       });
     },
 
@@ -720,8 +722,7 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
           ["destinationCurrencyCode", found.destinationCurrencyCode, req.sourceCurrencyCode],
           ["cryptoAmount", found.cryptoAmount, req.sourceAmount],
         ],
-        mismatchMessage:
-          "We found a sale for a different order. Contact support before starting another.",
+        mismatchMessage: "We found a sale for a different order. Do not start another.",
         reopenedMessage:
           "This sale is already open and can no longer be continued here. Nothing was sent. Start a new withdrawal.",
         noSurfaceMessage: (fundingRequestId) =>
@@ -733,7 +734,12 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
     getStatus: getFundingStatus,
 
     async getAssets(): Promise<MeldAsset[]> {
-      const res = await doFetch(`${base}/assets`, { headers: headers() });
+      // Bounded like the status read: every caller shares this one read, so an adapter that hangs
+      // rather than refusing must not hold them until the browser drops the socket.
+      const res = await doFetch(`${base}/assets`, {
+        headers: headers(),
+        signal: AbortSignal.timeout(ASSETS_TIMEOUT_MS),
+      });
       return parseMeldAssets(await read(res, "The asset table"));
     },
 

@@ -55,6 +55,15 @@ const LATE = {
 
 export type PolkadotPhaseIndex = Exclude<PhaseIndex, ProviderPhaseIndex>;
 
+const isPolkadotPhase = (index: number): index is PolkadotPhaseIndex =>
+  Number.isInteger(index) && index >= 2 && index <= 5;
+
+/** A phase of the shared part, from the view's own index. */
+export function polkadotPhaseOf(index: number): PolkadotPhaseIndex {
+  if (!isPolkadotPhase(index)) throw new RangeError(`Phase ${index} is not a Polkadot phase`);
+  return index;
+}
+
 type PolkadotMilestones = Pick<ReachedMilestones, "received" | "converted" | "moved" | "added">;
 
 function workerOf(record: TopUpRecord) {
@@ -224,10 +233,7 @@ const MOVED: MilestoneIndex = 5;
 
 /** The cause of a Polkadot part failure, from the worker's failure and the red milestone. A
  *  failure the worker did not name is core's, which fails only the claim. */
-function polkadotCause(
-  record: TopUpRecord,
-  failed: MilestoneIndex,
-): keyof typeof POLKADOT_FAILURES {
+function polkadotCause(record: TopUpRecord, failed: number): keyof typeof POLKADOT_FAILURES {
   switch (workerOf(record)?.failure) {
     case "held":
       return "held";
@@ -243,10 +249,7 @@ function polkadotCause(
 
 /** The failure of a top-up past the provider's part: the conversion, the move or the claim. Absent
  *  for any other failure. */
-export function polkadotFailure(
-  record: TopUpRecord,
-  failed: MilestoneIndex,
-): PartFailure | undefined {
+export function polkadotFailure(record: TopUpRecord, failed: number): PartFailure | undefined {
   const failure = record.failure;
   if (failure?.kind !== "mint" && failure?.kind !== "under-credit") return undefined;
   return {

@@ -108,25 +108,26 @@ describe("a fiat sale's figure", () => {
     pool.payees.length = 0;
   });
 
-  it("is what the sale lands less 6.5% and the payment's cost, cut to four decimals", async () => {
+  it("is what the sale lands less 2.5% and the payment's cost, cut to four decimals", async () => {
     const { planck } = await sizeMeldCommitment(AMOUNT, POOL);
-    // 398.2 PAS less 6.5% is 372.317; less the cost is 372.016876544, cut to 372.0160.
-    expect((LANDS * 9_350n) / 10_000n - COST).toBe(372_016_876_544n);
-    expect(planck).toBe(372_016_000_000n);
+    // The worker's 1% floor, the half point the check before the purse keeps and the point for
+    // KYC: 398.2 PAS less 2.5% is 388.245; less the cost is 387.944876544, cut to 387.9440.
+    expect((LANDS * 9_750n) / 10_000n - COST).toBe(387_944_876_544n);
+    expect(planck).toBe(387_944_000_000n);
   });
 
   it("names the CASH the rest should bring back, at today's price", async () => {
     const { planck, backCash } = await sizeMeldCommitment(AMOUNT, POOL);
-    // 2.588 PAS left once the provider and the payment are paid, of the 398.2 the 99.55 CASH sold
-    // for: about 6.47 CASH.
-    expect(LANDS - planck - COST).toBe(25_883_876_544n);
-    expect(backCash).toBe(6_470_969n);
+    // 0.9956 PAS left once the provider and the payment are paid, of the 398.2 the 99.55 CASH
+    // sold for: about 2.49 CASH.
+    expect(LANDS - planck - COST).toBe(9_955_876_544n);
+    expect(backCash).toBe(2_488_969n);
   });
 
   it("brings nothing back from a rest too small to send home", async () => {
-    // 2 CASH sells for 0.62 PAS; 0.04 PAS is left, under the 0.1 PAS worth the way back.
+    // 2 CASH sells for 0.62 PAS; 0.0156 PAS is left, under the 0.1 PAS worth the way back.
     const { planck, backCash } = await sizeMeldCommitment(2_000_000n, POOL);
-    expect(planck).toBe(5_496_000_000n);
+    expect(planck).toBe(5_744_000_000n);
     expect(backCash).toBe(0n);
   });
 
@@ -171,7 +172,7 @@ describe("the check before the purse", () => {
     pool.price = 3_950n;
     const lands = 99_550_000n * 3_950n;
     // The worker's floor alone would still cover the payment; the check keeps its margin.
-    expect((lands * 9_500n) / 10_000n).toBeGreaterThan(figure + COST);
+    expect((lands * 9_900n) / 10_000n).toBeGreaterThan(figure + COST);
     expect(await meldCommitmentFundable(AMOUNT, figure, DEPOSIT, POOL, 0n)).toBe(false);
   });
 
@@ -200,5 +201,16 @@ describe("the check before the purse", () => {
     pool.redemptionFee = 6_000;
     expect(await meldCommitmentFundable(AMOUNT, 98_668_820n, DEPOSIT, PSM, 0n)).toBe(false);
     expect(pool.payees).toEqual([]);
+  });
+
+  it("holds a sale handed off at an older slippage to the floor the worker will ship it at", async () => {
+    // Sized at 5%: 398.2 PAS less 6.5% is 372.317; less the cost, cut to four decimals, 372.0160.
+    const figure = 372_016_000_000n;
+    pool.price = 3_920n;
+    // 2% lower, the worker's 5% floor no longer covers the payment and its cost...
+    expect((99_550_000n * 3_920n * 9_500n) / 10_000n).toBeLessThan(figure + COST);
+    expect(await meldCommitmentFundable(AMOUNT, figure, DEPOSIT, POOL, 0n, 5)).toBe(false);
+    // ...while today's 1% would wave the purse through.
+    expect(await meldCommitmentFundable(AMOUNT, figure, DEPOSIT, POOL, 0n)).toBe(true);
   });
 });

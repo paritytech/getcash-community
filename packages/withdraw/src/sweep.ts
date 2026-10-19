@@ -42,7 +42,7 @@ export interface SweepInput {
   readKeyOnAssetHub: () => Promise<bigint>;
   /** Runs before the broadcast, so the driver can persist the attempt about to be made. */
   onBeforeSubmit?: () => Promise<void> | void;
-  onTx?: (info: { call: "sweep"; txHash: string; block?: number }) => void;
+  onTx?: (info: { call: "sweep"; txHash: string; block?: number; ok: boolean }) => void;
 }
 
 /** The whole balance in `token` to `to`, the key reaped behind it. */
@@ -77,7 +77,7 @@ export async function sweepOnce(input: SweepInput, state: SweepState): Promise<v
     input.submitTimeoutMs,
     "sweep submit",
   );
-  input.onTx?.({ call: "sweep", txHash: res.txHash, block: res.block?.number });
+  input.onTx?.({ call: "sweep", txHash: res.txHash, block: res.block?.number, ok: res.ok });
   if (!res.ok) {
     state.rejections += 1;
     const reason = describeDispatchError(res.dispatchError);

@@ -16,7 +16,8 @@
 // tiers the other way round: the pool sells the CASH for PAS, and for a stable sells that PAS
 // again on the stable's pool; the dotUSD tier keeps the CASH and lands it as it is. Whatever the
 // tier, the PAS that travelled with the CASH ends up in the landing asset too, so one asset is
-// deposited. The program names an asset claimer so a trap on Asset Hub is recoverable.
+// deposited. The program names an asset claimer so a trap on Asset Hub is recoverable: the key,
+// as its own signed origin names it there, so the key itself can claim the trap back.
 //
 // The PSM tier makes no sale in the XCM: its program is the dotUSD one aimed at the key's own
 // Asset Hub account, and the key then redeems the CASH there in a signed batch (redeem.ts). An
@@ -77,6 +78,17 @@ const account = (hex: string) => ({
   },
 });
 
+/** The claimer as Asset Hub names a signed account: under the relay network Paseo names its
+ *  accounts by. claim_assets looks a trap up by the claimant's own origin, so a claimer without
+ *  the network matches no signed account, and only Root could recover the trap. */
+const claimer = (hex: string) => ({
+  parents: 0,
+  interior: {
+    type: "X1",
+    value: { type: "AccountId32", value: { network: { type: "Polkadot" }, id: hex } },
+  },
+});
+
 const assetHubDest = (assetHubParaId: number) => ({
   parents: 1,
   interior: { type: "X1", value: { type: "Parachain", value: assetHubParaId } },
@@ -130,7 +142,7 @@ export function buildSwap(peopleApi: PeopleApi, args: SwapArgs) {
 function remoteProgram(destinationHex: string, claimerHex: string, sale: Sale) {
   const hints = {
     type: "SetHints",
-    value: { hints: [{ type: "AssetClaimer", value: { location: account(claimerHex) } }] },
+    value: { hints: [{ type: "AssetClaimer", value: { location: claimer(claimerHex) } }] },
   };
   // The dotUSD tier keeps the CASH and sells only the PAS that travelled, dust at any price, so
   // the destination gets dotUSD alone and never a native deposit it may be too small for. The

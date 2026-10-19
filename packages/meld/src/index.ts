@@ -18,6 +18,7 @@ export { ensureMeldAssets } from "./assets";
 export {
   directSellCodes,
   directSellToken,
+  directSellTokenOf,
   formatSellAmount,
   isDirectSellCode,
   isDirectUsdt,

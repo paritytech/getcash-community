@@ -12,6 +12,7 @@ import type { FundingSelection } from "../../../funding/selection";
 import { useFlowStore } from "../../../stores/flow";
 import { useRequestsStore } from "../../../stores/requests";
 import { useSessionStore } from "../../../stores/session";
+import RateErrorScreen from "../../ui/RateErrorScreen.vue";
 
 const props = defineProps<{ selection: FundingSelection }>();
 const emit = defineEmits<FundingPackageEmits>();
@@ -27,22 +28,30 @@ useVisibilityReconcile();
 useStateDirector();
 const { handedOff } = useChainflipHandoff(emit);
 
+/** A price that could not be had takes the pickers' place, in the two steps every quote screen
+ *  shows: a retry, then a change of amount. The rail cannot be swapped for itself. */
+const quoteFailed = computed(
+  () => flow.screen === "entry" && session.quoteError !== null && !session.loading,
+);
+
 const toolbar = computed<{
   back: boolean;
   title?: string;
   trailing: "skip" | null;
 }>(() => {
-  if (session.resuming) return { back: false, title: "Add funds via Crypto", trailing: null };
+  if (session.resuming) return { back: false, title: "Top up via crypto", trailing: null };
   // The confirmation and the recovery guide carry only the way back to the deposit.
   if (flow.confirmingCancel || flow.recoveringDeposit) return { back: true, trailing: null };
   // "journey" here is the deposit stage: the request exists and funds are still to be seen.
   if (flow.screen === "journey") {
     return {
       back: !requests.claiming,
-      title: "Add funds via Crypto",
+      title: "Top up via crypto",
       trailing: session.canSkipDeposit && !requests.claiming && isDemoBuild() ? "skip" : null,
     };
   }
+  // The failed quote takes the pickers' place; the title names the action it failed.
+  if (quoteFailed.value) return { back: true, title: "Add funds via Crypto", trailing: null };
   return {
     back: true,
     title: flow.step === "token" ? "Select token" : "Select network",
@@ -81,10 +90,6 @@ function onDepositSkip() {
   else void session.fundFaucet();
 }
 
-/** Shows a failed quote on the pickers with a way to ask again. */
-const quoteFailed = computed(
-  () => flow.screen === "entry" && session.quoteError !== null && !session.loading,
-);
 function requote() {
   void session.fetchQuote(flow.srcChain.chain, flow.srcAsset);
 }
@@ -137,18 +142,16 @@ onUnmounted(() => {
       </template>
     </Toolbar>
 
-    <!-- Why there is no quote, on a card. -->
-    <div
-      v-if="quoteFailed"
-      class="mx-6 mt-6 flex shrink-0 flex-col gap-3 rounded-container bg-surface-container p-4 shadow-1"
-    >
-      <p class="text-body-m text-fg-error">Couldn't price this top-up: {{ session.quoteError }}</p>
-      <SecondaryButton class="self-start" @click="requote">Try again</SecondaryButton>
-    </div>
-
     <div class="flex min-h-0 flex-1 flex-col px-6 pt-6">
       <!-- Resuming renders the deposit screen's skeleton shapes until the request is live. -->
       <DepositScreen v-if="session.resuming" @cancel="flow.confirmingCancel = true" />
+      <RateErrorScreen
+        v-else-if="quoteFailed"
+        :failures="session.quoteFailures"
+        :crypto="false"
+        @retry="requote"
+        @change-amount="emit('changeAmount')"
+      />
       <template v-else>
         <CancelTopUpScreen
           v-if="flow.screen === 'journey' && flow.confirmingCancel"

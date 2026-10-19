@@ -181,12 +181,20 @@ describe("withdrawal transactions", () => {
     const execute = seen.execute as { message: { value: Instruction[] } };
     const transfer = execute.message.value[2]!.value as { remote_xcm: Instruction[] };
     const [hints, , exchange, deposit] = transfer.remote_xcm;
-    const claimer = (
-      hints!.value as {
-        hints: Array<{ value: { location: { interior: { value: { value: { id: string } } } } } }>;
-      }
-    ).hints[0]!.value.location.interior.value.value.id;
-    expect(claimer).toBe(XCM.claimerHex);
+    const claimer = (hints!.value as { hints: Array<{ value: { location: unknown } }> }).hints[0]!
+      .value.location;
+    // Named under the relay network, as the key's own signed origin is on Asset Hub, so the key
+    // can claim a trap itself; without it only Root could.
+    expect(claimer).toEqual({
+      parents: 0,
+      interior: {
+        type: "X1",
+        value: {
+          type: "AccountId32",
+          value: { network: { type: "Polkadot" }, id: XCM.claimerHex },
+        },
+      },
+    });
     const give = (exchange!.value as Exchange).give.value.value.id;
     // Local to Asset Hub: parents 0, the pallet and the asset index.
     expect(give.parents).toBe(0);

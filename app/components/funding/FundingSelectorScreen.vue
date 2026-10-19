@@ -94,7 +94,7 @@ const amountScreen = computed<AmountScreenComponent>(
 // The clock only opens a screen that has something on it: with nothing running and nothing
 // finished, history is a dead end, so the control is not drawn at all.
 const hasHistoryContent = computed(() => props.topUps.length > 0 || props.pastTopUps.length > 0);
-/** A top-up still running; the only thing that may open the "Top-up in progress" screen. */
+/** A top-up still running; the only thing that may open the "Topping up" screen. */
 const hasTopUpInProgress = computed(() => props.topUps.length > 0);
 const entryScreen = () => resolveFundingShellScreen(props.initialScreen, hasTopUpInProgress.value);
 const screen = ref(entryScreen());

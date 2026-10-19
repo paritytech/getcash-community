@@ -112,9 +112,9 @@ const saveJobs = () => store.save();
  *   landed,                                  // the message leg is done: the funds are on Asset Hub
  *   done, createdAt, armedAt, lastTickAt, lastError?,
  *   state: { attempts, rejections, submitted, destinationBefore, expectedLanding,
- *            fundsSeenAt, psmRefusals, waitingSince, exit?, redeemSubmitted?, redeemNonce?,
- *            redeemAnchor?, workedMs },
- *                                            // the two balances as decimal strings or null;
+ *            arrivalFloor, fundsSeenAt, psmRefusals, waitingSince, exit?, redeemSubmitted?,
+ *            redeemNonce?, redeemAnchor?, workedMs },
+ *                                            // the three amounts as decimal strings or null;
  *                                            // exit: where the PSM tier's CASH leaves the key
  *                                            // on Asset Hub, "psm" unless the user chose the
  *                                            // pool from a hold; redeemSubmitted: that exit's
@@ -135,7 +135,7 @@ const saveJobs = () => store.save();
  *   residueError?,                           // why the way home's last step failed; the
  *                                            // next pass tries it again
  *   submitting?: { call, at },               // written before a submit
- *   txs: [{ call, txHash, block? }],
+ *   txs: [{ call, txHash, block?, ok }],
  * }
  */
 function newRecord(input, nowMs) {
@@ -739,6 +739,8 @@ async function tickRailLeg(record) {
   // A cancel that landed during this tick stands.
   if (record.phase === "failed") return;
   record.phase = outcome.step;
+  // A completed tick clears the error an earlier one left.
+  delete record.lastError;
   if (outcome.step === "done") record.done = true;
 }
 
@@ -1117,6 +1119,7 @@ async function tickRecord(record, nowMs) {
     state.submitted = !!record.state.submitted;
     state.destinationBefore = asBig(record.state.destinationBefore, null);
     state.expectedLanding = asBig(record.state.expectedLanding, null);
+    state.arrivalFloor = asBig(record.state.arrivalFloor, null);
     state.fundsSeenAt = record.state.fundsSeenAt ?? null;
     state.psmRefusals = record.state.psmRefusals ?? 0;
     state.waitingSince = record.state.waitingSince ?? null;
@@ -1135,6 +1138,7 @@ async function tickRecord(record, nowMs) {
         destinationBefore:
           state.destinationBefore === null ? null : String(state.destinationBefore),
         expectedLanding: state.expectedLanding === null ? null : String(state.expectedLanding),
+        arrivalFloor: state.arrivalFloor === null ? null : String(state.arrivalFloor),
         fundsSeenAt: state.fundsSeenAt,
         psmRefusals: state.psmRefusals,
         waitingSince: state.waitingSince,
@@ -1223,8 +1227,9 @@ async function tickRecord(record, nowMs) {
     // A cancel that landed during this tick stands.
     if (record.phase === "failed") return;
     record.phase = outcome.step;
-    // A completed tick clears any stale submitting marker.
+    // A completed tick clears any stale submitting marker, and the error an earlier one left.
     delete record.submitting;
+    delete record.lastError;
     if (outcome.step === "done") {
       // The funds are on Asset Hub. That is the whole job for a direct rail; a provider rail
       // carries on from the key on the next tick.

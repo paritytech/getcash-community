@@ -1,18 +1,19 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { lastReached } from "../../../funding/timeline/model";
-import type { TimelineView } from "../../../funding/timeline/types";
-import { TIMELINE_INSETS, timelineDrawing } from "./drawing";
+import type { TimelineSpec, TimelineView } from "../../../funding/timeline/types";
+import { timelineDrawing, timelineInsets } from "./drawing";
 import TimelineBand from "./TimelineBand.vue";
 
 const props = defineProps<{
+  spec: TimelineSpec;
   view: TimelineView;
   message: string | null;
   detail: string | null;
 }>();
 const emit = defineEmits<{
-  /** The drawing completed Added on a top-up that is done. */
-  added: [];
+  /** The drawing completed the last milestone on a journey that is done. */
+  completed: [];
 }>();
 
 /** How long a line takes to complete before its end milestone turns green. */
@@ -53,7 +54,7 @@ watch(
 );
 onBeforeUnmount(stopStepping);
 watch(shownReached, (reached) => {
-  if (props.view.state === "done" && reached === lastReached(props.view)) emit("added");
+  if (props.view.state === "done" && reached === lastReached(props.view)) emit("completed");
 });
 
 // A failure that arrives on screen plays its motion; one present when the screen opens shows at once.
@@ -67,17 +68,22 @@ watch(
 
 /** Each milestone with the line that leads into it; the first has none. */
 const steps = computed(() => {
-  const { milestones, lines } = timelineDrawing(props.view, shownReached.value);
+  const { milestones, lines } = timelineDrawing(props.spec, props.view, shownReached.value);
   return milestones.map((milestone, index) => ({ milestone, line: lines[index - 1] }));
 });
-const insets = {
-  paddingInlineStart: `${TIMELINE_INSETS.start}px`,
-  paddingInlineEnd: `${TIMELINE_INSETS.end}px`,
-};
+const insets = computed(() => {
+  const { start, end } = timelineInsets(props.spec);
+  return { paddingInlineStart: `${start}px`, paddingInlineEnd: `${end}px` };
+});
 </script>
 
 <template>
-  <TimelineBand :message="message" :detail="detail" :class="{ 'timeline-failing': failing }">
+  <TimelineBand
+    :label="spec.ariaLabel"
+    :message="message"
+    :detail="detail"
+    :class="{ 'timeline-failing': failing }"
+  >
     <ol class="timeline-card" :style="insets">
       <li
         v-for="({ milestone, line }, index) in steps"

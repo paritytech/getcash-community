@@ -21,7 +21,13 @@ import {
   type DepositAsset,
 } from "@getsome/funding";
 import { CASH_LOCATION } from "@getsome/people";
-import { NeedsSwapError, PASEO_PEOPLE_POOL_ACCOUNT, sizeSwap, sizeXcm } from "@getsome/withdraw";
+import {
+  DEFAULT_WITHDRAW_SLIPPAGE_PCT,
+  NeedsSwapError,
+  PASEO_PEOPLE_POOL_ACCOUNT,
+  sizeSwap,
+  sizeXcm,
+} from "@getsome/withdraw";
 
 const fmtCash = (v: bigint) => (Number(v) / 1e6).toFixed(6);
 const fmtPas = (v: bigint) => (Number(v) / 1e10).toFixed(6);
@@ -111,7 +117,7 @@ describe.runIf(process.env.VERIFY_WITHDRAW === "1")("live withdrawal sizing", ()
         assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
         peopleParaId: PASEO_PEOPLE_PARA_ID,
         sale: route,
-        slippagePct: 5,
+        slippagePct: DEFAULT_WITHDRAW_SLIPPAGE_PCT,
         transfer,
       }).catch((e: unknown) => {
         if (e instanceof NeedsSwapError) return null;

@@ -40,7 +40,7 @@ export function listHeadline(route: FundingRoute, timeline?: TopUpTimeline): Lis
 }
 
 /** A running row's ring: the overall progress once the timeline opened. */
-export function listProgress(timeline?: TopUpTimeline): FundingTopUpProgress {
+export function listProgress(timeline?: Pick<TopUpTimeline, "view">): FundingTopUpProgress {
   if (timeline === undefined) return { value: 0, tone: "waiting", delayed: false };
   const delayed = timeline.view.state === "delayed";
   return { value: overallProgress(timeline.view), tone: delayed ? "delayed" : "active", delayed };

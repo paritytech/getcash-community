@@ -9,7 +9,7 @@ import { isFundingRouteAvailable } from "../../funding/selection";
 import { assessWithdrawalAmount } from "../../withdraw/amount";
 
 const props = withDefaults(defineProps<AmountScreenProps>(), {
-  title: "Withdraw funds",
+  title: "Send money out",
   cta: "Continue",
   available: undefined,
 });

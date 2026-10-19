@@ -11,7 +11,11 @@ import CashAmount from "./CashAmount.vue";
 
 export interface DetailRow {
   label: string;
+  /** A second line under the label (the network under a destination address). */
+  sublabel?: string;
   value: string;
+  /** The full text behind an abbreviated value, for the tooltip. */
+  title?: string;
   /** Renders the value as the entry into the fee breakdown. */
   fees?: boolean;
   /** The full text to copy, when the row is copyable. `value` may be a shortened form of it. */
@@ -48,6 +52,7 @@ async function copyRow(row: DetailRow) {
     <div v-for="row in rows" :key="row.label" class="flex items-baseline justify-between gap-4">
       <dt class="text-paragraph-l" :class="muted ? 'text-fg-secondary' : 'text-fg-primary'">
         {{ row.label }}
+        <template v-if="row.sublabel"><br />{{ row.sublabel }}</template>
       </dt>
       <dd v-if="row.fees">
         <button
@@ -79,7 +84,7 @@ async function copyRow(row: DetailRow) {
         <span class="text-heading-m text-fg-primary">{{ row.value }}</span>
         <span class="text-body-s text-fg-secondary">{{ row.note }}</span>
       </dd>
-      <dd v-else class="text-heading-m text-fg-primary">
+      <dd v-else class="text-right text-heading-m text-fg-primary" :title="row.title">
         <CashAmount v-if="row.cash" :amount="row.value" />
         <template v-else>{{ row.value }}</template>
       </dd>

@@ -1153,8 +1153,8 @@ export async function createCoinageSession(
     settleAmount: args.amount,
     probeAddress: burnerKey.address,
   };
-  // A direct deposit lands as soon as it is sent, so its ask carries less headroom than a swap or
-  // a bank transfer, which give the pool longer to move.
+  // A direct deposit lands as soon as it is sent and has its own headroom; a swap or a bank
+  // transfer, which give the pool longer to move, take the pool tier's.
   const slippagePct = isManualSourceId(args.sourceId) ? DIRECT_SLIPPAGE_PCT : DEFAULT_SLIPPAGE_PCT;
   let sizing: FundingSizing;
   let budget: bigint;

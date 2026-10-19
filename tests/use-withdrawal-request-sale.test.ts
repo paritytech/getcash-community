@@ -286,6 +286,8 @@ describe("a fiat sale from the page", () => {
       const record = useRequestsStore().get(outcome.ref) as WithdrawalRecord;
       expect(record.sale).toMatchObject({
         sellCode,
+        // The asset too, which the record is read by if Meld renames the code during KYC.
+        asset: "usdt@assethub",
         cryptoAmount: USDT_COMMITTED.toString(),
       });
       expect(record.sale?.lane).toBeUndefined();
@@ -313,6 +315,7 @@ describe("a fiat sale from the page", () => {
         known.handoff.channel!.address,
         REDEEM,
         0n,
+        known.handoff.slippagePct,
       );
       expect(handedOff).toHaveBeenCalledTimes(1);
       expect(handedOff.mock.calls[0]![2]).toMatchObject({
@@ -390,12 +393,14 @@ describe("a fiat sale from the page", () => {
 
     const paid = await useWithdrawalRequest().paySale(outcome.ref);
     expect(paid).toEqual({ ok: true });
+    // Checked at the slippage the hand-off holds the worker to.
     expect(fundable).toHaveBeenCalledWith(
       100_000_000n,
       COMMITTED,
       known.handoff.channel!.address,
       { tier: "pool" },
       0n,
+      known.handoff.slippagePct,
     );
     expect(asked).toHaveBeenCalledWith(expect.objectContaining({ amount: 100_000_000n }));
     expect(handedOff).toHaveBeenCalledTimes(1);
@@ -421,6 +426,7 @@ describe("a fiat sale from the page", () => {
       known.handoff.channel!.address,
       PSM_SALE,
       50_000_000n,
+      known.handoff.slippagePct,
     );
     expect(asked).toHaveBeenCalledWith(expect.objectContaining({ amount: 100_000_000n }));
     expect(handedOff).toHaveBeenCalledTimes(1);
@@ -429,7 +435,7 @@ describe("a fiat sale from the page", () => {
   it("ends a PSM sale the pair can no longer serve with nothing taken", async () => {
     const outcome = await startSale(PSM_SALE, PSM_COMMITTED);
     if (!outcome.ok) throw new Error(outcome.reason);
-    await toDeposit(outcome.ref);
+    const known = await toDeposit(outcome.ref);
     // The pair filled up or repriced during KYC: the check decided the sale again and answered no.
     fundable.mockResolvedValue(false);
     const paid = await useWithdrawalRequest().paySale(outcome.ref);
@@ -440,6 +446,7 @@ describe("a fiat sale from the page", () => {
       expect.any(String),
       PSM_SALE,
       0n,
+      known.handoff.slippagePct,
     );
     expect(asked).not.toHaveBeenCalled();
     expect(handedOff).not.toHaveBeenCalled();

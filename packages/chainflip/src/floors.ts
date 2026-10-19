@@ -3,9 +3,11 @@
 
 import type { SourceId } from "@getsome/core";
 import {
+  channelSlippagePct,
+  CHANNEL_SLIPPAGE_FLOOR_PCT,
   DEFAULT_EGRESS,
   pickRegularQuote,
-  SLIPPAGE_BUFFER_PCT,
+  withSourceBuffer,
   type EgressConfig,
   type QuoteBackend,
 } from "./quote";
@@ -21,6 +23,10 @@ export interface LimitsBackend {
 
 export type FloorsBackend = QuoteBackend & LimitsBackend;
 
+/** A source whose quote recommends a wider tolerance than this, percent, is not offered: the
+ *  buffer would dwarf the purchase, and from 100 no buffer covers the worst fill at all. */
+export const MAX_OFFERED_TOLERANCE_PCT = 50;
+
 /** A source's learned floor. */
 export interface SourceFloor {
   readonly sourceId: SourceId;
@@ -30,6 +36,10 @@ export interface SourceFloor {
   readonly minimumEgressBaseUnits: bigint;
   /** Chainflip's own duration estimate for a swap of this asset, seconds; null when absent. */
   readonly etaSeconds: number | null;
+  /** The channel tolerance at the minimum, percent (`channelSlippagePct`); Chainflip recommends
+   *  more as a swap grows, so the precise quote may ask more. Absent on a floor learned before it
+   *  was kept. */
+  readonly slippagePct?: number;
 }
 
 export type SourceFloorResult =
@@ -104,6 +114,16 @@ async function learnFloor(
         outage: false,
       };
     }
+    const slippagePct = channelSlippagePct(quote ?? undefined);
+    if (slippagePct > MAX_OFFERED_TOLERANCE_PCT) {
+      return {
+        result: {
+          kind: "unavailable",
+          reason: `Chainflip asks a ${slippagePct}% tolerance for ${source.asset} -> ${egress.asset}`,
+        },
+        outage: false,
+      };
+    }
     const eta = quote?.["estimatedDurationSeconds"];
     return {
       result: {
@@ -113,6 +133,7 @@ async function learnFloor(
           minimumBaseUnits: minimum,
           minimumEgressBaseUnits: egressAmount,
           etaSeconds: typeof eta === "number" ? eta : null,
+          slippagePct,
         },
       },
       outage: false,
@@ -131,7 +152,8 @@ export interface SourceOffer {
   /** Whether a purchase of this size clears the source's floor. */
   readonly available: boolean;
   /** Indicative send amount in the asset's base units: the floor rate scaled to this purchase,
-   *  ceil-rounded and buffered like the precise quote. */
+   *  ceil-rounded and buffered for the tolerance learned at the floor. The precise quote, priced
+   *  at the purchase's own size, is the figure to pay. */
   readonly sendBaseUnits: bigint;
   /** `sendBaseUnits` ready to render, in the asset's own units. */
   readonly sendFormatted: string;
@@ -156,8 +178,8 @@ export function offerFor(
   const exact =
     (totalNeeded * floor.minimumBaseUnits + floor.minimumEgressBaseUnits - 1n) /
     floor.minimumEgressBaseUnits;
-  // Same buffer as the precise quote.
-  const send = (exact * SLIPPAGE_BUFFER_PCT) / 100n;
+  // The precise quote's buffer, at the tolerance learned with the floor.
+  const send = withSourceBuffer(exact, floor.slippagePct ?? CHANNEL_SLIPPAGE_FLOOR_PCT);
   return {
     sourceId: source.sourceId,
     available: totalNeeded >= floor.minimumEgressBaseUnits,

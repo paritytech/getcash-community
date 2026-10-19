@@ -34,7 +34,8 @@ async function listScenes(): Promise<Map<string, FundingTopUp[]>> {
   for (let n = 0; n < SCENES.length; n++) {
     const label = await directScene(1);
     const name = label.slice(label.indexOf(" ") + 1);
-    if (name.startsWith("list / ")) out.set(name, sceneRows(now));
+    if (name.startsWith("top-up / list") || name.startsWith("top-up / history"))
+      out.set(name, sceneRows(now));
   }
   return out;
 }
@@ -63,7 +64,7 @@ describe("preview deck list scenes", () => {
     for (let n = 0; n < SCENES.length; n++) {
       const label = await directScene(1);
       const name = label.slice(label.indexOf(" ") + 1);
-      if (!name.startsWith("list / ")) continue;
+      if (!(name.startsWith("top-up / list") || name.startsWith("top-up / history"))) continue;
       for (const row of sceneRows(now)) {
         if (row.state.kind === "settled" || row.state.kind === "failed") continue;
         running++;
@@ -79,36 +80,36 @@ describe("preview deck list scenes", () => {
   it("words each stage as the timeline does, not as the scene says", async () => {
     const scenes = await listScenes();
     const lineOf = (name: string) => scenes.get(name)!.map(status);
-    expect(lineOf("list / top-up: waiting")).toEqual(["Waiting for your deposit"]);
-    expect(lineOf("list / top-up: converting")).toEqual(["Adding to your balance"]);
-    expect(lineOf("list / top-up: adding")).toEqual(["Adding to your balance"]);
+    expect(lineOf("top-up / list: waiting")).toEqual(["Waiting for your deposit"]);
+    expect(lineOf("top-up / list: converting")).toEqual(["Adding to your balance"]);
+    expect(lineOf("top-up / list: adding")).toEqual(["Adding to your balance"]);
     // A fiat provider that is late may still take the money: the line says not to pay again.
-    expect(lineOf("list / top-up: retrying")).toEqual(["Delayed, don't pay again"]);
-    expect(lineOf("list / top-up: taking longer")).toEqual(["Delayed, don't pay again"]);
+    expect(lineOf("top-up / list: retrying")).toEqual(["Delayed, don't pay again"]);
+    expect(lineOf("top-up / list: taking longer")).toEqual(["Delayed, don't pay again"]);
   });
 
   it("ambers a delayed card off the record's own rail state", async () => {
     const scenes = await listScenes();
-    for (const name of ["list / top-up: retrying", "list / top-up: taking longer"]) {
+    for (const name of ["top-up / list: retrying", "top-up / list: taking longer"]) {
       expect(
         scenes.get(name)!.map((row) => row.progress.delayed),
         name,
       ).toEqual([true]);
     }
     // Nothing else is amber: the flag comes off the rail, so a scene cannot assert it by hand.
-    expect(scenes.get("list / top-up: waiting")!.map((row) => row.progress.delayed)).toEqual([
+    expect(scenes.get("top-up / list: waiting")!.map((row) => row.progress.delayed)).toEqual([
       false,
     ]);
   });
 
   it("lists nothing on a scene that seeds nothing", async () => {
     const scenes = await listScenes();
-    expect(scenes.get("list / history: empty")).toEqual([]);
-    expect(scenes.get("list / history: loading")).toEqual([]);
+    expect(scenes.get("top-up / history: empty")).toEqual([]);
+    expect(scenes.get("top-up / history: loading")).toEqual([]);
   });
 
   it("puts the collapse past its bound, with the settled row at the end", async () => {
-    const rows = (await listScenes()).get("list / top-ups: show more")!;
+    const rows = (await listScenes()).get("top-up / list: show more")!;
     expect(rows.filter((row) => row.state.kind === "settled")).toHaveLength(1);
     // Four running cards: three fit before the collapse, so Show more has to be drawn.
     expect(rows.filter((row) => row.state.kind !== "settled").length).toBeGreaterThan(3);

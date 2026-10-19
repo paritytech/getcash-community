@@ -785,6 +785,23 @@ describe("a sale's way to the provider and back", () => {
     });
   });
 
+  it("keeps the arrival floor the message leg sets, and hands it back on the next pass", async () => {
+    const job = unsold(NOW + 3_600_000);
+    job.state.arrivalFloor = "17000000000";
+    const seen: unknown[] = [];
+    mocks.withdrawTickOnce.mockImplementation(
+      async (_input: unknown, state: { arrivalFloor: bigint | null }) => {
+        seen.push(state.arrivalFloor);
+        state.arrivalFloor = 18_000_000_000n;
+        return { step: "deliver" };
+      },
+    );
+    const engine = await engineWith({ "s-1": job });
+    await engine.tickAllWithdraw();
+    expect(seen).toEqual([17_000_000_000n]);
+    expect(storedJob().state.arrivalFloor).toBe("18000000000");
+  });
+
   it("does not call a sale unfundable while an earlier submit may still land", async () => {
     const job = unsold(NOW + 3_600_000);
     job.submitting = { call: "withdraw", at: NOW - 60_000 };

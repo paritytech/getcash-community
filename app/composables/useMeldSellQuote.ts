@@ -366,8 +366,10 @@ export function useMeldSellQuote(
     }
   }
 
+  /** Another country is another price: its failures are its own. */
   function setCountry(next: string): void {
     country.value = next;
+    rateFailures.value = 0;
     void refresh();
   }
 

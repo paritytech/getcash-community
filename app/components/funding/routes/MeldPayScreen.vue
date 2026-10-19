@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // The Meld package's first screen: region, the quote it produced, and Continue into the provider
-// widget. The method is fixed by the route; the region is the buyer's only choice.
+// widget. The method is fixed by the route; the region is the buyer's only choice. A price that
+// could not be had takes the whole screen, in the two steps every quote screen shows.
 import { computed, onMounted, ref, watch } from "vue";
 import { ChevronRight } from "lucide-vue-next";
 import { useSessionStore } from "../../../stores/session";
@@ -10,8 +11,8 @@ import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import type { FundingRoute } from "../../../funding/selection";
 import DetailRows from "../../ui/DetailRows.vue";
 import PillButton from "../../ui/PillButton.vue";
+import RateErrorScreen from "../../ui/RateErrorScreen.vue";
 import RegionRow from "../../ui/RegionRow.vue";
-import SecondaryButton from "../../ui/SecondaryButton.vue";
 import SkeletonBlock from "../../ui/SkeletonBlock.vue";
 import SkeletonRow from "../../ui/SkeletonRow.vue";
 import MethodUnavailable from "../MethodUnavailable.vue";
@@ -145,9 +146,16 @@ async function next() {
     @use-crypto="emit('switchRoute', 'crypto')"
     @use-other="switchMethod && emit('switchRoute', switchMethod)"
   />
+  <RateErrorScreen
+    v-else-if="session.quoteError !== null && !session.loading"
+    :failures="session.quoteFailures"
+    @retry="requote"
+    @change-country="emit('currency')"
+    @use-crypto="emit('switchRoute', 'crypto')"
+  />
   <div v-else class="flex min-h-0 flex-1 flex-col">
     <!-- The hero: the total the card will be charged. The toolbar already names the method. -->
-    <div v-if="!session.quoteError" class="flex flex-col items-center text-center">
+    <div class="flex flex-col items-center text-center">
       <template v-if="heroAmount">
         <p class="text-display-xl text-fg-primary">{{ heroAmount }}</p>
         <button
@@ -167,8 +175,7 @@ async function next() {
       </template>
     </div>
 
-    <!-- The region the card is registered in leads the terms, and is live even while the quote
-         below it is blocked: changing it is the way out of a region that routes nothing. -->
+    <!-- The region the card is registered in leads the terms. -->
     <div class="mt-6 flex flex-col gap-4">
       <!-- Undecided until geo or the locale fallback answers (onMounted): a skeleton, not a
            default the buyer could mistake for a decision. -->
@@ -182,21 +189,10 @@ async function next() {
       />
 
       <!-- The quote's own rows, bare on the surface. -->
-      <template v-if="!session.quoteError">
-        <div v-if="session.loading || !session.quoted" class="flex flex-col gap-4">
-          <SkeletonRow v-for="n in 2" :key="n" />
-        </div>
-        <DetailRows v-else :rows="quoteRows" />
-      </template>
-    </div>
-
-    <!-- The quote failed. No design; keeps the card treatment. -->
-    <div
-      v-if="session.quoteError"
-      class="mt-6 flex flex-col gap-3 rounded-container bg-surface-container p-4 shadow-1"
-    >
-      <p class="text-body-m text-fg-error">Quote failed: {{ session.quoteError }}</p>
-      <SecondaryButton class="self-start" @click="requote">Retry quote</SecondaryButton>
+      <div v-if="session.loading || !session.quoted" class="flex flex-col gap-4">
+        <SkeletonRow v-for="n in 2" :key="n" />
+      </div>
+      <DetailRows v-else :rows="quoteRows" />
     </div>
 
     <p v-if="startError" class="mt-4 text-body-m text-fg-error">{{ startError }}</p>

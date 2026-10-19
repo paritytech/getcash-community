@@ -3,7 +3,8 @@
 // the provider says it pays out, and how long it takes. The caption opens the fee drill-in once the
 // sale is priced. Continue opens the provider's page for KYC; nothing is asked of the balance until
 // the provider names where the funds go. A price that could not be had takes the whole screen, and
-// a region this method does not pay out in shows the view the top-up rails share.
+// a region this method does not pay out in shows the view the top-up rails share. Both failure
+// screens are the ones the top-up rails show.
 import { computed } from "vue";
 import { ChevronRight } from "lucide-vue-next";
 import type { MeldSellQuote } from "../../composables/useMeldSellQuote";
@@ -11,8 +12,8 @@ import { groupAmountDigits } from "../../utils/cash";
 import { fmtFiat } from "../../utils/money";
 import MethodUnavailable from "../funding/MethodUnavailable.vue";
 import CashAmount from "../ui/CashAmount.vue";
-import ErrorState from "../ui/ErrorState.vue";
 import PillButton from "../ui/PillButton.vue";
+import RateErrorScreen from "../ui/RateErrorScreen.vue";
 import RegionRow from "../ui/RegionRow.vue";
 import SkeletonBlock from "../ui/SkeletonBlock.vue";
 import SkeletonRow from "../ui/SkeletonRow.vue";
@@ -45,7 +46,6 @@ const emit = defineEmits<{
   useOther: [];
   retry: [];
   useCrypto: [];
-  changeAmount: [];
 }>();
 
 const rateFailed = computed(() => !props.loading && props.errorKind === "rate");
@@ -76,29 +76,13 @@ const canContinue = computed(
     @use-other="emit('useOther')"
   />
 
-  <div v-else-if="rateFailed" class="flex min-h-0 flex-1 flex-col">
-    <ErrorState
-      v-if="rateFailures < 2"
-      class="my-auto"
-      title="Couldn't get the rate"
-      body="This is usually temporary. Try again in a moment"
-    />
-    <ErrorState
-      v-else
-      class="my-auto"
-      title="Still not working"
-      body="Try a different amount, or send to a crypto wallet instead"
-    />
-    <PillButton v-if="rateFailures < 2" class="mb-6 w-full" @click="emit('retry')">
-      Try again
-    </PillButton>
-    <div v-else class="mb-6 flex flex-col gap-4">
-      <PillButton variant="secondary" class="w-full" @click="emit('useCrypto')">
-        Use crypto
-      </PillButton>
-      <PillButton class="w-full" @click="emit('changeAmount')">Change amount</PillButton>
-    </div>
-  </div>
+  <RateErrorScreen
+    v-else-if="rateFailed"
+    :failures="rateFailures"
+    @retry="emit('retry')"
+    @change-country="emit('region')"
+    @use-crypto="emit('useCrypto')"
+  />
 
   <div v-else class="flex min-h-0 flex-1 flex-col">
     <div class="flex flex-col items-center gap-1 text-center">
