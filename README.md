@@ -78,11 +78,14 @@ the fallback when the PSM cannot serve; the pool sells the CASH for DOT inside t
 stable sells that DOT again on the stable's pool; dotUSD is the CASH sent as it is. Whatever the
 tier, the fee PAS that travels with the CASH ends up in the landing token, so the destination is
 credited one asset.
-The sale is decided at quote time, from the token the user picks for Asset Hub or, for a
-Chainflip or Meld destination, under the on-ramp's fiat rule: USDT through the PSM when it can
-serve, PAS through the pool otherwise. The PSM serves when it has room for the amount plus a tenth
-of it, 20 CASH at the least, once the app's own open PSM withdrawals are counted against that
-room. The sale is frozen on the hand-off, and the worker never re-decides it.
+The sale is decided at quote time, from the token the user picks for Asset Hub or, for a Meld
+destination, under the on-ramp's fiat rule: USDT through the PSM when it can serve, PAS through
+the pool otherwise. For a Chainflip destination the chain ranks USDT through the PSM, when it can
+serve, then PAS through the pool, and each destination takes the first of those Chainflip can
+quote for the amount, its minimum included: an amount under Chainflip's minimum for USDT sells
+PAS, and one under the minimum on both shows the smaller. The PSM serves when it has room for the
+amount plus a tenth of it, 20 CASH at the least, once the app's own open PSM withdrawals are
+counted against that room. The sale is frozen on the hand-off, and the worker never re-decides it.
 On the PSM tier the XCM makes no sale: it lands the CASH on the key's own Asset Hub account, the
 PAS that travelled sold for CASH, and the key signs one more transaction there, a
 `Utility.batch_all` of `Psm.redeem` and `Assets.transfer_all` of the USDT to the destination, or

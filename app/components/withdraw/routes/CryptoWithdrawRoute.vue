@@ -203,50 +203,49 @@ async function onAddress(entered: string) {
   // the summary must still show the destination this run was started for.
   const stale = () => step.value !== "summary" || destination.value !== picked;
   try {
-    // The sale the destination takes, decided now and frozen at confirm: the token picked for
-    // Asset Hub itself, the fiat rule for a provider, which lands the sale's token on the key.
+    if (picked.rail !== "direct") {
+      // A provider's offer carries the sale picked for the destination, frozen at confirm, and
+      // what it was quoted for in the sale's token, the figure the channel is opened for.
+      await offers.learn(base, psmReserved(requests.openWithdrawals, PSM_EXTERNAL));
+      if (stale()) return;
+      const offer = offers.offerFor(picked);
+      if (offer.state !== "available") {
+        receive.value = undefined;
+        return;
+      }
+      sale.value = offer.sale;
+      expectedLanding.value = offer.sellable;
+      receive.value = offer.formatted;
+      fees.value = offer.fees ?? null;
+      return;
+    }
+    // The sale the token picked for Asset Hub itself takes, decided now and frozen at confirm.
     const live = await import("~~/lib/withdraw-live");
     // The PSM's room this app's own redeems have spoken for, against the stable the destination
-    // lands or the fiat rule's external for a provider; the native and dotUSD read no PSM.
+    // lands; the native and dotUSD read no PSM.
     const reserved =
       picked.landing === "native" || picked.landing === "dotUSD"
         ? 0n
-        : psmReserved(requests.openWithdrawals, picked.landing ?? PSM_EXTERNAL);
+        : psmReserved(requests.openWithdrawals, picked.landing);
     const route = await live.chooseWithdrawRoute(base, picked.landing, reserved);
     if (stale()) return;
     // The sale stands on its own: an estimate that cannot be priced hides the figure, as it
     // always did, and does not hold the withdrawal back.
     sale.value = route;
-    if (picked.rail === "direct") {
-      // What the sale lands on Asset Hub in the token's decimals: the direct rail lands exactly
-      // that. Its fees are taken in CASH before the sale, so the drill-in shows them as CASH.
-      const [units, feesCash] = await Promise.all([
-        live.quoteDirectReceive(base, route),
-        live.directFeesCash(route),
-      ]);
-      if (stale()) return;
-      const landing = depositTokenOf(route);
-      receive.value = `${formatLanding(units, landing.decimals)} ${picked.asset}`;
-      fees.value = {
-        rows: [{ label: "Network fee", value: cashAmount(fmtCash(feesCash)) }],
-        receive: receive.value,
-        rate: directRate(units, landing.decimals, base, picked.asset),
-      };
-      return;
-    }
-    // A provider takes the sale's token from the key. It shows what its offer for this amount
-    // and sale said would land, and the channel is opened at confirm for the figure that offer
-    // was quoted for.
-    await offers.learn(base, route);
+    // What the sale lands on Asset Hub in the token's decimals: the direct rail lands exactly
+    // that. Its fees are taken in CASH before the sale, so the drill-in shows them as CASH.
+    const [units, feesCash] = await Promise.all([
+      live.quoteDirectReceive(base, route),
+      live.directFeesCash(route),
+    ]);
     if (stale()) return;
-    const offer = offers.offerFor(picked);
-    if (offer.state !== "available" || offers.sellable === null) {
-      receive.value = undefined;
-      return;
-    }
-    expectedLanding.value = offers.sellable;
-    receive.value = offer.formatted;
-    fees.value = offer.fees ?? null;
+    const landing = depositTokenOf(route);
+    receive.value = `${formatLanding(units, landing.decimals)} ${picked.asset}`;
+    fees.value = {
+      rows: [{ label: "Network fee", value: cashAmount(fmtCash(feesCash)) }],
+      receive: receive.value,
+      rate: directRate(units, landing.decimals, base, picked.asset),
+    };
   } catch (error: unknown) {
     console.warn("[withdraw] receive estimate unavailable:", error);
     receive.value = undefined;

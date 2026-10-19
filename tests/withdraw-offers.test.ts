@@ -10,10 +10,7 @@ import {
 } from "../app/withdraw/destinations";
 import { networkRow, rowState, type WithdrawOffer } from "../app/withdraw/offers";
 
-vi.mock("../lib/withdraw-live", () => ({
-  quoteWithdrawOffers: vi.fn(),
-  saleKeyOf: (sale: unknown) => JSON.stringify(sale),
-}));
+vi.mock("../lib/withdraw-live", () => ({ quoteWithdrawOffers: vi.fn() }));
 
 import { quoteWithdrawOffers } from "../lib/withdraw-live";
 import { FLOORS_STALE_MS } from "../app/stores/offers";
@@ -21,13 +18,15 @@ import { useWithdrawOffersStore } from "../app/stores/withdraw-offers";
 
 const quote = vi.mocked(quoteWithdrawOffers);
 
-const POOL = { tier: "pool" } as const;
-const PSM = { tier: "psm", external: "USDT", feeRate: 5_000 } as const;
+/** CASH this app's own PSM withdrawals have spoken for. */
+const RESERVED = 20_000_000n;
 const assetHub = withdrawDestination("dot-assethub")!;
 const bitcoin = withdrawNetwork("Bitcoin")!;
 const btc = withdrawDestination("btc")!;
 const AVAILABLE: WithdrawOffer = {
   state: "available",
+  sale: { tier: "pool" },
+  sellable: 40_000_000_000n,
   egress: 123_456n,
   formatted: "0.001234 BTC",
   etaSeconds: 900,
@@ -35,14 +34,14 @@ const AVAILABLE: WithdrawOffer = {
 const TOO_SMALL: WithdrawOffer = { state: "too-small", minimumCash: 12_500_000n }; // 12.5 CASH
 
 /** Every provider destination answered the same way. */
-function everyOffer(offer: WithdrawOffer, sellable: bigint | null = 40_000_000_000n) {
+function everyOffer(offer: WithdrawOffer): ReadonlyMap<string, WithdrawOffer> {
   const offers = new Map<string, WithdrawOffer>();
   for (const network of WITHDRAW_NETWORKS) {
     for (const destination of network.destinations) {
       if (destination.rail !== "direct") offers.set(destination.id, offer);
     }
   }
-  return { sellable, offers };
+  return offers;
 }
 
 describe("a row against its offer", () => {
@@ -93,9 +92,9 @@ describe("the withdraw offers store", () => {
   });
   afterEach(() => vi.useRealTimers());
 
-  it("quotes once per amount and sale, reuses a fresh answer, asks again when stale or unanswered", async () => {
+  it("quotes once per amount and reserved room, reuses a fresh answer, asks again when stale or unanswered", async () => {
     quote
-      .mockResolvedValueOnce(everyOffer({ state: "unavailable", reason: "down" }, null))
+      .mockResolvedValueOnce(everyOffer({ state: "unavailable", reason: "down" }))
       .mockResolvedValue(everyOffer(AVAILABLE));
     const store = useWithdrawOffersStore();
     store.railOn = true;
@@ -105,28 +104,27 @@ describe("the withdraw offers store", () => {
     expect(store.awaitingTokens(bitcoin)).toBe(true);
     expect(store.awaitingTokens(withdrawNetwork("Polkadot")!)).toBe(false);
 
-    await store.learn(50_000_000n, POOL);
-    expect(quote).toHaveBeenCalledWith(50_000_000n, expect.any(Array), POOL);
+    await store.learn(50_000_000n, RESERVED);
+    expect(quote).toHaveBeenCalledWith(50_000_000n, expect.any(Array), RESERVED);
     expect(store.awaitingNetworks).toBe(false);
     expect(store.awaitingTokens(bitcoin)).toBe(false);
     expect(store.rowFor(btc).subtitle).toBe("Not available right now");
     expect(store.networkRowFor(bitcoin).pickable).toBe(false);
 
-    await store.learn(50_000_000n, POOL); // no answer stands for nothing: asked again
+    await store.learn(50_000_000n, RESERVED); // no answer stands for nothing: asked again
     expect(quote).toHaveBeenCalledTimes(2);
     expect(store.rowFor(btc)).toEqual({ pickable: true });
     expect(store.offerFor(btc)).toEqual(AVAILABLE);
-    expect(store.sellable).toBe(40_000_000_000n);
 
-    await store.learn(50_000_000n, POOL);
+    await store.learn(50_000_000n, RESERVED);
     expect(quote).toHaveBeenCalledTimes(2); // fresh: reused
-    await store.learn(50_000_000n, PSM);
-    expect(quote).toHaveBeenCalledTimes(3); // the same amount through another sale: asked for it
-    expect(quote).toHaveBeenLastCalledWith(50_000_000n, expect.any(Array), PSM);
-    await store.learn(60_000_000n, PSM);
+    await store.learn(50_000_000n, RESERVED + 10_000_000n);
+    expect(quote).toHaveBeenCalledTimes(3); // a withdrawal started meanwhile: asked again
+    expect(quote).toHaveBeenLastCalledWith(50_000_000n, expect.any(Array), RESERVED + 10_000_000n);
+    await store.learn(60_000_000n, RESERVED);
     expect(quote).toHaveBeenCalledTimes(4); // another amount: asked for it
     vi.advanceTimersByTime(FLOORS_STALE_MS);
-    await store.learn(60_000_000n, PSM);
+    await store.learn(60_000_000n, RESERVED);
     expect(quote).toHaveBeenCalledTimes(5); // stale: asked again
   });
 
@@ -137,11 +135,11 @@ describe("the withdraw offers store", () => {
       .mockResolvedValueOnce(everyOffer(TOO_SMALL));
     const store = useWithdrawOffersStore();
     store.railOn = true;
-    const first = store.learn(50_000_000n, POOL);
-    const second = store.learn(5_000_000n, POOL);
+    const first = store.learn(50_000_000n, RESERVED);
+    const second = store.learn(5_000_000n, RESERVED);
     // A third look at the new amount joins its load rather than starting another: two quotes
     // in all, asserted below.
-    const third = store.learn(5_000_000n, POOL);
+    const third = store.learn(5_000_000n, RESERVED);
     expect(store.awaitingNetworks).toBe(true);
     release(everyOffer(AVAILABLE));
     await third;
@@ -158,9 +156,9 @@ describe("the withdraw offers store", () => {
       .mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
     const store = useWithdrawOffersStore();
     store.railOn = true;
-    await store.learn(50_000_000n, POOL);
+    await store.learn(50_000_000n, RESERVED);
     vi.advanceTimersByTime(FLOORS_STALE_MS);
-    const refresh = store.learn(50_000_000n, POOL);
+    const refresh = store.learn(50_000_000n, RESERVED);
     expect(store.offerFor(btc)).toEqual(AVAILABLE); // the old answer stands meanwhile
     expect(store.awaitingNetworks).toBe(false);
     release(everyOffer(TOO_SMALL));
@@ -171,7 +169,7 @@ describe("the withdraw offers store", () => {
   it("asks nothing while the rail is off, and says so on every provider row", async () => {
     const store = useWithdrawOffersStore();
     store.railOn = false;
-    await store.learn(50_000_000n, POOL);
+    await store.learn(50_000_000n, RESERVED);
     expect(quote).not.toHaveBeenCalled();
     expect(store.awaitingNetworks).toBe(false);
     expect(store.rowFor(btc).subtitle).toBe("Not available yet");
