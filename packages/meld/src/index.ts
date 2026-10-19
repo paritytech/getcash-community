@@ -1,5 +1,6 @@
 export {
   createMeldClient,
+  isAdapterOutage,
   type MeldClientLike,
   type MeldDepositDisclosure,
   type MeldEndpointConfig,

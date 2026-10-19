@@ -48,6 +48,7 @@ import {
   createMeldClient,
   createMeldRail,
   ensureMeldAssets,
+  isAdapterOutage,
   pickBestQuote,
   shareStatusReads,
   type MeldClientLike,
@@ -105,11 +106,25 @@ export { DEPOSIT_EXPIRED_REASON } from "../funding/requests/model";
 /** Stand-in address for the mock world, which never touches a chain. */
 const DEV_RECIPIENT = "13ENScfFZXQ8avXf6cphack516B8YCjdL4MJbodm7VxK8GE9";
 
+/** A token as the Meld rail delivers it, with the app's name for it on Meld's rail. */
+type MeldRailToken = NonNullable<Parameters<typeof createMeldRail>[0]["token"]> & {
+  meldAsset: MeldAssetId;
+};
+
 /** The deposit token as Meld delivers it. Throws for a token Meld cannot deliver. */
-function meldTokenOf(token: TokenSpec): Parameters<typeof createMeldRail>[0]["token"] {
-  if (token.meldCurrencyCode === undefined) throw new Error(`Meld cannot deliver ${token.symbol}`);
-  return token as Parameters<typeof createMeldRail>[0]["token"];
+function meldTokenOf(token: TokenSpec): MeldRailToken {
+  if (token.meldAsset === undefined || token.meldCurrencyCode === undefined) {
+    throw new Error(`Meld cannot deliver ${token.symbol}`);
+  }
+  return token as MeldRailToken;
 }
+
+/** A hosted world built on a route, with the quote its rail answered. */
+type LiveQuote = { world: HostedCoinageWorld; quote: Quote };
+
+/** A Meld quote on a route, with the region's corridor for that route's token and the country
+ *  it was priced in. */
+type MeldRouteQuote = LiveQuote & { corridor: SupportedCorridor; country: string };
 
 /** What Chainflip answered for a hosted world built on a route: its quote, or that the purchase
  *  is under the source's floor. */
@@ -180,13 +195,19 @@ export interface ActiveFlowRecord {
   sourceId?: string;
 }
 
+/** A stage of `step` that did not finish within its bound. */
+class StepTimeoutError extends Error {}
+
 /** Awaits `work` with a timeout, logging the stage label before and after. */
 async function step<T>(label: string, ms: number, work: Promise<T>): Promise<T> {
   console.warn(`[coinage] step: ${label}...`);
   let timer: ReturnType<typeof setTimeout>;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(
-      () => reject(new Error(`${label} timed out after ${ms / 1000}s (host not responding?)`)),
+      () =>
+        reject(
+          new StepTimeoutError(`${label} timed out after ${ms / 1000}s (host not responding?)`),
+        ),
       ms,
     );
   });
@@ -367,12 +388,14 @@ export const useSessionStore = defineStore("session", () => {
   /** True when the selected card or bank method is not routed for the chosen region. Not a quote
    *  failure; nothing to retry. */
   const meldMethodUnavailable = ref(false);
-  /** The crypto the Meld catalog is read for. `chooseQuoteRoute` sets it from the route the moment
-   *  one is chosen, and that value is what every quote is placed against. This initial value only
-   *  covers the window before then: the catalog loads when the pay screen mounts, before any amount
-   *  exists and so before a route can be chosen, so it assumes the PSM tier's external rather than
-   *  the fallback's. A route that comes back `pool` — the PSM paused, at its ceiling, or below its
-   *  minimum — moves it to the native and the watch below reloads. Off-host there is no PSM. */
+  /** The crypto the region dropdown's catalog is read for: the token of the route the last quote
+   *  was placed on. `followRoute` sets it once a route is chosen; a hosted Meld quote reads each
+   *  route's own corridor while it walks them and sets it once, to the route that quoted, or to
+   *  the first when none did. This initial value only covers the window before then: the catalog
+   *  loads when the pay screen mounts, before any amount exists and so before a route can be
+   *  chosen, so it assumes the PSM tier's external rather than the fallback's. A route that comes
+   *  back `pool` — the PSM paused, at its ceiling, or below its minimum, or no provider buying the
+   *  external — moves it to the native and the watch below reloads. Off-host there is no PSM. */
   const meldDestination = ref<MeldAssetId>(
     (isHosted() ? TOKENS[PSM_EXTERNAL].meldAsset : undefined) ?? DEFAULT_MELD_DESTINATION,
   );
@@ -687,12 +710,35 @@ export const useSessionStore = defineStore("session", () => {
   }
 
   /**
+   * Asks the quote of the world being built on one route of a walk: the world with its quote, the
+   * failure with the world already let go, or null when a newer quote has superseded this one.
+   */
+  async function quoteLiveWorld(
+    epoch: number,
+    building: Promise<HostedCoinageWorld | null>,
+  ): Promise<LiveQuote | { world: HostedCoinageWorld; error: unknown } | null> {
+    const world = await building;
+    if (!world) return null;
+    if (epoch !== quoteEpoch) {
+      world.dispose();
+      return null;
+    }
+    try {
+      return { world, quote: await step("quote", 20_000, world.session.quote()) };
+    } catch (error) {
+      world.dispose();
+      return { world, error };
+    }
+  }
+
+  /**
    * The conversion tier a fresh quote is built on, decided once here and handed down: the rail
    * is built for the asset the tier delivers, and the world freezes the tier into the hand-off.
    * Nothing downstream decides again. `deposit` names the asset the buyer will send when the
-   * picker knows it; the fiat rails name none. A hosted Chainflip pick does not come here: it
-   * walks the ranked routes in `runQuote`. The mock world runs over fakes with no PSM to
-   * ask, so outside the host the tier is the pool, fed with the stable the buyer picked.
+   * picker knows it; the fiat rails name none. A hosted Chainflip pick or Meld quote does not come
+   * here: each walks the ranked routes, in `runQuote` and `runMeldQuote`. The mock world runs over
+   * fakes with no PSM to ask, so outside the host the tier is the pool, fed with the stable the
+   * buyer picked.
    */
   async function chooseQuoteRoute(
     amount: bigint,
@@ -753,7 +799,7 @@ export const useSessionStore = defineStore("session", () => {
 
   /**
    * Builds the Meld rail for the current selection and the token the route delivers, or signals
-   * that the method is not routed for the region.
+   * that the method is not routed for the region. The corridor read is that token's.
    */
   async function buildMeldRail(route: ConversionRoute): Promise<
     | {
@@ -770,10 +816,11 @@ export const useSessionStore = defineStore("session", () => {
     const meldMethod = uiMethod === "card" ? "CARD" : "BANK_TRANSFER";
     const sourceId: SourceId = uiMethod === "card" ? "meld-card" : "meld-bank";
     const country = effectiveMeldCountry();
+    const token = meldTokenOf(depositTokenOf(route));
     // The live corridor is authoritative when discovery is reachable. Otherwise fall back to the
     // static region map as a whole {country, fiat} tuple with a synthetic corridor. The caller
     // assigns `meldCorridor` after its epoch guard.
-    const live = await fetchCorridor(meldDestination.value, country);
+    const live = await fetchCorridor(token.meldAsset, country);
     let region: { country: string; fiat: string };
     let corridor: SupportedCorridor;
     let paymentMethodType: string | null;
@@ -821,7 +868,7 @@ export const useSessionStore = defineStore("session", () => {
       fiat: region.fiat,
       method: meldMethod,
       paymentMethodType,
-      token: meldTokenOf(depositTokenOf(route)),
+      token,
     });
     return { rail, sourceId, client: meldClient, region, paymentMethodType, corridor };
   }
@@ -915,23 +962,23 @@ export const useSessionStore = defineStore("session", () => {
     }
     loading.value = true;
     try {
-      // The tier first: the rail is built for the asset the tier delivers.
-      const route = await chooseQuoteRoute(amountBase.value);
-      if (epoch !== quoteEpoch) return;
-      const built = await buildMeldRail(route);
-      // A newer quote may have started while the corridor probe was in flight; do not clobber its
-      // state.
-      if (epoch !== quoteEpoch) return;
-      meldCorridor.value = built.corridor;
-      if ("unavailable" in built) {
-        meldMethodUnavailable.value = true;
-        loading.value = false;
-        return;
-      }
-      // The country the quote is priced in; a re-open quotes the same region.
-      meldRegionCountry = built.region.country;
       // Mock world: quote, session and widget are real; settlement is simulated by the harness.
       if (!isHosted()) {
+        // The tier first: the rail is built for the asset the tier delivers.
+        const route = await chooseQuoteRoute(amountBase.value);
+        if (epoch !== quoteEpoch) return;
+        const built = await buildMeldRail(route);
+        // A newer quote may have started while the corridor probe was in flight; do not clobber
+        // its state.
+        if (epoch !== quoteEpoch) return;
+        meldCorridor.value = built.corridor;
+        if ("unavailable" in built) {
+          meldMethodUnavailable.value = true;
+          loading.value = false;
+          return;
+        }
+        // The country the quote is priced in; a re-open quotes the same region.
+        meldRegionCountry = built.region.country;
         // The funding leg's fees, from the same public reads the crypto route prices with. They
         // enlarge the budget the rail must deliver — the buyer pays for them — and the quote
         // reports them as their own row. Skipped in node test runs, which have no chain to read:
@@ -974,31 +1021,76 @@ export const useSessionStore = defineStore("session", () => {
         return;
       }
       // Hosted world: the same rail over the real host seams. The provider delivers the route's
-      // token to the burner and the funding leg converts it to CASH.
-      const { nextHostedTradeNumber } = await import("~~/lib/coinage-live");
-      const tradeN = await step(
-        "trade number",
-        10_000,
-        nextHostedTradeNumber(built.sourceId, (n) => requests.hasTrace(built.sourceId, n)),
-      );
-      const world = await createLiveWorld(
-        epoch,
-        depositWindowFor(method.value),
-        route,
-        tradeN,
-        built.rail,
-        built.sourceId,
-      );
-      if (!world) return;
+      // token to the burner and the funding leg converts it to CASH. Each route the chain ranks is
+      // asked in turn, on the region's corridor for its token, until a provider quotes it.
+      const { nextHostedTradeNumber, rankHostedRoutes } = await import("~~/lib/coinage-live");
+      const routes = await step("route selection", 10_000, rankHostedRoutes(amountBase.value));
+      if (epoch !== quoteEpoch) return;
+      // Every route is tried on one trade number: a Meld world writes nothing to storage and its
+      // quote opens no session, so a world let go leaves nothing behind.
+      let tradeN: number | undefined;
+      let firstCorridor: SupportedCorridor | null = null;
+      // The outage that ended the walk, else the first quote a route failed. None when no route's
+      // corridor routes the method.
+      let failure: unknown;
+      const pick = await pickRoute<MeldRouteQuote | null>(routes, async (route) => {
+        const built = await buildMeldRail(route);
+        if (epoch !== quoteEpoch) return { kind: "accepted", value: null };
+        firstCorridor ??= built.corridor;
+        if ("unavailable" in built) {
+          return { kind: "refused", reason: "the method is not routed for this token" };
+        }
+        tradeN ??= await step(
+          "trade number",
+          10_000,
+          nextHostedTradeNumber(built.sourceId, (n) => requests.hasTrace(built.sourceId, n)),
+        );
+        const asked = await quoteLiveWorld(
+          epoch,
+          createLiveWorld(
+            epoch,
+            depositWindowFor(method.value),
+            route,
+            tradeN,
+            built.rail,
+            built.sourceId,
+          ),
+        );
+        if (asked === null) return { kind: "accepted", value: null };
+        if ("quote" in asked) {
+          const value = { ...asked, corridor: built.corridor, country: built.region.country };
+          return { kind: "accepted", value };
+        }
+        const { error } = asked;
+        const reason = error instanceof Error ? error.message : String(error);
+        // An adapter that does not answer, or not in time, is the same adapter on the next route.
+        if (error instanceof StepTimeoutError || isAdapterOutage(error)) {
+          failure = error;
+          return { kind: "outage", reason };
+        }
+        failure ??= error;
+        return { kind: "refused", reason };
+      });
       if (epoch !== quoteEpoch) {
-        world.dispose();
+        if (pick.kind === "picked") pick.value?.world.dispose();
         return;
       }
-      const quote = await step("quote", 20_000, world.session.quote());
-      if (epoch !== quoteEpoch) {
-        world.dispose();
-        return;
+      if (pick.kind !== "picked") {
+        followRoute(routes[0]);
+        meldCorridor.value = firstCorridor;
+        if (failure === undefined) {
+          meldMethodUnavailable.value = true;
+          return;
+        }
+        throw failure;
       }
+      const { route, value } = pick;
+      if (value === null) return;
+      const { world, quote } = value;
+      followRoute(route);
+      meldCorridor.value = value.corridor;
+      // The country the quote is priced in; a re-open quotes the same region.
+      meldRegionCountry = value.country;
       live.value = world;
       quoted.value = meldQuotedView(quote.raw as MeldQuoteRaw, world.fundingSizing);
       quoteFailures.value = 0;
@@ -1067,35 +1159,22 @@ export const useSessionStore = defineStore("session", () => {
         // neither a flow slot nor a record, so a world let go leaves no request behind.
         let refusal: unknown;
         const pick = await pickRoute<RouteQuote | null>(routes, async (route) => {
-          const world = await createLiveWorld(
+          const asked = await quoteLiveWorld(
             epoch,
-            depositWindowFor("crypto"),
-            route,
-            tradeN,
-            undefined,
-            sourceId,
+            createLiveWorld(epoch, depositWindowFor("crypto"), route, tradeN, undefined, sourceId),
           );
-          // Superseded by a newer quote: nothing further is asked.
-          if (!world) return { kind: "accepted", value: null };
-          if (epoch !== quoteEpoch) {
-            world.dispose();
-            return { kind: "accepted", value: null };
+          // Quoted, or superseded by a newer quote: either way nothing further is asked.
+          if (asked === null || "quote" in asked) return { kind: "accepted", value: asked };
+          // Chainflip can refuse, on a floor, a pair or an outage, and the world and its burner
+          // are let go. The floor is on the buyer's token, the same on every route, so it ends the
+          // walk as an answer; an outage ends it as a failure.
+          const { world, error: e } = asked;
+          if (e instanceof SourceMinimumNotMetError) {
+            return { kind: "accepted", value: { world, minimum: e } };
           }
-          try {
-            const quote = await step("quote", 20_000, world.session.quote());
-            return { kind: "accepted", value: { world, quote } };
-          } catch (e) {
-            // Chainflip can refuse, on a floor, a pair or an outage: the world and its burner are
-            // let go. The floor is on the buyer's token, the same on every route, so it ends the
-            // walk as an answer; an outage ends it as a failure.
-            world.dispose();
-            if (e instanceof SourceMinimumNotMetError) {
-              return { kind: "accepted", value: { world, minimum: e } };
-            }
-            if (e instanceof ChainflipRequestError && e.outage) throw e;
-            refusal ??= e;
-            return { kind: "refused", reason: e instanceof Error ? e.message : String(e) };
-          }
+          if (e instanceof ChainflipRequestError && e.outage) throw e;
+          refusal ??= e;
+          return { kind: "refused", reason: e instanceof Error ? e.message : String(e) };
         });
         if (pick.kind !== "picked") throw refusal;
         const { route, value } = pick;

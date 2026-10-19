@@ -284,6 +284,14 @@ class AdapterRefusal extends Error {
   }
 }
 
+/** True when a call failed because the adapter did not answer: no response at all, which `fetch`
+ *  rejects with a `TypeError`, a 5xx (the adapter's `ProviderTimeout` when Meld did not answer
+ *  it), or a 429. A refusal the adapter answered with is not one. */
+export function isAdapterOutage(error: unknown): boolean {
+  if (error instanceof AdapterRefusal) return error.status >= 500 || error.status === 429;
+  return error instanceof TypeError;
+}
+
 /** `retry-after` in milliseconds: delta-seconds or an HTTP date. Undefined when absent or unreadable
  *  (a cross-origin response hides it unless the adapter exposes the header). */
 function retryAfterMsOf(res: Response): number | undefined {
