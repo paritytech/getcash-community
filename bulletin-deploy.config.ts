@@ -11,13 +11,13 @@ export default {
     {
       kind: "app",
       path: ".output/public",
-      appVersion: [0, 1, 0],
+      appVersion: [1, 0, 0],
     },
     {
       kind: "worker",
       // The built bundle as the site build copies it into .output/public/worker.
       path: ".output/public/worker",
-      appVersion: [0, 1, 0],
+      appVersion: [1, 0, 0],
       // Relative to this executable's own archive, where the bundle sits at the root.
       entrypoint: "index.js",
       // Background logic with no chat surface. Hosts currently start a worker only when it
