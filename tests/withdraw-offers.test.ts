@@ -8,7 +8,8 @@ import {
   withdrawDestination,
   withdrawNetwork,
 } from "../app/withdraw/destinations";
-import { networkRow, rowState, type WithdrawOffer } from "../app/withdraw/offers";
+import type { ConversionRoute } from "@getsome/funding";
+import { networkRow, rowState, sameSale, type WithdrawOffer } from "../app/withdraw/offers";
 
 vi.mock("../lib/withdraw-live", () => ({ quoteWithdrawOffers: vi.fn() }));
 
@@ -81,6 +82,21 @@ describe("a row against its offer", () => {
       ]),
     ).toEqual({ pickable: false, subtitle: "a" });
     expect(networkRow([])).toEqual({ pickable: false });
+  });
+});
+
+describe("whether the sale at confirm is the one the summary showed", () => {
+  const PSM: ConversionRoute = { tier: "psm", external: "USDT", feeRate: 5_000 };
+  it.each<[string, ConversionRoute, ConversionRoute, boolean]>([
+    ["the same PSM sale", PSM, { ...PSM }, true],
+    ["the PSM at another fee rate", PSM, { ...PSM, feeRate: 6_000 }, false],
+    ["the PSM against the pool", PSM, { tier: "pool" }, false],
+    ["the pool for the native", { tier: "pool" }, { tier: "pool" }, true],
+    ["the pool fed through a stable", { tier: "pool" }, { tier: "pool", external: "USDT" }, false],
+    ["dotUSD", { tier: "dotusd" }, { tier: "dotusd" }, true],
+  ])("%s", (_, shown, fresh, same) => {
+    expect(sameSale(shown, fresh)).toBe(same);
+    expect(sameSale(fresh, shown)).toBe(same);
   });
 });
 
@@ -164,6 +180,22 @@ describe("the withdraw offers store", () => {
     release(everyOffer(TOO_SMALL));
     await refresh;
     expect(store.offerFor(btc)).toEqual(TOO_SMALL);
+  });
+
+  it("quotes one destination again and writes the answer into the rows of the same pair", async () => {
+    quote
+      .mockResolvedValueOnce(everyOffer(AVAILABLE))
+      .mockResolvedValue(new Map([[btc.id, TOO_SMALL]]));
+    const store = useWithdrawOffersStore();
+    store.railOn = true;
+    await store.learn(50_000_000n, RESERVED);
+    // Another pair's answer is returned, and the rows stay.
+    expect(await store.requote(btc, 50_000_000n, RESERVED + 1n)).toEqual(TOO_SMALL);
+    expect(store.offerFor(btc)).toEqual(AVAILABLE);
+    expect(await store.requote(btc, 50_000_000n, RESERVED)).toEqual(TOO_SMALL);
+    expect(quote).toHaveBeenLastCalledWith(50_000_000n, [btc], RESERVED);
+    expect(store.offerFor(btc)).toEqual(TOO_SMALL);
+    expect(store.offerFor(withdrawDestination("usdc-eth")!)).toEqual(AVAILABLE);
   });
 
   it("asks nothing while the rail is off, and says so on every provider row", async () => {

@@ -74,6 +74,26 @@ export const useWithdrawOffersStore = defineStore("withdraw-offers", () => {
     return run;
   }
 
+  /** Quotes `destination` alone, fresh, for `amountCash` with `reserved` of the PSM's room spoken
+   *  for. The answer replaces the destination's row when the offers are for that pair, so the
+   *  pickers agree with it. */
+  async function requote(
+    destination: WithdrawDestination,
+    amountCash: bigint,
+    reserved: bigint,
+  ): Promise<WithdrawOffer> {
+    if (!railOn.value) return RAIL_OFF;
+    const quoted = await quoteWithdrawOffers(amountCash, [destination], reserved);
+    const offer = quoted.get(destination.id) ?? {
+      state: "unavailable",
+      reason: "the destination was not quoted",
+    };
+    if (amount.value === amountCash && reservedFor.value === reserved) {
+      offers.value = new Map(offers.value).set(destination.id, offer);
+    }
+    return offer;
+  }
+
   const offerFor = (destination: WithdrawDestination): WithdrawOffer =>
     railOn.value ? (offers.value.get(destination.id) ?? CHECKING) : RAIL_OFF;
 
@@ -102,6 +122,7 @@ export const useWithdrawOffersStore = defineStore("withdraw-offers", () => {
     amount,
     railOn,
     learn,
+    requote,
     offerFor,
     rowFor,
     networkRowFor,

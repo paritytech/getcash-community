@@ -85,7 +85,9 @@ serve, then PAS through the pool, and each destination takes the first of those 
 quote for the amount, its minimum included: an amount under Chainflip's minimum for USDT sells
 PAS, and one under the minimum on both shows the smaller. The PSM serves when it has room for the
 amount plus a tenth of it, 20 CASH at the least, once the app's own open PSM withdrawals are
-counted against that room. The sale is frozen on the hand-off, and the worker never re-decides it.
+counted against that room. Confirm decides the sale again, fresh: when it is no longer the one the
+summary showed, the summary takes the new figure and nothing starts until the user confirms that.
+The sale is frozen on the hand-off, and the worker never re-decides it.
 On the PSM tier the XCM makes no sale: it lands the CASH on the key's own Asset Hub account, the
 PAS that travelled sold for CASH, and the key signs one more transaction there, a
 `Utility.batch_all` of `Psm.redeem` and `Assets.transfer_all` of the USDT to the destination, or

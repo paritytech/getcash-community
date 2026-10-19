@@ -2,9 +2,9 @@
 // The amount is known before any destination is picked, so every Chainflip destination is quoted
 // for it once, on the first sale the chain ranks that Chainflip accepts: the quote says whether
 // the destination answers at all, whether the amount is under the provider's minimum, and what
-// would land. A row is greyed with the reason; the confirm judges once more before the channel is
-// opened. A row still being quoted is not drawn at all: the picker shows a skeleton row in its
-// place. Asset Hub itself has no provider: the direct rail is always pickable.
+// would land. A row is greyed with the reason; the confirm quotes the picked destination again
+// before the channel is opened. A row still being quoted is not drawn at all: the picker shows a
+// skeleton row in its place. Asset Hub itself has no provider: the direct rail is always pickable.
 
 import type { ConversionRoute } from "@getsome/funding";
 import { minimumLine } from "../funding/source-groups";
@@ -48,6 +48,19 @@ export type WithdrawOffer =
       etaSeconds: number | null;
       fees?: WithdrawFeeView;
     };
+
+/** Whether two sales are one: the same tier through the same stable and, on the PSM, at the same
+ *  fee rate, which is frozen on the sale. */
+export function sameSale(a: ConversionRoute, b: ConversionRoute): boolean {
+  switch (a.tier) {
+    case "psm":
+      return b.tier === "psm" && b.external === a.external && b.feeRate === a.feeRate;
+    case "pool":
+      return b.tier === "pool" && b.external === a.external;
+    case "dotusd":
+      return b.tier === "dotusd";
+  }
+}
 
 export interface RowState {
   pickable: boolean;
