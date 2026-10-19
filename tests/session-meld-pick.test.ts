@@ -1,5 +1,6 @@
 // A hosted card or bank top-up asks the region's providers about each route the chain ranks, on
-// the region's corridor for that route's token, and keeps the first they quote.
+// the region's corridor for that route's token, and keeps the first they quote. Its region dropdown
+// reads both tokens' catalogs.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
@@ -13,19 +14,25 @@ import {
 } from "../app/funding/requests/storage";
 import { useRequestsStore } from "../app/stores/requests";
 import { useSessionStore } from "../app/stores/session";
-import type { SupportedCorridor } from "../lib/supported";
+import type { SupportedCorridor, SupportedCountry } from "../lib/supported";
 
 const BURNER = "14uAyRtbeRsrgERPLETm72yFPKW3oi3m4RX93arNwGQhsduC";
 const PSM: ConversionRoute = { tier: "psm", external: "USDT", feeRate: 1_000 };
 const USDT = TOKENS.USDT.meldAsset as MeldAssetId;
 const DOT = TOKENS.PAS.meldAsset as MeldAssetId;
 
-const { worlds, adapter, corridors } = vi.hoisted(() => ({
+const { worlds, adapter, corridors, catalogs } = vi.hoisted(() => ({
   worlds: { builds: [] as string[], disposed: [] as string[] },
   /** Keyed by Meld's code for the token quoted. */
   adapter: new Map<string, { status: number; body: unknown }>(),
-  /** `reads`: the corridors a quote read; `catalogs`: the tokens the region dropdown reloaded for. */
-  corridors: { reads: [] as string[], unrouted: new Set<string>(), catalogs: [] as string[] },
+  /** The tokens whose corridor a quote read. */
+  corridors: { reads: [] as string[], unrouted: new Set<string>() },
+  /** The region dropdown's catalogs per token, and every read of them. */
+  catalogs: {
+    reads: [] as string[],
+    countries: new Map<string, SupportedCountry[]>(),
+    corridors: new Map<string, Map<string, SupportedCorridor>>(),
+  },
 }));
 vi.mock("../lib/host-account", () => ({ isHosted: () => true }));
 vi.mock("../lib/worker-rpc", () => ({
@@ -47,10 +54,13 @@ vi.mock("../lib/supported", async (importOriginal) => ({
     return { country, fiat: "USD", methods: corridors.unrouted.has(destination) ? [] : [card] };
   },
   fetchSupportedCountries: async (destination: string) => {
-    corridors.catalogs.push(destination);
-    return null;
+    catalogs.reads.push(`countries:${destination}`);
+    return catalogs.countries.get(destination) ?? null;
   },
-  fetchSupportedCorridors: async () => null,
+  fetchSupportedCorridors: async (destination: string) => {
+    catalogs.reads.push(`corridors:${destination}`);
+    return catalogs.corridors.get(destination) ?? null;
+  },
 }));
 // The offline client prices every token, except where a test has the adapter answer otherwise,
 // which the real client then reads as it would off the wire.
@@ -128,8 +138,10 @@ describe("a hosted Meld quote", () => {
     worlds.builds.length = 0;
     worlds.disposed.length = 0;
     corridors.reads.length = 0;
-    corridors.catalogs.length = 0;
     corridors.unrouted.clear();
+    catalogs.reads.length = 0;
+    catalogs.countries.clear();
+    catalogs.corridors.clear();
     adapter.clear();
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
@@ -194,11 +206,51 @@ describe("a hosted Meld quote", () => {
     // Every world but the one kept is let go.
     expect(worlds.disposed).toEqual(landed === undefined ? asked : asked.slice(0, -1));
     expect(session.live?.route.tier).toBe(landed);
-    // The dropdown follows the route the quote ended on, the first when none quoted: reloaded
-    // once for DOT, and not at all while it stays on USDT.
-    expect(corridors.catalogs).toEqual(landed === "pool" ? [DOT] : []);
     expect(session.meldMethodUnavailable).toBe(landed === undefined && error === undefined);
     expect(session.quoteError).toBe(error ?? null);
     expect(session.quoteFailures).toBe(error === undefined ? 0 : 1);
+  });
+
+  it("judges the region dropdown on both tokens' catalogs, whichever route quotes", async () => {
+    const card = (min: string) => ({
+      paymentMethodType: "CREDIT_DEBIT_CARD",
+      category: "card" as const,
+      min,
+      max: "5000",
+      currency: "EUR",
+      providers: [],
+    });
+    catalogs.countries.set(USDT, [{ country: "DE", name: "Germany" }]);
+    catalogs.countries.set(DOT, [
+      { country: "BR", name: "Brazil" },
+      { country: "DE", name: "Germany" },
+    ]);
+    catalogs.corridors.set(
+      USDT,
+      new Map([["DE", { country: "DE", fiat: "EUR", methods: [card("20")] }]]),
+    );
+    catalogs.corridors.set(
+      DOT,
+      new Map([
+        ["BR", { country: "BR", fiat: "EUR", methods: [card("30")] }],
+        ["DE", { country: "DE", fiat: "EUR", methods: [card("15")] }],
+      ]),
+    );
+    const session = useSessionStore();
+    await Promise.all([session.loadSupportedCountries(), session.loadSupportedCorridors()]);
+    expect(catalogs.reads.sort()).toEqual(
+      [`corridors:${DOT}`, `corridors:${USDT}`, `countries:${DOT}`, `countries:${USDT}`].sort(),
+    );
+    expect(session.supportedCountries?.map((c) => c.country)).toEqual(["BR", "DE"]);
+    expect(session.corridorByCountry?.get("BR")?.methods[0]?.min).toBe("30");
+    expect(session.corridorByCountry?.get("DE")?.methods[0]?.min).toBe("15");
+
+    // A quote that lands on DOT leaves the dropdown as it is.
+    corridors.unrouted.add(USDT);
+    session.setMethod("card");
+    session.setAmount("50");
+    await session.fetchMeldQuote();
+    expect(session.live?.route.tier).toBe("pool");
+    expect(catalogs.reads).toHaveLength(4);
   });
 });

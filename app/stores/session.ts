@@ -61,6 +61,8 @@ import {
   DEFAULT_MELD_DESTINATION,
   fetchSupportedCorridors,
   fetchSupportedCountries,
+  mergeCorridorMaps,
+  mergeCountries,
   methodFor,
   type SupportedCorridor,
   type SupportedCountry,
@@ -388,17 +390,14 @@ export const useSessionStore = defineStore("session", () => {
   /** True when the selected card or bank method is not routed for the chosen region. Not a quote
    *  failure; nothing to retry. */
   const meldMethodUnavailable = ref(false);
-  /** The crypto the region dropdown's catalog is read for: the token of the route the last quote
-   *  was placed on. `followRoute` sets it once a route is chosen; a hosted Meld quote reads each
-   *  route's own corridor while it walks them and sets it once, to the route that quoted, or to
-   *  the first when none did. This initial value only covers the window before then: the catalog
-   *  loads when the pay screen mounts, before any amount exists and so before a route can be
-   *  chosen, so it assumes the PSM tier's external rather than the fallback's. A route that comes
-   *  back `pool` — the PSM paused, at its ceiling, or below its minimum, or no provider buying the
-   *  external — moves it to the native and the watch below reloads. Off-host there is no PSM. */
-  const meldDestination = ref<MeldAssetId>(
-    (isHosted() ? TOKENS[PSM_EXTERNAL].meldAsset : undefined) ?? DEFAULT_MELD_DESTINATION,
-  );
+  /** The tokens the region dropdown's catalogs are read for. Hosted, a card or bank quote tries
+   *  the PSM's external and then the native, so a region counts when a provider delivers either
+   *  there; the external's catalog leads, as its route does. Off-host there is no PSM. */
+  const psmMeldAsset = isHosted() ? TOKENS[PSM_EXTERNAL].meldAsset : undefined;
+  const catalogDestinations: MeldAssetId[] =
+    psmMeldAsset === undefined
+      ? [DEFAULT_MELD_DESTINATION]
+      : [psmMeldAsset, DEFAULT_MELD_DESTINATION];
   /** Every Meld on-ramp country from the adapter's live catalog; null until loaded. */
   const supportedCountries = ref<SupportedCountry[] | null>(null);
   /** Bulk per-country corridors for greying the dropdown; null until loaded or when unreachable. */
@@ -751,18 +750,7 @@ export const useSessionStore = defineStore("session", () => {
         : { tier: "pool", external: deposit };
     }
     const { chooseHostedRoute } = await import("~~/lib/coinage-live");
-    const route = await step("route selection", 10_000, chooseHostedRoute(amount, deposit));
-    followRoute(route);
-    return route;
-  }
-
-  /** Reads the catalog for the crypto `route` has the rail deliver. A region validated against
-   *  one destination and quoted against another is how a supported region yields an unquotable
-   *  request, so the dropdown follows the route rather than a constant. A token Meld cannot
-   *  deliver leaves it as it was. */
-  function followRoute(route: ConversionRoute): void {
-    const asset = depositTokenOf(route).meldAsset;
-    if (asset !== undefined) meldDestination.value = asset;
+    return step("route selection", 10_000, chooseHostedRoute(amount, deposit));
   }
 
   /** The quote in flight, whichever rail: start() waits for it before opening the deposit. */
@@ -1076,7 +1064,6 @@ export const useSessionStore = defineStore("session", () => {
         return;
       }
       if (pick.kind !== "picked") {
-        followRoute(routes[0]);
         meldCorridor.value = firstCorridor;
         if (failure === undefined) {
           meldMethodUnavailable.value = true;
@@ -1084,10 +1071,9 @@ export const useSessionStore = defineStore("session", () => {
         }
         throw failure;
       }
-      const { route, value } = pick;
+      const { value } = pick;
       if (value === null) return;
       const { world, quote } = value;
-      followRoute(route);
       meldCorridor.value = value.corridor;
       // The country the quote is priced in; a re-open quotes the same region.
       meldRegionCountry = value.country;
@@ -1184,7 +1170,6 @@ export const useSessionStore = defineStore("session", () => {
           world.dispose();
           return;
         }
-        followRoute(route);
         const depositToken = chainflipTokenOf(depositTokenOf(route));
         if ("minimum" in value) {
           const e = value.minimum;
@@ -2309,30 +2294,21 @@ export const useSessionStore = defineStore("session", () => {
     }
   }
 
-  /** Loads the region dropdown from the adapter's live catalog. On failure `supportedCountries`
-   *  stays null and the screen keeps its static list. */
-  // A destination change invalidates the catalog on screen; reload both for the new one.
-  watch(meldDestination, () => {
-    void loadSupportedCountries();
-    void loadSupportedCorridors();
-  });
-
+  /** Loads the region dropdown from the adapter's live catalogs, one per destination, read in
+   *  parallel. When none answers `supportedCountries` stays null and the screen keeps its static
+   *  list. */
   async function loadSupportedCountries(): Promise<void> {
-    const destination = meldDestination.value;
-    const rows = await fetchSupportedCountries(destination);
-    // The destination can change while this is in flight, and the fetches do not return in the
-    // order they were made. Adopting a stale one greys the dropdown by a corridor the quotes are
-    // no longer placed against.
-    if (destination !== meldDestination.value) return;
+    const lists = await Promise.all(catalogDestinations.map((d) => fetchSupportedCountries(d)));
+    const rows = lists.reduce(mergeCountries);
     if (rows !== null) supportedCountries.value = rows;
   }
 
-  // Loads the bulk per-country corridors; only a real catalog is adopted so a cold/empty read greys nothing.
+  // Loads the bulk per-country corridors; only a real catalog is adopted so a cold/empty read greys
+  // nothing. A cold read knows nothing of its token, so it counts as unreachable.
   async function loadSupportedCorridors(): Promise<void> {
-    const destination = meldDestination.value;
-    const map = await fetchSupportedCorridors(destination);
-    if (destination !== meldDestination.value) return;
-    if (map !== null && map.size > 0) corridorByCountry.value = map;
+    const maps = await Promise.all(catalogDestinations.map((d) => fetchSupportedCorridors(d)));
+    const map = maps.map((m) => (m !== null && m.size > 0 ? m : null)).reduce(mergeCorridorMaps);
+    if (map !== null) corridorByCountry.value = map;
   }
 
   return {
