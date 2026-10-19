@@ -14,6 +14,7 @@ import {
   type TokenSpec,
 } from "@getsome/core";
 import {
+  ChainflipRequestError,
   chainflipTokenOf,
   egressFor,
   SOURCE_CONFIG_BY_ID,
@@ -25,6 +26,7 @@ import {
   createManualRail,
   NoCashTransferError,
   PERMILL,
+  pickRoute,
   PSM_EXTERNAL,
   recordedRoute,
   type ConversionRoute,
@@ -108,6 +110,12 @@ function meldTokenOf(token: TokenSpec): Parameters<typeof createMeldRail>[0]["to
   if (token.meldCurrencyCode === undefined) throw new Error(`Meld cannot deliver ${token.symbol}`);
   return token as Parameters<typeof createMeldRail>[0]["token"];
 }
+
+/** What Chainflip answered for a hosted world built on a route: its quote, or that the purchase
+ *  is under the source's floor. */
+type RouteQuote = { world: HostedCoinageWorld } & (
+  { quote: Quote } | { minimum: SourceMinimumNotMetError }
+);
 
 /** Persisted per request; enough to re-open it. */
 export interface ActiveFlowRecord {
@@ -682,7 +690,8 @@ export const useSessionStore = defineStore("session", () => {
    * The conversion tier a fresh quote is built on, decided once here and handed down: the rail
    * is built for the asset the tier delivers, and the world freezes the tier into the hand-off.
    * Nothing downstream decides again. `deposit` names the asset the buyer will send when the
-   * picker knows it; the fiat rails name none. The mock world runs over fakes with no PSM to
+   * picker knows it; the fiat rails name none. A hosted Chainflip pick does not come here: it
+   * walks the ranked routes in `runQuote`. The mock world runs over fakes with no PSM to
    * ask, so outside the host the tier is the pool, fed with the stable the buyer picked.
    */
   async function chooseQuoteRoute(
@@ -697,13 +706,17 @@ export const useSessionStore = defineStore("session", () => {
     }
     const { chooseHostedRoute } = await import("~~/lib/coinage-live");
     const route = await step("route selection", 10_000, chooseHostedRoute(amount, deposit));
-    // The catalog is read for the crypto the rail will be asked to deliver. A region validated
-    // against one destination and quoted against another is how a supported region yields an
-    // unquotable request, so the dropdown follows the route rather than a constant. A token Meld
-    // cannot deliver leaves it as it was.
+    followRoute(route);
+    return route;
+  }
+
+  /** Reads the catalog for the crypto `route` has the rail deliver. A region validated against
+   *  one destination and quoted against another is how a supported region yields an unquotable
+   *  request, so the dropdown follows the route rather than a constant. A token Meld cannot
+   *  deliver leaves it as it was. */
+  function followRoute(route: ConversionRoute): void {
     const asset = depositTokenOf(route).meldAsset;
     if (asset !== undefined) meldDestination.value = asset;
-    return route;
   }
 
   /** The quote in flight, whichever rail: start() waits for it before opening the deposit. */
@@ -1035,40 +1048,67 @@ export const useSessionStore = defineStore("session", () => {
         return;
       }
       const direct = isDirectSourceId(sourceId) ? sourceId : null;
-      const route = await chooseQuoteRoute(
-        amountBase.value,
-        direct === null ? undefined : depositAssetFor(direct),
-      );
-      if (epoch !== quoteEpoch) return;
+      const deposit = direct === null ? undefined : depositAssetFor(direct);
       if (isHosted()) {
-        const { nextHostedTradeNumber } = await import("~~/lib/coinage-live");
+        const { nextHostedTradeNumber, rankHostedRoutes } = await import("~~/lib/coinage-live");
+        // A direct pick's token has one route. A Chainflip pick asks Chainflip about each route
+        // the chain ranks until one can be quoted.
+        const routes =
+          direct === null
+            ? await step("route selection", 10_000, rankHostedRoutes(amountBase.value))
+            : [await chooseQuoteRoute(amountBase.value, deposit)];
+        if (epoch !== quoteEpoch) return;
         const tradeN = await step(
           "trade number",
           10_000,
           nextHostedTradeNumber(sourceId, (n) => requests.hasTrace(sourceId, n)),
         );
-        const world = await createLiveWorld(
-          epoch,
-          depositWindowFor("crypto"),
-          route,
-          tradeN,
-          undefined,
-          sourceId,
-        );
-        if (!world) return; // superseded by a newer quote
+        // Every route is tried on this one number: building a world and asking its quote write
+        // neither a flow slot nor a record, so a world let go leaves no request behind.
+        let refusal: unknown;
+        const pick = await pickRoute<RouteQuote | null>(routes, async (route) => {
+          const world = await createLiveWorld(
+            epoch,
+            depositWindowFor("crypto"),
+            route,
+            tradeN,
+            undefined,
+            sourceId,
+          );
+          // Superseded by a newer quote: nothing further is asked.
+          if (!world) return { kind: "accepted", value: null };
+          if (epoch !== quoteEpoch) {
+            world.dispose();
+            return { kind: "accepted", value: null };
+          }
+          try {
+            const quote = await step("quote", 20_000, world.session.quote());
+            return { kind: "accepted", value: { world, quote } };
+          } catch (e) {
+            // Chainflip can refuse, on a floor, a pair or an outage: the world and its burner are
+            // let go. The floor is on the buyer's token, the same on every route, so it ends the
+            // walk as an answer; an outage ends it as a failure.
+            world.dispose();
+            if (e instanceof SourceMinimumNotMetError) {
+              return { kind: "accepted", value: { world, minimum: e } };
+            }
+            if (e instanceof ChainflipRequestError && e.outage) throw e;
+            refusal ??= e;
+            return { kind: "refused", reason: e instanceof Error ? e.message : String(e) };
+          }
+        });
+        if (pick.kind !== "picked") throw refusal;
+        const { route, value } = pick;
+        if (value === null) return;
+        const { world } = value;
         if (epoch !== quoteEpoch) {
           world.dispose();
           return;
         }
-        let quote: Quote;
+        followRoute(route);
         const depositToken = chainflipTokenOf(depositTokenOf(route));
-        try {
-          quote = await step("quote", 20_000, world.session.quote());
-        } catch (e) {
-          // Chainflip can refuse, on a floor or an outage: the world and its burner are let go.
-          world.dispose();
-          if (!(e instanceof SourceMinimumNotMetError)) throw e;
-          if (epoch !== quoteEpoch) return;
+        if ("minimum" in value) {
+          const e = value.minimum;
           console.info(
             `[coinage] quote: below the ${e.assetSymbol} floor (${e.minimumFormatted} ${e.assetSymbol}); this purchase needs ${e.neededFormatted}`,
           );
@@ -1086,10 +1126,7 @@ export const useSessionStore = defineStore("session", () => {
           sourcePrice.value = { kind: "minimum", minimum: sourceMinimumOf(e) };
           return;
         }
-        if (epoch !== quoteEpoch) {
-          world.dispose();
-          return;
-        }
+        const { quote } = value;
         live.value = world;
         quoteFailures.value = 0;
         quoted.value = {
@@ -1103,6 +1140,8 @@ export const useSessionStore = defineStore("session", () => {
         // The rail's own figure is the pay card's price; a direct deposit has no swap to price.
         if (direct === null) sourcePrice.value = { kind: "price", price: sourcePriceOf(quote) };
       } else {
+        const route = await chooseQuoteRoute(amountBase.value, deposit);
+        if (epoch !== quoteEpoch) return;
         // Real pricing outside the host: the pool leg is a public chain read over a standalone
         // WebSocket. Skipped in node test runs; falls back to demo rates when the RPC is
         // unreachable. A stable deposit has nothing to read, the fakes take it one to one.
