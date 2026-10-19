@@ -81,8 +81,9 @@ stable sells that DOT again on the stable's pool; dotUSD is the CASH sent as it 
 tier, the fee PAS that travels with the CASH ends up in the landing token, so the destination is
 credited one asset.
 The sale is decided at quote time, from the token the user picks for Asset Hub or, for a Meld
-destination, under the on-ramp's fiat rule: USDT through the PSM when it can serve, PAS through
-the pool otherwise. For a Chainflip destination the chain ranks USDT through the PSM, when it can
+destination, from the candidates the off-ramp catalog routes for the region, in this build's lane
+order (USDT on Asset Hub, then PAS, then the Chainflip lanes): a USDT candidate only when the PSM
+can serve it, and the first a provider quotes wins. For a Chainflip destination the chain ranks USDT through the PSM, when it can
 serve, then PAS through the pool, and each destination takes the first of those Chainflip can
 quote for the amount, its minimum included: an amount under Chainflip's minimum for USDT sells
 PAS, and one under the minimum on both shows the smaller. The PSM serves when it has room for the
