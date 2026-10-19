@@ -1,7 +1,8 @@
 // What can pay for this purchase. Floors are learned from Chainflip for each asset a purchase is
 // sized in and kept while they are fresh; a Chainflip that answers for nothing is asked again,
-// with a growing delay, for as long as a picker is on screen. Every amount on screen is then
-// answered locally.
+// with a growing delay, for as long as a picker is on screen. Hosted, a source Chainflip cannot
+// swap into that asset is judged on the other route's asset too, since its quote walks to that
+// route. Every amount on screen is then answered locally.
 
 import { defineStore } from "pinia";
 import { computed, ref, shallowReactive, shallowRef, watch } from "vue";
@@ -11,6 +12,7 @@ import {
   offerFor,
   SOURCE_CONFIG_BY_ID,
   type EgressConfig,
+  type SourceFloor,
   type SourceFloorResult,
   type SourceOffer,
 } from "@getsome/chainflip";
@@ -83,6 +85,13 @@ interface Learned {
 const answeredForNothing = (floors: ReadonlyMap<SourceId, SourceFloorResult>): boolean =>
   floors.size > 0 && [...floors.values()].every((r) => r.kind === "unavailable");
 
+/** What a hosted Chainflip top-up can deliver, in the order its quote tries the routes: the PSM's
+ *  external, then the pool's native. */
+const HOSTED_EGRESSES: readonly EgressConfig[] = [
+  egressFor(TOKENS[PSM_EXTERNAL]),
+  egressFor(TOKENS.PAS),
+];
+
 export const useOffersStore = defineStore("offers", () => {
   const session = useSessionStore();
 
@@ -92,12 +101,31 @@ export const useOffersStore = defineStore("offers", () => {
    *
    *  The screen loads before a route can be chosen. Assuming the PSM's external costs a round
    *  trip only when a quote comes back `pool`; assuming the native cost one every session.
-   *  Off-host there is no PSM. */
+   *  Off-host there is no PSM. Hosted, `alternate` is the other route's egress. */
   const egress = computed(() =>
     egressFor(session.quoted?.depositToken ?? (isHosted() ? TOKENS[PSM_EXTERNAL] : TOKENS.PAS)),
   );
   const learnedByEgress = shallowRef<ReadonlyMap<string, Learned>>(new Map());
   const inflight = shallowReactive(new Map<string, Promise<void>>());
+  /** The alternate's answers, for only the sources asked. Kept apart so a partial answer is never
+   *  read as a whole one; a whole answer for the same egress replaces it. */
+  const partialByEgress = shallowRef<ReadonlyMap<string, Learned>>(new Map());
+  const partialInflight = new Map<
+    string,
+    { sourceIds: readonly SourceId[]; load: Promise<void> }
+  >();
+
+  function keepWhole(asset: string, learned: Learned | null) {
+    const next = new Map(learnedByEgress.value);
+    if (learned === null) next.delete(asset);
+    else next.set(asset, learned);
+    learnedByEgress.value = next;
+    if (partialByEgress.value.has(asset)) {
+      const partial = new Map(partialByEgress.value);
+      partial.delete(asset);
+      partialByEgress.value = partial;
+    }
+  }
 
   /** The floors for the egress on screen; null until learned. Writable so tests and previews
    *  can seed them: a seeded answer counts as fresh and outranks a load still in flight.
@@ -106,10 +134,7 @@ export const useOffersStore = defineStore("offers", () => {
     get: () => learnedByEgress.value.get(egress.value.asset)?.floors ?? null,
     set: (value: ReadonlyMap<SourceId, SourceFloorResult> | null) => {
       const asset = egress.value.asset;
-      const next = new Map(learnedByEgress.value);
-      if (value === null) next.delete(asset);
-      else next.set(asset, { floors: value, learnedAt: Date.now() });
-      learnedByEgress.value = next;
+      keepWhole(asset, value === null ? null : { floors: value, learnedAt: Date.now() });
       inflight.delete(asset);
     },
   });
@@ -118,6 +143,22 @@ export const useOffersStore = defineStore("offers", () => {
 
   /** Every learned source is unavailable: Chainflip is paused or unreachable. */
   const paused = computed(() => floors.value !== null && answeredForNothing(floors.value));
+
+  /** The sources the egress on screen cannot serve; none while Chainflip is paused, which the
+   *  other egress would say too. */
+  const unavailableOnScreen = computed<readonly SourceId[]>(() =>
+    floors.value === null || paused.value
+      ? []
+      : [...floors.value].filter(([, r]) => r.kind === "unavailable").map(([id]) => id),
+  );
+
+  /** Hosted, the other route's egress, asked for `unavailableOnScreen`: a pick of one walks to
+   *  the route Chainflip can quote. Null while no row needs it. */
+  const alternate = computed<EgressConfig | null>(() =>
+    isHosted() && unavailableOnScreen.value.length > 0
+      ? (HOSTED_EGRESSES.find((e) => e.asset !== egress.value.asset) ?? null)
+      : null,
+  );
 
   /** Whether a pick can lead anywhere: the browser's mock rail opens its fake channels without a
    *  key, and a hosted build needs the broker key to open a real one. A ref so tests can pin it. */
@@ -135,10 +176,7 @@ export const useOffersStore = defineStore("offers", () => {
         // Seeding the floors disowns the slot, so an answer that no longer holds it was asked
         // for before the seed and must not undo it. Same on the way out.
         if (inflight.get(asked.asset) !== load) return;
-        learnedByEgress.value = new Map(learnedByEgress.value).set(asked.asset, {
-          floors: learned,
-          learnedAt: Date.now(),
-        });
+        keepWhole(asked.asset, { floors: learned, learnedAt: Date.now() });
         if (asked.asset !== egress.value.asset) return;
         if (paused.value) scheduleRetry();
         else retries = 0;
@@ -150,12 +188,11 @@ export const useOffersStore = defineStore("offers", () => {
     return load;
   }
 
-  /** Learns the floors for the egress on screen when there is nothing to show, when the answer
-   *  has gone stale, or when the last answer was no answer. A good, fresh answer is reused.
-   *  Nothing is asked while the rail is off: the rows say "not yet" regardless. */
-  function learn(): Promise<void> {
+  /** Learns the floors for `asked` when there is nothing to show, when the answer has gone stale,
+   *  or when the last answer was no answer. A good, fresh answer is reused. Nothing is asked
+   *  while the rail is off: the rows say "not yet" regardless. */
+  function learnEgress(asked: EgressConfig): Promise<void> {
     if (!railEnabled.value) return Promise.resolve();
-    const asked = egress.value;
     const learned = learnedByEgress.value.get(asked.asset);
     if (learned && !answeredForNothing(learned.floors) && fresh(learned)) {
       return Promise.resolve();
@@ -163,10 +200,52 @@ export const useOffersStore = defineStore("offers", () => {
     return ask(asked);
   }
 
+  /** Learns the alternate's floors for the sources unavailable on screen, unless a good, fresh
+   *  whole answer or a fresh answer for those sources is at hand, or one is on its way. A no from
+   *  the alternate is an answer: it stands until stale. */
+  function learnAlternate(): Promise<void> {
+    const asked = alternate.value;
+    if (asked === null || !railEnabled.value) return Promise.resolve();
+    const sourceIds = unavailableOnScreen.value;
+    const whole = learnedByEgress.value.get(asked.asset);
+    if (whole && !answeredForNothing(whole.floors) && fresh(whole)) return Promise.resolve();
+    const partial = partialByEgress.value.get(asked.asset);
+    if (partial && fresh(partial) && sourceIds.every((id) => partial.floors.has(id))) {
+      return Promise.resolve();
+    }
+    const running = partialInflight.get(asked.asset);
+    if (running && sourceIds.every((id) => running.sourceIds.includes(id))) return running.load;
+    const load: Promise<void> = learnSourceFloors({ egress: asked, sourceIds })
+      .then((learned) => {
+        if (partialInflight.get(asked.asset)?.load !== load) return;
+        partialByEgress.value = new Map(partialByEgress.value).set(asked.asset, {
+          floors: learned,
+          learnedAt: Date.now(),
+        });
+      })
+      .finally(() => {
+        if (partialInflight.get(asked.asset)?.load === load) partialInflight.delete(asked.asset);
+      });
+    partialInflight.set(asked.asset, { sourceIds, load });
+    return load;
+  }
+
+  /** Learns the floors for the egress on screen, then the alternate's if its answer needs one. */
+  async function learn(): Promise<void> {
+    await learnEgress(egress.value);
+    await learnAlternate();
+  }
+
   // A quote can size the purchase in an asset no floor has been learned for yet.
   watch(
     () => egress.value.asset,
     () => void learn(),
+  );
+
+  // However the egress on screen got its answer, a source it cannot serve asks the alternate.
+  watch(
+    () => [alternate.value?.asset, ...unavailableOnScreen.value].join(),
+    () => void learnAlternate(),
   );
 
   // Chainflip refused a pick under a floor the rows did not show: the floors have moved since
@@ -245,17 +324,33 @@ export const useOffersStore = defineStore("offers", () => {
     () => !session.loading && (session.quoteError !== null || session.quoted !== null),
   );
 
+  /** No figure to hold a floor against: once the quote is in, the row is open as it is, and the
+   *  quote after a pick, which walks the routes, is what says no. */
+  const unjudged = (): TokenOffer => (sized.value ? { state: "ungated" } : { state: "checking" });
+
   function tokenOffer(sourceId: SourceId): TokenOffer {
     if (!railEnabled.value) return { state: "rail-off" };
     const learned = floors.value?.get(sourceId);
     if (learned === undefined) return { state: "checking" };
-    if (learned.kind === "unavailable") return { state: "unavailable", reason: learned.reason };
-    // No figure to hold the floor against once the quote is in: the row is open as it is, and
-    // the quote after a pick, sized in this source's own egress, is what says no.
-    if (target.value === null) return sized.value ? { state: "ungated" } : { state: "checking" };
+    if (learned.kind === "floor") return judged(sourceId, learned.floor);
+    if (alternate.value === null) return { state: "unavailable", reason: learned.reason };
+    const asset = alternate.value.asset;
+    const other =
+      partialByEgress.value.get(asset)?.floors.get(sourceId) ??
+      learnedByEgress.value.get(asset)?.floors.get(sourceId);
+    if (other === undefined) return { state: "checking" };
+    if (other.kind === "unavailable") return { state: "unavailable", reason: learned.reason };
+    // The quote is sized in the egress on screen, so the alternate's floor has no figure to be
+    // held against.
+    return unjudged();
+  }
+
+  /** Holds a floor learned for the egress on screen against the quote's figure. */
+  function judged(sourceId: SourceId, floor: SourceFloor): TokenOffer {
+    if (target.value === null) return unjudged();
     const source = SOURCE_CONFIG_BY_ID.get(sourceId);
     if (!source) return { state: "unavailable", reason: `no Chainflip source for ${sourceId}` };
-    const offer = offerFor(source, learned.floor, target.value, 0n, { maxDecimals: 6 });
+    const offer = offerFor(source, floor, target.value, 0n, { maxDecimals: 6 });
     if (offer.available) return { state: "available", offer };
     const amount = session.amountBase;
     // Linear: CASH per egress base unit is what the quote just said.
