@@ -12,6 +12,14 @@ export function pageMeldAssets(): Promise<void> {
     import.meta.env.MODE === "test"
       ? (import.meta.env.VITE_MELD_BASE_URL as string | undefined)
       : "https://adapter-production-bf4b.up.railway.app";
+  // TEST ONLY: trace which adapter this build talks to, so a stale bundle or a missing host
+  // network grant is told apart from a real adapter failure.
+  console.log(
+    "[dbg-build] pr113 build 2026-10-19-A | pageMeldAssets MODE=",
+    import.meta.env.MODE,
+    "baseUrl=",
+    baseUrl,
+  );
   return ensureMeldAssets(
     baseUrl
       ? createMeldClient({
@@ -19,5 +27,10 @@ export function pageMeldAssets(): Promise<void> {
           productId: (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
         })
       : createFakeMeldClient(),
-  );
+  )
+    .then(() => console.log("[dbg] pageMeldAssets: OK, assets read from", baseUrl))
+    .catch((e: unknown) => {
+      console.warn("[dbg] pageMeldAssets: FAILED reading", baseUrl, "->", e);
+      throw e;
+    });
 }

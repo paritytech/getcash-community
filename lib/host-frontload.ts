@@ -35,16 +35,30 @@ function meldDomains(): string[] {
 }
 
 export async function frontloadHostPermissions(): Promise<void> {
+  // TEST ONLY: trace the host permission front-load, to tell a hung grant apart from a denied one.
+  console.log("[dbg] frontload: start, isHosted =", isHosted());
   if (!isHosted()) return;
   const { requestPermission, getPaymentManager } = await import("@parity/product-sdk-host");
 
   // Network first: the amount screen's floor-learning fires as soon as this resolves.
+  const domains = [...CHAINFLIP_DOMAINS, ...brokerDomains(), ...GEO_DOMAINS, ...meldDomains()];
+  console.log("[dbg] frontload: requesting Remote grant for domains =", JSON.stringify(domains));
+  const t0 = Date.now();
   await requestPermission({
     tag: "Remote",
-    value: {
-      domains: [...CHAINFLIP_DOMAINS, ...brokerDomains(), ...GEO_DOMAINS, ...meldDomains()],
-    },
-  }).catch((e) => console.warn("[host] network grant failed (continuing):", e));
+    value: { domains },
+  })
+    .then((r) =>
+      console.log(
+        "[dbg] frontload: Remote grant resolved in",
+        Date.now() - t0,
+        "ms ->",
+        JSON.stringify(r),
+      ),
+    )
+    .catch((e) =>
+      console.warn("[dbg] frontload: Remote grant REJECTED in", Date.now() - t0, "ms ->", e),
+    );
 
   // These do not gate the first quote and queue behind the network dialog.
   void requestPermission({ tag: "ChainSubmit", value: undefined }).catch((e) =>
