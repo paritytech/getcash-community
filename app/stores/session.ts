@@ -88,7 +88,7 @@ import type {
 } from "~~/lib/funding-fees";
 import { isDemoBuild } from "../utils/demo";
 import { isMeldSourceId } from "../funding/source-ids";
-import { fmtCash, fmtCashDisplay, toCashBase } from "../utils/cash";
+import { fmtCash, toCashBase } from "../utils/cash";
 import { isMoneyAmount, sumMoney } from "../utils/money";
 import { fundFromFaucet, isFaucetConfigured } from "~~/lib/faucet";
 import {
@@ -198,6 +198,18 @@ const ahBlockLink = (block?: number) =>
   block === undefined
     ? ""
     : ` https://polkadot.js.org/apps/?rpc=${encodeURIComponent(NETWORK.assetHub.rpc)}#/explorer/query/${block}`;
+
+/** A Meld quote whose fiat falls outside the payment method's limits: not a failure to retry, an
+ *  amount to change. Decimal text throughout; `cash` is the bound in CASH, when it could be scaled. */
+export interface QuoteOutOfRange {
+  bound: "min" | "max";
+  /** The method's limit, in `fiat`. */
+  limit: string;
+  /** About what the amount asked for costs, in `fiat`. */
+  estimatedFiat: string;
+  fiat: string;
+  cash: string | null;
+}
 
 export interface QuotedView {
   send: string;
@@ -358,6 +370,9 @@ export const useSessionStore = defineStore("session", () => {
   /** Quote failures in a row for one amount, method, region and source: the screens stop offering
    *  another try after the second. Changing any of those starts the count over. */
   const quoteFailures = ref(0);
+  /** The amount's fiat falls outside the method's limits. Set instead of `quoteError`: retrying the
+   *  same amount cannot help, so it neither counts as a failure nor offers another try. */
+  const quoteOutOfRange = shallowRef<QuoteOutOfRange | null>(null);
   /** True when the selected card or bank method is not routed for the chosen region. Not a quote
    *  failure; nothing to retry. */
   const meldMethodUnavailable = ref(false);
@@ -512,6 +527,7 @@ export const useSessionStore = defineStore("session", () => {
     quoted.value = null;
     sourcePrice.value = null;
     quoteError.value = null;
+    quoteOutOfRange.value = null;
     quoteFailures.value = 0;
     meldMethodUnavailable.value = false;
   }
@@ -522,6 +538,7 @@ export const useSessionStore = defineStore("session", () => {
     method.value = next;
     quoted.value = null;
     quoteError.value = null;
+    quoteOutOfRange.value = null;
     quoteFailures.value = 0;
     meldMethodUnavailable.value = false;
   }
@@ -532,6 +549,7 @@ export const useSessionStore = defineStore("session", () => {
     meldCountry.value = code;
     quoted.value = null;
     quoteError.value = null;
+    quoteOutOfRange.value = null;
     quoteFailures.value = 0;
     meldMethodUnavailable.value = false;
   }
@@ -919,22 +937,26 @@ export const useSessionStore = defineStore("session", () => {
   }
 
   /**
-   * The buyer's copy for an amount whose fiat falls outside the method's limits: the bound in the
-   * fiat, and about what it comes to in CASH, scaled from this amount by the cost the rail solved.
+   * An amount whose fiat falls outside the method's limits, for the screen: the bound and the cost
+   * in the fiat, and about what the bound comes to in CASH, scaled from this amount by the cost the
+   * rail solved.
    */
-  function outOfRangeMessage(e: MeldAmountOutOfRangeError): string {
+  function outOfRangeOf(e: MeldAmountOutOfRangeError): QuoteOutOfRange {
     const limitCents = Math.round(Number(e.limit) * 100);
     const costCents = Math.round(Number(e.estimatedFiat) * 100);
     const amount = amountBase.value;
-    const what = e.bound === "min" ? "minimum" : "maximum";
-    if (amount === null || !(limitCents > 0) || !(costCents > 0)) return e.message;
-    const scaled = amount * BigInt(limitCents);
-    // Rounded toward the inside of the range, so the CASH figure named is one that quotes.
-    const cash =
-      e.bound === "min"
-        ? (scaled + BigInt(costCents) - 1n) / BigInt(costCents)
-        : scaled / BigInt(costCents);
-    return `This amount costs about ${e.estimatedFiat} ${e.fiat}. The ${what} for this payment method is ${e.limit} ${e.fiat} (about ${fmtCashDisplay(cash)} CASH).`;
+    let cash: string | null = null;
+    if (amount !== null && limitCents > 0 && costCents > 0) {
+      // Whole CASH, rounded toward the inside of the range, so the figure offered is one that quotes.
+      const unit = 10n ** BigInt(CASH_DECIMALS);
+      const scaled = amount * BigInt(limitCents);
+      const whole =
+        e.bound === "min"
+          ? (scaled + BigInt(costCents) * unit - 1n) / (BigInt(costCents) * unit)
+          : scaled / (BigInt(costCents) * unit);
+      if (whole > 0n) cash = fmtCash(whole * unit);
+    }
+    return { bound: e.bound, limit: e.limit, estimatedFiat: e.estimatedFiat, fiat: e.fiat, cash };
   }
 
   /** A quote that could not be had: the message for the screen, and one more failure in a row. */
@@ -957,6 +979,7 @@ export const useSessionStore = defineStore("session", () => {
     lastQuoteParams = { chain: "Meld", asset: method.value === "bank" ? "Bank" : "Card" };
     const epoch = quoteEpoch;
     quoteError.value = null;
+    quoteOutOfRange.value = null;
     meldMethodUnavailable.value = false;
     // Over the cap there is nothing to quote.
     if (amountBase.value === null || amountStatus() === "over-cap") {
@@ -1068,13 +1091,12 @@ export const useSessionStore = defineStore("session", () => {
       // The host logger renders an Error as `{}`; log the message, as the transient
       // hooks above already do, or a failed quote is undiagnosable from a device log.
       console.error(`[meld] quote failed: ${e instanceof Error ? e.message : String(e)}`);
-      failQuote(
-        e instanceof MeldAmountOutOfRangeError
-          ? outOfRangeMessage(e)
-          : e instanceof Error
-            ? e.message
-            : String(e),
-      );
+      if (e instanceof MeldAmountOutOfRangeError) {
+        quoted.value = null;
+        quoteOutOfRange.value = outOfRangeOf(e);
+        return;
+      }
+      failQuote(e instanceof Error ? e.message : String(e));
     } finally {
       if (epoch === quoteEpoch) loading.value = false;
     }
@@ -1097,6 +1119,7 @@ export const useSessionStore = defineStore("session", () => {
     lastQuoteParams = { chain, asset };
     const epoch = quoteEpoch;
     quoteError.value = null;
+    quoteOutOfRange.value = null;
     // Over the cap there is nothing to quote.
     if (amountBase.value === null || amountStatus() === "over-cap") {
       loading.value = false;
@@ -1331,6 +1354,7 @@ export const useSessionStore = defineStore("session", () => {
     teardownWorld();
     loading.value = false;
     quoteError.value = null;
+    quoteOutOfRange.value = null;
     quoteFailures.value = 0;
     resuming.value = false;
     method.value = "crypto";
@@ -2312,6 +2336,7 @@ export const useSessionStore = defineStore("session", () => {
     quoted,
     quoteError,
     quoteFailures,
+    quoteOutOfRange,
     meldMethodUnavailable,
     supportedCountries,
     corridorByCountry,

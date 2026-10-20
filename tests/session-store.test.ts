@@ -447,3 +447,76 @@ describe("session store: supported corridors loader against a live adapter", () 
     expect(store.corridorByCountry).toBeNull();
   });
 });
+
+describe("session store: a Meld amount outside the method's limits", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it("sets quoteOutOfRange instead of a failure to retry", async () => {
+    vi.resetModules();
+    await installTestMeldAssets();
+    vi.stubEnv("VITE_MELD_BASE_URL", "https://adapter.test");
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.includes("/supported?")) {
+          return json({
+            country: "IN",
+            fiat: "INR",
+            methods: [
+              {
+                paymentMethodType: "CREDIT_DEBIT_CARD",
+                category: "card",
+                min: "3000.00",
+                max: "50000.00",
+                currency: "INR",
+              },
+            ],
+          });
+        }
+        if (url.endsWith("/quote")) {
+          // About 560 rupees a DOT.
+          const fiat = Number(
+            (JSON.parse(String(init?.body)) as { sourceAmount: string }).sourceAmount,
+          );
+          return json({
+            quotes: [
+              {
+                serviceProvider: "BANXA",
+                sourceAmount: fiat.toFixed(2),
+                destinationAmount: (fiat / 560).toFixed(8),
+              },
+            ],
+          });
+        }
+        return json({});
+      }),
+    );
+    const { createPinia: freshPinia, setActivePinia: setFresh } = await import("pinia");
+    setFresh(freshPinia());
+    const { useSessionStore: freshStore } = await import("../app/stores/session");
+    const store = freshStore();
+    store.setMethod("card");
+    store.setMeldCountry("IN");
+    // A rupee's worth of CASH: far under the 3,000 INR card minimum.
+    store.setAmount("1");
+    await store.fetchMeldQuote();
+    expect(store.quoteOutOfRange).toMatchObject({ bound: "min", limit: "3000.00", fiat: "INR" });
+    // About 3,000 CASH at a rupee each.
+    expect(Number(store.quoteOutOfRange?.cash)).toBeCloseTo(3000, -1);
+    expect(store.quoteError).toBeNull();
+    expect(store.quoteFailures).toBe(0);
+    expect(store.quoted).toBeNull();
+    // A new amount clears it.
+    store.setAmount("2");
+    expect(store.quoteOutOfRange).toBeNull();
+  });
+});
