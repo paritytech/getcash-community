@@ -54,6 +54,7 @@ import {
 import { CASH_DECIMALS } from "@getsome/people";
 import { meldPaymentMethod, resolveMeldRegion } from "~~/lib/region";
 import {
+  countryName,
   fetchCorridor,
   DEFAULT_MELD_DESTINATION,
   fetchSupportedCorridors,
@@ -2191,30 +2192,36 @@ export const useSessionStore = defineStore("session", () => {
     }
   }
 
-  /** Loads the region dropdown from the adapter's live catalog. On failure `supportedCountries`
-   *  stays null and the screen keeps its static list. */
-  // A destination change invalidates the catalog on screen; reload both for the new one.
+  // A destination change invalidates the catalog on screen; reload it for the new one.
   watch(meldDestination, () => {
-    void loadSupportedCountries();
-    void loadSupportedCorridors();
+    void loadSupportedCatalog();
   });
 
-  async function loadSupportedCountries(): Promise<void> {
+  /**
+   * Loads the region dropdown and the per-country corridors from the adapter's live catalog. The
+   * bulk corridors carry every country's name, so one read fills both; the countries endpoint is
+   * asked only when that read comes back empty or fails. Only a real catalog is adopted, so a
+   * cold/empty read greys nothing, and on failure `supportedCountries` stays null and the screen
+   * keeps its static list.
+   */
+  async function loadSupportedCatalog(): Promise<void> {
     const destination = meldDestination.value;
-    const rows = await fetchSupportedCountries(destination);
+    const map = await fetchSupportedCorridors(destination);
     // The destination can change while this is in flight, and the fetches do not return in the
     // order they were made. Adopting a stale one greys the dropdown by a corridor the quotes are
     // no longer placed against.
     if (destination !== meldDestination.value) return;
-    if (rows !== null) supportedCountries.value = rows;
-  }
-
-  // Loads the bulk per-country corridors; only a real catalog is adopted so a cold/empty read greys nothing.
-  async function loadSupportedCorridors(): Promise<void> {
-    const destination = meldDestination.value;
-    const map = await fetchSupportedCorridors(destination);
+    if (map !== null && map.size > 0) {
+      corridorByCountry.value = map;
+      supportedCountries.value = [...map.values()].map((c) => ({
+        country: c.country,
+        name: c.name ?? countryName(c.country),
+      }));
+      return;
+    }
+    const rows = await fetchSupportedCountries(destination);
     if (destination !== meldDestination.value) return;
-    if (map !== null && map.size > 0) corridorByCountry.value = map;
+    if (rows !== null) supportedCountries.value = rows;
   }
 
   return {
@@ -2253,8 +2260,7 @@ export const useSessionStore = defineStore("session", () => {
     setAmount,
     setMethod,
     setMeldCountry,
-    loadSupportedCountries,
-    loadSupportedCorridors,
+    loadSupportedCatalog,
     fetchQuote,
     fetchMeldQuote,
     start,

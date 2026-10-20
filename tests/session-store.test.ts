@@ -294,10 +294,11 @@ describe("session store: Meld (card / bank) in the mock world", () => {
   });
 
   // Discovery is unconfigured in the mock world (no VITE_MELD_BASE_URL), so the loader is a no-op.
-  it("loadSupportedCorridors leaves corridorByCountry null when discovery is unconfigured", async () => {
+  it("loadSupportedCatalog leaves the catalog null when discovery is unconfigured", async () => {
     const store = useSessionStore();
-    await store.loadSupportedCorridors();
+    await store.loadSupportedCatalog();
     expect(store.corridorByCountry).toBeNull();
+    expect(store.supportedCountries).toBeNull();
   });
 });
 
@@ -306,6 +307,81 @@ describe("session store: supported corridors loader against a live adapter", () 
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
     vi.resetModules();
+  });
+
+  it("fills corridorByCountry and the region list from the bulk endpoint alone", async () => {
+    vi.resetModules();
+    // The reset leaves a fresh, empty asset table, as on a page that has not read the adapter's.
+    await installTestMeldAssets();
+    vi.stubEnv("VITE_MELD_BASE_URL", "https://adapter.test");
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            corridors: [
+              {
+                country: "US",
+                name: "United States of America",
+                fiat: "USD",
+                methods: [
+                  {
+                    paymentMethodType: "CREDIT_DEBIT_CARD",
+                    category: "card",
+                    min: "10",
+                    max: "5000",
+                    currency: "USD",
+                    providers: [],
+                  },
+                ],
+              },
+              { country: "BR", fiat: "BRL", methods: [] },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { createPinia: freshPinia, setActivePinia: setFresh } = await import("pinia");
+    setFresh(freshPinia());
+    const { useSessionStore: freshStore } = await import("../app/stores/session");
+    const store = freshStore();
+    await store.loadSupportedCatalog();
+    expect(store.corridorByCountry?.get("US")?.methods[0]?.category).toBe("card");
+    // Named by the catalog where it names one, by the locale otherwise.
+    expect(store.supportedCountries).toEqual([
+      { country: "US", name: "United States of America" },
+      { country: "BR", name: "Brazil" },
+    ]);
+    // The countries endpoint is not asked when corridors came back.
+    const urls = fetchMock.mock.calls.map((c) => String((c as unknown[])[0]));
+    expect(urls.some((u) => u.includes("/supported/countries"))).toBe(false);
+  });
+
+  it("falls back to the countries endpoint when the bulk read is empty", async () => {
+    vi.resetModules();
+    await installTestMeldAssets();
+    vi.stubEnv("VITE_MELD_BASE_URL", "https://adapter.test");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) =>
+        url.includes("/supported/countries")
+          ? new Response(JSON.stringify({ countries: [{ country: "DE", name: "Germany" }] }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            })
+          : new Response(JSON.stringify({ corridors: [] }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            }),
+      ),
+    );
+    const { createPinia: freshPinia, setActivePinia: setFresh } = await import("pinia");
+    setFresh(freshPinia());
+    const { useSessionStore: freshStore } = await import("../app/stores/session");
+    const store = freshStore();
+    await store.loadSupportedCatalog();
+    expect(store.corridorByCountry).toBeNull();
+    expect(store.supportedCountries).toEqual([{ country: "DE", name: "Germany" }]);
   });
 
   it("fills corridorByCountry from the bulk endpoint", async () => {
@@ -345,7 +421,7 @@ describe("session store: supported corridors loader against a live adapter", () 
     setFresh(freshPinia());
     const { useSessionStore: freshStore } = await import("../app/stores/session");
     const store = freshStore();
-    await store.loadSupportedCorridors();
+    await store.loadSupportedCatalog();
     expect(store.corridorByCountry?.get("US")?.methods[0]?.category).toBe("card");
   });
 
@@ -366,7 +442,7 @@ describe("session store: supported corridors loader against a live adapter", () 
     setFresh(freshPinia());
     const { useSessionStore: freshStore } = await import("../app/stores/session");
     const store = freshStore();
-    await store.loadSupportedCorridors();
+    await store.loadSupportedCatalog();
     // Empty catalog must not be adopted (else every country greys out).
     expect(store.corridorByCountry).toBeNull();
   });
