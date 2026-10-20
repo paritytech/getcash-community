@@ -46,6 +46,7 @@ import {
   createMeldClient,
   createMeldRail,
   ensureMeldAssets,
+  MeldAmountOutOfRangeError,
   pickBestQuote,
   shareStatusReads,
   type MeldClientLike,
@@ -87,7 +88,7 @@ import type {
 } from "~~/lib/funding-fees";
 import { isDemoBuild } from "../utils/demo";
 import { isMeldSourceId } from "../funding/source-ids";
-import { fmtCash, toCashBase } from "../utils/cash";
+import { fmtCash, fmtCashDisplay, toCashBase } from "../utils/cash";
 import { isMoneyAmount, sumMoney } from "../utils/money";
 import { fundFromFaucet, isFaucetConfigured } from "~~/lib/faucet";
 import {
@@ -765,10 +766,19 @@ export const useSessionStore = defineStore("session", () => {
     let region: { country: string; fiat: string };
     let corridor: SupportedCorridor;
     let paymentMethodType: string | null;
+    // The method's fiat limits, which seed the rail's rate probe and bound what it will quote.
+    let limits: { min?: string; max?: string } | undefined;
     if (live !== null) {
       region = { country, fiat: live.fiat };
       corridor = live;
-      paymentMethodType = methodFor(live, uiMethod)?.paymentMethodType ?? null;
+      const liveMethod = methodFor(live, uiMethod);
+      paymentMethodType = liveMethod?.paymentMethodType ?? null;
+      if (liveMethod !== null && liveMethod.currency === live.fiat) {
+        limits = {
+          ...(liveMethod.min !== "" ? { min: liveMethod.min } : {}),
+          ...(liveMethod.max !== "" ? { max: liveMethod.max } : {}),
+        };
+      }
     } else {
       region = resolveMeldRegion(country);
       corridor = staticCorridor(region);
@@ -810,8 +820,40 @@ export const useSessionStore = defineStore("session", () => {
       method: meldMethod,
       paymentMethodType,
       token: meldTokenOf(depositTokenOf(route)),
+      ...(limits === undefined ? {} : { limits }),
     });
     return { rail, sourceId, client: meldClient, region, paymentMethodType, corridor };
+  }
+
+  /**
+   * The native budget a mock-world Meld rail must deliver for `settleAmount` CASH: the Asset Hub
+   * pool the funding leg converts through, read live and sized as the crypto route sizes it, with
+   * the leg's fees on top. The rail then asks Meld what that native costs in the buyer's fiat.
+   * Null when the pool cannot be read.
+   */
+  async function poolNativeBudget(
+    settleAmount: bigint,
+    sizing: PoolFundingSizing,
+  ): Promise<bigint | null> {
+    try {
+      const [{ connectChain, ASSET_HUB }, { sizeNativeBudget, PASEO_UNDERLYING_ASSET_ID }] =
+        await Promise.all([import("~~/lib/host-chain"), import("@getsome/funding")]);
+      const client = await connectChain(ASSET_HUB);
+      return await step(
+        "pool quote (public read)",
+        30_000,
+        sizeNativeBudget({
+          client,
+          underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
+          settleAmount,
+          remoteFeeBuffer: sizing.remoteFeeBuffer,
+          keepNativeForFees: sizing.keepNativeForFees,
+        }),
+      );
+    } catch (e) {
+      console.warn("[meld] live pool pricing unavailable:", e);
+      return null;
+    }
   }
 
   /**
@@ -819,7 +861,8 @@ export const useSessionStore = defineStore("session", () => {
    * provider quote with CASH pegged to one unit of the quote fiat. Returns null when the provider
    * has no offer for this corridor.
    *
-   * Known limit: the peg is to the quote fiat, not USD; a non-USD region is off by the FX rate.
+   * Node test runs only, which have no pool to read: the peg is to the quote fiat, not USD, so a
+   * non-USD region is off by the FX rate. A browser prices on the pool (`poolNativeBudget`).
    */
   async function sizeMeldNativeBudget(
     client: MeldClientLike,
@@ -875,6 +918,25 @@ export const useSessionStore = defineStore("session", () => {
     });
   }
 
+  /**
+   * The buyer's copy for an amount whose fiat falls outside the method's limits: the bound in the
+   * fiat, and about what it comes to in CASH, scaled from this amount by the cost the rail solved.
+   */
+  function outOfRangeMessage(e: MeldAmountOutOfRangeError): string {
+    const limitCents = Math.round(Number(e.limit) * 100);
+    const costCents = Math.round(Number(e.estimatedFiat) * 100);
+    const amount = amountBase.value;
+    const what = e.bound === "min" ? "minimum" : "maximum";
+    if (amount === null || !(limitCents > 0) || !(costCents > 0)) return e.message;
+    const scaled = amount * BigInt(limitCents);
+    // Rounded toward the inside of the range, so the CASH figure named is one that quotes.
+    const cash =
+      e.bound === "min"
+        ? (scaled + BigInt(costCents) - 1n) / BigInt(costCents)
+        : scaled / BigInt(costCents);
+    return `This amount costs about ${e.estimatedFiat} ${e.fiat}. The ${what} for this payment method is ${e.limit} ${e.fiat} (about ${fmtCashDisplay(cash)} CASH).`;
+  }
+
   /** A quote that could not be had: the message for the screen, and one more failure in a row. */
   function failQuote(message: string): void {
     quoted.value = null;
@@ -927,19 +989,30 @@ export const useSessionStore = defineStore("session", () => {
         const sizing = await meldFundingSizing(amountBase.value);
         if (epoch !== quoteEpoch) return;
         // The Meld rail egresses the native token and is sized by a native budget: the settle
-        // amount plus People's execution fee, quoted against the fiat peg, plus the native the
-        // burner keeps for the program on Asset Hub.
-        const quotedBudget = await sizeMeldNativeBudget(
-          built.client,
-          { ...built.region, paymentMethodType: built.paymentMethodType },
-          amountBase.value + sizing.remoteFeeBuffer,
-        );
-        if (epoch !== quoteEpoch) return;
-        if (quotedBudget === null) {
-          failQuote("No provider offers this payment method or region. Try another.");
-          return;
+        // amount plus People's execution fee, priced on the pool, plus the native the burner keeps
+        // for the program on Asset Hub. The rail's quote then solves what it costs in fiat.
+        let nativeBudget: bigint;
+        if (typeof window !== "undefined") {
+          const pooled = await poolNativeBudget(amountBase.value, sizing);
+          if (epoch !== quoteEpoch) return;
+          if (pooled === null) {
+            failQuote("Couldn't price this amount right now. Please try again.");
+            return;
+          }
+          nativeBudget = pooled;
+        } else {
+          const quotedBudget = await sizeMeldNativeBudget(
+            built.client,
+            { ...built.region, paymentMethodType: built.paymentMethodType },
+            amountBase.value + sizing.remoteFeeBuffer,
+          );
+          if (epoch !== quoteEpoch) return;
+          if (quotedBudget === null) {
+            failQuote("No provider offers this payment method or region. Try another.");
+            return;
+          }
+          nativeBudget = quotedBudget + sizing.keepNativeForFees;
         }
-        const nativeBudget = quotedBudget + sizing.keepNativeForFees;
         const world = await createMockCoinageSession({
           recipient: DEV_RECIPIENT,
           amount: amountBase.value,
@@ -995,7 +1068,13 @@ export const useSessionStore = defineStore("session", () => {
       // The host logger renders an Error as `{}`; log the message, as the transient
       // hooks above already do, or a failed quote is undiagnosable from a device log.
       console.error(`[meld] quote failed: ${e instanceof Error ? e.message : String(e)}`);
-      failQuote(e instanceof Error ? e.message : String(e));
+      failQuote(
+        e instanceof MeldAmountOutOfRangeError
+          ? outOfRangeMessage(e)
+          : e instanceof Error
+            ? e.message
+            : String(e),
+      );
     } finally {
       if (epoch === quoteEpoch) loading.value = false;
     }
