@@ -24,6 +24,9 @@ import MeldBankTransferScreen from "./MeldBankTransferScreen.vue";
 import MeldFeeDetailsScreen from "./MeldFeeDetailsScreen.vue";
 import MeldPayScreen from "./MeldPayScreen.vue";
 import MeldPaySheet from "./MeldPaySheet.vue";
+import ScreenFrame from "../../ui/ScreenFrame.vue";
+import ScreenShell from "../../ui/ScreenShell.vue";
+import WidgetCancel from "../../ui/WidgetCancel.vue";
 
 const props = defineProps<{ selection: FundingSelection }>();
 const emit = defineEmits<FundingPackageEmits>();
@@ -231,106 +234,48 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <main
-    class="fixed inset-x-0 mx-auto flex w-full max-w-md flex-col overflow-hidden bg-surface-main"
-    style="
-      top: var(--vvt, 0px);
-      height: var(--vvh, 100dvh);
-      padding-top: env(safe-area-inset-top);
-      padding-bottom: env(safe-area-inset-bottom);
-    "
+  <!-- No title and no screen padding while the card widget is up; the back control stays. -->
+  <ScreenShell
+    :title="paying ? '' : showingCurrency ? 'Choose payment country' : showingFees ? 'Fees' : title"
+    :back="!requests.claiming && !session.resuming && !session.cancelling"
+    :edge="paying"
+    @back="goBack"
   >
-    <!-- No title while the card widget is up; the back control stays. -->
-    <Toolbar
-      :title="
-        paying ? '' : showingCurrency ? 'Choose payment country' : showingFees ? 'Fees' : title
+    <template
+      v-if="
+        (paying || isBank) &&
+        isDemoBuild() &&
+        !requests.claiming &&
+        (session.canSkipDeposit || session.faucetState !== 'idle')
       "
-      :back="!requests.claiming && !session.resuming && !session.cancelling"
-      @back="goBack"
+      #trailing
     >
-      <template
-        v-if="
-          (paying || isBank) &&
-          isDemoBuild() &&
-          !requests.claiming &&
-          (session.canSkipDeposit || session.faucetState !== 'idle')
-        "
-        #trailing
+      <!-- Skip hides once tapped; a spinner takes its place until the deposit is seen. -->
+      <button
+        v-if="session.canSkipDeposit"
+        type="button"
+        class="rounded-medium px-4 py-3 text-label-l font-normal text-fg-primary transition-colors hover:bg-action-tertiary-hover"
+        @click="onSkip"
       >
-        <!-- Skip hides once tapped; a spinner takes its place until the deposit is seen. -->
-        <button
-          v-if="session.canSkipDeposit"
-          type="button"
-          class="rounded-medium px-4 py-3 text-label-l font-normal text-fg-primary transition-colors hover:bg-action-tertiary-hover"
-          @click="onSkip"
-        >
-          Skip
-        </button>
-        <span
-          v-else
-          class="mx-4 my-3 inline-block size-6 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary"
-        />
-      </template>
-    </Toolbar>
+        Skip
+      </button>
+      <span
+        v-else
+        class="mx-4 my-3 inline-block size-6 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary"
+      />
+    </template>
 
-    <!-- The screen padding is dropped while the card widget is up. -->
-    <div class="flex min-h-0 flex-1 flex-col" :class="paying ? '' : 'px-6 pt-6'">
-      <div v-if="session.resuming" class="flex flex-col items-center gap-4 pt-16">
-        <span
-          class="inline-block size-8 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary"
-        />
-        <p class="text-body-m text-fg-secondary">Opening your top-up…</p>
-      </div>
-      <!-- Bank: both steps in one component, with the drill-ins laid over them. It stays mounted
+    <div v-if="session.resuming" class="flex flex-col items-center gap-4 pt-16">
+      <span
+        class="inline-block size-8 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary"
+      />
+      <p class="text-body-m text-fg-secondary">Opening your top-up…</p>
+    </div>
+    <!-- Bank: both steps in one component, with the drill-ins laid over them. It stays mounted
            behind them — re-creating it would reload the provider's details page. -->
-      <template v-else-if="isBank">
-        <MeldFeeDetailsScreen
-          v-if="showingFees"
-          :quote="quote"
-          :cash-amount="cashAmount"
-          @back="showingFees = false"
-        />
-        <CurrencySelectScreen
-          v-else-if="showingCurrency"
-          :options="pickerCountries"
-          :model-value="selectedCountry"
-          :detected="detectedCountry"
-          :busy="session.cancelling"
-          :notice="session.cancelNotice"
-          @pick="pickCurrency"
-        />
-        <MeldBankTransferScreen
-          v-show="!showingFees && !showingCurrency"
-          :country="selectedCountry"
-          :step="bankStep"
-          @fees="showingFees = true"
-          @currency="showingCurrency = true"
-          @continue="bankStep = 'details'"
-          @leave="emit('back')"
-          @switch-route="emit('switchRoute', $event)"
-        />
-      </template>
-      <template v-else-if="paying">
-        <MeldPaySheet :pay-url="session.meldPayUrl" />
-        <button
-          v-if="canCancel"
-          type="button"
-          class="mx-6 mt-3 mb-4 h-12 shrink-0 rounded-medium bg-status-error text-label-l text-fg-static-white transition-colors hover:bg-status-error-hover disabled:opacity-50"
-          :disabled="session.cancelling || !session.cancelReady"
-          @click="cancelTopUp"
-        >
-          {{ session.cancelling ? "Cancelling…" : "Cancel" }}
-        </button>
-        <p
-          v-if="session.cancelNotice"
-          class="mx-6 mb-4 text-center text-body-m text-fg-secondary"
-          role="status"
-        >
-          {{ session.cancelNotice }}
-        </p>
-      </template>
+    <template v-else-if="isBank">
       <MeldFeeDetailsScreen
-        v-else-if="showingFees"
+        v-if="showingFees"
         :quote="quote"
         :cash-amount="cashAmount"
         @back="showingFees = false"
@@ -342,18 +287,52 @@ onUnmounted(() => {
         :detected="detectedCountry"
         :busy="session.cancelling"
         :notice="session.cancelNotice"
-        placeholder="Search for a country"
         @pick="pickCurrency"
       />
-      <MeldPayScreen
-        v-else
+      <MeldBankTransferScreen
+        v-show="!showingFees && !showingCurrency"
+        :country="selectedCountry"
+        :step="bankStep"
         @fees="showingFees = true"
         @currency="showingCurrency = true"
+        @continue="bankStep = 'details'"
+        @leave="emit('back')"
         @switch-route="emit('switchRoute', $event)"
       />
-    </div>
-
-    <!-- state-director scene label (dev/demo keys only) -->
-    <PreviewSceneLabel />
-  </main>
+    </template>
+    <ScreenFrame v-else-if="paying">
+      <MeldPaySheet :pay-url="session.meldPayUrl" />
+      <template v-if="canCancel || session.cancelNotice" #actions>
+        <WidgetCancel
+          :offered="canCancel"
+          :cancelling="session.cancelling"
+          :ready="session.cancelReady"
+          :notice="session.cancelNotice"
+          @cancel="cancelTopUp"
+        />
+      </template>
+    </ScreenFrame>
+    <MeldFeeDetailsScreen
+      v-else-if="showingFees"
+      :quote="quote"
+      :cash-amount="cashAmount"
+      @back="showingFees = false"
+    />
+    <CurrencySelectScreen
+      v-else-if="showingCurrency"
+      :options="pickerCountries"
+      :model-value="selectedCountry"
+      :detected="detectedCountry"
+      :busy="session.cancelling"
+      :notice="session.cancelNotice"
+      placeholder="Search for a country"
+      @pick="pickCurrency"
+    />
+    <MeldPayScreen
+      v-else
+      @fees="showingFees = true"
+      @currency="showingCurrency = true"
+      @switch-route="emit('switchRoute', $event)"
+    />
+  </ScreenShell>
 </template>
