@@ -76,6 +76,8 @@ export function pickBestQuote(quotes: readonly MeldQuoteEntry[]): MeldQuoteEntry
 const MAX_SOLVE_ITERATIONS = 4;
 /** Fiat overshoot factor applied to each correction. */
 const SOLVE_BUFFER = 1.01;
+/** How close a line's fiat must sit to a bound to count as priced at it (half a cent). */
+const BOUND_SLACK = 0.005;
 
 /** One forward quote at `sourceAmount` fiat, reduced to the best line. */
 async function forwardBest(
@@ -145,18 +147,23 @@ export async function computeMeldQuote(
     }
     // Clears the target within the buffer's overshoot.
     if (out >= targetTokens && out <= targetTokens * SOLVE_BUFFER) break;
-    // What the target costs at this line's rate, held against the bounds before it is asked for:
-    // out of range is the buyer's answer, not a quote to send.
+    // What the target costs at this line's rate. A line at a bound that still misses the target
+    // settles it: out of range is the buyer's answer, not a quote to send. A projection past a
+    // bound from elsewhere does not, since a provider's fixed fee bends the line; it moves the
+    // probe to the bound.
     const need = paid * (targetTokens / out);
-    if (bounds.min !== undefined && need < bounds.min) {
+    if (bounds.min !== undefined && need < bounds.min && paid <= bounds.min + BOUND_SLACK) {
       throw new MeldAmountOutOfRangeError("min", bounds.min.toFixed(2), need.toFixed(2), ctx.fiat);
     }
-    if (bounds.max !== undefined && need > bounds.max) {
+    if (bounds.max !== undefined && need > bounds.max && paid >= bounds.max - BOUND_SLACK) {
       throw new MeldAmountOutOfRangeError("max", bounds.max.toFixed(2), need.toFixed(2), ctx.fiat);
     }
     // Scale fiat by the target/out ratio (down on overshoot, up on undershoot), plus the buffer,
-    // which never carries it past the maximum.
-    const fiatGuess = Math.min(need * SOLVE_BUFFER, bounds.max ?? Infinity);
+    // held within the bounds.
+    const fiatGuess = Math.min(
+      Math.max(need * SOLVE_BUFFER, bounds.min ?? 0),
+      bounds.max ?? Infinity,
+    );
     let probe: MeldQuoteEntry;
     try {
       probe = await forwardBest(client, ctx, fiatGuess.toFixed(2));

@@ -175,10 +175,16 @@ describe("computeMeldQuote (forward inversion)", () => {
 
 /**
  * The real client over a fake adapter that prices like INR against DOT: `rate` DOT per rupee,
- * refusing outside [min, max] with the adapter's BelowMinimum/AboveMaximum and the bound. Records
- * each asked amount in `asked`.
+ * refusing outside [min, max] with the adapter's BelowMinimum/AboveMaximum and the bound, less a
+ * fixed `fee` in fiat. Records each asked amount in `asked`.
  */
-function limitedClient(rate: number, min: number, max: number, asked: number[]): MeldClientLike {
+function limitedClient(
+  rate: number,
+  min: number,
+  max: number,
+  asked: number[],
+  fee = 0,
+): MeldClientLike {
   const json = (status: number, body: unknown) =>
     new Response(JSON.stringify(body), {
       status,
@@ -206,7 +212,7 @@ function limitedClient(rate: number, min: number, max: number, asked: number[]):
           {
             serviceProvider: "BANXA",
             sourceAmount: fiat.toFixed(2),
-            destinationAmount: (fiat * rate).toFixed(8),
+            destinationAmount: (Math.max(fiat - fee, 0) * rate).toFixed(8),
           },
         ],
       });
@@ -271,7 +277,20 @@ describe("computeMeldQuote (limits)", () => {
       dot(100),
     ).catch((e: unknown) => e);
     expect(err).toMatchObject({ bound: "max", limit: "50000.00", estimatedFiat: "56000.00" });
-    expect(asked).toEqual([3000]);
+    // The projection only moves the probe to the maximum; the line there settles it.
+    expect(asked).toEqual([3000, 50000]);
+  });
+
+  it("quotes a target a fixed fee makes look past the maximum from the minimum's line", async () => {
+    const asked: number[] = [];
+    // A 5 fee at a probe of 20 delivers 15, so a straight line puts 1,000 at 1,333: past the
+    // 1,200 maximum. It really costs about 1,005.
+    const ctx = { ...INR, limits: { min: "20.00", max: "1200.00" } };
+    const quote = await computeMeldQuote(limitedClient(1, 20, 1200, asked, 5), ctx, dot(1000));
+    const raw = quote.raw as MeldQuoteRaw;
+    expect(asked.slice(0, 2)).toEqual([20, 1200]);
+    expect(Number(raw.provider.destinationAmount)).toBeGreaterThanOrEqual(1000);
+    expect(Number(raw.provider.sourceAmount)).toBeLessThanOrEqual(1005 * 1.011);
   });
 
   it("names a bound the corridor did not, when a correction is refused on it", async () => {
