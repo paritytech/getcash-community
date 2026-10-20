@@ -37,6 +37,8 @@ jobs:
           meld-base-url: ${{ secrets.VITE_MELD_BASE_URL }}
           meld-product-id: ${{ secrets.VITE_MELD_PRODUCT_ID }}
           offramp-lanes: ${{ vars.VITE_OFFRAMP_LANES }}
+          top-up-minimum: ${{ vars.VITE_TOP_UP_MINIMUM }}
+          top-up-maximum: ${{ vars.VITE_TOP_UP_MAXIMUM }}
 
   # Which network legs this run deploys: every target on push, the chosen one
   # on a targeted redeploy (paritytech/autodeployer dispatches per network).
