@@ -12,10 +12,8 @@ import { TOKENS } from "@getsome/core";
 import {
   buildDotUsdFundingProgram,
   chooseCashTransfer,
-  destinationEarmark,
   discoverPool,
   dryRunFundingProgram,
-  estimateDestinationFeeCash,
   estimateDotUsdProgramFees,
   PASEO_ASSET_HUB_PARA_ID,
   PASEO_PEOPLE_PARA_ID,
@@ -57,33 +55,21 @@ describe.runIf(process.env.VERIFY_DOTUSD === "1")("dotUSD tier dry runs", () => 
 
       for (const whole of AMOUNTS) {
         const settle = whole * 1_000_000n;
-        const destinationFee = await estimateDestinationFeeCash({
-          peopleApi: pe,
-          pool,
-          assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
-          beneficiaryHex: holderHex,
-          amount: settle,
-          transfer,
-        });
-        const buyTarget = settle + destinationFee;
-        const earmark = destinationEarmark(buyTarget, destinationFee);
         const fees = await estimateDotUsdProgramFees({
           api: ah,
           beneficiaryHex: holderHex,
           peopleParaId: PASEO_PEOPLE_PARA_ID,
-          depositUnderlying: buyTarget,
-          remoteFeesCash: earmark,
+          depositUnderlying: settle,
           transfer,
           feeProbeAddress: holder,
           dryRunFrom: holder,
         });
         // Sized as the app does, then the program as the worker builds it once that has arrived.
-        const asked = stableDepositNeeded(buyTarget, fees);
+        const asked = stableDepositNeeded(settle, fees);
         const send = asked - fees.dispatchExternal - fees.heldBackExternal;
         const execArgs = buildDotUsdFundingProgram({
           withdrawUnderlying: send + fees.feeAllowanceExternal,
           payFeesUnderlying: fees.feeAllowanceExternal,
-          remoteFeesCash: earmark,
           beneficiaryHex: holderHex,
           peopleParaId: PASEO_PEOPLE_PARA_ID,
           transfer,
@@ -119,7 +105,7 @@ describe.runIf(process.env.VERIFY_DOTUSD === "1")("dotUSD tier dry runs", () => 
         console.log(
           [
             `${units(settle)} CASH:`,
-            `  ask ${units(asked)} dotUSD, destination fee ${destinationFee}, earmark ${earmark}`,
+            `  ask ${units(asked)} dotUSD`,
             `  fees local ${fees.localExternal} delivery ${fees.deliveryExternal} allowance ${fees.feeAllowanceExternal} dispatch ${fees.dispatchExternal} min_balance ${fees.minBalanceExternal}`,
             `  weight ${fees.maxWeight.ref_time} / ${fees.maxWeight.proof_size}, pool swaps for fees ${exchanges}`,
             `  refund ${refund}, landed ${units(landed)} CASH ${landed >= settle ? "ok" : "SHORT"}`,

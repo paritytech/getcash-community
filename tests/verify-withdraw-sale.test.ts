@@ -13,13 +13,12 @@ import { TOKENS } from "@getsome/core";
 import {
   chooseRoute,
   depositTokenOf,
-  destinationEarmark,
   PASEO_ASSET_HUB_PARA_ID,
   PASEO_PEOPLE_PARA_ID,
   type ConversionRoute,
 } from "@getsome/funding";
 import {
-  ASSET_HUB_FEE_BUFFER_CASH,
+  assetHubEarmark,
   CASH_ON_ASSET_HUB,
   DEFAULT_WITHDRAW_SLIPPAGE_PCT,
   dryRunOnAssetHub,
@@ -91,7 +90,7 @@ describe.runIf(process.env.VERIFY_WITHDRAW_SALE === "1")("the sale per token on 
         ["USDC", { tier: "pool", external: "USDC" }],
       ];
       for (const [name, route] of routes) {
-        const earmark = destinationEarmark(CASH_TO_TELEPORT, ASSET_HUB_FEE_BUFFER_CASH);
+        const earmark = assetHubEarmark(CASH_TO_TELEPORT);
         const sale = await priceSale({
           assetHubApi: api,
           route,

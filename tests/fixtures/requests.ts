@@ -160,7 +160,6 @@ export interface WorkerJobRecord {
   burnerAddress: string;
   depositExpiresAt: number | null;
   settleAmount: string;
-  remoteFeeBuffer: string;
   keepNativeForFees: string;
   slippagePct: number;
   underlyingAssetId: number;
@@ -211,7 +210,6 @@ function workerJob(
     burnerAddress: BURNER_ADDRESS,
     depositExpiresAt: startedAt + DAY,
     settleAmount,
-    remoteFeeBuffer: "500000000",
     keepNativeForFees: "100000000",
     slippagePct: 1,
     underlyingAssetId: 1337,

@@ -42,8 +42,13 @@
 // no mint. Its fees follow the PSM shape too: paid in the underlying from an allowance the program
 // refunds, cushioned once with FEE_MARGIN_BPS, the min_balance kept on the burner.
 //
-// The destination fee allowance is generous by design: the remote RefundSurplus returns what it
-// does not consume and the DepositAsset sweeps it to the burner.
+// The program People receives is one receive of the CASH, a hint naming the burner as the asset
+// claimer, and the deposit. Nothing is set aside for People's fees: People runs a program from
+// Asset Hub without payment, and the dry run below refuses the submit on a network whose People
+// does not. With a single receive the CASH is minted on People before any instruction can fail, so
+// a failure after it traps the CASH rather than losing it, and the trap is keyed to the burner's
+// own signed origin, which the burner can claim back with claim_assets. Everything the exchange
+// returns lands.
 //
 // Before the program is paid for, both chains run it in a dry run: Asset Hub runs the call as the
 // burner, People runs the program Asset Hub forwards. A program that would fail on either chain,
@@ -87,8 +92,7 @@ export const FUNDING_PROGRAM_MAX_WEIGHT = { ref_time: 8_000_000_000n, proof_size
 /** Headroom over a measured fee before it is carried as an allowance, in basis points. About
  *  17 times the 0.6% by which the delivery quote under-reports the charge (see the header), so it
  *  also absorbs the pool moving between the quote and inclusion, and small enough that the refund
- *  it produces is dust. The PSM tier applies it once, over its fees as a whole; the destination
- *  fee carries it too. */
+ *  it produces is dust. The PSM tier applies it once, over its fees as a whole. */
 export const FEE_MARGIN_BPS = 1_000n;
 
 /** `fee` plus FEE_MARGIN_BPS of it, rounded up, so a one-unit fee still gains a unit. */
@@ -156,6 +160,23 @@ const accountBeneficiary = (beneficiaryHex: string) => ({
   },
 });
 
+/** A signed account as People and Asset Hub name it: under the relay network, which Paseo names
+ *  Polkadot too. claim_assets looks a trap up by the claimant's own origin, so a claimer without
+ *  the network matches no signed account, and only Root could recover the trap. */
+export const claimer = (hex: string) => ({
+  parents: 0,
+  interior: {
+    type: "X1",
+    value: { type: "AccountId32", value: { network: { type: "Polkadot" }, id: hex } },
+  },
+});
+
+/** Names `hex` as the claimer of whatever the program leaves in the holding. */
+const assetClaimerHint = (hex: string) => ({
+  type: "SetHints",
+  value: { hints: [{ type: "AssetClaimer", value: { location: claimer(hex) } }] },
+});
+
 export const peopleDest = (peopleParaId: number) => ({
   parents: 1,
   interior: { type: "X1", value: { type: "Parachain", value: peopleParaId } },
@@ -165,15 +186,6 @@ export const peopleDest = (peopleParaId: number) => ({
 type ExecuteArgs = Parameters<AssetHubApi["tx"]["PolkadotXcm"]["execute"]>[0];
 /** A decoded call, as a transaction's `decodedCall` carries it and Utility.batch_all takes it. */
 export type AssetHubCall = ReturnType<AssetHubApi["tx"]["PolkadotXcm"]["execute"]>["decodedCall"];
-
-/** The destination fee allowance: the sized over-buy, or 1% of the target when that is more. The
- *  remote RefundSurplus returns the unused part, while an allowance too small to execute on traps
- *  the transfer at the destination. */
-export function destinationEarmark(underlyingOut: bigint, remoteFeeBuffer: bigint): bigint {
-  const onePercent = underlyingOut / 100n;
-  const floor = onePercent > remoteFeeBuffer ? onePercent : remoteFeeBuffer;
-  return floor > 0n ? floor : 1n;
-}
 
 /** The funding program: native in, underlying landed on the burner's People address, every Asset
  *  Hub fee paid in native before the exchange. */
@@ -186,8 +198,6 @@ export function buildFundingProgram(args: {
   /** The least underlying the exchange may return. Everything withdrawn above the fee allowance
    *  is given, and anything above this floor lands as extra underlying. */
   minUnderlyingOut: bigint;
-  /** Destination fee allowance in the underlying. */
-  remoteFeesCash: bigint;
   beneficiaryHex: string;
   peopleParaId: number;
   /** How the CASH moves to People. */
@@ -210,12 +220,7 @@ export function buildFundingProgram(args: {
           maximal: true,
         },
       },
-      holdingToPeople(
-        c(args.remoteFeesCash),
-        args.beneficiaryHex,
-        args.peopleParaId,
-        args.transfer,
-      ),
+      holdingToPeople(args.pool.underlying, args.beneficiaryHex, args.peopleParaId, args.transfer),
     ],
   };
   return {
@@ -241,8 +246,6 @@ export function buildPsmFundingProgram(args: {
   /** The allowance for local execution plus delivery, in the external the burner holds, with
    *  FEE_MARGIN_BPS on top. Withdrawn beside the CASH and moved whole to the fees register. */
   localFees: { id: XcmLocation; amount: bigint };
-  /** Destination fee allowance in CASH. */
-  remoteFeesCash: bigint;
   beneficiaryHex: string;
   peopleParaId: number;
   /** How the CASH moves to People. */
@@ -257,12 +260,7 @@ export function buildPsmFundingProgram(args: {
     value: [
       { type: "WithdrawAsset", value: sortedAssets([fees, c(args.withdrawCash)]) },
       { type: "PayFees", value: { asset: fees } },
-      holdingToPeople(
-        c(args.remoteFeesCash),
-        args.beneficiaryHex,
-        args.peopleParaId,
-        args.transfer,
-      ),
+      holdingToPeople(TOKENS.CASH.location, args.beneficiaryHex, args.peopleParaId, args.transfer),
       { type: "RefundSurplus" },
       {
         type: "DepositAsset",
@@ -300,8 +298,6 @@ export function buildStableFundingProgram(args: {
   /** The least CASH the second exchange may return: the requirement itself. Everything the
    *  first exchange returned is given, and anything above this floor lands as extra CASH. */
   minUnderlyingOut: bigint;
-  /** Destination fee allowance in CASH. */
-  remoteFeesCash: bigint;
   beneficiaryHex: string;
   peopleParaId: number;
   /** How the CASH moves to People. */
@@ -341,12 +337,7 @@ export function buildStableFundingProgram(args: {
           maximal: true,
         },
       },
-      holdingToPeople(
-        c(args.remoteFeesCash),
-        args.beneficiaryHex,
-        args.peopleParaId,
-        args.transfer,
-      ),
+      holdingToPeople(args.pool.underlying, args.beneficiaryHex, args.peopleParaId, args.transfer),
       { type: "RefundSurplus" },
       {
         type: "DepositAsset",
@@ -373,8 +364,6 @@ export function buildDotUsdFundingProgram(args: {
   /** Local execution plus delivery, in the underlying, with FEE_MARGIN_BPS on top. Moved whole
    *  to the fees register. */
   payFeesUnderlying: bigint;
-  /** Destination fee allowance in CASH. */
-  remoteFeesCash: bigint;
   beneficiaryHex: string;
   peopleParaId: number;
   /** How the CASH moves to People. */
@@ -388,12 +377,7 @@ export function buildDotUsdFundingProgram(args: {
     value: [
       { type: "WithdrawAsset", value: [c(args.withdrawUnderlying)] },
       { type: "PayFees", value: { asset: c(args.payFeesUnderlying) } },
-      holdingToPeople(
-        c(args.remoteFeesCash),
-        args.beneficiaryHex,
-        args.peopleParaId,
-        args.transfer,
-      ),
+      holdingToPeople(TOKENS.CASH.location, args.beneficiaryHex, args.peopleParaId, args.transfer),
       { type: "RefundSurplus" },
       {
         type: "DepositAsset",
@@ -413,12 +397,14 @@ export function dotUsdTxOptions(): { asset: Location } {
   return { asset: asLocation(TOKENS.DOTUSD.location) };
 }
 
-/** The InitiateTransfer every shape carries: the holding's CASH sent to People by `transfer`,
- *  `remoteFees` earmarked for the destination's execution. The filter names the CASH. When the
- *  dispatch fee leaves the account under min_balance, the withdrawal sweeps the rest of the fee
- *  asset into the holding, where it sorts first, and People does not accept it. */
+/** The InitiateTransfer every shape carries: the holding's CASH, keyed as `cashId`, sent to
+ *  People by `transfer` with no fee set aside for People, the burner named as the claimer of
+ *  anything the program leaves in the holding there, and the whole holding deposited to it. The
+ *  filter names the CASH. When the dispatch fee leaves the account under min_balance, the
+ *  withdrawal sweeps the rest of the fee asset into the holding, where it sorts first, and People
+ *  does not accept it. */
 function holdingToPeople(
-  remoteFees: { id: unknown; fun: unknown },
+  cashId: unknown,
   beneficiaryHex: string,
   peopleParaId: number,
   transfer: CashTransfer,
@@ -426,22 +412,17 @@ function holdingToPeople(
   const kind = transfer === "teleport" ? "Teleport" : "ReserveDeposit";
   const allCash = {
     type: "Wild",
-    value: {
-      type: "AllOf",
-      value: { id: remoteFees.id, fun: { type: "Fungible", value: undefined } },
-    },
+    value: { type: "AllOf", value: { id: cashId, fun: { type: "Fungible", value: undefined } } },
   };
   return {
     type: "InitiateTransfer",
     value: {
       destination: peopleDest(peopleParaId),
-      remote_fees: { type: kind, value: { type: "Definite", value: [remoteFees] } },
+      remote_fees: undefined,
       preserve_origin: false,
       assets: [{ type: kind, value: allCash }],
       remote_xcm: [
-        // Return the unused destination allowance to the holding, then sweep everything to the
-        // burner.
-        { type: "RefundSurplus" },
+        assetClaimerHint(beneficiaryHex),
         {
           type: "DepositAsset",
           value: {
@@ -456,7 +437,8 @@ function holdingToPeople(
 
 /** A stand-in for the program People receives, with the underlying keyed as `assetId`. Mirrors
  *  the instruction list the runtime forwards for `transfer`, which is what its weight and
- *  delivery fee depend on. */
+ *  delivery fee depend on: the receive, the origin cleared, the notice that nothing pays, then
+ *  the remote program and the topic the router appends. */
 export function forwardedProgramStandIn(
   assetId: AssetLocation,
   amount: bigint,
@@ -469,10 +451,12 @@ export function forwardedProgramStandIn(
     type: "V5",
     value: [
       { type: received, value: [c(amount)] },
-      { type: "PayFees", value: { asset: c(amount) } },
-      { type: received, value: [c(amount)] },
       { type: "ClearOrigin" },
-      { type: "RefundSurplus" },
+      {
+        type: "UnpaidExecution",
+        value: { weight_limit: { type: "Unlimited" }, check_origin: undefined },
+      },
+      assetClaimerHint(beneficiaryHex),
       {
         type: "DepositAsset",
         value: {
@@ -633,8 +617,6 @@ export async function estimateFundingProgramFees(args: {
   nativeBalance: bigint;
   /** The exchange floor the program will carry, for the same reason. */
   minUnderlyingOut: bigint;
-  /** The destination fee allowance the program will carry, for the same reason. */
-  remoteFeesCash: bigint;
   /** How the CASH moves to People. */
   transfer: CashTransfer;
   /** Any valid address for the dispatch fee read; the fee does not depend on the signer's
@@ -654,7 +636,6 @@ export async function estimateFundingProgramFees(args: {
       withdrawNative: args.nativeBalance,
       payFeesNative,
       minUnderlyingOut,
-      remoteFeesCash: args.remoteFeesCash,
       beneficiaryHex: args.beneficiaryHex,
       peopleParaId: args.peopleParaId,
       transfer: args.transfer,
@@ -784,8 +765,6 @@ export async function estimateStableProgramFees(args: {
   minNativeOut: bigint;
   /** The CASH floor the program will carry, for the same reason. */
   minUnderlyingOut: bigint;
-  /** The destination fee allowance the program will carry, for the same reason. */
-  remoteFeesCash: bigint;
   /** How the CASH moves to People. */
   transfer: CashTransfer;
   /** Any valid address for the dispatch fee read; the fee does not depend on the signer's
@@ -824,7 +803,6 @@ export async function estimateStableProgramFees(args: {
       payFeesStable: feeAllowance,
       minNativeOut: floors.native,
       minUnderlyingOut: floors.cash,
-      remoteFeesCash: args.remoteFeesCash,
       beneficiaryHex: args.beneficiaryHex,
       peopleParaId: args.peopleParaId,
       transfer: args.transfer,
@@ -919,8 +897,6 @@ export async function estimateDotUsdProgramFees(args: {
   /** The underlying the program is carved from, at its real magnitude: the dispatch fee has a
    *  per-byte component and compact-encoded amounts change length with magnitude. */
   depositUnderlying: bigint;
-  /** The destination fee allowance the program will carry, for the same reason. */
-  remoteFeesCash: bigint;
   /** How the CASH moves to People. */
   transfer: CashTransfer;
   /** Any valid address for the dispatch fee read; the fee does not depend on the signer's
@@ -953,7 +929,6 @@ export async function estimateDotUsdProgramFees(args: {
     return buildDotUsdFundingProgram({
       withdrawUnderlying: withdraw,
       payFeesUnderlying: feeAllowance,
-      remoteFeesCash: args.remoteFeesCash,
       beneficiaryHex: args.beneficiaryHex,
       peopleParaId: args.peopleParaId,
       transfer: args.transfer,
@@ -1027,50 +1002,6 @@ export async function estimateDotUsdProgramFees(args: {
     dispatchExternal,
     maxWeight,
   };
-}
-
-/** The underlying as People keys it. An asset local to Asset Hub sits behind Asset Hub's parachain
- *  junction one hop up; an asset already keyed from the relay or beyond reads the same on both. */
-function underlyingOnPeople(pool: Pool, assetHubParaId: number): AssetLocation {
-  const local = pool.underlying as unknown as { parents: number; interior: { value?: unknown } };
-  if (local.parents !== 0) return pool.underlying;
-  const inner = local.interior.value;
-  const junctions = Array.isArray(inner) ? inner : inner === undefined ? [] : [inner];
-  const all = [{ type: "Parachain", value: assetHubParaId }, ...junctions];
-  const value = all.length === 1 ? all[0] : all;
-  return { parents: 1, interior: { type: `X${all.length}`, value } } as unknown as AssetLocation;
-}
-
-/** The destination's execution fee for the forwarded program, in the underlying, with
- *  FEE_MARGIN_BPS on top so it is never a bare measurement. People runs the program in a dry run
- *  as if Asset Hub had sent it, and the fee is whatever the amount sent loses before it
- *  reaches the beneficiary. People cannot price a weight in the underlying directly, so this reads
- *  the charge its fee logic actually makes. Throws when the dry run does not complete. */
-export async function estimateDestinationFeeCash(args: {
-  peopleApi: PeopleApi;
-  pool: Pool;
-  assetHubParaId: number;
-  beneficiaryHex: string;
-  /** Representative underlying amount. The fee does not depend on it, but the deposit must clear
-   *  the asset's minimum balance for the dry run to complete. */
-  amount: bigint;
-  /** How the CASH moves to People. */
-  transfer: CashTransfer;
-}): Promise<bigint> {
-  const asset = underlyingOnPeople(args.pool, args.assetHubParaId);
-  const program = forwardedProgramStandIn(asset, args.amount, args.beneficiaryHex, args.transfer);
-  const run = await dryRunOnPeople({
-    peopleApi: args.peopleApi,
-    assetHubParaId: args.assetHubParaId,
-    program,
-    beneficiaryHex: args.beneficiaryHex,
-  });
-  if ("failed" in run) throw new Error(`destination fee estimate: ${run.failed}`);
-  if (run.landed === 0n) {
-    throw new Error("destination fee estimate: nothing reached the beneficiary in the dry run");
-  }
-  // The stand-in receives the amount twice and deposits what is left to the beneficiary.
-  return withFeeMargin(2n * args.amount - run.landed);
 }
 
 /** The fungible amount out of a VersionedAssets delivery-fee result (its single entry). */

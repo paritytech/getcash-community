@@ -13,6 +13,7 @@ import { isDemoBuild } from "../../utils/demo";
 import CancelTopUpScreen from "../screens/CancelTopUpScreen.vue";
 import JourneySkeleton from "../screens/JourneySkeleton.vue";
 import RecoverDepositScreen from "../screens/RecoverDepositScreen.vue";
+import RecoverTrappedScreen from "../screens/RecoverTrappedScreen.vue";
 import ReturnFundsScreen from "../screens/ReturnFundsScreen.vue";
 import FundingSettledStatusScreen from "./FundingSettledStatusScreen.vue";
 import { useJourneyQuote } from "../../composables/useJourneyQuote";
@@ -77,6 +78,25 @@ watch(
 /** The recovery guide over an ended Polkadot top-up, whose funds, if any, are on its own
  *  account. */
 const showingRecovery = ref(false);
+/** The deposit guide over a top-up whose Cash is in People's trap: what to send to its own
+ *  account for the claim's fee. Back (toolbar or bottom button) returns to the journey. */
+const showingRecoveryDeposit = ref(false);
+// The trap claimed, there is nothing left to send for.
+watch(
+  () => requests.foregroundRecord?.status.kind,
+  (kind) => {
+    if (kind !== undefined && kind !== "recovering") showingRecoveryDeposit.value = false;
+  },
+);
+
+/** Asks the purse for the claim's fee. A refusal reaches the journey as the host's word; a request
+ *  that could not be made leaves the journey's offer standing for the next tap. */
+async function recoverFromBalance() {
+  const record = requests.foregroundRecord;
+  if (record === null) return;
+  const asked = await requests.requestRecoveryPayment(record.ref);
+  if (!asked.ok) console.warn(`[funding] the recovery fee could not be asked for: ${asked.reason}`);
+}
 // Demo deck: a scene can land straight on the opened guide. Inert everywhere else.
 if (isDemoBuild()) {
   watch(
@@ -104,6 +124,7 @@ function goBack() {
   if (flow.confirmingCancel) flow.confirmingCancel = false;
   else if (showingRefund.value) showingRefund.value = false;
   else if (showingRecovery.value) showingRecovery.value = false;
+  else if (showingRecoveryDeposit.value) showingRecoveryDeposit.value = false;
   else if (showingFees.value) showingFees.value = false;
   else emit("back");
 }
@@ -151,11 +172,19 @@ onUnmounted(() => {
       padding-bottom: env(safe-area-inset-bottom);
     "
   >
-    <!-- The live journey's toolbar is back-only; the fee drill-in takes it over while open.
-         Back stays available during the claim: leaving lands on the top-ups list, where the
-         in-flight top-up remains resumable. -->
+    <!-- The live journey's toolbar is back-only; the fee and recovery drill-ins take it over
+         while open. Back stays available during the claim: leaving lands on the top-ups list,
+         where the in-flight top-up remains resumable. -->
     <Toolbar
-      :title="showingFees ? 'Fees' : waiting || unresumable ? title : ''"
+      :title="
+        showingFees
+          ? 'Fees'
+          : showingRecoveryDeposit
+            ? 'Recover your Cash'
+            : waiting || unresumable
+              ? title
+              : ''
+      "
       :back="(readOnly || !waiting) && !session.cancelling"
       @back="goBack"
     />
@@ -186,6 +215,10 @@ onUnmounted(() => {
       />
       <ReturnFundsScreen v-else-if="showingRefund" :top-up="topUp" @back="showingRefund = false" />
       <RecoverDepositScreen v-else-if="showingRecovery" @back="showingRecovery = false" />
+      <RecoverTrappedScreen
+        v-else-if="showingRecoveryDeposit"
+        @back="showingRecoveryDeposit = false"
+      />
       <MeldFeeDetailsScreen
         v-else-if="showingFees"
         :quote="quote"
@@ -198,6 +231,8 @@ onUnmounted(() => {
           @fees="showingFees = true"
           @refund="showingRefund = true"
           @recover="showingRecovery = true"
+          @recover-from-balance="recoverFromBalance"
+          @recover-deposit="showingRecoveryDeposit = true"
           @cancel="flow.confirmingCancel = true"
           @close="emit('back')"
           @start-over="emit('startOver')"

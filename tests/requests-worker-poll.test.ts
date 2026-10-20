@@ -341,7 +341,6 @@ describe("requests store: the worker poll", () => {
         peopleParaId: job.peopleParaId,
         assetHubGenesis: job.assetHubGenesis,
         peopleGenesis: job.peopleGenesis,
-        remoteFeeBuffer: job.remoteFeeBuffer,
         keepNativeForFees: job.keepNativeForFees,
       },
       status: { kind: "awaiting-deposit" },

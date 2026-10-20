@@ -19,12 +19,14 @@ import {
   type ConvertingStep,
   type DepositMismatchState,
   type DepositSeenVia,
+  type HostPayment,
   type Observation,
   type RailState,
   type RequestFailure,
   type TopUpRecord,
   type RequestStatus,
   type WorkerJobView,
+  type WorkerRecoveryView,
 } from "../model";
 import {
   burnerFinal,
@@ -40,6 +42,7 @@ type Witnesses = TopUpRecord["witnesses"];
 type Assurance = Extract<RequestStatus, { kind: "deposit-seen" }>["assurance"];
 type ChainObservation = Extract<Observation, { source: "chain"; burnerNative: string }>;
 type UserObservation = Extract<Observation, { source: "user" }>;
+type HostObservation = Extract<Observation, { source: "host" }>;
 type ProviderResult = Extract<Observation, { source: "provider"; result: unknown }>;
 /** The fields a positive money observation clears from a record it resurrects, the mismatch a
  *  Polkadot deposit drops once it is settled one way or the other, and the early claim word a
@@ -84,7 +87,7 @@ function apply(record: TopUpRecord, observation: Observation): TopUpRecord {
     case "user":
       return applyUser(record, observation);
     case "host":
-      return record;
+      return applyHost(record, observation);
   }
 }
 
@@ -171,6 +174,26 @@ function claiming(record: TopUpRecord, at: number): TopUpRecord {
 
 function converting(record: TopUpRecord, at: number, step: ConvertingStep): TopUpRecord {
   return { ...record, status: { kind: "converting", at, step } };
+}
+
+/** The Cash is in People's trap and the worker is getting it back: the record keeps what the
+ *  worker reports of the trap and the claim's fee, beside the purse's payment of it once asked,
+ *  and stands at `recovering` from when the trap was found. */
+function recovering(record: TopUpRecord, at: number, view: WorkerRecoveryView): TopUpRecord {
+  const step = view.phase === "claiming" ? "claiming" : "funding";
+  const current = record.status;
+  const status: RequestStatus =
+    current.kind === "recovering"
+      ? current.step === step
+        ? current
+        : { ...current, step }
+      : { kind: "recovering", at, step };
+  const { phase: _phase, ...facts } = view;
+  const recovery: TopUpRecord["recovery"] = {
+    ...facts,
+    ...(record.recovery?.payment === undefined ? {} : { payment: record.recovery.payment }),
+  };
+  return { ...record, status, recovery };
 }
 
 function sameDeposit(
@@ -356,6 +379,10 @@ function applyWorker(record: TopUpRecord, at: number, job: WorkerJobView | null)
       return expired(next, at);
     }
     return next;
+  }
+  // The trap, until the claim lands: then the job is done as any other.
+  if (job.recovery !== undefined && !job.done && rank < 3) {
+    return recovering(next, at, job.recovery);
   }
   if (job.done) return rank < 3 ? claiming(next, at) : next;
   if (job.fundsSeenAt !== null && isConvertingStep(job.phase)) {
@@ -595,10 +622,37 @@ function applyUser(record: TopUpRecord, observation: UserObservation): TopUpReco
         ["depositMismatch"],
       );
     }
-    case "payment-requested":
+    case "payment-requested": {
+      // The purse is asked for the claim's fee: the attempt and its id are stamped before the
+      // host is, as a withdrawal stamps its payment.
+      const { attempt, id } = observation;
+      const { recovery } = record;
+      if (record.status.kind !== "recovering" || recovery === undefined) return record;
+      const current = recovery.payment;
+      if (current !== undefined && attempt < current.attempt) return record;
+      if (current?.attempt === attempt && current.requestedAt !== undefined) return record;
+      return { ...record, recovery: { ...recovery, payment: { attempt, requestedAt: at, id } } };
+    }
     case "channel-opened":
     case "swap-opened":
     case "sale-unfundable":
       return record;
   }
+}
+
+/** The host's word on the purse's payment of the claim's fee. It moves nothing: the worker
+ *  reports the Cash on the burner and the claim. A refusal is kept for the journey to say so. */
+function applyHost(record: TopUpRecord, observation: HostObservation): TopUpRecord {
+  const { at, payment } = observation;
+  const next = witnessed(record, { host: { status: payment.status, at } });
+  const { recovery } = next;
+  if (recovery?.payment === undefined || payment.attempt !== recovery.payment.attempt) return next;
+  const updated: HostPayment = {
+    ...recovery.payment,
+    status: payment.status,
+    updatedAt: at,
+    ...(payment.reason === undefined ? {} : { reason: payment.reason }),
+    ...(payment.actualClaimed === undefined ? {} : { actualClaimed: payment.actualClaimed }),
+  };
+  return { ...next, recovery: { ...recovery, payment: updated } };
 }

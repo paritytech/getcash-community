@@ -12,10 +12,8 @@ import {
   buildStableFundingProgram,
   chooseCashTransfer,
   DEFAULT_SLIPPAGE_PCT,
-  destinationEarmark,
   discoverPool,
   dryRunFundingProgram,
-  estimateDestinationFeeCash,
   estimateStableProgramFees,
   PASEO_ASSET_HUB_PARA_ID,
   PASEO_PEOPLE_PARA_ID,
@@ -69,23 +67,13 @@ describe.runIf(process.env.VERIFY_STABLE === "1")("stable pool tier dry runs", (
 
         for (const whole of AMOUNTS) {
           const settle = whole * 1_000_000n;
-          const destinationFee = await estimateDestinationFeeCash({
-            peopleApi: pe,
-            pool,
-            assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
-            beneficiaryHex: holderHex,
-            amount: settle,
-            transfer,
-          });
-          const buyTarget = settle + destinationFee;
-          const earmark = destinationEarmark(buyTarget, destinationFee);
           // Sized as the app does: the plain two-hop quote is the gate, the ask carries the
           // headroom once.
           const { nativeIn, stableIn } = await quoteStableForUnderlying(
             ah,
             pool,
             stablePool,
-            buyTarget,
+            settle,
           );
           const stableInMax = withHeadroom(stableIn, DEFAULT_SLIPPAGE_PCT);
           const fees = await estimateStableProgramFees({
@@ -97,8 +85,7 @@ describe.runIf(process.env.VERIFY_STABLE === "1")("stable pool tier dry runs", (
             peopleParaId: PASEO_PEOPLE_PARA_ID,
             depositStable: stableInMax,
             minNativeOut: nativeIn,
-            minUnderlyingOut: buyTarget,
-            remoteFeesCash: earmark,
+            minUnderlyingOut: settle,
             transfer,
             feeProbeAddress: holder,
             dryRunFrom: holder,
@@ -116,8 +103,7 @@ describe.runIf(process.env.VERIFY_STABLE === "1")("stable pool tier dry runs", (
             withdrawStable: spend + fees.feeAllowanceExternal,
             payFeesStable: fees.feeAllowanceExternal,
             minNativeOut,
-            minUnderlyingOut: buyTarget,
-            remoteFeesCash: earmark,
+            minUnderlyingOut: settle,
             beneficiaryHex: holderHex,
             peopleParaId: PASEO_PEOPLE_PARA_ID,
             transfer,

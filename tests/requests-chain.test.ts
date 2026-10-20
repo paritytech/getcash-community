@@ -93,7 +93,6 @@ const { chain, worker, manager, lostRequestHandoff, log } = vi.hoisted(() => {
       peopleParaId: 1004,
       assetHubGenesis: `0x${"aa".repeat(32)}`,
       peopleGenesis: `0x${"bb".repeat(32)}`,
-      remoteFeeBuffer: "500000000",
       keepNativeForFees: slot.conversion?.tier === "psm" ? "0" : "100000000",
       ...(slot.conversion ?? { tier: "pool" }),
     }) as WorkerHandoffPayload;
@@ -174,7 +173,6 @@ function handoffOf(job: WorkerJobRecord): WorkerHandoffPayload {
     peopleParaId: job.peopleParaId,
     assetHubGenesis: job.assetHubGenesis,
     peopleGenesis: job.peopleGenesis,
-    remoteFeeBuffer: job.remoteFeeBuffer,
     keepNativeForFees: job.keepNativeForFees,
   };
 }

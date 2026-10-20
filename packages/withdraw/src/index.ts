@@ -10,6 +10,7 @@ export {
 export type { PeopleApi, Sale, SwapArgs, WithdrawXcmArgs } from "./program";
 export {
   ASSET_HUB_FEE_BUFFER_CASH,
+  assetHubEarmark,
   CommitmentUnfundableError,
   dryRunOnAssetHub,
   estimateDirectFeesCash,

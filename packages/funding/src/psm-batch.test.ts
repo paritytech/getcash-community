@@ -46,7 +46,6 @@ const BATCH = {
   externalIn: 5_125_629n,
   cashMinted: 5_100_000n,
   feeAllowanceExternal: 12_345n,
-  remoteFeesCash: 300_000n,
   beneficiaryHex: BENEFICIARY_HEX,
   peopleParaId: PEOPLE_PARA,
   transfer: "teleport" as const,
@@ -291,7 +290,7 @@ describe("buildPsmBatch", () => {
     expect((payFees!.value as { asset: Fungible }).asset).toEqual(usdt);
     const t = transfer!.value as {
       destination: { parents: number; interior: { value: { type: string; value: number } } };
-      remote_fees: { type: string; value: { type: string; value: Fungible[] } };
+      remote_fees: unknown;
       preserve_origin: boolean;
       assets: Array<{ type: string; value: { value: { type: string; value: number } } }>;
       remote_xcm: Instruction[];
@@ -300,11 +299,8 @@ describe("buildPsmBatch", () => {
       parents: 1,
       interior: { type: "X1", value: { type: "Parachain", value: PEOPLE_PARA } },
     });
-    expect(t.remote_fees.type).toBe("Teleport");
-    expect(t.remote_fees.value.type).toBe("Definite");
-    expect(t.remote_fees.value.value).toEqual([
-      { id: TOKENS.CASH.location, fun: { type: "Fungible", value: BATCH.remoteFeesCash } },
-    ]);
+    // People charges nothing for the program, so no fee travels ahead of the CASH.
+    expect(t.remote_fees).toBeUndefined();
     expect(t.preserve_origin).toBe(false);
     // The transfer names the CASH, so USDT swept into the holding stays behind.
     expect(t.assets).toEqual([
@@ -319,7 +315,7 @@ describe("buildPsmBatch", () => {
         },
       },
     ]);
-    expect(t.remote_xcm.map((i) => i.type)).toEqual(["RefundSurplus", "DepositAsset"]);
+    expect(t.remote_xcm.map((i) => i.type)).toEqual(["SetHints", "DepositAsset"]);
     const deposit = t.remote_xcm[1]!.value as {
       assets: { type: string };
       beneficiary: { parents: number; interior: { value: { value: { id: string } } } };
@@ -342,19 +338,15 @@ describe("buildPsmBatch", () => {
     });
   });
 
-  it("sends the CASH by reserve deposit when the chains allow no teleport: ReserveDeposit for the fees and the holding alike", () => {
+  it("sends the CASH by reserve deposit when the chains allow no teleport", () => {
     const { api, seen } = recordingApi();
     buildPsmBatch(api, { ...BATCH, transfer: "reserve" });
     const execute = seen.execute as ExecuteArgs;
     const transfer = execute.message.value.find((i) => i.type === "InitiateTransfer")!.value as {
-      remote_fees: { type: string; value: { type: string; value: Fungible[] } };
+      remote_fees: unknown;
       assets: unknown;
     };
-    expect(transfer.remote_fees.type).toBe("ReserveDeposit");
-    expect(transfer.remote_fees.value).toEqual({
-      type: "Definite",
-      value: [{ id: TOKENS.CASH.location, fun: { type: "Fungible", value: BATCH.remoteFeesCash } }],
-    });
+    expect(transfer.remote_fees).toBeUndefined();
     expect(transfer.assets).toEqual([
       {
         type: "ReserveDeposit",
@@ -383,7 +375,6 @@ describe("buildPsmBatch", () => {
     const program = buildPsmFundingProgram({
       withdrawCash: 5n,
       localFees: { id: higher, amount: 7n },
-      remoteFeesCash: 1n,
       beneficiaryHex: BENEFICIARY_HEX,
       peopleParaId: PEOPLE_PARA,
       transfer: "teleport",
@@ -436,7 +427,6 @@ describe("estimatePsmBatchFees", () => {
     beneficiaryHex: BENEFICIARY_HEX,
     peopleParaId: PEOPLE_PARA,
     depositExternal: 5_300_000n,
-    remoteFeesCash: BATCH.remoteFeesCash,
     transfer: "teleport" as const,
     feeProbeAddress: "5Probe",
   };
@@ -619,21 +609,16 @@ describe("dryRunPsmBatch", () => {
             const withdrawnCash = (execute.message.value[0]!.value as Fungible[]).find(
               (a) => a.id === TOKENS.CASH.location,
             )!.fun.value;
-            const transfer = execute.message.value[2]!.value as {
-              remote_fees: { value: { value: Fungible[] } };
-              remote_xcm: Instruction[];
-            };
-            const earmark = transfer.remote_fees.value.value[0]!.fun.value;
+            const transfer = execute.message.value[2]!.value as { remote_xcm: Instruction[] };
             const forwarded = {
               type: "V5",
               value: [
-                { type: "ReceiveTeleportedAsset", value: [fungible(earmark)] },
-                { type: "PayFees", value: { asset: fungible(earmark) } },
-                {
-                  type: "ReceiveTeleportedAsset",
-                  value: [fungible(withdrawnCash - earmark)],
-                },
+                { type: "ReceiveTeleportedAsset", value: [fungible(withdrawnCash)] },
                 { type: "ClearOrigin" },
+                {
+                  type: "UnpaidExecution",
+                  value: { weight_limit: { type: "Unlimited" }, check_origin: undefined },
+                },
                 ...transfer.remote_xcm,
                 { type: "SetTopic", value: `0x${"00".repeat(32)}` },
               ],

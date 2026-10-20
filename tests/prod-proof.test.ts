@@ -89,14 +89,11 @@ describe.runIf(process.env.PROD_PROOF === "1")("production proof", () => {
         probeAddress: burner.address,
       });
       if (!sizing) throw new Error("sizing failed");
-      console.log(
-        `SIZING remoteFeeBuffer=${cash(sizing.remoteFeeBuffer)} CASH  keepNative=${pas(sizing.keepNativeForFees)} PAS`,
-      );
+      console.log(`SIZING keepNative=${pas(sizing.keepNativeForFees)} PAS`);
       const budget = await sizeNativeBudget({
         client: ahC,
         underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
         settleAmount: SETTLE,
-        remoteFeeBuffer: sizing.remoteFeeBuffer,
         keepNativeForFees: sizing.keepNativeForFees,
       });
       console.log(`DEPOSIT to send: ${pas(budget)} PAS`);
@@ -143,7 +140,6 @@ describe.runIf(process.env.PROD_PROOF === "1")("production proof", () => {
               settleAmount: SETTLE,
               peopleParaId: PASEO_PEOPLE_PARA_ID,
               assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
-              remoteFeeBuffer: sizing.remoteFeeBuffer,
               keepNativeForFees: sizing.keepNativeForFees,
               slippagePct: DEFAULT_SLIPPAGE_PCT,
               tickTimeoutMs: DEFAULT_TICK_TIMEOUT_MS,

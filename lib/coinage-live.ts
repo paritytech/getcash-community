@@ -14,7 +14,6 @@ import {
   chooseRoute,
   type ConversionRoute,
   DEFAULT_KEEP_NATIVE_FOR_FEES,
-  DEFAULT_REMOTE_FEE_BUFFER,
   depositTokenOf,
   isStablePoolRoute,
   PASEO_PEOPLE_PARA_ID,
@@ -239,9 +238,8 @@ async function lostRequestFees(
   address: string,
   route: ConversionRoute,
   settleAmount: bigint,
-): Promise<Pick<WorkerHandoffPayload, "remoteFeeBuffer" | "keepNativeForFees" | "quotedDeposit">> {
+): Promise<Pick<WorkerHandoffPayload, "keepNativeForFees" | "quotedDeposit">> {
   const defaults = {
-    remoteFeeBuffer: DEFAULT_REMOTE_FEE_BUFFER.toString(),
     // Only a native deposit carries fee native; the other tiers price their fees live.
     keepNativeForFees: (depositTokenOf(route).assetHubId === undefined
       ? DEFAULT_KEEP_NATIVE_FOR_FEES

@@ -251,13 +251,13 @@ function feeFiat(total: number): string | null {
  * Meld's own fees stop where its delivery does: the route's token on Asset Hub. Getting from
  * there to CASH on People costs more, all of it already sized by the funding estimate and already
  * inside what the buyer pays, because the deposit was over-bought to cover it. On the pool tier
- * that is `keepNativeForFees` (dispatch, execution and delivery on Asset Hub, in native) and
- * `remoteFeeBuffer` (execution on People, in CASH). On the PSM tier the Asset Hub side is all in
- * the delivered stable: the batch's dispatch fee plus what the mint keeps out for the XCM's
- * execution and delivery, the fee allowance and the asset's min_balance that keeps the burner
- * alive. The min_balance and the unspent allowance stay on the
- * burner, but the buyer paid for them, so they are part of the cost shown. None has a row of its
- * own on the rail's quote, so the breakdown prices them here.
+ * that is `keepNativeForFees` (dispatch, execution and delivery on Asset Hub, in native). On the
+ * PSM tier the Asset Hub side is all in the delivered stable: the batch's dispatch fee plus what
+ * the mint keeps out for the XCM's execution and delivery, the fee allowance and the asset's
+ * min_balance that keeps the burner alive. The min_balance and the unspent allowance stay on the
+ * burner, but the buyer paid for them, so they are part of the cost shown. People charges nothing
+ * for the program it receives. None has a row of its own on the rail's quote, so the breakdown
+ * prices them here.
  *
  * The delivered token's side converts at the quote's implied rate (`meldImpliedRate`). The CASH
  * side takes the peg this app quotes against throughout, one CASH to one unit of the quote fiat
@@ -266,14 +266,13 @@ function feeFiat(total: number): string | null {
 function meldChainFeeFiat(raw: MeldQuoteRaw, sizing: FundingSizing): string | null {
   const rate = meldImpliedRate(raw);
   if (rate === null) return null;
-  const inCash = (amount: bigint) => Number(amount) / 10 ** CASH_DECIMALS;
   const onAssetHub =
     "keepNativeForFees" in sizing
       ? (Number(sizing.keepNativeForFees) / 10 ** TOKENS.PAS.decimals) * rate.fiatPerToken
       : (Number(sizing.dispatchExternal + sizing.heldBackExternal) /
           10 ** ("external" in sizing ? TOKENS[sizing.external] : TOKENS.DOTUSD).decimals) *
         rate.fiatPerToken;
-  return feeFiat(onAssetHub + inCash(sizing.remoteFeeBuffer));
+  return feeFiat(onAssetHub);
 }
 
 /**
@@ -860,7 +859,7 @@ export const useSessionStore = defineStore("session", () => {
    */
   async function meldFundingSizing(settleAmount: bigint): Promise<PoolFundingSizing> {
     if (typeof window === "undefined") {
-      return { tier: "pool", remoteFeeBuffer: 0n, keepNativeForFees: 0n };
+      return { tier: "pool", keepNativeForFees: 0n };
     }
     const { estimatePublicFundingSizing, FALLBACK_FUNDING_SIZING } =
       await import("~~/lib/funding-fees");
@@ -926,12 +925,12 @@ export const useSessionStore = defineStore("session", () => {
         const sizing = await meldFundingSizing(amountBase.value);
         if (epoch !== quoteEpoch) return;
         // The Meld rail egresses the native token and is sized by a native budget: the settle
-        // amount plus People's execution fee, quoted against the fiat peg, plus the native the
-        // burner keeps for the program on Asset Hub.
+        // amount, quoted against the fiat peg, plus the native the burner keeps for the program
+        // on Asset Hub.
         const quotedBudget = await sizeMeldNativeBudget(
           built.client,
           { ...built.region, paymentMethodType: built.paymentMethodType },
-          amountBase.value + sizing.remoteFeeBuffer,
+          amountBase.value,
         );
         if (epoch !== quoteEpoch) return;
         if (quotedBudget === null) {
@@ -1141,7 +1140,6 @@ export const useSessionStore = defineStore("session", () => {
                   client,
                   underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
                   settleAmount: settleForPricing,
-                  remoteFeeBuffer: priced.remoteFeeBuffer,
                   keepNativeForFees: priced.keepNativeForFees,
                   // A direct deposit carries its own headroom, as the hosted sizing does.
                   ...(direct === null ? {} : { slippagePct: DIRECT_SLIPPAGE_PCT }),
@@ -1903,7 +1901,6 @@ export const useSessionStore = defineStore("session", () => {
     return {
       ...rest,
       settleAmount: value.receive.toString(),
-      remoteFeeBuffer: value.remoteFeeBuffer.toString(),
       keepNativeForFees: value.keepNativeForFees.toString(),
       ...route,
       ...(value.quotedDeposit === undefined

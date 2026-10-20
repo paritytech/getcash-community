@@ -4,7 +4,7 @@
 
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef, watch } from "vue";
-import { recordedRoute, type ConversionRoute } from "@getsome/funding";
+import { recordedRoute, type ConversionRoute, type RecoveryToken } from "@getsome/funding";
 import type { FlowState, SourceId, SwapStatusResult } from "@getsome/core";
 import {
   createMeldClient,
@@ -67,8 +67,9 @@ import {
   type WithdrawalRecord,
   type WorkerHandoffPayload,
   type WorkerJobView,
+  type WorkerRecoveryView,
 } from "../funding/requests/model";
-import { paymentIdFor } from "../funding/requests/payment-id";
+import { paymentIdFor, recoveryPaymentIdFor } from "../funding/requests/payment-id";
 import { reduce } from "../funding/requests/reducer";
 import {
   createMemoryKeyedStorage,
@@ -221,6 +222,7 @@ const serializeProbed = (sources: ProbedBySource): string =>
 /** The status kinds whose arrival is written to the host before `observe` resolves. */
 const CRITICAL_KINDS = new Set<RequestRecord["status"]["kind"]>([
   "deposit-seen",
+  "recovering",
   "settled",
   "cancelled",
   "failed",
@@ -244,7 +246,10 @@ function isCritical(previous: RequestRecord, next: RequestRecord): boolean {
   if (isTopUp(previous) && isTopUp(next)) {
     return (
       (previous.meldSubmittedAt === undefined && next.meldSubmittedAt !== undefined) ||
-      (previous.depositSkippedAt === undefined && next.depositSkippedAt !== undefined)
+      (previous.depositSkippedAt === undefined && next.depositSkippedAt !== undefined) ||
+      // The recovery fee's prompt, stamped before the host is asked.
+      previous.recovery?.payment?.requestedAt !== next.recovery?.payment?.requestedAt ||
+      previous.recovery?.payment?.id !== next.recovery?.payment?.id
     );
   }
   if (isWithdrawal(previous) && isWithdrawal(next)) {
@@ -325,6 +330,7 @@ const WORKER_DRIVEN_KINDS = new Set<RequestRecord["status"]["kind"]>([
   "awaiting-deposit",
   "deposit-seen",
   "converting",
+  "recovering",
   "claiming",
   "awaiting-payment",
   "paid",
@@ -382,6 +388,13 @@ type WorkerJob = {
     preparedAt?: number;
     converted?: { txHash?: string; block?: number; at?: number; workedMs?: number };
   } | null;
+  trap?: { amount?: unknown; at?: unknown; claimerHex?: unknown } | null;
+  recovery?: {
+    phase?: unknown;
+    askCash?: unknown;
+    minimums?: { minimums?: Record<string, unknown> | null } | null;
+    deposit?: unknown;
+  } | null;
   // The hand-off the worker keeps, read back when the surface has no record of the job.
   label?: string;
   burnerAddress?: string;
@@ -391,7 +404,6 @@ type WorkerJob = {
   peopleParaId?: number;
   assetHubGenesis?: string;
   peopleGenesis?: string;
-  remoteFeeBuffer?: string;
   keepNativeForFees?: string;
   quotedDeposit?: string;
   tier?: unknown;
@@ -447,11 +459,47 @@ function conversionOf(job: WorkerJob): WorkerJobView["conversion"] {
   return { preparedAt: conversion.preparedAt, ...(converted === undefined ? {} : { converted }) };
 }
 
+const RECOVERY_TOKENS: readonly RecoveryToken[] = ["PAS", "DOTUSD", "USDT", "USDC"];
+
+/** The trap the job found and its recovery, when every field the record needs is there. */
+function recoveryOf(job: WorkerJob): WorkerRecoveryView | undefined {
+  const { trap, recovery } = job;
+  if (
+    !isObject(trap) ||
+    !isString(trap.amount) ||
+    !isNumber(trap.at) ||
+    !isString(trap.claimerHex)
+  ) {
+    return undefined;
+  }
+  const phase =
+    recovery?.phase === "claiming" || recovery?.phase === "done" ? recovery.phase : "funding";
+  const priced = isObject(recovery?.minimums) ? recovery.minimums.minimums : undefined;
+  let minimums: WorkerRecoveryView["minimums"];
+  if (isObject(priced)) {
+    minimums = {};
+    for (const token of RECOVERY_TOKENS) {
+      const figure = priced[token];
+      if (isString(figure) || figure === null) minimums[token] = figure;
+    }
+  }
+  return {
+    trappedAmount: trap.amount,
+    trappedAt: trap.at,
+    claimerHex: trap.claimerHex,
+    phase,
+    ...(isString(recovery?.askCash) ? { askCash: recovery.askCash } : {}),
+    ...(minimums === undefined ? {} : { minimums }),
+    ...(isString(recovery?.deposit) ? { deposit: recovery.deposit } : {}),
+  };
+}
+
 /** The job as the record's reducer reads it. */
 function jobView(job: WorkerJob): WorkerJobView {
   const { claim } = job;
   const depositSeen = depositSeenOf(job);
   const conversion = conversionOf(job);
+  const recovery = recoveryOf(job);
   const refusals = job.state?.psmRefusals;
   const workedMs = job.state?.workedMs;
   return {
@@ -482,6 +530,7 @@ function jobView(job: WorkerJob): WorkerJobView {
     ...(isNumber(refusals) && refusals > 0 ? { psmRefusals: refusals } : {}),
     ...(depositSeen === undefined ? {} : { depositSeen }),
     ...(conversion === undefined ? {} : { conversion }),
+    ...(recovery === undefined ? {} : { recovery }),
   };
 }
 
@@ -653,7 +702,6 @@ function handoffOf(job: WorkerJob): WorkerHandoffPayload | undefined {
     peopleParaId,
     assetHubGenesis,
     peopleGenesis,
-    remoteFeeBuffer,
     keepNativeForFees,
   } = job;
   if (
@@ -664,7 +712,6 @@ function handoffOf(job: WorkerJob): WorkerHandoffPayload | undefined {
     !isNumber(peopleParaId) ||
     !isString(assetHubGenesis) ||
     !isString(peopleGenesis) ||
-    !isString(remoteFeeBuffer) ||
     !isString(keepNativeForFees)
   ) {
     return undefined;
@@ -685,7 +732,6 @@ function handoffOf(job: WorkerJob): WorkerHandoffPayload | undefined {
     peopleParaId,
     assetHubGenesis,
     peopleGenesis,
-    remoteFeeBuffer,
     keepNativeForFees,
     ...(isString(job.quotedDeposit) ? { quotedDeposit: job.quotedDeposit } : {}),
     ...route,
@@ -1661,6 +1707,81 @@ export const useRequestsStore = defineStore("requests", () => {
     await observe(ref, { source: "user", at: requestsNow(), event: "retry" });
     syncJobPoll();
     return true;
+  }
+
+  /**
+   * Asks the purse for a trapped top-up's claim fee, under an id derived from the top-up's own key
+   * and the attempt, stamped on the record before the host is asked. The host shows its sheets
+   * to the page and answers through the request itself: a refusal is applied as the host's word,
+   * so the journey says so and offers the other way; the Cash reaching the account is the
+   * worker's to report. A refused attempt is followed by the next.
+   */
+  async function requestRecoveryPayment(
+    ref: RequestRef,
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const record = get(ref);
+    if (record === undefined || !isTopUp(record) || record.status.kind !== "recovering") {
+      return { ok: false, reason: "The top-up is not being recovered." };
+    }
+    const { recovery } = record;
+    if (recovery?.askCash === undefined) {
+      return { ok: false, reason: "The recovery fee is not known yet. Try again in a moment." };
+    }
+    if (!isHosted())
+      return { ok: false, reason: "Only the Polkadot App can pay from the balance." };
+    const previous = recovery.payment;
+    const attempt =
+      previous === undefined
+        ? 0
+        : previous.status === "failed"
+          ? previous.attempt + 1
+          : previous.attempt;
+    const idHex = recoveryPaymentIdFor(recovery.claimerHex, attempt);
+    await observe(ref, {
+      source: "user",
+      at: requestsNow(),
+      event: "payment-requested",
+      attempt,
+      id: idHex,
+    });
+    // The stamp is the record's word that the purse may be asked.
+    const stamped = get(ref);
+    if (
+      stamped === undefined ||
+      !isTopUp(stamped) ||
+      stamped.recovery?.payment?.attempt !== attempt ||
+      stamped.recovery.payment.requestedAt === undefined
+    ) {
+      return { ok: false, reason: "The top-up is no longer waiting for the fee." };
+    }
+    const burnerAddress =
+      record.handoff?.burnerAddress ?? record.deposit?.address ?? record.depositAddress ?? "";
+    const live = await import("~~/lib/withdraw-live");
+    // The request resolves after the user's decision on the host's sheets, so it is started and
+    // left to run; both answers reach the record as the host's word.
+    void live
+      .requestKeyPayment({
+        idHex,
+        amount: BigInt(recovery.askCash),
+        key: { address: burnerAddress, publicKeyHex: recovery.claimerHex as `0x${string}` },
+      })
+      .then(() =>
+        observe(ref, {
+          source: "host",
+          at: requestsNow(),
+          payment: { attempt, status: "processing" },
+        }),
+      )
+      .catch(async (e: unknown) => {
+        const reason = e instanceof live.PaymentRefusedError ? e.message : messageOf(e);
+        console.warn(`[requests] recovery fee for ${requestRefKey(ref)} refused: ${reason}`);
+        await observe(ref, {
+          source: "host",
+          at: requestsNow(),
+          payment: { attempt, status: "failed", reason },
+        });
+      });
+    return { ok: true };
   }
 
   /** The buyer finished the provider's widget; the stamp is on the host before this resolves. */
@@ -3061,6 +3182,7 @@ export const useRequestsStore = defineStore("requests", () => {
     leave,
     cancel,
     retry,
+    requestRecoveryPayment,
     markMeldSubmitted,
     markDepositSkipped,
     cancelWithdrawal,

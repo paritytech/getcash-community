@@ -32,7 +32,6 @@ const slot = (conversion: Record<string, unknown>, handoffAmount = "12000000"): 
   ({ handoffAmount, depositExpiresAt: 99, conversion }) as unknown as FlowState;
 
 const leg = {
-  remoteFeeBuffer: 43n,
   dispatchExternal: 1n,
   heldBackExternal: 2n,
   feeAllowanceExternal: 3n,
@@ -61,7 +60,6 @@ describe("lostRequestHandoff", () => {
       settleAmount: "12000000",
       depositExpiresAt: 99,
       tier: "dotusd",
-      remoteFeeBuffer: "43",
       keepNativeForFees: "0",
       quotedDeposit: "12093512",
     });
@@ -114,17 +112,9 @@ describe("lostRequestHandoff", () => {
       quotedDeposit: "12100000",
     });
 
-    fees.estimateFundingSizing.mockResolvedValue({
-      tier: "pool",
-      remoteFeeBuffer: 43n,
-      keepNativeForFees: 150_000_000n,
-    });
+    fees.estimateFundingSizing.mockResolvedValue({ tier: "pool", keepNativeForFees: 150_000_000n });
     const native = await lostRequestHandoff("dot-assethub", 4, "5Burner", slot({ tier: "pool" }));
-    expect(native).toMatchObject({
-      tier: "pool",
-      remoteFeeBuffer: "43",
-      keepNativeForFees: "150000000",
-    });
+    expect(native).toMatchObject({ tier: "pool", keepNativeForFees: "150000000" });
     expect(native.quotedDeposit).toBeUndefined();
   });
 
@@ -136,20 +126,12 @@ describe("lostRequestHandoff", () => {
       "5Burner",
       slot({ tier: "dotusd" }),
     );
-    expect(failed).toMatchObject({
-      tier: "dotusd",
-      remoteFeeBuffer: "1000",
-      keepNativeForFees: "0",
-    });
+    expect(failed).toMatchObject({ tier: "dotusd", keepNativeForFees: "0" });
     expect(failed.quotedDeposit).toBeUndefined();
 
     fees.estimateFundingSizing.mockResolvedValue(null);
     const gaveUp = await lostRequestHandoff("dot-assethub", 4, "5Burner", slot({ tier: "pool" }));
-    expect(gaveUp).toMatchObject({
-      tier: "pool",
-      remoteFeeBuffer: "1000",
-      keepNativeForFees: "200000000",
-    });
+    expect(gaveUp).toMatchObject({ tier: "pool", keepNativeForFees: "200000000" });
 
     const nothing = await lostRequestHandoff(
       "dot-assethub",
