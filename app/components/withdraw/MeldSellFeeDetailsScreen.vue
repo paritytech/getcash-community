@@ -9,6 +9,7 @@ import { cashAmount, fmtCash, groupAmountDigits } from "../../utils/cash";
 import { fmtFiat, isMoneyAmount } from "../../utils/money";
 import DetailRows, { type DetailRow } from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
+import ScreenFrame from "../ui/ScreenFrame.vue";
 
 const props = defineProps<{
   /** The live quote, or the sale as the record committed it. */
@@ -68,7 +69,7 @@ const rate = computed(() => {
 </script>
 
 <template>
-  <div class="flex min-h-0 flex-1 flex-col">
+  <ScreenFrame>
     <DetailRows class="gap-2" :rows="withdrawRows" muted />
 
     <hr class="my-2 border-stroke-secondary" />
@@ -93,8 +94,8 @@ const rate = computed(() => {
       </div>
     </div>
 
-    <PillButton variant="tertiary" class="mt-auto mb-6 w-full" @click="emit('back')">
-      Back
-    </PillButton>
-  </div>
+    <template #actions>
+      <PillButton variant="tertiary" class="w-full" @click="emit('back')">Back</PillButton>
+    </template>
+  </ScreenFrame>
 </template>

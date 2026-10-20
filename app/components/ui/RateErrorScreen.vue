@@ -6,6 +6,7 @@
 // or rail starts the count over (the caller resets `failures`).
 import ErrorState from "./ErrorState.vue";
 import PillButton from "./PillButton.vue";
+import ScreenFrame from "./ScreenFrame.vue";
 
 withDefaults(
   defineProps<{
@@ -21,7 +22,7 @@ const emit = defineEmits<{ retry: []; changeCountry: []; useCrypto: []; changeAm
 </script>
 
 <template>
-  <div class="flex min-h-0 flex-1 flex-col">
+  <ScreenFrame>
     <ErrorState
       v-if="failures < 2"
       class="my-auto"
@@ -38,15 +39,15 @@ const emit = defineEmits<{ retry: []; changeCountry: []; useCrypto: []; changeAm
           : 'Try a different amount'
       "
     />
-    <PillButton v-if="failures < 2" class="mb-6 w-full" @click="emit('retry')">
-      Try again
-    </PillButton>
-    <div v-else-if="crypto" class="mb-6 flex flex-col gap-4">
-      <PillButton variant="secondary" class="w-full" @click="emit('changeCountry')">
-        Change country
-      </PillButton>
-      <PillButton class="w-full" @click="emit('useCrypto')">Use crypto</PillButton>
-    </div>
-    <PillButton v-else class="mb-6 w-full" @click="emit('changeAmount')">Change amount</PillButton>
-  </div>
+    <template #actions>
+      <PillButton v-if="failures < 2" class="w-full" @click="emit('retry')">Try again</PillButton>
+      <div v-else-if="crypto" class="flex flex-col gap-4">
+        <PillButton variant="secondary" class="w-full" @click="emit('changeCountry')">
+          Change country
+        </PillButton>
+        <PillButton class="w-full" @click="emit('useCrypto')">Use crypto</PillButton>
+      </div>
+      <PillButton v-else class="w-full" @click="emit('changeAmount')">Change amount</PillButton>
+    </template>
+  </ScreenFrame>
 </template>
