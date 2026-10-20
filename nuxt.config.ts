@@ -42,7 +42,11 @@ export default defineNuxtConfig({
           // "system" is an explicit opt-in, not the fallback. A stored value that
           // matches no theme block (stale key, another app's value) must fall back
           // too, or the page silently renders the bare :root theme.
+          // In-host the stored theme may be stale (the user changed the app's theme
+          // since), so the page stays hidden until setTheme() applies the host's.
           innerHTML:
+            `(function(d){if(window.__HOST_WEBVIEW_MARK__===true||window.self!==window.top){d.setAttribute('data-theme-pending','');` +
+            `setTimeout(function(){d.removeAttribute('data-theme-pending')},1500)}})(document.documentElement);` +
             `try{var v=${JSON.stringify(THEMES)},t=localStorage.getItem('pds-theme');` +
             `if(t!=='system')document.documentElement.setAttribute('data-theme',v.indexOf(t)>=0?t:'${DEFAULT_THEME}')}` +
             `catch(e){document.documentElement.setAttribute('data-theme','${DEFAULT_THEME}')}`,

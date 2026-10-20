@@ -78,6 +78,16 @@ body {
   overscroll-behavior: none;
 }
 
+/* Until the host's theme lands, show the host's own sheet surface rather than a stale theme. */
+html[data-theme-pending],
+html[data-theme-pending] body {
+  background: transparent;
+}
+
+html[data-theme-pending] body {
+  visibility: hidden;
+}
+
 html {
   /* An app, not a document: a long press selects nothing and opens no callout, on iOS and on
    * Android alike. What a user may need to copy sits on a button that copies it on a tap, and

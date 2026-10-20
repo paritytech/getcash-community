@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getTheme, themeFromHost } from "../app/theme/theme";
+import { getTheme, setTheme, themeFromHost } from "../app/theme/theme";
 
 describe("themeFromHost", () => {
   it("a recognised custom name wins, whatever the host calls it", () => {
@@ -43,6 +43,27 @@ describe("getTheme", () => {
     } finally {
       if (original) Object.defineProperty(globalThis, "localStorage", original);
       else delete (globalThis as { localStorage?: unknown }).localStorage;
+    }
+  });
+});
+
+describe("setTheme", () => {
+  it("reveals a page held back for the host's theme", () => {
+    const attributes = new Map<string, string>([["data-theme-pending", ""]]);
+    const documentElement = {
+      setAttribute: (name: string, value: string) => attributes.set(name, value),
+      removeAttribute: (name: string) => attributes.delete(name),
+    };
+    const g = globalThis as { document?: unknown };
+    const original = g.document;
+    g.document = { documentElement };
+    try {
+      setTheme("lisbon");
+      expect(attributes.get("data-theme")).toBe("lisbon");
+      expect(attributes.has("data-theme-pending")).toBe(false);
+    } finally {
+      g.document = original;
+      if (original === undefined) delete g.document;
     }
   });
 });

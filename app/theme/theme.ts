@@ -76,6 +76,7 @@ export function setTheme(choice: ThemeChoice): void {
   } else {
     root.setAttribute("data-theme", choice);
   }
+  root.removeAttribute("data-theme-pending");
   writeStoredChoice(choice);
 }
 
