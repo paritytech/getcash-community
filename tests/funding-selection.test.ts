@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readTopUpBounds } from "../app/funding/bounds";
 import { fundingSelectorConfig } from "../app/funding/config";
 import {
   canonicalizeFundingAmount,
@@ -44,12 +45,48 @@ describe("funding selection configuration", () => {
   });
 });
 
-describe("the top-up bounds", () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-    vi.restoreAllMocks();
-    vi.resetModules();
+describe("the top-up bounds a build names", () => {
+  const read = (minimum = "", maximum = "") => readTopUpBounds({ minimum, maximum });
+
+  it("are 1 to 5000 CASH unless the build says otherwise", () => {
+    expect(read()).toEqual({ minimum: 100n, maximum: 500_000n, problems: [] });
+    expect(read("25.5", "250.5")).toEqual({ minimum: 2_550n, maximum: 25_050n, problems: [] });
+    // Equal is one valid amount, not none.
+    expect(read("25", "25")).toEqual({ minimum: 2_500n, maximum: 2_500n, problems: [] });
   });
+
+  it("hold the floor against a minimum of zero, under 1 or not an amount, and say so", () => {
+    for (const raw of ["0", "0.00", "-5", "ten", "1e3", "0.5"]) {
+      expect(read(raw)).toMatchObject({ minimum: 100n, maximum: 500_000n });
+      expect(read(raw).problems).toHaveLength(1);
+    }
+    expect(read("0.5").problems).toEqual(["VITE_TOP_UP_MINIMUM is under the 1 CASH floor"]);
+  });
+
+  it("hold the default against a maximum of zero, not an amount or under the minimum", () => {
+    for (const [minimum, maximum] of [
+      ["", "0"],
+      ["", "-100"],
+      ["", "lots"],
+      ["", "0.5"],
+      ["25", "20"],
+    ]) {
+      expect(read(minimum, maximum).maximum).toBe(500_000n);
+      expect(read(minimum, maximum).problems).toHaveLength(1);
+    }
+    expect(read("25", "20").problems).toEqual(["VITE_TOP_UP_MAXIMUM is under the 25 CASH minimum"]);
+  });
+
+  it("raise the default maximum to a minimum set above it", () => {
+    expect(read("6000")).toEqual({ minimum: 600_000n, maximum: 600_000n, problems: [] });
+    // A maximum under that minimum falls back to the same figure, not to 5000.
+    expect(read("6000", "5500")).toMatchObject({ minimum: 600_000n, maximum: 600_000n });
+    expect(read("6000", "5500").problems).toHaveLength(1);
+  });
+});
+
+describe("the top-up config", () => {
+  afterEach(() => vi.unstubAllEnvs());
 
   /** The config as a build with these VITE_TOP_UP_MINIMUM and VITE_TOP_UP_MAXIMUM would load it. */
   async function configWith(minimum: string, maximum = "") {
@@ -59,91 +96,40 @@ describe("the top-up bounds", () => {
     return import("../app/funding/config");
   }
 
-  it("is 1 CASH unless the build asks for more", async () => {
-    const { fundingSelectorConfig: config } = await configWith("");
-    expect(config.amount.minimum).toBe("1");
-    expect(fundingAmountStatus("1", config.amount).kind).toBe("valid");
-    expect(fundingAmountStatus("0.99", config.amount).kind).toBe("below-minimum");
-  });
-
-  it("takes the build's figure when it is above the floor", async () => {
-    const { fundingSelectorConfig: config } = await configWith("25.5");
-    expect(config.amount.minimum).toBe("25.5");
-    expect(fundingAmountStatus("25.5", config.amount).kind).toBe("valid");
+  it("takes the bounds the build names", async () => {
+    const { fundingSelectorConfig: config } = await configWith("25.5", "250.5");
+    expect(config.amount).toMatchObject({ minimum: "25.5", maximum: "250.5" });
     expect(fundingAmountStatus("25.49", config.amount).kind).toBe("below-minimum");
-    // A preset under the minimum would be a dead tap, so the three climb from the minimum instead.
-    expect(config.amount.presets).toEqual(["25.5", "127.5", "255"]);
-    const { fundingSelectorConfig: high } = await configWith("150");
-    expect(high.amount).toMatchObject({ minimum: "150", presets: ["150", "750", "1500"] });
-    // A minimum the configured presets all clear keeps them.
-    const { fundingSelectorConfig: low } = await configWith("10");
-    expect(low.amount.presets).toEqual(["10", "50", "100"]);
-  });
-
-  it("holds the floor against a build figure of zero, under 1 or not an amount", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    for (const raw of ["0", "0.00", "-5", "ten", "1e3", "0.5"]) {
-      const { fundingSelectorConfig: config } = await configWith(raw);
-      expect(config.amount.minimum).toBe("1");
-    }
-    expect(warn).toHaveBeenCalledTimes(6);
-  });
-
-  it("raises the default maximum to a minimum set above it", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const { fundingSelectorConfig: config } = await configWith("6000");
-    // Bounds too tight for three distinct amounts leave the one there is.
-    expect(config.amount).toMatchObject({ minimum: "6000", maximum: "6000", presets: ["6000"] });
-    expect(fundingAmountStatus("6000", config.amount).kind).toBe("valid");
-    expect(warn).not.toHaveBeenCalled();
-    // A build maximum under that minimum falls back to the same figure, not to 5000.
-    const { fundingSelectorConfig: under } = await configWith("6000", "5500");
-    expect(under.amount).toMatchObject({ minimum: "6000", maximum: "6000" });
-    expect(warn).toHaveBeenCalledTimes(1);
-  });
-
-  it("rebuilds the presets under a maximum the configured ones pass", async () => {
-    // The ladder from the minimum fits under 30.
-    const { fundingSelectorConfig: config } = await configWith("", "30");
-    expect(config.amount.presets).toEqual(["1", "5", "10"]);
-    // Under 5 it does not: the minimum, the midpoint and the maximum instead.
-    const { fundingSelectorConfig: tight } = await configWith("", "5");
-    expect(tight.amount.presets).toEqual(["1", "3", "5"]);
-    const { fundingSelectorConfig: cents } = await configWith("", "4.5");
-    expect(cents.amount.presets).toEqual(["1", "2.75", "4.5"]);
-  });
-
-  it("is 5000 CASH at most unless the build says otherwise", async () => {
-    const { fundingSelectorConfig: config } = await configWith("", "");
-    expect(config.amount.maximum).toBe("5000");
-    const { fundingSelectorConfig: capped } = await configWith("", "250.5");
-    expect(capped.amount.maximum).toBe("250.5");
-    expect(fundingAmountStatus("250.5", capped.amount).kind).toBe("valid");
-    expect(fundingAmountStatus("250.51", capped.amount).kind).toBe("above-maximum");
+    expect(fundingAmountStatus("25.5", config.amount).kind).toBe("valid");
+    expect(fundingAmountStatus("250.5", config.amount).kind).toBe("valid");
+    expect(fundingAmountStatus("250.51", config.amount).kind).toBe("above-maximum");
     // The keypad turns the digit away, as it does at the default.
-    expect(reduceFundingAmount("250", "5", capped.amount)).toEqual({
+    expect(reduceFundingAmount("250", "5", config.amount)).toEqual({
       amount: "250",
       hitMaximum: true,
     });
   });
 
-  it("holds the default against a build maximum of zero, not an amount, or under the minimum", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    for (const raw of ["0", "-100", "lots"]) {
-      const { fundingSelectorConfig: config } = await configWith("", raw);
-      expect(config.amount.maximum).toBe("5000");
-    }
-    // Under the floor, then under the build's own minimum: either would turn every amount away.
-    const { fundingSelectorConfig: underFloor } = await configWith("", "0.5");
-    expect(underFloor.amount.maximum).toBe("5000");
-    const { fundingSelectorConfig: underMinimum } = await configWith("25", "20");
-    expect(underMinimum.amount.maximum).toBe("5000");
-    expect(warn).toHaveBeenCalledTimes(5);
-    // Equal to the minimum is one valid amount, not none.
-    const { fundingSelectorConfig: exact } = await configWith("25", "25");
-    expect(exact.amount).toMatchObject({ minimum: "25", maximum: "25" });
-    expect(fundingAmountStatus("25", exact.amount).kind).toBe("valid");
-    expect(warn).toHaveBeenCalledTimes(5);
+  it("keeps the presets that fit the bounds and rebuilds them otherwise", async () => {
+    // A minimum the configured presets all clear keeps them.
+    const { fundingSelectorConfig: low } = await configWith("10");
+    expect(low.amount.presets).toEqual(["10", "50", "100"]);
+    // A preset under the minimum would be a dead tap, so the three climb from the minimum instead.
+    const { fundingSelectorConfig: high } = await configWith("25.5");
+    expect(high.amount.presets).toEqual(["25.5", "127.5", "255"]);
+    const { fundingSelectorConfig: higher } = await configWith("150");
+    expect(higher.amount.presets).toEqual(["150", "750", "1500"]);
+    // The ladder from the minimum fits under 30.
+    const { fundingSelectorConfig: capped } = await configWith("", "30");
+    expect(capped.amount.presets).toEqual(["1", "5", "10"]);
+    // Under 5 it does not: the minimum, the midpoint and the maximum instead.
+    const { fundingSelectorConfig: tight } = await configWith("", "5");
+    expect(tight.amount.presets).toEqual(["1", "3", "5"]);
+    const { fundingSelectorConfig: cents } = await configWith("", "4.5");
+    expect(cents.amount.presets).toEqual(["1", "2.75", "4.5"]);
+    // Bounds too tight for three distinct amounts leave the one there is.
+    const { fundingSelectorConfig: one } = await configWith("6000");
+    expect(one.amount).toMatchObject({ minimum: "6000", maximum: "6000", presets: ["6000"] });
   });
 
   it("leaves the withdrawal bounds where they were", async () => {
