@@ -10,6 +10,11 @@
 
 import type { ThemeMode } from "@parity/product-sdk-host";
 
+declare global {
+  // The boot script's fallback timer, cancelled once the host's theme lands.
+  var __THEME_PENDING_TIMER__: ReturnType<typeof setTimeout> | undefined;
+}
+
 export const THEMES = ["berlin-day", "berlin-night", "lisbon", "malta", "tokyo"] as const;
 
 export type Theme = (typeof THEMES)[number];
@@ -27,6 +32,8 @@ export const THEME_LABELS: Record<Theme, string> = {
 };
 
 const STORAGE_KEY = "pds-theme";
+const PENDING_ATTR = "data-theme-pending";
+const HOST_THEME_TIMEOUT_MS = 1500;
 
 export const DEFAULT_THEME: Theme = "berlin-night";
 
@@ -76,8 +83,18 @@ export function setTheme(choice: ThemeChoice): void {
   } else {
     root.setAttribute("data-theme", choice);
   }
-  root.removeAttribute("data-theme-pending");
   writeStoredChoice(choice);
+  revealPending(root);
+}
+
+/* Two frames, not one: the new theme's colours must compute while transitions
+   are still off, or the first visible frame tweens from the stale theme. */
+function revealPending(root: HTMLElement): void {
+  if (!root.hasAttribute(PENDING_ATTR)) return;
+  clearTimeout(globalThis.__THEME_PENDING_TIMER__);
+  const reveal = () => root.removeAttribute(PENDING_ATTR);
+  if (typeof requestAnimationFrame !== "function") return reveal();
+  requestAnimationFrame(() => requestAnimationFrame(reveal));
 }
 
 /**
@@ -91,6 +108,30 @@ export function themeFromHost(mode: ThemeMode): Theme {
     if (isTheme(named)) return named;
   }
   return mode.variant === "Dark" ? "berlin-night" : "berlin-day";
+}
+
+/**
+ * The inline <head> script that sets data-theme before the first paint, so a
+ * stored choice never flashes the default theme. Berlin Night is the product
+ * default (Funding — states and logic doc); "system" is an explicit opt-in, not
+ * the fallback. A stored value that matches no theme block (stale key, another
+ * app's value) must fall back too, or the page silently renders the bare :root
+ * theme.
+ *
+ * In-host the stored theme may be stale (the user changed the app's theme
+ * since), so it is not applied: the page stays hidden until setTheme() applies
+ * the host's, and only a host that never answers gets the stored theme.
+ */
+export function themeBootScript(): string {
+  return (
+    `(function(d){function a(){try{var v=${JSON.stringify(THEMES)},t=localStorage.getItem('${STORAGE_KEY}');` +
+    `if(t!=='system')d.setAttribute('data-theme',v.indexOf(t)>=0?t:'${DEFAULT_THEME}')}` +
+    `catch(e){d.setAttribute('data-theme','${DEFAULT_THEME}')}}` +
+    `if(window.__HOST_WEBVIEW_MARK__===true||window.self!==window.top){d.setAttribute('${PENDING_ATTR}','');` +
+    `window.__THEME_PENDING_TIMER__=setTimeout(function(){a();requestAnimationFrame(function(){` +
+    `requestAnimationFrame(function(){d.removeAttribute('${PENDING_ATTR}')})})},${HOST_THEME_TIMEOUT_MS})}` +
+    `else a()})(document.documentElement)`
+  );
 }
 
 /** Call once on mount to reapply the stored choice. */

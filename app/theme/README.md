@@ -82,8 +82,11 @@ bundle re-cut reverts these edits; re-apply from this note.
 
 **Project note (getcash):** the product default is **Berlin Night** per the
 "Funding — states and logic" spec. Nothing stored means `data-theme="berlin-night"`
-(applied by the anti-flash script in `nuxt.config.ts` and by `getTheme()`);
-`system` is an explicit opt-in stored as its own value.
+(applied by the anti-flash script, `themeBootScript()` in `theme.ts`, and by
+`getTheme()`); `system` is an explicit opt-in stored as its own value. Inside the
+Polkadot app the stored theme may be stale, so the script sets `data-theme-pending`
+instead: the page stays hidden over the host's surface until `setTheme()` applies the
+host's theme, or for 1.5 s, after which the stored theme applies.
 
 Three more exports, none needed for the common case:
 

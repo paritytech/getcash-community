@@ -78,14 +78,26 @@ body {
   overscroll-behavior: none;
 }
 
-/* Until the host's theme lands, show the host's own sheet surface rather than a stale theme. */
+/* Until the host's theme lands, show the host's own sheet surface rather than a stale theme.
+ * Any color-scheme other than normal makes Chromium paint an opaque canvas behind the page. */
 html[data-theme-pending],
 html[data-theme-pending] body {
   background: transparent;
 }
 
+html[data-theme-pending] {
+  color-scheme: normal !important;
+}
+
 html[data-theme-pending] body {
   visibility: hidden;
+}
+
+html[data-theme-pending] *,
+html[data-theme-pending] *::before,
+html[data-theme-pending] *::after {
+  transition: none !important;
+  animation: none !important;
 }
 
 html {
