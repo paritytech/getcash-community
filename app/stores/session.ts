@@ -489,19 +489,6 @@ export const useSessionStore = defineStore("session", () => {
     return highest + 1;
   }
 
-  /**
-   * TODO: remove this cap once the deposit is real money. Any replacement must clear the swap
-   * networks' per-asset minimums, the highest of which is around 107 CASH (BTC).
-   */
-  const DEMO_MAX_CASH = 200_000_000n; // 200 CASH
-
-  function amountStatus(): "empty" | "over-cap" | "ok" {
-    if (amountBase.value === null) return "empty";
-    // Hosted only; the mock world is unbounded.
-    if (isHosted() && amountBase.value > DEMO_MAX_CASH) return "over-cap";
-    return "ok";
-  }
-
   /** Prices the selected source for this budget, in `depositToken`, in the background.
    *  Epoch-guarded. */
   function priceSelectedSource(
@@ -981,8 +968,8 @@ export const useSessionStore = defineStore("session", () => {
     quoteError.value = null;
     quoteOutOfRange.value = null;
     meldMethodUnavailable.value = false;
-    // Over the cap there is nothing to quote.
-    if (amountBase.value === null || amountStatus() === "over-cap") {
+    // Nothing entered, nothing to quote.
+    if (amountBase.value === null) {
       loading.value = false;
       return;
     }
@@ -1120,8 +1107,8 @@ export const useSessionStore = defineStore("session", () => {
     const epoch = quoteEpoch;
     quoteError.value = null;
     quoteOutOfRange.value = null;
-    // Over the cap there is nothing to quote.
-    if (amountBase.value === null || amountStatus() === "over-cap") {
+    // Nothing entered, nothing to quote.
+    if (amountBase.value === null) {
       loading.value = false;
       return;
     }
@@ -2365,7 +2352,6 @@ export const useSessionStore = defineStore("session", () => {
     recoverRefundKeyFor,
     // derived helpers
     isFaucetConfigured,
-    amountStatus,
     // actions
     setAmount,
     setMethod,
