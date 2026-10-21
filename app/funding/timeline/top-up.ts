@@ -1,6 +1,6 @@
 import type { TopUpRecord } from "../requests/model";
 import type { TimelineFailure } from "./failure";
-import { liveClock, stepSince } from "./live";
+import { liveState } from "./live";
 import { timelineView } from "./model";
 import { earlierFact } from "./observed";
 import {
@@ -115,8 +115,7 @@ export function topUpTimeline(
     delayed: view.state === "delayed",
     now,
     locale,
-    live: liveClock(now, stepSince(view, previous, since, now)),
-    ...(readAt === undefined ? {} : { readAt }),
+    ...liveState(view, previous, since, now, readAt),
   };
   const text = providerPhase
     ? route.text(record, view.phase, state)

@@ -2,7 +2,7 @@
 // on the shared timeline model. Absent until the CASH reaches the key, unless the withdrawal
 // ended before.
 
-import { liveClock, stepSince } from "../../funding/timeline/live";
+import { liveState } from "../../funding/timeline/live";
 import { timelineView } from "../../funding/timeline/model";
 import { normal, type TimelineMessage } from "../../funding/timeline/route";
 import type { TimelineView } from "../../funding/timeline/types";
@@ -51,12 +51,10 @@ export function withdrawalTimeline(
   if (view === undefined) return { message: normal(waitingText(record)) };
   if (view.state === "failed") return { view, failure: withdrawalTimelineFailure(record) };
   if (view.state === "done") return { view };
-  const readAt = withdrawalReadAt(record);
   const text = withdrawalText(record, view.phase, {
     delayed: view.state === "delayed",
     now,
-    live: liveClock(now, stepSince(view, previous, since, now)),
-    ...(readAt === undefined ? {} : { readAt }),
+    ...liveState(view, previous, since, now, withdrawalReadAt(record)),
   });
   return {
     view,

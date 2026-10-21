@@ -6,7 +6,7 @@ import {
   SENDING_STEP_ORDER,
   type WithdrawalRecord,
 } from "../../funding/requests/model";
-import { checked, liveDetail, stages } from "../../funding/timeline/live";
+import { liveDetail, reader, stages } from "../../funding/timeline/live";
 import { delay, normal, type TextState, type TimelineText } from "../../funding/timeline/route";
 
 /** What a fiat sale waits on before its balance is asked: the seller's KYC with the provider. */
@@ -84,8 +84,8 @@ function phaseDetail(
   index: number,
   state: TextState,
 ): string | undefined {
-  const { live, readAt } = state;
-  const read = (label: string) => checked(label, readAt, live);
+  const { live } = state;
+  const read = reader(state);
   const step = sendingStep(record);
   if (state.delayed) return read(index < 2 ? "Last attempt" : "Checked");
   switch (index) {

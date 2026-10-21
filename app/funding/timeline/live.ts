@@ -2,6 +2,7 @@
 // and refreshed on a 3 s grid, although the clock that evaluates timelines ticks every second.
 
 import { lastReached } from "./model";
+import type { TextState } from "./route";
 import type { TimelineView } from "./types";
 
 /** How long a step is current before its live detail shows, and how often the detail moves. */
@@ -29,6 +30,20 @@ export function stepSince(
   return previous === undefined || lastReached(previous) === lastReached(view) ? since : now;
 }
 
+/** The live part of a step's text state: its clock, and the read the detail names. */
+export function liveState(
+  view: TimelineView,
+  previous: TimelineView | undefined,
+  since: number,
+  now: number,
+  readAt: number | undefined,
+): Pick<TextState, "live" | "readAt"> {
+  return {
+    live: liveClock(now, stepSince(view, previous, since, now)),
+    ...(readAt === undefined ? {} : { readAt }),
+  };
+}
+
 const SECOND = 1_000;
 const MINUTE = 60 * SECOND;
 const HOUR = 60 * MINUTE;
@@ -50,6 +65,12 @@ export function checked(
   if (readAt === undefined || live === undefined) return undefined;
   return `${label} ${ago(live - readAt)}`;
 }
+
+/** `checked` on a state's own read and clock. */
+export const reader =
+  ({ live, readAt }: Pick<TextState, "live" | "readAt">) =>
+  (label: string): string | undefined =>
+    checked(label, readAt, live);
 
 /** The parts of a detail line that are present, joined with a middle dot. */
 export function joinDetail(...parts: (string | undefined)[]): string | undefined {

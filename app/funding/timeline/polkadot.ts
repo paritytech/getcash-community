@@ -5,7 +5,7 @@ import { cashInText } from "../../utils/cash";
 import { conversionRouteOf, type DepositInBlock, type TopUpRecord } from "../requests/model";
 import { mintedOf } from "../requests/views";
 import { CLOSE, TRY_AGAIN, type PartFailure } from "./failure";
-import { checked, joinDetail, liveDetail, stages } from "./live";
+import { liveDetail, reader, stages } from "./live";
 import { earlierFact, factAt } from "./observed";
 import {
   delay,
@@ -216,9 +216,10 @@ function conversionMessage(record: TopUpRecord): TimelineMessage {
 export function polkadotText(
   record: TopUpRecord,
   index: PolkadotPhaseIndex,
-  { delayed, live, readAt }: TextState,
+  state: TextState,
 ): TimelineText {
-  const read = (label: string) => checked(label, readAt, live);
+  const { delayed, live } = state;
+  const read = reader(state);
   switch (index) {
     case 2:
       return depositOnBurner(record) === undefined

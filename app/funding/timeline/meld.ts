@@ -13,7 +13,7 @@ import {
   type FailureDetails,
   type PartFailure,
 } from "./failure";
-import { checked, joinDetail } from "./live";
+import { joinDetail, reader } from "./live";
 import { factAt, observedFrom } from "./observed";
 import { delay, normal, type TextState, type TimelineMessage, type TimelineRoute } from "./route";
 import type { PhasePart } from "./types";
@@ -119,7 +119,7 @@ function meldRoute(method: MeldMethod): TimelineRoute {
     seenExpectedMs: 30 * SECOND,
     lastReadAt: (record) => record.witnesses.provider?.at,
     text(record, index, state) {
-      const polled = (label: string) => checked(label, state.readAt, state.live);
+      const polled = reader(state);
       if (index === 0) {
         const first = method.firstDetail?.(record, state);
         return {

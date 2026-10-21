@@ -11,7 +11,7 @@ import {
   type FailureAction,
   type PartFailure,
 } from "./failure";
-import { checked, joinDetail } from "./live";
+import { checked, joinDetail, reader } from "./live";
 import { factAt, observedFrom } from "./observed";
 import { delay, normal, type TextState, type TimelineRoute, type TimelineText } from "./route";
 import type { PhaseInput, PhasePart } from "./types";
@@ -151,14 +151,11 @@ function countdown(
 const stepLine = (label: string, done: number, count: number): string =>
   `${label} ${Math.min(done + 1, count)} of ${count}`;
 
-function exchangeText(
-  record: TopUpRecord,
-  facts: ChainflipFacts,
-  { now, live, readAt }: TextState,
-): TimelineText {
+function exchangeText(record: TopUpRecord, facts: ChainflipFacts, state: TextState): TimelineText {
   // The token the user sent; the source id names the Asset Hub token the swap arrives as.
   const source = record.asset;
-  const read = (label: string) => checked(label, readAt, live);
+  const { now, live } = state;
+  const read = reader(state);
   if (confirmedAt(record, facts) === undefined) {
     const required = requiredOf(facts);
     return {
@@ -292,14 +289,14 @@ export const chainflipRoute: TimelineRoute = {
   text(record, index, state) {
     const facts = record.chainflip ?? {};
     if (index === 0) return exchangeText(record, facts, state);
-    const { delayed, now, live, readAt } = state;
+    const { delayed, now } = state;
     return {
       message: delayed
         ? delay(`Your ${record.asset} is exchanged and the network is processing the transfer`)
         : normal("Your money is on its way"),
       detail:
         countdown(facts.egressScheduledAt, estimated(facts, "egress"), now) ??
-        checked("Checked", readAt, live),
+        reader(state)("Checked"),
     };
   },
   failure: chainflipFailure,
