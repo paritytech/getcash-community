@@ -880,6 +880,98 @@ describe("worker funding engine", () => {
     });
   });
 
+  it("asks for the fee less what the burner holds, carries the round, and ends a deposit's terminal conversion without ending the recovery", async () => {
+    armSeams();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    const funding = await import("@getsome/funding");
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.fundsSeenAt = Date.now();
+      state.xcmSubmitted = true;
+      state.sentToPeople = SETTLE;
+      throw new funding.FundingTrappedError(SETTLE, hash32(0xab), hash32(0x07));
+    });
+    await engine.tickAllFunding();
+
+    // The burner already holds part of the fee: only the rest is asked for, in whole units.
+    const minimums = { PAS: 1_000n, DOTUSD: null, USDT: null, USDC: null };
+    mocks.recoveryMinimums.mockResolvedValue({ minimums, keepNativeForFees: 5n });
+    mocks.tickRecovery.mockImplementationOnce(async (_input, state) => {
+      state.feeCash = 123_456n;
+      state.held = 100_000n;
+      state.round = 1;
+      return { step: "funding", held: 100_000n, feeCash: 123_456n };
+    });
+    await engine.tickAllFunding();
+    expect(storedJob().recovery).toMatchObject({
+      phase: "funding",
+      feeCash: "123456",
+      askCash: "30000",
+      held: "100000",
+      round: 1,
+    });
+
+    // A deposit's conversion the chain would not take: the route and its state are let go, what
+    // ended it is kept, and the trap stands for the next deposit.
+    mocks.tickRecovery.mockResolvedValueOnce({
+      step: "funding",
+      held: 100_000n,
+      feeCash: 123_456n,
+    });
+    mocks.findRecoveryDeposit.mockResolvedValueOnce({ route: { tier: "pool" }, held: 10_000n });
+    mocks.tickOnce.mockRejectedValueOnce(new FundingHeldError("paused", "unavailable"));
+    await engine.tickAllFunding();
+    expect(storedJob()).toMatchObject({ phase: "recovering", recovery: { round: 1 } });
+    expect(storedJob().recovery.route).toBeUndefined();
+    expect(storedJob().recovery.state).toBeUndefined();
+    expect(storedJob().recovery.deposit).toBeUndefined();
+    expect(storedJob().recovery.depositError.message).toContain("funding held");
+    expect(storedJob().lastError).toContain("recovery deposit");
+    expect(storedJob().failure).toBeUndefined();
+
+    // The next tick looks for a deposit afresh.
+    mocks.tickRecovery.mockResolvedValueOnce({
+      step: "funding",
+      held: 100_000n,
+      feeCash: 123_456n,
+    });
+    mocks.findRecoveryDeposit.mockResolvedValueOnce(null);
+    await engine.tickAllFunding();
+    expect(mocks.findRecoveryDeposit).toHaveBeenCalledTimes(3);
+    expect(storedJob().recovery.route).toBeUndefined();
+  });
+
+  it("puts a recovered job back on the host's clock: a claim the host never settles times out", async () => {
+    armSeams();
+    vi.useFakeTimers();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    const funding = await import("@getsome/funding");
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.fundsSeenAt = Date.now();
+      state.xcmSubmitted = true;
+      state.sentToPeople = SETTLE;
+      throw new funding.FundingTrappedError(SETTLE, hash32(0xab), hash32(0x07));
+    });
+    await engine.tickAllFunding();
+    mocks.tickRecovery.mockImplementationOnce(async (_input, state) => {
+      state.feeCash = 123_456n;
+      state.attempts = 1;
+      return { step: "done", held: SETTLE, feeCash: 123_456n };
+    });
+    mocks.settlementBalance.mockResolvedValue(SETTLE);
+    mocks.registerTopUp.mockResolvedValue(undefined);
+    await engine.tickAllFunding();
+    expect(storedJob()).toMatchObject({ phase: "done", claim: { phase: "claiming" } });
+    pushStatus({ type: "claiming" });
+
+    // Past the tracking window with no verdict, the job fails as any other would.
+    vi.advanceTimersByTime(5_400_000 + 30_000);
+    await engine.tickAllFunding();
+    expect(storedJob()).toMatchObject({ phase: "failed", failure: "timeout" });
+    expect(storedJob().lastError).toContain("has not settled");
+  });
+
   it("records a host that routed the wrong chain as the job's error, and retries next wake", async () => {
     armSeams();
     mocks.getHostProvider.mockImplementation(async () => ({ genesis: OTHER_GENESIS }));

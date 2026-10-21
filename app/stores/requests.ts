@@ -41,6 +41,7 @@ import {
   isTopUp,
   isWithdrawSourceId,
   isWithdrawal,
+  paymentOutOfRound,
   paymentTaken,
   paymentWatchUntil,
   railProviderOf,
@@ -53,6 +54,7 @@ import {
   type ConvertedTx,
   type DepositInBlock,
   type Freshness,
+  type HostPayment,
   type HostPaymentStatus,
   type MeldSaleReading,
   type Observation,
@@ -391,6 +393,7 @@ type WorkerJob = {
   trap?: { amount?: unknown; at?: unknown; claimerHex?: unknown } | null;
   recovery?: {
     phase?: unknown;
+    round?: unknown;
     askCash?: unknown;
     minimums?: { minimums?: Record<string, unknown> | null } | null;
     deposit?: unknown;
@@ -488,6 +491,7 @@ function recoveryOf(job: WorkerJob): WorkerRecoveryView | undefined {
     trappedAt: trap.at,
     claimerHex: trap.claimerHex,
     phase,
+    round: isNumber(recovery?.round) ? recovery.round : 0,
     ...(isString(recovery?.askCash) ? { askCash: recovery.askCash } : {}),
     ...(minimums === undefined ? {} : { minimums }),
     ...(isString(recovery?.deposit) ? { deposit: recovery.deposit } : {}),
@@ -1709,12 +1713,17 @@ export const useRequestsStore = defineStore("requests", () => {
     return true;
   }
 
+  /** The top-ups whose claim fee the page is asking the host for right now: their stamps are
+   *  answered by the request itself, not read back meanwhile. */
+  const recoveryAsks = new Set<RequestKey>();
+
   /**
    * Asks the purse for a trapped top-up's claim fee, under an id derived from the top-up's own key
    * and the attempt, stamped on the record before the host is asked. The host shows its sheets
    * to the page and answers through the request itself: a refusal is applied as the host's word,
    * so the journey says so and offers the other way; the Cash reaching the account is the
-   * worker's to report. A refused attempt is followed by the next.
+   * worker's to report. A refused attempt, or one the worker's round has moved past, is followed
+   * by the next; one the host turned out not to know is asked again under its own id.
    */
   async function requestRecoveryPayment(
     ref: RequestRef,
@@ -1729,20 +1738,25 @@ export const useRequestsStore = defineStore("requests", () => {
     }
     if (!isHosted())
       return { ok: false, reason: "Only the Polkadot App can pay from the balance." };
+    const key = requestRefKey(ref);
+    if (recoveryAsks.has(key)) return { ok: false, reason: "Your balance is already being asked." };
     const previous = recovery.payment;
     const attempt =
       previous === undefined
         ? 0
-        : previous.status === "failed"
+        : previous.status === "failed" || paymentOutOfRound(recovery)
           ? previous.attempt + 1
           : previous.attempt;
     const idHex = recoveryPaymentIdFor(recovery.claimerHex, attempt);
+    // The ask is on record before the stamp, so no poll reads the host between the two.
+    recoveryAsks.add(key);
     await observe(ref, {
       source: "user",
       at: requestsNow(),
       event: "payment-requested",
       attempt,
       id: idHex,
+      round: recovery.round,
     });
     // The stamp is the record's word that the purse may be asked.
     const stamped = get(ref);
@@ -1752,13 +1766,15 @@ export const useRequestsStore = defineStore("requests", () => {
       stamped.recovery?.payment?.attempt !== attempt ||
       stamped.recovery.payment.requestedAt === undefined
     ) {
+      recoveryAsks.delete(key);
       return { ok: false, reason: "The top-up is no longer waiting for the fee." };
     }
     const burnerAddress =
       record.handoff?.burnerAddress ?? record.deposit?.address ?? record.depositAddress ?? "";
     const live = await import("~~/lib/withdraw-live");
     // The request resolves after the user's decision on the host's sheets, so it is started and
-    // left to run; both answers reach the record as the host's word.
+    // left to run; both answers reach the record as the host's word, and the host's status is
+    // read back from then on until it is final.
     void live
       .requestKeyPayment({
         idHex,
@@ -1773,13 +1789,18 @@ export const useRequestsStore = defineStore("requests", () => {
         }),
       )
       .catch(async (e: unknown) => {
-        const reason = e instanceof live.PaymentRefusedError ? e.message : messageOf(e);
-        console.warn(`[requests] recovery fee for ${requestRefKey(ref)} refused: ${reason}`);
+        const refused = e instanceof live.PaymentRefusedError;
+        const reason = refused ? e.message : messageOf(e);
+        console.warn(`[requests] recovery fee for ${key} refused: ${reason}`);
         await observe(ref, {
           source: "host",
           at: requestsNow(),
-          payment: { attempt, status: "failed", reason },
+          payment: { attempt, status: "failed", reason, refusal: refused ? e.refusal : "other" },
         });
+      })
+      .finally(() => {
+        recoveryAsks.delete(key);
+        syncPaymentPoll();
       });
     return { ok: true };
   }
@@ -1809,14 +1830,33 @@ export const useRequestsStore = defineStore("requests", () => {
     });
   }
 
-  /** One read of the host's word on a withdrawal's payment, applied as the host's observation.
-   *  Nothing to read before a prompt; a read that fails changes nothing. */
+  /** The host payment whose word is still pending for `record`, under a known id: a
+   *  withdrawal's while it awaits its payment; a trapped top-up's claim fee while the host has
+   *  not answered finally, unless the page is asking for it right now. */
+  function pendingHostPayment(record: RequestRecord): HostPayment | null {
+    if (isWithdrawal(record)) {
+      return record.status.kind === "awaiting-payment" && record.payment.id !== undefined
+        ? record.payment
+        : null;
+    }
+    const payment = record.recovery?.payment;
+    if (record.status.kind !== "recovering" || payment?.id === undefined) return null;
+    if (payment.status !== undefined && payment.status !== "processing") return null;
+    return recoveryAsks.has(requestRefKey(record.ref)) ? null : payment;
+  }
+
+  /** One read of the host's word on a payment, applied as the host's observation. Nothing to
+   *  read before a prompt; a read that fails changes nothing. */
   async function observePaymentStatus(ref: RequestRef): Promise<"ok" | "skipped" | "failed"> {
     const record = get(ref);
-    if (record === undefined || !isWithdrawal(record) || record.payment.id === undefined) {
-      return "skipped";
-    }
-    const { attempt, id } = record.payment;
+    const payment =
+      record === undefined
+        ? undefined
+        : isWithdrawal(record)
+          ? record.payment
+          : record.recovery?.payment;
+    if (payment?.id === undefined) return "skipped";
+    const { attempt, id } = payment;
     const at = requestsNow();
     try {
       const { readPaymentStatus } = await import("~~/lib/withdraw-live");
@@ -2242,32 +2282,32 @@ export const useRequestsStore = defineStore("requests", () => {
     });
   }
 
-  // The payment poll: while the withdrawal on screen awaits its payment and the host's id is
-  // known, the host's status is read every PAYMENT_POLL_MS, one read at a time. The key's CASH is
-  // the worker's to see; this poll only brings the host's own word forward.
+  // The payment poll: while the request on screen has a host payment pending under a known id,
+  // a withdrawal's or a trapped top-up's claim fee, the host's status is read every
+  // PAYMENT_POLL_MS, one read at a time. The key's CASH is the worker's to see; this poll only
+  // brings the host's own word forward.
   let paymentPoll: { key: RequestKey; timer: ReturnType<typeof setTimeout> | null } | null = null;
-  const foregroundAwaitingPayment = (): WithdrawalRecord | null => {
-    const record = foregroundWithdrawal.value;
-    return record !== null &&
-      record.status.kind === "awaiting-payment" &&
-      record.payment.id !== undefined
-      ? record
-      : null;
+  const foregroundAwaitingPayment = (): { ref: RequestRef; payment: HostPayment } | null => {
+    const record = foregroundRecord.value;
+    if (record === null) return null;
+    const payment = pendingHostPayment(record);
+    return payment === null ? null : { ref: record.ref, payment };
   };
   function startPaymentPoll(): void {
     if (sandboxed.value) return;
-    const record = foregroundAwaitingPayment();
-    if (record === null) return;
-    const key = requestRefKey(record.ref);
+    const pending = foregroundAwaitingPayment();
+    if (pending === null) return;
+    const key = requestRefKey(pending.ref);
     if (paymentPoll?.key === key) return;
     stopPaymentPoll();
     const poll = { key, timer: null as ReturnType<typeof setTimeout> | null };
     paymentPoll = poll;
     const tick = async (): Promise<void> => {
       if (paymentPoll !== poll) return;
-      await observePaymentStatus(record.ref);
+      await observePaymentStatus(pending.ref);
       if (paymentPoll !== poll) return;
-      if (foregroundAwaitingPayment()?.ref !== record.ref) {
+      const still = foregroundAwaitingPayment();
+      if (still === null || requestRefKey(still.ref) !== key) {
         stopPaymentPoll();
         return;
       }
@@ -2364,16 +2404,15 @@ export const useRequestsStore = defineStore("requests", () => {
     via: "probe",
   });
 
-  /** Reconcile's host step, hosted only: one status read for every withdrawal off screen that
-   *  awaits its payment under a known id. The foreground's own poll covers the one on screen. */
+  /** Reconcile's host step, hosted only: one status read for every request off screen with a
+   *  host payment pending under a known id, a withdrawal's or a trapped top-up's claim fee. The
+   *  foreground's own poll covers the one on screen. */
   async function readPaymentStatuses(): Promise<void> {
     if (sandboxed.value) return;
     if (!isHosted()) return;
-    const pending = withdrawals.value.filter(
+    const pending = records.value.filter(
       (record) =>
-        record.status.kind === "awaiting-payment" &&
-        record.payment.id !== undefined &&
-        requestRefKey(record.ref) !== foreground.value,
+        pendingHostPayment(record) !== null && requestRefKey(record.ref) !== foreground.value,
     );
     await inParallel(pending, MELD_READ_PARALLELISM, async (record) => {
       await observePaymentStatus(record.ref);

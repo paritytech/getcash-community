@@ -1423,6 +1423,7 @@ function trapped(
         trappedAt: at,
         claimerHex: `0x${"07".repeat(32)}`,
         phase,
+        round: 0,
         askCash: "10000",
         minimums: { PAS: "900000000", DOTUSD: "600000", USDT: "650000", USDC: "650000" },
         ...extra,

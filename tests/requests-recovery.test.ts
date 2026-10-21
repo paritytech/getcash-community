@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { migrateRecord } from "../app/funding/requests/migrate";
 import {
+  paymentOutOfRound,
   setRequestsClock,
   topUpRankOf,
   type Observation,
@@ -48,6 +49,7 @@ const view = (overrides: Partial<WorkerRecoveryView> = {}): WorkerRecoveryView =
   trappedAt: at(2),
   claimerHex: CLAIMER,
   phase: "funding",
+  round: 0,
   askCash: "10000",
   minimums: { PAS: "900000000", DOTUSD: "600000", USDT: null, USDC: "650000" },
   ...overrides,
@@ -89,7 +91,12 @@ const refused = (record: TopUpRecord, attempt = 0): TopUpRecord =>
   reduce(record, {
     source: "host",
     at: at(4),
-    payment: { attempt, status: "failed", reason: "The balance does not cover this fee." },
+    payment: {
+      attempt,
+      status: "failed",
+      reason: "The balance does not cover this fee.",
+      refusal: "insufficient-balance",
+    },
   }) as TopUpRecord;
 
 describe("the reducer", () => {
@@ -100,6 +107,7 @@ describe("the reducer", () => {
       trappedAmount: "25000000",
       trappedAt: at(2),
       claimerHex: CLAIMER,
+      round: 0,
       askCash: "10000",
       minimums: { PAS: "900000000", DOTUSD: "600000", USDT: null, USDC: "650000" },
     });
@@ -128,6 +136,7 @@ describe("the reducer", () => {
       attempt: 0,
       requestedAt: at(3),
       id: recoveryPaymentIdFor(CLAIMER, 0),
+      round: 0,
     });
     // The same attempt is stamped once.
     expect(requested(asked)).toBe(asked);
@@ -136,6 +145,7 @@ describe("the reducer", () => {
       attempt: 0,
       status: "failed",
       reason: "The balance does not cover this fee.",
+      refusal: "insufficient-balance",
       updatedAt: at(4),
     });
     expect(declined.status.kind).toBe("recovering");
@@ -147,6 +157,38 @@ describe("the reducer", () => {
     // A later worker read keeps the payment beside its own facts.
     const read = reduce(again, { ...trappedJob(view()), at: at(5) }) as TopUpRecord;
     expect(read.recovery?.payment?.attempt).toBe(1);
+  });
+
+  it("asks again under the same id an attempt the host turned out not to know", () => {
+    const asked = requested(trapped());
+    const unknown = reduce(asked, {
+      source: "host",
+      at: at(4),
+      payment: { attempt: 0, status: "not-found" },
+    }) as TopUpRecord;
+    expect(unknown.recovery?.payment?.status).toBe("not-found");
+    const again = reduce(unknown, {
+      source: "user",
+      at: at(5),
+      event: "payment-requested",
+      attempt: 0,
+      id: recoveryPaymentIdFor(CLAIMER, 0),
+    }) as TopUpRecord;
+    expect(again.recovery?.payment).toEqual({
+      attempt: 0,
+      requestedAt: at(5),
+      id: recoveryPaymentIdFor(CLAIMER, 0),
+      round: 0,
+    });
+  });
+
+  it("keeps a payment's round, and reads one the worker moved past as out of its round", () => {
+    const asked = requested(trapped());
+    expect(paymentOutOfRound(asked.recovery!)).toBe(false);
+    const moved = reduce(asked, { ...trappedJob(view({ round: 1 })), at: at(5) }) as TopUpRecord;
+    expect(moved.recovery?.round).toBe(1);
+    expect(moved.recovery?.payment?.round).toBe(0);
+    expect(paymentOutOfRound(moved.recovery!)).toBe(true);
   });
 
   it("is neither cancelled nor expired while the trap stands", () => {
@@ -201,24 +243,86 @@ describe("the timeline", () => {
     });
   });
 
-  it("names the fee as small until the worker sized it", () => {
+  it("offers nothing until the worker sized the fee", () => {
     const timeline = timelineOf(trapped(view({ askCash: undefined })));
-    expect(timeline?.detail).toBe("Pay the recovery fee from your balance to get it back.");
+    expect(timeline?.message?.text).toBe("Your Cash got stuck on the way to your balance.");
+    expect(timeline?.detail).toBe("Working out the recovery fee.");
+    expect(timeline?.recovery?.actions).toEqual([]);
+    expect(listHeadline("crypto", timeline)).toEqual({
+      text: "Recovering your Cash",
+      delayed: true,
+    });
   });
 
-  it("waits quietly once the purse was asked, and offers the deposit first once it refused", () => {
+  it("waits quietly once the purse was asked, and offers the deposit first once the balance fell short", () => {
     const asked = timelineOf(requested(trapped()));
     expect(asked?.message?.text).toBe("Recovering your Cash");
     expect(asked?.detail).toBe("The fee is on its way from your balance.");
     expect(asked?.recovery?.actions).toEqual([]);
     expect(listHeadline("crypto", asked)).toEqual({ text: "Recovering your Cash", delayed: true });
 
-    const declined = timelineOf(refused(requested(trapped())));
-    expect(declined?.message?.text).toBe("Your balance couldn't cover the recovery fee.");
-    expect(declined?.detail).toBe(
+    const short = timelineOf(refused(requested(trapped())));
+    expect(short?.message?.text).toBe("Your balance couldn't cover the recovery fee.");
+    expect(short?.detail).toBe(
       "Send a small deposit to this top-up's address to cover it, or try again once you have Cash.",
     );
-    expect(declined?.recovery?.actions).toEqual([SEND_DEPOSIT, FROM_BALANCE_AGAIN]);
+    expect(short?.recovery?.actions).toEqual([SEND_DEPOSIT, FROM_BALANCE_AGAIN]);
+  });
+
+  it("offers the purse first again when the sheet was declined, or the host failed otherwise", () => {
+    const declined = timelineOf(
+      reduce(requested(trapped()), {
+        source: "host",
+        at: at(4),
+        payment: { attempt: 0, status: "failed", reason: "declined", refusal: "declined" },
+      }),
+    );
+    expect(declined?.message?.text).toBe("You declined the fee payment.");
+    expect(declined?.detail).toBe(
+      "Try again, or send a small deposit to this top-up's address instead.",
+    );
+    expect(declined?.recovery?.actions).toEqual([FROM_BALANCE_AGAIN, SEND_DEPOSIT]);
+
+    const failed = timelineOf(
+      reduce(requested(trapped()), {
+        source: "host",
+        at: at(4),
+        payment: { attempt: 0, status: "failed", reason: "boom", refusal: "other" },
+      }),
+    );
+    expect(failed?.message?.text).toBe("The fee couldn't be paid from your balance.");
+    expect(failed?.recovery?.actions).toEqual([FROM_BALANCE_AGAIN, SEND_DEPOSIT]);
+  });
+
+  it("offers the purse again when the host does not know the payment it was asked for", () => {
+    const unknown = timelineOf(
+      reduce(requested(trapped()), {
+        source: "host",
+        at: at(4),
+        payment: { attempt: 0, status: "not-found" },
+      }),
+    );
+    expect(unknown?.detail).toBe(
+      "Pay the $0.01 Cash recovery fee from your balance to get it back.",
+    );
+    expect(unknown?.recovery?.actions).toEqual([FROM_BALANCE, SEND_DEPOSIT]);
+  });
+
+  it("asks for the fee again once the worker's round moved past the payment, paid or not", () => {
+    const paid = reduce(requested(trapped()), {
+      source: "host",
+      at: at(4),
+      payment: { attempt: 0, status: "completed" },
+    }) as TopUpRecord;
+    expect(timelineOf(paid)?.detail).toBe("The fee is on its way from your balance.");
+    const moved = timelineOf(
+      reduce(paid, { ...trappedJob(view({ round: 1, askCash: "20000" })), at: at(5) }),
+    );
+    expect(moved?.message?.text).toBe("The claim didn't go through.");
+    expect(moved?.detail).toBe(
+      "Another $0.02 Cash is needed. Pay it from your balance, or send a small deposit instead.",
+    );
+    expect(moved?.recovery?.actions).toEqual([FROM_BALANCE_AGAIN, SEND_DEPOSIT]);
   });
 
   it("says a deposit is being converted, then that the claim is on its way", () => {
@@ -281,6 +385,8 @@ describe("the store", () => {
             phase: "funding",
             feeCash: "9_876".replace("_", ""),
             askCash: "10000",
+            round: 1,
+            held: "0",
             attempts: 0,
             nonceAtClaim: null,
             sentAt: null,
@@ -305,6 +411,7 @@ describe("the store", () => {
       trappedAmount: "25000000",
       trappedAt: at(2),
       claimerHex: CLAIMER,
+      round: 1,
       askCash: "10000",
       minimums: { PAS: "900000000", DOTUSD: "600000", USDT: null, USDC: "650000" },
       deposit: "await-native",

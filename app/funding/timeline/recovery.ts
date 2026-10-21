@@ -3,7 +3,7 @@
 // say what is happening, and the buttons say what the buyer can do.
 
 import { cashInText, fmtCash } from "../../utils/cash";
-import type { TopUpRecord } from "../requests/model";
+import { paymentOutOfRound, type TopUpRecord } from "../requests/model";
 import { delay, type TimelineMessage } from "./route";
 
 /** A way to pay the claim's fee: from the purse, through the host's sheet, or by sending a
@@ -51,7 +51,24 @@ export function recoveryPrompt(record: TopUpRecord): RecoveryPrompt | undefined 
       actions: [],
     };
   }
-  if (payment?.requestedAt !== undefined && payment.status !== "failed") {
+  const fee = feeText(record);
+  // Nothing is offered before the worker has sized the fee: the first recovery tick does.
+  if (fee === undefined || recovery === undefined) {
+    return { message: delay(STUCK), detail: "Working out the recovery fee.", actions: [] };
+  }
+  // The worker moved past the round the purse paid in: a claim spent the fee, or it grew.
+  if (paymentOutOfRound(recovery)) {
+    return {
+      message: delay("The claim didn't go through."),
+      detail: `Another ${fee} is needed. Pay it from your balance, or send a small deposit instead.`,
+      actions: [FROM_BALANCE_AGAIN, SEND_DEPOSIT],
+    };
+  }
+  if (
+    payment?.requestedAt !== undefined &&
+    payment.status !== "failed" &&
+    payment.status !== "not-found"
+  ) {
     return {
       message: delay(RECOVERING),
       detail: "The fee is on its way from your balance.",
@@ -59,20 +76,28 @@ export function recoveryPrompt(record: TopUpRecord): RecoveryPrompt | undefined 
     };
   }
   if (payment?.status === "failed") {
+    if (payment.refusal === "insufficient-balance") {
+      return {
+        message: delay("Your balance couldn't cover the recovery fee."),
+        detail:
+          "Send a small deposit to this top-up's address to cover it, or try again once you have Cash.",
+        actions: [SEND_DEPOSIT, FROM_BALANCE_AGAIN],
+      };
+    }
     return {
-      message: delay("Your balance couldn't cover the recovery fee."),
-      detail:
-        "Send a small deposit to this top-up's address to cover it, or try again once you have Cash.",
-      actions: [SEND_DEPOSIT, FROM_BALANCE_AGAIN],
+      message: delay(
+        payment.refusal === "declined"
+          ? "You declined the fee payment."
+          : "The fee couldn't be paid from your balance.",
+      ),
+      detail: "Try again, or send a small deposit to this top-up's address instead.",
+      actions: [FROM_BALANCE_AGAIN, SEND_DEPOSIT],
     };
   }
-  const fee = feeText(record);
+  // Never asked, or asked of a host that turned out not to know the payment.
   return {
     message: delay(STUCK),
-    detail:
-      fee === undefined
-        ? "Pay the recovery fee from your balance to get it back."
-        : `Pay the ${fee} recovery fee from your balance to get it back.`,
+    detail: `Pay the ${fee} recovery fee from your balance to get it back.`,
     actions: [FROM_BALANCE, SEND_DEPOSIT],
   };
 }

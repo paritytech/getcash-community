@@ -2,11 +2,13 @@
 // the fee in CASH, a lost answer settled from the trap's count, and nothing sent twice.
 
 import { TOKENS } from "@getsome/core";
+import { InvalidTxError } from "polkadot-api";
 import { describe, expect, it } from "vitest";
 import { withFeeMargin } from "./funding-program";
 import {
   CLAIM_RESEND_MS,
   freshRecoveryState,
+  nativeFeeInCash,
   PEOPLE_CASH_TX_OPTIONS,
   tickRecovery,
   type RecoveryTickInput,
@@ -15,16 +17,26 @@ import {
 const ADDRESS = "5Burner";
 const CLAIMER_HEX = `0x${"07".repeat(32)}`;
 const TRAP = { amount: 5_100_000n, key: `0x${"ab".repeat(32)}` as const };
-/** The claim's fee in CASH as People prices it. */
-const FEE = 12_345n;
+/** People's rate for CASH: 2500 native units to one CASH unit, as a fixed-point number. */
+const RATE = 2_500n * 10n ** 18n;
+/** The claim's fee as People estimates it, in the native. */
+const FEE_NATIVE = 30_862_500n;
+/** The same fee in CASH, as the fee payment charges it. */
+const FEE = nativeFeeInCash(FEE_NATIVE, RATE);
 const TX_HASH = `0x${"55".repeat(32)}`;
 
-type Submit = "ok" | "rejected" | "lost";
+type Submit = "ok" | "rejected" | "lost" | "invalid";
 
-/** People as the recovery sees it: the trap's count, the burner's CASH and nonce, and the claim
- *  as a transaction that prices, dry-runs and submits. */
+/** People as the recovery sees it: the trap's count, the burner's CASH and nonce, the rate, and
+ *  the claim as a transaction that prices, dry-runs and submits. */
 function scriptedPeople(opts: { count: number; cash: bigint; dryRunRefuses?: boolean }) {
-  const state = { count: opts.count, cash: opts.cash, nonce: 3, submit: "ok" as Submit };
+  const state = {
+    count: opts.count,
+    cash: opts.cash,
+    nonce: 3,
+    submit: "ok" as Submit,
+    feeNative: FEE_NATIVE,
+  };
   const seen = {
     feeReads: [] as Array<[string, unknown]>,
     dryRuns: [] as Array<[unknown, unknown]>,
@@ -34,6 +46,7 @@ function scriptedPeople(opts: { count: number; cash: bigint; dryRunRefuses?: boo
   const api = {
     query: {
       PolkadotXcm: { AssetTraps: { getValue: async () => state.count } },
+      AssetRate: { ConversionRateToNative: { getValue: async () => RATE } },
     },
     apis: {
       AccountNonceApi: { account_nonce: async () => state.nonce },
@@ -69,11 +82,14 @@ function scriptedPeople(opts: { count: number; cash: bigint; dryRunRefuses?: boo
             decodedCall: { type: "PolkadotXcm", value: { type: "claim_assets", value: args } },
             getEstimatedFees: async (from: string, options: unknown) => {
               seen.feeReads.push([from, options]);
-              return FEE;
+              return state.feeNative;
             },
             signAndSubmit: async (_signer: unknown, options: unknown) => {
               seen.submits.push(options);
               if (state.submit === "lost") return new Promise<never>(() => {});
+              if (state.submit === "invalid") {
+                throw new InvalidTxError({ type: "Invalid", value: { type: "Payment" } });
+              }
               state.nonce += 1;
               if (state.submit === "rejected") {
                 return {
@@ -125,13 +141,26 @@ function tick(
   return { outcome, state, txs };
 }
 
+describe("nativeFeeInCash", () => {
+  it("divides the native fee by People's rate, rounding up where the chain rounds down", () => {
+    expect(nativeFeeInCash(17_722_807n, RATE)).toBe(7_090n);
+    expect(nativeFeeInCash(2_500n, RATE)).toBe(1n);
+    expect(nativeFeeInCash(2_501n, RATE)).toBe(2n);
+    expect(nativeFeeInCash(0n, RATE)).toBe(0n);
+    expect(() => nativeFeeInCash(1n, 0n)).toThrow(/rate for CASH is zero/);
+  });
+});
+
 describe("tickRecovery", () => {
-  it("waits for the fee: sizes it once with the margin, in CASH, and sends nothing while the burner holds less", async () => {
+  it("waits for the fee: sizes it once with the margin, in CASH off the native estimate and the rate, and sends nothing while the burner holds less", async () => {
     const world = scriptedPeople({ count: 1, cash: 0n });
     const { outcome, state } = tick(world);
+    expect(FEE).toBe(12_345n);
     expect(await outcome).toEqual({ step: "funding", held: 0n, feeCash: withFeeMargin(FEE) });
     expect(state.feeCash).toBe(withFeeMargin(FEE));
-    expect(world.seen.feeReads).toEqual([[ADDRESS, { asset: TOKENS.CASH.locationOnPeople }]]);
+    expect(state.held).toBe(0n);
+    // Priced on the exact transaction as it will be signed, fee asset and extension included.
+    expect(world.seen.feeReads).toEqual([[ADDRESS, PEOPLE_CASH_TX_OPTIONS]]);
     // Sized once: the next tick keeps the figure.
     world.state.cash = withFeeMargin(FEE) - 1n;
     expect((await tick(world, state).outcome).step).toBe("funding");
@@ -181,10 +210,19 @@ describe("tickRecovery", () => {
     expect(world.seen.submits).toEqual([PEOPLE_CASH_TX_OPTIONS]);
     // The nonce and the time are on record before the broadcast leaves, and let go after.
     expect(before).toEqual([
-      { feeCash: withFeeMargin(FEE), attempts: 1, nonceAtClaim: 3, claimSentAt: 1_000_000 },
+      {
+        feeCash: withFeeMargin(FEE),
+        round: 0,
+        held: withFeeMargin(FEE),
+        attempts: 1,
+        nonceAtClaim: 3,
+        claimSentAt: 1_000_000,
+      },
     ]);
     expect(state).toEqual({
       feeCash: withFeeMargin(FEE),
+      round: 0,
+      held: withFeeMargin(FEE) + TRAP.amount - FEE,
       attempts: 1,
       nonceAtClaim: null,
       claimSentAt: null,
@@ -235,16 +273,58 @@ describe("tickRecovery", () => {
     expect(world.seen.submits).toHaveLength(1);
   });
 
-  it("a rejected claim fails the tick with People's answer and clears the way for a retry", async () => {
+  it("a rejected claim fails the tick with People's answer, moves the round on and clears the way for a retry", async () => {
     const world = scriptedPeople({ count: 1, cash: withFeeMargin(FEE) });
     world.state.submit = "rejected";
     const state = freshRecoveryState();
     const { outcome, txs } = tick(world, state);
     await expect(outcome).rejects.toThrow(/claim rejected: .*UnknownClaim/);
     expect(txs).toEqual([{ call: "claim", txHash: TX_HASH, block: 7, ok: false }]);
-    expect(state).toMatchObject({ attempts: 1, nonceAtClaim: null, claimSentAt: null });
+    expect(state).toMatchObject({ attempts: 1, round: 1, nonceAtClaim: null, claimSentAt: null });
     world.state.submit = "ok";
     expect((await tick(world, state).outcome).step).toBe("done");
     expect(state.attempts).toBe(2);
+    expect(state.round).toBe(1);
+  });
+
+  it("a claim the pool refuses was never sent: the marker is let go and the fee sized again, the round moving on only when it grew past what is held", async () => {
+    const world = scriptedPeople({ count: 1, cash: withFeeMargin(FEE) });
+    world.state.submit = "invalid";
+    const state = freshRecoveryState();
+    const { outcome, txs } = tick(world, state);
+    await expect(outcome).rejects.toBeInstanceOf(InvalidTxError);
+    expect(txs).toEqual([]);
+    expect(state).toMatchObject({
+      feeCash: withFeeMargin(FEE),
+      round: 0,
+      attempts: 0,
+      nonceAtClaim: null,
+      claimSentAt: null,
+    });
+    expect(world.seen.feeReads).toHaveLength(2);
+
+    // The fee grew past the burner's CASH: the new figure is kept and the round moves on, so
+    // the next tick waits for the rest.
+    world.state.feeNative = FEE_NATIVE * 2n;
+    await expect(tick(world, state).outcome).rejects.toBeInstanceOf(InvalidTxError);
+    const grown = withFeeMargin(nativeFeeInCash(FEE_NATIVE * 2n, RATE));
+    expect(state).toMatchObject({ feeCash: grown, round: 1, attempts: 0, nonceAtClaim: null });
+    world.state.submit = "ok";
+    expect((await tick(world, state).outcome).step).toBe("funding");
+    expect(world.seen.submits).toHaveLength(2);
+
+    // Topped up to the new figure, the claim goes through.
+    world.state.cash = grown;
+    expect((await tick(world, state).outcome).step).toBe("done");
+    expect(state.round).toBe(1);
+  });
+
+  it("keeps the marker on a submit that failed otherwise: the claim may be in flight", async () => {
+    const world = scriptedPeople({ count: 1, cash: withFeeMargin(FEE) });
+    world.state.submit = "lost";
+    const state = freshRecoveryState();
+    await expect(tick(world, state).outcome).rejects.toThrow(/claim submit timed out/);
+    expect(state).toMatchObject({ attempts: 1, round: 0, nonceAtClaim: 3 });
+    expect(world.seen.feeReads).toHaveLength(1);
   });
 });

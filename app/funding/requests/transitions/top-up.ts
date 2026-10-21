@@ -623,15 +623,26 @@ function applyUser(record: TopUpRecord, observation: UserObservation): TopUpReco
       );
     }
     case "payment-requested": {
-      // The purse is asked for the claim's fee: the attempt and its id are stamped before the
-      // host is, as a withdrawal stamps its payment.
+      // The purse is asked for the claim's fee: the attempt, its id and the fee's round are
+      // stamped before the host is, as a withdrawal stamps its payment. An attempt the host
+      // turned out not to know is asked again under the same id, and its stamp starts over.
       const { attempt, id } = observation;
       const { recovery } = record;
       if (record.status.kind !== "recovering" || recovery === undefined) return record;
       const current = recovery.payment;
       if (current !== undefined && attempt < current.attempt) return record;
-      if (current?.attempt === attempt && current.requestedAt !== undefined) return record;
-      return { ...record, recovery: { ...recovery, payment: { attempt, requestedAt: at, id } } };
+      if (
+        current?.attempt === attempt &&
+        current.requestedAt !== undefined &&
+        current.status !== "not-found"
+      ) {
+        return record;
+      }
+      const round = observation.round ?? recovery.round;
+      return {
+        ...record,
+        recovery: { ...recovery, payment: { attempt, requestedAt: at, id, round } },
+      };
     }
     case "channel-opened":
     case "swap-opened":
@@ -647,11 +658,16 @@ function applyHost(record: TopUpRecord, observation: HostObservation): TopUpReco
   const next = witnessed(record, { host: { status: payment.status, at } });
   const { recovery } = next;
   if (recovery?.payment === undefined || payment.attempt !== recovery.payment.attempt) return next;
+  // The host's final word stands: a registration that arrives after it changes nothing.
+  const current = recovery.payment.status;
+  const final = current === "completed" || current === "failed" || current === "partiallyClaimed";
+  if (final && payment.status === "processing") return next;
   const updated: HostPayment = {
     ...recovery.payment,
     status: payment.status,
     updatedAt: at,
     ...(payment.reason === undefined ? {} : { reason: payment.reason }),
+    ...(payment.refusal === undefined ? {} : { refusal: payment.refusal }),
     ...(payment.actualClaimed === undefined ? {} : { actualClaimed: payment.actualClaimed }),
   };
   return { ...next, recovery: { ...recovery, payment: updated } };

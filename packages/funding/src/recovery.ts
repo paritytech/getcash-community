@@ -14,10 +14,15 @@
 // has passed for a dropped submit to be out of its mortality. Two claims for one trap would have
 // the second refused with its fee gone, so one waits on the other.
 //
-// THE FEE IS SIZED ONCE, WITH THE MARGIN. The page asks the purse for it, rounded up to what the
-// host can pay; what the fee does not take lands in the purse with the recovered CASH.
+// THE FEE IS SIZED ONCE, WITH THE MARGIN, IN CASH. The chain prices a transaction in the native
+// and charges the CASH that its asset rate makes of it; the estimate here follows the same two
+// steps. The page asks the purse for it, rounded up to what the host can pay; what the fee does
+// not take lands in the purse with the recovered CASH. The fee is sized again only when People's
+// pool refuses the claim, which is how a fee grown past the margin shows; the round then moves
+// on, so the surface knows a payment made before it no longer counts. A claim rejected at
+// inclusion spends the fee and moves the round on the same way.
 
-import type { PolkadotSigner } from "polkadot-api";
+import { InvalidTxError, type PolkadotSigner } from "polkadot-api";
 import { TOKENS } from "@getsome/core";
 import { describeDispatchError } from "./dispatch-error";
 import { withFeeMargin, type PeopleApi } from "./funding-program";
@@ -41,6 +46,11 @@ export const CLAIM_RESEND_MS = 10 * 60_000;
 export interface RecoveryState {
   /** The claim's fee in CASH with the margin, sized once; what the burner must hold. */
   feeCash: bigint | null;
+  /** The fee's round: it moves on when a claim spent the fee or the fee grew, so a payment made
+   *  in an earlier round no longer counts. */
+  round: number;
+  /** The burner's CASH on People at the last read; null before the first. */
+  held: bigint | null;
   /** Claims sent so far, rejected ones included. */
   attempts: number;
   /** The burner's nonce on People when the last claim was sent; null while none is owed an
@@ -52,6 +62,8 @@ export interface RecoveryState {
 
 export const freshRecoveryState = (): RecoveryState => ({
   feeCash: null,
+  round: 0,
+  held: null,
   attempts: 0,
   nonceAtClaim: null,
   claimSentAt: null,
@@ -108,17 +120,36 @@ export function buildClaim(peopleApi: PeopleApi, claimerHex: string, trap: Trap)
   } as never);
 }
 
-/** The claim's fee in CASH, with the margin on top. */
+/** The scale of People's asset rate, a fixed-point number with 18 places. */
+const RATE_ONE = 10n ** 18n;
+
+/** A native fee as the CASH People charges for it: divided by the rate, rounded up where the
+ *  chain rounds down, so the estimate never comes in under the charge. */
+export function nativeFeeInCash(native: bigint, rate: bigint): bigint {
+  if (rate <= 0n) throw new Error("claim fee: People's rate for CASH is zero");
+  return (native * RATE_ONE + rate - 1n) / rate;
+}
+
+/** The claim's fee in CASH, with the margin on top: the chain's own native estimate for the
+ *  exact transaction, made CASH by the asset rate the fee payment uses. */
 export async function sizeClaimFee(
   peopleApi: PeopleApi,
   address: string,
   claimerHex: string,
   trap: Trap,
 ): Promise<bigint> {
-  const fee = await buildClaim(peopleApi, claimerHex, trap).getEstimatedFees(address, {
-    asset: PEOPLE_CASH_TX_OPTIONS.asset,
-  } as never);
-  return withFeeMargin(fee);
+  const [native, rate] = await Promise.all([
+    buildClaim(peopleApi, claimerHex, trap).getEstimatedFees(
+      address,
+      PEOPLE_CASH_TX_OPTIONS as never,
+    ),
+    peopleApi.query.AssetRate.ConversionRateToNative.getValue(
+      TOKENS.CASH.locationOnPeople as never,
+      { at: "best" },
+    ),
+  ]);
+  if (rate === undefined) throw new Error("claim fee: People has no rate for CASH");
+  return withFeeMargin(nativeFeeInCash(native, rate));
 }
 
 /**
@@ -142,6 +173,7 @@ export async function tickRecovery(
   }
   const feeCash = state.feeCash;
   const held = await read(input.readCashOnPeople(address, "best"), "burner CASH read");
+  state.held = held;
   if (count === 0) {
     state.nonceAtClaim = null;
     state.claimSentAt = null;
@@ -181,23 +213,43 @@ export async function tickRecovery(
   state.claimSentAt = input.now();
   state.attempts += 1;
   await input.onBeforeSubmit?.();
-  const res = await bounded(
-    claim.signAndSubmit(input.signer, PEOPLE_CASH_TX_OPTIONS as never),
-    input.submitTimeoutMs,
-    "claim submit",
-  );
+  let res;
+  try {
+    res = await bounded(
+      claim.signAndSubmit(input.signer, PEOPLE_CASH_TX_OPTIONS as never),
+      input.submitTimeoutMs,
+      "claim submit",
+    );
+  } catch (error) {
+    // The pool would not take it: nothing is in flight and nothing was spent. The usual cause is
+    // a fee grown past the sizing, so it is sized again; grown past what the burner holds, the
+    // round moves on and the shortfall is asked for.
+    if (error instanceof InvalidTxError) {
+      state.nonceAtClaim = null;
+      state.claimSentAt = null;
+      state.attempts -= 1;
+      const fresh = await read(sizeClaimFee(peopleApi, address, claimerHex, trap), "claim fee");
+      if (fresh > feeCash) {
+        state.feeCash = fresh;
+        if (held < fresh) state.round += 1;
+      }
+    }
+    // Any other answer, a timeout among them, may have left the claim in flight: the marker
+    // stands and the next tick settles it from the trap's count and the nonce.
+    throw error;
+  }
   input.onTx?.({ call: "claim", txHash: res.txHash, block: res.block?.number, ok: res.ok });
   if (!res.ok) {
-    // Refused at inclusion and the fee gone; the next tick reads the trap again and retries.
+    // Refused at inclusion and the fee gone: the round moves on, and the next tick reads the
+    // trap again and asks for the fee afresh.
     state.nonceAtClaim = null;
     state.claimSentAt = null;
+    state.round += 1;
     throw new Error(`claim rejected: ${describeDispatchError(res.dispatchError)}`);
   }
   state.nonceAtClaim = null;
   state.claimSentAt = null;
-  return {
-    step: "done",
-    held: await read(input.readCashOnPeople(address, "best"), "burner CASH read"),
-    feeCash,
-  };
+  const after = await read(input.readCashOnPeople(address, "best"), "burner CASH read");
+  state.held = after;
+  return { step: "done", held: after, feeCash };
 }

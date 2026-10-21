@@ -709,8 +709,9 @@ function accountWorkedTime(record, nowMs) {
  */
 function judgeBounds(record, nowMs, read) {
   if (record.phase === "failed") return;
-  // A trap never expires, and neither does the job that holds one.
-  if (record.trap) return;
+  // A trap never expires, and neither does the recovery of one; once claimed back, the job is
+  // on the host's clock as any other.
+  if (record.phase === "recovering") return;
   if (onTheClock(record) && (record.state.workedMs ?? 0) > RUN_TIMEOUT_MS) {
     const what = record.done ? "claim" : "conversion";
     fail(record, "timeout", `${what} exceeded ${RUN_TIMEOUT_MS}ms of worker time`);
@@ -966,15 +967,23 @@ async function recoverTrapped(record, env) {
   const kept = record.recovery ?? {};
   const state = freshRecoveryState();
   state.feeCash = kept.feeCash == null ? null : asBig(kept.feeCash);
+  state.round = kept.round ?? 0;
+  state.held = kept.held == null ? null : asBig(kept.held);
   state.attempts = kept.attempts ?? 0;
   state.nonceAtClaim = kept.nonceAtClaim ?? null;
   state.claimSentAt = kept.sentAt ?? null;
   const persist = (phase) => {
+    const fee = state.feeCash;
+    // What the purse is asked for: the fee less what the burner already holds, in whole units;
+    // the fee itself once the burner covers it.
+    const owed = fee === null ? null : fee - (state.held ?? 0n);
     record.recovery = {
       ...record.recovery,
       phase,
-      feeCash: state.feeCash === null ? null : state.feeCash.toString(),
-      askCash: state.feeCash === null ? null : roundUpToClaimUnit(state.feeCash).toString(),
+      feeCash: fee === null ? null : fee.toString(),
+      askCash: owed === null ? null : roundUpToClaimUnit(owed > 0n ? owed : fee).toString(),
+      round: state.round,
+      held: state.held === null ? null : state.held.toString(),
       attempts: state.attempts,
       nonceAtClaim: state.nonceAtClaim,
       sentAt: state.claimSentAt,
@@ -1079,6 +1088,20 @@ async function fundRecovery(record, env, feeCash) {
       },
     });
   } catch (error) {
+    // The conversion's own terminal answers end this deposit's attempt, not the recovery: the
+    // route and the conversion's state are let go, so the next tick looks for a deposit afresh
+    // and chooses its route again, and what ended it is kept for the surface. A deposit that
+    // was itself trapped stays in People's trap, for governance.
+    if (
+      error instanceof FundingHeldError ||
+      error instanceof FundingShortfallError ||
+      error instanceof FundingTrappedError
+    ) {
+      recovery.depositError = { message: String(error.message), at: Date.now() };
+      delete recovery.route;
+      delete recovery.state;
+      delete recovery.deposit;
+    }
     throw new Error(`recovery deposit: ${String(error?.message ?? error)}`);
   }
   recovery.deposit = outcome.step;

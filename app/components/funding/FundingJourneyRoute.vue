@@ -89,13 +89,23 @@ watch(
   },
 );
 
+/** A tap on the purse the store could not act on: said under the journey, until the record
+ *  moves or the buyer taps again. */
+const recoveryNotice = ref<string | null>(null);
+watch(
+  () => requests.foregroundRecord?.rev,
+  () => {
+    recoveryNotice.value = null;
+  },
+);
 /** Asks the purse for the claim's fee. A refusal reaches the journey as the host's word; a request
- *  that could not be made leaves the journey's offer standing for the next tap. */
+ *  that could not be made is said under the journey, its offer standing for the next tap. */
 async function recoverFromBalance() {
   const record = requests.foregroundRecord;
   if (record === null) return;
+  recoveryNotice.value = null;
   const asked = await requests.requestRecoveryPayment(record.ref);
-  if (!asked.ok) console.warn(`[funding] the recovery fee could not be asked for: ${asked.reason}`);
+  if (!asked.ok) recoveryNotice.value = asked.reason;
 }
 // Demo deck: a scene can land straight on the opened guide. Inert everywhere else.
 if (isDemoBuild()) {
@@ -239,6 +249,13 @@ onUnmounted(() => {
         />
         <!-- A cancel the adapter refused: the payment is already on its way and the request
              stands. -->
+        <p
+          v-if="recoveryNotice"
+          class="shrink-0 pb-6 text-center text-body-m text-fg-secondary"
+          role="status"
+        >
+          {{ recoveryNotice }}
+        </p>
         <p
           v-if="session.cancelNotice"
           class="shrink-0 pb-6 text-center text-body-m text-fg-secondary"

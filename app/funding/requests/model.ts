@@ -262,8 +262,11 @@ export interface WorkerRecoveryView {
   /** The top-up's own public key, the claimer the program named: what the purse pays. */
   claimerHex: string;
   phase: RecoveryStep | "done";
-  /** What the purse is asked for: the claim's fee with its margin, rounded up to the claim
-   *  unit. Absent until the worker sized it. */
+  /** The fee's round: it moves on when a claim spent the fee or the fee grew, so a payment
+   *  made in an earlier round no longer counts. */
+  round: number;
+  /** What the purse is asked for: the claim's fee with its margin less what the burner holds,
+   *  rounded up to the claim unit. Absent until the worker sized it. */
   askCash?: string;
   /** The least of each token to send to the top-up's own account instead, base units; null
    *  where the chain cannot price it today. */
@@ -314,6 +317,11 @@ export interface TopUpRecovery extends Omit<WorkerRecoveryView, "phase"> {
    *  stamped before the host is asked, as a withdrawal's payment is. */
   payment?: HostPayment;
 }
+
+/** The fee payment no longer counts: the worker's round moved past the one the purse was asked
+ *  in, so a claim spent the fee or the fee grew, and it is asked for again. */
+export const paymentOutOfRound = (recovery: TopUpRecovery): boolean =>
+  recovery.payment !== undefined && (recovery.payment.round ?? 0) < recovery.round;
 
 export interface TopUpRecord {
   schema: 2;
@@ -532,6 +540,10 @@ export interface WithdrawalFailure {
 export type HostPaymentStatus =
   "processing" | "completed" | "failed" | "partiallyClaimed" | "not-found";
 
+/** Why the host refused a payment request: the user declined its sheet, the balance did not
+ *  cover it, or something else. */
+export type PaymentRefusal = "declined" | "insufficient-balance" | "other";
+
 /** The purse's payment to the key. Each prompt is one attempt under an id the surface derives
  *  from the key and the attempt, stamped on the record before the host is asked, so the host can
  *  always be asked about it again. */
@@ -542,9 +554,14 @@ export interface HostPayment {
   id?: string;
   status?: HostPaymentStatus;
   reason?: string;
+  /** Why the host refused, with a failed status. */
+  refusal?: PaymentRefusal;
   /** Base units the host says reached the key when it paid short. */
   actualClaimed?: string;
   updatedAt?: number;
+  /** A trapped top-up's claim fee: the fee's round when the purse was asked. A round the worker
+   *  has moved past means the fee was spent or grew, and this payment no longer counts. */
+  round?: number;
 }
 
 /** What the worker needs to move a withdrawal, as the surface hands it over, plus what a record
@@ -846,10 +863,19 @@ export type Observation =
         attempt: number;
         status: HostPaymentStatus;
         reason?: string;
+        refusal?: PaymentRefusal;
         actualClaimed?: string;
       };
     }
-  | { source: "user"; at: number; event: "payment-requested"; attempt: number; id: string }
+  | {
+      source: "user";
+      at: number;
+      event: "payment-requested";
+      attempt: number;
+      id: string;
+      /** A trapped top-up's claim fee: the fee's round the purse is asked in. */
+      round?: number;
+    }
   /** The pool can no longer fund what a sale promised its provider, checked before the purse was
    *  asked; the sale ends with nothing taken. */
   | { source: "user"; at: number; event: "sale-unfundable" }
