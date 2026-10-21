@@ -684,10 +684,13 @@ export async function fundingStatus(params) {
 
 const hostOwnsClaim = (record) => record.claim?.phase === "claiming";
 
-/** True from the first tick that saw funds until the claim is registered with the host. */
+/** True from the first tick that saw funds until the claim is registered with the host. A
+ *  recovery waits on the buyer and on People, not on this worker, so its ticks are not worked
+ *  time: the clock stops at the trap and resumes with the claim. */
 const onTheClock = (record) =>
   !isFinished(record) &&
   !hostOwnsClaim(record) &&
+  record.phase !== "recovering" &&
   (record.done || record.state.fundsSeenAt !== null);
 
 /**
@@ -816,7 +819,7 @@ function restoreTickState(stored) {
   state.nonceAtSubmit = stored.nonceAtSubmit ?? null;
   state.inclusionBlock = stored.inclusionBlock ?? null;
   state.sentToPeople = stored.sentToPeople == null ? null : asBig(stored.sentToPeople);
-  state.earmarkCash = stored.earmarkCash == null ? null : asBig(stored.earmarkCash);
+  state.peopleFeeCash = stored.peopleFeeCash == null ? null : asBig(stored.peopleFeeCash);
   return state;
 }
 
@@ -832,7 +835,7 @@ function storeTickState(state) {
     nonceAtSubmit: state.nonceAtSubmit,
     inclusionBlock: state.inclusionBlock,
     sentToPeople: state.sentToPeople === null ? null : state.sentToPeople.toString(),
-    earmarkCash: state.earmarkCash === null ? null : state.earmarkCash.toString(),
+    peopleFeeCash: state.peopleFeeCash === null ? null : state.peopleFeeCash.toString(),
   };
 }
 
@@ -894,6 +897,7 @@ async function runConversion(record, env, job) {
         signer: burner.signer,
         beneficiaryHex: toHex(burner.publicKey),
         settleAmount: job.settleAmount,
+        remoteFeeBuffer: job.remoteFeeBuffer,
         peopleParaId: record.peopleParaId,
         // The Asset Hub this worker is built for, the same one CASH_SETTLEMENT points at.
         assetHubParaId: PASEO_ASSET_HUB_PARA_ID,

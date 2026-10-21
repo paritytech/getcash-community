@@ -594,7 +594,7 @@ export async function dryRunFundingProgram(args: {
   assetHubParaId: number;
   /** The least underlying that must reach the beneficiary. */
   mustLand: bigint;
-}): Promise<{ landed: bigint }> {
+}): Promise<DryRunLanding> {
   const call = args.call ?? args.api.tx.PolkadotXcm.execute(args.execArgs).decodedCall;
   const dr = await args.api.apis.DryRunApi.dry_run_call(
     signedOrigin(args.from) as never,
@@ -632,7 +632,34 @@ export async function dryRunFundingProgram(args: {
       `not submitted: only ${run.landed} of ${args.mustLand} underlying would reach the beneficiary on People`,
     );
   }
-  return { landed: run.landed };
+  return { landed: run.landed, received: receivedIn(forwarded) };
+}
+
+/** What a pre-submit dry run saw on People: the underlying the forwarded program receives, fee
+ *  earmark included, and what reaches the beneficiary after People's charge. */
+export interface DryRunLanding {
+  landed: bigint;
+  received: bigint;
+}
+
+/** The underlying a forwarded program receives on People: every fungible amount its receive
+ *  instructions carry, the fee earmark and the transfer alike. */
+export function receivedIn(program: unknown): bigint {
+  const instructions = (program as { value?: unknown }).value;
+  if (!Array.isArray(instructions)) return 0n;
+  let total = 0n;
+  for (const instruction of instructions as Array<{ type: string; value?: unknown }>) {
+    if (
+      instruction.type !== "ReceiveTeleportedAsset" &&
+      instruction.type !== "ReserveAssetDeposited"
+    ) {
+      continue;
+    }
+    for (const asset of instruction.value as Array<{ fun?: { type?: string; value?: bigint } }>) {
+      if (asset.fun?.type === "Fungible") total += BigInt(asset.fun.value ?? 0n);
+    }
+  }
+  return total;
 }
 
 export interface FundingProgramFees {

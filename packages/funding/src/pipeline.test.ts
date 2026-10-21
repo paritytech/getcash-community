@@ -1335,7 +1335,7 @@ describe("tickOnce", () => {
     await drive(world, 1, state); // the submit
     // What went out, as the exchange reported it at inclusion, and the earmark it carried.
     expect(state.sentToPeople).toBe(world.state.trapped! + CHARGED_BEFORE_TRAP);
-    expect(state.earmarkCash).toBe(EARMARK);
+    expect(state.peopleFeeCash).toBe(50_000n);
     const error = await drive(world, 1, state).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(FundingTrappedError);
     expect(error).toMatchObject({ amount: world.state.trapped, claimerHex: BENEFICIARY_HEX });
@@ -2229,10 +2229,10 @@ describe("the submit, and the CASH read final on People", () => {
         nonceAtSubmit: 0,
         peopleAtXcm: 3n,
         sentToPeople: expect.any(BigInt),
-        earmarkCash: destinationEarmark(BUY - 3n, BUFFER),
+        peopleFeeCash: expect.any(BigInt),
       },
     ]);
-    expect(seen[0]!.sentToPeople!).toBeGreaterThan(seen[0]!.earmarkCash!);
+    expect(seen[0]!.sentToPeople!).toBeGreaterThan(seen[0]!.peopleFeeCash!);
     expect(state).toMatchObject({
       xcmSubmitted: true,
       peopleAtXcm: 3n,

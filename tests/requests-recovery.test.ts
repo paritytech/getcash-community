@@ -115,6 +115,19 @@ describe("the reducer", () => {
     expect(topUpRankOf(record)).toBe(2);
   });
 
+  it("keeps the status and the recovery under the same worker facts, so a poll that saw nothing new is a witness and not a write", () => {
+    const record = trapped();
+    const again = reduce(record, { ...trappedJob(view()), at: at(5) }) as TopUpRecord;
+    expect(again.status).toBe(record.status);
+    expect(again.recovery).toBe(record.recovery);
+    const asked = requested(record);
+    const polled = reduce(asked, { ...trappedJob(view()), at: at(6) }) as TopUpRecord;
+    expect(polled.recovery).toBe(asked.recovery);
+    // A moved fact is a new recovery.
+    const moved = reduce(asked, { ...trappedJob(view({ askCash: "20000" })), at: at(7) });
+    expect((moved as TopUpRecord).recovery).not.toBe(asked.recovery);
+  });
+
   it("follows the recovery to its claim, and to claiming once the worker is done", () => {
     const claiming = reduce(trapped(), {
       ...trappedJob(view({ phase: "claiming" })),

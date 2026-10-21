@@ -125,7 +125,7 @@ import {
   type StablePoolRoute,
 } from "./route";
 import { stableTxOptions } from "./stable";
-import { findTrap } from "./trap";
+import { findTrap, trapScanSpan } from "./trap";
 
 type AssetHubApi = TypedApi<typeof paseo_next_v2>;
 type AssetLocation = Parameters<AssetHubApi["query"]["AssetConversion"]["Pools"]["getValue"]>[0][0];
@@ -493,12 +493,12 @@ export interface TickState {
   rejections: number;
   lastRejection: string | null;
   /** The CASH the submitted program sends to People, fee earmark included, which is the most a
-   *  trap of it could hold: the dry run's figure from before the submit, then the conversion
+   *  trap of it could hold: what the dry run received before the submit, then the conversion
    *  event's figure at inclusion. Null while nothing has been sent. */
   sentToPeople: bigint | null;
-  /** The destination fee earmark the submitted program carries: the most People could have
-   *  charged before a failure, so the least a trap could hold is `sentToPeople` less this. */
-  earmarkCash: bigint | null;
+  /** What People charged the program in the pre-submit dry run: the most it charges a failing
+   *  one, so the least a trap could hold is `sentToPeople` less this. */
+  peopleFeeCash: bigint | null;
 }
 
 export const freshTickState = (): TickState => ({
@@ -512,7 +512,7 @@ export const freshTickState = (): TickState => ({
   rejections: 0,
   lastRejection: null,
   sentToPeople: null,
-  earmarkCash: null,
+  peopleFeeCash: null,
 });
 
 export interface TickOnceInput {
@@ -726,7 +726,7 @@ async function submitConversion<Options>(
   } else {
     state.nonceAtSubmit = null;
     state.sentToPeople = null;
-    state.earmarkCash = null;
+    state.peopleFeeCash = null;
   }
   return included;
 }
@@ -883,14 +883,12 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
     state.sentToPeople !== null &&
     balances.underlyingPeople <= state.peopleAtXcm
   ) {
-    // Before the inclusion's events named the figure, it is the dry run's landing plus the
-    // earmark, which is at most the earmark over what went out; the scan spans both ways.
     const trap = await bounded(
       findTrap(
         input.peopleApi,
         input.beneficiaryHex,
         state.sentToPeople,
-        2n * (state.earmarkCash ?? input.remoteFeeBuffer),
+        trapScanSpan(state.peopleFeeCash),
       ),
       input.tickTimeoutMs,
       "trap read",
@@ -1151,9 +1149,9 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
     });
     // Run the program on both chains before paying for it. A program that would fail, trap assets
     // or land short of what People still lacks is not submitted; the next tick re-prices and tries
-    // again with nothing spent. What the dry run lands plus the earmark bounds what the program
-    // sends, until the inclusion's events say exactly.
-    const { landed } = await bounded(
+    // again with nothing spent. What the dry run received on People is what the program sends,
+    // until the inclusion's events say exactly, and what it charged bounds a trap's shortfall.
+    const { landed, received } = await bounded(
       dryRunFundingProgram({
         api,
         peopleApi: input.peopleApi,
@@ -1167,8 +1165,8 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
       input.tickTimeoutMs,
       "funding program dry run",
     );
-    state.sentToPeople = landed + earmark;
-    state.earmarkCash = earmark;
+    state.sentToPeople = received;
+    state.peopleFeeCash = received - landed;
     const tx = api.tx.PolkadotXcm.execute(execArgs);
     // The dispatch fee is paid in native.
     const res = await submitConversion(
@@ -1311,7 +1309,7 @@ async function swapThroughStablePool(
   }
   // Both chains run the program before it is paid for; one that would fail, trap assets or land
   // short of what People still lacks is not submitted, and the next tick re-prices.
-  const { landed } = await bounded(
+  const { landed, received } = await bounded(
     dryRunFundingProgram({
       api,
       peopleApi: input.peopleApi,
@@ -1325,8 +1323,8 @@ async function swapThroughStablePool(
     input.tickTimeoutMs,
     "stable program dry run",
   );
-  state.sentToPeople = landed + remoteFeesCash;
-  state.earmarkCash = remoteFeesCash;
+  state.sentToPeople = received;
+  state.peopleFeeCash = received - landed;
   const tx = api.tx.PolkadotXcm.execute(execArgs);
   // The dispatch fee is charged in the stable, the one asset the burner holds.
   const res = await submitConversion(
@@ -1386,7 +1384,7 @@ async function sendDotUsdToPeople(
   }
   // Both chains run the program before it is paid for; one that would fail, trap assets or land
   // short of what People still lacks is not submitted, and the next tick re-prices.
-  const { landed } = await bounded(
+  const { landed, received } = await bounded(
     dryRunFundingProgram({
       api,
       peopleApi: input.peopleApi,
@@ -1400,8 +1398,8 @@ async function sendDotUsdToPeople(
     input.tickTimeoutMs,
     "dotUSD program dry run",
   );
-  state.sentToPeople = landed + remoteFeesCash;
-  state.earmarkCash = remoteFeesCash;
+  state.sentToPeople = received;
+  state.peopleFeeCash = received - landed;
   const tx = api.tx.PolkadotXcm.execute(execArgs);
   // The dispatch fee is charged in the underlying, the one asset the burner holds.
   const res = await submitConversion(
@@ -1500,7 +1498,7 @@ async function mintThroughPsm(
   // The whole batch on both chains before paying for it, the mint included: a PSM refusal
   // surfaces here, with nothing spent, rather than at inclusion.
   try {
-    const { landed } = await bounded(
+    const { landed, received } = await bounded(
       dryRunPsmBatch({
         api,
         peopleApi: input.peopleApi,
@@ -1514,8 +1512,8 @@ async function mintThroughPsm(
       input.tickTimeoutMs,
       "psm batch dry run",
     );
-    state.sentToPeople = landed + remoteFeesCash;
-    state.earmarkCash = remoteFeesCash;
+    state.sentToPeople = received;
+    state.peopleFeeCash = received - landed;
   } catch (error) {
     if (error instanceof ProgramRejectedError) refused(error.dispatchError);
     throw error;

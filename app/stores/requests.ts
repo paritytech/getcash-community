@@ -2292,8 +2292,9 @@ export const useRequestsStore = defineStore("requests", () => {
   // brings the host's own word forward.
   let paymentPoll: { key: RequestKey; timer: ReturnType<typeof setTimeout> | null } | null = null;
   const foregroundAwaitingPayment = (): { ref: RequestRef; payment: HostPayment } | null => {
-    const record = foregroundRecord.value;
-    if (record === null) return null;
+    // The request on screen of either kind: a withdrawal's payment or a top-up's claim fee.
+    const record = foregroundEntry.value?.record;
+    if (record === undefined) return null;
     const payment = pendingHostPayment(record);
     return payment === null ? null : { ref: record.ref, payment };
   };

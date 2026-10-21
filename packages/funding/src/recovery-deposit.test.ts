@@ -4,7 +4,12 @@
 import { TOKENS } from "@getsome/core";
 import { describe, expect, it } from "vitest";
 import { withFeeMargin } from "./funding-program";
-import { psmDepositNeeded, stableDepositNeeded, withHeadroom } from "./pipeline";
+import {
+  DEFAULT_REMOTE_FEE_BUFFER,
+  psmDepositNeeded,
+  stableDepositNeeded,
+  withHeadroom,
+} from "./pipeline";
 import { sizePsmMint, type PsmRoute } from "./psm-batch";
 import {
   findRecoveryDeposit,
@@ -15,6 +20,8 @@ import {
 import type { ConversionRoute } from "./route";
 
 const FEE_CASH = 15_000n;
+/** What the pipeline buys for the fee: the fee plus the destination fee buffer. */
+const TARGET = FEE_CASH + DEFAULT_REMOTE_FEE_BUFFER;
 const NATIVE_LOC = { parents: 1, interior: { type: "Here" } };
 const CASH_POOL = { native: NATIVE_LOC, underlying: TOKENS.CASH.location } as never;
 const USDT_POOL = { native: NATIVE_LOC, underlying: TOKENS.USDT.location } as never;
@@ -116,16 +123,16 @@ describe("recoveryMinimums", () => {
       USDC: USDC_POOL,
     });
     // The native: the headroomed quote plus what the program keeps for its own fees.
-    const nativeInMax = withHeadroom(FEE_CASH * RATE, 1);
+    const nativeInMax = withHeadroom(TARGET * RATE, 1);
     const keep = LOCAL_FEE + DELIVERY_FEE + DISPATCH_NATIVE;
     expect(sized.keepNativeForFees).toBe(keep);
     expect(sized.minimums.PAS).toBe(nativeInMax + keep);
     // dotUSD: the fee itself, with what the program holds back.
-    expect(sized.minimums.DOTUSD).toBe(FEE_CASH + feesHeld);
+    expect(sized.minimums.DOTUSD).toBe(TARGET + feesHeld);
     // USDT through the PSM: the mint that pays out the fee, with the same.
-    expect(sized.minimums.USDT).toBe(sizePsmMint(FEE_CASH, PSM_ROUTE).externalIn + feesHeld);
+    expect(sized.minimums.USDT).toBe(sizePsmMint(TARGET, PSM_ROUTE).externalIn + feesHeld);
     expect(sized.minimums.USDT).toBe(
-      psmDepositNeeded(FEE_CASH, PSM_ROUTE, {
+      psmDepositNeeded(TARGET, PSM_ROUTE, {
         dispatchExternal: DISPATCH_NATIVE / RATE,
         localExternal: LOCAL_FEE,
         deliveryExternal: DELIVERY_FEE,
@@ -133,7 +140,7 @@ describe("recoveryMinimums", () => {
       }),
     );
     // USDC through the pools: the headroomed two-hop quote, with the same.
-    const stableInMax = withHeadroom(FEE_CASH, 1);
+    const stableInMax = withHeadroom(TARGET, 1);
     expect(sized.minimums.USDC).toBe(stableInMax + feesHeld);
     expect(sized.minimums.USDC).toBe(
       stableDepositNeeded(stableInMax, {
@@ -150,8 +157,8 @@ describe("recoveryMinimums", () => {
     expect(sized.minimums.PAS).toBeNull();
     expect(sized.keepNativeForFees).toBeNull();
     expect(sized.minimums.USDC).toBeNull();
-    expect(sized.minimums.DOTUSD).toBe(FEE_CASH + feesHeld);
-    expect(sized.minimums.USDT).toBe(sizePsmMint(FEE_CASH, PSM_ROUTE).externalIn + feesHeld);
+    expect(sized.minimums.DOTUSD).toBe(TARGET + feesHeld);
+    expect(sized.minimums.USDT).toBe(sizePsmMint(TARGET, PSM_ROUTE).externalIn + feesHeld);
   });
 });
 

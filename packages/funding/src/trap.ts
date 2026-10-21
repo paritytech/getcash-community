@@ -4,10 +4,11 @@
 // of the pair (Location, VersionedAssets), the assets in the latest XCM version. The funding
 // program names the burner as the claimer, so a trap holds the CASH the conversion sent less
 // whatever fee People charged before the failure, and that charge is the one unknown: nothing on
-// some runtimes, a few units on others. So the trap is found by trying: the chain's AssetTraps map
-// is read whole, it holds a handful of entries, and the keys for every amount from the one sent
-// down by the fee earmark are computed locally until one is in the map. One or more counted under
-// it means the CASH is there, and claim_assets signed by the burner takes it back.
+// some runtimes, a few units on others, never more than a whole program's. So the trap is found by
+// trying: the chain's AssetTraps map is read whole, it holds a handful of entries, and the keys
+// for every amount from the one sent down by twice the fee the dry run saw are computed locally
+// until one is in the map. One or more counted under it means the CASH is there, and
+// claim_assets signed by the burner takes it back.
 //
 // The encoding comes from the chain's own codecs: the AssetsTrapped event carries the hash, the
 // origin and the assets in that order, so the pair's encoding is the event payload past the hash.
@@ -73,22 +74,36 @@ function trappedAmountOf(assets: unknown): bigint | null {
   return first?.fun?.type === "Fungible" ? BigInt(first.fun.value ?? 0n) : null;
 }
 
+/** The most amounts a scan tries: a bound on the worker's time, whatever the fee came to. */
+export const TRAP_SCAN_MAX = 50_000n;
+/** Amounts tried beyond twice the fee, for a charge that moved a little since the dry run. */
+const TRAP_SCAN_SLACK = 100n;
+
+/** How far below the amount sent a scan looks: twice the fee People's dry run charged, since a
+ *  failing program is charged at most what a whole one is, plus a little slack; never past
+ *  TRAP_SCAN_MAX. Without a dry-run figure, the slack alone. */
+export function trapScanSpan(peopleFee: bigint | null): bigint {
+  const span = 2n * (peopleFee ?? 0n) + TRAP_SCAN_SLACK;
+  return span < TRAP_SCAN_MAX ? span : TRAP_SCAN_MAX;
+}
+
 /** The trap holding the CASH sent for `claimerHex`, read from People at its best block: the
- *  entry whose key one of the amounts from `sent` down by `earmark` gives, or the AssetsTrapped
+ *  entry whose key one of the amounts from `sent` down by `span` gives, or the AssetsTrapped
  *  event of that block naming the claimer, which also serves when `sent` is off by what the pool
  *  moved after it was read. Null when neither shows one. */
 export async function findTrap(
   peopleApi: PeopleApi,
   claimerHex: string,
   sent: bigint,
-  earmark: bigint,
+  span: bigint,
 ): Promise<Trap | null> {
   const entries = await peopleApi.query.PolkadotXcm.AssetTraps.getEntries({ at: "best" });
   const counted = new Set(
     entries.filter((entry) => entry.value > 0).map((entry) => entry.keyArgs[0].toLowerCase()),
   );
   if (counted.size > 0) {
-    const floor = sent - earmark > 1n ? sent - earmark : 1n;
+    const reach = span < TRAP_SCAN_MAX ? span : TRAP_SCAN_MAX;
+    const floor = sent - reach > 1n ? sent - reach : 1n;
     for (let amount = sent; amount >= floor; amount -= 1n) {
       const key = await trapKey(claimerHex, amount);
       if (counted.has(key.toLowerCase())) return { amount, key };

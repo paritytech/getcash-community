@@ -3,7 +3,7 @@
 import { blake2b } from "@noble/hashes/blake2.js";
 import { TOKENS } from "@getsome/core";
 import { describe, expect, it } from "vitest";
-import { findTrap, trapKey } from "./trap";
+import { findTrap, TRAP_SCAN_MAX, trapKey, trapScanSpan } from "./trap";
 
 const CLAIMER_HEX = `0x${"07".repeat(32)}`;
 const AMOUNT = 5_100_000n;
@@ -128,6 +128,16 @@ const claimerOrigin = (hex: string) => ({
   },
 });
 
+describe("trapScanSpan", () => {
+  it("is twice the fee the dry run charged plus a little slack, capped, the slack alone without a figure", () => {
+    expect(trapScanSpan(null)).toBe(100n);
+    expect(trapScanSpan(0n)).toBe(100n);
+    expect(trapScanSpan(59n)).toBe(218n);
+    expect(trapScanSpan(10_000n)).toBe(20_100n);
+    expect(trapScanSpan(1_000_000n)).toBe(TRAP_SCAN_MAX);
+  });
+});
+
 describe("findTrap", () => {
   it("finds the trap under the key the amount sent gives, from one read of the traps at the best block", async () => {
     const key = await trapKey(CLAIMER_HEX, AMOUNT);
@@ -149,6 +159,16 @@ describe("findTrap", () => {
     );
     const below = await trapKey(CLAIMER_HEX, AMOUNT - EARMARK - 1n);
     expect(await findTrap(peopleApi({ [below]: 1 }).api, CLAIMER_HEX, AMOUNT, EARMARK)).toBeNull();
+  });
+
+  it("looks no further than TRAP_SCAN_MAX amounts, whatever span it is given", async () => {
+    const far = await trapKey(CLAIMER_HEX, AMOUNT - TRAP_SCAN_MAX - 1n);
+    const { api } = peopleApi({ [far]: 1 });
+    expect(await findTrap(api, CLAIMER_HEX, AMOUNT, TRAP_SCAN_MAX * 10n)).toBeNull();
+    const edge = await trapKey(CLAIMER_HEX, AMOUNT - TRAP_SCAN_MAX);
+    expect(
+      await findTrap(peopleApi({ [edge]: 1 }).api, CLAIMER_HEX, AMOUNT, TRAP_SCAN_MAX * 10n),
+    ).toEqual({ amount: AMOUNT - TRAP_SCAN_MAX, key: edge });
   });
 
   it("ignores a trap already claimed, whose count is zero", async () => {

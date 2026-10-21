@@ -284,6 +284,11 @@ describe("worker funding engine", () => {
     expect(mocks.tickOnce.mock.calls[0]![0]).toMatchObject({
       route: { tier: "psm", external: "USDT", feeRate: 5_000 },
       pool: undefined,
+      // Every figure the pipeline adds up is on the input, the buffer included.
+      settleAmount: SETTLE,
+      remoteFeeBuffer: 1_000n,
+      keepNativeForFees: expect.any(BigInt),
+      slippagePct: expect.any(Number),
     });
     expect(mocks.discoverPools).not.toHaveBeenCalled();
     expect(storedJob().phase).toBe("swap");
@@ -810,6 +815,8 @@ describe("worker funding engine", () => {
     expect((await revived.tickAllFunding()).ticked).toBe(1);
     expect(mocks.tickOnce).toHaveBeenCalledTimes(1);
     expect(mocks.tickRecovery).toHaveBeenCalledTimes(1);
+    // The recovery's ticks are not worked time: the clock stopped at the trap.
+    expect(storedJob().state.workedMs).toBe(900_001);
     expect(mocks.tickRecovery.mock.calls[0]![0]).toMatchObject({
       address: BURNER.address,
       claimerHex,
@@ -848,6 +855,7 @@ describe("worker funding engine", () => {
     expect(mocks.tickOnce.mock.calls[1]![0]).toMatchObject({
       route: { tier: "pool" },
       settleAmount: 123_456n,
+      remoteFeeBuffer: 1_000n,
       keepNativeForFees: 5n,
     });
     expect(storedJob().recovery).toMatchObject({

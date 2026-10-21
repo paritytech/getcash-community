@@ -179,7 +179,17 @@ export async function tickRecovery(
     state.claimSentAt = null;
     return { step: "done", held, feeCash };
   }
-  if (held < feeCash) return { step: "funding", held, feeCash };
+  if (held < feeCash) {
+    // The burner held the fee when a claim went out and holds less now with the trap still
+    // counted: that claim landed rejected while its answer was lost, and spent the fee. The round
+    // moves on so the fee is asked for again.
+    if (state.nonceAtClaim !== null) {
+      state.nonceAtClaim = null;
+      state.claimSentAt = null;
+      state.round += 1;
+    }
+    return { step: "funding", held, feeCash };
+  }
 
   // A claim owed an answer: wait for it while its nonce stands and it may still land.
   const nonce = await read(

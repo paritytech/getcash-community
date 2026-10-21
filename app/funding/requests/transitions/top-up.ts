@@ -193,7 +193,27 @@ function recovering(record: TopUpRecord, at: number, view: WorkerRecoveryView): 
     ...facts,
     ...(record.recovery?.payment === undefined ? {} : { payment: record.recovery.payment }),
   };
+  // The worker reports the same facts every tick for as long as the trap stands: unchanged, the
+  // record is the same, so the poll is a witness and not a write.
+  if (status === current && sameRecovery(record.recovery, recovery)) return record;
   return { ...record, status, recovery };
+}
+
+/** Whether two recoveries carry the same facts and the same payment. */
+function sameRecovery(
+  current: TopUpRecord["recovery"],
+  next: NonNullable<TopUpRecord["recovery"]>,
+): boolean {
+  if (current === undefined) return false;
+  const keys = new Set([...Object.keys(current), ...Object.keys(next)]);
+  for (const key of keys) {
+    const a = current[key as keyof typeof current];
+    const b = next[key as keyof typeof next];
+    if (a === b) continue;
+    if (key === "minimums" && JSON.stringify(a) === JSON.stringify(b)) continue;
+    return false;
+  }
+  return true;
 }
 
 function sameDeposit(

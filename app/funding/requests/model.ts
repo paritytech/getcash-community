@@ -301,7 +301,7 @@ export interface WorkerJobView {
     at: number;
   } | null;
   /** As the worker records them on either branch. */
-  txs?: { call: "swap" | "xcm"; txHash: string; block?: number }[];
+  txs?: { call: "swap" | "xcm" | "claim"; txHash: string; block?: number }[];
   /** The PSM's refusals of the mint so far, when there were any; the third holds the job. */
   psmRefusals?: number;
   depositSeen?: DepositInBlock;

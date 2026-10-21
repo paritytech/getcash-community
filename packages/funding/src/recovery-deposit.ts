@@ -76,24 +76,27 @@ export async function recoveryMinimums(args: {
   routes: Record<Stable, ConversionRoute>;
 }): Promise<RecoveryMinimums> {
   const { api, feeCash, pool } = args;
+  // The pipeline's gate buys the fee plus the destination fee buffer, as it buys any target: the
+  // figures are priced for that, or a deposit at the figure would never clear it.
+  const target = feeCash + DEFAULT_REMOTE_FEE_BUFFER;
   const common = {
     api,
     beneficiaryHex: args.beneficiaryHex,
     peopleParaId: args.peopleParaId,
     transfer: args.transfer,
     feeProbeAddress: args.probeAddress,
-    // The destination fee allowance the pipeline will carry for a buy of the fee.
-    remoteFeesCash: destinationEarmark(feeCash, DEFAULT_REMOTE_FEE_BUFFER),
+    // The destination fee allowance the pipeline will carry for that buy.
+    remoteFeesCash: destinationEarmark(target, DEFAULT_REMOTE_FEE_BUFFER),
   };
   let keepNativeForFees: bigint | null = null;
   const native = await priced(async () => {
     if (pool === null) throw new Error("no native pool");
-    const nativeInMax = await quoteNativeInMax(api, pool, feeCash, DEFAULT_SLIPPAGE_PCT);
+    const nativeInMax = await quoteNativeInMax(api, pool, target, DEFAULT_SLIPPAGE_PCT);
     const fees = await estimateFundingProgramFees({
       ...common,
       pool,
       nativeBalance: nativeInMax + PROBE_NATIVE,
-      minUnderlyingOut: feeCash,
+      minUnderlyingOut: target,
     });
     keepNativeForFees = fees.payFeesNative + fees.dispatchNative;
     return nativeInMax + keepNativeForFees;
@@ -101,9 +104,9 @@ export async function recoveryMinimums(args: {
   const dotUsd = await priced(async () => {
     const fees = await estimateDotUsdProgramFees({
       ...common,
-      depositUnderlying: feeCash + PROBE_UNITS,
+      depositUnderlying: target + PROBE_UNITS,
     });
-    return stableDepositNeeded(feeCash, fees);
+    return stableDepositNeeded(target, fees);
   });
   const stable = (name: Stable) =>
     priced(async () => {
@@ -112,13 +115,13 @@ export async function recoveryMinimums(args: {
         const fees = await estimatePsmBatchFees({
           ...common,
           route,
-          depositExternal: sizePsmMint(feeCash, route).externalIn + PROBE_UNITS,
+          depositExternal: sizePsmMint(target, route).externalIn + PROBE_UNITS,
         });
-        return psmDepositNeeded(feeCash, route, fees);
+        return psmDepositNeeded(target, route, fees);
       }
       const stablePool = args.stablePools[name];
       if (pool === null || stablePool === undefined) throw new Error(`no pool for ${name}`);
-      const { nativeIn, stableIn } = await quoteStableForUnderlying(api, pool, stablePool, feeCash);
+      const { nativeIn, stableIn } = await quoteStableForUnderlying(api, pool, stablePool, target);
       const stableInMax = withHeadroom(stableIn, DEFAULT_SLIPPAGE_PCT);
       const fees = await estimateStableProgramFees({
         ...common,
@@ -127,7 +130,7 @@ export async function recoveryMinimums(args: {
         pool,
         depositStable: stableInMax + PROBE_UNITS,
         minNativeOut: nativeIn,
-        minUnderlyingOut: feeCash,
+        minUnderlyingOut: target,
       });
       return stableDepositNeeded(stableInMax, fees);
     });

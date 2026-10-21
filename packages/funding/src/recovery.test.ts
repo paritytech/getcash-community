@@ -319,6 +319,23 @@ describe("tickRecovery", () => {
     expect(state.round).toBe(1);
   });
 
+  it("a claim whose answer was lost and that landed rejected spent the fee: the next tick moves the round on and asks again", async () => {
+    const world = scriptedPeople({ count: 1, cash: withFeeMargin(FEE) });
+    world.state.submit = "lost";
+    const state = freshRecoveryState();
+    await expect(tick(world, state).outcome).rejects.toThrow(/claim submit timed out/);
+    expect(state).toMatchObject({ attempts: 1, round: 0, nonceAtClaim: 3 });
+    // The chain took the claim and refused it: the nonce moved, the trap is still counted, and
+    // the fee is gone from the burner.
+    world.state.nonce = 4;
+    world.state.cash = 0n;
+    world.state.submit = "ok";
+    const next = await tick(world, state).outcome;
+    expect(next.step).toBe("funding");
+    expect(state).toMatchObject({ round: 1, nonceAtClaim: null, claimSentAt: null, attempts: 1 });
+    expect(world.seen.submits).toHaveLength(1);
+  });
+
   it("keeps the marker on a submit that failed otherwise: the claim may be in flight", async () => {
     const world = scriptedPeople({ count: 1, cash: withFeeMargin(FEE) });
     world.state.submit = "lost";

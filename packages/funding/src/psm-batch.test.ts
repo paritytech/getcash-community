@@ -705,7 +705,7 @@ describe("dryRunPsmBatch", () => {
   it("runs the whole batch as the burner on Asset Hub and hands People what it forwards", async () => {
     const chains = scriptedChains({});
     // 5.1 CASH minted, 0.05 to People's fees, the XCM's own paid in USDT: 5.05 lands.
-    await expect(run(chains)).resolves.toEqual({ landed: 5_050_000n });
+    await expect(run(chains)).resolves.toEqual({ landed: 5_050_000n, received: 5_100_000n });
     expect(chains.seen.origin).toEqual({
       type: "system",
       value: { type: "Signed", value: "5Burner" },
@@ -778,7 +778,9 @@ describe("dryRunPsmBatch", () => {
   });
 
   it("refuses a batch that would land short of what People needs, and not one unit sooner", async () => {
-    await expect(run(scriptedChains({}), 5_050_000n)).resolves.toEqual({ landed: 5_050_000n });
+    await expect(run(scriptedChains({}), 5_050_000n)).resolves.toMatchObject({
+      landed: 5_050_000n,
+    });
     await expect(run(scriptedChains({}), 5_050_001n)).rejects.toThrow(
       /not submitted: only 5050000 of 5050001 underlying would reach the beneficiary on People/,
     );
