@@ -33,6 +33,7 @@ const PROGRAM = {
   payFeesStable: 12_345n,
   minNativeOut: 47_000_000_000n,
   minUnderlyingOut: 5_100_000n,
+  remoteFeesCash: 300_000n,
   beneficiaryHex: BENEFICIARY_HEX,
   peopleParaId: PEOPLE_PARA,
   transfer: "teleport" as const,
@@ -107,17 +108,17 @@ describe("buildStableFundingProgram", () => {
     expect(second!.maximal).toBe(true);
   });
 
-  it("teleports the holding to the burner on People unpaid, names the burner as the claimer, and deposits the refund back on the burner", () => {
+  it("teleports the holding to the burner on People with the earmark, and deposits the refund back on the burner", () => {
     const transfer = instruction(args, "InitiateTransfer") as {
       destination: unknown;
-      remote_fees: unknown;
+      remote_fees: { type: string; value: { type: string; value: Fungible[] } };
       preserve_origin: boolean;
       assets: Array<{ type: string; value: unknown }>;
       remote_xcm: Instruction[];
     };
     expect(transfer.destination).toEqual(peopleDest(PEOPLE_PARA));
-    // People charges nothing for the program, so no fee travels ahead of the CASH.
-    expect(transfer.remote_fees).toBeUndefined();
+    expect(transfer.remote_fees.value.value[0]!.fun.value).toBe(PROGRAM.remoteFeesCash);
+    expect(transfer.remote_fees.value.value[0]!.id).toEqual(TOKENS.CASH.location);
     expect(transfer.preserve_origin).toBe(false);
     // The transfer names the CASH, so a stable swept into the holding stays behind.
     expect(transfer.assets).toEqual([
@@ -132,28 +133,11 @@ describe("buildStableFundingProgram", () => {
         },
       },
     ]);
-    expect(transfer.remote_xcm.map((i) => i.type)).toEqual(["SetHints", "DepositAsset"]);
-    // The hint names the burner as its signed origin on People, network included: a claimer
-    // without the network matches no signed account.
-    expect(transfer.remote_xcm[0]!.value).toEqual({
-      hints: [
-        {
-          type: "AssetClaimer",
-          value: {
-            location: {
-              parents: 0,
-              interior: {
-                type: "X1",
-                value: {
-                  type: "AccountId32",
-                  value: { network: { type: "Polkadot" }, id: BENEFICIARY_HEX },
-                },
-              },
-            },
-          },
-        },
-      ],
-    });
+    expect(transfer.remote_xcm.map((i) => i.type)).toEqual([
+      "SetHints",
+      "RefundSurplus",
+      "DepositAsset",
+    ]);
     const refund = instruction(args, "DepositAsset") as {
       assets: unknown;
       beneficiary: { interior: { value: { value: { id: string } } } };
@@ -262,7 +246,7 @@ function recordingApi(
 }
 
 describe("forwardedProgramStandIn", () => {
-  it("mirrors the reserve program People receives: the CASH deposited once as a reserve asset, unpaid, the burner named as the claimer", () => {
+  it("mirrors the reserve program People receives: the CASH deposited twice as a reserve asset", () => {
     const standIn = forwardedProgramStandIn(
       TOKENS.CASH.locationOnPeople as never,
       5_100_000n,
@@ -271,9 +255,11 @@ describe("forwardedProgramStandIn", () => {
     );
     expect(standIn.value.map((i) => i.type)).toEqual([
       "ReserveAssetDeposited",
+      "PayFees",
+      "ReserveAssetDeposited",
       "ClearOrigin",
-      "UnpaidExecution",
       "SetHints",
+      "RefundSurplus",
       "DepositAsset",
       "SetTopic",
     ]);
@@ -290,6 +276,7 @@ describe("estimateStableProgramFees", () => {
     depositStable: 5_400_000n,
     minNativeOut: 41_000_000_000n,
     minUnderlyingOut: 5_100_000n,
+    remoteFeesCash: 300_000n,
     transfer: "teleport" as const,
     feeProbeAddress: "5Probe",
   };

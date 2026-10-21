@@ -28,6 +28,7 @@ import {
   creditedTo,
   depositTokenOf,
   describeDispatchError,
+  destinationEarmark,
   forwardedTo,
   siblingOrigin,
   signedOrigin,
@@ -71,20 +72,12 @@ const FEE_ROUNDS = 3;
 /** An amount whose compact encoding is the longest any amount below 2^64 gets: nine bytes. */
 const LONGEST_AMOUNT = 2n ** 63n;
 
-/** The CASH set aside for Asset Hub's execution fee: ASSET_HUB_FEE_BUFFER_CASH, or one percent of
- *  what the key holds when that is more. Asset Hub refunds the unused part into the sale, while
- *  an allowance too small to execute on traps the program there. */
-export function assetHubEarmark(cashOnKey: bigint): bigint {
-  const onePercent = cashOnKey / 100n;
-  const floor = onePercent > ASSET_HUB_FEE_BUFFER_CASH ? onePercent : ASSET_HUB_FEE_BUFFER_CASH;
-  return floor > 0n ? floor : 1n;
-}
-
 /** The CASH a PSM-tier withdrawal has to redeem out of what the key holds on People: all of it
  *  but the earmark for Asset Hub's fees. The figure the PSM's room is judged on at quote time;
  *  the redeem itself, and what a sale is quoted, are sized from what reaches the key on Asset
  *  Hub. */
-export const redeemAmountOf = (cashOnKey: bigint): bigint => cashOnKey - assetHubEarmark(cashOnKey);
+export const redeemAmountOf = (cashOnKey: bigint): bigint =>
+  cashOnKey - destinationEarmark(cashOnKey, ASSET_HUB_FEE_BUFFER_CASH);
 
 /** The key needs more PAS than it holds to send the XCM: swap again. */
 export class NeedsSwapError extends Error {
@@ -163,7 +156,7 @@ export async function sizeSwap(input: SizeSwapInput): Promise<SwapArgs> {
     cashToSend: input.cashBalance,
     pasToWithdraw: LONGEST_AMOUNT,
     payFeesPas: LONGEST_AMOUNT,
-    remoteFeesCash: assetHubEarmark(input.cashBalance),
+    remoteFeesCash: destinationEarmark(input.cashBalance, ASSET_HUB_FEE_BUFFER_CASH),
     sale: longestSale(input.sale),
     destinationHex: input.destinationHex,
     claimerHex: input.claimerHex ?? input.key.publicKeyHex,
@@ -447,7 +440,7 @@ export async function sizeXcm(input: SizeXcmInput): Promise<XcmSizing> {
   const claimerHex = input.claimerHex ?? key.publicKeyHex;
   // The PSM tier lands on the key itself; the hand-off's destination is where the redeem pays.
   const landingHex = input.sale.tier === "psm" ? key.publicKeyHex : input.destinationHex;
-  const remoteFeesCash = assetHubEarmark(input.cashOnKey);
+  const remoteFeesCash = destinationEarmark(input.cashOnKey, ASSET_HUB_FEE_BUFFER_CASH);
   const sale = await priceSale({
     assetHubApi,
     route: input.sale,

@@ -30,13 +30,7 @@
 import { paseo_people_next } from "@polkadot-api/descriptors";
 import type { TypedApi } from "polkadot-api";
 import { TOKENS } from "@getsome/core";
-import {
-  claimer,
-  permillMulCeil,
-  STABLE_TOKENS,
-  type CashTransfer,
-  type Stable,
-} from "@getsome/funding";
+import { permillMulCeil, STABLE_TOKENS, type CashTransfer, type Stable } from "@getsome/funding";
 import { CASH_LOCATION } from "@getsome/people";
 import { PEOPLE_NATIVE } from "./paseo";
 
@@ -81,6 +75,17 @@ const account = (hex: string) => ({
     type: "X1",
     // papi encodes fixed-size binaries from their hex-string form; a raw Uint8Array mis-encodes.
     value: { type: "AccountId32", value: { network: undefined, id: hex } },
+  },
+});
+
+/** The claimer as Asset Hub names a signed account: under the relay network Paseo names its
+ *  accounts by. claim_assets looks a trap up by the claimant's own origin, so a claimer without
+ *  the network matches no signed account, and only Root could recover the trap. */
+const claimer = (hex: string) => ({
+  parents: 0,
+  interior: {
+    type: "X1",
+    value: { type: "AccountId32", value: { network: { type: "Polkadot" }, id: hex } },
   },
 });
 

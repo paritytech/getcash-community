@@ -14,12 +14,14 @@
 
 import type { CashTransfer } from "./cash-transfer";
 import {
+  destinationEarmark,
   estimateDotUsdProgramFees,
   estimateFundingProgramFees,
   estimateStableProgramFees,
   type Pool,
 } from "./funding-program";
 import {
+  DEFAULT_REMOTE_FEE_BUFFER,
   DEFAULT_SLIPPAGE_PCT,
   psmDepositNeeded,
   quoteNativeInMax,
@@ -80,6 +82,8 @@ export async function recoveryMinimums(args: {
     peopleParaId: args.peopleParaId,
     transfer: args.transfer,
     feeProbeAddress: args.probeAddress,
+    // The destination fee allowance the pipeline will carry for a buy of the fee.
+    remoteFeesCash: destinationEarmark(feeCash, DEFAULT_REMOTE_FEE_BUFFER),
   };
   let keepNativeForFees: bigint | null = null;
   const native = await priced(async () => {

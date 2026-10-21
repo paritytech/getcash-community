@@ -22,6 +22,7 @@ const BENEFICIARY_HEX = `0x${"07".repeat(32)}`;
 const PROGRAM = {
   withdrawUnderlying: 5_100_000n,
   payFeesUnderlying: 88_605n,
+  remoteFeesCash: 50_000n,
   beneficiaryHex: BENEFICIARY_HEX,
   peopleParaId: PEOPLE_PARA,
   transfer: "teleport" as const,
@@ -51,13 +52,15 @@ describe("buildDotUsdFundingProgram", () => {
     });
     const transfer = instruction(args, "InitiateTransfer") as {
       destination: unknown;
-      remote_fees: unknown;
+      remote_fees: { value: { value: Fungible[] } };
       assets: unknown;
       remote_xcm: Instruction[];
     };
     expect(transfer.destination).toEqual(peopleDest(PEOPLE_PARA));
-    // People charges nothing for the program, so no fee travels ahead of the CASH.
-    expect(transfer.remote_fees).toBeUndefined();
+    expect(transfer.remote_fees.value.value[0]).toEqual({
+      id: TOKENS.CASH.location,
+      fun: { type: "Fungible", value: PROGRAM.remoteFeesCash },
+    });
     expect(transfer.assets).toEqual([
       {
         type: "Teleport",
@@ -70,7 +73,11 @@ describe("buildDotUsdFundingProgram", () => {
         },
       },
     ]);
-    expect(transfer.remote_xcm.map((i) => i.type)).toEqual(["SetHints", "DepositAsset"]);
+    expect(transfer.remote_xcm.map((i) => i.type)).toEqual([
+      "SetHints",
+      "RefundSurplus",
+      "DepositAsset",
+    ]);
     expect(args.max_weight).toEqual(PROGRAM.maxWeight);
   });
 
@@ -151,6 +158,7 @@ describe("estimateDotUsdProgramFees", () => {
     beneficiaryHex: BENEFICIARY_HEX,
     peopleParaId: PEOPLE_PARA,
     depositUnderlying: 5_143_041n,
+    remoteFeesCash: 50_000n,
     transfer: "teleport" as const,
     feeProbeAddress: "5Probe",
   };

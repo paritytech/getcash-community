@@ -10,6 +10,7 @@ import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import {
   buildFundingProgram,
   chooseCashTransfer,
+  destinationEarmark,
   discoverPool,
   dryRunFundingProgram,
   estimateFundingProgramFees,
@@ -68,10 +69,14 @@ describe.runIf(process.env.VERIFY_AMOUNTS === "1")("live amount check", () => {
           probeAddress: from,
         });
         if (!sizing) throw new Error("sizing failed");
-        console.log(`\n### Ask: ${n} CASH  (fee native ${fmtPas(sizing.keepNativeForFees)} PAS)`);
+        const buyTarget = settle + sizing.remoteFeeBuffer;
+        const earmark = destinationEarmark(buyTarget, sizing.remoteFeeBuffer);
+        console.log(
+          `\n### Ask: ${n} CASH  (fee native ${fmtPas(sizing.keepNativeForFees)} PAS, destination over-buy ${fmtCash(sizing.remoteFeeBuffer)} CASH)`,
+        );
         for (const slip of slippages) {
-          // The deposit: the slippage-capped quote for the target plus the fee native.
-          const nativeInMax = await quoteNativeInMax(ah, pool, settle, slip);
+          // The deposit: the slippage-capped quote for the buy target plus the fee native.
+          const nativeInMax = await quoteNativeInMax(ah, pool, buyTarget, slip);
           const deposit = nativeInMax + sizing.keepNativeForFees;
           // Fees as the worker prices them at the submitting tick, dry-running from the holder.
           const fees = await estimateFundingProgramFees({
@@ -80,7 +85,8 @@ describe.runIf(process.env.VERIFY_AMOUNTS === "1")("live amount check", () => {
             beneficiaryHex: ZERO_32,
             peopleParaId: PASEO_PEOPLE_PARA_ID,
             nativeBalance: deposit,
-            minUnderlyingOut: settle,
+            minUnderlyingOut: buyTarget,
+            remoteFeesCash: earmark,
             transfer,
             feeProbeAddress: from,
             dryRunFrom: from,
@@ -89,7 +95,8 @@ describe.runIf(process.env.VERIFY_AMOUNTS === "1")("live amount check", () => {
             pool,
             withdrawNative: deposit - fees.dispatchNative,
             payFeesNative: fees.payFeesNative,
-            minUnderlyingOut: settle,
+            minUnderlyingOut: buyTarget,
+            remoteFeesCash: earmark,
             beneficiaryHex: ZERO_32,
             peopleParaId: PASEO_PEOPLE_PARA_ID,
             transfer,

@@ -87,9 +87,9 @@ function peopleApi(traps: Record<string, number>, events: unknown[] = []) {
     query: {
       PolkadotXcm: {
         AssetTraps: {
-          getValue: async (key: string, options: unknown) => {
-            reads.push([key, options]);
-            return traps[key] ?? 0;
+          getEntries: async (options: unknown) => {
+            reads.push(["entries", options]);
+            return Object.entries(traps).map(([key, value]) => ({ keyArgs: [key], value }));
           },
         },
       },
@@ -98,6 +98,8 @@ function peopleApi(traps: Record<string, number>, events: unknown[] = []) {
   };
   return { api: api as never, reads };
 }
+
+const EARMARK = 1_000n;
 
 const trappedEvent = (origin: unknown, amount: bigint, hash: string) => ({
   phase: { type: "Finalization" },
@@ -127,11 +129,31 @@ const claimerOrigin = (hex: string) => ({
 });
 
 describe("findTrap", () => {
-  it("finds the trap under the key the amount sent gives, at the best block", async () => {
+  it("finds the trap under the key the amount sent gives, from one read of the traps at the best block", async () => {
     const key = await trapKey(CLAIMER_HEX, AMOUNT);
     const { api, reads } = peopleApi({ [key]: 1 });
-    expect(await findTrap(api, CLAIMER_HEX, AMOUNT)).toEqual({ amount: AMOUNT, key });
-    expect(reads).toEqual([[key, { at: "best" }]]);
+    expect(await findTrap(api, CLAIMER_HEX, AMOUNT, EARMARK)).toEqual({ amount: AMOUNT, key });
+    expect(reads).toEqual([["entries", { at: "best" }]]);
+  });
+
+  it("finds a trap short of the amount sent by what People charged, down to the earmark, and not below", async () => {
+    const charged = await trapKey(CLAIMER_HEX, AMOUNT - 37n);
+    const { api } = peopleApi({ [charged]: 1, [`0x${"ee".repeat(32)}`]: 2 });
+    expect(await findTrap(api, CLAIMER_HEX, AMOUNT, EARMARK)).toEqual({
+      amount: AMOUNT - 37n,
+      key: charged,
+    });
+    const atTheEdge = await trapKey(CLAIMER_HEX, AMOUNT - EARMARK);
+    expect(await findTrap(peopleApi({ [atTheEdge]: 1 }).api, CLAIMER_HEX, AMOUNT, EARMARK)).toEqual(
+      { amount: AMOUNT - EARMARK, key: atTheEdge },
+    );
+    const below = await trapKey(CLAIMER_HEX, AMOUNT - EARMARK - 1n);
+    expect(await findTrap(peopleApi({ [below]: 1 }).api, CLAIMER_HEX, AMOUNT, EARMARK)).toBeNull();
+  });
+
+  it("ignores a trap already claimed, whose count is zero", async () => {
+    const key = await trapKey(CLAIMER_HEX, AMOUNT);
+    expect(await findTrap(peopleApi({ [key]: 0 }).api, CLAIMER_HEX, AMOUNT, EARMARK)).toBeNull();
   });
 
   it("falls back to the block's AssetsTrapped event naming the claimer, which carries the exact amount", async () => {
@@ -141,7 +163,10 @@ describe("findTrap", () => {
       trappedEvent(claimerOrigin(other), 1n, `0x${"cd".repeat(32)}`),
       trappedEvent(claimerOrigin(CLAIMER_HEX), AMOUNT - 7n, hash),
     ]);
-    expect(await findTrap(api, CLAIMER_HEX, AMOUNT)).toEqual({ amount: AMOUNT - 7n, key: hash });
+    expect(await findTrap(api, CLAIMER_HEX, AMOUNT, EARMARK)).toEqual({
+      amount: AMOUNT - 7n,
+      key: hash,
+    });
   });
 
   it("reads the claimer's account from a decoded binary as well as from hex", async () => {
@@ -157,13 +182,16 @@ describe("findTrap", () => {
       },
     };
     const { api } = peopleApi({}, [trappedEvent(origin, AMOUNT, hash)]);
-    expect(await findTrap(api, CLAIMER_HEX, AMOUNT)).toEqual({ amount: AMOUNT, key: hash });
+    expect(await findTrap(api, CLAIMER_HEX, AMOUNT, EARMARK)).toEqual({
+      amount: AMOUNT,
+      key: hash,
+    });
   });
 
-  it("finds nothing when neither the key nor the events show a trap", async () => {
+  it("finds nothing when neither the keys nor the events show a trap", async () => {
     const { api } = peopleApi({ [`0x${"ee".repeat(32)}`]: 1 }, [
       trappedEvent(claimerOrigin(`0x${"09".repeat(32)}`), AMOUNT, `0x${"cd".repeat(32)}`),
     ]);
-    expect(await findTrap(api, CLAIMER_HEX, AMOUNT)).toBeNull();
+    expect(await findTrap(api, CLAIMER_HEX, AMOUNT, EARMARK)).toBeNull();
   });
 });

@@ -5,6 +5,7 @@ import {
   DEFAULT_KEEP_NATIVE_FOR_FEES,
   DEFAULT_SLIPPAGE_PCT,
   DEFAULT_TICK_TIMEOUT_MS,
+  DEFAULT_REMOTE_FEE_BUFFER,
   FundingHeldError,
   FundingShortfallError,
   FundingTrappedError,
@@ -73,7 +74,7 @@ const saveJobs = () => store.save();
  *   v: 1, sessionId, label,                  // label: the entropy label the surface used
  *   burnerAddress,                           // the address the surface showed
  *   depositExpiresAt: number|null,           // the rail's deposit deadline
- *   settleAmount, keepNativeForFees, slippagePct,   // bigints as strings
+ *   settleAmount, remoteFeeBuffer, keepNativeForFees, slippagePct,   // bigints as strings
  *   quotedDeposit?,                                    // psm, stable pool and dotUSD tiers
  *   underlyingAssetId, peopleParaId, assetHubGenesis, peopleGenesis,
  *   tier: "pool" | "psm" | "dotusd", external?, feeRate?, // the conversion route the surface
@@ -195,6 +196,7 @@ function newRecord(input, nowMs) {
     burnerAddress,
     depositExpiresAt: depositExpiryOf(input),
     settleAmount: settleAmount.toString(),
+    remoteFeeBuffer: asBig(input.remoteFeeBuffer, DEFAULT_REMOTE_FEE_BUFFER).toString(),
     keepNativeForFees: asBig(input.keepNativeForFees, DEFAULT_KEEP_NATIVE_FOR_FEES).toString(),
     slippagePct: Number(input.slippagePct) > 0 ? Number(input.slippagePct) : DEFAULT_SLIPPAGE_PCT,
     // The PSM tier's gate waits for the deposit the quote asked for. Absent on a pool job and on
@@ -395,6 +397,7 @@ export async function amendFunding(params) {
   for (const field of ["tier", "external", "feeRate", "quotedDeposit"]) delete record[field];
   Object.assign(record, {
     settleAmount: terms.settleAmount,
+    remoteFeeBuffer: terms.remoteFeeBuffer,
     keepNativeForFees: terms.keepNativeForFees,
     slippagePct: terms.slippagePct,
     ...(terms.quotedDeposit === undefined ? {} : { quotedDeposit: terms.quotedDeposit }),
@@ -772,6 +775,7 @@ async function convert(record, env) {
   const outcome = await runConversion(record, env, {
     route,
     settleAmount: asBig(record.settleAmount),
+    remoteFeeBuffer: asBig(record.remoteFeeBuffer, DEFAULT_REMOTE_FEE_BUFFER),
     keepNativeForFees: asBig(record.keepNativeForFees, DEFAULT_KEEP_NATIVE_FOR_FEES),
     slippagePct: record.slippagePct,
     ...(typeof record.quotedDeposit === "string"
@@ -812,6 +816,7 @@ function restoreTickState(stored) {
   state.nonceAtSubmit = stored.nonceAtSubmit ?? null;
   state.inclusionBlock = stored.inclusionBlock ?? null;
   state.sentToPeople = stored.sentToPeople == null ? null : asBig(stored.sentToPeople);
+  state.earmarkCash = stored.earmarkCash == null ? null : asBig(stored.earmarkCash);
   return state;
 }
 
@@ -827,6 +832,7 @@ function storeTickState(state) {
     nonceAtSubmit: state.nonceAtSubmit,
     inclusionBlock: state.inclusionBlock,
     sentToPeople: state.sentToPeople === null ? null : state.sentToPeople.toString(),
+    earmarkCash: state.earmarkCash === null ? null : state.earmarkCash.toString(),
   };
 }
 
@@ -1079,6 +1085,7 @@ async function fundRecovery(record, env, feeCash) {
     outcome = await runConversion(record, env, {
       route,
       settleAmount: feeCash,
+      remoteFeeBuffer: DEFAULT_REMOTE_FEE_BUFFER,
       keepNativeForFees: asBig(recovery.minimums.keepNativeForFees, DEFAULT_KEEP_NATIVE_FOR_FEES),
       slippagePct: DEFAULT_SLIPPAGE_PCT,
       followDeposit: false,

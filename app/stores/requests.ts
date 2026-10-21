@@ -407,6 +407,7 @@ type WorkerJob = {
   peopleParaId?: number;
   assetHubGenesis?: string;
   peopleGenesis?: string;
+  remoteFeeBuffer?: string;
   keepNativeForFees?: string;
   quotedDeposit?: string;
   tier?: unknown;
@@ -706,6 +707,7 @@ function handoffOf(job: WorkerJob): WorkerHandoffPayload | undefined {
     peopleParaId,
     assetHubGenesis,
     peopleGenesis,
+    remoteFeeBuffer,
     keepNativeForFees,
   } = job;
   if (
@@ -716,6 +718,7 @@ function handoffOf(job: WorkerJob): WorkerHandoffPayload | undefined {
     !isNumber(peopleParaId) ||
     !isString(assetHubGenesis) ||
     !isString(peopleGenesis) ||
+    !isString(remoteFeeBuffer) ||
     !isString(keepNativeForFees)
   ) {
     return undefined;
@@ -736,6 +739,7 @@ function handoffOf(job: WorkerJob): WorkerHandoffPayload | undefined {
     peopleParaId,
     assetHubGenesis,
     peopleGenesis,
+    remoteFeeBuffer,
     keepNativeForFees,
     ...(isString(job.quotedDeposit) ? { quotedDeposit: job.quotedDeposit } : {}),
     ...route,

@@ -195,6 +195,7 @@ export interface WorkerHandoffPayload {
   peopleParaId: number;
   assetHubGenesis: string;
   peopleGenesis: string;
+  remoteFeeBuffer: string;
   /** Native pool tier only; "0" on the stable tiers, which price their own fees live. */
   keepNativeForFees: string;
   /** The conversion tier decided at quote time and frozen here; the worker consumes it and never

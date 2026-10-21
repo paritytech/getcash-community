@@ -214,6 +214,7 @@ async function depositAsked(pool: Pool, settle: bigint): Promise<bigint> {
     client: { getTypedApi: () => pool.api() } as never,
     underlyingAssetId: UNDERLYING_ID,
     settleAmount: settle,
+    remoteFeeBuffer: 0n,
     keepNativeForFees: 0n,
   });
 }

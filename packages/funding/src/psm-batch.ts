@@ -12,7 +12,8 @@
 // paid in USDT too, priced in the same pool, from an allowance the mint leaves on the burner and
 // the program withdraws, spends from and deposits the rest of back. Every fee here is measured
 // exactly; the cushion over them is taken once, in psmDepositNeeded (FEE_MARGIN_BPS,
-// funding-program.ts), and is asked for rather than held back, so it reaches the mint.
+// funding-program.ts), and is asked for rather than held back, so it reaches the mint. The
+// destination fee is the CASH earmark the pool tier uses.
 //
 // THE BURNER'S USDT ACCOUNT MUST STAY ALIVE THROUGH THE BATCH. pallet-assets reaps an account a
 // transfer or withdrawal leaves below the asset's min_balance and sweeps the remainder with it, and
@@ -123,6 +124,8 @@ export interface PsmBatchArgs {
    *  FEE_MARGIN_BPS on top. The mint leaves it on the burner beside the external's min_balance,
    *  the program withdraws it, and what it does not spend comes back to the burner. */
   feeAllowanceExternal: bigint;
+  /** Destination fee allowance in CASH. */
+  remoteFeesCash: bigint;
   beneficiaryHex: string;
   peopleParaId: number;
   /** How the CASH moves to People. */
@@ -138,6 +141,7 @@ export function buildPsmBatch(api: AssetHubApi, args: PsmBatchArgs) {
   const execArgs = buildPsmFundingProgram({
     withdrawCash: args.cashMinted,
     localFees: { id: external.location, amount: args.feeAllowanceExternal },
+    remoteFeesCash: args.remoteFeesCash,
     beneficiaryHex: args.beneficiaryHex,
     peopleParaId: args.peopleParaId,
     transfer: args.transfer,
@@ -170,6 +174,8 @@ export async function estimatePsmBatchFees(args: {
   /** The external the batch is carved from, at its real magnitude: the dispatch fee has a
    *  per-byte component and compact-encoded amounts change length with magnitude. */
   depositExternal: bigint;
+  /** The destination fee allowance the program will carry, for the same reason. */
+  remoteFeesCash: bigint;
   /** How the CASH moves to People. */
   transfer: CashTransfer;
   /** Any valid address for the dispatch fee read; the fee does not depend on the signer's
@@ -200,6 +206,7 @@ export async function estimatePsmBatchFees(args: {
       externalIn,
       cashMinted: psmMintOut(externalIn, args.route.feeRate),
       feeAllowanceExternal: feeAllowance,
+      remoteFeesCash: args.remoteFeesCash,
       beneficiaryHex: args.beneficiaryHex,
       peopleParaId: args.peopleParaId,
       transfer: args.transfer,

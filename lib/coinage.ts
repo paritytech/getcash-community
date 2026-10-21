@@ -43,6 +43,7 @@ import {
   type ConversionRoute,
   createManualRail,
   DEFAULT_KEEP_NATIVE_FOR_FEES,
+  DEFAULT_REMOTE_FEE_BUFFER,
   DEFAULT_SLIPPAGE_PCT,
   depositTokenOf,
   DIRECT_SLIPPAGE_PCT,
@@ -650,8 +651,9 @@ function depositBudget(
  *  quoted instead, which is what the worker's gate waits for. */
 export function handoffFees(
   sizing: FundingSizing,
-): Pick<WorkerHandoffPayload, "keepNativeForFees" | "quotedDeposit"> {
+): Pick<WorkerHandoffPayload, "remoteFeeBuffer" | "keepNativeForFees" | "quotedDeposit"> {
   return {
+    remoteFeeBuffer: sizing.remoteFeeBuffer.toString(),
     keepNativeForFees: ("keepNativeForFees" in sizing ? sizing.keepNativeForFees : 0n).toString(),
     ...("quotedDeposit" in sizing ? { quotedDeposit: sizing.quotedDeposit.toString() } : {}),
   };
@@ -758,6 +760,7 @@ export async function createMockCoinageSession(
 ): Promise<MockCoinageWorld> {
   const fundingSizing: FundingSizing = args.fundingSizing ?? {
     tier: "pool",
+    remoteFeeBuffer: 0n,
     keepNativeForFees: 0n,
   };
   const route: ConversionRoute = args.route ?? { tier: "pool" };
@@ -1195,7 +1198,8 @@ export async function createCoinageSession(
       return null;
     });
     const keepNativeForFees = pool?.keepNativeForFees ?? DEFAULT_KEEP_NATIVE_FOR_FEES;
-    sizing = { tier: "pool", keepNativeForFees };
+    const remoteFeeBuffer = pool?.remoteFeeBuffer ?? DEFAULT_REMOTE_FEE_BUFFER;
+    sizing = { tier: "pool", remoteFeeBuffer, keepNativeForFees };
     // Size the native budget the user must deposit from the live pool quote for the CASH
     // settle amount, plus the headroom that lets the deposit clear the worker's swap gate after
     // the pool moves, plus the retained fee native.
@@ -1206,6 +1210,7 @@ export async function createCoinageSession(
         client: await connectChain(ASSET_HUB),
         underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
         settleAmount: args.amount,
+        remoteFeeBuffer,
         keepNativeForFees,
         slippagePct,
       }),

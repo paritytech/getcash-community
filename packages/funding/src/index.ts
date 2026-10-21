@@ -1,6 +1,7 @@
 export {
   DEFAULT_KEEP_NATIVE_FOR_FEES,
   DEFAULT_INCLUSION_TIMEOUT_MS,
+  DEFAULT_REMOTE_FEE_BUFFER,
   DEFAULT_SLIPPAGE_PCT,
   DEFAULT_TICK_TIMEOUT_MS,
   DIRECT_SLIPPAGE_PCT,
@@ -33,7 +34,9 @@ export {
   buildDotUsdFundingProgram,
   claimer,
   DepositBelowFeesError,
+  destinationEarmark,
   dryRunFundingProgram,
+  estimateDestinationFeeCash,
   estimateFundingProgramFees,
   estimateStableProgramFees,
   estimateDotUsdProgramFees,

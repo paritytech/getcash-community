@@ -2,15 +2,17 @@
 //
 // pallet_xcm keys a trap by the claimer and the assets: the blake2_256 hash of the SCALE encoding
 // of the pair (Location, VersionedAssets), the assets in the latest XCM version. The funding
-// program names the burner as the claimer and People charges nothing for it, so a trap holds
-// exactly the CASH the conversion sent, and its key follows from that amount without reading any
-// event. The chain's AssetTraps map counts the traps under a key; one or more means the CASH is
-// there, and claim_assets signed by the burner takes it back.
+// program names the burner as the claimer, so a trap holds the CASH the conversion sent less
+// whatever fee People charged before the failure, and that charge is the one unknown: nothing on
+// some runtimes, a few units on others. So the trap is found by trying: the chain's AssetTraps map
+// is read whole, it holds a handful of entries, and the keys for every amount from the one sent
+// down by the fee earmark are computed locally until one is in the map. One or more counted under
+// it means the CASH is there, and claim_assets signed by the burner takes it back.
 //
 // The encoding comes from the chain's own codecs: the AssetsTrapped event carries the hash, the
 // origin and the assets in that order, so the pair's encoding is the event payload past the hash.
-// The event itself is the second way to find a trap, exact when the amount sent is not known to
-// the unit, but it is only in the block it happened in, which a worker asleep then never sees.
+// The event itself is the second way to find a trap, exact whatever was charged, but it is only in
+// the block it happened in, which a worker asleep then never sees.
 
 import { blake2b } from "@noble/hashes/blake2.js";
 import { TOKENS } from "@getsome/core";
@@ -71,18 +73,27 @@ function trappedAmountOf(assets: unknown): bigint | null {
   return first?.fun?.type === "Fungible" ? BigInt(first.fun.value ?? 0n) : null;
 }
 
-/** The trap holding `sent` CASH for `claimerHex`, read from People at its best block: the count
- *  under the key `sent` gives, or the AssetsTrapped event of that block naming the claimer, which
- *  also serves when `sent` is off by what the pool moved after it was read. Null when neither
- *  shows one. */
+/** The trap holding the CASH sent for `claimerHex`, read from People at its best block: the
+ *  entry whose key one of the amounts from `sent` down by `earmark` gives, or the AssetsTrapped
+ *  event of that block naming the claimer, which also serves when `sent` is off by what the pool
+ *  moved after it was read. Null when neither shows one. */
 export async function findTrap(
   peopleApi: PeopleApi,
   claimerHex: string,
   sent: bigint,
+  earmark: bigint,
 ): Promise<Trap | null> {
-  const key = await trapKey(claimerHex, sent);
-  const count = await peopleApi.query.PolkadotXcm.AssetTraps.getValue(key, { at: "best" });
-  if (count > 0) return { amount: sent, key };
+  const entries = await peopleApi.query.PolkadotXcm.AssetTraps.getEntries({ at: "best" });
+  const counted = new Set(
+    entries.filter((entry) => entry.value > 0).map((entry) => entry.keyArgs[0].toLowerCase()),
+  );
+  if (counted.size > 0) {
+    const floor = sent - earmark > 1n ? sent - earmark : 1n;
+    for (let amount = sent; amount >= floor; amount -= 1n) {
+      const key = await trapKey(claimerHex, amount);
+      if (counted.has(key.toLowerCase())) return { amount, key };
+    }
+  }
   const events = await peopleApi.query.System.Events.getValue({ at: "best" });
   for (const record of events) {
     const event = record.event as { type: string; value: { type: string; value: unknown } };
