@@ -1397,7 +1397,7 @@ async function pipeline(
 function trapped(
   request: PreviewRequest,
   phase: "funding" | "claiming",
-  extra: { deposit?: string } = {},
+  extra: { deposit?: string; round?: number; askCash?: string } = {},
 ): Observation {
   const at = request.at(1);
   return {
@@ -2395,6 +2395,14 @@ export const SCENES: Scene[] = [
     },
   },
   {
+    // The trap is found but the fee is not sized yet: nothing is offered for one tick.
+    name: "top-up / crypto / recovering: sizing the fee",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "await-arrival");
+      await r.observe(trapped(r, "funding", { askCash: undefined }));
+    },
+  },
+  {
     // The purse could not pay the fee: the deposit becomes the main way, the purse the other.
     name: "top-up / crypto / recovering: fee refused",
     apply: async (s, f, i) => {
@@ -2410,8 +2418,60 @@ export const SCENES: Scene[] = [
       await r.observe({
         source: "host",
         at: r.at(3),
-        payment: { attempt: 0, status: "failed", reason: "The balance does not cover this fee." },
+        payment: {
+          attempt: 0,
+          status: "failed",
+          reason: "The balance does not cover this fee.",
+          refusal: "insufficient-balance",
+        },
       });
+    },
+  },
+  {
+    // The buyer declined the host's sheet: the purse stays the main way.
+    name: "top-up / crypto / recovering: fee declined",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "await-arrival");
+      await r.observe(trapped(r, "funding"));
+      await r.observe({
+        source: "user",
+        at: r.at(2),
+        event: "payment-requested",
+        attempt: 0,
+        id: `0x${"ab".repeat(32)}`,
+      });
+      await r.observe({
+        source: "host",
+        at: r.at(3),
+        payment: {
+          attempt: 0,
+          status: "failed",
+          reason: "The payment was declined.",
+          refusal: "declined",
+        },
+      });
+    },
+  },
+  {
+    // The purse paid, but the claim did not go through and the worker moved the fee's round
+    // on: the fee is asked for again.
+    name: "top-up / crypto / recovering: fee needed again",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "await-arrival");
+      await r.observe(trapped(r, "funding"));
+      await r.observe({
+        source: "user",
+        at: r.at(2),
+        event: "payment-requested",
+        attempt: 0,
+        id: `0x${"ab".repeat(32)}`,
+      });
+      await r.observe({
+        source: "host",
+        at: r.at(3),
+        payment: { attempt: 0, status: "completed" },
+      });
+      await r.observe({ ...trapped(r, "funding", { round: 1 }), at: r.at(4) });
     },
   },
   {
