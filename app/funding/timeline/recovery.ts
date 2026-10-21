@@ -64,6 +64,14 @@ export function recoveryPrompt(record: TopUpRecord): RecoveryPrompt | undefined 
       actions: [FROM_BALANCE_AGAIN, SEND_DEPOSIT],
     };
   }
+  // The purse paid part of the fee: the worker asks for the rest.
+  if (payment?.status === "partiallyClaimed") {
+    return {
+      message: delay("Your balance covered part of the fee."),
+      detail: `Another ${fee} is needed. Pay it from your balance, or send a small deposit instead.`,
+      actions: [FROM_BALANCE_AGAIN, SEND_DEPOSIT],
+    };
+  }
   if (
     payment?.requestedAt !== undefined &&
     payment.status !== "failed" &&

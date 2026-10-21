@@ -282,6 +282,21 @@ describe("the timeline", () => {
     expect(short?.recovery?.actions).toEqual([SEND_DEPOSIT, FROM_BALANCE_AGAIN]);
   });
 
+  it("asks for the rest when the purse paid part of the fee", () => {
+    const short = timelineOf(
+      reduce(requested(trapped()), {
+        source: "host",
+        at: at(4),
+        payment: { attempt: 0, status: "partiallyClaimed", actualClaimed: "4000" },
+      }),
+    );
+    expect(short?.message?.text).toBe("Your balance covered part of the fee.");
+    expect(short?.detail).toBe(
+      "Another $0.01 Cash is needed. Pay it from your balance, or send a small deposit instead.",
+    );
+    expect(short?.recovery?.actions).toEqual([FROM_BALANCE_AGAIN, SEND_DEPOSIT]);
+  });
+
   it("offers the purse first again when the sheet was declined, or the host failed otherwise", () => {
     const declined = timelineOf(
       reduce(requested(trapped()), {

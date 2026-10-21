@@ -154,6 +154,16 @@ describe("requests store: a trapped top-up's fee, hosted", () => {
     expect(asked).toHaveBeenCalledTimes(2);
     expect(asked.mock.calls[1]![0]).toMatchObject({ idHex: recoveryPaymentIdFor(CLAIMER, 0) });
     expect(payment()).toMatchObject({ attempt: 0, status: "processing", requestedAt: at(3) });
+
+    // A payment the purse made short is over: the next ask is a fresh attempt under its own id.
+    readStatus.mockResolvedValueOnce({ status: "partiallyClaimed", actualClaimed: "4000" });
+    await requests.observePaymentStatus(REF);
+    expect(payment()?.status).toBe("partiallyClaimed");
+    expect(await requests.requestRecoveryPayment(REF)).toEqual({ ok: true });
+    await settle();
+    expect(asked).toHaveBeenCalledTimes(3);
+    expect(asked.mock.calls[2]![0]).toMatchObject({ idHex: recoveryPaymentIdFor(CLAIMER, 1) });
+    expect(payment()).toMatchObject({ attempt: 1, status: "processing" });
   });
 
   it("polls the host for the fee's payment while the top-up is on screen and its word is pending", async () => {

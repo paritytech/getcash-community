@@ -1026,6 +1026,13 @@ async function recoverTrapped(record, env) {
     );
   } finally {
     persist(record.recovery?.phase ?? "funding");
+    // The round moved on: a claim spent the fee, or the fee grew. Whatever deposit covered it is
+    // over, and the next funding round looks for one afresh.
+    if (state.round !== (kept.round ?? 0)) {
+      delete record.recovery.route;
+      delete record.recovery.state;
+      delete record.recovery.deposit;
+    }
   }
   delete record.lastError;
   delete record.submitting;
@@ -1116,6 +1123,14 @@ async function fundRecovery(record, env, feeCash) {
     throw new Error(`recovery deposit: ${String(error?.message ?? error)}`);
   }
   recovery.deposit = outcome.step;
+  if (outcome.step === "done") {
+    // The deposit is CASH on People: its conversion is over, and only the step is kept, for the
+    // surface, until the claim. The route and the state are let go, so a funding round after
+    // this one looks for a deposit afresh instead of replaying a finished conversion.
+    delete recovery.route;
+    delete recovery.state;
+    delete recovery.depositError;
+  }
 }
 
 /** The route's recorded fields, as a hand-off carries them. */

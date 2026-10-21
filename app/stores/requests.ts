@@ -1745,37 +1745,48 @@ export const useRequestsStore = defineStore("requests", () => {
     const key = requestRefKey(ref);
     if (recoveryAsks.has(key)) return { ok: false, reason: "Your balance is already being asked." };
     const previous = recovery.payment;
+    // A refused attempt, one the purse paid short, or one the worker's round moved past is over;
+    // the next ask is a fresh attempt under its own id.
     const attempt =
       previous === undefined
         ? 0
-        : previous.status === "failed" || paymentOutOfRound(recovery)
+        : previous.status === "failed" ||
+            previous.status === "partiallyClaimed" ||
+            paymentOutOfRound(recovery)
           ? previous.attempt + 1
           : previous.attempt;
     const idHex = recoveryPaymentIdFor(recovery.claimerHex, attempt);
-    // The ask is on record before the stamp, so no poll reads the host between the two.
+    // The ask is on record before the stamp, so no poll reads the host between the two, and let
+    // go on every way out of here that does not reach the host.
     recoveryAsks.add(key);
-    await observe(ref, {
-      source: "user",
-      at: requestsNow(),
-      event: "payment-requested",
-      attempt,
-      id: idHex,
-      round: recovery.round,
-    });
-    // The stamp is the record's word that the purse may be asked.
-    const stamped = get(ref);
-    if (
-      stamped === undefined ||
-      !isTopUp(stamped) ||
-      stamped.recovery?.payment?.attempt !== attempt ||
-      stamped.recovery.payment.requestedAt === undefined
-    ) {
+    let live: typeof import("~~/lib/withdraw-live");
+    try {
+      await observe(ref, {
+        source: "user",
+        at: requestsNow(),
+        event: "payment-requested",
+        attempt,
+        id: idHex,
+        round: recovery.round,
+      });
+      // The stamp is the record's word that the purse may be asked.
+      const stamped = get(ref);
+      if (
+        stamped === undefined ||
+        !isTopUp(stamped) ||
+        stamped.recovery?.payment?.attempt !== attempt ||
+        stamped.recovery.payment.requestedAt === undefined
+      ) {
+        recoveryAsks.delete(key);
+        return { ok: false, reason: "The top-up is no longer waiting for the fee." };
+      }
+      live = await import("~~/lib/withdraw-live");
+    } catch (e) {
       recoveryAsks.delete(key);
-      return { ok: false, reason: "The top-up is no longer waiting for the fee." };
+      throw e;
     }
     const burnerAddress =
       record.handoff?.burnerAddress ?? record.deposit?.address ?? record.depositAddress ?? "";
-    const live = await import("~~/lib/withdraw-live");
     // The request resolves after the user's decision on the host's sheets, so it is started and
     // left to run; both answers reach the record as the host's word, and the host's status is
     // read back from then on until it is final.

@@ -104,8 +104,14 @@ async function recoverFromBalance() {
   const record = requests.foregroundRecord;
   if (record === null) return;
   recoveryNotice.value = null;
-  const asked = await requests.requestRecoveryPayment(record.ref);
-  if (!asked.ok) recoveryNotice.value = asked.reason;
+  try {
+    const asked = await requests.requestRecoveryPayment(record.ref);
+    if (!asked.ok) recoveryNotice.value = asked.reason;
+  } catch (e) {
+    // The stamp or the host could not be reached: said, and the offer stands for the next tap.
+    console.warn(`[funding] the recovery fee could not be asked for: ${String(e)}`);
+    recoveryNotice.value = "Your balance couldn't be asked just now. Try again in a moment.";
+  }
 }
 // Demo deck: a scene can land straight on the opened guide. Inert everywhere else.
 if (isDemoBuild()) {

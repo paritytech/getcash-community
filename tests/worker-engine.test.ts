@@ -871,6 +871,27 @@ describe("worker funding engine", () => {
     });
     expect(mocks.findRecoveryDeposit).toHaveBeenCalledTimes(2);
 
+    // The deposit's conversion ends: the step is kept for the surface, the route and the state
+    // are let go, so a later funding round looks for a deposit afresh.
+    mocks.tickRecovery.mockResolvedValueOnce({ step: "funding", held: 0n, feeCash: 123_456n });
+    mocks.tickOnce.mockResolvedValueOnce(outcome("done"));
+    await revived.tickAllFunding();
+    expect(storedJob().recovery).toMatchObject({ phase: "funding", deposit: "done" });
+    expect(storedJob().recovery.route).toBeUndefined();
+    expect(storedJob().recovery.state).toBeUndefined();
+
+    // The claim spent the fee and the round moved on: the deposit is over too, and the next
+    // funding round looks for one afresh.
+    mocks.tickRecovery.mockImplementationOnce(async (_input, state) => {
+      state.round = 1;
+      return { step: "funding", held: 0n, feeCash: 123_456n };
+    });
+    mocks.findRecoveryDeposit.mockResolvedValueOnce(null);
+    await revived.tickAllFunding();
+    expect(storedJob().recovery).toMatchObject({ phase: "funding", round: 1 });
+    expect(storedJob().recovery.deposit).toBeUndefined();
+    expect(mocks.findRecoveryDeposit).toHaveBeenCalledTimes(3);
+
     // The claim lands: the job is done as any other, and the host's claim is registered for the
     // CASH on the burner in the same tick.
     mocks.tickRecovery.mockImplementationOnce(async (_input, state) => {

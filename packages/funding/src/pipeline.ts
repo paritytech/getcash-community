@@ -755,7 +755,8 @@ export function sentAmountOf(
 ): bigint | null {
   const expected = CONVERSION_EVENT[route.tier];
   if (expected === null) return null;
-  const field = route.tier === "psm" ? "amount" : "amount_out";
+  // The mint's event names what the burner received in CASH; the swap's what it returned.
+  const field = route.tier === "psm" ? "internal_received" : "amount_out";
   const conversions = events.filter(
     (e) =>
       e.type === expected.pallet &&

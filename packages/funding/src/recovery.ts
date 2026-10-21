@@ -163,6 +163,14 @@ export async function tickRecovery(
   const { peopleApi, address, claimerHex, trap } = input;
   const read = <T>(work: Promise<T>, what: string) => bounded(work, input.tickTimeoutMs, what);
 
+  // The nonce is read before the trap's count, both at best: a claim that lands between the two
+  // reads moves the nonce after it was read and empties the trap before the count is read, so the
+  // count says done. The other way round, a stale count and a moved nonce would send a second
+  // claim after the first one won, and lose its fee.
+  const nonce = await read(
+    peopleApi.apis.AccountNonceApi.account_nonce(address, { at: "best" }),
+    "nonce read",
+  );
   // The trap's count is the claim's answer, whoever asked: zero, the CASH is on the burner.
   const count = await read(
     peopleApi.query.PolkadotXcm.AssetTraps.getValue(trap.key, { at: "best" }),
@@ -192,10 +200,6 @@ export async function tickRecovery(
   }
 
   // A claim owed an answer: wait for it while its nonce stands and it may still land.
-  const nonce = await read(
-    peopleApi.apis.AccountNonceApi.account_nonce(address, { at: "best" }),
-    "nonce read",
-  );
   if (state.nonceAtClaim !== null && state.claimSentAt !== null) {
     const inFlight =
       nonce === state.nonceAtClaim && input.now() - state.claimSentAt < CLAIM_RESEND_MS;
@@ -203,12 +207,14 @@ export async function tickRecovery(
   }
 
   // People runs the claim as the burner before it is paid for; one it would refuse is not sent.
+  // At best, where the trap was found: at the finalized block it may not be there yet.
   const claim = buildClaim(peopleApi, claimerHex, trap);
   const dr = await read(
     peopleApi.apis.DryRunApi.dry_run_call(
       signedOrigin(address) as never,
       claim.decodedCall as never,
       5,
+      { at: "best" },
     ),
     "claim dry run",
   );

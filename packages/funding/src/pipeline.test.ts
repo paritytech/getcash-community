@@ -2549,9 +2549,13 @@ describe("isConverted", () => {
 });
 
 describe("sentAmountOf", () => {
+  // The mint's event as the chain emits it: the external consumed, the CASH received, its fee.
   const minted = (amount: bigint) => ({
     type: "Psm",
-    value: { type: "Minted", value: { amount } },
+    value: {
+      type: "Minted",
+      value: { external_consumed: amount, internal_received: amount, internal_fee: 0n },
+    },
   });
   it("is the exchange into CASH, not a fee's swap before the program or its refund after it", () => {
     const feeSwap = swappedTo(NATIVE_LOC, 300n);

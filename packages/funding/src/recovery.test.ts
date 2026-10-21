@@ -39,20 +39,34 @@ function scriptedPeople(opts: { count: number; cash: bigint; dryRunRefuses?: boo
   };
   const seen = {
     feeReads: [] as Array<[string, unknown]>,
-    dryRuns: [] as Array<[unknown, unknown]>,
+    dryRuns: [] as Array<[unknown, unknown, unknown]>,
     submits: [] as unknown[],
+    /** The chain reads in order, for the nonce-before-count rule. */
+    reads: [] as string[],
   };
   const claimArgs: unknown[] = [];
   const api = {
     query: {
-      PolkadotXcm: { AssetTraps: { getValue: async () => state.count } },
+      PolkadotXcm: {
+        AssetTraps: {
+          getValue: async () => {
+            seen.reads.push("count");
+            return state.count;
+          },
+        },
+      },
       AssetRate: { ConversionRateToNative: { getValue: async () => RATE } },
     },
     apis: {
-      AccountNonceApi: { account_nonce: async () => state.nonce },
+      AccountNonceApi: {
+        account_nonce: async () => {
+          seen.reads.push("nonce");
+          return state.nonce;
+        },
+      },
       DryRunApi: {
-        dry_run_call: async (origin: unknown, call: unknown) => {
-          seen.dryRuns.push([origin, call]);
+        dry_run_call: async (origin: unknown, call: unknown, _version: number, at: unknown) => {
+          seen.dryRuns.push([origin, call, at]);
           return {
             success: true,
             value: {
@@ -201,12 +215,15 @@ describe("tickRecovery", () => {
         },
       },
     });
+    // Dry-run at best, where the trap was found, and the nonce read before the trap's count.
     expect(world.seen.dryRuns).toEqual([
       [
         { type: "system", value: { type: "Signed", value: ADDRESS } },
         { type: "PolkadotXcm", value: { type: "claim_assets", value: world.claimArgs[0] } },
+        { at: "best" },
       ],
     ]);
+    expect(world.seen.reads).toEqual(["nonce", "count"]);
     expect(world.seen.submits).toEqual([PEOPLE_CASH_TX_OPTIONS]);
     // The nonce and the time are on record before the broadcast leaves, and let go after.
     expect(before).toEqual([
