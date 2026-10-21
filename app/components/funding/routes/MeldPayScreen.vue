@@ -20,7 +20,12 @@ import MethodUnavailable from "../MethodUnavailable.vue";
 const session = useSessionStore();
 // switchRoute asks the shell to swap to the crypto package when this region does not route the
 // method; fees opens the fee-breakdown drill-in, currency the region picker.
-const emit = defineEmits<{ switchRoute: [route: FundingRoute]; fees: []; currency: [] }>();
+const emit = defineEmits<{
+  switchRoute: [route: FundingRoute];
+  fees: [];
+  currency: [];
+  changeAmount: [];
+}>();
 
 // The adapter's buyer-facing refusal message, shown under the quote and blocking Continue.
 const startError = ref<string | null>(null);
@@ -52,6 +57,11 @@ onMounted(async () => {
 function requote() {
   startError.value = null;
   void session.fetchMeldQuote();
+}
+// Out of range: the bound the method takes, in CASH, becomes the amount and is quoted.
+function useAmount(cash: string) {
+  session.setAmount(cash);
+  requote();
 }
 // So does changing region: the refusal the last one earned is not this one's, and it would
 // otherwise keep Continue disabled for a payment that was never refused. The picker lives in the
@@ -145,6 +155,20 @@ async function next() {
     @region="emit('currency')"
     @use-crypto="emit('switchRoute', 'crypto')"
     @use-other="switchMethod && emit('switchRoute', switchMethod)"
+  />
+  <MethodUnavailable
+    v-else-if="session.quoteOutOfRange !== null && !session.loading"
+    direction="top-up"
+    :method="meldMethod"
+    :amount="session.amountHuman"
+    :country="selectedCountry"
+    :country-name="countryLabel"
+    :minimum="null"
+    :other="null"
+    :range="session.quoteOutOfRange"
+    @region="emit('currency')"
+    @change-amount="emit('changeAmount')"
+    @use-amount="useAmount"
   />
   <RateErrorScreen
     v-else-if="session.quoteError !== null && !session.loading"

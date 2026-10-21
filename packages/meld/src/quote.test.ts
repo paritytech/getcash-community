@@ -1,7 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { TOKENS, type ReverseQuoteInput } from "@getsome/core";
-import type { MeldClientLike, MeldQuoteEntry, MeldQuoteRequest } from "./client";
-import { computeMeldQuote, pickBestQuote, type MeldQuoteContext, type MeldQuoteRaw } from "./quote";
+import {
+  createMeldClient,
+  type MeldClientLike,
+  type MeldQuoteEntry,
+  type MeldQuoteRequest,
+} from "./client";
+import {
+  computeMeldQuote,
+  MeldAmountOutOfRangeError,
+  pickBestQuote,
+  type MeldQuoteContext,
+  type MeldQuoteRaw,
+} from "./quote";
 
 const CTX: MeldQuoteContext = {
   country: "US",
@@ -159,6 +170,139 @@ describe("computeMeldQuote (forward inversion)", () => {
       cancel: async () => ({ outcome: "cancelled" as const }),
     };
     await expect(computeMeldQuote(capped, CTX, twentyDot())).rejects.toThrow(/could not price/);
+  });
+});
+
+/**
+ * The real client over a fake adapter that prices like INR against DOT: `rate` DOT per rupee,
+ * refusing outside [min, max] with the adapter's BelowMinimum/AboveMaximum and the bound, less a
+ * fixed `fee` in fiat. Records each asked amount in `asked`.
+ */
+function limitedClient(
+  rate: number,
+  min: number,
+  max: number,
+  asked: number[],
+  fee = 0,
+): MeldClientLike {
+  const json = (status: number, body: unknown) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "content-type": "application/json" },
+    });
+  return createMeldClient({
+    baseUrl: "https://adapter.test",
+    fetchImpl: async (_url, init) => {
+      const fiat = Number(
+        (JSON.parse(String(init?.body)) as { sourceAmount: string }).sourceAmount,
+      );
+      asked.push(fiat);
+      if (fiat < min) {
+        return json(400, {
+          error: { tag: "BelowMinimum", value: { amount: min.toFixed(2), currency: "INR" } },
+        });
+      }
+      if (fiat > max) {
+        return json(400, {
+          error: { tag: "AboveMaximum", value: { amount: max.toFixed(2), currency: "INR" } },
+        });
+      }
+      return json(200, {
+        quotes: [
+          {
+            serviceProvider: "BANXA",
+            sourceAmount: fiat.toFixed(2),
+            destinationAmount: (Math.max(fiat - fee, 0) * rate).toFixed(8),
+          },
+        ],
+      });
+    },
+  });
+}
+
+describe("computeMeldQuote (limits)", () => {
+  const INR: MeldQuoteContext = { ...CTX, country: "IN", fiat: "INR" };
+  // About 560 rupees a DOT; card limits 3,000 to 50,000.
+  const RATE = 1 / 560;
+  const dot = (whole: number): ReverseQuoteInput => ({
+    sourceId: "dot-assethub",
+    target: { amount: BigInt(Math.round(whole * 1e10)), decimals: 10 },
+  });
+
+  it("probes at the method's minimum, not the target's number read as fiat", async () => {
+    const asked: number[] = [];
+    const ctx = { ...INR, limits: { min: "3000.00", max: "50000.00" } };
+    const quote = await computeMeldQuote(limitedClient(RATE, 3000, 50000, asked), ctx, dot(8.9));
+    expect(asked[0]).toBe(3000);
+    const raw = quote.raw as MeldQuoteRaw;
+    expect(Number(raw.provider.destinationAmount)).toBeGreaterThanOrEqual(8.9);
+    // 8.9 DOT at 560 a DOT is about 4,984 rupees; the buffer keeps it within a percent.
+    expect(Number(raw.provider.sourceAmount)).toBeGreaterThanOrEqual(4984);
+    expect(Number(raw.provider.sourceAmount)).toBeLessThanOrEqual(4984 * 1.011);
+  });
+
+  it("learns the minimum from a refusal when the caller had no limits", async () => {
+    const asked: number[] = [];
+    const quote = await computeMeldQuote(limitedClient(RATE, 3000, 50000, asked), INR, dot(8.9));
+    // The 8.90 guess is refused on the minimum, and the probe moves there.
+    expect(asked.slice(0, 2)).toEqual([8.9, 3000]);
+    expect(Number((quote.raw as MeldQuoteRaw).provider.destinationAmount)).toBeGreaterThanOrEqual(
+      8.9,
+    );
+  });
+
+  it("refuses a target that costs less than the minimum, naming the bound and the cost", async () => {
+    const asked: number[] = [];
+    const ctx = { ...INR, limits: { min: "3000.00", max: "50000.00" } };
+    const err = await computeMeldQuote(limitedClient(RATE, 3000, 50000, asked), ctx, dot(2)).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(MeldAmountOutOfRangeError);
+    expect(err).toMatchObject({
+      bound: "min",
+      limit: "3000.00",
+      estimatedFiat: "1120.00",
+      fiat: "INR",
+    });
+    // Only the rate probe went out: the out-of-range amount is never quoted.
+    expect(asked).toEqual([3000]);
+  });
+
+  it("refuses a target that costs more than the maximum without quoting it", async () => {
+    const asked: number[] = [];
+    const ctx = { ...INR, limits: { min: "3000.00", max: "50000.00" } };
+    const err = await computeMeldQuote(
+      limitedClient(RATE, 3000, 50000, asked),
+      ctx,
+      dot(100),
+    ).catch((e: unknown) => e);
+    expect(err).toMatchObject({ bound: "max", limit: "50000.00", estimatedFiat: "56000.00" });
+    // The projection only moves the probe to the maximum; the line there settles it.
+    expect(asked).toEqual([3000, 50000]);
+  });
+
+  it("quotes a target a fixed fee makes look past the maximum from the minimum's line", async () => {
+    const asked: number[] = [];
+    // A 5 fee at a probe of 20 delivers 15, so a straight line puts 1,000 at 1,333: past the
+    // 1,200 maximum. It really costs about 1,005.
+    const ctx = { ...INR, limits: { min: "20.00", max: "1200.00" } };
+    const quote = await computeMeldQuote(limitedClient(1, 20, 1200, asked, 5), ctx, dot(1000));
+    const raw = quote.raw as MeldQuoteRaw;
+    expect(asked.slice(0, 2)).toEqual([20, 1200]);
+    expect(Number(raw.provider.destinationAmount)).toBeGreaterThanOrEqual(1000);
+    expect(Number(raw.provider.sourceAmount)).toBeLessThanOrEqual(1005 * 1.011);
+  });
+
+  it("names a bound the corridor did not, when a correction is refused on it", async () => {
+    const asked: number[] = [];
+    // The caller knew the minimum only; the maximum comes back on the refused correction.
+    const ctx = { ...INR, limits: { min: "3000.00" } };
+    const err = await computeMeldQuote(
+      limitedClient(RATE, 3000, 50000, asked),
+      ctx,
+      dot(100),
+    ).catch((e: unknown) => e);
+    expect(err).toMatchObject({ bound: "max", limit: "50000.00", estimatedFiat: "56000.00" });
   });
 });
 
