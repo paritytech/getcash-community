@@ -22,6 +22,9 @@ const props = withDefaults(
     /** Routes this build can run. Any other renders dimmed, marked "Soon", and unclickable. */
     availableRoutes?: readonly FundingRoute[];
     history: boolean;
+    /** A top-up or send still running: the clock wears a dot, and Back returns to its screen. */
+    historyBadge?: boolean;
+    back?: boolean;
     error?: string | null;
     loading?: boolean;
     /** Launch-load placeholder: static chrome renders inert, data-driven parts show skeletons. */
@@ -43,6 +46,7 @@ const emit = defineEmits<{
   route: [route: FundingRoute];
   continue: [];
   history: [];
+  back: [];
 }>();
 
 const displayAmount = computed(() => (props.amount === "" ? "0" : groupAmountDigits(props.amount)));
@@ -104,8 +108,12 @@ function requestContinue() {
     <FundingEntryHeader
       :title="title"
       :history="history"
+      :history-badge="historyBadge"
+      :back="back"
+      :centered="back"
       :skeleton="skeleton"
       @history="emit('history')"
+      @back="emit('back')"
     />
 
     <div class="amount-shell-scroll">
