@@ -1,5 +1,7 @@
 import tailwindcss from "@tailwindcss/vite";
 import { nodePolyfills } from "vite-plugin-node-polyfills";
+import { DECIMALS, readTopUpBounds } from "./app/funding/bounds";
+import { formatFundingAmount } from "./app/funding/selection";
 import { DEFAULT_THEME, THEMES } from "./app/theme/theme";
 import papiConfig from "./.papi/polkadot-api.json";
 import { NETWORK } from "./packages/core/src/network";
@@ -10,6 +12,18 @@ if (!NETWORK.testnet && process.env.VITE_FAUCET_SEED?.trim()) {
     "VITE_FAUCET_SEED is set, but packages/core/src/network.json does not mark the network as a testnet",
   );
 }
+
+// The top-up bounds are inlined too. A value the app ignores is reported here, in the build log
+// whoever set it reads, with the bounds the build uses instead.
+const topUpBounds = readTopUpBounds({
+  minimum: process.env.VITE_TOP_UP_MINIMUM,
+  maximum: process.env.VITE_TOP_UP_MAXIMUM,
+});
+const topUpRange = `${formatFundingAmount(topUpBounds.minimum, DECIMALS)} to ${formatFundingAmount(topUpBounds.maximum, DECIMALS)} CASH`;
+for (const problem of topUpBounds.problems) {
+  console.warn(`[config] ${problem}; ignored`);
+}
+console.info(`[config] top-up bounds: ${topUpRange}`);
 
 // The app dials the chains network.json names, with calls typed from the metadata in .papi/.
 for (const [chain, papiGenesis] of [

@@ -236,14 +236,24 @@ export async function fetchSupportedCorridors(
     );
     if (!res.ok) return null;
     const data = (await res.json()) as {
-      corridors?: { country?: string; fiat?: string; methods?: Record<string, unknown>[] }[];
+      corridors?: {
+        country?: string;
+        name?: string;
+        fiat?: string;
+        methods?: Record<string, unknown>[];
+      }[];
     };
     const map = new Map<string, SupportedCorridor>();
     for (const c of data.corridors ?? []) {
       const country = String(c.country ?? "");
       const fiat = String(c.fiat ?? "");
       if (country === "") continue;
-      map.set(country, { country, fiat, methods: (c.methods ?? []).map((m) => toMethod(m, fiat)) });
+      map.set(country, {
+        country,
+        fiat,
+        methods: (c.methods ?? []).map((m) => toMethod(m, fiat)),
+        ...(typeof c.name === "string" && c.name !== "" ? { name: c.name } : {}),
+      });
     }
     // Only a non-empty result is cached; an empty one (cold cache) is retried next call.
     if (map.size > 0) corridorsCache.set(catalogKey(destination, direction), map);
