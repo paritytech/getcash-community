@@ -41,6 +41,16 @@ inputs:
       Empty uses the build's default, the direct Asset Hub sales only: the Chainflip swap lanes
       (usdc@arbitrum, usdc@solana) are offered only when listed here.
     default: ""
+  top-up-minimum:
+    description: >
+      Optional VITE_TOP_UP_MINIMUM, the least a top up can be, in CASH. Empty uses the build's
+      default, 1 CASH.
+    default: ""
+  top-up-maximum:
+    description: >
+      Optional VITE_TOP_UP_MAXIMUM, the most a top up can be, in CASH. Empty uses the build's
+      default, 5000 CASH.
+    default: ""
   require-secrets:
     description: >
       Whether an empty meld-base-url, meld-product-id or chainflip-broker-api-key is a
@@ -101,6 +111,8 @@ runs:
         VITE_MELD_BASE_URL: ${{ inputs.meld-base-url }}
         VITE_MELD_PRODUCT_ID: ${{ inputs.meld-product-id }}
         VITE_OFFRAMP_LANES: ${{ inputs.offramp-lanes }}
+        VITE_TOP_UP_MINIMUM: ${{ inputs.top-up-minimum }}
+        VITE_TOP_UP_MAXIMUM: ${{ inputs.top-up-maximum }}
         REQUIRE_SECRETS: ${{ inputs.require-secrets }}
       run: |
         if [ -z "$VITE_MELD_BASE_URL" ]; then
