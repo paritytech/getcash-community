@@ -845,7 +845,11 @@ describe("worker funding engine", () => {
     // A deposit arrived in the native: the pipeline converts it for the fee, through the pool,
     // with the figures priced for it, and the route is kept once taken.
     mocks.tickRecovery.mockResolvedValueOnce({ step: "funding", held: 0n, feeCash: 123_456n });
-    mocks.findRecoveryDeposit.mockResolvedValueOnce({ route: { tier: "pool" }, held: 10_000n });
+    mocks.findRecoveryDeposit.mockResolvedValueOnce({
+      route: { tier: "pool" },
+      token: "PAS",
+      held: 10_000n,
+    });
     mocks.tickOnce.mockImplementationOnce(async (input, state) => {
       state.fundsSeenAt = Date.now();
       return { ...outcome("swap"), submitted: true };
@@ -880,16 +884,23 @@ describe("worker funding engine", () => {
     expect(storedJob().recovery.route).toBeUndefined();
     expect(storedJob().recovery.state).toBeUndefined();
 
-    // The claim spent the fee and the round moved on: the deposit is over too, and the next
-    // funding round looks for one afresh.
-    mocks.tickRecovery.mockImplementationOnce(async (_input, state) => {
+    // The claim was sent and rejected at inclusion: the tick throws with the round moved on and
+    // nothing in flight. The record is back to funding at once, not left at the claiming the
+    // submit stamped, and the deposit is over too: the next funding round looks for one afresh.
+    mocks.tickRecovery.mockImplementationOnce(async (input, state) => {
+      await input.onBeforeSubmit?.();
       state.round = 1;
-      return { step: "funding", held: 0n, feeCash: 123_456n };
+      state.nonceAtClaim = null;
+      state.claimSentAt = null;
+      throw new Error("claim rejected: UnknownClaim");
     });
-    mocks.findRecoveryDeposit.mockResolvedValueOnce(null);
     await revived.tickAllFunding();
     expect(storedJob().recovery).toMatchObject({ phase: "funding", round: 1 });
     expect(storedJob().recovery.deposit).toBeUndefined();
+    expect(storedJob().lastError).toContain("claim rejected");
+    mocks.tickRecovery.mockResolvedValueOnce({ step: "funding", held: 0n, feeCash: 123_456n });
+    mocks.findRecoveryDeposit.mockResolvedValueOnce(null);
+    await revived.tickAllFunding();
     expect(mocks.findRecoveryDeposit).toHaveBeenCalledTimes(3);
 
     // The claim lands: the job is done as any other, and the host's claim is registered for the
@@ -947,18 +958,27 @@ describe("worker funding engine", () => {
       held: 100_000n,
       feeCash: 123_456n,
     });
-    mocks.findRecoveryDeposit.mockResolvedValueOnce({ route: { tier: "pool" }, held: 10_000n });
+    mocks.findRecoveryDeposit.mockResolvedValueOnce({
+      route: { tier: "pool" },
+      token: "PAS",
+      held: 10_000n,
+    });
     mocks.tickOnce.mockRejectedValueOnce(new FundingHeldError("paused", "unavailable"));
     await engine.tickAllFunding();
     expect(storedJob()).toMatchObject({ phase: "recovering", recovery: { round: 1 } });
     expect(storedJob().recovery.route).toBeUndefined();
     expect(storedJob().recovery.state).toBeUndefined();
     expect(storedJob().recovery.deposit).toBeUndefined();
-    expect(storedJob().recovery.depositError.message).toContain("funding held");
+    expect(storedJob().recovery.depositError).toMatchObject({
+      message: expect.stringContaining("funding held"),
+      token: "PAS",
+      held: "10000",
+    });
     expect(storedJob().lastError).toContain("recovery deposit");
     expect(storedJob().failure).toBeUndefined();
 
-    // The next tick looks for a deposit afresh.
+    // The next tick looks for a deposit afresh, and not for the one the chain would not take
+    // while its balance stands: the search is told what that deposit held.
     mocks.tickRecovery.mockResolvedValueOnce({
       step: "funding",
       held: 100_000n,
@@ -967,6 +987,7 @@ describe("worker funding engine", () => {
     mocks.findRecoveryDeposit.mockResolvedValueOnce(null);
     await engine.tickAllFunding();
     expect(mocks.findRecoveryDeposit).toHaveBeenCalledTimes(3);
+    expect(mocks.findRecoveryDeposit.mock.calls[2]![3]).toEqual({ PAS: 10_000n });
     expect(storedJob().recovery.route).toBeUndefined();
   });
 

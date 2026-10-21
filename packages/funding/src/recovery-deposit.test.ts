@@ -189,14 +189,38 @@ describe("recoveryCandidates and findRecoveryDeposit", () => {
         "5Burner",
         candidates,
       ),
-    ).toEqual({ route: USDC_ROUTE, held: 80_000n });
+    ).toEqual({ route: USDC_ROUTE, token: "USDC", held: 80_000n });
     expect(
       await findRecoveryDeposit(
         scriptedAssetHub({ native: 50n, usdc: 80_000n }),
         "5Burner",
         candidates,
       ),
-    ).toEqual({ route: { tier: "pool" }, held: 50n });
+    ).toEqual({ route: { tier: "pool" }, token: "PAS", held: 50n });
+  });
+
+  it("skips a deposit the chain would not take while its balance stands, and takes a new one", async () => {
+    const candidates = recoveryCandidates(minimums, ROUTES);
+    const held = { USDC: 80_000n };
+    // The same deposit, or what the paid rejections left of it: not again.
+    expect(
+      await findRecoveryDeposit(scriptedAssetHub({ usdc: 80_000n }), "5Burner", candidates, held),
+    ).toBeNull();
+    expect(
+      await findRecoveryDeposit(scriptedAssetHub({ usdc: 79_990n }), "5Burner", candidates, held),
+    ).toBeNull();
+    // More USDC arrived, or another token: a deposit to take up.
+    expect(
+      await findRecoveryDeposit(scriptedAssetHub({ usdc: 160_000n }), "5Burner", candidates, held),
+    ).toEqual({ route: USDC_ROUTE, token: "USDC", held: 160_000n });
+    expect(
+      await findRecoveryDeposit(
+        scriptedAssetHub({ native: 50n, usdc: 80_000n }),
+        "5Burner",
+        candidates,
+        held,
+      ),
+    ).toEqual({ route: { tier: "pool" }, token: "PAS", held: 50n });
   });
 
   it("names the token a route is fed with", () => {

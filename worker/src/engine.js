@@ -95,10 +95,17 @@ const saveJobs = () => store.save();
  *                                            // holds, the key AssetTraps counts it under, the
  *                                            // burner as the claimer it names
  *   recovery?: { phase: "funding"|"claiming"|"done", feeCash: string|null, askCash: string|null,
- *                attempts, nonceAtClaim: number|null, sentAt: number|null,
+ *                round, held: string|null, attempts, nonceAtClaim: number|null, sentAt: number|null,
  *                minimums?: { at, feeCash, minimums: { PAS, DOTUSD, USDT, USDC }, keepNativeForFees,
  *                             routes: { USDT, USDC } },
- *                route?, state?, deposit? },
+ *                route?, state?, deposit?, depositHeld?: { token, held },
+ *                depositError?: { message, at, token?, held? } },
+ *                                            // round moves on when a claim spent the fee or the
+ *                                            // fee grew; held is the burner's CASH at the last
+ *                                            // read. depositHeld names the deposit being
+ *                                            // converted and its balance; depositError what ended
+ *                                            // a conversion the chain would not take, with that
+ *                                            // deposit, which is skipped while its balance stands
  *                                            // the claim's progress: funding while the burner
  *                                            // waits for the fee, claiming while a claim is
  *                                            // owed an answer; feeCash the fee with the margin,
@@ -113,10 +120,12 @@ const saveJobs = () => store.save();
  *   done, createdAt, armedAt, lastTickAt, lastError?,
  *   state: { attempts, psmRefusals, xcmSubmitted, peopleAtXcm: string,
  *            fundsSeenAt: number|null, nonceAtSubmit: number|null,
- *            inclusionBlock: number|null, sentToPeople: string|null,
+ *            inclusionBlock: number|null, sentToPeople: string|null, peopleFeeCash: string|null,
  *            workedMs, rejections, lastRejection },
  *                                            // sentToPeople: the CASH the submitted program
- *                                            // sends, what a trap of it holds
+ *                                            // sends, the most a trap of it holds;
+ *                                            // peopleFeeCash: what People's dry run charged it,
+ *                                            // the most a trap holds less
  *                                            // attempts: submits so far
  *                                            // psmRefusals: PSM refusals so far, not transport
  *                                            // nonceAtSubmit: set from before a submit until
@@ -1025,7 +1034,9 @@ async function recoverTrapped(record, env) {
       state,
     );
   } finally {
-    persist(record.recovery?.phase ?? "funding");
+    // A claim owed an answer is the only thing that keeps the recovery in claiming; a tick that
+    // threw with nothing in flight, a refused or rejected claim among them, is back to funding.
+    persist(state.nonceAtClaim === null ? "funding" : "claiming");
     // The round moved on: a claim spent the fee, or the fee grew. Whatever deposit covered it is
     // over, and the next funding round looks for one afresh.
     if (state.round !== (kept.round ?? 0)) {
@@ -1081,14 +1092,21 @@ async function fundRecovery(record, env, feeCash) {
   );
   let route = recovery.route === undefined ? null : recordedRoute(recovery.route);
   if (route === null) {
+    // A deposit whose conversion the chain would not take is skipped while its balance stands:
+    // paying for it again would end the same way. A new deposit of that token grows the balance.
+    const held =
+      recovery.depositError?.token === undefined
+        ? {}
+        : { [recovery.depositError.token]: asBig(recovery.depositError.held) };
     const found = await bounded(
-      findRecoveryDeposit(api, burner.address, recoveryCandidates(minimums, routes)),
+      findRecoveryDeposit(api, burner.address, recoveryCandidates(minimums, routes), held),
       DEFAULT_TICK_TIMEOUT_MS,
       "recovery deposit read",
     );
     if (found === null) return;
     route = found.route;
     recovery.route = recordedRouteFields(route);
+    recovery.depositHeld = { token: found.token, held: found.held.toString() };
     await saveJobs();
   }
   let outcome;
@@ -1115,10 +1133,17 @@ async function fundRecovery(record, env, feeCash) {
       error instanceof FundingShortfallError ||
       error instanceof FundingTrappedError
     ) {
-      recovery.depositError = { message: String(error.message), at: Date.now() };
+      // What ended it, and which deposit at what balance, so that deposit is not taken up again
+      // until a new one grows the balance.
+      recovery.depositError = {
+        message: String(error.message),
+        at: Date.now(),
+        ...(recovery.depositHeld ?? {}),
+      };
       delete recovery.route;
       delete recovery.state;
       delete recovery.deposit;
+      delete recovery.depositHeld;
     }
     throw new Error(`recovery deposit: ${String(error?.message ?? error)}`);
   }
@@ -1130,6 +1155,7 @@ async function fundRecovery(record, env, feeCash) {
     delete recovery.route;
     delete recovery.state;
     delete recovery.depositError;
+    delete recovery.depositHeld;
   }
 }
 

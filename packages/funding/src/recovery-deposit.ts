@@ -163,15 +163,23 @@ export function recoveryCandidates(
 }
 
 /** The deposit on the burner's Asset Hub account, if one was made: the first token held at or
- *  above what was asked for it, read at the latest block, with its route. */
+ *  above what was asked for it, read at the latest block, with its route. A token whose
+ *  conversion the chain would not take is passed in `held` with the balance it had then, and is
+ *  skipped until the balance grows past it: the same deposit is not paid for again, a new one is
+ *  taken up. */
 export async function findRecoveryDeposit(
   api: AssetHubApi,
   address: string,
   candidates: ReadonlyArray<{ route: ConversionRoute; minimum: bigint }>,
-): Promise<{ route: ConversionRoute; held: bigint } | null> {
+  held: Partial<Record<RecoveryToken, bigint>> = {},
+): Promise<{ route: ConversionRoute; token: RecoveryToken; held: bigint } | null> {
   for (const { route, minimum } of candidates) {
-    const held = await readDeposit(api, route, address, "best");
-    if (held >= minimum) return { route, held };
+    const token = recoveryTokenOf(route);
+    const balance = await readDeposit(api, route, address, "best");
+    if (balance < minimum) continue;
+    const before = held[token];
+    if (before !== undefined && balance <= before) continue;
+    return { route, token, held: balance };
   }
   return null;
 }
