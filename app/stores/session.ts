@@ -46,6 +46,7 @@ import {
   createMeldClient,
   createMeldRail,
   ensureMeldAssets,
+  MeldAmountOutOfRangeError,
   pickBestQuote,
   shareStatusReads,
   type MeldClientLike,
@@ -54,6 +55,7 @@ import {
 import { CASH_DECIMALS } from "@getsome/people";
 import { meldPaymentMethod, resolveMeldRegion } from "~~/lib/region";
 import {
+  countryName,
   fetchCorridor,
   DEFAULT_MELD_DESTINATION,
   fetchSupportedCorridors,
@@ -196,6 +198,18 @@ const ahBlockLink = (block?: number) =>
   block === undefined
     ? ""
     : ` https://polkadot.js.org/apps/?rpc=${encodeURIComponent(NETWORK.assetHub.rpc)}#/explorer/query/${block}`;
+
+/** A Meld quote whose fiat falls outside the payment method's limits: not a failure to retry, an
+ *  amount to change. Decimal text throughout; `cash` is the bound in CASH, when it could be scaled. */
+export interface QuoteOutOfRange {
+  bound: "min" | "max";
+  /** The method's limit, in `fiat`. */
+  limit: string;
+  /** About what the amount asked for costs, in `fiat`. */
+  estimatedFiat: string;
+  fiat: string;
+  cash: string | null;
+}
 
 export interface QuotedView {
   send: string;
@@ -356,6 +370,9 @@ export const useSessionStore = defineStore("session", () => {
   /** Quote failures in a row for one amount, method, region and source: the screens stop offering
    *  another try after the second. Changing any of those starts the count over. */
   const quoteFailures = ref(0);
+  /** The amount's fiat falls outside the method's limits. Set instead of `quoteError`: retrying the
+   *  same amount cannot help, so it neither counts as a failure nor offers another try. */
+  const quoteOutOfRange = shallowRef<QuoteOutOfRange | null>(null);
   /** True when the selected card or bank method is not routed for the chosen region. Not a quote
    *  failure; nothing to retry. */
   const meldMethodUnavailable = ref(false);
@@ -497,6 +514,7 @@ export const useSessionStore = defineStore("session", () => {
     quoted.value = null;
     sourcePrice.value = null;
     quoteError.value = null;
+    quoteOutOfRange.value = null;
     quoteFailures.value = 0;
     meldMethodUnavailable.value = false;
   }
@@ -507,6 +525,7 @@ export const useSessionStore = defineStore("session", () => {
     method.value = next;
     quoted.value = null;
     quoteError.value = null;
+    quoteOutOfRange.value = null;
     quoteFailures.value = 0;
     meldMethodUnavailable.value = false;
   }
@@ -517,6 +536,7 @@ export const useSessionStore = defineStore("session", () => {
     meldCountry.value = code;
     quoted.value = null;
     quoteError.value = null;
+    quoteOutOfRange.value = null;
     quoteFailures.value = 0;
     meldMethodUnavailable.value = false;
   }
@@ -751,10 +771,19 @@ export const useSessionStore = defineStore("session", () => {
     let region: { country: string; fiat: string };
     let corridor: SupportedCorridor;
     let paymentMethodType: string | null;
+    // The method's fiat limits, which seed the rail's rate probe and bound what it will quote.
+    let limits: { min?: string; max?: string } | undefined;
     if (live !== null) {
       region = { country, fiat: live.fiat };
       corridor = live;
-      paymentMethodType = methodFor(live, uiMethod)?.paymentMethodType ?? null;
+      const liveMethod = methodFor(live, uiMethod);
+      paymentMethodType = liveMethod?.paymentMethodType ?? null;
+      if (liveMethod !== null && liveMethod.currency === live.fiat) {
+        limits = {
+          ...(liveMethod.min !== "" ? { min: liveMethod.min } : {}),
+          ...(liveMethod.max !== "" ? { max: liveMethod.max } : {}),
+        };
+      }
     } else {
       region = resolveMeldRegion(country);
       corridor = staticCorridor(region);
@@ -796,8 +825,40 @@ export const useSessionStore = defineStore("session", () => {
       method: meldMethod,
       paymentMethodType,
       token: meldTokenOf(depositTokenOf(route)),
+      ...(limits === undefined ? {} : { limits }),
     });
     return { rail, sourceId, client: meldClient, region, paymentMethodType, corridor };
+  }
+
+  /**
+   * The native budget a mock-world Meld rail must deliver for `settleAmount` CASH: the Asset Hub
+   * pool the funding leg converts through, read live and sized as the crypto route sizes it, with
+   * the leg's fees on top. The rail then asks Meld what that native costs in the buyer's fiat.
+   * Null when the pool cannot be read.
+   */
+  async function poolNativeBudget(
+    settleAmount: bigint,
+    sizing: PoolFundingSizing,
+  ): Promise<bigint | null> {
+    try {
+      const [{ connectChain, ASSET_HUB }, { sizeNativeBudget, PASEO_UNDERLYING_ASSET_ID }] =
+        await Promise.all([import("~~/lib/host-chain"), import("@getsome/funding")]);
+      const client = await connectChain(ASSET_HUB);
+      return await step(
+        "pool quote (public read)",
+        30_000,
+        sizeNativeBudget({
+          client,
+          underlyingAssetId: PASEO_UNDERLYING_ASSET_ID,
+          settleAmount,
+          remoteFeeBuffer: sizing.remoteFeeBuffer,
+          keepNativeForFees: sizing.keepNativeForFees,
+        }),
+      );
+    } catch (e) {
+      console.warn("[meld] live pool pricing unavailable:", e);
+      return null;
+    }
   }
 
   /**
@@ -805,7 +866,8 @@ export const useSessionStore = defineStore("session", () => {
    * provider quote with CASH pegged to one unit of the quote fiat. Returns null when the provider
    * has no offer for this corridor.
    *
-   * Known limit: the peg is to the quote fiat, not USD; a non-USD region is off by the FX rate.
+   * Node test runs only, which have no pool to read: the peg is to the quote fiat, not USD, so a
+   * non-USD region is off by the FX rate. A browser prices on the pool (`poolNativeBudget`).
    */
   async function sizeMeldNativeBudget(
     client: MeldClientLike,
@@ -861,6 +923,29 @@ export const useSessionStore = defineStore("session", () => {
     });
   }
 
+  /**
+   * An amount whose fiat falls outside the method's limits, for the screen: the bound and the cost
+   * in the fiat, and about what the bound comes to in CASH, scaled from this amount by the cost the
+   * rail solved.
+   */
+  function outOfRangeOf(e: MeldAmountOutOfRangeError): QuoteOutOfRange {
+    const limitCents = Math.round(Number(e.limit) * 100);
+    const costCents = Math.round(Number(e.estimatedFiat) * 100);
+    const amount = amountBase.value;
+    let cash: string | null = null;
+    if (amount !== null && limitCents > 0 && costCents > 0) {
+      // Whole CASH, rounded toward the inside of the range, so the figure offered is one that quotes.
+      const unit = 10n ** BigInt(CASH_DECIMALS);
+      const scaled = amount * BigInt(limitCents);
+      const whole =
+        e.bound === "min"
+          ? (scaled + BigInt(costCents) * unit - 1n) / (BigInt(costCents) * unit)
+          : scaled / (BigInt(costCents) * unit);
+      if (whole > 0n) cash = fmtCash(whole * unit);
+    }
+    return { bound: e.bound, limit: e.limit, estimatedFiat: e.estimatedFiat, fiat: e.fiat, cash };
+  }
+
   /** A quote that could not be had: the message for the screen, and one more failure in a row. */
   function failQuote(message: string): void {
     quoted.value = null;
@@ -881,6 +966,7 @@ export const useSessionStore = defineStore("session", () => {
     lastQuoteParams = { chain: "Meld", asset: method.value === "bank" ? "Bank" : "Card" };
     const epoch = quoteEpoch;
     quoteError.value = null;
+    quoteOutOfRange.value = null;
     meldMethodUnavailable.value = false;
     // Nothing entered, nothing to quote.
     if (amountBase.value === null) {
@@ -913,19 +999,30 @@ export const useSessionStore = defineStore("session", () => {
         const sizing = await meldFundingSizing(amountBase.value);
         if (epoch !== quoteEpoch) return;
         // The Meld rail egresses the native token and is sized by a native budget: the settle
-        // amount plus People's execution fee, quoted against the fiat peg, plus the native the
-        // burner keeps for the program on Asset Hub.
-        const quotedBudget = await sizeMeldNativeBudget(
-          built.client,
-          { ...built.region, paymentMethodType: built.paymentMethodType },
-          amountBase.value + sizing.remoteFeeBuffer,
-        );
-        if (epoch !== quoteEpoch) return;
-        if (quotedBudget === null) {
-          failQuote("No provider offers this payment method or region. Try another.");
-          return;
+        // amount plus People's execution fee, priced on the pool, plus the native the burner keeps
+        // for the program on Asset Hub. The rail's quote then solves what it costs in fiat.
+        let nativeBudget: bigint;
+        if (typeof window !== "undefined") {
+          const pooled = await poolNativeBudget(amountBase.value, sizing);
+          if (epoch !== quoteEpoch) return;
+          if (pooled === null) {
+            failQuote("Couldn't price this amount right now. Please try again.");
+            return;
+          }
+          nativeBudget = pooled;
+        } else {
+          const quotedBudget = await sizeMeldNativeBudget(
+            built.client,
+            { ...built.region, paymentMethodType: built.paymentMethodType },
+            amountBase.value + sizing.remoteFeeBuffer,
+          );
+          if (epoch !== quoteEpoch) return;
+          if (quotedBudget === null) {
+            failQuote("No provider offers this payment method or region. Try another.");
+            return;
+          }
+          nativeBudget = quotedBudget + sizing.keepNativeForFees;
         }
-        const nativeBudget = quotedBudget + sizing.keepNativeForFees;
         const world = await createMockCoinageSession({
           recipient: DEV_RECIPIENT,
           amount: amountBase.value,
@@ -981,6 +1078,11 @@ export const useSessionStore = defineStore("session", () => {
       // The host logger renders an Error as `{}`; log the message, as the transient
       // hooks above already do, or a failed quote is undiagnosable from a device log.
       console.error(`[meld] quote failed: ${e instanceof Error ? e.message : String(e)}`);
+      if (e instanceof MeldAmountOutOfRangeError) {
+        quoted.value = null;
+        quoteOutOfRange.value = outOfRangeOf(e);
+        return;
+      }
       failQuote(e instanceof Error ? e.message : String(e));
     } finally {
       if (epoch === quoteEpoch) loading.value = false;
@@ -1004,6 +1106,7 @@ export const useSessionStore = defineStore("session", () => {
     lastQuoteParams = { chain, asset };
     const epoch = quoteEpoch;
     quoteError.value = null;
+    quoteOutOfRange.value = null;
     // Nothing entered, nothing to quote.
     if (amountBase.value === null) {
       loading.value = false;
@@ -1238,6 +1341,7 @@ export const useSessionStore = defineStore("session", () => {
     teardownWorld();
     loading.value = false;
     quoteError.value = null;
+    quoteOutOfRange.value = null;
     quoteFailures.value = 0;
     resuming.value = false;
     method.value = "crypto";
@@ -2178,30 +2282,42 @@ export const useSessionStore = defineStore("session", () => {
     }
   }
 
-  /** Loads the region dropdown from the adapter's live catalog. On failure `supportedCountries`
-   *  stays null and the screen keeps its static list. */
-  // A destination change invalidates the catalog on screen; reload both for the new one.
+  // A destination change invalidates the catalog on screen; reload it for the new one.
   watch(meldDestination, () => {
-    void loadSupportedCountries();
-    void loadSupportedCorridors();
+    void loadSupportedCatalog();
   });
 
-  async function loadSupportedCountries(): Promise<void> {
+  /**
+   * Loads the region dropdown and the per-country corridors from the adapter's live catalog, both
+   * in one step. The countries are the whole catalog: the corridors hold only regions that route
+   * something, so a region listed from them alone would vanish rather than show as unsupported,
+   * which is how a buyer looking for their own country learns why it is not on offer. The
+   * corridors grey the list and carry each region's limits, and stand in for it when the countries
+   * read fails. Only a real catalog is adopted, so a cold/empty read greys nothing, and when both
+   * fail `supportedCountries` stays null and the screen keeps its static list.
+   */
+  async function loadSupportedCatalog(): Promise<void> {
     const destination = meldDestination.value;
-    const rows = await fetchSupportedCountries(destination);
+    const [map, rows] = await Promise.all([
+      fetchSupportedCorridors(destination),
+      fetchSupportedCountries(destination),
+    ]);
     // The destination can change while this is in flight, and the fetches do not return in the
     // order they were made. Adopting a stale one greys the dropdown by a corridor the quotes are
     // no longer placed against.
     if (destination !== meldDestination.value) return;
-    if (rows !== null) supportedCountries.value = rows;
-  }
-
-  // Loads the bulk per-country corridors; only a real catalog is adopted so a cold/empty read greys nothing.
-  async function loadSupportedCorridors(): Promise<void> {
-    const destination = meldDestination.value;
-    const map = await fetchSupportedCorridors(destination);
-    if (destination !== meldDestination.value) return;
-    if (map !== null && map.size > 0) corridorByCountry.value = map;
+    const corridors = map !== null && map.size > 0 ? map : null;
+    if (corridors !== null) corridorByCountry.value = corridors;
+    if (rows !== null && rows.length > 0) {
+      supportedCountries.value = rows;
+    } else if (corridors !== null) {
+      supportedCountries.value = [...corridors.values()].map((c) => ({
+        country: c.country,
+        name: c.name ?? countryName(c.country),
+      }));
+    } else if (rows !== null) {
+      supportedCountries.value = rows;
+    }
   }
 
   return {
@@ -2213,6 +2329,7 @@ export const useSessionStore = defineStore("session", () => {
     quoted,
     quoteError,
     quoteFailures,
+    quoteOutOfRange,
     meldMethodUnavailable,
     supportedCountries,
     corridorByCountry,
@@ -2239,8 +2356,7 @@ export const useSessionStore = defineStore("session", () => {
     setAmount,
     setMethod,
     setMeldCountry,
-    loadSupportedCountries,
-    loadSupportedCorridors,
+    loadSupportedCatalog,
     fetchQuote,
     fetchMeldQuote,
     start,
