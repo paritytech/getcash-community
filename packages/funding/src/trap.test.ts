@@ -134,7 +134,7 @@ describe("trapScanSpan", () => {
     expect(trapScanSpan(0n)).toBe(100n);
     expect(trapScanSpan(59n)).toBe(218n);
     expect(trapScanSpan(10_000n)).toBe(20_100n);
-    expect(trapScanSpan(1_000_000n)).toBe(TRAP_SCAN_MAX);
+    expect(trapScanSpan(1_000_000n)).toBe(TRAP_SCAN_MAX / 2n);
   });
 });
 
@@ -161,14 +161,26 @@ describe("findTrap", () => {
     expect(await findTrap(peopleApi({ [below]: 1 }).api, CLAIMER_HEX, AMOUNT, EARMARK)).toBeNull();
   });
 
-  it("looks no further than TRAP_SCAN_MAX amounts, whatever span it is given", async () => {
-    const far = await trapKey(CLAIMER_HEX, AMOUNT - TRAP_SCAN_MAX - 1n);
+  it("finds a trap above the figure too, when the pool filled more than the dry run saw", async () => {
+    const above = await trapKey(CLAIMER_HEX, AMOUNT + 60n);
+    const { api } = peopleApi({ [above]: 1 });
+    expect(await findTrap(api, CLAIMER_HEX, AMOUNT, EARMARK)).toEqual({
+      amount: AMOUNT + 60n,
+      key: above,
+    });
+    const tooFar = await trapKey(CLAIMER_HEX, AMOUNT + EARMARK + 1n);
+    expect(await findTrap(peopleApi({ [tooFar]: 1 }).api, CLAIMER_HEX, AMOUNT, EARMARK)).toBeNull();
+  });
+
+  it("looks no further than half of TRAP_SCAN_MAX each way, whatever span it is given", async () => {
+    const half = TRAP_SCAN_MAX / 2n;
+    const far = await trapKey(CLAIMER_HEX, AMOUNT - half - 1n);
     const { api } = peopleApi({ [far]: 1 });
     expect(await findTrap(api, CLAIMER_HEX, AMOUNT, TRAP_SCAN_MAX * 10n)).toBeNull();
-    const edge = await trapKey(CLAIMER_HEX, AMOUNT - TRAP_SCAN_MAX);
+    const edge = await trapKey(CLAIMER_HEX, AMOUNT - half);
     expect(
       await findTrap(peopleApi({ [edge]: 1 }).api, CLAIMER_HEX, AMOUNT, TRAP_SCAN_MAX * 10n),
-    ).toEqual({ amount: AMOUNT - TRAP_SCAN_MAX, key: edge });
+    ).toEqual({ amount: AMOUNT - half, key: edge });
   });
 
   it("ignores a trap already claimed, whose count is zero", async () => {

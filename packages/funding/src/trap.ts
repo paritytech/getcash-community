@@ -74,23 +74,26 @@ function trappedAmountOf(assets: unknown): bigint | null {
   return first?.fun?.type === "Fungible" ? BigInt(first.fun.value ?? 0n) : null;
 }
 
-/** The most amounts a scan tries: a bound on the worker's time, whatever the fee came to. */
+/** The most amounts a scan tries, both sides together: a bound on the worker's time, whatever
+ *  the fee came to. */
 export const TRAP_SCAN_MAX = 50_000n;
 /** Amounts tried beyond twice the fee, for a charge that moved a little since the dry run. */
 const TRAP_SCAN_SLACK = 100n;
 
-/** How far below the amount sent a scan looks: twice the fee People's dry run charged, since a
- *  failing program is charged at most what a whole one is, plus a little slack; never past
- *  TRAP_SCAN_MAX. Without a dry-run figure, the slack alone. */
+/** How far from the amount sent a scan looks, each way: twice the fee People's dry run charged,
+ *  since a failing program is charged at most what a whole one is, plus a little slack; never
+ *  past half of TRAP_SCAN_MAX. Without a dry-run figure, the slack alone. */
 export function trapScanSpan(peopleFee: bigint | null): bigint {
   const span = 2n * (peopleFee ?? 0n) + TRAP_SCAN_SLACK;
-  return span < TRAP_SCAN_MAX ? span : TRAP_SCAN_MAX;
+  const most = TRAP_SCAN_MAX / 2n;
+  return span < most ? span : most;
 }
 
 /** The trap holding the CASH sent for `claimerHex`, read from People at its best block: the
- *  entry whose key one of the amounts from `sent` down by `span` gives, or the AssetsTrapped
- *  event of that block naming the claimer, which also serves when `sent` is off by what the pool
- *  moved after it was read. Null when neither shows one. */
+ *  entry whose key one of the amounts within `span` of `sent` gives, or the AssetsTrapped event
+ *  of that block naming the claimer. The scan looks above `sent` as well as below: while the
+ *  figure is still the dry run's, the pool may have filled more or less than it saw. Null when
+ *  neither shows one. */
 export async function findTrap(
   peopleApi: PeopleApi,
   claimerHex: string,
@@ -102,9 +105,10 @@ export async function findTrap(
     entries.filter((entry) => entry.value > 0).map((entry) => entry.keyArgs[0].toLowerCase()),
   );
   if (counted.size > 0) {
-    const reach = span < TRAP_SCAN_MAX ? span : TRAP_SCAN_MAX;
+    const most = TRAP_SCAN_MAX / 2n;
+    const reach = span < most ? span : most;
     const floor = sent - reach > 1n ? sent - reach : 1n;
-    for (let amount = sent; amount >= floor; amount -= 1n) {
+    for (let amount = sent + reach; amount >= floor; amount -= 1n) {
       const key = await trapKey(claimerHex, amount);
       if (counted.has(key.toLowerCase())) return { amount, key };
     }

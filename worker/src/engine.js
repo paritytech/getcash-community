@@ -97,7 +97,7 @@ const saveJobs = () => store.save();
  *   recovery?: { phase: "funding"|"claiming"|"done", feeCash: string|null, askCash: string|null,
  *                round, held: string|null, attempts, nonceAtClaim: number|null, sentAt: number|null,
  *                minimums?: { at, feeCash, minimums: { PAS, DOTUSD, USDT, USDC }, keepNativeForFees,
- *                             routes: { USDT, USDC } },
+ *                             routes: { USDT, USDC }, repriceFailedAt?, repriceError? },
  *                route?, state?, deposit?, depositHeld?: { token, held },
  *                depositError?: { message, at, token?, held? } },
  *                                            // round moves on when a claim spent the fee or the
@@ -1072,12 +1072,25 @@ const RECOVERY_MINIMUMS_TTL_MS = 10 * 60_000;
 async function fundRecovery(record, env, feeCash) {
   const { api, burner } = env;
   const recovery = record.recovery;
+  const now = Date.now();
+  const figures = recovery.minimums;
   const stale =
-    recovery.minimums === undefined ||
-    recovery.minimums.feeCash !== feeCash.toString() ||
-    Date.now() - recovery.minimums.at > RECOVERY_MINIMUMS_TTL_MS;
-  if (stale) {
-    recovery.minimums = await sizeRecoveryMinimums(record, env, feeCash);
+    figures === undefined ||
+    figures.feeCash !== feeCash.toString() ||
+    now - figures.at > RECOVERY_MINIMUMS_TTL_MS;
+  // Figures that could not be priced again stand for another while, and a deposit already being
+  // converted is not held up by a provider that is slow today. Without any figures there is
+  // nothing to look for a deposit with, and the tick says so.
+  const backingOff =
+    figures?.repriceFailedAt !== undefined &&
+    now - figures.repriceFailedAt < RECOVERY_MINIMUMS_TTL_MS;
+  if (stale && !backingOff) {
+    try {
+      recovery.minimums = await sizeRecoveryMinimums(record, env, feeCash);
+    } catch (error) {
+      if (figures === undefined) throw error;
+      recovery.minimums = { ...figures, repriceFailedAt: now, repriceError: String(error) };
+    }
     await saveJobs();
   }
   const routes = {

@@ -81,13 +81,19 @@ const showingRecovery = ref(false);
 /** The deposit guide over a top-up whose Cash is in People's trap: what to send to its own
  *  account for the claim's fee. Back (toolbar or bottom button) returns to the journey. */
 const showingRecoveryDeposit = ref(false);
-// The trap claimed, there is nothing left to send for.
-watch(
-  () => requests.foregroundRecord?.status.kind,
-  (kind) => {
-    if (kind !== undefined && kind !== "recovering") showingRecoveryDeposit.value = false;
-  },
-);
+// Nothing left to send for: the trap claimed, a deposit already being converted, or the claim
+// on its way. The screen closes so it cannot ask for a second deposit.
+const recoveryStillWaitsForADeposit = computed<boolean | null>(() => {
+  const record = requests.foregroundRecord;
+  if (record === null) return null;
+  if (record.status.kind !== "recovering") return false;
+  const deposit = record.recovery?.deposit;
+  if (record.status.step === "claiming") return false;
+  return deposit === undefined || deposit === "await-native";
+});
+watch(recoveryStillWaitsForADeposit, (waits) => {
+  if (waits === false) showingRecoveryDeposit.value = false;
+});
 
 /** A tap on the purse the store could not act on: said under the journey, until the record
  *  moves or the buyer taps again. */

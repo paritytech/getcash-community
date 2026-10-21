@@ -920,6 +920,48 @@ describe("worker funding engine", () => {
     });
   });
 
+  it("keeps the manual path's figures when they cannot be priced again, and still looks for a deposit", async () => {
+    armSeams();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    const funding = await import("@getsome/funding");
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.fundsSeenAt = Date.now();
+      state.xcmSubmitted = true;
+      state.sentToPeople = SETTLE;
+      throw new funding.FundingTrappedError(SETTLE, hash32(0xab), hash32(0x07));
+    });
+    await engine.tickAllFunding();
+    const minimums = { PAS: 1_000n, DOTUSD: null, USDT: null, USDC: null };
+    mocks.recoveryMinimums.mockResolvedValueOnce({ minimums, keepNativeForFees: 5n });
+    mocks.tickRecovery.mockImplementation(async (_input, state) => {
+      state.feeCash = 123_456n;
+      return { step: "funding", held: 0n, feeCash: 123_456n };
+    });
+    await engine.tickAllFunding();
+    expect(storedJob().recovery.minimums.minimums).toMatchObject({ PAS: "1000" });
+
+    // The figures went stale and the provider is slow: the old ones stand, the search goes on.
+    storedJob().recovery.minimums.at = Date.now() - 11 * 60_000;
+    const revived = await freshEngine();
+    mocks.recoveryMinimums.mockRejectedValueOnce(new Error("recovery minimums timed out"));
+    mocks.findRecoveryDeposit.mockResolvedValueOnce(null);
+    await revived.tickAllFunding();
+    expect(storedJob().recovery.minimums).toMatchObject({
+      minimums: { PAS: "1000" },
+      repriceFailedAt: expect.any(Number),
+      repriceError: expect.stringContaining("timed out"),
+    });
+    expect(storedJob().lastError).toBeUndefined();
+    expect(mocks.findRecoveryDeposit).toHaveBeenCalledTimes(2);
+
+    // Not priced again every tick while the provider is slow: the next try waits out the TTL.
+    mocks.findRecoveryDeposit.mockResolvedValueOnce(null);
+    await revived.tickAllFunding();
+    expect(mocks.recoveryMinimums).toHaveBeenCalledTimes(2);
+    expect(mocks.findRecoveryDeposit).toHaveBeenCalledTimes(3);
+  });
+
   it("asks for the fee less what the burner holds, carries the round, and ends a deposit's terminal conversion without ending the recovery", async () => {
     armSeams();
     const engine = await freshEngine();
