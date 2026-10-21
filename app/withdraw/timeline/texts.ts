@@ -1,7 +1,12 @@
 // What the withdrawal's journey says: the band under the timeline per phase, the wait before it,
 // and the list's words for a sale before its balance is asked.
 
-import { saleAwaitingDeposit, type WithdrawalRecord } from "../../funding/requests/model";
+import {
+  saleAwaitingDeposit,
+  SENDING_STEP_ORDER,
+  type WithdrawalRecord,
+} from "../../funding/requests/model";
+import { checked, liveDetail, stages } from "../../funding/timeline/live";
 import { delay, normal, type TextState, type TimelineText } from "../../funding/timeline/route";
 
 /** What a fiat sale waits on before its balance is asked: the seller's KYC with the provider. */
@@ -66,12 +71,57 @@ function phaseText(record: WithdrawalRecord, index: number): string {
   }
 }
 
+/** The worker's step on the conversion, as an order, when the record is on it. */
+function sendingStep(record: WithdrawalRecord): number | undefined {
+  const { status } = record;
+  return status.kind === "converting" ? SENDING_STEP_ORDER[status.step] : undefined;
+}
+
+/** The live detail per phase: the stages the worker is through where it reports them, and when
+ *  whoever moves the phase was last read. */
+function phaseDetail(
+  record: WithdrawalRecord,
+  index: number,
+  state: TextState,
+): string | undefined {
+  const { live, readAt } = state;
+  const read = (label: string) => checked(label, readAt, live);
+  const step = sendingStep(record);
+  if (state.delayed) return read(index < 2 ? "Last attempt" : "Checked");
+  switch (index) {
+    case 0:
+      return liveDetail(
+        live,
+        stages(["Swapped", "Converted"], step === undefined ? 0 : Math.min(step, 2)),
+        read("checked"),
+      );
+    case 1:
+      return record.handoff.tier === "psm"
+        ? liveDetail(
+            live,
+            stages(["Arrived", "Redeemed"], step === SENDING_STEP_ORDER.redeem ? 1 : 0),
+            read("checked"),
+          )
+        : read("Checked");
+    case 2:
+    case 3:
+      return read(
+        record.route === "crypto" ? "Checked with the exchange" : "Checked with the provider",
+      );
+    default:
+      return read("Checked");
+  }
+}
+
 export function withdrawalText(
   record: WithdrawalRecord,
   index: number,
-  { delayed }: TextState,
+  state: TextState,
 ): TimelineText {
-  if (!delayed) return { message: normal(phaseText(record, index)) };
+  const detail = phaseDetail(record, index, state);
   // The conversion is phases 0 and 1; from the hand-off on, a delay is the rail's.
-  return { message: delay(index < 2 ? CONVERSION_DELAYED : RAIL_DELAYED) };
+  const message = state.delayed
+    ? delay(index < 2 ? CONVERSION_DELAYED : RAIL_DELAYED)
+    : normal(phaseText(record, index));
+  return detail === undefined ? { message } : { message, detail };
 }

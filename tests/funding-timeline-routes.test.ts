@@ -1353,3 +1353,163 @@ describe("top-up timeline, failures", () => {
     },
   );
 });
+
+describe("top-up timeline, live detail", () => {
+  /** Three seconds on the step: the live clock is `now` itself. */
+  const live = (now: number) => ({ now, watchingSince: SENT, stepSince: now - 3 * SECOND });
+  const provider = (at: number) => ({ provider: { status: "transaction_seen", at } }) as const;
+
+  function checking(now: number): TopUpRecord {
+    return {
+      ...cardRecord(),
+      observedAt: { receiving: SENT },
+      witnesses: provider(now - 2 * SECOND),
+    };
+  }
+  function confirming(now: number, chainflip: ChainflipFacts, readAt = now - SECOND): TopUpRecord {
+    return {
+      ...cryptoRecord(),
+      observedAt: { receiving: SENT },
+      chainflip,
+      witnesses: { core: { phase: "swapping", at: readAt } },
+    };
+  }
+
+  it.each([
+    [
+      "the provider poll under the card's review",
+      checking(SENT + MINUTE),
+      meldCardRoute,
+      SENT + MINUTE,
+      "Checked with the provider 2s ago",
+    ],
+    [
+      "the provider poll once the payment is accepted",
+      {
+        ...cardRecord(),
+        observedAt: { receiving: SENT, sending: SENT + MINUTE },
+        witnesses: provider(SENT + 2 * MINUTE - 2 * SECOND),
+      },
+      meldCardRoute,
+      SENT + 2 * MINUTE,
+      "Checked with the provider 2s ago",
+    ],
+    [
+      "the last block beside the confirmation count",
+      confirming(SENT + MINUTE, {
+        requiredConfirmations: 3,
+        depositConfirmations: 1,
+        confirmationsAt: SENT + MINUTE - 4 * SECOND,
+      }),
+      chainflipRoute,
+      SENT + MINUTE,
+      "Confirmation 2 of 3 · last block 4s ago",
+    ],
+    [
+      "the Chainflip read when it gives no count",
+      confirming(SENT + MINUTE, {}),
+      chainflipRoute,
+      SENT + MINUTE,
+      "Checked 1s ago",
+    ],
+    [
+      "the price check while Chainflip waits for a stable price",
+      {
+        ...confirming(SENT + 3 * MINUTE, {
+          swapScheduledAt: SENT + MINUTE,
+          swapRescheduledAt: SENT + 2 * MINUTE,
+        }),
+        observedAt: { receiving: SENT, swapping: SENT + MINUTE },
+      },
+      chainflipRoute,
+      SENT + 3 * MINUTE,
+      "Price checked 1s ago",
+    ],
+    [
+      "the network watch while the funds are arriving",
+      record({}, { lastTickAt: SENT + 10 * SECOND }),
+      sentRoute,
+      SENT + 12 * SECOND,
+      "Watching the network · checked 2s ago",
+    ],
+    [
+      "finality's blocks once the deposit is seen",
+      record(
+        { depositInBlock: { block: 110, finalizedAtSeen: 100, finalized: 105, best: 120 } },
+        { lastTickAt: SENT + 10 * SECOND },
+      ),
+      sentRoute,
+      SENT + 12 * SECOND,
+      "Finalizing · block 6 of 10 · checked 2s ago",
+    ],
+    [
+      "the conversion's stages",
+      record(
+        { conversionPreparedAt: RECEIVED + 5 * SECOND },
+        { ...received, lastTickAt: RECEIVED + 8 * SECOND },
+      ),
+      sentRoute,
+      RECEIVED + 10 * SECOND,
+      "Prepared ✓ · Included · checked 2s ago",
+    ],
+    [
+      "the claim's stages",
+      record(
+        {
+          converted,
+          observedAt: { "cash-on-people": MOVED },
+          claimRegisteredAt: MOVED + 5 * SECOND,
+        },
+        { ...received, lastTickAt: MOVED + 9 * SECOND },
+      ),
+      sentRoute,
+      MOVED + 10 * SECOND,
+      "Registered ✓ · Seen · Added · checked 1s ago",
+    ],
+  ] satisfies [string, TopUpRecord, TimelineRoute, number, string][])(
+    "shows %s",
+    (_, topUp, route, now, detail) => {
+      expect(openedTimeline(topUp, route, live(now)).detail).toBe(detail);
+    },
+  );
+
+  it("waits 3 s on a step before it says anything live", () => {
+    const now = SENT + MINUTE;
+    const soon = { now, watchingSince: SENT, stepSince: now - 2 * SECOND };
+    expect(openedTimeline(checking(now), meldCardRoute, soon).detail).toBeUndefined();
+    // A static line stays, without the live part.
+    const counted = confirming(now, { requiredConfirmations: 3, depositConfirmations: 1 });
+    expect(openedTimeline(counted, chainflipRoute, soon).detail).toBe("Confirmation 2 of 3");
+  });
+
+  it("gives way to the reconnect line", () => {
+    const now = SENT + MINUTE;
+    const stale = confirming(
+      now,
+      { requiredConfirmations: 3, depositConfirmations: 1 },
+      now - RECONNECT_AFTER_MS - 1,
+    );
+    expect(
+      openedTimeline(stale, chainflipRoute, { ...live(now), watchingSince: SENT - HOUR }).detail,
+    ).toBe("Trying to reconnect");
+  });
+
+  it("counts the time on a step from the memo, and starts over when the step moves", () => {
+    const timelineOf = createTopUpTimelines();
+    const t = SENT + MINUTE;
+    const detailAt = (topUp: TopUpRecord, now: number) => timelineOf(topUp, now)?.detail;
+    expect(detailAt(checking(t), t)).toBeUndefined();
+    expect(detailAt(checking(t), t + 2 * SECOND)).toBeUndefined();
+    expect(detailAt(checking(t), t + 3 * SECOND)).toBe("Checked with the provider 5s ago");
+    // The line moves only on the grid: a second later it still says what the tick said.
+    expect(detailAt(checking(t), t + 4 * SECOND)).toBe("Checked with the provider 5s ago");
+    const accepted: TopUpRecord = {
+      ...checking(t),
+      observedAt: { receiving: SENT, sending: t + 4 * SECOND },
+      witnesses: provider(t + 4 * SECOND),
+    };
+    expect(detailAt(accepted, t + 4 * SECOND)).toBeUndefined();
+    expect(detailAt(accepted, t + 6 * SECOND)).toBeUndefined();
+    expect(detailAt(accepted, t + 7 * SECOND)).toBe("Checked with the provider 3s ago");
+  });
+});

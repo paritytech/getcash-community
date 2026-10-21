@@ -5,6 +5,7 @@ import { cashInText } from "../../utils/cash";
 import { conversionRouteOf, type DepositInBlock, type TopUpRecord } from "../requests/model";
 import { mintedOf } from "../requests/views";
 import { CLOSE, TRY_AGAIN, type PartFailure } from "./failure";
+import { checked, joinDetail, liveDetail, stages } from "./live";
 import { earlierFact, factAt } from "./observed";
 import {
   delay,
@@ -174,6 +175,33 @@ export function polkadotPhase(
 export const workerTickAt = (record: TopUpRecord): number | undefined =>
   workerOf(record)?.lastTickAt ?? undefined;
 
+/** The latest read of the shared part: the worker's tick or the app's own best-block read. */
+export function chainReadAt(record: TopUpRecord): number | undefined {
+  const reads = [workerTickAt(record), record.witnesses.chain?.best?.at].filter(
+    (at) => at !== undefined,
+  );
+  return reads.length === 0 ? undefined : Math.max(...reads);
+}
+
+/** How far the deposit's block is from final, as the worker counts it. */
+function finalizingLine(inBlock: DepositInBlock | undefined): string {
+  if (inBlock === undefined || inBlock.block <= inBlock.finalizedAtSeen) return "Finalizing";
+  const blocks = inBlock.block - inBlock.finalizedAtSeen;
+  const done = Math.min(blocks, inBlock.finalized - inBlock.finalizedAtSeen + 1);
+  return `Finalizing · block ${Math.max(done, 1)} of ${blocks}`;
+}
+
+/** The claim's stages the worker and the Host are through. */
+function claimStages(record: TopUpRecord): string {
+  const done =
+    record.observedAt?.["host-claiming"] !== undefined
+      ? 2
+      : record.claimRegisteredAt !== undefined
+        ? 1
+        : 0;
+  return stages(["Registered", "Seen", "Added"], done);
+}
+
 function conversionMessage(record: TopUpRecord): TimelineMessage {
   if (psmRefused(record)) {
     return delay("The conversion paused for a moment and will retry automatically");
@@ -188,24 +216,37 @@ function conversionMessage(record: TopUpRecord): TimelineMessage {
 export function polkadotText(
   record: TopUpRecord,
   index: PolkadotPhaseIndex,
-  { delayed }: TextState,
+  { delayed, live, readAt }: TextState,
 ): TimelineText {
+  const read = (label: string) => checked(label, readAt, live);
   switch (index) {
     case 2:
-      return {
-        message: normal(
-          depositOnBurner(record) === undefined
-            ? "Your money is arriving"
-            : "Making sure your money arrived safely",
-        ),
-      };
+      return depositOnBurner(record) === undefined
+        ? {
+            message: normal("Your money is arriving"),
+            detail: read("Watching the network · checked"),
+          }
+        : {
+            message: normal("Making sure your money arrived safely"),
+            detail: liveDetail(live, finalizingLine(record.depositInBlock), read("checked")),
+          };
     case 3:
-      return { message: conversionMessage(record) };
+      return {
+        message: conversionMessage(record),
+        detail: psmRefused(record)
+          ? read("Last attempt")
+          : liveDetail(
+              live,
+              stages(["Prepared", "Included"], record.conversionPreparedAt === undefined ? 0 : 1),
+              read("checked"),
+            ),
+      };
     case 4:
       return {
         message: delayed
           ? delay("Your Cash is ready and waiting for the network to confirm it")
           : normal("Getting your Cash ready"),
+        detail: read("Checked"),
       };
     case 5:
       return {
@@ -214,6 +255,7 @@ export function polkadotText(
             ? "Adding the rest of your Cash"
             : `Adding ${cashInText(record.amountHuman)} to your balance`,
         ),
+        detail: liveDetail(live, claimStages(record), read("checked")),
       };
   }
 }

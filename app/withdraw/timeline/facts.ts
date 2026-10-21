@@ -95,6 +95,18 @@ function legOpenedAt({ status }: WithdrawalRecord): number | undefined {
   return status.kind === "converting" || status.kind === "sending" ? status.at : undefined;
 }
 
+/** When the reads that move the withdrawal last succeeded: the worker's tick, which follows
+ *  every leg, the rail's last report, or the host's payment status. */
+export function withdrawalReadAt(record: WithdrawalRecord): number | undefined {
+  const worker = record.witnesses.worker;
+  const reads = [
+    worker?.known ? worker.lastTickAt : undefined,
+    record.rail.updatedAt,
+    record.witnesses.host?.at,
+  ].filter((at): at is number => at != null);
+  return reads.length === 0 ? undefined : Math.max(...reads);
+}
+
 export function withdrawalMilestones(
   record: WithdrawalRecord,
 ): ReachedMilestones<WithdrawalMilestone> {
