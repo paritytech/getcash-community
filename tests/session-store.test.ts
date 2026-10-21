@@ -294,10 +294,11 @@ describe("session store: Meld (card / bank) in the mock world", () => {
   });
 
   // Discovery is unconfigured in the mock world (no VITE_MELD_BASE_URL), so the loader is a no-op.
-  it("loadSupportedCorridors leaves corridorByCountry null when discovery is unconfigured", async () => {
+  it("loadSupportedCatalog leaves the catalog null when discovery is unconfigured", async () => {
     const store = useSessionStore();
-    await store.loadSupportedCorridors();
+    await store.loadSupportedCatalog();
     expect(store.corridorByCountry).toBeNull();
+    expect(store.supportedCountries).toBeNull();
   });
 });
 
@@ -306,6 +307,115 @@ describe("session store: supported corridors loader against a live adapter", () 
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
     vi.resetModules();
+  });
+
+  /** A fetch answering the two catalog endpoints: `countries` (null for a failed read) and the
+   *  bulk `corridors`. */
+  const catalogFetch = (countries: unknown[] | null, corridors: unknown[]) =>
+    vi.fn(async (url: string) => {
+      const json = (status: number, body: unknown) =>
+        new Response(JSON.stringify(body), {
+          status,
+          headers: { "content-type": "application/json" },
+        });
+      if (url.includes("/supported/countries")) {
+        return countries === null ? json(500, {}) : json(200, { countries });
+      }
+      return json(200, { corridors });
+    });
+  const usCard = {
+    country: "US",
+    name: "United States of America",
+    fiat: "USD",
+    methods: [
+      {
+        paymentMethodType: "CREDIT_DEBIT_CARD",
+        category: "card",
+        min: "10",
+        max: "5000",
+        currency: "USD",
+        providers: [],
+      },
+    ],
+  };
+
+  it("lists the whole catalog, a region nothing routes from included, greyed by the corridors", async () => {
+    vi.resetModules();
+    // The reset leaves a fresh, empty asset table, as on a page that has not read the adapter's.
+    await installTestMeldAssets();
+    vi.stubEnv("VITE_MELD_BASE_URL", "https://adapter.test");
+    const fetchMock = catalogFetch(
+      [
+        { country: "US", name: "United States of America" },
+        { country: "NF", name: "Norfolk Island" },
+      ],
+      [usCard],
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { createPinia: freshPinia, setActivePinia: setFresh } = await import("pinia");
+    setFresh(freshPinia());
+    const { useSessionStore: freshStore } = await import("../app/stores/session");
+    const store = freshStore();
+    await store.loadSupportedCatalog();
+    // NF routes nothing, so it has no corridor, and stays listed for the picker to show as
+    // unsupported rather than vanishing.
+    expect(store.supportedCountries).toEqual([
+      { country: "US", name: "United States of America" },
+      { country: "NF", name: "Norfolk Island" },
+    ]);
+    expect(store.corridorByCountry?.get("US")?.methods[0]?.category).toBe("card");
+    expect(store.corridorByCountry?.has("NF")).toBe(false);
+    // Both in the one load.
+    const urls = fetchMock.mock.calls.map((c) => String((c as unknown[])[0]));
+    expect(urls.filter((u) => u.includes("/supported/countries"))).toHaveLength(1);
+    expect(urls.filter((u) => u.includes("/supported/corridors"))).toHaveLength(1);
+  });
+
+  it("lists the corridors' own countries when the countries read fails", async () => {
+    vi.resetModules();
+    await installTestMeldAssets();
+    vi.stubEnv("VITE_MELD_BASE_URL", "https://adapter.test");
+    vi.stubGlobal(
+      "fetch",
+      catalogFetch(null, [usCard, { country: "BR", fiat: "BRL", methods: [] }]),
+    );
+    const { createPinia: freshPinia, setActivePinia: setFresh } = await import("pinia");
+    setFresh(freshPinia());
+    const { useSessionStore: freshStore } = await import("../app/stores/session");
+    const store = freshStore();
+    await store.loadSupportedCatalog();
+    // Named by the catalog where it names one, by the locale otherwise.
+    expect(store.supportedCountries).toEqual([
+      { country: "US", name: "United States of America" },
+      { country: "BR", name: "Brazil" },
+    ]);
+  });
+
+  it("falls back to the countries endpoint when the bulk read is empty", async () => {
+    vi.resetModules();
+    await installTestMeldAssets();
+    vi.stubEnv("VITE_MELD_BASE_URL", "https://adapter.test");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) =>
+        url.includes("/supported/countries")
+          ? new Response(JSON.stringify({ countries: [{ country: "DE", name: "Germany" }] }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            })
+          : new Response(JSON.stringify({ corridors: [] }), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            }),
+      ),
+    );
+    const { createPinia: freshPinia, setActivePinia: setFresh } = await import("pinia");
+    setFresh(freshPinia());
+    const { useSessionStore: freshStore } = await import("../app/stores/session");
+    const store = freshStore();
+    await store.loadSupportedCatalog();
+    expect(store.corridorByCountry).toBeNull();
+    expect(store.supportedCountries).toEqual([{ country: "DE", name: "Germany" }]);
   });
 
   it("fills corridorByCountry from the bulk endpoint", async () => {
@@ -345,7 +455,7 @@ describe("session store: supported corridors loader against a live adapter", () 
     setFresh(freshPinia());
     const { useSessionStore: freshStore } = await import("../app/stores/session");
     const store = freshStore();
-    await store.loadSupportedCorridors();
+    await store.loadSupportedCatalog();
     expect(store.corridorByCountry?.get("US")?.methods[0]?.category).toBe("card");
   });
 
@@ -366,8 +476,81 @@ describe("session store: supported corridors loader against a live adapter", () 
     setFresh(freshPinia());
     const { useSessionStore: freshStore } = await import("../app/stores/session");
     const store = freshStore();
-    await store.loadSupportedCorridors();
+    await store.loadSupportedCatalog();
     // Empty catalog must not be adopted (else every country greys out).
     expect(store.corridorByCountry).toBeNull();
+  });
+});
+
+describe("session store: a Meld amount outside the method's limits", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it("sets quoteOutOfRange instead of a failure to retry", async () => {
+    vi.resetModules();
+    await installTestMeldAssets();
+    vi.stubEnv("VITE_MELD_BASE_URL", "https://adapter.test");
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.includes("/supported?")) {
+          return json({
+            country: "IN",
+            fiat: "INR",
+            methods: [
+              {
+                paymentMethodType: "CREDIT_DEBIT_CARD",
+                category: "card",
+                min: "3000.00",
+                max: "50000.00",
+                currency: "INR",
+              },
+            ],
+          });
+        }
+        if (url.endsWith("/quote")) {
+          // About 560 rupees a DOT.
+          const fiat = Number(
+            (JSON.parse(String(init?.body)) as { sourceAmount: string }).sourceAmount,
+          );
+          return json({
+            quotes: [
+              {
+                serviceProvider: "BANXA",
+                sourceAmount: fiat.toFixed(2),
+                destinationAmount: (fiat / 560).toFixed(8),
+              },
+            ],
+          });
+        }
+        return json({});
+      }),
+    );
+    const { createPinia: freshPinia, setActivePinia: setFresh } = await import("pinia");
+    setFresh(freshPinia());
+    const { useSessionStore: freshStore } = await import("../app/stores/session");
+    const store = freshStore();
+    store.setMethod("card");
+    store.setMeldCountry("IN");
+    // A rupee's worth of CASH: far under the 3,000 INR card minimum.
+    store.setAmount("1");
+    await store.fetchMeldQuote();
+    expect(store.quoteOutOfRange).toMatchObject({ bound: "min", limit: "3000.00", fiat: "INR" });
+    // About 3,000 CASH at a rupee each.
+    expect(Number(store.quoteOutOfRange?.cash)).toBeCloseTo(3000, -1);
+    expect(store.quoteError).toBeNull();
+    expect(store.quoteFailures).toBe(0);
+    expect(store.quoted).toBeNull();
+    // A new amount clears it.
+    store.setAmount("2");
+    expect(store.quoteOutOfRange).toBeNull();
   });
 });

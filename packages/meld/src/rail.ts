@@ -39,6 +39,8 @@ export interface MeldRailOptions {
    * decimals size the quote. Default `TOKENS.PAS` (Meld's code for DOT on Asset Hub).
    */
   token?: MeldQuoteContext["token"];
+  /** The method's fiat limits in `fiat`, from the corridor; see `MeldQuoteContext.limits`. */
+  limits?: MeldQuoteContext["limits"];
 }
 
 /** Default Meld payment-method code per UI category. Bank codes are region-specific. */
@@ -76,6 +78,7 @@ export function createMeldRail(opts: MeldRailOptions): MeldRail {
     fiat,
     token,
     method: paymentMethodType,
+    ...(opts.limits === undefined ? {} : { limits: opts.limits }),
   };
 
   // Session pay URLs, keyed by depositChannelId, filled at requestDepositAddress time.

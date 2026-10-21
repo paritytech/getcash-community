@@ -48,6 +48,7 @@ const emit = defineEmits<{
   /** Leave the screen without touching the request: a lapsed transfer may still be arriving. */
   leave: [];
   switchRoute: [route: FundingRoute];
+  changeAmount: [];
 }>();
 
 const session = useSessionStore();
@@ -58,7 +59,9 @@ const blocked = computed(() => session.quoteError !== null && !session.loading);
 /** A request exists: the provider has a pay page for this quote. */
 const requestOpen = computed(() => requests.phase !== null);
 /** The summary has nothing to price yet. */
-const pricing = computed(() => !blocked.value && !session.quoted);
+const pricing = computed(
+  () => !blocked.value && session.quoteOutOfRange === null && !session.quoted,
+);
 
 /** The hero: the exact total to transfer, fees included. Shown only once a quote priced it. */
 const heroAmount = computed(() => {
@@ -115,6 +118,11 @@ function onContinue() {
 function requote() {
   startError.value = null;
   void session.fetchMeldQuote();
+}
+// Out of range: the bound the method takes, in CASH, becomes the amount and is quoted.
+function useAmount(cash: string) {
+  session.setAmount(cash);
+  requote();
 }
 
 /** How long the confirmation waits, in seconds, from the moment the details are on screen. */
@@ -187,6 +195,20 @@ function confirmSent() {
       @region="emit('currency')"
       @use-crypto="emit('switchRoute', 'crypto')"
       @use-other="emit('switchRoute', 'card')"
+    />
+    <MethodUnavailable
+      v-else-if="step === 'summary' && session.quoteOutOfRange !== null && !session.loading"
+      direction="top-up"
+      method="bank"
+      :amount="session.amountHuman"
+      :country="country"
+      :country-name="countryLabel"
+      :minimum="null"
+      :other="null"
+      :range="session.quoteOutOfRange"
+      @region="emit('currency')"
+      @change-amount="emit('changeAmount')"
+      @use-amount="useAmount"
     />
     <RateErrorScreen
       v-else-if="step === 'summary' && blocked"
