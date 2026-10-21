@@ -32,6 +32,8 @@ type Submit = "ok" | "rejected" | "lost" | "invalid";
 function scriptedPeople(opts: { count: number; cash: bigint; dryRunRefuses?: boolean }) {
   const state = {
     count: opts.count,
+    /** The count in the finalized block; the best block's unless set. */
+    finalizedCount: null as number | null,
     cash: opts.cash,
     nonce: 3,
     submit: "ok" as Submit,
@@ -49,9 +51,9 @@ function scriptedPeople(opts: { count: number; cash: bigint; dryRunRefuses?: boo
     query: {
       PolkadotXcm: {
         AssetTraps: {
-          getValue: async () => {
-            seen.reads.push("count");
-            return state.count;
+          getValue: async (_key: unknown, options: { at: string }) => {
+            seen.reads.push(options.at === "finalized" ? "count (finalized)" : "count");
+            return options.at === "finalized" ? (state.finalizedCount ?? state.count) : state.count;
           },
         },
       },
@@ -253,6 +255,19 @@ describe("tickRecovery", () => {
     expect((await tick(world, state).outcome).step).toBe("done");
     expect(world.seen.submits).toEqual([]);
     expect(state).toMatchObject({ nonceAtClaim: null, claimSentAt: null });
+    expect(world.seen.reads).toEqual(["nonce", "count", "count (finalized)"]);
+  });
+
+  it("is not done while the trap is empty only in a best block the chain may yet replace", async () => {
+    const world = scriptedPeople({ count: 0, cash: TRAP.amount });
+    world.state.finalizedCount = 1;
+    const state = { ...freshRecoveryState(), nonceAtClaim: 3, claimSentAt: 999_000 };
+    expect((await tick(world, state).outcome).step).toBe("claiming");
+    expect(world.seen.submits).toEqual([]);
+    // The marker stands until the finalized block agrees.
+    expect(state).toMatchObject({ nonceAtClaim: 3, claimSentAt: 999_000 });
+    world.state.finalizedCount = 0;
+    expect((await tick(world, state).outcome).step).toBe("done");
   });
 
   it("does not send a claim People would refuse", async () => {

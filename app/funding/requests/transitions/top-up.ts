@@ -645,17 +645,17 @@ function applyUser(record: TopUpRecord, observation: UserObservation): TopUpReco
     case "payment-requested": {
       // The purse is asked for the claim's fee: the attempt, its id and the fee's round are
       // stamped before the host is, as a withdrawal stamps its payment. An attempt the host
-      // turned out not to know is asked again under the same id, and its stamp starts over.
+      // turned out not to know, or that failed for a reason that was not the host's refusal, is
+      // asked again under the same id, and its stamp starts over.
       const { attempt, id } = observation;
       const { recovery } = record;
       if (record.status.kind !== "recovering" || recovery === undefined) return record;
       const current = recovery.payment;
       if (current !== undefined && attempt < current.attempt) return record;
-      if (
-        current?.attempt === attempt &&
-        current.requestedAt !== undefined &&
-        current.status !== "not-found"
-      ) {
+      const askable =
+        current?.status === "not-found" ||
+        (current?.status === "failed" && current.refusal === "other");
+      if (current?.attempt === attempt && current.requestedAt !== undefined && !askable) {
         return record;
       }
       const round = observation.round ?? recovery.round;

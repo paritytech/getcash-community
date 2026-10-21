@@ -164,6 +164,41 @@ describe("requests store: a trapped top-up's fee, hosted", () => {
     expect(asked).toHaveBeenCalledTimes(3);
     expect(asked.mock.calls[2]![0]).toMatchObject({ idHex: recoveryPaymentIdFor(CLAIMER, 1) });
     expect(payment()).toMatchObject({ attempt: 1, status: "processing" });
+
+    // A request that failed for a reason that was not the host's refusal may have been paid: it
+    // is asked again under the same id, and the host's answer takes the stamp over.
+    readStatus.mockResolvedValueOnce({ status: "completed" });
+    await requests.observePaymentStatus(REF);
+    asked.mockRejectedValueOnce(new Error("socket closed"));
+    // A later round moves the stamp out of its round so the fee is asked for anew.
+    await requests.observe(REF, {
+      source: "worker",
+      at: at(4),
+      job: {
+        phase: "recovering",
+        done: false,
+        fundsSeenAt: at(0),
+        lastTickAt: at(4),
+        claim: null,
+        recovery: {
+          trappedAmount: "25000000",
+          trappedAt: at(2),
+          claimerHex: CLAIMER,
+          phase: "funding",
+          round: 1,
+          askCash: "10000",
+        },
+      },
+    });
+    expect(await requests.requestRecoveryPayment(REF)).toEqual({ ok: true });
+    await settle();
+    expect(asked).toHaveBeenCalledTimes(4);
+    expect(payment()).toMatchObject({ attempt: 2, status: "failed", refusal: "other" });
+    expect(await requests.requestRecoveryPayment(REF)).toEqual({ ok: true });
+    await settle();
+    expect(asked).toHaveBeenCalledTimes(5);
+    expect(asked.mock.calls[4]![0]).toMatchObject({ idHex: recoveryPaymentIdFor(CLAIMER, 2) });
+    expect(payment()).toMatchObject({ attempt: 2, status: "processing" });
   });
 
   it("polls the host for the fee's payment while the top-up is on screen and its word is pending", async () => {

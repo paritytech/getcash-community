@@ -1746,13 +1746,14 @@ export const useRequestsStore = defineStore("requests", () => {
     if (recoveryAsks.has(key)) return { ok: false, reason: "Your balance is already being asked." };
     const previous = recovery.payment;
     // A refused attempt, one the purse paid short, or one the worker's round moved past is over;
-    // the next ask is a fresh attempt under its own id.
+    // the next ask is a fresh attempt under its own id. An attempt that failed for a reason that
+    // was not the host's refusal, a dropped connection with the sheet up, may well have been
+    // paid: it is asked again under its own id, which a host that paid it answers as known.
+    const refused = previous?.status === "failed" && previous.refusal !== "other";
     const attempt =
       previous === undefined
         ? 0
-        : previous.status === "failed" ||
-            previous.status === "partiallyClaimed" ||
-            paymentOutOfRound(recovery)
+        : refused || previous.status === "partiallyClaimed" || paymentOutOfRound(recovery)
           ? previous.attempt + 1
           : previous.attempt;
     const idHex = recoveryPaymentIdFor(recovery.claimerHex, attempt);
@@ -2320,6 +2321,12 @@ export const useRequestsStore = defineStore("requests", () => {
     paymentPoll = poll;
     const tick = async (): Promise<void> => {
       if (paymentPoll !== poll) return;
+      // A fee the page is asking for right now is answered by the request, not read back: the
+      // poll steps aside and the request's end starts it again.
+      if (recoveryAsks.has(key)) {
+        stopPaymentPoll();
+        return;
+      }
       await observePaymentStatus(pending.ref);
       if (paymentPoll !== poll) return;
       const still = foregroundAwaitingPayment();

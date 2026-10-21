@@ -183,6 +183,14 @@ export async function tickRecovery(
   const held = await read(input.readCashOnPeople(address, "best"), "burner CASH read");
   state.held = held;
   if (count === 0) {
+    // Done only once the finalized block agrees: the driver sizes the host's claim from the
+    // finalized balance, and a claim that is in a best block the chain may yet replace would have
+    // it size a leftover instead of the CASH coming back.
+    const final = await read(
+      peopleApi.query.PolkadotXcm.AssetTraps.getValue(trap.key, { at: "finalized" }),
+      "trap read (finalized)",
+    );
+    if (final > 0) return { step: "claiming", held, feeCash };
     state.nonceAtClaim = null;
     state.claimSentAt = null;
     return { step: "done", held, feeCash };
