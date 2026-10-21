@@ -2301,30 +2301,36 @@ export const useSessionStore = defineStore("session", () => {
   });
 
   /**
-   * Loads the region dropdown and the per-country corridors from the adapter's live catalog. The
-   * bulk corridors carry every country's name, so one read fills both; the countries endpoint is
-   * asked only when that read comes back empty or fails. Only a real catalog is adopted, so a
-   * cold/empty read greys nothing, and on failure `supportedCountries` stays null and the screen
-   * keeps its static list.
+   * Loads the region dropdown and the per-country corridors from the adapter's live catalog, both
+   * in one step. The countries are the whole catalog: the corridors hold only regions that route
+   * something, so a region listed from them alone would vanish rather than show as unsupported,
+   * which is how a buyer looking for their own country learns why it is not on offer. The
+   * corridors grey the list and carry each region's limits, and stand in for it when the countries
+   * read fails. Only a real catalog is adopted, so a cold/empty read greys nothing, and when both
+   * fail `supportedCountries` stays null and the screen keeps its static list.
    */
   async function loadSupportedCatalog(): Promise<void> {
     const destination = meldDestination.value;
-    const map = await fetchSupportedCorridors(destination);
+    const [map, rows] = await Promise.all([
+      fetchSupportedCorridors(destination),
+      fetchSupportedCountries(destination),
+    ]);
     // The destination can change while this is in flight, and the fetches do not return in the
     // order they were made. Adopting a stale one greys the dropdown by a corridor the quotes are
     // no longer placed against.
     if (destination !== meldDestination.value) return;
-    if (map !== null && map.size > 0) {
-      corridorByCountry.value = map;
-      supportedCountries.value = [...map.values()].map((c) => ({
+    const corridors = map !== null && map.size > 0 ? map : null;
+    if (corridors !== null) corridorByCountry.value = corridors;
+    if (rows !== null && rows.length > 0) {
+      supportedCountries.value = rows;
+    } else if (corridors !== null) {
+      supportedCountries.value = [...corridors.values()].map((c) => ({
         country: c.country,
         name: c.name ?? countryName(c.country),
       }));
-      return;
+    } else if (rows !== null) {
+      supportedCountries.value = rows;
     }
-    const rows = await fetchSupportedCountries(destination);
-    if (destination !== meldDestination.value) return;
-    if (rows !== null) supportedCountries.value = rows;
   }
 
   return {

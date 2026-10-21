@@ -309,36 +309,47 @@ describe("session store: supported corridors loader against a live adapter", () 
     vi.resetModules();
   });
 
-  it("fills corridorByCountry and the region list from the bulk endpoint alone", async () => {
+  /** A fetch answering the two catalog endpoints: `countries` (null for a failed read) and the
+   *  bulk `corridors`. */
+  const catalogFetch = (countries: unknown[] | null, corridors: unknown[]) =>
+    vi.fn(async (url: string) => {
+      const json = (status: number, body: unknown) =>
+        new Response(JSON.stringify(body), {
+          status,
+          headers: { "content-type": "application/json" },
+        });
+      if (url.includes("/supported/countries")) {
+        return countries === null ? json(500, {}) : json(200, { countries });
+      }
+      return json(200, { corridors });
+    });
+  const usCard = {
+    country: "US",
+    name: "United States of America",
+    fiat: "USD",
+    methods: [
+      {
+        paymentMethodType: "CREDIT_DEBIT_CARD",
+        category: "card",
+        min: "10",
+        max: "5000",
+        currency: "USD",
+        providers: [],
+      },
+    ],
+  };
+
+  it("lists the whole catalog, a region nothing routes from included, greyed by the corridors", async () => {
     vi.resetModules();
     // The reset leaves a fresh, empty asset table, as on a page that has not read the adapter's.
     await installTestMeldAssets();
     vi.stubEnv("VITE_MELD_BASE_URL", "https://adapter.test");
-    const fetchMock = vi.fn(
-      async () =>
-        new Response(
-          JSON.stringify({
-            corridors: [
-              {
-                country: "US",
-                name: "United States of America",
-                fiat: "USD",
-                methods: [
-                  {
-                    paymentMethodType: "CREDIT_DEBIT_CARD",
-                    category: "card",
-                    min: "10",
-                    max: "5000",
-                    currency: "USD",
-                    providers: [],
-                  },
-                ],
-              },
-              { country: "BR", fiat: "BRL", methods: [] },
-            ],
-          }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        ),
+    const fetchMock = catalogFetch(
+      [
+        { country: "US", name: "United States of America" },
+        { country: "NF", name: "Norfolk Island" },
+      ],
+      [usCard],
     );
     vi.stubGlobal("fetch", fetchMock);
     const { createPinia: freshPinia, setActivePinia: setFresh } = await import("pinia");
@@ -346,15 +357,38 @@ describe("session store: supported corridors loader against a live adapter", () 
     const { useSessionStore: freshStore } = await import("../app/stores/session");
     const store = freshStore();
     await store.loadSupportedCatalog();
+    // NF routes nothing, so it has no corridor, and stays listed for the picker to show as
+    // unsupported rather than vanishing.
+    expect(store.supportedCountries).toEqual([
+      { country: "US", name: "United States of America" },
+      { country: "NF", name: "Norfolk Island" },
+    ]);
     expect(store.corridorByCountry?.get("US")?.methods[0]?.category).toBe("card");
+    expect(store.corridorByCountry?.has("NF")).toBe(false);
+    // Both in the one load.
+    const urls = fetchMock.mock.calls.map((c) => String((c as unknown[])[0]));
+    expect(urls.filter((u) => u.includes("/supported/countries"))).toHaveLength(1);
+    expect(urls.filter((u) => u.includes("/supported/corridors"))).toHaveLength(1);
+  });
+
+  it("lists the corridors' own countries when the countries read fails", async () => {
+    vi.resetModules();
+    await installTestMeldAssets();
+    vi.stubEnv("VITE_MELD_BASE_URL", "https://adapter.test");
+    vi.stubGlobal(
+      "fetch",
+      catalogFetch(null, [usCard, { country: "BR", fiat: "BRL", methods: [] }]),
+    );
+    const { createPinia: freshPinia, setActivePinia: setFresh } = await import("pinia");
+    setFresh(freshPinia());
+    const { useSessionStore: freshStore } = await import("../app/stores/session");
+    const store = freshStore();
+    await store.loadSupportedCatalog();
     // Named by the catalog where it names one, by the locale otherwise.
     expect(store.supportedCountries).toEqual([
       { country: "US", name: "United States of America" },
       { country: "BR", name: "Brazil" },
     ]);
-    // The countries endpoint is not asked when corridors came back.
-    const urls = fetchMock.mock.calls.map((c) => String((c as unknown[])[0]));
-    expect(urls.some((u) => u.includes("/supported/countries"))).toBe(false);
   });
 
   it("falls back to the countries endpoint when the bulk read is empty", async () => {
