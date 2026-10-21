@@ -4,7 +4,6 @@ import { liveState } from "./live";
 import { timelineView } from "./model";
 import { earlierFact } from "./observed";
 import {
-  chainReadAt,
   depositOnBurner,
   polkadotFailure,
   polkadotMilestones,
@@ -107,10 +106,10 @@ export function topUpTimeline(
   if (view.state === "failed") return { view, failure: failureOf(record, route, view.failed) };
 
   const providerPhase = isProviderPhase(view.phase);
-  const lastReadAt = (providerPhase ? route.lastReadAt(record) : workerTickAt(record)) ?? -Infinity;
-  // The detail's read is the app's own chain read too on the shared part: it watches the deposit
-  // before the worker does.
-  const readAt = providerPhase ? route.lastReadAt(record) : chainReadAt(record);
+  // The read that moves the phase, which the detail names and the reconnect line watches. Not
+  // the app's own burner read: it is stamped on a balance change, not on each read.
+  const readAt = providerPhase ? route.lastReadAt(record) : workerTickAt(record);
+  const lastReadAt = readAt ?? -Infinity;
   const state = {
     delayed: view.state === "delayed",
     now,

@@ -83,7 +83,7 @@ export function createTopUpTimelines(): TopUpTimelineOf {
       previous: timeline.view,
       sentUnseenMs: sentUnseenMs + awaited,
       ...(awaiting ? { awaitingSince: now } : {}),
-      stepSince: stepSince(timeline.view, previous, since, now),
+      stepSince: previous === undefined ? now : stepSince(timeline.view, previous, since, now),
     });
     return timeline;
   };

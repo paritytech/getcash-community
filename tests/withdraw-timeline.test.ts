@@ -1052,10 +1052,16 @@ describe("withdrawal timeline, live detail", () => {
   it("names the rail's read on the hand-off, and the attempt on a delay", () => {
     const handing = chainflip({
       status: { kind: "sending", at: at(3) },
-      rail: { provider: "chainflip", stage: "waiting", updatedAt: at(4) },
+      witnesses: worker(at(4)),
     });
     const now = at(4) + 2 * SECOND;
     expect(withdrawalTimeline(handing, live(now)).detail).toBe("Checked with the exchange 2s ago");
+    // The rail's own stamp moves on transitions, not on reads: alone, it names no read.
+    const unread = chainflip({
+      status: { kind: "sending", at: at(3) },
+      rail: { provider: "chainflip", stage: "waiting", updatedAt: at(4) },
+    });
+    expect(withdrawalTimeline(unread, live(now)).detail).toBeUndefined();
     const stuck = record({
       status: { kind: "converting", at: at(1), step: "swap" },
       witnesses: { worker: { ...worker(at(2)).worker!, lastError: "boom" } },
@@ -1076,7 +1082,7 @@ describe("withdrawal timeline, live detail", () => {
     );
     const handing = chainflip({
       status: { kind: "sending", at: t + 4 * SECOND },
-      rail: { provider: "chainflip", stage: "waiting", updatedAt: t + 4 * SECOND },
+      witnesses: worker(t + 4 * SECOND),
     });
     expect(timelineOf(handing, t + 4 * SECOND).detail).toBeUndefined();
     expect(timelineOf(handing, t + 7 * SECOND).detail).toBe("Checked with the exchange 3s ago");

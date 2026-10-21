@@ -96,13 +96,13 @@ function legOpenedAt({ status }: WithdrawalRecord): number | undefined {
 }
 
 /** When the reads that move the withdrawal last succeeded: the worker's tick, which follows
- *  every leg, the rail's last report, or the host's payment status. */
-export function withdrawalReadAt(record: WithdrawalRecord): number | undefined {
+ *  every leg, and on the rail leg the host's payment read too. The rail's own stamp is not a
+ *  read: it moves on transitions. */
+export function withdrawalReadAt(record: WithdrawalRecord, phase: number): number | undefined {
   const worker = record.witnesses.worker;
   const reads = [
     worker?.known ? worker.lastTickAt : undefined,
-    record.rail.updatedAt,
-    record.witnesses.host?.at,
+    phase >= 2 ? record.witnesses.host?.at : undefined,
   ].filter((at): at is number => at != null);
   return reads.length === 0 ? undefined : Math.max(...reads);
 }

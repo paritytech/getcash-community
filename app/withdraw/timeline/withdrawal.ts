@@ -54,7 +54,7 @@ export function withdrawalTimeline(
   const text = withdrawalText(record, view.phase, {
     delayed: view.state === "delayed",
     now,
-    ...liveState(view, previous, since, now, withdrawalReadAt(record)),
+    ...liveState(view, previous, since, now, withdrawalReadAt(record, view.phase)),
   });
   return {
     view,

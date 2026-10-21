@@ -225,7 +225,7 @@ export function polkadotText(
       return depositOnBurner(record) === undefined
         ? {
             message: normal("Your money is arriving"),
-            detail: read("Watching the network · checked"),
+            detail: liveDetail(live, "Watching the network", read("checked")),
           }
         : {
             message: normal("Making sure your money arrived safely"),

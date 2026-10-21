@@ -99,7 +99,10 @@ function phaseDetail(
       return record.handoff.tier === "psm"
         ? liveDetail(
             live,
-            stages(["Arrived", "Redeemed"], step === SENDING_STEP_ORDER.redeem ? 1 : 0),
+            stages(
+              ["Arrived", "Redeemed"],
+              step === SENDING_STEP_ORDER.redeem || record.failure?.kind === "held" ? 1 : 0,
+            ),
             read("checked"),
           )
         : read("Checked");
