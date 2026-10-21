@@ -197,19 +197,13 @@ export interface ActiveFlowRecord {
   sourceId?: string;
 }
 
-/** A stage of `step` that did not finish within its bound. */
-class StepTimeoutError extends Error {}
-
 /** Awaits `work` with a timeout, logging the stage label before and after. */
 async function step<T>(label: string, ms: number, work: Promise<T>): Promise<T> {
   console.warn(`[coinage] step: ${label}...`);
   let timer: ReturnType<typeof setTimeout>;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(
-      () =>
-        reject(
-          new StepTimeoutError(`${label} timed out after ${ms / 1000}s (host not responding?)`),
-        ),
+      () => reject(new Error(`${label} timed out after ${ms / 1000}s (host not responding?)`)),
       ms,
     );
   });
@@ -1051,8 +1045,9 @@ export const useSessionStore = defineStore("session", () => {
         }
         const { error } = asked;
         const reason = error instanceof Error ? error.message : String(error);
-        // An adapter that does not answer, or not in time, is the same adapter on the next route.
-        if (error instanceof StepTimeoutError || isAdapterOutage(error)) {
+        // An adapter that does not answer is the same adapter on the next route. A quote out of
+        // time is this route's refusal.
+        if (isAdapterOutage(error)) {
           failure = error;
           return { kind: "outage", reason };
         }

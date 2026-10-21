@@ -39,8 +39,8 @@ takes over whenever the PSM cannot serve a request (i.e.: no instance open for t
 paused, the amount over the instance's debt ceiling or under its minimum) and then the provider
 delivers the native token and one XCM swaps and sends it instead. A Chainflip pick takes the
 pool too when Chainflip cannot quote the swap into USDT for it, and a card or bank top-up when no
-provider buys USDT for the region and amount. Which tier a request takes
-is decided at quote time, before the provider is told what to send, and recorded on the request
+provider buys USDT for the region and amount or the quote for it times out. Which tier a request
+takes is decided at quote time, before the provider is told what to send, and recorded on the request
 with the fee rate it was quoted; the worker runs the tier it is handed and never chooses one.
 On the Polkadot route the token the buyer picks decides: DOT takes the pool, USDT the PSM (the
 pool through PAS when the PSM cannot serve), USDC a stable pool leg, one XCM that exchanges USDC

@@ -245,6 +245,38 @@ describe("lib/supported", () => {
     expect(await reimport.fetchSupportedCorridors(DEST)).toBeNull(); // throw -> null
   });
 
+  it("fetchSupportedCorridors seeds fetchCorridor for the countries it lists, and only those", async () => {
+    const fetchSpy = stubFetch({
+      "/supported/corridors": {
+        corridors: [
+          {
+            country: "GB",
+            fiat: "GBP",
+            methods: [
+              {
+                paymentMethodType: "FASTER_PAYMENTS",
+                category: "bank",
+                min: "20",
+                max: "5000",
+                currency: "GBP",
+              },
+            ],
+          },
+        ],
+      },
+      "/supported?country=US": { country: "US", fiat: "USD", methods: [] },
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const { fetchCorridor, fetchSupportedCorridors } = await import("../lib/supported");
+    await fetchSupportedCorridors(DEST);
+    expect((await fetchCorridor(DEST, "GB"))?.methods[0]?.category).toBe("bank");
+    expect(await fetchCorridor(DEST, "US")).toEqual({ country: "US", fiat: "USD", methods: [] });
+    const perCountry = fetchSpy.mock.calls
+      .map(([u]) => String(u))
+      .filter((u) => u.includes("/supported?country="));
+    expect(perCountry).toEqual([expect.stringContaining("country=US")]);
+  });
+
   it("corridorOptions leaves every row plain and selectable when the map is null", async () => {
     const { corridorOptions } = await import("../lib/supported");
     const rows = corridorOptions([{ country: "US", name: "United States" }], null, "card");

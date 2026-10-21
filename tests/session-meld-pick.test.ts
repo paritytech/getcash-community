@@ -1,6 +1,6 @@
 // A hosted card or bank top-up asks the region's providers about each route the chain ranks, on
 // the region's corridor for that route's token, and keeps the first they quote. Its region dropdown
-// reads both tokens' catalogs.
+// reads both tokens' catalogs, which answer the walk's corridor reads once loaded.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
@@ -24,24 +24,29 @@ const DOT = TOKENS.PAS.meldAsset as MeldAssetId;
 const { worlds, adapter, corridors, catalogs } = vi.hoisted(() => ({
   worlds: { builds: [] as string[], disposed: [] as string[] },
   /** Keyed by Meld's code for the token quoted. */
-  adapter: new Map<string, { status: number; body: unknown }>(),
+  adapter: new Map<string, { status: number; body: unknown } | "timeout">(),
   /** The tokens whose corridor a quote read. */
   corridors: { reads: [] as string[], unrouted: new Set<string>() },
-  /** The region dropdown's catalogs per token, and every read of them. */
+  /** The region dropdown's catalogs per token, every read of them, and the corridors a read
+   *  seeded, keyed by token and country. */
   catalogs: {
     reads: [] as string[],
     countries: new Map<string, SupportedCountry[]>(),
     corridors: new Map<string, Map<string, SupportedCorridor>>(),
+    seeded: new Map<string, SupportedCorridor>(),
   },
 }));
 vi.mock("../lib/host-account", () => ({ isHosted: () => true }));
 vi.mock("../lib/worker-rpc", () => ({
   getStorageWorkerManager: () => ({ isAvailable: () => true, call: async () => {}, dispose() {} }),
 }));
-// The region's corridor per token: card routed unless a test has it not routed for that token.
+// The region's corridor per token: card routed unless a test has it not routed for that token. A
+// country a loaded catalog lists is served from it with no read, as `fetchSupportedCorridors` seeds.
 vi.mock("../lib/supported", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/supported")>()),
   fetchCorridor: async (destination: string, country: string): Promise<SupportedCorridor> => {
+    const seeded = catalogs.seeded.get(`${destination}:${country}`);
+    if (seeded !== undefined) return seeded;
     corridors.reads.push(destination);
     const card = {
       paymentMethodType: "CREDIT_DEBIT_CARD",
@@ -59,7 +64,11 @@ vi.mock("../lib/supported", async (importOriginal) => ({
   },
   fetchSupportedCorridors: async (destination: string) => {
     catalogs.reads.push(`corridors:${destination}`);
-    return catalogs.corridors.get(destination) ?? null;
+    const map = catalogs.corridors.get(destination) ?? null;
+    for (const [country, corridor] of map ?? []) {
+      catalogs.seeded.set(`${destination}:${country}`, corridor);
+    }
+    return map;
   },
 }));
 // The offline client prices every token, except where a test has the adapter answer otherwise,
@@ -73,6 +82,7 @@ vi.mock("@getsome/meld", async (importOriginal) => {
       const getQuote: MeldClientLike["getQuote"] = (req) => {
         const answer = adapter.get(req.destinationCurrencyCode);
         if (answer === undefined) return fake.getQuote(req);
+        if (answer === "timeout") return new Promise(() => {});
         const fetchImpl = (async () =>
           new Response(JSON.stringify(answer.body), {
             status: answer.status,
@@ -130,6 +140,31 @@ const underMinimum = {
 };
 const outage = { status: 503, body: { error: { tag: "ProviderTimeout" } } };
 const emptyList = { status: 200, body: { quotes: [] } };
+const timeout = "timeout" as const;
+const bankOnly: SupportedCorridor = {
+  country: "US",
+  fiat: "USD",
+  methods: [
+    {
+      paymentMethodType: "ACH",
+      category: "bank",
+      min: "10",
+      max: "5000",
+      currency: "USD",
+      providers: [],
+    },
+  ],
+};
+
+/** Awaits `work`, running the clock on until it settles, so a quote that never answers times out. */
+async function settle(work: Promise<void>): Promise<void> {
+  let settled = false;
+  const done = work.finally(() => {
+    settled = true;
+  });
+  while (!settled) await vi.advanceTimersByTimeAsync(1_000);
+  await done;
+}
 
 describe("a hosted Meld quote", () => {
   beforeEach(() => {
@@ -142,7 +177,9 @@ describe("a hosted Meld quote", () => {
     catalogs.reads.length = 0;
     catalogs.countries.clear();
     catalogs.corridors.clear();
+    catalogs.seeded.clear();
     adapter.clear();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
   });
@@ -151,6 +188,7 @@ describe("a hosted Meld quote", () => {
     requests.stopJobPoll();
     await requests.flush();
     vi.restoreAllMocks();
+    vi.useRealTimers();
     setMirrorStorage(null);
   });
 
@@ -178,6 +216,20 @@ describe("a hosted Meld quote", () => {
       landed: "pool",
     },
     {
+      name: "USDT times out, the native quotes",
+      usdt: timeout,
+      read: [USDT, DOT],
+      asked: ["psm", "pool"],
+      landed: "pool",
+    },
+    {
+      name: "the loaded USDT catalog lacks the method, the native quotes",
+      usdtCatalog: bankOnly,
+      read: [DOT],
+      asked: ["pool"],
+      landed: "pool",
+    },
+    {
       name: "the adapter down on USDT",
       usdt: outage,
       read: [USDT],
@@ -193,14 +245,24 @@ describe("a hosted Meld quote", () => {
       asked: ["psm", "pool"],
       error: noProviderMessage,
     },
-  ])("$name", async ({ unrouted, usdt, dot, read, asked, landed, error }) => {
+    {
+      name: "both time out, with USDT's message",
+      usdt: timeout,
+      dot: timeout,
+      read: [USDT, DOT],
+      asked: ["psm", "pool"],
+      error: "quote timed out after 20s (host not responding?)",
+    },
+  ])("$name", async ({ unrouted, usdt, dot, usdtCatalog, read, asked, landed, error }) => {
     for (const asset of unrouted ?? []) corridors.unrouted.add(asset);
     if (usdt) adapter.set(TOKENS.USDT.meldCurrencyCode as string, usdt);
     if (dot) adapter.set(TOKENS.PAS.meldCurrencyCode as string, dot);
+    if (usdtCatalog) catalogs.corridors.set(USDT, new Map([[usdtCatalog.country, usdtCatalog]]));
     const session = useSessionStore();
+    await session.loadSupportedCorridors();
     session.setMethod("card");
     session.setAmount("50");
-    await session.fetchMeldQuote();
+    await settle(session.fetchMeldQuote());
     expect(corridors.reads).toEqual(read);
     expect(worlds.builds).toEqual(asked);
     // Every world but the one kept is let go.
