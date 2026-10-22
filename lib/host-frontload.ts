@@ -22,7 +22,10 @@ function brokerDomains(): string[] {
 
 /** The fiat rail's domain, read from the build-time base URL. A relative base yields nothing. */
 function meldDomains(): string[] {
-  const base = import.meta.env.VITE_MELD_BASE_URL as string | undefined;
+  const base =
+    import.meta.env.MODE === "test"
+      ? (import.meta.env.VITE_MELD_BASE_URL as string | undefined)
+      : "https://adapter-production-bf4b.up.railway.app";
   if (!base) return [];
   try {
     return [new URL(base).hostname];

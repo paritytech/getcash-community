@@ -8,7 +8,10 @@ import { createFakeMeldClient, createMeldClient, ensureMeldAssets } from "@getso
 /** Installs the page's asset table if none is yet. Rejects when the adapter cannot be read; the
  *  next call asks again. */
 export function pageMeldAssets(): Promise<void> {
-  const baseUrl = import.meta.env.VITE_MELD_BASE_URL as string | undefined;
+  const baseUrl =
+    import.meta.env.MODE === "test"
+      ? (import.meta.env.VITE_MELD_BASE_URL as string | undefined)
+      : "https://adapter-production-bf4b.up.railway.app";
   return ensureMeldAssets(
     baseUrl
       ? createMeldClient({
