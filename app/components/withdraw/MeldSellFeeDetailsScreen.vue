@@ -9,6 +9,7 @@ import { cashAmount, fmtCash, groupAmountDigits } from "../../utils/cash";
 import { fmtFiat, isMoneyAmount } from "../../utils/money";
 import DetailRows, { type DetailRow } from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
+import ReceiveRow from "./ReceiveRow.vue";
 
 const props = defineProps<{
   /** The live quote, or the sale as the record committed it. */
@@ -82,16 +83,7 @@ const rate = computed(() => {
 
     <hr class="my-2 border-stroke-secondary" />
 
-    <div class="mt-2 flex flex-col gap-1">
-      <div class="flex items-center justify-between gap-4">
-        <span class="text-paragraph-l text-fg-secondary">You'll receive</span>
-        <span class="text-display-l text-fg-primary">{{ payout }}</span>
-      </div>
-      <div v-if="rate" class="flex items-baseline justify-between gap-4">
-        <span class="text-paragraph-l text-fg-secondary">Rate</span>
-        <span class="text-paragraph-l text-fg-secondary">{{ rate }}</span>
-      </div>
-    </div>
+    <ReceiveRow :receive="payout" :rate="rate" />
 
     <PillButton variant="tertiary" class="mt-auto mb-6 w-full" @click="emit('back')">
       Back
