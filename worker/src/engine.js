@@ -356,6 +356,8 @@ function trapped(record, error, nowMs) {
     claimerHex: error.claimerHex,
     at: nowMs,
   };
+  // The conversion's time is spent; the claim that follows the recovery gets the whole bound.
+  record.state.workedMs = 0;
   delete record.lastError;
 }
 

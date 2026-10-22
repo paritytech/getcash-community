@@ -89,7 +89,7 @@ export function trapScanSpan(peopleFee: bigint | null): bigint {
   return span < most ? span : most;
 }
 
-/** The trap holding the CASH sent for `claimerHex`, read from People at its best block: the
+/** The trap holding the CASH sent for `claimerHex`, read from People at its finalized block: the
  *  entry whose key one of the amounts within `span` of `sent` gives, or the AssetsTrapped event
  *  of that block naming the claimer. The scan looks above `sent` as well as below: while the
  *  figure is still the dry run's, the pool may have filled more or less than it saw. Null when
@@ -100,7 +100,9 @@ export async function findTrap(
   sent: bigint,
   span: bigint,
 ): Promise<Trap | null> {
-  const entries = await peopleApi.query.PolkadotXcm.AssetTraps.getEntries({ at: "best" });
+  // Read at the finalized block, as the arrival is: a trap ends the conversion for good, and a
+  // trap seen in a best block the chain then replaces would end it for nothing.
+  const entries = await peopleApi.query.PolkadotXcm.AssetTraps.getEntries({ at: "finalized" });
   const counted = new Set(
     entries.filter((entry) => entry.value > 0).map((entry) => entry.keyArgs[0].toLowerCase()),
   );
@@ -113,7 +115,7 @@ export async function findTrap(
       if (counted.has(key.toLowerCase())) return { amount, key };
     }
   }
-  const events = await peopleApi.query.System.Events.getValue({ at: "best" });
+  const events = await peopleApi.query.System.Events.getValue({ at: "finalized" });
   for (const record of events) {
     const event = record.event as { type: string; value: { type: string; value: unknown } };
     if (event.type !== "PolkadotXcm" || event.value.type !== "AssetsTrapped") continue;

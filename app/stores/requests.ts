@@ -1770,11 +1770,14 @@ export const useRequestsStore = defineStore("requests", () => {
         id: idHex,
         round: recovery.round,
       });
-      // The stamp is the record's word that the purse may be asked.
+      // The stamp is the record's word that the purse may be asked: the record still recovering,
+      // with this attempt stamped. A record that moved on meanwhile keeps an older stamp of the
+      // same attempt, which is no word.
       const stamped = get(ref);
       if (
         stamped === undefined ||
         !isTopUp(stamped) ||
+        stamped.status.kind !== "recovering" ||
         stamped.recovery?.payment?.attempt !== attempt ||
         stamped.recovery.payment.requestedAt === undefined
       ) {

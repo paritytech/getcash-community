@@ -143,7 +143,7 @@ describe("findTrap", () => {
     const key = await trapKey(CLAIMER_HEX, AMOUNT);
     const { api, reads } = peopleApi({ [key]: 1 });
     expect(await findTrap(api, CLAIMER_HEX, AMOUNT, EARMARK)).toEqual({ amount: AMOUNT, key });
-    expect(reads).toEqual([["entries", { at: "best" }]]);
+    expect(reads).toEqual([["entries", { at: "finalized" }]]);
   });
 
   it("finds a trap short of the amount sent by what People charged, down to the earmark, and not below", async () => {

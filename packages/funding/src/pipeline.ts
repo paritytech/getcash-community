@@ -74,7 +74,7 @@
 // A TRAP IS FOUND FROM STORAGE, NOT FROM EVENTS. The program names the burner as the claimer of
 // whatever it leaves in People's holding, so a deposit that fails there traps the CASH sent, less
 // the fee People charged before the failure, under the burner's own origin. While the submit is in
-// a block and People shows nothing arrived, one read of AssetTraps at People's best block, tried
+// a block and People shows nothing arrived, one read of AssetTraps at People's finalized block, tried
 // against every amount from the one sent down by the fee earmark, says whether the CASH is there
 // (trap.ts). FundingTrappedError then ends the run as a recovery, never as a timeout, and nothing
 // is converted twice: the trap waits for the burner's claim.

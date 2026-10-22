@@ -798,6 +798,8 @@ describe("worker funding engine", () => {
       trap: { amount: SETTLE.toString(), key, claimerHex },
     });
     expect(storedJob().state.sentToPeople).toBe(SETTLE.toString());
+    // The conversion's time is spent at the trap: the claim after the recovery gets the bound.
+    expect(storedJob().state.workedMs).toBe(0);
     expect(storedJob().lastError).toBeUndefined();
     expect(storedJob().failure).toBeUndefined();
 
