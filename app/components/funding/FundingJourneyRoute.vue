@@ -237,10 +237,7 @@ onUnmounted(() => {
       />
       <ReturnFundsScreen v-else-if="showingRefund" :top-up="topUp" @back="showingRefund = false" />
       <RecoverDepositScreen v-else-if="showingRecovery" @back="showingRecovery = false" />
-      <RecoverTrappedScreen
-        v-else-if="showingRecoveryDeposit"
-        @back="showingRecoveryDeposit = false"
-      />
+      <RecoverTrappedScreen v-else-if="showingRecoveryDeposit" />
       <MeldFeeDetailsScreen
         v-else-if="showingFees"
         :quote="quote"

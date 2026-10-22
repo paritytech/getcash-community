@@ -11,10 +11,8 @@ import { useCopyToClipboard } from "../../composables/useCopyToClipboard";
 import { useRequestsStore } from "../../stores/requests";
 import { shortAddress } from "../../utils/address";
 import CopiedPill from "../ui/CopiedPill.vue";
-import PillButton from "../ui/PillButton.vue";
 import QrCard from "../ui/QrCard.vue";
 
-const emit = defineEmits<{ back: [] }>();
 const requests = useRequestsStore();
 
 const record = computed(() => requests.foregroundRecord);
@@ -29,10 +27,18 @@ const address = computed(
 
 const TOKEN_ORDER: readonly RecoveryToken[] = ["PAS", "DOTUSD", "USDT", "USDC"];
 
-/** Base units as a decimal, trailing zeros trimmed. */
-function fmtUnits(base: bigint, decimals: number): string {
-  const s = base.toString().padStart(decimals + 1, "0");
-  return `${s.slice(0, -decimals)}.${s.slice(-decimals)}`.replace(/\.?0+$/, "") || "0";
+/** The most decimals a figure shows: a minimum rounded up reads better than ten places. */
+const SHOWN_DECIMALS = 4;
+
+/** Base units as a decimal, rounded up to SHOWN_DECIMALS, trailing zeros trimmed. Up, never
+ *  down: the figure is the least to send. */
+function fmtLeast(base: bigint, decimals: number): string {
+  const dropped = decimals > SHOWN_DECIMALS ? decimals - SHOWN_DECIMALS : 0;
+  const unit = 10n ** BigInt(dropped);
+  const shown = (base + unit - 1n) / unit;
+  const places = decimals - dropped;
+  const s = shown.toString().padStart(places + 1, "0");
+  return `${s.slice(0, -places)}.${s.slice(-places)}`.replace(/\.?0+$/, "") || "0";
 }
 
 /** The tokens the worker priced, each with the least to send, named as the deposit screen names
@@ -44,7 +50,7 @@ const choices = computed(() => {
     if (typeof figure !== "string") return [];
     const spec = TOKENS[token];
     return [
-      { token, name: directAssetName(spec), amount: fmtUnits(BigInt(figure), spec.decimals) },
+      { token, name: directAssetName(spec), amount: fmtLeast(BigInt(figure), spec.decimals) },
     ];
   });
 });
@@ -71,7 +77,7 @@ function copy(text: string | null) {
     <!-- The token to send: a row of chips, the picked one filled. -->
     <div
       v-if="choices.length"
-      class="mt-6 flex shrink-0 flex-wrap justify-center gap-2"
+      class="mt-4 flex shrink-0 flex-wrap justify-center gap-2"
       role="radiogroup"
       aria-label="Token to send"
     >
@@ -92,14 +98,14 @@ function copy(text: string | null) {
         {{ c.name }}
       </button>
     </div>
-    <p v-else class="mt-6 shrink-0 text-center text-body-m text-fg-secondary">
+    <p v-else class="mt-4 shrink-0 text-center text-body-m text-fg-secondary">
       Working out what to send. Try again in a moment.
     </p>
 
     <template v-if="choice && address">
       <!-- The one flexible block, as on the deposit screen: the QR takes what the text leaves,
            up to 224px so the chips and rows around it keep their weight. -->
-      <div class="mt-6 flex min-h-24 shrink basis-[15rem] justify-center pb-4">
+      <div class="mt-4 flex min-h-24 shrink basis-[15rem] justify-center pb-3">
         <QrCard :value="address" />
       </div>
 
@@ -138,7 +144,8 @@ function copy(text: string | null) {
       </p>
     </template>
 
-    <!-- The waiting word is a status line, not a second button: Back is the only action. -->
+    <!-- The waiting word is a status line; the toolbar's back is the way out, as on the deposit
+         screen. -->
     <div class="mt-auto flex shrink-0 flex-col gap-2 pt-6">
       <CopiedPill />
       <p class="flex items-center justify-center gap-2 text-body-m text-fg-secondary" role="status">
@@ -148,7 +155,6 @@ function copy(text: string | null) {
         />
         <span>Waiting for funds</span>
       </p>
-      <PillButton variant="tertiary" class="w-full" @click="emit('back')">Back</PillButton>
     </div>
   </section>
 </template>
