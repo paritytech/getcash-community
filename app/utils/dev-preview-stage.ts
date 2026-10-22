@@ -43,6 +43,9 @@ export type PreviewStage =
        *  the row as an estimate the quote could not give. */
       receive?: string | null;
       fees?: WithdrawFeeView;
+      /** The provider's minimum for the staged token, in CASH, over the amount: the summary gives
+       *  way to the out-of-range screen. */
+      belowMinimum?: string;
       /** A canned secret for the return-funds step, so the revealed frame can be staged. */
       secret?: string;
       skeleton?: boolean;

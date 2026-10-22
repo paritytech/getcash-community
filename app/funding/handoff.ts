@@ -11,4 +11,6 @@ export type FundingPackageEmits = {
   switchRoute: [route: FundingRoute];
   /** Back to the shell's amount screen, the amount kept. */
   changeAmount: [];
+  /** The bound a quote named becomes the amount; the package stays up and quotes it. */
+  useAmount: [amount: string];
 };

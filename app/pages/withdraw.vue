@@ -147,6 +147,18 @@ function returnFromTopUp() {
   void purse.refresh();
 }
 
+/** A package asked for another amount: back to the amount screen, the amount kept. */
+function returnToAmount() {
+  loadEpoch += 1;
+  shellEntry.value = "amount";
+  returnToShell();
+}
+
+/** The bound a package's quote named becomes the amount; the package stays up and quotes it. */
+function useAmount(amount: string) {
+  if (selection.value !== null) selection.value = { ...selection.value, amount };
+}
+
 /** Back from a fresh withdrawal's package lands on the pending list, where it now shows. */
 function returnFromPackage() {
   loadEpoch += 1;
@@ -248,6 +260,8 @@ onMounted(async () => {
     :selection="selection"
     @back="returnFromPackage"
     @switch-route="switchRoute"
+    @change-amount="returnToAmount"
+    @use-amount="useAmount"
   />
   <FundingSelectorScreen
     v-else-if="topUpsReady"

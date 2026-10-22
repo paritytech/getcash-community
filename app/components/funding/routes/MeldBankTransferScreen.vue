@@ -19,12 +19,14 @@ import { useRequestsStore } from "../../../stores/requests";
 import { useSessionStore } from "../../../stores/session";
 import { currencyConfig } from "../../../funding/config";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
+import { fiatOutOfRange } from "../../../funding/out-of-range";
 import type { FundingRoute } from "../../../funding/selection";
 import CashAmount from "../../ui/CashAmount.vue";
 import PillButton from "../../ui/PillButton.vue";
 import RateErrorScreen from "../../ui/RateErrorScreen.vue";
 import RegionRow from "../../ui/RegionRow.vue";
 import SkeletonBlock from "../../ui/SkeletonBlock.vue";
+import AmountOutOfRange from "../AmountOutOfRange.vue";
 import MethodUnavailable from "../MethodUnavailable.vue";
 import MeldPaySheet from "./MeldPaySheet.vue";
 
@@ -195,16 +197,11 @@ function confirmSent() {
       @use-crypto="emit('switchRoute', 'crypto')"
       @use-other="emit('switchRoute', 'card')"
     />
-    <MethodUnavailable
+    <AmountOutOfRange
       v-else-if="step === 'summary' && session.quoteOutOfRange !== null && !session.loading"
-      direction="top-up"
-      method="bank"
       :amount="session.amountHuman"
-      :country="country"
-      :country-name="countryLabel"
-      :minimum="null"
-      :other="null"
-      :range="session.quoteOutOfRange"
+      :words="fiatOutOfRange(session.quoteOutOfRange, 'bank', countryLabel)"
+      :region="{ label: 'Payment country', value: countryLabel, country }"
       @region="emit('currency')"
       @change-amount="emit('changeAmount')"
       @use-amount="useAmount"
