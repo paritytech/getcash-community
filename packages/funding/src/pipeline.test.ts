@@ -16,7 +16,9 @@ import {
   freshTickState,
   FundingHeldError,
   FundingShortfallError,
+  FundingTrappedError,
   isConverted,
+  sentAmountOf,
   MAX_PROGRAM_REJECTIONS,
   MAX_PSM_REFUSALS,
   psmDepositNeeded,
@@ -32,6 +34,7 @@ import {
 } from "./pipeline";
 import { psmMintOut, sizePsmMint, type PsmRoute } from "./psm-batch";
 import type { ConversionRoute } from "./route";
+import { trapKey } from "./trap";
 
 const SETTLE = 5_000_000n; // 5 underlying at 6 decimals
 const BUFFER = 100_000n;
@@ -209,7 +212,21 @@ const scriptedPeople = (opts: {
   fee: () => bigint;
   error: () => string | undefined;
   trap?: bigint;
+  /** The CASH People's trap holds for the burner, keyed as the chain keys it. */
+  trapped?: () => bigint | null;
 }) => ({
+  query: {
+    PolkadotXcm: {
+      AssetTraps: {
+        getEntries: async () => {
+          const held = opts.trapped?.() ?? null;
+          if (held === null) return [];
+          return [{ keyArgs: [await trapKey(BENEFICIARY_HEX, held)], value: 1 }];
+        },
+      },
+    },
+    System: { Events: { getValue: async () => [] } },
+  },
   apis: {
     DryRunApi: {
       dry_run_xcm: async (_origin: unknown, program: { value: Instruction[] }) => {
@@ -266,6 +283,26 @@ type Outcome = { ok: true; events?: unknown[] } | { ok: false; dispatchError: un
 
 /** The conversion events a successful transaction carries, as polkadot-api flattens them. */
 const SWAPPED = { type: "AssetConversion", value: { type: "SwapCreditExecuted", value: {} } };
+/** An exchange's event with what it returned and the asset it returned it in, as the inclusion
+ *  carries it. */
+const swappedTo = (asset: unknown, amountOut: bigint) => ({
+  type: "AssetConversion",
+  value: {
+    type: "SwapCreditExecuted",
+    value: {
+      amount_in: 0n,
+      amount_out: amountOut,
+      path: [
+        [NATIVE_LOC, 0n],
+        [asset, amountOut],
+      ],
+    },
+  },
+});
+/** The exchange into CASH with what it returned. */
+const swapped = (amountOut: bigint) => swappedTo(TOKENS.CASH.location, amountOut);
+/** What People charges before a deposit fails: the trap holds that much less than was sent. */
+const CHARGED_BEFORE_TRAP = 37n;
 const MINTED = { type: "Psm", value: { type: "Minted", value: {} } };
 /** What became of a submit's watch: let go, and whether it got as far as reporting finality. */
 type WatchLog = { open: boolean; finalityReported: boolean };
@@ -392,6 +429,9 @@ function scriptedWorld(
     trapOnAssetHub?: bigint;
     /** Underlying the People dry run reports trapped. */
     trapOnPeople?: bigint;
+    /** The program's deposit fails on People and the CASH sent, less a little the chain charged,
+     *  sits in its trap: nothing ever arrives on the burner. */
+    trapOnLanding?: boolean;
     /** The submit's watch never answers: the program is dropped, or included on a chain that
      *  moves on without telling. Lifted by the tests through `state.loseAnswer`. */
     loseAnswer?: LoseAnswer;
@@ -419,6 +459,8 @@ function scriptedWorld(
     priceAtSubmitBps: opts.priceAtSubmitBps,
     quoteCalls: 0,
     loseAnswer: (opts.loseAnswer ?? null) as LoseAnswer | null,
+    /** The CASH People's trap holds for the burner. */
+    trapped: null as bigint | null,
     /** A dropped program, for the test to land when it chooses. */
     lost: null as (() => Outcome) | null,
     txs: [] as Array<{ call: string; args: ExecuteArgs; options: unknown; watch: WatchLog }>,
@@ -460,6 +502,7 @@ function scriptedWorld(
     fee: () => opts.remoteFeeAtDryRun ?? remoteFee,
     error: () => opts.peopleDryRunError,
     trap: opts.trapOnPeople,
+    trapped: () => state.trapped,
   });
   // The program as the runtime runs it. The dispatch fee is charged whatever happens. On success
   // the withdrawn native leaves in full, the exchange fills at the pool rate and the result goes in
@@ -496,10 +539,14 @@ function scriptedWorld(
         } else {
           state.nativeAh -= debit;
         }
-        state.inFlight = out - remoteFee;
-        state.arrivalIn = opts.arrivalAfterReads ?? 3;
+        if (opts.trapOnLanding) {
+          state.trapped = out - CHARGED_BEFORE_TRAP;
+        } else {
+          state.inFlight = out - remoteFee;
+          state.arrivalIn = opts.arrivalAfterReads ?? 3;
+        }
         state.xcmLanded = true;
-        return { ok: true, events: [SWAPPED] };
+        return { ok: true, events: [swapped(out)] };
       };
       if (state.loseAnswer === "included") land();
       if (state.loseAnswer === "dropped") state.lost = land;
@@ -1205,8 +1252,12 @@ describe("tickOnce", () => {
     expect(transfer.destination.interior.value.value).toBe(1004);
     expect(transfer.remote_fees.value.value[0]!.fun.value).toBe(EARMARK);
     expect(transfer.preserve_origin).toBe(false);
-    expect(transfer.remote_xcm.map((i) => i.type)).toEqual(["RefundSurplus", "DepositAsset"]);
-    const deposit = transfer.remote_xcm[1]!.value as {
+    expect(transfer.remote_xcm.map((i) => i.type)).toEqual([
+      "SetHints",
+      "RefundSurplus",
+      "DepositAsset",
+    ]);
+    const deposit = transfer.remote_xcm[2]!.value as {
       beneficiary: { interior: { value: { value: { id: string } } } };
     };
     // papi encodes fixed-size binaries from their hex-string form
@@ -1274,6 +1325,24 @@ describe("tickOnce", () => {
 
     world.state.nativeAh = MAX_IN + KEEP;
     await expect(drive(world, 1, state)).rejects.toBeInstanceOf(FundingShortfallError);
+    expect(world.state.txs.map((t) => t.call)).toEqual(["swap"]);
+  });
+
+  it("finds the CASH the program left in People's trap, short of the amount sent by what the chain charged, and ends the run as trapped", async () => {
+    const world = scriptedWorld({ trapOnLanding: true });
+    world.state.nativeAh = MAX_IN + KEEP;
+    const state = freshTickState();
+    await drive(world, 1, state); // the submit
+    // What went out, as the exchange reported it at inclusion, and the earmark it carried.
+    expect(state.sentToPeople).toBe(world.state.trapped! + CHARGED_BEFORE_TRAP);
+    expect(state.peopleFeeCash).toBe(50_000n);
+    const error = await drive(world, 1, state).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(FundingTrappedError);
+    expect(error).toMatchObject({ amount: world.state.trapped, claimerHex: BENEFICIARY_HEX });
+    expect((error as FundingTrappedError).key).toBe(
+      await trapKey(BENEFICIARY_HEX, world.state.trapped!),
+    );
+    // Nothing converts again while the trap stands.
     expect(world.state.txs.map((t) => t.call)).toEqual(["swap"]);
   });
 
@@ -2150,9 +2219,20 @@ describe("the submit, and the CASH read final on People", () => {
         seen.push({ ...state });
       },
     });
+    // The program's figures are on record too: what the dry run lands plus the earmark it
+    // carries, the most a trap of it could hold.
     expect(seen).toEqual([
-      { ...freshTickState(), attempts: 1, fundsSeenAt: 2_000, nonceAtSubmit: 0, peopleAtXcm: 3n },
+      {
+        ...freshTickState(),
+        attempts: 1,
+        fundsSeenAt: 2_000,
+        nonceAtSubmit: 0,
+        peopleAtXcm: 3n,
+        sentToPeople: expect.any(BigInt),
+        peopleFeeCash: expect.any(BigInt),
+      },
     ]);
+    expect(seen[0]!.sentToPeople!).toBeGreaterThan(seen[0]!.peopleFeeCash!);
     expect(state).toMatchObject({
       xcmSubmitted: true,
       peopleAtXcm: 3n,
@@ -2465,6 +2545,36 @@ describe("isConverted", () => {
   ];
   it.each(cases)("%s", (_name, route, ok, events, converted) => {
     expect(isConverted(route, { ok, events })).toBe(converted);
+  });
+});
+
+describe("sentAmountOf", () => {
+  // The mint's event as the chain emits it: the external consumed, the CASH received, its fee.
+  const minted = (amount: bigint) => ({
+    type: "Psm",
+    value: {
+      type: "Minted",
+      value: { external_consumed: amount, internal_received: amount, internal_fee: 0n },
+    },
+  });
+  it("is the exchange into CASH, not a fee's swap before the program or its refund after it", () => {
+    const feeSwap = swappedTo(NATIVE_LOC, 300n);
+    const refund = swappedTo(TOKENS.USDT.location, 40n);
+    expect(sentAmountOf(POOL, [swapped(5_001_000n)])).toBe(5_001_000n);
+    expect(
+      sentAmountOf(STABLE_ROUTE, [
+        feeSwap,
+        swappedTo(NATIVE_LOC, 900n),
+        swapped(5_002_000n),
+        refund,
+      ]),
+    ).toBe(5_002_000n);
+    expect(sentAmountOf(STABLE_ROUTE, [feeSwap, refund])).toBeNull();
+  });
+  it("is the PSM's mint, and nothing on the dotUSD tier, which exchanges nothing", () => {
+    expect(sentAmountOf(ROUTE, [swappedTo(NATIVE_LOC, 300n), minted(5_003_000n)])).toBe(5_003_000n);
+    expect(sentAmountOf(DOTUSD_ROUTE, [swapped(1n)])).toBeNull();
+    expect(sentAmountOf(POOL, [SWAPPED])).toBeNull();
   });
 });
 
@@ -2884,6 +2994,7 @@ describe("estimateDestinationFeeCash", () => {
       "PayFees",
       "ReceiveTeleportedAsset",
       "ClearOrigin",
+      "SetHints",
       "RefundSurplus",
       "DepositAsset",
       "SetTopic",

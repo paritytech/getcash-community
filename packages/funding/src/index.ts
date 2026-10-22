@@ -1,12 +1,13 @@
 export {
   DEFAULT_KEEP_NATIVE_FOR_FEES,
-  DEFAULT_REMOTE_FEE_BUFFER,
   DEFAULT_INCLUSION_TIMEOUT_MS,
+  DEFAULT_REMOTE_FEE_BUFFER,
   DEFAULT_SLIPPAGE_PCT,
   DEFAULT_TICK_TIMEOUT_MS,
   DIRECT_SLIPPAGE_PCT,
   FundingHeldError,
   FundingShortfallError,
+  FundingTrappedError,
   MAX_PROGRAM_REJECTIONS,
   MAX_PSM_REFUSALS,
   discoverPool,
@@ -19,6 +20,7 @@ export {
   quoteStableIn,
   quoteUnderlyingOut,
   readDeposit,
+  sentAmountOf,
   sizeNativeBudget,
   stableDepositNeeded,
   tickOnce,
@@ -30,6 +32,7 @@ export {
   buildPsmFundingProgram,
   buildStableFundingProgram,
   buildDotUsdFundingProgram,
+  claimer,
   DepositBelowFeesError,
   destinationEarmark,
   dryRunFundingProgram,
@@ -74,6 +77,24 @@ export type {
   StablePoolRoute,
   DotUsdRoute,
 } from "./route";
+export { findTrap, trapKey, trappedCash } from "./trap";
+export type { Trap } from "./trap";
+export {
+  buildClaim,
+  CLAIM_RESEND_MS,
+  freshRecoveryState,
+  PEOPLE_CASH_TX_OPTIONS,
+  sizeClaimFee,
+  tickRecovery,
+} from "./recovery";
+export type { RecoveryOutcome, RecoveryState, RecoveryStep, RecoveryTickInput } from "./recovery";
+export {
+  findRecoveryDeposit,
+  recoveryCandidates,
+  recoveryMinimums,
+  recoveryTokenOf,
+} from "./recovery-deposit";
+export type { RecoveryMinimums, RecoveryToken } from "./recovery-deposit";
 export { chooseCashTransfer, NoCashTransferError } from "./cash-transfer";
 export type { CashTransfer } from "./cash-transfer";
 export {

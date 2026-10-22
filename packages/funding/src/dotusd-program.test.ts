@@ -73,7 +73,11 @@ describe("buildDotUsdFundingProgram", () => {
         },
       },
     ]);
-    expect(transfer.remote_xcm.map((i) => i.type)).toEqual(["RefundSurplus", "DepositAsset"]);
+    expect(transfer.remote_xcm.map((i) => i.type)).toEqual([
+      "SetHints",
+      "RefundSurplus",
+      "DepositAsset",
+    ]);
     expect(args.max_weight).toEqual(PROGRAM.maxWeight);
   });
 

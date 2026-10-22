@@ -33,6 +33,7 @@ export function phaseLike(record: TopUpRecord): PaymentPhase {
         ? "swapping"
         : "awaiting-deposit";
     case "converting":
+    case "recovering":
       return "swapping";
     default:
       return "awaiting-deposit";
@@ -67,6 +68,8 @@ export function fundingStepOf(record: TopUpRecord): FundingStep | null {
   switch (status.kind) {
     case "converting":
       return status.step;
+    case "recovering":
+      return "await-arrival";
     case "claiming":
     case "settled":
       return "done";
@@ -145,6 +148,7 @@ export function rowStateOf(record: TopUpRecord, label: string): FundingTopUpStat
       return { kind: "finishing", status: label };
     case "deposit-seen":
     case "converting":
+    case "recovering":
       return { kind: "finishing", status: label };
   }
 }

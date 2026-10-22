@@ -13,6 +13,7 @@ import { isDemoBuild } from "../../utils/demo";
 import CancelTopUpScreen from "../screens/CancelTopUpScreen.vue";
 import JourneySkeleton from "../screens/JourneySkeleton.vue";
 import RecoverDepositScreen from "../screens/RecoverDepositScreen.vue";
+import RecoverTrappedScreen from "../screens/RecoverTrappedScreen.vue";
 import ReturnFundsScreen from "../screens/ReturnFundsScreen.vue";
 import FundingSettledStatusScreen from "./FundingSettledStatusScreen.vue";
 import { useJourneyQuote } from "../../composables/useJourneyQuote";
@@ -77,6 +78,47 @@ watch(
 /** The recovery guide over an ended Polkadot top-up, whose funds, if any, are on its own
  *  account. */
 const showingRecovery = ref(false);
+/** The deposit guide over a top-up whose Cash is in People's trap: what to send to its own
+ *  account for the claim's fee. Back (toolbar or bottom button) returns to the journey. */
+const showingRecoveryDeposit = ref(false);
+// Nothing left to send for: the trap claimed, a deposit already being converted, or the claim
+// on its way. The screen closes so it cannot ask for a second deposit.
+const recoveryStillWaitsForADeposit = computed<boolean | null>(() => {
+  const record = requests.foregroundRecord;
+  if (record === null) return null;
+  if (record.status.kind !== "recovering") return false;
+  const deposit = record.recovery?.deposit;
+  if (record.status.step === "claiming") return false;
+  return deposit === undefined || deposit === "await-native";
+});
+watch(recoveryStillWaitsForADeposit, (waits) => {
+  if (waits === false) showingRecoveryDeposit.value = false;
+});
+
+/** A tap on the purse the store could not act on: said under the journey, until the record
+ *  moves or the buyer taps again. */
+const recoveryNotice = ref<string | null>(null);
+watch(
+  () => requests.foregroundRecord?.rev,
+  () => {
+    recoveryNotice.value = null;
+  },
+);
+/** Asks the purse for the claim's fee. A refusal reaches the journey as the host's word; a request
+ *  that could not be made is said under the journey, its offer standing for the next tap. */
+async function recoverFromBalance() {
+  const record = requests.foregroundRecord;
+  if (record === null) return;
+  recoveryNotice.value = null;
+  try {
+    const asked = await requests.requestRecoveryPayment(record.ref);
+    if (!asked.ok) recoveryNotice.value = asked.reason;
+  } catch (e) {
+    // The stamp or the host could not be reached: said, and the offer stands for the next tap.
+    console.warn(`[funding] the recovery fee could not be asked for: ${String(e)}`);
+    recoveryNotice.value = "Your balance couldn't be asked just now. Try again in a moment.";
+  }
+}
 // Demo deck: a scene can land straight on the opened guide. Inert everywhere else.
 if (isDemoBuild()) {
   watch(
@@ -104,6 +146,7 @@ function goBack() {
   if (flow.confirmingCancel) flow.confirmingCancel = false;
   else if (showingRefund.value) showingRefund.value = false;
   else if (showingRecovery.value) showingRecovery.value = false;
+  else if (showingRecoveryDeposit.value) showingRecoveryDeposit.value = false;
   else if (showingFees.value) showingFees.value = false;
   else emit("back");
 }
@@ -151,11 +194,19 @@ onUnmounted(() => {
       padding-bottom: env(safe-area-inset-bottom);
     "
   >
-    <!-- The live journey's toolbar is back-only; the fee drill-in takes it over while open.
-         Back stays available during the claim: leaving lands on the top-ups list, where the
-         in-flight top-up remains resumable. -->
+    <!-- The live journey's toolbar is back-only; the fee and recovery drill-ins take it over
+         while open. Back stays available during the claim: leaving lands on the top-ups list,
+         where the in-flight top-up remains resumable. -->
     <Toolbar
-      :title="showingFees ? 'Fees' : waiting || unresumable ? title : ''"
+      :title="
+        showingFees
+          ? 'Fees'
+          : showingRecoveryDeposit
+            ? 'Recover your Cash'
+            : waiting || unresumable
+              ? title
+              : ''
+      "
       :back="(readOnly || !waiting) && !session.cancelling"
       @back="goBack"
     />
@@ -186,6 +237,7 @@ onUnmounted(() => {
       />
       <ReturnFundsScreen v-else-if="showingRefund" :top-up="topUp" @back="showingRefund = false" />
       <RecoverDepositScreen v-else-if="showingRecovery" @back="showingRecovery = false" />
+      <RecoverTrappedScreen v-else-if="showingRecoveryDeposit" />
       <MeldFeeDetailsScreen
         v-else-if="showingFees"
         :quote="quote"
@@ -198,12 +250,21 @@ onUnmounted(() => {
           @fees="showingFees = true"
           @refund="showingRefund = true"
           @recover="showingRecovery = true"
+          @recover-from-balance="recoverFromBalance"
+          @recover-deposit="showingRecoveryDeposit = true"
           @cancel="flow.confirmingCancel = true"
           @close="emit('back')"
           @start-over="emit('startOver')"
         />
         <!-- A cancel the adapter refused: the payment is already on its way and the request
              stands. -->
+        <p
+          v-if="recoveryNotice"
+          class="shrink-0 pb-6 text-center text-body-m text-fg-secondary"
+          role="status"
+        >
+          {{ recoveryNotice }}
+        </p>
         <p
           v-if="session.cancelNotice"
           class="shrink-0 pb-6 text-center text-body-m text-fg-secondary"

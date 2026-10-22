@@ -45,6 +45,12 @@
 // The destination fee allowance is generous by design: the remote RefundSurplus returns what it
 // does not consume and the DepositAsset sweeps it to the burner.
 //
+// The remote program names the burner as the claimer of whatever it leaves in People's holding,
+// right after the origin is cleared. A deposit that fails there traps the CASH under the burner's
+// own signed origin, which it claims back with claim_assets (recovery.ts); without the hint the
+// trap would be keyed to Asset Hub's origin, for governance alone. A failure inside PayFees itself
+// comes before the hint and keeps that older exposure, which the exact allowance guards against.
+//
 // Before the program is paid for, both chains run it in a dry run: Asset Hub runs the call as the
 // burner, People runs the program Asset Hub forwards. A program that would fail on either chain,
 // trap assets, or land short of the target is reported instead of submitted.
@@ -154,6 +160,23 @@ const accountBeneficiary = (beneficiaryHex: string) => ({
     // papi encodes fixed-size binaries from their hex-string form; a raw Uint8Array mis-encodes.
     value: { type: "AccountId32", value: { network: undefined, id: beneficiaryHex } },
   },
+});
+
+/** A signed account as People and Asset Hub name it: under the relay network, which Paseo names
+ *  Polkadot too. claim_assets looks a trap up by the claimant's own origin, so a claimer without
+ *  the network matches no signed account, and only Root could recover the trap. */
+export const claimer = (hex: string) => ({
+  parents: 0,
+  interior: {
+    type: "X1",
+    value: { type: "AccountId32", value: { network: { type: "Polkadot" }, id: hex } },
+  },
+});
+
+/** Names `hex` as the claimer of whatever the program leaves in the holding. */
+const assetClaimerHint = (hex: string) => ({
+  type: "SetHints",
+  value: { hints: [{ type: "AssetClaimer", value: { location: claimer(hex) } }] },
 });
 
 export const peopleDest = (peopleParaId: number) => ({
@@ -414,7 +437,8 @@ export function dotUsdTxOptions(): { asset: Location } {
 }
 
 /** The InitiateTransfer every shape carries: the holding's CASH sent to People by `transfer`,
- *  `remoteFees` earmarked for the destination's execution. The filter names the CASH. When the
+ *  `remoteFees` earmarked for the destination's execution, the burner named as the claimer of
+ *  anything the program leaves in the holding there. The filter names the CASH. When the
  *  dispatch fee leaves the account under min_balance, the withdrawal sweeps the rest of the fee
  *  asset into the holding, where it sorts first, and People does not accept it. */
 function holdingToPeople(
@@ -439,8 +463,10 @@ function holdingToPeople(
       preserve_origin: false,
       assets: [{ type: kind, value: allCash }],
       remote_xcm: [
-        // Return the unused destination allowance to the holding, then sweep everything to the
-        // burner.
+        // The burner is the claimer of whatever a failure past this point leaves in the holding:
+        // the trap is keyed to its own signed origin, which claim_assets takes back. Then return
+        // the unused destination allowance to the holding and sweep everything to the burner.
+        assetClaimerHint(beneficiaryHex),
         { type: "RefundSurplus" },
         {
           type: "DepositAsset",
@@ -472,6 +498,7 @@ export function forwardedProgramStandIn(
       { type: "PayFees", value: { asset: c(amount) } },
       { type: received, value: [c(amount)] },
       { type: "ClearOrigin" },
+      assetClaimerHint(beneficiaryHex),
       { type: "RefundSurplus" },
       {
         type: "DepositAsset",
@@ -567,7 +594,7 @@ export async function dryRunFundingProgram(args: {
   assetHubParaId: number;
   /** The least underlying that must reach the beneficiary. */
   mustLand: bigint;
-}): Promise<{ landed: bigint }> {
+}): Promise<DryRunLanding> {
   const call = args.call ?? args.api.tx.PolkadotXcm.execute(args.execArgs).decodedCall;
   const dr = await args.api.apis.DryRunApi.dry_run_call(
     signedOrigin(args.from) as never,
@@ -605,7 +632,34 @@ export async function dryRunFundingProgram(args: {
       `not submitted: only ${run.landed} of ${args.mustLand} underlying would reach the beneficiary on People`,
     );
   }
-  return { landed: run.landed };
+  return { landed: run.landed, received: receivedIn(forwarded) };
+}
+
+/** What a pre-submit dry run saw on People: the underlying the forwarded program receives, fee
+ *  earmark included, and what reaches the beneficiary after People's charge. */
+export interface DryRunLanding {
+  landed: bigint;
+  received: bigint;
+}
+
+/** The underlying a forwarded program receives on People: every fungible amount its receive
+ *  instructions carry, the fee earmark and the transfer alike. */
+export function receivedIn(program: unknown): bigint {
+  const instructions = (program as { value?: unknown }).value;
+  if (!Array.isArray(instructions)) return 0n;
+  let total = 0n;
+  for (const instruction of instructions as Array<{ type: string; value?: unknown }>) {
+    if (
+      instruction.type !== "ReceiveTeleportedAsset" &&
+      instruction.type !== "ReserveAssetDeposited"
+    ) {
+      continue;
+    }
+    for (const asset of instruction.value as Array<{ fun?: { type?: string; value?: bigint } }>) {
+      if (asset.fun?.type === "Fungible") total += BigInt(asset.fun.value ?? 0n);
+    }
+  }
+  return total;
 }
 
 export interface FundingProgramFees {

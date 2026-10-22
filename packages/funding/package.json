@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@getsome/core": "workspace:*",
+    "@noble/hashes": "^2.2.0",
     "@polkadot-api/descriptors": "file:../../.papi/descriptors",
     "polkadot-api": "2.2.2"
   }
