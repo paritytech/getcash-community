@@ -3,18 +3,30 @@
 
 import { requestRefKey } from "../../utils/request-index";
 import type { WithdrawalRecord } from "../../funding/requests/model";
+import { stepSince } from "../../funding/timeline/live";
 import type { TimelineView } from "../../funding/timeline/types";
 import { withdrawalTimeline, type WithdrawalTimeline } from "./withdrawal";
 
 export type WithdrawalTimelineOf = (record: WithdrawalRecord, now: number) => WithdrawalTimeline;
 
+/** What this session watched of one withdrawal: the view shown last and when its step began. */
+interface Watch {
+  readonly view: TimelineView;
+  readonly stepSince: number;
+}
+
 /** Evaluates withdrawal timelines in memory for one app session. */
 export function createWithdrawalTimelines(): WithdrawalTimelineOf {
-  const shown = new Map<string, TimelineView>();
+  const shown = new Map<string, Watch>();
   return (record, now) => {
     const key = requestRefKey(record.ref);
-    const timeline = withdrawalTimeline(record, { now, previous: shown.get(key) });
-    if (timeline.view !== undefined) shown.set(key, timeline.view);
+    const watch = shown.get(key);
+    const since = watch?.stepSince ?? now;
+    const timeline = withdrawalTimeline(record, { now, previous: watch?.view, stepSince: since });
+    const { view } = timeline;
+    if (view !== undefined) {
+      shown.set(key, { view, stepSince: stepSince(view, watch?.view, since, now) });
+    }
     return timeline;
   };
 }

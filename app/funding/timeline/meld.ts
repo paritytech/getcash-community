@@ -13,6 +13,7 @@ import {
   type FailureDetails,
   type PartFailure,
 } from "./failure";
+import { joinDetail, reader } from "./live";
 import { factAt, observedFrom } from "./observed";
 import { delay, normal, type TextState, type TimelineMessage, type TimelineRoute } from "./route";
 import type { PhasePart } from "./types";
@@ -118,16 +119,22 @@ function meldRoute(method: MeldMethod): TimelineRoute {
     seenExpectedMs: 30 * SECOND,
     lastReadAt: (record) => record.witnesses.provider?.at,
     text(record, index, state) {
+      const polled = reader(state);
       if (index === 0) {
+        const first = method.firstDetail?.(record, state);
         return {
           message: method.firstMessage(record),
-          detail: method.firstDetail?.(record, state),
+          detail:
+            first === undefined
+              ? polled("Checked with the provider")
+              : joinDetail(first, polled("checked with the provider")),
         };
       }
       return {
         message: providerError(record)
           ? delay(method.retryingText)
           : normal("Your money is on its way"),
+        detail: polled("Checked with the provider"),
       };
     },
     failure: (record) => method.failures[meldEnding(record)](endingWords(record)),
