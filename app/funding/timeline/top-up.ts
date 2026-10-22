@@ -1,5 +1,6 @@
 import type { TopUpRecord } from "../requests/model";
 import type { TimelineFailure } from "./failure";
+import { liveState } from "./live";
 import { timelineView } from "./model";
 import { earlierFact } from "./observed";
 import {
@@ -46,6 +47,8 @@ export interface TopUpTimelineOptions {
   /** How long this session's reads were fresh, in total, while the funds the provider sent were
    *  not seen. */
   readonly sentUnseenMs?: number;
+  /** When the current step became current, for the live detail; `now` when unknown. */
+  readonly stepSince?: number;
 }
 
 /** How long the reads that move the current phase may go without success before we say so. */
@@ -76,7 +79,14 @@ function failureOf(record: TopUpRecord, route: TimelineRoute, failed: number): T
 export function topUpTimeline(
   record: TopUpRecord,
   route: TimelineRoute,
-  { now, watchingSince, locale, previous, sentUnseenMs = 0 }: TopUpTimelineOptions,
+  {
+    now,
+    watchingSince,
+    locale,
+    previous,
+    sentUnseenMs = 0,
+    stepSince: since = now,
+  }: TopUpTimelineOptions,
 ): TopUpTimeline | undefined {
   const view = timelineView(TOP_UP_TIMELINE, {
     reached: { ...providerMilestones(record, route), ...polkadotMilestones(record) },
@@ -95,12 +105,20 @@ export function topUpTimeline(
   if (view.state === "done") return { view };
   if (view.state === "failed") return { view, failure: failureOf(record, route, view.failed) };
 
-  const state = { delayed: view.state === "delayed", now, locale };
   const providerPhase = isProviderPhase(view.phase);
+  // The read that moves the phase, which the detail names and the reconnect line watches. Not
+  // the app's own burner read: it is stamped on a balance change, not on each read.
+  const readAt = providerPhase ? route.lastReadAt(record) : workerTickAt(record);
+  const lastReadAt = readAt ?? -Infinity;
+  const state = {
+    delayed: view.state === "delayed",
+    now,
+    locale,
+    ...liveState(view, previous, since, now, readAt),
+  };
   const text = providerPhase
     ? route.text(record, view.phase, state)
     : polkadotText(record, polkadotPhaseOf(view.phase), state);
-  const lastReadAt = (providerPhase ? route.lastReadAt(record) : workerTickAt(record)) ?? -Infinity;
   const reconnecting = now - Math.max(lastReadAt, watchingSince) > RECONNECT_AFTER_MS;
   return {
     view,

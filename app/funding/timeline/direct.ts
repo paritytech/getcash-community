@@ -4,7 +4,6 @@
 
 import type { TopUpRecord } from "../requests/model";
 import { CLOSE, CRYPTO_EXPIRED_TEXT, expiredEnding, type PartFailure } from "./failure";
-import { workerTickAt } from "./polkadot";
 import type { TimelineRoute } from "./route";
 
 const SECOND = 1_000;
@@ -31,12 +30,7 @@ export const directRoute: TimelineRoute = {
   milestones: () => ({}),
   phase: noProviderPhase,
   seenExpectedMs: 30 * SECOND,
-  lastReadAt(record) {
-    const reads = [workerTickAt(record), record.witnesses.chain?.best?.at].filter(
-      (at) => at !== undefined,
-    );
-    return reads.length === 0 ? undefined : Math.max(...reads);
-  },
+  lastReadAt: noProviderPhase,
   text: noProviderPhase,
   failure: directFailure,
   failureDetails: () => ({}),

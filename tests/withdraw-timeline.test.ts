@@ -1008,3 +1008,83 @@ describe("withdrawal rows", () => {
     expect(ready!.state).toEqual({ kind: "awaiting-transfer", status: SALE_READY_LABEL });
   });
 });
+
+describe("withdrawal timeline, live detail", () => {
+  const SECOND = 1_000;
+  const worker = (lastTickAt: number): WithdrawalRecord["witnesses"] => ({
+    worker: {
+      known: true,
+      phase: "swap",
+      done: false,
+      fundsSeenAt: at(0),
+      lastTickAt,
+      at: lastTickAt,
+    },
+  });
+  /** Three seconds on the step: the live clock is `now` itself. */
+  const live = (now: number) => ({ now, stepSince: now - 3 * SECOND });
+
+  it("reads the conversion's stages and the worker's tick", () => {
+    const converting = record({
+      status: { kind: "converting", at: at(1), step: "convert" },
+      witnesses: worker(at(2)),
+    });
+    const now = at(2) + 5 * SECOND;
+    expect(withdrawalTimeline(converting, live(now)).detail).toBe(
+      "Swapped ✓ · Converted · checked 5s ago",
+    );
+    expect(withdrawalTimeline(converting, { now }).detail).toBeUndefined();
+  });
+
+  it("reads the PSM tier's arrival and redeem", () => {
+    const psm = { ...record().handoff, tier: "psm" as const, external: "USDT" as const };
+    const redeeming = record({
+      handoff: psm,
+      status: { kind: "converting", at: at(5), step: "redeem" },
+      witnesses: worker(at(5)),
+    });
+    const now = at(5) + 4 * SECOND;
+    expect(withdrawalTimeline(redeeming, live(now)).detail).toBe(
+      "Arrived ✓ · Redeemed · checked 4s ago",
+    );
+  });
+
+  it("names the rail's read on the hand-off, and the worker's tick on a delay", () => {
+    const handing = chainflip({
+      status: { kind: "sending", at: at(3) },
+      witnesses: worker(at(4)),
+    });
+    const now = at(4) + 2 * SECOND;
+    expect(withdrawalTimeline(handing, live(now)).detail).toBe("Checked with the exchange 2s ago");
+    // The rail's own stamp moves on transitions, not on reads: alone, it names no read.
+    const unread = chainflip({
+      status: { kind: "sending", at: at(3) },
+      rail: { provider: "chainflip", stage: "waiting", updatedAt: at(4) },
+    });
+    expect(withdrawalTimeline(unread, live(now)).detail).toBeUndefined();
+    const stuck = record({
+      status: { kind: "converting", at: at(1), step: "swap" },
+      witnesses: { worker: { ...worker(at(2)).worker!, lastError: "boom" } },
+    });
+    expect(withdrawalTimeline(stuck, live(at(2) + 6 * SECOND)).detail).toBe("Checked 6s ago");
+  });
+
+  it("counts the time on a step from the memo", () => {
+    const timelineOf = createWithdrawalTimelines();
+    const converting = record({
+      status: { kind: "converting", at: at(1), step: "swap" },
+      witnesses: worker(at(2)),
+    });
+    const t = at(2);
+    expect(timelineOf(converting, t).detail).toBeUndefined();
+    expect(timelineOf(converting, t + 3 * SECOND).detail).toBe(
+      "Swapped · Converted · checked 3s ago",
+    );
+    const handing = chainflip({
+      status: { kind: "sending", at: t + 4 * SECOND },
+      witnesses: worker(t + 4 * SECOND),
+    });
+    expect(timelineOf(handing, t + 4 * SECOND).detail).toBeUndefined();
+    expect(timelineOf(handing, t + 7 * SECOND).detail).toBe("Checked with the exchange 3s ago");
+  });
+});
