@@ -805,13 +805,13 @@ describe("withdrawal timeline drawing", () => {
   const drawing = (rec: WithdrawalRecord) =>
     timelineDrawing(WITHDRAWAL_TIMELINE, withdrawalTimeline(rec, { now: at(6) }).view!);
 
-  it("names Started, Received by provider and Sent, heading there first", () => {
+  it("names Started, Received and Sent, heading there first", () => {
     const { milestones } = drawing(record({ status: { kind: "paid", at: at(1), via: "worker" } }));
     expect(milestones.map(({ label }) => label)).toEqual([
       "Started",
       undefined,
       undefined,
-      "Received by provider",
+      "Received",
       undefined,
       undefined,
       "Sent",
@@ -819,14 +819,14 @@ describe("withdrawal timeline drawing", () => {
     expect(milestones.find(({ current }) => current)?.id).toBe("received");
   });
 
-  it("keeps Received by provider's label through the rail's own progress and a failure", () => {
+  it("keeps Received's label through the rail's own progress and a failure", () => {
     const rail = (status: "sending" | "sent") =>
       chainflip({
         status: { kind: "sending", at: at(3) },
         rail: { provider: "chainflip", stage: "processing", status, updatedAt: at(5) },
       });
-    expect(drawing(rail("sending")).milestones[3]!.label).toBe("Received by provider");
-    expect(drawing(rail("sent")).milestones[3]!.label).toBe("Received by provider");
+    expect(drawing(rail("sending")).milestones[3]!.label).toBe("Received");
+    expect(drawing(rail("sent")).milestones[3]!.label).toBe("Received");
     const declined = failed(sale(), "egress-failed", "send", false, {
       rail: {
         provider: "meld",
@@ -836,22 +836,22 @@ describe("withdrawal timeline drawing", () => {
       },
     });
     const { milestones } = drawing(declined);
-    expect(milestones[3]!.label).toBe("Received by provider");
+    expect(milestones[3]!.label).toBe("Received");
     expect(milestones[5]).toMatchObject({
       state: "failed",
       label: "Failed",
       size: "large",
-      labelAlign: "end",
+      labelAlign: "centre",
     });
   });
 
-  it("grows a small milestone that failed and leans its label", () => {
+  it("grows a small milestone that failed, its label centred under it", () => {
     const refused = failed(chainflip(), "rejected", "convert", true);
     expect(drawing(refused).milestones[1]).toMatchObject({
       state: "failed",
       size: "large",
       label: "Failed",
-      labelAlign: "start",
+      labelAlign: "centre",
     });
   });
 });
