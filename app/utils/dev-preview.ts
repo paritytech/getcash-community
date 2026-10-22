@@ -2537,6 +2537,19 @@ export const SCENES: Scene[] = [
     },
     apply: (s, f) => base(s, f),
   },
+  // A figure too long for the row's display size steps down to headline size.
+  {
+    name: "withdrawal / crypto / fees: long figure",
+    stage: {
+      kind: "withdraw-package",
+      step: "fees",
+      chain: "Ethereum",
+      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
+      receive: "24.034843 USDC",
+      fees: { ...WITHDRAW_PREVIEW_FEES, receive: "24.034843 USDC" },
+    },
+    apply: (s, f) => base(s, f),
+  },
   {
     name: "withdrawal / crypto / summary: quoting",
     stage: {

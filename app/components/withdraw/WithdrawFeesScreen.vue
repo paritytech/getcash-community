@@ -7,6 +7,7 @@ import type { WithdrawFeeView } from "../../withdraw/offers";
 import { groupAmountDigits } from "../../utils/cash";
 import DetailRows from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
+import ReceiveRow from "./ReceiveRow.vue";
 
 const props = defineProps<{
   /** The CASH leaving the balance, as typed. */
@@ -39,16 +40,7 @@ const headRows = computed(() => [
 
     <hr class="my-2 border-stroke-secondary" />
 
-    <div class="mt-2 flex flex-col gap-1">
-      <div class="flex items-center justify-between gap-4">
-        <span class="text-paragraph-l text-fg-secondary">You'll receive</span>
-        <span class="text-display-l text-fg-primary">{{ fees.receive }}</span>
-      </div>
-      <div v-if="fees.rate" class="flex items-baseline justify-between gap-4">
-        <span class="text-paragraph-l text-fg-secondary">Rate</span>
-        <span class="text-paragraph-l text-fg-secondary">{{ fees.rate }}</span>
-      </div>
-    </div>
+    <ReceiveRow :receive="fees.receive" :rate="fees.rate ?? null" />
 
     <PillButton variant="tertiary" class="mt-auto mb-6 w-full" @click="emit('back')">
       Back
