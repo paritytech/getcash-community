@@ -1081,7 +1081,10 @@ async function fundRecovery(record, env, feeCash) {
   // Figures that could not be priced again stand for another while, and a deposit already being
   // converted is not held up by a provider that is slow today. Without any figures there is
   // nothing to look for a deposit with, and the tick says so.
+  // A fee that moved is priced again at once: figures for the old fee would ask for too little.
+  const feeMoved = figures !== undefined && figures.feeCash !== feeCash.toString();
   const backingOff =
+    !feeMoved &&
     figures?.repriceFailedAt !== undefined &&
     now - figures.repriceFailedAt < RECOVERY_MINIMUMS_TTL_MS;
   if (stale && !backingOff) {
@@ -1148,10 +1151,14 @@ async function fundRecovery(record, env, feeCash) {
     ) {
       // What ended it, and which deposit at what balance, so that deposit is not taken up again
       // until a new one grows the balance.
+      // The deposit is only worth skipping while it is still there: a held conversion leaves it
+      // on Asset Hub, a shortfall or a trap has already sent it away, and a smaller deposit of
+      // the same token after that must be taken up.
+      const stays = error instanceof FundingHeldError;
       recovery.depositError = {
         message: String(error.message),
         at: Date.now(),
-        ...(recovery.depositHeld ?? {}),
+        ...(stays ? (recovery.depositHeld ?? {}) : {}),
       };
       delete recovery.route;
       delete recovery.state;

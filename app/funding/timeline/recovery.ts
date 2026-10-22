@@ -77,9 +77,13 @@ export function recoveryPrompt(record: TopUpRecord): RecoveryPrompt | undefined 
     payment.status !== "failed" &&
     payment.status !== "not-found"
   ) {
+    // Asked and not yet answered: the sheet is up, or the answer is still to be read back.
     return {
       message: delay(RECOVERING),
-      detail: "The fee is on its way from your balance.",
+      detail:
+        payment.status === undefined
+          ? "Waiting for the payment to be approved."
+          : "The fee is on its way from your balance.",
       actions: [],
     };
   }

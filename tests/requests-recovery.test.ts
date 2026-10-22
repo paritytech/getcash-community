@@ -270,7 +270,17 @@ describe("the timeline", () => {
   it("waits quietly once the purse was asked, and offers the deposit first once the balance fell short", () => {
     const asked = timelineOf(requested(trapped()));
     expect(asked?.message?.text).toBe("Recovering your Cash");
-    expect(asked?.detail).toBe("The fee is on its way from your balance.");
+    // Asked and not yet answered: the sheet is up.
+    expect(asked?.detail).toBe("Waiting for the payment to be approved.");
+    const registered = timelineOf(
+      reduce(requested(trapped()), {
+        source: "host",
+        at: at(4),
+        payment: { attempt: 0, status: "processing" },
+      }),
+    );
+    expect(registered?.detail).toBe("The fee is on its way from your balance.");
+    expect(registered?.recovery?.actions).toEqual([]);
     expect(asked?.recovery?.actions).toEqual([]);
     expect(listHeadline("crypto", asked)).toEqual({ text: "Recovering your Cash", delayed: true });
 

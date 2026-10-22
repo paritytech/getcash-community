@@ -3,7 +3,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { deriveKeypair, deriveKeypairWithSecret, toSchnorrkelSecret } from "@getsome/ephemeral";
-import { FundingHeldError } from "@getsome/funding";
+import { FundingHeldError, FundingShortfallError } from "@getsome/funding";
 import { PaymentTopUpErr, PaymentTopUpStatusErr } from "@novasamatech/host-api";
 import { topUpIdFor } from "../worker/src/topup-id.js";
 
@@ -960,6 +960,24 @@ describe("worker funding engine", () => {
     await revived.tickAllFunding();
     expect(mocks.recoveryMinimums).toHaveBeenCalledTimes(2);
     expect(mocks.findRecoveryDeposit).toHaveBeenCalledTimes(3);
+
+    // A fee that moved is priced again at once, backoff or not.
+    mocks.tickRecovery.mockImplementation(async (_input, state) => {
+      state.feeCash = 200_000n;
+      return { step: "funding", held: 0n, feeCash: 200_000n };
+    });
+    mocks.recoveryMinimums.mockResolvedValueOnce({
+      minimums: { PAS: 1_600n, DOTUSD: null, USDT: null, USDC: null },
+      keepNativeForFees: 5n,
+    });
+    mocks.findRecoveryDeposit.mockResolvedValueOnce(null);
+    await revived.tickAllFunding();
+    expect(mocks.recoveryMinimums).toHaveBeenCalledTimes(3);
+    expect(storedJob().recovery.minimums).toMatchObject({
+      feeCash: "200000",
+      minimums: { PAS: "1600" },
+    });
+    expect(storedJob().recovery.minimums.repriceFailedAt).toBeUndefined();
   });
 
   it("asks for the fee less what the burner holds, carries the round, and ends a deposit's terminal conversion without ending the recovery", async () => {
@@ -1030,6 +1048,31 @@ describe("worker funding engine", () => {
     await engine.tickAllFunding();
     expect(mocks.findRecoveryDeposit).toHaveBeenCalledTimes(3);
     expect(mocks.findRecoveryDeposit.mock.calls[2]![3]).toEqual({ PAS: 10_000n });
+
+    // A deposit whose conversion sent it away and fell short is gone: nothing is skipped for it,
+    // so a smaller deposit of the same token after it is taken up.
+    mocks.tickRecovery.mockResolvedValueOnce({
+      step: "funding",
+      held: 100_000n,
+      feeCash: 123_456n,
+    });
+    mocks.findRecoveryDeposit.mockResolvedValueOnce({
+      route: { tier: "pool" },
+      token: "PAS",
+      held: 50_000n,
+    });
+    mocks.tickOnce.mockRejectedValueOnce(new FundingShortfallError(100n, 123_456n));
+    await engine.tickAllFunding();
+    expect(storedJob().recovery.depositError.message).toContain("funding shortfall");
+    expect(storedJob().recovery.depositError.token).toBeUndefined();
+    mocks.tickRecovery.mockResolvedValueOnce({
+      step: "funding",
+      held: 100_000n,
+      feeCash: 123_456n,
+    });
+    mocks.findRecoveryDeposit.mockResolvedValueOnce(null);
+    await engine.tickAllFunding();
+    expect(mocks.findRecoveryDeposit.mock.calls[4]![3]).toEqual({});
     expect(storedJob().recovery.route).toBeUndefined();
   });
 
