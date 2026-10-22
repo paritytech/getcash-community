@@ -1658,6 +1658,15 @@ export const SCENES: Scene[] = [
     }),
   },
   {
+    // "New top-up" pressed while one still runs: the amount screen with Back to the list and the
+    // dot on the clock.
+    name: "top-up / list: new top-up while one runs",
+    apply: topUpList({
+      running: [{ ...BITCOIN_SWAP, amount: "50", stage: "waiting" }],
+      entry: "amount",
+    }),
+  },
+  {
     // The screen's own shapes while the top-ups are still being read.
     name: "top-up / list: loading",
     apply: topUpList({

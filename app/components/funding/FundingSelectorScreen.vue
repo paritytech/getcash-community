@@ -123,6 +123,12 @@ function showAmount() {
   emit("change");
 }
 
+/** Back from the amount screen while a top-up runs: the "Topping up" screen it was entered from. */
+function showPending() {
+  screen.value = "pending";
+  emit("change");
+}
+
 function showHistory() {
   if (screen.value === "pending" || screen.value === "amount") {
     historyReturnScreen.value = screen.value;
@@ -220,6 +226,8 @@ watch(
       :route="route"
       :available-routes="availableRoutes ?? undefined"
       :history="hasHistoryContent"
+      :history-badge="hasTopUpInProgress"
+      :back="hasTopUpInProgress"
       :error="error"
       :loading="loading"
       :title="title"
@@ -229,6 +237,7 @@ watch(
       @route="changeRoute"
       @continue="continueToPackage"
       @history="showHistory"
+      @back="showPending"
     />
 
     <!-- state-director scene label (dev/demo keys only) -->

@@ -8,6 +8,8 @@ withDefaults(
     back?: boolean;
     centered?: boolean;
     history?: boolean;
+    /** Something is running behind the clock: a dot on it. */
+    historyBadge?: boolean;
     /** Launch-load placeholder: the title and history control render as inert skeleton shapes. */
     skeleton?: boolean;
   }>(),
@@ -15,6 +17,7 @@ withDefaults(
     back: false,
     centered: false,
     history: false,
+    historyBadge: false,
     skeleton: false,
   },
 );
@@ -51,10 +54,11 @@ const emit = defineEmits<{
       v-else-if="history"
       type="button"
       class="funding-entry-history"
-      aria-label="History"
+      :aria-label="historyBadge ? 'History, something in progress' : 'History'"
       @click="emit('history')"
     >
       <History class="size-7" aria-hidden="true" />
+      <span v-if="historyBadge" class="funding-entry-history-badge" aria-hidden="true" />
     </button>
     <span v-else-if="back || centered" aria-hidden="true" />
   </header>
@@ -71,11 +75,6 @@ const emit = defineEmits<{
   padding: 0 1.5rem;
 }
 
-.funding-entry-header-back {
-  display: grid;
-  grid-template-columns: 2.75rem minmax(0, 1fr) 2.75rem;
-}
-
 .funding-entry-header-centered {
   display: grid;
   grid-template-columns: 4.5rem minmax(0, 1fr) 4.5rem;
@@ -83,6 +82,13 @@ const emit = defineEmits<{
 
 .funding-entry-header-centered h1 {
   text-align: center;
+}
+
+/* After the centred rule: with both, the columns are the controls' own width, so the clock stays
+   flush right. */
+.funding-entry-header-back {
+  display: grid;
+  grid-template-columns: 2.75rem minmax(0, 1fr) 2.75rem;
 }
 
 .funding-entry-header h1 {
@@ -110,6 +116,7 @@ const emit = defineEmits<{
 }
 
 .funding-entry-history {
+  position: relative;
   display: flex;
   width: 2.75rem;
   height: 2.75rem;
@@ -124,6 +131,18 @@ const emit = defineEmits<{
 
 .funding-entry-history:hover {
   background: var(--bg-selection-container-hover);
+}
+
+/* An 8px dot in a 12px ring of the screen colour, at the design's corner of the 44px button. */
+.funding-entry-history-badge {
+  position: absolute;
+  right: 0.4375rem;
+  bottom: 0.4375rem;
+  width: 0.75rem;
+  height: 0.75rem;
+  border: 2px solid var(--bg-surface-main);
+  border-radius: 9999px;
+  background: var(--bg-status-error);
 }
 
 @media (max-height: 650px) {
