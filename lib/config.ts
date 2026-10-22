@@ -138,8 +138,8 @@ export const sourcePairFor = (sourceId: string): { chain: string; asset: string 
  *  VITE_OFFRAMP_LANES overrides the list, comma separated; an asset left out is not offered,
  *  whatever the adapter lists, and an entry that is not an asset id is dropped with a warning. */
 export const OFFRAMP_LANE_ORDER: readonly MeldAssetId[] = (() => {
-  // Test only: the Arbitrum SaleVault lane is forced on so the vault path is reachable.
-  if (import.meta.env.MODE !== "test") return ["usdt@assethub", "dot@assethub", "usdc@arbitrum"];
+  // Test only: only the Arbitrum SaleVault lane, so every sale goes through the vault.
+  if (import.meta.env.MODE !== "test") return ["usdc@arbitrum"];
   const raw = import.meta.env.VITE_OFFRAMP_LANES as string | undefined;
   const listed = (raw ?? "")
     .split(",")
