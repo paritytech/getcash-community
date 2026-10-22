@@ -103,7 +103,9 @@ function headers(): Record<string, string> {
   return {
     accept: "application/json",
     "x-dev-product-id":
-      (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
+      import.meta.env.MODE === "test"
+        ? ((import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev")
+        : "getcash.dev",
   };
 }
 

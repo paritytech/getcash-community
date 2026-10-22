@@ -799,7 +799,10 @@ export const useSessionStore = defineStore("session", () => {
     const baseClient = meldBaseUrl
       ? createMeldClient({
           baseUrl: meldBaseUrl,
-          productId: (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
+          productId:
+            import.meta.env.MODE === "test"
+              ? ((import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev")
+              : "getcash.dev",
           ...(redirectUrl ? { redirectUrl } : {}),
         })
       : createFakeMeldClient();
@@ -1777,7 +1780,9 @@ export const useSessionStore = defineStore("session", () => {
             createMeldClient({
               baseUrl: meldBaseUrl,
               productId:
-                (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
+                import.meta.env.MODE === "test"
+                  ? ((import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev")
+                  : "getcash.dev",
             }),
           );
           meldStatusClient = client;

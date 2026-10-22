@@ -572,7 +572,10 @@ export function meldHandoffConfig(): NonNullable<WithdrawalHandoffPayload["meld"
   if (!baseUrl) return isDemoBuild() ? { offline: true } : null;
   return {
     baseUrl,
-    productId: (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
+    productId:
+      import.meta.env.MODE === "test"
+        ? ((import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev")
+        : "getcash.dev",
   };
 }
 

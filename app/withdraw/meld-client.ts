@@ -33,7 +33,10 @@ function defaultClient(): MeldSellClient | null {
   if (baseUrl) {
     return createMeldClient({
       baseUrl,
-      productId: (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
+      productId:
+        import.meta.env.MODE === "test"
+          ? ((import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev")
+          : "getcash.dev",
       // After KYC the provider lands the widget on the adapter's frameable return page, which
       // tells a seller they are verified rather than that a payment arrived.
       redirectUrl: `${baseUrl.replace(/\/$/, "")}/meld/return?flow=sell`,

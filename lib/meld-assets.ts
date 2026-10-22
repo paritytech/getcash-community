@@ -16,7 +16,10 @@ export function pageMeldAssets(): Promise<void> {
     baseUrl
       ? createMeldClient({
           baseUrl,
-          productId: (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
+          productId:
+            import.meta.env.MODE === "test"
+              ? ((import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev")
+              : "getcash.dev",
         })
       : createFakeMeldClient(),
   );
