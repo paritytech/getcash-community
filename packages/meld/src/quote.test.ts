@@ -192,7 +192,7 @@ function limitedClient(
     });
   return createMeldClient({
     baseUrl: "https://adapter.test",
-    fetchImpl: async (_url, init) => {
+    fetchImpl: (async (_url: string, init?: RequestInit) => {
       const fiat = Number(
         (JSON.parse(String(init?.body)) as { sourceAmount: string }).sourceAmount,
       );
@@ -216,7 +216,7 @@ function limitedClient(
           },
         ],
       });
-    },
+    }) as unknown as typeof fetch,
   });
 }
 

@@ -6,7 +6,7 @@ import {
   PASEO_UNDERLYING_ASSET_ID,
   recordedRoute,
 } from "@getsome/funding";
-import { MELD_SELL_ENABLED } from "@getsome/meld";
+import { createMeldClient, MELD_SELL_ENABLED } from "@getsome/meld";
 import { CASH_LOCATION } from "@getsome/people";
 import {
   CHANNEL_EXPIRY_MARGIN_MS,
@@ -134,6 +134,12 @@ const saveJobs = () => store.save();
  *                                            // stuck: its funding job failed past RETURN_REARMS
  *   residueError?,                           // why the way home's last step failed; the
  *                                            // next pass tries it again
+ *   vaultReturnSeenAt?,                      // a vault sale only: when the adapter first said
+ *                                            // the vault returned the held USDT to the key
+ *   vaultRefundSince?,                       // a vault sale only: when the worker first asked
+ *                                            // for a refunded sale's return
+ *   vaultDeliverySince?,                     // a vault sale only: when the worker first saw
+ *                                            // a delivery the vault had not booked
  *   submitting?: { call, at },               // written before a submit
  *   txs: [{ call, txHash, block?, ok }],
  * }
@@ -879,6 +885,10 @@ async function sendHome(record, kind) {
       kind === "residue" ? "residue read" : "key read on asset hub",
     );
     if (kind === "residue") {
+      // A vault sale's held USDT comes back to the key before anything is decided.
+      if (swapOf(record)?.vaultAddress !== undefined && (await vaultHolds(record, held, token))) {
+        return;
+      }
       // A swap that failed after the key paid refunds its USDT to the key: the key is read again
       // until Chainflip says the refund will not come, however long its egress takes.
       if (swapOf(record) !== null && held === 0n && record.phase === "failed") {
@@ -1017,6 +1027,83 @@ async function swapRefund(record, nowMs = Date.now()) {
     return nowMs - record.refundSeenAt < REFUND_SETTLE_MS ? "pending" : "none";
   }
   return "pending";
+}
+
+/** How long after the vault's return the key is read for it before a person must look. */
+const VAULT_RETURN_SETTLE_MS = 7_200_000;
+/** How long a refunded sale waits for the provider's refund to reach the vault before a person must look. */
+const VAULT_REFUND_WAIT_MS = 7 * 86_400_000;
+
+/** The adapter client a vault sale is read through, the same one its rail uses. */
+function vaultClient(record) {
+  const meld = meldOf(record.meld);
+  if (meld?.baseUrl === undefined) throw new Error("sale vault: no adapter for this sale");
+  return createMeldClient(meld);
+}
+
+/** Asks the adapter to return a vault sale. True when it never can, and a person must look. */
+async function askVaultReturn(record, client) {
+  try {
+    await bounded(
+      client.requestSaleVaultReturn(record.channel.id),
+      DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+      "sale vault return",
+    );
+    return false;
+  } catch (error) {
+    // Outside Chainflip's swap limits, or a refund no single sale owns, no retry helps.
+    if (error?.code === "SALE_RETURN_NOT_SWAPPABLE" || error?.code === "SALE_REFUND_AMBIGUOUS") {
+      record.residue = { amount: "0", returning: false, stuck: true };
+      return true;
+    }
+    // A refund not yet at the vault is a wait.
+    if (error?.code === "SALE_REFUND_NOT_ARRIVED") return false;
+    throw error;
+  }
+}
+
+/** Brings a vault sale's held USDT back to the key first. True once it is left for a person. */
+async function vaultHolds(record, held, token, nowMs = Date.now()) {
+  const client = vaultClient(record);
+  const sale = await bounded(
+    client.getSaleVault(record.channel.id),
+    DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+    "sale vault read",
+  );
+  if (sale.status !== "returned" && sale.returnStatus !== "returned") {
+    // A paid sale comes back only when the provider refunded it to the vault.
+    const refunded = record.leg?.reading?.depositFailure?.reason?.code === "refunded";
+    if (sale.status === "paid" && !refunded) return false;
+    if (sale.status === "paid" || sale.status === "held") {
+      // Asked once: a return the adapter already started is not asked for again.
+      if (sale.returnStatus !== "returning" && (await askVaultReturn(record, client))) return true;
+      if (sale.status === "held")
+        throw new Error("waiting for the held funds to come back to the key");
+      record.vaultRefundSince ??= nowMs;
+      if (nowMs - record.vaultRefundSince >= VAULT_REFUND_WAIT_MS) {
+        record.residue = { amount: "0", returning: false, stuck: true };
+        return true;
+      }
+      throw new Error("waiting for the provider's refund to come back to the key");
+    }
+    if (record.leg?.reading?.swapDelivered === true) {
+      // A delivery the vault never books to this sale is left for a person after the settle window.
+      record.vaultDeliverySince ??= nowMs;
+      if (nowMs - record.vaultDeliverySince >= VAULT_RETURN_SETTLE_MS) {
+        record.residue = { amount: "0", returning: false, stuck: true };
+        return true;
+      }
+      throw new Error("waiting for the vault to record the delivery");
+    }
+    return false;
+  }
+  if (held >= residueReturnFloor(token)) return false;
+  record.vaultReturnSeenAt ??= nowMs;
+  if (nowMs - record.vaultReturnSeenAt < VAULT_RETURN_SETTLE_MS) {
+    throw new Error("waiting for the vault's return to reach the key");
+  }
+  record.residue = { amount: "0", returning: false, stuck: true };
+  return true;
 }
 
 /** The funding job that carries a sale's key home: a job on the key through `route`, held to the
