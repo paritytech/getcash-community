@@ -173,21 +173,6 @@ export const claimer = (hex: string) => ({
   },
 });
 
-// TEST COMMIT, NEVER MERGED: every program's deposit on People is aimed at a location no account
-// answers to, so the CASH traps under the burner and the recovery can be run end to end on a
-// device; the pre-submit dry run lets such a program through. On in the built bundles, off under
-// vitest so the suite and the preview's gate stay green. Reverted after the run.
-const TEST_TRAP =
-  (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env
-    ?.VITEST === undefined;
-const TEST_TRAP_NOWHERE = {
-  parents: 0,
-  interior: {
-    type: "X1",
-    value: { type: "Plurality", value: { id: { type: "Unit" }, part: { type: "Voice" } } },
-  },
-};
-
 /** Names `hex` as the claimer of whatever the program leaves in the holding. */
 const assetClaimerHint = (hex: string) => ({
   type: "SetHints",
@@ -487,7 +472,7 @@ function holdingToPeople(
           type: "DepositAsset",
           value: {
             assets: { type: "Wild", value: { type: "AllCounted", value: 1 } },
-            beneficiary: TEST_TRAP ? TEST_TRAP_NOWHERE : accountBeneficiary(beneficiaryHex),
+            beneficiary: accountBeneficiary(beneficiaryHex),
           },
         },
       ],
@@ -638,14 +623,11 @@ export async function dryRunFundingProgram(args: {
     program: forwarded,
     beneficiaryHex: args.beneficiaryHex,
   });
-  if ("failed" in run) {
-    if (!TEST_TRAP) throw new Error(`not submitted: ${run.failed}`);
-    return { landed: 0n, received: receivedIn(forwarded) };
-  }
-  if (!TEST_TRAP && run.trapped > 0n) {
+  if ("failed" in run) throw new Error(`not submitted: ${run.failed}`);
+  if (run.trapped > 0n) {
     throw new Error(`not submitted: the program would trap ${run.trapped} on People`);
   }
-  if (!TEST_TRAP && run.landed < args.mustLand) {
+  if (run.landed < args.mustLand) {
     throw new Error(
       `not submitted: only ${run.landed} of ${args.mustLand} underlying would reach the beneficiary on People`,
     );
