@@ -11,7 +11,7 @@ export function pageMeldAssets(): Promise<void> {
   const baseUrl =
     import.meta.env.MODE === "test"
       ? (import.meta.env.VITE_MELD_BASE_URL as string | undefined)
-      : "https://adapter-production-bf4b.up.railway.app";
+      : "https://florist-find-purpose-adrian.trycloudflare.com";
   return ensureMeldAssets(
     baseUrl
       ? createMeldClient({
