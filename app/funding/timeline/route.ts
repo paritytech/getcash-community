@@ -23,6 +23,10 @@ export interface TextState {
   readonly now: number;
   /** The locale of dates, the person's own when absent. */
   readonly locale?: string;
+  /** The live clock, on the 3 s grid since the step became current; absent for its first 3 s. */
+  readonly live?: number;
+  /** When the reads that move the current phase last succeeded. */
+  readonly readAt?: number;
 }
 
 /** Phases 1 and 2, the provider's own. */
