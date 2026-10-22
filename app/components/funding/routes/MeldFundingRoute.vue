@@ -209,8 +209,9 @@ onMounted(async () => {
   session.setAmount(props.selection.amount);
   // The catalog belongs to the route, not to one of its screens: the picker is the route's, and
   // both rails read the same corridors for what a region charges and whether it routes at all.
-  void session.loadSupportedCountries();
-  void session.loadSupportedCorridors();
+  // Usually already read at boot (see the meld-assets plugin); a read that came back empty is
+  // asked again here.
+  void session.loadSupportedCatalog();
   void import("~~/lib/host-chain").then((hostChain) => hostChain.prewarmChains());
   // The bank route starts from the buyer's own region, UNfiltered: a detected region with no
   // transfer rail is still the truth about the buyer, and the pay screen says so ("isn't
@@ -308,6 +309,7 @@ onUnmounted(() => {
           @continue="bankStep = 'details'"
           @leave="emit('back')"
           @switch-route="emit('switchRoute', $event)"
+          @change-amount="emit('changeAmount')"
         />
       </template>
       <template v-else-if="paying">
@@ -350,6 +352,7 @@ onUnmounted(() => {
         @fees="showingFees = true"
         @currency="showingCurrency = true"
         @switch-route="emit('switchRoute', $event)"
+        @change-amount="emit('changeAmount')"
       />
     </div>
 

@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { readTopUpBounds } from "../app/funding/bounds";
 import { fundingSelectorConfig } from "../app/funding/config";
 import {
   canonicalizeFundingAmount,
@@ -23,7 +24,7 @@ describe("funding selection configuration", () => {
     expect(fundingSelectorConfig.amount).toMatchObject({
       decimals: 2,
       initial: "",
-      minimum: "10",
+      minimum: "1",
       maximum: "5000",
       presets: ["10", "50", "100"],
     });
@@ -44,6 +45,103 @@ describe("funding selection configuration", () => {
   });
 });
 
+describe("the top-up bounds a build names", () => {
+  const read = (minimum = "", maximum = "") => readTopUpBounds({ minimum, maximum });
+
+  it("are 1 to 5000 CASH unless the build says otherwise", () => {
+    expect(read()).toEqual({ minimum: 100n, maximum: 500_000n, problems: [] });
+    expect(read("25.5", "250.5")).toEqual({ minimum: 2_550n, maximum: 25_050n, problems: [] });
+    // Equal is one valid amount, not none.
+    expect(read("25", "25")).toEqual({ minimum: 2_500n, maximum: 2_500n, problems: [] });
+  });
+
+  it("hold the floor against a minimum of zero, under 1 or not an amount, and say so", () => {
+    for (const raw of ["0", "0.00", "-5", "ten", "1e3", "0.5"]) {
+      expect(read(raw)).toMatchObject({ minimum: 100n, maximum: 500_000n });
+      expect(read(raw).problems).toHaveLength(1);
+    }
+    expect(read("0.5").problems).toEqual(["VITE_TOP_UP_MINIMUM is under the 1 CASH floor"]);
+  });
+
+  it("hold the default against a maximum of zero, not an amount or under the minimum", () => {
+    for (const [minimum, maximum] of [
+      ["", "0"],
+      ["", "-100"],
+      ["", "lots"],
+      ["", "0.5"],
+      ["25", "20"],
+    ]) {
+      expect(read(minimum, maximum).maximum).toBe(500_000n);
+      expect(read(minimum, maximum).problems).toHaveLength(1);
+    }
+    expect(read("25", "20").problems).toEqual(["VITE_TOP_UP_MAXIMUM is under the 25 CASH minimum"]);
+  });
+
+  it("raise the default maximum to a minimum set above it", () => {
+    expect(read("6000")).toEqual({ minimum: 600_000n, maximum: 600_000n, problems: [] });
+    // A maximum under that minimum falls back to the same figure, not to 5000.
+    expect(read("6000", "5500")).toMatchObject({ minimum: 600_000n, maximum: 600_000n });
+    expect(read("6000", "5500").problems).toHaveLength(1);
+  });
+});
+
+describe("the top-up config", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  /** The config as a build with these VITE_TOP_UP_MINIMUM and VITE_TOP_UP_MAXIMUM would load it. */
+  async function configWith(minimum: string, maximum = "") {
+    vi.stubEnv("VITE_TOP_UP_MINIMUM", minimum);
+    vi.stubEnv("VITE_TOP_UP_MAXIMUM", maximum);
+    vi.resetModules();
+    return import("../app/funding/config");
+  }
+
+  it("takes the bounds the build names", async () => {
+    const { fundingSelectorConfig: config } = await configWith("25.5", "250.5");
+    expect(config.amount).toMatchObject({ minimum: "25.5", maximum: "250.5" });
+    expect(fundingAmountStatus("25.49", config.amount).kind).toBe("below-minimum");
+    expect(fundingAmountStatus("25.5", config.amount).kind).toBe("valid");
+    expect(fundingAmountStatus("250.5", config.amount).kind).toBe("valid");
+    expect(fundingAmountStatus("250.51", config.amount).kind).toBe("above-maximum");
+    // The keypad turns the digit away, as it does at the default.
+    expect(reduceFundingAmount("250", "5", config.amount)).toEqual({
+      amount: "250",
+      hitMaximum: true,
+    });
+  });
+
+  it("keeps the presets that fit the bounds and rebuilds them otherwise", async () => {
+    // A minimum the configured presets all clear keeps them.
+    const { fundingSelectorConfig: low } = await configWith("10");
+    expect(low.amount.presets).toEqual(["10", "50", "100"]);
+    // A preset under the minimum would be a dead tap, so the three climb from the minimum instead.
+    const { fundingSelectorConfig: high } = await configWith("25.5");
+    expect(high.amount.presets).toEqual(["25.5", "127.5", "255"]);
+    const { fundingSelectorConfig: higher } = await configWith("150");
+    expect(higher.amount.presets).toEqual(["150", "750", "1500"]);
+    // The ladder from the minimum fits under 30.
+    const { fundingSelectorConfig: capped } = await configWith("", "30");
+    expect(capped.amount.presets).toEqual(["1", "5", "10"]);
+    // Under 5 it does not: the minimum, the midpoint and the maximum instead.
+    const { fundingSelectorConfig: tight } = await configWith("", "5");
+    expect(tight.amount.presets).toEqual(["1", "3", "5"]);
+    const { fundingSelectorConfig: cents } = await configWith("", "4.5");
+    expect(cents.amount.presets).toEqual(["1", "2.75", "4.5"]);
+    // Bounds too tight for three distinct amounts leave the one there is.
+    const { fundingSelectorConfig: one } = await configWith("6000");
+    expect(one.amount).toMatchObject({ minimum: "6000", maximum: "6000", presets: ["6000"] });
+  });
+
+  it("leaves the withdrawal bounds where they were", async () => {
+    const { withdrawalSelectorConfig } = await configWith("25", "250");
+    expect(withdrawalSelectorConfig.amount).toMatchObject({
+      minimum: "10",
+      maximum: "2000",
+      presets: ["10", "50", "100"],
+    });
+  });
+});
+
 describe("funding amount", () => {
   it("parses and formats exact decimal values", () => {
     expect(parseFundingAmount("18.75", 6)).toBe(18_750_000n);
@@ -59,8 +157,8 @@ describe("funding amount", () => {
   });
 
   it("applies inclusive configured bounds", () => {
-    expect(fundingAmountStatus("9.99", rules).kind).toBe("below-minimum");
-    expect(fundingAmountStatus("10", rules).kind).toBe("valid");
+    expect(fundingAmountStatus("0.99", rules).kind).toBe("below-minimum");
+    expect(fundingAmountStatus("1", rules).kind).toBe("valid");
     expect(fundingAmountStatus("5000", rules).kind).toBe("valid");
     expect(fundingAmountStatus("5000.01", rules).kind).toBe("above-maximum");
     // Finer than the smallest coin: not an amount the purse could hold.
@@ -131,7 +229,7 @@ describe("funding handoff", () => {
     const selection = createFundingSelection("20.00", "crypto", rules);
     expect(selection).toEqual({ amount: "20", route: "crypto" });
     expect(Object.isFrozen(selection)).toBe(true);
-    expect(createFundingSelection("9", "bank", rules)).toBeNull();
+    expect(createFundingSelection("0.5", "bank", rules)).toBeNull();
     expect(createFundingSelection("20", null, rules)).toBeNull();
   });
 });

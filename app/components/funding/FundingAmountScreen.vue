@@ -46,6 +46,8 @@ const notice = computed(() => {
     :route="route"
     :available-routes="availableRoutes"
     :history="history"
+    :history-badge="historyBadge"
+    :back="back"
     :error="error"
     :loading="loading"
     :skeleton="skeleton"
@@ -58,6 +60,7 @@ const notice = computed(() => {
     @route="emit('route', $event)"
     @continue="emit('continue')"
     @history="emit('history')"
+    @back="emit('back')"
   >
     <template #default="{ displayAmount }">
       <FundingAmountDisplay class="funding-amount" :amount="displayAmount" :caret="!skeleton" />
