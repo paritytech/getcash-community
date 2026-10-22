@@ -1049,7 +1049,7 @@ describe("withdrawal timeline, live detail", () => {
     );
   });
 
-  it("names the rail's read on the hand-off, and the attempt on a delay", () => {
+  it("names the rail's read on the hand-off, and the worker's tick on a delay", () => {
     const handing = chainflip({
       status: { kind: "sending", at: at(3) },
       witnesses: worker(at(4)),
@@ -1066,7 +1066,7 @@ describe("withdrawal timeline, live detail", () => {
       status: { kind: "converting", at: at(1), step: "swap" },
       witnesses: { worker: { ...worker(at(2)).worker!, lastError: "boom" } },
     });
-    expect(withdrawalTimeline(stuck, live(at(2) + 6 * SECOND)).detail).toBe("Last attempt 6s ago");
+    expect(withdrawalTimeline(stuck, live(at(2) + 6 * SECOND)).detail).toBe("Checked 6s ago");
   });
 
   it("counts the time on a step from the memo", () => {

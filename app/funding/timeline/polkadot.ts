@@ -5,7 +5,7 @@ import { cashInText } from "../../utils/cash";
 import { conversionRouteOf, type DepositInBlock, type TopUpRecord } from "../requests/model";
 import { mintedOf } from "../requests/views";
 import { CLOSE, TRY_AGAIN, type PartFailure } from "./failure";
-import { liveDetail, reader, stages } from "./live";
+import { liveDetail, reader, stages, stepLine } from "./live";
 import { earlierFact, factAt } from "./observed";
 import {
   delay,
@@ -175,20 +175,15 @@ export function polkadotPhase(
 export const workerTickAt = (record: TopUpRecord): number | undefined =>
   workerOf(record)?.lastTickAt ?? undefined;
 
-/** The latest read of the shared part: the worker's tick or the app's own best-block read. */
-export function chainReadAt(record: TopUpRecord): number | undefined {
-  const reads = [workerTickAt(record), record.witnesses.chain?.best?.at].filter(
-    (at) => at !== undefined,
-  );
-  return reads.length === 0 ? undefined : Math.max(...reads);
-}
-
 /** How far the deposit's block is from final, as the worker counts it. */
 function finalizingLine(inBlock: DepositInBlock | undefined): string {
   if (inBlock === undefined || inBlock.block <= inBlock.finalizedAtSeen) return "Finalizing";
   const blocks = inBlock.block - inBlock.finalizedAtSeen;
-  const done = Math.min(blocks, inBlock.finalized - inBlock.finalizedAtSeen + 1);
-  return `Finalizing · block ${Math.max(done, 1)} of ${blocks}`;
+  return stepLine(
+    "Finalizing · block",
+    Math.max(inBlock.finalized - inBlock.finalizedAtSeen, 0),
+    blocks,
+  );
 }
 
 /** The claim's stages the worker and the Host are through. */
@@ -234,8 +229,9 @@ export function polkadotText(
     case 3:
       return {
         message: conversionMessage(record),
+        // The tick is a check: the worker retries the mint on its own schedule, unstamped.
         detail: psmRefused(record)
-          ? read("Last attempt")
+          ? read("Checked")
           : liveDetail(
               live,
               stages(["Prepared", "Included"], record.conversionPreparedAt === undefined ? 0 : 1),

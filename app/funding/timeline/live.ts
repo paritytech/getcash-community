@@ -1,5 +1,6 @@
 // The live detail under a timeline's message: shown once the viewer has sat on a step for 3 s,
-// and refreshed on a 3 s grid, although the clock that evaluates timelines ticks every second.
+// on a clock that moves on a 3 s grid although timelines are evaluated every second. A read's
+// age is measured from that clock, so it also moves when a fresh read lands between grid ticks.
 
 import { lastReached } from "./model";
 import type { TextState } from "./route";
@@ -38,10 +39,7 @@ export function liveState(
   now: number,
   readAt: number | undefined,
 ): Pick<TextState, "live" | "readAt"> {
-  return {
-    live: liveClock(now, stepSince(view, previous, since, now)),
-    ...(readAt === undefined ? {} : { readAt }),
-  };
+  return { live: liveClock(now, stepSince(view, previous, since, now)), readAt };
 }
 
 const SECOND = 1_000;
@@ -85,6 +83,10 @@ export function liveDetail(
 ): string | undefined {
   return live === undefined ? undefined : joinDetail(...parts);
 }
+
+/** The step a count is on, `done` of them behind it: "Part 2 of 4", "Confirmation 3 of 3". */
+export const stepLine = (label: string, done: number, count: number): string =>
+  `${label} ${Math.min(done + 1, count)} of ${count}`;
 
 /** The stages of a step, the first `done` ticked: "Prepared ✓ · Included". */
 export function stages(names: readonly string[], done: number): string {

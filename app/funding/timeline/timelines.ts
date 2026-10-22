@@ -44,8 +44,8 @@ interface Watch {
   readonly sentUnseenMs: number;
   /** When the last evaluation found the sent funds unseen with fresh reads. */
   readonly awaitingSince?: number;
-  /** When the step shown last became current. */
-  readonly stepSince: number;
+  /** When the step shown last became current; kept with `previous`. */
+  readonly stepSince?: number;
 }
 
 /** Evaluates timelines in memory for one app session. Each top-up is watched from its first
@@ -59,8 +59,10 @@ export function createTopUpTimelines(): TopUpTimelineOf {
       previous,
       sentUnseenMs,
       awaitingSince,
-      stepSince: since,
-    } = shown.get(key) ?? { watchingSince: now, sentUnseenMs: 0, stepSince: now };
+      stepSince: kept,
+    } = shown.get(key) ?? { watchingSince: now, sentUnseenMs: 0 };
+    // Kept only with the view it was shown on, so the first open starts its step now.
+    const since = kept ?? now;
     const route = timelineRouteOf(record);
     const timeline = topUpTimeline(record, route, {
       now,
@@ -70,7 +72,7 @@ export function createTopUpTimelines(): TopUpTimelineOf {
       stepSince: since,
     });
     if (timeline === undefined) {
-      shown.set(key, { watchingSince, sentUnseenMs, stepSince: now });
+      shown.set(key, { watchingSince, sentUnseenMs });
       return undefined;
     }
     const awaiting = timeline.awaitingSentFunds === true;
@@ -83,7 +85,7 @@ export function createTopUpTimelines(): TopUpTimelineOf {
       previous: timeline.view,
       sentUnseenMs: sentUnseenMs + awaited,
       ...(awaiting ? { awaitingSince: now } : {}),
-      stepSince: previous === undefined ? now : stepSince(timeline.view, previous, since, now),
+      stepSince: stepSince(timeline.view, previous, since, now),
     });
     return timeline;
   };

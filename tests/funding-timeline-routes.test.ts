@@ -1498,14 +1498,15 @@ describe("top-up timeline, live detail", () => {
     const timelineOf = createTopUpTimelines();
     const t = SENT + MINUTE;
     const detailAt = (topUp: TopUpRecord, now: number) => timelineOf(topUp, now)?.detail;
-    // A tick before the timeline opens does not start the first step's clock.
+    // A tick before the timeline opens does not start the first step's clock, however long ago:
+    // the first open shows no live detail, and the next tick does not take it back.
     const unopened: TopUpRecord = {
       ...cardRecord(),
       meldSubmittedAt: undefined,
       observedAt: {},
       witnesses: {},
     };
-    expect(timelineOf(unopened, t - SECOND)).toBeUndefined();
+    expect(timelineOf(unopened, t - 10 * SECOND)).toBeUndefined();
     expect(detailAt(checking(t), t)).toBeUndefined();
     expect(detailAt(checking(t), t + 2 * SECOND)).toBeUndefined();
     expect(detailAt(checking(t), t + 3 * SECOND)).toBe("Checked with the provider 5s ago");

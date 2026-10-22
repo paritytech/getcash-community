@@ -21,17 +21,11 @@ export function createWithdrawalTimelines(): WithdrawalTimelineOf {
   return (record, now) => {
     const key = requestRefKey(record.ref);
     const watch = shown.get(key);
-    const timeline = withdrawalTimeline(record, {
-      now,
-      previous: watch?.view,
-      stepSince: watch?.stepSince ?? now,
-    });
+    const since = watch?.stepSince ?? now;
+    const timeline = withdrawalTimeline(record, { now, previous: watch?.view, stepSince: since });
     const { view } = timeline;
     if (view !== undefined) {
-      shown.set(key, {
-        view,
-        stepSince: stepSince(view, watch?.view, watch?.stepSince ?? now, now),
-      });
+      shown.set(key, { view, stepSince: stepSince(view, watch?.view, since, now) });
     }
     return timeline;
   };

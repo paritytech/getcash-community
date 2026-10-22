@@ -4,7 +4,6 @@
 
 import type { TopUpRecord } from "../requests/model";
 import { CLOSE, CRYPTO_EXPIRED_TEXT, expiredEnding, type PartFailure } from "./failure";
-import { chainReadAt } from "./polkadot";
 import type { TimelineRoute } from "./route";
 
 const SECOND = 1_000;
@@ -31,7 +30,7 @@ export const directRoute: TimelineRoute = {
   milestones: () => ({}),
   phase: noProviderPhase,
   seenExpectedMs: 30 * SECOND,
-  lastReadAt: chainReadAt,
+  lastReadAt: noProviderPhase,
   text: noProviderPhase,
   failure: directFailure,
   failureDetails: () => ({}),

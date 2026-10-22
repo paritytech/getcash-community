@@ -77,6 +77,13 @@ function sendingStep(record: WithdrawalRecord): number | undefined {
   return status.kind === "converting" ? SENDING_STEP_ORDER[status.step] : undefined;
 }
 
+/** Who the phase's read names, delayed or not: the rail on the hand-off and the exchange, unless
+ *  the direct rail, which is the arrival itself; otherwise the worker's tick, a check either way. */
+function readLabel(record: WithdrawalRecord, index: number): string {
+  if (index < 2 || index > 3 || record.rail.provider === "direct") return "Checked";
+  return record.route === "crypto" ? "Checked with the exchange" : "Checked with the provider";
+}
+
 /** The live detail per phase: the stages the worker is through where it reports them, and when
  *  whoever moves the phase was last read. */
 function phaseDetail(
@@ -87,7 +94,7 @@ function phaseDetail(
   const { live } = state;
   const read = reader(state);
   const step = sendingStep(record);
-  if (state.delayed) return read(index < 2 ? "Last attempt" : "Checked");
+  if (state.delayed) return read(readLabel(record, index));
   switch (index) {
     case 0:
       return liveDetail(
@@ -106,13 +113,8 @@ function phaseDetail(
             read("checked"),
           )
         : read("Checked");
-    case 2:
-    case 3:
-      return read(
-        record.route === "crypto" ? "Checked with the exchange" : "Checked with the provider",
-      );
     default:
-      return read("Checked");
+      return read(readLabel(record, index));
   }
 }
 

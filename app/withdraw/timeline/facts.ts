@@ -2,6 +2,7 @@
 // Only the current status keeps its stamp, so a milestone's time is known for the leg the record
 // is on; a reached milestone implies every milestone before it, so earlier lines draw full.
 
+import { latestOf } from "../../funding/requests/facts";
 import {
   SENDING_STEP_ORDER,
   withdrawalRankOf,
@@ -100,11 +101,10 @@ function legOpenedAt({ status }: WithdrawalRecord): number | undefined {
  *  read: it moves on transitions. */
 export function withdrawalReadAt(record: WithdrawalRecord, phase: number): number | undefined {
   const worker = record.witnesses.worker;
-  const reads = [
+  return latestOf(
     worker?.known ? worker.lastTickAt : undefined,
     phase >= 2 ? record.witnesses.host?.at : undefined,
-  ].filter((at): at is number => at != null);
-  return reads.length === 0 ? undefined : Math.max(...reads);
+  );
 }
 
 export function withdrawalMilestones(

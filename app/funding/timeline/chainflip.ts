@@ -11,7 +11,7 @@ import {
   type FailureAction,
   type PartFailure,
 } from "./failure";
-import { checked, joinDetail, reader } from "./live";
+import { checked, joinDetail, reader, stepLine } from "./live";
 import { factAt, observedFrom } from "./observed";
 import { delay, normal, type TextState, type TimelineRoute, type TimelineText } from "./route";
 import type { PhaseInput, PhasePart } from "./types";
@@ -148,9 +148,6 @@ function countdown(
 }
 
 /** The step in progress of `count`, or the last once all are done. */
-const stepLine = (label: string, done: number, count: number): string =>
-  `${label} ${Math.min(done + 1, count)} of ${count}`;
-
 function exchangeText(record: TopUpRecord, facts: ChainflipFacts, state: TextState): TimelineText {
   // The token the user sent; the source id names the Asset Hub token the swap arrives as.
   const source = record.asset;
