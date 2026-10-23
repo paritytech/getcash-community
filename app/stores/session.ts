@@ -53,6 +53,7 @@ import {
   type MeldQuoteRaw,
 } from "@getsome/meld";
 import { CASH_DECIMALS } from "@getsome/people";
+import { isHostUnreachable } from "~~/lib/host-errors";
 import { meldPaymentMethod, resolveMeldRegion } from "~~/lib/region";
 import {
   countryName,
@@ -370,6 +371,12 @@ export const useSessionStore = defineStore("session", () => {
   /** Quote failures in a row for one amount, method, region and source: the screens stop offering
    *  another try after the second. Changing any of those starts the count over. */
   const quoteFailures = ref(0);
+  /** The failed quote failed because the host gave no chain connection. Only read through
+   *  `hostUnreachable`, which every clear of `quoteError` also clears. */
+  const quoteErrorFromHost = ref(false);
+  /** The quote on screen failed because the host could not be reached. Nothing the buyer picks
+   *  can fix that, so the screens offer only another try, however many in a row. */
+  const hostUnreachable = computed(() => quoteError.value !== null && quoteErrorFromHost.value);
   /** The amount's fiat falls outside the method's limits. Set instead of `quoteError`: retrying the
    *  same amount cannot help, so it neither counts as a failure nor offers another try. */
   const quoteOutOfRange = shallowRef<QuoteOutOfRange | null>(null);
@@ -946,11 +953,13 @@ export const useSessionStore = defineStore("session", () => {
     return { bound: e.bound, limit: e.limit, estimatedFiat: e.estimatedFiat, fiat: e.fiat, cash };
   }
 
-  /** A quote that could not be had: the message for the screen, and one more failure in a row. */
-  function failQuote(message: string): void {
+  /** A quote that could not be had: the message for the screen, and one more failure in a row.
+   *  A host that could not be reached is not the amount's failure and does not count. */
+  function failQuote(message: string, cause?: unknown): void {
     quoted.value = null;
     quoteError.value = message;
-    quoteFailures.value += 1;
+    quoteErrorFromHost.value = isHostUnreachable(cause);
+    if (!quoteErrorFromHost.value) quoteFailures.value += 1;
   }
 
   /** (Re)quotes the Meld rail for the current CASH amount and region. The mock world simulates
@@ -1083,7 +1092,7 @@ export const useSessionStore = defineStore("session", () => {
         quoteOutOfRange.value = outOfRangeOf(e);
         return;
       }
-      failQuote(e instanceof Error ? e.message : String(e));
+      failQuote(e instanceof Error ? e.message : String(e), e);
     } finally {
       if (epoch === quoteEpoch) loading.value = false;
     }
@@ -1301,7 +1310,7 @@ export const useSessionStore = defineStore("session", () => {
         return fetchQuote(chain, asset, true);
       }
       console.error(`[coinage] quote failed: ${e instanceof Error ? e.message : String(e)}`);
-      failQuote(msg);
+      failQuote(msg, e);
     } finally {
       if (epoch === quoteEpoch) loading.value = false;
     }
@@ -2329,6 +2338,7 @@ export const useSessionStore = defineStore("session", () => {
     quoted,
     quoteError,
     quoteFailures,
+    hostUnreachable,
     quoteOutOfRange,
     meldMethodUnavailable,
     supportedCountries,

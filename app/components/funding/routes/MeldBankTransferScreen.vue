@@ -22,6 +22,7 @@ import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import type { FundingRoute } from "../../../funding/selection";
 import CashAmount from "../../ui/CashAmount.vue";
 import PillButton from "../../ui/PillButton.vue";
+import HostErrorScreen from "../../ui/HostErrorScreen.vue";
 import RateErrorScreen from "../../ui/RateErrorScreen.vue";
 import RegionRow from "../../ui/RegionRow.vue";
 import SkeletonBlock from "../../ui/SkeletonBlock.vue";
@@ -208,6 +209,10 @@ function confirmSent() {
       @region="emit('currency')"
       @change-amount="emit('changeAmount')"
       @use-amount="useAmount"
+    />
+    <HostErrorScreen
+      v-else-if="step === 'summary' && blocked && session.hostUnreachable"
+      @retry="requote"
     />
     <RateErrorScreen
       v-else-if="step === 'summary' && blocked"
