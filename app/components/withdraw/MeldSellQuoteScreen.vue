@@ -15,6 +15,7 @@ import CashAmount from "../ui/CashAmount.vue";
 import PillButton from "../ui/PillButton.vue";
 import RateErrorScreen from "../ui/RateErrorScreen.vue";
 import RegionRow from "../ui/RegionRow.vue";
+import ScreenFrame from "../ui/ScreenFrame.vue";
 import SkeletonBlock from "../ui/SkeletonBlock.vue";
 import SkeletonRow from "../ui/SkeletonRow.vue";
 
@@ -84,7 +85,7 @@ const canContinue = computed(
     @use-crypto="emit('useCrypto')"
   />
 
-  <div v-else class="flex min-h-0 flex-1 flex-col">
+  <ScreenFrame v-else>
     <div class="flex flex-col items-center gap-1 text-center">
       <p class="text-display-xl text-fg-primary">
         <CashAmount :amount="groupAmountDigits(amount)" />
@@ -131,9 +132,11 @@ const canContinue = computed(
 
     <p v-if="startError" class="mt-4 text-body-m text-fg-error" role="alert">{{ startError }}</p>
 
-    <PillButton class="mt-auto w-full" :disabled="!canContinue" @click="emit('continue')">
-      {{ starting ? "Starting…" : "Continue" }}
-    </PillButton>
-    <PoweredBy class="mt-3 mb-4" provider="Meld" />
-  </div>
+    <template #actions>
+      <PillButton class="w-full" :disabled="!canContinue" @click="emit('continue')">
+        {{ starting ? "Starting…" : "Continue" }}
+      </PillButton>
+      <PoweredBy provider="Meld" />
+    </template>
+  </ScreenFrame>
 </template>

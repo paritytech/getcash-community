@@ -33,7 +33,7 @@ import {
   type SupportedCountry,
 } from "~~/lib/supported";
 import CurrencySelectScreen from "../../funding/routes/CurrencySelectScreen.vue";
-import Toolbar from "../../ui/Toolbar.vue";
+import ScreenShell from "../../ui/ScreenShell.vue";
 import MeldSellFeeDetailsScreen from "../MeldSellFeeDetailsScreen.vue";
 import MeldSellKycScreen from "../MeldSellKycScreen.vue";
 import MeldSellQuoteScreen from "../MeldSellQuoteScreen.vue";
@@ -483,107 +483,93 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <!-- Toolbar and screen fill the visible viewport; the app never scrolls. -->
-  <main
-    class="fixed inset-x-0 mx-auto flex w-full max-w-md flex-col overflow-hidden bg-surface-main"
-    style="
-      top: var(--vvt, 0px);
-      height: var(--vvh, 100dvh);
-      padding-top: env(safe-area-inset-top);
-      padding-bottom: env(safe-area-inset-bottom);
-    "
-  >
-    <Toolbar :title="toolbar.title" :back="toolbar.back" @back="onBack">
-      <template v-if="canSkipRail || canSkipQuote" #trailing>
-        <button
-          type="button"
-          class="rounded-medium px-4 py-3 text-label-l font-normal text-fg-primary transition-colors hover:bg-action-tertiary-hover"
-          @click="canSkipRail ? onSkipRail() : onSkipQuote()"
-        >
-          Skip
-        </button>
-      </template>
-    </Toolbar>
-
-    <!-- The provider's page runs edge to edge; every other step keeps the screen padding. -->
-    <div class="flex min-h-0 flex-1 flex-col" :class="step === 'kyc' ? '' : 'px-6 pt-6'">
-      <MeldSellKycScreen
-        v-if="step === 'kyc' && widgetUrl"
-        :widget-url="widgetUrl"
-        :cancellable="cancellable"
-        :cancelling="cancelling"
-        :notice="notice"
-        @cancel="cancelSale"
-      />
-      <MeldSellFeeDetailsScreen
-        v-else-if="step === 'fees' && shownFees"
-        :quote="shownFees"
-        :cash-amount="feesFrom === 'journey' && record ? record.amountHuman : amount"
-        @back="step = feesFrom"
-      />
-      <CurrencySelectScreen
-        v-else-if="step === 'region'"
-        :options="pickerCountries"
-        :model-value="sale.country.value"
-        :detected="detectedCountry"
-        placeholder="Search for a country"
-        @pick="pickCountry"
-      />
-      <MeldSellQuoteScreen
-        v-else-if="step === 'quote' || step === 'fees'"
-        :method="method"
-        :amount="amount"
-        :quote="sale.quote.value"
-        :loading="sale.loading.value || !countryDecided"
-        :error="sale.error.value"
-        :error-kind="sale.errorKind.value"
-        :rate-failures="sale.rateFailures.value"
-        :minimum="minimum"
-        :other="switchMethod"
-        :country="countryDecided ? sale.country.value : null"
-        :country-name="countryDecided ? countryLabel : null"
-        :starting="starting"
-        :start-error="startError"
-        @continue="confirm"
-        @fees="openFees('quote')"
-        @region="step = 'region'"
-        @retry="retryQuote"
-        @use-crypto="emit('switchRoute', 'crypto')"
-        @use-other="switchMethod && emit('switchRoute', switchMethod)"
-      />
-      <WithdrawCancelScreen
-        v-else-if="step === 'cancel'"
-        :cancelling="cancelling"
-        @confirm="cancelSale"
-        @keep="closeCancel"
-      />
-      <WithdrawJourneyScreen
-        v-else-if="(step === 'journey' || step === 'kyc') && record"
-        :record="record"
-        :notice="notice"
-        :busy="busy"
-        :fees-available="journeyFees !== null"
-        @cancel="openCancel"
-        @retry="retry"
-        @fees="openFees('journey')"
-        @close="emit('back')"
-      />
-      <div
-        v-else-if="step === 'journey' && unavailable"
-        class="flex flex-1 flex-col items-center pt-16 text-center"
+  <!-- The provider's page runs edge to edge; every other step keeps the screen padding. -->
+  <ScreenShell :title="toolbar.title" :back="toolbar.back" :edge="step === 'kyc'" @back="onBack">
+    <template v-if="canSkipRail || canSkipQuote" #trailing>
+      <button
+        type="button"
+        class="rounded-medium px-4 py-3 text-label-l font-normal text-fg-primary transition-colors hover:bg-action-tertiary-hover"
+        @click="canSkipRail ? onSkipRail() : onSkipQuote()"
       >
-        <h1 class="text-heading-l text-fg-primary">Withdrawal unavailable</h1>
-        <p class="mt-2 text-body-m text-fg-secondary">
-          This withdrawal is no longer available. Return to see your latest activity.
-        </p>
-      </div>
-      <div v-else class="flex flex-col items-center gap-4 pt-16">
-        <span
-          class="inline-block size-8 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary"
-        />
-        <p class="text-body-m text-fg-secondary">Opening your withdrawal…</p>
-      </div>
+        Skip
+      </button>
+    </template>
+
+    <MeldSellKycScreen
+      v-if="step === 'kyc' && widgetUrl"
+      :widget-url="widgetUrl"
+      :cancellable="cancellable"
+      :cancelling="cancelling"
+      :notice="notice"
+      @cancel="cancelSale"
+    />
+    <MeldSellFeeDetailsScreen
+      v-else-if="step === 'fees' && shownFees"
+      :quote="shownFees"
+      :cash-amount="feesFrom === 'journey' && record ? record.amountHuman : amount"
+      @back="step = feesFrom"
+    />
+    <CurrencySelectScreen
+      v-else-if="step === 'region'"
+      :options="pickerCountries"
+      :model-value="sale.country.value"
+      :detected="detectedCountry"
+      placeholder="Search for a country"
+      @pick="pickCountry"
+    />
+    <MeldSellQuoteScreen
+      v-else-if="step === 'quote' || step === 'fees'"
+      :method="method"
+      :amount="amount"
+      :quote="sale.quote.value"
+      :loading="sale.loading.value || !countryDecided"
+      :error="sale.error.value"
+      :error-kind="sale.errorKind.value"
+      :rate-failures="sale.rateFailures.value"
+      :minimum="minimum"
+      :other="switchMethod"
+      :country="countryDecided ? sale.country.value : null"
+      :country-name="countryDecided ? countryLabel : null"
+      :starting="starting"
+      :start-error="startError"
+      @continue="confirm"
+      @fees="openFees('quote')"
+      @region="step = 'region'"
+      @retry="retryQuote"
+      @use-crypto="emit('switchRoute', 'crypto')"
+      @use-other="switchMethod && emit('switchRoute', switchMethod)"
+    />
+    <WithdrawCancelScreen
+      v-else-if="step === 'cancel'"
+      :cancelling="cancelling"
+      @confirm="cancelSale"
+      @keep="closeCancel"
+    />
+    <WithdrawJourneyScreen
+      v-else-if="(step === 'journey' || step === 'kyc') && record"
+      :record="record"
+      :notice="notice"
+      :busy="busy"
+      :fees-available="journeyFees !== null"
+      @cancel="openCancel"
+      @retry="retry"
+      @fees="openFees('journey')"
+      @close="emit('back')"
+    />
+    <div
+      v-else-if="step === 'journey' && unavailable"
+      class="flex flex-1 flex-col items-center pt-16 text-center"
+    >
+      <h1 class="text-heading-l text-fg-primary">Withdrawal unavailable</h1>
+      <p class="mt-2 text-body-m text-fg-secondary">
+        This withdrawal is no longer available. Return to see your latest activity.
+      </p>
     </div>
-    <PreviewSceneLabel />
-  </main>
+    <div v-else class="flex flex-col items-center gap-4 pt-16">
+      <span
+        class="inline-block size-8 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary"
+      />
+      <p class="text-body-m text-fg-secondary">Opening your withdrawal…</p>
+    </div>
+  </ScreenShell>
 </template>

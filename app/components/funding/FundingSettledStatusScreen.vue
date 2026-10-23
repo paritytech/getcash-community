@@ -7,6 +7,7 @@ import { formatWhenShort } from "../../utils/journey";
 import CashAmount from "../ui/CashAmount.vue";
 import DetailRows from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
+import ScreenFrame from "../ui/ScreenFrame.vue";
 import TransactionIcon from "../ui/TransactionIcon.vue";
 
 const props = defineProps<{ topUp: FundingTopUp }>();
@@ -25,7 +26,7 @@ const rows = computed(() =>
 </script>
 
 <template>
-  <div class="flex min-h-0 flex-1 flex-col">
+  <ScreenFrame>
     <div class="min-h-0 flex-1 overflow-y-auto">
       <div class="flex flex-col items-center gap-2 text-center">
         <TransactionIcon class="size-14" />
@@ -40,8 +41,8 @@ const rows = computed(() =>
       <DetailRows v-if="rows.length" class="mt-6" :rows="rows" @fees="emit('fees')" />
     </div>
 
-    <PillButton variant="tertiary" class="mt-6 mb-6 w-full" @click="emit('close')">
-      Close
-    </PillButton>
-  </div>
+    <template #actions>
+      <PillButton variant="tertiary" class="mt-6 w-full" @click="emit('close')">Close</PillButton>
+    </template>
+  </ScreenFrame>
 </template>
