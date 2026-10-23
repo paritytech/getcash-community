@@ -2,6 +2,7 @@
 // Only the current status keeps its stamp, so a milestone's time is known for the leg the record
 // is on; a reached milestone implies every milestone before it, so earlier lines draw full.
 
+import { latestOf } from "../../funding/requests/facts";
 import {
   SENDING_STEP_ORDER,
   withdrawalRankOf,
@@ -93,6 +94,17 @@ const fact = (at: number | null | undefined): Fact => (at == null ? {} : { at })
 function legOpenedAt({ status }: WithdrawalRecord): number | undefined {
   if (status.kind === "failed") return status.legAt;
   return status.kind === "converting" || status.kind === "sending" ? status.at : undefined;
+}
+
+/** When the reads that move the withdrawal last succeeded: the worker's tick, which follows
+ *  every leg, and on the rail leg the host's payment read too. The rail's own stamp is not a
+ *  read: it moves on transitions. */
+export function withdrawalReadAt(record: WithdrawalRecord, phase: number): number | undefined {
+  const worker = record.witnesses.worker;
+  return latestOf(
+    worker?.known ? worker.lastTickAt : undefined,
+    phase >= 2 ? record.witnesses.host?.at : undefined,
+  );
 }
 
 export function withdrawalMilestones(
