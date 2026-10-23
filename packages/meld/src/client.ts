@@ -93,7 +93,8 @@ export interface MeldSessionResult {
 
 /**
  * Sell-session request, Meld's sessionType SELL. The provider issues the deposit address after
- * KYC, so none is named here; it comes back later on the status.
+ * KYC, so none is named here, and it comes back later on the status. `walletAddress` is the seller's
+ * own sending and refund address, which Banxa requires.
  */
 export interface MeldSellSessionRequest {
   readonly serviceProvider: string;
@@ -109,6 +110,8 @@ export interface MeldSellSessionRequest {
   /** The fiat paid out, e.g. 'EUR'. */
   readonly destinationCurrencyCode: string;
   readonly paymentMethodType: string;
+  /** The address the crypto is sent from, where a provider refund lands, none sent when absent. */
+  readonly walletAddress?: string;
 }
 
 /**
@@ -765,6 +768,7 @@ export function createMeldClient(
           // The crypto leg, named as on the buy; see `getSellQuote`.
           destinationCurrencyCode: req.sourceCurrencyCode,
           cryptoAmount: req.sourceAmount,
+          ...(req.walletAddress !== undefined ? { walletAddress: req.walletAddress } : {}),
           paymentMethodType: req.paymentMethodType,
           serviceProvider: req.serviceProvider,
           ...(config.redirectUrl ? { redirectUrl: config.redirectUrl } : {}),
@@ -775,6 +779,9 @@ export function createMeldClient(
           ["fiat", found.fiat, req.destinationCurrencyCode],
           ["destinationCurrencyCode", found.destinationCurrencyCode, req.sourceCurrencyCode],
           ["cryptoAmount", found.cryptoAmount, req.sourceAmount],
+          ...(req.walletAddress !== undefined
+            ? [["walletAddress", found.walletAddress, req.walletAddress] as const]
+            : []),
         ],
         mismatchMessage: "We found a sale for a different order. Do not start another.",
         reopenedMessage:

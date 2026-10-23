@@ -140,6 +140,8 @@ const saveJobs = () => store.save();
  *                                            // for a refunded sale's return
  *   vaultDeliverySince?,                     // a vault sale only: when the worker first saw
  *                                            // a delivery the vault had not booked
+ *   providerRefundSince?,                    // a direct sale only: when it started waiting
+ *                                            // for the provider's refund on the key
  *   submitting?: { call, at },               // written before a submit
  *   txs: [{ call, txHash, block?, ok }],
  * }
@@ -491,6 +493,7 @@ function rearm(record, nowMs) {
   delete record.lastError;
   delete record.failedAt;
   delete record.refundSeenAt;
+  // `providerRefundSince` survives: a re-sent hand-off is the same order, so its refund clock keeps running.
   record.armedAt = nowMs;
   record.state.workedMs = 0;
   if (failure === "rejected" || failure === "timeout") {
@@ -755,17 +758,16 @@ async function tickRailLeg(record) {
 const residueSessionId = (record) => `${record.sessionId}/residue`;
 
 /**
- * What a Meld sale still owes the purse: `residue`, what the key holds once the provider is paid,
- * or `whole`, everything it holds when the sale failed before the provider could be paid. Null
+ * What a Meld sale still owes the purse: `residue`, what the key holds once the provider is paid
+ * and the sale ended, or `whole`, everything it holds when the sale failed before the provider could be paid. Null
  * when nothing is owed, once the way home is on the job, and while a payment or a message may
  * still land: a key that may have paid moves nothing more until the chain has settled it
  * (`settleInFlight`).
  */
 function returnDue(record, nowMs = Date.now()) {
   if (record.rail !== "meld" || record.residue !== undefined) return null;
-  // A swap sale's key is empty once paid, until the swap ends: a refund comes back to it.
-  if (record.leg?.paid === true)
-    return swapOf(record) !== null && isLive(record) ? null : "residue";
+  // A paid sale's key waits until the sale ends: a swap's or the provider's refund comes back to it.
+  if (record.leg?.paid === true) return isLive(record) ? null : "residue";
   if (record.phase !== "failed" || KEPT_ON_FAILURE.has(record.failure)) return null;
   if (record.leg?.exact?.inFlight === true || submitMayLand(record, nowMs)) return null;
   return "whole";
@@ -864,9 +866,9 @@ const unrevivable = (record) => goesHomeWhole(record) || record.failure === "unr
  * that ended unpaid sends everything, wherever it is: the CASH still on People when the price
  * moved, the token on Asset Hub when the provider closed the order, the CASH on Asset Hub when
  * the PSM tier's exit could not pay the promise. The exchange is held to the bound the sale
- * itself went out under.
+ * itself went out under. A direct sale that failed once paid first waits for the provider's refund.
  */
-async function sendHome(record, kind) {
+async function sendHome(record, kind, nowMs = Date.now()) {
   const sale = recordedRoute(record);
   const token = depositTokenOf(sale);
   const client = await connectChain(record.assetHubGenesis, "asset hub");
@@ -899,6 +901,19 @@ async function sendHome(record, kind) {
           record.residue = { amount: "0", returning: false, stuck: true };
           return;
         }
+      }
+      // A direct sale that failed once paid is refunded to the key, its sending address: the key waits for it.
+      if (
+        swapOf(record) === null &&
+        record.phase === "failed" &&
+        !refundOnKey(record, held, token)
+      ) {
+        record.providerRefundSince ??= nowMs;
+        if (nowMs - record.providerRefundSince >= PROVIDER_REFUND_WAIT_MS) {
+          record.residue = { amount: held.toString(), returning: false, stuck: true };
+          return;
+        }
+        throw new Error("waiting for the provider's refund to reach the key");
       }
       if (held < residueReturnFloor(token)) {
         record.residue = { amount: held.toString(), returning: false };
@@ -1029,6 +1044,20 @@ async function swapRefund(record, nowMs = Date.now()) {
   return "pending";
 }
 
+/** How long a direct sale that failed once paid waits for the refund on its key before a person must look. */
+const PROVIDER_REFUND_WAIT_MS = 7 * 86_400_000;
+
+/** A refund is on the key once it holds a floor more than the payment left, or a floor when that is unknown. */
+function refundOnKey(record, held, token) {
+  const before = record.leg?.exact?.balanceBefore;
+  const left = before == null ? 0n : asBig(before, 0n) - asBig(record.channel?.amount, 0n);
+  return held - (left > 0n ? left : 0n) >= residueReturnFloor(token);
+}
+
+/** The provider ended the sale by refunding it. */
+const providerRefunded = (record) =>
+  record.leg?.reading?.depositFailure?.reason?.code === "refunded";
+
 /** How long after the vault's return the key is read for it before a person must look. */
 const VAULT_RETURN_SETTLE_MS = 7_200_000;
 /** How long a refunded sale waits for the provider's refund to reach the vault before a person must look. */
@@ -1072,7 +1101,7 @@ async function vaultHolds(record, held, token, nowMs = Date.now()) {
   );
   if (sale.status !== "returned" && sale.returnStatus !== "returned") {
     // A paid sale comes back only when the provider refunded it to the vault.
-    const refunded = record.leg?.reading?.depositFailure?.reason?.code === "refunded";
+    const refunded = providerRefunded(record);
     if (sale.status === "paid" && !refunded) return false;
     if (sale.status === "paid" || sale.status === "held") {
       // Asked once: a return the adapter already started is not asked for again.
