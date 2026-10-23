@@ -96,7 +96,7 @@ export function countryName(country: string): string {
 function baseUrl(): string | undefined {
   return import.meta.env.MODE === "test"
     ? (import.meta.env.VITE_MELD_BASE_URL as string | undefined)
-    : "https://florist-find-purpose-adrian.trycloudflare.com";
+    : "https://reviewing-translation-italia-quotations.trycloudflare.com";
 }
 
 function headers(): Record<string, string> {
