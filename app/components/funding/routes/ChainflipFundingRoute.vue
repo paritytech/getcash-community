@@ -12,6 +12,7 @@ import type { FundingSelection } from "../../../funding/selection";
 import { useFlowStore } from "../../../stores/flow";
 import { useRequestsStore } from "../../../stores/requests";
 import { useSessionStore } from "../../../stores/session";
+import HostErrorScreen from "../../ui/HostErrorScreen.vue";
 import RateErrorScreen from "../../ui/RateErrorScreen.vue";
 
 const props = defineProps<{ selection: FundingSelection }>();
@@ -145,6 +146,7 @@ onUnmounted(() => {
     <div class="flex min-h-0 flex-1 flex-col px-6 pt-6">
       <!-- Resuming renders the deposit screen's skeleton shapes until the request is live. -->
       <DepositScreen v-if="session.resuming" @cancel="flow.confirmingCancel = true" />
+      <HostErrorScreen v-else-if="quoteFailed && session.hostUnreachable" @retry="requote" />
       <RateErrorScreen
         v-else-if="quoteFailed"
         :failures="session.quoteFailures"

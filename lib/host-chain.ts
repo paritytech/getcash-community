@@ -4,6 +4,7 @@
 
 import type { PolkadotClient } from "polkadot-api";
 import { NETWORK } from "@getsome/core";
+import { HostUnreachableError } from "./host-errors";
 import { withTimeout } from "./timeout";
 
 export const ASSET_HUB_WS = NETWORK.assetHub.rpc;
@@ -95,7 +96,9 @@ async function dialChain(target: ChainTarget): Promise<PolkadotClient> {
     // In a host container chain access comes from the host. There is no WebSocket fallback.
     const probe = await probeHostProvider(target);
     if (!probe.provider) {
-      throw new Error(`${target.label} chain: host did not provide access: ${probe.reason}`);
+      throw new HostUnreachableError(
+        `${target.label} chain: host did not provide access: ${probe.reason}`,
+      );
     }
     const client = createClient(probe.provider);
     try {
@@ -103,7 +106,10 @@ async function dialChain(target: ChainTarget): Promise<PolkadotClient> {
     } catch (e) {
       client.destroy();
       const reason = e instanceof Error ? e.message : String(e);
-      throw new Error(`${target.label} chain: host-routed connection failed: ${reason}`);
+      throw new HostUnreachableError(
+        `${target.label} chain: host-routed connection failed: ${reason}`,
+        { cause: e },
+      );
     }
     console.info(`[chain] ${target.label}: host-routed provider`);
     return client;
