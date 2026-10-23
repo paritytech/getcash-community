@@ -27,7 +27,7 @@ import {
 import type { WithdrawFeeView } from "../../../withdraw/offers";
 import { withdrawalRequestRef } from "../../../withdraw/rows";
 import Toolbar from "../../ui/Toolbar.vue";
-import WithdrawAddressScreen from "../WithdrawAddressScreen.vue";
+import WithdrawAddressScreen, { type PasteFeedback } from "../WithdrawAddressScreen.vue";
 import WithdrawCancelScreen from "../WithdrawCancelScreen.vue";
 import WithdrawFeesScreen from "../WithdrawFeesScreen.vue";
 import WithdrawJourneyScreen from "../WithdrawJourneyScreen.vue";
@@ -378,6 +378,7 @@ watch(
 // build never has one. Immediate: the deck may have staged this package before it mounted.
 const previewSkeleton = ref(false);
 const previewSecret = ref<string | undefined>(undefined);
+const previewPasteFeedback = ref<PasteFeedback | null>(null);
 watch(
   previewStage,
   (stage) => {
@@ -393,6 +394,7 @@ watch(
     receive.value = stage.receive;
     fees.value = stage.fees ?? null;
     previewSecret.value = stage.secret;
+    previewPasteFeedback.value = stage.pasteFeedback ?? null;
     step.value = stage.step;
     previewSkeleton.value = stage.skeleton === true;
   },
@@ -454,6 +456,7 @@ onUnmounted(() => {
         :network="network"
         :destination="destination"
         :initial="address"
+        :feedback="previewPasteFeedback"
         @next="onAddress"
       />
       <WithdrawSummaryScreen

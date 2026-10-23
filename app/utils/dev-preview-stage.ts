@@ -39,6 +39,8 @@ export type PreviewStage =
         | "region";
       chain?: string;
       address?: string;
+      /** Paste's word held on the address step. */
+      pasteFeedback?: "pasted" | "nothing-to-paste";
       /** The summary's canned estimate: a string shows it, null shows it quoting, absent hides
        *  the row as an estimate the quote could not give. */
       receive?: string | null;

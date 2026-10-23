@@ -2500,6 +2500,29 @@ export const SCENES: Scene[] = [
     },
     apply: (s, f) => base(s, f),
   },
+  // Paste's two words, held for the deck: a pasted address over the warning line, and an empty
+  // clipboard under the pill.
+  {
+    name: "withdrawal / crypto / address: pasted",
+    stage: {
+      kind: "withdraw-package",
+      step: "address",
+      chain: "Ethereum",
+      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
+      pasteFeedback: "pasted",
+    },
+    apply: (s, f) => base(s, f),
+  },
+  {
+    name: "withdrawal / crypto / address: nothing to paste",
+    stage: {
+      kind: "withdraw-package",
+      step: "address",
+      chain: "Ethereum",
+      pasteFeedback: "nothing-to-paste",
+    },
+    apply: (s, f) => base(s, f),
+  },
   // The summary and its fee drill-in, on the section's canned quote: the route never asks
   // Chainflip while the stage carries the estimate.
   {

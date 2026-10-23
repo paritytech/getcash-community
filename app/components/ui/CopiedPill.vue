@@ -6,8 +6,8 @@
 // means every new control has to remember to join in. Watching the signal, any successful copy
 // anywhere raises it, and a screen opts in simply by rendering this.
 import { onUnmounted, ref, watch } from "vue";
-import { Check } from "lucide-vue-next";
 import { copiedAt } from "../../composables/useCopyToClipboard";
+import SnackBar from "./SnackBar.vue";
 
 const props = withDefaults(defineProps<{ durationMs?: number }>(), { durationMs: 2000 });
 
@@ -28,11 +28,6 @@ onUnmounted(() => {
 
 <template>
   <div v-if="show" class="flex shrink-0 justify-center pb-3" aria-live="polite">
-    <span
-      class="flex items-center gap-2 rounded-full bg-surface-container px-4 py-2 text-label-m text-fg-primary shadow-1"
-    >
-      <Check class="size-4 text-fg-success" aria-hidden="true" />
-      Copied
-    </span>
+    <SnackBar text="Copied" tone="success" />
   </div>
 </template>
