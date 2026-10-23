@@ -1962,6 +1962,17 @@ export const SCENES: Scene[] = [
     },
   },
   {
+    // The host is crediting the balance: after 3 s the band adds the claim's stages and the
+    // worker's last tick.
+    name: "top-up / card / journey: adding to balance",
+    apply: async (s, f, i) => {
+      const r = await cardPayment(s, f, i);
+      await core(r, 1, swapping("complete", "meld-card"));
+      await r.observe(worker(r, 2, "swap"));
+      await r.observe(worker(r, 3, "claim", true));
+    },
+  },
+  {
     // The provider reports a temporary error (Meld's ERROR) and may still retry: amber current
     // line, delay text in the band, nothing terminal.
     name: "top-up / card / journey: delayed",

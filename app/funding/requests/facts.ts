@@ -10,10 +10,10 @@ import type {
   WorkerJobView,
 } from "./model";
 
-/** The later of two times, or the larger of two counts. */
-function latest(current: number | undefined, read: number | undefined): number | undefined {
-  if (current === undefined) return read;
-  return read === undefined ? current : Math.max(current, read);
+/** The latest of the times, or the largest of the counts, that are known; absent when none is. */
+export function latestOf(...values: (number | null | undefined)[]): number | undefined {
+  const known = values.filter((value): value is number => value != null);
+  return known.length === 0 ? undefined : Math.max(...known);
 }
 
 /** Stamps `fact` at `at`, unless the record observed it before. */
@@ -86,7 +86,7 @@ export function chainflipObserved(
   if (progress === undefined && egressScheduledAt === undefined) return record;
   const { lastStatechainUpdateAt, ...read } = progress ?? {};
   const current = record.chainflip;
-  const depositConfirmations = latest(current?.depositConfirmations, read.depositConfirmations);
+  const depositConfirmations = latestOf(current?.depositConfirmations, read.depositConfirmations);
   const chunks =
     read.chunks !== undefined &&
     (current?.chunks === undefined || read.chunks.executed >= current.chunks.executed)
@@ -96,21 +96,21 @@ export function chainflipObserved(
     depositConfirmations,
     requiredConfirmations: read.requiredConfirmations ?? current?.requiredConfirmations,
     boostedAt: current?.boostedAt ?? read.boostedAt,
-    swapScheduledAt: latest(current?.swapScheduledAt, read.swapScheduledAt),
+    swapScheduledAt: latestOf(current?.swapScheduledAt, read.swapScheduledAt),
     chunks,
-    swapRescheduledAt: latest(current?.swapRescheduledAt, read.swapRescheduledAt),
+    swapRescheduledAt: latestOf(current?.swapRescheduledAt, read.swapRescheduledAt),
     estimatedDurationsSeconds: estimatesKept(
       current?.estimatedDurationsSeconds,
       read.estimatedDurationsSeconds,
     ),
-    egressScheduledAt: latest(current?.egressScheduledAt, egressScheduledAt),
+    egressScheduledAt: latestOf(current?.egressScheduledAt, egressScheduledAt),
     confirmationsAt:
       depositConfirmations === current?.depositConfirmations ? current?.confirmationsAt : at,
     chunksAt: chunks?.executed === current?.chunks?.executed ? current?.chunksAt : at,
   });
   const next = chainflip === current ? record : { ...record, chainflip };
   const witnessed = record.witnesses.chainflip?.lastStatechainUpdateAt;
-  const clock = latest(witnessed, lastStatechainUpdateAt);
+  const clock = latestOf(witnessed, lastStatechainUpdateAt);
   if (clock === undefined || clock === witnessed) return next;
   return {
     ...next,
