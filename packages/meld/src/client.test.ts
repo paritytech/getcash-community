@@ -677,3 +677,72 @@ describe("the asset table", () => {
     await expect(client.getAssets()).rejects.toMatchObject({ status: 401 });
   });
 });
+
+describe("createMeldClient sale vault", () => {
+  const SALE = { status: "held", held: "98000000", returnStatus: "none", returnTx: null };
+
+  it("reads a sale's vault state from the adapter", async () => {
+    const { impl, calls } = stubSequence([
+      { status: 200, body: { sale: { ...SALE, home: "0x" } } },
+    ]);
+    const client = createMeldClient({
+      baseUrl: "https://adapter.test/",
+      productId: "getcash.dev",
+      fetchImpl: impl,
+    });
+    expect(await client.getSaleVault("funding/1")).toEqual(SALE);
+    expect(calls[0]!.url).toBe("https://adapter.test/offramp/sale/funding%2F1");
+    expect(calls[0]!.init?.headers).toEqual({
+      accept: "application/json",
+      "x-dev-product-id": "getcash.dev",
+    });
+  });
+
+  it("asks for a return with an empty body and reads the sale it answers", async () => {
+    const { impl, calls } = stubSequence([
+      { status: 200, body: { sale: { ...SALE, returnStatus: "returning", returnTx: "0xabc" } } },
+    ]);
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+    expect(await client.requestSaleVaultReturn("funding-1")).toEqual({
+      ...SALE,
+      returnStatus: "returning",
+      returnTx: "0xabc",
+    });
+    expect(calls[0]!.url).toBe("https://adapter.test/offramp/returns/funding-1");
+    expect(calls[0]!.init?.method).toBe("POST");
+    expect(calls[0]!.init?.body).toBe("{}");
+  });
+
+  it("carries the adapter's refusal code so the worker can tell a wait from a dead end", async () => {
+    const { impl } = stubSequence([
+      {
+        status: 409,
+        body: {
+          error: { tag: "Other", value: { code: "SALE_REFUND_NOT_ARRIVED", message: "not yet" } },
+        },
+      },
+    ]);
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+    await expect(client.requestSaleVaultReturn("funding-1")).rejects.toMatchObject({
+      status: 409,
+      code: "SALE_REFUND_NOT_ARRIVED",
+    });
+  });
+
+  it("fills defaults for missing fields and refuses an answer naming no sale", async () => {
+    const { impl } = stubSequence([
+      { status: 200, body: { sale: {} } },
+      { status: 200, body: {} },
+    ]);
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+    expect(await client.getSaleVault("funding-1")).toEqual({
+      status: "",
+      held: "0",
+      returnStatus: "none",
+      returnTx: null,
+    });
+    await expect(client.getSaleVault("funding-1")).rejects.toThrow(
+      "the adapter named no sale vault",
+    );
+  });
+});

@@ -6,3 +6,11 @@ coverage/
 .papi/
 public/fonts/
 pnpm-lock.yaml
+
+# Solidity is formatted by solhint, not prettier; and the Hardhat build output.
+packages/sale-vault/contracts/
+packages/sale-vault/artifacts/
+packages/sale-vault/cache/
+packages/sale-vault/typechain-types/
+packages/sale-vault/coverage/
+packages/sale-vault/coverage.json

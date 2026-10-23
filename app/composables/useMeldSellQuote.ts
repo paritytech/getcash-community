@@ -25,6 +25,7 @@ import {
   countryName,
   fetchOfframpCorridor,
   fetchOfframpCorridors,
+  getOfframpVault,
   methodFor,
   type OfframpLaneRef,
   type SupportedCorridor,
@@ -41,8 +42,8 @@ export interface MeldSellQuote {
   paymentMethodType: string;
   /** Exactly what the provider is paid, base units of the sold asset: PAS, or the lane's. */
   cryptoAmount: bigint;
-  /** A sale through an offramp lane: the lane, and the USDT redeem the withdrawal runs. */
-  swap?: { lane: LaneId; route: ConversionRoute };
+  /** A sale through an offramp lane: the lane, the USDT redeem, and the SaleVault it delivers to. */
+  swap?: { lane: LaneId; route: ConversionRoute; vault?: { chainId: number; contract: string } };
   /** A direct sale quoted under a code other than Meld's code for DOT, which the session must name
    *  too: its code for USDT on Asset Hub. */
   sellCode?: string;
@@ -310,11 +311,19 @@ export function useMeldSellQuote(
           const size: SizedSale =
             lane === null
               ? await sizeDirectSale(live, code, amount, toValue(reserved))
-              : await live.sizeSwapSale(amount, lane, toValue(reserved)).then((swap) => ({
-                  planck: swap.promise,
-                  backCash: 0n,
-                  swap: { lane: lane.id, route: swap.route },
-                }));
+              : await live.sizeSwapSale(amount, lane, toValue(reserved)).then((swap) => {
+                  // Only the Arbitrum lane routes through the SaleVault, so only it carries one.
+                  const v = lane.chainflip.chain === "Arbitrum" ? getOfframpVault() : null;
+                  return {
+                    planck: swap.promise,
+                    backCash: 0n,
+                    swap: {
+                      lane: lane.id,
+                      route: swap.route,
+                      ...(v ? { vault: { chainId: v.chainId, contract: v.contract } } : {}),
+                    },
+                  };
+                });
           if (mine !== epoch) return;
           const { quotes } = await client.getSellQuote({
             country: country.value,

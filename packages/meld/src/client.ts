@@ -93,7 +93,8 @@ export interface MeldSessionResult {
 
 /**
  * Sell-session request, Meld's sessionType SELL. The provider issues the deposit address after
- * KYC, so none is named here; it comes back later on the status.
+ * KYC, so none is named here, and it comes back later on the status. `walletAddress` is the seller's
+ * own sending and refund address, which Banxa requires.
  */
 export interface MeldSellSessionRequest {
   readonly serviceProvider: string;
@@ -109,6 +110,8 @@ export interface MeldSellSessionRequest {
   /** The fiat paid out, e.g. 'EUR'. */
   readonly destinationCurrencyCode: string;
   readonly paymentMethodType: string;
+  /** The address the crypto is sent from, where a provider refund lands, none sent when absent. */
+  readonly walletAddress?: string;
 }
 
 /**
@@ -183,6 +186,20 @@ export type MeldCancelResult =
 export interface MeldSellClientLike {
   getSellQuote(req: MeldSellQuoteRequest): Promise<{ quotes: MeldQuoteEntry[] }>;
   createSellSession(req: MeldSellSessionRequest): Promise<MeldSessionResult>;
+}
+
+/** A sale's SaleVault state as the adapter reports it, the fields the worker acts on. */
+export interface MeldSaleVault {
+  status: string;
+  held: string;
+  returnStatus: string;
+  returnTx: string | null;
+}
+
+/** The adapter's SaleVault routes for an offramp sale, keyed by its funding request. */
+export interface MeldSaleVaultClientLike {
+  getSaleVault(fundingRequestId: string): Promise<MeldSaleVault>;
+  requestSaleVaultReturn(fundingRequestId: string): Promise<MeldSaleVault>;
 }
 
 export interface MeldClientLike extends Partial<MeldSellClientLike> {
@@ -403,7 +420,9 @@ function depositOf(raw: unknown): MeldDepositDisclosure | undefined {
  * `POST /session` and `GET /funding/:fundingRequestId`. A sell rides the same routes with
  * `direction: "sell"` in the body; absent means buy.
  */
-export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & MeldSellClientLike {
+export function createMeldClient(
+  config: MeldEndpointConfig,
+): MeldClientLike & MeldSellClientLike & MeldSaleVaultClientLike {
   const doFetch = config.fetchImpl ?? fetch;
   const base = config.baseUrl.replace(/\/$/, "");
   /**
@@ -484,6 +503,19 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
       body: JSON.stringify(body),
     });
     return read(res, what, region);
+  }
+
+  // The sale vault fields off an adapter `{ sale }` answer, or a throw when it names none.
+  function saleVaultOf(data: Record<string, unknown>): MeldSaleVault {
+    const sale = data.sale as Record<string, unknown> | undefined;
+    if (typeof sale !== "object" || sale === null)
+      throw new Error("the adapter named no sale vault");
+    return {
+      status: String(sale.status ?? ""),
+      held: String(sale.held ?? "0"),
+      returnStatus: String(sale.returnStatus ?? "none"),
+      returnTx: typeof sale.returnTx === "string" ? sale.returnTx : null,
+    };
   }
 
   /** Fetches `GET /funding/:id` and maps the adapter's funding record onto MeldStatusResult. */
@@ -736,6 +768,7 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
           // The crypto leg, named as on the buy; see `getSellQuote`.
           destinationCurrencyCode: req.sourceCurrencyCode,
           cryptoAmount: req.sourceAmount,
+          ...(req.walletAddress !== undefined ? { walletAddress: req.walletAddress } : {}),
           paymentMethodType: req.paymentMethodType,
           serviceProvider: req.serviceProvider,
           ...(config.redirectUrl ? { redirectUrl: config.redirectUrl } : {}),
@@ -746,6 +779,9 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
           ["fiat", found.fiat, req.destinationCurrencyCode],
           ["destinationCurrencyCode", found.destinationCurrencyCode, req.sourceCurrencyCode],
           ["cryptoAmount", found.cryptoAmount, req.sourceAmount],
+          ...(req.walletAddress !== undefined
+            ? [["walletAddress", found.walletAddress, req.walletAddress] as const]
+            : []),
         ],
         mismatchMessage: "We found a sale for a different order. Do not start another.",
         reopenedMessage:
@@ -794,5 +830,18 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
         throw err;
       }
     },
+
+    getSaleVault: async (fundingRequestId) => {
+      const res = await doFetch(`${base}/offramp/sale/${encodeURIComponent(fundingRequestId)}`, {
+        headers: headers(),
+        signal: AbortSignal.timeout(STATUS_TIMEOUT_MS),
+      });
+      return saleVaultOf(await read(res, "the sale vault"));
+    },
+
+    requestSaleVaultReturn: async (fundingRequestId) =>
+      saleVaultOf(
+        await post(`/offramp/returns/${encodeURIComponent(fundingRequestId)}`, {}, "the return"),
+      ),
   };
 }

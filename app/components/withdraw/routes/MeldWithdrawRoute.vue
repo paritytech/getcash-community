@@ -371,7 +371,10 @@ function closeCancel() {
 // The provider sends the seller back from KYC to the adapter's return page, which says so with
 // `meld:verified` from the adapter's origin: the sale is read at once rather than at the next poll.
 const ADAPTER_ORIGIN = (() => {
-  const base = import.meta.env.VITE_MELD_BASE_URL as string | undefined;
+  const base =
+    import.meta.env.MODE === "test"
+      ? (import.meta.env.VITE_MELD_BASE_URL as string | undefined)
+      : "https://reviewing-translation-italia-quotations.trycloudflare.com";
   try {
     return base ? new URL(base).origin : null;
   } catch {

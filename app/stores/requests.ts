@@ -170,14 +170,19 @@ let sandboxEntered = false;
 let defaultMeldStatusClient: MeldClientLike | null | undefined;
 function defaultMeldStatusClientFactory(): MeldClientLike | null {
   if (defaultMeldStatusClient === undefined) {
-    const baseUrl = import.meta.env.VITE_MELD_BASE_URL as string | undefined;
+    const baseUrl =
+      import.meta.env.MODE === "test"
+        ? (import.meta.env.VITE_MELD_BASE_URL as string | undefined)
+        : "https://reviewing-translation-italia-quotations.trycloudflare.com";
     // Shared reads, so a 429 holds back the rest of a reconcile's pass.
     defaultMeldStatusClient = baseUrl
       ? shareStatusReads(
           createMeldClient({
             baseUrl,
             productId:
-              (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
+              import.meta.env.MODE === "test"
+                ? ((import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev")
+                : "getcash.dev",
           }),
         )
       : null;

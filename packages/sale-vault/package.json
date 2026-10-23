@@ -1,0 +1,34 @@
+{
+  "name": "@getsome/sale-vault",
+  "version": "0.0.0",
+  "private": true,
+  "description": "SaleVault: the on-Arbitrum contract that pays a Meld off-ramp provider an exact amount from a Chainflip swap and keeps the leftover as self-funding gas.",
+  "license": "GPL-3.0-or-later",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "test:fork": "hardhat test test/SaleVault.fork.test.ts",
+    "coverage": "hardhat coverage",
+    "lint": "solhint 'contracts/**/*.sol'",
+    "lint:fix": "solhint 'contracts/**/*.sol' --fix --noPrompt",
+    "size": "hardhat size-contracts",
+    "verify": "hardhat verify",
+    "clean": "hardhat clean && rm -rf artifacts cache typechain-types coverage"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@openzeppelin/contracts": "^5.1.0",
+    "@types/chai": "^4.3.11",
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^22.0.0",
+    "chai": "^4.3.10",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.13.0",
+    "fast-check": "^3.23.0",
+    "hardhat": "^2.24.1",
+    "hardhat-contract-sizer": "^2.10.0",
+    "solhint": "^5.0.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.0"
+  }
+}

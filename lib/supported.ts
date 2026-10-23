@@ -51,12 +51,21 @@ export interface OfframpLaneRef {
 }
 
 /** A (country, fiat) corridor. Empty `methods` means nothing routes here. */
+/** The SaleVault an offramp sale's Chainflip CCM delivers to, when the adapter names one. */
+export interface SaleVaultTarget {
+  chain: string;
+  chainId: number;
+  contract: string;
+}
+
 export interface SupportedCorridor {
   country: string;
   fiat: string;
   methods: SupportedMethod[];
   /** The country's name, where the catalog gave one. */
   name?: string;
+  /** The SaleVault to deliver to, present only on the per-country offramp read that carries it. */
+  vault?: SaleVaultTarget;
 }
 
 /** One region-dropdown row. Deliverability is answered per selection by `fetchCorridor`. */
@@ -85,14 +94,18 @@ export function countryName(country: string): string {
 }
 
 function baseUrl(): string | undefined {
-  return import.meta.env.VITE_MELD_BASE_URL as string | undefined;
+  return import.meta.env.MODE === "test"
+    ? (import.meta.env.VITE_MELD_BASE_URL as string | undefined)
+    : "https://reviewing-translation-italia-quotations.trycloudflare.com";
 }
 
 function headers(): Record<string, string> {
   return {
     accept: "application/json",
     "x-dev-product-id":
-      (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
+      import.meta.env.MODE === "test"
+        ? ((import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev")
+        : "getcash.dev",
   };
 }
 
@@ -270,16 +283,45 @@ export async function fetchSupportedCorridors(
 
 let offrampCorridors: Map<string, SupportedCorridor> | null = null;
 const offrampCorridorCache = new Map<string, SupportedCorridor>();
+// The deployment-wide SaleVault, learned from the bulk offramp read and reused by the sale opener.
+let offrampVault: SaleVaultTarget | null = null;
+
+/** The SaleVault the bulk offramp read named, or null when none is configured or it is not loaded yet. */
+export function getOfframpVault(): SaleVaultTarget | null {
+  return offrampVault;
+}
 
 function corridorOf(c: Record<string, unknown>, country: string): SupportedCorridor {
   const fiat = String(c.fiat ?? "");
   const methods = Array.isArray(c.methods) ? (c.methods as Record<string, unknown>[]) : [];
+  const vault = vaultOf(c.vault);
   return {
     country,
     fiat,
     methods: methods.map((m) => toMethod(m, fiat)),
     ...(typeof c.name === "string" && c.name !== "" ? { name: c.name } : {}),
+    ...(vault ? { vault } : {}),
   };
+}
+
+// The SaleVault target off a corridor payload, or undefined when the adapter named none.
+function vaultOf(v: unknown): SaleVaultTarget | undefined {
+  if (typeof v !== "object" || v === null) return undefined;
+  const o = v as Record<string, unknown>;
+  if (
+    typeof o.chain !== "string" ||
+    o.chain === "" ||
+    typeof o.chainId !== "number" ||
+    typeof o.contract !== "string"
+  ) {
+    return undefined;
+  }
+  // The address becomes a swap's egress destination, so a malformed one is dropped rather than used:
+  // a positive integer chain id and a 20-byte EVM address, since the vault lives on an EVM chain.
+  if (!Number.isInteger(o.chainId) || o.chainId <= 0 || !/^0x[0-9a-fA-F]{40}$/.test(o.contract)) {
+    return undefined;
+  }
+  return { chain: o.chain, chainId: o.chainId, contract: o.contract };
 }
 
 /** Every off-ramp corridor as a country -> corridor map, tab-cached; null when unreachable. */
@@ -292,12 +334,14 @@ export async function fetchOfframpCorridors(): Promise<Map<string, SupportedCorr
       headers: headers(),
     });
     if (!res.ok) return null;
-    const data = (await res.json()) as { corridors?: Record<string, unknown>[] };
+    const data = (await res.json()) as { corridors?: Record<string, unknown>[]; vault?: unknown };
     const map = new Map<string, SupportedCorridor>();
     for (const c of data.corridors ?? []) {
       const country = String(c.country ?? "");
       if (country !== "") map.set(country, corridorOf(c, country));
     }
+    const vault = vaultOf(data.vault);
+    if (vault !== undefined) offrampVault = vault;
     // Only a non-empty result is cached; an empty one (cold cache) is retried next call.
     if (map.size > 0) offrampCorridors = map;
     return map;

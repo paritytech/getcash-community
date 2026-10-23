@@ -130,7 +130,7 @@ describe("createMeldClient sell sessions", () => {
       serviceProvider: "TRANSAK",
       redirectUrl: "https://adapter.test/meld/return",
     });
-    // Optional on a sale at Meld, and refused by the adapter.
+    // None named, none sent.
     expect(sent).not.toHaveProperty("walletAddress");
     // The order reference is key material, not a term the adapter is told.
     expect(sent).not.toHaveProperty("orderRef");
@@ -140,6 +140,53 @@ describe("createMeldClient sell sessions", () => {
       fundingRequestId: "funding-sell-1",
       widgetUrl: "https://kyc.test",
     });
+  });
+
+  it("sends the seller's own sending address when named", async () => {
+    const { impl, calls } = stubSequence([created]);
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+    await client.createSellSession({ ...SELL_REQ, walletAddress: SELL_REQ.orderRef });
+    expect(body(calls[0]!)).toMatchObject({ direction: "sell", walletAddress: SELL_REQ.orderRef });
+  });
+
+  it("refuses to resume into a sale opened from another address", async () => {
+    const reused = {
+      status: 409,
+      body: {
+        error: {
+          tag: "Other",
+          value: {
+            code: "IDEMPOTENCY_KEY_REUSED",
+            message: "reused",
+            fundingRequestId: "funding-live",
+          },
+        },
+      },
+    };
+    const live = (walletAddress: string) => ({
+      status: 200,
+      body: {
+        funding: {
+          status: "session_opened",
+          serviceProviderWidgetUrl: "https://kyc.test/resume",
+          fiat: "EUR",
+          destinationCurrencyCode: "DOT",
+          cryptoAmount: "23.4521",
+          walletAddress,
+        },
+      },
+    });
+    const req = { ...SELL_REQ, walletAddress: SELL_REQ.orderRef };
+    const other = createMeldClient({
+      baseUrl: "https://adapter.test",
+      fetchImpl: stubSequence([reused, live("1Other")]).impl,
+    });
+    await expect(other.createSellSession(req)).rejects.toThrow(/different order/);
+    const same = createMeldClient({
+      baseUrl: "https://adapter.test",
+      fetchImpl: stubSequence([reused, live(SELL_REQ.orderRef)]).impl,
+    });
+    expect((await same.createSellSession(req)).fundingRequestId).toBe("funding-live");
   });
 
   it("keeps a buy and a sale of one pair on different keys", async () => {
