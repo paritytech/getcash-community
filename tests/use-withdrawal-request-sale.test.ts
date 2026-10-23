@@ -349,8 +349,8 @@ describe("a fiat sale from the page", () => {
         paymentMethodType: "SEPA",
       }),
     );
-    // Optional on a sale, and the adapter refuses it: no wallet is named.
-    expect(spy.mock.calls[0]![0]).not.toHaveProperty("walletAddress");
+    // The key sends the crypto, so it is where a provider refund lands.
+    expect(spy.mock.calls[0]![0]).toMatchObject({ walletAddress: KEY_ADDRESS });
     if (!outcome.ok) return;
     const record = useRequestsStore().get(outcome.ref) as WithdrawalRecord;
     expect(record).toMatchObject({
@@ -674,6 +674,26 @@ describe("a fiat sale from the page", () => {
 
     beforeEach(() => {
       openSwap.mockReset().mockResolvedValue(swapChannel("cf-fresh", FIXTURE_NOW + 3_600_000));
+    });
+
+    it("names the vault as a lane sale's sending address, and nothing for a lane without one", async () => {
+      const spy = vi.spyOn(meld, "createSellSession");
+      const lane = (swap: Record<string, unknown>) =>
+        useWithdrawalRequest().startSale({
+          method: "bank",
+          amount: 30_000_000n,
+          country: "GB",
+          fiat: "GBP",
+          paymentMethodType: "UK_FASTER_PAYMENTS",
+          quote: QUOTE,
+          cryptoAmount: LANE_COMMITTED,
+          swap: { route: REDEEM, ...swap } as never,
+        });
+      const VAULT = "0xAbCdEf0123456789aBcDeF0123456789AbCdEf01";
+      await lane({ lane: "usdc-arbitrum", vault: { chainId: 421614, contract: VAULT } });
+      await lane({ lane: "usdc-solana" });
+      expect(spy.mock.calls[0]![0]).toMatchObject({ walletAddress: VAULT.toLowerCase() });
+      expect(spy.mock.calls[1]![0]).not.toHaveProperty("walletAddress");
     });
 
     async function laneSaleAtDeposit() {

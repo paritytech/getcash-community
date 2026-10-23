@@ -248,8 +248,8 @@ export function useWithdrawalRequest() {
    * is the key's, so a session whose answer was lost would otherwise hold that key to its terms,
    * and the seller's next try at another amount would be refused as a different order.
    *
-   * The seller's own wallet is not sent. Meld takes it on a sale as optional, and the adapter
-   * refuses it for now.
+   * The seller's own sending address is sent as `walletAddress`, where a provider refund lands: the
+   * key on a direct sale, the SaleVault on an Arbitrum lane, and none on a lane without one.
    */
   async function startSale(input: MeldSaleStart): Promise<MeldSaleStartOutcome> {
     if (!isHosted()) {
@@ -308,6 +308,12 @@ export function useWithdrawalRequest() {
         sourceAmount: formatSellAmount(input.cryptoAmount, token),
         destinationCurrencyCode: input.fiat,
         paymentMethodType: input.paymentMethodType,
+        // The address the crypto leaves from, where a provider refund lands: the key, or the vault.
+        ...(input.swap === undefined
+          ? { walletAddress: key.address }
+          : input.swap.vault !== undefined
+            ? { walletAddress: input.swap.vault.contract.toLowerCase() }
+            : {}),
       });
     } catch (e: unknown) {
       return { ok: false, reason: messageOf(e) };

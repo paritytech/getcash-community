@@ -976,7 +976,9 @@ describe("a direct fiat sale of USDT", () => {
   it("sends what the payment left home as USDT through the pool", async () => {
     const engine = await landed();
     mocks.keyUsdt = 1_500_000n; // 1.5 USDT left on the key once it paid
-    await engine.tickAllWithdraw(); // the key pays the provider, then what is left goes home
+    mocks.status.mockResolvedValue({ status: "complete" });
+    await engine.tickAllWithdraw(); // the key pays the provider
+    await engine.tickAllWithdraw(); // the sale settles, then what is left goes home
     expect(mocks.startFunding).toHaveBeenCalledTimes(1);
     expect(mocks.startFunding.mock.calls[0]![0]).toMatchObject({ tier: "pool", external: "USDT" });
     expect(storedJob().residue).toMatchObject({ amount: "1500000", returning: true });
@@ -985,9 +987,76 @@ describe("a direct fiat sale of USDT", () => {
   it("keeps less than a USDT on the key rather than pay the way home", async () => {
     const engine = await landed();
     mocks.keyUsdt = 170_000n;
+    mocks.status.mockResolvedValue({ status: "complete" });
+    await engine.tickAllWithdraw();
     await engine.tickAllWithdraw();
     expect(mocks.startFunding).not.toHaveBeenCalled();
     expect(storedJob().residue).toEqual({ amount: "170000", returning: false });
+  });
+
+  it("sends nothing home while the paid sale is live", async () => {
+    const engine = await landed();
+    mocks.keyUsdt = 1_500_000n;
+    await engine.tickAllWithdraw();
+    await engine.tickAllWithdraw();
+    expect(storedJob().leg.paid).toBe(true);
+    expect(storedJob().residue).toBeUndefined();
+    expect(mocks.startFunding).not.toHaveBeenCalled();
+  });
+
+  /** The provider's ending for a sale it refunded instead of paying out. */
+  const refunded = {
+    status: "failed",
+    depositFailure: { reason: { code: "refunded" }, kind: "unknown" },
+  };
+
+  it("waits for a refunded sale's refund on the key, then sends it home", async () => {
+    const engine = await landed();
+    mocks.keyUsdt = 170_000n;
+    await engine.tickAllWithdraw(); // the key pays the provider
+    mocks.status.mockResolvedValue(refunded);
+    await engine.tickAllWithdraw(); // the provider refunds to the key, its sending address
+    expect(storedJob()).toMatchObject({ phase: "failed" });
+    expect(storedJob().residue).toBeUndefined();
+    expect(storedJob().residueError).toMatch(/provider's refund/);
+    mocks.keyUsdt = 25_170_000n; // the refund lands
+    await engine.tickAllWithdraw();
+    expect(mocks.startFunding.mock.calls[0]![0]).toMatchObject({ tier: "pool", external: "USDT" });
+    expect(storedJob().residue).toMatchObject({ amount: "25170000", returning: true });
+  });
+
+  it("waits for the refund even when the payment left a residue worth sending", async () => {
+    const first = await engineWith({});
+    await first.startWithdraw(usdtHandoff());
+    const job = storedJob();
+    Object.assign(job, { landed: true, phase: "handoff" });
+    job.state.fundsSeenAt = NOW - 60_000;
+    job.leg.exact.balanceBefore = "26500000"; // what the key held as the payment left
+    const engine = await engineWith({ "s-1": job });
+    mocks.keyUsdt = 1_500_000n;
+    await engine.tickAllWithdraw(); // the key pays the provider, 1.5 USDT left on it
+    mocks.status.mockResolvedValue({
+      status: "failed",
+      depositFailure: { reason: { code: "failed" }, kind: "unknown" },
+    });
+    await engine.tickAllWithdraw(); // any failure once paid may still be refunded
+    expect(storedJob().residue).toBeUndefined();
+    expect(mocks.startFunding).not.toHaveBeenCalled();
+    mocks.keyUsdt = 26_500_000n; // the refund lands on top of the residue
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue).toMatchObject({ amount: "26500000", returning: true });
+  });
+
+  it("leaves a refund that never reaches the key for a person after a week", async () => {
+    const engine = await landed();
+    await engine.tickAllWithdraw();
+    mocks.status.mockResolvedValue(refunded);
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue).toBeUndefined();
+    vi.setSystemTime(NOW + 7 * 86_400_000);
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue).toMatchObject({ amount: "0", returning: false, stuck: true });
+    expect(mocks.startFunding).not.toHaveBeenCalled();
   });
 
   it("sends the whole key home as USDT when the sale ends before the provider is paid", async () => {

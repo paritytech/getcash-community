@@ -309,7 +309,7 @@ export async function quoteDirectCashFor(native: bigint): Promise<bigint> {
 // for the price to move while the seller verifies, less what the payment itself costs the key. On
 // the PSM tier the rate is frozen on the sale, so the figure is what the batch pays out of what
 // the key holds, less the payment's cost and nothing else. What the sale lands above the figure is
-// the residue, which the worker sends home once the provider is paid. Before the purse is asked
+// the residue, which the worker sends home once the provider is paid and the sale ends. Before the purse is asked
 // the figure is checked again, on the pool tier with that margin under the floor, since the worker
 // sizes the sale a few minutes later, and on the PSM tier with the pair decided again as it stands,
 // since the seller's verification can take hours; a price that moved too far meanwhile, or a PSM
