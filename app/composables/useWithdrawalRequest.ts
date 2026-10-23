@@ -89,8 +89,8 @@ export interface MeldSaleStart {
   quote: MeldQuoteEntry;
   /** Exactly what the provider is paid, base units of the sold asset: PAS, USDT, or the lane's. */
   cryptoAmount: bigint;
-  /** A sale through an offramp lane: the lane, and the USDT redeem the withdrawal runs. */
-  swap?: { lane: LaneId; route: ConversionRoute };
+  /** A sale through an offramp lane: the lane, the USDT redeem, and the SaleVault to deliver to. */
+  swap?: { lane: LaneId; route: ConversionRoute; vault?: { chainId: number; contract: string } };
   /** A direct sale quoted under a code other than Meld's code for DOT: its code for USDT on Asset
    *  Hub. The session names the same code. */
   sellCode?: string;
@@ -248,8 +248,8 @@ export function useWithdrawalRequest() {
    * is the key's, so a session whose answer was lost would otherwise hold that key to its terms,
    * and the seller's next try at another amount would be refused as a different order.
    *
-   * The seller's own wallet is not sent. Meld takes it on a sale as optional, and the adapter
-   * refuses it for now.
+   * The seller's own sending address is sent as `walletAddress`, where a provider refund lands: the
+   * key on a direct sale, the SaleVault on an Arbitrum lane, and none on a lane without one.
    */
   async function startSale(input: MeldSaleStart): Promise<MeldSaleStartOutcome> {
     if (!isHosted()) {
@@ -308,6 +308,12 @@ export function useWithdrawalRequest() {
         sourceAmount: formatSellAmount(input.cryptoAmount, token),
         destinationCurrencyCode: input.fiat,
         paymentMethodType: input.paymentMethodType,
+        // The address the crypto leaves from, where a provider refund lands: the key, or the vault.
+        ...(input.swap === undefined
+          ? { walletAddress: key.address }
+          : input.swap.vault !== undefined
+            ? { walletAddress: input.swap.vault.contract.toLowerCase() }
+            : {}),
       });
     } catch (e: unknown) {
       return { ok: false, reason: messageOf(e) };
@@ -376,6 +382,7 @@ export function useWithdrawalRequest() {
         cryptoAmount: input.cryptoAmount.toString(),
         ...(input.swap === undefined ? {} : { lane: input.swap.lane }),
         ...(input.sellCode === undefined ? {} : { sellCode: input.sellCode }),
+        ...(input.swap?.vault ? { vault: input.swap.vault } : {}),
         ...(soldAsset === undefined ? {} : { asset: soldAsset }),
         quotedPayout: quote.destinationAmount,
         ...(Object.keys(fees).length === 0 ? {} : { fees }),
@@ -478,6 +485,8 @@ export function useWithdrawalRequest() {
       committed: BigInt(record.sale.cryptoAmount),
       providerAddress: provider.address,
       keyPublicKeyHex: record.key.publicKeyHex,
+      fundingRequestId: record.sale.fundingRequestId,
+      ...(record.sale.vault ? { vault: record.sale.vault } : {}),
       reserved: reservedFor(recordedRoute(record.handoff), ref),
     });
     if (swap === null) return false;

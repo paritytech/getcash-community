@@ -30,6 +30,8 @@ export async function requestDepositAddress(
           args.fillOrKill?.slippageTolerancePercent ?? String(channelSlippagePct(rawQuote)),
         retryDurationMinutes: args.fillOrKill?.retryDurationMinutes ?? 10,
       },
+      // Forwarded only for a CCM sale, so the egress calls SaleVault with the message.
+      ...(args.ccm ? { ccmParams: args.ccm } : {}),
     });
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);

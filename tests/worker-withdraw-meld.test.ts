@@ -305,7 +305,9 @@ describe("the worker's side of a fiat sale", () => {
   });
 
   it("sends the residue home through the funding engine once the payment is out", async () => {
+    mocks.status.mockResolvedValue({ status: "complete" });
     const engine = await engineWith({ "s-1": landedJob() });
+    await engine.tickAllWithdraw();
     await engine.tickAllWithdraw();
     expect(mocks.startFunding).toHaveBeenCalledTimes(1);
     expect(mocks.startFunding.mock.calls[0]![0]).toMatchObject({
@@ -332,7 +334,9 @@ describe("the worker's side of a fiat sale", () => {
 
   it("keeps a residue too small to be worth the way back", async () => {
     mocks.keyFree = 200_000_000n;
+    mocks.status.mockResolvedValue({ status: "complete" });
     const engine = await engineWith({ "s-1": landedJob() });
+    await engine.tickAllWithdraw();
     await engine.tickAllWithdraw();
     expect(mocks.startFunding).not.toHaveBeenCalled();
     expect(storedJob().residue).toEqual({ amount: "200000000", returning: false });
@@ -349,7 +353,9 @@ describe("the worker's side of a fiat sale", () => {
   });
 
   it("describes the residue to the page", async () => {
+    mocks.status.mockResolvedValue({ status: "complete" });
     const engine = await engineWith({ "s-1": landedJob() });
+    await engine.tickAllWithdraw();
     await engine.tickAllWithdraw();
     expect(await engine.withdrawStatus({ sessionId: "s-1" })).toMatchObject({
       residue: { amount: "7000000000", returning: true },
@@ -408,7 +414,11 @@ describe("a sale's payment whose answer was lost", () => {
     expect(mocks.payRailExact).not.toHaveBeenCalled();
     expect(storedJob()).toMatchObject({ phase: "handoff", leg: { paid: true } });
     expect(storedJob().failure).toBeUndefined();
-    // Paid, so what is left goes home as a residue, not as the whole key.
+    // Paid, so what is left goes home as a residue, not as the whole key, once the sale ends.
+    expect(storedJob().residue).toBeUndefined();
+    mocks.status.mockResolvedValue({ status: "complete" });
+    await engine.tickAllWithdraw();
+    await engine.tickAllWithdraw();
     expect(storedJob().residue).toMatchObject({ amount: "1000000000", returning: true });
   });
 
@@ -465,6 +475,9 @@ describe("a sale's payment whose answer was lost", () => {
     mocks.exactPaymentOut.mockResolvedValue(true);
     await engine.tickAllWithdraw();
     expect(storedJob()).toMatchObject({ phase: "handoff", leg: { paid: true } });
+    mocks.status.mockResolvedValue({ status: "complete" });
+    await engine.tickAllWithdraw();
+    await engine.tickAllWithdraw();
     expect(storedJob().residue).toMatchObject({ returning: true });
     expect(storedJob().residue.whole).toBeUndefined();
   });
@@ -561,20 +574,22 @@ describe("a sale that ends before its provider is paid", () => {
     const engine = await engineWith({ "s-1": landedJob() });
     await engine.tickAllWithdraw();
     expect(storedJob().leg.paid).toBe(true);
-    // The way home is on the job, though its funding job is not there yet.
+    // The sale is still live, so nothing goes home yet.
+    expect(storedJob().residue).toBeUndefined();
+
+    // The provider settles on the next pass: the job is done and ticked no more, and the key
+    // goes home. The way home is on the job, though its funding job is not there yet.
+    mocks.status.mockResolvedValue({ status: "complete" });
+    await engine.tickAllWithdraw();
+    expect(storedJob()).toMatchObject({ done: true, phase: "done" });
     expect(storedJob().residue).toMatchObject({
       amount: "21000000000",
       returning: true,
       sessionId: "s-1/residue",
     });
     expect(storedJob().residueError).toMatch(/storage down/);
-
-    // The provider settles on the next pass: the job is done and ticked no more, but the key
-    // still goes home.
-    mocks.status.mockResolvedValue({ status: "complete" });
     mocks.startFunding.mockRejectedValueOnce(new Error("still down"));
     await engine.tickAllWithdraw();
-    expect(storedJob()).toMatchObject({ done: true, phase: "done" });
     expect(storedJob().residueError).toMatch(/still down/);
     await engine.tickAllWithdraw();
     expect(mocks.status).toHaveBeenCalledTimes(1);
@@ -615,8 +630,10 @@ describe("a sale that ends before its provider is paid", () => {
   it("gives up a residue read that hangs, and tries it again", async () => {
     mocks.channel.mockResolvedValue({ ...closed, expired: false });
     mocks.payRailExact.mockResolvedValue(undefined);
-    mocks.keyReadHangs = true;
+    mocks.status.mockResolvedValue({ status: "complete" });
     const engine = await engineWith({ "s-1": landedJob() });
+    await engine.tickAllWithdraw();
+    mocks.keyReadHangs = true;
     const pass = engine.tickAllWithdraw();
     await vi.advanceTimersByTimeAsync(30_000);
     await pass;
@@ -821,6 +838,8 @@ describe("a sale's way to the provider and back", () => {
   it("starts the way home again when its funding job failed, then leaves it stuck for a person", async () => {
     const engine = await engineWith({ "s-1": landedJob() });
     mocks.payRailExact.mockResolvedValue(undefined);
+    mocks.status.mockResolvedValue({ status: "complete" });
+    await engine.tickAllWithdraw();
     await engine.tickAllWithdraw();
     expect(mocks.startFunding).toHaveBeenCalledTimes(1);
     mocks.fundingStatus.mockResolvedValue({ phase: "failed", failure: "timeout", claim: null });
@@ -1024,12 +1043,17 @@ describe("a failed sale whose payment may still land", () => {
     return job;
   };
 
-  it("takes a payment the chain shows landed as paid, and sends only what is left home", async () => {
+  it("takes a payment the chain shows landed as paid, and waits for the provider's refund", async () => {
     mocks.exactPaymentOut.mockResolvedValue(true);
     const engine = await engineWith({ "s-1": inFlight() });
     await engine.tickAllWithdraw();
     expect(storedJob().leg.paid).toBe(true);
-    expect(storedJob().residue).toMatchObject({ amount: "7000000000", returning: true });
+    // The provider holds a payment for a failed sale, and refunds it to the key.
+    expect(storedJob().residue).toBeUndefined();
+    expect(storedJob().residueError).toMatch(/provider's refund/);
+    mocks.keyFree = 28_000_000_000n;
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue).toMatchObject({ amount: "28000000000", returning: true });
   });
 
   it("sends the whole key home once the attempt outlived its mortality unlanded", async () => {
@@ -1178,7 +1202,9 @@ describe("a sale on the PSM tier, in USDT", () => {
   });
 
   it("sends the USDT residue home on the mint route the worker chose for it", async () => {
+    mocks.status.mockResolvedValue({ status: "complete" });
     const engine = await engineWith({ "s-1": psmJob() });
+    await engine.tickAllWithdraw();
     await engine.tickAllWithdraw();
     expect(mocks.payRailExact).toHaveBeenCalledTimes(1);
     expect(mocks.chooseRoute).toHaveBeenCalledTimes(1);
@@ -1207,7 +1233,9 @@ describe("a sale on the PSM tier, in USDT", () => {
 
   it("keeps a USDT residue under a tenth of a dollar, choosing no route for it", async () => {
     mocks.keyToken = 99_999n;
+    mocks.status.mockResolvedValue({ status: "complete" });
     const engine = await engineWith({ "s-1": psmJob() });
+    await engine.tickAllWithdraw();
     await engine.tickAllWithdraw();
     expect(mocks.chooseRoute).not.toHaveBeenCalled();
     expect(mocks.startFunding).not.toHaveBeenCalled();

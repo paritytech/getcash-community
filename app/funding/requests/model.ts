@@ -575,6 +575,8 @@ export interface WithdrawalChannel {
   /** The exact planck the key pays, for a provider that holds it to its quote. Absent: the key
    *  pays everything it holds. */
   amount?: string;
+  // The SaleVault the swap egress pays, when the channel delivers through a sale contract with CCM.
+  vaultAddress?: string;
 }
 
 /**
@@ -600,6 +602,8 @@ export interface MeldSale {
    *  redeemed, which the key pays and `cryptoAmount` is in. The code as the adapter named the asset
    *  when the sale opened, kept for the wire; what the sale sells is `asset`. */
   sellCode?: string;
+  // The SaleVault a lane sale delivers to, when it routes through a sale contract with CCM.
+  vault?: { chainId: number; contract: string };
   /** The asset a direct sale under `sellCode` sells, by the app's own name for it, fixed when the
    *  sale opened. Meld renames codes and the adapter's table then no longer knows the old one, so
    *  the sale is read by this, not by its code. A record from before it was kept has only the

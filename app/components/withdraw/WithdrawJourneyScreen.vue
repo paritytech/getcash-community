@@ -6,6 +6,7 @@ import { computed } from "vue";
 import { RefreshCcw, X } from "lucide-vue-next";
 import { formatBaseUnits, sellAmountOf } from "@getsome/meld";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
+import { useSaleVaultStatus } from "../../composables/useSaleVaultStatus";
 import { SUCCESS_ICON_DELAY_MS, useJourneySuccess } from "../../composables/useJourneySuccess";
 import {
   isWithdrawalSideExit,
@@ -120,6 +121,27 @@ const canSwitchToPool = computed(
 const canCancel = computed(
   () => status.value.kind === "awaiting-payment" && !paymentTaken(props.record),
 );
+// A sale that routes through the vault is the only one with an on-chain state worth reading.
+const vaultSaleId = () =>
+  props.record.sale?.vault !== undefined ? props.record.sale.fundingRequestId : undefined;
+const {
+  status: vaultStatus,
+  returning: vaultReturning,
+  error: vaultError,
+  requestReturn: returnVaultSale,
+} = useSaleVaultStatus(vaultSaleId);
+
+/** The payout did not land, so the funds sit in the contract until they are returned home. */
+const vaultHeld = computed(
+  () => vaultStatus.value?.status === "held" && vaultStatus.value.returnStatus === "none",
+);
+/** A return the seller started, or one already recorded, is on its way to their account. */
+const vaultReturnPending = computed(
+  () => vaultReturning.value || vaultStatus.value?.returnStatus === "returning",
+);
+const vaultReturned = computed(
+  () => vaultStatus.value?.returnStatus === "returned" || vaultStatus.value?.status === "returned",
+);
 </script>
 
 <template>
@@ -188,6 +210,24 @@ const canCancel = computed(
           :detail="band.detail"
         />
       </div>
+
+      <!-- The payout did not land on chain, so the funds are held in the contract until returned. -->
+      <div v-if="vaultHeld" class="flex flex-col gap-2">
+        <p class="text-body-s text-fg-secondary">
+          The provider could not be paid, so your funds are held safely in the sale contract. Return
+          them to your account.
+        </p>
+        <p v-if="vaultError" class="text-body-s text-fg-error">{{ vaultError }}</p>
+        <PillButton :disabled="vaultReturning" @click="returnVaultSale">
+          {{ vaultReturning ? "Returning..." : "Return to my account" }}
+        </PillButton>
+      </div>
+      <p v-else-if="vaultReturnPending" class="text-body-s text-fg-secondary">
+        Your held funds are on their way back to your account.
+      </p>
+      <p v-else-if="vaultReturned" class="text-body-s text-fg-secondary">
+        Your held funds were returned to your account.
+      </p>
 
       <DetailRows v-if="rows.length" :rows="rows" @fees="emit('fees')" />
       <!-- The reference copies, so the screen carries the confirmation. -->

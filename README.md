@@ -117,8 +117,8 @@ adapter and checks against the figure agreed, and until the order and the price 
 more. Then the purse pays the key, the worker's message leg lands the sale's token on the key's
 own Asset Hub account, on the PSM tier through the redeem, and the rail leg pays the provider
 exactly that figure, once, at a nonce it pins, after the adapter confirms the address, the asset
-and the amount, and within an hour of the purse being asked. What the sale landed above the
-figure goes home as CASH when it is worth the way back (a tenth of the token or more; less stays
+and the amount, and within an hour of the purse being asked. Once the sale ends, what it landed
+above the figure goes home as CASH when it is worth the way back (a tenth of the token or more; less stays
 on the key), and the quote says about how much: the worker hands the key to the funding engine,
 which converts and claims it into the purse as it does an on-ramp, and starts that job again if
 it fails, up to three times. The residue's route is the one tier the worker decides, since no

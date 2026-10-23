@@ -8,6 +8,8 @@ export interface GetQuoteV2Args {
   destChain: string;
   destAsset: string;
   amount: string;
+  // CCM pricing so the quote accounts for the destination contract call, absent for a plain swap.
+  ccmParams?: { gasBudget: string; messageLengthBytes: number };
 }
 
 /** Chainflip field names verbatim; this object goes on the wire as-is. */
@@ -17,10 +19,19 @@ export interface FillOrKillParams {
   retryDurationMinutes: number;
 }
 
+/** Chainflip CCM params verbatim: the destination gas budget, the 0x-hex message, optional extra data. */
+export interface CcmParams {
+  gasBudget: string;
+  message: string;
+  ccmAdditionalData?: string;
+}
+
 export interface RequestDepositAddressV2Args {
   quote: unknown;
   destAddress: string;
   fillOrKillParams: FillOrKillParams;
+  // Present only for a CCM swap, so the egress calls the destination contract with the message.
+  ccmParams?: CcmParams;
 }
 
 export interface SwapSdkLike {

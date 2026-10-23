@@ -326,6 +326,43 @@ describe("a fiat sale through an offramp lane", () => {
     expect(storedJob()).toMatchObject({ phase: "failed", failure: "channel-mismatch" });
   });
 
+  it("pays a vault swap once Chainflip's record pays the SaleVault, not the provider", async () => {
+    const VAULT = "0x81949127042930F8e7A1723385A2F76213C72ee9";
+    // The egress now pays the trusted vault; the provider lives inside the CCM message.
+    mocks.channel.mockResolvedValue({
+      depositAddress: CF_DEPOSIT,
+      destinationAddress: VAULT,
+      expired: false,
+    });
+    const first = await engineWith({});
+    await first.startWithdraw(swapHandoff({ swap: { ...swap, vaultAddress: VAULT } }));
+    const job = storedJob();
+    Object.assign(job, { landed: true, phase: "handoff" });
+    job.state.fundsSeenAt = NOW - 60_000;
+    const engine = await engineWith({ "s-1": job });
+    await engine.tickAllWithdraw();
+    expect(mocks.payRail).toHaveBeenCalledTimes(1);
+    expect(storedJob().leg.paid).toBe(true);
+  });
+
+  it("fails a vault swap whose egress is not the vault", async () => {
+    const VAULT = "0x81949127042930F8e7A1723385A2F76213C72ee9";
+    mocks.channel.mockResolvedValue({
+      depositAddress: CF_DEPOSIT,
+      destinationAddress: SOLANA_DEPOSIT,
+      expired: false,
+    });
+    const first = await engineWith({});
+    await first.startWithdraw(swapHandoff({ swap: { ...swap, vaultAddress: VAULT } }));
+    const job = storedJob();
+    Object.assign(job, { landed: true, phase: "handoff" });
+    job.state.fundsSeenAt = NOW - 60_000;
+    const engine = await engineWith({ "s-1": job });
+    await engine.tickAllWithdraw();
+    expect(mocks.payRail).not.toHaveBeenCalled();
+    expect(storedJob()).toMatchObject({ phase: "failed", failure: "channel-mismatch" });
+  });
+
   it("waits for a failed swap's refund, then sends the USDT home through the pool", async () => {
     const engine = await landed();
     await engine.tickAllWithdraw(); // the key pays the swap
@@ -485,6 +522,348 @@ describe("a fiat sale through an offramp lane", () => {
   });
 });
 
+describe("a fiat sale through the SaleVault", () => {
+  const VAULT = "0x81949127042930F8e7A1723385A2F76213C72ee9";
+  const SALE_URL = "https://adapter.test/offramp/sale/funding-sell-1";
+  const RETURN_URL = "https://adapter.test/offramp/returns/funding-sell-1";
+  const HEADERS = { accept: "application/json", "x-dev-product-id": "getcash.dev" };
+  const fetchMock = vi.fn();
+
+  /** The adapter answers the sale read with `sale`, and a return request with 200. */
+  const vaultSays = (sale: Record<string, unknown>) =>
+    fetchMock.mockImplementation(async (url: string) =>
+      url === RETURN_URL
+        ? new Response(JSON.stringify({ sale: { ...sale, returnStatus: "returning" } }))
+        : new Response(JSON.stringify({ sale: { held: "0", returnTx: null, ...sale } })),
+    );
+  const posts = () => fetchMock.mock.calls.filter(([, init]) => init?.method === "POST");
+
+  beforeEach(() => {
+    mocks.stored.clear();
+    for (const fn of [
+      mocks.railFor,
+      mocks.payRail,
+      mocks.status,
+      mocks.channel,
+      mocks.startFunding,
+    ]) {
+      fn.mockReset();
+    }
+    mocks.channel.mockResolvedValue({
+      depositAddress: CF_DEPOSIT,
+      destinationAddress: VAULT,
+      expired: false,
+    });
+    mocks.railFor.mockReturnValue({ status: mocks.status, channel: mocks.channel });
+    mocks.payRail.mockResolvedValue(undefined);
+    mocks.status.mockResolvedValue({ status: "receiving" });
+    mocks.startFunding.mockResolvedValue({ sessionId: "s-1/residue" });
+    mocks.keyFree = 0n;
+    mocks.keyUsdt = 0n;
+    mocks.keyCash = 0n;
+    fetchMock.mockReset();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  /** A vault sale whose key paid the swap, and whose Meld sale then failed. */
+  async function failedAfterDelivery(swapDelivered = true) {
+    const first = await engineWith({});
+    await first.startWithdraw(swapHandoff({ swap: { ...swap, vaultAddress: VAULT } }));
+    const job = storedJob();
+    Object.assign(job, { landed: true, phase: "handoff" });
+    job.state.fundsSeenAt = NOW - 60_000;
+    const engine = await engineWith({ "s-1": job });
+    await engine.tickAllWithdraw(); // the key pays the swap
+    expect(fetchMock).not.toHaveBeenCalled();
+    mocks.status.mockResolvedValue({ status: "failed", raw: "failed", swapDelivered });
+    return engine;
+  }
+
+  it("reads the vault at the adapter, and decides the residue as today once it paid", async () => {
+    vaultSays({ status: "paid", returnStatus: "none" });
+    const engine = await failedAfterDelivery();
+    await engine.tickAllWithdraw();
+    expect(fetchMock).toHaveBeenCalledWith(SALE_URL, {
+      headers: HEADERS,
+      signal: expect.any(AbortSignal),
+    });
+    expect(posts()).toHaveLength(0);
+    expect(storedJob().residueError).toBeUndefined();
+    expect(storedJob().residue).toEqual({ amount: "0", returning: false });
+  });
+
+  it("asks for a held sale's return once, and waits for it", async () => {
+    vaultSays({ status: "held", held: "98000000", returnStatus: "none" });
+    const engine = await failedAfterDelivery();
+    await engine.tickAllWithdraw();
+    expect(posts()).toEqual([
+      [
+        RETURN_URL,
+        {
+          method: "POST",
+          headers: { ...HEADERS, "content-type": "application/json" },
+          body: "{}",
+        },
+      ],
+    ]);
+    expect(storedJob()).toMatchObject({ phase: "failed", failure: "rail-failed" });
+    expect(storedJob().residue).toBeUndefined();
+    expect(storedJob().residueError).toMatch(/held funds to come back/);
+    expect(mocks.startFunding).not.toHaveBeenCalled();
+  });
+
+  it("waits on a return already on its way without asking again", async () => {
+    vaultSays({ status: "held", held: "98000000", returnStatus: "returning" });
+    const engine = await failedAfterDelivery();
+    await engine.tickAllWithdraw();
+    await engine.tickAllWithdraw();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(posts()).toHaveLength(0);
+    expect(storedJob().residue).toBeUndefined();
+    expect(storedJob().residueError).toMatch(/held funds to come back/);
+  });
+
+  it("reports a return the adapter refuses, and asks again next pass", async () => {
+    fetchMock.mockImplementation(async (url: string) =>
+      url === RETURN_URL
+        ? new Response("{}", { status: 503 })
+        : new Response(JSON.stringify({ sale: { status: "held", returnStatus: "none" } })),
+    );
+    const engine = await failedAfterDelivery();
+    await engine.tickAllWithdraw();
+    expect(storedJob().residueError).toMatch(/503/);
+    await engine.tickAllWithdraw();
+    expect(posts()).toHaveLength(2);
+    expect(storedJob().residue).toBeUndefined();
+  });
+
+  it("sends the returned USDT home as CASH once it lands on the key", async () => {
+    vaultSays({ status: "returned", returnStatus: "returned", returnTx: "0xret" });
+    const engine = await failedAfterDelivery();
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue).toBeUndefined();
+    expect(storedJob().residueError).toMatch(/vault's return to reach the key/);
+    expect(storedJob().vaultReturnSeenAt).toBe(NOW);
+    expect(mocks.startFunding).not.toHaveBeenCalled();
+    mocks.keyUsdt = 98_000_000n; // the return lands on the key
+    vi.setSystemTime(NOW + 60_000);
+    await engine.tickAllWithdraw();
+    expect(mocks.startFunding).toHaveBeenCalledTimes(1);
+    expect(mocks.startFunding.mock.calls[0]![0]).toMatchObject({
+      sessionId: "s-1/residue",
+      tier: "pool",
+      external: "USDT",
+    });
+    expect(storedJob().residue).toMatchObject({ amount: "98000000", returning: true });
+    expect(storedJob().residueError).toBeUndefined();
+  });
+
+  it("leaves a return that never reaches the key for a person after two hours", async () => {
+    vaultSays({ status: "returned", returnStatus: "returned" });
+    const engine = await failedAfterDelivery();
+    await engine.tickAllWithdraw();
+    vi.setSystemTime(NOW + 2 * 60 * 60 * 1000 - 1);
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue).toBeUndefined();
+    expect(storedJob().vaultReturnSeenAt).toBe(NOW);
+    vi.setSystemTime(NOW + 2 * 60 * 60 * 1000);
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue).toEqual({ amount: "0", returning: false, stuck: true });
+    expect(mocks.startFunding).not.toHaveBeenCalled();
+  });
+
+  it("waits when the adapter cannot say", async () => {
+    fetchMock.mockResolvedValue(new Response("{}", { status: 404 }));
+    const engine = await failedAfterDelivery();
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue).toBeUndefined();
+    expect(storedJob().residueError).toMatch(/the sale vault failed \(404\)/);
+    fetchMock.mockRejectedValue(new Error("network down"));
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue).toBeUndefined();
+    expect(storedJob().residueError).toMatch(/network down/);
+  });
+
+  it("waits for the vault to record a delivery Chainflip made", async () => {
+    vaultSays({ status: "none", returnStatus: "none" });
+    const engine = await failedAfterDelivery();
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue).toBeUndefined();
+    expect(storedJob().residueError).toMatch(/vault to record the delivery/);
+    expect(posts()).toHaveLength(0);
+  });
+
+  it("leaves a delivery the vault never books for a person after two hours", async () => {
+    vaultSays({ status: "none", returnStatus: "none" });
+    const engine = await failedAfterDelivery();
+    await engine.tickAllWithdraw();
+    expect(storedJob().vaultDeliverySince).toBe(NOW);
+    vi.setSystemTime(NOW + 2 * 60 * 60 * 1000);
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue).toEqual({ amount: "0", returning: false, stuck: true });
+  });
+
+  it("follows Chainflip's refund when the swap never delivered to the vault", async () => {
+    vaultSays({ status: "none", returnStatus: "none" });
+    const engine = await failedAfterDelivery(false);
+    await engine.tickAllWithdraw();
+    expect(storedJob().residueError).toMatch(/swap's refund/);
+    mocks.keyUsdt = 99_000_000n; // the refund lands on the key
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue).toMatchObject({ amount: "99000000", returning: true });
+  });
+
+  /** The Meld sale ended REFUNDED after Chainflip delivered to the vault, which had paid the provider. */
+  const refundedReading = {
+    status: "failed",
+    raw: "REFUNDED",
+    swapDelivered: true,
+    depositFailure: {
+      reason: {
+        code: "refunded",
+        message: "The provider returned the funds instead of paying out.",
+      },
+      kind: "unknown",
+    },
+  };
+
+  it("asks for a refunded paid sale's return, and waits for the provider's refund", async () => {
+    vaultSays({ status: "paid", returnStatus: "none" });
+    const engine = await failedAfterDelivery();
+    mocks.status.mockResolvedValue(refundedReading);
+    await engine.tickAllWithdraw();
+    expect(posts()).toEqual([
+      [
+        RETURN_URL,
+        {
+          method: "POST",
+          headers: { ...HEADERS, "content-type": "application/json" },
+          body: "{}",
+        },
+      ],
+    ]);
+    expect(storedJob().residue).toBeUndefined();
+    expect(storedJob().vaultRefundSince).toBe(NOW);
+    expect(storedJob().residueError).toMatch(/provider's refund to come back/);
+  });
+
+  it("keeps asking while the refund has not reached the vault", async () => {
+    fetchMock.mockImplementation(async (url: string) =>
+      url === RETURN_URL
+        ? new Response(
+            JSON.stringify({ error: { tag: "Other", value: { code: "SALE_REFUND_NOT_ARRIVED" } } }),
+            { status: 409 },
+          )
+        : new Response(JSON.stringify({ sale: { status: "paid", returnStatus: "none" } })),
+    );
+    const engine = await failedAfterDelivery();
+    mocks.status.mockResolvedValue(refundedReading);
+    await engine.tickAllWithdraw();
+    await engine.tickAllWithdraw();
+    expect(posts()).toHaveLength(2);
+    expect(storedJob().residue).toBeUndefined();
+    expect(storedJob().residueError).toMatch(/provider's refund to come back/);
+  });
+
+  it("leaves a refund that never reaches the vault for a person after a week", async () => {
+    vaultSays({ status: "paid", returnStatus: "returning" });
+    const engine = await failedAfterDelivery();
+    mocks.status.mockResolvedValue(refundedReading);
+    await engine.tickAllWithdraw();
+    expect(posts()).toHaveLength(0);
+    vi.setSystemTime(NOW + 7 * 86_400_000 - 1);
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue).toBeUndefined();
+    vi.setSystemTime(NOW + 7 * 86_400_000);
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue).toEqual({ amount: "0", returning: false, stuck: true });
+  });
+
+  it("brings a refunded sale's returned USDT home like a held one", async () => {
+    vaultSays({ status: "returned", returnStatus: "returned" });
+    const engine = await failedAfterDelivery();
+    mocks.status.mockResolvedValue(refundedReading);
+    mocks.keyUsdt = 60_000_000n;
+    await engine.tickAllWithdraw();
+    expect(mocks.startFunding).toHaveBeenCalledTimes(1);
+    expect(storedJob().residue).toMatchObject({ amount: "60000000", returning: true });
+  });
+
+  it("leaves a return Chainflip would not swap for a person at once", async () => {
+    fetchMock.mockImplementation(async (url: string) =>
+      url === RETURN_URL
+        ? new Response(
+            JSON.stringify({
+              error: { tag: "Other", value: { code: "SALE_RETURN_NOT_SWAPPABLE" } },
+            }),
+            { status: 409 },
+          )
+        : new Response(
+            JSON.stringify({ sale: { status: "held", held: "5", returnStatus: "none" } }),
+          ),
+    );
+    const engine = await failedAfterDelivery();
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue).toEqual({ amount: "0", returning: false, stuck: true });
+    expect(storedJob().residueError).toBeUndefined();
+    await engine.tickAllWithdraw();
+    expect(posts()).toHaveLength(1);
+  });
+
+  it("leaves a refund no single sale owns for a person at once", async () => {
+    fetchMock.mockImplementation(async (url: string) =>
+      url === RETURN_URL
+        ? new Response(
+            JSON.stringify({ error: { tag: "Other", value: { code: "SALE_REFUND_AMBIGUOUS" } } }),
+            { status: 409 },
+          )
+        : new Response(JSON.stringify({ sale: { status: "paid", returnStatus: "none" } })),
+    );
+    const engine = await failedAfterDelivery();
+    mocks.status.mockResolvedValue(refundedReading);
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue).toEqual({ amount: "0", returning: false, stuck: true });
+    expect(storedJob().residueError).toBeUndefined();
+  });
+
+  it("reports a refused return whose body is not JSON", async () => {
+    fetchMock.mockImplementation(async (url: string) =>
+      url === RETURN_URL
+        ? new Response("bad gateway", { status: 502 })
+        : new Response(JSON.stringify({ sale: { status: "held", returnStatus: "none" } })),
+    );
+    const engine = await failedAfterDelivery();
+    await engine.tickAllWithdraw();
+    expect(storedJob().residueError).toMatch(/the return failed \(502\)/);
+    expect(storedJob().residue).toBeUndefined();
+  });
+
+  it("never reads the adapter for a swap sale without a vault", async () => {
+    const engine = await engineWith({});
+    await engine.startWithdraw(swapHandoff());
+    const job = storedJob();
+    Object.assign(job, { landed: true, phase: "handoff" });
+    job.state.fundsSeenAt = NOW - 60_000;
+    mocks.channel.mockResolvedValue({
+      depositAddress: CF_DEPOSIT,
+      destinationAddress: SOLANA_DEPOSIT,
+      expired: false,
+    });
+    const resumed = await engineWith({ "s-1": job });
+    await resumed.tickAllWithdraw();
+    mocks.status.mockResolvedValue({ status: "failed", raw: "failed", swapDelivered: true });
+    await resumed.tickAllWithdraw();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(storedJob().residue).toEqual({ amount: "0", returning: false });
+  });
+});
+
 describe("a direct fiat sale of USDT", () => {
   const usdtHandoff = (overrides: Record<string, unknown> = {}) =>
     handoff({
@@ -597,7 +976,9 @@ describe("a direct fiat sale of USDT", () => {
   it("sends what the payment left home as USDT through the pool", async () => {
     const engine = await landed();
     mocks.keyUsdt = 1_500_000n; // 1.5 USDT left on the key once it paid
-    await engine.tickAllWithdraw(); // the key pays the provider, then what is left goes home
+    mocks.status.mockResolvedValue({ status: "complete" });
+    await engine.tickAllWithdraw(); // the key pays the provider
+    await engine.tickAllWithdraw(); // the sale settles, then what is left goes home
     expect(mocks.startFunding).toHaveBeenCalledTimes(1);
     expect(mocks.startFunding.mock.calls[0]![0]).toMatchObject({ tier: "pool", external: "USDT" });
     expect(storedJob().residue).toMatchObject({ amount: "1500000", returning: true });
@@ -606,9 +987,76 @@ describe("a direct fiat sale of USDT", () => {
   it("keeps less than a USDT on the key rather than pay the way home", async () => {
     const engine = await landed();
     mocks.keyUsdt = 170_000n;
+    mocks.status.mockResolvedValue({ status: "complete" });
+    await engine.tickAllWithdraw();
     await engine.tickAllWithdraw();
     expect(mocks.startFunding).not.toHaveBeenCalled();
     expect(storedJob().residue).toEqual({ amount: "170000", returning: false });
+  });
+
+  it("sends nothing home while the paid sale is live", async () => {
+    const engine = await landed();
+    mocks.keyUsdt = 1_500_000n;
+    await engine.tickAllWithdraw();
+    await engine.tickAllWithdraw();
+    expect(storedJob().leg.paid).toBe(true);
+    expect(storedJob().residue).toBeUndefined();
+    expect(mocks.startFunding).not.toHaveBeenCalled();
+  });
+
+  /** The provider's ending for a sale it refunded instead of paying out. */
+  const refunded = {
+    status: "failed",
+    depositFailure: { reason: { code: "refunded" }, kind: "unknown" },
+  };
+
+  it("waits for a refunded sale's refund on the key, then sends it home", async () => {
+    const engine = await landed();
+    mocks.keyUsdt = 170_000n;
+    await engine.tickAllWithdraw(); // the key pays the provider
+    mocks.status.mockResolvedValue(refunded);
+    await engine.tickAllWithdraw(); // the provider refunds to the key, its sending address
+    expect(storedJob()).toMatchObject({ phase: "failed" });
+    expect(storedJob().residue).toBeUndefined();
+    expect(storedJob().residueError).toMatch(/provider's refund/);
+    mocks.keyUsdt = 25_170_000n; // the refund lands
+    await engine.tickAllWithdraw();
+    expect(mocks.startFunding.mock.calls[0]![0]).toMatchObject({ tier: "pool", external: "USDT" });
+    expect(storedJob().residue).toMatchObject({ amount: "25170000", returning: true });
+  });
+
+  it("waits for the refund even when the payment left a residue worth sending", async () => {
+    const first = await engineWith({});
+    await first.startWithdraw(usdtHandoff());
+    const job = storedJob();
+    Object.assign(job, { landed: true, phase: "handoff" });
+    job.state.fundsSeenAt = NOW - 60_000;
+    job.leg.exact.balanceBefore = "26500000"; // what the key held as the payment left
+    const engine = await engineWith({ "s-1": job });
+    mocks.keyUsdt = 1_500_000n;
+    await engine.tickAllWithdraw(); // the key pays the provider, 1.5 USDT left on it
+    mocks.status.mockResolvedValue({
+      status: "failed",
+      depositFailure: { reason: { code: "failed" }, kind: "unknown" },
+    });
+    await engine.tickAllWithdraw(); // any failure once paid may still be refunded
+    expect(storedJob().residue).toBeUndefined();
+    expect(mocks.startFunding).not.toHaveBeenCalled();
+    mocks.keyUsdt = 26_500_000n; // the refund lands on top of the residue
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue).toMatchObject({ amount: "26500000", returning: true });
+  });
+
+  it("leaves a refund that never reaches the key for a person after a week", async () => {
+    const engine = await landed();
+    await engine.tickAllWithdraw();
+    mocks.status.mockResolvedValue(refunded);
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue).toBeUndefined();
+    vi.setSystemTime(NOW + 7 * 86_400_000);
+    await engine.tickAllWithdraw();
+    expect(storedJob().residue).toMatchObject({ amount: "0", returning: false, stuck: true });
+    expect(mocks.startFunding).not.toHaveBeenCalled();
   });
 
   it("sends the whole key home as USDT when the sale ends before the provider is paid", async () => {
