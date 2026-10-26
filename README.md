@@ -22,8 +22,9 @@ The **surface** (`app/`, `lib/`) is what the user sees. It quotes, shows a depos
 opens the provider's widget, and tracks the request. The **worker** (`worker/`) runs in the
 background inside the host. Once a deposit has landed, the surface hands the job to the
 worker, which converts it to CASH and sends it to the People chain in one transaction on Asset
-Hub (by teleport, or by reserve transfer where the chains do not trust the teleport), then, once
-that CASH is final on People, claims it through the host's top-up call. The top-up is registered
+Hub (by teleport, or by reserve transfer where the chains do not trust the teleport), then, as
+soon as that CASH shows in a People block, claims it through the host's top-up call, while it
+keeps watching the conversion's block until Asset Hub finalizes it. The top-up is registered
 under the ephemeral account's public key and driven by the host from there.
 The surface shows the top-up done as soon as the host reports the claim in a block; the worker
 follows the host's status over a subscription it holds open until the claim is final, and
