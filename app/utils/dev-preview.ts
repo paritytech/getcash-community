@@ -1209,6 +1209,7 @@ function base(session: Session, flow: Flow) {
   session.corridorByCountry = null;
   session.meldCorridor = null;
   session.meldMethodUnavailable = false;
+  session.quoteOutOfRange = null;
   // The shell reads the adapters again unless a top-ups scene says otherwise.
   previewTopUpScene.value = null;
   // Bitcoin, matching the canned quote.
@@ -1273,6 +1274,21 @@ function methodUnavailable(session: Session, country: string) {
   session.quoted = null;
   session.meldCorridor = session.corridorByCountry?.get(country) ?? null;
   session.meldMethodUnavailable = true;
+}
+
+/** The method takes the region, but the amount costs less than its minimum there: the hero keeps
+ *  the typed amount, the quote is gone, and the minimum in CASH is the way on. */
+function belowMinimum(session: Session, country: string, cash: string) {
+  session.setMeldCountry(country);
+  session.quoted = null;
+  session.meldCorridor = session.corridorByCountry?.get(country) ?? null;
+  session.quoteOutOfRange = {
+    bound: "min",
+    limit: "20.00",
+    estimatedFiat: "12.50",
+    fiat: "GBP",
+    cash,
+  };
 }
 
 /** The price could not be had, `failures` times in a row for this amount: the first offers another
@@ -1953,6 +1969,15 @@ export const SCENES: Scene[] = [
     apply: (s, f) => {
       cardSummary(s, f);
       f.previewDrillIn = "currency";
+    },
+  },
+  {
+    // The card minimum in the United Kingdom is over the amount: a different amount, or the
+    // minimum itself, as the ways on.
+    name: "top-up / card / summary: below minimum",
+    apply: (s, f) => {
+      cardSummary(s, f);
+      belowMinimum(s, "GB", "20");
     },
   },
   {
@@ -2713,6 +2738,19 @@ export const SCENES: Scene[] = [
       step: "summary",
       chain: "Ethereum",
       address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
+    },
+    apply: (s, f) => base(s, f),
+  },
+  // The provider's minimum for the token is over the amount: the summary gives way to the
+  // out-of-range screen, the minimum offered as the amount.
+  {
+    name: "withdrawal / crypto / summary: below minimum",
+    stage: {
+      kind: "withdraw-package",
+      step: "summary",
+      chain: "Ethereum",
+      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
+      belowMinimum: "50",
     },
     apply: (s, f) => base(s, f),
   },

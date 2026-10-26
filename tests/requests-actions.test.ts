@@ -699,6 +699,7 @@ describe("requests store: foreground, clock and user actions", () => {
       "corridorByCountry",
       "meldCorridor",
       "meldMethodUnavailable",
+      "quoteOutOfRange",
     ]);
     expect([...written].filter((name) => !allowed.has(name))).toEqual([]);
   });
