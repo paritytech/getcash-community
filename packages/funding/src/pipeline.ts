@@ -828,9 +828,10 @@ async function settleInclusion(
 }
 
 /**
- * One reading of the balances and at most one action on them. Retryable by calling again;
- * the only terminal signals are the returned "done" and a thrown FundingShortfallError or
- * FundingHeldError.
+ * One reading of the balances and at most one action on them. Retryable by calling again. The
+ * returned "done" holds while the program's block stands, and a later tick takes it back when
+ * the chain discards the block. A thrown FundingShortfallError or FundingHeldError ends the run,
+ * the shortfall once the driver has seen the conversion final.
  */
 export async function tickOnce(input: TickOnceInput, state: TickState): Promise<TickOutcome> {
   const { api, route, address } = input;

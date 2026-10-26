@@ -2690,6 +2690,28 @@ describe("the submit, and the arrival on People", () => {
     expect(rest.txs).toEqual(["swap"]);
   });
 
+  it("takes a lost submit settled as landed as final from the burner's moved nonce when the program left the account standing, as on the stable tiers", async () => {
+    const world = funded({ loseAnswer: "included", quoteAfterXcm: true, arrivalAfterReads: 4 });
+    world.chain.finalityHeld = true;
+    const state = freshTickState();
+    await lostTick(world, state);
+    // The program landed and left the burner standing: its nonce moved, a little native stayed.
+    world.nonce.latest = 1;
+    world.state.nativeAh = KEEP;
+    world.state.loseAnswer = null;
+    expect((await drive(world, 1, state)).steps).toEqual(["await-arrival"]);
+    expect(state).toMatchObject({ nonceAtSubmit: 0, inclusionHash: null });
+
+    world.chain.finalize();
+    world.chain.reads.length = 0;
+    expect((await drive(world, 1, state)).steps).toEqual(["await-arrival"]);
+    expect(world.chain.reads).toEqual(["number@finalized", "nonce@finalized"]);
+    expect(state).toMatchObject({ xcmSubmitted: true, nonceAtSubmit: null, inclusionBlock: null });
+    const rest = await drive(world, 2, state);
+    expect(rest.steps).toEqual(["await-arrival", "done"]);
+    expect(rest.txs).toEqual(["swap"]);
+  });
+
   it("sends again under the same nonce when the block a lost submit was settled in is discarded before the arrival", async () => {
     const world = funded({ loseAnswer: "included", quoteAfterXcm: true, arrivalAfterReads: 3 });
     world.chain.finalityHeld = true;

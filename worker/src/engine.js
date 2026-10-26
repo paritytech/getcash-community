@@ -113,12 +113,15 @@ const saveJobs = () => store.save();
  *                                            // succeeded and carried the tier's conversion event,
  *                                            // with the worker time then
  *   claim?: { phase: "sizing"|"registering"|"claiming"|"claimed", attempt, credited,
- *             id?, amount?, sizedAt?, at, attempts, registeredAt?, workedMs?, status?,
- *             partial?, error? },
+ *             id?, amount?, sizedAt?, resizedFrom?, at, attempts, registeredAt?, workedMs?,
+ *             status?, partial?, error? },
  *                                            // attempt: 0-based; each has its own id (hex)
  *                                            // credited: CASH the host minted so far
  *                                            // sizedAt: the conversions sent when the attempt
  *                                            // was sized; one sent since may have brought more
+ *                                            // resizedFrom: { amount, sizedAt } of the attempt's
+ *                                            // first sizing, while a re-sized registration is
+ *                                            // out; the host may hold the first one
  *                                            // workedMs: worker time since this attempt was
  *                                            // registered
  *                                            // status: the host's last word on the top-up
@@ -381,6 +384,11 @@ const isFinished = (record) => record.done === true && record.claim?.phase === "
  *  keeps ticking, so a discarded block takes the done back and the conversion goes out again. */
 const conversionPending = (record) => record.state.nonceAtSubmit !== null;
 
+/** A claim the host has not taken yet, sized before the conversion went out again: what the new
+ *  arrival brought is not the amount it holds. */
+const staleRegistering = (record) =>
+  record.claim?.phase === "registering" && record.state.attempts > record.claim.sizedAt;
+
 /** The burner's CASH on People at the best block, floored to the claim unit: the run is done once
  *  the best block shows the arrival. */
 async function claimableOn(peoplePort, burner, what) {
@@ -455,6 +463,12 @@ async function sizeClaim(record, burner, peoplePort) {
     return;
   }
   const attempt = claim?.attempt ?? 0;
+  // An attempt sized again keeps its first sizing: a host call that failed after the host took
+  // it leaves the host holding that amount, and AlreadyExists then says so.
+  const resizedFrom =
+    claim?.phase === "registering"
+      ? (claim.resizedFrom ?? { amount: claim.amount, sizedAt: claim.sizedAt })
+      : undefined;
   record.claim = {
     phase: "registering",
     attempt,
@@ -462,6 +476,7 @@ async function sizeClaim(record, burner, peoplePort) {
     id: toHex(claimIdFor(record, burner, attempt)),
     amount: amount.toString(),
     sizedAt: record.state.attempts,
+    ...(resizedFrom === undefined ? {} : { resizedFrom }),
     at: 0,
     attempts: 0,
   };
@@ -493,8 +508,11 @@ async function registerClaim(record, burner) {
       record.claim = { ...record.claim, error: String(error?.message ?? error) };
       throw error;
     }
+    // The host holds this attempt as it was first sized: that amount is the claim's.
+    if (record.claim.resizedFrom) record.claim = { ...record.claim, ...record.claim.resizedFrom };
   }
   delete record.claim.error;
+  delete record.claim.resizedFrom;
   record.claim = { ...record.claim, phase: "claiming", registeredAt: Date.now(), workedMs: 0 };
   watchClaim(record);
 }
@@ -801,6 +819,7 @@ async function tickRecord(record, nowMs) {
       };
     };
 
+    const submittedBefore = state.xcmSubmitted;
     let outcome;
     try {
       outcome = await tickOnce(
@@ -850,6 +869,11 @@ async function tickRecord(record, nowMs) {
         },
         state,
       );
+    } catch (error) {
+      // The tick found the block discarded and failed after that: the done goes with the block
+      // here as it would have at the end of the tick.
+      if (submittedBefore && !state.xcmSubmitted) record.done = false;
+      throw error;
     } finally {
       persistState();
     }
@@ -864,8 +888,9 @@ async function tickRecord(record, nowMs) {
     record.done = outcome.step === "done";
     if (record.done) {
       // Claim in the same tick the CASH lands, over this tick's People connection. A claim
-      // already registered is followed, not registered again.
-      if (record.claim == null || record.claim.phase === "sizing") {
+      // already registered is followed, not registered again; one the host has not taken yet,
+      // sized before the conversion went out again, is sized once more under the same id.
+      if (record.claim == null || record.claim.phase === "sizing" || staleRegistering(record)) {
         await sizeClaim(record, burner, peoplePort);
       } else {
         await claimFor(record);
