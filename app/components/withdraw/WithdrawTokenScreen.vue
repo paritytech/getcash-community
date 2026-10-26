@@ -44,7 +44,7 @@ const rows = computed(() =>
       <OptionRow v-for="n in network.destinations.length" :key="n" skeleton />
     </ul>
 
-    <ul v-else class="-mx-2 mt-4 flex flex-col gap-2 overflow-y-auto pb-6">
+    <ul v-else class="-mx-2 mt-4 flex flex-col gap-2 overflow-y-auto pb-cta">
       <OptionRow
         v-for="{ destination, state } in rows"
         :key="destination.id"

@@ -8,6 +8,7 @@ import { computed, watch } from "vue";
 import { useWithdrawOffersStore } from "../../stores/withdraw-offers";
 import type { OptionListRow } from "../../utils/option-list";
 import { WITHDRAW_NETWORKS, type WithdrawNetwork } from "../../withdraw/destinations";
+import ScreenFrame from "../ui/ScreenFrame.vue";
 
 interface NetworkOption extends OptionListRow {
   network: WithdrawNetwork;
@@ -47,7 +48,7 @@ const rows = computed<NetworkOption[]>(() =>
 </script>
 
 <template>
-  <div class="flex min-h-0 flex-1 flex-col">
+  <ScreenFrame>
     <OptionList
       :rows="rows"
       :loading="skeleton || offers.awaitingNetworks"
@@ -55,6 +56,8 @@ const rows = computed<NetworkOption[]>(() =>
       @pick="emit('pick', $event.network)"
     />
 
-    <PoweredBy class="mt-auto mb-4 pt-3" provider="Chainflip" />
-  </div>
+    <template #actions>
+      <PoweredBy provider="Chainflip" />
+    </template>
+  </ScreenFrame>
 </template>

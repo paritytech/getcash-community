@@ -190,6 +190,7 @@ function requestContinue() {
   flex-direction: column;
   align-items: center;
   padding: 1rem;
+  padding-bottom: var(--spacing-cta);
   color: var(--fg-primary);
 }
 
@@ -221,11 +222,5 @@ function requestContinue() {
 .amount-shell-primary {
   width: 100%;
   margin-top: auto;
-}
-
-@media (max-height: 650px) {
-  .amount-shell-content {
-    padding-bottom: 0.75rem;
-  }
 }
 </style>
