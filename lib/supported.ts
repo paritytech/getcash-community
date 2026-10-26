@@ -379,6 +379,26 @@ function plainRow(c: SupportedCountry): CountryOption {
 
 // Picker rows for the active method: supported carries its fiat min, unsupported is disabled, and a
 // minimum above `floor` greys the row it belongs to; a null/empty map leaves all rows plain.
+/**
+ * The regions a fiat route's picker lists before `corridorOptions` says what each row can take.
+ *
+ * Both rails list the whole live catalog, so a buyer looking for their own country always finds
+ * it, pickable or greyed under "Unsupported country". Bank needs the corridors to tell a region
+ * with a transfer rail from one without; until they are read it lists the regions known to have
+ * one, rather than a catalog where every row would look pickable. With no live catalog at all,
+ * each rail falls back to its own short list.
+ */
+export function pickerBase(
+  ui: "card" | "bank",
+  catalog: readonly SupportedCountry[] | null,
+  corridors: Map<string, SupportedCorridor> | null,
+  fallback: { card: readonly SupportedCountry[]; bank: readonly SupportedCountry[] },
+): readonly SupportedCountry[] {
+  const live = catalog !== null && catalog.length > 0 ? catalog : null;
+  if (ui === "card") return live ?? fallback.card;
+  return live !== null && corridors !== null && corridors.size > 0 ? live : fallback.bank;
+}
+
 export function corridorOptions(
   base: readonly SupportedCountry[],
   corridors: Map<string, SupportedCorridor> | null,

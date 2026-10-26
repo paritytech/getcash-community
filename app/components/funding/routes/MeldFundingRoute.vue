@@ -5,7 +5,7 @@
 // journey once the payment is approved, asserted, or fails.
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { bankRailCountries } from "~~/lib/region";
-import { corridorOptions, countryName, type CountryOption } from "~~/lib/supported";
+import { corridorOptions, countryName, pickerBase, type CountryOption } from "~~/lib/supported";
 import { detectCountry, useDetectedCountry } from "../../../composables/useDetectedCountry";
 import { useMeldHandoff } from "../../../composables/useMeldHandoff";
 import { useStateDirector } from "../../../composables/useStateDirector";
@@ -113,9 +113,9 @@ async function cancelTopUp() {
 const selectedCountry = computed(() => session.meldCountry ?? "DE");
 
 /**
- * The regions a bank transfer can actually be made from: Meld has no generic bank code, so a
- * country without a rail is a dead end rather than a slower corridor. Named by the live catalog
- * where it has them, alphabetically, as the design lists them.
+ * The regions known to have a bank transfer rail, named by the live catalog where it has them,
+ * alphabetically. The bank picker's list only until the corridors are read: those say for every
+ * region whether a transfer can be made from it.
  */
 const bankRails = computed(() => {
   const named = new Map((session.supportedCountries ?? []).map((c) => [c.country, c.name]));
@@ -148,33 +148,27 @@ const quotedFloor = computed(() => {
 });
 
 /**
- * The rows the drill-in lists: each rail's own idea of where it can be paid from, both carrying
- * what that region charges and greyed where it cannot take this purchase.
- *
- * The base lists differ — bank has its rails, card has the whole catalog — but what a row says
- * about itself does not, so both go through `corridorOptions`.
+ * The rows the drill-in lists: every region the catalog names, each carrying what it charges and
+ * greyed where this rail cannot take this purchase from it.
  */
-const pickerCountries = computed<CountryOption[]>(() => {
-  const live = session.supportedCountries;
-  const base = isBank ? bankRails.value : live && live.length > 0 ? live : FALLBACK_COUNTRIES;
-  return corridorOptions(
-    base,
+const pickerCountries = computed<CountryOption[]>(() =>
+  corridorOptions(
+    pickerBase(isBank ? "bank" : "card", session.supportedCountries, session.corridorByCountry, {
+      card: FALLBACK_COUNTRIES,
+      bank: bankRails.value,
+    }),
     session.corridorByCountry,
     isBank ? "bank" : "card",
     quotedFloor.value,
-  );
-});
+  ),
+);
 
 // IP-geo first, the device locale otherwise; live, so a late geo answer updates the pin in place.
 const detected = useDetectedCountry();
 
-/** The buyer's detected region, when this route can be paid from it. The card picker judges that
- *  for itself — it pins the region only while it is pickable — so only bank filters here. */
-const detectedCountry = computed(() => {
-  if (detected.value === null) return null;
-  if (!isBank) return detected.value;
-  return bankRailCountries().includes(detected.value) ? detected.value : null;
-});
+/** The buyer's detected region. The picker judges for itself whether this route can be paid from
+ *  it: it pins the region only while it is pickable. */
+const detectedCountry = computed(() => detected.value);
 
 /**
  * Commits a new region. A request already open for the old one is withdrawn first: its pay page
