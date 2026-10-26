@@ -4,7 +4,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { useSessionStore } from "../app/stores/session";
-import { HostUnreachableError } from "../lib/host-errors";
 
 /** Set, the next mock world refuses to be built, which fails the quote on every rail. */
 const fault = { error: null as Error | null };
@@ -82,34 +81,5 @@ describe("session store: quote failures in a row", () => {
     await store.fetchMeldQuote();
     expect(store.quoteError).toBeNull();
     expect(store.quoteFailures).toBe(0);
-  });
-
-  it("a host that cannot be reached is flagged and never counts against the amount", async () => {
-    const store = useSessionStore();
-    store.setAmount("1");
-    fault.error = new HostUnreachableError("asset-hub chain: host did not provide access");
-    await store.fetchQuote("Bitcoin", "BTC");
-    await store.fetchQuote("Bitcoin", "BTC");
-    expect(store.hostUnreachable).toBe(true);
-    expect(store.quoteFailures).toBe(0);
-
-    fault.error = new Error("wrapped", {
-      cause: new HostUnreachableError("people chain: host-routed connection failed"),
-    });
-    store.setMethod("card");
-    await store.fetchMeldQuote();
-    expect(store.hostUnreachable).toBe(true);
-    expect(store.quoteFailures).toBe(0);
-
-    // A price failure after it is the amount's again.
-    fault.error = new Error("the rate could not be read");
-    await store.fetchMeldQuote();
-    expect(store.hostUnreachable).toBe(false);
-    expect(store.quoteFailures).toBe(1);
-
-    fault.error = null;
-    await store.fetchMeldQuote();
-    expect(store.quoteError).toBeNull();
-    expect(store.hostUnreachable).toBe(false);
   });
 });

@@ -4,7 +4,6 @@
 
 import type { PolkadotClient } from "polkadot-api";
 import { NETWORK } from "@getsome/core";
-import { HostUnreachableError } from "./host-errors";
 import { withTimeout } from "./timeout";
 
 export const ASSET_HUB_WS = NETWORK.assetHub.rpc;
@@ -96,9 +95,7 @@ async function dialChain(target: ChainTarget): Promise<PolkadotClient> {
     // In a host container chain access comes from the host. There is no WebSocket fallback.
     const probe = await probeHostProvider(target);
     if (!probe.provider) {
-      throw new HostUnreachableError(
-        `${target.label} chain: host did not provide access: ${probe.reason}`,
-      );
+      throw new Error(`${target.label} chain: host did not provide access: ${probe.reason}`);
     }
     const client = createClient(probe.provider);
     try {
@@ -106,10 +103,7 @@ async function dialChain(target: ChainTarget): Promise<PolkadotClient> {
     } catch (e) {
       client.destroy();
       const reason = e instanceof Error ? e.message : String(e);
-      throw new HostUnreachableError(
-        `${target.label} chain: host-routed connection failed: ${reason}`,
-        { cause: e },
-      );
+      throw new Error(`${target.label} chain: host-routed connection failed: ${reason}`);
     }
     console.info(`[chain] ${target.label}: host-routed provider`);
     return client;
@@ -155,5 +149,16 @@ export function evictChains(): void {
   for (const [label, pending] of clientCache) {
     clientCache.delete(label);
     pending.then((client) => client.destroy()).catch(() => {});
+  }
+}
+
+/** Whether the host serves both chains, dialled as every later read will be. The dials stay
+ *  cached for those reads. Never throws: a failure comes back with its reason. */
+export async function checkHostChains(): Promise<{ ok: true } | { ok: false; reason: string }> {
+  try {
+    await Promise.all([connectChain(PEOPLE), connectChain(ASSET_HUB)]);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: e instanceof Error ? e.message : String(e) };
   }
 }

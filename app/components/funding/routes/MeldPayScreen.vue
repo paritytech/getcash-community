@@ -11,7 +11,6 @@ import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import type { FundingRoute } from "../../../funding/selection";
 import DetailRows from "../../ui/DetailRows.vue";
 import PillButton from "../../ui/PillButton.vue";
-import HostErrorScreen from "../../ui/HostErrorScreen.vue";
 import RateErrorScreen from "../../ui/RateErrorScreen.vue";
 import RegionRow from "../../ui/RegionRow.vue";
 import SkeletonBlock from "../../ui/SkeletonBlock.vue";
@@ -170,10 +169,6 @@ async function next() {
     @region="emit('currency')"
     @change-amount="emit('changeAmount')"
     @use-amount="useAmount"
-  />
-  <HostErrorScreen
-    v-else-if="session.quoteError !== null && !session.loading && session.hostUnreachable"
-    @retry="requote"
   />
   <RateErrorScreen
     v-else-if="session.quoteError !== null && !session.loading"
