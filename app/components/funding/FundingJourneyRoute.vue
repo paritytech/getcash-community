@@ -12,6 +12,7 @@ import { useSessionStore } from "../../stores/session";
 import { isDemoBuild } from "../../utils/demo";
 import CancelTopUpScreen from "../screens/CancelTopUpScreen.vue";
 import JourneySkeleton from "../screens/JourneySkeleton.vue";
+import ScreenShell from "../ui/ScreenShell.vue";
 import RecoverDepositScreen from "../screens/RecoverDepositScreen.vue";
 import RecoverTrappedScreen from "../screens/RecoverTrappedScreen.vue";
 import ReturnFundsScreen from "../screens/ReturnFundsScreen.vue";
@@ -185,97 +186,82 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <main
-    class="fixed inset-x-0 mx-auto flex w-full max-w-md flex-col overflow-hidden bg-surface-main"
-    style="
-      top: var(--vvt, 0px);
-      height: var(--vvh, 100dvh);
-      padding-top: env(safe-area-inset-top);
-      padding-bottom: env(safe-area-inset-bottom);
+  <!-- The live journey's toolbar is back-only; the fee and recovery drill-ins take it over
+       while open. Back stays available during the claim: leaving lands on the top-ups list,
+       where the in-flight top-up remains resumable. -->
+  <ScreenShell
+    :title="
+      showingFees
+        ? 'Fees'
+        : showingRecoveryDeposit
+          ? 'Recover your Cash'
+          : waiting || unresumable
+            ? title
+            : ''
     "
+    :back="(readOnly || !waiting) && !session.cancelling"
+    @back="goBack"
   >
-    <!-- The live journey's toolbar is back-only; the fee and recovery drill-ins take it over
-         while open. Back stays available during the claim: leaving lands on the top-ups list,
-         where the in-flight top-up remains resumable. -->
-    <Toolbar
-      :title="
-        showingFees
-          ? 'Fees'
-          : showingRecoveryDeposit
-            ? 'Recover your Cash'
-            : waiting || unresumable
-              ? title
-              : ''
-      "
-      :back="(readOnly || !waiting) && !session.cancelling"
-      @back="goBack"
+    <FundingSettledStatusScreen
+      v-if="readOnly && topUp && !showingFees"
+      :top-up="topUp"
+      @fees="showingFees = true"
+      @close="emit('back')"
     />
 
-    <div class="flex min-h-0 flex-1 flex-col px-6 pt-6">
-      <FundingSettledStatusScreen
-        v-if="readOnly && topUp && !showingFees"
-        :top-up="topUp"
-        @fees="showingFees = true"
-        @close="emit('back')"
-      />
+    <!-- The screen's own shapes while the request opens, not a spinner over an empty one. -->
+    <JourneySkeleton v-else-if="waiting" :timeline="!readOnly" />
 
-      <!-- The screen's own shapes while the request opens, not a spinner over an empty one. -->
-      <JourneySkeleton v-else-if="waiting" :timeline="!readOnly" />
-
-      <div v-else-if="unavailable" class="flex flex-1 flex-col items-center pt-16 text-center">
-        <h1 class="text-heading-l text-fg-primary">Top-up unavailable</h1>
-        <p class="mt-2 text-body-m text-fg-secondary">
-          This top-up is no longer available. Return to see your latest activity.
-        </p>
-      </div>
-
-      <CancelTopUpScreen
-        v-else-if="flow.confirmingCancel"
-        kind="transfer"
-        @confirm="cancelTopUp"
-        @keep="flow.confirmingCancel = false"
-      />
-      <ReturnFundsScreen v-else-if="showingRefund" :top-up="topUp" @back="showingRefund = false" />
-      <RecoverDepositScreen v-else-if="showingRecovery" @back="showingRecovery = false" />
-      <RecoverTrappedScreen v-else-if="showingRecoveryDeposit" />
-      <MeldFeeDetailsScreen
-        v-else-if="showingFees"
-        :quote="quote"
-        :cash-amount="cashAmount"
-        @back="showingFees = false"
-      />
-      <template v-else>
-        <JourneyScreen
-          :top-up="topUp ?? null"
-          @fees="showingFees = true"
-          @refund="showingRefund = true"
-          @recover="showingRecovery = true"
-          @recover-from-balance="recoverFromBalance"
-          @recover-deposit="showingRecoveryDeposit = true"
-          @cancel="flow.confirmingCancel = true"
-          @close="emit('back')"
-          @start-over="emit('startOver')"
-        />
-        <!-- A cancel the adapter refused: the payment is already on its way and the request
-             stands. -->
-        <p
-          v-if="recoveryNotice"
-          class="shrink-0 pb-6 text-center text-body-m text-fg-secondary"
-          role="status"
-        >
-          {{ recoveryNotice }}
-        </p>
-        <p
-          v-if="session.cancelNotice"
-          class="shrink-0 pb-6 text-center text-body-m text-fg-secondary"
-          role="status"
-        >
-          {{ session.cancelNotice }}
-        </p>
-      </template>
+    <div v-else-if="unavailable" class="flex flex-1 flex-col items-center pt-16 text-center">
+      <h1 class="text-heading-l text-fg-primary">Top-up unavailable</h1>
+      <p class="mt-2 text-body-m text-fg-secondary">
+        This top-up is no longer available. Return to see your latest activity.
+      </p>
     </div>
 
-    <!-- state-director scene label (dev/demo keys only) -->
-    <PreviewSceneLabel />
-  </main>
+    <CancelTopUpScreen
+      v-else-if="flow.confirmingCancel"
+      kind="transfer"
+      @confirm="cancelTopUp"
+      @keep="flow.confirmingCancel = false"
+    />
+    <ReturnFundsScreen v-else-if="showingRefund" :top-up="topUp" @back="showingRefund = false" />
+    <RecoverDepositScreen v-else-if="showingRecovery" @back="showingRecovery = false" />
+    <RecoverTrappedScreen v-else-if="showingRecoveryDeposit" />
+    <MeldFeeDetailsScreen
+      v-else-if="showingFees"
+      :quote="quote"
+      :cash-amount="cashAmount"
+      @back="showingFees = false"
+    />
+    <template v-else>
+      <JourneyScreen
+        :top-up="topUp ?? null"
+        @fees="showingFees = true"
+        @refund="showingRefund = true"
+        @recover="showingRecovery = true"
+        @recover-from-balance="recoverFromBalance"
+        @recover-deposit="showingRecoveryDeposit = true"
+        @cancel="flow.confirmingCancel = true"
+        @close="emit('back')"
+        @start-over="emit('startOver')"
+      />
+      <!-- A tap on the purse the store could not act on, or a cancel the adapter refused: the
+           payment is already on its way and the request stands. -->
+      <p
+        v-if="recoveryNotice"
+        class="shrink-0 pb-cta text-center text-body-m text-fg-secondary"
+        role="status"
+      >
+        {{ recoveryNotice }}
+      </p>
+      <p
+        v-if="session.cancelNotice"
+        class="shrink-0 pb-cta text-center text-body-m text-fg-secondary"
+        role="status"
+      >
+        {{ session.cancelNotice }}
+      </p>
+    </template>
+  </ScreenShell>
 </template>

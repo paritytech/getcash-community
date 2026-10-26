@@ -42,7 +42,7 @@ function pick(token: TokenRow) {
       <OptionRow v-for="n in tokens.length" :key="n" skeleton />
     </ul>
 
-    <div v-else class="-mx-2 mt-4 flex min-h-0 flex-col gap-4 overflow-y-auto pb-6">
+    <div v-else class="-mx-2 mt-4 flex min-h-0 flex-col gap-4 overflow-y-auto pb-cta">
       <ul
         v-for="group in groups"
         :key="group.label"
