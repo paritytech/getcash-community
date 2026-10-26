@@ -811,6 +811,64 @@ describe("worker funding engine", () => {
     expect((await engine.tickAllFunding()).ticked).toBe(0);
   });
 
+  it("sizes the burner once more when the host settles a claim sized before the conversion went out again", async () => {
+    armSeams();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.attempts = 1;
+      state.xcmSubmitted = true;
+      state.nonceAtSubmit = 0;
+      state.inclusionBlock = 42;
+      return outcome("done");
+    });
+    mocks.settlementBalance.mockResolvedValueOnce(SETTLE);
+    mocks.registerTopUp.mockResolvedValue(undefined);
+    await engine.tickAllFunding();
+    expect(storedJob().claim).toMatchObject({ phase: "claiming", attempt: 0, sizedAt: 1 });
+
+    // The block was discarded and the conversion went out again, bringing a little more.
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.attempts = 2;
+      return { ...outcome("swap"), submitted: true };
+    });
+    await engine.tickAllFunding();
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.nonceAtSubmit = null;
+      state.inclusionBlock = null;
+      return outcome("done");
+    });
+    await engine.tickAllFunding();
+    expect(storedJob()).toMatchObject({ done: true, claim: { phase: "claiming", attempt: 0 } });
+    expect(mocks.registerTopUp).toHaveBeenCalledTimes(1);
+
+    // The host settles the first attempt: the burner is sized again for what the second
+    // arrival left, and its whole units are claimed under the next id.
+    pushStatus(claimed(true));
+    expect((await sessionStatus(engine)).claim).toMatchObject({
+      phase: "sizing",
+      attempt: 1,
+      credited: SETTLE.toString(),
+    });
+    const left = 30_000n;
+    mocks.settlementBalance.mockResolvedValueOnce(left + 1_234n);
+    await engine.tickAllFunding();
+    expect(mocks.registerTopUp).toHaveBeenLastCalledWith(
+      left,
+      expect.any(Uint8Array),
+      topUpIdFor(BURNER.publicKey, 1),
+    );
+    expect(storedJob().claim).toMatchObject({ phase: "claiming", attempt: 1, sizedAt: 2 });
+    pushStatus(claimed(true));
+    await saved(() =>
+      expect(storedJob().claim).toMatchObject({
+        phase: "claimed",
+        amount: (SETTLE + left).toString(),
+      }),
+    );
+    expect((await engine.tickAllFunding()).ticked).toBe(0);
+  });
+
   it("follows a claim the host drives on every tick, Asset Hub answering or not", async () => {
     armSeams();
     const engine = await freshEngine();

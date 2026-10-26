@@ -113,9 +113,12 @@ const saveJobs = () => store.save();
  *                                            // succeeded and carried the tier's conversion event,
  *                                            // with the worker time then
  *   claim?: { phase: "sizing"|"registering"|"claiming"|"claimed", attempt, credited,
- *             id?, amount?, at, attempts, registeredAt?, workedMs?, status?, partial?, error? },
+ *             id?, amount?, sizedAt?, at, attempts, registeredAt?, workedMs?, status?,
+ *             partial?, error? },
  *                                            // attempt: 0-based; each has its own id (hex)
  *                                            // credited: CASH the host minted so far
+ *                                            // sizedAt: the conversions sent when the attempt
+ *                                            // was sized; one sent since may have brought more
  *                                            // workedMs: worker time since this attempt was
  *                                            // registered
  *                                            // status: the host's last word on the top-up
@@ -458,6 +461,7 @@ async function sizeClaim(record, burner, peoplePort) {
     credited: claim?.credited ?? "0",
     id: toHex(claimIdFor(record, burner, attempt)),
     amount: amount.toString(),
+    sizedAt: record.state.attempts,
     at: 0,
     attempts: 0,
   };
@@ -545,12 +549,19 @@ function applyClaimStatus(record, status) {
   switch (status.type) {
     case "claimed":
       if (status.finalized) {
-        const credited = asBig(record.claim.credited) + asBig(record.claim.amount);
+        const credited = (asBig(record.claim.credited) + asBig(record.claim.amount)).toString();
+        // A conversion sent again since this attempt was sized may have brought more than it
+        // claimed: the burner is sized once more, for the whole units left.
+        if (record.state.attempts > record.claim.sizedAt) {
+          record.claim = { ...record.claim, credited };
+          settleShort(record);
+          return;
+        }
         record.claim = {
           ...record.claim,
           phase: "claimed",
-          credited: credited.toString(),
-          amount: credited.toString(),
+          credited,
+          amount: credited,
           at: Date.now(),
         };
       }
