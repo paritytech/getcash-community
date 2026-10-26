@@ -10,6 +10,7 @@ import type { OptionListRow } from "../../utils/option-list";
 import { useFreshFloors } from "../../composables/useFreshFloors";
 import { useFlowStore } from "../../stores/flow";
 import { isNetworkPickable, useOffersStore, type NetworkRow } from "../../stores/offers";
+import ScreenFrame from "../ui/ScreenFrame.vue";
 
 interface NetworkOption extends OptionListRow {
   network: NetworkRow;
@@ -38,7 +39,7 @@ function pick({ network }: NetworkOption) {
 </script>
 
 <template>
-  <div class="flex min-h-0 flex-1 flex-col">
+  <ScreenFrame>
     <OptionList
       :rows="rows"
       :loading="offers.awaitingNetworks && !flow.starting"
@@ -46,6 +47,8 @@ function pick({ network }: NetworkOption) {
       @pick="pick"
     />
 
-    <PoweredBy class="mt-auto mb-4 pt-3" provider="Chainflip" />
-  </div>
+    <template #actions>
+      <PoweredBy provider="Chainflip" />
+    </template>
+  </ScreenFrame>
 </template>

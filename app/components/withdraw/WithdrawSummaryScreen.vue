@@ -8,6 +8,7 @@ import type { WithdrawFeeView } from "../../withdraw/offers";
 import { groupAmountDigits } from "../../utils/cash";
 import CashAmount from "../ui/CashAmount.vue";
 import PillButton from "../ui/PillButton.vue";
+import ScreenFrame from "../ui/ScreenFrame.vue";
 
 defineProps<{
   /** The CASH leaving the balance, as typed. */
@@ -26,7 +27,7 @@ const emit = defineEmits<{ confirm: []; fees: [] }>();
 </script>
 
 <template>
-  <div class="flex min-h-0 flex-1 flex-col">
+  <ScreenFrame>
     <div class="flex flex-col items-center text-center">
       <p class="text-display-m text-fg-primary">
         <CashAmount :amount="groupAmountDigits(amount)" />
@@ -67,8 +68,10 @@ const emit = defineEmits<{ confirm: []; fees: [] }>();
 
     <p v-if="error" class="mt-4 text-body-s text-fg-error" role="alert">{{ error }}</p>
 
-    <PillButton class="mt-auto mb-6 w-full" :disabled="starting" @click="emit('confirm')">
-      {{ starting ? "Confirming…" : "Confirm withdrawal" }}
-    </PillButton>
-  </div>
+    <template #actions>
+      <PillButton class="w-full" :disabled="starting" @click="emit('confirm')">
+        {{ starting ? "Confirming…" : "Confirm withdrawal" }}
+      </PillButton>
+    </template>
+  </ScreenFrame>
 </template>
