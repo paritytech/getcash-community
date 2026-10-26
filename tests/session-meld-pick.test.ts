@@ -1,6 +1,6 @@
 // A hosted card or bank top-up asks the region's providers about each route the chain ranks, on
 // the region's corridor for that route's token, and keeps the first they quote. Its region dropdown
-// reads both tokens' catalogs, which answer the walk's corridor reads once loaded.
+// reads both tokens' catalogs.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
@@ -14,7 +14,7 @@ import {
 } from "../app/funding/requests/storage";
 import { useRequestsStore } from "../app/stores/requests";
 import { useSessionStore } from "../app/stores/session";
-import type { SupportedCorridor, SupportedCountry } from "../lib/supported";
+import { countryName, type SupportedCorridor, type SupportedCountry } from "../lib/supported";
 
 const BURNER = "14uAyRtbeRsrgERPLETm72yFPKW3oi3m4RX93arNwGQhsduC";
 const PSM: ConversionRoute = { tier: "psm", external: "USDT", feeRate: 1_000 };
@@ -25,34 +25,33 @@ const { worlds, adapter, corridors, catalogs } = vi.hoisted(() => ({
   worlds: { builds: [] as string[], disposed: [] as string[] },
   /** Keyed by Meld's code for the token quoted. */
   adapter: new Map<string, { status: number; body: unknown } | "timeout">(),
-  /** The tokens whose corridor a quote read. */
-  corridors: { reads: [] as string[], unrouted: new Set<string>() },
-  /** The region dropdown's catalogs per token, every read of them, and the corridors a read
-   *  seeded, keyed by token and country. */
+  /** The tokens whose corridor a quote read, and the card limits a token's corridor carries. */
+  corridors: {
+    reads: [] as string[],
+    unrouted: new Set<string>(),
+    limits: new Map<string, { min: string; max: string }>(),
+  },
+  /** The region dropdown's catalogs per token, and every read of them. */
   catalogs: {
     reads: [] as string[],
     countries: new Map<string, SupportedCountry[]>(),
     corridors: new Map<string, Map<string, SupportedCorridor>>(),
-    seeded: new Map<string, SupportedCorridor>(),
   },
 }));
 vi.mock("../lib/host-account", () => ({ isHosted: () => true }));
 vi.mock("../lib/worker-rpc", () => ({
   getStorageWorkerManager: () => ({ isAvailable: () => true, call: async () => {}, dispose() {} }),
 }));
-// The region's corridor per token: card routed unless a test has it not routed for that token. A
-// country a loaded catalog lists is served from it with no read, as `fetchSupportedCorridors` seeds.
+// The region's corridor per token: card routed, with no limits, unless a test has it otherwise for
+// that token.
 vi.mock("../lib/supported", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/supported")>()),
   fetchCorridor: async (destination: string, country: string): Promise<SupportedCorridor> => {
-    const seeded = catalogs.seeded.get(`${destination}:${country}`);
-    if (seeded !== undefined) return seeded;
     corridors.reads.push(destination);
     const card = {
       paymentMethodType: "CREDIT_DEBIT_CARD",
       category: "card" as const,
-      min: "",
-      max: "",
+      ...(corridors.limits.get(destination) ?? { min: "", max: "" }),
       currency: "USD",
       providers: [],
     };
@@ -64,11 +63,7 @@ vi.mock("../lib/supported", async (importOriginal) => ({
   },
   fetchSupportedCorridors: async (destination: string) => {
     catalogs.reads.push(`corridors:${destination}`);
-    const map = catalogs.corridors.get(destination) ?? null;
-    for (const [country, corridor] of map ?? []) {
-      catalogs.seeded.set(`${destination}:${country}`, corridor);
-    }
-    return map;
+    return catalogs.corridors.get(destination) ?? null;
   },
 }));
 // The offline client prices every token, except where a test has the adapter answer otherwise,
@@ -141,20 +136,8 @@ const underMinimum = {
 const outage = { status: 503, body: { error: { tag: "ProviderTimeout" } } };
 const emptyList = { status: 200, body: { quotes: [] } };
 const timeout = "timeout" as const;
-const bankOnly: SupportedCorridor = {
-  country: "US",
-  fiat: "USD",
-  methods: [
-    {
-      paymentMethodType: "ACH",
-      category: "bank",
-      min: "10",
-      max: "5000",
-      currency: "USD",
-      providers: [],
-    },
-  ],
-};
+/** Card limits that put the amount under the method's minimum. */
+const minimum = (min: string) => ({ min, max: "100000" });
 
 /** Awaits `work`, running the clock on until it settles, so a quote that never answers times out. */
 async function settle(work: Promise<void>): Promise<void> {
@@ -174,10 +157,10 @@ describe("a hosted Meld quote", () => {
     worlds.disposed.length = 0;
     corridors.reads.length = 0;
     corridors.unrouted.clear();
+    corridors.limits.clear();
     catalogs.reads.length = 0;
     catalogs.countries.clear();
     catalogs.corridors.clear();
-    catalogs.seeded.clear();
     adapter.clear();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -223,10 +206,10 @@ describe("a hosted Meld quote", () => {
       landed: "pool",
     },
     {
-      name: "the loaded USDT catalog lacks the method, the native quotes",
-      usdtCatalog: bankOnly,
-      read: [DOT],
-      asked: ["pool"],
+      name: "USDT out of its limits, the native quotes",
+      limits: { [USDT]: minimum("1000") },
+      read: [USDT, DOT],
+      asked: ["psm", "pool"],
       landed: "pool",
     },
     {
@@ -253,13 +236,27 @@ describe("a hosted Meld quote", () => {
       asked: ["psm", "pool"],
       error: "quote timed out after 20s (host not responding?)",
     },
-  ])("$name", async ({ unrouted, usdt, dot, usdtCatalog, read, asked, landed, error }) => {
+    {
+      name: "both out of their limits, the lower minimum in CASH shown",
+      limits: { [USDT]: minimum("1000"), [DOT]: minimum("0.05") },
+      read: [USDT, DOT],
+      asked: ["psm", "pool"],
+      outOfRange: "0.05",
+    },
+    {
+      name: "no provider quotes USDT and the native out of its limits, the native's shown",
+      usdt: noProvider,
+      limits: { [DOT]: minimum("1000") },
+      read: [USDT, DOT],
+      asked: ["psm", "pool"],
+      outOfRange: "1000.00",
+    },
+  ])("$name", async ({ unrouted, usdt, dot, limits, read, asked, landed, error, outOfRange }) => {
     for (const asset of unrouted ?? []) corridors.unrouted.add(asset);
     if (usdt) adapter.set(TOKENS.USDT.meldCurrencyCode as string, usdt);
     if (dot) adapter.set(TOKENS.PAS.meldCurrencyCode as string, dot);
-    if (usdtCatalog) catalogs.corridors.set(USDT, new Map([[usdtCatalog.country, usdtCatalog]]));
+    for (const [asset, bounds] of Object.entries(limits ?? {})) corridors.limits.set(asset, bounds);
     const session = useSessionStore();
-    await session.loadSupportedCorridors();
     session.setMethod("card");
     session.setAmount("50");
     await settle(session.fetchMeldQuote());
@@ -268,9 +265,10 @@ describe("a hosted Meld quote", () => {
     // Every world but the one kept is let go.
     expect(worlds.disposed).toEqual(landed === undefined ? asked : asked.slice(0, -1));
     expect(session.live?.route.tier).toBe(landed);
-    expect(session.meldMethodUnavailable).toBe(landed === undefined && error === undefined);
+    expect(session.meldMethodUnavailable).toBe(asked.length === 0);
     expect(session.quoteError).toBe(error ?? null);
     expect(session.quoteFailures).toBe(error === undefined ? 0 : 1);
+    expect(session.quoteOutOfRange?.limit ?? null).toBe(outOfRange ?? null);
   });
 
   it("judges the region dropdown on both tokens' catalogs, whichever route quotes", async () => {
@@ -299,7 +297,7 @@ describe("a hosted Meld quote", () => {
       ]),
     );
     const session = useSessionStore();
-    await Promise.all([session.loadSupportedCountries(), session.loadSupportedCorridors()]);
+    await session.loadSupportedCatalog();
     expect(catalogs.reads.sort()).toEqual(
       [`corridors:${DOT}`, `corridors:${USDT}`, `countries:${DOT}`, `countries:${USDT}`].sort(),
     );
@@ -314,5 +312,37 @@ describe("a hosted Meld quote", () => {
     await session.fetchMeldQuote();
     expect(session.live?.route.tier).toBe("pool");
     expect(catalogs.reads).toHaveLength(4);
+  });
+
+  it.each([
+    {
+      name: "no countries read answers, the corridors of both stand in",
+      countries: {},
+      corridors: { [USDT]: ["DE"], [DOT]: ["BR", "DE"] },
+      want: ["DE", "BR"],
+    },
+    {
+      name: "one token's countries empty, the other's listed",
+      countries: { [USDT]: [], [DOT]: ["BR"] },
+      corridors: { [USDT]: ["DE"] },
+      want: ["BR"],
+    },
+    { name: "nothing answers", countries: { [USDT]: [] }, corridors: { [DOT]: [] }, want: null },
+  ])("loads the region dropdown: $name", async ({ countries, corridors: maps, want }) => {
+    for (const [token, codes] of Object.entries(countries)) {
+      catalogs.countries.set(
+        token,
+        codes.map((country) => ({ country, name: countryName(country) })),
+      );
+    }
+    for (const [token, codes] of Object.entries(maps)) {
+      catalogs.corridors.set(
+        token,
+        new Map(codes.map((country) => [country, { country, fiat: "EUR", methods: [] }])),
+      );
+    }
+    const session = useSessionStore();
+    await session.loadSupportedCatalog();
+    expect(session.supportedCountries?.map((c) => c.country) ?? null).toEqual(want);
   });
 });

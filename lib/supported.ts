@@ -183,9 +183,8 @@ export async function fetchSupportedCountries(
 }
 
 /**
- * The methods and limits a country's corridor offers. Cached per country, and seeded by
- * `fetchSupportedCorridors` for the countries it lists. Returns `null` when discovery is
- * unreachable; an empty `methods` array means nothing routes here.
+ * The methods and limits a country's corridor offers. Cached per country. Returns `null` when
+ * discovery is unreachable; an empty `methods` array means nothing routes here.
  */
 export async function fetchCorridor(
   destination: MeldAssetId,
@@ -222,9 +221,6 @@ export async function fetchCorridor(
 }
 
 // Every supported corridor as a country -> corridor map, DB-backed and tab-cached; null when unreachable.
-// Each entry is the adapter's per-country answer as of its last refresh, so it seeds `fetchCorridor`
-// where that has no read of its own. A country missing from the map is not seeded: the refresh also
-// drops a country it failed to read or that went stale, so absence does not mean nothing routes there.
 export async function fetchSupportedCorridors(
   destination: MeldAssetId,
   direction: SupportedDirection = "buy",
@@ -240,17 +236,24 @@ export async function fetchSupportedCorridors(
     );
     if (!res.ok) return null;
     const data = (await res.json()) as {
-      corridors?: { country?: string; fiat?: string; methods?: Record<string, unknown>[] }[];
+      corridors?: {
+        country?: string;
+        name?: string;
+        fiat?: string;
+        methods?: Record<string, unknown>[];
+      }[];
     };
     const map = new Map<string, SupportedCorridor>();
     for (const c of data.corridors ?? []) {
       const country = String(c.country ?? "");
       const fiat = String(c.fiat ?? "");
       if (country === "") continue;
-      const corridor = { country, fiat, methods: (c.methods ?? []).map((m) => toMethod(m, fiat)) };
-      map.set(country, corridor);
-      const key = corridorKey(destination, country, direction);
-      if (!corridorCache.has(key)) corridorCache.set(key, corridor);
+      map.set(country, {
+        country,
+        fiat,
+        methods: (c.methods ?? []).map((m) => toMethod(m, fiat)),
+        ...(typeof c.name === "string" && c.name !== "" ? { name: c.name } : {}),
+      });
     }
     // Only a non-empty result is cached; an empty one (cold cache) is retried next call.
     if (map.size > 0) corridorsCache.set(catalogKey(destination, direction), map);

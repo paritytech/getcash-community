@@ -278,6 +278,9 @@ class AdapterRefusal extends Error {
     options?: { cause?: unknown },
     /** From a 429's `retry-after`, when the response lets the browser read it. */
     readonly retryAfterMs?: number,
+    /** The fiat bound a buy quote was refused against, from a BelowMinimum/AboveMaximum that
+     *  carried one. */
+    readonly limit?: MeldFiatLimit,
   ) {
     super(message, options);
     this.name = "AdapterRefusal";
@@ -290,6 +293,27 @@ class AdapterRefusal extends Error {
 export function isAdapterOutage(error: unknown): boolean {
   if (error instanceof AdapterRefusal) return error.status >= 500 || error.status === 429;
   return error instanceof TypeError;
+}
+
+/** A buy's fiat bound, as the adapter reports it on a refused quote. */
+export interface MeldFiatLimit {
+  readonly bound: "min" | "max";
+  /** Exact decimal text, in `currency` units. */
+  readonly amount: string;
+  readonly currency: string;
+}
+
+/** The fiat bound `error` was refused against, when it is a buy quote refused on one. */
+export function fiatLimitOf(error: unknown): MeldFiatLimit | undefined {
+  return error instanceof AdapterRefusal ? error.limit : undefined;
+}
+
+function limitOf(tag: string, value?: TagValue): MeldFiatLimit | undefined {
+  const bound = tag === "BelowMinimum" ? "min" : tag === "AboveMaximum" ? "max" : undefined;
+  if (bound === undefined || value?.amount === undefined || value.currency === undefined) {
+    return undefined;
+  }
+  return { bound, amount: value.amount, currency: value.currency };
 }
 
 /** `retry-after` in milliseconds: delta-seconds or an HTTP date. Undefined when absent or unreadable
@@ -450,6 +474,7 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
         typeof value?.fundingRequestId === "string" ? value.fundingRequestId : undefined,
         undefined,
         res.status === 429 ? retryAfterMsOf(res) : undefined,
+        limitOf(tag, value),
       );
     }
     return data;

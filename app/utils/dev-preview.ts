@@ -1658,6 +1658,15 @@ export const SCENES: Scene[] = [
     }),
   },
   {
+    // "New top-up" pressed while one still runs: the amount screen with Back to the list and the
+    // dot on the clock.
+    name: "top-up / list: new top-up while one runs",
+    apply: topUpList({
+      running: [{ ...BITCOIN_SWAP, amount: "50", stage: "waiting" }],
+      entry: "amount",
+    }),
+  },
+  {
     // The screen's own shapes while the top-ups are still being read.
     name: "top-up / list: loading",
     apply: topUpList({
@@ -1950,6 +1959,17 @@ export const SCENES: Scene[] = [
       const r = await cardPayment(s, f, i);
       await core(r, 1, swapping("complete", "meld-card"));
       await r.observe(worker(r, 2, "swap"));
+    },
+  },
+  {
+    // The host is crediting the balance: after 3 s the band adds the claim's stages and the
+    // worker's last tick.
+    name: "top-up / card / journey: adding to balance",
+    apply: async (s, f, i) => {
+      const r = await cardPayment(s, f, i);
+      await core(r, 1, swapping("complete", "meld-card"));
+      await r.observe(worker(r, 2, "swap"));
+      await r.observe(worker(r, 3, "claim", true));
     },
   },
   {
@@ -2514,6 +2534,19 @@ export const SCENES: Scene[] = [
       address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
       receive: "24.44 USDC",
       fees: WITHDRAW_PREVIEW_FEES,
+    },
+    apply: (s, f) => base(s, f),
+  },
+  // A figure too long for the row's display size steps down to headline size.
+  {
+    name: "withdrawal / crypto / fees: long figure",
+    stage: {
+      kind: "withdraw-package",
+      step: "fees",
+      chain: "Ethereum",
+      address: "0x4B20993Bc481177ec7E8f571ceCaE8A9e22C02db",
+      receive: "24.034843 USDC",
+      fees: { ...WITHDRAW_PREVIEW_FEES, receive: "24.034843 USDC" },
     },
     apply: (s, f) => base(s, f),
   },

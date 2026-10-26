@@ -11,8 +11,9 @@ import {
   type FailureAction,
   type PartFailure,
 } from "./failure";
+import { checked, joinDetail, reader, stepLine } from "./live";
 import { factAt, observedFrom } from "./observed";
-import { delay, normal, type TimelineRoute, type TimelineText } from "./route";
+import { delay, normal, type TextState, type TimelineRoute, type TimelineText } from "./route";
 import type { PhaseInput, PhasePart } from "./types";
 
 const SECOND = 1_000;
@@ -147,35 +148,43 @@ function countdown(
 }
 
 /** The step in progress of `count`, or the last once all are done. */
-const stepLine = (label: string, done: number, count: number): string =>
-  `${label} ${Math.min(done + 1, count)} of ${count}`;
-
-function exchangeText(record: TopUpRecord, facts: ChainflipFacts, now: number): TimelineText {
+function exchangeText(record: TopUpRecord, facts: ChainflipFacts, state: TextState): TimelineText {
   // The token the user sent; the source id names the Asset Hub token the swap arrives as.
   const source = record.asset;
+  const { now, live } = state;
+  const read = reader(state);
   if (confirmedAt(record, facts) === undefined) {
     const required = requiredOf(facts);
     return {
       message: normal(`Confirming your ${source} deposit`),
       detail:
         required === undefined
-          ? undefined
-          : stepLine("Confirmation", facts.depositConfirmations ?? 0, required),
+          ? read("Checked")
+          : joinDetail(
+              stepLine("Confirmation", facts.depositConfirmations ?? 0, required),
+              checked("last block", facts.confirmationsAt, live) ?? read("checked"),
+            ),
     };
   }
   if (waitingForPrice(facts)) {
-    return { message: delay(`Waiting for a stable price to exchange your ${source}`) };
+    return {
+      message: delay(`Waiting for a stable price to exchange your ${source}`),
+      detail: read("Price checked"),
+    };
   }
   const chunks = chunkCount(facts);
   if (chunks !== undefined) {
     return {
       message: normal(`Exchanging your ${source} in a few steps`),
-      detail: stepLine("Part", facts.chunks?.executed ?? 0, chunks),
+      detail: joinDetail(
+        stepLine("Part", facts.chunks?.executed ?? 0, chunks),
+        checked("last part", facts.chunksAt, live) ?? read("checked"),
+      ),
     };
   }
   return {
     message: normal(`Exchanging your ${source}`),
-    detail: countdown(facts.swapScheduledAt, estimated(facts, "swap"), now),
+    detail: countdown(facts.swapScheduledAt, estimated(facts, "swap"), now) ?? read("Checked"),
   };
 }
 
@@ -274,14 +283,17 @@ export const chainflipRoute: TimelineRoute = {
     const core = record.witnesses.core;
     return core?.phase === "swapping" ? core.at : undefined;
   },
-  text(record, index, { delayed, now }) {
+  text(record, index, state) {
     const facts = record.chainflip ?? {};
-    if (index === 0) return exchangeText(record, facts, now);
+    if (index === 0) return exchangeText(record, facts, state);
+    const { delayed, now } = state;
     return {
       message: delayed
         ? delay(`Your ${record.asset} is exchanged and the network is processing the transfer`)
         : normal("Your money is on its way"),
-      detail: countdown(facts.egressScheduledAt, estimated(facts, "egress"), now),
+      detail:
+        countdown(facts.egressScheduledAt, estimated(facts, "egress"), now) ??
+        reader(state)("Checked"),
     };
   },
   failure: chainflipFailure,
