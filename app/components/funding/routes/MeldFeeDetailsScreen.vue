@@ -11,6 +11,7 @@ import { cashAmount } from "../../../utils/cash";
 import { fmtFiat, isMoneyAmount, sumMoney } from "../../../utils/money";
 import DetailRows from "../../ui/DetailRows.vue";
 import PillButton from "../../ui/PillButton.vue";
+import ScreenFrame from "../../ui/ScreenFrame.vue";
 
 const props = defineProps<{
   quote: QuoteView | null;
@@ -96,7 +97,7 @@ const rate = computed(() => {
 </script>
 
 <template>
-  <div class="flex min-h-0 flex-1 flex-col">
+  <ScreenFrame>
     <!-- The split, its total, then the charge. The rule above the total is what makes it read as
          a sum, so it only appears when there are components above it to sum. -->
     <template v-if="feeRows.length">
@@ -119,8 +120,8 @@ const rate = computed(() => {
       </div>
     </div>
 
-    <PillButton variant="tertiary" class="mt-auto mb-6 w-full" @click="emit('back')">
-      Back
-    </PillButton>
-  </div>
+    <template #actions>
+      <PillButton variant="tertiary" class="w-full" @click="emit('back')">Back</PillButton>
+    </template>
+  </ScreenFrame>
 </template>
