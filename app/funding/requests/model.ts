@@ -207,7 +207,7 @@ export interface WorkerHandoffPayload {
 
 /** A fact the top-up timeline measures time from that has no time of its own on the record: a
  *  provider status, the deposit first seen on the burner itself (kept once the status moves on),
- *  the deposit first read final on the burner by the app, the CASH in a People block (the
+ *  the deposit first read final on the burner by the app, the CASH at People's best block (the
  *  worker's funding leg done), and the host's `claiming`. */
 export type ObservedFact =
   | Exclude<SwapProgress, "waiting">
