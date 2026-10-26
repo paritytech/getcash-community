@@ -1,7 +1,7 @@
 // Error mapping and idempotency-key behavior of `createMeldClient`.
 
 import { describe, expect, it } from "vitest";
-import { createMeldClient } from "./client";
+import { createMeldClient, refusalOf } from "./client";
 
 /** A fetch stub answering a scripted sequence, one response per call, the last repeating. */
 function stubSequence(responses: readonly { status: number; body: unknown }[]) {
@@ -212,6 +212,27 @@ describe("createMeldClient error mapping", () => {
     });
     const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
     await expect(client.createSession(SESSION_REQ)).rejects.not.toThrow(/quote/i);
+  });
+
+  it("keeps the adapter's tag, code and status on the refusal", async () => {
+    const { impl } = stubFetch(400, {
+      error: {
+        tag: "Other",
+        value: { code: "AMOUNT_REJECTED", message: "The provider cannot take this amount." },
+      },
+    });
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+    const refused = await client
+      .getQuote({
+        country: "DE",
+        sourceCurrencyCode: "EUR",
+        destinationCurrencyCode: "DOT",
+        sourceAmount: "50.00",
+        paymentMethodType: "CREDIT_DEBIT_CARD",
+      })
+      .catch((e: unknown) => e);
+    expect(refusalOf(refused)).toEqual({ status: 400, tag: "Other", code: "AMOUNT_REJECTED" });
+    expect(refusalOf(new Error("not a refusal"))).toBeUndefined();
   });
 
   it("names the threshold on BelowMinimum", async () => {

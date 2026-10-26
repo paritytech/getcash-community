@@ -281,6 +281,8 @@ class AdapterRefusal extends Error {
     /** The fiat bound a buy quote was refused against, from a BelowMinimum/AboveMaximum that
      *  carried one. */
     readonly limit?: MeldFiatLimit,
+    /** The adapter's failure tag (`NoQuotesAvailable`, `Other`, …), for logs and branching. */
+    readonly tag?: string,
   ) {
     super(message, options);
     this.name = "AdapterRefusal";
@@ -293,6 +295,23 @@ export interface MeldFiatLimit {
   /** Exact decimal text, in `currency` units. */
   readonly amount: string;
   readonly currency: string;
+}
+
+/** What the adapter said when it refused: its tag, the `Other` code under it, and the status. */
+export interface MeldRefusal {
+  readonly tag?: string;
+  readonly code?: string;
+  readonly status: number;
+}
+
+/** The adapter's refusal behind `error`, when it is one. */
+export function refusalOf(error: unknown): MeldRefusal | undefined {
+  if (!(error instanceof AdapterRefusal)) return undefined;
+  return {
+    status: error.status,
+    ...(error.tag === undefined ? {} : { tag: error.tag }),
+    ...(error.code === undefined ? {} : { code: error.code }),
+  };
 }
 
 /** The fiat bound `error` was refused against, when it is a buy quote refused on one. */
@@ -467,6 +486,7 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
         undefined,
         res.status === 429 ? retryAfterMsOf(res) : undefined,
         limitOf(tag, value),
+        tag,
       );
     }
     return data;

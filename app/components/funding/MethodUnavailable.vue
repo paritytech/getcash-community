@@ -3,7 +3,8 @@
 // why, the region (still live, as one way out), the other fiat method when the region routes it,
 // and crypto. With `range` it is instead a top-up whose amount costs less than the method's minimum
 // or more than its maximum there: the bound in CASH, and the ways out are a different amount or
-// the bound itself.
+// the bound itself. With `amountRejected` the provider turned the amount down without naming a
+// bound, so the one way out is a different amount.
 import { computed } from "vue";
 import type { QuoteOutOfRange } from "../../stores/session";
 import { cashAmount } from "../../utils/cash";
@@ -27,6 +28,8 @@ const props = defineProps<{
   other: "card" | "bank" | null;
   /** The amount is routed but outside the method's limits: the bound it misses. */
   range?: QuoteOutOfRange | null;
+  /** The provider turned the amount down without saying which bound it missed. */
+  amountRejected?: boolean;
 }>();
 defineEmits<{
   region: [];
@@ -42,6 +45,8 @@ const range = computed(() => props.range ?? null);
 const below = computed(() => range.value?.bound === "min");
 const payment = computed(() => (props.method === "bank" ? "bank payment" : "card payment"));
 const message = computed(() => {
+  if (props.amountRejected)
+    return `This amount can't be paid by ${payment.value} in ${props.countryName}`;
   const r = range.value;
   if (r !== null) {
     if (r.cash === null) {
@@ -54,6 +59,7 @@ const message = computed(() => {
   return `${props.method === "bank" ? "Bank" : "Card"} ${topUp.value ? "transfer" : "payout"} isn't available in this region`;
 });
 const minRows = computed(() => {
+  if (props.amountRejected) return [];
   const r = range.value;
   if (r !== null) {
     const label = below.value ? "Min. payment" : "Max. payment";
@@ -92,7 +98,10 @@ const minRows = computed(() => {
       <DetailRows :rows="minRows" />
     </div>
 
-    <div v-if="range" class="mt-auto mb-6 flex shrink-0 flex-col gap-4">
+    <div v-if="amountRejected" class="mt-auto mb-6 flex shrink-0 flex-col gap-4">
+      <PillButton class="w-full" @click="$emit('changeAmount')">Change amount</PillButton>
+    </div>
+    <div v-else-if="range" class="mt-auto mb-6 flex shrink-0 flex-col gap-4">
       <PillButton variant="secondary" class="w-full" @click="$emit('changeAmount')">
         Change amount
       </PillButton>

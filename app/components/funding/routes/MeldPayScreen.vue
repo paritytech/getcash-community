@@ -122,6 +122,7 @@ const canContinue = computed(
     !session.loading &&
     !session.quoteError &&
     !session.meldMethodUnavailable &&
+    !session.quoteAmountRejected &&
     !!session.quoted &&
     !starting.value &&
     // A refusal blocks Continue until a fresh quote clears it.
@@ -169,6 +170,19 @@ async function next() {
     @region="emit('currency')"
     @change-amount="emit('changeAmount')"
     @use-amount="useAmount"
+  />
+  <MethodUnavailable
+    v-else-if="session.quoteAmountRejected && !session.loading"
+    direction="top-up"
+    :method="meldMethod"
+    :amount="session.amountHuman"
+    :country="selectedCountry"
+    :country-name="countryLabel"
+    :minimum="null"
+    :other="null"
+    amount-rejected
+    @region="emit('currency')"
+    @change-amount="emit('changeAmount')"
   />
   <RateErrorScreen
     v-else-if="session.quoteError !== null && !session.loading"

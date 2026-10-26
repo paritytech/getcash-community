@@ -3,6 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import { createMeldClient } from "@getsome/meld";
 import { useSessionStore } from "../app/stores/session";
 
 /** Set, the next mock world refuses to be built, which fails the quote on every rail. */
@@ -82,4 +83,58 @@ describe("session store: quote failures in a row", () => {
     expect(store.quoteError).toBeNull();
     expect(store.quoteFailures).toBe(0);
   });
+
+  it("asks for a different amount when the provider turns the amount down, without a retry", async () => {
+    fault.error = await adapterRefusal({
+      tag: "Other",
+      value: { code: "AMOUNT_REJECTED", message: "The provider cannot take this amount." },
+    });
+    const store = useSessionStore();
+    store.setMethod("card");
+    store.setAmount("100");
+    await store.fetchMeldQuote();
+    expect(store.quoteAmountRejected).toBe(true);
+    expect(store.quoteError).toBeNull();
+    expect(store.quoteFailures).toBe(0);
+
+    // A new amount clears it.
+    store.setAmount("200");
+    expect(store.quoteAmountRejected).toBe(false);
+  });
+
+  it("keeps any other refusal on the generic retry screen", async () => {
+    fault.error = await adapterRefusal({
+      tag: "Other",
+      value: { code: "PROVIDER_REJECTED", message: "The provider declined this request." },
+    });
+    const store = useSessionStore();
+    store.setMethod("card");
+    store.setAmount("100");
+    await store.fetchMeldQuote();
+    expect(store.quoteAmountRejected).toBe(false);
+    expect(store.quoteError).not.toBeNull();
+    expect(store.quoteFailures).toBe(1);
+  });
 });
+
+/** A real adapter refusal for `error`, as the Meld client throws it on a refused quote. */
+async function adapterRefusal(error: unknown): Promise<Error> {
+  const fetchImpl = (async () =>
+    new Response(JSON.stringify({ error }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    })) as unknown as typeof fetch;
+  const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl });
+  return client
+    .getQuote({
+      country: "DE",
+      sourceCurrencyCode: "EUR",
+      destinationCurrencyCode: "DOT",
+      sourceAmount: "50.00",
+      paymentMethodType: "CREDIT_DEBIT_CARD",
+    })
+    .then(
+      () => new Error("expected a refusal"),
+      (e: unknown) => e as Error,
+    );
+}

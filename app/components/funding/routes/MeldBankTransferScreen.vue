@@ -59,7 +59,11 @@ const blocked = computed(() => session.quoteError !== null && !session.loading);
 const requestOpen = computed(() => requests.phase !== null);
 /** The summary has nothing to price yet. */
 const pricing = computed(
-  () => !blocked.value && session.quoteOutOfRange === null && !session.quoted,
+  () =>
+    !blocked.value &&
+    session.quoteOutOfRange === null &&
+    !session.quoteAmountRejected &&
+    !session.quoted,
 );
 
 /** The hero: the exact total to transfer, fees included. Shown only once a quote priced it. */
@@ -208,6 +212,19 @@ function confirmSent() {
       @region="emit('currency')"
       @change-amount="emit('changeAmount')"
       @use-amount="useAmount"
+    />
+    <MethodUnavailable
+      v-else-if="step === 'summary' && session.quoteAmountRejected && !session.loading"
+      direction="top-up"
+      method="bank"
+      :amount="session.amountHuman"
+      :country="country"
+      :country-name="countryLabel"
+      :minimum="null"
+      :other="null"
+      amount-rejected
+      @region="emit('currency')"
+      @change-amount="emit('changeAmount')"
     />
     <RateErrorScreen
       v-else-if="step === 'summary' && blocked"

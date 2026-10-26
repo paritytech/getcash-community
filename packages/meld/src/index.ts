@@ -1,7 +1,9 @@
 export {
   createMeldClient,
   fiatLimitOf,
+  refusalOf,
   type MeldFiatLimit,
+  type MeldRefusal,
   type MeldClientLike,
   type MeldDepositDisclosure,
   type MeldEndpointConfig,
