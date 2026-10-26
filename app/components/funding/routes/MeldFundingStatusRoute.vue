@@ -24,6 +24,9 @@ import CancelTopUpScreen from "../../screens/CancelTopUpScreen.vue";
 import MeldBankTransferScreen from "./MeldBankTransferScreen.vue";
 import MeldFeeDetailsScreen from "./MeldFeeDetailsScreen.vue";
 import MeldPaySheet from "./MeldPaySheet.vue";
+import ScreenFrame from "../../ui/ScreenFrame.vue";
+import ScreenShell from "../../ui/ScreenShell.vue";
+import WidgetCancel from "../../ui/WidgetCancel.vue";
 
 const props = defineProps<{ topUp: FundingTopUp }>();
 const emit = defineEmits<FundingPackageEmits>();
@@ -111,111 +114,93 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <main
-    class="fixed inset-x-0 mx-auto flex w-full max-w-md flex-col overflow-hidden bg-surface-main"
-    style="
-      top: var(--vvt, 0px);
-      height: var(--vvh, 100dvh);
-      padding-top: env(safe-area-inset-top);
-      padding-bottom: env(safe-area-inset-bottom);
-    "
+  <!-- The title and page padding are dropped while the card widget is up. -->
+  <ScreenShell
+    :back="!waiting && !requests.claiming && !session.cancelling"
+    :title="flow.confirmingCancel ? '' : showingFees ? 'Fees' : showingWidget ? '' : title"
+    :edge="showingWidget"
+    @back="goBack"
   >
-    <!-- The title and page padding are dropped while the card widget is up. -->
-    <Toolbar
-      :back="!waiting && !requests.claiming && !session.cancelling"
-      :title="flow.confirmingCancel ? '' : showingFees ? 'Fees' : showingWidget ? '' : title"
-      @back="goBack"
+    <template
+      v-if="
+        showingPayment &&
+        !showingFees &&
+        isDemoBuild() &&
+        !requests.claiming &&
+        (session.canSkipDeposit || session.faucetState !== 'idle')
+      "
+      #trailing
     >
-      <template
-        v-if="
-          showingPayment &&
-          !showingFees &&
-          isDemoBuild() &&
-          !requests.claiming &&
-          (session.canSkipDeposit || session.faucetState !== 'idle')
-        "
-        #trailing
+      <!-- Skip hides once tapped; a spinner takes its place until the deposit is seen. -->
+      <button
+        v-if="session.canSkipDeposit"
+        type="button"
+        class="rounded-medium px-4 py-3 text-label-l font-normal text-fg-primary transition-colors hover:bg-action-tertiary-hover"
+        @click="onSkip"
       >
-        <!-- Skip hides once tapped; a spinner takes its place until the deposit is seen. -->
-        <button
-          v-if="session.canSkipDeposit"
-          type="button"
-          class="rounded-medium px-4 py-3 text-label-l font-normal text-fg-primary transition-colors hover:bg-action-tertiary-hover"
-          @click="onSkip"
-        >
-          Skip
-        </button>
-        <span
-          v-else
-          class="mx-4 my-3 inline-block size-6 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary"
-        />
-      </template>
-    </Toolbar>
-
-    <div class="flex min-h-0 flex-1 flex-col" :class="showingWidget ? '' : 'px-6 pt-6'">
-      <div v-if="waiting" class="flex flex-col items-center gap-4 pt-16">
-        <span
-          class="inline-block size-8 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary"
-        />
-        <p class="text-body-m text-fg-secondary">Opening your top-up…</p>
-      </div>
-
-      <div v-else-if="unavailable" class="flex flex-1 flex-col items-center pt-16 text-center">
-        <h1 class="text-heading-l text-fg-primary">Top-up unavailable</h1>
-        <p class="mt-2 text-body-m text-fg-secondary">
-          This top-up is no longer available. Return to see your latest activity.
-        </p>
-      </div>
-
-      <!-- The transfer may already be on its way and nothing here can see it, so the choice gets
-           the whole screen, exactly as it does on the journey. -->
-      <CancelTopUpScreen
-        v-else-if="flow.confirmingCancel"
-        kind="transfer"
-        @confirm="cancelTopUp"
-        @keep="flow.confirmingCancel = false"
+        Skip
+      </button>
+      <span
+        v-else
+        class="mx-4 my-3 inline-block size-6 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary"
       />
+    </template>
 
-      <MeldFeeDetailsScreen
-        v-else-if="showingFees"
-        :quote="quote"
-        :cash-amount="cashAmount"
-        @back="showingFees = false"
+    <div v-if="waiting" class="flex flex-col items-center gap-4 pt-16">
+      <span
+        class="inline-block size-8 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary"
       />
-
-      <!-- The transfer's own details step, the same screen the fresh flow ends on, with the way
-           out that only a resumed transfer needs. -->
-      <MeldBankTransferScreen
-        v-else-if="isBank"
-        :country="country"
-        step="details"
-        :cancellable="canCancel"
-        @fees="showingFees = true"
-        @cancel="flow.confirmingCancel = true"
-        @leave="emit('back')"
-      />
-
-      <template v-else>
-        <MeldPaySheet :pay-url="session.meldPayUrl" />
-        <!-- No confirmation on the card: its charge is reported by the widget itself, so a
-             payment we cannot see is not a state this rail reaches. -->
-        <button
-          v-if="canCancel"
-          type="button"
-          class="mx-6 mt-3 mb-4 h-12 shrink-0 rounded-medium bg-status-error text-label-l text-fg-static-white transition-colors hover:bg-status-error-hover disabled:opacity-50"
-          :disabled="session.cancelling || !session.cancelReady"
-          @click="cancelTopUp"
-        >
-          {{ session.cancelling ? "Cancelling…" : "Cancel" }}
-        </button>
-        <p
-          v-if="session.cancelNotice"
-          class="mx-6 mb-4 text-center text-body-m text-fg-secondary"
-          role="status"
-        >
-          {{ session.cancelNotice }}
-        </p>
-      </template>
+      <p class="text-body-m text-fg-secondary">Opening your top-up…</p>
     </div>
-  </main>
+
+    <div v-else-if="unavailable" class="flex flex-1 flex-col items-center pt-16 text-center">
+      <h1 class="text-heading-l text-fg-primary">Top-up unavailable</h1>
+      <p class="mt-2 text-body-m text-fg-secondary">
+        This top-up is no longer available. Return to see your latest activity.
+      </p>
+    </div>
+
+    <!-- The transfer may already be on its way and nothing here can see it, so the choice gets
+           the whole screen, exactly as it does on the journey. -->
+    <CancelTopUpScreen
+      v-else-if="flow.confirmingCancel"
+      kind="transfer"
+      @confirm="cancelTopUp"
+      @keep="flow.confirmingCancel = false"
+    />
+
+    <MeldFeeDetailsScreen
+      v-else-if="showingFees"
+      :quote="quote"
+      :cash-amount="cashAmount"
+      @back="showingFees = false"
+    />
+
+    <!-- The transfer's own details step, the same screen the fresh flow ends on, with the way
+           out that only a resumed transfer needs. -->
+    <MeldBankTransferScreen
+      v-else-if="isBank"
+      :country="country"
+      step="details"
+      :cancellable="canCancel"
+      @fees="showingFees = true"
+      @cancel="flow.confirmingCancel = true"
+      @leave="emit('back')"
+    />
+
+    <ScreenFrame v-else>
+      <MeldPaySheet :pay-url="session.meldPayUrl" />
+      <!-- No confirmation on the card: its charge is reported by the widget itself, so a
+             payment we cannot see is not a state this rail reaches. -->
+      <template v-if="canCancel || session.cancelNotice" #actions>
+        <WidgetCancel
+          :offered="canCancel"
+          :cancelling="session.cancelling"
+          :ready="session.cancelReady"
+          :notice="session.cancelNotice"
+          @cancel="cancelTopUp"
+        />
+      </template>
+    </ScreenFrame>
+  </ScreenShell>
 </template>

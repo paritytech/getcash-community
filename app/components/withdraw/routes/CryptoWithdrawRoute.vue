@@ -28,7 +28,7 @@ import {
 import type { WithdrawFeeView } from "../../../withdraw/offers";
 import { withdrawalRequestRef } from "../../../withdraw/rows";
 import AmountOutOfRange from "../../funding/AmountOutOfRange.vue";
-import Toolbar from "../../ui/Toolbar.vue";
+import ScreenShell from "../../ui/ScreenShell.vue";
 import WithdrawAddressScreen from "../WithdrawAddressScreen.vue";
 import WithdrawCancelScreen from "../WithdrawCancelScreen.vue";
 import WithdrawFeesScreen from "../WithdrawFeesScreen.vue";
@@ -438,117 +438,103 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <!-- Toolbar and screen fill the visible viewport; the app never scrolls. -->
-  <main
-    class="fixed inset-x-0 mx-auto flex w-full max-w-md flex-col overflow-hidden bg-surface-main"
-    style="
-      top: var(--vvt, 0px);
-      height: var(--vvh, 100dvh);
-      padding-top: env(safe-area-inset-top);
-      padding-bottom: env(safe-area-inset-bottom);
-    "
-  >
-    <Toolbar :title="toolbar.title" :back="toolbar.back" @back="onBack">
-      <template v-if="canSkipRail || canSkipSummary" #trailing>
-        <button
-          type="button"
-          class="rounded-medium px-4 py-3 text-label-l font-normal text-fg-primary transition-colors hover:bg-action-tertiary-hover"
-          @click="canSkipRail ? onSkipRail() : onSkipSummary()"
-        >
-          Skip
-        </button>
-      </template>
-    </Toolbar>
-
-    <div class="flex min-h-0 flex-1 flex-col px-6 pt-6">
-      <WithdrawNetworkScreen
-        v-if="step === 'network'"
-        :amount="amountBase"
-        :skeleton="previewSkeleton"
-        @pick="pickNetwork"
-      />
-      <WithdrawTokenScreen
-        v-else-if="step === 'token' && network"
-        :network="network"
-        :skeleton="previewSkeleton"
-        @pick="pickToken"
-      />
-      <!-- Keyed so a staged address replaces the screen's own typing state. -->
-      <WithdrawAddressScreen
-        v-else-if="step === 'address' && network && destination"
-        :key="address"
-        :network="network"
-        :destination="destination"
-        :initial="address"
-        @next="onAddress"
-      />
-      <AmountOutOfRange
-        v-else-if="step === 'summary' && destination && belowMinimum !== null"
-        :amount="groupAmountDigits(amount)"
-        :words="cryptoBelowMinimum(belowMinimum)"
-        @change-amount="emit('changeAmount')"
-        @use-amount="useAmount"
-      />
-      <WithdrawSummaryScreen
-        v-else-if="step === 'summary' && destination"
-        :amount="amount"
-        :destination="destination"
-        :address="address"
-        :receive="receive"
-        :fees="fees"
-        :starting="starting"
-        :error="startError"
-        @confirm="confirm"
-        @fees="openFees('summary')"
-      />
-      <WithdrawFeesScreen
-        v-else-if="step === 'fees' && fees"
-        :amount="amount"
-        :fees="fees"
-        @back="step = feesFrom"
-      />
-      <WithdrawCancelScreen
-        v-else-if="step === 'cancel'"
-        :cancelling="busy"
-        @confirm="confirmCancel"
-        @keep="step = 'journey'"
-      />
-      <WithdrawJourneyScreen
-        v-else-if="step === 'journey' && record"
-        :record="record"
-        :notice="notice"
-        :busy="busy"
-        :fees-available="fees !== null"
-        :pool-figure="poolFigure"
-        @cancel="step = 'cancel'"
-        @retry="retry"
-        @pool="switchToPool"
-        @return-funds="step = 'return-funds'"
-        @fees="openFees('journey')"
-        @close="emit('back')"
-      />
-      <WithdrawReturnFundsScreen
-        v-else-if="step === 'return-funds' && record"
-        :record="record"
-        :preview-secret="previewSecret"
-        @back="step = 'journey'"
-      />
-      <div
-        v-else-if="step === 'journey' && unavailable"
-        class="flex flex-1 flex-col items-center pt-16 text-center"
+  <ScreenShell :title="toolbar.title" :back="toolbar.back" @back="onBack">
+    <template v-if="canSkipRail || canSkipSummary" #trailing>
+      <button
+        type="button"
+        class="rounded-medium px-4 py-3 text-label-l font-normal text-fg-primary transition-colors hover:bg-action-tertiary-hover"
+        @click="canSkipRail ? onSkipRail() : onSkipSummary()"
       >
-        <h1 class="text-heading-l text-fg-primary">Withdrawal unavailable</h1>
-        <p class="mt-2 text-body-m text-fg-secondary">
-          This withdrawal is no longer available. Return to see your latest activity.
-        </p>
-      </div>
-      <div v-else-if="step === 'journey'" class="flex flex-col items-center gap-4 pt-16">
-        <span
-          class="inline-block size-8 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary"
-        />
-        <p class="text-body-m text-fg-secondary">Opening your withdrawal…</p>
-      </div>
+        Skip
+      </button>
+    </template>
+
+    <WithdrawNetworkScreen
+      v-if="step === 'network'"
+      :amount="amountBase"
+      :skeleton="previewSkeleton"
+      @pick="pickNetwork"
+    />
+    <WithdrawTokenScreen
+      v-else-if="step === 'token' && network"
+      :network="network"
+      :skeleton="previewSkeleton"
+      @pick="pickToken"
+    />
+    <!-- Keyed so a staged address replaces the screen's own typing state. -->
+    <WithdrawAddressScreen
+      v-else-if="step === 'address' && network && destination"
+      :key="address"
+      :network="network"
+      :destination="destination"
+      :initial="address"
+      @next="onAddress"
+    />
+    <AmountOutOfRange
+      v-else-if="step === 'summary' && destination && belowMinimum !== null"
+      :amount="groupAmountDigits(amount)"
+      :words="cryptoBelowMinimum(belowMinimum)"
+      @change-amount="emit('changeAmount')"
+      @use-amount="useAmount"
+    />
+    <WithdrawSummaryScreen
+      v-else-if="step === 'summary' && destination"
+      :amount="amount"
+      :destination="destination"
+      :address="address"
+      :receive="receive"
+      :fees="fees"
+      :starting="starting"
+      :error="startError"
+      @confirm="confirm"
+      @fees="openFees('summary')"
+    />
+    <WithdrawFeesScreen
+      v-else-if="step === 'fees' && fees"
+      :amount="amount"
+      :fees="fees"
+      @back="step = feesFrom"
+    />
+    <WithdrawCancelScreen
+      v-else-if="step === 'cancel'"
+      :cancelling="busy"
+      @confirm="confirmCancel"
+      @keep="step = 'journey'"
+    />
+    <WithdrawJourneyScreen
+      v-else-if="step === 'journey' && record"
+      :record="record"
+      :notice="notice"
+      :busy="busy"
+      :fees-available="fees !== null"
+      :pool-figure="poolFigure"
+      @cancel="step = 'cancel'"
+      @retry="retry"
+      @pool="switchToPool"
+      @return-funds="step = 'return-funds'"
+      @fees="openFees('journey')"
+      @close="emit('back')"
+    />
+    <WithdrawReturnFundsScreen
+      v-else-if="step === 'return-funds' && record"
+      :record="record"
+      :preview-secret="previewSecret"
+      @back="step = 'journey'"
+    />
+    <div
+      v-else-if="step === 'journey' && unavailable"
+      class="flex flex-1 flex-col items-center pt-16 text-center"
+    >
+      <h1 class="text-heading-l text-fg-primary">Withdrawal unavailable</h1>
+      <p class="mt-2 text-body-m text-fg-secondary">
+        This withdrawal is no longer available. Return to see your latest activity.
+      </p>
     </div>
-    <PreviewSceneLabel />
-  </main>
+    <div v-else-if="step === 'journey'" class="flex flex-col items-center gap-4 pt-16">
+      <span
+        class="inline-block size-8 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary"
+      />
+      <p class="text-body-m text-fg-secondary">Opening your withdrawal…</p>
+    </div>
+  </ScreenShell>
 </template>
