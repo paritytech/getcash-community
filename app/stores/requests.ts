@@ -89,6 +89,7 @@ import {
   freshnessOf,
   fundingStepOf,
   fundsSeenOf,
+  meldAwaitingBuyerOf,
   meldHandedOffOf,
   meldStageOf,
   phaseLike,
@@ -1378,6 +1379,11 @@ export const useRequestsStore = defineStore("requests", () => {
    *  widget. */
   const meldHandedOff = computed(() =>
     foregroundRecord.value ? meldHandedOffOf(foregroundRecord.value) : false,
+  );
+  /** The rail filed a transaction for the request on screen that the buyer has not been seen to
+   *  pay: the widget stays up. */
+  const meldAwaitingBuyer = computed(() =>
+    foregroundRecord.value ? meldAwaitingBuyerOf(foregroundRecord.value) : false,
   );
 
   // The foreground clock: while the request on screen awaits its deposit, one clock observation a
@@ -3058,6 +3064,7 @@ export const useRequestsStore = defineStore("requests", () => {
     meldSubmitted,
     depositSkipped,
     meldHandedOff,
+    meldAwaitingBuyer,
     leave,
     cancel,
     retry,
