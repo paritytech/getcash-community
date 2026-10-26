@@ -52,7 +52,7 @@ const busy = computed(() => Boolean(props.openingTopUpId));
 
     <div
       v-if="skeleton"
-      class="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden px-4 pt-6 pb-6"
+      class="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden px-4 pt-6 pb-cta"
       aria-label="Loading your top-ups"
     >
       <span class="funding-history-shape h-4 w-26 animate-pulse bg-action-disabled" />
@@ -66,13 +66,13 @@ const busy = computed(() => Boolean(props.openingTopUpId));
     <!-- Nothing has ever been topped up: the clock the list lives behind, and why it is bare. -->
     <div
       v-else-if="empty"
-      class="flex min-h-0 flex-1 flex-col items-center justify-center px-4 pb-6 text-center"
+      class="flex min-h-0 flex-1 flex-col items-center justify-center px-4 pb-cta text-center"
     >
       <History class="size-7 text-fg-secondary" aria-hidden="true" />
       <p class="mt-2 max-w-[19.5rem] text-body-m text-fg-secondary">{{ emptyText }}</p>
     </div>
 
-    <div v-else class="flex min-h-0 flex-1 flex-col px-4 pt-6 pb-6">
+    <div v-else class="flex min-h-0 flex-1 flex-col px-4 pt-6 pb-cta">
       <!-- Above the list, not after it: the error answers a tap on a card near the top, and the
            list is long enough that anything below it is never scrolled to. -->
       <p v-if="error" class="pb-3 text-center text-caption text-fg-error" role="alert">

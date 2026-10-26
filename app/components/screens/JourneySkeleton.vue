@@ -2,6 +2,7 @@
 // The journey's own shapes while its request is being opened: the hero, the stepper card, the
 // detail rows and the button it lands on. Drawn from the screen it stands in for, so nothing
 // jumps when the record arrives.
+import ScreenFrame from "../ui/ScreenFrame.vue";
 import SkeletonBlock from "../ui/SkeletonBlock.vue";
 
 withDefaults(
@@ -14,7 +15,7 @@ withDefaults(
 </script>
 
 <template>
-  <div class="flex min-h-0 flex-1 flex-col" aria-label="Opening your top-up" aria-busy="true">
+  <ScreenFrame aria-label="Opening your top-up" aria-busy="true">
     <div class="flex flex-col items-center gap-2">
       <SkeletonBlock class="size-14" />
       <SkeletonBlock class="h-14 w-44" />
@@ -31,8 +32,10 @@ withDefaults(
       </div>
     </div>
 
-    <SkeletonBlock class="mt-auto mb-6 h-12 w-full" />
-  </div>
+    <template #actions>
+      <SkeletonBlock class="h-12 w-full" />
+    </template>
+  </ScreenFrame>
 </template>
 
 <style scoped>

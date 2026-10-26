@@ -8,13 +8,16 @@ import { useSessionStore } from "../../../stores/session";
 import { methodMinimum, namedCountry, otherMethod } from "~~/lib/supported";
 import { detectCountry } from "../../../composables/useDetectedCountry";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
+import { fiatOutOfRange } from "../../../funding/out-of-range";
 import type { FundingRoute } from "../../../funding/selection";
 import DetailRows from "../../ui/DetailRows.vue";
 import PillButton from "../../ui/PillButton.vue";
 import RateErrorScreen from "../../ui/RateErrorScreen.vue";
 import RegionRow from "../../ui/RegionRow.vue";
+import ScreenFrame from "../../ui/ScreenFrame.vue";
 import SkeletonBlock from "../../ui/SkeletonBlock.vue";
 import SkeletonRow from "../../ui/SkeletonRow.vue";
+import AmountOutOfRange from "../AmountOutOfRange.vue";
 import MethodUnavailable from "../MethodUnavailable.vue";
 
 const session = useSessionStore();
@@ -156,16 +159,11 @@ async function next() {
     @use-crypto="emit('switchRoute', 'crypto')"
     @use-other="switchMethod && emit('switchRoute', switchMethod)"
   />
-  <MethodUnavailable
+  <AmountOutOfRange
     v-else-if="session.quoteOutOfRange !== null && !session.loading"
-    direction="top-up"
-    :method="meldMethod"
     :amount="session.amountHuman"
-    :country="selectedCountry"
-    :country-name="countryLabel"
-    :minimum="null"
-    :other="null"
-    :range="session.quoteOutOfRange"
+    :words="fiatOutOfRange(session.quoteOutOfRange, meldMethod, countryLabel)"
+    :region="{ label: 'Payment country', value: countryLabel, country: selectedCountry }"
     @region="emit('currency')"
     @change-amount="emit('changeAmount')"
     @use-amount="useAmount"
@@ -177,7 +175,7 @@ async function next() {
     @change-country="emit('currency')"
     @use-crypto="emit('switchRoute', 'crypto')"
   />
-  <div v-else class="flex min-h-0 flex-1 flex-col">
+  <ScreenFrame v-else>
     <!-- The hero: the total the card will be charged. The toolbar already names the method. -->
     <div class="flex flex-col items-center text-center">
       <template v-if="heroAmount">
@@ -221,9 +219,11 @@ async function next() {
 
     <p v-if="startError" class="mt-4 text-body-m text-fg-error">{{ startError }}</p>
 
-    <PillButton class="mt-auto w-full" :disabled="!canContinue" @click="next">
-      {{ starting ? "Starting…" : "Continue" }}
-    </PillButton>
-    <PoweredBy class="mt-3 mb-4" provider="Meld" />
-  </div>
+    <template #actions>
+      <PillButton class="w-full" :disabled="!canContinue" @click="next">
+        {{ starting ? "Starting…" : "Continue" }}
+      </PillButton>
+      <PoweredBy provider="Meld" />
+    </template>
+  </ScreenFrame>
 </template>

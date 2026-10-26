@@ -100,7 +100,7 @@ const sections = computed(() =>
 
     <!-- The list scrolls under the search field; the negative margin lets a row's fill run the
          full width while the field keeps the screen's padding. -->
-    <div class="-mx-6 mt-6 flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
+    <div class="-mx-6 mt-6 flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-cta">
       <section v-for="(section, i) in sections" :key="section.title ?? `matches-${i}`">
         <h2 v-if="section.title" class="mb-3 text-body-m text-fg-secondary">{{ section.title }}</h2>
         <ul class="flex flex-col gap-2">

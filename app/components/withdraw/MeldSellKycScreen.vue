@@ -2,6 +2,8 @@
 // The seller's KYC: the provider's page, edge to edge, where they verify themselves and name the
 // account to be paid out to. The route reads the sale meanwhile and moves on once the provider
 // names where the funds go. Cancel is offered until then, and never after.
+import ScreenFrame from "../ui/ScreenFrame.vue";
+import WidgetCancel from "../ui/WidgetCancel.vue";
 
 defineProps<{
   widgetUrl: string;
@@ -13,7 +15,7 @@ const emit = defineEmits<{ cancel: [] }>();
 </script>
 
 <template>
-  <div class="flex min-h-0 w-full flex-1 flex-col">
+  <ScreenFrame class="w-full">
     <!-- `*` delegates the features down the provider's own nested frames, where the camera for
          the ID check and any payment sheet live; see `MeldPaySheet.vue`. -->
     <iframe
@@ -22,17 +24,13 @@ const emit = defineEmits<{ cancel: [] }>();
       title="Verify with the provider"
       allow="payment *; camera *; clipboard-write *"
     />
-    <button
-      v-if="cancellable"
-      type="button"
-      class="mx-6 mt-3 mb-4 h-12 shrink-0 rounded-medium bg-status-error text-label-l text-fg-static-white transition-colors hover:bg-status-error-hover disabled:opacity-50"
-      :disabled="cancelling"
-      @click="emit('cancel')"
-    >
-      {{ cancelling ? "Cancelling…" : "Cancel" }}
-    </button>
-    <p v-if="notice" class="mx-6 mb-4 text-center text-body-m text-fg-secondary" role="status">
-      {{ notice }}
-    </p>
-  </div>
+    <template v-if="cancellable || notice" #actions>
+      <WidgetCancel
+        :offered="cancellable"
+        :cancelling="cancelling"
+        :notice="notice"
+        @cancel="emit('cancel')"
+      />
+    </template>
+  </ScreenFrame>
 </template>
