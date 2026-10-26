@@ -99,9 +99,16 @@ watch(paying, (now) => {
   showingCurrency.value = false;
 });
 /** Cancel is offered only while nothing can have been paid. Card only: the bank screen has no
- *  cancel, so a transfer the buyer walks away from is left to the provider to expire. */
+ *  cancel, so a transfer the buyer walks away from is left to the provider to expire. Once the
+ *  provider has filed a transaction neither this app nor the adapter will call it off, so the
+ *  button would only lead to a refusal. */
 const canCancel = computed(
-  () => paying.value && !requests.meldSubmitted && !requests.fundsSeen && !requests.claiming,
+  () =>
+    paying.value &&
+    !requests.meldSubmitted &&
+    !requests.fundsSeen &&
+    !requests.claiming &&
+    !requests.railSeen,
 );
 
 /** Performs the cancel. One that went through leaves for the selector; a declined one stays put. */

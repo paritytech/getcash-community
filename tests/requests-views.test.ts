@@ -256,6 +256,20 @@ describe("request views", () => {
     // So does the provider approving it (SETTLING reads as `sending`).
     expect(meldAwaitingBuyerOf(reduce(filed, provider("sending", AT + 1)))).toBe(false);
 
+    // The bank route files the same way: its provider reported PENDING ~70s after the transfer
+    // details opened, before the buyer sent anything. The details stay until "I've sent funds".
+    const { meldSubmittedAt: _bankStamp, ...bank } = migrated(submittedCardRecord, "meld-bank", 4);
+    const bankFiled = reduce(
+      { ...bank, status: { kind: "awaiting-deposit" }, rail: rail("meld", "waiting", "waiting") },
+      provider("receiving", AT),
+    );
+    expect(meldAwaitingBuyerOf(bankFiled)).toBe(true);
+    expect(
+      meldAwaitingBuyerOf(
+        reduce(bankFiled, { source: "user", at: AT + 1, event: "meld-submitted" }),
+      ),
+    ).toBe(false);
+
     // A crypto record's rail sighting is never a Meld widget.
     expect(
       meldAwaitingBuyerOf({

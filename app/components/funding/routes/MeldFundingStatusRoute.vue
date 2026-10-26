@@ -54,8 +54,10 @@ const { quote, cashAmount } = useJourneyQuote(() => props.topUp);
 const showingPayment = computed(() => !waiting.value && !unavailable.value);
 /** Edge to edge for the card widget only; the transfer's details take the screen's own gutter. */
 const showingWidget = computed(() => showingPayment.value && !isBank);
+// Not once the provider has filed a transaction: neither this app nor the adapter calls it off.
 const canCancel = computed(
-  () => showingPayment.value && !requests.meldSubmitted && !requests.fundsSeen,
+  () =>
+    showingPayment.value && !requests.meldSubmitted && !requests.fundsSeen && !requests.railSeen,
 );
 
 /** The region the transfer was priced in, restored with the request. */
