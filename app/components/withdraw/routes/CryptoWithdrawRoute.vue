@@ -8,12 +8,13 @@ import { useDrillIn } from "../../../composables/useDrillIn";
 import { useStateDirector } from "../../../composables/useStateDirector";
 import { psmReserved, useWithdrawalRequest } from "../../../composables/useWithdrawalRequest";
 import type { FundingPackageEmits } from "../../../funding/handoff";
+import { cryptoBelowMinimum } from "../../../funding/out-of-range";
 import type { FundingSelection } from "../../../funding/selection";
 import type { FundingTopUp } from "../../../funding/top-ups";
 import { CASH_DECIMALS } from "@getsome/people";
 import { useRequestsStore } from "../../../stores/requests";
 import { useWithdrawOffersStore } from "../../../stores/withdraw-offers";
-import { cashAmount, fmtCash, toCashBase } from "../../../utils/cash";
+import { cashAmount, fmtCash, groupAmountDigits, toCashBase } from "../../../utils/cash";
 import { previewStage } from "../../../utils/dev-preview-stage";
 import { isDemoBuild } from "../../../utils/demo";
 import { requestRefKey, type RequestRef } from "../../../utils/request-index";
@@ -26,6 +27,7 @@ import {
 } from "../../../withdraw/destinations";
 import type { WithdrawFeeView } from "../../../withdraw/offers";
 import { withdrawalRequestRef } from "../../../withdraw/rows";
+import AmountOutOfRange from "../../funding/AmountOutOfRange.vue";
 import ScreenShell from "../../ui/ScreenShell.vue";
 import WithdrawAddressScreen from "../WithdrawAddressScreen.vue";
 import WithdrawCancelScreen from "../WithdrawCancelScreen.vue";
@@ -72,6 +74,9 @@ const sale = ref<ConversionRoute | null>(null);
 /** What the estimate says lands on the key in the sale's token; what a provider's channel is
  *  quoted with at confirm. */
 const expectedLanding = ref<bigint | null>(null);
+/** The provider's minimum for the token, in CASH base units, while the amount is under it: the
+ *  summary gives way to the out-of-range screen. */
+const belowMinimum = ref<bigint | null>(null);
 const starting = ref(false);
 const startError = ref<string | null>(null);
 const busy = ref(false);
@@ -188,6 +193,7 @@ function directRate(units: bigint, decimals: number, base: bigint, asset: string
 async function onAddress(entered: string) {
   address.value = entered;
   startError.value = null;
+  belowMinimum.value = null;
   step.value = "summary";
   const picked = destination.value;
   const base = toCashBase(amount.value);
@@ -240,6 +246,11 @@ async function onAddress(entered: string) {
     await offers.learn(base, route);
     if (stale()) return;
     const offer = offers.offerFor(picked);
+    if (offer.state === "too-small") {
+      belowMinimum.value = offer.minimumCash;
+      receive.value = undefined;
+      return;
+    }
     if (offer.state !== "available" || offers.sellable === null) {
       receive.value = undefined;
       return;
@@ -259,6 +270,11 @@ async function confirm() {
   if (picked === null || base === null || starting.value) return;
   // Judged once more here: the offer may have changed since the pick, and the channel is opened
   // next. Under the minimum, or with the provider not answering, nothing is opened.
+  const offer = offers.offerFor(picked);
+  if (offer.state === "too-small") {
+    belowMinimum.value = offer.minimumCash;
+    return;
+  }
   const allowed = offers.rowFor(picked);
   if (!allowed.pickable) {
     startError.value = allowed.subtitle ?? "This destination cannot take the amount.";
@@ -295,6 +311,15 @@ async function confirm() {
     starting.value = false;
   }
 }
+
+/** The out-of-range screen's way on: the shell takes the minimum as the amount, and the summary
+ *  quotes it afresh when it lands. */
+function useAmount(cash: string) {
+  emit("useAmount", cash);
+}
+watch(amount, () => {
+  if (step.value === "summary" && address.value !== "") void onAddress(address.value);
+});
 
 async function confirmCancel() {
   const current = record.value;
@@ -393,6 +418,7 @@ watch(
     receive.value = stage.receive;
     fees.value = stage.fees ?? null;
     previewSecret.value = stage.secret;
+    belowMinimum.value = stage.belowMinimum === undefined ? null : toCashBase(stage.belowMinimum);
     step.value = stage.step;
     previewSkeleton.value = stage.skeleton === true;
   },
@@ -443,6 +469,13 @@ onUnmounted(() => {
       :destination="destination"
       :initial="address"
       @next="onAddress"
+    />
+    <AmountOutOfRange
+      v-else-if="step === 'summary' && destination && belowMinimum !== null"
+      :amount="groupAmountDigits(amount)"
+      :words="cryptoBelowMinimum(belowMinimum)"
+      @change-amount="emit('changeAmount')"
+      @use-amount="useAmount"
     />
     <WithdrawSummaryScreen
       v-else-if="step === 'summary' && destination"
