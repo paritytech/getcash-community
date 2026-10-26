@@ -8,6 +8,7 @@ import CashAmount from "../ui/CashAmount.vue";
 import DetailRows from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
 import RegionRow from "../ui/RegionRow.vue";
+import ScreenFrame from "../ui/ScreenFrame.vue";
 
 defineProps<{
   /** The CASH amount typed, grouped. */
@@ -25,7 +26,7 @@ defineEmits<{
 </script>
 
 <template>
-  <div class="flex min-h-0 flex-1 flex-col">
+  <ScreenFrame>
     <div class="flex shrink-0 flex-col items-center text-center">
       <p class="text-display-xl text-fg-primary"><CashAmount :amount="amount" /></p>
       <p class="mt-1 text-body-s text-fg-error" role="alert">{{ words.message }}</p>
@@ -42,13 +43,15 @@ defineEmits<{
       <DetailRows :rows="words.rows" />
     </div>
 
-    <div class="mt-auto mb-6 flex shrink-0 flex-col gap-4">
-      <PillButton variant="secondary" class="w-full" @click="$emit('changeAmount')">
-        Change amount
-      </PillButton>
-      <PillButton v-if="words.bound" class="w-full" @click="$emit('useAmount', words.bound)">
-        Continue with {{ cashAmount(words.bound) }}
-      </PillButton>
-    </div>
-  </div>
+    <template #actions>
+      <div class="flex flex-col gap-4">
+        <PillButton variant="secondary" class="w-full" @click="$emit('changeAmount')">
+          Change amount
+        </PillButton>
+        <PillButton v-if="words.bound" class="w-full" @click="$emit('useAmount', words.bound)">
+          Continue with {{ cashAmount(words.bound) }}
+        </PillButton>
+      </div>
+    </template>
+  </ScreenFrame>
 </template>
