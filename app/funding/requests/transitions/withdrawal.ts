@@ -23,7 +23,7 @@ import {
   SELL_TOKEN,
   type MeldToken,
 } from "@getsome/meld";
-import { laneById, laneSellToken } from "@getsome/offramp";
+import { LANES, laneById, laneSellToken } from "@getsome/offramp";
 import {
   PAYMENT_EXPIRED_REASON,
   PAYMENT_WINDOW_MS,
@@ -352,7 +352,7 @@ function applyWorker(
         // Asset Hub account is under what any exit can take; it stays there for a person.
         if (rank < 1) return next;
         return failed(next, at, {
-          kind: "unknown",
+          kind: "too-small",
           step: "convert",
           message: job.lastError ?? "the CASH left on the key is too small to redeem",
           recoverable: false,
@@ -414,7 +414,8 @@ const sameResidue = (
   a.returning === b.returning &&
   a.whole === b.whole &&
   a.returned === b.returned &&
-  a.stuck === b.stuck;
+  a.stuck === b.stuck &&
+  a.onProxy === b.onProxy;
 
 /** The adapter's endings for a sale the purse was not asked for. */
 const SALE_ENDINGS: Readonly<Record<string, string>> = Object.freeze({
@@ -484,6 +485,52 @@ function applySale(record: WithdrawalRecord, observation: SaleObservation): With
     });
   }
   return next;
+}
+
+/** A lane sale's SaleVaultProxy as a screen reads it, with the sale's funding id and the USDC it holds. */
+export interface SaleVaultProxyOfRecord {
+  fundingRequestId: string;
+  chainId: number;
+  address: string;
+  claimerAddress?: string;
+  token: MeldToken;
+}
+
+/** The sale's own proxy, or the one its swap kept for a record rebuilt from the worker's job. */
+export function saleVaultProxyOfRecord(
+  record: WithdrawalRecord,
+): SaleVaultProxyOfRecord | undefined {
+  const { sale, handoff } = record;
+  if (sale !== undefined) {
+    return sale.proxy === undefined
+      ? undefined
+      : {
+          fundingRequestId: sale.fundingRequestId,
+          chainId: sale.proxy.chainId,
+          address: sale.proxy.address,
+          ...(sale.proxy.claimerAddress === undefined
+            ? {}
+            : { claimerAddress: sale.proxy.claimerAddress }),
+          token: sellTokenOf(sale),
+        };
+  }
+  const swap = handoff.swap;
+  const lane = LANES.find((l) => l.refundSender === "sale-vault-proxy");
+  if (
+    handoff.channel === undefined ||
+    swap?.proxyChainId === undefined ||
+    swap.proxyAddress === undefined ||
+    lane === undefined
+  ) {
+    return undefined;
+  }
+  return {
+    fundingRequestId: handoff.channel.id,
+    chainId: swap.proxyChainId,
+    address: swap.proxyAddress,
+    ...(swap.claimerAddress === undefined ? {} : { claimerAddress: swap.claimerAddress }),
+    token: laneSellToken(lane),
+  };
 }
 
 /** What a sale sells: its offramp lane's asset, or the Asset Hub asset it opened on, PAS unless
@@ -647,10 +694,10 @@ function applyUser(record: WithdrawalRecord, observation: UserObservation): With
       if (record.status.kind !== "failed" || !record.status.recoverable) return record;
       const { failure: _cleared, ...rest } = record;
       if (record.failure?.step === "payment") {
-        // A fresh attempt: the surface prompts again and stamps it. The payment window restarts
-        // with it, on the record's clock and on the hand-off the worker is re-armed with, so a
-        // late retry is not expired on arrival.
-        const paymentExpiresAt = at + PAYMENT_WINDOW_MS;
+        // A fresh attempt restarts the payment window, a lane sale keeps its swap's sealed deadline
+        const sealed =
+          record.sale?.lane === undefined ? undefined : record.handoff.swap?.paymentExpiresAt;
+        const paymentExpiresAt = Math.max(at + PAYMENT_WINDOW_MS, sealed ?? 0);
         return {
           ...rest,
           status: { kind: "awaiting-payment" },
@@ -690,6 +737,8 @@ function applyUser(record: WithdrawalRecord, observation: UserObservation): With
         return record;
       return { ...record, handoff: { ...record.handoff, swap: observation.channel } };
     case "sale-unfundable":
+    case "sale-outdated":
+    case "sale-late":
       // Only before the purse was asked: after that the worker's own floor decides.
       if (
         record.sale === undefined ||
@@ -699,12 +748,24 @@ function applyUser(record: WithdrawalRecord, observation: UserObservation): With
       ) {
         return record;
       }
-      return failed(record, at, {
-        kind: "unfundable",
-        step: "payment",
-        message: "the price moved past what the sale promised its provider",
-        recoverable: false,
-      });
+      if (observation.event === "sale-late") return expired(record, at);
+      return failed(
+        record,
+        at,
+        observation.event === "sale-unfundable"
+          ? {
+              kind: "unfundable",
+              step: "payment",
+              message: "the price moved past what the sale promised its provider",
+              recoverable: false,
+            }
+          : {
+              kind: "sale-ended",
+              step: "payment",
+              message: "This sale was started on an older version and can no longer be paid.",
+              recoverable: false,
+            },
+      );
     case "meld-submitted":
     case "deposit-skipped":
     case "deposit-accepted":

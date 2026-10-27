@@ -17,6 +17,11 @@ import {
   SELL_TOKEN,
   type MeldQuoteEntry,
 } from "@getsome/meld";
+import {
+  predictSaleVaultProxy,
+  SALE_SWAP_RETRY_MINUTES,
+  saleVaultProxyMatches,
+} from "@getsome/chainflip/sale-vault-proxy";
 import { laneById, laneSellToken, type LaneId } from "@getsome/offramp";
 import { CHANNEL_EXPIRY_MARGIN_MS } from "@getsome/withdraw";
 import {
@@ -39,15 +44,20 @@ import {
   sameRequestRef,
   type RequestRef,
 } from "../utils/request-index";
-import { formatLanding } from "../withdraw/destinations";
+import { addressKey, formatLanding } from "../withdraw/destinations";
 import { meldSellClient } from "../withdraw/meld-client";
 import { workerSessionId } from "~~/lib/coinage";
 import { isHosted } from "~~/lib/host-account";
+import { SALE_VAULT_PROXY } from "~~/lib/config";
+import type { SaleVaultProxyTarget } from "~~/lib/supported";
 
 /** How long before a Chainflip channel closes it is opened afresh instead: the purse's whole
  *  payment window for the CASH to reach the key, then the margin the worker itself refuses to pay
  *  a channel within. Any shorter and the page keeps a channel the worker will not pay. */
 const SWAP_REUSE_MARGIN_MS = PAYMENT_WINDOW_MS + CHANNEL_EXPIRY_MARGIN_MS;
+
+/** The least a lane sale's sealed deadline must leave: the reuse margin plus the swap's price retries. */
+const SEALED_MARGIN_MS = SWAP_REUSE_MARGIN_MS + SALE_SWAP_RETRY_MINUTES * 60_000;
 
 /** The withdrawals a cancel is under way for, by request key: a sale's purse is not asked
  *  meanwhile. Module scope, since each screen holds its own `useWithdrawalRequest`. */
@@ -89,8 +99,8 @@ export interface MeldSaleStart {
   quote: MeldQuoteEntry;
   /** Exactly what the provider is paid, base units of the sold asset: PAS, USDT, or the lane's. */
   cryptoAmount: bigint;
-  /** A sale through an offramp lane: the lane, and the USDT redeem the withdrawal runs. */
-  swap?: { lane: LaneId; route: ConversionRoute };
+  /** A lane sale: the lane, the USDT redeem it runs, and the adapter's SaleVaultProxy deployment. */
+  swap?: { lane: LaneId; route: ConversionRoute; proxy?: SaleVaultProxyTarget };
   /** A direct sale quoted under a code other than Meld's code for DOT: its code for USDT on Asset
    *  Hub. The session names the same code. */
   sellCode?: string;
@@ -248,8 +258,7 @@ export function useWithdrawalRequest() {
    * is the key's, so a session whose answer was lost would otherwise hold that key to its terms,
    * and the seller's next try at another amount would be refused as a different order.
    *
-   * The seller's own wallet is not sent. Meld takes it on a sale as optional, and the adapter
-   * refuses it for now.
+   * The key is sent as the seller's account, and a session pinned to another sending address drops.
    */
   async function startSale(input: MeldSaleStart): Promise<MeldSaleStartOutcome> {
     if (!isHosted()) {
@@ -286,6 +295,21 @@ export function useWithdrawalRequest() {
     if (!(await live.cashCanMove())) {
       return { ok: false, reason: "This network does not let CASH move from People to Asset Hub." };
     }
+    // Only a lane sale paid by this build's Arbitrum SaleVaultProxy carries a claimer
+    const paidByProxy =
+      input.swap !== undefined && laneById(input.swap.lane).refundSender === "sale-vault-proxy";
+    const deployment = paidByProxy ? SALE_VAULT_PROXY : null;
+    if (
+      input.swap !== undefined &&
+      (deployment === null ||
+        input.swap.proxy === undefined ||
+        !saleVaultProxyMatches(deployment, input.swap.proxy))
+    ) {
+      return {
+        ok: false,
+        reason: "Card and bank sales through Arbitrum are not available on this network.",
+      };
+    }
     const destinationId = MELD_WITHDRAW_DESTINATIONS[input.method];
     const sourceId = `${WITHDRAW_SOURCE_PREFIX}${destinationId}`;
     const n = await live.nextWithdrawNumber(sourceId, (candidate) =>
@@ -294,6 +318,23 @@ export function useWithdrawalRequest() {
     const ref = requestRefOf(sourceId, n);
     const key = await live.withdrawKeyFor(sourceId, n);
     await live.advanceWithdrawCounter(sourceId, n);
+    const claimerAddress = deployment === null ? undefined : await live.claimerKeyFor(sourceId, n);
+    const proxy =
+      deployment === null || claimerAddress === undefined
+        ? undefined
+        : {
+            chainId: deployment.chainId,
+            factory: deployment.factory,
+            implementation: deployment.implementation,
+            address: predictSaleVaultProxy(
+              deployment.factory,
+              deployment.implementation,
+              key.publicKeyHex,
+              claimerAddress,
+            ),
+            claimerAddress,
+          };
+    const walletAddress = proxy?.address ?? key.address;
     const token =
       input.swap === undefined
         ? directSellToken(input.sellCode ?? SELL_TOKEN.meldCurrencyCode)
@@ -308,6 +349,9 @@ export function useWithdrawalRequest() {
         sourceAmount: formatSellAmount(input.cryptoAmount, token),
         destinationCurrencyCode: input.fiat,
         paymentMethodType: input.paymentMethodType,
+        sellerAccount: key.address,
+        ...(claimerAddress === undefined ? {} : { sellerClaimer: claimerAddress }),
+        expectedWalletAddress: walletAddress,
       });
     } catch (e: unknown) {
       return { ok: false, reason: messageOf(e) };
@@ -377,6 +421,8 @@ export function useWithdrawalRequest() {
         ...(input.swap === undefined ? {} : { lane: input.swap.lane }),
         ...(input.sellCode === undefined ? {} : { sellCode: input.sellCode }),
         ...(soldAsset === undefined ? {} : { asset: soldAsset }),
+        walletAddress,
+        ...(proxy === undefined ? {} : { proxy }),
         quotedPayout: quote.destinationAmount,
         ...(Object.keys(fees).length === 0 ? {} : { fees }),
       },
@@ -403,7 +449,35 @@ export function useWithdrawalRequest() {
     if (channel === undefined) {
       return { ok: false, reason: "The provider has not named where to send the funds yet." };
     }
+    // A deposit at the seller's own sending address would pay the sale back to itself
+    const own = [record.key.address, record.sale.walletAddress];
+    if (
+      own.some(
+        (address) => address !== undefined && addressKey(address) === addressKey(channel.address),
+      )
+    ) {
+      return {
+        ok: false,
+        reason: "The provider named your own address as the deposit. Nothing was sent.",
+      };
+    }
     if (record.status.kind !== "awaiting-payment") return { ok: true };
+    // A lane sale with no proxy and claimer on record, or one on another deployment, cannot be paid
+    const proxy = record.sale.proxy;
+    if (
+      record.sale.lane !== undefined &&
+      record.payment.requestedAt === undefined &&
+      (record.sale.walletAddress === undefined ||
+        proxy?.claimerAddress === undefined ||
+        SALE_VAULT_PROXY === null ||
+        !saleVaultProxyMatches(SALE_VAULT_PROXY, proxy))
+    ) {
+      await requests.observe(ref, { source: "user", at: requestsNow(), event: "sale-outdated" });
+      return {
+        ok: false,
+        reason: "This sale was started on an older version and can no longer be paid.",
+      };
+    }
     const live = await import("~~/lib/withdraw-live");
     if (record.payment.requestedAt !== undefined) {
       await handOff(ref, live);
@@ -420,10 +494,18 @@ export function useWithdrawalRequest() {
     }
     if (!unasked(ref)) return { ok: false, reason: "The sale is no longer waiting for payment." };
     const { lane } = record.sale;
+    // The deadline sealed into a lane sale's message no longer leaves the key and the swap their time
+    if (
+      lane !== undefined &&
+      record.deadline.paymentExpiresAt - SEALED_MARGIN_MS <= requestsNow()
+    ) {
+      await requests.observe(ref, { source: "user", at: requestsNow(), event: "sale-late" });
+      return { ok: false, reason: "The sale ran out of time before it could be paid." };
+    }
     let fundable: boolean;
     try {
       if (lane !== undefined) {
-        // The swap is opened now, to the address the provider named, on today's quote. One opened
+        // The swap to the SaleVaultProxyFactory opens now, on today's quote. One opened
         // on an earlier try is kept only while it still has time for the key's payment.
         const swap = record.handoff.swap;
         fundable =
@@ -459,8 +541,7 @@ export function useWithdrawalRequest() {
     return { ok: true };
   }
 
-  /** Opens a lane sale's Chainflip channel to the provider's deposit address and records it.
-   *  False only when the price moved too far for the sale's promise. */
+  /** Opens a lane sale's channel to the SaleVaultProxyFactory and records it, false on a price move. */
   async function openSaleSwap(
     ref: RequestRef,
     lane: LaneId,
@@ -472,13 +553,23 @@ export function useWithdrawalRequest() {
     }
     const provider = record.handoff.channel;
     if (provider === undefined) throw new Error("the provider has not named its deposit address");
+    const { walletAddress } = record.sale;
+    if (walletAddress === undefined) throw new Error("the sale has no sending address on record");
+    const deployment = record.sale.proxy;
+    if (deployment?.claimerAddress === undefined)
+      throw new Error("the sale has no claimer on record");
     const swap = await live.openSwapSaleChannel({
       amount: BigInt(record.handoff.amount),
       lane: laneById(lane),
       committed: BigInt(record.sale.cryptoAmount),
       providerAddress: provider.address,
       keyPublicKeyHex: record.key.publicKeyHex,
+      fundingRequestId: record.sale.fundingRequestId,
+      walletAddress,
       reserved: reservedFor(recordedRoute(record.handoff), ref),
+      paymentExpiresAt: record.deadline.paymentExpiresAt,
+      claimerAddress: deployment.claimerAddress,
+      deployment,
     });
     if (swap === null) return false;
     await requests.observe(ref, {
@@ -495,8 +586,10 @@ export function useWithdrawalRequest() {
   const reservedFor = (sale: ConversionRoute, ref: RequestRef): bigint =>
     sale.tier === "psm" ? psmReserved(requests.openWithdrawals, sale.external, ref) : 0n;
 
-  /** A Chainflip channel the key can still pay before it closes. */
+  /** A Chainflip channel the key can still pay before it closes and before its sealed deadline. */
   function swapStillOpen(swap: WithdrawalChannel, now: number): boolean {
+    const sealed = swap.paymentExpiresAt;
+    if (sealed === undefined || sealed - SEALED_MARGIN_MS <= now) return false;
     return swap.expiresAt === 0 || swap.expiresAt - SWAP_REUSE_MARGIN_MS > now;
   }
 

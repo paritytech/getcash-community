@@ -66,6 +66,7 @@ export function withdrawalFailureText(
       return "The provider changed the terms of the sale, so nothing was sent.";
     case "sale-closed":
       return "The sale could not be completed, so nothing was sent to the provider. Your funds are coming back to your balance.";
+    case "too-small":
     case "unknown":
       return failure.message || "Something went wrong with this withdrawal.";
   }

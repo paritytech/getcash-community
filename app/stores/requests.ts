@@ -6,6 +6,7 @@ import { defineStore } from "pinia";
 import { computed, ref, shallowRef, watch } from "vue";
 import { recordedRoute, type ConversionRoute } from "@getsome/funding";
 import type { FlowState, SourceId, SwapStatusResult } from "@getsome/core";
+import { isEvmAddress, saleVaultProxyContractsOf } from "@getsome/chainflip/sale-vault-proxy";
 import {
   createMeldClient,
   ensureMeldAssets,
@@ -485,6 +486,22 @@ function jobView(job: WorkerJob): WorkerJobView {
   };
 }
 
+/** A channel as a worker's withdrawal job keeps it. */
+type WithdrawJobChannel = {
+  id?: unknown;
+  address?: unknown;
+  openedAt?: unknown;
+  expiresAt?: unknown;
+  expectedEgress?: unknown;
+  amount?: unknown;
+  proxyChainId?: unknown;
+  proxyFactory?: unknown;
+  proxyImplementation?: unknown;
+  proxyAddress?: unknown;
+  claimerAddress?: unknown;
+  paymentExpiresAt?: unknown;
+};
+
 /** What this surface reads of a worker's stored withdrawal job. */
 type WithdrawJob = {
   phase?: string;
@@ -508,6 +525,7 @@ type WithdrawJob = {
     whole?: unknown;
     sessionId?: unknown;
     stuck?: unknown;
+    onProxy?: unknown;
   } | null;
   // The hand-off the worker keeps, read back when the surface has no record of the job.
   label?: string;
@@ -527,14 +545,9 @@ type WithdrawJob = {
   poolAccount?: string;
   slippagePct?: number;
   paymentExpiresAt?: number;
-  channel?: {
-    id?: unknown;
-    address?: unknown;
-    openedAt?: unknown;
-    expiresAt?: unknown;
-    expectedEgress?: unknown;
-    amount?: unknown;
-  };
+  channel?: WithdrawJobChannel;
+  /** A lane sale's swap to the SaleVaultProxyFactory, with the proxy it delivers through. */
+  swap?: WithdrawJobChannel;
   meld?: { baseUrl?: unknown; productId?: unknown; offline?: unknown };
   createdAt?: number;
 };
@@ -588,6 +601,7 @@ function residueViewOf(
       ...(whole ? { whole: true } : {}),
       ...(residueJob?.claim?.phase === "claimed" ? { returned: true } : {}),
       ...(residue.stuck === true ? { stuck: true } : {}),
+      ...(residue.onProxy === true ? { onProxy: true } : {}),
     },
   };
 }
@@ -695,7 +709,8 @@ function handoffOf(job: WorkerJob): WorkerHandoffPayload | undefined {
 /** The hand-off the worker keeps on its withdrawal job, when every field is there. */
 function withdrawHandoffOf(job: WithdrawJob): WithdrawalHandoffPayload | undefined {
   const { destination, rail } = job;
-  const channel = channelOf(job);
+  const channel = channelOf(job.channel);
+  const swap = channelOf(job.swap);
   if (
     !isString(job.label) ||
     !isString(job.keyAddress) ||
@@ -747,12 +762,12 @@ function withdrawHandoffOf(job: WithdrawJob): WithdrawalHandoffPayload | undefin
     paymentExpiresAt: job.paymentExpiresAt,
     ...(channel === undefined ? {} : { channel }),
     ...(meldOf(job) === undefined ? {} : { meld: meldOf(job)! }),
+    ...(swap === undefined ? {} : { swap }),
   };
 }
 
-/** The channel a job carries, when every field is there. */
-function channelOf(job: WithdrawJob): WithdrawalChannel | undefined {
-  const c = job.channel;
+/** A channel a job carries, when every field is there, with a lane sale's proxy when it names one whole. */
+function channelOf(c: WithdrawJobChannel | undefined): WithdrawalChannel | undefined {
   if (
     c === undefined ||
     !isString(c.id) ||
@@ -770,6 +785,32 @@ function channelOf(job: WithdrawJob): WithdrawalChannel | undefined {
     expiresAt: c.expiresAt,
     expectedEgress: c.expectedEgress,
     ...(isString(c.amount) && /^\d+$/.test(c.amount) ? { amount: c.amount } : {}),
+    ...proxyOf(c),
+  };
+}
+
+// The proxy fields of a lane sale's swap, all of them or none
+function proxyOf(c: WithdrawJobChannel): Partial<WithdrawalChannel> {
+  const proxy = saleVaultProxyContractsOf({
+    chainId: c.proxyChainId,
+    factory: c.proxyFactory,
+    implementation: c.proxyImplementation,
+  });
+  if (
+    proxy === null ||
+    !isEvmAddress(c.proxyAddress) ||
+    !isEvmAddress(c.claimerAddress) ||
+    !isNumber(c.paymentExpiresAt)
+  ) {
+    return {};
+  }
+  return {
+    proxyChainId: proxy.chainId,
+    proxyFactory: proxy.factory,
+    proxyImplementation: proxy.implementation,
+    proxyAddress: c.proxyAddress,
+    claimerAddress: c.claimerAddress,
+    paymentExpiresAt: c.paymentExpiresAt,
   };
 }
 

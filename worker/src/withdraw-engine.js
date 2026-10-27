@@ -1,3 +1,12 @@
+import {
+  isEvmAddress,
+  predictSaleVaultProxy,
+  SALE_SWAP_RETRY_MINUTES,
+  SALE_VAULT_PROXY_CHAIN_ID,
+  saleVaultProxyContractsOf,
+  saleVaultProxyDelaysMs,
+  sameEvmAddress,
+} from "@getsome/chainflip/sale-vault-proxy";
 import { NETWORK, TOKENS } from "@getsome/core";
 import {
   chooseCashTransfer,
@@ -6,12 +15,13 @@ import {
   PASEO_UNDERLYING_ASSET_ID,
   recordedRoute,
 } from "@getsome/funding";
-import { MELD_SELL_ENABLED } from "@getsome/meld";
+import { createMeldClient, MELD_SELL_ENABLED } from "@getsome/meld";
 import { CASH_LOCATION } from "@getsome/people";
 import {
   CHANNEL_EXPIRY_MARGIN_MS,
   ChannelExpiredError,
   ChannelMismatchError,
+  claimEntropyLabel,
   CommitmentUnfundableError,
   DEFAULT_WITHDRAW_SUBMIT_TIMEOUT_MS,
   DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
@@ -41,7 +51,9 @@ import {
   bounded,
   connectChain,
   createJobStore,
+  claimerFor,
   keypairFor,
+  meldOf,
   signOptionsFor,
 } from "./shared.js";
 
@@ -102,6 +114,7 @@ const saveJobs = () => store.save();
  *   channel?,                                // the provider's channel the page opened; for Meld
  *                                            // its `amount` is exactly what the key pays, PAS
  *                                            // or, for a sale of USDT, USDT
+ *   swap?,                                   // a lane sale's Chainflip channel, proxy and sealed deadline
  *   meld?: { baseUrl?, productId?, offline? }, // Meld only: the adapter the sale is read from
  *   assetHubGenesis, peopleGenesis, peopleParaId, assetHubParaId, poolAccount, slippagePct,
  *   paymentExpiresAt: number|null,
@@ -125,15 +138,26 @@ const saveJobs = () => store.save();
  *                                            // exact: the Meld payment's nonce, in flight or
  *                                            // not, and the block its attempt is anchored at
  *   saleNotFound?, saleNotFoundSince?,       // Meld only: the adapter's 404s in a row, and since
- *   residue?: { amount?, returning, whole?, sessionId?, route?, rearms?, stuck? },
+ *   residue?: { amount?, returning, whole?, sessionId?, route?, rearms?, stuck?, round?,
+ *               onProxy? },
  *                                            // Meld only: what the sale left on the key once
  *                                            // the provider was paid, in the sale's token, and
  *                                            // its way home; whole: the sale ended unpaid and
  *                                            // all of it goes home; route: the funding route
  *                                            // the way home takes, decided when it started;
- *                                            // stuck: its funding job failed past RETURN_REARMS
+ *                                            // stuck: its funding job failed past RETURN_REARMS,
+ *                                            // round: a late refund's way home, from 1, and
+ *                                            // onProxy: it is stuck on the proxy, not the key
  *   residueError?,                           // why the way home's last step failed; the
  *                                            // next pass tries it again
+ *   residueNextAt?,                          // when a residue wait reads again
+ *   residueSettledAt?,                       // when this worker saw the residue settle
+ *   lateWatch?: { checkedAt },               // a paid sale's key watched for a late refund
+ *   providerRefundSince?,                    // when a paid then failed sale began its wait
+ *   proxyUnreadSince?,                       // when the adapter first could not name the proxy
+ *   proxyReturnSince?,                       // when the proxy began to hold a return
+ *   proxyReturnTx?, proxyReturnSeenAt?,      // the proxy's last mined return and when it was
+ *   proxyDeliverySince?,                     // when a deferred or unbooked delivery was seen
  *   submitting?: { call, at },               // written before a submit
  *   txs: [{ call, txHash, block?, ok }],
  * }
@@ -184,9 +208,14 @@ function newRecord(input, nowMs) {
     if (!isChannel(input.swap) || channelOf(input.swap).amount === undefined) {
       throw new Error("startWithdraw: a swap sale needs its channel and the USDT it must land");
     }
+    if (channelOf(input.swap).paymentExpiresAt === undefined) {
+      throw new Error("startWithdraw: a swap sale needs the payment deadline its message seals");
+    }
     if (input.tier !== "psm" || input.external !== "USDT") {
       throw new Error("startWithdraw: a swap sale redeems its CASH for USDT");
     }
+    const refused = proxyRefusal(channelOf(input.swap), keyPublicKeyHex);
+    if (refused !== null) throw new Error(`startWithdraw: ${refused}`);
   }
   if (input.rail === "meld" && meldOf(input.meld) === null) {
     throw new Error("startWithdraw: a Meld sale needs the adapter it is read from");
@@ -270,12 +299,23 @@ const isChannel = (channel) =>
   typeof channel.address === "string" &&
   channel.address !== "";
 
-/** The channel's fields as the surface sent them, numbers and strings only. `amount` is kept only
- *  as a positive whole number of planck. */
+/** The channel's fields as the surface sent them, `amount` only as positive planck, `paymentExpiresAt` only as positive ms. */
 function channelOf(channel) {
   const openedAt = Number(channel.openedAt);
   const expiresAt = Number(channel.expiresAt);
+  const { paymentExpiresAt } = channel;
   const amount = /^\d+$/.test(String(channel.amount ?? "")) ? String(channel.amount) : undefined;
+  const proxy = saleVaultProxyContractsOf({
+    chainId: channel.proxyChainId,
+    factory: channel.proxyFactory,
+    implementation: channel.proxyImplementation,
+  });
+  const proxyAddress = isEvmAddress(channel.proxyAddress) ? channel.proxyAddress : undefined;
+  // A zero claimer has no proxy, the factory refuses it and predict throws on it
+  const claimerAddress =
+    isEvmAddress(channel.claimerAddress) && !/^0x0{40}$/.test(channel.claimerAddress)
+      ? channel.claimerAddress
+      : undefined;
   return {
     id: channel.id,
     address: channel.address,
@@ -283,19 +323,51 @@ function channelOf(channel) {
     expiresAt: Number.isFinite(expiresAt) && expiresAt > 0 ? expiresAt : 0,
     expectedEgress: String(channel.expectedEgress ?? "0"),
     ...(amount !== undefined && asBig(amount) > 0n ? { amount } : {}),
+    ...(proxy === null
+      ? {}
+      : {
+          proxyChainId: proxy.chainId,
+          proxyFactory: proxy.factory,
+          proxyImplementation: proxy.implementation,
+        }),
+    ...(proxyAddress === undefined ? {} : { proxyAddress }),
+    ...(claimerAddress === undefined ? {} : { claimerAddress }),
+    ...(Number.isSafeInteger(paymentExpiresAt) && paymentExpiresAt > 0 ? { paymentExpiresAt } : {}),
   };
 }
 
-/** The adapter a Meld sale is read from, or the page's word that it ran the offline sale. Null
- *  when the hand-off says neither. */
-function meldOf(meld) {
-  if (typeof meld !== "object" || meld === null) return null;
-  if (meld.offline === true) return { offline: true };
-  if (typeof meld.baseUrl !== "string" || meld.baseUrl === "") return null;
-  return {
-    baseUrl: meld.baseUrl,
-    ...(typeof meld.productId === "string" && meld.productId ? { productId: meld.productId } : {}),
-  };
+/** Why a swap sale's proxy is not the one derived for the key and its claimer, or null when it is. */
+function proxyRefusal(swap, homeHex) {
+  if (swap.proxyFactory === undefined) return "a swap sale names no sale vault proxy deployment";
+  if (swap.proxyAddress === undefined) return "a swap sale names no proxy address";
+  if (swap.claimerAddress === undefined) return "a swap sale names no claimer";
+  if (swap.proxyChainId !== SALE_VAULT_PROXY_CHAIN_ID) {
+    return `a swap sale's proxy is on chain ${swap.proxyChainId}, not ${SALE_VAULT_PROXY_CHAIN_ID}`;
+  }
+  // Factory and implementation come from the page, which holds the key already, so a pin adds no trust
+  const predicted = predictSaleVaultProxy(
+    swap.proxyFactory,
+    swap.proxyImplementation,
+    homeHex,
+    swap.claimerAddress,
+  );
+  if (!sameEvmAddress(swap.proxyAddress, predicted)) {
+    return `a swap sale's proxy is ${predicted} for this key, not ${swap.proxyAddress}`;
+  }
+  return null;
+}
+
+/** Why a swap sale's claimer is not the one the worker derives from the label, or null. */
+async function claimerRefusal(swap, label) {
+  let claim;
+  try {
+    claim = claimEntropyLabel(label);
+  } catch {
+    return `a swap sale's label ${label} is not a withdrawal's`;
+  }
+  const derived = await claimerFor(claim);
+  if (sameEvmAddress(swap.claimerAddress, derived)) return null;
+  return `a swap sale's claimer is ${swap.claimerAddress}, the worker derives ${derived} for this key`;
 }
 
 /** A fresh rail leg, seeded with the hand-off's channel when it carries one. The expiry rides
@@ -303,14 +375,26 @@ function meldOf(meld) {
  *  key's first nonce on Asset Hub. */
 function legFor(input, nowMs) {
   const leg = freshRailLegState();
-  // A swap sale's key pays the Chainflip channel, which pays the provider's deposit address.
-  const pays = swapOf(input) ?? input.channel;
+  // A swap sale's key pays the Chainflip channel, which delivers to the SaleVaultProxyFactory.
+  const swap = swapOf(input);
+  const pays = swap ?? input.channel;
   if (isChannel(pays)) {
-    const { id, address, openedAt, expiresAt } = channelOf(pays);
-    leg.handoff = { id, address, openedAt: openedAt || nowMs, expiresAt };
+    const { id, address, openedAt, expiresAt, paymentExpiresAt } = channelOf(pays);
+    leg.handoff = {
+      id,
+      address,
+      openedAt: openedAt || nowMs,
+      expiresAt: swap === null ? expiresAt : swapPayBy(expiresAt, paymentExpiresAt),
+    };
   }
-  if (input.rail === "meld" && swapOf(input) === null) leg.exact = freshExactPayState();
+  if (input.rail === "meld" && swap === null) leg.exact = freshExactPayState();
   return leg;
+}
+
+/** When a swap stops being paid: its channel's expiry, or earlier so a swap that retries its price lands by the sealed deadline. */
+function swapPayBy(expiresAt, paymentExpiresAt) {
+  const payBy = paymentExpiresAt - SALE_SWAP_RETRY_MINUTES * 60_000;
+  return expiresAt > 0 ? Math.min(expiresAt, payBy) : payBy;
 }
 
 /** A Meld sale's Chainflip channel, when it sells through an offramp lane; null otherwise. */
@@ -382,7 +466,9 @@ export async function startWithdraw(params) {
     // with a fresh Chainflip channel, even when its key would go home whole: nothing has moved
     // that the new channel could cross. A payment that could not be confirmed still waits for a
     // person.
-    const freshSwap = freshSwapFor(existing, input);
+    const offered = freshSwapFor(existing, input);
+    const freshSwap =
+      offered !== null && (await claimerRefusal(offered, existing.label)) === null ? offered : null;
     const held = freshSwap === null ? unrevivable(existing) : existing.failure === "unresolved";
     if (existing.phase === "failed" && !held) rearm(existing, Date.now());
     if (freshSwap !== null) {
@@ -418,6 +504,11 @@ export async function startWithdraw(params) {
   if (key.address !== record.keyAddress) {
     return { error: "invalid", reason: mismatchReason(key.address, record.keyAddress) };
   }
+  const claimerRefused =
+    swapOf(record) === null ? null : await claimerRefusal(record.swap, record.label);
+  if (claimerRefused !== null) {
+    return { error: "invalid", reason: `startWithdraw: ${claimerRefused}` };
+  }
   all[record.sessionId] = record;
   await saveJobs();
   return describeWithdraw(record);
@@ -429,7 +520,9 @@ export async function startWithdraw(params) {
 function freshSwapFor(existing, input) {
   if (swapOf(existing) === null || swapOf(input) === null) return null;
   const swap = channelOf(input.swap);
-  if (swap.amount === undefined || swap.id === existing.leg?.handoff?.id) return null;
+  if (swap.amount === undefined || swap.paymentExpiresAt === undefined) return null;
+  if (swap.id === existing.leg?.handoff?.id) return null;
+  if (proxyRefusal(swap, existing.keyPublicKeyHex) !== null) return null;
   const untouched =
     existing.leg?.paid !== true &&
     (existing.leg?.sweep?.attempts ?? 0) === 0 &&
@@ -479,6 +572,7 @@ function rearm(record, nowMs) {
   delete record.lastError;
   delete record.failedAt;
   delete record.refundSeenAt;
+  // providerRefundSince is kept: a re-sent hand-off is the same order
   record.armedAt = nowMs;
   record.state.workedMs = 0;
   if (failure === "rejected" || failure === "timeout") {
@@ -669,9 +763,9 @@ async function tickRailLeg(record) {
             ? payRail(record, handoff, sweep, hooks)
             : payRailExact(record, handoff, exactAmount, exact, hooks),
         tickTimeoutMs: DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
-        // The Chainflip channel of a swap sale must pay out to the provider's deposit address.
+        // A swap sale's Chainflip channel must pay out to the factory its proxy was derived from.
         destinationAddress:
-          swapOf(record) === null ? record.destination?.address : record.channel?.address,
+          swapOf(record) === null ? record.destination?.address : swapOf(record).proxyFactory,
         ...(exactAmount === null
           ? swapOf(record) === null
             ? {}
@@ -736,22 +830,21 @@ async function tickRailLeg(record) {
   if (outcome.step === "done") record.done = true;
 }
 
-/** The funding job that brings what a sale left on its key home. Not a `<source>:<n>` id, so the
- *  surface never mistakes it for a top-up of its own. */
-const residueSessionId = (record) => `${record.sessionId}/residue`;
+/** The funding job id that brings a sale's key home, never a `<source>:<n>`, a late round's suffixed. */
+const residueSessionId = (record, round = 0) =>
+  `${record.sessionId}/residue${round > 0 ? `/${round}` : ""}`;
 
 /**
- * What a Meld sale still owes the purse: `residue`, what the key holds once the provider is paid,
- * or `whole`, everything it holds when the sale failed before the provider could be paid. Null
- * when nothing is owed, once the way home is on the job, and while a payment or a message may
+ * What a Meld sale still owes the purse: `residue`, what the key holds once the provider is paid
+ * and the sale ended, or `whole`, everything it holds when the sale failed unpaid. Null when
+ * nothing is owed, once the way home is on the job, and while a payment or a message may
  * still land: a key that may have paid moves nothing more until the chain has settled it
  * (`settleInFlight`).
  */
 function returnDue(record, nowMs = Date.now()) {
   if (record.rail !== "meld" || record.residue !== undefined) return null;
-  // A swap sale's key is empty once paid, until the swap ends: a refund comes back to it.
-  if (record.leg?.paid === true)
-    return swapOf(record) !== null && isLive(record) ? null : "residue";
+  // A paid sale's key waits until the sale ends: a swap's or the provider's refund comes back to it.
+  if (record.leg?.paid === true) return isLive(record) ? null : "residue";
   if (record.phase !== "failed" || KEPT_ON_FAILURE.has(record.failure)) return null;
   if (record.leg?.exact?.inFlight === true || submitMayLand(record, nowMs)) return null;
   return "whole";
@@ -850,9 +943,9 @@ const unrevivable = (record) => goesHomeWhole(record) || record.failure === "unr
  * that ended unpaid sends everything, wherever it is: the CASH still on People when the price
  * moved, the token on Asset Hub when the provider closed the order, the CASH on Asset Hub when
  * the PSM tier's exit could not pay the promise. The exchange is held to the bound the sale
- * itself went out under.
+ * itself went out under. A paid sale that failed first waits for its refund, through its proxy.
  */
-async function sendHome(record, kind) {
+async function sendHome(record, kind, nowMs = Date.now()) {
   const sale = recordedRoute(record);
   const token = depositTokenOf(sale);
   const client = await connectChain(record.assetHubGenesis, "asset hub");
@@ -875,12 +968,37 @@ async function sendHome(record, kind) {
       // until Chainflip says the refund will not come, however long its egress takes.
       if (swapOf(record) !== null && held === 0n && record.phase === "failed") {
         const refund = await swapRefund(record);
-        if (refund === "pending") throw new Error("waiting for the swap's refund to reach the key");
+        if (refund === "pending") {
+          throw new ResidueWaitError("waiting for the swap's refund to reach the key");
+        }
         if (refund === "failed") {
           // Chainflip could not send it back: a person must, so the key is not read again.
           record.residue = { amount: "0", returning: false, stuck: true };
           return;
         }
+      }
+      // What the swap delivered is on the proxy, which pays the provider and sends the rest back
+      if (
+        swapOf(record)?.proxyFactory !== undefined &&
+        (await proxyHolds(record, held, token, nowMs))
+      ) {
+        return;
+      }
+      // A direct sale that failed once paid is refunded to the key, its sending address
+      if (
+        swapOf(record) === null &&
+        record.phase === "failed" &&
+        !refundOnKey(record, held, token)
+      ) {
+        record.providerRefundSince ??= nowMs;
+        if (nowMs - record.providerRefundSince >= PROVIDER_REFUND_WAIT_MS) {
+          record.residue = { amount: held.toString(), returning: false, stuck: true };
+          return;
+        }
+        throw new ResidueWaitError(
+          "waiting for the provider's refund to reach the key",
+          LATE_WATCH_EVERY_MS,
+        );
       }
       if (held < residueReturnFloor(token)) {
         record.residue = { amount: held.toString(), returning: false };
@@ -895,7 +1013,7 @@ async function sendHome(record, kind) {
       // A sale that failed before anything reached its key: no way home to start. Not while the
       // purse may still pay it, or the CASH would land on a key nothing reads again.
       if (pursePayMayLand(record)) {
-        throw new Error("waiting for the purse's payment window to close");
+        throw new ResidueWaitError("waiting for the purse's payment window to close");
       }
       record.residue = { whole: true, returning: false };
       return;
@@ -904,14 +1022,18 @@ async function sendHome(record, kind) {
   } finally {
     client.destroy();
   }
-  // The way home is on the job, and stored, before its funding job exists: a worker stopped in
-  // between finds the sale over and its way home open, and follows it (`keepWayHome`), rather than
-  // driving the sale on or reading a key the funding job is already emptying.
-  record.residue = {
+  await beginWayHome(record, {
     ...(kind === "whole" ? { whole: true } : { amount: held.toString() }),
-    returning: true,
-    sessionId: residueSessionId(record),
     route,
+  });
+}
+
+/** Stores a key's way home before its funding job exists, so a restarted worker follows it. */
+async function beginWayHome(record, residue) {
+  record.residue = {
+    ...residue,
+    returning: true,
+    sessionId: residueSessionId(record, residue.round),
   };
   await saveJobs();
   await startWayHome(record);
@@ -1011,11 +1133,202 @@ async function swapRefund(record, nowMs = Date.now()) {
   return "pending";
 }
 
-/** The funding job that carries a sale's key home: a job on the key through `route`, held to the
- *  bound the sale itself went out under, claimed under ids far past the purse's payments to the
- *  key. A way home from before the route was recorded is a pool one, which is what it was. */
+/** How long a paid then failed sale waits for its refund, over Banxa's stated ten business days. */
+const PROVIDER_REFUND_WAIT_MS = 14 * 86_400_000;
+/** How often a residue wait reads again, the adapter keeper's least interval_ms. */
+const RESIDUE_WAIT_EVERY_MS = 15_000;
+
+/** A residue that is still on its way, read again after `everyMs`. */
+class ResidueWaitError extends Error {
+  constructor(message, everyMs = RESIDUE_WAIT_EVERY_MS) {
+    super(message);
+    this.everyMs = everyMs;
+  }
+}
+
+/** Whether the key holds a floor more than the payment left, a refund. */
+function refundOnKey(record, held, token) {
+  const before = record.leg?.exact?.balanceBefore;
+  const left = before == null ? 0n : asBig(before, 0n) - asBig(record.channel?.amount, 0n);
+  return held - (left > 0n ? left : 0n) >= residueReturnFloor(token);
+}
+
+/** The proxy's release clocks on this build's chain, from its factory's immutables. */
+const PROXY_DELAYS = saleVaultProxyDelaysMs(SALE_VAULT_PROXY_CHAIN_ID);
+/** How long a mined return takes to reach the key, or come back to the proxy: its release delay. */
+const PROXY_RETURN_LAND_MS = PROXY_DELAYS.releaseDelayMs;
+/** How long an unknown proxy or a stalled delivery waits, over the keeper's longest interval_ms plus resend_ms. */
+const PROXY_RETURN_SETTLE_MS = 3 * 3_600_000;
+/** How long a proxy holding a return is waited on before it shows stuck. */
+const PROXY_RETURN_WAIT_MS = 7 * 86_400_000;
+
+/** The adapter a proxy sale is read through, the same one its rail uses. */
+function saleVaultProxyClient(record) {
+  const meld = meldOf(record.meld);
+  if (meld?.baseUrl === undefined) throw new Error("sale vault proxy: no adapter for this sale");
+  return createMeldClient(meld);
+}
+
+/** Leaves a proxy sale's residue, and the dust on its key, for a person. */
+function proxyStuck(record, held) {
+  record.residue = { amount: held.toString(), returning: false, stuck: true, onProxy: true };
+  return true;
+}
+
+/** Brings a proxy's funds to the key: false sends the key home, true leaves it for a person. */
+async function proxyHolds(record, held, token, nowMs) {
+  // What already reached the key goes home now
+  if (held >= residueReturnFloor(token)) return false;
+  const client = saleVaultProxyClient(record);
+  let sale;
+  try {
+    sale = await bounded(
+      client.getSaleVaultProxy(record.channel.id),
+      DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+      "sale vault proxy read",
+    );
+  } catch (error) {
+    record.proxyUnreadSince ??= nowMs;
+    const unread = nowMs - record.proxyUnreadSince;
+    // An adapter that has no proxy for the sale leaves it for a person once the wait runs out
+    if (error?.status === 404 || error?.status === 409) {
+      if (unread >= PROXY_RETURN_SETTLE_MS) return proxyStuck(record, held);
+      throw new ResidueWaitError(`waiting for the sale vault proxy: ${error.message}`);
+    }
+    // Any other read failure gets the longer wait
+    if (unread >= PROXY_RETURN_WAIT_MS) return proxyStuck(record, held);
+    throw error;
+  }
+  delete record.proxyUnreadSince;
+  // A proxy read on another chain is a config fault, left for a person
+  if ((sale.chainId ?? swapOf(record).proxyChainId) !== swapOf(record).proxyChainId) {
+    return proxyStuck(record, held);
+  }
+  const call = sale.call;
+  const calling = call?.status === "sending" || call?.status === "sent";
+  const returned = call?.action === "return" && call.status === "mined";
+  // A new mined return is progress: its own clock starts, and the wait for the next restarts
+  if (returned && (call.txHash ?? String(call.at)) !== record.proxyReturnTx) {
+    record.proxyReturnTx = call.txHash ?? String(call.at);
+    record.proxyReturnSeenAt = call.at || nowMs;
+    delete record.proxyReturnSince;
+  }
+  // A delivery the factory deferred for gas waits for the keeper's deliver
+  if (asBig(sale.deferred, 0n) > 0n) {
+    record.proxyDeliverySince ??= nowMs;
+    if (nowMs - record.proxyDeliverySince >= PROXY_RETURN_SETTLE_MS)
+      return proxyStuck(record, held);
+    if (!calling) await askProxyKeeper(record, client);
+    throw new ResidueWaitError("waiting for the sale vault proxy's keeper to deliver the sale");
+  }
+  if (sale.returnable) {
+    // The clock starts before the ask, so a failing ask still ends in a person
+    record.proxyReturnSince ??= nowMs;
+    if (nowMs - record.proxyReturnSince >= PROXY_RETURN_WAIT_MS) return proxyStuck(record, held);
+    if (!calling) await askProxyKeeper(record, client);
+    throw new ResidueWaitError("waiting for the sale vault proxy's return");
+  }
+  delete record.proxyReturnSince;
+  // Below the least a return can send: it goes to the seller's claimer, never home
+  if (asBig(sale.waiting, 0n) > 0n) return proxyStuck(record, held);
+  if (returned) {
+    // An emptied proxy and a key holding something long after the return: it landed under the floor
+    if (
+      held > 0n &&
+      asBig(sale.balance, 0n) === 0n &&
+      asBig(sale.pending, 0n) === 0n &&
+      nowMs - record.proxyReturnSeenAt >= PROXY_RETURN_SETTLE_MS
+    ) {
+      record.residue = { amount: held.toString(), returning: false };
+      return true;
+    }
+    if (nowMs - record.proxyReturnSeenAt < PROXY_RETURN_LAND_MS) {
+      throw new ResidueWaitError("waiting for the return to reach the key");
+    }
+    return proxyStuck(record, held);
+  }
+  if (sale.status === "none" && record.leg?.reading?.swapDelivered === true) {
+    record.proxyDeliverySince ??= nowMs;
+    if (nowMs - record.proxyDeliverySince >= PROXY_RETURN_SETTLE_MS)
+      return proxyStuck(record, held);
+    throw new ResidueWaitError("waiting for the sale vault proxy to book the delivery");
+  }
+  // The provider was paid and the sale then failed: its refund goes to the proxy, then home.
+  if (record.phase === "failed" && sale.status === "paid") {
+    record.providerRefundSince ??= nowMs;
+    if (nowMs - record.providerRefundSince >= PROVIDER_REFUND_WAIT_MS)
+      return proxyStuck(record, held);
+    throw new ResidueWaitError("waiting for the provider's refund", LATE_WATCH_EVERY_MS);
+  }
+  return false;
+}
+
+/** Asks the adapter's keeper to act on a proxy sale now. A refusal it may lift later is a wait. */
+async function askProxyKeeper(record, client) {
+  try {
+    await bounded(
+      client.requestSaleVaultProxyReturn(record.channel.id),
+      DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+      "sale vault proxy return",
+    );
+  } catch (error) {
+    if (error?.status !== 409 && error?.status !== 503) throw error;
+  }
+}
+
+/** How long a paid sale's key is watched for a late refund: stale delay plus release delay. */
+const LATE_WATCH_MS = PROXY_DELAYS.staleDelayMs + PROXY_DELAYS.releaseDelayMs;
+/** How often a watched key is read. */
+const LATE_WATCH_EVERY_MS = 3_600_000;
+
+/** A paid sale's residue is settled, its way home over, so only a late refund is left. */
+const residueSettled = (record) =>
+  record.rail === "meld" &&
+  record.leg?.paid === true &&
+  record.residue !== undefined &&
+  record.residue.whole !== true &&
+  !wayHomeOpen(record) &&
+  !(record.residue.returning === true && record.residue.stuck === true);
+
+/** A sale whose residue settled under this worker is due its first mark or its next read, inside the watch. */
+const lateWatchDue = (record, nowMs) =>
+  residueSettled(record) &&
+  record.residueSettledAt !== undefined &&
+  nowMs - record.residueSettledAt < LATE_WATCH_MS &&
+  (record.lateWatch === undefined || nowMs - record.lateWatch.checkedAt >= LATE_WATCH_EVERY_MS);
+
+/** Reads a settled sale's key for a late refund and sends one worth it home under a new round. */
+async function watchLate(record, nowMs) {
+  if (record.lateWatch === undefined) {
+    record.lateWatch = { checkedAt: nowMs };
+    return;
+  }
+  record.lateWatch = { checkedAt: nowMs };
+  const sale = recordedRoute(record);
+  const token = depositTokenOf(sale);
+  const client = await connectChain(record.assetHubGenesis, "asset hub");
+  let held;
+  let route;
+  try {
+    const assetHubApi = client.getTypedApi(paseo_next_v2);
+    held = await bounded(
+      readDestinationBalance(assetHubApi, record.keyPublicKeyHex, token.assetHubId),
+      DEFAULT_WITHDRAW_TICK_TIMEOUT_MS,
+      "late refund read",
+    );
+    if (held < residueReturnFloor(token)) return;
+    route = await wayHomeRoute(assetHubApi, sale, held, 0n);
+  } finally {
+    client.destroy();
+  }
+  const round = (record.residue.round ?? 0) + 1;
+  delete record.lateWatch;
+  await beginWayHome(record, { amount: held.toString(), route, round });
+}
+
+/** The funding job that carries a sale's key home through `route`, claim ids past each earlier round. */
 const wayHomeParams = (record, route) => ({
-  sessionId: residueSessionId(record),
+  sessionId: residueSessionId(record, record.residue?.round),
   label: record.label,
   burnerAddress: record.keyAddress,
   settleAmount: RESIDUE_SETTLE_AMOUNT,
@@ -1025,7 +1338,7 @@ const wayHomeParams = (record, route) => ({
   peopleGenesis: record.peopleGenesis,
   ...recordedRoute(route),
   quoteFloorPct: record.slippagePct,
-  claimIdOffset: RESIDUE_CLAIM_ID_OFFSET,
+  claimIdOffset: RESIDUE_CLAIM_ID_OFFSET * ((record.residue?.round ?? 0) + 1),
 });
 
 /**
@@ -1254,25 +1567,18 @@ export async function tickAllWithdraw() {
   ticking = true;
   try {
     const all = await loadJobs();
-    const due = Object.values(all).filter(
-      (record) =>
-        record?.v === RECORD_V &&
-        (isLive(record) ||
-          returnDue(record) !== null ||
-          wayHomeOpen(record) ||
-          inFlightAfterFailure(record)),
-    );
+    const owed = (record) =>
+      isLive(record) ||
+      returnDue(record) !== null ||
+      wayHomeOpen(record) ||
+      inFlightAfterFailure(record) ||
+      lateWatchDue(record, Date.now());
+    const due = Object.values(all).filter((record) => record?.v === RECORD_V && owed(record));
     let ticked = 0;
     for (const record of due) {
       // Cancelled since this pass began, with nothing owed.
-      if (
-        !isLive(record) &&
-        returnDue(record) === null &&
-        !wayHomeOpen(record) &&
-        !inFlightAfterFailure(record)
-      ) {
-        continue;
-      }
+      if (!owed(record)) continue;
+      const settledBefore = residueSettled(record);
       if (isLive(record)) {
         const nowMs = Date.now();
         let read = false;
@@ -1314,10 +1620,28 @@ export async function tickAllWithdraw() {
         }
       }
       const kind = returnDue(record);
-      if (kind !== null || wayHomeOpen(record)) {
+      // A residue wait reads again on its own cadence, not on every pass
+      const residueDue = kind !== null && !(record.residueNextAt > Date.now());
+      if (residueDue || (kind === null && wayHomeOpen(record))) {
         try {
-          if (kind !== null) await sendHome(record, kind);
+          if (residueDue) await sendHome(record, kind);
           else await keepWayHome(record);
+          delete record.residueError;
+          delete record.residueNextAt;
+        } catch (error) {
+          record.residueError = String(error?.message ?? error);
+          if (residueDue) {
+            const every = error instanceof ResidueWaitError ? error.everyMs : RESIDUE_WAIT_EVERY_MS;
+            record.residueNextAt = Date.now() + every;
+          }
+        }
+      }
+      // The late watch runs from when this worker saw the residue settle
+      if (!settledBefore && residueSettled(record)) record.residueSettledAt = Date.now();
+      // A paid sale's key is watched a while longer, for a refund that comes after its residue
+      if (lateWatchDue(record, Date.now())) {
+        try {
+          await watchLate(record, Date.now());
           delete record.residueError;
         } catch (error) {
           record.residueError = String(error?.message ?? error);

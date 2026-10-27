@@ -9,7 +9,6 @@ export {
   type SourceConfig,
 } from "./sources";
 export {
-  DEFAULT_CHANNEL_LIFETIME_MS,
   openWithdrawChannel,
   quoteOutgoing,
   type IncludedFee,
@@ -35,6 +34,17 @@ export {
 } from "./quote";
 export { getSwapStatus, isImplicitFailure, type StatusBackend } from "./status";
 export { requestDepositAddress, type DepositBackend } from "./deposit";
+export { encodeSaleMessage, SALE_MESSAGE_BYTES } from "./ccm";
+export {
+  isEvmAddress,
+  isEvmPayeeAddress,
+  predictSaleVaultProxy,
+  SALE_SWAP_RETRY_MINUTES,
+  SALE_VAULT_PROXY_CCM_GAS_BUDGET,
+  saleVaultProxyUsdcDomain,
+  sameEvmAddress,
+} from "./sale-vault-proxy";
+export { chainflipRpcUrl } from "./channel-expiry";
 export { createLiquidityGate, type LiquidityGate } from "./gate";
 export {
   learnFloors,
