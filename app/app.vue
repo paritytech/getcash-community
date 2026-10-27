@@ -11,16 +11,12 @@ useHostTheme();
 const themeKind = useResolvedThemeKind();
 
 // Development builds open only once the host serves the chains; see useHostGate.
-const { state: hostGate, retry: retryHostGate } = useHostGate();
+const { state: hostGate } = useHostGate();
 </script>
 
 <template>
   <NuxtPage v-if="hostGate.kind === 'ready'" />
-  <HostUnavailableScreen
-    v-else-if="hostGate.kind === 'unreachable'"
-    :reason="hostGate.reason"
-    @retry="retryHostGate"
-  />
+  <HostUnavailableScreen v-else-if="hostGate.kind === 'unreachable'" :reason="hostGate.reason" />
   <main
     v-else
     class="fixed inset-0 flex items-center justify-center bg-surface-main text-body-m text-fg-secondary"

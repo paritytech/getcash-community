@@ -33,5 +33,5 @@ export function useHostGate() {
     if (state.value.kind === "checking") void check();
   });
 
-  return { state, retry: check };
+  return { state, check };
 }

@@ -29,7 +29,7 @@ describe("host gate", () => {
     env.hosted = true;
     env.check.mockReset();
     vi.spyOn(console, "error").mockImplementation(() => {});
-    // onMounted outside a component only warns; the tests drive the check through retry.
+    // onMounted outside a component only warns; the tests run the check themselves.
     vi.spyOn(console, "warn").mockImplementation(() => {});
   });
   afterEach(() => {
@@ -55,7 +55,7 @@ describe("host gate", () => {
     const gate = useHostGate();
     expect(gate.state.value).toEqual({ kind: "checking" });
 
-    await gate.retry();
+    await gate.check();
     expect(gate.state.value).toEqual({
       kind: "unreachable",
       reason:
@@ -63,7 +63,7 @@ describe("host gate", () => {
     });
 
     env.check.mockResolvedValueOnce({ ok: true });
-    await gate.retry();
+    await gate.check();
     expect(gate.state.value).toEqual({ kind: "ready" });
   });
 });
