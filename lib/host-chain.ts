@@ -151,3 +151,14 @@ export function evictChains(): void {
     pending.then((client) => client.destroy()).catch(() => {});
   }
 }
+
+/** Whether the host serves both chains, dialled as every later read will be. The dials stay
+ *  cached for those reads. Never throws: a failure comes back with its reason. */
+export async function checkHostChains(): Promise<{ ok: true } | { ok: false; reason: string }> {
+  try {
+    await Promise.all([connectChain(PEOPLE), connectChain(ASSET_HUB)]);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: e instanceof Error ? e.message : String(e) };
+  }
+}
