@@ -11,6 +11,7 @@ import type { FundingTopUp } from "../../../funding/top-ups";
 import { useFlowStore } from "../../../stores/flow";
 import { useRequestsStore } from "../../../stores/requests";
 import { useSessionStore } from "../../../stores/session";
+import ScreenShell from "../../ui/ScreenShell.vue";
 
 const props = defineProps<{ topUp: FundingTopUp }>();
 const emit = defineEmits<FundingPackageEmits>();
@@ -72,58 +73,46 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <main
-    class="fixed inset-x-0 mx-auto flex w-full max-w-md flex-col overflow-hidden bg-surface-main"
-    style="
-      top: var(--vvt, 0px);
-      height: var(--vvh, 100dvh);
-      padding-top: env(safe-area-inset-top);
-      padding-bottom: env(safe-area-inset-bottom);
-    "
+  <ScreenShell
+    :back="!waiting && !requests.claiming"
+    :title="flow.confirmingCancel || flow.recoveringDeposit ? undefined : 'Top up via crypto'"
+    @back="onBack"
   >
-    <Toolbar
-      :back="!waiting && !requests.claiming"
-      :title="flow.confirmingCancel || flow.recoveringDeposit ? undefined : 'Top up via crypto'"
-      @back="onBack"
+    <template
+      v-if="
+        !waiting &&
+        !unavailable &&
+        !flow.confirmingCancel &&
+        !flow.recoveringDeposit &&
+        session.canSkipDeposit &&
+        isDemoBuild()
+      "
+      #trailing
     >
-      <template
-        v-if="
-          !waiting &&
-          !unavailable &&
-          !flow.confirmingCancel &&
-          !flow.recoveringDeposit &&
-          session.canSkipDeposit &&
-          isDemoBuild()
-        "
-        #trailing
+      <button
+        type="button"
+        class="rounded-medium px-4 py-3 text-label-l font-normal text-fg-primary transition-colors hover:bg-action-tertiary-hover"
+        @click="onDepositSkip"
       >
-        <button
-          type="button"
-          class="rounded-medium px-4 py-3 text-label-l font-normal text-fg-primary transition-colors hover:bg-action-tertiary-hover"
-          @click="onDepositSkip"
-        >
-          Skip
-        </button>
-      </template>
-    </Toolbar>
+        Skip
+      </button>
+    </template>
 
-    <div class="flex min-h-0 flex-1 flex-col px-6 pt-6">
-      <!-- While opening, the deposit screen renders its skeleton shapes (it has no deposit yet). -->
-      <DepositScreen v-if="waiting" @cancel="flow.confirmingCancel = true" />
+    <!-- While opening, the deposit screen renders its skeleton shapes (it has no deposit yet). -->
+    <DepositScreen v-if="waiting" @cancel="flow.confirmingCancel = true" />
 
-      <div v-else-if="unavailable" class="flex flex-1 flex-col items-center pt-16 text-center">
-        <h1 class="text-heading-l text-fg-primary">Top-up unavailable</h1>
-        <p class="mt-2 text-body-m text-fg-secondary">
-          This top-up is no longer available. Return to see your latest activity.
-        </p>
-      </div>
-
-      <CancelTopUpScreen
-        v-else-if="flow.confirmingCancel"
-        @confirm="cancelTopUp"
-        @keep="flow.confirmingCancel = false"
-      />
-      <DepositScreen v-else @cancel="flow.confirmingCancel = true" />
+    <div v-else-if="unavailable" class="flex flex-1 flex-col items-center pt-16 text-center">
+      <h1 class="text-heading-l text-fg-primary">Top-up unavailable</h1>
+      <p class="mt-2 text-body-m text-fg-secondary">
+        This top-up is no longer available. Return to see your latest activity.
+      </p>
     </div>
-  </main>
+
+    <CancelTopUpScreen
+      v-else-if="flow.confirmingCancel"
+      @confirm="cancelTopUp"
+      @keep="flow.confirmingCancel = false"
+    />
+    <DepositScreen v-else @cancel="flow.confirmingCancel = true" />
+  </ScreenShell>
 </template>

@@ -64,7 +64,7 @@ const busy = computed(() => Boolean(props.openingTopUpId));
     <!-- The screen's own shapes while the top-ups are still being read. -->
     <div
       v-if="skeleton"
-      class="flex min-h-0 flex-1 flex-col px-4 pt-4 pb-6"
+      class="flex min-h-0 flex-1 flex-col px-4 pt-4 pb-cta"
       aria-label="Loading your top-ups"
     >
       <div class="flex flex-col gap-2">
@@ -78,7 +78,7 @@ const busy = computed(() => Boolean(props.openingTopUpId));
       <span class="funding-pending-shape mt-auto h-12 animate-pulse bg-action-disabled" />
     </div>
 
-    <div v-else class="flex min-h-0 flex-1 flex-col px-4 pt-4 pb-6">
+    <div v-else class="flex min-h-0 flex-1 flex-col px-4 pt-4 pb-cta">
       <div class="-mx-4 min-h-0 flex-1 overflow-y-auto px-4">
         <section v-if="topUps.length > 0">
           <ul class="flex flex-col gap-2">

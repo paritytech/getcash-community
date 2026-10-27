@@ -5,6 +5,7 @@
 import { computed } from "vue";
 import { useSessionStore } from "../../stores/session";
 import PillButton from "../ui/PillButton.vue";
+import ScreenFrame from "../ui/ScreenFrame.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -25,20 +26,22 @@ const body = computed(() =>
 </script>
 
 <template>
-  <section class="flex min-h-0 flex-1 flex-col">
+  <ScreenFrame>
     <div class="flex flex-col gap-2 px-2 text-center">
       <h1 class="text-display-s text-fg-primary">Cancel top-up?</h1>
       <p class="text-paragraph-l text-fg-primary">{{ body }}</p>
     </div>
-    <div class="mt-auto flex shrink-0 flex-col gap-3 pb-6">
-      <PillButton
-        variant="danger"
-        :disabled="session.cancelling || !session.cancelReady"
-        @click="emit('confirm')"
-      >
-        {{ session.cancelling ? "Cancelling…" : "Cancel" }}
-      </PillButton>
-      <PillButton :disabled="session.cancelling" @click="emit('keep')">Keep it</PillButton>
-    </div>
-  </section>
+    <template #actions>
+      <div class="flex flex-col gap-3">
+        <PillButton
+          variant="danger"
+          :disabled="session.cancelling || !session.cancelReady"
+          @click="emit('confirm')"
+        >
+          {{ session.cancelling ? "Cancelling…" : "Cancel" }}
+        </PillButton>
+        <PillButton :disabled="session.cancelling" @click="emit('keep')">Keep it</PillButton>
+      </div>
+    </template>
+  </ScreenFrame>
 </template>
