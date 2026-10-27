@@ -12,6 +12,7 @@ import { depositQrValue } from "../../funding/deposit-qr";
 import { effectiveSourceId } from "../../funding/requests/model";
 import DepositMismatchSheet from "../funding/DepositMismatchSheet.vue";
 import RecoverDepositScreen from "./RecoverDepositScreen.vue";
+import ScreenFrame from "../ui/ScreenFrame.vue";
 
 // Cancel is a request: the route swaps in the full-screen confirmation and performs the cancel.
 const emit = defineEmits<{ cancel: [] }>();
@@ -137,7 +138,7 @@ function copy(target: "amount" | "address") {
 
 <template>
   <!-- The deposit is still being opened: the screen's own shapes as placeholders. -->
-  <section v-if="!deposit" class="flex min-h-0 flex-1 flex-col" aria-label="Opening your top-up">
+  <ScreenFrame v-if="!deposit" aria-label="Opening your top-up">
     <div class="flex min-h-24 shrink basis-[19rem] justify-center pb-4">
       <span
         class="deposit-skeleton-qr aspect-square h-full max-h-72 animate-pulse bg-action-disabled"
@@ -150,16 +151,18 @@ function copy(target: "amount" | "address") {
       </span>
       <span class="size-6 shrink-0 animate-pulse rounded-full bg-action-disabled" />
     </div>
-    <div class="mt-auto grid shrink-0 grid-cols-2 gap-2 pt-6 pb-6">
-      <span class="h-12 animate-pulse rounded-full bg-action-disabled" />
-      <span class="h-12 animate-pulse rounded-full bg-action-disabled" />
-    </div>
-  </section>
+    <template #actions>
+      <div class="grid grid-cols-2 gap-2 pt-6">
+        <span class="h-12 animate-pulse rounded-full bg-action-disabled" />
+        <span class="h-12 animate-pulse rounded-full bg-action-disabled" />
+      </div>
+    </template>
+  </ScreenFrame>
 
   <!-- The way back for a Polkadot deposit the buyer does not want converted. -->
   <RecoverDepositScreen v-else-if="flow.recoveringDeposit" @back="flow.recoveringDeposit = false" />
 
-  <section v-else class="flex min-h-0 flex-1 flex-col">
+  <ScreenFrame v-else>
     <!-- The one flexible block on the screen. Short webviews shrink the QR to a scannable
          floor. The basis carries the card's 288px plus this block's own 16px bottom gap. -->
     <div class="flex min-h-24 shrink basis-[19rem] justify-center pb-4">
@@ -197,34 +200,36 @@ function copy(target: "amount" | "address") {
       <Copy class="size-6 shrink-0 text-fg-secondary" aria-hidden="true" />
     </button>
 
-    <div class="mt-auto flex shrink-0 flex-col pt-6 pb-6">
-      <CopiedPill />
-      <!-- Cancel asks the route for the confirmation screen; offered only while nothing has
+    <template #actions>
+      <div class="flex flex-col pt-6">
+        <CopiedPill />
+        <!-- Cancel asks the route for the confirmation screen; offered only while nothing has
            been paid. -->
-      <div class="grid grid-cols-2 gap-2">
-        <button
-          v-if="showCancel"
-          type="button"
-          class="h-12 rounded-full bg-status-error text-label-l text-fg-static-white transition-colors hover:bg-status-error-hover"
-          @click="emit('cancel')"
-        >
-          Cancel
-        </button>
-        <button
-          type="button"
-          class="flex h-12 items-center justify-center gap-2 rounded-full bg-action-tertiary px-2 text-label-l whitespace-nowrap text-fg-primary disabled:opacity-100"
-          :class="showCancel ? '' : 'col-span-2'"
-          disabled
-        >
-          <span
-            class="size-4 shrink-0 animate-spin rounded-full border-[1.5px] border-fg-primary border-r-transparent"
-            aria-hidden="true"
-          />
-          <span>Waiting for funds</span>
-        </button>
+        <div class="grid grid-cols-2 gap-2">
+          <button
+            v-if="showCancel"
+            type="button"
+            class="h-12 rounded-full bg-status-error text-label-l text-fg-static-white transition-colors hover:bg-status-error-hover"
+            @click="emit('cancel')"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            class="flex h-12 items-center justify-center gap-2 rounded-full bg-action-tertiary px-2 text-label-l whitespace-nowrap text-fg-primary disabled:opacity-100"
+            :class="showCancel ? '' : 'col-span-2'"
+            disabled
+          >
+            <span
+              class="size-4 shrink-0 animate-spin rounded-full border-[1.5px] border-fg-primary border-r-transparent"
+              aria-hidden="true"
+            />
+            <span>Waiting for funds</span>
+          </button>
+        </div>
       </div>
-    </div>
-  </section>
+    </template>
+  </ScreenFrame>
 
   <DepositMismatchSheet
     :mismatch="flow.recoveringDeposit ? null : sheet"

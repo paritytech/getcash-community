@@ -19,12 +19,15 @@ import { useRequestsStore } from "../../../stores/requests";
 import { useSessionStore } from "../../../stores/session";
 import { currencyConfig } from "../../../funding/config";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
+import { fiatAmountRejected, fiatOutOfRange } from "../../../funding/out-of-range";
 import type { FundingRoute } from "../../../funding/selection";
 import CashAmount from "../../ui/CashAmount.vue";
 import PillButton from "../../ui/PillButton.vue";
 import RateErrorScreen from "../../ui/RateErrorScreen.vue";
 import RegionRow from "../../ui/RegionRow.vue";
+import ScreenFrame from "../../ui/ScreenFrame.vue";
 import SkeletonBlock from "../../ui/SkeletonBlock.vue";
+import AmountOutOfRange from "../AmountOutOfRange.vue";
 import MethodUnavailable from "../MethodUnavailable.vue";
 import MeldPaySheet from "./MeldPaySheet.vue";
 
@@ -199,30 +202,20 @@ function confirmSent() {
       @use-crypto="emit('switchRoute', 'crypto')"
       @use-other="emit('switchRoute', 'card')"
     />
-    <MethodUnavailable
+    <AmountOutOfRange
       v-else-if="step === 'summary' && session.quoteOutOfRange !== null && !session.loading"
-      direction="top-up"
-      method="bank"
       :amount="session.amountHuman"
-      :country="country"
-      :country-name="countryLabel"
-      :minimum="null"
-      :other="null"
-      :range="session.quoteOutOfRange"
+      :words="fiatOutOfRange(session.quoteOutOfRange, 'bank', countryLabel)"
+      :region="{ label: 'Payment country', value: countryLabel, country }"
       @region="emit('currency')"
       @change-amount="emit('changeAmount')"
       @use-amount="useAmount"
     />
-    <MethodUnavailable
+    <AmountOutOfRange
       v-else-if="step === 'summary' && session.quoteAmountRejected && !session.loading"
-      direction="top-up"
-      method="bank"
       :amount="session.amountHuman"
-      :country="country"
-      :country-name="countryLabel"
-      :minimum="null"
-      :other="null"
-      amount-rejected
+      :words="fiatAmountRejected('bank', countryLabel)"
+      :region="{ label: 'Payment country', value: countryLabel, country }"
       @region="emit('currency')"
       @change-amount="emit('changeAmount')"
     />
@@ -233,7 +226,7 @@ function confirmSent() {
       @change-country="emit('currency')"
       @use-crypto="emit('switchRoute', 'crypto')"
     />
-    <template v-else-if="step === 'summary'">
+    <ScreenFrame v-else-if="step === 'summary'">
       <!-- The hero, pricing or priced. -->
       <div class="flex shrink-0 flex-col items-center text-center">
         <template v-if="pricing">
@@ -288,12 +281,14 @@ function confirmSent() {
         </div>
       </div>
 
-      <SkeletonBlock v-if="pricing" class="mt-auto h-12 w-full shrink-0" />
-      <PillButton v-else class="mt-auto w-full shrink-0" @click="onContinue"> Continue </PillButton>
-      <PoweredBy class="mt-3 mb-4" provider="Meld" />
-    </template>
+      <template #actions>
+        <SkeletonBlock v-if="pricing" class="h-12 w-full" />
+        <PillButton v-else class="w-full" @click="onContinue">Continue</PillButton>
+        <PoweredBy provider="Meld" />
+      </template>
+    </ScreenFrame>
 
-    <template v-else>
+    <ScreenFrame v-else>
       <!-- The provider's page, and nothing of ours over it: the account to pay is on it. -->
       <div
         class="flex min-h-0 flex-1 flex-col overflow-clip rounded-container bg-surface-container"
@@ -327,29 +322,31 @@ function confirmSent() {
         {{ session.cancelNotice }}
       </p>
 
-      <div class="mt-6 mb-6 flex shrink-0 flex-col gap-3">
-        <PillButton v-if="startError" class="w-full" @click="openRequest">Try again</PillButton>
-        <!-- Nothing left to confirm on a lapsed transfer, and nothing to cancel either: a
+      <template #actions>
+        <div class="flex flex-col gap-3 pt-6">
+          <PillButton v-if="startError" class="w-full" @click="openRequest">Try again</PillButton>
+          <!-- Nothing left to confirm on a lapsed transfer, and nothing to cancel either: a
              transfer already sent still arrives, so this only leaves the screen. -->
-        <PillButton v-else-if="lapsed" class="w-full" @click="emit('leave')">
-          Back to top-ups
-        </PillButton>
-        <!-- The count is on the button, so the wait is visibly the button's and not a failure. -->
-        <PillButton v-else class="w-full" :disabled="!canConfirm" @click="confirmSent">
-          <!-- A non-breaking space: the compiler condenses a plain one away, and the count must
+          <PillButton v-else-if="lapsed" class="w-full" @click="emit('leave')">
+            Back to top-ups
+          </PillButton>
+          <!-- The count is on the button, so the wait is visibly the button's and not a failure. -->
+          <PillButton v-else class="w-full" :disabled="!canConfirm" @click="confirmSent">
+            <!-- A non-breaking space: the compiler condenses a plain one away, and the count must
                not wrap off the label either. -->
-          I’ve sent funds<template v-if="countdown > 0">&nbsp;{{ countdown }}</template>
-        </PillButton>
-        <!-- A resumed transfer's way out: nothing can have been taken while this screen is up. -->
-        <PillButton
-          v-if="cancellable && !lapsed && !startError"
-          variant="danger"
-          class="w-full"
-          @click="emit('cancel')"
-        >
-          Cancel
-        </PillButton>
-      </div>
-    </template>
+            I’ve sent funds<template v-if="countdown > 0">&nbsp;{{ countdown }}</template>
+          </PillButton>
+          <!-- A resumed transfer's way out: nothing can have been taken while this screen is up. -->
+          <PillButton
+            v-if="cancellable && !lapsed && !startError"
+            variant="danger"
+            class="w-full"
+            @click="emit('cancel')"
+          >
+            Cancel
+          </PillButton>
+        </div>
+      </template>
+    </ScreenFrame>
   </div>
 </template>

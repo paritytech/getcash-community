@@ -11,6 +11,7 @@ import CopiedPill from "../ui/CopiedPill.vue";
 import PillButton from "../ui/PillButton.vue";
 import RecoveryAddressCard from "../ui/RecoveryAddressCard.vue";
 import RecoveryKeyCard from "../ui/RecoveryKeyCard.vue";
+import ScreenFrame from "../ui/ScreenFrame.vue";
 
 const props = defineProps<{
   record: WithdrawalRecord;
@@ -50,49 +51,53 @@ const steps = [
 </script>
 
 <template>
-  <section class="flex min-h-0 flex-1 flex-col overflow-y-auto pb-6" aria-label="Return funds">
-    <div class="flex shrink-0 flex-col gap-2 text-center">
-      <h1 class="text-display-s text-fg-primary">Return funds</h1>
-      <p class="text-paragraph-l text-fg-primary">
-        Your <span class="font-semibold">DOT</span> is on its way back to your recovery address.
-      </p>
-    </div>
+  <ScreenFrame aria-label="Return funds">
+    <div class="min-h-0 flex-1 overflow-y-auto">
+      <div class="flex shrink-0 flex-col gap-2 text-center">
+        <h1 class="text-display-s text-fg-primary">Return funds</h1>
+        <p class="text-paragraph-l text-fg-primary">
+          Your <span class="font-semibold">DOT</span> is on its way back to your recovery address.
+        </p>
+      </div>
 
-    <ol class="mt-8 flex shrink-0 flex-col gap-6">
-      <li v-for="(step, index) in steps" :key="index" class="flex flex-col gap-3">
-        <div class="flex items-center gap-3">
-          <span
-            class="flex size-8 shrink-0 items-center justify-center rounded-full bg-fg-primary text-heading-l text-fg-primary-inverted"
-            aria-hidden="true"
-          >
-            {{ index + 1 }}
-          </span>
-          <p class="text-body-m text-fg-primary">{{ step.text }}</p>
-        </div>
+      <ol class="mt-8 flex shrink-0 flex-col gap-6">
+        <li v-for="(step, index) in steps" :key="index" class="flex flex-col gap-3">
+          <div class="flex items-center gap-3">
+            <span
+              class="flex size-8 shrink-0 items-center justify-center rounded-full bg-fg-primary text-heading-l text-fg-primary-inverted"
+              aria-hidden="true"
+            >
+              {{ index + 1 }}
+            </span>
+            <p class="text-body-m text-fg-primary">{{ step.text }}</p>
+          </div>
 
-        <RecoveryAddressCard
-          v-if="step.card === 'address' && address"
-          label="Address on Asset Hub"
-          :address="address"
-        />
-        <template v-else-if="step.card === 'key'">
-          <RecoveryKeyCard
-            label="Private key"
-            :secret="secret"
-            :masked="masked"
-            @toggle="toggleKey"
+          <RecoveryAddressCard
+            v-if="step.card === 'address' && address"
+            label="Address on Asset Hub"
+            :address="address"
           />
-          <p v-if="unavailable" class="text-center text-body-s text-fg-error" role="alert">
-            The key can't be loaded on this device. Open this withdrawal in the Polkadot App to
-            reach it.
-          </p>
-        </template>
-      </li>
-    </ol>
-
-    <div class="mt-auto shrink-0 pt-8">
-      <CopiedPill />
-      <PillButton variant="tertiary" class="w-full" @click="emit('back')">Back</PillButton>
+          <template v-else-if="step.card === 'key'">
+            <RecoveryKeyCard
+              label="Private key"
+              :secret="secret"
+              :masked="masked"
+              @toggle="toggleKey"
+            />
+            <p v-if="unavailable" class="text-center text-body-s text-fg-error" role="alert">
+              The key can't be loaded on this device. Open this withdrawal in the Polkadot App to
+              reach it.
+            </p>
+          </template>
+        </li>
+      </ol>
     </div>
-  </section>
+
+    <template #actions>
+      <div class="pt-8">
+        <CopiedPill />
+        <PillButton variant="tertiary" class="w-full" @click="emit('back')">Back</PillButton>
+      </div>
+    </template>
+  </ScreenFrame>
 </template>
