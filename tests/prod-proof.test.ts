@@ -119,8 +119,8 @@ describe.runIf(process.env.PROD_PROOF === "1")("production proof", () => {
       const txs: string[] = [];
       const pool = await discoverPool(ah, PASEO_UNDERLYING_ASSET_ID);
       const state = freshTickState();
-      const readFinalizedUnderlyingOnPeople = async (ss58: string) => {
-        const h = await pe.query.Assets.Account.getValue(CASH_LOCATION, ss58, { at: "finalized" });
+      const readUnderlyingOnPeople = async (ss58: string, at: "best" | "finalized") => {
+        const h = await pe.query.Assets.Account.getValue(CASH_LOCATION, ss58, { at });
         return h?.balance ?? 0n;
       };
       const deadline = Date.now() + RUN_TIMEOUT_MS;
@@ -149,7 +149,7 @@ describe.runIf(process.env.PROD_PROOF === "1")("production proof", () => {
               tickTimeoutMs: DEFAULT_TICK_TIMEOUT_MS,
               inclusionTimeoutMs: DEFAULT_INCLUSION_TIMEOUT_MS,
               signOptions: { at: best[0]?.hash },
-              readFinalizedUnderlyingOnPeople,
+              readUnderlyingOnPeople,
               now: Date.now,
               onTx: (i) => {
                 txs.push(`${i.call}@${i.block ?? "?"}`);
