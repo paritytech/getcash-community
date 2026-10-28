@@ -4,7 +4,7 @@
 // on the token.
 import { computed } from "vue";
 import type { RecoveryToken } from "@getsome/funding";
-import type { RecoveryChoice } from "../../funding/recovery-deposit";
+import { RECOVERY_TOKEN_ORDER, type RecoveryChoice } from "../../funding/recovery-deposit";
 import { networkIcon, tokenIcon } from "../../utils/icons";
 import type { OptionListRow } from "../../utils/option-list";
 import NetworkRecapBar from "../ui/NetworkRecapBar.vue";
@@ -24,7 +24,7 @@ const props = defineProps<{
 const emit = defineEmits<{ pick: [token: RecoveryToken]; back: [] }>();
 
 /** One skeleton per token the worker prices. */
-const PLACEHOLDERS: TokenOption[] = (["PAS", "DOTUSD", "USDC", "USDT"] as const).map((token) => ({
+const PLACEHOLDERS: TokenOption[] = RECOVERY_TOKEN_ORDER.map((token) => ({
   key: token,
   icon: "",
   label: "",

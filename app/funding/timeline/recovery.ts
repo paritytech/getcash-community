@@ -4,7 +4,7 @@
 
 import { currencyConfig } from "../config";
 import { cashInText, fmtCash } from "../../utils/cash";
-import { paymentOutOfRound, type TopUpRecord } from "../requests/model";
+import { paymentOutOfRound, type TopUpRecord, type TopUpRecovery } from "../requests/model";
 import { delay, type TimelineMessage } from "./route";
 
 /** A way to pay the claim's fee: from the purse, through the host's sheet, or by sending a
@@ -33,7 +33,7 @@ const NOT_PAID = "The fee wasn't paid";
 const NOT_ADDED = "We couldn't add your Cash yet";
 
 /** The claim's fee as the band names it ("$0.01"), when the worker has sized it. */
-export function recoveryFee(record: TopUpRecord): string | undefined {
+function recoveryFee(record: TopUpRecord): string | undefined {
   const fee = record.recovery?.askCash;
   return fee === undefined ? undefined : `${currencyConfig.symbol}${fmtCash(BigInt(fee))}`;
 }
@@ -55,6 +55,20 @@ function purseCovers(record: TopUpRecord, purse: PurseWord): boolean {
   const fee = record.recovery?.askCash;
   if (typeof purse === "bigint") return fee !== undefined && purse >= BigInt(fee);
   return record.recovery?.payment?.refusal !== "insufficient-balance";
+}
+
+/** The purse was asked for the fee in the current round and has not answered yet: the host's
+ *  sheet is up, or its word is still to be read back. The band waits on it, and the fee's
+ *  confirmation says the fee is being paid; the two read this one predicate so they cannot
+ *  drift apart. */
+export function awaitingAnswer(recovery: TopUpRecovery | undefined): boolean {
+  const payment = recovery?.payment;
+  return (
+    recovery !== undefined &&
+    payment?.requestedAt !== undefined &&
+    payment.status === undefined &&
+    !paymentOutOfRound(recovery)
+  );
 }
 
 /** What the journey says and offers for a top-up in recovery; absent for any other. */
@@ -104,15 +118,20 @@ export function recoveryPrompt(
       actions: covers ? [FROM_BALANCE, SEND_DEPOSIT] : [SEND_DEPOSIT],
     };
   }
+  if (awaitingAnswer(recovery)) {
+    return {
+      message: delay(ALMOST_HERE),
+      detail: "Waiting for the fee to be approved.",
+      actions: [],
+    };
+  }
   if (
     payment?.requestedAt !== undefined &&
     payment.status !== "failed" &&
     payment.status !== "not-found"
   ) {
-    // Asked and not yet answered: the sheet is up, or the answer is still to be read back.
-    return payment.status === undefined
-      ? { message: delay(ALMOST_HERE), detail: "Waiting for the fee to be approved.", actions: [] }
-      : { message: delay(ADDING), detail: paid, actions: [] };
+    // Registered or paid: the fee is on its way to the burner, and the claim follows.
+    return { message: delay(ADDING), detail: paid, actions: [] };
   }
   if (payment?.status === "failed") {
     if (!covers) {
@@ -125,9 +144,14 @@ export function recoveryPrompt(
         actions: [SEND_DEPOSIT],
       };
     }
+    // A balance read since may cover the fee, so the purse is offered again; a refusal for the
+    // balance keeps its reason, since the host may want more than the bare fee.
     return {
       message: delay(NOT_PAID),
-      detail: `Your ${cash} is still waiting. Try again, or pay from another wallet.`,
+      detail:
+        payment.refusal === "insufficient-balance"
+          ? "Your balance couldn't cover it. Try again, or pay from another wallet."
+          : `Your ${cash} is still waiting. Try again, or pay from another wallet.`,
       actions: [FROM_BALANCE_AGAIN, SEND_DEPOSIT],
     };
   }

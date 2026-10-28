@@ -14,7 +14,8 @@ export interface RecoveryChoice {
   readonly amount: string;
 }
 
-const TOKEN_ORDER: readonly RecoveryToken[] = ["PAS", "DOTUSD", "USDC", "USDT"];
+/** The tokens in the order the screens list them. */
+export const RECOVERY_TOKEN_ORDER: readonly RecoveryToken[] = ["PAS", "DOTUSD", "USDC", "USDT"];
 
 /** The most decimals a figure shows: a minimum rounded up reads better than ten places. */
 const SHOWN_DECIMALS = 4;
@@ -33,7 +34,7 @@ function fmtLeast(base: bigint, decimals: number): string {
 /** The tokens the worker priced, in the design's order; none until it has. */
 export function recoveryChoices(recovery: TopUpRecovery | undefined): RecoveryChoice[] {
   const minimums = recovery?.minimums ?? {};
-  return TOKEN_ORDER.flatMap((token) => {
+  return RECOVERY_TOKEN_ORDER.flatMap((token) => {
     const figure = minimums[token];
     if (typeof figure !== "string") return [];
     const spec = TOKENS[token];

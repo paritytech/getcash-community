@@ -41,6 +41,7 @@ import {
   isTopUp,
   isWithdrawSourceId,
   isWithdrawal,
+  burnerAddressOf,
   paymentOutOfRound,
   paymentTaken,
   paymentWatchUntil,
@@ -1762,6 +1763,9 @@ export const useRequestsStore = defineStore("requests", () => {
     recoveryAsks.add(key);
     let live: typeof import("~~/lib/withdraw-live");
     try {
+      // The host's module before the stamp: a stamp with no host ask behind it would read as a
+      // payment still waiting for its answer.
+      live = await import("~~/lib/withdraw-live");
       await observe(ref, {
         source: "user",
         at: requestsNow(),
@@ -1784,13 +1788,11 @@ export const useRequestsStore = defineStore("requests", () => {
         recoveryAsks.delete(key);
         return { ok: false, reason: "The top-up is no longer waiting for the fee." };
       }
-      live = await import("~~/lib/withdraw-live");
     } catch (e) {
       recoveryAsks.delete(key);
       throw e;
     }
-    const burnerAddress =
-      record.handoff?.burnerAddress ?? record.deposit?.address ?? record.depositAddress ?? "";
+    const burnerAddress = burnerAddressOf(record) ?? "";
     // The request resolves after the user's decision on the host's sheets, so it is started and
     // left to run; both answers reach the record as the host's word, and the host's status is
     // read back from then on until it is final.

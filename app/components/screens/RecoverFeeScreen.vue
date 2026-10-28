@@ -18,6 +18,8 @@ defineProps<{
   purse: PurseWord;
   /** The purse could not be read and the quick retries are spent; the slow ones go on. */
   purseUnread: boolean;
+  /** The read purse falls short of the fee: the host is not asked. */
+  short: boolean;
   /** The host is being asked, or its sheet is up. */
   paying: boolean;
   /** A tap the store could not act on, said under the figure. */
@@ -50,6 +52,9 @@ const emit = defineEmits<{ confirm: []; back: [] }>();
         Available <CashAmount :amount="groupAmountDigits(fmtCash(purse))" />
       </span>
       <p class="text-display-m text-fg-primary"><CashAmount :amount="fee" /></p>
+      <p v-if="short" class="text-body-m text-fg-secondary" role="status">
+        Your balance doesn't cover the fee.
+      </p>
       <p v-if="notice" class="text-body-m text-fg-secondary" role="status">{{ notice }}</p>
     </div>
 
@@ -68,7 +73,7 @@ const emit = defineEmits<{ confirm: []; back: [] }>();
       </PillButton>
       <div v-else class="grid grid-cols-2 gap-2">
         <PillButton variant="secondary" @click="emit('back')">Back</PillButton>
-        <PillButton @click="emit('confirm')">Confirm</PillButton>
+        <PillButton :disabled="short" @click="emit('confirm')">Confirm</PillButton>
       </div>
     </template>
   </ScreenFrame>

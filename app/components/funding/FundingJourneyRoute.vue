@@ -7,9 +7,11 @@ import type { RecoveryToken } from "@getsome/funding";
 import { usePurseBalance } from "../../composables/usePurseBalance";
 import { useStateDirector } from "../../composables/useStateDirector";
 import { useVisibilityReconcile } from "../../composables/useVisibilityReconcile";
+import { currencyConfig } from "../../funding/config";
 import { recoveryChoices } from "../../funding/recovery-deposit";
+import { burnerAddressOf } from "../../funding/requests/model";
 import {
-  recoveryFee,
+  awaitingAnswer,
   recoveryPrompt,
   trappedCash,
   type PurseWord,
@@ -20,6 +22,7 @@ import { useRequestsStore } from "../../stores/requests";
 import { useSessionStore } from "../../stores/session";
 import { fmtCash } from "../../utils/cash";
 import { isDemoBuild } from "../../utils/demo";
+import { requestRefKey } from "../../utils/request-index";
 import CancelTopUpScreen from "../screens/CancelTopUpScreen.vue";
 import JourneySkeleton from "../screens/JourneySkeleton.vue";
 import ScreenShell from "../ui/ScreenShell.vue";
@@ -112,9 +115,13 @@ const recoveryFeeHuman = computed(() => {
   const ask = requests.foregroundRecord?.recovery?.askCash;
   return ask === undefined ? null : fmtCash(BigInt(ask));
 });
-const recoveryFeeText = computed(() => {
-  const record = requests.foregroundRecord;
-  return record === null ? undefined : recoveryFee(record);
+const recoveryFeeText = computed(() =>
+  recoveryFeeHuman.value === null ? undefined : `${currencyConfig.symbol}${recoveryFeeHuman.value}`,
+);
+/** The read purse falls short of the fee: the confirmation says so and does not ask the host. */
+const purseShort = computed(() => {
+  const ask = requests.foregroundRecord?.recovery?.askCash;
+  return typeof purseWord.value === "bigint" && ask !== undefined && purseWord.value < BigInt(ask);
 });
 /** The Cash the claim adds, as the confirmation names it. */
 const recoveryAmount = computed(() => {
@@ -125,15 +132,22 @@ const recoveryAmount = computed(() => {
  *  them. */
 const recoveryAddress = computed(() => {
   const record = requests.foregroundRecord;
-  // A record rebuilt from the worker's job keeps the address outside its deposit block.
-  return (
-    record?.handoff?.burnerAddress ?? record?.deposit?.address ?? record?.depositAddress ?? null
-  );
+  return record === null ? null : burnerAddressOf(record);
 });
 const recoveryPriced = computed(() => requests.foregroundRecord?.recovery?.minimums !== undefined);
 const recoveryChoicesView = computed(() => recoveryChoices(requests.foregroundRecord?.recovery));
-/** The token the deposit screen is on: picked here, else as the record remembers it. */
+/** The token the deposit screen is on: picked here, else as the record remembers it. A pick
+ *  belongs to the record it was made on, and goes with it. */
 const pickedToken = ref<RecoveryToken | null>(null);
+watch(
+  () => {
+    const record = requests.foregroundRecord;
+    return record === null ? null : requestRefKey(record.ref);
+  },
+  () => {
+    pickedToken.value = null;
+  },
+);
 const depositToken = computed(
   () => pickedToken.value ?? requests.foregroundRecord?.recovery?.depositToken ?? null,
 );
@@ -142,34 +156,44 @@ const depositChoice = computed(
 );
 /** The host's word on the fee's payment. */
 const payment = computed(() => requests.foregroundRecord?.recovery?.payment);
-/** The host is being asked, or its sheet is up: the confirmation says the fee is being paid. */
+/** The host is being asked, or its sheet is up: the confirmation says the fee is being paid. The
+ *  band reads the same predicate for its waiting line. */
 const asking = ref(false);
 const payingFee = computed(
-  () =>
-    asking.value ||
-    (payment.value?.requestedAt !== undefined && payment.value.status === undefined),
+  () => asking.value || awaitingAnswer(requests.foregroundRecord?.recovery),
 );
+/** The band's word on the recovery, read with the purse as the journey reads it. */
+const prompt = computed(() => {
+  const record = requests.foregroundRecord;
+  return record === null ? undefined : recoveryPrompt(record, purseWord.value);
+});
 // The buyer is still asked for the fee: the trap stands, nothing is being converted or claimed,
 // and no payment is on its way. Otherwise the screens close, so they cannot ask for a second
 // deposit or a second fee; the confirmation stays while its own payment is on its way.
 const recoveryAsksTheBuyer = computed<boolean | null>(() => {
-  const record = requests.foregroundRecord;
-  if (record === null) return null;
-  return (recoveryPrompt(record)?.actions.length ?? 0) > 0;
+  if (requests.foregroundRecord === null) return null;
+  return (prompt.value?.actions.length ?? 0) > 0;
 });
 watch(recoveryAsksTheBuyer, (asks) => {
   if (asks !== false) return;
   if (recoveryScreen.value === "fee" && payingFee.value && recovering.value) return;
   recoveryScreen.value = null;
 });
+// A record that is no longer recovering has no recovery screen to show, whatever was up.
+watch(recovering, (on) => {
+  if (!on) recoveryScreen.value = null;
+});
 /** The host's answer closes the confirmation: the fee is paid, or the journey says why not. The
- *  purse is read again either way, since the answer may have drawn it down. */
+ *  purse is read again: afresh when it paid, in part or whole, since the answer drew it down;
+ *  with the known balance standing meanwhile when it refused or did not know the ask. */
 watch(
   () => payment.value?.status,
   (status) => {
     if (status === undefined) return;
     if (recoveryScreen.value === "fee") recoveryScreen.value = null;
-    void purse.refresh({ spent: true });
+    const spent =
+      status === "processing" || status === "completed" || status === "partiallyClaimed";
+    void purse.refresh({ spent });
   },
 );
 // The confirmation shows the balance, so it opens on a fresh read.
@@ -187,10 +211,13 @@ watch(
   },
 );
 // A top-up whose deposit screen was opened before opens on it again, once its record is up and
-// while the buyer is still asked.
+// while the band offers the wallet path: not onto a QR the band would not offer, as when the
+// purse covers the fee since.
 let landedOnDeposit = false;
 watch(
-  () => depositToken.value !== null && recoveryAsksTheBuyer.value === true,
+  () =>
+    depositToken.value !== null &&
+    prompt.value?.actions.some((action) => action.kind === "send-deposit") === true,
   (lands) => {
     if (!lands || landedOnDeposit) return;
     landedOnDeposit = true;
@@ -360,6 +387,7 @@ onUnmounted(() => {
       :amount="recoveryAmount"
       :purse="purseWord"
       :purse-unread="purse.failed.value"
+      :short="purseShort"
       :paying="payingFee"
       :notice="recoveryNotice"
       @confirm="recoverFromBalance"

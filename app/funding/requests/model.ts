@@ -893,6 +893,13 @@ export type Observation =
 /** The source a request runs under: a bare legacy ref means the crypto rail's. */
 export const effectiveSourceId = (ref: RequestRef): string => ref.sourceId ?? CRYPTO_SOURCE_ID;
 
+/** The top-up's own Asset Hub account: the hand-off's burner, else the deposit's address, else
+ *  the one a record rebuilt from the worker's job keeps outside its deposit block. */
+export const burnerAddressOf = (
+  record: Pick<TopUpRecord, "handoff" | "deposit" | "depositAddress">,
+): string | null =>
+  record.handoff?.burnerAddress ?? record.deposit?.address ?? record.depositAddress ?? null;
+
 /** A top-up the buyer pays by sending a Polkadot token straight to its account. */
 export const isDirectDeposit = (record: Pick<TopUpRecord, "ref">): boolean =>
   isDirectSourceId(effectiveSourceId(record.ref));

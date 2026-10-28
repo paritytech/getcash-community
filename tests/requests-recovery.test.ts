@@ -27,6 +27,7 @@ import {
 import { fundingStepOf, phaseLike, rowStateOf } from "../app/funding/requests/views";
 import { listHeadline } from "../app/funding/timeline/list";
 import {
+  awaitingAnswer,
   FROM_BALANCE,
   FROM_BALANCE_AGAIN,
   recoveryPrompt,
@@ -362,12 +363,28 @@ describe("the timeline", () => {
     expect(unread?.detail).toBe("Your balance couldn't cover it. Pay the fee from another wallet.");
     expect(unread?.recovery?.actions).toEqual([SEND_DEPOSIT]);
     expect(promptWith(short, SHORT)?.actions).toEqual([SEND_DEPOSIT]);
-    // The purse was topped up since: the purse is offered again.
+    // The purse was topped up since: the purse is offered again, with the refusal's reason kept.
     const toppedUp = promptWith(short, COVERS);
     expect(toppedUp?.detail).toBe(
-      "Your $25 Cash is still waiting. Try again, or pay from another wallet.",
+      "Your balance couldn't cover it. Try again, or pay from another wallet.",
     );
     expect(toppedUp?.actions).toEqual([FROM_BALANCE_AGAIN, SEND_DEPOSIT]);
+  });
+
+  it("knows a payment asked in this round and not yet answered, for the band and the fee screen alike", () => {
+    expect(awaitingAnswer(undefined)).toBe(false);
+    expect(awaitingAnswer(trapped().recovery)).toBe(false);
+    expect(awaitingAnswer(requested(trapped()).recovery)).toBe(true);
+    const registered = host(requested(trapped()), { status: "processing" }) as TopUpRecord;
+    expect(awaitingAnswer(registered.recovery)).toBe(false);
+    expect(awaitingAnswer(refused(requested(trapped())).recovery)).toBe(false);
+    // Asked in a round the worker moved past: that ask is owed no answer any more.
+    const moved = reduce(requested(trapped()), {
+      ...trappedJob(view({ round: 1 })),
+      at: at(5),
+    }) as TopUpRecord;
+    expect(awaitingAnswer(moved.recovery)).toBe(false);
+    expect(timelineOf(moved)?.detail).not.toBe("Waiting for the fee to be approved.");
   });
 
   it("asks for the rest when the purse paid part of the fee", () => {
@@ -475,6 +492,56 @@ describe("the store", () => {
     vi.restoreAllMocks();
     setRequestsClock(Date.now);
     setMirrorStorage(null);
+  });
+
+  /** A recovering top-up as the worker persists it, seeded into `storage` for a boot. */
+  async function seedRecovering(storage: ReturnType<typeof createMemoryKeyedStorage>) {
+    await storage.write(requestKey(REF), JSON.stringify(awaitingDepositCryptoRecord));
+    await storage.write(REQUEST_INDEX_KEY, serializeRequestIndex([REF]));
+    const job = fixtureWorkerJobs["dot-assethub:3"]!;
+    await storage.write(
+      WORKER_JOBS_KEY,
+      JSON.stringify({
+        "dot-assethub:3": {
+          ...job,
+          phase: "recovering",
+          lastTickAt: at(2),
+          state: { ...job.state, xcmSubmitted: true, fundsSeenAt: at(0), sentToPeople: "25000000" },
+          trap: { amount: "25000000", key: KEY, claimerHex: CLAIMER, at: at(2) },
+          recovery: {
+            phase: "funding",
+            feeCash: "9876",
+            askCash: "10000",
+            round: 1,
+            held: "0",
+            attempts: 0,
+            nonceAtClaim: null,
+            sentAt: null,
+            minimums: {
+              at: at(2),
+              feeCash: "9876",
+              minimums: { PAS: "900000000", DOTUSD: "600000", USDT: null, USDC: "650000" },
+              keepNativeForFees: "110",
+              routes: { USDT: { tier: "pool", external: "USDT" }, USDC: { tier: "psm" } },
+            },
+            deposit: "await-native",
+          },
+        },
+      }),
+    );
+  }
+
+  it("keeps the token the buyer picked to send, on the record and in storage", async () => {
+    const storage = createMemoryKeyedStorage();
+    setRecordStorage(storage);
+    await seedRecovering(storage);
+    const requests = useRequestsStore();
+    await requests.reconcile("boot");
+    await requests.pickRecoveryToken(REF, "USDT");
+    expect((requests.get(REF) as TopUpRecord).recovery?.depositToken).toBe("USDT");
+    await requests.flush();
+    const stored = JSON.parse((await storage.read(requestKey(REF))) ?? "null") as TopUpRecord;
+    expect(stored.recovery?.depositToken).toBe("USDT");
   });
 
   it("reads the trap and the recovery off the worker's job, as the worker persists them", async () => {
