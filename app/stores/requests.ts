@@ -1824,6 +1824,17 @@ export const useRequestsStore = defineStore("requests", () => {
     return { ok: true };
   }
 
+  /** The buyer picked the token to send for a trapped top-up's claim fee: the deposit screen
+   *  opens on it, and the top-up opens on that screen again. */
+  function pickRecoveryToken(ref: RequestRef, token: RecoveryToken): Promise<void> {
+    return observe(ref, {
+      source: "user",
+      at: requestsNow(),
+      event: "recovery-token-picked",
+      token,
+    });
+  }
+
   /** The buyer finished the provider's widget; the stamp is on the host before this resolves. */
   function markMeldSubmitted(ref: RequestRef): Promise<void> {
     return observe(ref, { source: "user", at: requestsNow(), event: "meld-submitted" });
@@ -3248,6 +3259,7 @@ export const useRequestsStore = defineStore("requests", () => {
     cancel,
     retry,
     requestRecoveryPayment,
+    pickRecoveryToken,
     markMeldSubmitted,
     markDepositSkipped,
     cancelWithdrawal,

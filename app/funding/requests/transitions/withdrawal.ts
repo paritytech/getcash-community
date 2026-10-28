@@ -708,6 +708,7 @@ function applyUser(record: WithdrawalRecord, observation: UserObservation): With
     case "meld-submitted":
     case "deposit-skipped":
     case "deposit-accepted":
+    case "recovery-token-picked":
       return record;
   }
 }

@@ -317,6 +317,9 @@ export interface TopUpRecovery extends Omit<WorkerRecoveryView, "phase"> {
   /** Each prompt is one attempt under an id derived from the top-up's own key and the attempt,
    *  stamped before the host is asked, as a withdrawal's payment is. */
   payment?: HostPayment;
+  /** The token the buyer picked to send for the fee: the deposit screen was opened on it, and
+   *  the top-up opens on that screen again. */
+  depositToken?: RecoveryToken;
 }
 
 /** The fee payment no longer counts: the worker's round moved past the one the purse was asked
@@ -877,6 +880,8 @@ export type Observation =
       /** A trapped top-up's claim fee: the fee's round the purse is asked in. */
       round?: number;
     }
+  /** The buyer picked the token to send for a trapped top-up's claim fee. */
+  | { source: "user"; at: number; event: "recovery-token-picked"; token: RecoveryToken }
   /** The pool can no longer fund what a sale promised its provider, checked before the purse was
    *  asked; the sale ends with nothing taken. */
   | { source: "user"; at: number; event: "sale-unfundable" }

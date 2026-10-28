@@ -1,63 +1,25 @@
 <script setup lang="ts">
-// The manual way to the claim's fee for a top-up whose Cash is in People's trap: a deposit of any
-// token a top-up takes, on the top-up's own Asset Hub account, which the worker converts for the
-// fee as it would a top-up. The least of each token comes from the worker; the address is the
-// record's own.
-import { computed, ref } from "vue";
+// The deposit that pays a trapped top-up's claim fee: the token the buyer picked, sent to the
+// top-up's own Asset Hub account, which the worker converts for the fee as it would a top-up.
+// The route hands over the figures: the address is the record's own, the least to send is the
+// worker's, and whatever is sent above the fee is added to the Cash.
 import { Copy } from "lucide-vue-next";
-import { TOKENS } from "@getsome/core";
-import { directAssetName, type RecoveryToken } from "@getsome/funding";
 import { useCopyToClipboard } from "../../composables/useCopyToClipboard";
-import { useRequestsStore } from "../../stores/requests";
+import type { RecoveryChoice } from "../../funding/recovery-deposit";
 import { shortAddress } from "../../utils/address";
 import CopiedPill from "../ui/CopiedPill.vue";
+import PillButton from "../ui/PillButton.vue";
 import QrCard from "../ui/QrCard.vue";
+import ScreenFrame from "../ui/ScreenFrame.vue";
 
-const requests = useRequestsStore();
-
-const record = computed(() => requests.foregroundRecord);
-// A record rebuilt from the worker's job keeps the address outside its deposit block.
-const address = computed(
-  () =>
-    record.value?.handoff?.burnerAddress ??
-    record.value?.deposit?.address ??
-    record.value?.depositAddress ??
-    null,
-);
-
-const TOKEN_ORDER: readonly RecoveryToken[] = ["PAS", "DOTUSD", "USDT", "USDC"];
-
-/** The most decimals a figure shows: a minimum rounded up reads better than ten places. */
-const SHOWN_DECIMALS = 4;
-
-/** Base units as a decimal, rounded up to SHOWN_DECIMALS, trailing zeros trimmed. Up, never
- *  down: the figure is the least to send. */
-function fmtLeast(base: bigint, decimals: number): string {
-  const dropped = decimals > SHOWN_DECIMALS ? decimals - SHOWN_DECIMALS : 0;
-  const unit = 10n ** BigInt(dropped);
-  const shown = (base + unit - 1n) / unit;
-  const places = decimals - dropped;
-  const s = shown.toString().padStart(places + 1, "0");
-  return `${s.slice(0, -places)}.${s.slice(-places)}`.replace(/\.?0+$/, "") || "0";
-}
-
-/** The tokens the worker priced, each with the least to send, named as the deposit screen names
- *  them. */
-const choices = computed(() => {
-  const minimums = record.value?.recovery?.minimums ?? {};
-  return TOKEN_ORDER.flatMap((token) => {
-    const figure = minimums[token];
-    if (typeof figure !== "string") return [];
-    const spec = TOKENS[token];
-    return [
-      { token, name: directAssetName(spec), amount: fmtLeast(BigInt(figure), spec.decimals) },
-    ];
-  });
-});
-const picked = ref<RecoveryToken | null>(null);
-const choice = computed(
-  () => choices.value.find((c) => c.token === picked.value) ?? choices.value[0] ?? null,
-);
+defineProps<{
+  address: string | null;
+  /** The picked token with the least to send; null until the worker priced it. */
+  choice: RecoveryChoice | null;
+  /** The fee as the band names it ("$0.01"); undefined until the worker sized it. */
+  fee?: string;
+}>();
+const emit = defineEmits<{ changeToken: [] }>();
 
 // Either row's copy raises the shared pill above the buttons.
 const { copy: copyToClipboard } = useCopyToClipboard();
@@ -67,45 +29,11 @@ function copy(text: string | null) {
 </script>
 
 <template>
-  <section class="flex min-h-0 flex-1 flex-col overflow-y-auto pb-6" aria-label="Recover your Cash">
-    <!-- The toolbar carries the title, so the screen opens on what to do and the QR keeps its
-         room, as on the deposit screen. -->
-    <p class="shrink-0 text-center text-paragraph-l text-fg-primary">
-      Send a little to cover the recovery fee. The rest comes back with your Cash.
-    </p>
-
-    <!-- The token to send: a row of chips, the picked one filled. -->
-    <div
-      v-if="choices.length"
-      class="mt-4 flex shrink-0 flex-wrap justify-center gap-2"
-      role="radiogroup"
-      aria-label="Token to send"
-    >
-      <button
-        v-for="c in choices"
-        :key="c.token"
-        type="button"
-        role="radio"
-        :aria-checked="choice?.token === c.token"
-        class="rounded-full px-3 py-1 text-label-m transition-colors"
-        :class="
-          choice?.token === c.token
-            ? 'bg-action-primary text-fg-primary-inverted'
-            : 'bg-action-tertiary text-fg-primary hover:bg-action-tertiary-hover'
-        "
-        @click="picked = c.token"
-      >
-        {{ c.name }}
-      </button>
-    </div>
-    <p v-else class="mt-4 shrink-0 text-center text-body-m text-fg-secondary">
-      Working out what to send. Try again in a moment.
-    </p>
-
+  <ScreenFrame>
     <template v-if="choice && address">
-      <!-- The one flexible block, as on the deposit screen: the QR takes what the text leaves,
-           up to 224px so the chips and rows around it keep their weight. -->
-      <div class="mt-4 flex min-h-24 shrink basis-[15rem] justify-center pb-3">
+      <!-- The one flexible block, as on the deposit screen: the QR takes what the rows leave,
+           down to a scannable floor. -->
+      <div class="flex min-h-24 shrink basis-[19rem] justify-center pb-4">
         <QrCard :value="address" />
       </div>
 
@@ -139,22 +67,33 @@ function copy(text: string | null) {
         <Copy class="size-6 shrink-0 text-fg-secondary" aria-hidden="true" />
       </button>
 
-      <p class="mt-4 shrink-0 text-body-s text-fg-secondary">
-        For privacy, send from an account you don't use for other top-ups.
+      <p v-if="fee" class="mt-4 shrink-0 text-right text-body-s text-fg-secondary">
+        The fee is {{ fee }}. Anything above it is added to your Cash.
       </p>
     </template>
+    <p v-else class="shrink-0 text-center text-body-m text-fg-secondary">
+      Working out what to send. Try again in a moment.
+    </p>
 
-    <!-- The waiting word is a status line; the toolbar's back is the way out, as on the deposit
-         screen. -->
-    <div class="mt-auto flex shrink-0 flex-col gap-2 pt-6">
-      <CopiedPill />
-      <p class="flex items-center justify-center gap-2 text-body-m text-fg-secondary" role="status">
-        <span
-          class="size-4 shrink-0 animate-spin rounded-full border-[1.5px] border-fg-secondary border-r-transparent"
-          aria-hidden="true"
-        />
-        <span>Waiting for funds</span>
-      </p>
-    </div>
-  </section>
+    <template #actions>
+      <div class="flex flex-col pt-6">
+        <CopiedPill />
+        <div class="grid grid-cols-2 gap-2">
+          <PillButton variant="tertiary" @click="emit('changeToken')">Change token</PillButton>
+          <!-- The waiting word is a button in shape only, as on the deposit screen. -->
+          <button
+            type="button"
+            class="flex h-12 items-center justify-center gap-2 rounded-full bg-action-tertiary px-2 text-label-l whitespace-nowrap text-fg-primary disabled:opacity-100"
+            disabled
+          >
+            <span
+              class="size-4 shrink-0 animate-spin rounded-full border-[1.5px] border-fg-primary border-r-transparent"
+              aria-hidden="true"
+            />
+            <span>Waiting for funds</span>
+          </button>
+        </div>
+      </div>
+    </template>
+  </ScreenFrame>
 </template>

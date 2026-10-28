@@ -1,10 +1,12 @@
 <script setup lang="ts">
 // The pill CTA: primary carries the screen's one main action, secondary a recovery from a state
-// that is not the buyer's fault (Use crypto), tertiary the quiet exits (Back, Close), danger the
-// one that undoes a top-up (Cancel). Layout (width, margins) belongs to the call site.
-withDefaults(defineProps<{ variant?: "primary" | "secondary" | "tertiary" | "danger" }>(), {
-  variant: "primary",
-});
+// that is not the buyer's fault (Use crypto), tertiary the quiet exits (Back, Close), ghost the
+// other way under a primary (Pay fee from another wallet), danger the one that undoes a top-up
+// (Cancel). Layout (width, margins) belongs to the call site.
+withDefaults(
+  defineProps<{ variant?: "primary" | "secondary" | "tertiary" | "ghost" | "danger" }>(),
+  { variant: "primary" },
+);
 </script>
 
 <template>
@@ -17,6 +19,8 @@ withDefaults(defineProps<{ variant?: "primary" | "secondary" | "tertiary" | "dan
       'bg-action-secondary text-fg-primary hover:bg-action-secondary-hover':
         variant === 'secondary',
       'bg-action-tertiary text-fg-primary hover:bg-action-tertiary-hover': variant === 'tertiary',
+      'bg-transparent text-fg-primary hover:bg-action-tertiary-hover disabled:hover:bg-transparent':
+        variant === 'ghost',
       'bg-status-error text-fg-static-white hover:bg-status-error-hover disabled:opacity-50':
         variant === 'danger',
     }"
