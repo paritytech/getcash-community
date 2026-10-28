@@ -44,6 +44,7 @@ describe("host gate", () => {
     env.assetHubOk = true;
     env.check.mockReset();
     env.check.mockResolvedValue({ ok: true });
+    vi.spyOn(console, "error").mockImplementation(() => {});
   });
   afterEach(() => {
     vi.restoreAllMocks();

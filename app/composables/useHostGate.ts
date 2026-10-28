@@ -9,12 +9,11 @@
 import { ref } from "vue";
 import { NETWORK } from "@getsome/core";
 import { isHosted } from "~~/lib/host-account";
-import { withTimeout } from "~~/lib/timeout";
-
-const QUICK_CHECK_TIMEOUT_MS = 1_500;
 
 export const hostGateApplies = (): boolean => NETWORK.testnet && isHosted();
 
+/** The host's own capability check: documented as a non-hanging, catchable call, not a chain
+ *  connection, so it is trusted to settle on its own rather than raced against a timeout. */
 async function chainsReportSupported(): Promise<boolean> {
   const [{ PEOPLE, ASSET_HUB }, { isChainSupported }] = await Promise.all([
     import("~~/lib/host-chain"),
@@ -24,6 +23,16 @@ async function chainsReportSupported(): Promise<boolean> {
     isChainSupported(PEOPLE.genesisHash),
     isChainSupported(ASSET_HUB.genesisHash),
   ]);
+  if (!people.ok || !people.value) {
+    console.error(
+      `[host] TrUAPI check failed: people chain ${people.ok ? "not supported" : people.error.message}`,
+    );
+  }
+  if (!assetHub.ok || !assetHub.value) {
+    console.error(
+      `[host] TrUAPI check failed: asset-hub chain ${assetHub.ok ? "not supported" : assetHub.error.message}`,
+    );
+  }
   return people.ok && people.value && assetHub.ok && assetHub.value;
 }
 
@@ -31,18 +40,21 @@ export function useHostGate() {
   const incompatible = ref(false);
 
   async function check(): Promise<void> {
-    const quickOk = await withTimeout(
-      chainsReportSupported(),
-      QUICK_CHECK_TIMEOUT_MS,
-      "truapi runtime check",
-    ).catch(() => false);
+    const quickOk = await chainsReportSupported().catch((e: unknown) => {
+      const reason = e instanceof Error ? e.message : String(e);
+      console.error(`[host] TrUAPI check failed: quick check threw: ${reason}`);
+      return false;
+    });
     if (!quickOk) {
       incompatible.value = true;
       return;
     }
     const { checkHostChains } = await import("~~/lib/host-chain");
     const result = await checkHostChains();
-    if (!result.ok) incompatible.value = true;
+    if (!result.ok) {
+      console.error(`[host] TrUAPI check failed: ${result.reason}`);
+      incompatible.value = true;
+    }
   }
 
   if (hostGateApplies()) void check();
