@@ -8,6 +8,10 @@
 // region produces an unquotable request. Every cache is therefore keyed by destination, and by
 // direction: a sale reads Meld's off-ramp catalog, whose regions and payout methods are its own.
 
+import {
+  saleVaultProxyContractsOf,
+  type SaleVaultProxyContracts,
+} from "@getsome/chainflip/sale-vault-proxy";
 import { isMeldAssetId, meldCodeOf, type MeldAssetId } from "@getsome/core";
 import { pageMeldAssets } from "./meld-assets";
 
@@ -50,6 +54,9 @@ export interface OfframpLaneRef {
   max?: string;
 }
 
+/** The SaleVaultProxyFactory an Arbitrum sale's Chainflip CCM delivers to, as the adapter names it. */
+export type SaleVaultProxyTarget = SaleVaultProxyContracts & { chain: string };
+
 /** A (country, fiat) corridor. Empty `methods` means nothing routes here. */
 export interface SupportedCorridor {
   country: string;
@@ -85,14 +92,18 @@ export function countryName(country: string): string {
 }
 
 function baseUrl(): string | undefined {
-  return import.meta.env.VITE_MELD_BASE_URL as string | undefined;
+  return import.meta.env.MODE === "test"
+    ? (import.meta.env.VITE_MELD_BASE_URL as string | undefined)
+    : "https://appointment-leo-pit-numerical.trycloudflare.com";
 }
 
 function headers(): Record<string, string> {
   return {
     accept: "application/json",
     "x-dev-product-id":
-      (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
+      import.meta.env.MODE === "test"
+        ? ((import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev")
+        : "getcash.dev",
   };
 }
 
@@ -270,6 +281,33 @@ export async function fetchSupportedCorridors(
 
 let offrampCorridors: Map<string, SupportedCorridor> | null = null;
 const offrampCorridorCache = new Map<string, SupportedCorridor>();
+// The deployment-wide SaleVaultProxy factory, learned from either offramp read
+let offrampSaleVaultProxy: SaleVaultProxyTarget | null = null;
+
+/** The SaleVaultProxy deployment the adapter named, or null when none is verified or none was read yet. */
+export function getOfframpSaleVaultProxy(): SaleVaultProxyTarget | null {
+  return offrampSaleVaultProxy;
+}
+
+// The SaleVaultProxy target off an offramp payload, or undefined when it is absent or malformed
+function proxyOf(v: unknown): SaleVaultProxyTarget | undefined {
+  if (typeof v !== "object" || v === null) return undefined;
+  const o = v as Record<string, unknown>;
+  if (typeof o.chain !== "string" || o.chain === "" || typeof o.chainId !== "number") {
+    return undefined;
+  }
+  const contracts = saleVaultProxyContractsOf(o);
+  return contracts === null ? undefined : { chain: o.chain, ...contracts };
+}
+
+// Takes the latest read's SaleVaultProxy target, and drops the caches once a read names none
+function learnSaleVaultProxy(v: unknown): void {
+  offrampSaleVaultProxy = proxyOf(v) ?? null;
+  if (offrampSaleVaultProxy === null) {
+    offrampCorridors = null;
+    offrampCorridorCache.clear();
+  }
+}
 
 function corridorOf(c: Record<string, unknown>, country: string): SupportedCorridor {
   const fiat = String(c.fiat ?? "");
@@ -282,7 +320,7 @@ function corridorOf(c: Record<string, unknown>, country: string): SupportedCorri
   };
 }
 
-/** Every off-ramp corridor as a country -> corridor map, tab-cached; null when unreachable. */
+/** Every off-ramp corridor by country, cached once a SaleVaultProxy is named, null when unreachable. */
 export async function fetchOfframpCorridors(): Promise<Map<string, SupportedCorridor> | null> {
   if (offrampCorridors !== null) return offrampCorridors;
   const base = baseUrl();
@@ -292,21 +330,25 @@ export async function fetchOfframpCorridors(): Promise<Map<string, SupportedCorr
       headers: headers(),
     });
     if (!res.ok) return null;
-    const data = (await res.json()) as { corridors?: Record<string, unknown>[] };
+    const data = (await res.json()) as {
+      corridors?: Record<string, unknown>[];
+      saleVaultProxy?: unknown;
+    };
     const map = new Map<string, SupportedCorridor>();
     for (const c of data.corridors ?? []) {
       const country = String(c.country ?? "");
       if (country !== "") map.set(country, corridorOf(c, country));
     }
-    // Only a non-empty result is cached; an empty one (cold cache) is retried next call.
-    if (map.size > 0) offrampCorridors = map;
+    learnSaleVaultProxy(data.saleVaultProxy);
+    // An empty result (cold cache) or one read before the adapter verified its proxy is read again
+    if (map.size > 0 && offrampSaleVaultProxy !== null) offrampCorridors = map;
     return map;
   } catch {
     return null;
   }
 }
 
-/** One country's off-ramp corridor, read live. Cached per country; null when unreachable. */
+/** One country's off-ramp corridor, cached once a SaleVaultProxy is named, null when unreachable. */
 export async function fetchOfframpCorridor(country: string): Promise<SupportedCorridor | null> {
   const hit = offrampCorridorCache.get(country);
   if (hit !== undefined) return hit;
@@ -319,8 +361,9 @@ export async function fetchOfframpCorridor(country: string): Promise<SupportedCo
     );
     if (!res.ok) return null;
     const data = (await res.json()) as Record<string, unknown>;
+    learnSaleVaultProxy(data.saleVaultProxy);
     const corridor = corridorOf(data, String(data.country ?? country));
-    offrampCorridorCache.set(country, corridor);
+    if (offrampSaleVaultProxy !== null) offrampCorridorCache.set(country, corridor);
     return corridor;
   } catch {
     return null;

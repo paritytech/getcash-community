@@ -33,3 +33,9 @@ worker/index.js
 public/worker/
 
 local/
+
+# sale-vault-proxy Hardhat build output
+packages/sale-vault-proxy/artifacts/
+packages/sale-vault-proxy/cache/
+packages/sale-vault-proxy/typechain-types/
+packages/sale-vault-proxy/coverage.json

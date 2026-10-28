@@ -8,12 +8,18 @@ import { createFakeMeldClient, createMeldClient, ensureMeldAssets } from "@getso
 /** Installs the page's asset table if none is yet. Rejects when the adapter cannot be read; the
  *  next call asks again. */
 export function pageMeldAssets(): Promise<void> {
-  const baseUrl = import.meta.env.VITE_MELD_BASE_URL as string | undefined;
+  const baseUrl =
+    import.meta.env.MODE === "test"
+      ? (import.meta.env.VITE_MELD_BASE_URL as string | undefined)
+      : "https://appointment-leo-pit-numerical.trycloudflare.com";
   return ensureMeldAssets(
     baseUrl
       ? createMeldClient({
           baseUrl,
-          productId: (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
+          productId:
+            import.meta.env.MODE === "test"
+              ? ((import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev")
+              : "getcash.dev",
         })
       : createFakeMeldClient(),
   );

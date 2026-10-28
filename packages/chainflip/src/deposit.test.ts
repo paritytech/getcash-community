@@ -53,6 +53,16 @@ describe("requestDepositAddress", () => {
     });
   });
 
+  it("forwards CCM terms only for a CCM sale", async () => {
+    const ccm = { gasBudget: "350000", message: `0x${"ab".repeat(128)}` };
+    const withCcm = capturingBackend(CHANNEL_RESULT);
+    await requestDepositAddress(withCcm.backend, btc, { ...args(makeQuote({})), ccm });
+    expect(withCcm.captured()!.ccmParams).toEqual(ccm);
+    const plain = capturingBackend(CHANNEL_RESULT);
+    await requestDepositAddress(plain.backend, btc, args(makeQuote({})));
+    expect(plain.captured()!).not.toHaveProperty("ccmParams");
+  });
+
   it("asks half a point when the quote recommends nothing or less", async () => {
     const { backend, captured } = capturingBackend(CHANNEL_RESULT);
     await requestDepositAddress(backend, btc, args(makeQuote({})));

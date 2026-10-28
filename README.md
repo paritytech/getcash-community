@@ -117,8 +117,8 @@ adapter and checks against the figure agreed, and until the order and the price 
 more. Then the purse pays the key, the worker's message leg lands the sale's token on the key's
 own Asset Hub account, on the PSM tier through the redeem, and the rail leg pays the provider
 exactly that figure, once, at a nonce it pins, after the adapter confirms the address, the asset
-and the amount, and within an hour of the purse being asked. What the sale landed above the
-figure goes home as CASH when it is worth the way back (a tenth of the token or more; less stays
+and the amount, and within an hour of the purse being asked. Once the sale ends, what it landed
+above the figure goes home as CASH when it is worth the way back (a tenth of the token or more; less stays
 on the key), and the quote says about how much: the worker hands the key to the funding engine,
 which converts and claims it into the purse as it does an on-ramp, and starts that job again if
 it fails, up to three times. The residue's route is the one tier the worker decides, since no
@@ -128,6 +128,11 @@ the price moved past the figure, the provider closed or changed the order, or th
 sends everything on the key home the same way, wherever it is. A payment whose answer was lost
 holds the job until the chain shows it landed or outlived its mortality; only a key whose chain
 state contradicts the payment stops the job for a person.
+
+A sale through Arbitrum is paid from its own SaleVaultProxy, a minimal proxy the SaleVaultProxyFactory
+deploys for the seller's key when Chainflip delivers, so the provider sees the proxy as the sender
+and refunds to it. Anything the provider was not paid, or refunds later, goes home to the key
+through a return anyone can call, and the worker sends it on as CASH.
 
 ### Rails as packages
 
@@ -232,16 +237,18 @@ Next. Demo builds, and with them the faucet and Skip, need `"testnet": true`; th
 
 Copy `.env.example` to `.env` and fill in what you need. Nuxt reads `.env`, not `.env.local`.
 
-| Variable                        | Purpose                                                                                                                                                                                                                         |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `VITE_FAUCET_SEED`              | demo faucet account, holding PAS, dotUSD, USDt and USDC on Asset Hub; inlined into the client bundle, use a testnet account                                                                                                     |
-| `VITE_DEPLOYER_SEED`            | fallback for `MNEMONIC` in `deploy.sh`                                                                                                                                                                                          |
-| `VITE_MELD_BASE_URL`            | origin of the Meld adapter; unset, the offline fake Meld client runs instead. Meld's currency codes are read from its `GET /assets` at runtime, never written in this app                                                       |
-| `VITE_MELD_PRODUCT_ID`          | product id the adapter expects in the `x-dev-product-id` header                                                                                                                                                                 |
-| `VITE_OFFRAMP_LANES`            | card and bank sales: the off-ramp lanes sold through, best first, by asset id (`usdt@assethub,dot@assethub,usdc@arbitrum,usdc@solana`), not Meld code; unset, the direct Asset Hub sales only                                   |
-| `VITE_CHAINFLIP_BROKER_API_KEY` | Broker-as-a-Service key the Chainflip deposit channels open on; unset, the crypto withdrawal destinations show as not available, and so do the crypto sources in a hosted build                                                 |
-| `VITE_TOP_UP_MINIMUM`           | the least a top up can be, in CASH. Defaults to 1. A value that is zero, negative, under 1 or not an amount is ignored, and the build log says so. A source's own minimum, where it has one, is shown when the source is picked |
-| `VITE_TOP_UP_MAXIMUM`           | the most a top up can be, in CASH. Defaults to 5000, or to the minimum where that is set higher. A value that is zero, negative, not an amount or under the minimum is ignored, and the build log says so                       |
+| Variable                               | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VITE_FAUCET_SEED`                     | demo faucet account, holding PAS, dotUSD, USDt and USDC on Asset Hub; inlined into the client bundle, use a testnet account                                                                                                                                                                                                                                                                                                                                                |
+| `VITE_DEPLOYER_SEED`                   | fallback for `MNEMONIC` in `deploy.sh`                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `VITE_MELD_BASE_URL`                   | origin of the Meld adapter; unset, the offline fake Meld client runs instead. Meld's currency codes are read from its `GET /assets` at runtime, never written in this app                                                                                                                                                                                                                                                                                                  |
+| `VITE_MELD_PRODUCT_ID`                 | product id the adapter expects in the `x-dev-product-id` header                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `VITE_OFFRAMP_LANES`                   | card and bank sales: the off-ramp lanes sold through, best first, by asset id (`usdt@assethub,dot@assethub,usdc@arbitrum`), not Meld code; unset, the direct Asset Hub sales only. Solana lanes are never sold through                                                                                                                                                                                                                                                     |
+| `VITE_SALE_VAULT_PROXY_FACTORY`        | the SaleVaultProxyFactory an Arbitrum sale delivers to, as `pnpm --filter @getsome/sale-vault-proxy run deploy --network arbitrumSepolia` (or `arbitrumOne`) prints it; the adapter's `sale_vault_proxy.factory` must be the same, and it reads the implementation from it. Its chain and least sale come from the build's network. Unset, `usdc@arbitrum` is not sold through, and a deploy build that lists it with either value unset or not a nonzero 0x address fails |
+| `VITE_SALE_VAULT_PROXY_IMPLEMENTATION` | the factory's SaleVaultProxy implementation, from the same deploy output; needed with the factory                                                                                                                                                                                                                                                                                                                                                                          |
+| `VITE_CHAINFLIP_BROKER_API_KEY`        | Broker-as-a-Service key the Chainflip deposit channels open on; unset, the crypto withdrawal destinations show as not available, and so do the crypto sources in a hosted build                                                                                                                                                                                                                                                                                            |
+| `VITE_TOP_UP_MINIMUM`                  | the least a top up can be, in CASH. Defaults to 1. A value that is zero, negative, under 1 or not an amount is ignored, and the build log says so. A source's own minimum, where it has one, is shown when the source is picked                                                                                                                                                                                                                                            |
+| `VITE_TOP_UP_MAXIMUM`                  | the most a top up can be, in CASH. Defaults to 5000, or to the minimum where that is set higher. A value that is zero, negative, not an amount or under the minimum is ignored, and the build log says so                                                                                                                                                                                                                                                                  |
 
 `VITE_CHAINFLIP_BROKER_API_KEY` names an account on Broker-as-a-Service (chainflip-broker.io), one
 key per Chainflip network; this app uses mainnet. Chainflip's own backend refuses to open deposit
@@ -278,7 +285,9 @@ in `.env.local` or `.env`.
 CI does the same: a push to `main` deploys `getcash.paseo`, and every pull request gets a
 preview at `pr<N>-getcash.paseo`. Both are signed with the repository's `MNEMONIC` secret and
 build with `VITE_FAUCET_SEED`, `VITE_MELD_BASE_URL`, `VITE_MELD_PRODUCT_ID` and
-`VITE_CHAINFLIP_BROKER_API_KEY` from repository secrets.
+`VITE_CHAINFLIP_BROKER_API_KEY` from repository secrets, and `VITE_OFFRAMP_LANES`,
+`VITE_SALE_VAULT_PROXY_FACTORY`, `VITE_SALE_VAULT_PROXY_IMPLEMENTATION`, `VITE_TOP_UP_MINIMUM` and
+`VITE_TOP_UP_MAXIMUM` from repository variables.
 
 ## License
 

@@ -28,6 +28,8 @@ jobs:
           meld-base-url: ${{ secrets.VITE_MELD_BASE_URL }}
           meld-product-id: ${{ secrets.VITE_MELD_PRODUCT_ID }}
           offramp-lanes: ${{ vars.VITE_OFFRAMP_LANES }}
+          sale-vault-proxy-factory: ${{ vars.VITE_SALE_VAULT_PROXY_FACTORY }}
+          sale-vault-proxy-implementation: ${{ vars.VITE_SALE_VAULT_PROXY_IMPLEMENTATION }}
           top-up-minimum: ${{ vars.VITE_TOP_UP_MINIMUM }}
           top-up-maximum: ${{ vars.VITE_TOP_UP_MAXIMUM }}
           # Fork and Dependabot PRs cannot read repo secrets and skip the deploy job; empty

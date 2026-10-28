@@ -39,6 +39,7 @@ import {
 } from "../utils/dev-preview";
 import { previewStage, type PreviewStage } from "../utils/dev-preview-stage";
 import { useRouter } from "vue-router";
+import PillButton from "../components/ui/PillButton.vue";
 import { previewTopUpScene } from "../utils/dev-preview-top-ups";
 
 useVisualViewportHeight();
@@ -393,4 +394,13 @@ onMounted(async () => {
   />
   <!-- Launch load: the amount screen's chrome with skeletons over the data still being fetched. -->
   <FundingSelectorScreen v-else skeleton />
+  <!-- Test only: the withdraw page has no entry from here, so this opens it. -->
+  <PillButton
+    v-if="!journey && !activePackage && !activeTopUpPackage"
+    variant="tertiary"
+    class="fixed left-4 top-4 z-50 px-4 py-2"
+    @click="router.push('/withdraw')"
+  >
+    Withdraw
+  </PillButton>
 </template>

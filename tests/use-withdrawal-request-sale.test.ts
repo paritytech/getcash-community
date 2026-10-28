@@ -1,11 +1,13 @@
 // The page's side of a fiat sale: confirm opens the provider's SELL session for the committed
-// figure, naming no wallet, and writes a record that waits on KYC, asking nothing of the
+// figure, naming the key as seller, and writes a record that waits on KYC, asking nothing of the
 // purse; the provider's deposit address becomes the channel; only then is the price checked and
 // the purse asked, a PSM sale with this app's other redeems ahead spoken for; a cancel during KYC
 // withdraws the order at the provider too.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import { AccountId } from "polkadot-api";
+import { predictSaleVaultProxy } from "@getsome/chainflip/sale-vault-proxy";
 import { createFakeMeldClient } from "@getsome/meld";
 import type { ConversionRoute } from "@getsome/funding";
 import {
@@ -35,6 +37,23 @@ const COMMITTED = 234_521_000_000n;
 const counter = vi.hoisted(() => ({ next: 1 }));
 
 vi.mock("../lib/host-account", () => ({ isHosted: () => true }));
+/** This build's SaleVaultProxy deployment, null for a build without one. */
+const FACTORY = `0x${"11".repeat(20)}`;
+const IMPLEMENTATION = `0x${"22".repeat(20)}`;
+const deployed = vi.hoisted(() => ({
+  proxy: null as null | {
+    chainId: number;
+    factory: string;
+    implementation: string;
+    minSale: bigint;
+  },
+}));
+vi.mock("../lib/config", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/config")>()),
+  get SALE_VAULT_PROXY() {
+    return deployed.proxy;
+  },
+}));
 const workerCall = vi.fn(async () => ({}));
 vi.mock("../lib/worker-rpc", () => ({
   getStorageWorkerManager: () => ({ isAvailable: () => true, call: workerCall }),
@@ -47,6 +66,7 @@ vi.mock("../lib/withdraw-live", () => ({
     address: n === 1 ? KEY_ADDRESS : NEXT_KEY_ADDRESS,
     publicKeyHex: KEY_HEX,
   }),
+  claimerKeyFor: vi.fn(async () => `0x${"55".repeat(20)}`),
   advanceWithdrawCounter: vi.fn(async (_sourceId: string, n: number) => {
     counter.next = n + 1;
   }),
@@ -93,6 +113,7 @@ const fundable = vi.mocked(live.meldCommitmentFundable);
 const openSwap = vi.mocked(live.openSwapSaleChannel);
 const advanced = vi.mocked(live.advanceWithdrawCounter);
 const probed = vi.mocked(live.probeWithdrawKey);
+const claimed = vi.mocked(live.claimerKeyFor);
 
 function fakeWebStorage(): WebStorageLike {
   const entries = new Map<string, string>();
@@ -171,6 +192,7 @@ describe("a fiat sale from the page", () => {
     fundable.mockClear().mockResolvedValue(true);
     advanced.mockClear();
     probed.mockClear();
+    claimed.mockClear();
     counter.next = 1;
     workerCall.mockClear();
     vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -349,8 +371,15 @@ describe("a fiat sale from the page", () => {
         paymentMethodType: "SEPA",
       }),
     );
-    // Optional on a sale, and the adapter refuses it: no wallet is named.
+    // The key is the seller's account and, on a direct sale, its own sending address.
+    expect(spy.mock.calls[0]![0]).toMatchObject({
+      sellerAccount: KEY_ADDRESS,
+      expectedWalletAddress: KEY_ADDRESS,
+    });
     expect(spy.mock.calls[0]![0]).not.toHaveProperty("walletAddress");
+    // A direct sale has no proxy, so no claimer is derived or sent
+    expect(spy.mock.calls[0]![0]).not.toHaveProperty("sellerClaimer");
+    expect(claimed).not.toHaveBeenCalled();
     if (!outcome.ok) return;
     const record = useRequestsStore().get(outcome.ref) as WithdrawalRecord;
     expect(record).toMatchObject({
@@ -363,14 +392,49 @@ describe("a fiat sale from the page", () => {
         fundingRequestId: "mock-sell-1",
         cryptoAmount: COMMITTED.toString(),
         quotedPayout: "90.12",
+        walletAddress: KEY_ADDRESS,
       },
       handoff: { rail: "meld", meld: { baseUrl: "https://adapter.test" } },
     });
+    expect(record.sale?.proxy).toBeUndefined();
     expect(record.handoff.channel).toBeUndefined();
     expect(asked).not.toHaveBeenCalled();
     expect(handedOff).not.toHaveBeenCalled();
     // The screen that asked takes the sale to the front, if it is still up; opening it does not.
     expect(useRequestsStore().foregroundWithdrawal).toBeNull();
+  });
+
+  it("creates nothing when the session is pinned to another sending address", async () => {
+    vi.spyOn(meld, "createSellSession").mockRejectedValue(
+      new Error("The sale's sending address does not match. Nothing was sent."),
+    );
+    const outcome = await startSale();
+    expect(outcome).toEqual({
+      ok: false,
+      reason: "The sale's sending address does not match. Nothing was sent.",
+    });
+    expect(useRequestsStore().withdrawals).toEqual([]);
+  });
+
+  it.each([
+    ["as the seller's account", KEY_ADDRESS],
+    ["under another SS58 prefix", AccountId(42).dec(AccountId().enc(KEY_ADDRESS))],
+  ])("refuses a deposit at the seller's own key %s, asking nothing", async (_, own) => {
+    const outcome = await startSale();
+    if (!outcome.ok) throw new Error(outcome.reason);
+    const status = meld.getStatus.bind(meld);
+    vi.spyOn(meld, "getStatus").mockImplementation(async (id) => {
+      const result = await status(id);
+      return result.deposit === undefined
+        ? result
+        : { ...result, deposit: { ...result.deposit, address: own } };
+    });
+    await toDeposit(outcome.ref);
+    expect(await useWithdrawalRequest().paySale(outcome.ref)).toEqual({
+      ok: false,
+      reason: "The provider named your own address as the deposit. Nothing was sent.",
+    });
+    expect(asked).not.toHaveBeenCalled();
   });
 
   it("creates nothing when the provider will not open the sale", async () => {
@@ -663,20 +727,163 @@ describe("a fiat sale from the page", () => {
   describe("through an offramp lane", () => {
     const LANE_COMMITTED = 24_000_000n;
     const REDEEM = { tier: "psm", external: "USDT", feeRate: 1_000 } as const;
-    const swapChannel = (id: string, expiresAt: number) => ({
+    /** The payment deadline a lane sale's record holds until the purse is asked. */
+    const SALE_DEADLINE = FIXTURE_NOW + SALE_WINDOW_MS;
+    const swapChannel = (id: string, expiresAt: number, paymentExpiresAt = SALE_DEADLINE) => ({
       id,
       address: "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5",
       openedAt: FIXTURE_NOW,
       expiresAt,
       expectedEgress: LANE_COMMITTED.toString(),
       amount: "25100000",
+      paymentExpiresAt,
     });
+
+    const NAMED = {
+      chain: "arbitrum",
+      chainId: 421614,
+      factory: FACTORY,
+      implementation: IMPLEMENTATION,
+    };
+    const CLAIMER = `0x${"55".repeat(20)}`;
+    const PROXY = predictSaleVaultProxy(FACTORY, IMPLEMENTATION, KEY_HEX, CLAIMER);
 
     beforeEach(() => {
       openSwap.mockReset().mockResolvedValue(swapChannel("cf-fresh", FIXTURE_NOW + 3_600_000));
+      deployed.proxy = {
+        chainId: 421614,
+        factory: FACTORY,
+        implementation: IMPLEMENTATION,
+        minSale: 1_250_000n,
+      };
+    });
+    afterEach(() => {
+      deployed.proxy = null;
     });
 
+    const startLaneSale = (proxy: typeof NAMED | null = NAMED) =>
+      useWithdrawalRequest().startSale({
+        method: "bank",
+        amount: 30_000_000n,
+        country: "GB",
+        fiat: "GBP",
+        paymentMethodType: "UK_FASTER_PAYMENTS",
+        quote: QUOTE,
+        cryptoAmount: LANE_COMMITTED,
+        swap: { lane: "usdc-arbitrum", route: REDEEM, ...(proxy === null ? {} : { proxy }) },
+      });
+
     async function laneSaleAtDeposit() {
+      const outcome = await startLaneSale();
+      if (!outcome.ok) throw new Error(outcome.reason);
+      await toDeposit(outcome.ref);
+      return outcome.ref;
+    }
+
+    it("ends a lane sale kept without its proxy, opening nothing and asking nothing", async () => {
+      const ref = await laneSaleAtDeposit();
+      const kept = useRequestsStore().get(ref) as WithdrawalRecord;
+      delete kept.sale!.proxy;
+      delete kept.sale!.walletAddress;
+      expect(await useWithdrawalRequest().paySale(ref)).toEqual({
+        ok: false,
+        reason: "This sale was started on an older version and can no longer be paid.",
+      });
+      expect(openSwap).not.toHaveBeenCalled();
+      expect(asked).not.toHaveBeenCalled();
+      expect(useRequestsStore().get(ref)).toMatchObject({
+        status: { kind: "failed", recoverable: false },
+        failure: { kind: "sale-ended" },
+      });
+    });
+
+    it("ends a lane sale kept with its proxy but no claimer, opening nothing and asking nothing", async () => {
+      const ref = await laneSaleAtDeposit();
+      const kept = useRequestsStore().get(ref) as WithdrawalRecord;
+      delete kept.sale!.proxy!.claimerAddress;
+      expect(await useWithdrawalRequest().paySale(ref)).toEqual({
+        ok: false,
+        reason: "This sale was started on an older version and can no longer be paid.",
+      });
+      expect(openSwap).not.toHaveBeenCalled();
+      expect(asked).not.toHaveBeenCalled();
+    });
+
+    it("ends a lane sale recorded on another deployment, or on a build with the lane off", async () => {
+      for (const build of [{ factory: `0x${"33".repeat(20)}` }, null]) {
+        const ref = await laneSaleAtDeposit();
+        deployed.proxy = build === null ? null : { ...deployed.proxy!, ...build };
+        expect(await useWithdrawalRequest().paySale(ref)).toEqual({
+          ok: false,
+          reason: "This sale was started on an older version and can no longer be paid.",
+        });
+        expect(useRequestsStore().get(ref)).toMatchObject({ failure: { kind: "sale-ended" } });
+        deployed.proxy = {
+          chainId: 421614,
+          factory: FACTORY,
+          implementation: IMPLEMENTATION,
+          minSale: 1_250_000n,
+        };
+      }
+      expect(openSwap).not.toHaveBeenCalled();
+      expect(asked).not.toHaveBeenCalled();
+    });
+
+    it("ends a lane sale whose sealed deadline leaves no time to pay, opening nothing and asking nothing", async () => {
+      const ref = await laneSaleAtDeposit();
+      setRequestsClock(() => SALE_DEADLINE - 60 * 60_000);
+      expect(await useWithdrawalRequest().paySale(ref)).toEqual({
+        ok: false,
+        reason: "The sale ran out of time before it could be paid.",
+      });
+      expect(openSwap).not.toHaveBeenCalled();
+      expect(asked).not.toHaveBeenCalled();
+      expect(useRequestsStore().get(ref)).toMatchObject({
+        status: { kind: "expired" },
+        failure: { kind: "sale-expired" },
+      });
+    });
+
+    it("names the key and claimer's proxy as the sale's sending address and records both", async () => {
+      const spy = vi.spyOn(meld, "createSellSession");
+      const outcome = await startLaneSale();
+      if (!outcome.ok) throw new Error(outcome.reason);
+      expect(claimed).toHaveBeenCalledWith("wd:meld-bank", 1);
+      expect(spy.mock.calls[0]![0]).toMatchObject({
+        sellerAccount: KEY_ADDRESS,
+        sellerClaimer: CLAIMER,
+        expectedWalletAddress: PROXY,
+      });
+      const record = useRequestsStore().get(outcome.ref) as WithdrawalRecord;
+      expect(record.sale).toMatchObject({
+        walletAddress: PROXY,
+        proxy: {
+          chainId: 421614,
+          factory: FACTORY,
+          implementation: IMPLEMENTATION,
+          address: PROXY,
+          claimerAddress: CLAIMER,
+        },
+      });
+    });
+
+    it("refuses before any session with no deployment, or one the adapter does not name", async () => {
+      const spy = vi.spyOn(meld, "createSellSession");
+      const refused = {
+        ok: false,
+        reason: "Card and bank sales through Arbitrum are not available on this network.",
+      };
+      expect(await startLaneSale(null)).toEqual(refused);
+      expect(await startLaneSale({ ...NAMED, factory: `0x${"33".repeat(20)}` })).toEqual(refused);
+      expect(await startLaneSale({ ...NAMED, chainId: 42161 })).toEqual(refused);
+      deployed.proxy = null;
+      expect(await startLaneSale()).toEqual(refused);
+      expect(spy).not.toHaveBeenCalled();
+      expect(advanced).not.toHaveBeenCalled();
+    });
+
+    it("never sends a claimer for a lane no proxy pays, refusing it before any session", async () => {
+      const spy = vi.spyOn(meld, "createSellSession");
       const outcome = await useWithdrawalRequest().startSale({
         method: "bank",
         amount: 30_000_000n,
@@ -685,12 +892,50 @@ describe("a fiat sale from the page", () => {
         paymentMethodType: "UK_FASTER_PAYMENTS",
         quote: QUOTE,
         cryptoAmount: LANE_COMMITTED,
-        swap: { lane: "usdc-solana", route: REDEEM },
+        swap: { lane: "usdc-solana", route: REDEEM, proxy: NAMED },
       });
+      expect(outcome).toEqual({
+        ok: false,
+        reason: "Card and bank sales through Arbitrum are not available on this network.",
+      });
+      expect(spy).not.toHaveBeenCalled();
+      expect(claimed).not.toHaveBeenCalled();
+    });
+
+    it("opens the swap with the sale's funding id and recorded sending address", async () => {
+      const ref = await laneSaleAtDeposit();
+      expect(await useWithdrawalRequest().paySale(ref)).toEqual({ ok: true });
+      expect(openSwap).toHaveBeenCalledWith(
+        expect.objectContaining({
+          fundingRequestId: "mock-sell-1",
+          walletAddress: PROXY,
+          keyPublicKeyHex: KEY_HEX,
+          claimerAddress: CLAIMER,
+          committed: LANE_COMMITTED,
+          // The deadline on record before the purse is asked, which the message seals
+          paymentExpiresAt: SALE_DEADLINE,
+          deployment: expect.objectContaining({ factory: FACTORY, implementation: IMPLEMENTATION }),
+        }),
+      );
+    });
+
+    it("refuses a deposit at the sale's own proxy, whatever its casing", async () => {
+      const outcome = await startLaneSale();
       if (!outcome.ok) throw new Error(outcome.reason);
+      const status = meld.getStatus.bind(meld);
+      vi.spyOn(meld, "getStatus").mockImplementation(async (id) => {
+        const result = await status(id);
+        return result.deposit === undefined
+          ? result
+          : { ...result, deposit: { ...result.deposit, address: PROXY.toLowerCase() } };
+      });
       await toDeposit(outcome.ref);
-      return outcome.ref;
-    }
+      expect(await useWithdrawalRequest().paySale(outcome.ref)).toEqual({
+        ok: false,
+        reason: "The provider named your own address as the deposit. Nothing was sent.",
+      });
+      expect(openSwap).not.toHaveBeenCalled();
+    });
 
     it("keeps a swap opened earlier while the key still has time to pay it", async () => {
       const ref = await laneSaleAtDeposit();
@@ -704,6 +949,25 @@ describe("a fiat sale from the page", () => {
       expect(await useWithdrawalRequest().paySale(ref)).toEqual({ ok: true });
       expect(openSwap).not.toHaveBeenCalled();
       expect((useRequestsStore().get(ref) as WithdrawalRecord).handoff.swap?.id).toBe("cf-kept");
+    });
+
+    it("pays a lane sale again after its purse refused, through the swap it sealed", async () => {
+      const ref = await laneSaleAtDeposit();
+      openSwap.mockResolvedValueOnce(swapChannel("cf-first", FIXTURE_NOW + 6 * 3_600_000));
+      const withdrawal = useWithdrawalRequest();
+      asked.mockRejectedValueOnce(new live.PaymentRefusedError("declined"));
+      await withdrawal.paySale(ref);
+      await vi.waitFor(() => expect(useRequestsStore().get(ref)?.status.kind).toBe("failed"));
+      expect(await withdrawal.retry(ref)).toBe(true);
+      // The retried record waits under the deadline its swap sealed
+      expect((useRequestsStore().get(ref) as WithdrawalRecord).deadline.paymentExpiresAt).toBe(
+        SALE_DEADLINE,
+      );
+      asked.mockClear();
+      expect(await withdrawal.paySale(ref)).toEqual({ ok: true });
+      expect(openSwap).toHaveBeenCalledTimes(1);
+      expect(asked).toHaveBeenCalledTimes(1);
+      expect((useRequestsStore().get(ref) as WithdrawalRecord).handoff.swap?.id).toBe("cf-first");
     });
 
     it("opens a fresh swap in place of one about to close", async () => {
@@ -727,6 +991,34 @@ describe("a fiat sale from the page", () => {
         at: FIXTURE_NOW,
         event: "swap-opened",
         channel: swapChannel("cf-short", FIXTURE_NOW + 20 * 60_000),
+      });
+      expect(await useWithdrawalRequest().paySale(ref)).toEqual({ ok: true });
+      expect(openSwap).toHaveBeenCalledTimes(1);
+      expect((useRequestsStore().get(ref) as WithdrawalRecord).handoff.swap?.id).toBe("cf-fresh");
+    });
+
+    it.each([
+      [
+        "seals a deadline too close",
+        () => swapChannel("cf-late", SALE_DEADLINE, FIXTURE_NOW + 20 * 60_000),
+      ],
+      [
+        "seals no deadline",
+        () => {
+          const { paymentExpiresAt: _sealed, ...unsealed } = swapChannel(
+            "cf-unsealed",
+            SALE_DEADLINE,
+          );
+          return unsealed;
+        },
+      ],
+    ])("opens a fresh swap in place of one that %s for the proxy", async (_, kept) => {
+      const ref = await laneSaleAtDeposit();
+      await useRequestsStore().observe(ref, {
+        source: "user",
+        at: FIXTURE_NOW,
+        event: "swap-opened",
+        channel: kept(),
       });
       expect(await useWithdrawalRequest().paySale(ref)).toEqual({ ok: true });
       expect(openSwap).toHaveBeenCalledTimes(1);

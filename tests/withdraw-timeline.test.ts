@@ -10,6 +10,7 @@ import {
 } from "../app/funding/requests/model";
 import { LINE_LIMIT } from "../app/funding/timeline/model";
 import { requestRefOf } from "../app/utils/request-index";
+import { fundsOnKey, saleAssetOnKey } from "../app/withdraw/timeline/failure";
 import { withdrawalJourneyRows } from "../app/withdraw/timeline/journey-rows";
 import { withdrawalListProgress } from "../app/withdraw/timeline/list";
 import { withdrawalPhase } from "../app/withdraw/timeline/phases";
@@ -706,6 +707,84 @@ describe("withdrawal timeline", () => {
   it("tries a refunded sale again rather than walking it into a wallet", () => {
     const refunded = failed(sale(), "refunded", "send", true);
     expect(withdrawalTimeline(refunded, { now: at(6) }).failure?.action).toBe("try-again");
+  });
+
+  describe("a sale's funds left on its own key", () => {
+    const sent = (residue: WithdrawalRecord["residue"]) =>
+      sale({ status: { kind: "sent", at: at(9) }, residue });
+    const closed = (residue?: WithdrawalRecord["residue"]) =>
+      failed(sale(), "sale-closed", "send", false, residue === undefined ? {} : { residue });
+
+    it.each([
+      [
+        "a payment to the provider that could not be confirmed",
+        failed(sale(), "unresolved", "send"),
+      ],
+      ["CASH too small to redeem", failed(sale(), "too-small", "convert")],
+      ["a way home that failed", closed({ whole: true, returning: true, stuck: true })],
+      [
+        "a refund that came too late",
+        closed({ amount: "5000000000", returning: false, stuck: true }),
+      ],
+      [
+        "a refund Chainflip could not send back",
+        closed({ amount: "0", returning: false, stuck: true }),
+      ],
+    ] as const)("walks %s into a wallet", (_, rec) => {
+      expect(fundsOnKey(rec)).toBe(true);
+      expect(withdrawalTimeline(rec, { now: at(6) }).failure?.action).toBe("return-funds");
+    });
+
+    it("offers a leftover under the way home's floor on a paid sale, with no failure", () => {
+      const rec = sent({ amount: "5000000000", returning: false });
+      expect(fundsOnKey(rec)).toBe(true);
+      expect(withdrawalTimeline(rec, { now: at(10) }).failure).toBeUndefined();
+    });
+
+    it.each([
+      ["a sale that ended before the purse was asked", failed(sale(), "sale-ended", "payment")],
+      ["a way home still running", closed({ whole: true, returning: true })],
+      ["a sale whose key held nothing", closed({ whole: true, returning: false })],
+      ["a leftover the sale's decimals cannot show", sent({ amount: "1", returning: false })],
+      ["a leftover on its way home", sent({ amount: "5000000000", returning: true })],
+      [
+        "a crypto withdrawal that was too small to redeem",
+        failed(record(), "too-small", "convert"),
+      ],
+    ] as const)("leaves %s alone", (_, rec) => {
+      expect(fundsOnKey(rec)).toBe(false);
+    });
+
+    it("names the asset on the key: what the redeem delivered, CASH when too small to redeem", () => {
+      const redeemed = (asset: Partial<NonNullable<WithdrawalRecord["sale"]>>) => {
+        const base = sale();
+        const handoff = {
+          ...base.handoff,
+          tier: "psm" as const,
+          external: "USDT" as const,
+          feeRate: 1000,
+        };
+        return { ...base, handoff, sale: { ...base.sale!, ...asset } };
+      };
+      const usdt = redeemed({ asset: "usdt@assethub" });
+      expect(saleAssetOnKey(failed(usdt, "unresolved", "send"))).toBe("USDT");
+      expect(saleAssetOnKey(failed(usdt, "too-small", "convert"))).toBe("CASH");
+      // A lane sale sells USDC on Arbitrum, but its key holds the USDT the redeem landed
+      expect(
+        saleAssetOnKey(failed(redeemed({ lane: "usdc-arbitrum" }), "unresolved", "send")),
+      ).toBe("USDT");
+      expect(saleAssetOnKey(failed(record(), "refunded", "send", true))).toBeNull();
+    });
+
+    it("leaves funds stuck on a lane sale's proxy to its own note, not the key's guide", () => {
+      const onProxy = sent({ amount: "0", returning: false, stuck: true, onProxy: true });
+      expect(fundsOnKey(onProxy)).toBe(false);
+      expect(withdrawalTimeline(onProxy, { now: at(10) }).failure).toBeUndefined();
+      // Dust the key itself still holds keeps the guide
+      expect(
+        fundsOnKey(sent({ amount: "5000000000", returning: false, stuck: true, onProxy: true })),
+      ).toBe(true);
+    });
   });
 
   it("keeps the fill a rail failure stopped the line at, without the memo", () => {

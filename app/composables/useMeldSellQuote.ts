@@ -18,15 +18,18 @@ import {
   type MeldQuoteEntry,
 } from "@getsome/meld";
 import type { ConversionRoute } from "@getsome/funding";
+import { saleVaultProxyMatches } from "@getsome/chainflip/sale-vault-proxy";
 import { laneByMeldCode, laneSellToken, type LaneId, type OfframpLane } from "@getsome/offramp";
-import { OFFRAMP_LANE_ORDER } from "~~/lib/config";
+import { OFFRAMP_LANE_ORDER, SALE_VAULT_PROXY } from "~~/lib/config";
 import { bankRailCountries, regionForCountry } from "~~/lib/region";
 import {
   countryName,
   fetchOfframpCorridor,
   fetchOfframpCorridors,
+  getOfframpSaleVaultProxy,
   methodFor,
   type OfframpLaneRef,
+  type SaleVaultProxyTarget,
   type SupportedCorridor,
   type SupportedCountry,
   type SupportedMethod,
@@ -41,8 +44,8 @@ export interface MeldSellQuote {
   paymentMethodType: string;
   /** Exactly what the provider is paid, base units of the sold asset: PAS, or the lane's. */
   cryptoAmount: bigint;
-  /** A sale through an offramp lane: the lane, and the USDT redeem the withdrawal runs. */
-  swap?: { lane: LaneId; route: ConversionRoute };
+  /** A lane sale: the lane, the USDT redeem it runs, and the SaleVaultProxy deployment that pays. */
+  swap?: { lane: LaneId; route: ConversionRoute; proxy?: SaleVaultProxyTarget };
   /** A direct sale quoted under a code other than Meld's code for DOT, which the session must name
    *  too: its code for USDT on Asset Hub. */
   sellCode?: string;
@@ -81,10 +84,42 @@ function startingCountry(): string {
 }
 
 /** What a sale of Meld code `code` sells: an asset on Asset Hub with no swap (null), PAS or USDT,
- *  a lane this build can swap into, or `undefined` for a code it cannot sell. */
+ *  a lane this build can swap into and sell through, or `undefined` for a code it cannot sell. */
 export function saleLaneOf(code: string): OfframpLane | null | undefined {
   if (isDirectSellCode(code)) return null;
   return laneByMeldCode(code) ?? undefined;
+}
+
+/** This build's SaleVaultProxy deployment when the adapter names the same, and a throw otherwise. */
+function saleVaultProxyTarget(): { target: SaleVaultProxyTarget; minSale: bigint } {
+  const named = getOfframpSaleVaultProxy();
+  if (SALE_VAULT_PROXY !== null && named !== null) {
+    if (saleVaultProxyMatches(SALE_VAULT_PROXY, named)) {
+      return { target: named, minSale: SALE_VAULT_PROXY.minSale };
+    }
+    // Two deployments that disagree is a config mistake, worth a line in the log
+    console.warn(
+      `[sell] the adapter names SaleVaultProxy ${named.chainId}/${named.factory}/${named.implementation}, not this build's ${SALE_VAULT_PROXY.chainId}/${SALE_VAULT_PROXY.factory}/${SALE_VAULT_PROXY.implementation}`,
+    );
+  }
+  throw new Error("Card and bank sales through Arbitrum are not available on this network.");
+}
+
+/** Sizes a lane sale, refused below the SaleVaultProxy deployment's least sale. */
+async function sizeLaneSale(
+  live: typeof import("~~/lib/withdraw-live"),
+  lane: OfframpLane,
+  amount: bigint,
+  reserved: bigint,
+): Promise<SizedSale> {
+  const proxy = saleVaultProxyTarget();
+  const swap = await live.sizeSwapSale(amount, lane, reserved);
+  if (swap.promise < proxy.minSale) throw new Error("The amount is below this lane's least sale.");
+  return {
+    planck: swap.promise,
+    backCash: 0n,
+    swap: { lane: lane.id, route: swap.route, proxy: proxy.target },
+  };
 }
 
 /** The asset a lane sells: the adapter's own name for it, or the one the asset table gives its
@@ -287,6 +322,9 @@ export function useMeldSellQuote(
       }
       await ensureMeldAssets(client);
       const live = await import("~~/lib/withdraw-live");
+      // A catalog read before the adapter named its SaleVaultProxy lacks the Arbitrum lane
+      if (SALE_VAULT_PROXY !== null && getOfframpSaleVaultProxy() === null) await loadCatalog();
+      if (mine !== epoch) return;
       const corridor = await corridorFor(country.value);
       if (mine !== epoch) return;
       if (corridor === null) {
@@ -310,11 +348,7 @@ export function useMeldSellQuote(
           const size: SizedSale =
             lane === null
               ? await sizeDirectSale(live, code, amount, toValue(reserved))
-              : await live.sizeSwapSale(amount, lane, toValue(reserved)).then((swap) => ({
-                  planck: swap.promise,
-                  backCash: 0n,
-                  swap: { lane: lane.id, route: swap.route },
-                }));
+              : await sizeLaneSale(live, lane, amount, toValue(reserved));
           if (mine !== epoch) return;
           const { quotes } = await client.getSellQuote({
             country: country.value,

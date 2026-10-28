@@ -482,6 +482,13 @@ describe("lib/supported", () => {
     expect(groups[0]?.rows.map((r) => r.country)).toEqual(["GB"]);
   });
 
+  const SALE_VAULT_PROXY = {
+    chain: "arbitrum",
+    chainId: 421614,
+    factory: `0x${"11".repeat(20)}`,
+    implementation: `0x${"22".repeat(20)}`,
+  };
+
   it("reads the off-ramp catalog with each method's lane, and caches only a non-empty one", async () => {
     const body = {
       corridors: [
@@ -513,6 +520,7 @@ describe("lib/supported", () => {
         },
         { country: "", fiat: "EUR", methods: [] },
       ],
+      saleVaultProxy: SALE_VAULT_PROXY,
     };
     const fetchMock = stubFetch({ "/supported/offramp/corridors": body });
     vi.stubGlobal("fetch", fetchMock);
@@ -557,5 +565,127 @@ describe("lib/supported", () => {
     expect(corridor!.methods[0]!.currency).toBe("BRL");
     // An unreachable catalog is null, not empty.
     expect(await fetchOfframpCorridors()).toBeNull();
+  });
+
+  it("caches the SaleVaultProxy named on the bulk off-ramp read", async () => {
+    vi.stubGlobal(
+      "fetch",
+      stubFetch({
+        "/supported/offramp/corridors": {
+          corridors: [{ country: "DE", fiat: "EUR", methods: [] }],
+          saleVaultProxy: SALE_VAULT_PROXY,
+        },
+      }),
+    );
+    const { fetchOfframpCorridors, getOfframpSaleVaultProxy } = await import("../lib/supported");
+    expect(getOfframpSaleVaultProxy()).toBeNull();
+    await fetchOfframpCorridors();
+    expect(getOfframpSaleVaultProxy()).toEqual(SALE_VAULT_PROXY);
+  });
+
+  it("caches the SaleVaultProxy named on a per-country off-ramp read", async () => {
+    vi.stubGlobal(
+      "fetch",
+      stubFetch({
+        "/supported/offramp?country=DE": {
+          country: "DE",
+          fiat: "EUR",
+          methods: [],
+          saleVaultProxy: SALE_VAULT_PROXY,
+        },
+      }),
+    );
+    const { fetchOfframpCorridor, getOfframpSaleVaultProxy } = await import("../lib/supported");
+    await fetchOfframpCorridor("DE");
+    expect(getOfframpSaleVaultProxy()).toEqual(SALE_VAULT_PROXY);
+  });
+
+  it("forgets a SaleVaultProxy once a later read stops naming one", async () => {
+    vi.stubGlobal(
+      "fetch",
+      stubFetch({
+        "/supported/offramp/corridors": {
+          corridors: [{ country: "DE", fiat: "EUR", methods: [] }],
+          saleVaultProxy: SALE_VAULT_PROXY,
+        },
+        "/supported/offramp?country=FR": { country: "FR", fiat: "EUR", methods: [] },
+      }),
+    );
+    const { fetchOfframpCorridor, fetchOfframpCorridors, getOfframpSaleVaultProxy } =
+      await import("../lib/supported");
+    await fetchOfframpCorridors();
+    expect(getOfframpSaleVaultProxy()).toEqual(SALE_VAULT_PROXY);
+    await fetchOfframpCorridor("FR");
+    expect(getOfframpSaleVaultProxy()).toBeNull();
+  });
+
+  it("reads the catalog again until the adapter names its SaleVaultProxy", async () => {
+    const body: Record<string, unknown> = {
+      corridors: [{ country: "DE", fiat: "EUR", methods: [] }],
+    };
+    const country: Record<string, unknown> = { country: "FR", fiat: "EUR", methods: [] };
+    const fetchMock = stubFetch({
+      "/supported/offramp/corridors": body,
+      "/supported/offramp?country=FR": country,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { fetchOfframpCorridor, fetchOfframpCorridors, getOfframpSaleVaultProxy } =
+      await import("../lib/supported");
+    // Read before the adapter verified its deployment: nothing kept
+    await fetchOfframpCorridors();
+    await fetchOfframpCorridor("FR");
+    expect(getOfframpSaleVaultProxy()).toBeNull();
+    body.saleVaultProxy = SALE_VAULT_PROXY;
+    country.saleVaultProxy = SALE_VAULT_PROXY;
+    await fetchOfframpCorridors();
+    await fetchOfframpCorridor("FR");
+    expect(getOfframpSaleVaultProxy()).toEqual(SALE_VAULT_PROXY);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    // Verified, both reads are kept
+    await fetchOfframpCorridors();
+    await fetchOfframpCorridor("FR");
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("drops the cached catalog once a read names no SaleVaultProxy", async () => {
+    const fetchMock = stubFetch({
+      "/supported/offramp/corridors": {
+        corridors: [{ country: "DE", fiat: "EUR", methods: [] }],
+        saleVaultProxy: SALE_VAULT_PROXY,
+      },
+      "/supported/offramp?country=FR": { country: "FR", fiat: "EUR", methods: [] },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { fetchOfframpCorridor, fetchOfframpCorridors } = await import("../lib/supported");
+    await fetchOfframpCorridors();
+    await fetchOfframpCorridor("FR");
+    await fetchOfframpCorridors();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("drops a malformed SaleVaultProxy payload", async () => {
+    const bad = [
+      { ...SALE_VAULT_PROXY, chain: "" },
+      { ...SALE_VAULT_PROXY, chainId: 0 },
+      { ...SALE_VAULT_PROXY, chainId: 1.5 },
+      { ...SALE_VAULT_PROXY, factory: "0x1234" },
+      { ...SALE_VAULT_PROXY, implementation: undefined },
+      "arbitrum",
+    ];
+    for (const saleVaultProxy of bad) {
+      vi.resetModules();
+      vi.stubGlobal(
+        "fetch",
+        stubFetch({
+          "/supported/offramp/corridors": {
+            corridors: [{ country: "DE", fiat: "EUR", methods: [] }],
+            saleVaultProxy,
+          },
+        }),
+      );
+      const { fetchOfframpCorridors, getOfframpSaleVaultProxy } = await import("../lib/supported");
+      await fetchOfframpCorridors();
+      expect(getOfframpSaleVaultProxy()).toBeNull();
+    }
   });
 });

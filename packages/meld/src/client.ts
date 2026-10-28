@@ -89,11 +89,13 @@ export interface MeldSessionResult {
    * When this session stops being payable, in epoch ms. Absent when the rail published no expiry.
    */
   readonly expiresAt?: number;
+  /** Sell only: the seller's sending and refund address the adapter derived and pinned. */
+  readonly walletAddress?: string;
 }
 
 /**
  * Sell-session request, Meld's sessionType SELL. The provider issues the deposit address after
- * KYC, so none is named here; it comes back later on the status.
+ * KYC, so none is named here, and it comes back on the status. No `walletAddress` is ever sent.
  */
 export interface MeldSellSessionRequest {
   readonly serviceProvider: string;
@@ -109,6 +111,12 @@ export interface MeldSellSessionRequest {
   /** The fiat paid out, e.g. 'EUR'. */
   readonly destinationCurrencyCode: string;
   readonly paymentMethodType: string;
+  /** The withdrawal key's Asset Hub address, SS58 prefix 0: the seller's home. */
+  readonly sellerAccount: string;
+  /** A lane sale's claimer, the Arbitrum address its proxy releases to and is derived from. */
+  readonly sellerClaimer?: string;
+  /** The sending address this side derived, which the adapter's echo must equal. Never sent. */
+  readonly expectedWalletAddress?: string;
 }
 
 /**
@@ -185,6 +193,78 @@ export interface MeldSellClientLike {
   createSellSession(req: MeldSellSessionRequest): Promise<MeldSessionResult>;
 }
 
+/** A sale's SaleVaultProxy state as the adapter reports it, the fields the worker acts on. */
+export interface MeldSaleVaultProxy {
+  /** This sale's own `none`, `paid` or `held`, or empty when the adapter named none. */
+  status: string;
+  /** The chain the proxy lives on, or null when the adapter named none. */
+  chainId: number | null;
+  /** USDC base units on the proxy. */
+  balance: string;
+  /** USDC this sale delivered under its own terms. */
+  amount: string;
+  /** What the provider was not owed on this sale, recorded at pay time. */
+  leftover: string;
+  /** USDC the factory booked for the home and claimer and has not moved yet. */
+  pending: string;
+  /** This sale's gas-deferred delivery, released only by the keeper's deliver. */
+  deferred: string;
+  /** Balance below the least that can go home, released to the claimer at `releaseAt`. */
+  waiting: string;
+  minReturn: string;
+  returnable: boolean;
+  attempts: number;
+  /** When the next return may go, epoch ms. */
+  nextReturnAt: number | null;
+  /** The seller's Arbitrum address the proxy releases to, or null when the adapter named none. */
+  claimer: string | null;
+  /** From when a release may run, epoch ms: 0 is open now, null before the proxy is deployed. */
+  releaseAt: number | null;
+  /** What a release would send the claimer now. */
+  releasable: string;
+  /** Every release to the claimer, oldest first. */
+  released: MeldSaleVaultProxyPayout[];
+  /** Every pending credit the proxy refused and the factory paid the claimer, oldest first. */
+  flushedToClaimer: MeldSaleVaultProxyPayout[];
+  /** USDC on the claimer now, what a relay can move. */
+  claimerBalance: string;
+  blockedReason: string | null;
+  /** The keeper's last transaction for the sale. */
+  call: { action: string; status: string; txHash: string | null; at: number } | null;
+}
+
+/** One payout from a proxy to its claimer. */
+export interface MeldSaleVaultProxyPayout {
+  /** USDC base units. */
+  amount: string;
+  txHash: string;
+  /** When the keeper read it, epoch ms. */
+  at: number;
+}
+
+/** A USDC transferWithAuthorization the claimer signed, as `POST /offramp/relay` takes it. */
+export interface MeldClaimerRelay {
+  from: string;
+  to: string;
+  /** USDC base units. */
+  value: string;
+  /** Unix seconds. */
+  validAfter: string;
+  /** Unix seconds. */
+  validBefore: string;
+  nonce: string;
+  /** 65 bytes, r || s || v. */
+  signature: string;
+}
+
+/** The adapter's SaleVaultProxy routes for an offramp sale, keyed by its funding request. */
+export interface MeldSaleVaultProxyClientLike {
+  getSaleVaultProxy(fundingRequestId: string): Promise<MeldSaleVaultProxy>;
+  requestSaleVaultProxyReturn(fundingRequestId: string): Promise<MeldSaleVaultProxy>;
+  /** Has the keeper send a claimer's signed USDC transfer, answering the broadcast transaction. */
+  relayClaimerTransfer(relay: MeldClaimerRelay): Promise<{ txHash: string | null }>;
+}
+
 export interface MeldClientLike extends Partial<MeldSellClientLike> {
   /** What Meld calls each asset the adapter serves (`GET /assets`). Read once, before any call that
    *  names a code; see `ensureMeldAssets`. */
@@ -207,6 +287,8 @@ export interface MeldEndpointConfig {
   redirectUrl?: string;
   /** Injectable fetch (tests / non-browser). Defaults to global fetch. */
   fetchImpl?: typeof fetch;
+  /** Key an address compares by, so SS58 can compare by public key. Defaults to EVM lowercased. */
+  walletKey?: (address: string) => string;
 }
 
 /** The detail the adapter attached to a tag: a threshold on BelowMinimum/AboveMaximum, or its own
@@ -345,6 +427,8 @@ interface SessionWalk {
   readonly body: () => Record<string, unknown>;
   /** The terms a resumed row must agree with, as `[label, stored, asked]`. */
   readonly terms: (found: MeldStatusResult) => readonly (readonly [string, unknown, string])[];
+  /** Puts a stored and an asked term in the form they are compared in, verbatim when absent. */
+  readonly compareAs?: (value: unknown) => unknown;
   /** The fiat just quoted, compared with a resumed row's own; a difference only logs. */
   readonly askedAmount?: string;
   readonly mismatchMessage: string;
@@ -397,14 +481,86 @@ function depositOf(raw: unknown): MeldDepositDisclosure | undefined {
   };
 }
 
+// EVM addresses compare without casing, every other address verbatim
+const defaultWalletKey = (address: string): string =>
+  address.startsWith("0x") ? address.toLowerCase() : address;
+
+// The keeper's last call off a sale answer, or null when it names none
+function saleCallOf(raw: unknown): MeldSaleVaultProxy["call"] {
+  if (typeof raw !== "object" || raw === null) return null;
+  const call = raw as Record<string, unknown>;
+  return {
+    action: String(call.action ?? ""),
+    status: String(call.status ?? ""),
+    txHash: typeof call.txHash === "string" ? call.txHash : null,
+    at: typeof call.at === "number" ? call.at : 0,
+  };
+}
+
+// A base-unit amount off a sale answer, "0" when absent, a throw when not whole digits
+function unitsOf(sale: Record<string, unknown>, field: string): string {
+  const value = sale[field];
+  if (value === undefined || value === null) return "0";
+  const text = String(value);
+  if (!/^[0-9]+$/.test(text)) throw new Error(`the adapter named a malformed sale ${field}`);
+  return text;
+}
+
+// The payouts off a sale answer, a throw for any entry not shaped as one
+function payoutsOf(sale: Record<string, unknown>, field: string): MeldSaleVaultProxyPayout[] {
+  const value = sale[field];
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error(`the adapter named a malformed sale ${field}`);
+  return value.map((raw: unknown) => {
+    const payout = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
+    if (typeof payout.txHash !== "string" || typeof payout.at !== "number") {
+      throw new Error(`the adapter named a malformed sale ${field}`);
+    }
+    return { amount: unitsOf(payout, "amount"), txHash: payout.txHash, at: payout.at };
+  });
+}
+
+// The sale vault proxy fields off an adapter `{ sale }` answer, or a throw when it names none
+function saleVaultProxyOf(data: Record<string, unknown>): MeldSaleVaultProxy {
+  const sale = data.sale as Record<string, unknown> | undefined;
+  if (typeof sale !== "object" || sale === null)
+    throw new Error("the adapter named no sale vault proxy");
+  return {
+    status: String(sale.status ?? ""),
+    chainId: typeof sale.chainId === "number" ? sale.chainId : null,
+    balance: unitsOf(sale, "balance"),
+    amount: unitsOf(sale, "amount"),
+    leftover: unitsOf(sale, "leftover"),
+    pending: unitsOf(sale, "pending"),
+    deferred: unitsOf(sale, "deferred"),
+    waiting: unitsOf(sale, "waiting"),
+    minReturn: unitsOf(sale, "minReturn"),
+    returnable: sale.returnable === true,
+    attempts: typeof sale.attempts === "number" ? sale.attempts : 0,
+    nextReturnAt: typeof sale.nextReturnAt === "number" ? sale.nextReturnAt : null,
+    claimer: typeof sale.claimer === "string" ? sale.claimer : null,
+    releaseAt: typeof sale.releaseAt === "number" ? sale.releaseAt : null,
+    releasable: unitsOf(sale, "releasable"),
+    released: payoutsOf(sale, "released"),
+    flushedToClaimer: payoutsOf(sale, "flushedToClaimer"),
+    claimerBalance: unitsOf(sale, "claimerBalance"),
+    blockedReason: typeof sale.blockedReason === "string" ? sale.blockedReason : null,
+    call: saleCallOf(sale.call),
+  };
+}
+
 /**
  * Builds a MeldClientLike over the Meld adapter service, which holds the Meld key and adds the
  * Meld auth headers server-side. This side speaks the adapter's JSON routes: `POST /quote`,
  * `POST /session` and `GET /funding/:fundingRequestId`. A sell rides the same routes with
- * `direction: "sell"` in the body; absent means buy.
+ * `direction: "sell"` in the body, absent means buy. A sale's proxy is read and moved through
+ * `GET /offramp/sale/:id`, `POST /offramp/returns/:id` and `POST /offramp/relay`.
  */
-export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & MeldSellClientLike {
+export function createMeldClient(
+  config: MeldEndpointConfig,
+): MeldClientLike & MeldSellClientLike & MeldSaleVaultProxyClientLike {
   const doFetch = config.fetchImpl ?? fetch;
+  const walletKey = config.walletKey ?? defaultWalletKey;
   const base = config.baseUrl.replace(/\/$/, "");
   /**
    * The default idempotency key: the terms the buyer chose, plus an attempt counter. No solved
@@ -531,9 +687,10 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
   ): Promise<MeldSessionResult | null> {
     const status = await getFundingStatus(fundingRequestId);
     if (!status.serviceProviderWidgetUrl) return null;
+    const same = walk.compareAs ?? ((value: unknown) => value);
     const mismatched = walk
       .terms(status)
-      .filter(([, stored, asked]) => stored !== undefined && stored !== asked);
+      .filter(([, stored, asked]) => stored !== undefined && same(stored) !== same(asked));
     if (mismatched.length > 0) {
       // The row is for a different order. Do not resume into it or open a new session.
       throw new AdapterRefusal(
@@ -560,6 +717,7 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
       widgetUrl: status.serviceProviderWidgetUrl,
       ...(status.widgetUrl ? { meldWidgetUrl: status.widgetUrl } : {}),
       ...(status.expiresAt !== undefined ? { expiresAt: status.expiresAt } : {}),
+      ...(status.walletAddress !== undefined ? { walletAddress: status.walletAddress } : {}),
     };
   }
 
@@ -588,6 +746,9 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
         const widgetUrl = String(data.serviceProviderWidgetUrl ?? "");
         const meldWidgetUrl = data.widgetUrl != null ? String(data.widgetUrl) : undefined;
         if (!widgetUrl && !meldWidgetUrl) throw new Error(walk.noSurfaceMessage(fundingRequestId));
+        const pinned = data.pinned as Record<string, unknown> | undefined;
+        const walletAddress =
+          typeof pinned?.walletAddress === "string" ? pinned.walletAddress : undefined;
         return {
           fundingRequestId,
           sessionId: String(data.sessionId ?? ""),
@@ -595,6 +756,7 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
           widgetUrl,
           ...(meldWidgetUrl !== undefined ? { meldWidgetUrl } : {}),
           ...(typeof data.expiresAt === "number" ? { expiresAt: data.expiresAt } : {}),
+          ...(walletAddress !== undefined ? { walletAddress } : {}),
         };
       } catch (err) {
         // `IDEMPOTENCY_KEY_REUSED` names a live request opened under this key. Resume it.
@@ -725,7 +887,8 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
     },
 
     async createSellSession(req) {
-      return openSession({
+      const expected = req.expectedWalletAddress;
+      const session = await openSession({
         what: "Starting the sale",
         region: req.country,
         key: (attempt) => sellIntentKey(req, attempt),
@@ -736,6 +899,8 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
           // The crypto leg, named as on the buy; see `getSellQuote`.
           destinationCurrencyCode: req.sourceCurrencyCode,
           cryptoAmount: req.sourceAmount,
+          sellerAccount: req.sellerAccount,
+          ...(req.sellerClaimer === undefined ? {} : { sellerClaimer: req.sellerClaimer }),
           paymentMethodType: req.paymentMethodType,
           serviceProvider: req.serviceProvider,
           ...(config.redirectUrl ? { redirectUrl: config.redirectUrl } : {}),
@@ -746,7 +911,11 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
           ["fiat", found.fiat, req.destinationCurrencyCode],
           ["destinationCurrencyCode", found.destinationCurrencyCode, req.sourceCurrencyCode],
           ["cryptoAmount", found.cryptoAmount, req.sourceAmount],
+          ...(expected !== undefined
+            ? [["walletAddress", found.walletAddress, expected] as const]
+            : []),
         ],
+        compareAs: (value) => (typeof value === "string" ? walletKey(value) : value),
         mismatchMessage: "We found a sale for a different order. Do not start another.",
         reopenedMessage:
           "This sale is already open and can no longer be continued here. Nothing was sent. Start a new withdrawal.",
@@ -754,6 +923,15 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
           `[meld] the adapter returned no hosted page for funding request ${fundingRequestId}; there is nothing for the seller to continue on`,
         exhaustedMessage: `This sale has already been opened and closed ${MAX_ATTEMPTS} times. Nothing was sent. Start a new withdrawal later.`,
       });
+      // The adapter ships its echo first, so a missing one is a sale pinned elsewhere and never paid
+      if (
+        expected !== undefined &&
+        (session.walletAddress === undefined ||
+          walletKey(session.walletAddress) !== walletKey(expected))
+      ) {
+        throw new Error("The sale's sending address does not match. Nothing was sent.");
+      }
+      return session;
     },
 
     getStatus: getFundingStatus,
@@ -793,6 +971,36 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
         if (err instanceof AdapterRefusal && err.status === 404) return { outcome: "not-found" };
         throw err;
       }
+    },
+
+    async getSaleVaultProxy(fundingRequestId) {
+      const res = await doFetch(`${base}/offramp/sale/${encodeURIComponent(fundingRequestId)}`, {
+        headers: headers(),
+        signal: AbortSignal.timeout(STATUS_TIMEOUT_MS),
+      });
+      return saleVaultProxyOf(await read(res, "The sale vault proxy"));
+    },
+
+    async requestSaleVaultProxyReturn(fundingRequestId) {
+      const res = await doFetch(`${base}/offramp/returns/${encodeURIComponent(fundingRequestId)}`, {
+        method: "POST",
+        headers: { ...headers(), "content-type": "application/json" },
+        body: "{}",
+        signal: AbortSignal.timeout(STATUS_TIMEOUT_MS),
+      });
+      return saleVaultProxyOf(await read(res, "The return"));
+    },
+
+    async relayClaimerTransfer(relay) {
+      const res = await doFetch(`${base}/offramp/relay`, {
+        method: "POST",
+        headers: { ...headers(), "content-type": "application/json" },
+        body: JSON.stringify(relay),
+        signal: AbortSignal.timeout(STATUS_TIMEOUT_MS),
+      });
+      const data = await read(res, "The transfer");
+      const sent = (data.relay as Record<string, unknown> | undefined) ?? {};
+      return { txHash: typeof sent.txHash === "string" ? sent.txHash : null };
     },
   };
 }

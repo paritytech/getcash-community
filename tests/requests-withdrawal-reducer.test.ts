@@ -494,7 +494,7 @@ describe("withdrawal: the worker", () => {
     );
     expect(small.status).toEqual({ kind: "failed", at: at(3), recoverable: false, legAt: at(1) });
     expect(small.failure).toEqual({
-      kind: "unknown",
+      kind: "too-small",
       step: "convert",
       message: "redeem sizing: 9000 CASH on the key cannot fund an exit of at least 1000000",
       recoverable: false,
@@ -610,5 +610,20 @@ describe("withdrawal: migration", () => {
     });
     const { payment: _dropped, ...broken } = stored;
     expect(migrateRecord(broken, REF, at(9))).toBeNull();
+  });
+
+  it("names a too-small ending stored as the unknown one on the convert leg", () => {
+    const failure = {
+      kind: "unknown",
+      step: "convert",
+      message: "too small",
+      recoverable: false,
+    } as const;
+    const stored = record({ status: { kind: "failed", at: at(3), recoverable: false }, failure });
+    expect(migrateRecord(stored, REF, at(9))).toMatchObject({
+      failure: { ...failure, kind: "too-small" },
+    });
+    const send = record({ failure: { ...failure, step: "send" } });
+    expect(migrateRecord(send, REF, at(9))).toMatchObject({ failure: send.failure });
   });
 });

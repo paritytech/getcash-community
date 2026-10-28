@@ -38,6 +38,8 @@ export const JOB_POLL_CLAIMING_MS = 1_000;
 export const MELD_POLL_MS = 3_000;
 /** The Meld poll's ceiling while its reads keep failing; the delay doubles up to it. */
 export const MELD_POLL_MAX_MS = 30_000;
+/** A lane sale's SaleVaultProxy re-read: the adapter keeper acts at most this often (its interval_ms floor). */
+export const SALE_VAULT_PROXY_POLL_MS = 15_000;
 /** Foreground host payment status poll, while a withdrawal awaits its payment. */
 export const PAYMENT_POLL_MS = 3_000;
 /** A job whose `lastTickAt` is older than this counts as stale. */
@@ -469,6 +471,8 @@ export type WithdrawalFailureKind =
   | "channel-expired"
   /** The provider's record of the channel did not match the withdrawal; nothing moved. */
   | "channel-mismatch"
+  /** The CASH on the key is under what any exit can take, so it stays on the key. */
+  | "too-small"
   /** The price moved past what a sale promised its provider; the CASH is still on the key. */
   | "unfundable"
   /** Whether the provider was paid cannot be told from the chain; nothing more is sent. */
@@ -542,9 +546,7 @@ export interface WithdrawalHandoffPayload {
   /** A fiat sale only: the adapter the worker reads the sale from, or `offline` for a build that
    *  ran the stand-in sale and has no adapter. */
   meld?: { baseUrl?: string; productId?: string; offline?: boolean };
-  /** A fiat sale through an offramp lane only: the Chainflip channel the key pays, swapping its
-   *  USDT for the lane's asset and paying it to the provider's deposit address (`channel`). Opened
-   *  by the page once that address is known. */
+  /** A lane sale only: the Chainflip channel that swaps the key's USDT to the SaleVaultProxyFactory. */
   swap?: WithdrawalChannel;
 }
 
@@ -575,6 +577,16 @@ export interface WithdrawalChannel {
   /** The exact planck the key pays, for a provider that holds it to its quote. Absent: the key
    *  pays everything it holds. */
   amount?: string;
+  /** The chain, SaleVaultProxyFactory and implementation a lane sale's swap delivers through. */
+  proxyChainId?: number;
+  proxyFactory?: string;
+  proxyImplementation?: string;
+  /** The seller key's SaleVaultProxy, which pays the provider and takes back any refund. */
+  proxyAddress?: string;
+  /** The seller's Arbitrum address the proxy releases to, bound into its address and the message. */
+  claimerAddress?: string;
+  /** The payment deadline (ms) a lane sale's CCM message seals, past it the proxy holds the delivery. */
+  paymentExpiresAt?: number;
 }
 
 /**
@@ -605,6 +617,16 @@ export interface MeldSale {
    *  the sale is read by this, not by its code. A record from before it was kept has only the
    *  code. */
   asset?: MeldAssetId;
+  /** Where the provider sees the crypto come from and refunds to: the key, or the sale's proxy. */
+  walletAddress?: string;
+  /** The SaleVaultProxy a lane sale pays from, its deployment, and the claimer it releases to. */
+  proxy?: {
+    chainId: number;
+    factory: string;
+    implementation: string;
+    address: string;
+    claimerAddress?: string;
+  };
   /** The fiat the quote said reaches the seller, decimal text in `fiat`. An estimate: the
    *  provider prices the payout again. */
   quotedPayout: string;
@@ -673,6 +695,8 @@ export interface WithdrawalResidue {
   returned?: boolean;
   /** The funding job carrying it failed past the worker's retries; it needs a person. */
   stuck?: boolean;
+  /** Stuck on a lane sale's SaleVaultProxy or claimer, not on the key. */
+  onProxy?: boolean;
 }
 
 /** `direct` for a destination on Asset Hub, which the funds reach with the XCM itself; the rest
@@ -815,9 +839,13 @@ export type Observation =
   /** The pool can no longer fund what a sale promised its provider, checked before the purse was
    *  asked; the sale ends with nothing taken. */
   | { source: "user"; at: number; event: "sale-unfundable" }
+  /** A lane sale from before SaleVaultProxy, ended before the purse was asked. */
+  | { source: "user"; at: number; event: "sale-outdated" }
+  /** A lane sale whose sealed deadline leaves no time to pay, ended before the purse was asked. */
+  | { source: "user"; at: number; event: "sale-late" }
   /** The page opened a fresh provider channel for a retry; the hand-off carries it next. */
   | { source: "user"; at: number; event: "channel-opened"; channel: WithdrawalChannel }
-  /** The page opened a lane sale's Chainflip channel to the provider's deposit address. */
+  /** The page opened a lane sale's Chainflip channel to the SaleVaultProxyFactory. */
   | { source: "user"; at: number; event: "swap-opened"; channel: WithdrawalChannel };
 
 /** The source a request runs under: a bare legacy ref means the crypto rail's. */

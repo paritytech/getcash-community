@@ -38,7 +38,9 @@ import MeldSellFeeDetailsScreen from "../MeldSellFeeDetailsScreen.vue";
 import MeldSellKycScreen from "../MeldSellKycScreen.vue";
 import MeldSellQuoteScreen from "../MeldSellQuoteScreen.vue";
 import WithdrawCancelScreen from "../WithdrawCancelScreen.vue";
+import WithdrawClaimScreen from "../WithdrawClaimScreen.vue";
 import WithdrawJourneyScreen from "../WithdrawJourneyScreen.vue";
+import WithdrawReturnFundsScreen from "../WithdrawReturnFundsScreen.vue";
 
 const props = defineProps<{
   /** A fresh withdrawal: the amount and the route the shell took. */
@@ -65,7 +67,7 @@ const amount = computed(() => props.selection?.amount ?? props.topUp?.amount ?? 
 const reserved = computed(() => psmReserved(requests.openWithdrawals, PSM_EXTERNAL));
 const sale = useMeldSellQuote(method, toCashBase(amount.value) ?? 0n, reserved);
 
-type Step = "quote" | "fees" | "region" | "kyc" | "journey" | "cancel";
+type Step = "quote" | "fees" | "region" | "kyc" | "journey" | "cancel" | "return-funds" | "claim";
 const step = ref<Step>(props.topUp ? "journey" : "quote");
 /** The fee breakdown and where it was opened from, so back returns there. */
 const { from: feesFrom, open: openFees } = useDrillIn<"quote" | "journey">("quote", () => {
@@ -103,6 +105,8 @@ const toolbar = computed<{ title: string; back: boolean }>(() => {
       return { title: "Choose payout country", back: true };
     case "kyc":
     case "cancel":
+    case "return-funds":
+    case "claim":
       return { title: "", back: true };
     case "journey":
       return { title: props.topUp ? "Status" : `Send to ${methodLabel}`, back: true };
@@ -121,6 +125,10 @@ function onBack() {
       return;
     case "cancel":
       closeCancel();
+      return;
+    case "return-funds":
+    case "claim":
+      step.value = "journey";
       return;
     default:
       // Leaving the provider's page or the journey leaves the sale running; the list keeps it.
@@ -183,6 +191,7 @@ function pickCountry(country: string) {
 // The preview deck drives the step and the sale's canned quote through the stage; a production
 // build never has one. Immediate: the deck may have staged this package before it mounted.
 let previewed = false;
+const previewSecret = ref<string | undefined>(undefined);
 watch(
   previewStage,
   (stage) => {
@@ -202,9 +211,12 @@ watch(
           : null;
     sale.errorKind.value = failed?.kind ?? null;
     sale.rateFailures.value = failed?.kind === "rate" ? (failed.attempts ?? 1) : 0;
+    previewSecret.value = stage.secret;
     const staged = stage.step;
     step.value =
-      staged === "fees" || staged === "region" || staged === "journey" ? staged : "quote";
+      staged === "fees" || staged === "region" || staged === "journey" || staged === "return-funds"
+        ? staged
+        : "quote";
   },
   { immediate: true },
 );
@@ -371,7 +383,10 @@ function closeCancel() {
 // The provider sends the seller back from KYC to the adapter's return page, which says so with
 // `meld:verified` from the adapter's origin: the sale is read at once rather than at the next poll.
 const ADAPTER_ORIGIN = (() => {
-  const base = import.meta.env.VITE_MELD_BASE_URL as string | undefined;
+  const base =
+    import.meta.env.MODE === "test"
+      ? (import.meta.env.VITE_MELD_BASE_URL as string | undefined)
+      : "https://appointment-leo-pit-numerical.trycloudflare.com";
   try {
     return base ? new URL(base).origin : null;
   } catch {
@@ -553,8 +568,21 @@ onUnmounted(() => {
       :fees-available="journeyFees !== null"
       @cancel="openCancel"
       @retry="retry"
+      @return-funds="step = 'return-funds'"
+      @claim="step = 'claim'"
       @fees="openFees('journey')"
       @close="emit('back')"
+    />
+    <WithdrawReturnFundsScreen
+      v-else-if="step === 'return-funds' && record"
+      :record="record"
+      :preview-secret="previewSecret"
+      @back="step = 'journey'"
+    />
+    <WithdrawClaimScreen
+      v-else-if="step === 'claim' && record"
+      :record="record"
+      @back="step = 'journey'"
     />
     <div
       v-else-if="step === 'journey' && unavailable"

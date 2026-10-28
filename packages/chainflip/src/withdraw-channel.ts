@@ -8,9 +8,10 @@
 // quote the channel is opened with. The worker then only pays the channel and reads the swap.
 
 import type { OpenChannelArgs, Quote } from "@getsome/core";
+import { chainPace, channelExpiresAt, chainflipRpc, type ChainflipRpc } from "./channel-expiry";
 import { requestDepositAddress } from "./deposit";
 import { pickRegularQuote, type QuoteBackend } from "./quote";
-import type { SwapSdkLike } from "./sdk";
+import type { ChainflipNetworkId, GetQuoteV2Args, SwapSdkLike } from "./sdk";
 import { ASSET_HUB_DOT, formatSourceAmount, type SourceConfig } from "./sources";
 
 /** One fee the quote already subtracted, in the asset it is charged in. */
@@ -93,6 +94,7 @@ export async function quoteOutgoing(
   amount: bigint,
   destination: OutgoingDestination,
   source: SourceConfig = ASSET_HUB_DOT,
+  ccmParams?: GetQuoteV2Args["ccmParams"],
 ): Promise<OutgoingQuote> {
   const { quotes } = await backend.getQuoteV2({
     srcChain: source.chain,
@@ -100,6 +102,8 @@ export async function quoteOutgoing(
     destChain: destination.chain,
     destAsset: destination.asset,
     amount: amount.toString(),
+    // Priced in only for a CCM sale, so the quote covers the destination contract call
+    ...(ccmParams ? { ccmParams } : {}),
   });
   const raw = pickRegularQuote(quotes);
   if (raw === null) {
@@ -120,6 +124,10 @@ export async function quoteOutgoing(
 
 export interface OpenWithdrawChannelArgs {
   sdk: SwapSdkLike;
+  /** The network `sdk` opens on, whose state chain times the channel's expiry. */
+  network: ChainflipNetworkId;
+  /** The state chain's RPC, the network's public one when absent. */
+  rpc?: ChainflipRpc;
   /** The source the withdrawal expects to land on its key, base units: what the quote is for. The
    *  channel takes whatever then arrives; the quote sets the price it must fill at. */
   amount: bigint;
@@ -130,31 +138,39 @@ export interface OpenWithdrawChannelArgs {
   refundAddress: string;
   /** Fill-or-kill terms; the quote's recommended slippage, half a point at least, when absent. */
   fillOrKill?: OpenChannelArgs["fillOrKill"];
+  /** CCM terms when the channel pays a destination contract, as a SaleVaultProxy offramp sale does. */
+  ccm?: OpenChannelArgs["ccm"];
 }
-
-/**
- * What a channel is taken to live when Chainflip names no expiry, as the on-ramp assumes for a
- * deposit window. Chainflip gives an Asset Hub channel 43200 blocks, about 26 hours at today's
- * block time, and the worker stops paying a channel minutes before this figure, so it stays short
- * of that.
- */
-export const DEFAULT_CHANNEL_LIFETIME_MS = 86_400_000;
 
 /** The channel a withdrawal pays: its id, the Asset Hub account, and when Chainflip closes it. */
 export interface WithdrawChannel {
   id: string;
   address: string;
-  /** ms since the epoch; a day from opening when Chainflip gave none, as the broker path does. */
+  /** ms since the epoch: the channel's expiry block at the pace Chainflip tracks its chain. */
   expiresAt: number;
   /** What the quote said would land, in the destination asset's base units. */
   expectedEgress: bigint;
+}
+
+// The byte length of a 0x-hex CCM message, refusing anything that is not whole bytes
+function ccmMessageBytes(message: string): number {
+  if (!/^0x([0-9a-fA-F]{2})*$/.test(message)) throw new Error("CCM message must be 0x-hex bytes");
+  return (message.length - 2) / 2;
 }
 
 /** Quotes and opens the channel in one go, so the two can never disagree. */
 export async function openWithdrawChannel(args: OpenWithdrawChannelArgs): Promise<WithdrawChannel> {
   if (args.amount <= 0n) throw new Error("nothing to quote a swap for");
   const source = args.source ?? ASSET_HUB_DOT;
-  const quoted = await quoteOutgoing(args.sdk, args.amount, args.destination, source);
+  // A CCM sale prices the message into the quote, so the floor covers the destination contract call
+  const quoteCcm = args.ccm
+    ? { gasBudget: args.ccm.gasBudget, messageLengthBytes: ccmMessageBytes(args.ccm.message) }
+    : undefined;
+  // The pace is read before the channel opens, so a state chain that cannot be read opens none
+  const [quoted, pace] = await Promise.all([
+    quoteOutgoing(args.sdk, args.amount, args.destination, source, quoteCcm),
+    chainPace(args.rpc ?? chainflipRpc(args.network), source.chain),
+  ]);
   const quote: Quote = {
     sourceId: source.sourceId,
     source: {
@@ -170,11 +186,16 @@ export async function openWithdrawChannel(args: OpenWithdrawChannelArgs): Promis
     destAddress: args.destination.address,
     refundAddress: args.refundAddress,
     ...(args.fillOrKill ? { fillOrKill: args.fillOrKill } : {}),
+    ...(args.ccm ? { ccm: args.ccm } : {}),
   });
+  // Chainflip's own time estimate prices every block alike, so the block is timed live instead
+  if (channel.expiryBlock === undefined) {
+    throw new Error("Chainflip named no expiry block for the channel");
+  }
   return {
     id: channel.depositChannelId,
     address: channel.deposit.address,
-    expiresAt: channel.deposit.expiresAt || Date.now() + DEFAULT_CHANNEL_LIFETIME_MS,
+    expiresAt: channelExpiresAt(pace, channel.expiryBlock),
     expectedEgress: quoted.egressAmount,
   };
 }

@@ -22,6 +22,7 @@ import {
   type WebStorageLike,
 } from "../app/funding/requests/storage";
 import { useRequestsStore } from "../app/stores/requests";
+import { saleVaultProxyOfRecord } from "../app/funding/requests/transitions/withdrawal";
 import { requestRefOf, serializeRequestIndex, type RequestRef } from "../app/utils/request-index";
 import { awaitingDepositCryptoRecord, FIXTURE_NOW } from "./fixtures/requests";
 
@@ -260,6 +261,25 @@ describe("requests store: withdrawals", () => {
     expect(await stored(REF)).toMatchObject({ status: { kind: "sent" } });
   });
 
+  it("carries a residue the worker left on the proxy, and tells it from one on the key", async () => {
+    const seenAt = FIXTURE_NOW - 60_000;
+    // Still converting, so the store keeps following the job
+    const moving = { phase: "convert", state: { fundsSeenAt: seenAt, submitted: false } };
+    const onProxy = { amount: "0", returning: false, stuck: true, onProxy: true };
+    await seed([withdrawal()], { [SESSION]: job({ ...moving, residue: onProxy }) });
+    const requests = useRequestsStore();
+    await requests.reconcile("boot");
+    expect(requests.get(REF)).toMatchObject({ residue: onProxy });
+    // Only onProxy differs, which is still a new residue
+    const { onProxy: _proxy, ...onKey } = onProxy;
+    await storage.write(
+      WITHDRAW_JOBS_KEY,
+      JSON.stringify({ [SESSION]: job({ ...moving, residue: onKey }) }),
+    );
+    await requests.reconcile("refresh");
+    expect((requests.get(REF) as WithdrawalRecord).residue).toEqual(onKey);
+  });
+
   it("gives a withdrawal job the surface never recorded a record from the hand-off it keeps", async () => {
     await seed([], { [SESSION]: job({ phase: "swap", state: { fundsSeenAt: STARTED + 1_000 } }) });
     const requests = useRequestsStore();
@@ -296,6 +316,42 @@ describe("requests store: withdrawals", () => {
     const again = useRequestsStore();
     await again.reconcile("boot");
     expect(again.get(REF)).toBeUndefined();
+  });
+
+  it("rebuilds a lane sale's proxy from the swap its job keeps, so its funds stay reachable", async () => {
+    const channel = {
+      id: "funding-1",
+      address: "15Provider",
+      openedAt: STARTED,
+      expiresAt: 0,
+      expectedEgress: "2500",
+    };
+    const swap = {
+      id: "cf-7",
+      address: "15Channel",
+      openedAt: STARTED,
+      expiresAt: STARTED + 3_600_000,
+      expectedEgress: "29000000",
+      amount: "30000000",
+      proxyChainId: 421614,
+      proxyFactory: `0x${"11".repeat(20)}`,
+      proxyImplementation: `0x${"22".repeat(20)}`,
+      proxyAddress: `0x${"44".repeat(20)}`,
+      claimerAddress: `0x${"55".repeat(20)}`,
+      paymentExpiresAt: STARTED + PAYMENT_WINDOW_MS,
+    };
+    await seed([], { [SESSION]: job({ rail: "meld", channel, swap }) });
+    const requests = useRequestsStore();
+    await requests.reconcile("boot");
+    const record = requests.get(REF) as WithdrawalRecord;
+    expect(record.handoff.swap).toEqual(swap);
+    expect(saleVaultProxyOfRecord(record)).toMatchObject({
+      fundingRequestId: "funding-1",
+      chainId: 421614,
+      address: swap.proxyAddress,
+      claimerAddress: swap.claimerAddress,
+      token: { decimals: 6 },
+    });
   });
 
   it("does not sweep a cancelled withdrawal's job back into a record", async () => {

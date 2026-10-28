@@ -8,6 +8,13 @@ import {
   type DepositAsset,
   type ManualSourceId,
 } from "@getsome/funding";
+import { UNSOLD_LANE_ASSETS } from "@getsome/offramp";
+import {
+  SALE_VAULT_PROXY_CHAIN_ID,
+  saleVaultProxyContractsOf,
+  saleVaultProxyMinSale,
+  type SaleVaultProxyDeployment,
+} from "@getsome/chainflip/sale-vault-proxy";
 
 // Chain and asset identifiers, as Chainflip and the icon set name them.
 export const CHAINS = {
@@ -133,12 +140,15 @@ export const sourcePairFor = (sourceId: string): { chain: string; asset: string 
 /** The off-ramp lanes this build sells through, in preference order, by the app's name for each
  *  asset (`usdt@assethub`), never by Meld's code for it, which the adapter owns and Meld renames.
  *  By default only the direct Asset Hub sales, USDT before DOT since the PSM redeems the CASH for
- *  USDT at a fixed rate where DOT takes the pool's price. The Chainflip swap lanes (usdc@arbitrum,
- *  usdc@solana) are opt-in: a build sells through one only when VITE_OFFRAMP_LANES names it.
+ *  USDT at a fixed rate where DOT takes the pool's price. The Chainflip swap lane (usdc@arbitrum,
+ *  never Solana) is opt-in: a build sells through it only when VITE_OFFRAMP_LANES names it.
  *  VITE_OFFRAMP_LANES overrides the list, comma separated; an asset left out is not offered,
  *  whatever the adapter lists, and an entry that is not an asset id is dropped with a warning. */
 export const OFFRAMP_LANE_ORDER: readonly MeldAssetId[] = (() => {
-  const raw = import.meta.env.VITE_OFFRAMP_LANES as string | undefined;
+  const raw =
+    import.meta.env.MODE === "test"
+      ? (import.meta.env.VITE_OFFRAMP_LANES as string | undefined)
+      : "usdc@arbitrum";
   const listed = (raw ?? "")
     .split(",")
     .map((entry) => entry.trim().toLowerCase())
@@ -149,6 +159,49 @@ export const OFFRAMP_LANE_ORDER: readonly MeldAssetId[] = (() => {
       `[config] VITE_OFFRAMP_LANES names ${unknown.join(", ")}, which are not asset ids (e.g. usdt@assethub); ignored`,
     );
   }
-  const assets = listed.filter(isMeldAssetId);
+  const known = listed.filter(isMeldAssetId);
+  // A lane with no sending address this app controls is never sold through
+  const unsellable = known.filter((asset) => UNSOLD_LANE_ASSETS.includes(asset));
+  if (unsellable.length > 0) {
+    console.warn(
+      `[config] VITE_OFFRAMP_LANES names ${unsellable.join(", ")}, which have no sending address this app controls; ignored`,
+    );
+  }
+  const assets = known.filter((asset) => !unsellable.includes(asset));
   return assets.length > 0 ? assets : ["usdt@assethub", "dot@assethub"];
 })();
+
+/** The Chainflip network a fiat sale swaps on, shared with the worker. */
+export { SALE_SWAP_NETWORK } from "@getsome/chainflip/sale-vault-proxy";
+
+/** The SaleVaultProxyFactory an Arbitrum sale delivers to, from VITE_SALE_VAULT_PROXY_*, null when unset. */
+export const SALE_VAULT_PROXY: SaleVaultProxyDeployment | null = readSaleVaultProxy(
+  {
+    factory: import.meta.env.VITE_SALE_VAULT_PROXY_FACTORY as string | undefined,
+    implementation: import.meta.env.VITE_SALE_VAULT_PROXY_IMPLEMENTATION as string | undefined,
+  },
+  SALE_VAULT_PROXY_CHAIN_ID,
+);
+
+/** The deployment both build values name on `chainId` with its least sale, null when unset or bad. */
+export function readSaleVaultProxy(
+  raw: { factory?: string; implementation?: string },
+  chainId: number,
+): SaleVaultProxyDeployment | null {
+  if ([raw.factory, raw.implementation].every((v) => (v ?? "").trim() === "")) return null;
+  const contracts = saleVaultProxyContractsOf({ ...raw, chainId });
+  if (contracts === null) {
+    console.warn(
+      "[config] VITE_SALE_VAULT_PROXY_FACTORY and VITE_SALE_VAULT_PROXY_IMPLEMENTATION must both be 0x addresses; the Arbitrum lane is off",
+    );
+    return null;
+  }
+  const minSale = saleVaultProxyMinSale(chainId);
+  if (minSale === null) {
+    console.warn(
+      `[config] packages/sale-vault-proxy has no network for chain ${chainId}; the Arbitrum lane is off`,
+    );
+    return null;
+  }
+  return { ...contracts, minSale };
+}
