@@ -92,14 +92,18 @@ export function countryName(country: string): string {
 }
 
 function baseUrl(): string | undefined {
-  return import.meta.env.VITE_MELD_BASE_URL as string | undefined;
+  return import.meta.env.MODE === "test"
+    ? (import.meta.env.VITE_MELD_BASE_URL as string | undefined)
+    : "https://finder-decade-buys-consists.trycloudflare.com";
 }
 
 function headers(): Record<string, string> {
   return {
     accept: "application/json",
     "x-dev-product-id":
-      (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
+      import.meta.env.MODE === "test"
+        ? ((import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev")
+        : "getcash.dev",
   };
 }
 
