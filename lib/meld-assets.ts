@@ -11,7 +11,7 @@ export function pageMeldAssets(): Promise<void> {
   const baseUrl =
     import.meta.env.MODE === "test"
       ? (import.meta.env.VITE_MELD_BASE_URL as string | undefined)
-      : "https://finder-decade-buys-consists.trycloudflare.com";
+      : "https://appointment-leo-pit-numerical.trycloudflare.com";
   return ensureMeldAssets(
     baseUrl
       ? createMeldClient({

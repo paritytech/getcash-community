@@ -31,7 +31,7 @@ function meldDomains(): string[] {
   const base =
     import.meta.env.MODE === "test"
       ? (import.meta.env.VITE_MELD_BASE_URL as string | undefined)
-      : "https://finder-decade-buys-consists.trycloudflare.com";
+      : "https://appointment-leo-pit-numerical.trycloudflare.com";
   if (!base) return [];
   try {
     return [new URL(base).hostname];
