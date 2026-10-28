@@ -71,8 +71,9 @@ function copy(text: string | null) {
         The fee is {{ fee }}. Anything above it is added to your Cash.
       </p>
     </template>
+    <!-- The token is not priced: not yet, or not today. The other tokens are a tap away. -->
     <p v-else class="shrink-0 text-center text-body-m text-fg-secondary">
-      Working out what to send. Try again in a moment.
+      This token can't be priced right now. Change token, or try again in a moment.
     </p>
 
     <template #actions>
@@ -84,6 +85,7 @@ function copy(text: string | null) {
           <button
             type="button"
             class="flex h-12 items-center justify-center gap-2 rounded-full bg-action-tertiary px-2 text-label-l whitespace-nowrap text-fg-primary disabled:opacity-100"
+            role="status"
             disabled
           >
             <span

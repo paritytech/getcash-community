@@ -109,9 +109,12 @@ export function usePurseBalance(options: { enabled?: () => boolean } = {}): Purs
       void refresh();
       return;
     }
-    // Off: the pending retry goes, and a read in flight lands nowhere.
+    // Off: the pending retry goes, a read in flight lands nowhere, and nothing read stands for
+    // the next enable, which starts from unknown as a mount does.
     cancelRetry();
     epoch += 1;
+    state.value = isHosted() ? { kind: "unknown" } : { kind: "none" };
+    failed.value = false;
   });
   onUnmounted(() => {
     cancelRetry();
