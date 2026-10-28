@@ -100,8 +100,12 @@ const saveJobs = () => store.save();
  *                                            // burner as the claimer it names
  *   recovery?: { phase: "funding"|"claiming"|"done", feeCash: string|null, askCash: string|null,
  *                round, held: string|null, attempts, nonceAtClaim: number|null, sentAt: number|null,
- *                minimums?: { at, feeCash, minimums: { PAS, DOTUSD, USDT, USDC }, keepNativeForFees,
+ *                minimums?: { at, feeCash, minimums: { PAS, DOTUSD, USDT, USDC },
+ *                             gates: { PAS, DOTUSD, USDT, USDC }, keepNativeForFees,
  *                             routes: { USDT, USDC }, repriceFailedAt?, repriceError? },
+ *                                            // minimums: what the surface shows to send, with
+ *                                            // the pool tiers' headroom; gates: what counts as
+ *                                            // the deposit, the pipeline's own figure
  *                route?, state?, deposit?, depositDoneAt?, depositHeld?: { token, held },
  *                depositError?: { message, at, token?, held? } },
  *                                            // round moves on when a claim spent the fee or the
@@ -1110,8 +1114,10 @@ async function fundRecovery(record, env, feeCash) {
     USDT: recordedRoute(recovery.minimums.routes.USDT),
     USDC: recordedRoute(recovery.minimums.routes.USDC),
   };
-  const minimums = Object.fromEntries(
-    Object.entries(recovery.minimums.minimums).map(([token, figure]) => [
+  // A deposit counts at the gate's figure, not at the one shown with its headroom: a buyer who
+  // sent what was shown is not held up by a quote that moved a little since.
+  const gates = Object.fromEntries(
+    Object.entries(recovery.minimums.gates).map(([token, figure]) => [
       token,
       figure === null ? null : asBig(figure),
     ]),
@@ -1125,7 +1131,7 @@ async function fundRecovery(record, env, feeCash) {
         ? {}
         : { [recovery.depositError.token]: asBig(recovery.depositError.held) };
     const found = await bounded(
-      findRecoveryDeposit(api, burner.address, recoveryCandidates(minimums, routes), held),
+      findRecoveryDeposit(api, burner.address, recoveryCandidates(gates, routes), held),
       DEFAULT_TICK_TIMEOUT_MS,
       "recovery deposit read",
     );
@@ -1241,16 +1247,22 @@ async function sizeRecoveryMinimums(record, env, feeCash) {
   return {
     at: Date.now(),
     feeCash: feeCash.toString(),
-    minimums: Object.fromEntries(
-      Object.entries(sized.minimums).map(([token, figure]) => [
-        token,
-        figure === null ? null : figure.toString(),
-      ]),
-    ),
+    minimums: figuresAsStrings(sized.minimums),
+    // What counts as the deposit: the gate's own figure, under the one shown.
+    gates: figuresAsStrings(sized.gates),
     keepNativeForFees: sized.keepNativeForFees === null ? null : sized.keepNativeForFees.toString(),
     routes: { USDT: recordedRouteFields(usdtRoute), USDC: recordedRouteFields(usdcRoute) },
   };
 }
+
+/** A token table of bigints as the record keeps it, nulls kept. */
+const figuresAsStrings = (figures) =>
+  Object.fromEntries(
+    Object.entries(figures).map(([token, figure]) => [
+      token,
+      figure === null ? null : figure.toString(),
+    ]),
+  );
 
 /** Records the conversion's progress. A retry is prepared again; the first time stands. */
 function recordConversion(record, fact) {

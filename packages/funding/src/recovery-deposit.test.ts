@@ -122,13 +122,17 @@ describe("recoveryMinimums", () => {
       USDT: USDT_POOL,
       USDC: USDC_POOL,
     });
-    // The native: the headroomed quote plus what the program keeps for its own fees.
+    // The native: the headroomed quote plus what the program keeps for its own fees. The deposit
+    // counts at the plain quote plus the same, as the pipeline's gate takes it.
     const nativeInMax = withHeadroom(TARGET * RATE, 1);
     const keep = LOCAL_FEE + DELIVERY_FEE + DISPATCH_NATIVE;
     expect(sized.keepNativeForFees).toBe(keep);
     expect(sized.minimums.PAS).toBe(nativeInMax + keep);
-    // dotUSD: the fee itself, with what the program holds back.
+    expect(sized.gates.PAS).toBe(TARGET * RATE + keep);
+    expect(sized.gates.PAS).toBeLessThan(sized.minimums.PAS!);
+    // dotUSD: the fee itself, with what the program holds back, and no headroom either way.
     expect(sized.minimums.DOTUSD).toBe(TARGET + feesHeld);
+    expect(sized.gates.DOTUSD).toBe(TARGET + feesHeld);
     // USDT through the PSM: the mint that pays out the fee, with the same.
     expect(sized.minimums.USDT).toBe(sizePsmMint(TARGET, PSM_ROUTE).externalIn + feesHeld);
     expect(sized.minimums.USDT).toBe(
@@ -139,7 +143,10 @@ describe("recoveryMinimums", () => {
         minBalanceExternal: MIN_BALANCE,
       }),
     );
-    // USDC through the pools: the headroomed two-hop quote, with the same.
+    // The PSM's rate is fixed: the deposit counts at the figure shown.
+    expect(sized.gates.USDT).toBe(sized.minimums.USDT);
+    // USDC through the pools: the headroomed two-hop quote, with the same; the deposit counts at
+    // the plain quote with the same.
     const stableInMax = withHeadroom(TARGET, 1);
     expect(sized.minimums.USDC).toBe(stableInMax + feesHeld);
     expect(sized.minimums.USDC).toBe(
@@ -150,15 +157,20 @@ describe("recoveryMinimums", () => {
         minBalanceExternal: MIN_BALANCE,
       }),
     );
+    expect(sized.gates.USDC).toBe(TARGET + feesHeld);
+    expect(sized.gates.USDC).toBeLessThan(sized.minimums.USDC!);
   });
 
   it("leaves a token the chain cannot price without a figure, and the rest priced", async () => {
     const sized = await sizing(scriptedAssetHub({}), { USDT: USDT_POOL });
     expect(sized.minimums.PAS).toBeNull();
+    expect(sized.gates.PAS).toBeNull();
     expect(sized.keepNativeForFees).toBeNull();
     expect(sized.minimums.USDC).toBeNull();
+    expect(sized.gates.USDC).toBeNull();
     expect(sized.minimums.DOTUSD).toBe(TARGET + feesHeld);
     expect(sized.minimums.USDT).toBe(sizePsmMint(TARGET, PSM_ROUTE).externalIn + feesHeld);
+    expect(sized.gates.USDT).toBe(sized.minimums.USDT);
   });
 });
 

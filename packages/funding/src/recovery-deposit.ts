@@ -24,7 +24,7 @@ import {
   DEFAULT_REMOTE_FEE_BUFFER,
   DEFAULT_SLIPPAGE_PCT,
   psmDepositNeeded,
-  quoteNativeInMax,
+  quoteNativeIn,
   quoteStableForUnderlying,
   readDeposit,
   stableDepositNeeded,
@@ -40,25 +40,40 @@ type AssetHubApi = Parameters<typeof readDeposit>[0];
 export type RecoveryToken = "PAS" | "DOTUSD" | Stable;
 
 export interface RecoveryMinimums {
-  /** The least of each token, in its base units, that clears the pipeline's gate for the fee;
-   *  null for a token the chain cannot price today. */
+  /** The least of each token, in its base units, to ask for: the pipeline's gate for the fee
+   *  with the pool tiers' slippage headroom on top, as a top-up is asked; null for a token the
+   *  chain cannot price today. */
   minimums: Record<RecoveryToken, bigint | null>;
+  /** The least of each token that counts as the deposit: the gate's own figure, the plain quote
+   *  without the headroom, as the pipeline takes it. A deposit at the figure shown is not
+   *  stranded by a quote that moved a little by the time it lands. Equal to the minimum on the
+   *  PSM and dotUSD tiers, which carry no headroom; null where the minimum is. */
+  gates: Record<RecoveryToken, bigint | null>;
   /** The native the pool tier keeps for the program's own fees, which its gate takes; null when
    *  the native could not be priced. */
   keepNativeForFees: bigint | null;
+}
+
+/** A token's two figures: what is asked for, and what counts. */
+interface Figures {
+  minimum: bigint;
+  gate: bigint;
 }
 
 /** What a probe carries above the quote so the estimators can carve their fees from it. */
 const PROBE_NATIVE = 1_000_000_000n;
 const PROBE_UNITS = 1_000_000n;
 
-const priced = async (read: () => Promise<bigint>): Promise<bigint | null> => {
+const priced = async (read: () => Promise<Figures>): Promise<Figures | null> => {
   try {
     return await read();
   } catch {
     return null;
   }
 };
+
+/** The same figure asked for and counted: a tier with no headroom. */
+const exact = (figure: bigint): Figures => ({ minimum: figure, gate: figure });
 
 /** The least of each token to send so the pipeline lands at least `feeCash` on People. */
 export async function recoveryMinimums(args: {
@@ -91,7 +106,8 @@ export async function recoveryMinimums(args: {
   let keepNativeForFees: bigint | null = null;
   const native = await priced(async () => {
     if (pool === null) throw new Error("no native pool");
-    const nativeInMax = await quoteNativeInMax(api, pool, target, DEFAULT_SLIPPAGE_PCT);
+    const nativeIn = await quoteNativeIn(api, pool, target);
+    const nativeInMax = withHeadroom(nativeIn, DEFAULT_SLIPPAGE_PCT);
     const fees = await estimateFundingProgramFees({
       ...common,
       pool,
@@ -99,14 +115,15 @@ export async function recoveryMinimums(args: {
       minUnderlyingOut: target,
     });
     keepNativeForFees = fees.payFeesNative + fees.dispatchNative;
-    return nativeInMax + keepNativeForFees;
+    // The gate takes the plain quote plus what the program keeps, as the pipeline's does.
+    return { minimum: nativeInMax + keepNativeForFees, gate: nativeIn + keepNativeForFees };
   });
   const dotUsd = await priced(async () => {
     const fees = await estimateDotUsdProgramFees({
       ...common,
       depositUnderlying: target + PROBE_UNITS,
     });
-    return stableDepositNeeded(target, fees);
+    return exact(stableDepositNeeded(target, fees));
   });
   const stable = (name: Stable) =>
     priced(async () => {
@@ -117,7 +134,7 @@ export async function recoveryMinimums(args: {
           route,
           depositExternal: sizePsmMint(target, route).externalIn + PROBE_UNITS,
         });
-        return psmDepositNeeded(target, route, fees);
+        return exact(psmDepositNeeded(target, route, fees));
       }
       const stablePool = args.stablePools[name];
       if (pool === null || stablePool === undefined) throw new Error(`no pool for ${name}`);
@@ -132,31 +149,40 @@ export async function recoveryMinimums(args: {
         minNativeOut: nativeIn,
         minUnderlyingOut: target,
       });
-      return stableDepositNeeded(stableInMax, fees);
+      // The gate takes the plain two-hop quote with the same fees, as the pipeline's does.
+      return {
+        minimum: stableDepositNeeded(stableInMax, fees),
+        gate: stableDepositNeeded(stableIn, fees),
+      };
     });
-  return {
-    minimums: {
-      PAS: native,
-      DOTUSD: dotUsd,
-      USDT: await stable("USDT"),
-      USDC: await stable("USDC"),
-    },
-    keepNativeForFees,
+  const figures = {
+    PAS: native,
+    DOTUSD: dotUsd,
+    USDT: await stable("USDT"),
+    USDC: await stable("USDC"),
   };
+  const pick = (which: keyof Figures): Record<RecoveryToken, bigint | null> => ({
+    PAS: figures.PAS?.[which] ?? null,
+    DOTUSD: figures.DOTUSD?.[which] ?? null,
+    USDT: figures.USDT?.[which] ?? null,
+    USDC: figures.USDC?.[which] ?? null,
+  });
+  return { minimums: pick("minimum"), gates: pick("gate"), keepNativeForFees };
 }
 
 /** The routes a recovery deposit can take, each with the least of its token that counts as the
- *  deposit; a token without a figure cannot be taken. */
+ *  deposit, which is the gate's figure and not the one asked for; a token without a figure
+ *  cannot be taken. */
 export function recoveryCandidates(
-  minimums: RecoveryMinimums["minimums"],
+  gates: RecoveryMinimums["gates"],
   routes: Record<Stable, ConversionRoute>,
 ): Array<{ route: ConversionRoute; minimum: bigint }> {
   const candidates: Array<[ConversionRoute, bigint | null]> = [
-    [{ tier: "pool" }, minimums.PAS],
-    [{ tier: "dotusd" }, minimums.DOTUSD],
+    [{ tier: "pool" }, gates.PAS],
+    [{ tier: "dotusd" }, gates.DOTUSD],
     ...(Object.keys(STABLE_TOKENS) as Stable[]).map((name): [ConversionRoute, bigint | null] => [
       routes[name],
-      minimums[name],
+      gates[name],
     ]),
   ];
   return candidates.flatMap(([route, minimum]) => (minimum === null ? [] : [{ route, minimum }]));

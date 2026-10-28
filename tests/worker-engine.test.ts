@@ -809,7 +809,9 @@ describe("worker funding engine", () => {
     storedJob().state.workedMs = 900_001;
     const revived = await freshEngine();
     const minimums = { PAS: 1_000n, DOTUSD: null, USDT: 2_000n, USDC: null };
-    mocks.recoveryMinimums.mockResolvedValue({ minimums, keepNativeForFees: 5n });
+    // The native is asked for with headroom; the gate counts a little less.
+    const gates = { PAS: 990n, DOTUSD: null, USDT: 2_000n, USDC: null };
+    mocks.recoveryMinimums.mockResolvedValue({ minimums, gates, keepNativeForFees: 5n });
     mocks.tickRecovery.mockImplementationOnce(async (_input, state) => {
       state.feeCash = 123_456n;
       return { step: "funding", held: 0n, feeCash: 123_456n };
@@ -838,6 +840,7 @@ describe("worker funding engine", () => {
     expect(storedJob().recovery.minimums).toMatchObject({
       feeCash: "123456",
       minimums: { PAS: "1000", DOTUSD: null, USDT: "2000", USDC: null },
+      gates: { PAS: "990", DOTUSD: null, USDT: "2000", USDC: null },
       keepNativeForFees: "5",
       routes: {
         USDT: { tier: "pool", external: "USDT" },
@@ -845,6 +848,11 @@ describe("worker funding engine", () => {
       },
     });
     expect(mocks.tickOnce).toHaveBeenCalledTimes(1);
+    // The deposit is looked for at the gate's figures, not at the ones shown.
+    expect(mocks.findRecoveryDeposit.mock.calls[0]![2]).toEqual([
+      { route: { tier: "pool" }, minimum: 990n },
+      { route: { tier: "pool", external: "USDT" }, minimum: 2_000n },
+    ]);
 
     // A deposit arrived in the native, but the gate holds it short of what the fee needs: the
     // route is kept, and the conversion waits on the price or on more funds, so the job still
@@ -995,7 +1003,11 @@ describe("worker funding engine", () => {
     });
     await engine.tickAllFunding();
     const minimums = { PAS: 1_000n, DOTUSD: null, USDT: null, USDC: null };
-    mocks.recoveryMinimums.mockResolvedValueOnce({ minimums, keepNativeForFees: 5n });
+    mocks.recoveryMinimums.mockResolvedValueOnce({
+      minimums,
+      gates: minimums,
+      keepNativeForFees: 5n,
+    });
     mocks.tickRecovery.mockImplementation(async (_input, state) => {
       state.feeCash = 123_456n;
       return { step: "funding", held: 0n, feeCash: 123_456n };
@@ -1030,6 +1042,7 @@ describe("worker funding engine", () => {
     });
     mocks.recoveryMinimums.mockResolvedValueOnce({
       minimums: { PAS: 1_600n, DOTUSD: null, USDT: null, USDC: null },
+      gates: { PAS: 1_600n, DOTUSD: null, USDT: null, USDC: null },
       keepNativeForFees: 5n,
     });
     mocks.findRecoveryDeposit.mockResolvedValueOnce(null);
@@ -1057,7 +1070,7 @@ describe("worker funding engine", () => {
 
     // The burner already holds part of the fee: only the rest is asked for, in whole units.
     const minimums = { PAS: 1_000n, DOTUSD: null, USDT: null, USDC: null };
-    mocks.recoveryMinimums.mockResolvedValue({ minimums, keepNativeForFees: 5n });
+    mocks.recoveryMinimums.mockResolvedValue({ minimums, gates: minimums, keepNativeForFees: 5n });
     mocks.tickRecovery.mockImplementationOnce(async (_input, state) => {
       state.feeCash = 123_456n;
       state.held = 100_000n;
