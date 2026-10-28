@@ -148,7 +148,7 @@ export const OFFRAMP_LANE_ORDER: readonly MeldAssetId[] = (() => {
   const raw =
     import.meta.env.MODE === "test"
       ? (import.meta.env.VITE_OFFRAMP_LANES as string | undefined)
-      : "usdt@assethub,dot@assethub,usdc@arbitrum";
+      : "usdc@arbitrum";
   const listed = (raw ?? "")
     .split(",")
     .map((entry) => entry.trim().toLowerCase())
