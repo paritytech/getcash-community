@@ -1250,7 +1250,7 @@ const isLive = (record) => !record.done && record.phase !== "failed";
  * re-arms a failed one, except as `rearm` says.
  */
 export async function tickAllWithdraw() {
-  if (ticking) return { ticked: 0, busy: true };
+  if (ticking) return { ticked: 0, holding: 0, busy: true };
   ticking = true;
   try {
     const all = await loadJobs();
@@ -1326,7 +1326,8 @@ export async function tickAllWithdraw() {
       ticked += 1;
       await saveJobs();
     }
-    return { ticked, busy: false };
+    // Every live withdrawal moves on its own, so each one holds the keep-alive.
+    return { ticked, holding: ticked, busy: false };
   } finally {
     ticking = false;
   }

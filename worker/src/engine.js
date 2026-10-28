@@ -98,7 +98,7 @@ const saveJobs = () => store.save();
  *                round, held: string|null, attempts, nonceAtClaim: number|null, sentAt: number|null,
  *                minimums?: { at, feeCash, minimums: { PAS, DOTUSD, USDT, USDC }, keepNativeForFees,
  *                             routes: { USDT, USDC }, repriceFailedAt?, repriceError? },
- *                route?, state?, deposit?, depositHeld?: { token, held },
+ *                route?, state?, deposit?, depositDoneAt?, depositHeld?: { token, held },
  *                depositError?: { message, at, token?, held? } },
  *                                            // round moves on when a claim spent the fee or the
  *                                            // fee grew; held is the burner's CASH at the last
@@ -1045,6 +1045,7 @@ async function recoverTrapped(record, env) {
       delete record.recovery.route;
       delete record.recovery.state;
       delete record.recovery.deposit;
+      delete record.recovery.depositDoneAt;
     }
   }
   delete record.lastError;
@@ -1165,6 +1166,7 @@ async function fundRecovery(record, env, feeCash) {
       delete recovery.route;
       delete recovery.state;
       delete recovery.deposit;
+      delete recovery.depositDoneAt;
       delete recovery.depositHeld;
     }
     throw new Error(`recovery deposit: ${String(error?.message ?? error)}`);
@@ -1174,6 +1176,7 @@ async function fundRecovery(record, env, feeCash) {
     // The deposit is CASH on People: its conversion is over, and only the step is kept, for the
     // surface, until the claim. The route and the state are let go, so a funding round after
     // this one looks for a deposit afresh instead of replaying a finished conversion.
+    recovery.depositDoneAt = Date.now();
     delete recovery.route;
     delete recovery.state;
     delete recovery.depositError;
@@ -1266,7 +1269,7 @@ let ticking = false;
  * A job ends only through `fail`; a re-sent hand-off re-arms it.
  */
 export async function tickAllFunding() {
-  if (ticking) return { ticked: 0, busy: true };
+  if (ticking) return { ticked: 0, holding: 0, busy: true };
   ticking = true;
   try {
     const all = await loadJobs();
@@ -1275,6 +1278,7 @@ export async function tickAllFunding() {
       (record) => record?.v === RECORD_V && !isFinished(record) && record.phase !== "failed",
     );
     let ticked = 0;
+    let holding = 0;
     for (const record of live) {
       if (record.phase === "failed") continue; // cancelled since this pass began
       const nowMs = Date.now();
@@ -1298,10 +1302,40 @@ export async function tickAllFunding() {
       }
       judgeBounds(record, nowMs, read);
       ticked += 1;
+      if (!waitsOnTheBuyer(record, nowMs)) holding += 1;
       await saveJobs();
     }
-    return { ticked, busy: false };
+    return { ticked, holding, busy: false };
   } finally {
     ticking = false;
   }
 }
+
+/** How long a converted deposit keeps the worker awake for the claim that follows it. The
+ *  deposit is on the burner on People by then, so only a People that does not answer the claim
+ *  can hold it up, and a recovery has no run bound of its own to end that. */
+const RECOVERY_CLAIM_HOLD_MS = 10 * 60_000;
+
+/**
+ * A deposit being converted for the fee, or one converted lately, with the claim to follow on
+ * its own. A deposit the gate holds short moves only with the price or the buyer, so it does not
+ * count.
+ */
+const convertingDeposit = (recovery, nowMs) =>
+  (recovery?.deposit === "done" &&
+    nowMs - (recovery.depositDoneAt ?? 0) < RECOVERY_CLAIM_HOLD_MS) ||
+  (recovery?.route !== undefined && recovery.deposit !== "await-native");
+
+/**
+ * A recovery that waits on the buyer alone: the burner waits for the claim's fee, no deposit is
+ * being converted for it and no claim is owed an answer. Nothing moves until the buyer acts, so
+ * such a job is ticked on the passes the open app asks for, which size the fee and price the
+ * manual path, but never keeps the worker awake. The worker sees the fee only once it is on the
+ * burner, never the purse's payment itself, so a fee paid right before the app closes is claimed
+ * on the next open.
+ */
+const waitsOnTheBuyer = (record, nowMs) =>
+  record.phase === "recovering" &&
+  record.recovery?.phase !== "claiming" &&
+  record.submitting === undefined &&
+  !convertingDeposit(record.recovery, nowMs);

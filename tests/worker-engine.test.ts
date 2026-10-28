@@ -745,13 +745,13 @@ describe("worker funding engine", () => {
       }
       return outcome("done");
     });
-    expect(await engine.tickAllFunding()).toEqual({ ticked: 2, busy: false });
+    expect(await engine.tickAllFunding()).toEqual({ ticked: 2, holding: 2, busy: false });
     expect(mocks.tickOnce).toHaveBeenCalledTimes(2);
     expect(storedJob()).toMatchObject({ phase: "await-arrival", state: { xcmSubmitted: true } });
     expect(storedJob("s-2")).toMatchObject({ phase: "await-native" });
 
     mocks.settlementBalance.mockResolvedValueOnce(0n);
-    expect(await engine.tickAllFunding()).toEqual({ ticked: 2, busy: false });
+    expect(await engine.tickAllFunding()).toEqual({ ticked: 2, holding: 2, busy: false });
     expect(storedJob()).toMatchObject({ done: true });
     expect(storedJob("s-2")).toMatchObject({ phase: "await-native" });
   });
@@ -814,7 +814,9 @@ describe("worker funding engine", () => {
       state.feeCash = 123_456n;
       return { step: "funding", held: 0n, feeCash: 123_456n };
     });
-    expect((await revived.tickAllFunding()).ticked).toBe(1);
+    // Ticked, but waiting on the buyer alone: nothing moves without them, so the job does not
+    // hold the keep-alive.
+    expect(await revived.tickAllFunding()).toEqual({ ticked: 1, holding: 0, busy: false });
     expect(mocks.tickOnce).toHaveBeenCalledTimes(1);
     expect(mocks.tickRecovery).toHaveBeenCalledTimes(1);
     // The recovery's ticks are not worked time: the clock stopped at the trap.
@@ -844,21 +846,34 @@ describe("worker funding engine", () => {
     });
     expect(mocks.tickOnce).toHaveBeenCalledTimes(1);
 
-    // A deposit arrived in the native: the pipeline converts it for the fee, through the pool,
-    // with the figures priced for it, and the route is kept once taken.
+    // A deposit arrived in the native, but the gate holds it short of what the fee needs: the
+    // route is kept, and the conversion waits on the price or on more funds, so the job still
+    // waits on the buyer.
     mocks.tickRecovery.mockResolvedValueOnce({ step: "funding", held: 0n, feeCash: 123_456n });
     mocks.findRecoveryDeposit.mockResolvedValueOnce({
       route: { tier: "pool" },
       token: "PAS",
       held: 10_000n,
     });
+    mocks.tickOnce.mockResolvedValueOnce(outcome("await-native"));
+    expect((await revived.tickAllFunding()).holding).toBe(0);
+    expect(storedJob().recovery).toMatchObject({
+      phase: "funding",
+      route: { tier: "pool" },
+      deposit: "await-native",
+    });
+
+    // The price came back: the pipeline converts the deposit for the fee, through the pool, with
+    // the figures priced for it, on the route kept from the find. A deposit being converted
+    // moves on its own: the job holds the keep-alive again.
+    mocks.tickRecovery.mockResolvedValueOnce({ step: "funding", held: 0n, feeCash: 123_456n });
     mocks.tickOnce.mockImplementationOnce(async (input, state) => {
       state.fundsSeenAt = Date.now();
       return { ...outcome("swap"), submitted: true };
     });
-    await revived.tickAllFunding();
-    expect(mocks.tickOnce).toHaveBeenCalledTimes(2);
-    expect(mocks.tickOnce.mock.calls[1]![0]).toMatchObject({
+    expect((await revived.tickAllFunding()).holding).toBe(1);
+    expect(mocks.tickOnce).toHaveBeenCalledTimes(3);
+    expect(mocks.tickOnce.mock.calls[2]![0]).toMatchObject({
       route: { tier: "pool" },
       settleAmount: 123_456n,
       remoteFeeBuffer: 1_000n,
@@ -878,13 +893,34 @@ describe("worker funding engine", () => {
     expect(mocks.findRecoveryDeposit).toHaveBeenCalledTimes(2);
 
     // The deposit's conversion ends: the step is kept for the surface, the route and the state
-    // are let go, so a later funding round looks for a deposit afresh.
+    // are let go, so a later funding round looks for a deposit afresh. The fee is on its way to
+    // the burner and the claim follows on its own, so the job keeps the keep-alive.
     mocks.tickRecovery.mockResolvedValueOnce({ step: "funding", held: 0n, feeCash: 123_456n });
     mocks.tickOnce.mockResolvedValueOnce(outcome("done"));
-    await revived.tickAllFunding();
+    expect((await revived.tickAllFunding()).holding).toBe(1);
     expect(storedJob().recovery).toMatchObject({ phase: "funding", deposit: "done" });
+    expect(storedJob().recovery.depositDoneAt).toBeTypeOf("number");
     expect(storedJob().recovery.route).toBeUndefined();
     expect(storedJob().recovery.state).toBeUndefined();
+
+    // A converted deposit whose claim People does not answer stops holding the worker after a
+    // while, since a recovery has no run bound of its own: the job waits on the buyer again.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 11 * 60_000);
+    mocks.tickRecovery.mockResolvedValueOnce({ step: "funding", held: 0n, feeCash: 123_456n });
+    mocks.findRecoveryDeposit.mockResolvedValueOnce(null);
+    expect((await revived.tickAllFunding()).holding).toBe(0);
+    expect(storedJob().recovery).toMatchObject({ phase: "funding", deposit: "done" });
+    vi.useRealTimers();
+
+    // A claim owed an answer keeps the worker awake until the chain answers it.
+    mocks.tickRecovery.mockImplementationOnce(async (_input, state) => {
+      state.nonceAtClaim = 3;
+      state.claimSentAt = Date.now();
+      return { step: "claiming", held: 123_456n, feeCash: 123_456n };
+    });
+    expect((await revived.tickAllFunding()).holding).toBe(1);
+    expect(storedJob().recovery).toMatchObject({ phase: "claiming", nonceAtClaim: 3 });
 
     // The claim was sent and rejected at inclusion: the tick throws with the round moved on and
     // nothing in flight. The record is back to funding at once, not left at the claiming the
@@ -903,7 +939,7 @@ describe("worker funding engine", () => {
     mocks.tickRecovery.mockResolvedValueOnce({ step: "funding", held: 0n, feeCash: 123_456n });
     mocks.findRecoveryDeposit.mockResolvedValueOnce(null);
     await revived.tickAllFunding();
-    expect(mocks.findRecoveryDeposit).toHaveBeenCalledTimes(3);
+    expect(mocks.findRecoveryDeposit).toHaveBeenCalledTimes(4);
 
     // The claim lands: the job is done as any other, and the host's claim is registered for the
     // CASH on the burner in the same tick.
@@ -913,7 +949,7 @@ describe("worker funding engine", () => {
     });
     mocks.settlementBalance.mockResolvedValue(SETTLE);
     mocks.registerTopUp.mockResolvedValue(undefined);
-    await revived.tickAllFunding();
+    expect((await revived.tickAllFunding()).holding).toBe(1);
     expect(storedJob()).toMatchObject({
       phase: "done",
       done: true,
