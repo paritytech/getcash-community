@@ -1,6 +1,7 @@
-// Quoting the provider destinations for an amount, over a scripted pool and a scripted Chainflip:
-// what lands, the minimum priced back into CASH once, a provider that is not answering caught on
-// the first destination, and a single refused pair marked alone.
+// Quoting the provider destinations for an amount, over a scripted pool, a scripted ranking of the
+// sales and a scripted Chainflip: what lands, the sale each destination takes, the minimum priced
+// back into CASH once, a provider that is not answering caught on the first destination, and a
+// single refused pair marked alone.
 
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -8,6 +9,7 @@ import {
   ChainflipRequestError,
   type SwapSdkLike,
 } from "@getsome/chainflip";
+import type { ConversionRoute } from "@getsome/funding";
 import { WITHDRAW_NETWORKS } from "../app/withdraw/destinations";
 
 vi.mock("@novasamatech/host-api", () => ({
@@ -20,10 +22,13 @@ vi.mock("../lib/host-payments", () => ({
 }));
 
 // The fee estimate asks the chains how CASH moves and reads People's pool; here the move is a
-// teleport and the fees are the 0.45 CASH the figures below assume.
+// teleport and the fees are the 0.45 CASH the figures below assume. The sales a provider
+// withdrawal could make are the ones each test ranks.
+const ranking: { routes: ConversionRoute[] } = { routes: [] };
 vi.mock("@getsome/funding", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@getsome/funding")>()),
   chooseCashTransfer: async () => "teleport",
+  rankRoutes: async () => ranking.routes,
 }));
 vi.mock("@getsome/withdraw", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@getsome/withdraw")>()),
@@ -61,8 +66,10 @@ vi.mock("../lib/host-chain", () => ({
   }),
 }));
 
-/** Chainflip, answering per destination asset from a script. */
-const script: { quote: (asset: string, amount: string) => unknown } = { quote: () => ({}) };
+/** Chainflip, answering per destination asset and Asset Hub source from a script. */
+const script: { quote: (asset: string, amount: string, from: string) => unknown } = {
+  quote: () => ({}),
+};
 const asked: { asset: string; from: string; amount: string }[] = [];
 vi.mock("../lib/chainflip-backend", () => ({
   NETWORK: "mainnet",
@@ -70,7 +77,7 @@ vi.mock("../lib/chainflip-backend", () => ({
   mainnetSdk: async (): Promise<SwapSdkLike> => ({
     getQuoteV2: async (args) => {
       asked.push({ asset: args.destAsset, from: args.srcAsset, amount: args.amount });
-      const quote = script.quote(args.destAsset, args.amount);
+      const quote = script.quote(args.destAsset, args.amount, args.srcAsset);
       if (quote instanceof Error) throw quote;
       return { quotes: [quote] };
     },
@@ -97,7 +104,8 @@ const KEPT_ON_KEY = 55_000n + 70_000n;
  *  exact. */
 const REDEEMED = 49_550_000n - KEPT_ON_KEY - 247_125n;
 
-function reset() {
+function reset(routes: ConversionRoute[] = [POOL]) {
+  ranking.routes = routes;
   asked.length = 0;
   poolReverseQuotes.length = 0;
 }
@@ -140,13 +148,14 @@ describe("quoting the provider destinations for an amount", () => {
       estimatedDurationSeconds: 600,
       amountAsked: amount,
     });
-    const { sellable, offers } = await quoteWithdrawOffers(CASH, PROVIDERS, POOL);
-    expect(sellable).toBe(SELLABLE);
+    const offers = await quoteWithdrawOffers(CASH, PROVIDERS, 0n);
     expect(asked).toHaveLength(PROVIDERS.length);
     expect(asked.every((q) => q.from === "DOT" && q.amount === String(SELLABLE))).toBe(true);
     // Six decimals at most, rounded up, so a payout is never overstated.
     expect(offers.get("btc")).toEqual({
       state: "available",
+      sale: POOL,
+      sellable: SELLABLE,
       egress: 123_456n,
       formatted: "0.001235 BTC",
       etaSeconds: 600,
@@ -155,17 +164,21 @@ describe("quoting the provider destinations for an amount", () => {
   });
 
   it("asks every destination for the exact USDT a PSM sale redeems, from the USDT source", async () => {
-    reset();
+    reset([PSM, POOL]);
     script.quote = () => ({
       type: "REGULAR",
       egressAmount: "123456",
       estimatedDurationSeconds: 600,
     });
-    const { sellable, offers } = await quoteWithdrawOffers(CASH, PROVIDERS, PSM);
-    expect(sellable).toBe(REDEEMED);
+    const offers = await quoteWithdrawOffers(CASH, PROVIDERS, 0n);
     expect(asked).toHaveLength(PROVIDERS.length);
     expect(asked.every((q) => q.from === "USDT" && q.amount === "49177875")).toBe(true);
-    expect(offers.get("btc")).toMatchObject({ state: "available", egress: 123_456n });
+    expect(offers.get("btc")).toMatchObject({
+      state: "available",
+      sale: PSM,
+      sellable: REDEEMED,
+      egress: 123_456n,
+    });
   });
 
   it("prices the quote's fee split into the destination asset with the quote's own numbers", async () => {
@@ -185,7 +198,7 @@ describe("quoting the provider destinations for an amount", () => {
             ],
           }
         : { type: "REGULAR", egressAmount: "123456", estimatedDurationSeconds: null };
-    const { offers } = await quoteWithdrawOffers(CASH, PROVIDERS, POOL);
+    const offers = await quoteWithdrawOffers(CASH, PROVIDERS, 0n);
     expect(offers.get("usdc-eth")).toMatchObject({
       state: "available",
       fees: {
@@ -216,7 +229,7 @@ describe("quoting the provider destinations for an amount", () => {
       depositAmount: amount,
       includedFees: [{ chain: "Ethereum", asset: "USDC", amount: "210000", type: "NETWORK" }],
     });
-    const { offers } = await quoteWithdrawOffers(CASH, PROVIDERS, POOL);
+    const offers = await quoteWithdrawOffers(CASH, PROVIDERS, 0n);
     const offer = offers.get("usdc-eth");
     if (offer?.state !== "available") throw new Error("expected an available offer");
 
@@ -238,7 +251,7 @@ describe("quoting the provider destinations for an amount", () => {
           : // A fee kind the rows don't name.
             [{ chain: "Ethereum", asset, amount: "1", type: "MYSTERY" }],
     });
-    const { offers } = await quoteWithdrawOffers(CASH, PROVIDERS, POOL);
+    const offers = await quoteWithdrawOffers(CASH, PROVIDERS, 0n);
     expect(offers.get("btc")?.state).toBe("available");
     expect(offers.get("btc")).not.toHaveProperty("fees");
     expect(offers.get("usdc-eth")).not.toHaveProperty("fees");
@@ -248,7 +261,7 @@ describe("quoting the provider destinations for an amount", () => {
     reset();
     const minimum = 40_000_000_000n; // 4 DOT
     script.quote = () => new BelowMinimumSwapAmountError(minimum);
-    const { offers } = await quoteWithdrawOffers(CASH, PROVIDERS, POOL);
+    const offers = await quoteWithdrawOffers(CASH, PROVIDERS, 0n);
     // 4.08 DOT at two planck per CASH unit, plus the 0.45 CASH of fees.
     const expected = (minimum + (minimum * 2n) / 100n) / 2n + 450_000n;
     for (const destination of PROVIDERS) {
@@ -258,26 +271,16 @@ describe("quoting the provider destinations for an amount", () => {
   });
 
   it("prices a PSM sale's minimum back through the PSM's own inverse, exact and off the pool", async () => {
-    reset();
-    script.quote = () => new BelowMinimumSwapAmountError(20_000_000n); // 20 USDT
-    const { offers } = await quoteWithdrawOffers(CASH, PROVIDERS, PSM);
+    reset([PSM, POOL]);
+    script.quote = (_asset, _amount, from) =>
+      from === "USDT"
+        ? new BelowMinimumSwapAmountError(20_000_000n) // 20 USDT
+        : new ChainflipRequestError("no route", 400);
+    const offers = await quoteWithdrawOffers(CASH, PROVIDERS, 0n);
     // ceil(20 / 0.995) CASH redeems to 20 USDT, plus the 0.45 CASH of fees; no headroom.
     expect(offers.get("btc")).toEqual({ state: "too-small", minimumCash: 20_100_503n + 450_000n });
     // The one reverse quote priced the redeem's fee for the sellable; none priced the minimum.
     expect(poolReverseQuotes).toEqual([REDEEM_FEE_NATIVE]);
-  });
-
-  it("marks every destination off the first when Chainflip is not answering, asking nobody else", async () => {
-    reset();
-    script.quote = () => new ChainflipRequestError("Asset HubDot is disabled", 503);
-    const { offers } = await quoteWithdrawOffers(CASH, PROVIDERS, POOL);
-    expect(asked).toHaveLength(1);
-    for (const destination of PROVIDERS) {
-      expect(offers.get(destination.id)).toEqual({
-        state: "unavailable",
-        reason: "Asset HubDot is disabled",
-      });
-    }
   });
 
   it("marks a single refused pair alone and keeps asking the rest", async () => {
@@ -286,7 +289,7 @@ describe("quoting the provider destinations for an amount", () => {
       asset === "TRX"
         ? new ChainflipRequestError("insufficient liquidity", 400)
         : { type: "REGULAR", egressAmount: "1", estimatedDurationSeconds: null };
-    const { offers } = await quoteWithdrawOffers(CASH, PROVIDERS, POOL);
+    const offers = await quoteWithdrawOffers(CASH, PROVIDERS, 0n);
     expect(asked).toHaveLength(PROVIDERS.length);
     expect(offers.get("trx-tron")?.state).toBe("unavailable");
     expect(offers.get("btc")?.state).toBe("available");
@@ -298,8 +301,94 @@ describe("quoting the provider destinations for an amount", () => {
       amount === "1"
         ? new BelowMinimumSwapAmountError(40_000_000_000n)
         : new Error(`unexpected probe of ${amount}`);
-    const { sellable, offers } = await quoteWithdrawOffers(100_000n, PROVIDERS, POOL);
-    expect(sellable).toBe(0n);
+    const offers = await quoteWithdrawOffers(100_000n, PROVIDERS, 0n);
     expect(offers.get("btc")?.state).toBe("too-small");
+  });
+});
+
+describe("picking each destination's sale", () => {
+  /** Chainflip's minimum on USDT from Asset Hub, and one on DOT this pool prices at 4.53 CASH:
+   *  the minimum with its headroom at two planck per CASH unit, plus the 0.45 CASH of fees. */
+  const USDT_MINIMUM = 20_000_000n;
+  const DOT_MINIMUM = 8_000_000n;
+  const DOT_MINIMUM_CASH = 4_530_000n;
+  const N = PROVIDERS.length;
+  const onPsm = { state: "available", sale: PSM };
+  const onPool = { state: "available", sale: POOL };
+
+  it.each([
+    {
+      case: "3 CASH is under both minimums: the smaller is shown",
+      amount: 3_000_000n,
+      room: true,
+      offer: { state: "too-small", minimumCash: DOT_MINIMUM_CASH },
+      asks: { USDT: 1, DOT: 1 },
+    },
+    {
+      case: "15 CASH with PSM room is under the USDT minimum: DOT",
+      amount: 15_000_000n,
+      room: true,
+      offer: onPool,
+      asks: { USDT: 1, DOT: N },
+    },
+    {
+      case: "15 CASH without PSM room: DOT",
+      amount: 15_000_000n,
+      room: false,
+      offer: onPool,
+      asks: { USDT: 0, DOT: N },
+    },
+    {
+      case: "25 CASH with PSM room: USDT",
+      amount: 25_000_000n,
+      room: true,
+      offer: onPsm,
+      asks: { USDT: N, DOT: 0 },
+    },
+    {
+      case: "25 CASH without PSM room: DOT",
+      amount: 25_000_000n,
+      room: false,
+      offer: onPool,
+      asks: { USDT: 0, DOT: N },
+    },
+    {
+      case: "25 CASH with USDT refused to BTC alone: BTC on DOT, the rest on USDT",
+      amount: 25_000_000n,
+      room: true,
+      refused: "BTC",
+      offer: onPsm,
+      btc: onPool,
+      asks: { USDT: N, DOT: 1 },
+    },
+    {
+      case: "Chainflip not answering on the first destination: all unavailable, nobody else asked",
+      amount: 25_000_000n,
+      room: true,
+      outage: true,
+      offer: { state: "unavailable", reason: "down" },
+      asks: { USDT: 1, DOT: 0 },
+    },
+  ])("$case", async ({ amount, room, refused, outage, offer, btc, asks }) => {
+    reset(room ? [PSM, POOL] : [POOL]);
+    script.quote = (asset, sold, from) => {
+      if (outage) return new ChainflipRequestError("down", 503);
+      if (from === "USDT" && asset === refused) return new ChainflipRequestError("no route", 400);
+      const minimum = from === "USDT" ? USDT_MINIMUM : DOT_MINIMUM;
+      return BigInt(sold) < minimum
+        ? new BelowMinimumSwapAmountError(minimum)
+        : { type: "REGULAR", egressAmount: "1", estimatedDurationSeconds: null };
+    };
+    const offers = await quoteWithdrawOffers(amount, PROVIDERS, 0n);
+    for (const destination of PROVIDERS) {
+      expect(offers.get(destination.id)).toMatchObject(
+        destination.id === "btc" && btc !== undefined ? btc : offer,
+      );
+    }
+    // A minimum is on the token sold: once one destination is under it, the rest are not asked.
+    expect({
+      USDT: asked.filter((q) => q.from === "USDT").length,
+      DOT: asked.filter((q) => q.from === "DOT").length,
+    }).toEqual(asks);
   });
 });

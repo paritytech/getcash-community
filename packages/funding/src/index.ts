@@ -65,6 +65,7 @@ export {
   depositTokenOf,
   isStablePoolRoute,
   mintingOpen,
+  rankRoutes,
   readRedeemCapacity,
   recordedRoute,
 } from "./route";
@@ -95,6 +96,8 @@ export {
   recoveryTokenOf,
 } from "./recovery-deposit";
 export type { RecoveryMinimums, RecoveryToken } from "./recovery-deposit";
+export { pickRoute } from "./route-pick";
+export type { RouteAnswer, RouteDecline, RoutePick } from "./route-pick";
 export { chooseCashTransfer, NoCashTransferError } from "./cash-transfer";
 export type { CashTransfer } from "./cash-transfer";
 export {

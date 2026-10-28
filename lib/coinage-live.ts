@@ -19,6 +19,7 @@ import {
   isStablePoolRoute,
   PASEO_PEOPLE_PARA_ID,
   PASEO_UNDERLYING_ASSET_ID,
+  rankRoutes,
   recordedRoute,
   type DepositAsset,
   type FundingStep,
@@ -298,12 +299,25 @@ export async function chooseHostedRoute(
   amount: bigint,
   deposit?: DepositAsset,
 ): Promise<ConversionRoute> {
-  const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
-  return chooseRoute(api, {
+  return chooseRoute(await routeApi(), {
     direction: "mint",
     internalAmount: amount,
     ...(deposit === undefined ? {} : { deposit }),
   });
+}
+
+/** The conversion tiers a hosted request with no named deposit could take, best first, read off
+ *  the live PSM: a Chainflip pick or a card or bank top-up asks its provider about each in order,
+ *  before any deposit address or provider session exists, and keeps the first it can quote. */
+export async function rankHostedRoutes(
+  amount: bigint,
+): Promise<[ConversionRoute, ...ConversionRoute[]]> {
+  return rankRoutes(await routeApi(), { direction: "mint", internalAmount: amount });
+}
+
+/** Asset Hub's typed API, which the routing rule reads the PSM through. */
+async function routeApi() {
+  return (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
 }
 
 /** The funded session over the real host seams; budget sized live for the route's tier. */
