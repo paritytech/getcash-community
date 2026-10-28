@@ -619,11 +619,11 @@ type Inclusion = { txHash: string } & TxEventsPayload;
 /** The event a successful transaction of each tier carries once it converted the deposit. A fee
  *  paid in an asset other than the native is swapped through the pool as well, so on the PSM tier
  *  only the mint counts. The dotUSD tier exchanges nothing: its successful send is the conversion. */
-const CONVERSION_EVENT: Record<ConversionRoute["tier"], { pallet: string; name: string } | null> = {
+const CONVERSION_EVENT = {
   psm: { pallet: "Psm", name: "Minted" },
   pool: { pallet: "AssetConversion", name: "SwapCreditExecuted" },
   dotusd: null,
-};
+} satisfies Record<ConversionRoute["tier"], { pallet: string; name: string } | null>;
 
 /** Whether an inclusion converted the deposit: the transaction succeeded and its events hold the
  *  tier's conversion event. */
@@ -721,7 +721,8 @@ async function submitConversion<Options>(
   }
   if (included.ok) {
     markLanded(state, included.block.number);
-    // What went out, as the chain reports it; the dry run's figure stands where it does not.
+    // What went out, as the chain reports it on the pool tiers; the dry run's exact figure
+    // stands on the others, and where the events do not say.
     state.sentToPeople = sentAmountOf(input.route, included.events) ?? state.sentToPeople;
   } else {
     state.nonceAtSubmit = null;
@@ -745,26 +746,26 @@ function swapEndsInCash(path: unknown): boolean {
 }
 const CASH_ID = BigInt(TOKENS.CASH.assetHubId);
 
-/** The CASH an inclusion's events say the program sent to People, earmark included: every unit
- *  the conversion returned, since the program sends the whole holding. The pool tiers' exchange
- *  into CASH, the last of them; the PSM's mint; the dotUSD tier exchanges nothing and its figure
- *  was known before the submit. Null when the events do not say. */
+/** The CASH an inclusion's events say the program sent to People, earmark included, on the pool
+ *  tiers: what the last exchange into CASH returned, which the program withdraws whole. Null on
+ *  the other tiers, whose figure was known before the submit: the PSM's batch withdraws the
+ *  fixed amount it was built with, whatever its mint paid out at the fee of the day, so the
+ *  mint's event can say more than went out; the dotUSD tier exchanges nothing. Null too when
+ *  the events do not say. */
 export function sentAmountOf(
   route: ConversionRoute,
   events: ReadonlyArray<{ type: string; value: { type: string; value?: unknown } }>,
 ): bigint | null {
-  const expected = CONVERSION_EVENT[route.tier];
-  if (expected === null) return null;
-  // The mint's event names what the burner received in CASH; the swap's what it returned.
-  const field = route.tier === "psm" ? "internal_received" : "amount_out";
+  if (route.tier !== "pool") return null;
+  const expected = CONVERSION_EVENT.pool;
   const conversions = events.filter(
     (e) =>
       e.type === expected.pallet &&
       e.value.type === expected.name &&
-      (route.tier === "psm" || swapEndsInCash((e.value.value as { path?: unknown })?.path)),
+      swapEndsInCash((e.value.value as { path?: unknown })?.path),
   );
   const last = conversions.at(-1)?.value.value as Record<string, unknown> | undefined;
-  const amount = last?.[field];
+  const amount = last?.amount_out;
   return typeof amount === "bigint" ? amount : null;
 }
 

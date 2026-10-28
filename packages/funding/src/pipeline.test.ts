@@ -2571,8 +2571,10 @@ describe("sentAmountOf", () => {
     ).toBe(5_002_000n);
     expect(sentAmountOf(STABLE_ROUTE, [feeSwap, refund])).toBeNull();
   });
-  it("is the PSM's mint, and nothing on the dotUSD tier, which exchanges nothing", () => {
-    expect(sentAmountOf(ROUTE, [swappedTo(NATIVE_LOC, 300n), minted(5_003_000n)])).toBe(5_003_000n);
+  it("says nothing on the PSM tier, whose batch withdraws the figure it was built with, nor on the dotUSD tier", () => {
+    // The mint can pay out more than the batch withdraws when the fee fell since the quote: the
+    // dry run's figure is the exact one, and the event must not replace it.
+    expect(sentAmountOf(ROUTE, [swappedTo(NATIVE_LOC, 300n), minted(5_003_000n)])).toBeNull();
     expect(sentAmountOf(DOTUSD_ROUTE, [swapped(1n)])).toBeNull();
     expect(sentAmountOf(POOL, [SWAPPED])).toBeNull();
   });
