@@ -8,12 +8,13 @@ import { useDrillIn } from "../../../composables/useDrillIn";
 import { useStateDirector } from "../../../composables/useStateDirector";
 import { psmReserved, useWithdrawalRequest } from "../../../composables/useWithdrawalRequest";
 import type { FundingPackageEmits } from "../../../funding/handoff";
+import { cryptoBelowMinimum } from "../../../funding/out-of-range";
 import type { FundingSelection } from "../../../funding/selection";
 import type { FundingTopUp } from "../../../funding/top-ups";
 import { CASH_DECIMALS } from "@getsome/people";
 import { useRequestsStore } from "../../../stores/requests";
 import { useWithdrawOffersStore } from "../../../stores/withdraw-offers";
-import { cashAmount, fmtCash, toCashBase } from "../../../utils/cash";
+import { cashAmount, fmtCash, groupAmountDigits, toCashBase } from "../../../utils/cash";
 import { previewStage } from "../../../utils/dev-preview-stage";
 import { isDemoBuild } from "../../../utils/demo";
 import { requestRefKey, type RequestRef } from "../../../utils/request-index";
@@ -31,7 +32,8 @@ import {
   type WithdrawOffer,
 } from "../../../withdraw/offers";
 import { withdrawalRequestRef } from "../../../withdraw/rows";
-import Toolbar from "../../ui/Toolbar.vue";
+import AmountOutOfRange from "../../funding/AmountOutOfRange.vue";
+import ScreenShell from "../../ui/ScreenShell.vue";
 import WithdrawAddressScreen from "../WithdrawAddressScreen.vue";
 import WithdrawCancelScreen from "../WithdrawCancelScreen.vue";
 import WithdrawFeesScreen from "../WithdrawFeesScreen.vue";
@@ -77,6 +79,9 @@ const sale = ref<ConversionRoute | null>(null);
 /** What the estimate says lands on the key in the sale's token; what a provider's channel is
  *  quoted with at confirm. */
 const expectedLanding = ref<bigint | null>(null);
+/** The provider's minimum for the token, in CASH base units, while the amount is under it: the
+ *  summary gives way to the out-of-range screen. */
+const belowMinimum = ref<bigint | null>(null);
 const starting = ref(false);
 const startError = ref<string | null>(null);
 const busy = ref(false);
@@ -200,6 +205,7 @@ type Estimate =
       receive: string | undefined;
       fees: WithdrawFeeView | null;
     }
+  | { kind: "too-small"; minimumCash: bigint }
   | { kind: "declined"; reason: string };
 
 /** The sale `picked` takes for `base` CASH and what it lands. A provider's offer is the pickers'
@@ -221,6 +227,7 @@ async function estimate(
       await offers.learn(base, reserved);
       offer = offers.offerFor(picked);
     }
+    if (offer.state === "too-small") return { kind: "too-small", minimumCash: offer.minimumCash };
     if (offer.state !== "available") {
       const reason = rowState(picked, offer).subtitle ?? "This destination cannot take the amount.";
       return { kind: "declined", reason };
@@ -283,6 +290,7 @@ const leftSummary = (picked: WithdrawDestination) =>
 async function onAddress(entered: string) {
   address.value = entered;
   startError.value = null;
+  belowMinimum.value = null;
   step.value = "summary";
   const picked = destination.value;
   const base = toCashBase(amount.value);
@@ -299,7 +307,10 @@ async function onAddress(entered: string) {
     // A chain answer that lands after the user went back and picked another token is for nobody:
     // the summary must still show the destination this run was started for.
     if (leftSummary(picked)) return;
-    if (estimated.kind === "declined") receive.value = undefined;
+    if (estimated.kind === "too-small") {
+      belowMinimum.value = estimated.minimumCash;
+      receive.value = undefined;
+    } else if (estimated.kind === "declined") receive.value = undefined;
     else showEstimate(estimated);
   } catch (error: unknown) {
     console.warn("[withdraw] receive estimate unavailable:", error);
@@ -319,6 +330,11 @@ async function confirm() {
     // filled up since the summary. Nothing starts on a sale the summary did not show.
     const fresh = await estimate(picked, base, true);
     if (leftSummary(picked) || sale.value !== shown) return;
+    // Under the minimum on every sale: the summary gives way to the out-of-range screen.
+    if (fresh.kind === "too-small") {
+      belowMinimum.value = fresh.minimumCash;
+      return;
+    }
     if (fresh.kind === "declined") {
       startError.value = fresh.reason;
       return;
@@ -349,6 +365,15 @@ async function confirm() {
     starting.value = false;
   }
 }
+
+/** The out-of-range screen's way on: the shell takes the minimum as the amount, and the summary
+ *  quotes it afresh when it lands. */
+function useAmount(cash: string) {
+  emit("useAmount", cash);
+}
+watch(amount, () => {
+  if (step.value === "summary" && address.value !== "") void onAddress(address.value);
+});
 
 async function confirmCancel() {
   const current = record.value;
@@ -447,6 +472,7 @@ watch(
     receive.value = stage.receive;
     fees.value = stage.fees ?? null;
     previewSecret.value = stage.secret;
+    belowMinimum.value = stage.belowMinimum === undefined ? null : toCashBase(stage.belowMinimum);
     step.value = stage.step;
     previewSkeleton.value = stage.skeleton === true;
   },
@@ -466,110 +492,103 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <!-- Toolbar and screen fill the visible viewport; the app never scrolls. -->
-  <main
-    class="fixed inset-x-0 mx-auto flex w-full max-w-md flex-col overflow-hidden bg-surface-main"
-    style="
-      top: var(--vvt, 0px);
-      height: var(--vvh, 100dvh);
-      padding-top: env(safe-area-inset-top);
-      padding-bottom: env(safe-area-inset-bottom);
-    "
-  >
-    <Toolbar :title="toolbar.title" :back="toolbar.back" @back="onBack">
-      <template v-if="canSkipRail || canSkipSummary" #trailing>
-        <button
-          type="button"
-          class="rounded-medium px-4 py-3 text-label-l font-normal text-fg-primary transition-colors hover:bg-action-tertiary-hover"
-          @click="canSkipRail ? onSkipRail() : onSkipSummary()"
-        >
-          Skip
-        </button>
-      </template>
-    </Toolbar>
-
-    <div class="flex min-h-0 flex-1 flex-col px-6 pt-6">
-      <WithdrawNetworkScreen
-        v-if="step === 'network'"
-        :amount="amountBase"
-        :skeleton="previewSkeleton"
-        @pick="pickNetwork"
-      />
-      <WithdrawTokenScreen
-        v-else-if="step === 'token' && network"
-        :network="network"
-        :skeleton="previewSkeleton"
-        @pick="pickToken"
-      />
-      <!-- Keyed so a staged address replaces the screen's own typing state. -->
-      <WithdrawAddressScreen
-        v-else-if="step === 'address' && network && destination"
-        :key="address"
-        :network="network"
-        :destination="destination"
-        :initial="address"
-        @next="onAddress"
-      />
-      <WithdrawSummaryScreen
-        v-else-if="step === 'summary' && destination"
-        :amount="amount"
-        :destination="destination"
-        :address="address"
-        :receive="receive"
-        :fees="fees"
-        :starting="starting"
-        :error="startError"
-        @confirm="confirm"
-        @fees="openFees('summary')"
-      />
-      <WithdrawFeesScreen
-        v-else-if="step === 'fees' && fees"
-        :amount="amount"
-        :fees="fees"
-        @back="step = feesFrom"
-      />
-      <WithdrawCancelScreen
-        v-else-if="step === 'cancel'"
-        :cancelling="busy"
-        @confirm="confirmCancel"
-        @keep="step = 'journey'"
-      />
-      <WithdrawJourneyScreen
-        v-else-if="step === 'journey' && record"
-        :record="record"
-        :notice="notice"
-        :busy="busy"
-        :fees-available="fees !== null"
-        :pool-figure="poolFigure"
-        @cancel="step = 'cancel'"
-        @retry="retry"
-        @pool="switchToPool"
-        @return-funds="step = 'return-funds'"
-        @fees="openFees('journey')"
-        @close="emit('back')"
-      />
-      <WithdrawReturnFundsScreen
-        v-else-if="step === 'return-funds' && record"
-        :record="record"
-        :preview-secret="previewSecret"
-        @back="step = 'journey'"
-      />
-      <div
-        v-else-if="step === 'journey' && unavailable"
-        class="flex flex-1 flex-col items-center pt-16 text-center"
+  <ScreenShell :title="toolbar.title" :back="toolbar.back" @back="onBack">
+    <template v-if="canSkipRail || canSkipSummary" #trailing>
+      <button
+        type="button"
+        class="rounded-medium px-4 py-3 text-label-l font-normal text-fg-primary transition-colors hover:bg-action-tertiary-hover"
+        @click="canSkipRail ? onSkipRail() : onSkipSummary()"
       >
-        <h1 class="text-heading-l text-fg-primary">Withdrawal unavailable</h1>
-        <p class="mt-2 text-body-m text-fg-secondary">
-          This withdrawal is no longer available. Return to see your latest activity.
-        </p>
-      </div>
-      <div v-else-if="step === 'journey'" class="flex flex-col items-center gap-4 pt-16">
-        <span
-          class="inline-block size-8 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary"
-        />
-        <p class="text-body-m text-fg-secondary">Opening your withdrawal…</p>
-      </div>
+        Skip
+      </button>
+    </template>
+
+    <WithdrawNetworkScreen
+      v-if="step === 'network'"
+      :amount="amountBase"
+      :skeleton="previewSkeleton"
+      @pick="pickNetwork"
+    />
+    <WithdrawTokenScreen
+      v-else-if="step === 'token' && network"
+      :network="network"
+      :skeleton="previewSkeleton"
+      @pick="pickToken"
+    />
+    <!-- Keyed so a staged address replaces the screen's own typing state. -->
+    <WithdrawAddressScreen
+      v-else-if="step === 'address' && network && destination"
+      :key="address"
+      :network="network"
+      :destination="destination"
+      :initial="address"
+      @next="onAddress"
+    />
+    <AmountOutOfRange
+      v-else-if="step === 'summary' && destination && belowMinimum !== null"
+      :amount="groupAmountDigits(amount)"
+      :words="cryptoBelowMinimum(belowMinimum)"
+      @change-amount="emit('changeAmount')"
+      @use-amount="useAmount"
+    />
+    <WithdrawSummaryScreen
+      v-else-if="step === 'summary' && destination"
+      :amount="amount"
+      :destination="destination"
+      :address="address"
+      :receive="receive"
+      :fees="fees"
+      :starting="starting"
+      :error="startError"
+      @confirm="confirm"
+      @fees="openFees('summary')"
+    />
+    <WithdrawFeesScreen
+      v-else-if="step === 'fees' && fees"
+      :amount="amount"
+      :fees="fees"
+      @back="step = feesFrom"
+    />
+    <WithdrawCancelScreen
+      v-else-if="step === 'cancel'"
+      :cancelling="busy"
+      @confirm="confirmCancel"
+      @keep="step = 'journey'"
+    />
+    <WithdrawJourneyScreen
+      v-else-if="step === 'journey' && record"
+      :record="record"
+      :notice="notice"
+      :busy="busy"
+      :fees-available="fees !== null"
+      :pool-figure="poolFigure"
+      @cancel="step = 'cancel'"
+      @retry="retry"
+      @pool="switchToPool"
+      @return-funds="step = 'return-funds'"
+      @fees="openFees('journey')"
+      @close="emit('back')"
+    />
+    <WithdrawReturnFundsScreen
+      v-else-if="step === 'return-funds' && record"
+      :record="record"
+      :preview-secret="previewSecret"
+      @back="step = 'journey'"
+    />
+    <div
+      v-else-if="step === 'journey' && unavailable"
+      class="flex flex-1 flex-col items-center pt-16 text-center"
+    >
+      <h1 class="text-heading-l text-fg-primary">Withdrawal unavailable</h1>
+      <p class="mt-2 text-body-m text-fg-secondary">
+        This withdrawal is no longer available. Return to see your latest activity.
+      </p>
     </div>
-    <PreviewSceneLabel />
-  </main>
+    <div v-else-if="step === 'journey'" class="flex flex-col items-center gap-4 pt-16">
+      <span
+        class="inline-block size-8 animate-spin rounded-full border-[3px] border-stroke-primary border-t-fg-primary"
+      />
+      <p class="text-body-m text-fg-secondary">Opening your withdrawal…</p>
+    </div>
+  </ScreenShell>
 </template>

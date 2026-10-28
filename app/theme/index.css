@@ -27,6 +27,9 @@
      shadcn.css, which is imported first. It has to precede every alias in both
      files, and @import cannot follow a rule. */
 
+  /* The gap under a bottom-anchored action: the design's 32px, the same on every screen. */
+  --spacing-cta: 2rem;
+
   --color-fg-primary: var(--fg-primary);
   --color-fg-secondary: var(--fg-secondary);
   --color-fg-secondary-hover: var(--fg-secondary-hover);

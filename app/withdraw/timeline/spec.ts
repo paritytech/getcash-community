@@ -1,6 +1,6 @@
 // The withdrawal's timeline as the designer drew it: the top-up's seven milestones on the same
-// 370 px card, with Started, Received by provider and Sent named. Everything up to Received by
-// provider runs on Polkadot; everything after it is the rail's own.
+// 370 px card, with Started, Received and Sent named. Everything up to Received runs on Polkadot;
+// everything after it is the rail's own.
 
 import type { TimelineSpec } from "../../funding/timeline/types";
 
@@ -30,11 +30,11 @@ export const WITHDRAWAL_TIMELINE: TimelineSpec<WithdrawalMilestone> = {
   designWidth: 370,
   milestones: [
     { id: "started", label: "Started", centre: 34.5 },
-    { id: "departed", centre: 77, failedLabelAlign: "start" },
-    { id: "converted", centre: 141, failedLabelAlign: "end" },
-    { id: "received", label: "Received by provider", centre: 187.5 },
-    { id: "processed", centre: 234, failedLabelAlign: "start" },
-    { id: "dispatched", centre: 298, failedLabelAlign: "end" },
+    { id: "departed", centre: 77 },
+    { id: "converted", centre: 141 },
+    { id: "received", label: "Received", centre: 187.5 },
+    { id: "processed", centre: 234 },
+    { id: "dispatched", centre: 298 },
     { id: "sent", label: "Sent", centre: 338 },
   ],
 };

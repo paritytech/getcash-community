@@ -8,6 +8,7 @@ import {
 import { listHeadline, listProgress, overallProgress } from "../app/funding/timeline/list";
 import { timelineView } from "../app/funding/timeline/model";
 import { TOP_UP_TIMELINE } from "../app/funding/timeline/top-up-spec";
+import { WITHDRAWAL_TIMELINE } from "../app/withdraw/timeline/spec";
 import {
   MILESTONES,
   type MilestoneIndex,
@@ -216,6 +217,17 @@ describe("top-up timeline drawing", () => {
     expect(labelAt(current("active", 5, 0.5), 4)).toBe("Converted");
     expect(labelAt(failedAt(6, 0.2))).toBe("Received");
     expect(labelAt(done)).toBe("Received");
+  });
+
+  it("centres the withdrawal's failed label under its milestone", () => {
+    const at = (view: TimelineView, index: number) => {
+      const { label, labelAlign } = timelineDrawing(WITHDRAWAL_TIMELINE, view).milestones[index]!;
+      return `${label} ${labelAlign}`;
+    };
+    expect(at(failedAt(4, 0.5), 4)).toBe("Failed centre");
+    expect(at(failedAt(2, 0.5), 2)).toBe("Failed centre");
+    expect(at(failedAt(5, 0.5), 5)).toBe("Failed centre");
+    expect(at(failedAt(4, 0.5), 3)).toBe("Received centre");
   });
 });
 
