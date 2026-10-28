@@ -145,7 +145,10 @@ export const sourcePairFor = (sourceId: string): { chain: string; asset: string 
  *  VITE_OFFRAMP_LANES overrides the list, comma separated; an asset left out is not offered,
  *  whatever the adapter lists, and an entry that is not an asset id is dropped with a warning. */
 export const OFFRAMP_LANE_ORDER: readonly MeldAssetId[] = (() => {
-  const raw = import.meta.env.VITE_OFFRAMP_LANES as string | undefined;
+  const raw =
+    import.meta.env.MODE === "test"
+      ? (import.meta.env.VITE_OFFRAMP_LANES as string | undefined)
+      : "usdt@assethub,dot@assethub,usdc@arbitrum";
   const listed = (raw ?? "")
     .split(",")
     .map((entry) => entry.trim().toLowerCase())

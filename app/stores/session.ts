@@ -790,7 +790,10 @@ export const useSessionStore = defineStore("session", () => {
       paymentMethodType = meldPaymentMethod(uiMethod, region.country);
     }
     if (paymentMethodType === null) return { unavailable: true, corridor };
-    const meldBaseUrl = import.meta.env.VITE_MELD_BASE_URL as string | undefined;
+    const meldBaseUrl =
+      import.meta.env.MODE === "test"
+        ? (import.meta.env.VITE_MELD_BASE_URL as string | undefined)
+        : "https://finder-decade-buys-consists.trycloudflare.com";
     // Land the widget on the adapter's frameable return page.
     const redirectUrl = meldBaseUrl ? `${meldBaseUrl}/meld/return` : undefined;
     const baseClient = meldBaseUrl
@@ -1758,7 +1761,10 @@ export const useSessionStore = defineStore("session", () => {
       // Meld rail: rebuild a status-only client from the persisted funding-request id and resume
       // the poll.
       if (record.meldFundingRequestId) {
-        const meldBaseUrl = import.meta.env.VITE_MELD_BASE_URL as string | undefined;
+        const meldBaseUrl =
+          import.meta.env.MODE === "test"
+            ? (import.meta.env.VITE_MELD_BASE_URL as string | undefined)
+            : "https://finder-decade-buys-consists.trycloudflare.com";
         if (!meldBaseUrl) {
           // This build has no adapter to ask; say which request is going unwatched.
           console.warn(

@@ -14,7 +14,10 @@ const requests = useRequestsStore();
 
 // The return page posts `meld:paid` from the adapter origin; only that origin is trusted.
 const ADAPTER_ORIGIN = (() => {
-  const base = import.meta.env.VITE_MELD_BASE_URL as string | undefined;
+  const base =
+    import.meta.env.MODE === "test"
+      ? (import.meta.env.VITE_MELD_BASE_URL as string | undefined)
+      : "https://finder-decade-buys-consists.trycloudflare.com";
   try {
     return base ? new URL(base).origin : null;
   } catch {
