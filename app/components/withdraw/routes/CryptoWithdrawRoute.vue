@@ -25,7 +25,12 @@ import {
   type WithdrawDestination,
   type WithdrawNetwork,
 } from "../../../withdraw/destinations";
-import type { WithdrawFeeView } from "../../../withdraw/offers";
+import {
+  rowState,
+  sameSale,
+  type WithdrawFeeView,
+  type WithdrawOffer,
+} from "../../../withdraw/offers";
 import { withdrawalRequestRef } from "../../../withdraw/rows";
 import AmountOutOfRange from "../../funding/AmountOutOfRange.vue";
 import ScreenShell from "../../ui/ScreenShell.vue";
@@ -190,6 +195,98 @@ function directRate(units: bigint, decimals: number, base: bigint, asset: string
   return `${cashAmount("1")} ≈ ${value >= 0.01 ? value.toFixed(2) : value.toPrecision(2)} ${asset}`;
 }
 
+/** What the summary shows for a destination and keeps for confirm, or why it cannot be sent. */
+type Estimate =
+  | {
+      kind: "priced";
+      sale: ConversionRoute;
+      expectedLanding: bigint | null;
+      /** Undefined when the sale stands but its figure could not be priced. */
+      receive: string | undefined;
+      fees: WithdrawFeeView | null;
+    }
+  | { kind: "too-small"; minimumCash: bigint }
+  | { kind: "declined"; reason: string };
+
+/** The sale `picked` takes for `base` CASH and what it lands. A provider's offer is the pickers'
+ *  quote, or asked again of that destination alone when `recheck`; Asset Hub's sale is always
+ *  decided on the chain as it stands. Throws when the chain cannot be read. */
+async function estimate(
+  picked: WithdrawDestination,
+  base: bigint,
+  recheck: boolean,
+): Promise<Estimate> {
+  if (picked.rail !== "direct") {
+    // A provider's offer carries the sale picked for the destination, frozen at confirm, and
+    // what it was quoted for in the sale's token, the figure the channel is opened for.
+    const reserved = psmReserved(requests.openWithdrawals, PSM_EXTERNAL);
+    let offer: WithdrawOffer;
+    if (recheck) {
+      offer = await offers.requote(picked, base, reserved);
+    } else {
+      await offers.learn(base, reserved);
+      offer = offers.offerFor(picked);
+    }
+    if (offer.state === "too-small") return { kind: "too-small", minimumCash: offer.minimumCash };
+    if (offer.state !== "available") {
+      const reason = rowState(picked, offer).subtitle ?? "This destination cannot take the amount.";
+      return { kind: "declined", reason };
+    }
+    return {
+      kind: "priced",
+      sale: offer.sale,
+      expectedLanding: offer.sellable,
+      receive: offer.formatted,
+      fees: offer.fees ?? null,
+    };
+  }
+  const live = await import("~~/lib/withdraw-live");
+  // The PSM's room this app's own redeems have spoken for, against the stable the destination
+  // lands; the native and dotUSD read no PSM.
+  const reserved =
+    picked.landing === "native" || picked.landing === "dotUSD"
+      ? 0n
+      : psmReserved(requests.openWithdrawals, picked.landing);
+  const sale = await live.chooseWithdrawRoute(base, picked.landing, reserved);
+  try {
+    // What the sale lands on Asset Hub in the token's decimals: the direct rail lands exactly
+    // that. Its fees are taken in CASH before the sale, so the drill-in shows them as CASH.
+    const [units, feesCash] = await Promise.all([
+      live.quoteDirectReceive(base, sale),
+      live.directFeesCash(sale),
+    ]);
+    const landing = depositTokenOf(sale);
+    const receive = `${formatLanding(units, landing.decimals)} ${picked.asset}`;
+    return {
+      kind: "priced",
+      sale,
+      expectedLanding: null,
+      receive,
+      fees: {
+        rows: [{ label: "Network fee", value: cashAmount(fmtCash(feesCash)) }],
+        receive,
+        rate: directRate(units, landing.decimals, base, picked.asset),
+      },
+    };
+  } catch (error: unknown) {
+    // The sale stands on its own: an estimate that cannot be priced hides the figure, as it
+    // always did, and does not hold the withdrawal back.
+    console.warn("[withdraw] receive estimate unavailable:", error);
+    return { kind: "priced", sale, expectedLanding: null, receive: undefined, fees: null };
+  }
+}
+
+function showEstimate(priced: Extract<Estimate, { kind: "priced" }>) {
+  sale.value = priced.sale;
+  expectedLanding.value = priced.expectedLanding;
+  receive.value = priced.receive;
+  fees.value = priced.fees;
+}
+
+/** Whether the summary moved on from `picked`: the user went back, or picked another token. */
+const leftSummary = (picked: WithdrawDestination) =>
+  step.value !== "summary" || destination.value !== picked;
+
 async function onAddress(entered: string) {
   address.value = entered;
   startError.value = null;
@@ -205,59 +302,16 @@ async function onAddress(entered: string) {
     return;
   }
   receive.value = null;
-  // A chain answer that lands after the user went back and picked another token is for nobody:
-  // the summary must still show the destination this run was started for.
-  const stale = () => step.value !== "summary" || destination.value !== picked;
   try {
-    // The sale the destination takes, decided now and frozen at confirm: the token picked for
-    // Asset Hub itself, the fiat rule for a provider, which lands the sale's token on the key.
-    const live = await import("~~/lib/withdraw-live");
-    // The PSM's room this app's own redeems have spoken for, against the stable the destination
-    // lands or the fiat rule's external for a provider; the native and dotUSD read no PSM.
-    const reserved =
-      picked.landing === "native" || picked.landing === "dotUSD"
-        ? 0n
-        : psmReserved(requests.openWithdrawals, picked.landing ?? PSM_EXTERNAL);
-    const route = await live.chooseWithdrawRoute(base, picked.landing, reserved);
-    if (stale()) return;
-    // The sale stands on its own: an estimate that cannot be priced hides the figure, as it
-    // always did, and does not hold the withdrawal back.
-    sale.value = route;
-    if (picked.rail === "direct") {
-      // What the sale lands on Asset Hub in the token's decimals: the direct rail lands exactly
-      // that. Its fees are taken in CASH before the sale, so the drill-in shows them as CASH.
-      const [units, feesCash] = await Promise.all([
-        live.quoteDirectReceive(base, route),
-        live.directFeesCash(route),
-      ]);
-      if (stale()) return;
-      const landing = depositTokenOf(route);
-      receive.value = `${formatLanding(units, landing.decimals)} ${picked.asset}`;
-      fees.value = {
-        rows: [{ label: "Network fee", value: cashAmount(fmtCash(feesCash)) }],
-        receive: receive.value,
-        rate: directRate(units, landing.decimals, base, picked.asset),
-      };
-      return;
-    }
-    // A provider takes the sale's token from the key. It shows what its offer for this amount
-    // and sale said would land, and the channel is opened at confirm for the figure that offer
-    // was quoted for.
-    await offers.learn(base, route);
-    if (stale()) return;
-    const offer = offers.offerFor(picked);
-    if (offer.state === "too-small") {
-      belowMinimum.value = offer.minimumCash;
+    const estimated = await estimate(picked, base, false);
+    // A chain answer that lands after the user went back and picked another token is for nobody:
+    // the summary must still show the destination this run was started for.
+    if (leftSummary(picked)) return;
+    if (estimated.kind === "too-small") {
+      belowMinimum.value = estimated.minimumCash;
       receive.value = undefined;
-      return;
-    }
-    if (offer.state !== "available" || offers.sellable === null) {
-      receive.value = undefined;
-      return;
-    }
-    expectedLanding.value = offers.sellable;
-    receive.value = offer.formatted;
-    fees.value = offer.fees ?? null;
+    } else if (estimated.kind === "declined") receive.value = undefined;
+    else showEstimate(estimated);
   } catch (error: unknown) {
     console.warn("[withdraw] receive estimate unavailable:", error);
     receive.value = undefined;
@@ -268,35 +322,35 @@ async function confirm() {
   const picked = destination.value;
   const base = toCashBase(amount.value);
   if (picked === null || base === null || starting.value) return;
-  // Judged once more here: the offer may have changed since the pick, and the channel is opened
-  // next. Under the minimum, or with the provider not answering, nothing is opened.
-  const offer = offers.offerFor(picked);
-  if (offer.state === "too-small") {
-    belowMinimum.value = offer.minimumCash;
-    return;
-  }
-  const allowed = offers.rowFor(picked);
-  if (!allowed.pickable) {
-    startError.value = allowed.subtitle ?? "This destination cannot take the amount.";
-    return;
-  }
-  // The sale is the quote's decision; without one the worker would have to decide, which it
-  // never does.
-  const route = sale.value;
-  if (route === null) {
-    startError.value = "The estimate is not available right now.";
-    return;
-  }
+  const shown = sale.value;
   starting.value = true;
   startError.value = null;
   try {
+    // The sale is frozen next, so it is decided again on the chain as it stands: the PSM may have
+    // filled up since the summary. Nothing starts on a sale the summary did not show.
+    const fresh = await estimate(picked, base, true);
+    if (leftSummary(picked) || sale.value !== shown) return;
+    // Under the minimum on every sale: the summary gives way to the out-of-range screen.
+    if (fresh.kind === "too-small") {
+      belowMinimum.value = fresh.minimumCash;
+      return;
+    }
+    if (fresh.kind === "declined") {
+      startError.value = fresh.reason;
+      return;
+    }
+    if (shown === null || !sameSale(shown, fresh.sale)) {
+      showEstimate(fresh);
+      startError.value = "The estimate has changed. Review it and confirm again.";
+      return;
+    }
     const outcome = await withdrawal.start({
       destinationId: picked.id,
       amount: base,
       destination: { chain: picked.chainLabel, asset: picked.asset, address: address.value },
       landingHex: landingAccountHex(picked, address.value),
       rail: picked.rail,
-      sale: route,
+      sale: shown,
       ...(expectedLanding.value === null ? {} : { expectedLanding: expectedLanding.value }),
     });
     if (outcome.ref === null) {

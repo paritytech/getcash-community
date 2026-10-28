@@ -38,8 +38,10 @@ token and the worker signs one `Utility.batch_all` that mints the CASH and sends
 The AssetConversion pool is the fallback, priced at whatever it quotes at the time. It
 takes over whenever the PSM cannot serve a request (i.e.: no instance open for the pair, minting
 paused, the amount over the instance's debt ceiling or under its minimum) and then the provider
-delivers the native token and one XCM swaps and sends it instead. Which tier a request takes
-is decided at quote time, before the provider is told what to send, and recorded on the request
+delivers the native token and one XCM swaps and sends it instead. A Chainflip pick takes the
+pool too when Chainflip cannot quote the swap into USDT for it, and a card or bank top-up when no
+provider buys USDT for the region and amount or the quote for it times out. Which tier a request
+takes is decided at quote time, before the provider is told what to send, and recorded on the request
 with the fee rate it was quoted; the worker runs the tier it is handed and never chooses one.
 On the Polkadot route the token the buyer picks decides: DOT takes the pool, USDT the PSM (the
 pool through PAS when the PSM cannot serve), USDC a stable pool leg, one XCM that exchanges USDC
@@ -79,11 +81,17 @@ the fallback when the PSM cannot serve; the pool sells the CASH for DOT inside t
 stable sells that DOT again on the stable's pool; dotUSD is the CASH sent as it is. Whatever the
 tier, the fee PAS that travels with the CASH ends up in the landing token, so the destination is
 credited one asset.
-The sale is decided at quote time, from the token the user picks for Asset Hub or, for a
-Chainflip or Meld destination, under the on-ramp's fiat rule: USDT through the PSM when it can
-serve, PAS through the pool otherwise. The PSM serves when it has room for the amount plus a tenth
-of it, 20 CASH at the least, once the app's own open PSM withdrawals are counted against that
-room. The sale is frozen on the hand-off, and the worker never re-decides it.
+The sale is decided at quote time, from the token the user picks for Asset Hub or, for a Meld
+destination, from the candidates the off-ramp catalog routes for the region, in this build's lane
+order (USDT on Asset Hub, then PAS, then the Chainflip lanes): a USDT candidate only when the PSM
+can serve it, and the first a provider quotes wins. For a Chainflip destination the chain ranks USDT through the PSM, when it can
+serve, then PAS through the pool, and each destination takes the first of those Chainflip can
+quote for the amount, its minimum included: an amount under Chainflip's minimum for USDT sells
+PAS, and one under the minimum on both shows the smaller. The PSM serves when it has room for the
+amount plus a tenth of it, 20 CASH at the least, once the app's own open PSM withdrawals are
+counted against that room. Confirm decides the sale again, fresh: when it is no longer the one the
+summary showed, the summary takes the new figure and nothing starts until the user confirms that.
+The sale is frozen on the hand-off, and the worker never re-decides it.
 On the PSM tier the XCM makes no sale: it lands the CASH on the key's own Asset Hub account, the
 PAS that travelled sold for CASH, and the key signs one more transaction there, a
 `Utility.batch_all` of `Psm.redeem` and `Assets.transfer_all` of the USDT to the destination, or
