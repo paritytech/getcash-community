@@ -83,11 +83,15 @@ const saveJobs = () => store.save();
  *   quoteFloorPct?, claimIdOffset?,          // a burner that is another job's key, sent home
  *                                            // whole: its exchange held to the pool's quote,
  *                                            // its claims under ids that key never used
+ *   wayHome?: true,                          // that key's way home: a trap fails the job
+ *                                            // rather than start a recovery no one funds
  *   phase: "starting" | FundingStep | "recovering" | "failed",
  *                                            // await-native: the route's deposit asset
  *                                            // recovering: the CASH is in People's trap and
  *                                            // the burner is claiming it back
- *   failure?: "shortfall" | "timeout" | "expired" | "cancelled" | "claim" | "held",
+ *   failure?: "shortfall" | "timeout" | "expired" | "cancelled" | "claim" | "held" | "trapped",
+ *                                            // trapped: a way home's program left the CASH in
+ *                                            // People's trap, which no one is asked to fund
  *                                            // held: the PSM refused the mint three times; the
  *                                            // deposit stays on the burner
  *   trap?: { amount: string, key, claimerHex, at },
@@ -218,6 +222,9 @@ function newRecord(input, nowMs) {
     ...route,
     ...(quoteFloorPct === undefined ? {} : { quoteFloorPct }),
     ...(claimIdOffset === 0 ? {} : { claimIdOffset }),
+    // A sale's key on its way home: no buyer stands behind it to pay a claim's fee, so a trap
+    // fails the job for the sale to report instead of starting a recovery.
+    ...(input.wayHome === true ? { wayHome: true } : {}),
     phase: "starting",
     done: false,
     createdAt: nowMs,
@@ -1290,7 +1297,14 @@ export async function tickAllFunding() {
         if (error instanceof FundingShortfallError) {
           fail(record, "shortfall", `shortfall: ${error.message}`);
         } else if (error instanceof FundingTrappedError) {
-          trapped(record, error, nowMs);
+          if (record.wayHome) {
+            // A recovery needs someone to pay the claim's fee, and a sale's way home has no
+            // one: the job ends here, and the sale marks its residue stuck for a person. The
+            // reason names the trap, the one place that says where the CASH is.
+            fail(record, "trapped", error.message);
+          } else {
+            trapped(record, error, nowMs);
+          }
         } else if (error instanceof FundingHeldError) {
           // The PSM would not take the mint three times over. The deposit stays on the burner
           // and nothing converts it through the pool; a re-sent hand-off tries again.
@@ -1302,7 +1316,9 @@ export async function tickAllFunding() {
       }
       judgeBounds(record, nowMs, read);
       ticked += 1;
-      if (!waitsOnTheBuyer(record, nowMs)) holding += 1;
+      // A job that ended in this pass, or that waits on the buyer alone, has nothing left to
+      // keep the worker awake for.
+      if (record.phase !== "failed" && !waitsOnTheBuyer(record, nowMs)) holding += 1;
       await saveJobs();
     }
     return { ticked, holding, busy: false };

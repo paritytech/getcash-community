@@ -1026,13 +1026,16 @@ const wayHomeParams = (record, route) => ({
   ...recordedRoute(route),
   quoteFloorPct: record.slippagePct,
   claimIdOffset: RESIDUE_CLAIM_ID_OFFSET,
+  // Told apart from a top-up: a trap on the way home fails the job instead of asking anyone
+  // for a claim's fee.
+  wayHome: true,
 });
 
 /**
  * Follows a key's way home once it is on the job: notes when its funding job has claimed the
  * funds, starts that job when it never started (the start was refused, or the worker stopped
- * first), and starts it again when it failed, up to RETURN_REARMS times. Past that the residue is
- * marked stuck, for a person.
+ * first), and starts it again when it failed, up to RETURN_REARMS times. Past that, or at once
+ * when the program trapped the CASH on People, the residue is marked stuck, for a person.
  */
 async function keepWayHome(record) {
   const residue = record.residue;
@@ -1046,8 +1049,10 @@ async function keepWayHome(record) {
     return;
   }
   if (job?.phase !== "failed") return;
+  // The CASH is in People's trap: the key holds nothing to send again, so the residue is stuck
+  // at once, for a person.
   const rearms = residue.rearms ?? 0;
-  if (rearms >= RETURN_REARMS) {
+  if (job.failure === "trapped" || rearms >= RETURN_REARMS) {
     record.residue = { ...residue, stuck: true };
     return;
   }

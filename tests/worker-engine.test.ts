@@ -958,6 +958,30 @@ describe("worker funding engine", () => {
     });
   });
 
+  it("fails a sale's way home whose program trapped, instead of starting a recovery no one funds", async () => {
+    armSeams();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify({ ...HANDOFF, wayHome: true }));
+    expect(storedJob().wayHome).toBe(true);
+    const funding = await import("@getsome/funding");
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.fundsSeenAt = Date.now();
+      state.xcmSubmitted = true;
+      throw new funding.FundingTrappedError(SETTLE, hash32(0xab), hash32(0x07));
+    });
+    // Ticked once, holding nothing: the job is over.
+    expect(await engine.tickAllFunding()).toEqual({ ticked: 1, holding: 0, busy: false });
+    expect(storedJob()).toMatchObject({ phase: "failed", failure: "trapped" });
+    // The reason names the trap: the one place that says where the sale's CASH is.
+    expect(storedJob().lastError).toContain("People's trap");
+    expect(storedJob().lastError).toContain(hash32(0xab));
+    expect(storedJob().trap).toBeUndefined();
+    expect(storedJob().recovery).toBeUndefined();
+    expect(mocks.tickRecovery).not.toHaveBeenCalled();
+    // Terminal: nothing drives it again.
+    expect((await engine.tickAllFunding()).ticked).toBe(0);
+  });
+
   it("keeps the manual path's figures when they cannot be priced again, and still looks for a deposit", async () => {
     armSeams();
     const engine = await freshEngine();

@@ -834,6 +834,20 @@ describe("a sale's way to the provider and back", () => {
     expect(storedJob().residue.stuck).toBe(true);
   });
 
+  it("leaves the way home stuck at once when its program trapped, with no start again", async () => {
+    const engine = await engineWith({ "s-1": landedJob() });
+    mocks.payRailExact.mockResolvedValue(undefined);
+    await engine.tickAllWithdraw();
+    expect(mocks.startFunding).toHaveBeenCalledTimes(1);
+    // The way home is told apart from a top-up, so a trap on it fails the job.
+    expect(mocks.startFunding.mock.calls[0]![0]).toMatchObject({ wayHome: true });
+    mocks.fundingStatus.mockResolvedValue({ phase: "failed", failure: "trapped", claim: null });
+    await engine.tickAllWithdraw();
+    expect(mocks.startFunding).toHaveBeenCalledTimes(1);
+    expect(storedJob().residue.stuck).toBe(true);
+    expect(storedJob().residue.rearms).toBeUndefined();
+  });
+
   it("notes the way home over once its funding job claimed the funds, and reads it no more", async () => {
     const engine = await engineWith({ "s-1": landedJob() });
     mocks.payRailExact.mockResolvedValue(undefined);
