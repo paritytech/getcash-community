@@ -1127,14 +1127,27 @@ describe("worker funding engine", () => {
       state.fundsSeenAt = Date.now();
       state.xcmSubmitted = true;
       state.sentToPeople = SETTLE;
+      // The trap is read at People's finalized block while Asset Hub's own finalized head is
+      // still the inclusion block: the pre-send record is still set.
+      state.nonceAtSubmit = 7;
+      state.inclusionBlock = 100;
+      state.inclusionHash = hash32(0x11);
       throw new funding.FundingTrappedError(SETTLE, key, claimerHex);
     });
-    await engine.tickAllFunding();
+    // The trap holds the worker for the first recovery tick, which sizes the fee.
+    expect(await engine.tickAllFunding()).toEqual({ ticked: 1, holding: 1, busy: false });
     expect(storedJob()).toMatchObject({
       phase: "recovering",
       trap: { amount: SETTLE.toString(), key, claimerHex },
     });
     expect(storedJob().state.sentToPeople).toBe(SETTLE.toString());
+    // A trap at People's finalized block proves the conversion final: the pre-send record goes,
+    // so the job is never read as a conversion still pending once the recovery is done.
+    expect(storedJob().state).toMatchObject({
+      nonceAtSubmit: null,
+      inclusionBlock: null,
+      inclusionHash: null,
+    });
     // The conversion's time is spent at the trap: the claim after the recovery gets the bound.
     expect(storedJob().state.workedMs).toBe(0);
     expect(storedJob().lastError).toBeUndefined();
@@ -1202,11 +1215,14 @@ describe("worker funding engine", () => {
     });
     mocks.tickOnce.mockResolvedValueOnce(outcome("await-native"));
     expect((await revived.tickAllFunding()).holding).toBe(0);
+    // The find is stamped, with the figure the deposit was found at, frozen for its gate.
     expect(storedJob().recovery).toMatchObject({
       phase: "funding",
       route: { tier: "pool" },
       deposit: "await-native",
+      depositGate: "990",
     });
+    expect(storedJob().recovery.depositFoundAt).toBeTypeOf("number");
 
     // The price came back: the pipeline converts the deposit for the fee, through the pool, with
     // the figures priced for it, on the route kept from the find. A deposit being converted
@@ -1223,6 +1239,8 @@ describe("worker funding engine", () => {
       settleAmount: 123_456n,
       remoteFeeBuffer: 1_000n,
       keepNativeForFees: 5n,
+      // The gate takes the figure the deposit was found at, as a top-up's quote is frozen.
+      quotedDeposit: 990n,
     });
     expect(storedJob().recovery).toMatchObject({
       phase: "funding",
@@ -1237,6 +1255,16 @@ describe("worker funding engine", () => {
     });
     expect(mocks.findRecoveryDeposit).toHaveBeenCalledTimes(2);
 
+    // A conversion that keeps failing to go through stops holding the worker after a while,
+    // since a recovery has no run bound of its own: the route stands, and the job waits on the
+    // buyer, ticked on the passes the open app asks for. The clock stays ahead from here on.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 11 * 60_000);
+    mocks.tickRecovery.mockResolvedValueOnce({ step: "funding", held: 0n, feeCash: 123_456n });
+    mocks.tickOnce.mockResolvedValueOnce(outcome("swap"));
+    expect((await revived.tickAllFunding()).holding).toBe(0);
+    expect(storedJob().recovery).toMatchObject({ route: { tier: "pool" }, deposit: "swap" });
+
     // The deposit's conversion ends: the step is kept for the surface, the route and the state
     // are let go, so a later funding round looks for a deposit afresh. The fee is on its way to
     // the burner and the claim follows on its own, so the job keeps the keep-alive.
@@ -1249,14 +1277,12 @@ describe("worker funding engine", () => {
     expect(storedJob().recovery.state).toBeUndefined();
 
     // A converted deposit whose claim People does not answer stops holding the worker after a
-    // while, since a recovery has no run bound of its own: the job waits on the buyer again.
-    vi.useFakeTimers({ toFake: ["Date"] });
+    // while, for the same reason: the job waits on the buyer again.
     vi.setSystemTime(Date.now() + 11 * 60_000);
     mocks.tickRecovery.mockResolvedValueOnce({ step: "funding", held: 0n, feeCash: 123_456n });
     mocks.findRecoveryDeposit.mockResolvedValueOnce(null);
     expect((await revived.tickAllFunding()).holding).toBe(0);
     expect(storedJob().recovery).toMatchObject({ phase: "funding", deposit: "done" });
-    vi.useRealTimers();
 
     // A claim owed an answer keeps the worker awake until the chain answers it.
     mocks.tickRecovery.mockImplementationOnce(async (_input, state) => {
@@ -1301,6 +1327,13 @@ describe("worker funding engine", () => {
       recovery: { phase: "done", attempts: 1 },
       claim: { phase: "claiming", attempt: 0, amount: SETTLE.toString() },
     });
+
+    // Done, the job follows its claim as any other: the pre-send record went with the trap, so
+    // nothing sends it back through the recovery.
+    const recoveryTicks = mocks.tickRecovery.mock.calls.length;
+    await revived.tickAllFunding();
+    expect(mocks.tickRecovery.mock.calls.length).toBe(recoveryTicks);
+    expect(storedJob()).toMatchObject({ phase: "done", done: true, claim: { phase: "claiming" } });
   });
 
   it("fails a sale's way home whose program trapped, instead of starting a recovery no one funds", async () => {
@@ -1320,11 +1353,23 @@ describe("worker funding engine", () => {
     // The reason names the trap: the one place that says where the sale's CASH is.
     expect(storedJob().lastError).toContain("People's trap");
     expect(storedJob().lastError).toContain(hash32(0xab));
-    expect(storedJob().trap).toBeUndefined();
+    // The trap is kept as any other, for a person to find the CASH by.
+    expect(storedJob().trap).toMatchObject({
+      amount: SETTLE.toString(),
+      key: hash32(0xab),
+      claimerHex: hash32(0x07),
+    });
     expect(storedJob().recovery).toBeUndefined();
     expect(mocks.tickRecovery).not.toHaveBeenCalled();
-    // Terminal: nothing drives it again.
+    // Terminal: nothing drives it again, and a re-sent hand-off is refused rather than re-armed
+    // into a recovery.
     expect((await engine.tickAllFunding()).ticked).toBe(0);
+    expect(await engine.startFunding(JSON.stringify({ ...HANDOFF, wayHome: true }))).toMatchObject({
+      error: "invalid",
+    });
+    expect(storedJob()).toMatchObject({ phase: "failed", failure: "trapped" });
+    expect((await engine.tickAllFunding()).ticked).toBe(0);
+    expect(mocks.tickRecovery).not.toHaveBeenCalled();
   });
 
   it("keeps the manual path's figures when they cannot be priced again, and still looks for a deposit", async () => {

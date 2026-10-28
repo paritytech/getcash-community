@@ -104,7 +104,8 @@ export async function recoveryMinimums(args: {
     remoteFeesCash: destinationEarmark(target, DEFAULT_REMOTE_FEE_BUFFER),
   };
   let keepNativeForFees: bigint | null = null;
-  const native = await priced(async () => {
+  // Each tier's reads are its own, so the four are priced side by side, within one tick's bound.
+  const native = priced(async () => {
     if (pool === null) throw new Error("no native pool");
     const nativeIn = await quoteNativeIn(api, pool, target);
     const nativeInMax = withHeadroom(nativeIn, DEFAULT_SLIPPAGE_PCT);
@@ -118,7 +119,7 @@ export async function recoveryMinimums(args: {
     // The gate takes the plain quote plus what the program keeps, as the pipeline's does.
     return { minimum: nativeInMax + keepNativeForFees, gate: nativeIn + keepNativeForFees };
   });
-  const dotUsd = await priced(async () => {
+  const dotUsd = priced(async () => {
     const fees = await estimateDotUsdProgramFees({
       ...common,
       depositUnderlying: target + PROBE_UNITS,
@@ -155,18 +156,17 @@ export async function recoveryMinimums(args: {
         gate: stableDepositNeeded(stableIn, fees),
       };
     });
-  const figures = {
-    PAS: native,
-    DOTUSD: dotUsd,
-    USDT: await stable("USDT"),
-    USDC: await stable("USDC"),
-  };
-  const pick = (which: keyof Figures): Record<RecoveryToken, bigint | null> => ({
-    PAS: figures.PAS?.[which] ?? null,
-    DOTUSD: figures.DOTUSD?.[which] ?? null,
-    USDT: figures.USDT?.[which] ?? null,
-    USDC: figures.USDC?.[which] ?? null,
-  });
+  const [pas, dotusd, usdt, usdc] = await Promise.all([
+    native,
+    dotUsd,
+    stable("USDT"),
+    stable("USDC"),
+  ]);
+  const figures = { PAS: pas, DOTUSD: dotusd, USDT: usdt, USDC: usdc };
+  const pick = (which: keyof Figures) =>
+    Object.fromEntries(
+      Object.entries(figures).map(([token, figure]) => [token, figure?.[which] ?? null]),
+    ) as Record<RecoveryToken, bigint | null>;
   return { minimums: pick("minimum"), gates: pick("gate"), keepNativeForFees };
 }
 
@@ -189,10 +189,11 @@ export function recoveryCandidates(
 }
 
 /** The deposit on the burner's Asset Hub account, if one was made: the first token held at or
- *  above what was asked for it, read at the latest block, with its route. A token whose
- *  conversion the chain would not take is passed in `held` with the balance it had then, and is
- *  skipped until the balance grows past it: the same deposit is not paid for again, a new one is
- *  taken up. */
+ *  above what counts for it, with its route. Read at the finalized block, as the pipeline's gate
+ *  reads it, so a deposit found is one the gate takes on the next tick rather than one it holds
+ *  until finality. A token whose conversion the chain would not take is passed in `held` with
+ *  the balance it had then, and is skipped until the balance grows past it: the same deposit is
+ *  not paid for again, a new one is taken up. */
 export async function findRecoveryDeposit(
   api: AssetHubApi,
   address: string,
@@ -201,7 +202,7 @@ export async function findRecoveryDeposit(
 ): Promise<{ route: ConversionRoute; token: RecoveryToken; held: bigint } | null> {
   for (const { route, minimum } of candidates) {
     const token = recoveryTokenOf(route);
-    const balance = await readDeposit(api, route, address, "best");
+    const balance = await readDeposit(api, route, address, "finalized");
     if (balance < minimum) continue;
     const before = held[token];
     if (before !== undefined && balance <= before) continue;

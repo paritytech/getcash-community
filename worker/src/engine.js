@@ -106,7 +106,8 @@ const saveJobs = () => store.save();
  *                                            // minimums: what the surface shows to send, with
  *                                            // the pool tiers' headroom; gates: what counts as
  *                                            // the deposit, the pipeline's own figure
- *                route?, state?, deposit?, depositDoneAt?, depositHeld?: { token, held },
+ *                route?, state?, deposit?, depositFoundAt?, depositGate?, depositDoneAt?,
+ *                depositHeld?: { token, held },
  *                depositError?: { message, at, token?, held? } },
  *                                            // round moves on when a claim spent the fee or the
  *                                            // fee grew; held is the burner's CASH at the last
@@ -278,6 +279,11 @@ export async function startFunding(params) {
     }
     const mismatch = await burnerMismatch(existing, String(input.burnerAddress ?? ""));
     if (mismatch) return { error: "invalid", reason: mismatch };
+    // A sale's way home whose program trapped is over: the key holds nothing to send again,
+    // and a re-arm would read the trap as a recovery to drive.
+    if (existing.phase === "failed" && existing.wayHome && existing.failure === "trapped") {
+      return { error: "invalid", reason: "the way home's CASH is in People's trap" };
+    }
     if (existing.phase === "failed") {
       rearm(existing, Date.now());
       existing.depositExpiresAt = depositExpiryOf(input) ?? existing.depositExpiresAt;
@@ -376,16 +382,25 @@ function fail(record, failure, reason) {
  *  recorded for the claim and for the surface, and the conversion's clock stops. */
 function trapped(record, error, nowMs) {
   record.phase = "recovering";
-  record.trap = {
-    amount: error.amount.toString(),
-    key: error.key,
-    claimerHex: error.claimerHex,
-    at: nowMs,
-  };
+  record.trap = trapOf(error, nowMs);
+  // A trap at People's finalized block proves the conversion final: the pre-send record is let
+  // go here, as the inclusion settler would have, so the job is not read as a conversion still
+  // pending once the recovery is done.
+  record.state.nonceAtSubmit = null;
+  record.state.inclusionBlock = null;
+  record.state.inclusionHash = null;
   // The conversion's time is spent; the claim that follows the recovery gets the whole bound.
   record.state.workedMs = 0;
   delete record.lastError;
 }
+
+/** The trap as the record keeps it: what it holds, the key it is counted under, the claimer. */
+const trapOf = (error, nowMs) => ({
+  amount: error.amount.toString(),
+  key: error.key,
+  claimerHex: error.claimerHex,
+  at: nowMs,
+});
 
 /**
  * Marks a job still waiting for its deposit as cancelled. The record is kept, and a re-sent
@@ -1140,6 +1155,8 @@ async function recoverTrapped(record, env) {
       delete record.recovery.state;
       delete record.recovery.deposit;
       delete record.recovery.depositDoneAt;
+      delete record.recovery.depositFoundAt;
+      delete record.recovery.depositGate;
     }
   }
   delete record.lastError;
@@ -1199,12 +1216,7 @@ async function fundRecovery(record, env, feeCash) {
   };
   // A deposit counts at the gate's figure, not at the one shown with its headroom: a buyer who
   // sent what was shown is not held up by a quote that moved a little since.
-  const gates = Object.fromEntries(
-    Object.entries(recovery.minimums.gates).map(([token, figure]) => [
-      token,
-      figure === null ? null : asBig(figure),
-    ]),
-  );
+  const gates = mapFigures(recovery.minimums.gates, asBig);
   let route = recovery.route === undefined ? null : recordedRoute(recovery.route);
   if (route === null) {
     // A deposit whose conversion the chain would not take is skipped while its balance stands:
@@ -1222,6 +1234,11 @@ async function fundRecovery(record, env, feeCash) {
     route = found.route;
     recovery.route = recordedRouteFields(route);
     recovery.depositHeld = { token: found.token, held: found.held.toString() };
+    // When the deposit was found, for the hold its conversion keeps on the worker, and the
+    // figure it was found at: the conversion's gate takes that figure, frozen as a top-up's
+    // quote is, so a quote that moves while it converts cannot hold a deposit that was right.
+    recovery.depositFoundAt = Date.now();
+    recovery.depositGate = gates[found.token].toString();
     await saveJobs();
   }
   let outcome;
@@ -1232,6 +1249,7 @@ async function fundRecovery(record, env, feeCash) {
       remoteFeeBuffer: DEFAULT_REMOTE_FEE_BUFFER,
       keepNativeForFees: asBig(recovery.minimums.keepNativeForFees, DEFAULT_KEEP_NATIVE_FOR_FEES),
       slippagePct: DEFAULT_SLIPPAGE_PCT,
+      ...(recovery.depositGate === undefined ? {} : { quotedDeposit: asBig(recovery.depositGate) }),
       followDeposit: false,
       stored: recovery.state ?? {},
       store: (state) => {
@@ -1263,6 +1281,8 @@ async function fundRecovery(record, env, feeCash) {
       delete recovery.state;
       delete recovery.deposit;
       delete recovery.depositDoneAt;
+      delete recovery.depositFoundAt;
+      delete recovery.depositGate;
       delete recovery.depositHeld;
     }
     throw new Error(`recovery deposit: ${String(error?.message ?? error)}`);
@@ -1277,6 +1297,8 @@ async function fundRecovery(record, env, feeCash) {
     delete recovery.state;
     delete recovery.depositError;
     delete recovery.depositHeld;
+    delete recovery.depositFoundAt;
+    delete recovery.depositGate;
   }
 }
 
@@ -1330,21 +1352,18 @@ async function sizeRecoveryMinimums(record, env, feeCash) {
   return {
     at: Date.now(),
     feeCash: feeCash.toString(),
-    minimums: figuresAsStrings(sized.minimums),
+    minimums: mapFigures(sized.minimums, String),
     // What counts as the deposit: the gate's own figure, under the one shown.
-    gates: figuresAsStrings(sized.gates),
+    gates: mapFigures(sized.gates, String),
     keepNativeForFees: sized.keepNativeForFees === null ? null : sized.keepNativeForFees.toString(),
     routes: { USDT: recordedRouteFields(usdtRoute), USDC: recordedRouteFields(usdcRoute) },
   };
 }
 
-/** A token table of bigints as the record keeps it, nulls kept. */
-const figuresAsStrings = (figures) =>
+/** A token table mapped figure by figure, nulls kept: the record keeps bigints as strings. */
+const mapFigures = (figures, map) =>
   Object.fromEntries(
-    Object.entries(figures).map(([token, figure]) => [
-      token,
-      figure === null ? null : figure.toString(),
-    ]),
+    Object.entries(figures).map(([token, figure]) => [token, figure === null ? null : map(figure)]),
   );
 
 /** Records the conversion's progress. A retry is prepared again; the first time stands. */
@@ -1399,7 +1418,9 @@ export async function tickAllFunding() {
           if (record.wayHome) {
             // A recovery needs someone to pay the claim's fee, and a sale's way home has no
             // one: the job ends here, and the sale marks its residue stuck for a person. The
-            // reason names the trap, the one place that says where the CASH is.
+            // trap is kept as any other, the one place that says where the CASH is; a re-sent
+            // hand-off is refused, so it never starts a recovery.
+            record.trap = trapOf(error, nowMs);
             fail(record, "trapped", error.message);
           } else {
             trapped(record, error, nowMs);
@@ -1426,31 +1447,38 @@ export async function tickAllFunding() {
   }
 }
 
-/** How long a converted deposit keeps the worker awake for the claim that follows it. The
- *  deposit is on the burner on People by then, so only a People that does not answer the claim
- *  can hold it up, and a recovery has no run bound of its own to end that. */
-const RECOVERY_CLAIM_HOLD_MS = 10 * 60_000;
+/** How long a recovery keeps the worker awake after each thing that moved it: the trap, for the
+ *  first tick that sizes the fee and claims at once when the burner already holds it; a deposit
+ *  found, for its conversion; a conversion done, for the claim that follows; a claim sent, for
+ *  its answer. A recovery has no run bound of its own, so each hold has this one: past it the
+ *  job waits on the buyer, still ticked on the passes the open app asks for, and nothing is
+ *  given up. */
+const RECOVERY_HOLD_MS = 10 * 60_000;
+
+/** Within the hold of something stamped at `at`; nothing stamped is nothing to hold for. */
+const holdsSince = (at, nowMs) => typeof at === "number" && nowMs - at < RECOVERY_HOLD_MS;
 
 /**
- * A deposit being converted for the fee, or one converted lately, with the claim to follow on
- * its own. A deposit the gate holds short moves only with the price or the buyer, so it does not
- * count.
+ * A recovery that waits on the buyer alone: nothing that moved it is within its hold. The
+ * burner waits for the claim's fee, no deposit is being converted for it and no claim is owed an
+ * answer, so the job is ticked on the passes the open app asks for, which size the fee and
+ * price the manual path, but never keeps the worker awake. The worker sees the fee only once it
+ * is on the burner, never the purse's payment itself, so a fee paid right before the app closes
+ * is claimed on the next open.
  */
-const convertingDeposit = (recovery, nowMs) =>
-  (recovery?.deposit === "done" &&
-    nowMs - (recovery.depositDoneAt ?? 0) < RECOVERY_CLAIM_HOLD_MS) ||
-  (recovery?.route !== undefined && recovery.deposit !== "await-native");
-
-/**
- * A recovery that waits on the buyer alone: the burner waits for the claim's fee, no deposit is
- * being converted for it and no claim is owed an answer. Nothing moves until the buyer acts, so
- * such a job is ticked on the passes the open app asks for, which size the fee and price the
- * manual path, but never keeps the worker awake. The worker sees the fee only once it is on the
- * burner, never the purse's payment itself, so a fee paid right before the app closes is claimed
- * on the next open.
- */
-const waitsOnTheBuyer = (record, nowMs) =>
-  record.phase === "recovering" &&
-  record.recovery?.phase !== "claiming" &&
-  record.submitting === undefined &&
-  !convertingDeposit(record.recovery, nowMs);
+function waitsOnTheBuyer(record, nowMs) {
+  if (record.phase !== "recovering") return false;
+  const recovery = record.recovery;
+  // The trap, until the first recovery tick has sized the fee.
+  if (recovery === undefined) return !holdsSince(record.trap?.at, nowMs);
+  // A claim owed an answer, from its send, which is stamped before the submit goes out.
+  if (recovery.phase === "claiming") return !holdsSince(recovery.sentAt, nowMs);
+  // A deposit converted lately, for the claim that follows it.
+  if (recovery.deposit === "done") return !holdsSince(recovery.depositDoneAt, nowMs);
+  // A deposit being converted, from its find. One the gate holds short moves only with the
+  // price or the buyer, so it does not count.
+  if (recovery.route !== undefined && recovery.deposit !== "await-native") {
+    return !holdsSince(recovery.depositFoundAt, nowMs);
+  }
+  return true;
+}
