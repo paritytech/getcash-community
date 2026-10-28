@@ -705,33 +705,370 @@ describe("worker funding engine", () => {
     expect((await sessionStatus(engine)).conversion).toEqual(conversion);
   });
 
-  it("reads the CASH behind done, and behind sizing every claim attempt, from the finalized People block", async () => {
+  it("reads People at the block the tick asks for, and sizes every claim attempt at the best block", async () => {
     armSeams();
     const engine = await freshEngine();
     await engine.startFunding(JSON.stringify(HANDOFF));
     mocks.tickOnce.mockImplementationOnce(async (input) => {
-      expect(await input.readFinalizedUnderlyingOnPeople(BURNER.address)).toBe(SETTLE);
+      expect(await input.readUnderlyingOnPeople(BURNER.address, "best")).toBe(SETTLE);
+      expect(await input.readUnderlyingOnPeople(BURNER.address, "finalized")).toBe(SETTLE);
       return outcome("done");
     });
     mocks.settlementBalance.mockResolvedValue(SETTLE);
     mocks.registerTopUp.mockResolvedValue(undefined);
     await engine.tickAllFunding();
     expect(storedJob().claim).toMatchObject({ phase: "claiming", attempt: 0 });
-    // The tick's own read, then the one that sized the claim.
-    expect(mocks.settlementBalance).toHaveBeenCalledTimes(2);
+    const cash = { kind: "foreign", id: "cash" };
+    // The tick's two reads, then the one that sized the claim.
+    expect(mocks.settlementBalance.mock.calls).toEqual([
+      [BURNER.address, cash, { at: "best" }],
+      [BURNER.address, cash, { at: "finalized" }],
+      [BURNER.address, cash, { at: "best" }],
+    ]);
 
     // A short verdict sizes the next attempt the same way.
     pushStatus(partially(SETTLE / 2n));
     mocks.settlementBalance.mockResolvedValue(SETTLE / 2n);
     await engine.tickAllFunding();
     expect(storedJob().claim).toMatchObject({ phase: "claiming", attempt: 1 });
-    expect(mocks.settlementBalance).toHaveBeenCalledTimes(3);
-    for (const call of mocks.settlementBalance.mock.calls) {
-      expect(call).toEqual([BURNER.address, { kind: "foreign", id: "cash" }, { at: "finalized" }]);
-    }
+    expect(mocks.settlementBalance).toHaveBeenCalledTimes(4);
+    expect(mocks.settlementBalance.mock.calls.at(-1)).toEqual([
+      BURNER.address,
+      cash,
+      { at: "best" },
+    ]);
   });
 
-  it("ticks the next job while the first one waits for its CASH to be final", async () => {
+  it("keeps ticking a done job until its conversion is final, and takes the done back while the chain discards the block", async () => {
+    armSeams();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    // Done at People's best block; the conversion is in a block the chain can still discard.
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.xcmSubmitted = true;
+      state.nonceAtSubmit = 0;
+      state.inclusionBlock = 42;
+      return outcome("done");
+    });
+    mocks.settlementBalance.mockResolvedValue(SETTLE);
+    mocks.registerTopUp.mockResolvedValue(undefined);
+    await engine.tickAllFunding();
+    expect(storedJob()).toMatchObject({ done: true, claim: { phase: "claiming", attempt: 0 } });
+    expect(mocks.registerTopUp).toHaveBeenCalledTimes(1);
+
+    // The block was discarded: the conversion goes out again and the job is not done, while the
+    // claim stays registered with the host.
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      expect(state).toMatchObject({ xcmSubmitted: true, nonceAtSubmit: 0, inclusionBlock: 42 });
+      state.inclusionBlock = 43;
+      return { ...outcome("swap"), submitted: true };
+    });
+    await engine.tickAllFunding();
+    expect(mocks.tickOnce).toHaveBeenCalledTimes(2);
+    expect(storedJob()).toMatchObject({
+      done: false,
+      phase: "swap",
+      claim: { phase: "claiming", attempt: 0 },
+    });
+
+    // Done again on the new arrival, final this time: the claim is followed, not registered twice.
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.nonceAtSubmit = null;
+      state.inclusionBlock = null;
+      return outcome("done");
+    });
+    await engine.tickAllFunding();
+    expect(storedJob()).toMatchObject({
+      done: true,
+      phase: "done",
+      claim: { phase: "claiming", attempt: 0 },
+      state: { nonceAtSubmit: null },
+    });
+    expect(mocks.registerTopUp).toHaveBeenCalledTimes(1);
+
+    // Final: the pipeline is left alone and only the claim is followed.
+    await engine.tickAllFunding();
+    expect(mocks.tickOnce).toHaveBeenCalledTimes(3);
+  });
+
+  it("tells the pipeline once a claim is registered, keeps ticking it on the host's claim in a block, and stops on the claim final", async () => {
+    armSeams();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    const registered: Array<boolean | undefined> = [];
+    mocks.tickOnce.mockImplementation(async (input, state) => {
+      registered.push(input.claimRegistered);
+      state.xcmSubmitted = true;
+      state.nonceAtSubmit = 0;
+      state.inclusionBlock = 42;
+      return outcome("done");
+    });
+    mocks.settlementBalance.mockResolvedValue(SETTLE);
+    mocks.registerTopUp.mockResolvedValue(undefined);
+    await engine.tickAllFunding();
+    await engine.tickAllFunding();
+    expect(registered).toEqual([false, true]);
+    expect(storedJob()).toMatchObject({ done: true, claim: { phase: "claiming", attempt: 0 } });
+
+    // The block is discarded and the conversion goes out again: done is taken back.
+    mocks.tickOnce.mockImplementationOnce(async () => ({ ...outcome("swap"), submitted: true }));
+    await engine.tickAllFunding();
+    expect(storedJob()).toMatchObject({ done: false, phase: "swap", claim: { phase: "claiming" } });
+
+    // The host claims the new arrival and reports it in a block: the pipeline keeps watching
+    // the conversion's block, since the claim's can still go with it.
+    pushStatus(claimed(false));
+    mocks.tickOnce.mockImplementationOnce(async () => outcome("await-arrival"));
+    await engine.tickAllFunding();
+    expect(storedJob()).toMatchObject({
+      done: false,
+      phase: "await-arrival",
+      claim: { phase: "claiming", attempt: 0, status: "claimed" },
+    });
+
+    // Final: the funding leg is over, whatever the pipeline would say, and it is left alone.
+    pushStatus(claimed(true));
+    await saved(() => expect(storedJob().claim.phase).toBe("claimed"));
+    const ticks = mocks.tickOnce.mock.calls.length;
+    expect((await engine.tickAllFunding()).ticked).toBe(1);
+    expect(mocks.tickOnce).toHaveBeenCalledTimes(ticks);
+    expect(storedJob()).toMatchObject({ done: true, phase: "done", claim: { phase: "claimed" } });
+    expect(mocks.registerTopUp).toHaveBeenCalledTimes(1);
+    expect((await engine.tickAllFunding()).ticked).toBe(0);
+  });
+
+  it("sizes the burner once more when the host settles a claim sized before the conversion went out again", async () => {
+    armSeams();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.attempts = 1;
+      state.xcmSubmitted = true;
+      state.nonceAtSubmit = 0;
+      state.inclusionBlock = 42;
+      return outcome("done");
+    });
+    mocks.settlementBalance.mockResolvedValueOnce(SETTLE);
+    mocks.registerTopUp.mockResolvedValue(undefined);
+    await engine.tickAllFunding();
+    expect(storedJob().claim).toMatchObject({ phase: "claiming", attempt: 0, sizedAt: 1 });
+
+    // The block was discarded and the conversion went out again, bringing a little more.
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.attempts = 2;
+      return { ...outcome("swap"), submitted: true };
+    });
+    await engine.tickAllFunding();
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.nonceAtSubmit = null;
+      state.inclusionBlock = null;
+      return outcome("done");
+    });
+    await engine.tickAllFunding();
+    expect(storedJob()).toMatchObject({ done: true, claim: { phase: "claiming", attempt: 0 } });
+    expect(mocks.registerTopUp).toHaveBeenCalledTimes(1);
+
+    // The host settles the first attempt: the burner is sized again for what the second
+    // arrival left, and its whole units are claimed under the next id.
+    pushStatus(claimed(true));
+    expect((await sessionStatus(engine)).claim).toMatchObject({
+      phase: "sizing",
+      attempt: 1,
+      credited: SETTLE.toString(),
+    });
+    const left = 30_000n;
+    mocks.settlementBalance.mockResolvedValueOnce(left + 1_234n);
+    await engine.tickAllFunding();
+    expect(mocks.registerTopUp).toHaveBeenLastCalledWith(
+      left,
+      expect.any(Uint8Array),
+      topUpIdFor(BURNER.publicKey, 1),
+    );
+    expect(storedJob().claim).toMatchObject({ phase: "claiming", attempt: 1, sizedAt: 2 });
+    pushStatus(claimed(true));
+    await saved(() =>
+      expect(storedJob().claim).toMatchObject({
+        phase: "claimed",
+        amount: (SETTLE + left).toString(),
+      }),
+    );
+    expect((await engine.tickAllFunding()).ticked).toBe(0);
+  });
+
+  it("sizes a claim the host has not taken yet once more when the conversion went out again, under the same id", async () => {
+    armSeams();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.attempts = 1;
+      state.xcmSubmitted = true;
+      state.nonceAtSubmit = 0;
+      state.inclusionBlock = 42;
+      return outcome("done");
+    });
+    mocks.settlementBalance.mockResolvedValueOnce(SETTLE);
+    // The host call fails: the claim is sized and still to be registered.
+    mocks.registerTopUp.mockRejectedValueOnce(new Error("host away"));
+    await engine.tickAllFunding();
+    expect(storedJob().claim).toMatchObject({
+      phase: "registering",
+      amount: SETTLE.toString(),
+      sizedAt: 1,
+    });
+
+    // The block was discarded and the conversion went out again, bringing one unit less.
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.attempts = 2;
+      return { ...outcome("swap"), submitted: true };
+    });
+    await engine.tickAllFunding();
+    const less = SETTLE - 10_000n;
+    mocks.settlementBalance.mockResolvedValue(less);
+    mocks.registerTopUp.mockResolvedValue(undefined);
+    mocks.tickOnce.mockImplementation(async () => outcome("done"));
+    await engine.tickAllFunding();
+    expect(mocks.registerTopUp).toHaveBeenCalledTimes(2);
+    expect(mocks.registerTopUp).toHaveBeenLastCalledWith(
+      less,
+      expect.any(Uint8Array),
+      topUpIdFor(BURNER.publicKey, 0),
+    );
+    expect(storedJob().claim).toMatchObject({
+      phase: "claiming",
+      attempt: 0,
+      amount: less.toString(),
+      sizedAt: 2,
+    });
+    expect(storedJob().claim).not.toHaveProperty("resizedFrom");
+  });
+
+  it("keeps the first sizing when the host already holds it, and claims what the resend left past it under the next id", async () => {
+    armSeams();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.attempts = 1;
+      state.xcmSubmitted = true;
+      state.nonceAtSubmit = 0;
+      state.inclusionBlock = 42;
+      return outcome("done");
+    });
+    mocks.settlementBalance.mockResolvedValueOnce(SETTLE);
+    // The host took the registration, and the answer was lost on the way back.
+    mocks.registerTopUp.mockRejectedValueOnce(new Error("host away"));
+    await engine.tickAllFunding();
+    expect(storedJob().claim).toMatchObject({ phase: "registering", sizedAt: 1 });
+
+    // The block was discarded and the conversion went out again, bringing a little more.
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.attempts = 2;
+      return { ...outcome("swap"), submitted: true };
+    });
+    await engine.tickAllFunding();
+    const more = SETTLE + 30_000n;
+    mocks.settlementBalance.mockResolvedValueOnce(more);
+    mocks.registerTopUp.mockRejectedValueOnce(new PaymentTopUpErr.AlreadyExists());
+    mocks.tickOnce.mockImplementation(async () => outcome("done"));
+    await engine.tickAllFunding();
+    expect(mocks.registerTopUp).toHaveBeenLastCalledWith(
+      more,
+      expect.any(Uint8Array),
+      topUpIdFor(BURNER.publicKey, 0),
+    );
+    expect(storedJob().claim).toMatchObject({
+      phase: "claiming",
+      attempt: 0,
+      amount: SETTLE.toString(),
+      sizedAt: 1,
+    });
+    expect(storedJob().claim).not.toHaveProperty("resizedFrom");
+
+    // The host settles the first sizing; what the resend brought past it is claimed next.
+    pushStatus(claimed(true));
+    expect((await sessionStatus(engine)).claim).toMatchObject({
+      phase: "sizing",
+      attempt: 1,
+      credited: SETTLE.toString(),
+    });
+    mocks.settlementBalance.mockResolvedValueOnce(30_000n);
+    mocks.registerTopUp.mockResolvedValue(undefined);
+    await engine.tickAllFunding();
+    expect(mocks.registerTopUp).toHaveBeenLastCalledWith(
+      30_000n,
+      expect.any(Uint8Array),
+      topUpIdFor(BURNER.publicKey, 1),
+    );
+    pushStatus(claimed(true));
+    await saved(() =>
+      expect(storedJob().claim).toMatchObject({ phase: "claimed", amount: more.toString() }),
+    );
+  });
+
+  it("takes the done back when the tick that found the block discarded fails before it ends", async () => {
+    armSeams();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.xcmSubmitted = true;
+      state.arrived = true;
+      state.nonceAtSubmit = 0;
+      state.inclusionBlock = 42;
+      return outcome("done");
+    });
+    mocks.settlementBalance.mockResolvedValueOnce(SETTLE);
+    mocks.registerTopUp.mockResolvedValue(undefined);
+    await engine.tickAllFunding();
+    expect(storedJob()).toMatchObject({ done: true, claim: { phase: "claiming" } });
+
+    // The latch is released, then the quote the resend needs times out.
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.xcmSubmitted = false;
+      state.arrived = false;
+      state.inclusionBlock = null;
+      throw new Error("quote timeout");
+    });
+    await engine.tickAllFunding();
+    expect(storedJob()).toMatchObject({
+      done: false,
+      state: { xcmSubmitted: false, arrived: false, nonceAtSubmit: 0 },
+      lastError: expect.stringContaining("quote timeout"),
+    });
+
+    // The conversion goes out again on the next tick that completes.
+    mocks.tickOnce.mockImplementationOnce(async () => ({ ...outcome("swap"), submitted: true }));
+    await engine.tickAllFunding();
+    expect(storedJob()).toMatchObject({ done: false, phase: "swap" });
+  });
+
+  it("follows a claim the host drives on every tick, Asset Hub answering or not", async () => {
+    armSeams();
+    const engine = await freshEngine();
+    await engine.startFunding(JSON.stringify(HANDOFF));
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.xcmSubmitted = true;
+      state.nonceAtSubmit = 0;
+      state.inclusionBlock = 42;
+      return outcome("done");
+    });
+    mocks.settlementBalance.mockResolvedValue(SETTLE);
+    mocks.registerTopUp.mockResolvedValue(undefined);
+    await engine.tickAllFunding();
+    expect(openWatches()).toHaveLength(1);
+
+    // A restart takes the subscription with it, and Asset Hub does not answer.
+    const again = await freshEngine();
+    expect(openWatches()).toHaveLength(0);
+    mocks.tickOnce.mockRejectedValueOnce(new Error("read timed out"));
+    await again.tickAllFunding();
+    expect(openWatches()).toHaveLength(1);
+    expect(storedJob()).toMatchObject({
+      done: true,
+      lastError: "read timed out",
+      claim: { phase: "claiming", attempt: 0 },
+    });
+  });
+
+  it("ticks the next job while the first one waits for its CASH", async () => {
     armSeams();
     const engine = await freshEngine();
     await engine.startFunding(JSON.stringify(HANDOFF));
@@ -1255,11 +1592,12 @@ describe("worker funding engine", () => {
     expect((await engine.tickAllFunding()).ticked).toBe(1);
   });
 
-  it("releases the latches when re-arming after a shortfall, so the deficit can be re-bought", async () => {
+  it("holds a shortfall while the conversion's block can be discarded, fails on it once final, and releases the latches when re-arming so the deficit can be re-bought", async () => {
     armSeams();
     const engine = await freshEngine();
     await engine.startFunding(JSON.stringify(HANDOFF));
     const funding = await import("@getsome/funding");
+    const short = () => new funding.FundingShortfallError(SETTLE - 5_000n, SETTLE);
     mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
       state.attempts = 1;
       state.xcmSubmitted = true;
@@ -1267,13 +1605,27 @@ describe("worker funding engine", () => {
       state.nonceAtSubmit = 5;
       state.inclusionBlock = 1_234;
       state.fundsSeenAt = Date.now();
-      throw new funding.FundingShortfallError(SETTLE - 5_000n, SETTLE);
+      throw short();
+    });
+    await engine.tickAllFunding();
+    // The block is not final: the verdict waits, and the job keeps ticking.
+    expect(storedJob()).toMatchObject({
+      phase: "starting",
+      lastError: expect.stringContaining("shortfall"),
+      state: { xcmSubmitted: true, nonceAtSubmit: 5, inclusionBlock: 1_234 },
+    });
+    expect(storedJob().failure).toBeUndefined();
+
+    mocks.tickOnce.mockImplementationOnce(async (_input, state) => {
+      state.nonceAtSubmit = null;
+      state.inclusionBlock = null;
+      throw short();
     });
     await engine.tickAllFunding();
     expect(storedJob()).toMatchObject({
       phase: "failed",
       failure: "shortfall",
-      state: { xcmSubmitted: true, peopleAtXcm: "100", nonceAtSubmit: 5, inclusionBlock: 1_234 },
+      state: { xcmSubmitted: true, peopleAtXcm: "100", nonceAtSubmit: null },
     });
 
     await engine.startFunding(JSON.stringify(HANDOFF));
@@ -1809,17 +2161,34 @@ describe("worker funding engine", () => {
     expect(storedJob().claim).toMatchObject({ phase: "claiming", attempt: 1 });
   });
 
-  it("fails a claim nothing was credited for once the burner reads empty, and a re-sent hand-off sizes it again", async () => {
+  it("waits with a claim nothing was credited for while the burner reads empty, until the run's bound, and a re-sent hand-off sizes it again", async () => {
     armSeams();
+    vi.useFakeTimers();
     const engine = await engineWithRegisteredClaim();
 
+    // The CASH left People with a discarded block, or the host is wrong: either way, wait.
     pushStatus({ type: "notClaimed" });
-    mocks.settlementBalance.mockResolvedValueOnce(0n);
+    mocks.settlementBalance.mockResolvedValue(0n);
     expect((await engine.tickAllFunding()).ticked).toBe(1);
-    expect(storedJob()).toMatchObject({ phase: "failed", failure: "claim", done: true });
+    expect(storedJob()).toMatchObject({ phase: "done", done: true, claim: { phase: "sizing" } });
+    expect(storedJob().failure).toBeUndefined();
     expect(storedJob().claim).toMatchObject({ phase: "sizing", attempt: 1 });
+
+    // The wait is on the run's clock: fifteen minutes of ticks end it.
+    expect(storedJob().state.workedMs).toBe(0);
+    for (let tick = 0; tick < 30; tick += 1) {
+      vi.advanceTimersByTime(30_000);
+      expect((await engine.tickAllFunding()).ticked).toBe(1);
+    }
+    expect(storedJob()).toMatchObject({ phase: "done", state: { workedMs: 900_000 } });
+    expect(storedJob().failure).toBeUndefined();
+    vi.advanceTimersByTime(30_000);
+    expect((await engine.tickAllFunding()).ticked).toBe(1);
+    expect(storedJob()).toMatchObject({ phase: "failed", failure: "timeout", done: true });
+    expect(storedJob().lastError).toContain("claim exceeded");
     expect((await engine.tickAllFunding()).ticked).toBe(0);
 
+    mocks.settlementBalance.mockReset();
     await engine.startFunding(JSON.stringify(HANDOFF));
     mocks.settlementBalance.mockResolvedValueOnce(SETTLE);
     expect((await engine.tickAllFunding()).ticked).toBe(1);

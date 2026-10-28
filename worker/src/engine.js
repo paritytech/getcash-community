@@ -126,10 +126,13 @@ const saveJobs = () => store.save();
  *                                            // deposit's route once one arrived, its pipeline
  *                                            // state, and the step its last tick reached
  *   done, createdAt, armedAt, lastTickAt, lastError?,
+ *                                            // done: the CASH is on People; taken back while
+ *                                            // the conversion's block is discarded and resent
  *   state: { attempts, psmRefusals, xcmSubmitted, peopleAtXcm: string,
  *            fundsSeenAt: number|null, nonceAtSubmit: number|null,
- *            inclusionBlock: number|null, sentToPeople: string|null, peopleFeeCash: string|null,
- *            workedMs, rejections, lastRejection },
+ *            inclusionBlock: number|null, inclusionHash: string|null, arrived,
+ *            sentToPeople: string|null, peopleFeeCash: string|null, workedMs,
+ *            rejections, lastRejection },
  *                                            // sentToPeople: the CASH the submitted program
  *                                            // sends, the most a trap of it holds;
  *                                            // peopleFeeCash: what People's dry run charged it,
@@ -138,8 +141,10 @@ const saveJobs = () => store.save();
  *                                            // psmRefusals: PSM refusals so far, not transport
  *                                            // nonceAtSubmit: set from before a submit until
  *                                            // the conversion is final
- *                                            // inclusionBlock: the block the conversion was
- *                                            // seen in, while it is not final
+ *                                            // inclusionBlock, inclusionHash: the block the
+ *                                            // conversion was seen in, while it is not final
+ *                                            // arrived: the CASH was seen on People; done holds
+ *                                            // on it while that block stands
  *                                            // workedMs: worker time since the deposit was
  *                                            // final, until the claim is registered (see
  *                                            // accountWorkedTime)
@@ -159,9 +164,15 @@ const saveJobs = () => store.save();
  *                                            // succeeded and carried the tier's conversion event,
  *                                            // with the worker time then
  *   claim?: { phase: "sizing"|"registering"|"claiming"|"claimed", attempt, credited,
- *             id?, amount?, at, attempts, registeredAt?, workedMs?, status?, partial?, error? },
+ *             id?, amount?, sizedAt?, resizedFrom?, at, attempts, registeredAt?, workedMs?,
+ *             status?, partial?, error? },
  *                                            // attempt: 0-based; each has its own id (hex)
  *                                            // credited: CASH the host minted so far
+ *                                            // sizedAt: the conversions sent when the attempt
+ *                                            // was sized; one sent since may have brought more
+ *                                            // resizedFrom: { amount, sizedAt } of the attempt's
+ *                                            // first sizing, while a re-sized registration is
+ *                                            // out; the host may hold the first one
  *                                            // workedMs: worker time since this attempt was
  *                                            // registered
  *                                            // status: the host's last word on the top-up
@@ -247,6 +258,8 @@ const freshRecordState = () => ({
   fundsSeenAt: null,
   nonceAtSubmit: null,
   inclusionBlock: null,
+  inclusionHash: null,
+  arrived: false,
   workedMs: 0,
 });
 
@@ -335,6 +348,8 @@ function rearm(record, nowMs) {
     record.state.nonceAtSubmit = null;
     record.state.inclusionBlock = null;
     record.state.sentToPeople = null;
+    record.state.inclusionHash = null;
+    record.state.arrived = false;
   }
   if (failure === "held") record.state.psmRefusals = 0;
   record.state.rejections = 0;
@@ -435,10 +450,20 @@ const waitingForDeposit = (record) => !record.done && record.state.fundsSeenAt =
 /** True once the CASH has landed and been claimed; `done` alone means the funding leg is over. */
 const isFinished = (record) => record.done === true && record.claim?.phase === "claimed";
 
-/** The burner's CASH on People in the finalized block, floored to the claim unit. */
+/** The conversion was seen in a block the chain can still discard. A done job with it pending
+ *  keeps ticking, so a discarded block takes the done back and the conversion goes out again. */
+const conversionPending = (record) => record.state.nonceAtSubmit !== null;
+
+/** A claim the host has not taken yet, sized before the conversion went out again: what the new
+ *  arrival brought is not the amount it holds. */
+const staleRegistering = (record) =>
+  record.claim?.phase === "registering" && record.state.attempts > record.claim.sizedAt;
+
+/** The burner's CASH on People at the best block, floored to the claim unit: the run is done once
+ *  the best block shows the arrival. */
 async function claimableOn(peoplePort, burner, what) {
   const held = await bounded(
-    peoplePort.settlementBalance(burner.address, CASH_SETTLEMENT, { at: "finalized" }),
+    peoplePort.settlementBalance(burner.address, CASH_SETTLEMENT, { at: "best" }),
     DEFAULT_TICK_TIMEOUT_MS,
     what,
   );
@@ -504,16 +529,27 @@ async function sizeClaim(record, burner, peoplePort) {
   const amount = await claimableOn(peoplePort, burner, "burner CASH read");
   const claim = record.claim ?? null;
   if (amount === 0n) {
-    if (claim?.phase === "sizing") settleOnCredited(record);
+    // Nothing to claim after a part was credited settles for that part. Nothing at all, after
+    // the host claimed none, only means the CASH left People with a discarded block and is on
+    // its way back; the run's bound ends the wait otherwise.
+    if (claim?.phase === "sizing" && asBig(claim.credited ?? "0") > 0n) settleOnCredited(record);
     return;
   }
   const attempt = claim?.attempt ?? 0;
+  // An attempt sized again keeps its first sizing: a host call that failed after the host took
+  // it leaves the host holding that amount, and AlreadyExists then says so.
+  const resizedFrom =
+    claim?.phase === "registering"
+      ? (claim.resizedFrom ?? { amount: claim.amount, sizedAt: claim.sizedAt })
+      : undefined;
   record.claim = {
     phase: "registering",
     attempt,
     credited: claim?.credited ?? "0",
     id: toHex(claimIdFor(record, burner, attempt)),
     amount: amount.toString(),
+    sizedAt: record.state.attempts,
+    ...(resizedFrom === undefined ? {} : { resizedFrom }),
     at: 0,
     attempts: 0,
   };
@@ -545,8 +581,11 @@ async function registerClaim(record, burner) {
       record.claim = { ...record.claim, error: String(error?.message ?? error) };
       throw error;
     }
+    // The host holds this attempt as it was first sized: that amount is the claim's.
+    if (record.claim.resizedFrom) record.claim = { ...record.claim, ...record.claim.resizedFrom };
   }
   delete record.claim.error;
+  delete record.claim.resizedFrom;
   record.claim = { ...record.claim, phase: "claiming", registeredAt: Date.now(), workedMs: 0 };
   watchClaim(record);
 }
@@ -601,12 +640,19 @@ function applyClaimStatus(record, status) {
   switch (status.type) {
     case "claimed":
       if (status.finalized) {
-        const credited = asBig(record.claim.credited) + asBig(record.claim.amount);
+        const credited = (asBig(record.claim.credited) + asBig(record.claim.amount)).toString();
+        // A conversion sent again since this attempt was sized may have brought more than it
+        // claimed: the burner is sized once more, for the whole units left.
+        if (record.state.attempts > record.claim.sizedAt) {
+          record.claim = { ...record.claim, credited };
+          settleShort(record);
+          return;
+        }
         record.claim = {
           ...record.claim,
           phase: "claimed",
-          credited: credited.toString(),
-          amount: credited.toString(),
+          credited,
+          amount: credited,
           at: Date.now(),
         };
       }
@@ -706,6 +752,12 @@ export async function fundingStatus(params) {
 
 const hostOwnsClaim = (record) => record.claim?.phase === "claiming";
 
+/** The host settled the claim, final: the CASH was on People in a block the relay chain
+ *  finalized, so the conversion's block is final with it and the funding leg is over, whatever
+ *  People shows since. A claim merely seen in a block is not enough: that block can still go,
+ *  and the pipeline has to keep watching the conversion's. */
+const hostClaimed = (record) => record.claim?.phase === "claimed";
+
 /** True from the first tick that saw funds until the claim is registered with the host. A
  *  recovery waits on the buyer and on People, not on this worker, so its ticks are not worked
  *  time: the clock stops at the trap and resumes with the claim. */
@@ -760,7 +812,16 @@ function judgeBounds(record, nowMs, read) {
 /** One tick for one record: read what it needs, act at most once, persist, let go. */
 async function tickRecord(record, nowMs) {
   accountWorkedTime(record, nowMs);
-  if (record.done) {
+  // A claim the host drives is followed on every tick, whatever the chains answer below.
+  if (hostOwnsClaim(record)) watchClaim(record);
+  if (hostClaimed(record)) {
+    record.done = true;
+    record.phase = "done";
+    delete record.lastError;
+    delete record.submitting;
+    return;
+  }
+  if (record.done && !conversionPending(record)) {
     await claimFor(record);
     return;
   }
@@ -797,33 +858,50 @@ async function convert(record, env) {
   // The tier is an input to this worker, never a decision it makes: a job converts through the
   // route it was quoted or not at all.
   const route = recordedRoute(record);
-  const outcome = await runConversion(record, env, {
-    route,
-    settleAmount: asBig(record.settleAmount),
-    remoteFeeBuffer: asBig(record.remoteFeeBuffer, DEFAULT_REMOTE_FEE_BUFFER),
-    keepNativeForFees: asBig(record.keepNativeForFees, DEFAULT_KEEP_NATIVE_FOR_FEES),
-    slippagePct: record.slippagePct,
-    ...(typeof record.quotedDeposit === "string"
-      ? { quotedDeposit: asBig(record.quotedDeposit) }
-      : {}),
-    ...(typeof record.quoteFloorPct === "number" ? { quoteFloorPct: record.quoteFloorPct } : {}),
-    followDeposit: true,
-    stored: record.state,
-    store: (state) => {
-      record.state = { ...state, workedMs: record.state.workedMs ?? 0 };
-    },
-    onConversion: (fact) => recordConversion(record, fact),
-  });
+  const submittedBefore = !!record.state.xcmSubmitted;
+  let outcome;
+  try {
+    outcome = await runConversion(record, env, {
+      route,
+      settleAmount: asBig(record.settleAmount),
+      remoteFeeBuffer: asBig(record.remoteFeeBuffer, DEFAULT_REMOTE_FEE_BUFFER),
+      keepNativeForFees: asBig(record.keepNativeForFees, DEFAULT_KEEP_NATIVE_FOR_FEES),
+      slippagePct: record.slippagePct,
+      ...(typeof record.quotedDeposit === "string"
+        ? { quotedDeposit: asBig(record.quotedDeposit) }
+        : {}),
+      ...(typeof record.quoteFloorPct === "number" ? { quoteFloorPct: record.quoteFloorPct } : {}),
+      followDeposit: true,
+      stored: record.state,
+      store: (state) => {
+        record.state = { ...state, workedMs: record.state.workedMs ?? 0 };
+      },
+      onConversion: (fact) => recordConversion(record, fact),
+    });
+  } catch (error) {
+    // The tick found the block discarded and failed after that: the done goes with the block
+    // here as it would have at the end of the tick.
+    if (submittedBefore && !record.state.xcmSubmitted) record.done = false;
+    throw error;
+  }
   // A cancel that landed during this tick stands.
   if (record.phase === "failed") return;
   record.phase = outcome.step;
   delete record.lastError;
   // A completed tick clears any stale submitting marker.
   delete record.submitting;
-  if (outcome.step === "done") {
-    record.done = true;
-    // Claim in the same tick the CASH lands, over this tick's People connection.
-    await sizeClaim(record, env.burner, env.peoplePort);
+  // Done follows the latest tick: a discarded block takes it back while the conversion goes
+  // out again, and the claim already registered waits with the host for the CASH.
+  record.done = outcome.step === "done";
+  if (record.done) {
+    // Claim in the same tick the CASH lands, over this tick's People connection. A claim
+    // already registered is followed, not registered again; one the host has not taken yet,
+    // sized before the conversion went out again, is sized once more under the same id.
+    if (record.claim == null || record.claim.phase === "sizing" || staleRegistering(record)) {
+      await sizeClaim(record, env.burner, env.peoplePort);
+    } else {
+      await claimFor(record);
+    }
   }
 }
 
@@ -840,6 +918,8 @@ function restoreTickState(stored) {
   state.fundsSeenAt = stored.fundsSeenAt ?? null;
   state.nonceAtSubmit = stored.nonceAtSubmit ?? null;
   state.inclusionBlock = stored.inclusionBlock ?? null;
+  state.inclusionHash = stored.inclusionHash ?? null;
+  state.arrived = !!stored.arrived;
   state.sentToPeople = stored.sentToPeople == null ? null : asBig(stored.sentToPeople);
   state.peopleFeeCash = stored.peopleFeeCash == null ? null : asBig(stored.peopleFeeCash);
   return state;
@@ -856,6 +936,8 @@ function storeTickState(state) {
     fundsSeenAt: state.fundsSeenAt,
     nonceAtSubmit: state.nonceAtSubmit,
     inclusionBlock: state.inclusionBlock,
+    inclusionHash: state.inclusionHash,
+    arrived: state.arrived,
     sentToPeople: state.sentToPeople === null ? null : state.sentToPeople.toString(),
     peopleFeeCash: state.peopleFeeCash === null ? null : state.peopleFeeCash.toString(),
   };
@@ -931,8 +1013,9 @@ async function runConversion(record, env, job) {
         inclusionTimeoutMs: DEFAULT_INCLUSION_TIMEOUT_MS,
         // The PSM tier adds its fee asset itself.
         signOptions: { at: anchor.hash },
-        readFinalizedUnderlyingOnPeople: (ss58) =>
-          peoplePort.settlementBalance(ss58, CASH_SETTLEMENT, { at: "finalized" }),
+        readUnderlyingOnPeople: (ss58, at) =>
+          peoplePort.settlementBalance(ss58, CASH_SETTLEMENT, { at }),
+        claimRegistered: record.claim != null,
         now: Date.now,
         // Persisted before the broadcast leaves, so a wake mid-send knows a conversion may be
         // in flight.
@@ -1306,7 +1389,11 @@ export async function tickAllFunding() {
         await tickRecord(record, nowMs);
         read = true;
       } catch (error) {
-        if (error instanceof FundingShortfallError) {
+        if (error instanceof FundingShortfallError && conversionPending(record)) {
+          // The verdict is on a block the chain can still discard: it stands only once the
+          // block is final, and a discarded block sends the conversion again instead.
+          record.lastError = `shortfall: ${error.message}`;
+        } else if (error instanceof FundingShortfallError) {
           fail(record, "shortfall", `shortfall: ${error.message}`);
         } else if (error instanceof FundingTrappedError) {
           if (record.wayHome) {
