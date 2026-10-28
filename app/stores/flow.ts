@@ -28,7 +28,8 @@ export type Step = "amount" | "method" | "network" | "token";
  * The drill-ins are the route's own refs, so a scene has no way into them: this is the one door,
  * read behind `isDemoBuild()` and null in every build that is not the deck's.
  */
-export type PreviewDrillIn = "currency" | "fees" | "refund";
+export type PreviewDrillIn =
+  "currency" | "fees" | "refund" | "recovery-fee" | "recovery-token" | "recovery-deposit";
 
 export const useFlowStore = defineStore("flow", () => {
   const session = useSessionStore();
@@ -46,6 +47,8 @@ export const useFlowStore = defineStore("flow", () => {
   const previewDrillIn = ref<PreviewDrillIn | null>(null);
   /** Demo deck only: the deposit mismatch a scene wants the sheet to show over the deposit. */
   const previewMismatch = ref<DepositMismatch | null>(null);
+  /** Demo deck only: the purse balance a scene wants the journey to read, base units of CASH. */
+  const previewPurse = ref<bigint | null>(null);
   /** The recovery screen for a mismatched direct deposit has taken the deposit screen. */
   const recoveringDeposit = ref(false);
 
@@ -179,6 +182,7 @@ export const useFlowStore = defineStore("flow", () => {
     confirmingCancel,
     previewDrillIn,
     previewMismatch,
+    previewPurse,
     recoveringDeposit,
     screen,
     setSourceByName,

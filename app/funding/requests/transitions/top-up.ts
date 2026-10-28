@@ -189,9 +189,11 @@ function recovering(record: TopUpRecord, at: number, view: WorkerRecoveryView): 
         : { ...current, step }
       : { kind: "recovering", at, step };
   const { phase: _phase, ...facts } = view;
+  const { payment, depositToken } = record.recovery ?? {};
   const recovery: TopUpRecord["recovery"] = {
     ...facts,
-    ...(record.recovery?.payment === undefined ? {} : { payment: record.recovery.payment }),
+    ...(payment === undefined ? {} : { payment }),
+    ...(depositToken === undefined ? {} : { depositToken }),
   };
   // The worker reports the same facts every tick for as long as the trap stands: unchanged, the
   // record is the same, so the poll is a witness and not a write.
@@ -663,6 +665,12 @@ function applyUser(record: TopUpRecord, observation: UserObservation): TopUpReco
         ...record,
         recovery: { ...recovery, payment: { attempt, requestedAt: at, id, round } },
       };
+    }
+    case "recovery-token-picked": {
+      const { recovery } = record;
+      if (record.status.kind !== "recovering" || recovery === undefined) return record;
+      if (recovery.depositToken === observation.token) return record;
+      return { ...record, recovery: { ...recovery, depositToken: observation.token } };
     }
     case "channel-opened":
     case "swap-opened":
