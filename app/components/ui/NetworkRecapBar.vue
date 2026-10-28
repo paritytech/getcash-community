@@ -3,11 +3,14 @@
 // container bar. `skeleton` renders the bar as an empty loading placeholder.
 withDefaults(
   defineProps<{
+    /** The bar's own word, before the network's. */
+    caption?: string;
     label?: string;
     icon?: string;
     skeleton?: boolean;
   }>(),
   {
+    caption: "Network selected",
     label: "",
     icon: "",
     skeleton: false,
@@ -22,7 +25,7 @@ withDefaults(
     :aria-hidden="skeleton || undefined"
   >
     <template v-if="!skeleton">
-      <span>Network selected</span>
+      <span>{{ caption }}</span>
       <span class="flex items-center gap-2">
         {{ label }}
         <img :src="icon" alt="" class="size-6 rounded-full" />

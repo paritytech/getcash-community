@@ -3,17 +3,32 @@
 // Reached
 // from a package's handoff or from a top-up opened from the list.
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import type { RecoveryToken } from "@getsome/funding";
+import { usePurseBalance } from "../../composables/usePurseBalance";
 import { useStateDirector } from "../../composables/useStateDirector";
 import { useVisibilityReconcile } from "../../composables/useVisibilityReconcile";
+import { currencyConfig } from "../../funding/config";
+import { recoveryChoices } from "../../funding/recovery-deposit";
+import { burnerAddressOf } from "../../funding/requests/model";
+import {
+  awaitingAnswer,
+  recoveryPrompt,
+  trappedCash,
+  type PurseWord,
+} from "../../funding/timeline/recovery";
 import type { FundingTopUp } from "../../funding/top-ups";
 import { useFlowStore } from "../../stores/flow";
 import { useRequestsStore } from "../../stores/requests";
 import { useSessionStore } from "../../stores/session";
+import { fmtCash } from "../../utils/cash";
 import { isDemoBuild } from "../../utils/demo";
+import { requestRefKey } from "../../utils/request-index";
 import CancelTopUpScreen from "../screens/CancelTopUpScreen.vue";
 import JourneySkeleton from "../screens/JourneySkeleton.vue";
 import ScreenShell from "../ui/ScreenShell.vue";
 import RecoverDepositScreen from "../screens/RecoverDepositScreen.vue";
+import RecoverFeeScreen from "../screens/RecoverFeeScreen.vue";
+import RecoverTokenScreen from "../screens/RecoverTokenScreen.vue";
 import RecoverTrappedScreen from "../screens/RecoverTrappedScreen.vue";
 import ReturnFundsScreen from "../screens/ReturnFundsScreen.vue";
 import FundingSettledStatusScreen from "./FundingSettledStatusScreen.vue";
@@ -79,24 +94,157 @@ watch(
 /** The recovery guide over an ended Polkadot top-up, whose funds, if any, are on its own
  *  account. */
 const showingRecovery = ref(false);
-/** The deposit guide over a top-up whose Cash is in People's trap: what to send to its own
- *  account for the claim's fee. Back (toolbar or bottom button) returns to the journey. */
-const showingRecoveryDeposit = ref(false);
-// Nothing left to send for: the trap claimed, a deposit already being converted, or the claim
-// on its way. The screen closes so it cannot ask for a second deposit.
-const recoveryStillWaitsForADeposit = computed<boolean | null>(() => {
-  const record = requests.foregroundRecord;
-  if (record === null) return null;
-  if (record.status.kind !== "recovering") return false;
-  const deposit = record.recovery?.deposit;
-  if (record.status.step === "claiming") return false;
-  return deposit === undefined || deposit === "await-native";
-});
-watch(recoveryStillWaitsForADeposit, (waits) => {
-  if (waits === false) showingRecoveryDeposit.value = false;
-});
 
-/** A tap on the purse the store could not act on: said under the journey, until the record
+/** The screens over a top-up whose Cash is in People's trap: the fee's confirmation before the
+ *  purse is asked, the token to send instead, and the deposit on that token. Back (toolbar or
+ *  bottom button) returns to the journey; Change token returns to the token screen. */
+type RecoveryScreen = "fee" | "token" | "deposit";
+const recoveryScreen = ref<RecoveryScreen | null>(null);
+const recovering = computed(() => requests.foregroundRecord?.status.kind === "recovering");
+// The purse is read for a top-up in recovery only: whether it covers the fee decides what the
+// band offers, and the confirmation shows it. The deck stages a balance of its own.
+const purse = usePurseBalance({ enabled: () => recovering.value });
+const purseWord = computed<PurseWord>(() => {
+  if (isDemoBuild() && flow.previewPurse !== null) return flow.previewPurse;
+  const state = purse.state.value;
+  return state.kind === "known" ? state.balance : state.kind;
+});
+/** The claim's fee as the confirmation shows it, once the worker sized it, and as the band and
+ *  the deposit screen name it. */
+const recoveryFeeHuman = computed(() => {
+  const ask = requests.foregroundRecord?.recovery?.askCash;
+  return ask === undefined ? null : fmtCash(BigInt(ask));
+});
+const recoveryFeeText = computed(() =>
+  recoveryFeeHuman.value === null ? undefined : `${currencyConfig.symbol}${recoveryFeeHuman.value}`,
+);
+/** The read purse falls short of the fee: the confirmation says so and does not ask the host. */
+const purseShort = computed(() => {
+  const ask = requests.foregroundRecord?.recovery?.askCash;
+  return typeof purseWord.value === "bigint" && ask !== undefined && purseWord.value < BigInt(ask);
+});
+/** The Cash the claim adds, as the confirmation names it. */
+const recoveryAmount = computed(() => {
+  const record = requests.foregroundRecord;
+  return record === null ? "" : trappedCash(record);
+});
+/** What the deposit screen shows: the record's own address, and the tokens as the worker priced
+ *  them. */
+const recoveryAddress = computed(() => {
+  const record = requests.foregroundRecord;
+  return record === null ? null : burnerAddressOf(record);
+});
+const recoveryPriced = computed(() => requests.foregroundRecord?.recovery?.minimums !== undefined);
+const recoveryChoicesView = computed(() => recoveryChoices(requests.foregroundRecord?.recovery));
+/** The token the deposit screen is on: picked here, else as the record remembers it. A pick
+ *  belongs to the record it was made on, and goes with it. */
+const pickedToken = ref<RecoveryToken | null>(null);
+watch(
+  () => {
+    const record = requests.foregroundRecord;
+    return record === null ? null : requestRefKey(record.ref);
+  },
+  () => {
+    pickedToken.value = null;
+  },
+);
+const depositToken = computed(
+  () => pickedToken.value ?? requests.foregroundRecord?.recovery?.depositToken ?? null,
+);
+const depositChoice = computed(
+  () => recoveryChoicesView.value.find((c) => c.token === depositToken.value) ?? null,
+);
+/** The host's word on the fee's payment. */
+const payment = computed(() => requests.foregroundRecord?.recovery?.payment);
+/** The host is being asked, or its sheet is up: the confirmation says the fee is being paid. The
+ *  band reads the same predicate for its waiting line. */
+const asking = ref(false);
+const payingFee = computed(
+  () => asking.value || awaitingAnswer(requests.foregroundRecord?.recovery),
+);
+/** The band's word on the recovery, read with the purse as the journey reads it. */
+const prompt = computed(() => {
+  const record = requests.foregroundRecord;
+  return record === null ? undefined : recoveryPrompt(record, purseWord.value);
+});
+// The buyer is still asked for the fee: the trap stands, nothing is being converted or claimed,
+// and no payment is on its way. Otherwise the screens close, so they cannot ask for a second
+// deposit or a second fee; the confirmation stays while its own payment is on its way.
+const recoveryAsksTheBuyer = computed<boolean | null>(() => {
+  if (requests.foregroundRecord === null) return null;
+  return (prompt.value?.actions.length ?? 0) > 0;
+});
+watch(recoveryAsksTheBuyer, (asks) => {
+  if (asks !== false) return;
+  if (recoveryScreen.value === "fee" && payingFee.value && recovering.value) return;
+  recoveryScreen.value = null;
+});
+// A record that is no longer recovering has no recovery screen to show, whatever was up.
+watch(recovering, (on) => {
+  if (!on) recoveryScreen.value = null;
+});
+/** The host's answer closes the confirmation: the fee is paid, or the journey says why not. The
+ *  purse is read again: afresh when it paid, in part or whole, since the answer drew it down;
+ *  with the known balance standing meanwhile when it refused or did not know the ask. */
+watch(
+  () => payment.value?.status,
+  (status) => {
+    if (status === undefined) return;
+    if (recoveryScreen.value === "fee") recoveryScreen.value = null;
+    const spent =
+      status === "processing" || status === "completed" || status === "partiallyClaimed";
+    void purse.refresh({ spent });
+  },
+);
+// The confirmation shows the balance, so it opens on a fresh read.
+watch(recoveryScreen, (screen) => {
+  if (screen === "fee") void purse.refresh();
+});
+// A screen whose figures are gone closes: the fee re-sized under the confirmation, or the
+// deposit without a token.
+watch(
+  () =>
+    (recoveryScreen.value === "fee" && recoveryFeeHuman.value === null) ||
+    (recoveryScreen.value === "deposit" && depositToken.value === null),
+  (gone) => {
+    if (gone) recoveryScreen.value = null;
+  },
+);
+// A top-up whose deposit screen was opened before opens on it again, once its record is up and
+// while the band offers the wallet path: not onto a QR the band would not offer, as when the
+// purse covers the fee since.
+let landedOnDeposit = false;
+watch(
+  () =>
+    depositToken.value !== null &&
+    prompt.value?.actions.some((action) => action.kind === "send-deposit") === true,
+  (lands) => {
+    if (!lands || landedOnDeposit) return;
+    landedOnDeposit = true;
+    if (recoveryScreen.value === null) recoveryScreen.value = "deposit";
+  },
+  { immediate: true },
+);
+/** The deposit path: the token screen first, the deposit itself once a token is known. */
+function openRecoveryDeposit() {
+  recoveryScreen.value = depositToken.value === null ? "token" : "deposit";
+}
+/** The pick opens the deposit on the token and is kept on the record, so the top-up opens on the
+ *  deposit again. A pick that could not be kept still opens the deposit; it is only not
+ *  remembered. */
+async function pickRecoveryToken(token: RecoveryToken) {
+  const record = requests.foregroundRecord;
+  if (record === null) return;
+  pickedToken.value = token;
+  recoveryScreen.value = "deposit";
+  try {
+    await requests.pickRecoveryToken(record.ref, token);
+  } catch (e) {
+    console.warn(`[funding] the recovery token could not be kept: ${String(e)}`);
+  }
+}
+
+/** A tap on the purse the store could not act on: said on the confirmation, until the record
  *  moves or the buyer taps again. */
 const recoveryNotice = ref<string | null>(null);
 watch(
@@ -106,11 +254,12 @@ watch(
   },
 );
 /** Asks the purse for the claim's fee. A refusal reaches the journey as the host's word; a request
- *  that could not be made is said under the journey, its offer standing for the next tap. */
+ *  that could not be made is said on the confirmation, its offer standing for the next tap. */
 async function recoverFromBalance() {
   const record = requests.foregroundRecord;
   if (record === null) return;
   recoveryNotice.value = null;
+  asking.value = true;
   try {
     const asked = await requests.requestRecoveryPayment(record.ref);
     if (!asked.ok) recoveryNotice.value = asked.reason;
@@ -118,14 +267,19 @@ async function recoverFromBalance() {
     // The stamp or the host could not be reached: said, and the offer stands for the next tap.
     console.warn(`[funding] the recovery fee could not be asked for: ${String(e)}`);
     recoveryNotice.value = "Your balance couldn't be asked just now. Try again in a moment.";
+  } finally {
+    asking.value = false;
   }
 }
-// Demo deck: a scene can land straight on the opened guide. Inert everywhere else.
+// Demo deck: a scene can land straight on an opened drill-in. Inert everywhere else.
 if (isDemoBuild()) {
   watch(
     () => flow.previewDrillIn,
     (want) => {
       if (want === "refund") showingRefund.value = true;
+      else if (want === "recovery-fee") recoveryScreen.value = "fee";
+      else if (want === "recovery-token") recoveryScreen.value = "token";
+      else if (want === "recovery-deposit") recoveryScreen.value = "deposit";
     },
     { immediate: true },
   );
@@ -143,11 +297,19 @@ watch(
   },
 );
 
+/** The toolbar's title: the drill-ins name themselves, the live journey carries none. */
+const shellTitle = computed(() => {
+  if (showingFees.value) return "Fees";
+  if (recoveryScreen.value === "token") return "Select token";
+  if (recoveryScreen.value === "deposit") return "Pay fee";
+  return waiting.value || unresumable.value ? props.title : "";
+});
+
 function goBack() {
   if (flow.confirmingCancel) flow.confirmingCancel = false;
   else if (showingRefund.value) showingRefund.value = false;
   else if (showingRecovery.value) showingRecovery.value = false;
-  else if (showingRecoveryDeposit.value) showingRecoveryDeposit.value = false;
+  else if (recoveryScreen.value !== null) recoveryScreen.value = null;
   else if (showingFees.value) showingFees.value = false;
   else emit("back");
 }
@@ -190,15 +352,7 @@ onUnmounted(() => {
        while open. Back stays available during the claim: leaving lands on the top-ups list,
        where the in-flight top-up remains resumable. -->
   <ScreenShell
-    :title="
-      showingFees
-        ? 'Fees'
-        : showingRecoveryDeposit
-          ? 'Recover your Cash'
-          : waiting || unresumable
-            ? title
-            : ''
-    "
+    :title="shellTitle"
     :back="(readOnly || !waiting) && !session.cancelling"
     @back="goBack"
   >
@@ -227,7 +381,32 @@ onUnmounted(() => {
     />
     <ReturnFundsScreen v-else-if="showingRefund" :top-up="topUp" @back="showingRefund = false" />
     <RecoverDepositScreen v-else-if="showingRecovery" @back="showingRecovery = false" />
-    <RecoverTrappedScreen v-else-if="showingRecoveryDeposit" />
+    <RecoverFeeScreen
+      v-else-if="recoveryScreen === 'fee' && recoveryFeeHuman !== null"
+      :fee="recoveryFeeHuman"
+      :amount="recoveryAmount"
+      :purse="purseWord"
+      :purse-unread="purse.failed.value"
+      :short="purseShort"
+      :paying="payingFee"
+      :notice="recoveryNotice"
+      @confirm="recoverFromBalance"
+      @back="recoveryScreen = null"
+    />
+    <RecoverTokenScreen
+      v-else-if="recoveryScreen === 'token'"
+      :choices="recoveryChoicesView"
+      :priced="recoveryPriced"
+      @pick="pickRecoveryToken"
+      @back="recoveryScreen = null"
+    />
+    <RecoverTrappedScreen
+      v-else-if="recoveryScreen === 'deposit' && depositToken !== null"
+      :address="recoveryAddress"
+      :choice="depositChoice"
+      :fee="recoveryFeeText"
+      @change-token="recoveryScreen = 'token'"
+    />
     <MeldFeeDetailsScreen
       v-else-if="showingFees"
       :quote="quote"
@@ -237,24 +416,18 @@ onUnmounted(() => {
     <template v-else>
       <JourneyScreen
         :top-up="topUp ?? null"
+        :purse="purseWord"
         @fees="showingFees = true"
         @refund="showingRefund = true"
         @recover="showingRecovery = true"
-        @recover-from-balance="recoverFromBalance"
-        @recover-deposit="showingRecoveryDeposit = true"
+        @recover-from-balance="recoveryScreen = 'fee'"
+        @recover-deposit="openRecoveryDeposit"
         @cancel="flow.confirmingCancel = true"
         @close="emit('back')"
         @start-over="emit('startOver')"
       />
-      <!-- A tap on the purse the store could not act on, or a cancel the adapter refused: the
-           payment is already on its way and the request stands. -->
-      <p
-        v-if="recoveryNotice"
-        class="shrink-0 pb-cta text-center text-body-m text-fg-secondary"
-        role="status"
-      >
-        {{ recoveryNotice }}
-      </p>
+      <!-- A cancel the adapter refused: the payment is already on its way and the request
+           stands. -->
       <p
         v-if="session.cancelNotice"
         class="shrink-0 pb-cta text-center text-body-m text-fg-secondary"
