@@ -424,6 +424,79 @@ describe("lib/supported", () => {
     expect(blank.some((r) => r.belowMinimum)).toBe(false);
   });
 
+  const method = (
+    category: "card" | "bank",
+    min: string,
+    max: string,
+    currency = "USD",
+    providers = ["TRANSAK"],
+  ) => ({ paymentMethodType: category, category, min, max, currency, providers });
+  const corridor = (fiat: string, ...methods: ReturnType<typeof method>[]) => ({
+    country: "DE",
+    fiat,
+    methods,
+  });
+
+  it.each([
+    {
+      name: "a method only USDT routes",
+      usdt: corridor("USD", method("card", "10", "500")),
+      pas: corridor("USD", method("bank", "20", "900")),
+      want: corridor("USD", method("card", "10", "500"), method("bank", "20", "900")),
+    },
+    {
+      name: "a method only PAS routes",
+      usdt: corridor("USD"),
+      pas: corridor("USD", method("card", "5", "300")),
+      want: corridor("USD", method("card", "5", "300")),
+    },
+    {
+      name: "both route it: the smaller minimum and the larger maximum",
+      usdt: corridor("USD", method("card", "10.5", "500")),
+      pas: corridor("USD", method("card", "9.75", "300", "USD", ["MOONPAY", "TRANSAK"])),
+      want: corridor("USD", method("card", "9.75", "500", "USD", ["TRANSAK", "MOONPAY"])),
+    },
+    {
+      name: "a bound one side does not give",
+      usdt: corridor("USD", method("card", "", "500")),
+      pas: corridor("USD", method("card", "5", "300")),
+      want: corridor("USD", method("card", "", "500")),
+    },
+    {
+      name: "different fiats: USDT's bounds where it routes the method, else PAS's",
+      usdt: corridor("USD", method("card", "10", "500")),
+      pas: corridor("EUR", method("card", "5", "900", "EUR"), method("bank", "20", "900", "EUR")),
+      want: corridor("USD", method("card", "10", "500"), method("bank", "20", "900", "EUR")),
+    },
+    {
+      name: "USDT unreachable",
+      usdt: null,
+      pas: corridor("USD", method("card", "5", "300")),
+      want: corridor("USD", method("card", "5", "300")),
+    },
+    {
+      name: "PAS unreachable",
+      usdt: corridor("USD", method("card", "10", "500")),
+      pas: null,
+      want: corridor("USD", method("card", "10", "500")),
+    },
+  ])("mergeCorridor: $name", async ({ usdt, pas, want }) => {
+    const { mergeCorridor } = await import("../lib/supported");
+    expect(mergeCorridor(usdt, pas)).toEqual(want);
+  });
+
+  it.each([
+    { name: "both answer", usdt: ["DE", "US"], pas: ["BR", "DE"], want: ["BR", "DE", "US"] },
+    { name: "USDT unreachable", usdt: null, pas: ["BR", "DE"], want: ["BR", "DE"] },
+    { name: "PAS unreachable", usdt: ["DE", "US"], pas: null, want: ["DE", "US"] },
+    { name: "neither answers", usdt: null, pas: null, want: null },
+  ])("mergeCountries: $name", async ({ usdt, pas, want }) => {
+    const { mergeCountries, countryName } = await import("../lib/supported");
+    const rows = (codes: string[] | null) =>
+      codes && codes.map((country) => ({ country, name: countryName(country) }));
+    expect(mergeCountries(rows(usdt), rows(pas))?.map((c) => c.country) ?? null).toEqual(want);
+  });
+
   it("namedCountry prefers the catalog's own name, then Intl's, then the code", async () => {
     const { namedCountry } = await import("../lib/supported");
     const catalog = [{ country: "GB", name: "United Kingdom of Great Britain" }];

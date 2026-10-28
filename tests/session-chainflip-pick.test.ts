@@ -1,12 +1,13 @@
-// A hosted Chainflip pick runs under its own source and opens the rail's channel to the burner.
-// The demo's Skip then has the faucet send the burner what the rail would have delivered; on a
-// Polkadot deposit, the figure the deposit itself asks.
+// A hosted Chainflip pick runs under its own source and opens the rail's channel to the burner,
+// on the first route the chain ranks that Chainflip can quote. The demo's Skip then has the faucet
+// send the burner what the rail would have delivered; on a Polkadot deposit, the figure the
+// deposit itself asks.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { TOKENS } from "@getsome/core";
-import { SourceMinimumNotMetError } from "@getsome/chainflip";
-import { createManualRail } from "@getsome/funding";
+import { ChainflipRequestError, SourceMinimumNotMetError } from "@getsome/chainflip";
+import { createManualRail, type ConversionRoute } from "@getsome/funding";
 import { createFakeRail } from "@getsome/testing";
 import {
   createMemoryKeyedStorage,
@@ -22,11 +23,16 @@ const BURNER = "14uAyRtbeRsrgERPLETm72yFPKW3oi3m4RX93arNwGQhsduC";
 const BUDGET = 58_694_260_960n;
 /** What the next world sizes its budget at; a test moves it to stand for a rebuild on reopen. */
 const sizing = { budget: BUDGET };
-/** Set, the fakes' rail refuses the next quote with it: the pick is under Chainflip's floor. */
-const floor = { error: null as Error | null };
+/** The routes the chain ranks for a Chainflip pick. */
+const ranked = { routes: [{ tier: "pool" }] as ConversionRoute[] };
+/** Per tier, the error the fakes' rail refuses a quote on that route with. */
+const refusals = new Map<ConversionRoute["tier"], Error>();
 
 const { worlds, faucet, manager } = vi.hoisted(() => ({
-  worlds: { builds: [] as { sourceId?: string; tradeN?: number }[] },
+  worlds: {
+    builds: [] as { sourceId?: string; tradeN?: number; tier: string }[],
+    disposed: [] as string[],
+  },
   faucet: { calls: [] as unknown[] },
   manager: { isAvailable: () => true, call: async () => {}, dispose() {} },
 }));
@@ -43,6 +49,7 @@ vi.mock("../lib/coinage-live", async () => {
   const { createMockCoinageSession, depositTokenOf } = await import("../lib/coinage");
   return {
     chooseHostedRoute: async () => ({ tier: "pool" }),
+    rankHostedRoutes: async () => ranked.routes,
     nextHostedTradeNumber: async () => 1,
     ensureChainSubmitGrant: async () => {},
     // The requests store's own reads: the counter behind the gap sweep, a number with no flow
@@ -58,19 +65,21 @@ vi.mock("../lib/coinage-live", async () => {
     watchTradeBurner: async () => () => {},
     createHostedCoinageWorld: async (args: {
       amount: bigint;
-      route: { tier: "pool" };
+      route: ConversionRoute;
       sourceId?: string;
       tradeN?: number;
     }) => {
-      worlds.builds.push({ sourceId: args.sourceId, tradeN: args.tradeN });
+      const { tier } = args.route;
+      worlds.builds.push({ sourceId: args.sourceId, tradeN: args.tradeN, tier });
       // A Polkadot pick deposits straight to the burner; every other runs on the fakes' rail,
-      // which refuses when a test puts the pick under its floor.
+      // which refuses the routes a test has it refuse.
+      const refusal = refusals.get(tier);
       const rail =
         args.sourceId === "dot-assethub"
           ? createManualRail({ token: depositTokenOf(args.route) })
-          : floor.error === null
+          : refusal === undefined
             ? undefined
-            : createFakeRail({ quoteError: floor.error });
+            : createFakeRail({ quoteError: refusal });
       const mock = await createMockCoinageSession({
         recipient: BURNER,
         amount: args.amount,
@@ -88,7 +97,10 @@ vi.mock("../lib/coinage-live", async () => {
         readPurse: async () => 0n,
         readBurnerDepositOnAh: async () => 0n,
         exportBurnerSecret: async () => "0x",
-        dispose: () => mock.session.dispose(),
+        dispose: () => {
+          worlds.disposed.push(tier);
+          mock.session.dispose();
+        },
       };
     },
   };
@@ -106,6 +118,17 @@ function fakeWebStorage(): WebStorageLike {
     },
   };
 }
+
+/** Chainflip's answer to a BTC purchase under its floor. */
+const underFloor = () =>
+  new SourceMinimumNotMetError({
+    sourceId: "btc",
+    assetSymbol: "BTC",
+    minimumBaseUnits: 100_000n,
+    minimumFormatted: "0.001",
+    neededBaseUnits: 50_000n,
+    neededFormatted: "0.0005",
+  });
 
 /** Quotes 50 CASH from the pick and starts the request. */
 async function startTopUp(chain: string, asset: string) {
@@ -125,9 +148,11 @@ describe("a hosted Chainflip pick", () => {
     setRecordStorage(createMemoryKeyedStorage());
     setMirrorStorage(fakeWebStorage());
     worlds.builds.length = 0;
+    worlds.disposed.length = 0;
     faucet.calls.length = 0;
     sizing.budget = BUDGET;
-    floor.error = null;
+    ranked.routes = [{ tier: "pool" }];
+    refusals.clear();
     vi.spyOn(console, "warn").mockImplementation(() => {});
   });
   afterEach(async () => {
@@ -141,7 +166,7 @@ describe("a hosted Chainflip pick", () => {
   it("runs under its own source and opens the rail's channel to the burner", async () => {
     const { session, requests } = await startTopUp("Bitcoin", "BTC");
     // The world runs under the pick's source, not the deposit token's.
-    expect(worlds.builds).toEqual([{ sourceId: "btc", tradeN: 1 }]);
+    expect(worlds.builds).toEqual([{ sourceId: "btc", tradeN: 1, tier: "pool" }]);
     // The rail's figure is what the buyer sends; the budget is what lands on the burner.
     expect(session.quoted).toMatchObject({
       send: "0.001 BTC",
@@ -166,14 +191,7 @@ describe("a hosted Chainflip pick", () => {
   });
 
   it("a pick under its floor sizes the picker without an error and opens nothing", async () => {
-    floor.error = new SourceMinimumNotMetError({
-      sourceId: "btc",
-      assetSymbol: "BTC",
-      minimumBaseUnits: 100_000n,
-      minimumFormatted: "0.001",
-      neededBaseUnits: 50_000n,
-      neededFormatted: "0.0005",
-    });
+    refusals.set("pool", underFloor());
     const session = useSessionStore();
     const requests = useRequestsStore();
     session.setAmount("50");
@@ -200,6 +218,35 @@ describe("a hosted Chainflip pick", () => {
     expect(session.live).toBeNull();
     await session.start();
     expect(requests.phase).toBeNull();
+  });
+
+  const PSM: ConversionRoute = { tier: "psm", external: "USDT", feeRate: 1_000 };
+  const refused = new ChainflipRequestError("no USDT route", 400);
+  const outage = new ChainflipRequestError("Chainflip is down", 503);
+  const noDot = new Error("no DOT route");
+  it.each([
+    { name: "USDT accepted", asked: ["psm"], landed: "psm" },
+    { name: "USDT refused, DOT accepted", usdt: refused, asked: ["psm", "pool"], landed: "pool" },
+    { name: "an outage on USDT", usdt: outage, asked: ["psm"], error: outage },
+    { name: "both refused", usdt: refused, dot: noDot, asked: ["psm", "pool"], error: refused },
+    { name: "USDT under the source's floor", usdt: underFloor(), asked: ["psm"], minimum: true },
+  ])("a pick the PSM can serve: $name", async ({ usdt, dot, asked, landed, error, minimum }) => {
+    ranked.routes = [PSM, { tier: "pool" }];
+    if (usdt) refusals.set("psm", usdt);
+    if (dot) refusals.set("pool", dot);
+    const session = useSessionStore();
+    session.setAmount("50");
+    await session.fetchQuote("Bitcoin", "BTC");
+    expect(worlds.builds.map((build) => build.tier)).toEqual(asked);
+    expect(worlds.builds.every((build) => build.tradeN === 1)).toBe(true);
+    // Every world but the one kept is let go.
+    expect(worlds.disposed).toEqual(landed === undefined ? asked : asked.slice(0, -1));
+    expect(session.live?.route.tier).toBe(landed);
+    expect(session.quoteError).toBe(error?.message ?? null);
+    expect(session.quoteFailures).toBe(error === undefined ? 0 : 1);
+    expect(session.sourcePrice?.kind).toBe(
+      minimum ? "minimum" : error === undefined ? "price" : undefined,
+    );
   });
 
   // TODO(production): delete with the faucet and fundFaucet.

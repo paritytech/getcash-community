@@ -1,6 +1,7 @@
 export {
   createMeldClient,
   fiatLimitOf,
+  isAdapterOutage,
   type MeldFiatLimit,
   type MeldClientLike,
   type MeldDepositDisclosure,
