@@ -6,16 +6,22 @@ import { computed } from "vue";
 import { RefreshCcw, X } from "lucide-vue-next";
 import { formatBaseUnits, sellAmountOf } from "@getsome/meld";
 import { useFundingProgressClock } from "../../composables/useFundingProgressClock";
+import {
+  saleVaultProxyNote,
+  saleVaultProxyRelayable,
+  useSaleVaultProxyStatus,
+} from "../../composables/useSaleVaultProxyStatus";
 import { SUCCESS_ICON_DELAY_MS, useJourneySuccess } from "../../composables/useJourneySuccess";
 import {
   isWithdrawalSideExit,
   paymentTaken,
   type WithdrawalRecord,
 } from "../../funding/requests/model";
-import { sellTokenOf } from "../../funding/requests/transitions/withdrawal";
+import { saleVaultProxyOfRecord } from "../../funding/requests/transitions/withdrawal";
 import { TIMELINE_CADENCE_MS } from "../../funding/timeline/timelines";
 import { useRequestsStore } from "../../stores/requests";
-import { formatWhenShort } from "../../utils/journey";
+import { formatWhenInline, formatWhenShort } from "../../utils/journey";
+import { fundsOnKey, saleTokenOnKey } from "../../withdraw/timeline/failure";
 import { withdrawalJourneyRows } from "../../withdraw/timeline/journey-rows";
 import { WITHDRAWAL_TIMELINE } from "../../withdraw/timeline/spec";
 import FundingTimeline from "../funding/timeline/FundingTimeline.vue";
@@ -42,6 +48,7 @@ const emit = defineEmits<{
   pool: [];
   close: [];
   "return-funds": [];
+  claim: [];
   fees: [];
 }>();
 const requests = useRequestsStore();
@@ -83,14 +90,13 @@ const copyable = computed(() => rows.value.some((row) => row.copy !== undefined)
 const residueNote = computed(() => {
   const residue = props.record.residue;
   if (residue === undefined) return null;
-  if (residue.stuck === true) {
+  // A proxy's own note speaks for funds stuck on it, while the page can read one
+  if (residue.stuck === true && (residue.onProxy !== true || proxyNote.value === null)) {
     return "What was left could not come back to your balance on its own.";
   }
-  const sale = props.record.sale;
-  if (sale === undefined) return null;
-  // In the token the sale sold, shown to the sale's decimals; a remainder below them is not worth
-  // a line.
-  const token = sellTokenOf(sale);
+  if (props.record.sale === undefined) return null;
+  // In the token on the key at the sale's decimals, a remainder below them gets no line
+  const token = saleTokenOnKey(props.record);
   const shown = residue.amount === undefined ? 0n : sellAmountOf(BigInt(residue.amount), token);
   const amount = shown === 0n ? null : `${formatBaseUnits(token, shown)} ${token.symbol}`;
   if (!residue.returning) {
@@ -112,6 +118,8 @@ const action = computed(() => timeline.value.failure?.action ?? null);
 const closeLabel = computed(() =>
   action.value === "close" && props.record.route !== "crypto" ? "Start over" : "Close",
 );
+/** Funds left on the withdrawal's own key, failed or sent, open the guide that hands over its key. */
+const returnFunds = computed(() => fundsOnKey(props.record));
 /** The pool is offered only where waiting cannot help: the PSM refused with room for the redeem. */
 const canSwitchToPool = computed(
   () => action.value === "try-again" && props.record.failure?.kind === "held",
@@ -119,6 +127,41 @@ const canSwitchToPool = computed(
 /** Cancel is offered only while nothing was paid and the host has nothing in hand. */
 const canCancel = computed(
   () => status.value.kind === "awaiting-payment" && !paymentTaken(props.record),
+);
+// Only a proxy sale whose swap reached its egress can have an on-chain state worth reading
+const saleProxy = computed(() => saleVaultProxyOfRecord(props.record));
+const proxySale = () => {
+  const { rail } = props.record;
+  if (saleProxy.value === undefined) return undefined;
+  if (rail.stage !== "delivered" && rail.stageAt?.sending === undefined) return undefined;
+  return { fundingRequestId: saleProxy.value.fundingRequestId, chainId: saleProxy.value.chainId };
+};
+const { status: proxy, error: proxyError } = useSaleVaultProxyStatus(proxySale);
+
+/** What the proxy says about the seller's funds, or null when it has nothing to add. */
+const proxyNote = computed(() => {
+  const kept = saleProxy.value;
+  if (proxy.value === null || kept === undefined) return null;
+  return saleVaultProxyNote(
+    proxy.value,
+    (units) => formatBaseUnits(kept.token, units),
+    (ms) => formatWhenInline(ms),
+    props.record.residue?.stuck === true,
+  );
+});
+/** When a return that was refused or killed is tried again. */
+const proxyRetryAt = computed(() => {
+  const p = proxy.value;
+  return p?.blockedReason === "not-due" && p.nextReturnAt !== null
+    ? `Sending back again ${formatWhenInline(p.nextReturnAt)}.`
+    : null;
+});
+/** Funds on the seller's own Arbitrum address open the screen that moves them, as it reads them. */
+const canClaim = computed(
+  () =>
+    proxy.value !== null &&
+    saleProxy.value?.claimerAddress !== undefined &&
+    saleVaultProxyRelayable(proxy.value) > 0n,
 );
 </script>
 
@@ -193,9 +236,22 @@ const canCancel = computed(
       <!-- The reference copies, so the screen carries the confirmation. -->
       <CopiedPill v-if="copyable" />
       <p v-if="residueNote" class="text-body-s text-fg-secondary">{{ residueNote }}</p>
+      <!-- The sale's proxy: a provider that was not paid or refunded, and the way home. -->
+      <div v-if="proxyNote || proxyRetryAt || proxyError || canClaim" class="flex flex-col gap-2">
+        <p v-if="proxyNote" class="text-body-s text-fg-secondary">{{ proxyNote }}</p>
+        <p v-if="proxyRetryAt" class="text-body-s text-fg-secondary">{{ proxyRetryAt }}</p>
+        <p v-if="proxyError" class="text-body-s text-fg-error">{{ proxyError }}</p>
+        <p v-if="canClaim" class="text-body-s text-fg-secondary">
+          Your USDC is on your own Arbitrum address. This moves it to an address you choose, with no
+          ETH needed.
+        </p>
+        <PillButton v-if="canClaim" variant="tertiary" @click="emit('claim')">
+          Move my USDC
+        </PillButton>
+      </div>
 
-      <PillButton v-if="action === 'return-funds'" class="mt-auto" @click="emit('return-funds')">
-        Return funds
+      <PillButton v-if="returnFunds" class="mt-auto" @click="emit('return-funds')">
+        {{ record.route === "crypto" ? "Return funds" : "Recover funds" }}
       </PillButton>
       <div v-else-if="action === 'try-again'" class="mt-auto flex flex-col gap-3">
         <PillButton :disabled="busy" @click="emit('retry')">Try again</PillButton>

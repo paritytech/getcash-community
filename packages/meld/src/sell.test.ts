@@ -52,7 +52,10 @@ const SELL_REQ = {
   sourceAmount: "23.4521",
   destinationCurrencyCode: "EUR",
   paymentMethodType: "SEPA",
+  sellerAccount: "5KeyAddress",
 };
+
+const PROXY = "0xfb63126B916e3bD2497702a0139AD2B344aC7536";
 
 const created = {
   status: 201,
@@ -110,7 +113,7 @@ describe("createMeldClient sell quotes", () => {
 });
 
 describe("createMeldClient sell sessions", () => {
-  it("opens a sale for the committed crypto, naming no wallet", async () => {
+  it("opens a sale for the committed crypto, naming the seller and no wallet", async () => {
     const { impl, calls } = stubSequence([created]);
     const client = createMeldClient({
       baseUrl: "https://adapter.test",
@@ -129,9 +132,11 @@ describe("createMeldClient sell sessions", () => {
       paymentMethodType: "SEPA",
       serviceProvider: "TRANSAK",
       redirectUrl: "https://adapter.test/meld/return",
+      sellerAccount: "5KeyAddress",
     });
-    // Optional on a sale at Meld, and refused by the adapter.
+    // The adapter derives the wallet from the seller account and refuses one named here.
     expect(sent).not.toHaveProperty("walletAddress");
+    expect(sent).not.toHaveProperty("expectedWalletAddress");
     // The order reference is key material, not a term the adapter is told.
     expect(sent).not.toHaveProperty("orderRef");
     expect(String(sent.idempotencyKey)).toContain("sell");
@@ -140,6 +145,115 @@ describe("createMeldClient sell sessions", () => {
       fundingRequestId: "funding-sell-1",
       widgetUrl: "https://kyc.test",
     });
+  });
+
+  it("never sends the address it expects, only checks the adapter's echo of it", async () => {
+    const { impl, calls } = stubSequence([
+      { ...created, body: { ...created.body, pinned: { walletAddress: PROXY } } },
+    ]);
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+    const session = await client.createSellSession({ ...SELL_REQ, expectedWalletAddress: PROXY });
+    expect(body(calls[0]!)).not.toHaveProperty("walletAddress");
+    expect(body(calls[0]!)).not.toHaveProperty("expectedWalletAddress");
+    expect(session.walletAddress).toBe(PROXY);
+  });
+
+  it("sends a lane sale's claimer for the adapter to derive the proxy from, and none otherwise", async () => {
+    const claimer = `0x${"33".repeat(20)}`;
+    const { impl, calls } = stubSequence([created]);
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+    await client.createSellSession({ ...SELL_REQ, sellerClaimer: claimer });
+    expect(body(calls[0]!)).toMatchObject({ sellerAccount: "5KeyAddress", sellerClaimer: claimer });
+    await client.createSellSession(SELL_REQ);
+    expect(body(calls[1]!)).not.toHaveProperty("sellerClaimer");
+  });
+
+  it("compares an EVM echo without regard to casing", async () => {
+    const { impl } = stubSequence([
+      { ...created, body: { ...created.body, pinned: { walletAddress: PROXY.toLowerCase() } } },
+    ]);
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+    const session = await client.createSellSession({ ...SELL_REQ, expectedWalletAddress: PROXY });
+    expect(session.fundingRequestId).toBe("funding-sell-1");
+  });
+
+  it("refuses a sale the adapter pinned to another address, or to none", async () => {
+    for (const pinned of [{ walletAddress: "5OtherKey" }, {}, undefined]) {
+      const { impl } = stubSequence([{ ...created, body: { ...created.body, pinned } }]);
+      const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+      await expect(
+        client.createSellSession({ ...SELL_REQ, expectedWalletAddress: "5KeyAddress" }),
+      ).rejects.toThrow("The sale's sending address does not match. Nothing was sent.");
+    }
+  });
+
+  it("refuses an SS58 echo that differs only in casing", async () => {
+    const { impl } = stubSequence([
+      { ...created, body: { ...created.body, pinned: { walletAddress: "5keyaddress" } } },
+    ]);
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+    await expect(
+      client.createSellSession({ ...SELL_REQ, expectedWalletAddress: "5KeyAddress" }),
+    ).rejects.toThrow(/does not match/);
+  });
+
+  it("compares the echo under the account key the caller gives", async () => {
+    const { impl } = stubSequence([
+      { ...created, body: { ...created.body, pinned: { walletAddress: "1KeyOtherPrefix" } } },
+    ]);
+    const client = createMeldClient({
+      baseUrl: "https://adapter.test",
+      fetchImpl: impl,
+      walletKey: (address) =>
+        address.endsWith("Prefix") || address === "5KeyAddress" ? "k" : address,
+    });
+    const session = await client.createSellSession({
+      ...SELL_REQ,
+      expectedWalletAddress: "5KeyAddress",
+    });
+    expect(session.walletAddress).toBe("1KeyOtherPrefix");
+  });
+
+  it("refuses to resume into a sale opened from another address", async () => {
+    const reused = {
+      status: 409,
+      body: {
+        error: {
+          tag: "Other",
+          value: {
+            code: "IDEMPOTENCY_KEY_REUSED",
+            message: "reused",
+            fundingRequestId: "funding-live",
+          },
+        },
+      },
+    };
+    const live = (walletAddress: string) => ({
+      status: 200,
+      body: {
+        funding: {
+          status: "session_opened",
+          serviceProviderWidgetUrl: "https://kyc.test/resume",
+          fiat: "EUR",
+          destinationCurrencyCode: "DOT",
+          cryptoAmount: "23.4521",
+          walletAddress,
+        },
+      },
+    });
+    const req = { ...SELL_REQ, expectedWalletAddress: PROXY };
+    const other = createMeldClient({
+      baseUrl: "https://adapter.test",
+      fetchImpl: stubSequence([reused, live("0x1111111111111111111111111111111111111111")]).impl,
+    });
+    await expect(other.createSellSession(req)).rejects.toThrow(/different order/);
+    const same = createMeldClient({
+      baseUrl: "https://adapter.test",
+      fetchImpl: stubSequence([reused, live(PROXY.toLowerCase())]).impl,
+    });
+    const resumed = await same.createSellSession(req);
+    expect(resumed.fundingRequestId).toBe("funding-live");
+    expect(resumed.walletAddress).toBe(PROXY.toLowerCase());
   });
 
   it("keeps a buy and a sale of one pair on different keys", async () => {
@@ -295,6 +409,7 @@ describe("the offline sale", () => {
   it("answers KYC polls first, then discloses the deposit for the committed amount", async () => {
     const client = createFakeMeldClient({ sellPollsBeforeDeposit: 2 });
     const session = await client.createSellSession(SELL_REQ);
+    expect(session.walletAddress).toBe(SELL_REQ.sellerAccount);
     expect((await client.getStatus(session.fundingRequestId)).deposit).toBeUndefined();
     expect((await client.getStatus(session.fundingRequestId)).deposit).toBeUndefined();
     const disclosed = await client.getStatus(session.fundingRequestId);
@@ -310,6 +425,13 @@ describe("the offline sale", () => {
     expect(await client.getStatus("mock-sell-load1-1")).toEqual({ status: "expired" });
     // A buy it does not know still reads as the fixed status.
     expect(await client.getStatus("funding-1")).toEqual({ status: "session_opened" });
+  });
+
+  it("echoes the address this side expects, as the adapter pins the one it derives", async () => {
+    const client = createFakeMeldClient();
+    const session = await client.createSellSession({ ...SELL_REQ, expectedWalletAddress: PROXY });
+    expect(session.walletAddress).toBe(PROXY);
+    expect((await client.getStatus(session.fundingRequestId)).walletAddress).toBe(PROXY);
   });
 
   it("stops disclosing anything for a sale cancelled during KYC", async () => {

@@ -712,3 +712,179 @@ describe("the asset table", () => {
     await expect(client.getAssets()).rejects.toMatchObject({ status: 401 });
   });
 });
+
+describe("createMeldClient sale vault proxy", () => {
+  const SALE = {
+    status: "held",
+    chainId: 421614,
+    balance: "98000000",
+    amount: "98000000",
+    leftover: "0",
+    pending: "0",
+    deferred: "5000000",
+    waiting: "0",
+    minReturn: "20000000",
+    returnable: true,
+    attempts: 1,
+    nextReturnAt: 1_900_000,
+    claimer: "0x3333333333333333333333333333333333333333",
+    releaseAt: 1_800_086_400_000,
+    releasable: "0",
+    released: [{ amount: "400000", txHash: "0xdef", at: 1_700_000 }],
+    flushedToClaimer: [],
+    claimerBalance: "400000",
+    blockedReason: "not-due",
+    call: { action: "return", status: "sent", txHash: "0xabc", at: 1_800_000 },
+  };
+
+  it("reads a sale's proxy state from the adapter", async () => {
+    const { impl, calls } = stubSequence([
+      { status: 200, body: { sale: { ...SALE, home: `0x${"ab".repeat(32)}` } } },
+    ]);
+    const client = createMeldClient({
+      baseUrl: "https://adapter.test/",
+      productId: "getcash.dev",
+      fetchImpl: impl,
+    });
+    expect(await client.getSaleVaultProxy("funding/1")).toEqual(SALE);
+    expect(calls[0]!.url).toBe("https://adapter.test/offramp/sale/funding%2F1");
+    expect(calls[0]!.init?.headers).toEqual({
+      accept: "application/json",
+      "x-dev-product-id": "getcash.dev",
+    });
+  });
+
+  it("asks for a return with an empty body and reads the sale it answers", async () => {
+    const { impl, calls } = stubSequence([{ status: 200, body: { sale: SALE } }]);
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+    expect(await client.requestSaleVaultProxyReturn("funding-1")).toEqual(SALE);
+    expect(calls[0]!.url).toBe("https://adapter.test/offramp/returns/funding-1");
+    expect(calls[0]!.init?.method).toBe("POST");
+    expect(calls[0]!.init?.body).toBe("{}");
+    expect(calls[0]!.init?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("posts a claimer's signed transfer and reads the transaction it answers", async () => {
+    const relay = {
+      from: "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+      to: "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
+      value: "1500000",
+      validAfter: "0",
+      validBefore: "1900000000",
+      nonce: `0x${"cd".repeat(32)}`,
+      signature: `0x${"11".repeat(64)}1b`,
+    };
+    const { impl, calls } = stubSequence([
+      { status: 202, body: { relay: { status: "sent", chainId: 421614, txHash: "0xabc" } } },
+      { status: 202, body: { relay: { status: "sent", chainId: 421614, txHash: null } } },
+    ]);
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+    expect(await client.relayClaimerTransfer(relay)).toEqual({ txHash: "0xabc" });
+    expect(await client.relayClaimerTransfer(relay)).toEqual({ txHash: null });
+    expect(calls[0]!.url).toBe("https://adapter.test/offramp/relay");
+    expect(calls[0]!.init?.method).toBe("POST");
+    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual(relay);
+  });
+
+  it("carries a relay refusal's code", async () => {
+    const { impl } = stubSequence([
+      {
+        status: 409,
+        body: { error: { tag: "Other", value: { code: "RELAY_INSUFFICIENT_BALANCE" } } },
+      },
+    ]);
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+    await expect(
+      client.relayClaimerTransfer({
+        from: "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        to: "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
+        value: "1",
+        validAfter: "0",
+        validBefore: "1",
+        nonce: `0x${"cd".repeat(32)}`,
+        signature: `0x${"11".repeat(65)}`,
+      }),
+    ).rejects.toMatchObject({ status: 409, code: "RELAY_INSUFFICIENT_BALANCE" });
+  });
+
+  it("refuses a payout list that is not shaped as one", async () => {
+    for (const released of [
+      "x",
+      [{ amount: "1", at: 1 }],
+      [{ amount: "1.5", txHash: "0x", at: 1 }],
+    ]) {
+      const { impl } = stubSequence([{ status: 200, body: { sale: { ...SALE, released } } }]);
+      const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+      await expect(client.getSaleVaultProxy("funding-1")).rejects.toThrow(/malformed sale/);
+    }
+  });
+
+  it("refuses an amount that is not whole base units", async () => {
+    for (const balance of ["1.5", "-1", "abc", ""]) {
+      const { impl } = stubSequence([{ status: 200, body: { sale: { ...SALE, balance } } }]);
+      const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+      await expect(client.getSaleVaultProxy("funding-1")).rejects.toThrow(
+        "the adapter named a malformed sale balance",
+      );
+    }
+  });
+
+  it("carries the adapter's refusal code so the worker can tell a wait from a dead end", async () => {
+    const { impl } = stubSequence([
+      {
+        status: 503,
+        body: {
+          error: {
+            tag: "Other",
+            value: { code: "SALE_VAULT_PROXY_CHAIN_UNAVAILABLE", message: "chain down" },
+          },
+        },
+      },
+    ]);
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+    await expect(client.requestSaleVaultProxyReturn("funding-1")).rejects.toMatchObject({
+      status: 503,
+      code: "SALE_VAULT_PROXY_CHAIN_UNAVAILABLE",
+    });
+  });
+
+  it("fills defaults for missing fields and refuses an answer naming no sale", async () => {
+    const { impl } = stubSequence([
+      { status: 200, body: { sale: {} } },
+      { status: 200, body: { sale: { call: { action: "release" } } } },
+      { status: 200, body: {} },
+    ]);
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+    expect(await client.getSaleVaultProxy("funding-1")).toEqual({
+      status: "",
+      chainId: null,
+      balance: "0",
+      amount: "0",
+      leftover: "0",
+      pending: "0",
+      deferred: "0",
+      waiting: "0",
+      minReturn: "0",
+      returnable: false,
+      attempts: 0,
+      nextReturnAt: null,
+      claimer: null,
+      releaseAt: null,
+      releasable: "0",
+      released: [],
+      flushedToClaimer: [],
+      claimerBalance: "0",
+      blockedReason: null,
+      call: null,
+    });
+    expect((await client.getSaleVaultProxy("funding-1")).call).toEqual({
+      action: "release",
+      status: "",
+      txHash: null,
+      at: 0,
+    });
+    await expect(client.getSaleVaultProxy("funding-1")).rejects.toThrow(
+      "the adapter named no sale vault proxy",
+    );
+  });
+});

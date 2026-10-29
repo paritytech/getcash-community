@@ -1,9 +1,9 @@
-import { deriveKeypairWithSecret } from "@getsome/ephemeral";
+import { deriveKeypairWithSecret, deriveRefundKey } from "@getsome/ephemeral";
 import { createClient } from "polkadot-api";
 import { deriveEntropy, getHostLocalStorage, getHostProvider } from "./host.js";
 
 // What both engines need of the host and the chains: a job map in product storage, a bounded
-// wait, a chain client for one tick, the anchor of a submit, and the key a label derives.
+// wait, a chain client for one tick, the anchor of a submit, and the keys a label derives.
 
 /**
  * A job map under `storageKey`, loaded once and single-flight, saved after every change, one
@@ -136,9 +136,30 @@ export async function anchorFor(client) {
 
 /** The keypair the entropy label `label` derives, from host entropy. Never persisted. */
 export async function keypairFor(label) {
+  return deriveKeypairWithSecret(await entropyFor(label));
+}
+
+/** The Arbitrum address the claim label `label` derives as a secp256k1 key, from host entropy. */
+export async function claimerFor(label) {
+  return deriveRefundKey("Arbitrum", await entropyFor(label)).address;
+}
+
+// The label's raw bytes go to the host unhashed, the same bytes the page sends for 32 or fewer
+async function entropyFor(label) {
   const result = await deriveEntropy(new TextEncoder().encode(label));
   if (!result.ok) {
     throw new Error(`deriveEntropy refused: ${String(result.error?.message ?? result.error)}`);
   }
-  return deriveKeypairWithSecret(result.value);
+  return result.value;
+}
+
+/** The hand-off's Meld adapter, or its offline flag, null when it names neither. */
+export function meldOf(meld) {
+  if (typeof meld !== "object" || meld === null) return null;
+  if (meld.offline === true) return { offline: true };
+  if (typeof meld.baseUrl !== "string" || meld.baseUrl === "") return null;
+  return {
+    baseUrl: meld.baseUrl,
+    ...(typeof meld.productId === "string" && meld.productId ? { productId: meld.productId } : {}),
+  };
 }

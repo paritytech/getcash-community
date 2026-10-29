@@ -1,0 +1,226 @@
+{
+  "predict": {
+    "pinned": [
+      {
+        "factory": "0x1111111111111111111111111111111111111111",
+        "implementation": "0x2222222222222222222222222222222222222222",
+        "home": "0xabababababababababababababababababababababababababababababababab",
+        "claimer": "0x3333333333333333333333333333333333333333",
+        "args": "0xabababababababababababababababababababababababababababababababab3333333333333333333333333333333333333333",
+        "salt": "0x966ba05a9ce5a2a399566f929d36e3fe95425c488fb5b676e831f497b63d4adc",
+        "initcodeHash": "0x73c979d0db47d948377325ee5404793da3b3ca4a542ca0777eb59ac225b3eecf",
+        "proxy": "0xcc7d876cC298b0e30157D6c2656FBC6Fc66deeC7"
+      },
+      {
+        "factory": "0x1111111111111111111111111111111111111111",
+        "implementation": "0x2222222222222222222222222222222222222222",
+        "home": "0xd43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d",
+        "claimer": "0x3333333333333333333333333333333333333333",
+        "args": "0xd43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d3333333333333333333333333333333333333333",
+        "salt": "0x756d7b3730cbbbaaeb2127b77653ed4bcde1479c25672a19bc59b7c34f92e847",
+        "initcodeHash": "0x927aa0ff6d2511517ac84f4f46365a722985e4335de1770c8b295c99874c4be9",
+        "proxy": "0xB7967f92Fd611b5fF68b6A043DAf49034Cad476B"
+      }
+    ],
+    "local": {
+      "factory": "0xC140bBe06848EeA22BACc5f02D4D1A69767d33c5",
+      "implementation": "0xc3813cd0fC2e34A56dd030c6e9362AA7D1428344",
+      "home": "0x0a528ed24585e375c843bdbaa82a92ea3320936295ba3eacac9bc93acce2a575",
+      "claimer": "0x90D121876b4f93DA56F039139fdF37a96cde00c3",
+      "args": "0x0a528ed24585e375c843bdbaa82a92ea3320936295ba3eacac9bc93acce2a57590d121876b4f93da56f039139fdf37a96cde00c3",
+      "salt": "0x9f10aea15113c7314f959e71fefa8c7f915cc27629654ebe77c1e02f5fc36acb",
+      "proxy": "0xad46C51Afe8817c4127D08f6Ff78dEF7E6fb83a9"
+    }
+  },
+  "message": {
+    "fundingRequestId": "funding-1",
+    "ref": "0xc0615bcc697a20445b853b8779e01ab7c45752dbd7ab43f9c3dc100a83e5b52c",
+    "recipient": "0x1111111111111111111111111111111111111111",
+    "committed": "50000000",
+    "home": "0xabababababababababababababababababababababababababababababababab",
+    "paymentExpiresAt": 1798761600500,
+    "deadline": "1798761600",
+    "claimer": "0x3333333333333333333333333333333333333333",
+    "encoded": "0xc0615bcc697a20445b853b8779e01ab7c45752dbd7ab43f9c3dc100a83e5b52c00000000000000000000000011111111111111111111111111111111111111110000000000000000000000000000000000000000000000000000000002faf080abababababababababababababababababababababababababababababababab000000000000000000000000000000000000000000000000000000006b36ec800000000000000000000000003333333333333333333333333333333333333333"
+  },
+  "selectors": {
+    "cfReceive(uint32,bytes,bytes,address,uint256)": "0x4904ac5f",
+    "deliver(bytes32,address,bytes32,address,uint256,uint256)": "0x67b12c52",
+    "DELIVERY_GAS()": "0x6a9aeb03",
+    "deploy(bytes32,address)": "0x8c1fb931",
+    "expireDeferred(bytes32,address,bytes32,address,uint256,uint256)": "0xae50b33c",
+    "flush(bytes32,address)": "0xb026fd99",
+    "GUARDIAN()": "0x724c184c",
+    "IMPLEMENTATION()": "0x3a4741bd",
+    "pending(bytes32,address)": "0xda4e6595",
+    "pendingDelivery(bytes32,address,bytes32,address,uint256,uint256)": "0x4be199b9",
+    "predict(bytes32,address)": "0xc4b9f746",
+    "PROXY_CALL_GAS()": "0xff68a045",
+    "retire()": "0xa4874d77",
+    "retired()": "0x2eb38ae0",
+    "skim()": "0x1dd19cb4",
+    "skimNative()": "0x544be958",
+    "skimToken(address)": "0x20d6c580",
+    "totalPending()": "0x3f90916a",
+    "TREASURY()": "0x2d2c5565",
+    "USDC()": "0x89a30271",
+    "VAULT()": "0x411557d1",
+    "attempts()": "0x5754a042",
+    "BROKER()": "0xeae2396f",
+    "claimer()": "0xd379be23",
+    "delivery(bytes32,address,uint256)": "0xcf951176",
+    "FACTORY()": "0x2dd31000",
+    "FEE_ALLOWANCE()": "0xd44b57ea",
+    "HOME_CHAIN()": "0xf42ff394",
+    "HOME_TOKEN()": "0xf2553acd",
+    "home()": "0x9fa92f9d",
+    "lastActivityAt()": "0xceceb47c",
+    "lastReturnAt()": "0x79f6bcca",
+    "MAX_RETURN()": "0x90b18557",
+    "MIN_RETURN()": "0x0151900d",
+    "nextReturnAt()": "0x1bfde17a",
+    "onDelivery(bytes32,address,uint256,uint256,uint256)": "0x6c1ab6de",
+    "PRICE_FLOOR_BPS()": "0xcf056f5b",
+    "RELEASE_ATTEMPTS()": "0x3c0b1a93",
+    "RELEASE_DELAY()": "0xa302e232",
+    "release()": "0x86d1a69f",
+    "releaseAt()": "0xae69ef4c",
+    "RETRY_BLOCKS()": "0xf036a575",
+    "RETURN_COOLDOWN()": "0x47446418",
+    "returnHome()": "0x2aadc832",
+    "skimForeign(address)": "0x37d550dd",
+    "STALE_DELAY()": "0xa1f3888a",
+    "state()": "0xc19d93fb",
+    "balanceOf(address)": "0x70a08231",
+    "xSwapToken(uint32,bytes,uint32,address,uint256,bytes)": "0x04fc7da0"
+  },
+  "events": {
+    "DeferredExpired(bytes32,address,bytes32,address,uint256,uint256,uint256)": "0x2ff0a87413e8741befdd6c42c9b6b8ef0b9bf66e48412812267ecb4835288298",
+    "Delivered(bytes32,address,bytes32,address,address,uint256,uint256)": "0x740323cc1a31028876638a289f378128325a303cfdd063bc2e5a04b1a5573901",
+    "DeliveryDeferred(bytes32,address,bytes32,address,uint256,uint256,uint256)": "0xf36d2d6895ea5d23911fc17f8da4f81118ebdd213c96e7846d32873bc35dd96e",
+    "DeliveryPending(bytes32,address,bytes32,uint256,bytes32)": "0xa439ba302799ba5f6662ccfbba2be083951241f8d802d477e9f323e8678a4f75",
+    "DeliveryUnbooked(bytes32,address,bytes32,address,uint256)": "0xae542f0e78232e4f714dd64ac912880fcd90e29d239f9abee813117f463b1d06",
+    "PendingFlushed(bytes32,address,address,uint256)": "0x1dc85fc3f58e3ec3a5a227beb1c5ca1500834ad3b5955ba342ec59cf7b4d12ec",
+    "ProxyDeployed(bytes32,address,address)": "0x2dd96d0459d7a19d9973c629335d112af970ad4894b70919d288614388ef8eae",
+    "Retired()": "0xc15f68f0a72806ff3f8bf2435385a67c4c22413f1c7931ef7bcea718e6ffcf03",
+    "Skimmed(address,address,uint256)": "0x0cfb7d414a57e3fd35da9f4b61341e65026c225646228ba0262d9264f541c32e",
+    "Unattributed(address,uint256,bytes32)": "0x0787f9200c6edc0c789aa92966501bc1cc341358e5ff68465e15a5cc668bd752",
+    "ExtraDelivery(bytes32,address,uint256,uint256)": "0x0460094d9d5a5631feaf5dd85f23e99ecfc678710f9d6a85b26602158115190e",
+    "ForeignSkimmed(address,uint256)": "0xe1c1c0699cb13bb7fe935496479fdb616c08ee3ba9b9248637b1a15698f4a179",
+    "Released(uint256)": "0xfb81f9b30d73d830c3544b34d827c08142579ee75710b490bab0b3995468c565",
+    "ReturnedHome(uint256,uint256,uint8)": "0x29e6d466d8b0a144fc7f8dc0b0679d483e523068eb01442edf6af34082e8b6e6",
+    "SaleHeld(bytes32,address,uint256,uint256,bytes32)": "0x770fe1c162f1b25db4867e122f756cfe5362437ae8b5dfc12fdaac3a2c78204e",
+    "SalePaid(bytes32,address,uint256,uint256)": "0xa35c23073d2cee723bfb41b0b9f1bf75499c3557e5b9d2fb8ecd10e8e573d9f6"
+  },
+  "state": {
+    "proxy": "0x56278F0F096dF8D6F3bAf3eCB8e37d8271A70BC2",
+    "raw": "0x62b6213d2086917d3e2a2e73a6097257fb8dc33aeae24f8ec5c066dc32639a6500000000000000000000000090d121876b4f93da56f039139fdf37a96cde00c3000000000000000000000000000000000000000000000000000000000007a120000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006ae1be430000000000000000000000000000000000000000000000000000000000000000",
+    "decoded": {
+      "home": "0x62b6213d2086917d3e2a2e73a6097257fb8dc33aeae24f8ec5c066dc32639a65",
+      "claimer": "0x90D121876b4f93DA56F039139fdF37a96cde00c3",
+      "balance": "500000",
+      "attempts": "0",
+      "lastReturnAt": "0",
+      "nextReturnAt": "0",
+      "releaseAt": "1793179203",
+      "releasable": "0"
+    }
+  },
+  "delivery": {
+    "proxy": "0x56278F0F096dF8D6F3bAf3eCB8e37d8271A70BC2",
+    "home": "0x62b6213d2086917d3e2a2e73a6097257fb8dc33aeae24f8ec5c066dc32639a65",
+    "ref": "0x1bb189b93efbea7d1c29bbcc09f8531217792fb352f6382e646b312153a3f9de",
+    "recipient": "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
+    "committed": "50000000",
+    "raw": "0x00000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000003010b000000000000000000000000000000000000000000000000000000000000061a80",
+    "decoded": {
+      "status": "1",
+      "amount": "50400000",
+      "leftover": "400000"
+    }
+  },
+  "cfParameters": {
+    "testnet": {
+      "retryBlocks": 100,
+      "refund": "0x1234567890AbcdEF1234567890aBcdef12345678",
+      "minPriceX128": "336879543251729078828740861357450529341",
+      "broker": "0x9e8d88ae895c9b37b2dead9757a3452f7c2299704d91ddfa444d87723f94fe0c",
+      "bytes": "0x01640000001234567890abcdef1234567890abcdef123456783d0ad7a3703d0ad7a3703d0ad7a370fd00000000000000000000000000000000000000009e8d88ae895c9b37b2dead9757a3452f7c2299704d91ddfa444d87723f94fe0c000000"
+    },
+    "mainnet": {
+      "retryBlocks": 100,
+      "refund": "0x1234567890AbcdEF1234567890aBcdef12345678",
+      "minPriceX128": "336879543251729078828740861357450529341",
+      "broker": "0x70d0cd75a367987344a3896a18e1510e5429ca5e88357b6c2a2e306b3877380d",
+      "bytes": "0x01640000001234567890abcdef1234567890abcdef123456783d0ad7a3703d0ad7a3703d0ad7a370fd000000000000000000000000000000000000000070d0cd75a367987344a3896a18e1510e5429ca5e88357b6c2a2e306b3877380d000000"
+    },
+    "derived": {
+      "amount": "20000000",
+      "floorBps": "9900",
+      "feeAllowance": "600000",
+      "retryBlocks": 100,
+      "refund": "0xfb63126B916e3bD2497702a0139AD2B344aC7536",
+      "minPriceX128": "326671072244100924924839623134497482997",
+      "broker": "0x70d0cd75a367987344a3896a18e1510e5429ca5e88357b6c2a2e306b3877380d",
+      "bytes": "0x0164000000fb63126b916e3bd2497702a0139ad2b344ac7536f5285c8fc2f5285c8fc2f5285c8fc2f5000000000000000000000000000000000000000070d0cd75a367987344a3896a18e1510e5429ca5e88357b6c2a2e306b3877380d000000"
+    }
+  },
+  "gas": {
+    "DELIVERY_GAS": "225000",
+    "PROXY_CALL_GAS": "125000",
+    "CCM_GAS_BUDGET": "280000",
+    "forkBlock": 518698642,
+    "l1Gas": "2488",
+    "measured": {
+      "cfReceive": {
+        "freshPay": "183992",
+        "freshShort": "156022",
+        "freshPayoutFailed": "161395",
+        "freshExpired": "156000",
+        "existingPay": "127267"
+      },
+      "deliver": "186753",
+      "cfReceiveMax": "183992",
+      "onDeliveryMax": "95416",
+      "deliveryGas": "225000",
+      "proxyCallGas": "125000",
+      "deferFloor": "48933",
+      "returnHome": "83419",
+      "release": "75505",
+      "expireDeferred": "29401",
+      "flush": "49048",
+      "flushDeploy": "113003",
+      "flushFallback": "117904"
+    }
+  },
+  "networks": {
+    "42161": {
+      "vault": "0x79001a5e762f3bEFC8e5871b42F6734e00498920",
+      "usdc": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+      "broker": "0x70d0cd75a367987344a3896a18e1510e5429ca5e88357b6c2a2e306b3877380d",
+      "minDeposit": "10000000",
+      "refundFee": "510000",
+      "minReturn": "20000000",
+      "maxReturn": "10000000000",
+      "returnCooldown": "3600",
+      "releaseDelay": "86400",
+      "releaseAttempts": "7",
+      "staleDelay": "5184000",
+      "minSale": "25000000"
+    },
+    "421614": {
+      "vault": "0x2bb150e6d4366A1BDBC4275D1F35892CD63F27e3",
+      "usdc": "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d",
+      "broker": "0x9e8d88ae895c9b37b2dead9757a3452f7c2299704d91ddfa444d87723f94fe0c",
+      "minDeposit": "0",
+      "refundFee": "10000",
+      "minReturn": "1000000",
+      "maxReturn": "100000000",
+      "returnCooldown": "900",
+      "releaseDelay": "86400",
+      "releaseAttempts": "7",
+      "staleDelay": "5184000",
+      "minSale": "1250000"
+    }
+  }
+}

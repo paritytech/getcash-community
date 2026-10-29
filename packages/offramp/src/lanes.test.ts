@@ -2,7 +2,15 @@ import { afterEach, describe, expect, it } from "vitest";
 import { SOURCE_CONFIG_BY_ID } from "@getsome/chainflip";
 import { installMeldAssets } from "@getsome/core";
 import { TEST_MELD_ASSETS } from "../../../tests/setup-meld-assets";
-import { isLaneId, LANES, laneById, laneByMeldCode, laneSellToken } from "./lanes";
+import {
+  isLaneId,
+  LANES,
+  laneById,
+  laneByMeldCode,
+  laneSellable,
+  laneSellToken,
+  UNSOLD_LANE_ASSETS,
+} from "./lanes";
 
 describe("lane catalog", () => {
   it("has unique ids", () => {
@@ -29,21 +37,40 @@ describe("lane catalog", () => {
   });
 });
 
+describe("lane senders", () => {
+  it("pays Arbitrum from the sale's proxy and has no sender on Solana", () => {
+    expect(laneById("usdc-arbitrum").refundSender).toBe("sale-vault-proxy");
+    expect(laneById("usdc-solana").refundSender).toBe("none");
+    expect(laneById("usdt-solana").refundSender).toBe("none");
+  });
+
+  it("lists only the lanes with a sender, and names the rest's assets", () => {
+    expect(LANES.map((l) => l.id)).toEqual(["usdc-arbitrum"]);
+    expect(LANES.every(laneSellable)).toBe(true);
+    expect(UNSOLD_LANE_ASSETS).toEqual(["usdt@solana", "usdc@solana"]);
+  });
+});
+
 describe("laneByMeldCode", () => {
   afterEach(() => {
     installMeldAssets(TEST_MELD_ASSETS);
   });
 
   it("finds the lane a Meld code sells through, and none for an Asset Hub code", () => {
-    expect(laneByMeldCode("USDC_SOLANA")?.id).toBe("usdc-solana");
+    expect(laneByMeldCode("USDC_ARBITRUM")?.id).toBe("usdc-arbitrum");
     expect(laneByMeldCode("DOT")).toBeNull();
     expect(laneByMeldCode("NOT_A_CODE")).toBeNull();
   });
 
-  it("follows the adapter's table when Meld renames a lane's code", () => {
-    installMeldAssets([{ asset: "usdc@solana", code: "USDC_SOL" }]);
-    expect(laneByMeldCode("USDC_SOL")?.id).toBe("usdc-solana");
+  it("finds no lane for a code whose lane cannot be sold", () => {
     expect(laneByMeldCode("USDC_SOLANA")).toBeNull();
-    expect(laneSellToken(laneById("usdc-solana")).meldCurrencyCode).toBe("USDC_SOL");
+    expect(laneByMeldCode("USDT_SOLANA")).toBeNull();
+  });
+
+  it("follows the adapter's table when Meld renames a lane's code", () => {
+    installMeldAssets([{ asset: "usdc@arbitrum", code: "USDC_ARB" }]);
+    expect(laneByMeldCode("USDC_ARB")?.id).toBe("usdc-arbitrum");
+    expect(laneByMeldCode("USDC_ARBITRUM")).toBeNull();
+    expect(laneSellToken(laneById("usdc-arbitrum")).meldCurrencyCode).toBe("USDC_ARB");
   });
 });

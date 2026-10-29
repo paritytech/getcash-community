@@ -7,7 +7,13 @@
 import { PaymentRequestErr, PaymentStatusErr } from "@novasamatech/host-api";
 import { deriveEntropy, getHostLocalStorage } from "@parity/product-sdk-host";
 import type { TokenSpec } from "@getsome/core";
-import { deriveKeypair, walletSeedHex } from "@getsome/ephemeral";
+import {
+  deriveKeypair,
+  deriveRefundKey,
+  signTransferAuthorization,
+  walletSeedHex,
+  type RefundKey,
+} from "@getsome/ephemeral";
 import {
   chooseCashTransfer,
   chooseRoute,
@@ -27,8 +33,8 @@ import {
   type RoutePick,
   type RouteQuery,
 } from "@getsome/funding";
-import { sellAmountOf } from "@getsome/meld";
-import { laneCommit, laneSellToken, type OfframpLane } from "@getsome/offramp";
+import { sellAmountOf, type MeldClaimerRelay } from "@getsome/meld";
+import { laneCommit, laneSellable, laneSellToken, type OfframpLane } from "@getsome/offramp";
 import {
   createHostEntropyPort,
   createHostStorageAdapter,
@@ -39,6 +45,7 @@ import {
   buildRedeemBatch,
   CASH_ON_ASSET_HUB,
   cashToExit,
+  claimEntropyLabel,
   DEFAULT_WITHDRAW_SLIPPAGE_PCT,
   estimateDirectFeesCash,
   estimateRedeemFeeCash,
@@ -52,6 +59,7 @@ import {
   RedeemTooSmallError,
   residueReturnFloor,
   type AssetHubApi,
+  WITHDRAW_LABEL_PREFIX,
 } from "@getsome/withdraw";
 import { paseo_next_v2, paseo_people_next } from "@polkadot-api/descriptors";
 import {
@@ -66,19 +74,31 @@ import {
   assetHubSourceFor,
   BelowMinimumSwapAmountError,
   ChainflipRequestError,
+  encodeSaleMessage,
   formatSourceAmount,
+  isEvmAddress,
+  isEvmPayeeAddress,
   openWithdrawChannel,
+  predictSaleVaultProxy,
   quoteOutgoing,
+  SALE_MESSAGE_BYTES,
+  SALE_SWAP_RETRY_MINUTES,
+  SALE_VAULT_PROXY_CCM_GAS_BUDGET,
+  saleVaultProxyUsdcDomain,
+  sameEvmAddress,
   SOURCE_CONFIG_BY_ID,
   type IncludedFee,
   type OutgoingQuote,
   type SourceConfig,
 } from "@getsome/chainflip";
+import { bytesToHex, hexToBytes, randomBytes } from "@noble/hashes/utils.js";
 import { AccountId } from "polkadot-api";
+import type { SaleVaultProxyContracts } from "@getsome/chainflip/sale-vault-proxy";
 import { cashAmount } from "../app/utils/cash";
 import { isDemoBuild } from "../app/utils/demo";
 import type { WithdrawFeeView, WithdrawOffer } from "../app/withdraw/offers";
-import { mainnetSdk, saleChannelsOpen, saleSwapSdk } from "./chainflip-backend";
+import { mainnetSdk, NETWORK, saleChannelsOpen, saleSwapSdk } from "./chainflip-backend";
+import { SALE_SWAP_NETWORK } from "./config";
 import { withTimeout } from "./timeout";
 import { hostSafeEntropy, nextFreeTradeNumber, readTradeCounter, tradeCounterKey } from "./coinage";
 import {
@@ -101,7 +121,12 @@ const toHex = (bytes: Uint8Array): `0x${string}` =>
  *  The worker builds the same bytes from the string it is handed. */
 export function withdrawEntropyLabel(sourceId: string, n: number): string {
   if (!isWithdrawSourceId(sourceId)) throw new Error(`'${sourceId}' is not a withdrawal source`);
-  return `wd:eph:${sourceId.slice(WITHDRAW_SOURCE_PREFIX.length)}:${n}`;
+  const label = `${WITHDRAW_LABEL_PREFIX}${sourceId.slice(WITHDRAW_SOURCE_PREFIX.length)}:${n}`;
+  // The page pre-hashes a longer key and the worker does not, so they would derive different keys
+  if (new TextEncoder().encode(label).length > 32) {
+    throw new Error(`'${label}' is longer than the host's 32-byte key`);
+  }
+  return label;
 }
 
 export interface WithdrawKey {
@@ -134,6 +159,72 @@ export async function revealWithdrawKey(label: string): Promise<WithdrawRefundKe
   const seed = await entropy.deriveSeed(new TextEncoder().encode(label));
   const keypair = deriveKeypair(seed);
   return { address: keypair.address, secret: walletSeedHex(seed) };
+}
+
+// The claimer's secp256k1 key, a seed outside the curve throws for good rather than falling back
+async function claimKeyOf(label: string): Promise<RefundKey> {
+  const entropy = createHostEntropyPort(hostSafeEntropy(deriveEntropy));
+  const seed = await entropy.deriveSeed(new TextEncoder().encode(claimEntropyLabel(label)));
+  return deriveRefundKey("Arbitrum", seed);
+}
+
+/** Withdrawal `n`'s claimer: the Arbitrum address a held sale's proxy releases to. */
+export async function claimerKeyFor(sourceId: string, n: number): Promise<string> {
+  return (await claimKeyOf(withdrawEntropyLabel(sourceId, n))).address;
+}
+
+/** The claimer key and its importable secret, refused unless it is the claimer on record. */
+export async function revealClaimKey(
+  label: string,
+  claimerAddress: string,
+): Promise<Pick<RefundKey, "address" | "secret">> {
+  const key = await claimKeyOf(label);
+  if (!sameEvmAddress(key.address, claimerAddress)) {
+    throw new Error("This sale's claim key does not match its record. Nothing is shown.");
+  }
+  return { address: key.address, secret: key.secret };
+}
+
+/** How long a signed claimer transfer stays valid, seconds: the adapter checks and sends it at once. */
+const CLAIM_RELAY_WINDOW_S = 3_600;
+
+/** The claimer's USDC transfer to `to`, signed for the adapter's relay, refused unless it is the claimer on record. */
+export async function signClaimRelay(args: {
+  label: string;
+  claimerAddress: string;
+  chainId: number;
+  to: string;
+  value: bigint;
+  nowMs?: number;
+}): Promise<MeldClaimerRelay> {
+  if (!isEvmPayeeAddress(args.to)) throw new Error("The destination is not an Arbitrum address.");
+  if (sameEvmAddress(args.to, args.claimerAddress)) {
+    throw new Error("The destination is the address the funds are already on.");
+  }
+  if (args.value <= 0n) throw new Error("There is nothing to move.");
+  const domain = saleVaultProxyUsdcDomain(args.chainId);
+  if (domain === null) throw new Error(`no USDC domain for chain ${args.chainId}`);
+  const key = await claimKeyOf(args.label);
+  if (!sameEvmAddress(key.address, args.claimerAddress)) {
+    throw new Error("This sale's claim key does not match its record. Nothing is signed.");
+  }
+  const authorization = {
+    from: key.address,
+    to: args.to,
+    value: args.value,
+    validAfter: 0n,
+    validBefore: BigInt(Math.floor((args.nowMs ?? Date.now()) / 1000) + CLAIM_RELAY_WINDOW_S),
+    nonce: `0x${bytesToHex(randomBytes(32))}`,
+  };
+  return {
+    from: authorization.from,
+    to: authorization.to,
+    value: authorization.value.toString(),
+    validAfter: authorization.validAfter.toString(),
+    validBefore: authorization.validBefore.toString(),
+    nonce: authorization.nonce,
+    signature: signTransferAuthorization(hexToBytes(key.secret.slice(2)), domain, authorization),
+  };
 }
 
 /** The key's CASH on People at the best block. */
@@ -450,11 +541,6 @@ export async function meldCommitmentFundable(
   return saleFloor(now.expected, sale, PURSE_CHECK_MARGIN_PCT, slippagePct) >= needed;
 }
 
-// A sale through an offramp lane sells USDT, not PAS: the PSM redeems the CASH at a fixed rate,
-// the key pays all of it into a Chainflip channel, and Chainflip pays the lane's asset straight to
-// the provider. The sale commits to Chainflip's fill-or-kill floor on the least USDT the key can
-// hold, so the provider is never underpaid; what Chainflip delivers above it the provider keeps.
-
 /** What a sale through `lane` sells and commits to. */
 export interface SwapSaleSize {
   /** The PSM redeem the withdrawal runs, landing USDT on the key. */
@@ -491,11 +577,16 @@ export async function sizeSwapSale(
   const usdtToken = depositTokenOf(route);
   const usdtIn = now.expected - (await paymentCost(now.api, now.expected, usdtToken));
   if (usdtIn <= 0n) throw new Error("The amount does not cover the network fees.");
+  // Chainflip takes the proxy delivery's gas out of the egress, so the quote prices it in
   const quote = await quoteOutgoing(
     await saleSwapSdk(),
     usdtIn,
     lane.chainflip,
     assetHubSourceFor(usdtToken),
+    {
+      gasBudget: SALE_VAULT_PROXY_CCM_GAS_BUDGET,
+      messageLengthBytes: SALE_MESSAGE_BYTES,
+    },
   );
   const token = laneSellToken(lane);
   // The lane's own buffer: its delivery fee can rise before the swap lands, by chain.
@@ -510,28 +601,62 @@ export async function sizeSwapSale(
   return { route, landing: now.expected, usdtIn, commit, promise };
 }
 
-/** Opens a lane sale's Chainflip channel: the key's USDT in, the lane's asset out to the provider's
- *  deposit address, refunded to the key on Asset Hub. Null, with nothing opened, when today's floor
- *  no longer covers what the sale promised. */
+/** Opens a lane sale's channel to the SaleVaultProxyFactory, null once today's floor misses the sale. */
 export async function openSwapSaleChannel(args: {
   amount: bigint;
   lane: OfframpLane;
   committed: bigint;
   providerAddress: string;
   keyPublicKeyHex: string;
+  fundingRequestId: string;
+  walletAddress: string;
   reserved: bigint;
+  /** The sale's payment deadline on record (ms), sealed into the message for the proxy. */
+  paymentExpiresAt: number;
+  /** The claimer on record, bound into the proxy's address and sealed into the message. */
+  claimerAddress: string;
+  /** The SaleVaultProxy deployment on record, which the channel delivers to. */
+  deployment: SaleVaultProxyContracts;
 }): Promise<WithdrawalChannel | null> {
+  if (!laneSellable(args.lane)) {
+    throw new Error("This sale's lane has no sending address a refund can return to.");
+  }
+  const { deployment } = args;
+  if (!isEvmAddress(args.providerAddress)) {
+    throw new Error("The provider's deposit address is not an Arbitrum address.");
+  }
+  const proxy = predictSaleVaultProxy(
+    deployment.factory,
+    deployment.implementation,
+    args.keyPublicKeyHex,
+    args.claimerAddress,
+  );
+  if (!sameEvmAddress(proxy, args.walletAddress)) {
+    throw new Error("The sale's sending address does not match. Nothing was sent.");
+  }
   const size = await sizeSwapSale(args.amount, args.lane, args.reserved);
   if (size.commit < args.committed) return null;
   const channel = await openWithdrawChannel({
     sdk: await saleSwapSdk(),
+    network: SALE_SWAP_NETWORK,
     source: assetHubSourceFor(depositTokenOf(size.route)),
     amount: size.usdtIn,
-    destination: { ...args.lane.chainflip, address: args.providerAddress },
+    destination: { ...args.lane.chainflip, address: deployment.factory },
     refundAddress: AccountId(0).dec(args.keyPublicKeyHex as `0x${string}`),
     fillOrKill: {
       slippageTolerancePercent: (args.lane.slippageBps / 100).toString(),
-      retryDurationMinutes: 30,
+      retryDurationMinutes: SALE_SWAP_RETRY_MINUTES,
+    },
+    ccm: {
+      gasBudget: SALE_VAULT_PROXY_CCM_GAS_BUDGET,
+      message: encodeSaleMessage({
+        fundingRequestId: args.fundingRequestId,
+        recipient: args.providerAddress,
+        committed: args.committed,
+        home: args.keyPublicKeyHex,
+        paymentExpiresAt: args.paymentExpiresAt,
+        claimer: args.claimerAddress,
+      }),
     },
   });
   return {
@@ -541,6 +666,14 @@ export async function openSwapSaleChannel(args: {
     expiresAt: channel.expiresAt,
     expectedEgress: channel.expectedEgress.toString(),
     amount: size.landing.toString(),
+    // The worker checks the egress against this factory and the proxy it predicts
+    proxyChainId: deployment.chainId,
+    proxyFactory: deployment.factory,
+    proxyImplementation: deployment.implementation,
+    proxyAddress: proxy,
+    claimerAddress: args.claimerAddress,
+    // The worker rebuilds the message with it, since the record's own deadline moves later
+    paymentExpiresAt: args.paymentExpiresAt,
   };
 }
 
@@ -867,6 +1000,7 @@ export async function openWithdrawChannelFor(args: {
   const config = providerDestination(args.destination);
   const channel = await openWithdrawChannel({
     sdk: await mainnetSdk(),
+    network: NETWORK,
     amount: args.amount,
     source: assetHubSourceFor(depositTokenOf(args.sale)),
     destination: { chain: config.chain, asset: config.asset, address: args.destination.address },

@@ -2,13 +2,19 @@
 // launch: Network (Remote) for the Chainflip domains, ChainSubmit for the funding pipeline, and
 // Balance through a one-shot purse read. Outside a host container this is a no-op.
 
-import { BAAS_BROKER_HOST } from "@getsome/chainflip";
-import { brokerConfigured } from "./chainflip-backend";
+import { BAAS_BROKER_HOST, chainflipRpcUrl } from "@getsome/chainflip";
+import { swapApiFor } from "@getsome/chainflip/swap-status";
+import { brokerConfigured, NETWORK } from "./chainflip-backend";
+import { SALE_SWAP_NETWORK } from "./config";
 import { isHosted } from "./host-account";
 import { readPurseBalance } from "./coinage";
 
-/** The two Chainflip hosts that serve quotes, floors and prices. */
-const CHAINFLIP_DOMAINS = ["rpc.mainnet.chainflip.io", "chainflip-swap.chainflip.io"];
+/** Chainflip's swap API and state chain RPC on each network this build opens channels on. */
+function chainflipDomains(): string[] {
+  return [...new Set([NETWORK, SALE_SWAP_NETWORK])].flatMap((network) =>
+    [swapApiFor(network), chainflipRpcUrl(network)].map((url) => new URL(url).hostname),
+  );
+}
 
 /** The IP→country service the card and bank screens default the buyer's region from (lib/geo.ts).
  *  Only the grant is front-loaded: the lookup itself runs when one of those screens opens, so a
@@ -39,7 +45,7 @@ export async function frontloadHostPermissions(): Promise<void> {
   await requestPermission({
     tag: "Remote",
     value: {
-      domains: [...CHAINFLIP_DOMAINS, ...brokerDomains(), ...GEO_DOMAINS, ...meldDomains()],
+      domains: [...chainflipDomains(), ...brokerDomains(), ...GEO_DOMAINS, ...meldDomains()],
     },
   }).catch((e) => console.warn("[host] network grant failed (continuing):", e));
 
