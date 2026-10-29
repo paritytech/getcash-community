@@ -74,9 +74,22 @@ export function timelineInsets(spec: TimelineSpec): { start: number; end: number
 }
 
 /** Each line's share of the stretched width: the designer's gap between the two rings. */
-function lineWeights(spec: TimelineSpec): number[] {
+function lineWeights(spec: TimelineSpec, failed = -1): number[] {
   const edges = ringEdges(spec);
-  return edges.slice(1).map((edge, index) => edge.start - edges[index]!.end);
+  const weights = edges.slice(1).map((edge, index) => edge.start - edges[index]!.end);
+  // A small milestone grown on failure sits centred between its neighbours
+  const grown = spec.milestones[failed];
+  if (
+    grown === undefined ||
+    sizeOf(grown) === "large" ||
+    failed === 0 ||
+    failed === edges.length - 1
+  )
+    return weights;
+  const half = (edges[failed + 1]!.start - edges[failed - 1]!.end) / 2 - RING_RADIUS.large;
+  weights[failed - 1] = half;
+  weights[failed] = half;
+  return weights;
 }
 
 /**
@@ -104,7 +117,7 @@ export function timelineDrawing(
             (milestone, index) => index > reached && sizeOf(milestone) === "large",
           );
 
-  const lines = lineWeights(spec).map((weight, index): DrawnLine => {
+  const lines = lineWeights(spec, failed).map((weight, index): DrawnLine => {
     if (index < reached) return { weight, fill: 1, tone: "complete" };
     if (index > reached) return { weight, fill: 0, tone: "upcoming" };
     if (reached < last) return { weight, fill: 1, tone: "current" };

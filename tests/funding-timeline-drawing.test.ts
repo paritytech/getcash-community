@@ -201,6 +201,25 @@ describe("top-up timeline drawing", () => {
     expect(timelineInsets(TOP_UP_TIMELINE)).toEqual({ start: 18.5, end: 16 });
   });
 
+  // A grown ring is 16 px wider, taken only from the two lines beside it
+  it.each([
+    ["a small milestone after Started", failedAt(1, 0), [25.25, 25.25, 22.5, 22.5, 48, 16], 159.5],
+    [
+      "a small milestone after Received",
+      failedAt(4, 0.5),
+      [18.5, 48, 22.5, 27.25, 27.25, 16],
+      159.5,
+    ],
+    ["a labelled milestone", failedAt(3, 0.7), [18.5, 48, 22.5, 22.5, 48, 16], 175.5],
+  ] satisfies [string, TimelineView, number[], number][])(
+    "centres a failure at %s between its neighbours, the rest where the designer put them",
+    (_, view, weights, total) => {
+      const { lines } = timelineDrawing(TOP_UP_TIMELINE, view);
+      expect(lines.map(({ weight }) => weight)).toEqual(weights);
+      expect(lines.reduce((sum, { weight }) => sum + weight, 0)).toBe(total);
+    },
+  );
+
   it("renames a milestone once the drawing reaches the spec's milestone", () => {
     const spec: TimelineSpec = {
       ...TOP_UP_TIMELINE,

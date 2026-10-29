@@ -29,11 +29,14 @@ withDefaults(
 </template>
 
 <style scoped>
-/* Small caps on the figure's baseline: half the surrounding size on display styles, never below
-   16px (where it keeps the figure's size). Light, secondary, and the figure's own tracking. */
+/* Light secondary small caps on the figure's baseline, half the figure on display styles */
 .cash-ticker {
   margin-left: 0.25rem;
-  font-size: max(0.5em, min(1em, 1rem));
+  /* Blink and WebKit synthesize small caps at 0.7 of the font size */
+  font-size: max(calc(0.5em / 0.7), min(1em, 1rem));
+  font-variant-caps: all-small-caps;
+  /* The figure alone sets the line, so display amounts keep the design's line height */
+  line-height: 0;
   font-weight: var(--scale-font-weight-light);
   color: var(--fg-secondary);
 }

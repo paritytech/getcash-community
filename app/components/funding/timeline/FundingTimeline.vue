@@ -343,6 +343,11 @@ const insets = computed(() => {
     background-color 300ms ease;
 }
 
+/* The lines beside it give up the grown ring's width at its pace, so at design width no other node moves */
+.timeline-failing .timeline-step {
+  transition: flex-grow 380ms ease-out;
+}
+
 .timeline-failing .timeline-milestone-failed :is(.timeline-cross, .timeline-label) {
   animation: timeline-fade 250ms ease-out 380ms backwards;
 }
