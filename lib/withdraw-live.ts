@@ -15,11 +15,17 @@ import {
   NoCashTransferError,
   PASEO_ASSET_HUB_PARA_ID,
   PASEO_PEOPLE_PARA_ID,
+  pickRoute,
   psmGrossFor,
+  rankRoutes,
   STABLE_TOKENS,
   type ConversionRoute,
   type DepositAsset,
   type PsmRoute,
+  type RouteAnswer,
+  type RouteDecline,
+  type RoutePick,
+  type RouteQuery,
 } from "@getsome/funding";
 import { sellAmountOf } from "@getsome/meld";
 import { laneCommit, laneSellToken, type OfframpLane } from "@getsome/offramp";
@@ -170,7 +176,7 @@ const feesBySale = new Map<string, { at: number; fees: Promise<bigint> }>();
 
 /** The sales one quote serves, as a key: a pool sale fed through a stable has a hop more than one
  *  for the native, and the PSM lands its own figure, so each is kept apart from the others. */
-export const saleKeyOf = (sale: ConversionRoute): string =>
+const saleKeyOf = (sale: ConversionRoute): string =>
   sale.tier === "dotusd" ? sale.tier : `${sale.tier}:${sale.external ?? "native"}`;
 
 /** The CASH the fees take from a direct withdrawal before the sale on Asset Hub, priced now on
@@ -209,27 +215,41 @@ export async function directFeesCash(sale: ConversionRoute): Promise<bigint> {
 /** The sale a direct withdrawal of `amount` CASH makes for the token it lands, decided the way
  *  the on-ramp decides a deposit's tier the other way round: the native takes the pool and
  *  dotUSD the teleport, with no chain read; a stable takes the PSM when it is approved for
- *  redeeming and can serve the amount, the pool fed through the native otherwise. No landing is
- *  the fiat rails' rule: the PSM's own external when it can serve, the native otherwise.
- *  `reserved` is the CASH this app's own in-flight PSM withdrawals have yet to redeem, which the
- *  PSM's room is judged without. */
+ *  redeeming and can serve the amount, the pool fed through the native otherwise. `reserved` is
+ *  the CASH this app's own in-flight PSM withdrawals have yet to redeem, which the PSM's room is
+ *  judged without. */
 export async function chooseWithdrawRoute(
   amount: bigint,
-  landing: DepositAsset | undefined,
+  landing: DepositAsset,
   reserved: bigint,
 ): Promise<ConversionRoute> {
   if (landing === "native") return { tier: "pool" };
   if (landing === "dotUSD") return { tier: "dotusd" };
+  const { api, query } = await withdrawRouteQuery(amount, reserved);
+  return chooseRoute(api, { ...query, deposit: landing });
+}
+
+/** The sales a provider withdrawal of `amount` CASH could make, best first: USDT through the PSM
+ *  when it can serve, with `reserved` of its room spoken for, then the native through the pool.
+ *  The provider is asked about them in that order. */
+async function rankWithdrawRoutes(
+  amount: bigint,
+  reserved: bigint,
+): Promise<readonly ConversionRoute[]> {
+  const { api, query } = await withdrawRouteQuery(amount, reserved);
+  return rankRoutes(api, query);
+}
+
+/** The Asset Hub a withdrawal's sale is decided on, and the redeem it is judged on: what the
+ *  redeem will take, the amount less the fees and Asset Hub's earmark. */
+async function withdrawRouteQuery(
+  amount: bigint,
+  reserved: bigint,
+): Promise<{ api: AssetHubApi; query: RouteQuery }> {
   const { connectChain, ASSET_HUB } = await import("./host-chain");
   const api = (await connectChain(ASSET_HUB)).getTypedApi(paseo_next_v2);
-  // Judged on what the redeem will take: the amount less the fees and Asset Hub's earmark.
   const sold = amount - (await directFeesCash({ tier: "pool" }));
-  return chooseRoute(api, {
-    direction: "redeem",
-    internalAmount: redeemAmountOf(sold),
-    reserved,
-    ...(landing === undefined ? {} : { deposit: landing }),
-  });
+  return { api, query: { direction: "redeem", internalAmount: redeemAmountOf(sold), reserved } };
 }
 
 /** Stands in for the key and the provider in a fee estimate before either is known: the fee
@@ -652,33 +672,34 @@ function cashForMinimum(minimum: bigint, sale: ConversionRoute): Promise<bigint>
   return directFeesCash(sale).then((fees) => psmGrossFor(minimum, sale.feeRate) + fees);
 }
 
+type AvailableOffer = Extract<WithdrawOffer, { state: "available" }>;
+
 /**
- * What every provider destination offers for `amountCash` sold through `sale`: the sale is priced
- * into its token, the headroom comes off on the pool tier, and each destination is quoted for
- * what is left from that token's Asset Hub source. One refused quote says the amount is under the
- * provider's minimum, priced back into CASH; a provider that is not answering marks every
- * destination after the first, without asking the rest. Never throws.
+ * What every provider destination offers for `amountCash`, with `reserved` of the PSM's room
+ * spoken for. The chain ranks the sales once (`rankWithdrawRoutes`); each destination is quoted on
+ * them in that order, from the sale's Asset Hub source for what it sells, and takes the first
+ * Chainflip accepts. An amount under Chainflip's minimum on every sale says the smallest of them,
+ * priced back into CASH; a provider that is not answering on the first destination marks every
+ * destination without asking the rest. Never throws.
  */
 export async function quoteWithdrawOffers(
   amountCash: bigint,
   destinations: readonly { id: string; chain: string; asset: string }[],
-  sale: ConversionRoute,
-): Promise<{ sellable: bigint | null; offers: ReadonlyMap<string, WithdrawOffer> }> {
+  reserved: bigint,
+): Promise<ReadonlyMap<string, WithdrawOffer>> {
   const offers = new Map<string, WithdrawOffer>();
   const allUnavailable = (reason: string) => {
     for (const destination of destinations)
       offers.set(destination.id, { state: "unavailable", reason });
     console.warn(`[withdraw] offers unavailable: ${reason}`);
-    return { sellable: null, offers };
+    return offers;
   };
 
-  let source: SourceConfig;
-  let sellable: bigint;
+  let routes: readonly ConversionRoute[];
   let sdk: Awaited<ReturnType<typeof mainnetSdk>>;
   try {
-    source = assetHubSourceFor(depositTokenOf(sale));
-    [sellable, sdk] = await withTimeout(
-      Promise.all([sellableOf(amountCash, sale), mainnetSdk()]),
+    [routes, sdk] = await withTimeout(
+      Promise.all([rankWithdrawRoutes(amountCash, reserved), mainnetSdk()]),
       OFFERS_TIMEOUT_MS,
       "withdraw offers",
     );
@@ -686,75 +707,97 @@ export async function quoteWithdrawOffers(
     return allUnavailable(messageOf(e));
   }
 
-  // An amount the fees eat whole sells for nothing; a quote for one unit still makes Chainflip
-  // name its minimum, which is the answer such a row needs.
-  const probe = sellable > 0n ? sellable : 1n;
-  // The minimum is on the token sold, so every destination names the same one: priced once.
-  const minimumCashFor = new Map<bigint, Promise<bigint>>();
-  const tooSmall = async (minimum: bigint): Promise<WithdrawOffer> => {
-    let priced = minimumCashFor.get(minimum);
-    if (priced === undefined) {
-      priced = cashForMinimum(minimum, sale);
-      minimumCashFor.set(minimum, priced);
+  // Per sale, shared by every destination: what it sells, and its answer once one destination's
+  // quote was under the minimum. The minimum is on the token sold, so it is the same for all.
+  const sellables = new Map<ConversionRoute, Promise<bigint>>();
+  const tooSmall = new Map<ConversionRoute, Promise<RouteDecline>>();
+  const sellableFor = (route: ConversionRoute): Promise<bigint> => {
+    let sellable = sellables.get(route);
+    if (sellable === undefined) {
+      sellable = withTimeout(sellableOf(amountCash, route), OFFERS_TIMEOUT_MS, "withdraw sale");
+      sellables.set(route, sellable);
     }
-    try {
-      return { state: "too-small", minimumCash: await priced };
-    } catch (e) {
-      return { state: "unavailable", reason: messageOf(e) };
+    return sellable;
+  };
+  const tooSmallFor = (route: ConversionRoute, minimum: bigint): Promise<RouteDecline> => {
+    let answer = tooSmall.get(route);
+    if (answer === undefined) {
+      answer = cashForMinimum(minimum, route).then(
+        (minimumCash): RouteDecline => ({ kind: "too-small", minimumCash }),
+        (e: unknown): RouteDecline => ({ kind: "refused", reason: messageOf(e) }),
+      );
+      tooSmall.set(route, answer);
     }
+    return answer;
   };
 
-  const quoteOne = async (destination: {
-    id: string;
-    chain: string;
-    asset: string;
-  }): Promise<{ offer: WithdrawOffer; outage: boolean }> => {
-    const config = providerDestination(destination);
+  const ask = async (
+    destination: { id: string; chain: string; asset: string },
+    route: ConversionRoute,
+  ): Promise<RouteAnswer<AvailableOffer>> => {
+    const known = tooSmall.get(route);
+    if (known !== undefined) return known;
     try {
+      const config = providerDestination(destination);
+      const source = assetHubSourceFor(depositTokenOf(route));
+      const sellable = await sellableFor(route);
+      // An amount the fees eat whole sells for nothing; a quote for one unit still makes
+      // Chainflip name its minimum, which is the answer such a row needs.
       const quote = await withTimeout(
-        quoteOutgoing(sdk, probe, config, source),
+        quoteOutgoing(sdk, sellable > 0n ? sellable : 1n, config, source),
         OFFERS_TIMEOUT_MS,
         `${config.asset} offer`,
       );
       const fees = offerFees(config, source, quote, amountCash);
       return {
-        offer: {
+        kind: "accepted",
+        value: {
           state: "available",
+          sale: route,
+          sellable,
           egress: quote.egressAmount,
           formatted: fmtPayout(config, quote.egressAmount),
           etaSeconds: quote.estimatedDurationSeconds,
           ...(fees === undefined ? {} : { fees }),
         },
-        outage: false,
       };
     } catch (e) {
-      if (e instanceof BelowMinimumSwapAmountError) {
-        return { offer: await tooSmall(e.minimumBaseUnits), outage: false };
+      if (e instanceof BelowMinimumSwapAmountError) return tooSmallFor(route, e.minimumBaseUnits);
+      if (e instanceof ChainflipRequestError && e.outage) {
+        return { kind: "outage", reason: messageOf(e) };
       }
-      return {
-        offer: { state: "unavailable", reason: messageOf(e) },
-        outage: e instanceof ChainflipRequestError && e.outage,
-      };
+      return { kind: "refused", reason: messageOf(e) };
     }
   };
 
+  const pickFor = (destination: { id: string; chain: string; asset: string }) =>
+    pickRoute(routes, (route) => ask(destination, route));
+
   // The first destination is asked alone: a provider that is not answering says so once.
   const [first, ...rest] = destinations;
-  if (first === undefined) return { sellable, offers };
-  const canary = await quoteOne(first);
-  offers.set(first.id, canary.offer);
-  if (canary.outage && canary.offer.state === "unavailable") {
-    const { reason } = canary.offer;
-    for (const destination of rest) offers.set(destination.id, { state: "unavailable", reason });
-    console.warn(`[withdraw] offers unavailable: ${reason}`);
-    return { sellable, offers };
-  }
+  if (first === undefined) return offers;
+  const canary = await pickFor(first);
+  if (canary.kind === "outage") return allUnavailable(canary.reason);
+  offers.set(first.id, offerOf(canary));
   await Promise.all(
     rest.map(async (destination) => {
-      offers.set(destination.id, (await quoteOne(destination)).offer);
+      offers.set(destination.id, offerOf(await pickFor(destination)));
     }),
   );
-  return { sellable, offers };
+  return offers;
+}
+
+/** A destination's offer from the sale picked for it, or why none was. */
+function offerOf(pick: RoutePick<AvailableOffer>): WithdrawOffer {
+  switch (pick.kind) {
+    case "picked":
+      return pick.value;
+    case "too-small":
+      return { state: "too-small", minimumCash: pick.minimumCash };
+    case "refused":
+    case "outage":
+      return { state: "unavailable", reason: pick.reason };
+  }
 }
 
 const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
