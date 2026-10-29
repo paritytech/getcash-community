@@ -42,7 +42,7 @@ describe("withdrawal destinations", () => {
     ]);
     const provided = others.flatMap((network) => network.destinations);
     expect(provided.every((d) => d.rail === "chainflip")).toBe(true);
-    // A provider names no landing: the fiat rule decides what lands on the key for it.
+    // A provider names no landing: the sale its quote picks decides what lands on the key.
     expect(provided.every((d) => d.landing === undefined)).toBe(true);
   });
 

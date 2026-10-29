@@ -270,6 +270,92 @@ export async function fetchSupportedCorridors(
   }
 }
 
+// A hosted card or bank top-up is delivered in whichever of two tokens a provider quotes, so its
+// region dropdown reads both tokens' buy catalogs as one. `preferred` is the catalog of the token
+// tried first; where the two disagree, its answer is kept.
+
+/** Two country lists as one, each country once and in name order, as the adapter lists them; null
+ *  only when both are. */
+export function mergeCountries(
+  preferred: readonly SupportedCountry[] | null,
+  other: readonly SupportedCountry[] | null,
+): SupportedCountry[] | null {
+  if (other === null) return preferred && [...preferred];
+  if (preferred === null) return [...other];
+  const seen = new Set(preferred.map((c) => c.country));
+  return [...preferred, ...other.filter((c) => !seen.has(c.country))].sort((a, b) =>
+    a.name.localeCompare(b.name),
+  );
+}
+
+const DECIMAL = /^(\d+)(?:\.(\d*))?$/;
+
+/** The sign of `a - b` for two plain decimal texts, exactly; null when either is not one. */
+function compareDecimal(a: string, b: string): number | null {
+  const x = DECIMAL.exec(a.trim());
+  const y = DECIMAL.exec(b.trim());
+  if (x === null || y === null) return null;
+  const places = Math.max(x[2]?.length ?? 0, y[2]?.length ?? 0);
+  const scaled = (m: RegExpExecArray) => BigInt(m[1]! + (m[2] ?? "").padEnd(places, "0"));
+  const diff = scaled(x) - scaled(y);
+  return diff === 0n ? 0 : diff < 0n ? -1 : 1;
+}
+
+/** The lower (`sign` -1) or higher (`sign` 1) of two bounds. Blank when either cannot be read: a
+ *  row is greyed on a bound we can read, never on one a side does not give. */
+function widerBound(a: string, b: string, sign: -1 | 1): string {
+  const order = compareDecimal(a, b);
+  if (order === null) return "";
+  return order * sign >= 0 ? a : b;
+}
+
+/**
+ * One country's two corridors as one: a category is routed when either routes it, and where both
+ * do, the first method of each is bounded by the smaller minimum and the larger maximum. Bounds in
+ * two currencies are never mixed: the preferred method's stand.
+ */
+export function mergeCorridor(
+  preferred: SupportedCorridor | null,
+  other: SupportedCorridor | null,
+): SupportedCorridor | null {
+  if (preferred === null || other === null) return preferred ?? other;
+  const first = (corridor: SupportedCorridor, category: SupportedMethodCategory) =>
+    corridor.methods.find((m) => m.category === category);
+  const widened = (method: SupportedMethod): SupportedMethod => {
+    const twin = first(other, method.category);
+    if (method !== first(preferred, method.category) || twin === undefined) return method;
+    if (twin.currency !== method.currency) return method;
+    return {
+      ...method,
+      min: widerBound(method.min, twin.min, -1),
+      max: widerBound(method.max, twin.max, 1),
+      providers: [...new Set([...method.providers, ...twin.providers])],
+    };
+  };
+  return {
+    ...preferred,
+    methods: [
+      ...preferred.methods.map(widened),
+      ...other.methods.filter((m) => first(preferred, m.category) === undefined),
+    ],
+  };
+}
+
+/** Two catalogs' corridors as one, country by country (see `mergeCorridor`); null only when both
+ *  are. */
+export function mergeCorridorMaps(
+  preferred: Map<string, SupportedCorridor> | null,
+  other: Map<string, SupportedCorridor> | null,
+): Map<string, SupportedCorridor> | null {
+  if (preferred === null || other === null) return preferred ?? other;
+  const merged = new Map<string, SupportedCorridor>();
+  for (const country of new Set([...preferred.keys(), ...other.keys()])) {
+    const corridor = mergeCorridor(preferred.get(country) ?? null, other.get(country) ?? null);
+    if (corridor !== null) merged.set(country, corridor);
+  }
+  return merged;
+}
+
 // The off-ramp catalog: the adapter merges Meld's sell routes for every configured lane (today's
 // Asset Hub sale first, then the Chainflip lanes) and tags each country's payout method with the
 // first lane that routes it. A sale reads this instead of one destination's sell catalog, so a

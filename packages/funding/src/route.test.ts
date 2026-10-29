@@ -1,6 +1,6 @@
 // Route selection over a scripted PSM: each of the four checks failing on its own, the margin at
-// its boundary in both directions, the tier following the deposit the buyer named, and a resumed
-// job's route coming from its record rather than the chain.
+// its boundary in both directions, the routes ranked with and without a named deposit, and a
+// resumed job's route coming from its record rather than the chain.
 
 import { TOKENS } from "@getsome/core";
 import { describe, expect, it } from "vitest";
@@ -11,9 +11,11 @@ import {
   depositTokenOf,
   isStablePoolRoute,
   mintHeadroom,
+  rankRoutes,
   recordedRoute,
   withMargin,
   type ConversionRoute,
+  type RouteQuery,
 } from "./route";
 
 const CASH = 1_000_000n; // one CASH, 6 decimals
@@ -233,57 +235,46 @@ describe("chooseRoute", () => {
   });
 });
 
-describe("chooseRoute with the deposit named", () => {
-  it("a native deposit is the pool, with no PSM to ask", async () => {
-    const { api, reads } = scriptedPsm();
-    expect(await chooseRoute(api, mintFrom("native", 50n * CASH))).toEqual(POOL);
-    expect(reads).toEqual([]);
-  });
-
-  it("a dotUSD deposit is the dotUSD tier, with no PSM to ask", async () => {
-    const { api, reads } = scriptedPsm();
-    expect(await chooseRoute(api, mintFrom("dotUSD", 50n * CASH))).toEqual(DOTUSD);
-    expect(reads).toEqual([]);
-  });
-
-  it("USDC is the pool fed with USDC: the PSM approves no such external today", async () => {
-    const { api, reads } = scriptedPsm();
-    expect(await chooseRoute(api, mintFrom("USDC", 50n * CASH))).toEqual(POOL_FED_USDC);
-    expect(reads).toEqual([
-      ["Psm", TOKENS.CASH.location],
-      ["ExternalAssets", TOKENS.CASH.location, TOKENS.USDC.location],
-    ]);
-  });
-
-  it("USDC takes the PSM the day it is approved there, at USDC's own fee", async () => {
-    const { api } = scriptedPsm({ approvals: { USDC: LIVE.approval }, mintingFee: 7_000 });
-    expect(await chooseRoute(api, mintFrom("USDC", 50n * CASH))).toEqual({
-      tier: "psm",
-      external: "USDC",
-      feeRate: 7_000,
-    });
-  });
-
-  it("USDT takes the PSM when it can serve, and the pool fed with USDT when any check fails", async () => {
-    expect(await chooseRoute(scriptedPsm().api, mintFrom("USDT", 50n * CASH))).toEqual(
-      PSM_AT_DEFAULT_FEE,
+describe("rankRoutes", () => {
+  const PSM_REDEEM_FEE: ConversionRoute = { tier: "psm", external: "USDT", feeRate: 7_000 };
+  const PSM_USDC: ConversionRoute = { tier: "psm", external: "USDC", feeRate: 5_000 };
+  const usdcApproved = { approvals: { USDC: LIVE.approval } };
+  // `pair` is the external whose PSM entries are read; none for a deposit that needs no PSM.
+  it.each<[string, Partial<PsmWorld>, RouteQuery, ConversionRoute[], ("USDT" | "USDC")?]>([
+    ["mint, PSM can serve", {}, mint(50n * CASH), [PSM_AT_DEFAULT_FEE, POOL], "USDT"],
+    ["mint, PSM cannot", { instance: undefined }, mint(50n * CASH), [POOL], "USDT"],
+    [
+      "redeem, PSM can serve",
+      { debts: [70n * CASH], redemptionFee: 7_000 },
+      redeem(50n * CASH),
+      [PSM_REDEEM_FEE, POOL],
+      "USDT",
+    ],
+    ["redeem, PSM cannot", {}, redeem(50n * CASH), [POOL], "USDT"],
+    ["native deposit", {}, mintFrom("native", 50n * CASH), [POOL]],
+    ["dotUSD deposit", {}, mintFrom("dotUSD", 50n * CASH), [DOTUSD]],
+    ["USDT deposit, PSM can serve", {}, mintFrom("USDT", 50n * CASH), [PSM_AT_DEFAULT_FEE], "USDT"],
+    [
+      "USDT deposit, PSM cannot",
+      { debts: [45n * CASH + 1n] },
+      mintFrom("USDT", 50n * CASH),
+      [POOL_FED_USDT],
+      "USDT",
+    ],
+    ["USDC deposit, not approved", {}, mintFrom("USDC", 50n * CASH), [POOL_FED_USDC], "USDC"],
+    ["USDC deposit, approved", usdcApproved, mintFrom("USDC", 50n * CASH), [PSM_USDC], "USDC"],
+  ])("%s", async (_, world, query, expected, pair) => {
+    const { api, reads } = scriptedPsm(world);
+    expect(await rankRoutes(api, query)).toEqual(expected);
+    expect(reads).toEqual(
+      pair === undefined
+        ? []
+        : [
+            ["Psm", TOKENS.CASH.location],
+            ["ExternalAssets", TOKENS.CASH.location, TOKENS[pair].location],
+          ],
     );
-    const failing = [
-      scriptedPsm({ instance: undefined }),
-      scriptedPsm({ approval: undefined }),
-      scriptedPsm({ approval: { status: { type: "MintingDisabled" }, decimals: 6 } }),
-      scriptedPsm({ debts: [45n * CASH + 1n] }),
-    ];
-    for (const { api } of failing) {
-      expect(await chooseRoute(api, mintFrom("USDT", 50n * CASH))).toEqual(POOL_FED_USDT);
-    }
-    expect(await chooseRoute(scriptedPsm().api, mintFrom("USDT", CASH - 1n))).toEqual(
-      POOL_FED_USDT,
-    );
-  });
-
-  it("without a deposit named the fallback is still the native pool", async () => {
-    expect(await chooseRoute(scriptedPsm({ instance: undefined }).api, mint(CASH))).toEqual(POOL);
+    expect(await chooseRoute(scriptedPsm(world).api, query)).toEqual(expected[0]);
   });
 });
 

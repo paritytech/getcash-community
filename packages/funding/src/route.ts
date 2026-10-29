@@ -1,13 +1,12 @@
-// Route selection: which conversion tier a request takes. Three tiers, one decision point. The
-// PSM (deliver a stable it approves, mint 1:1 minus the fee) is preferred and the AssetConversion
-// pool is the fallback: fed with the native it swaps once, fed with a stable it swaps twice,
-// stable to native to CASH. The dotUSD tier takes the underlying itself and moves it
-// with no conversion at all. A caller that knows what the buyer will deposit names it and the tier
-// follows the token; a caller that does not, the fiat rails, gets the PSM's external when the PSM
-// can serve and the native otherwise. The decision is four PSM reads made once at quote time and
-// then frozen into the request; the worker CONSUMES the recorded route and never decides one, so
-// a job resumed from persisted state cannot take a different tier than the one the buyer was
-// quoted against an asset that has already arrived.
+// Route selection: the conversion tiers a request could take, best first. The PSM (deliver a
+// stable it approves, mint 1:1 minus the fee) is preferred; the AssetConversion pool is the
+// fallback, fed with the native it swaps once, fed with a stable it swaps twice; the dotUSD tier
+// moves the underlying itself with no conversion. A named deposit has the one route its token
+// takes. A provider rail gets the PSM's external when the PSM can serve, then the native, and asks
+// its provider about them in that order (`pickRoute`). The route is picked once at quote time and
+// frozen into the request; the worker CONSUMES the recorded route and never decides one, so a job
+// resumed from persisted state cannot take a different tier than the one the buyer was quoted
+// against an asset that has already arrived.
 
 import { TOKENS, type TokenSpec, type XcmLocation } from "@getsome/core";
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
@@ -87,8 +86,8 @@ export interface RouteQuery {
   internalAmount: bigint;
   /** The asset the buyer will deposit, when the caller already knows it. The native takes the
    *  pool and the underlying the dotUSD tier, neither with a PSM read; a stable takes the PSM when
-   *  it is approved and can serve, the pool fed with that stable otherwise. Absent, the fiat
-   *  rails' rule: the PSM's external when the PSM can serve, the native otherwise. */
+   *  it is approved and can serve, the pool fed with that stable otherwise. Absent, the provider
+   *  rails' rule: the PSM's external when the PSM can serve, then the native. */
   deposit?: DepositAsset;
   /** Internal units this app's own in-flight PSM-tier withdrawals have yet to redeem, taken out
    *  of the capacity before a redeem is judged: the chain does not know of them until each one's
@@ -149,27 +148,27 @@ export function mintHeadroom(input: {
   return headroom < 0n ? 0n : headroom;
 }
 
-/** The tier a request takes, decided once at quote time: the four checks of the routing rule
- *  against the live PSM, the PSM when all of them pass and the pool when any fails. */
-export async function chooseRoute(api: AssetHubApi, query: RouteQuery): Promise<ConversionRoute> {
-  if (query.deposit === "native") return POOL;
-  if (query.deposit === "dotUSD") return DOTUSD;
-  const external: PsmExternal = query.deposit ?? PSM_EXTERNAL;
-  // Where the request goes when the PSM will not serve it: the pool fed with the stable the
-  // buyer named, or the native when nobody named one.
-  const fallback: ConversionRoute = query.deposit === undefined ? POOL : { tier: "pool", external };
+type PsmConversionRoute = Extract<ConversionRoute, { tier: "psm" }>;
+
+/** The PSM route for this external when the four checks of the routing rule pass against the live
+ *  PSM, null when any fails. */
+async function eligiblePsmRoute(
+  api: AssetHubApi,
+  query: RouteQuery,
+  external: PsmExternal,
+): Promise<PsmConversionRoute | null> {
   const externalLocation = EXTERNAL_LOCATIONS[external];
   const [instance, approval] = await Promise.all([
     api.query.Psm.Psm.getValue(INTERNAL),
     api.query.Psm.ExternalAssets.getValue(INTERNAL, externalLocation),
   ]);
   // 1. An instance exists for the internal asset and the external is approved on it.
-  if (instance === undefined || approval === undefined) return fallback;
+  if (instance === undefined || approval === undefined) return null;
   // 2. The circuit breaker: minting needs the pair fully open, redemption survives a minting
   //    halt.
   const status = approval.status.type;
   const open = query.direction === "mint" ? status === "AllEnabled" : status !== "AllDisabled";
-  if (!open) return fallback;
+  if (!open) return null;
 
   // The fee is a ValueQuery: an absent entry decodes to the pallet default (0.5%), so the value
   // read is always the one the call will be charged.
@@ -197,10 +196,36 @@ export async function chooseRoute(api: AssetHubApi, query: RouteQuery): Promise<
         ? 0n
         : debt - reserved;
   const floor = query.direction === "mint" ? ROUTE_MARGIN_FLOOR : REDEEM_MARGIN_FLOOR;
-  if (capacity < withMargin(query.internalAmount, floor)) return fallback;
+  if (capacity < withMargin(query.internalAmount, floor)) return null;
   // 4. Not below the instance's minimum swap.
-  if (query.internalAmount < instance.min_swap_amount) return fallback;
+  if (query.internalAmount < instance.min_swap_amount) return null;
   return { tier: "psm", external, feeRate };
+}
+
+/** The routes a request could take, best first, ranked once at quote time. A named deposit has
+ *  exactly one: the native the pool, the underlying the dotUSD tier, a stable the PSM when it can
+ *  serve and the pool fed with that stable otherwise. With none named, the PSM's external when the
+ *  PSM can serve, then the native through the pool. The chain cannot know whether a provider can
+ *  deliver or take the PSM's token for the amount, so a provider rail asks about these in order
+ *  with `pickRoute`. */
+export async function rankRoutes(
+  api: AssetHubApi,
+  query: RouteQuery,
+): Promise<[ConversionRoute, ...ConversionRoute[]]> {
+  if (query.deposit === "native") return [POOL];
+  if (query.deposit === "dotUSD") return [DOTUSD];
+  if (query.deposit !== undefined) {
+    const external = query.deposit;
+    return [(await eligiblePsmRoute(api, query, external)) ?? { tier: "pool", external }];
+  }
+  const psm = await eligiblePsmRoute(api, query, PSM_EXTERNAL);
+  return psm === null ? [POOL] : [psm, POOL];
+}
+
+/** The best route a request could take: the first of `rankRoutes`. */
+export async function chooseRoute(api: AssetHubApi, query: RouteQuery): Promise<ConversionRoute> {
+  const [best] = await rankRoutes(api, query);
+  return best;
 }
 
 /** The route a persisted hand-off or job record carries, and the ONLY way a worker learns a
