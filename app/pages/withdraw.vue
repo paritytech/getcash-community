@@ -36,13 +36,15 @@ import { projectFundingTopUps, type FundingTopUp } from "../funding/top-ups";
 import { useRequestsStore } from "../stores/requests";
 import { applyCurrentScene } from "../utils/dev-preview";
 import { previewStage, type PreviewStage } from "../utils/dev-preview-stage";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
+import { readWithdrawHandoff, withdrawHandoffParams } from "../withdraw/handoff";
 import { WITHDRAWAL_LIST_WORDING, WITHDRAWAL_WORDING } from "../withdraw/rows";
 import { frontloadHostPermissions } from "~~/lib/host-frontload";
 
 useVisualViewportHeight();
 const requests = useRequestsStore();
 const router = useRouter();
+const currentRoute = useRoute();
 
 const routeLabel = (route: FundingRoute): string =>
   withdrawalSelectorConfig.routes.find(({ id }) => id === route)?.label ?? route;
@@ -93,6 +95,20 @@ const topUpError = ref<string | null>(null);
 const shellEntry = ref<FundingShellEntryScreen>("auto");
 const historyReturn = ref<FundingHistoryReturnScreen>("amount");
 let loadEpoch = 0;
+
+// Another product opened the withdrawal with an amount or a route (./withdraw/handoff.ts): the
+// shell opens on the amount screen with them chosen, before it mounts and reads its selection.
+const handoff = readWithdrawHandoff(
+  withdrawHandoffParams(window.location.search, currentRoute.query),
+  withdrawalSelectorConfig.amount.decimals,
+);
+if (handoff !== null) {
+  selection.value = {
+    amount: handoff.amount ?? withdrawalSelectorConfig.amount.initial,
+    route: handoff.route ?? withdrawalSelectorConfig.defaultRoute,
+  };
+  shellEntry.value = "amount";
+}
 
 const activeTopUp = computed<FundingTopUp | null>(() =>
   activeTopUpId.value === null
