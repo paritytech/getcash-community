@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { cryptoBelowMinimum, fiatOutOfRange } from "../app/funding/out-of-range";
+import {
+  cryptoBelowMinimum,
+  fiatAmountRejected,
+  fiatOutOfRange,
+} from "../app/funding/out-of-range";
 
 describe("fiatOutOfRange", () => {
   const range = { limit: "40.00", estimatedFiat: "19.68", fiat: "GBP" };
@@ -28,6 +32,16 @@ describe("fiatOutOfRange", () => {
     ).toEqual({
       message: "Below the minimum for card payment in United Kingdom",
       rows: [{ label: "Min. payment", value: "£40.00" }],
+      bound: null,
+    });
+  });
+});
+
+describe("fiatAmountRejected", () => {
+  it("names the method and region, with no bound to continue with", () => {
+    expect(fiatAmountRejected("card", "France")).toEqual({
+      message: "This amount can't be paid by card payment in France",
+      rows: [],
       bound: null,
     });
   });

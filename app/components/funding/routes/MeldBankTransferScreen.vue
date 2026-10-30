@@ -19,7 +19,7 @@ import { useRequestsStore } from "../../../stores/requests";
 import { useSessionStore } from "../../../stores/session";
 import { currencyConfig } from "../../../funding/config";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
-import { fiatOutOfRange } from "../../../funding/out-of-range";
+import { fiatAmountRejected, fiatOutOfRange } from "../../../funding/out-of-range";
 import type { FundingRoute } from "../../../funding/selection";
 import CashAmount from "../../ui/CashAmount.vue";
 import PillButton from "../../ui/PillButton.vue";
@@ -62,7 +62,11 @@ const blocked = computed(() => session.quoteError !== null && !session.loading);
 const requestOpen = computed(() => requests.phase !== null);
 /** The summary has nothing to price yet. */
 const pricing = computed(
-  () => !blocked.value && session.quoteOutOfRange === null && !session.quoted,
+  () =>
+    !blocked.value &&
+    session.quoteOutOfRange === null &&
+    !session.quoteAmountRejected &&
+    !session.quoted,
 );
 
 /** The hero: the exact total to transfer, fees included. Shown only once a quote priced it. */
@@ -151,6 +155,14 @@ function useAmount(cash: string) {
       @region="emit('currency')"
       @change-amount="emit('changeAmount')"
       @use-amount="useAmount"
+    />
+    <AmountOutOfRange
+      v-else-if="step === 'summary' && session.quoteAmountRejected && !session.loading"
+      :amount="session.amountHuman"
+      :words="fiatAmountRejected('bank', countryLabel)"
+      :region="{ label: 'Payment country', value: countryLabel, country }"
+      @region="emit('currency')"
+      @change-amount="emit('changeAmount')"
     />
     <RateErrorScreen
       v-else-if="step === 'summary' && blocked"
