@@ -4,7 +4,7 @@
 // clears the target.
 
 import type { Quote, ReverseQuoteInput, TokenSpec } from "@getsome/core";
-import { fiatLimitOf, type MeldClientLike, type MeldQuoteEntry } from "./client";
+import { fiatLimitOf, refusalOf, type MeldClientLike, type MeldQuoteEntry } from "./client";
 import { formatBaseUnits, toBaseUnits, type MeldToken } from "./units";
 
 /** The buyer and route context a Meld quote needs beyond the target. Fixed per rail instance. */
@@ -103,6 +103,27 @@ async function forwardBest(
 }
 
 /**
+ * The rate probe: a forward quote at an amount picked for the rate, not the buyer's. A provider
+ * refusing that amount says nothing about the buyer's, so it fails as an ordinary quote error
+ * rather than as the buyer's amount being refused.
+ */
+async function probeRate(
+  client: MeldClientLike,
+  ctx: MeldQuoteContext,
+  sourceAmount: string,
+): Promise<MeldQuoteEntry> {
+  try {
+    return await forwardBest(client, ctx, sourceAmount);
+  } catch (e) {
+    if (refusalOf(e)?.code !== "AMOUNT_REJECTED") throw e;
+    throw new Error(
+      `No provider would price ${ctx.method} in ${ctx.fiat} right now. Try again or another payment method.`,
+      { cause: e },
+    );
+  }
+}
+
+/**
  * Solves the fiat for a target amount of the context's token. Returns a core Quote whose `source`
  * is that delivery and whose `raw` carries the chosen fiat line.
  */
@@ -124,12 +145,12 @@ export async function computeMeldQuote(
   // to the bound it names, once.
   let best: MeldQuoteEntry;
   try {
-    best = await forwardBest(client, ctx, (bounds.min ?? Math.max(targetTokens, 1)).toFixed(2));
+    best = await probeRate(client, ctx, (bounds.min ?? Math.max(targetTokens, 1)).toFixed(2));
   } catch (e) {
     const limit = fiatLimitOf(e);
     if (limit === undefined) throw e;
     bounds[limit.bound] = positive(limit.amount);
-    best = await forwardBest(client, ctx, limit.amount);
+    best = await probeRate(client, ctx, limit.amount);
   }
   // Cheapest line seen that delivers at least the target.
   let cleared: MeldQuoteEntry | null = Number(best.destinationAmount) >= targetTokens ? best : null;

@@ -51,6 +51,7 @@ import {
   isAdapterOutage,
   MeldAmountOutOfRangeError,
   pickBestQuote,
+  refusalOf,
   shareStatusReads,
   type MeldClientLike,
   type MeldQuoteRaw,
@@ -398,6 +399,9 @@ export const useSessionStore = defineStore("session", () => {
   /** The amount's fiat falls outside the method's limits. Set instead of `quoteError`: retrying the
    *  same amount cannot help, so it neither counts as a failure nor offers another try. */
   const quoteOutOfRange = shallowRef<QuoteOutOfRange | null>(null);
+  /** A provider turned the amount down without naming a bound. Like `quoteOutOfRange`, the same
+   *  amount cannot quote, so the screen asks for a different one rather than offering a retry. */
+  const quoteAmountRejected = ref(false);
   /** True when the selected card or bank method is not routed for the chosen region. Not a quote
    *  failure; nothing to retry. */
   const meldMethodUnavailable = ref(false);
@@ -539,6 +543,7 @@ export const useSessionStore = defineStore("session", () => {
     sourcePrice.value = null;
     quoteError.value = null;
     quoteOutOfRange.value = null;
+    quoteAmountRejected.value = false;
     quoteFailures.value = 0;
     meldMethodUnavailable.value = false;
   }
@@ -550,6 +555,7 @@ export const useSessionStore = defineStore("session", () => {
     quoted.value = null;
     quoteError.value = null;
     quoteOutOfRange.value = null;
+    quoteAmountRejected.value = false;
     quoteFailures.value = 0;
     meldMethodUnavailable.value = false;
   }
@@ -561,6 +567,7 @@ export const useSessionStore = defineStore("session", () => {
     quoted.value = null;
     quoteError.value = null;
     quoteOutOfRange.value = null;
+    quoteAmountRejected.value = false;
     quoteFailures.value = 0;
     meldMethodUnavailable.value = false;
   }
@@ -1040,6 +1047,7 @@ export const useSessionStore = defineStore("session", () => {
     const epoch = quoteEpoch;
     quoteError.value = null;
     quoteOutOfRange.value = null;
+    quoteAmountRejected.value = false;
     meldMethodUnavailable.value = false;
     // Nothing entered, nothing to quote.
     if (amountBase.value === null) {
@@ -1196,11 +1204,22 @@ export const useSessionStore = defineStore("session", () => {
     } catch (e: unknown) {
       if (epoch !== quoteEpoch) return; // a newer quote owns the state now
       // The host logger renders an Error as `{}`; log the message, as the transient
-      // hooks above already do, or a failed quote is undiagnosable from a device log.
-      console.error(`[meld] quote failed: ${e instanceof Error ? e.message : String(e)}`);
+      // hooks above already do, or a failed quote is undiagnosable from a device log. The
+      // adapter's tag and code go to the log only: the screen stays generic for them.
+      const refusal = refusalOf(e);
+      const said =
+        refusal === undefined
+          ? ""
+          : ` (HTTP ${refusal.status} ${refusal.tag ?? "untagged"}${refusal.code ? ` ${refusal.code}` : ""})`;
+      console.error(`[meld] quote failed${said}: ${e instanceof Error ? e.message : String(e)}`);
       if (e instanceof MeldAmountOutOfRangeError) {
         quoted.value = null;
         quoteOutOfRange.value = outOfRangeOf(e);
+        return;
+      }
+      if (refusal?.code === "AMOUNT_REJECTED") {
+        quoted.value = null;
+        quoteAmountRejected.value = true;
         return;
       }
       failQuote(e instanceof Error ? e.message : String(e));
@@ -1227,6 +1246,7 @@ export const useSessionStore = defineStore("session", () => {
     const epoch = quoteEpoch;
     quoteError.value = null;
     quoteOutOfRange.value = null;
+    quoteAmountRejected.value = false;
     // Nothing entered, nothing to quote.
     if (amountBase.value === null) {
       loading.value = false;
@@ -1474,6 +1494,7 @@ export const useSessionStore = defineStore("session", () => {
     loading.value = false;
     quoteError.value = null;
     quoteOutOfRange.value = null;
+    quoteAmountRejected.value = false;
     quoteFailures.value = 0;
     resuming.value = false;
     method.value = "crypto";
@@ -2456,6 +2477,7 @@ export const useSessionStore = defineStore("session", () => {
     quoteError,
     quoteFailures,
     quoteOutOfRange,
+    quoteAmountRejected,
     meldMethodUnavailable,
     supportedCountries,
     corridorByCountry,
