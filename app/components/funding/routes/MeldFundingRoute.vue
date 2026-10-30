@@ -205,7 +205,7 @@ async function pickCurrency(country: string) {
 /**
  * Demo Skip: play the payment through from the start — the buyer leaving the widget, the provider
  * seeing the transaction, then settling it — so the timeline runs its whole length. The store
- * drives the deposit at the end of that, by faucet or by the mock harness.
+ * sends the deposit by faucet on the press, or has the mock harness drop it at the end.
  */
 function onSkip() {
   session.simulateMeldPayment();

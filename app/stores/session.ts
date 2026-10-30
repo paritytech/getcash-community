@@ -1980,6 +1980,10 @@ export const useSessionStore = defineStore("session", () => {
       return;
     faucetState.value = "funding";
     void markDepositSkipped();
+    // The faucet state and its error belong to the request on screen: a transfer that settles
+    // after the buyer moved to another request leaves that request's Skip alone.
+    const key = foregroundRef && requestRefKey(foregroundRef);
+    const onScreen = () => (foregroundRef && requestRefKey(foregroundRef)) === key;
     try {
       // The faucet stands in for the rail: it sends the burner what the rail would deliver, in
       // the route's token, the one the pipeline reads the burner for. A Polkadot deposit asks the
@@ -1990,8 +1994,9 @@ export const useSessionStore = defineStore("session", () => {
         amount: isDirectSourceId(live.value.sourceId) ? s.deposit.amount : live.value.budget,
         route: live.value.route,
       });
-      faucetState.value = "sent";
+      if (onScreen()) faucetState.value = "sent";
     } catch (e: unknown) {
+      if (!onScreen()) return;
       faucetState.value = "idle";
       requests.setTransientError({
         message: e instanceof Error ? e.message : String(e),
@@ -2245,7 +2250,7 @@ export const useSessionStore = defineStore("session", () => {
 
   /** Credits the settled Meld payment into the coinage leg, once. A no-op in the host world. */
   function creditMeldSettlement() {
-    if (meldCredited) return;
+    if (meldCredited || !mock.value) return;
     meldCredited = true;
     simulateDeposit();
   }
@@ -2269,6 +2274,9 @@ export const useSessionStore = defineStore("session", () => {
    *
    * The poll is stopped first. It re-reads the rail on its own cadence and would overwrite these
    * stages with whatever the (unpaid, or faked) request really says.
+   *
+   * The hosted demo's deposit leaves on the press, as on every other Skip: the play stops with the
+   * screen, and a buyer who leaves mid-play must not take the deposit with it.
    */
   function simulateMeldPayment(): void {
     const ref = foregroundRef;
@@ -2289,16 +2297,13 @@ export const useSessionStore = defineStore("session", () => {
       });
     // The buyer finishes in the widget: the journey takes over from the iframe.
     void markMeldSubmitted();
+    if (!mock.value) void fundFaucet();
     // The provider sees the transaction, then approves it.
     step(() => report("receiving"));
     step(() => report("complete"));
-    // The conversion runs, and the deposit that pays for it arrives: the mock world fakes it
-    // through `creditMeldSettlement`, the hosted demo needs the faucet. The real pipeline takes
-    // the journey the rest of the way.
-    step(() => {
-      if (mock.value) creditMeldSettlement();
-      else void fundFaucet();
-    });
+    // The mock world fakes the deposit that pays for the conversion through
+    // `creditMeldSettlement`. The real pipeline takes the journey the rest of the way.
+    if (mock.value) step(creditMeldSettlement);
   }
 
   /** The provider's hosted pay page for the request on screen, or null. */
