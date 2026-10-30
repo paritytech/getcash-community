@@ -59,6 +59,7 @@ import {
   handoffSaleOf,
   isWithdrawSourceId,
   type HostPaymentStatus,
+  type PaymentRefusal,
   type WithdrawalChannel,
   type WithdrawalHandoffPayload,
 } from "../app/funding/requests/model";
@@ -979,21 +980,30 @@ export function nudgeWithdrawTicks(worker: WorkerLike): void {
 const fromHex = (hex: string): Uint8Array =>
   Uint8Array.from(hex.slice(2).match(/.{2}/g) ?? [], (byte) => parseInt(byte, 16));
 
-/** The host refused a payment request; the message is the user's reason. */
+/** The host refused a payment request; the message is the user's reason, and the refusal says
+ *  which kind it was. */
 export class PaymentRefusedError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    readonly refusal: PaymentRefusal = "other",
+  ) {
     super(message);
     this.name = "PaymentRefusedError";
   }
 }
 
-/** What the host's refusal means to the user. */
-function refusalReason(error: unknown): string {
-  if (error instanceof PaymentRequestErr.Rejected) return "The payment was declined.";
-  if (error instanceof PaymentRequestErr.InsufficientBalance) {
-    return "The balance does not cover this withdrawal.";
+/** What the host's refusal means to the user, and which kind it was. */
+function refusalOf(error: unknown): { message: string; refusal: PaymentRefusal } {
+  if (error instanceof PaymentRequestErr.Rejected) {
+    return { message: "The payment was declined.", refusal: "declined" };
   }
-  return error instanceof Error ? error.message : String(error);
+  if (error instanceof PaymentRequestErr.InsufficientBalance) {
+    return {
+      message: "The balance does not cover this withdrawal.",
+      refusal: "insufficient-balance",
+    };
+  }
+  return { message: error instanceof Error ? error.message : String(error), refusal: "other" };
 }
 
 /** Asks the host to pay `amount` CASH to the key under `idHex`. Resolves once the host registered
@@ -1010,7 +1020,8 @@ export async function requestKeyPayment(args: {
     await hostRequestPayment(args.amount, fromHex(args.key.publicKeyHex), fromHex(args.idHex));
   } catch (error) {
     if (error instanceof PaymentRequestErr.AlreadyExists) return;
-    throw new PaymentRefusedError(refusalReason(error));
+    const { message, refusal } = refusalOf(error);
+    throw new PaymentRefusedError(message, refusal);
   }
 }
 

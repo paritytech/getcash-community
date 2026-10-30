@@ -1,0 +1,218 @@
+// The manual way to fund a recovery: a deposit on the burner's Asset Hub account, in any token a
+// top-up takes, that the funding pipeline turns into at least the claim's fee in CASH on People.
+//
+// What the user is asked to send is the pipeline's own gate run forward with the fee as the
+// target, as the app sizes a top-up: the quote for the fee, the min_balance a stable keeps on the
+// burner, and one cushion over every fee the program pays. The program's fees are measured
+// against a probe carved from a deposit a little above the quote, since the estimators refuse a
+// probe that cannot cover its own fees. The pipeline converts whatever lands, so what the fee
+// does not take reaches the purse with the recovered CASH.
+//
+// A stable tier leaves its min_balance and the unspent allowance on the burner, so a balance
+// alone does not say a deposit was made: the deposit is the first token held at or above what
+// was asked for it.
+
+import type { CashTransfer } from "./cash-transfer";
+import {
+  destinationEarmark,
+  estimateDotUsdProgramFees,
+  estimateFundingProgramFees,
+  estimateStableProgramFees,
+  type Pool,
+} from "./funding-program";
+import {
+  DEFAULT_REMOTE_FEE_BUFFER,
+  DEFAULT_SLIPPAGE_PCT,
+  psmDepositNeeded,
+  quoteNativeIn,
+  quoteStableForUnderlying,
+  readDeposit,
+  stableDepositNeeded,
+  withHeadroom,
+} from "./pipeline";
+import { estimatePsmBatchFees, sizePsmMint } from "./psm-batch";
+import type { ConversionRoute } from "./route";
+import { STABLE_TOKENS, type Stable } from "./stable";
+
+type AssetHubApi = Parameters<typeof readDeposit>[0];
+
+/** The tokens a recovery deposit may be made in, by their token-table name. */
+export type RecoveryToken = "PAS" | "DOTUSD" | Stable;
+
+export interface RecoveryMinimums {
+  /** The least of each token, in its base units, to ask for: the pipeline's gate for the fee
+   *  with the pool tiers' slippage headroom on top, as a top-up is asked; null for a token the
+   *  chain cannot price today. */
+  minimums: Record<RecoveryToken, bigint | null>;
+  /** The least of each token that counts as the deposit: the gate's own figure, the plain quote
+   *  without the headroom, as the pipeline takes it. A deposit at the figure shown is not
+   *  stranded by a quote that moved a little by the time it lands. Equal to the minimum on the
+   *  PSM and dotUSD tiers, which carry no headroom; null where the minimum is. */
+  gates: Record<RecoveryToken, bigint | null>;
+  /** The native the pool tier keeps for the program's own fees, which its gate takes; null when
+   *  the native could not be priced. */
+  keepNativeForFees: bigint | null;
+}
+
+/** A token's two figures: what is asked for, and what counts. */
+interface Figures {
+  minimum: bigint;
+  gate: bigint;
+}
+
+/** What a probe carries above the quote so the estimators can carve their fees from it. */
+const PROBE_NATIVE = 1_000_000_000n;
+const PROBE_UNITS = 1_000_000n;
+
+const priced = async (read: () => Promise<Figures>): Promise<Figures | null> => {
+  try {
+    return await read();
+  } catch {
+    return null;
+  }
+};
+
+/** The same figure asked for and counted: a tier with no headroom. */
+const exact = (figure: bigint): Figures => ({ minimum: figure, gate: figure });
+
+/** The least of each token to send so the pipeline lands at least `feeCash` on People. */
+export async function recoveryMinimums(args: {
+  api: AssetHubApi;
+  peopleParaId: number;
+  feeCash: bigint;
+  transfer: CashTransfer;
+  beneficiaryHex: string;
+  probeAddress: string;
+  /** The native/CASH pool; null when the chain has none. */
+  pool: Pool | null;
+  /** Each stable's native pool, where the chain has one. */
+  stablePools: Partial<Record<Stable, Pool>>;
+  /** The route each stable takes, as decided for the fee. */
+  routes: Record<Stable, ConversionRoute>;
+}): Promise<RecoveryMinimums> {
+  const { api, feeCash, pool } = args;
+  // The pipeline's gate buys the fee plus the destination fee buffer, as it buys any target: the
+  // figures are priced for that, or a deposit at the figure would never clear it.
+  const target = feeCash + DEFAULT_REMOTE_FEE_BUFFER;
+  const common = {
+    api,
+    beneficiaryHex: args.beneficiaryHex,
+    peopleParaId: args.peopleParaId,
+    transfer: args.transfer,
+    feeProbeAddress: args.probeAddress,
+    // The destination fee allowance the pipeline will carry for that buy.
+    remoteFeesCash: destinationEarmark(target, DEFAULT_REMOTE_FEE_BUFFER),
+  };
+  let keepNativeForFees: bigint | null = null;
+  // Each tier's reads are its own, so the four are priced side by side, within one tick's bound.
+  const native = priced(async () => {
+    if (pool === null) throw new Error("no native pool");
+    const nativeIn = await quoteNativeIn(api, pool, target);
+    const nativeInMax = withHeadroom(nativeIn, DEFAULT_SLIPPAGE_PCT);
+    const fees = await estimateFundingProgramFees({
+      ...common,
+      pool,
+      nativeBalance: nativeInMax + PROBE_NATIVE,
+      minUnderlyingOut: target,
+    });
+    keepNativeForFees = fees.payFeesNative + fees.dispatchNative;
+    // The gate takes the plain quote plus what the program keeps, as the pipeline's does.
+    return { minimum: nativeInMax + keepNativeForFees, gate: nativeIn + keepNativeForFees };
+  });
+  const dotUsd = priced(async () => {
+    const fees = await estimateDotUsdProgramFees({
+      ...common,
+      depositUnderlying: target + PROBE_UNITS,
+    });
+    return exact(stableDepositNeeded(target, fees));
+  });
+  const stable = (name: Stable) =>
+    priced(async () => {
+      const route = args.routes[name];
+      if (route.tier === "psm") {
+        const fees = await estimatePsmBatchFees({
+          ...common,
+          route,
+          depositExternal: sizePsmMint(target, route).externalIn + PROBE_UNITS,
+        });
+        return exact(psmDepositNeeded(target, route, fees));
+      }
+      const stablePool = args.stablePools[name];
+      if (pool === null || stablePool === undefined) throw new Error(`no pool for ${name}`);
+      const { nativeIn, stableIn } = await quoteStableForUnderlying(api, pool, stablePool, target);
+      const stableInMax = withHeadroom(stableIn, DEFAULT_SLIPPAGE_PCT);
+      const fees = await estimateStableProgramFees({
+        ...common,
+        stable: name,
+        stablePool,
+        pool,
+        depositStable: stableInMax + PROBE_UNITS,
+        minNativeOut: nativeIn,
+        minUnderlyingOut: target,
+      });
+      // The gate takes the plain two-hop quote with the same fees, as the pipeline's does.
+      return {
+        minimum: stableDepositNeeded(stableInMax, fees),
+        gate: stableDepositNeeded(stableIn, fees),
+      };
+    });
+  const [pas, dotusd, usdt, usdc] = await Promise.all([
+    native,
+    dotUsd,
+    stable("USDT"),
+    stable("USDC"),
+  ]);
+  const figures = { PAS: pas, DOTUSD: dotusd, USDT: usdt, USDC: usdc };
+  const pick = (which: keyof Figures) =>
+    Object.fromEntries(
+      Object.entries(figures).map(([token, figure]) => [token, figure?.[which] ?? null]),
+    ) as Record<RecoveryToken, bigint | null>;
+  return { minimums: pick("minimum"), gates: pick("gate"), keepNativeForFees };
+}
+
+/** The routes a recovery deposit can take, each with the least of its token that counts as the
+ *  deposit, which is the gate's figure and not the one asked for; a token without a figure
+ *  cannot be taken. */
+export function recoveryCandidates(
+  gates: RecoveryMinimums["gates"],
+  routes: Record<Stable, ConversionRoute>,
+): Array<{ route: ConversionRoute; minimum: bigint }> {
+  const candidates: Array<[ConversionRoute, bigint | null]> = [
+    [{ tier: "pool" }, gates.PAS],
+    [{ tier: "dotusd" }, gates.DOTUSD],
+    ...(Object.keys(STABLE_TOKENS) as Stable[]).map((name): [ConversionRoute, bigint | null] => [
+      routes[name],
+      gates[name],
+    ]),
+  ];
+  return candidates.flatMap(([route, minimum]) => (minimum === null ? [] : [{ route, minimum }]));
+}
+
+/** The deposit on the burner's Asset Hub account, if one was made: the first token held at or
+ *  above what counts for it, with its route. Read at the finalized block, as the pipeline's gate
+ *  reads it, so a deposit found is one the gate takes on the next tick rather than one it holds
+ *  until finality. A token whose conversion the chain would not take is passed in `held` with
+ *  the balance it had then, and is skipped until the balance grows past it: the same deposit is
+ *  not paid for again, a new one is taken up. */
+export async function findRecoveryDeposit(
+  api: AssetHubApi,
+  address: string,
+  candidates: ReadonlyArray<{ route: ConversionRoute; minimum: bigint }>,
+  held: Partial<Record<RecoveryToken, bigint>> = {},
+): Promise<{ route: ConversionRoute; token: RecoveryToken; held: bigint } | null> {
+  for (const { route, minimum } of candidates) {
+    const token = recoveryTokenOf(route);
+    const balance = await readDeposit(api, route, address, "finalized");
+    if (balance < minimum) continue;
+    const before = held[token];
+    if (before !== undefined && balance <= before) continue;
+    return { route, token, held: balance };
+  }
+  return null;
+}
+
+/** The token-table name of the token a route is fed with. */
+export function recoveryTokenOf(route: ConversionRoute): RecoveryToken {
+  if (route.tier === "dotusd") return "DOTUSD";
+  return route.external ?? "PAS";
+}

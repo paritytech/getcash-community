@@ -38,6 +38,7 @@ import {
   buildPsmFundingProgram,
   DepositBelowFeesError,
   dryRunFundingProgram,
+  type DryRunLanding,
   extractFungibleAmount,
   forwardedProgramStandIn,
   peopleDest,
@@ -296,7 +297,7 @@ export function dryRunPsmBatch(args: {
   assetHubParaId: number;
   /** The least CASH that must reach the beneficiary. */
   mustLand: bigint;
-}): Promise<{ landed: bigint }> {
+}): Promise<DryRunLanding> {
   return dryRunFundingProgram({
     api: args.api,
     peopleApi: args.peopleApi,

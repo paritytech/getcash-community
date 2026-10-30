@@ -1408,6 +1408,46 @@ async function pipeline(
   return r;
 }
 
+/** The worker's job once it found the Cash in People's trap, at `phase` of the recovery: the
+ *  conversion is in a block, the claim's fee is sized, and the manual path is priced. */
+function trapped(
+  request: PreviewRequest,
+  phase: "funding" | "claiming",
+  extra: { deposit?: string; round?: number; askCash?: string } = {},
+): Observation {
+  const at = request.at(1);
+  return {
+    source: "worker",
+    at,
+    job: {
+      phase: "recovering",
+      done: false,
+      fundsSeenAt: request.at(0),
+      lastTickAt: at,
+      claim: null,
+      conversion: {
+        preparedAt: request.at(0),
+        converted: {
+          txHash: `0x${"11".repeat(32)}`,
+          block: 100,
+          at: request.at(0),
+          workedMs: 5_000,
+        },
+      },
+      recovery: {
+        trappedAmount: "20000000",
+        trappedAt: at,
+        claimerHex: `0x${"07".repeat(32)}`,
+        phase,
+        round: 0,
+        askCash: "10000",
+        minimums: { PAS: "900000000", DOTUSD: "600000", USDT: "650000", USDC: "650000" },
+        ...extra,
+      },
+    },
+  };
+}
+
 /** The crypto scenes' request, claimed by the worker and prompting core's consent. */
 async function claimConsent(s: Session, f: Flow, index: number): Promise<PreviewRequest> {
   base(s, f);
@@ -2388,6 +2428,111 @@ export const SCENES: Scene[] = [
           psmRefusals: 3,
         },
       });
+    },
+  },
+  {
+    // The program left the Cash in People's trap: the worker found it and sized the claim's fee,
+    // and the journey offers the purse, or a deposit on the top-up's own account.
+    name: "top-up / crypto / recovering: needs fee",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "await-arrival");
+      await r.observe(trapped(r, "funding"));
+    },
+  },
+  {
+    // The trap is found but the fee is not sized yet: nothing is offered for one tick.
+    name: "top-up / crypto / recovering: sizing the fee",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "await-arrival");
+      await r.observe(trapped(r, "funding", { askCash: undefined }));
+    },
+  },
+  {
+    // The purse could not pay the fee: the deposit becomes the main way, the purse the other.
+    name: "top-up / crypto / recovering: fee refused",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "await-arrival");
+      await r.observe(trapped(r, "funding"));
+      await r.observe({
+        source: "user",
+        at: r.at(2),
+        event: "payment-requested",
+        attempt: 0,
+        id: `0x${"ab".repeat(32)}`,
+      });
+      await r.observe({
+        source: "host",
+        at: r.at(3),
+        payment: {
+          attempt: 0,
+          status: "failed",
+          reason: "The balance does not cover this fee.",
+          refusal: "insufficient-balance",
+        },
+      });
+    },
+  },
+  {
+    // The buyer declined the host's sheet: the purse stays the main way.
+    name: "top-up / crypto / recovering: fee declined",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "await-arrival");
+      await r.observe(trapped(r, "funding"));
+      await r.observe({
+        source: "user",
+        at: r.at(2),
+        event: "payment-requested",
+        attempt: 0,
+        id: `0x${"ab".repeat(32)}`,
+      });
+      await r.observe({
+        source: "host",
+        at: r.at(3),
+        payment: {
+          attempt: 0,
+          status: "failed",
+          reason: "The payment was declined.",
+          refusal: "declined",
+        },
+      });
+    },
+  },
+  {
+    // The purse paid, but the claim did not go through and the worker moved the fee's round
+    // on: the fee is asked for again.
+    name: "top-up / crypto / recovering: fee needed again",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "await-arrival");
+      await r.observe(trapped(r, "funding"));
+      await r.observe({
+        source: "user",
+        at: r.at(2),
+        event: "payment-requested",
+        attempt: 0,
+        id: `0x${"ab".repeat(32)}`,
+      });
+      await r.observe({
+        source: "host",
+        at: r.at(3),
+        payment: { attempt: 0, status: "completed" },
+      });
+      await r.observe({ ...trapped(r, "funding", { round: 1 }), at: r.at(4) });
+    },
+  },
+  {
+    // A deposit on the top-up's own account is being converted for the fee.
+    name: "top-up / crypto / recovering: converting deposit",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "await-arrival");
+      await r.observe(trapped(r, "funding", { deposit: "swap" }));
+    },
+  },
+  {
+    // The fee is on the account and the claim is on its way.
+    name: "top-up / crypto / recovering: claiming",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "await-arrival");
+      await r.observe(trapped(r, "claiming"));
     },
   },
   {

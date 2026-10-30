@@ -15,12 +15,13 @@ import {
 } from "../../funding/quote-rows";
 import { creditedAmountOf } from "../../funding/requests/views";
 import { CLOSE, type FailureAction } from "../../funding/timeline/failure";
+import type { RecoveryAction } from "../../funding/timeline/recovery";
 import { TIMELINE_CADENCE_MS } from "../../funding/timeline/timelines";
 import { TOP_UP_TIMELINE } from "../../funding/timeline/top-up-spec";
 import type { FundingTopUp } from "../../funding/top-ups";
 import { useRequestsStore } from "../../stores/requests";
 import { useSessionStore } from "../../stores/session";
-import { cashInText, fmtCash, toCashBase } from "../../utils/cash";
+import { cashAmount, cashInText, fmtCash, toCashBase } from "../../utils/cash";
 import { currencyConfig } from "../../funding/config";
 import { fmtFiat, isMoneyAmount } from "../../utils/money";
 import { formatWhenShort, shortRef } from "../../utils/journey";
@@ -38,11 +39,14 @@ const props = defineProps<{
 }>();
 // fees and refund ask the host to swap in their drill-ins; cancel asks it for the cancel
 // confirmation; close leaves the finished journey; startOver asks it to re-enter this route for a
-// fresh attempt at the same top-up.
+// fresh attempt at the same top-up. recoverFromBalance and recoverDeposit are the two ways to pay
+// a trapped top-up's claim fee: the purse, or a deposit on the top-up's own account.
 const emit = defineEmits<{
   fees: [];
   refund: [];
   recover: [];
+  recoverFromBalance: [];
+  recoverDeposit: [];
   cancel: [];
   close: [];
   startOver: [];
@@ -271,6 +275,28 @@ const failureAction = computed<FailureAction | null>(() => {
   return needsRequest && requests.foregroundRecord === null ? CLOSE : action;
 });
 
+/** The ways to pay a trapped top-up's claim fee, the main one first. Both act on the request on
+ *  screen, so a journey opened from history offers none. */
+const recoveryActions = computed<readonly RecoveryAction[]>(() =>
+  requests.foregroundRecord === null ? [] : (timeline.value?.recovery?.actions ?? []),
+);
+const recoveryLabel = (action: RecoveryAction): string =>
+  action.kind === "send-deposit"
+    ? "Send a deposit instead"
+    : action.retry
+      ? "Try again from balance"
+      : "Pay fee from balance";
+function recover(action: RecoveryAction) {
+  if (action.kind === "from-balance") emit("recoverFromBalance");
+  else emit("recoverDeposit");
+}
+/** What the recovery costs, shown before the purse is asked for it. */
+const recoveryRows = computed<DetailRow[]>(() => {
+  const fee = requests.foregroundRecord?.recovery?.askCash;
+  if (fee === undefined || timeline.value?.recovery === undefined) return [];
+  return [{ label: "Recovery fee", value: cashAmount(fmtCash(BigInt(fee))) }];
+});
+
 /** Explains a header amount that moved off the quote. */
 const rateChangeNotice = computed(() =>
   revisedAmount.value
@@ -370,9 +396,25 @@ const { success, successShown, successPlaying, drawn, band } = useJourneySuccess
         @fees="emit('fees')"
       />
 
+      <!-- The recovery's cost, so the purse's sheet never surprises. -->
+      <DetailRows v-if="recoveryRows.length" :rows="recoveryRows" />
+
       <!-- The reference copies, so the screen carries the confirmation. -->
       <DetailRows v-if="endedRows.length" :rows="endedRows" @fees="emit('fees')" />
       <CopiedPill v-if="endedRows.length" />
+
+      <!-- The ways to pay the claim's fee while the Cash is in People's trap, the main one first. -->
+      <template v-if="recoveryActions.length > 0">
+        <PillButton
+          v-for="(action, index) in recoveryActions"
+          :key="action.kind"
+          :variant="index === 0 ? 'primary' : 'tertiary'"
+          :class="{ 'mt-auto': index === 0 }"
+          @click="recover(action)"
+        >
+          {{ recoveryLabel(action) }}
+        </PillButton>
+      </template>
 
       <!-- The refund guide for money the provider returned to the refund key, the recovery guide
            for money on the top-up's own account. -->

@@ -3,19 +3,27 @@ import { toSchnorrkelSecret } from "@getsome/ephemeral";
 import {
   DEFAULT_INCLUSION_TIMEOUT_MS,
   DEFAULT_KEEP_NATIVE_FOR_FEES,
-  DEFAULT_REMOTE_FEE_BUFFER,
   DEFAULT_SLIPPAGE_PCT,
   DEFAULT_TICK_TIMEOUT_MS,
+  DEFAULT_REMOTE_FEE_BUFFER,
   FundingHeldError,
   FundingShortfallError,
+  FundingTrappedError,
   PASEO_ASSET_HUB_PARA_ID,
   STABLE_TOKENS,
   chooseCashTransfer,
+  chooseRoute,
+  discoverPool,
   discoverPools,
+  findRecoveryDeposit,
+  freshRecoveryState,
   freshTickState,
   readDeposit,
   recordedRoute,
+  recoveryCandidates,
+  recoveryMinimums,
   tickOnce,
+  tickRecovery,
 } from "@getsome/funding";
 import { CASH_SETTLEMENT, createPeopleChainPort } from "@getsome/people";
 import { PaymentTopUpErr, PaymentTopUpStatusErr } from "@novasamatech/host-api";
@@ -75,17 +83,61 @@ const saveJobs = () => store.save();
  *   quoteFloorPct?, claimIdOffset?,          // a burner that is another job's key, sent home
  *                                            // whole: its exchange held to the pool's quote,
  *                                            // its claims under ids that key never used
- *   phase: "starting" | FundingStep | "failed",  // await-native: the route's deposit asset
- *   failure?: "shortfall" | "timeout" | "expired" | "cancelled" | "claim" | "held",
+ *   wayHome?: true,                          // that key's way home: a trap fails the job
+ *                                            // rather than start a recovery no one funds
+ *   phase: "starting" | FundingStep | "recovering" | "failed",
+ *                                            // await-native: the route's deposit asset
+ *                                            // recovering: the CASH is in People's trap and
+ *                                            // the burner is claiming it back
+ *   failure?: "shortfall" | "timeout" | "expired" | "cancelled" | "claim" | "held" | "trapped",
+ *                                            // trapped: a way home's program left the CASH in
+ *                                            // People's trap, which no one is asked to fund
  *                                            // held: the PSM refused the mint three times; the
  *                                            // deposit stays on the burner
+ *   trap?: { amount: string, key, claimerHex, at },
+ *                                            // the trap the program left on People: the CASH it
+ *                                            // holds, the key AssetTraps counts it under, the
+ *                                            // burner as the claimer it names
+ *   recovery?: { phase: "funding"|"claiming"|"done", feeCash: string|null, askCash: string|null,
+ *                round, held: string|null, attempts, nonceAtClaim: number|null, sentAt: number|null,
+ *                minimums?: { at, feeCash, minimums: { PAS, DOTUSD, USDT, USDC },
+ *                             gates: { PAS, DOTUSD, USDT, USDC }, keepNativeForFees,
+ *                             routes: { USDT, USDC }, repriceFailedAt?, repriceError? },
+ *                                            // minimums: what the surface shows to send, with
+ *                                            // the pool tiers' headroom; gates: what counts as
+ *                                            // the deposit, the pipeline's own figure
+ *                route?, state?, deposit?, depositFoundAt?, depositGate?, depositDoneAt?,
+ *                depositHeld?: { token, held },
+ *                depositError?: { message, at, token?, held? } },
+ *                                            // round moves on when a claim spent the fee or the
+ *                                            // fee grew; held is the burner's CASH at the last
+ *                                            // read. depositHeld names the deposit being
+ *                                            // converted and its balance; depositError what ended
+ *                                            // a conversion the chain would not take, with that
+ *                                            // deposit, which is skipped while its balance stands
+ *                                            // the claim's progress: funding while the burner
+ *                                            // waits for the fee, claiming while a claim is
+ *                                            // owed an answer; feeCash the fee with the margin,
+ *                                            // askCash the same rounded up to the claim unit,
+ *                                            // what the purse is asked for
+ *                                            // minimums: the manual path's figures, the least
+ *                                            // of each token to send to the burner on Asset Hub
+ *                                            // (strings, null where unpriced) and each stable's
+ *                                            // route; route, state, deposit: the recovery
+ *                                            // deposit's route once one arrived, its pipeline
+ *                                            // state, and the step its last tick reached
  *   done, createdAt, armedAt, lastTickAt, lastError?,
  *                                            // done: the CASH is on People; taken back while
  *                                            // the conversion's block is discarded and resent
  *   state: { attempts, psmRefusals, xcmSubmitted, peopleAtXcm: string,
  *            fundsSeenAt: number|null, nonceAtSubmit: number|null,
- *            inclusionBlock: number|null, inclusionHash: string|null, arrived, workedMs,
+ *            inclusionBlock: number|null, inclusionHash: string|null, arrived,
+ *            sentToPeople: string|null, peopleFeeCash: string|null, workedMs,
  *            rejections, lastRejection },
+ *                                            // sentToPeople: the CASH the submitted program
+ *                                            // sends, the most a trap of it holds;
+ *                                            // peopleFeeCash: what People's dry run charged it,
+ *                                            // the most a trap holds less
  *                                            // attempts: submits so far
  *                                            // psmRefusals: PSM refusals so far, not transport
  *                                            // nonceAtSubmit: set from before a submit until
@@ -99,7 +151,7 @@ const saveJobs = () => store.save();
  *                                            // accountWorkedTime)
  *                                            // rejections, lastRejection: paid rejections in
  *                                            // a row with the same answer
- *   submitting?: { call: "swap", at },        // written before a submit, with the state
+ *   submitting?: { call: "swap"|"claim", at }, // written before a submit, with the state
  *   txs: [{ call, txHash, block? }],
  *   depositSeen?: { block, finalizedAtSeen, finalized, best },
  *                                            // the deposit in a best block, followed until the
@@ -186,6 +238,9 @@ function newRecord(input, nowMs) {
     ...route,
     ...(quoteFloorPct === undefined ? {} : { quoteFloorPct }),
     ...(claimIdOffset === 0 ? {} : { claimIdOffset }),
+    // A sale's key on its way home: no buyer stands behind it to pay a claim's fee, so a trap
+    // fails the job for the sale to report instead of starting a recovery.
+    ...(input.wayHome === true ? { wayHome: true } : {}),
     phase: "starting",
     done: false,
     createdAt: nowMs,
@@ -224,6 +279,11 @@ export async function startFunding(params) {
     }
     const mismatch = await burnerMismatch(existing, String(input.burnerAddress ?? ""));
     if (mismatch) return { error: "invalid", reason: mismatch };
+    // A sale's way home whose program trapped is over: the key holds nothing to send again,
+    // and a re-arm would read the trap as a recovery to drive.
+    if (existing.phase === "failed" && existing.wayHome && existing.failure === "trapped") {
+      return { error: "invalid", reason: "the way home's CASH is in People's trap" };
+    }
     if (existing.phase === "failed") {
       rearm(existing, Date.now());
       existing.depositExpiresAt = depositExpiryOf(input) ?? existing.depositExpiresAt;
@@ -277,7 +337,7 @@ const depositExpiryOf = (input) => {
  * attempt.
  */
 function rearm(record, nowMs) {
-  record.phase = record.done ? "done" : "starting";
+  record.phase = record.done ? "done" : record.trap ? "recovering" : "starting";
   // Older records carry the failure kind in the reason only.
   const failure =
     record.failure ?? (record.lastError?.startsWith("shortfall") ? "shortfall" : null);
@@ -293,6 +353,7 @@ function rearm(record, nowMs) {
     record.state.peopleAtXcm = "0";
     record.state.nonceAtSubmit = null;
     record.state.inclusionBlock = null;
+    record.state.sentToPeople = null;
     record.state.inclusionHash = null;
     record.state.arrived = false;
   }
@@ -316,6 +377,30 @@ function fail(record, failure, reason) {
   record.lastError = reason;
   unwatchClaim(record.sessionId);
 }
+
+/** The program left the CASH in People's trap. The job turns into its recovery: the trap is
+ *  recorded for the claim and for the surface, and the conversion's clock stops. */
+function trapped(record, error, nowMs) {
+  record.phase = "recovering";
+  record.trap = trapOf(error, nowMs);
+  // A trap at People's finalized block proves the conversion final: the pre-send record is let
+  // go here, as the inclusion settler would have, so the job is not read as a conversion still
+  // pending once the recovery is done.
+  record.state.nonceAtSubmit = null;
+  record.state.inclusionBlock = null;
+  record.state.inclusionHash = null;
+  // The conversion's time is spent; the claim that follows the recovery gets the whole bound.
+  record.state.workedMs = 0;
+  delete record.lastError;
+}
+
+/** The trap as the record keeps it: what it holds, the key it is counted under, the claimer. */
+const trapOf = (error, nowMs) => ({
+  amount: error.amount.toString(),
+  key: error.key,
+  claimerHex: error.claimerHex,
+  at: nowMs,
+});
 
 /**
  * Marks a job still waiting for its deposit as cancelled. The record is kept, and a re-sent
@@ -416,6 +501,9 @@ const MAX_CLAIM_ATTEMPTS = 3;
 /** The largest `claimIdOffset`: it leaves room above for every attempt a job can make, inside
  *  the 32-bit counter an attempt's id is derived with. */
 const MAX_CLAIM_ID_OFFSET = 2 ** 31;
+/** Bound on a trap claim reaching finality on People; past it a later tick settles from the
+ *  trap's count what became of it. */
+const RECOVERY_SUBMIT_TIMEOUT_MS = 120_000;
 
 /** The id claim attempt `attempt` is registered under. A burner that is another job's key starts
  *  its attempts at an offset, so no claim takes an id that key was already paid under. */
@@ -654,6 +742,8 @@ function describeFunding(record) {
     workedMs: record.state?.workedMs ?? 0,
     lastError: record.lastError,
     failure: record.failure,
+    trap: record.trap,
+    recovery: record.recovery,
     submitting: record.submitting,
     txs: record.txs,
     fundsSeenAt: record.state?.fundsSeenAt ?? null,
@@ -683,10 +773,13 @@ const hostOwnsClaim = (record) => record.claim?.phase === "claiming";
  *  and the pipeline has to keep watching the conversion's. */
 const hostClaimed = (record) => record.claim?.phase === "claimed";
 
-/** True from the first tick that saw funds until the claim is registered with the host. */
+/** True from the first tick that saw funds until the claim is registered with the host. A
+ *  recovery waits on the buyer and on People, not on this worker, so its ticks are not worked
+ *  time: the clock stops at the trap and resumes with the claim. */
 const onTheClock = (record) =>
   !isFinished(record) &&
   !hostOwnsClaim(record) &&
+  record.phase !== "recovering" &&
   (record.done || record.state.fundsSeenAt !== null);
 
 /**
@@ -711,6 +804,9 @@ function accountWorkedTime(record, nowMs) {
  */
 function judgeBounds(record, nowMs, read) {
   if (record.phase === "failed") return;
+  // A trap never expires, and neither does the recovery of one; once claimed back, the job is
+  // on the host's clock as any other.
+  if (record.phase === "recovering") return;
   if (onTheClock(record) && (record.state.workedMs ?? 0) > RUN_TIMEOUT_MS) {
     const what = record.done ? "claim" : "conversion";
     fail(record, "timeout", `${what} exceeded ${RUN_TIMEOUT_MS}ms of worker time`);
@@ -744,158 +840,25 @@ async function tickRecord(record, nowMs) {
     await claimFor(record);
     return;
   }
-  // The tier is an input to this worker, never a decision it makes: a job converts through the
-  // route it was quoted or not at all.
-  const route = recordedRoute(record);
   const burner = await keypairFor(record.label);
   const ahClient = await connectChain(record.assetHubGenesis, "asset hub");
   let peopleClient = null;
   try {
     peopleClient = await connectChain(record.peopleGenesis, "people");
-    const peoplePort = createPeopleChainPort({ client: peopleClient });
-    const api = ahClient.getTypedApi(paseo_next_v2);
-    // Pool keys are re-discovered each wake and not persisted, in one read of the pool table: the
-    // CASH pool, and for a pool job fed with a stable the stable's own pool too, under its
-    // pallet-assets id. The PSM and dotUSD tiers have no pool to find.
-    const [pool, stablePool] =
-      route.tier === "pool"
-        ? await bounded(
-            discoverPools(
-              api,
-              route.external === undefined
-                ? [record.underlyingAssetId]
-                : [record.underlyingAssetId, STABLE_TOKENS[route.external].assetHubId],
-            ),
-            DEFAULT_TICK_TIMEOUT_MS,
-            "pool discovery",
-          )
-        : [];
-    // Asked on every dispatch, so a runtime upgrade between ticks is picked up before the next
-    // submit; a network with no transfer fails the tick like any other read.
-    const transfer = await bounded(
-      chooseCashTransfer({
-        assetHub: ahClient,
-        people: peopleClient,
-        assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
-        peopleParaId: record.peopleParaId,
-      }),
-      DEFAULT_TICK_TIMEOUT_MS,
-      "cash transfer choice",
-    );
-    // Every submit is on Asset Hub; one anchor per tick serves them all.
-    const anchor = await anchorFor(ahClient);
-    if (waitingForDeposit(record)) await followDeposit(record, api, route, burner.address, anchor);
-
-    // Restore the persisted state into the shape tickOnce mutates. fundsSeenAt must be
-    // exactly null when absent.
-    const state = freshTickState();
-    state.attempts = record.state.attempts;
-    state.psmRefusals = record.state.psmRefusals ?? 0;
-    state.rejections = record.state.rejections ?? 0;
-    state.lastRejection = record.state.lastRejection ?? null;
-    state.xcmSubmitted = !!record.state.xcmSubmitted;
-    state.peopleAtXcm = asBig(record.state.peopleAtXcm);
-    state.fundsSeenAt = record.state.fundsSeenAt ?? null;
-    state.nonceAtSubmit = record.state.nonceAtSubmit ?? null;
-    state.inclusionBlock = record.state.inclusionBlock ?? null;
-    state.inclusionHash = record.state.inclusionHash ?? null;
-    state.arrived = !!record.state.arrived;
-    // tickOnce mutates the state as it works; it is written back before a submit leaves and
-    // after the tick, thrown or not.
-    const persistState = () => {
-      record.state = {
-        attempts: state.attempts,
-        psmRefusals: state.psmRefusals,
-        rejections: state.rejections,
-        lastRejection: state.lastRejection,
-        xcmSubmitted: state.xcmSubmitted,
-        peopleAtXcm: state.peopleAtXcm.toString(),
-        fundsSeenAt: state.fundsSeenAt,
-        nonceAtSubmit: state.nonceAtSubmit,
-        inclusionBlock: state.inclusionBlock,
-        inclusionHash: state.inclusionHash,
-        arrived: state.arrived,
-        workedMs: record.state.workedMs ?? 0,
-      };
+    const env = {
+      burner,
+      ahClient,
+      peopleClient,
+      api: ahClient.getTypedApi(paseo_next_v2),
+      peopleApi: peopleClient.getTypedApi(paseo_people_next),
+      peoplePort: createPeopleChainPort({ client: peopleClient }),
     };
-
-    const submittedBefore = state.xcmSubmitted;
-    let outcome;
-    try {
-      outcome = await tickOnce(
-        {
-          api,
-          peopleApi: peopleClient.getTypedApi(paseo_people_next),
-          route,
-          transfer,
-          pool,
-          stablePool,
-          address: burner.address,
-          signer: burner.signer,
-          beneficiaryHex: toHex(burner.publicKey),
-          settleAmount: asBig(record.settleAmount),
-          peopleParaId: record.peopleParaId,
-          // The Asset Hub this worker is built for, the same one CASH_SETTLEMENT points at.
-          assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
-          remoteFeeBuffer: asBig(record.remoteFeeBuffer, DEFAULT_REMOTE_FEE_BUFFER),
-          keepNativeForFees: asBig(record.keepNativeForFees, DEFAULT_KEEP_NATIVE_FOR_FEES),
-          slippagePct: record.slippagePct,
-          ...(typeof record.quotedDeposit === "string"
-            ? { quotedDeposit: asBig(record.quotedDeposit) }
-            : {}),
-          ...(typeof record.quoteFloorPct === "number"
-            ? { quoteFloorPct: record.quoteFloorPct }
-            : {}),
-          tickTimeoutMs: DEFAULT_TICK_TIMEOUT_MS,
-          inclusionTimeoutMs: DEFAULT_INCLUSION_TIMEOUT_MS,
-          // The PSM tier adds its fee asset itself.
-          signOptions: { at: anchor.hash },
-          readUnderlyingOnPeople: (ss58, at) =>
-            peoplePort.settlementBalance(ss58, CASH_SETTLEMENT, { at }),
-          claimRegistered: record.claim != null,
-          now: Date.now,
-          // Persisted before the broadcast leaves, so a wake mid-send knows a conversion may be
-          // in flight.
-          onBeforeSubmit: async (call) => {
-            persistState();
-            record.submitting = { call, at: Date.now() };
-            await saveJobs();
-          },
-          onTx: (info) => {
-            delete record.submitting;
-            record.txs.push(info);
-          },
-          onConversion: (fact) => recordConversion(record, fact),
-        },
-        state,
-      );
-    } catch (error) {
-      // The tick found the block discarded and failed after that: the done goes with the block
-      // here as it would have at the end of the tick.
-      if (submittedBefore && !state.xcmSubmitted) record.done = false;
-      throw error;
-    } finally {
-      persistState();
+    // The CASH is in People's trap: the conversion is over and the recovery has the job.
+    if (record.trap) {
+      await recoverTrapped(record, env);
+      return;
     }
-    // A cancel that landed during this tick stands.
-    if (record.phase === "failed") return;
-    record.phase = outcome.step;
-    delete record.lastError;
-    // A completed tick clears any stale submitting marker.
-    delete record.submitting;
-    // Done follows the latest tick: a discarded block takes it back while the conversion goes
-    // out again, and the claim already registered waits with the host for the CASH.
-    record.done = outcome.step === "done";
-    if (record.done) {
-      // Claim in the same tick the CASH lands, over this tick's People connection. A claim
-      // already registered is followed, not registered again; one the host has not taken yet,
-      // sized before the conversion went out again, is sized once more under the same id.
-      if (record.claim == null || record.claim.phase === "sizing" || staleRegistering(record)) {
-        await sizeClaim(record, burner, peoplePort);
-      } else {
-        await claimFor(record);
-      }
-    }
+    await convert(record, env);
   } finally {
     try {
       peopleClient?.destroy();
@@ -903,6 +866,191 @@ async function tickRecord(record, nowMs) {
       ahClient.destroy();
     }
   }
+}
+
+/** The job's own conversion: the deposit the surface quoted, through the route it recorded. */
+async function convert(record, env) {
+  // The tier is an input to this worker, never a decision it makes: a job converts through the
+  // route it was quoted or not at all.
+  const route = recordedRoute(record);
+  const submittedBefore = !!record.state.xcmSubmitted;
+  let outcome;
+  try {
+    outcome = await runConversion(record, env, {
+      route,
+      settleAmount: asBig(record.settleAmount),
+      remoteFeeBuffer: asBig(record.remoteFeeBuffer, DEFAULT_REMOTE_FEE_BUFFER),
+      keepNativeForFees: asBig(record.keepNativeForFees, DEFAULT_KEEP_NATIVE_FOR_FEES),
+      slippagePct: record.slippagePct,
+      ...(typeof record.quotedDeposit === "string"
+        ? { quotedDeposit: asBig(record.quotedDeposit) }
+        : {}),
+      ...(typeof record.quoteFloorPct === "number" ? { quoteFloorPct: record.quoteFloorPct } : {}),
+      followDeposit: true,
+      stored: record.state,
+      store: (state) => {
+        record.state = { ...state, workedMs: record.state.workedMs ?? 0 };
+      },
+      onConversion: (fact) => recordConversion(record, fact),
+    });
+  } catch (error) {
+    // The tick found the block discarded and failed after that: the done goes with the block
+    // here as it would have at the end of the tick.
+    if (submittedBefore && !record.state.xcmSubmitted) record.done = false;
+    throw error;
+  }
+  // A cancel that landed during this tick stands.
+  if (record.phase === "failed") return;
+  record.phase = outcome.step;
+  delete record.lastError;
+  // A completed tick clears any stale submitting marker.
+  delete record.submitting;
+  // Done follows the latest tick: a discarded block takes it back while the conversion goes
+  // out again, and the claim already registered waits with the host for the CASH.
+  record.done = outcome.step === "done";
+  if (record.done) {
+    // Claim in the same tick the CASH lands, over this tick's People connection. A claim
+    // already registered is followed, not registered again; one the host has not taken yet,
+    // sized before the conversion went out again, is sized once more under the same id.
+    if (record.claim == null || record.claim.phase === "sizing" || staleRegistering(record)) {
+      await sizeClaim(record, env.burner, env.peoplePort);
+    } else {
+      await claimFor(record);
+    }
+  }
+}
+
+/** The persisted shape of a TickState, bigints as strings. */
+function restoreTickState(stored) {
+  // fundsSeenAt must be exactly null when absent.
+  const state = freshTickState();
+  state.attempts = stored.attempts ?? 0;
+  state.psmRefusals = stored.psmRefusals ?? 0;
+  state.rejections = stored.rejections ?? 0;
+  state.lastRejection = stored.lastRejection ?? null;
+  state.xcmSubmitted = !!stored.xcmSubmitted;
+  state.peopleAtXcm = asBig(stored.peopleAtXcm);
+  state.fundsSeenAt = stored.fundsSeenAt ?? null;
+  state.nonceAtSubmit = stored.nonceAtSubmit ?? null;
+  state.inclusionBlock = stored.inclusionBlock ?? null;
+  state.inclusionHash = stored.inclusionHash ?? null;
+  state.arrived = !!stored.arrived;
+  state.sentToPeople = stored.sentToPeople == null ? null : asBig(stored.sentToPeople);
+  state.peopleFeeCash = stored.peopleFeeCash == null ? null : asBig(stored.peopleFeeCash);
+  return state;
+}
+
+function storeTickState(state) {
+  return {
+    attempts: state.attempts,
+    psmRefusals: state.psmRefusals,
+    rejections: state.rejections,
+    lastRejection: state.lastRejection,
+    xcmSubmitted: state.xcmSubmitted,
+    peopleAtXcm: state.peopleAtXcm.toString(),
+    fundsSeenAt: state.fundsSeenAt,
+    nonceAtSubmit: state.nonceAtSubmit,
+    inclusionBlock: state.inclusionBlock,
+    inclusionHash: state.inclusionHash,
+    arrived: state.arrived,
+    sentToPeople: state.sentToPeople === null ? null : state.sentToPeople.toString(),
+    peopleFeeCash: state.peopleFeeCash === null ? null : state.peopleFeeCash.toString(),
+  };
+}
+
+/**
+ * One pipeline tick over the burner: the job's own conversion, or a recovery deposit converted
+ * for the claim's fee. `job` names the route and the target; the state it restores and stores is
+ * the job's, written back before a submit leaves and after the tick, thrown or not.
+ */
+async function runConversion(record, env, job) {
+  const { api, ahClient, peopleClient, peoplePort, burner } = env;
+  const { route } = job;
+  // Pool keys are re-discovered each wake and not persisted, in one read of the pool table: the
+  // CASH pool, and for a pool job fed with a stable the stable's own pool too, under its
+  // pallet-assets id. The PSM and dotUSD tiers have no pool to find.
+  const [pool, stablePool] =
+    route.tier === "pool"
+      ? await bounded(
+          discoverPools(
+            api,
+            route.external === undefined
+              ? [record.underlyingAssetId]
+              : [record.underlyingAssetId, STABLE_TOKENS[route.external].assetHubId],
+          ),
+          DEFAULT_TICK_TIMEOUT_MS,
+          "pool discovery",
+        )
+      : [];
+  // Asked on every dispatch, so a runtime upgrade between ticks is picked up before the next
+  // submit; a network with no transfer fails the tick like any other read.
+  const transfer = await bounded(
+    chooseCashTransfer({
+      assetHub: ahClient,
+      people: peopleClient,
+      assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
+      peopleParaId: record.peopleParaId,
+    }),
+    DEFAULT_TICK_TIMEOUT_MS,
+    "cash transfer choice",
+  );
+  // Every submit is on Asset Hub; one anchor per tick serves them all.
+  const anchor = await anchorFor(ahClient);
+  if (job.followDeposit && waitingForDeposit(record)) {
+    await followDeposit(record, api, route, burner.address, anchor);
+  }
+
+  const state = restoreTickState(job.stored ?? {});
+  const persistState = () => job.store(storeTickState(state));
+  let outcome;
+  try {
+    outcome = await tickOnce(
+      {
+        api,
+        peopleApi: env.peopleApi,
+        route,
+        transfer,
+        pool,
+        stablePool,
+        address: burner.address,
+        signer: burner.signer,
+        beneficiaryHex: toHex(burner.publicKey),
+        settleAmount: job.settleAmount,
+        remoteFeeBuffer: job.remoteFeeBuffer,
+        peopleParaId: record.peopleParaId,
+        // The Asset Hub this worker is built for, the same one CASH_SETTLEMENT points at.
+        assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
+        keepNativeForFees: job.keepNativeForFees,
+        slippagePct: job.slippagePct,
+        ...(job.quotedDeposit === undefined ? {} : { quotedDeposit: job.quotedDeposit }),
+        ...(job.quoteFloorPct === undefined ? {} : { quoteFloorPct: job.quoteFloorPct }),
+        tickTimeoutMs: DEFAULT_TICK_TIMEOUT_MS,
+        inclusionTimeoutMs: DEFAULT_INCLUSION_TIMEOUT_MS,
+        // The PSM tier adds its fee asset itself.
+        signOptions: { at: anchor.hash },
+        readUnderlyingOnPeople: (ss58, at) =>
+          peoplePort.settlementBalance(ss58, CASH_SETTLEMENT, { at }),
+        claimRegistered: record.claim != null,
+        now: Date.now,
+        // Persisted before the broadcast leaves, so a wake mid-send knows a conversion may be
+        // in flight.
+        onBeforeSubmit: async (call) => {
+          persistState();
+          record.submitting = { call, at: Date.now() };
+          await saveJobs();
+        },
+        onTx: (info) => {
+          delete record.submitting;
+          record.txs.push(info);
+        },
+        ...(job.onConversion === undefined ? {} : { onConversion: job.onConversion }),
+      },
+      state,
+    );
+  } finally {
+    persistState();
+  }
+  return outcome;
 }
 
 /**
@@ -933,6 +1081,291 @@ async function followDeposit(record, api, route, address, anchor) {
   };
 }
 
+/** `amount` rounded up to the claim unit: the least the host can pay that covers it. */
+const roundUpToClaimUnit = (amount) => ((amount + CLAIM_UNIT - 1n) / CLAIM_UNIT) * CLAIM_UNIT;
+
+/**
+ * One recovery tick: the burner claims the trap back once it holds the claim's fee in CASH, and
+ * the job is then done as any other, its CASH on the burner for the host's claim. While the fee
+ * is missing, a deposit the user makes on the burner's Asset Hub account is converted for it.
+ * The recovery's own fields are written back before a submit leaves and after the tick, thrown
+ * or not; the rest of `record.recovery` is kept as it was.
+ */
+async function recoverTrapped(record, env) {
+  const { burner, peoplePort } = env;
+  record.phase = "recovering";
+  const kept = record.recovery ?? {};
+  const state = freshRecoveryState();
+  state.feeCash = kept.feeCash == null ? null : asBig(kept.feeCash);
+  state.round = kept.round ?? 0;
+  state.held = kept.held == null ? null : asBig(kept.held);
+  state.attempts = kept.attempts ?? 0;
+  state.nonceAtClaim = kept.nonceAtClaim ?? null;
+  state.claimSentAt = kept.sentAt ?? null;
+  const persist = (phase) => {
+    const fee = state.feeCash;
+    // What the purse is asked for: the fee less what the burner already holds, in whole units;
+    // the fee itself once the burner covers it.
+    const owed = fee === null ? null : fee - (state.held ?? 0n);
+    record.recovery = {
+      ...record.recovery,
+      phase,
+      feeCash: fee === null ? null : fee.toString(),
+      askCash: owed === null ? null : roundUpToClaimUnit(owed > 0n ? owed : fee).toString(),
+      round: state.round,
+      held: state.held === null ? null : state.held.toString(),
+      attempts: state.attempts,
+      nonceAtClaim: state.nonceAtClaim,
+      sentAt: state.claimSentAt,
+    };
+  };
+  let outcome;
+  try {
+    outcome = await tickRecovery(
+      {
+        peopleApi: env.peopleApi,
+        address: burner.address,
+        signer: burner.signer,
+        claimerHex: record.trap.claimerHex,
+        trap: { amount: asBig(record.trap.amount), key: record.trap.key },
+        readCashOnPeople: (ss58, at) => peoplePort.settlementBalance(ss58, CASH_SETTLEMENT, { at }),
+        tickTimeoutMs: DEFAULT_TICK_TIMEOUT_MS,
+        submitTimeoutMs: RECOVERY_SUBMIT_TIMEOUT_MS,
+        now: Date.now,
+        onBeforeSubmit: async () => {
+          persist("claiming");
+          record.submitting = { call: "claim", at: Date.now() };
+          await saveJobs();
+        },
+        onTx: (info) => {
+          delete record.submitting;
+          record.txs.push(info);
+        },
+      },
+      state,
+    );
+  } finally {
+    // A claim owed an answer is the only thing that keeps the recovery in claiming; a tick that
+    // threw with nothing in flight, a refused or rejected claim among them, is back to funding.
+    persist(state.nonceAtClaim === null ? "funding" : "claiming");
+    // The round moved on: a claim spent the fee, or the fee grew. Whatever deposit covered it is
+    // over, and the next funding round looks for one afresh.
+    if (state.round !== (kept.round ?? 0)) {
+      delete record.recovery.route;
+      delete record.recovery.state;
+      delete record.recovery.deposit;
+      delete record.recovery.depositDoneAt;
+      delete record.recovery.depositFoundAt;
+      delete record.recovery.depositGate;
+    }
+  }
+  delete record.lastError;
+  delete record.submitting;
+  persist(outcome.step);
+  if (outcome.step === "done") {
+    record.phase = "done";
+    record.done = true;
+    // Claim in the same tick the CASH is back, over this tick's People connection.
+    await sizeClaim(record, burner, peoplePort);
+    return;
+  }
+  if (outcome.step === "funding") await fundRecovery(record, env, state.feeCash);
+}
+
+/** How long the figures the manual path shows stand before they are priced again. */
+const RECOVERY_MINIMUMS_TTL_MS = 10 * 60_000;
+
+/**
+ * The manual way to the claim's fee: the user sends any token a top-up takes to the burner's
+ * Asset Hub account, and the pipeline converts it for the fee as it would a top-up. The least of
+ * each token that clears the pipeline's gate is priced for the surface and kept fresh; the first
+ * token held at or above its figure is the deposit, and its route is kept once chosen, as a job's
+ * is. A failure here is this tick's and the next one tries again; the conversion's own terminal
+ * answers are not the job's, since the trap stands whatever becomes of the deposit.
+ */
+async function fundRecovery(record, env, feeCash) {
+  const { api, burner } = env;
+  const recovery = record.recovery;
+  const now = Date.now();
+  const figures = recovery.minimums;
+  const stale =
+    figures === undefined ||
+    figures.feeCash !== feeCash.toString() ||
+    now - figures.at > RECOVERY_MINIMUMS_TTL_MS;
+  // Figures that could not be priced again stand for another while, and a deposit already being
+  // converted is not held up by a provider that is slow today. Without any figures there is
+  // nothing to look for a deposit with, and the tick says so.
+  // A fee that moved is priced again at once: figures for the old fee would ask for too little.
+  const feeMoved = figures !== undefined && figures.feeCash !== feeCash.toString();
+  const backingOff =
+    !feeMoved &&
+    figures?.repriceFailedAt !== undefined &&
+    now - figures.repriceFailedAt < RECOVERY_MINIMUMS_TTL_MS;
+  if (stale && !backingOff) {
+    try {
+      recovery.minimums = await sizeRecoveryMinimums(record, env, feeCash);
+    } catch (error) {
+      if (figures === undefined) throw error;
+      recovery.minimums = { ...figures, repriceFailedAt: now, repriceError: String(error) };
+    }
+    await saveJobs();
+  }
+  const routes = {
+    USDT: recordedRoute(recovery.minimums.routes.USDT),
+    USDC: recordedRoute(recovery.minimums.routes.USDC),
+  };
+  // A deposit counts at the gate's figure, not at the one shown with its headroom: a buyer who
+  // sent what was shown is not held up by a quote that moved a little since.
+  const gates = mapFigures(recovery.minimums.gates, asBig);
+  let route = recovery.route === undefined ? null : recordedRoute(recovery.route);
+  if (route === null) {
+    // A deposit whose conversion the chain would not take is skipped while its balance stands:
+    // paying for it again would end the same way. A new deposit of that token grows the balance.
+    const held =
+      recovery.depositError?.token === undefined
+        ? {}
+        : { [recovery.depositError.token]: asBig(recovery.depositError.held) };
+    const found = await bounded(
+      findRecoveryDeposit(api, burner.address, recoveryCandidates(gates, routes), held),
+      DEFAULT_TICK_TIMEOUT_MS,
+      "recovery deposit read",
+    );
+    if (found === null) return;
+    route = found.route;
+    recovery.route = recordedRouteFields(route);
+    recovery.depositHeld = { token: found.token, held: found.held.toString() };
+    // When the deposit was found, for the hold its conversion keeps on the worker, and the
+    // figure it was found at: the conversion's gate takes that figure, frozen as a top-up's
+    // quote is, so a quote that moves while it converts cannot hold a deposit that was right.
+    recovery.depositFoundAt = Date.now();
+    recovery.depositGate = gates[found.token].toString();
+    await saveJobs();
+  }
+  let outcome;
+  try {
+    outcome = await runConversion(record, env, {
+      route,
+      settleAmount: feeCash,
+      remoteFeeBuffer: DEFAULT_REMOTE_FEE_BUFFER,
+      keepNativeForFees: asBig(recovery.minimums.keepNativeForFees, DEFAULT_KEEP_NATIVE_FOR_FEES),
+      slippagePct: DEFAULT_SLIPPAGE_PCT,
+      ...(recovery.depositGate === undefined ? {} : { quotedDeposit: asBig(recovery.depositGate) }),
+      followDeposit: false,
+      stored: recovery.state ?? {},
+      store: (state) => {
+        recovery.state = state;
+      },
+    });
+  } catch (error) {
+    // The conversion's own terminal answers end this deposit's attempt, not the recovery: the
+    // route and the conversion's state are let go, so the next tick looks for a deposit afresh
+    // and chooses its route again, and what ended it is kept for the surface. A deposit that
+    // was itself trapped stays in People's trap, for governance.
+    if (
+      error instanceof FundingHeldError ||
+      error instanceof FundingShortfallError ||
+      error instanceof FundingTrappedError
+    ) {
+      // What ended it, and which deposit at what balance, so that deposit is not taken up again
+      // until a new one grows the balance.
+      // The deposit is only worth skipping while it is still there: a held conversion leaves it
+      // on Asset Hub, a shortfall or a trap has already sent it away, and a smaller deposit of
+      // the same token after that must be taken up.
+      const stays = error instanceof FundingHeldError;
+      recovery.depositError = {
+        message: String(error.message),
+        at: Date.now(),
+        ...(stays ? (recovery.depositHeld ?? {}) : {}),
+      };
+      delete recovery.route;
+      delete recovery.state;
+      delete recovery.deposit;
+      delete recovery.depositDoneAt;
+      delete recovery.depositFoundAt;
+      delete recovery.depositGate;
+      delete recovery.depositHeld;
+    }
+    throw new Error(`recovery deposit: ${String(error?.message ?? error)}`);
+  }
+  recovery.deposit = outcome.step;
+  if (outcome.step === "done") {
+    // The deposit is CASH on People: its conversion is over, and only the step is kept, for the
+    // surface, until the claim. The route and the state are let go, so a funding round after
+    // this one looks for a deposit afresh instead of replaying a finished conversion.
+    recovery.depositDoneAt = Date.now();
+    delete recovery.route;
+    delete recovery.state;
+    delete recovery.depositError;
+    delete recovery.depositHeld;
+    delete recovery.depositFoundAt;
+    delete recovery.depositGate;
+  }
+}
+
+/** The route's recorded fields, as a hand-off carries them. */
+const recordedRouteFields = (route) => ({
+  tier: route.tier,
+  ...(route.external === undefined ? {} : { external: route.external }),
+  ...(route.feeRate === undefined ? {} : { feeRate: route.feeRate }),
+});
+
+/** Prices the manual path for `feeCash`: each stable's route for it, then the least of each
+ *  token, bigints as strings for the record. */
+async function sizeRecoveryMinimums(record, env, feeCash) {
+  const { api, ahClient, peopleClient, burner } = env;
+  const read = (work, what) => bounded(work, DEFAULT_TICK_TIMEOUT_MS, what);
+  const poolOf = (id) => discoverPool(api, id).catch(() => null);
+  const [pool, usdtPool, usdcPool, transfer, usdtRoute, usdcRoute] = await read(
+    Promise.all([
+      poolOf(record.underlyingAssetId),
+      poolOf(STABLE_TOKENS.USDT.assetHubId),
+      poolOf(STABLE_TOKENS.USDC.assetHubId),
+      chooseCashTransfer({
+        assetHub: ahClient,
+        people: peopleClient,
+        assetHubParaId: PASEO_ASSET_HUB_PARA_ID,
+        peopleParaId: record.peopleParaId,
+      }),
+      chooseRoute(api, { direction: "mint", internalAmount: feeCash, deposit: "USDT" }),
+      chooseRoute(api, { direction: "mint", internalAmount: feeCash, deposit: "USDC" }),
+    ]),
+    "recovery minimums reads",
+  );
+  const routes = { USDT: usdtRoute, USDC: usdcRoute };
+  const sized = await read(
+    recoveryMinimums({
+      api,
+      peopleParaId: record.peopleParaId,
+      feeCash,
+      transfer,
+      beneficiaryHex: toHex(burner.publicKey),
+      probeAddress: burner.address,
+      pool,
+      stablePools: {
+        ...(usdtPool === null ? {} : { USDT: usdtPool }),
+        ...(usdcPool === null ? {} : { USDC: usdcPool }),
+      },
+      routes,
+    }),
+    "recovery minimums",
+  );
+  return {
+    at: Date.now(),
+    feeCash: feeCash.toString(),
+    minimums: mapFigures(sized.minimums, String),
+    // What counts as the deposit: the gate's own figure, under the one shown.
+    gates: mapFigures(sized.gates, String),
+    keepNativeForFees: sized.keepNativeForFees === null ? null : sized.keepNativeForFees.toString(),
+    routes: { USDT: recordedRouteFields(usdtRoute), USDC: recordedRouteFields(usdcRoute) },
+  };
+}
+
+/** A token table mapped figure by figure, nulls kept: the record keeps bigints as strings. */
+const mapFigures = (figures, map) =>
+  Object.fromEntries(
+    Object.entries(figures).map(([token, figure]) => [token, figure === null ? null : map(figure)]),
+  );
+
 /** Records the conversion's progress. A retry is prepared again; the first time stands. */
 function recordConversion(record, fact) {
   const preparedAt = record.conversion?.preparedAt ?? Date.now();
@@ -957,7 +1390,7 @@ let ticking = false;
  * A job ends only through `fail`; a re-sent hand-off re-arms it.
  */
 export async function tickAllFunding() {
-  if (ticking) return { ticked: 0, busy: true };
+  if (ticking) return { ticked: 0, holding: 0, busy: true };
   ticking = true;
   try {
     const all = await loadJobs();
@@ -966,6 +1399,7 @@ export async function tickAllFunding() {
       (record) => record?.v === RECORD_V && !isFinished(record) && record.phase !== "failed",
     );
     let ticked = 0;
+    let holding = 0;
     for (const record of live) {
       if (record.phase === "failed") continue; // cancelled since this pass began
       const nowMs = Date.now();
@@ -980,6 +1414,17 @@ export async function tickAllFunding() {
           record.lastError = `shortfall: ${error.message}`;
         } else if (error instanceof FundingShortfallError) {
           fail(record, "shortfall", `shortfall: ${error.message}`);
+        } else if (error instanceof FundingTrappedError) {
+          if (record.wayHome) {
+            // A recovery needs someone to pay the claim's fee, and a sale's way home has no
+            // one: the job ends here, and the sale marks its residue stuck for a person. The
+            // trap is kept as any other, the one place that says where the CASH is; a re-sent
+            // hand-off is refused, so it never starts a recovery.
+            record.trap = trapOf(error, nowMs);
+            fail(record, "trapped", error.message);
+          } else {
+            trapped(record, error, nowMs);
+          }
         } else if (error instanceof FundingHeldError) {
           // The PSM would not take the mint three times over. The deposit stays on the burner
           // and nothing converts it through the pool; a re-sent hand-off tries again.
@@ -991,10 +1436,49 @@ export async function tickAllFunding() {
       }
       judgeBounds(record, nowMs, read);
       ticked += 1;
+      // A job that ended in this pass, or that waits on the buyer alone, has nothing left to
+      // keep the worker awake for.
+      if (record.phase !== "failed" && !waitsOnTheBuyer(record, nowMs)) holding += 1;
       await saveJobs();
     }
-    return { ticked, busy: false };
+    return { ticked, holding, busy: false };
   } finally {
     ticking = false;
   }
+}
+
+/** How long a recovery keeps the worker awake after each thing that moved it: the trap, for the
+ *  first tick that sizes the fee and claims at once when the burner already holds it; a deposit
+ *  found, for its conversion; a conversion done, for the claim that follows; a claim sent, for
+ *  its answer. A recovery has no run bound of its own, so each hold has this one: past it the
+ *  job waits on the buyer, still ticked on the passes the open app asks for, and nothing is
+ *  given up. */
+const RECOVERY_HOLD_MS = 10 * 60_000;
+
+/** Within the hold of something stamped at `at`; nothing stamped is nothing to hold for. */
+const holdsSince = (at, nowMs) => typeof at === "number" && nowMs - at < RECOVERY_HOLD_MS;
+
+/**
+ * A recovery that waits on the buyer alone: nothing that moved it is within its hold. The
+ * burner waits for the claim's fee, no deposit is being converted for it and no claim is owed an
+ * answer, so the job is ticked on the passes the open app asks for, which size the fee and
+ * price the manual path, but never keeps the worker awake. The worker sees the fee only once it
+ * is on the burner, never the purse's payment itself, so a fee paid right before the app closes
+ * is claimed on the next open.
+ */
+function waitsOnTheBuyer(record, nowMs) {
+  if (record.phase !== "recovering") return false;
+  const recovery = record.recovery;
+  // The trap, until the first recovery tick has sized the fee.
+  if (recovery === undefined) return !holdsSince(record.trap?.at, nowMs);
+  // A claim owed an answer, from its send, which is stamped before the submit goes out.
+  if (recovery.phase === "claiming") return !holdsSince(recovery.sentAt, nowMs);
+  // A deposit converted lately, for the claim that follows it.
+  if (recovery.deposit === "done") return !holdsSince(recovery.depositDoneAt, nowMs);
+  // A deposit being converted, from its find. One the gate holds short moves only with the
+  // price or the buyer, so it does not count.
+  if (recovery.route !== undefined && recovery.deposit !== "await-native") {
+    return !holdsSince(recovery.depositFoundAt, nowMs);
+  }
+  return true;
 }
