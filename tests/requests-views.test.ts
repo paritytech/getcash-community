@@ -19,6 +19,7 @@ import { reduce } from "../app/funding/requests/reducer";
 import {
   claimingOf,
   creditedAmountOf,
+  meldAwaitingBuyerOf,
   meldHandedOffOf,
   meldStageOf,
   phaseLike,
@@ -223,6 +224,76 @@ describe("request views", () => {
 
     expect(meldStageOf(meld(unstamped, "failed", "failed"))).toBe("failed");
     expect(meldHandedOffOf(meld(unstamped, "failed", "failed"))).toBe(false);
+  });
+
+  it("meldAwaitingBuyerOf holds the widget while a filed transaction is not yet paid", () => {
+    // Banxa files its Meld transaction as PENDING the moment its card form loads: the adapter
+    // reports `transaction_seen`, read as `receiving`, before the buyer has typed anything.
+    const { meldSubmittedAt: _stamp, ...unstamped } = card();
+    const open: RequestRecord = {
+      ...unstamped,
+      status: { kind: "awaiting-deposit" },
+      rail: rail("meld", "waiting", "waiting"),
+    };
+    const provider = (status: "receiving" | "sending", at: number): Observation => ({
+      source: "provider",
+      provider: "meld",
+      at,
+      result: { status },
+    });
+    expect(meldAwaitingBuyerOf(open, AT)).toBe(false);
+
+    const filed = reduce(open, provider("receiving", AT));
+    expect(filed.status.kind).toBe("deposit-seen");
+    expect(meldAwaitingBuyerOf(filed, AT)).toBe(true);
+    expect(meldHandedOffOf(filed)).toBe(false);
+
+    // The buyer finishing in the widget ends it.
+    const submitted = reduce(filed, { source: "user", at: AT + 1, event: "meld-submitted" });
+    expect(meldAwaitingBuyerOf(submitted, AT)).toBe(false);
+    expect(meldHandedOffOf(submitted)).toBe(true);
+
+    // So does the provider approving it (SETTLING reads as `sending`).
+    expect(meldAwaitingBuyerOf(reduce(filed, provider("sending", AT + 1)), AT)).toBe(false);
+
+    // The bank route files the same way: its provider reported PENDING ~70s after the transfer
+    // details opened, before the buyer sent anything. The details stay until "I've sent funds".
+    const { meldSubmittedAt: _bankStamp, ...bank } = migrated(submittedCardRecord, "meld-bank", 4);
+    const bankFiled = reduce(
+      { ...bank, status: { kind: "awaiting-deposit" }, rail: rail("meld", "waiting", "waiting") },
+      provider("receiving", AT),
+    );
+    expect(meldAwaitingBuyerOf(bankFiled, AT)).toBe(true);
+    expect(
+      meldAwaitingBuyerOf(
+        reduce(bankFiled, { source: "user", at: AT + 1, event: "meld-submitted" }),
+        AT,
+      ),
+    ).toBe(false);
+
+    // A form left past its pay page's deadline is not still being filled in: reopened, it goes to
+    // the journey. Without a deadline, nothing bounds it.
+    const expiring: RequestRecord = {
+      ...filed,
+      deadline: { depositExpiresAt: AT + 60_000, source: "rail" },
+    };
+    expect(meldAwaitingBuyerOf(expiring, AT + 59_999)).toBe(true);
+    expect(meldAwaitingBuyerOf(expiring, AT + 60_000)).toBe(false);
+    expect(
+      meldAwaitingBuyerOf({ ...filed, deadline: { depositExpiresAt: null, source: "route" } }, AT),
+    ).toBe(true);
+
+    // A crypto record's rail sighting is never a Meld widget.
+    expect(
+      meldAwaitingBuyerOf(
+        {
+          ...crypto(),
+          status: { kind: "deposit-seen", at: AT, assurance: "provisional", via: "rail" },
+          rail: rail("chainflip", "received", "receiving"),
+        },
+        AT,
+      ),
+    ).toBe(false);
   });
 
   it("creditedAmountOf reads what the Host credited only once the top-up ended", () => {

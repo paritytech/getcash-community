@@ -343,14 +343,14 @@ describe("a fiat sale from the page", () => {
       expect.objectContaining({
         serviceProvider: "TRANSAK",
         orderRef: KEY_ADDRESS,
+        // The key sends the crypto on a direct sale, so a refund comes back to it.
+        walletAddress: KEY_ADDRESS,
         sourceCurrencyCode: "DOT",
         sourceAmount: "23.4521",
         destinationCurrencyCode: "EUR",
         paymentMethodType: "SEPA",
       }),
     );
-    // Optional on a sale, and the adapter refuses it: no wallet is named.
-    expect(spy.mock.calls[0]![0]).not.toHaveProperty("walletAddress");
     if (!outcome.ok) return;
     const record = useRequestsStore().get(outcome.ref) as WithdrawalRecord;
     expect(record).toMatchObject({
@@ -691,6 +691,12 @@ describe("a fiat sale from the page", () => {
       await toDeposit(outcome.ref);
       return outcome.ref;
     }
+
+    it("names no seller wallet: the swap, not the key, pays the provider", async () => {
+      const spy = vi.spyOn(meld, "createSellSession");
+      await laneSaleAtDeposit();
+      expect(spy.mock.calls[0]![0]).not.toHaveProperty("walletAddress");
+    });
 
     it("keeps a swap opened earlier while the key still has time to pay it", async () => {
       const ref = await laneSaleAtDeposit();

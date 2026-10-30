@@ -244,9 +244,9 @@ const endedRows = computed<DetailRow[]>(() => [
 /**
  * Cancel, bank only: the provider's pay page can still be withdrawn while no money has arrived.
  *
- * "I've sent funds" does not close it — on this rail that is the buyer's word and not the money,
- * and a transfer they never made would otherwise leave a payable page standing. The confirmation
- * screen carries the warning for the buyer who did already pay.
+ * Reaching the journey does not close it: a transfer the buyer never made would otherwise leave a
+ * payable page standing. The confirmation screen carries the warning for the buyer who did already
+ * pay.
  */
 const canCancel = computed(
   () =>

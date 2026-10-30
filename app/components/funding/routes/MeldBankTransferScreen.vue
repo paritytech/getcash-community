@@ -7,19 +7,19 @@
 // with it.
 //
 // Nothing here can see whether the transfer was actually made — the provider only learns of it
-// when the money lands — so "I've sent funds" is the buyer's word. It waits out a short countdown
-// first, because the details behind it take longer to read than the button takes to reach.
+// when the money lands — so the screen stays on the details until the provider reports the payment
+// moving, and the status poll hands the top-up to the journey. Back leaves it running in the list.
 //
 // A price that could not be had takes the summary step whole, in the two steps every quote
 // screen shows: a retry, then a change of country or of rail.
-import { computed, onUnmounted, ref, watch } from "vue";
+import { computed, ref } from "vue";
 import { ChevronRight, CircleAlert } from "lucide-vue-next";
 import { methodMinimum, namedCountry, otherMethod } from "~~/lib/supported";
 import { useRequestsStore } from "../../../stores/requests";
 import { useSessionStore } from "../../../stores/session";
 import { currencyConfig } from "../../../funding/config";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
-import { fiatOutOfRange } from "../../../funding/out-of-range";
+import { fiatAmountRejected, fiatOutOfRange } from "../../../funding/out-of-range";
 import type { FundingRoute } from "../../../funding/selection";
 import CashAmount from "../../ui/CashAmount.vue";
 import PillButton from "../../ui/PillButton.vue";
@@ -62,7 +62,11 @@ const blocked = computed(() => session.quoteError !== null && !session.loading);
 const requestOpen = computed(() => requests.phase !== null);
 /** The summary has nothing to price yet. */
 const pricing = computed(
-  () => !blocked.value && session.quoteOutOfRange === null && !session.quoted,
+  () =>
+    !blocked.value &&
+    session.quoteOutOfRange === null &&
+    !session.quoteAmountRejected &&
+    !session.quoted,
 );
 
 /** The hero: the exact total to transfer, fees included. Shown only once a quote priced it. */
@@ -126,61 +130,6 @@ function useAmount(cash: string) {
   session.setAmount(cash);
   requote();
 }
-
-/** How long the confirmation waits, in seconds, from the moment the details are on screen. */
-const CONFIRM_DELAY_S = 5;
-/** Seconds still to wait; 0 once the confirmation is the buyer's to give. */
-const countdown = ref(CONFIRM_DELAY_S);
-let countdownTimer: ReturnType<typeof setInterval> | null = null;
-function stopCountdown() {
-  if (countdownTimer !== null) clearInterval(countdownTimer);
-  countdownTimer = null;
-}
-/** Runs once per pay page: a page that reloads under the buyer does not restart their wait. */
-function startCountdown() {
-  if (countdownTimer !== null || countdown.value === 0) return;
-  countdownTimer = setInterval(() => {
-    countdown.value -= 1;
-    if (countdown.value <= 0) stopCountdown();
-  }, 1_000);
-}
-/** The pay page the wait was served for. Tracked as the last URL seen, not the watch's previous
- *  value: two requests are always separated by a null gap (the cancel tears the page down), so a
- *  plain old-vs-new comparison would read the second one as the first. */
-let waitedFor: string | null = null;
-watch(
-  () => (props.step === "details" ? session.meldPayUrl : null),
-  (url) => {
-    if (url === null) return;
-    if (waitedFor !== null && url !== waitedFor) {
-      // A new request behind the same mounted screen: new account, new amount — the wait is owed
-      // again. The same page seen again (Back, then Continue) keeps the wait already served.
-      stopCountdown();
-      countdown.value = CONFIRM_DELAY_S;
-    }
-    waitedFor = url;
-    startCountdown();
-  },
-  { immediate: true },
-);
-onUnmounted(stopCountdown);
-
-/**
- * The buyer's word that the transfer is on its way. The provider cannot see an inbound transfer
- * until it lands, so this is the same handoff the card widget posts for itself: it moves the
- * top-up onto the journey, where the status poll takes over.
- */
-const canConfirm = computed(
-  () =>
-    countdown.value === 0 &&
-    !requests.meldSubmitted &&
-    session.meldPayUrl !== null &&
-    !requests.claiming,
-);
-function confirmSent() {
-  if (!canConfirm.value) return;
-  void session.markMeldSubmitted();
-}
 </script>
 
 <template>
@@ -206,6 +155,14 @@ function confirmSent() {
       @region="emit('currency')"
       @change-amount="emit('changeAmount')"
       @use-amount="useAmount"
+    />
+    <AmountOutOfRange
+      v-else-if="step === 'summary' && session.quoteAmountRejected && !session.loading"
+      :amount="session.amountHuman"
+      :words="fiatAmountRejected('bank', countryLabel)"
+      :region="{ label: 'Payment country', value: countryLabel, country }"
+      @region="emit('currency')"
+      @change-amount="emit('changeAmount')"
     />
     <RateErrorScreen
       v-else-if="step === 'summary' && blocked"
@@ -317,12 +274,6 @@ function confirmSent() {
              transfer already sent still arrives, so this only leaves the screen. -->
           <PillButton v-else-if="lapsed" class="w-full" @click="emit('leave')">
             Back to top-ups
-          </PillButton>
-          <!-- The count is on the button, so the wait is visibly the button's and not a failure. -->
-          <PillButton v-else class="w-full" :disabled="!canConfirm" @click="confirmSent">
-            <!-- A non-breaking space: the compiler condenses a plain one away, and the count must
-               not wrap off the label either. -->
-            I’ve sent funds<template v-if="countdown > 0">&nbsp;{{ countdown }}</template>
           </PillButton>
           <!-- A resumed transfer's way out: nothing can have been taken while this screen is up. -->
           <PillButton
