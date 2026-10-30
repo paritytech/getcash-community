@@ -1381,9 +1381,9 @@ export const useRequestsStore = defineStore("requests", () => {
     foregroundRecord.value ? meldHandedOffOf(foregroundRecord.value) : false,
   );
   /** The rail filed a transaction for the request on screen that the buyer has not been seen to
-   *  pay: the widget stays up. */
+   *  pay, and its pay page is still open: the widget stays up. */
   const meldAwaitingBuyer = computed(() =>
-    foregroundRecord.value ? meldAwaitingBuyerOf(foregroundRecord.value) : false,
+    foregroundRecord.value ? meldAwaitingBuyerOf(foregroundRecord.value, tick.value) : false,
   );
 
   // The foreground clock: while the request on screen awaits its deposit, one clock observation a

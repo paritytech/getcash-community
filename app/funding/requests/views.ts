@@ -167,12 +167,15 @@ export function meldStageOf(
  *
  * Some providers (Banxa) file their transaction, as `PENDING`, the moment their card form loads,
  * so the rail's `received` is not proof of payment. The buyer is still on the form, and the widget
- * must stay.
+ * must stay. Not past the pay page's deadline, though: a form whose link has expired cannot still be
+ * being filled in, and a reopened one goes to the journey.
  */
-export function meldAwaitingBuyerOf(record: TopUpRecord): boolean {
+export function meldAwaitingBuyerOf(record: TopUpRecord, now: number): boolean {
   const { rail, status } = record;
+  const expiresAt = record.deadline.depositExpiresAt;
   return (
     rail.provider === "meld" &&
+    (expiresAt === null || now < expiresAt) &&
     rail.stage === "received" &&
     record.meldSubmittedAt === undefined &&
     status.kind === "deposit-seen" &&
