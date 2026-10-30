@@ -8,6 +8,7 @@ import type { FundingTopUpState } from "../top-ups";
 import {
   CONFIRMED_TTL_MS,
   isFinished,
+  paymentWatchUntil,
   rankOf,
   type Freshness,
   type RequestRecord,
@@ -168,11 +169,14 @@ export function meldStageOf(
  * Some providers (Banxa) file their transaction, as `PENDING`, the moment their card form loads,
  * so the rail's `received` is not proof of payment. The buyer is still on the form, and the widget
  * must stay. Not past the pay page's deadline, though: a form whose link has expired cannot still be
- * being filled in, and a reopened one goes to the journey.
+ * being filled in, and a reopened one goes to the journey. A bank transfer is bounded by the
+ * payment watch instead, as its expiry is: its details stay useful for as long as a transfer sent
+ * from them can still land.
  */
 export function meldAwaitingBuyerOf(record: TopUpRecord, now: number): boolean {
   const { rail, status } = record;
-  const expiresAt = record.deadline.depositExpiresAt;
+  const expiresAt =
+    record.route === "bank" ? paymentWatchUntil(record) : record.deadline.depositExpiresAt;
   return (
     rail.provider === "meld" &&
     (expiresAt === null || now < expiresAt) &&
