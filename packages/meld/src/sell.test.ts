@@ -110,7 +110,7 @@ describe("createMeldClient sell quotes", () => {
 });
 
 describe("createMeldClient sell sessions", () => {
-  it("opens a sale for the committed crypto, naming no wallet", async () => {
+  it("opens a sale for the committed crypto, naming no wallet when none is given", async () => {
     const { impl, calls } = stubSequence([created]);
     const client = createMeldClient({
       baseUrl: "https://adapter.test",
@@ -130,7 +130,7 @@ describe("createMeldClient sell sessions", () => {
       serviceProvider: "TRANSAK",
       redirectUrl: "https://adapter.test/meld/return",
     });
-    // Optional on a sale at Meld, and refused by the adapter.
+    // Optional: a sale whose crypto reaches the provider from elsewhere names none.
     expect(sent).not.toHaveProperty("walletAddress");
     // The order reference is key material, not a term the adapter is told.
     expect(sent).not.toHaveProperty("orderRef");
@@ -140,6 +140,13 @@ describe("createMeldClient sell sessions", () => {
       fundingRequestId: "funding-sell-1",
       widgetUrl: "https://kyc.test",
     });
+  });
+
+  it("names the account the crypto is sent from, which the provider refunds to", async () => {
+    const { impl, calls } = stubSequence([created]);
+    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
+    await client.createSellSession({ ...SELL_REQ, walletAddress: "5KeyAddress" });
+    expect(body(calls[0]!)).toMatchObject({ direction: "sell", walletAddress: "5KeyAddress" });
   });
 
   it("keeps a buy and a sale of one pair on different keys", async () => {
