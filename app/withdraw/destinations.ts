@@ -12,21 +12,31 @@ import { elideMiddle } from "../utils/address";
 import { networkIcon, tokenIcon } from "../utils/icons";
 import { POLKADOT_CHAIN, SOURCE_CHAINS, sourceIdFor } from "~~/lib/config";
 
-export interface WithdrawDestination {
+interface DestinationBase {
   /** The destination's id, the tail of the withdrawal's source id: `usdc-assethub`, `btc`. */
   id: string;
   /** The network as Chainflip and the icon set name it. */
   chain: string;
   chainLabel: string;
   asset: string;
-  rail: WithdrawalRailState["provider"];
-  /** What the CASH lands as on Asset Hub, named as the on-ramp names a deposit: the token picked
-   *  for Asset Hub itself. A provider names none: it takes from the key whatever the fiat rule
-   *  lands there, the PSM's external when the PSM can serve and the native otherwise. The sale
-   *  that gets there is decided at quote time from it. */
-  landing?: DepositAsset;
   validateAddress(address: string): boolean;
 }
+
+/** Asset Hub itself, reached by the XCM alone. `landing` is what the CASH lands as there, named as
+ *  the on-ramp names a deposit, from which the sale is decided at quote time. */
+export interface DirectDestination extends DestinationBase {
+  rail: "direct";
+  landing: DepositAsset;
+}
+
+/** A destination a provider carries. It names no landing: it takes from the key whatever the sale
+ *  its quote picked lands there, the PSM's external or the native. */
+export interface ProviderDestination extends DestinationBase {
+  rail: Exclude<WithdrawalRailState["provider"], "direct">;
+  landing?: undefined;
+}
+
+export type WithdrawDestination = DirectDestination | ProviderDestination;
 
 export interface WithdrawNetwork {
   chain: string;
@@ -52,11 +62,7 @@ export function assetHubAccountHex(address: string): `0x${string}` {
   return `0x${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
-const assetHubDestination = (
-  id: string,
-  asset: string,
-  landing: DepositAsset,
-): WithdrawDestination =>
+const assetHubDestination = (id: string, asset: string, landing: DepositAsset): DirectDestination =>
   Object.freeze({
     id,
     chain: POLKADOT_CHAIN.chain,
@@ -78,7 +84,7 @@ const ASSET_HUB_DESTINATIONS: readonly WithdrawDestination[] = Object.freeze([
 
 /** The Chainflip destinations, one per source the on-ramp knows, each checked with the same
  *  validator the on-ramp applies to a refund address on that chain. */
-function chainflipDestinations(chain: string, assets: readonly string[]): WithdrawDestination[] {
+function chainflipDestinations(chain: string, assets: readonly string[]): ProviderDestination[] {
   return assets.flatMap((asset) => {
     const sourceId = sourceIdFor(chain, asset);
     const config = sourceId === undefined ? undefined : SOURCE_CONFIG_BY_ID.get(sourceId);

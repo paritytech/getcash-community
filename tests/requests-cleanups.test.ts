@@ -44,6 +44,7 @@ vi.mock("../lib/coinage-live", () => ({
   DEFAULT_SOURCE_ID: "dot-assethub",
   nextHostedTradeNumber: async () => RESERVED_TRADE_N,
   chooseHostedRoute: async () => ({ tier: "pool" }),
+  rankHostedRoutes: async () => [{ tier: "pool" }],
   createHostedCoinageWorld: async (args: {
     tradeN?: number;
     sourceId?: string;
