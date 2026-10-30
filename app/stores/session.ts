@@ -2305,8 +2305,22 @@ export const useSessionStore = defineStore("session", () => {
   const meldPayUrl = computed<string | null>(() => {
     // Hidden once the buyer finished the widget.
     if (requests.meldSubmitted) return null;
+    // And once the record is past the buyer: the provider approved, or money moved. Only with a
+    // record to read, so a request still being re-opened is not taken for a lapsed one.
+    if (
+      requests.foregroundRecord !== null &&
+      !requests.awaitingDeposit &&
+      !requests.meldAwaitingBuyer
+    ) {
+      return null;
+    }
     const state = lastState.value;
-    const fromRail = state?.phase === "awaiting-deposit" ? state.deposit.payUrl : undefined;
+    // Core reads the rail's first sighting as `swapping`, which a provider filing its transaction
+    // as the form loads reaches before the buyer has paid; the page is still theirs to finish.
+    const fromRail =
+      state?.phase === "awaiting-deposit" || state?.phase === "swapping"
+        ? state.deposit.payUrl
+        : undefined;
     return fromRail ?? meldResumeWidgetUrl.value;
   });
 

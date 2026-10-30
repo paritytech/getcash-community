@@ -5,9 +5,8 @@
 // The two rails need different screens here, because the payment is made in different places. A
 // card is paid inside the provider's widget, which reports the payment itself. A bank transfer is
 // paid in the buyer's own banking app, from details the provider's page only displays — nothing
-// can observe it, so the transfer's own screen and its "I've sent funds" is the only way forward.
-// Showing the widget for both left a re-opened transfer with no way to say it had been sent, and
-// an unconfirmed request expires on the clock while the money is still in the post.
+// can observe it, so the transfer's own screen keeps its details up until the provider reports the
+// payment moving.
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useJourneyQuote } from "../../../composables/useJourneyQuote";
 import { useMeldHandoff } from "../../../composables/useMeldHandoff";
@@ -57,8 +56,10 @@ const { quote, cashAmount } = useJourneyQuote(() => props.topUp);
 const showingPayment = computed(() => !waiting.value && !unavailable.value);
 /** Edge to edge for the card widget only; the transfer's details take the screen's own gutter. */
 const showingWidget = computed(() => showingPayment.value && !isBank);
+// Not once the provider has filed a transaction: neither this app nor the adapter calls it off.
 const canCancel = computed(
-  () => showingPayment.value && !requests.meldSubmitted && !requests.fundsSeen,
+  () =>
+    showingPayment.value && !requests.meldSubmitted && !requests.fundsSeen && !requests.railSeen,
 );
 
 /** The region the transfer was priced in, restored with the request. */

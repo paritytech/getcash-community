@@ -161,6 +161,29 @@ export function meldStageOf(
   return record.meldSubmittedAt === undefined ? "waiting" : "receiving";
 }
 
+/**
+ * The Meld rail has filed a transaction, but nothing says the buyer has paid it yet: the buyer has
+ * not finished in the widget, the provider has not approved it, and no money reached the burner.
+ *
+ * Some providers (Banxa) file their transaction, as `PENDING`, the moment their card form loads,
+ * so the rail's `received` is not proof of payment. The buyer is still on the form, and the widget
+ * must stay. Not past the pay page's deadline, though: a form whose link has expired cannot still be
+ * being filled in, and a reopened one goes to the journey.
+ */
+export function meldAwaitingBuyerOf(record: TopUpRecord, now: number): boolean {
+  const { rail, status } = record;
+  const expiresAt = record.deadline.depositExpiresAt;
+  return (
+    rail.provider === "meld" &&
+    (expiresAt === null || now < expiresAt) &&
+    rail.stage === "received" &&
+    record.meldSubmittedAt === undefined &&
+    status.kind === "deposit-seen" &&
+    status.assurance === "provisional" &&
+    (status.via === "rail" || status.via === "core")
+  );
+}
+
 /** The journey took over from the widget: the buyer submitted, or the payment completed. */
 export const meldHandedOffOf = (record: TopUpRecord): boolean =>
   record.meldSubmittedAt !== undefined || record.rail.stage === "delivered";

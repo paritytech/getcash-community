@@ -17,6 +17,7 @@ export function useMeldHandoff(emit: (event: "handoff") => void) {
       meldHandedOff: requests.meldHandedOff,
       meldStage: requests.meldStage,
       awaitingDeposit: requests.awaitingDeposit,
+      awaitingBuyer: requests.meldAwaitingBuyer,
     }),
   );
 
