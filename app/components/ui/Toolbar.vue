@@ -8,7 +8,7 @@ const emit = defineEmits<{ back: [] }>();
 </script>
 
 <template>
-  <header class="flex h-15 shrink-0 items-center gap-2.5 px-6">
+  <header class="toolbar box-content flex h-15 shrink-0 items-center gap-2.5 px-6 pt-6">
     <div class="flex w-11 shrink-0 items-center">
       <button
         v-if="back"
@@ -45,5 +45,12 @@ const emit = defineEmits<{ back: [] }>();
 
 .toolbar-glass:hover {
   background: color-mix(in srgb, var(--fg-primary) 11%, transparent);
+}
+
+/* Same breakpoint as the funding header, so every screen in the sheet starts at one height */
+@media (max-height: 711px) {
+  .toolbar {
+    padding-top: 0;
+  }
 }
 </style>
