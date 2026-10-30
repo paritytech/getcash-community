@@ -153,6 +153,10 @@ const quotedFloor = computed(() => {
 /**
  * The rows the drill-in lists: every region the catalog names, each carrying what it charges and
  * greyed where this rail cannot take this purchase from it.
+ *
+ * Bank offers every Meld BANK_TRANSFER method, but only SEPA and Faster Payments have been paid end
+ * to end; the transfer screen's copy assumes a push transfer. Others (ACH, iDEAL, Interac, PayID…)
+ * are kept for now: disable any that misbehaves.
  */
 const pickerCountries = computed<CountryOption[]>(() =>
   corridorOptions(
