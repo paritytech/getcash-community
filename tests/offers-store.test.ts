@@ -6,7 +6,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { nextTick } from "vue";
 import { TOKENS, type SourceId } from "@getsome/core";
 import { egressFor, type SourceFloorResult } from "@getsome/chainflip";
-import { useOffersStore } from "../app/stores/offers";
+import { useOffersStore, type TokenOffer } from "../app/stores/offers";
 import { useSessionStore } from "../app/stores/session";
 import { learnSourceFloors } from "../lib/source-floors";
 
@@ -329,6 +329,76 @@ describe("offers store", () => {
     await useOffersStore().learn();
     expect(learnSourceFloors).toHaveBeenLastCalledWith({ egress: egressFor(TOKENS.PAS) });
   });
+
+  const NO_ETH: SourceFloorResult = { kind: "unavailable", reason: "No ETH -> USDT quote" };
+  /** What Chainflip said for the USDT egress: ETH's answer, and BTC's so it is not paused. */
+  const onScreen = (eth: SourceFloorResult, btc = floor("btc", 40_000n, 10n, USDT)) =>
+    new Map<SourceId, SourceFloorResult>([
+      ["eth", eth],
+      ["btc", btc],
+    ]);
+  it.each<{
+    name: string;
+    primary: ReadonlyMap<SourceId, SourceFloorResult>;
+    /** The DOT egress's answer for ETH, never asked when null. */
+    alternate: SourceFloorResult | "pending" | null;
+    offer: Partial<TokenOffer>;
+  }>([
+    {
+      name: "answered on screen, the alternate never asked",
+      primary: onScreen(floor("eth", 10n ** 16n, 25n, USDT)),
+      alternate: null,
+      offer: { state: "available" },
+    },
+    {
+      name: "a floor on the alternate only, offered as it is",
+      primary: onScreen(NO_ETH),
+      alternate: floor("eth", 10n ** 16n, 25n),
+      offer: { state: "ungated" },
+    },
+    {
+      name: "the alternate still answering",
+      primary: onScreen(NO_ETH),
+      alternate: "pending",
+      offer: { state: "checking" },
+    },
+    {
+      name: "unavailable on both",
+      primary: onScreen(NO_ETH),
+      alternate: { kind: "unavailable", reason: "No ETH -> DOT quote" },
+      offer: { state: "unavailable", reason: "No ETH -> USDT quote" },
+    },
+    {
+      name: "Chainflip paused, the alternate never asked",
+      primary: onScreen(NO_ETH, NO_ETH),
+      alternate: null,
+      offer: { state: "unavailable" },
+    },
+  ])(
+    "judges a hosted source on the other route too: $name",
+    async ({ primary, alternate, offer }) => {
+      hosted.value = true;
+      const session = useSessionStore();
+      const offers = useOffersStore();
+      sizedInUsdt(session);
+      const learn = vi.mocked(learnSourceFloors);
+      if (alternate !== null) {
+        learn.mockReturnValue(
+          alternate === "pending"
+            ? new Promise<never>(() => {})
+            : Promise.resolve(new Map([["eth", alternate]])),
+        );
+      }
+      offers.floors = primary;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(learn.mock.calls.map(([args]) => args)).toEqual(
+        alternate === null ? [] : [{ egress: egressFor(TOKENS.PAS), sourceIds: ["eth"] }],
+      );
+      expect(offers.tokensOf("Ethereum").find((t) => t.asset === "ETH")!.offer).toMatchObject(
+        offer,
+      );
+    },
+  );
 
   it("drops an answer for floors that were seeded while it was in flight", async () => {
     const session = useSessionStore();
