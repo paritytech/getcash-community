@@ -2,6 +2,7 @@ export {
   createMeldClient,
   fiatLimitOf,
   refusalOf,
+  isAdapterOutage,
   type MeldFiatLimit,
   type MeldRefusal,
   type MeldClientLike,

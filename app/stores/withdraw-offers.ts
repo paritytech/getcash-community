@@ -1,12 +1,11 @@
-// What the provider destinations offer for the amount on screen and the sale it is sold through,
-// quoted once per amount and sale and kept while fresh, and the rows of the withdraw pickers read
-// off them.
+// What the provider destinations offer for the amount on screen, each on the sale picked for it,
+// quoted once per amount and PSM room spoken for and kept while fresh, and the rows of the
+// withdraw pickers read off them.
 
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef } from "vue";
-import type { ConversionRoute } from "@getsome/funding";
 import { brokerConfigured } from "~~/lib/chainflip-backend";
-import { quoteWithdrawOffers, saleKeyOf } from "~~/lib/withdraw-live";
+import { quoteWithdrawOffers } from "~~/lib/withdraw-live";
 import {
   WITHDRAW_NETWORKS,
   type WithdrawDestination,
@@ -24,16 +23,12 @@ const PROVIDER_DESTINATIONS: readonly WithdrawDestination[] = WITHDRAW_NETWORKS.
 ).filter((destination) => destination.rail !== "direct");
 
 export const useWithdrawOffersStore = defineStore("withdraw-offers", () => {
-  /** The offers by destination id, for `amount` sold through the sale; empty while being quoted. */
+  /** The offers by destination id, for `amount`; empty while being quoted. */
   const offers = shallowRef<ReadonlyMap<string, WithdrawOffer>>(new Map());
   /** The CASH the offers are for. */
   const amount = ref<bigint | null>(null);
-  /** The sale the offers are for, as `saleKeyOf` names it. */
-  const saleKey = ref<string | null>(null);
-  /** What the provider quotes were asked for, in the sale's token: what the sale lands for
-   *  `amount`, less the headroom the sale and the sweep may take on the pool tier. What a channel
-   *  is opened for at confirm. */
-  const sellable = ref<bigint | null>(null);
+  /** The PSM room this app's own withdrawals had spoken for when the offers were asked. */
+  const reservedFor = ref<bigint | null>(null);
   const learnedAt = ref<number | null>(null);
   let inflight: Promise<void> | null = null;
 
@@ -47,29 +42,28 @@ export const useWithdrawOffersStore = defineStore("withdraw-offers", () => {
     offers.value.size > 0 &&
     [...offers.value.values()].every((offer) => offer.state !== "unavailable");
 
-  /** Quotes every provider destination for `amountCash` sold through `sale`: on a new amount or
-   *  sale, when the answer went stale, or when a destination could not be quoted last time.
-   *  Nothing is asked while the rail is off. Repeat calls for the same amount and sale join the
-   *  in-flight load. */
-  function learn(amountCash: bigint | null, sale: ConversionRoute): Promise<void> {
+  /** Quotes every provider destination for `amountCash`, with `reserved` of the PSM's room spoken
+   *  for by this app's own withdrawals: on a new amount or reserved room, when the answer went
+   *  stale, or when a destination could not be quoted last time. Nothing is asked while the rail
+   *  is off. Repeat calls for the same pair join the in-flight load. */
+  function learn(amountCash: bigint | null, reserved: bigint): Promise<void> {
     if (!railOn.value || amountCash === null) return Promise.resolve();
-    const key = saleKeyOf(sale);
-    if (amount.value === amountCash && saleKey.value === key) {
+    const current = () => amount.value === amountCash && reservedFor.value === reserved;
+    if (current()) {
       if (inflight) return inflight;
       if (settled() && fresh()) return Promise.resolve();
     } else {
-      // A new amount or sale: the rows start over. A refresh for the same ones keeps the current
-      // answer on screen until the new one lands.
+      // A new pair: the rows start over. A refresh for the same one keeps the current answer on
+      // screen until the new one lands.
       amount.value = amountCash;
-      saleKey.value = key;
+      reservedFor.value = reserved;
       offers.value = new Map();
     }
-    const run: Promise<void> = quoteWithdrawOffers(amountCash, PROVIDER_DESTINATIONS, sale)
+    const run: Promise<void> = quoteWithdrawOffers(amountCash, PROVIDER_DESTINATIONS, reserved)
       .then((quoted) => {
-        // The amount or the sale moved on while this was in flight: the answer is for nobody.
-        if (amount.value !== amountCash || saleKey.value !== key) return;
-        sellable.value = quoted.sellable;
-        offers.value = quoted.offers;
+        // The pair moved on while this was in flight: the answer is for nobody.
+        if (!current()) return;
+        offers.value = quoted;
         learnedAt.value = Date.now();
       })
       .finally(() => {
@@ -78,6 +72,26 @@ export const useWithdrawOffersStore = defineStore("withdraw-offers", () => {
       });
     inflight = run;
     return run;
+  }
+
+  /** Quotes `destination` alone, fresh, for `amountCash` with `reserved` of the PSM's room spoken
+   *  for. The answer replaces the destination's row when the offers are for that pair, so the
+   *  pickers agree with it. */
+  async function requote(
+    destination: WithdrawDestination,
+    amountCash: bigint,
+    reserved: bigint,
+  ): Promise<WithdrawOffer> {
+    if (!railOn.value) return RAIL_OFF;
+    const quoted = await quoteWithdrawOffers(amountCash, [destination], reserved);
+    const offer = quoted.get(destination.id) ?? {
+      state: "unavailable",
+      reason: "the destination was not quoted",
+    };
+    if (amount.value === amountCash && reservedFor.value === reserved) {
+      offers.value = new Map(offers.value).set(destination.id, offer);
+    }
+    return offer;
   }
 
   const offerFor = (destination: WithdrawDestination): WithdrawOffer =>
@@ -106,9 +120,9 @@ export const useWithdrawOffersStore = defineStore("withdraw-offers", () => {
   return {
     offers,
     amount,
-    sellable,
     railOn,
     learn,
+    requote,
     offerFor,
     rowFor,
     networkRowFor,

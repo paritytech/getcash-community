@@ -1,7 +1,7 @@
 // Error mapping and idempotency-key behavior of `createMeldClient`.
 
 import { describe, expect, it } from "vitest";
-import { createMeldClient, refusalOf } from "./client";
+import { createMeldClient, isAdapterOutage, refusalOf } from "./client";
 
 /** A fetch stub answering a scripted sequence, one response per call, the last repeating. */
 function stubSequence(responses: readonly { status: number; body: unknown }[]) {
@@ -185,6 +185,41 @@ describe("createMeldClient quote mapping", () => {
     const { quotes } = await client.getQuote(QUOTE_REQ);
     expect(quotes[0]).not.toHaveProperty("transactionFee");
     expect(quotes[0]).not.toHaveProperty("partnerFee");
+  });
+});
+
+describe("isAdapterOutage", () => {
+  const QUOTE_REQ = {
+    country: "US",
+    sourceCurrencyCode: "USD",
+    destinationCurrencyCode: "USDT_DOT",
+    sourceAmount: "50.00",
+    paymentMethodType: "CREDIT_DEBIT_CARD",
+  };
+  const quoteError = (fetchImpl: typeof fetch) =>
+    createMeldClient({ baseUrl: "https://adapter.test", fetchImpl })
+      .getQuote(QUOTE_REQ)
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+  const answering = (status: number, tag: string) => stubFetch(status, { error: { tag } }).impl;
+  const unreachable = (async () => {
+    throw new TypeError("Failed to fetch");
+  }) as unknown as typeof fetch;
+
+  it.each([
+    { name: "no response", fetchImpl: unreachable, outage: true },
+    {
+      name: "Meld not answering the adapter",
+      fetchImpl: answering(503, "ProviderTimeout"),
+      outage: true,
+    },
+    { name: "a throttle", fetchImpl: answering(429, "Other"), outage: true },
+    { name: "no provider quote", fetchImpl: answering(422, "NoQuotesAvailable"), outage: false },
+    { name: "under the minimum", fetchImpl: answering(400, "BelowMinimum"), outage: false },
+  ])("$name: $outage", async ({ fetchImpl, outage }) => {
+    expect(isAdapterOutage(await quoteError(fetchImpl))).toBe(outage);
   });
 });
 

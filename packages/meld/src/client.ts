@@ -109,6 +109,10 @@ export interface MeldSellSessionRequest {
   /** The fiat paid out, e.g. 'EUR'. */
   readonly destinationCurrencyCode: string;
   readonly paymentMethodType: string;
+  /** The account the crypto is sent from, which the provider refunds to: the withdrawal key on
+   *  Asset Hub for a direct sale. The adapter requires it on an Asset Hub asset, and Banxa refuses
+   *  a sale without one. Absent for a sale whose crypto reaches the provider from elsewhere. */
+  readonly walletAddress?: string;
 }
 
 /**
@@ -287,6 +291,14 @@ class AdapterRefusal extends Error {
     super(message, options);
     this.name = "AdapterRefusal";
   }
+}
+
+/** True when a call failed because the adapter did not answer: no response at all, which `fetch`
+ *  rejects with a `TypeError`, a 5xx (the adapter's `ProviderTimeout` when Meld did not answer
+ *  it), or a 429. A refusal the adapter answered with is not one. */
+export function isAdapterOutage(error: unknown): boolean {
+  if (error instanceof AdapterRefusal) return error.status >= 500 || error.status === 429;
+  return error instanceof TypeError;
 }
 
 /** A buy's fiat bound, as the adapter reports it on a refused quote. */
@@ -756,6 +768,7 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
           // The crypto leg, named as on the buy; see `getSellQuote`.
           destinationCurrencyCode: req.sourceCurrencyCode,
           cryptoAmount: req.sourceAmount,
+          ...(req.walletAddress === undefined ? {} : { walletAddress: req.walletAddress }),
           paymentMethodType: req.paymentMethodType,
           serviceProvider: req.serviceProvider,
           ...(config.redirectUrl ? { redirectUrl: config.redirectUrl } : {}),
