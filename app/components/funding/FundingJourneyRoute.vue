@@ -107,7 +107,8 @@ const purse = usePurseBalance({ enabled: () => recovering.value });
 const purseWord = computed<PurseWord>(() => {
   if (isDemoBuild() && flow.previewPurse !== null) return flow.previewPurse;
   const state = purse.state.value;
-  return state.kind === "known" ? state.balance : state.kind;
+  if (state.kind === "known") return state.balance;
+  return state.kind === "unknown" && purse.failed.value ? "unread" : state.kind;
 });
 /** The claim's fee as the confirmation shows it, once the worker sized it, and as the band and
  *  the deposit screen name it. */
@@ -214,14 +215,17 @@ watch(
   },
 );
 // A top-up whose deposit screen was opened before opens on it again, decided once per record
-// when the band first asks the buyer: onto the QR only while the band offers the wallet path,
-// not onto one it would not offer, as when the purse covers the fee since, and not over the
-// band's word that a deposit was let go, which the buyer should read before being asked for
-// another. Decided once, so a balance read that lands later never moves the buyer there unasked.
+// when the band first asks the buyer with the purse read: onto the QR only while the band offers
+// the wallet path, not onto one it would not offer, as when the purse covers the fee since, and
+// not over the band's word that a deposit was let go, which the buyer should read before being
+// asked for another. Decided once, so a later read never moves the buyer there unasked; not
+// before the first read lands, since until then the band offers the purse alone and the buyer
+// whose balance falls short would never land.
 watch(
   () => {
     const record = requests.foregroundRecord;
     if (record === null || (prompt.value?.actions.length ?? 0) === 0) return null;
+    if (purseWord.value === "unknown") return null;
     return requestRefKey(record.ref);
   },
   (asking) => {
@@ -396,7 +400,6 @@ onUnmounted(() => {
       :fee="recoveryFeeHuman"
       :amount="recoveryAmount"
       :purse="purseWord"
-      :purse-unread="purse.failed.value"
       :short="purseShort"
       :paying="payingFee"
       :notice="recoveryNotice"

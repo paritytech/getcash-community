@@ -2664,6 +2664,16 @@ export const SCENES: Scene[] = [
     },
   },
   {
+    // The purse cannot be read: both ways to the fee, so a failing host never leaves the purse as
+    // the only one.
+    name: "top-up / crypto / recovering: needs fee, balance unread",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "await-arrival");
+      f.previewPurse = "unread";
+      await r.observe(trapped(r, "funding"));
+    },
+  },
+  {
     name: "top-up / crypto / failed: refunded",
     apply: async (s, f, i) => {
       base(s, f);

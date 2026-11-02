@@ -5,6 +5,7 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import { FUNDING_CHAINS, sourceIdFor } from "~~/lib/config";
 import type { DepositMismatch } from "../funding/deposit-mismatch";
+import type { PurseWord } from "../funding/timeline/recovery";
 import { useOffersStore } from "./offers";
 import { useRequestsStore } from "./requests";
 import { useSessionStore } from "./session";
@@ -47,8 +48,9 @@ export const useFlowStore = defineStore("flow", () => {
   const previewDrillIn = ref<PreviewDrillIn | null>(null);
   /** Demo deck only: the deposit mismatch a scene wants the sheet to show over the deposit. */
   const previewMismatch = ref<DepositMismatch | null>(null);
-  /** Demo deck only: the purse balance a scene wants the journey to read, base units of CASH. */
-  const previewPurse = ref<bigint | null>(null);
+  /** Demo deck only: the purse as a scene wants the journey to read it, base units of CASH or
+   *  its word for one that cannot be read. */
+  const previewPurse = ref<PurseWord | null>(null);
   /** The recovery screen for a mismatched direct deposit has taken the deposit screen. */
   const recoveringDeposit = ref(false);
 

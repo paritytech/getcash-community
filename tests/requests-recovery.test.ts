@@ -313,7 +313,7 @@ describe("the timeline", () => {
       text: "Needs a step from you",
       delayed: true,
     });
-    // The purse unread counts as covering the fee; a read balance decides.
+    // The purse not yet read counts as covering the fee; a read balance decides.
     expect(promptWith(trapped(), COVERS)?.actions).toEqual([FROM_BALANCE]);
     expect(promptWith(trapped(), BigInt(view().askCash!))?.actions).toEqual([FROM_BALANCE]);
   });
@@ -329,6 +329,18 @@ describe("the timeline", () => {
     );
     // Until the worker found the trap there is only the quote.
     expect(trappedCash(awaiting())).toBe(awaiting().amountHuman);
+  });
+
+  it("offers the purse beside the wallet path while the balance cannot be read", () => {
+    const prompt = promptWith(trapped(), "unread");
+    expect(prompt?.message.text).toBe("Your Cash is almost here");
+    expect(prompt?.detail).toBe(
+      "A $0.01 network fee is needed. Pay it from your balance or from another wallet.",
+    );
+    expect(prompt?.actions).toEqual([FROM_BALANCE, SEND_DEPOSIT]);
+    // The host's last word was that the balance fell short: the wallet path alone, read or not.
+    const short = refused(requested(trapped()));
+    expect(promptWith(short, "unread")?.actions).toEqual([SEND_DEPOSIT]);
   });
 
   it("offers a deposit alone while the balance falls short of the fee, or there is no purse", () => {
@@ -371,10 +383,10 @@ describe("the timeline", () => {
 
   it("offers a deposit alone once the balance fell short, until a read says it covers the fee again", () => {
     const short = refused(requested(trapped()));
-    const unread = timelineOf(short);
-    expect(unread?.message?.text).toBe("The fee wasn't paid");
-    expect(unread?.detail).toBe("Your balance couldn't cover it.");
-    expect(unread?.recovery?.actions).toEqual([SEND_DEPOSIT]);
+    const notRead = timelineOf(short);
+    expect(notRead?.message?.text).toBe("The fee wasn't paid");
+    expect(notRead?.detail).toBe("Your balance couldn't cover it.");
+    expect(notRead?.recovery?.actions).toEqual([SEND_DEPOSIT]);
     expect(promptWith(short, SHORT)?.actions).toEqual([SEND_DEPOSIT]);
     // The purse was topped up since: the purse is offered again, with the refusal's reason kept.
     const toppedUp = promptWith(short, COVERS);

@@ -15,9 +15,9 @@ defineProps<{
   fee: string;
   /** The top-up's amount, decimal CASH. */
   amount: string;
+  /** The balance the fee comes from; "unread" once the quick retries are spent, the slow ones
+   *  going on. */
   purse: PurseWord;
-  /** The purse could not be read and the quick retries are spent; the slow ones go on. */
-  purseUnread: boolean;
   /** The read purse falls short of the fee: the host is not asked. */
   short: boolean;
   /** The host is being asked, or its sheet is up. */
@@ -41,12 +41,12 @@ const emit = defineEmits<{ confirm: []; back: [] }>();
     <div class="flex flex-1 flex-col items-center justify-center gap-4 text-center">
       <!-- The balance the fee comes from: a skeleton while it is read, a word once the read
            keeps failing, nothing where there is no purse to read. -->
-      <p v-if="purse === 'unknown' && purseUnread" class="text-body-s text-fg-secondary">
+      <p v-if="purse === 'unread'" class="text-body-s text-fg-secondary">
         Your balance couldn't be read. Retrying…
       </p>
       <SkeletonBlock v-else-if="purse === 'unknown'" style="width: 10.5rem; height: 1.75rem" />
       <span
-        v-else-if="purse !== 'none'"
+        v-else-if="typeof purse === 'bigint'"
         class="rounded-full bg-surface-container px-3 py-1 text-body-m text-fg-secondary"
       >
         Available <CashAmount :amount="groupAmountDigits(fmtCash(purse))" />

@@ -17,8 +17,9 @@ export const FROM_BALANCE_AGAIN: RecoveryAction = { kind: "from-balance", retry:
 export const SEND_DEPOSIT: RecoveryAction = { kind: "send-deposit" };
 
 /** What the purse holds, as the journey last read it: the balance in base units, "unknown" while
- *  it has not been read, "none" where there is no purse to read. */
-export type PurseWord = bigint | "unknown" | "none";
+ *  it has not been read, "unread" once its reads keep failing, "none" where there is no purse to
+ *  read. */
+export type PurseWord = bigint | "unknown" | "unread" | "none";
 
 export interface RecoveryPrompt {
   readonly message: TimelineMessage;
@@ -47,9 +48,9 @@ export function trappedCash(record: TopUpRecord): string {
 }
 
 /**
- * Whether the purse can pay the fee. A read balance decides; an unread one is taken to cover it,
- * unless the host's last word was that it did not, so a buyer whose balance was topped up since
- * is offered the purse again once the next read says so.
+ * Whether the purse can pay the fee. A read balance decides; one not yet read, or that cannot be,
+ * is taken to cover it, unless the host's last word was that it did not, so a buyer whose
+ * balance was topped up since is offered the purse again once the next read says so.
  */
 function purseCovers(record: TopUpRecord, purse: PurseWord): boolean {
   if (purse === "none") return false;
@@ -207,7 +208,16 @@ function askFor(
       actions: [FROM_BALANCE_AGAIN, SEND_DEPOSIT],
     };
   }
-  // Never asked, or asked of a host that turned out not to know the payment.
+  // Never asked, or asked of a host that turned out not to know the payment. A purse that cannot
+  // be read is offered beside the wallet path, so a host that keeps failing never leaves the
+  // purse as the only way.
+  if (covers && purse === "unread") {
+    return {
+      message: delay(ALMOST_HERE),
+      detail: `A ${fee} network fee is needed. Pay it from your balance or from another wallet.`,
+      actions: [FROM_BALANCE, SEND_DEPOSIT],
+    };
+  }
   return covers
     ? {
         message: delay(ALMOST_HERE),
