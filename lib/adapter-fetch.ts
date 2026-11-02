@@ -3,7 +3,7 @@
 
 import { proveLitePersonhood } from "@getsome/host";
 import { devAdapterFetch, personhoodAdapterFetch } from "@getsome/meld";
-import { createAccountsProvider } from "@novasamatech/host-api-wrapper";
+import { getAccountsProvider } from "@parity/product-sdk-host";
 
 /** Must be in the adapter's `allowed_products`; in `personhood` mode, the Host's id for getcash. */
 export const PRODUCT_ID =
@@ -25,15 +25,22 @@ function build(): typeof fetch {
       `VITE_ADAPTER_AUTH=${mode} needs "dev", or "personhood" with VITE_MELD_BASE_URL`,
     );
   }
-  const accounts = createAccountsProvider();
-  const ringVrf = {
-    listRingVrfKeys: async (owner: string) => accounts.listRingVrfKeys(owner),
-    createRingVRFProof: async (...args: Parameters<typeof accounts.createRingVRFProof>) =>
-      accounts.createRingVRFProof(...args),
-  };
   return personhoodAdapterFetch({
     baseUrl,
     productId: PRODUCT_ID,
-    prove: (message) => proveLitePersonhood(ringVrf, PRODUCT_ID, message),
+    // Through the SDK the rest of the app uses: the Host's port delivers to one listener only.
+    prove: async (message) => {
+      const accounts = await getAccountsProvider();
+      if (accounts === null) throw new Error("VITE_ADAPTER_AUTH=personhood needs a Host");
+      return proveLitePersonhood(
+        {
+          listRingVrfKeys: async (owner) => accounts.listRingVrfKeys(owner),
+          createRingVRFProof: async (...args: Parameters<typeof accounts.createRingVRFProof>) =>
+            accounts.createRingVRFProof(...args),
+        },
+        PRODUCT_ID,
+        message,
+      );
+    },
   });
 }

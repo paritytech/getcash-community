@@ -1,3 +1,4 @@
+import { toHex } from "polkadot-api/utils";
 import { describe, expect, it } from "vitest";
 import type { ResultLike } from "./entropy";
 import {
@@ -7,12 +8,11 @@ import {
   type RingVrfAccountsLike,
 } from "./personhood";
 
-const collection = (name: string) => new TextEncoder().encode(name.padEnd(32, " "));
 const ring = (name: string): RingLocationLike => ({
-  chainId: "0x4a2b",
+  chainId: "0x67fa",
   junctions: [
     { tag: "PalletInstance", value: 61 },
-    { tag: "CollectionId", value: collection(name) },
+    { tag: "CollectionId", value: toHex(new TextEncoder().encode(name.padEnd(32, " "))) },
   ],
 });
 const people = ring("pop:polkadot.network/people");
@@ -23,14 +23,14 @@ const ok = <T>(value: T): PromiseLike<ResultLike<T>> =>
 const err = (error: unknown): PromiseLike<ResultLike<never>> =>
   Promise.resolve({ isErr: () => true, error });
 
-function accounts(overrides: Partial<RingVrfAccountsLike> = {}) {
+function accounts(overrides: Partial<RingVrfAccountsLike<string>> = {}) {
   const calls: unknown[][] = [];
-  const fake: RingVrfAccountsLike = {
+  const fake: RingVrfAccountsLike<string> = {
     listRingVrfKeys: (owner) => {
       calls.push(["list", owner]);
       return ok([
-        { handle: [owner, { tag: "Index", value: 0 }], rings: [people] },
-        { handle: [owner, { tag: "Index", value: 1 }], rings: [lite] },
+        { handle: "full", rings: [people] },
+        { handle: "lite", rings: [lite] },
       ]);
     },
     createRingVRFProof: (...args) => {
@@ -47,23 +47,27 @@ describe("proveLitePersonhood", () => {
     const { fake, calls } = accounts();
     const message = new Uint8Array(56);
 
-    const proof = await proveLitePersonhood(fake, "getcash.paseo", message);
+    const proof = await proveLitePersonhood(fake, "getcash.dot", message);
 
     expect(proof).toEqual({ proof: new Uint8Array([1, 2]), ringIndex: 62 });
     expect(calls).toEqual([
-      ["list", "peopl.paseo"],
-      ["prove", ["peopl.paseo", { tag: "Index", value: 1 }], ["getcash.paseo", 0], lite, message],
+      ["list", "peopl.dot"],
+      [
+        "prove",
+        "lite",
+        { productId: "getcash.dot", suffix: { tag: "Index", value: 0 } },
+        lite,
+        message,
+      ],
     ]);
   });
 
-  it("names the Host's refusal", async () => {
-    const notMember = Object.assign(new Error("not a member"), {
-      name: "CreateProofErr::NotMember",
-    });
+  it("carries the Host's refusal", async () => {
+    const notMember = { tag: "Domain", value: { tag: "V1", value: { tag: "NotMember" } } };
     const { fake } = accounts({ createRingVRFProof: () => err(notMember) });
 
-    await expect(proveLitePersonhood(fake, "getcash.paseo", new Uint8Array(56))).rejects.toEqual(
-      new PersonhoodRefused("CreateProofErr::NotMember"),
+    await expect(proveLitePersonhood(fake, "getcash.dot", new Uint8Array(56))).rejects.toEqual(
+      new PersonhoodRefused(JSON.stringify(notMember)),
     );
   });
 
@@ -71,7 +75,7 @@ describe("proveLitePersonhood", () => {
     const { fake } = accounts({ listRingVrfKeys: () => ok([]) });
 
     await expect(
-      proveLitePersonhood(fake, "getcash.paseo", new Uint8Array(56)),
+      proveLitePersonhood(fake, "getcash.dot", new Uint8Array(56)),
     ).rejects.toBeInstanceOf(PersonhoodRefused);
   });
 });
