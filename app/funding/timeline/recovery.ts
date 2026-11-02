@@ -113,7 +113,7 @@ export function recoveryPrompt(
       message: delay(NOT_ADDED),
       detail: covers
         ? `Another ${fee} network fee is needed. Pay it from your balance or from another wallet.`
-        : `Another ${fee} network fee is needed. Pay it from another wallet.`,
+        : `Another ${fee} network fee is needed.`,
       actions: covers ? [FROM_BALANCE, SEND_DEPOSIT] : [SEND_DEPOSIT],
     };
   }
@@ -123,7 +123,7 @@ export function recoveryPrompt(
       message: delay(NOT_ADDED),
       detail: covers
         ? `Your balance covered part of the fee. Another ${fee} is needed. Pay it from your balance or from another wallet.`
-        : `Your balance covered part of the fee. Another ${fee} is needed. Pay it from another wallet.`,
+        : `Your balance covered part of the fee. Another ${fee} is needed.`,
       actions: covers ? [FROM_BALANCE, SEND_DEPOSIT] : [SEND_DEPOSIT],
     };
   }
@@ -137,8 +137,8 @@ export function recoveryPrompt(
         message: delay(NOT_PAID),
         detail:
           payment.refusal === "insufficient-balance"
-            ? "Your balance couldn't cover it. Pay the fee from another wallet."
-            : `Your ${cash} is still waiting. Pay the fee from another wallet.`,
+            ? "Your balance couldn't cover it."
+            : `Your ${cash} is still waiting.`,
         actions: [SEND_DEPOSIT],
       };
     }
@@ -162,7 +162,7 @@ export function recoveryPrompt(
       }
     : {
         message: delay(ALMOST_HERE),
-        detail: `A ${fee} network fee is needed to add it. You can pay it from another wallet.`,
+        detail: `A ${fee} network fee is needed to add it.`,
         actions: [SEND_DEPOSIT],
       };
 }

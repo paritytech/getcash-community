@@ -320,9 +320,7 @@ describe("the timeline", () => {
     for (const purse of [SHORT, "none"] as const) {
       const prompt = promptWith(trapped(), purse);
       expect(prompt?.message.text).toBe("Your Cash is almost here");
-      expect(prompt?.detail).toBe(
-        "A $0.01 network fee is needed to add it. You can pay it from another wallet.",
-      );
+      expect(prompt?.detail).toBe("A $0.01 network fee is needed to add it.");
       expect(prompt?.actions).toEqual([SEND_DEPOSIT]);
     }
   });
@@ -360,7 +358,7 @@ describe("the timeline", () => {
     const short = refused(requested(trapped()));
     const unread = timelineOf(short);
     expect(unread?.message?.text).toBe("The fee wasn't paid");
-    expect(unread?.detail).toBe("Your balance couldn't cover it. Pay the fee from another wallet.");
+    expect(unread?.detail).toBe("Your balance couldn't cover it.");
     expect(unread?.recovery?.actions).toEqual([SEND_DEPOSIT]);
     expect(promptWith(short, SHORT)?.actions).toEqual([SEND_DEPOSIT]);
     // The purse was topped up since: the purse is offered again, with the refusal's reason kept.
@@ -424,9 +422,7 @@ describe("the timeline", () => {
     );
     expect(covers?.recovery?.actions).toEqual([FROM_BALANCE, SEND_DEPOSIT]);
     const short = promptWith(part, SHORT);
-    expect(short?.detail).toBe(
-      "Your balance covered part of the fee. Another $0.01 is needed. Pay it from another wallet.",
-    );
+    expect(short?.detail).toBe("Your balance covered part of the fee. Another $0.01 is needed.");
     expect(short?.actions).toEqual([SEND_DEPOSIT]);
   });
 
@@ -444,7 +440,7 @@ describe("the timeline", () => {
     expect(timeline?.recovery?.actions).toEqual([FROM_BALANCE_AGAIN, SEND_DEPOSIT]);
     // Short of the fee since: a deposit is the one way.
     const short = promptWith(declined, SHORT);
-    expect(short?.detail).toBe("Your $25 Cash is still waiting. Pay the fee from another wallet.");
+    expect(short?.detail).toBe("Your $25 Cash is still waiting.");
     expect(short?.actions).toEqual([SEND_DEPOSIT]);
 
     const failed = timelineOf(
@@ -474,7 +470,7 @@ describe("the timeline", () => {
     );
     expect(covers?.recovery?.actions).toEqual([FROM_BALANCE, SEND_DEPOSIT]);
     const short = promptWith(moved, SHORT);
-    expect(short?.detail).toBe("Another $0.02 network fee is needed. Pay it from another wallet.");
+    expect(short?.detail).toBe("Another $0.02 network fee is needed.");
     expect(short?.actions).toEqual([SEND_DEPOSIT]);
   });
 
