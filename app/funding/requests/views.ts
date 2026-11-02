@@ -3,7 +3,7 @@
 
 import type { FailureKind, PaymentPhase } from "@getsome/core";
 import type { FundingStep } from "@getsome/funding";
-import { fmtCash } from "../../utils/cash";
+import { fmtCashToCents } from "../../utils/cash";
 import type { FundingTopUpState } from "../top-ups";
 import {
   CONFIRMED_TTL_MS,
@@ -60,7 +60,7 @@ export function creditedAmountOf(record: TopUpRecord): string | undefined {
       : record.status.kind === "failed"
         ? mintedOf(record)
         : undefined;
-  return credited === undefined ? undefined : fmtCash(credited);
+  return credited === undefined ? undefined : fmtCashToCents(credited);
 }
 
 /** Today's step comes from the worker's job; a core, rail or chain sighting sets none. A side exit reports the leg it kept the rank of. */

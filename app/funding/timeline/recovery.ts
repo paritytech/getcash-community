@@ -3,7 +3,7 @@
 // say what is happening, and the buttons say what the buyer can do.
 
 import { currencyConfig } from "../config";
-import { cashInText, cashToAmountInput, fmtCash } from "../../utils/cash";
+import { cashInText, fmtCash, fmtCashToCents } from "../../utils/cash";
 import { paymentOutOfRound, type TopUpRecord, type TopUpRecovery } from "../requests/model";
 import { delay, type TimelineMessage } from "./route";
 
@@ -39,11 +39,11 @@ function recoveryFee(record: TopUpRecord): string | undefined {
 }
 
 /** The Cash the claim adds, as a decimal: what the trap holds, which a swap filled off its quote
- *  leaves apart from the quoted amount, cut to cents as the app shows every amount; the quote
- *  until the worker found the trap. */
+ *  leaves apart from the quoted amount, cut to cents as a credited sum is shown; the quote until
+ *  the worker found the trap. */
 export function trappedCash(record: TopUpRecord): string {
   const trapped = record.recovery?.trappedAmount;
-  return trapped === undefined ? record.amountHuman : cashToAmountInput(BigInt(trapped), 2);
+  return trapped === undefined ? record.amountHuman : fmtCashToCents(BigInt(trapped));
 }
 
 /**

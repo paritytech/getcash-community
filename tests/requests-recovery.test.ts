@@ -323,7 +323,7 @@ describe("the timeline", () => {
     expect(trappedCash(short)).toBe("20");
     // A swap that filled off its quote leaves a long fraction: cut to cents, as every amount is.
     const filled = trapped(view({ trappedAmount: "10100249" }));
-    expect(trappedCash(filled)).toBe("10.1");
+    expect(trappedCash(filled)).toBe("10.10");
     expect(timelineOf(short)?.detail).toBe(
       "The fee is paid. Your $20 Cash will be in your balance in a moment.",
     );
