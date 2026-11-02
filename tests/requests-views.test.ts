@@ -283,6 +283,16 @@ describe("request views", () => {
       meldAwaitingBuyerOf({ ...filed, deadline: { depositExpiresAt: null, source: "route" } }, AT),
     ).toBe(true);
 
+    // A bank transfer's details outlast its pay page: they stay for the whole payment watch.
+    const bankExpiring: RequestRecord = {
+      ...bankFiled,
+      deadline: { depositExpiresAt: AT + 60_000, source: "rail" },
+    };
+    expect(bankExpiring.route).toBe("bank");
+    expect(meldAwaitingBuyerOf(bankExpiring, AT + 60_000)).toBe(true);
+    expect(meldAwaitingBuyerOf(bankExpiring, paymentWatchUntil(bankExpiring) - 1)).toBe(true);
+    expect(meldAwaitingBuyerOf(bankExpiring, paymentWatchUntil(bankExpiring))).toBe(false);
+
     // A crypto record's rail sighting is never a Meld widget.
     expect(
       meldAwaitingBuyerOf(
