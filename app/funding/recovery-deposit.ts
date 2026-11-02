@@ -10,8 +10,9 @@ export interface RecoveryChoice {
   readonly token: RecoveryToken;
   /** The token as the deposit screen names it (DOT, dotUSD, USDC, USDT). */
   readonly name: string;
-  /** The least to send, as a decimal. */
-  readonly amount: string;
+  /** The least to send, as a decimal; null where the chain cannot price the token today, so the
+   *  token screen lists it but does not offer it. */
+  readonly amount: string | null;
 }
 
 /** The tokens in the order the screens list them. */
@@ -31,15 +32,15 @@ function fmtLeast(base: bigint, decimals: number): string {
   return `${s.slice(0, -places)}.${s.slice(-places)}`.replace(/\.?0+$/, "") || "0";
 }
 
-/** The tokens the worker priced, in the design's order; none until it has. */
+/** The tokens the worker priced, in the design's order, one it could not price today with no
+ *  amount; none until it has priced them. */
 export function recoveryChoices(recovery: TopUpRecovery | undefined): RecoveryChoice[] {
   const minimums = recovery?.minimums ?? {};
   return RECOVERY_TOKEN_ORDER.flatMap((token) => {
     const figure = minimums[token];
-    if (typeof figure !== "string") return [];
+    if (figure === undefined) return [];
     const spec = TOKENS[token];
-    return [
-      { token, name: directAssetName(spec), amount: fmtLeast(BigInt(figure), spec.decimals) },
-    ];
+    const amount = figure === null ? null : fmtLeast(BigInt(figure), spec.decimals);
+    return [{ token, name: directAssetName(spec), amount }];
   });
 }

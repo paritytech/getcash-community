@@ -34,7 +34,7 @@ const NOT_PAID = "The fee wasn't paid";
 const NOT_ADDED = "We couldn't add your Cash yet";
 
 /** The claim's fee as the band names it ("$0.01"), when the worker has sized it. */
-function recoveryFee(record: TopUpRecord): string | undefined {
+export function recoveryFee(record: TopUpRecord): string | undefined {
   const fee = record.recovery?.askCash;
   return fee === undefined ? undefined : `${currencyConfig.symbol}${fmtCash(BigInt(fee))}`;
 }

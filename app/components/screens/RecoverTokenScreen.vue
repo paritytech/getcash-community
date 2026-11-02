@@ -1,9 +1,11 @@
 <script setup lang="ts">
 // The token to send for a trapped top-up's claim fee: the ones a top-up takes on Polkadot, as
-// the worker priced them. Skeleton rows stand in until it has. A pick opens the deposit screen
-// on the token.
+// the worker priced them. Skeleton rows stand in until it has, one per token, and a token the
+// chain could not price today keeps its row, unpickable with the reason under it. A pick opens
+// the deposit screen on the token.
 import { computed } from "vue";
 import type { RecoveryToken } from "@getsome/funding";
+import { POLKADOT_CHAIN } from "~~/lib/config";
 import { RECOVERY_TOKEN_ORDER, type RecoveryChoice } from "../../funding/recovery-deposit";
 import { networkIcon, tokenIcon } from "../../utils/icons";
 import type { OptionListRow } from "../../utils/option-list";
@@ -18,7 +20,7 @@ interface TokenOption extends OptionListRow {
 
 const props = defineProps<{
   choices: readonly RecoveryChoice[];
-  /** The worker has priced the tokens: no choice then means none can be sent today. */
+  /** The worker has priced the tokens: a choice with no amount then cannot be sent today. */
   priced: boolean;
 }>();
 const emit = defineEmits<{ pick: [token: RecoveryToken]; back: [] }>();
@@ -40,9 +42,14 @@ const rows = computed<TokenOption[]>(() =>
         key: choice.token,
         icon: tokenIcon(choice.name),
         label: choice.name,
-        pickable: true,
+        pickable: choice.amount !== null,
+        ...(choice.amount === null ? { subtitle: "Not available right now" } : {}),
         token: choice.token,
       })),
+);
+/** The worker priced the tokens and the chain could price none of them. */
+const nonePriced = computed(
+  () => props.priced && props.choices.every((choice) => choice.amount === null),
 );
 </script>
 
@@ -52,11 +59,11 @@ const rows = computed<TokenOption[]>(() =>
     <NetworkRecapBar
       class="-mx-2"
       caption="Network"
-      label="Polkadot"
-      :icon="networkIcon('Polkadot')"
+      :label="POLKADOT_CHAIN.label"
+      :icon="networkIcon(POLKADOT_CHAIN.label)"
     />
     <div class="mt-4 flex min-h-0 flex-1 flex-col">
-      <p v-if="priced && !choices.length" class="text-center text-body-m text-fg-secondary">
+      <p v-if="nonePriced" class="text-center text-body-m text-fg-secondary">
         No token can be priced right now. Try again in a moment.
       </p>
       <OptionList

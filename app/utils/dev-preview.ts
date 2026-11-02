@@ -1411,6 +1411,9 @@ async function pipeline(
 
 /** The worker's job once it found the Cash in People's trap, at `phase` of the recovery: the
  *  conversion is in a block, the claim's fee is sized, and the manual path is priced. */
+/** The least of each token the staged worker priced. */
+const PRICED_MINIMUMS = { PAS: "900000000", DOTUSD: "600000", USDT: "650000", USDC: "650000" };
+
 function trapped(
   request: PreviewRequest,
   phase: "funding" | "claiming",
@@ -1418,6 +1421,7 @@ function trapped(
     deposit?: string;
     round?: number;
     askCash?: string;
+    minimums?: Record<string, string | null>;
     depositFound?: boolean;
     depositUnused?: { at: number; kind: "held" | "short" | "trapped" };
   } = {},
@@ -1449,7 +1453,7 @@ function trapped(
         phase,
         round: 0,
         askCash: "10000",
-        minimums: { PAS: "900000000", DOTUSD: "600000", USDT: "650000", USDC: "650000" },
+        minimums: PRICED_MINIMUMS,
         ...extra,
       },
     },
@@ -2661,6 +2665,15 @@ export const SCENES: Scene[] = [
     apply: async (s, f, i) => {
       const r = await pipeline(s, f, i, "await-arrival");
       await r.observe(trapped(r, "claiming"));
+    },
+  },
+  {
+    // One token the chain could not price today keeps its row, unpickable with the reason.
+    name: "top-up / crypto / recovering: select token, one unpriced",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "await-arrival");
+      await r.observe(trapped(r, "funding", { minimums: { ...PRICED_MINIMUMS, USDC: null } }));
+      f.previewDrillIn = "recovery-token";
     },
   },
   {

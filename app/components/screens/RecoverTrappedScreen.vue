@@ -30,7 +30,7 @@ function copy(text: string | null) {
 
 <template>
   <ScreenFrame>
-    <template v-if="choice && address">
+    <template v-if="choice && choice.amount !== null && address">
       <!-- The one flexible block, as on the deposit screen: the QR takes what the rows leave,
            down to a scannable floor. -->
       <div class="flex min-h-24 shrink basis-[19rem] justify-center pb-4">

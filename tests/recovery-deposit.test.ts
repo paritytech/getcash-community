@@ -29,10 +29,16 @@ describe("recoveryChoices", () => {
     expect(pas?.amount).toBe("0.0001");
   });
 
-  it("leaves out a token the chain could not price, and lists none before the worker priced", () => {
-    expect(recoveryChoices(recovery({ PAS: null, USDT: null })).map((c) => c.token)).toEqual([]);
-    expect(recoveryChoices(recovery({ PAS: null, USDT: "650000" })).map((c) => c.token)).toEqual([
-      "USDT",
+  it("keeps a token the chain could not price, with no amount, and lists none before the worker priced", () => {
+    expect(
+      recoveryChoices(recovery({ PAS: null, USDT: "650000" })).map((c) => [c.token, c.amount]),
+    ).toEqual([
+      ["PAS", null],
+      ["USDT", "0.65"],
+    ]);
+    expect(recoveryChoices(recovery({ PAS: null, USDT: null })).map((c) => c.amount)).toEqual([
+      null,
+      null,
     ]);
     expect(recoveryChoices(undefined)).toEqual([]);
   });

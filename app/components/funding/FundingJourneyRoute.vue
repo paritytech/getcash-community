@@ -7,11 +7,11 @@ import type { RecoveryToken } from "@getsome/funding";
 import { usePurseBalance } from "../../composables/usePurseBalance";
 import { useStateDirector } from "../../composables/useStateDirector";
 import { useVisibilityReconcile } from "../../composables/useVisibilityReconcile";
-import { currencyConfig } from "../../funding/config";
 import { recoveryChoices } from "../../funding/recovery-deposit";
 import { burnerAddressOf } from "../../funding/requests/model";
 import {
   awaitingAnswer,
+  recoveryFee,
   recoveryPrompt,
   trappedCash,
   type PurseWord,
@@ -116,9 +116,10 @@ const recoveryFeeHuman = computed(() => {
   const ask = requests.foregroundRecord?.recovery?.askCash;
   return ask === undefined ? null : fmtCash(BigInt(ask));
 });
-const recoveryFeeText = computed(() =>
-  recoveryFeeHuman.value === null ? undefined : `${currencyConfig.symbol}${recoveryFeeHuman.value}`,
-);
+const recoveryFeeText = computed(() => {
+  const record = requests.foregroundRecord;
+  return record === null ? undefined : recoveryFee(record);
+});
 /** The read purse falls short of the fee: the confirmation says so and does not ask the host. */
 const purseShort = computed(() => {
   const ask = requests.foregroundRecord?.recovery?.askCash;
