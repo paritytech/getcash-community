@@ -5,16 +5,32 @@ interface Credential {
   expiresAtMs: number;
 }
 
+/** Product storage every runtime of the product shares, e.g. the Host's local storage. */
+export interface CredentialStorage {
+  readJSON(key: string): Promise<unknown>;
+  writeJSON(key: string, value: unknown): Promise<unknown>;
+}
+
 export interface PersonhoodFetchConfig {
   /** Base URL of the onramp adapter service. */
   baseUrl: string;
   productId: string;
   /** Proves the challenge bytes as a person, e.g. `proveLitePersonhood` from `@getsome/host`. */
   prove(message: Uint8Array): Promise<{ proof: Uint8Array; ringIndex: number }>;
+  /** Keeps the token across runs, so the page and the worker share one handshake. */
+  storage?: CredentialStorage;
   fetchImpl?: typeof fetch;
 }
 
 const RENEW_BEFORE_EXPIRY_MS = 30_000;
+const STORAGE_KEY = "getsome.adapter.token";
+
+const isFresh = (value: unknown): value is Credential =>
+  typeof value === "object" &&
+  value !== null &&
+  typeof (value as Credential).token === "string" &&
+  typeof (value as Credential).expiresAtMs === "number" &&
+  (value as Credential).expiresAtMs - RENEW_BEFORE_EXPIRY_MS > Date.now();
 
 const fromBase64Url = (text: string) =>
   Uint8Array.from(atob(text.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
@@ -44,6 +60,7 @@ export function personhoodAdapterFetch(config: PersonhoodFetchConfig): typeof fe
   const doFetch: typeof fetch = (input, init) => (config.fetchImpl ?? fetch)(input, init);
   const base = config.baseUrl.replace(/\/$/, "");
   let held: Credential | undefined;
+  let refused: string | undefined;
   let pending: Promise<Credential | Response> | undefined;
 
   const post = (path: string, body?: unknown) =>
@@ -73,16 +90,20 @@ export function personhoodAdapterFetch(config: PersonhoodFetchConfig): typeof fe
     return first instanceof Response && first.status === 401 ? redeem() : first;
   }
 
+  // Storage only saves a handshake, so failing to read or write it must not fail the call.
+  async function obtain(): Promise<Credential | Response> {
+    const stored = await config.storage?.readJSON(STORAGE_KEY).catch(() => undefined);
+    if (isFresh(stored) && stored.token !== refused) return (held = stored);
+    const got = await handshake();
+    if (got instanceof Response) return got;
+    held = got;
+    await config.storage?.writeJSON(STORAGE_KEY, got).catch(() => undefined);
+    return got;
+  }
+
   function credential(): Promise<Credential | Response> {
-    if (held && held.expiresAtMs - RENEW_BEFORE_EXPIRY_MS > Date.now()) {
-      return Promise.resolve(held);
-    }
-    pending ??= handshake()
-      .then((got) => {
-        if (!(got instanceof Response)) held = got;
-        return got;
-      })
-      .finally(() => (pending = undefined));
+    if (isFresh(held)) return Promise.resolve(held);
+    pending ??= obtain().finally(() => (pending = undefined));
     return pending;
   }
 
@@ -92,6 +113,7 @@ export function personhoodAdapterFetch(config: PersonhoodFetchConfig): typeof fe
       if (used instanceof Response) return used;
       const res = await doFetch(input, withHeader(init, "authorization", `Bearer ${used.token}`));
       if (res.status !== 401 || attempt > 0) return res;
+      refused = used.token;
       if (held === used) held = undefined;
     }
   };

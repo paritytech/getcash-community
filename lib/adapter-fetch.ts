@@ -3,7 +3,7 @@
 
 import { proveLitePersonhood } from "@getsome/host";
 import { devAdapterFetch, personhoodAdapterFetch } from "@getsome/meld";
-import { getAccountsProvider } from "@parity/product-sdk-host";
+import { getAccountsProvider, getHostLocalStorage } from "@parity/product-sdk-host";
 
 /** Must be in the adapter's `allowed_products`; in `personhood` mode, the Host's id for getcash. */
 export const PRODUCT_ID =
@@ -28,6 +28,10 @@ function build(): typeof fetch {
   return personhoodAdapterFetch({
     baseUrl,
     productId: PRODUCT_ID,
+    storage: {
+      readJSON: async (key) => (await getHostLocalStorage())?.readJSON(key),
+      writeJSON: async (key, value) => (await getHostLocalStorage())?.writeJSON(key, value),
+    },
     // Through the SDK the rest of the app uses: the Host's port delivers to one listener only.
     prove: async (message) => {
       const accounts = await getAccountsProvider();

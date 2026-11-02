@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { devAdapterFetch, personhoodAdapterFetch } from "./auth";
+import { type CredentialStorage, devAdapterFetch, personhoodAdapterFetch } from "./auth";
 
 const BASE = "https://adapter.test";
 const CHALLENGE = new Uint8Array(56).fill(0xfb);
@@ -9,7 +9,10 @@ const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 /** An adapter whose redeem and gated-route answers are scripted, the last repeating. */
-function adapter(script: { redeem?: number[]; gated?: number[] } = {}) {
+function adapter(
+  script: { redeem?: number[]; gated?: number[] } = {},
+  storage?: CredentialStorage,
+) {
   const calls: { path: string; headers: Headers; body: unknown }[] = [];
   let tokens = 0;
   const next = (answers: number[] | undefined, n: number) =>
@@ -33,13 +36,24 @@ function adapter(script: { redeem?: number[]; gated?: number[] } = {}) {
     expect(message).toEqual(CHALLENGE);
     return { proof: new Uint8Array([0xff, 0xfe]), ringIndex: 62 };
   };
-  const authed = personhoodAdapterFetch({
-    baseUrl: `${BASE}/`,
-    productId: "getcash.paseo",
-    prove,
-    fetchImpl,
-  });
-  return { authed, calls };
+  const runtime = () =>
+    personhoodAdapterFetch({
+      baseUrl: `${BASE}/`,
+      productId: "getcash.paseo",
+      prove,
+      fetchImpl,
+      ...(storage ? { storage } : {}),
+    });
+  return { authed: runtime(), runtime, calls };
+}
+
+function memoryStorage() {
+  const values = new Map<string, unknown>();
+  const storage: CredentialStorage = {
+    readJSON: async (key) => values.get(key) ?? null,
+    writeJSON: async (key, value) => values.set(key, value),
+  };
+  return { storage, values };
 }
 
 const bearer = (c: { headers: Headers }) => c.headers.get("authorization");
@@ -104,5 +118,28 @@ describe("personhoodAdapterFetch", () => {
       "Bearer t1",
       "Bearer t2",
     ]);
+  });
+
+  it("reuses the token another runtime stored", async () => {
+    const { storage } = memoryStorage();
+    const { authed, runtime, calls } = adapter({}, storage);
+
+    await authed(`${BASE}/assets`);
+    await runtime()(`${BASE}/funding/1`);
+
+    expect(calls.filter((c) => c.path === "/api/v1/auth/redeem")).toHaveLength(1);
+    expect(calls.filter((c) => !c.path.startsWith("/api")).map(bearer)).toEqual([
+      "Bearer t1",
+      "Bearer t1",
+    ]);
+  });
+
+  it("does not take back a stored token the adapter refused", async () => {
+    const { storage, values } = memoryStorage();
+    const { authed, runtime } = adapter({ gated: [200, 401, 200] }, storage);
+
+    await authed(`${BASE}/assets`);
+    expect((await runtime()(`${BASE}/assets`)).status).toBe(200);
+    expect(values.get("getsome.adapter.token")).toMatchObject({ token: "t2" });
   });
 });
