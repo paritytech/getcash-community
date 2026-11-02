@@ -9,6 +9,18 @@ import { getAccountsProvider, getHostLocalStorage } from "@parity/product-sdk-ho
 export const PRODUCT_ID =
   (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev";
 
+type AdapterAuth = "dev" | "personhood";
+
+export const ADAPTER_AUTH: AdapterAuth = adapterAuth(
+  import.meta.env.VITE_ADAPTER_AUTH as string | undefined,
+);
+
+function adapterAuth(value: string | undefined): AdapterAuth {
+  if (value === undefined || value === "dev") return "dev";
+  if (value === "personhood") return value;
+  throw new Error(`VITE_ADAPTER_AUTH must be "dev" or "personhood", not "${value}"`);
+}
+
 let built: typeof fetch | undefined;
 
 export function adapterFetch(): typeof fetch {
@@ -17,14 +29,9 @@ export function adapterFetch(): typeof fetch {
 }
 
 function build(): typeof fetch {
-  const mode = (import.meta.env.VITE_ADAPTER_AUTH as string | undefined) ?? "dev";
-  if (mode === "dev") return devAdapterFetch(PRODUCT_ID);
+  if (ADAPTER_AUTH === "dev") return devAdapterFetch(PRODUCT_ID);
   const baseUrl = import.meta.env.VITE_MELD_BASE_URL as string | undefined;
-  if (mode !== "personhood" || !baseUrl) {
-    throw new Error(
-      `VITE_ADAPTER_AUTH=${mode} needs "dev", or "personhood" with VITE_MELD_BASE_URL`,
-    );
-  }
+  if (!baseUrl) throw new Error("VITE_ADAPTER_AUTH=personhood needs VITE_MELD_BASE_URL");
   return personhoodAdapterFetch({
     baseUrl,
     productId: PRODUCT_ID,

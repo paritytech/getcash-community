@@ -173,7 +173,7 @@ const handoff = (overrides: Record<string, unknown> = {}) => ({
   slippagePct: 5,
   paymentExpiresAt: NOW + DAY,
   channel,
-  meld: { baseUrl: "https://adapter.test", productId: "getcash.dev" },
+  meld: { baseUrl: "https://adapter.test", productId: "getcash.dot", auth: "personhood" },
   ...overrides,
 });
 
@@ -272,7 +272,7 @@ describe("the worker's side of a fiat sale", () => {
     expect(await engine.startWithdraw(handoff())).toMatchObject({ sessionId: "s-1" });
     expect(storedJob()).toMatchObject({
       channel: { amount: AMOUNT },
-      meld: { baseUrl: "https://adapter.test", productId: "getcash.dev" },
+      meld: { baseUrl: "https://adapter.test", productId: "getcash.dot", auth: "personhood" },
       leg: { exact: { nonce: 0, inFlight: false } },
     });
   });

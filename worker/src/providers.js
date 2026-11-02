@@ -11,6 +11,7 @@ import {
   devAdapterFetch,
   ensureMeldAssets,
   MELD_SELL_ENABLED,
+  personhoodAdapterFetch,
   saleRail,
 } from "@getsome/meld";
 import { LANES, laneSellToken } from "@getsome/offramp";
@@ -34,6 +35,7 @@ import {
   keypairFor,
   signOptionsFor,
 } from "./shared.js";
+import { getHostLocalStorage, proveLitePersonhood } from "./host.js";
 
 /** Room for the host calls a payment makes without a bound of their own: the key's derivation
  *  and the save before the broadcast. */
@@ -73,12 +75,8 @@ export function railFor(provider, record) {
       return NETWORK.testnet ? { status: async () => ({ status: "receiving" }) } : null;
     }
     if (typeof meld?.baseUrl !== "string" || meld.baseUrl === "") return null;
-    const client = createMeldClient({
-      baseUrl: meld.baseUrl,
-      ...(typeof meld.productId === "string" && meld.productId
-        ? { fetchImpl: devAdapterFetch(meld.productId) }
-        : {}),
-    });
+    const fetchImpl = adapterFetchFor(meld);
+    const client = createMeldClient({ baseUrl: meld.baseUrl, ...(fetchImpl ? { fetchImpl } : {}) });
     // A direct sale is paid in the token the hand-off's sale lands on the key.
     const rail = record?.swap
       ? swapSaleRail(saleRail(client, record, Date.now, LANE_TOKENS), record)
@@ -86,6 +84,31 @@ export function railFor(provider, record) {
     return withMeldAssets(rail, client);
   }
   return null;
+}
+
+const personhoodFetches = new Map();
+
+/** Proves the worker to the adapter as the page that handed the sale off did. A personhood fetch
+ *  is kept per adapter and product, and shares the page's stored token. */
+function adapterFetchFor({ baseUrl, productId, auth }) {
+  if (typeof productId !== "string" || !productId) return undefined;
+  if (auth !== "personhood") return devAdapterFetch(productId);
+  const key = `${baseUrl} ${productId}`;
+  if (!personhoodFetches.has(key)) {
+    personhoodFetches.set(
+      key,
+      personhoodAdapterFetch({
+        baseUrl,
+        productId,
+        storage: {
+          readJSON: async (k) => (await getHostLocalStorage()).readJSON(k),
+          writeJSON: async (k, value) => (await getHostLocalStorage()).writeJSON(k, value),
+        },
+        prove: (message) => proveLitePersonhood(productId, message),
+      }),
+    );
+  }
+  return personhoodFetches.get(key);
 }
 
 /**

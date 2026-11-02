@@ -102,7 +102,7 @@ const saveJobs = () => store.save();
  *   channel?,                                // the provider's channel the page opened; for Meld
  *                                            // its `amount` is exactly what the key pays, PAS
  *                                            // or, for a sale of USDT, USDT
- *   meld?: { baseUrl?, productId?, offline? }, // Meld only: the adapter the sale is read from
+ *   meld?: { baseUrl?, productId?, auth?, offline? }, // Meld only: the adapter the sale is read from
  *   assetHubGenesis, peopleGenesis, peopleParaId, assetHubParaId, poolAccount, slippagePct,
  *   paymentExpiresAt: number|null,
  *   phase: "starting" | WithdrawStep | RailStep | "failed",
@@ -295,6 +295,7 @@ function meldOf(meld) {
   return {
     baseUrl: meld.baseUrl,
     ...(typeof meld.productId === "string" && meld.productId ? { productId: meld.productId } : {}),
+    ...(meld.auth === "personhood" ? { auth: "personhood" } : {}),
   };
 }
 
