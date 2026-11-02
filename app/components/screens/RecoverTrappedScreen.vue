@@ -67,7 +67,7 @@ function copy(text: string | null) {
         <Copy class="size-6 shrink-0 text-fg-secondary" aria-hidden="true" />
       </button>
 
-      <p v-if="fee" class="mt-4 shrink-0 text-right text-body-s text-fg-secondary">
+      <p v-if="fee" class="mt-4 shrink-0 text-center text-body-s text-fg-secondary">
         The fee is {{ fee }}. Anything above it is added to your Cash.
       </p>
     </template>
