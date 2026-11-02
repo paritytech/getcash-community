@@ -703,7 +703,7 @@ describe("createMeldClient: a 429's retry-after", () => {
 });
 
 describe("the asset table", () => {
-  it("reads GET /assets with the dev product header, keeping the rows the app knows", async () => {
+  it("reads GET /assets, keeping the rows the app knows", async () => {
     const { impl, calls } = stubSequence([
       {
         status: 200,
@@ -715,14 +715,9 @@ describe("the asset table", () => {
         },
       },
     ]);
-    const client = createMeldClient({
-      baseUrl: "https://adapter.test/",
-      productId: "app.dot",
-      fetchImpl: impl,
-    });
+    const client = createMeldClient({ baseUrl: "https://adapter.test/", fetchImpl: impl });
     expect(await client.getAssets()).toEqual([{ asset: "dot@assethub", code: "DOT" }]);
     expect(calls[0]?.url).toBe("https://adapter.test/assets");
-    expect(new Headers(calls[0]?.init?.headers).get("x-dev-product-id")).toBe("app.dot");
     // Bounded, so an adapter that hangs cannot hold every caller sharing the read.
     expect(calls[0]?.init?.signal).toBeInstanceOf(AbortSignal);
   });

@@ -4,17 +4,13 @@
 // by its own id. See `@getsome/core`'s `meld-assets`.
 
 import { createFakeMeldClient, createMeldClient, ensureMeldAssets } from "@getsome/meld";
+import { adapterFetch } from "./adapter-fetch";
 
 /** Installs the page's asset table if none is yet. Rejects when the adapter cannot be read; the
  *  next call asks again. */
 export function pageMeldAssets(): Promise<void> {
   const baseUrl = import.meta.env.VITE_MELD_BASE_URL as string | undefined;
   return ensureMeldAssets(
-    baseUrl
-      ? createMeldClient({
-          baseUrl,
-          productId: (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
-        })
-      : createFakeMeldClient(),
+    baseUrl ? createMeldClient({ baseUrl, fetchImpl: adapterFetch() }) : createFakeMeldClient(),
   );
 }

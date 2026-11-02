@@ -109,6 +109,7 @@ import {
   type RequestRef,
 } from "../utils/request-index";
 import { sendHandoff, workerSessionId, type Finality } from "~~/lib/coinage";
+import { adapterFetch } from "~~/lib/adapter-fetch";
 import { FUNDING_CHAINS, sourceIdFor, sourcePairFor } from "~~/lib/config";
 import { isHosted } from "~~/lib/host-account";
 import type { StorageWorker } from "~~/lib/worker-rpc";
@@ -174,13 +175,7 @@ function defaultMeldStatusClientFactory(): MeldClientLike | null {
     const baseUrl = import.meta.env.VITE_MELD_BASE_URL as string | undefined;
     // Shared reads, so a 429 holds back the rest of a reconcile's pass.
     defaultMeldStatusClient = baseUrl
-      ? shareStatusReads(
-          createMeldClient({
-            baseUrl,
-            productId:
-              (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
-          }),
-        )
+      ? shareStatusReads(createMeldClient({ baseUrl, fetchImpl: adapterFetch() }))
       : null;
   }
   return defaultMeldStatusClient;
@@ -1913,7 +1908,7 @@ export const useRequestsStore = defineStore("requests", () => {
       // A 401 is an auth problem on this side and retries with the other transients.
       if (httpStatus === 401) {
         console.error(
-          `[meld] status poll unauthorized for ${fundingRequestId}; check VITE_MELD_PRODUCT_ID / adapter auth. Retrying; the payment is NOT being declared failed:`,
+          `[meld] status poll unauthorized for ${fundingRequestId}; check VITE_ADAPTER_AUTH / VITE_MELD_PRODUCT_ID. Retrying; the payment is NOT being declared failed:`,
           e,
         );
       }

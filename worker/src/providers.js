@@ -6,7 +6,13 @@
 import { readChannelRecord, readSwapStatus } from "@getsome/chainflip/swap-status";
 import { NETWORK } from "@getsome/core";
 import { depositTokenOf, recordedRoute, stableTxOptions } from "@getsome/funding";
-import { createMeldClient, ensureMeldAssets, MELD_SELL_ENABLED, saleRail } from "@getsome/meld";
+import {
+  createMeldClient,
+  devAdapterFetch,
+  ensureMeldAssets,
+  MELD_SELL_ENABLED,
+  saleRail,
+} from "@getsome/meld";
 import { LANES, laneSellToken } from "@getsome/offramp";
 import {
   ChannelMismatchError,
@@ -70,7 +76,7 @@ export function railFor(provider, record) {
     const client = createMeldClient({
       baseUrl: meld.baseUrl,
       ...(typeof meld.productId === "string" && meld.productId
-        ? { productId: meld.productId }
+        ? { fetchImpl: devAdapterFetch(meld.productId) }
         : {}),
     });
     // A direct sale is paid in the token the hand-off's sale lands on the key.

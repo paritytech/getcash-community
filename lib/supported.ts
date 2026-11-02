@@ -9,6 +9,7 @@
 // direction: a sale reads Meld's off-ramp catalog, whose regions and payout methods are its own.
 
 import { isMeldAssetId, meldCodeOf, type MeldAssetId } from "@getsome/core";
+import { adapterFetch } from "./adapter-fetch";
 import { pageMeldAssets } from "./meld-assets";
 
 /** The catalog's default destination: what the pool tier's rail asks Meld to deliver. By the app's
@@ -88,13 +89,7 @@ function baseUrl(): string | undefined {
   return import.meta.env.VITE_MELD_BASE_URL as string | undefined;
 }
 
-function headers(): Record<string, string> {
-  return {
-    accept: "application/json",
-    "x-dev-product-id":
-      (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
-  };
-}
+const HEADERS = { accept: "application/json" };
 
 /** Which way value moves through a corridor: a buy delivers the crypto, a sale takes it. The two
  *  are separate catalogs on Meld's side, with their own regions, methods and limits. */
@@ -164,9 +159,9 @@ export async function fetchSupportedCountries(
   const base = baseUrl();
   if (base === undefined) return null;
   try {
-    const res = await fetch(
+    const res = await adapterFetch()(
       `${base.replace(/\/$/, "")}/supported/countries?destinationCurrencyCode=${encodeURIComponent(await destinationCode(destination))}${directionQuery(direction)}`,
-      { headers: headers() },
+      { headers: HEADERS },
     );
     if (!res.ok) return null;
     const data = (await res.json()) as { countries?: Record<string, unknown>[] };
@@ -196,9 +191,9 @@ export async function fetchCorridor(
   const base = baseUrl();
   if (base === undefined) return null;
   try {
-    const res = await fetch(
+    const res = await adapterFetch()(
       `${base.replace(/\/$/, "")}/supported?country=${encodeURIComponent(country)}&destinationCurrencyCode=${encodeURIComponent(await destinationCode(destination))}${directionQuery(direction)}`,
-      { headers: headers() },
+      { headers: HEADERS },
     );
     if (!res.ok) return null;
     const data = (await res.json()) as {
@@ -230,9 +225,9 @@ export async function fetchSupportedCorridors(
   const base = baseUrl();
   if (base === undefined) return null;
   try {
-    const res = await fetch(
+    const res = await adapterFetch()(
       `${base.replace(/\/$/, "")}/supported/corridors?destinationCurrencyCode=${encodeURIComponent(await destinationCode(destination))}${directionQuery(direction)}`,
-      { headers: headers() },
+      { headers: HEADERS },
     );
     if (!res.ok) return null;
     const data = (await res.json()) as {
@@ -374,8 +369,8 @@ export async function fetchOfframpCorridors(): Promise<Map<string, SupportedCorr
   const base = baseUrl();
   if (base === undefined) return null;
   try {
-    const res = await fetch(`${base.replace(/\/$/, "")}/supported/offramp/corridors`, {
-      headers: headers(),
+    const res = await adapterFetch()(`${base.replace(/\/$/, "")}/supported/offramp/corridors`, {
+      headers: HEADERS,
     });
     if (!res.ok) return null;
     const data = (await res.json()) as { corridors?: Record<string, unknown>[] };
@@ -399,9 +394,9 @@ export async function fetchOfframpCorridor(country: string): Promise<SupportedCo
   const base = baseUrl();
   if (base === undefined) return null;
   try {
-    const res = await fetch(
+    const res = await adapterFetch()(
       `${base.replace(/\/$/, "")}/supported/offramp?country=${encodeURIComponent(country)}`,
-      { headers: headers() },
+      { headers: HEADERS },
     );
     if (!res.ok) return null;
     const data = (await res.json()) as Record<string, unknown>;

@@ -203,13 +203,11 @@ export interface MeldClientLike extends Partial<MeldSellClientLike> {
 export interface MeldEndpointConfig {
   /** Base URL of the onramp adapter service, e.g. '/api/meld'. */
   baseUrl: string;
-  /** Sent as `x-dev-product-id` for the adapter's dev auth. */
-  productId?: string;
   /** Idempotency key per session create. Defaults to a key derived from the purchase intent. */
   idempotencyKey?: () => string;
   /** Where the embedded widget lands the buyer on completion; forwarded to Meld's redirectUrl. */
   redirectUrl?: string;
-  /** Injectable fetch (tests / non-browser). Defaults to global fetch. */
+  /** Proves the caller: `devAdapterFetch` or `personhoodAdapterFetch`. Defaults to global fetch. */
   fetchImpl?: typeof fetch;
 }
 
@@ -466,10 +464,7 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
     ].join("-");
   const nextKey = config.idempotencyKey;
 
-  const headers = (): Record<string, string> => ({
-    accept: "application/json",
-    ...(config.productId ? { "x-dev-product-id": config.productId } : {}),
-  });
+  const headers = (): Record<string, string> => ({ accept: "application/json" });
 
   /**
    * Parses the adapter's JSON body. On a non-OK response, maps `{ error: { tag, value } }` to an

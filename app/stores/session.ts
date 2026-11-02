@@ -58,6 +58,7 @@ import {
 } from "@getsome/meld";
 import { CASH_DECIMALS } from "@getsome/people";
 import { meldPaymentMethod, resolveMeldRegion } from "~~/lib/region";
+import { adapterFetch } from "~~/lib/adapter-fetch";
 import {
   countryName,
   fetchCorridor,
@@ -845,7 +846,7 @@ export const useSessionStore = defineStore("session", () => {
     const baseClient = meldBaseUrl
       ? createMeldClient({
           baseUrl: meldBaseUrl,
-          productId: (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
+          fetchImpl: adapterFetch(),
           ...(redirectUrl ? { redirectUrl } : {}),
         })
       : createFakeMeldClient();
@@ -1921,11 +1922,7 @@ export const useSessionStore = defineStore("session", () => {
         } else {
           // The pay-page lookup below and the poll's first tick share one read.
           const client = shareStatusReads(
-            createMeldClient({
-              baseUrl: meldBaseUrl,
-              productId:
-                (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
-            }),
+            createMeldClient({ baseUrl: meldBaseUrl, fetchImpl: adapterFetch() }),
           );
           meldStatusClient = client;
           meldFundingRequestId = record.meldFundingRequestId;

@@ -79,6 +79,7 @@ import { cashAmount } from "../app/utils/cash";
 import { isDemoBuild } from "../app/utils/demo";
 import type { WithdrawFeeView, WithdrawOffer } from "../app/withdraw/offers";
 import { mainnetSdk, saleChannelsOpen, saleSwapSdk } from "./chainflip-backend";
+import { PRODUCT_ID } from "./adapter-fetch";
 import { withTimeout } from "./timeout";
 import { hostSafeEntropy, nextFreeTradeNumber, readTradeCounter, tradeCounterKey } from "./coinage";
 import {
@@ -550,10 +551,7 @@ export async function openSwapSaleChannel(args: {
 export function meldHandoffConfig(): NonNullable<WithdrawalHandoffPayload["meld"]> | null {
   const baseUrl = import.meta.env.VITE_MELD_BASE_URL as string | undefined;
   if (!baseUrl) return isDemoBuild() ? { offline: true } : null;
-  return {
-    baseUrl,
-    productId: (import.meta.env.VITE_MELD_PRODUCT_ID as string | undefined) ?? "getcash.dev",
-  };
+  return { baseUrl, productId: PRODUCT_ID };
 }
 
 /** Headroom between the pool's answer and what the provider is asked to take: the sale on Asset

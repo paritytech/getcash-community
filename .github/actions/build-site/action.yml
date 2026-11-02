@@ -27,8 +27,8 @@ inputs:
     default: ""
   meld-product-id:
     description: >
-      VITE_MELD_PRODUCT_ID, the product id sent as the adapter's `x-dev-product-id`
-      header and vetted against its `allowed_products`. Inlined at build time. An
+      VITE_MELD_PRODUCT_ID, this product's id, vetted against the adapter's
+      `allowed_products`. Inlined at build time. An
       empty value fails the build for the same reason meld-base-url does (see
       require-secrets): the code falls back to `getcash.dev`, which an adapter
       that does not list it refuses with 401 on every call — a quote that cannot be

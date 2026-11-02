@@ -31,8 +31,9 @@ function withHeader(init: RequestInit | undefined, name: string, value: string):
 }
 
 /** For an adapter in `insecure_dev` mode, which trusts the product id header. */
-export function devAdapterFetch(productId: string, fetchImpl: typeof fetch = fetch): typeof fetch {
-  return (input, init) => fetchImpl(input, withHeader(init, "x-dev-product-id", productId));
+export function devAdapterFetch(productId: string, fetchImpl?: typeof fetch): typeof fetch {
+  return (input, init) =>
+    (fetchImpl ?? fetch)(input, withHeader(init, "x-dev-product-id", productId));
 }
 
 /**
@@ -40,7 +41,7 @@ export function devAdapterFetch(productId: string, fetchImpl: typeof fetch = fet
  * refusal, so callers read it like any other.
  */
 export function personhoodAdapterFetch(config: PersonhoodFetchConfig): typeof fetch {
-  const doFetch = config.fetchImpl ?? fetch;
+  const doFetch: typeof fetch = (input, init) => (config.fetchImpl ?? fetch)(input, init);
   const base = config.baseUrl.replace(/\/$/, "");
   let held: Credential | undefined;
   let pending: Promise<Credential | Response> | undefined;
