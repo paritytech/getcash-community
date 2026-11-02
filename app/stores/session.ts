@@ -1966,7 +1966,8 @@ export const useSessionStore = defineStore("session", () => {
   }
 
   // Demo faucet
-  async function fundFaucet(): Promise<void> {
+  /** Resolves true once the transfer is broadcast with its request still on screen. */
+  async function fundFaucet(): Promise<boolean> {
     const s = lastState.value;
     // "sent" blocks too: the transfer was broadcast, and the deposit watch takes it from there.
     // A refused transfer resets to "idle".
@@ -1977,7 +1978,7 @@ export const useSessionStore = defineStore("session", () => {
       faucetState.value === "funding" ||
       faucetState.value === "sent"
     )
-      return;
+      return false;
     faucetState.value = "funding";
     void markDepositSkipped();
     // The faucet state and its error belong to the request on screen: a transfer that settles
@@ -1994,14 +1995,17 @@ export const useSessionStore = defineStore("session", () => {
         amount: isDirectSourceId(live.value.sourceId) ? s.deposit.amount : live.value.budget,
         route: live.value.route,
       });
-      if (onScreen()) faucetState.value = "sent";
+      if (!onScreen()) return false;
+      faucetState.value = "sent";
+      return true;
     } catch (e: unknown) {
-      if (!onScreen()) return;
+      if (!onScreen()) return false;
       faucetState.value = "idle";
       requests.setTransientError({
         message: e instanceof Error ? e.message : String(e),
         source: "faucet",
       });
+      return false;
     }
   }
 
@@ -2276,7 +2280,9 @@ export const useSessionStore = defineStore("session", () => {
    * stages with whatever the (unpaid, or faked) request really says.
    *
    * The hosted demo's deposit leaves on the press, as on every other Skip: the play stops with the
-   * screen, and a buyer who leaves mid-play must not take the deposit with it.
+   * screen, and a buyer who leaves mid-play must not take the deposit with it. The provider's steps
+   * wait for that transfer to be broadcast: a refused one would leave the record reporting a
+   * payment that never came, with no Cancel, since the rail is taken to hold the money.
    */
   function simulateMeldPayment(): void {
     const ref = foregroundRef;
@@ -2297,13 +2303,21 @@ export const useSessionStore = defineStore("session", () => {
       });
     // The buyer finishes in the widget: the journey takes over from the iframe.
     void markMeldSubmitted();
-    if (!mock.value) void fundFaucet();
     // The provider sees the transaction, then approves it.
-    step(() => report("receiving"));
-    step(() => report("complete"));
-    // The mock world fakes the deposit that pays for the conversion through
-    // `creditMeldSettlement`. The real pipeline takes the journey the rest of the way.
-    if (mock.value) step(creditMeldSettlement);
+    const play = () => {
+      step(() => report("receiving"));
+      step(() => report("complete"));
+    };
+    if (mock.value) {
+      play();
+      // The mock world fakes the deposit that pays for the conversion. The real pipeline takes
+      // the journey the rest of the way.
+      step(creditMeldSettlement);
+      return;
+    }
+    void fundFaucet().then((sent) => {
+      if (sent) play();
+    });
   }
 
   /** The provider's hosted pay page for the request on screen, or null. */

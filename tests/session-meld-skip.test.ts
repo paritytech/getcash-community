@@ -1,6 +1,7 @@
 // The demo's Skip on a hosted card or bank top-up behaves as Skip does on every route: the press
 // stamps the request and sends the faucet's deposit at once, and the screen plays the provider's
-// steps on top. Nothing but the press stamps it, and the faucet's state is the stamped request's.
+// steps once that deposit is out. Nothing but the press stamps it, and the faucet's state is the
+// stamped request's.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
@@ -168,6 +169,26 @@ describe("Skip on a hosted Meld top-up", () => {
       expect(second.requests.transientError).toBeNull();
     },
   );
+
+  it("plays the provider's steps once the transfer is out", async () => {
+    const { session, requests } = await cardOnScreen();
+    vi.useFakeTimers();
+    session.simulateMeldPayment();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(requests.meldStage).toBe("complete");
+  });
+
+  it("plays no provider step after a refused transfer, so the request can still be cancelled", async () => {
+    const { session, requests, ref } = await cardOnScreen();
+    vi.useFakeTimers();
+    faucet.broadcast = () => Promise.reject(new Error("refused"));
+    session.simulateMeldPayment();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(requests.get(ref)?.observedAt?.receiving).toBeUndefined();
+    expect(requests.meldStage).not.toBe("complete");
+    expect(requests.railSeen).toBe(false);
+    expect(requests.transientError?.source).toBe("faucet");
+  });
 
   it("sends the deposit on the widget's press, so leaving mid-play keeps it", async () => {
     const { session, requests, ref } = await cardOnScreen();
