@@ -18,6 +18,7 @@ export {
   type MeldStatusResult,
   type MeldCancelResult,
 } from "./client";
+export { devAdapterFetch, personhoodAdapterFetch, type PersonhoodFetchConfig } from "./auth";
 export { formatBaseUnits, parseBaseUnits, toBaseUnits, type MeldToken } from "./units";
 export { ensureMeldAssets } from "./assets";
 export {
