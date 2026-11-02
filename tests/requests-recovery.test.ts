@@ -371,20 +371,48 @@ describe("the timeline", () => {
     expect(toppedUp?.actions).toEqual([FROM_BALANCE_AGAIN, SEND_DEPOSIT]);
   });
 
-  it("knows a payment asked in this round and not yet answered, for the band and the fee screen alike", () => {
+  it("knows a payment asked and not yet answered, whatever the round, for the band and the fee screen alike", () => {
     expect(awaitingAnswer(undefined)).toBe(false);
     expect(awaitingAnswer(trapped().recovery)).toBe(false);
     expect(awaitingAnswer(requested(trapped()).recovery)).toBe(true);
     const registered = host(requested(trapped()), { status: "processing" }) as TopUpRecord;
     expect(awaitingAnswer(registered.recovery)).toBe(false);
     expect(awaitingAnswer(refused(requested(trapped())).recovery)).toBe(false);
-    // Asked in a round the worker moved past: that ask is owed no answer any more.
+    // The round moved while the sheet is up, a deposit's claim refused or rejected meanwhile:
+    // the ask is still owed its answer, and what it brings is judged once final.
     const moved = reduce(requested(trapped()), {
       ...trappedJob(view({ round: 1 })),
       at: at(5),
     }) as TopUpRecord;
+    expect(awaitingAnswer(moved.recovery)).toBe(true);
+    expect(timelineOf(moved)?.detail).toBe("Waiting for the fee to be approved.");
+    expect(timelineOf(moved)?.recovery?.actions).toEqual([]);
+  });
+
+  it("waits for a payment still on its way when the round moved, and asks again once it landed", () => {
+    const processing = host(requested(trapped()), { status: "processing" }) as TopUpRecord;
+    const moved = reduce(processing, {
+      ...trappedJob(view({ round: 1, askCash: "20000" })),
+      at: at(5),
+    }) as TopUpRecord;
+    expect(paymentOutOfRound(moved.recovery!)).toBe(true);
+    const inFlight = timelineOf(moved);
+    expect(inFlight?.message?.text).toBe("Adding your Cash");
+    expect(inFlight?.recovery?.actions).toEqual([]);
     expect(awaitingAnswer(moved.recovery)).toBe(false);
-    expect(timelineOf(moved)?.detail).not.toBe("Waiting for the fee to be approved.");
+    // Declined at last, in the moved round: the ask is over and the purse is offered again.
+    const declined = host(
+      reduce(requested(trapped()), { ...trappedJob(view({ round: 1 })), at: at(5) }) as TopUpRecord,
+      { status: "failed", reason: "declined", refusal: "declined" },
+    ) as TopUpRecord;
+    expect(awaitingAnswer(declined.recovery)).toBe(false);
+    expect(timelineOf(declined)?.recovery?.actions).toEqual([FROM_BALANCE, SEND_DEPOSIT]);
+    // Landed, and the worker still asks: what it brought was short, or spent since.
+    const landed = host(moved, { status: "completed" }) as TopUpRecord;
+    expect(timelineOf(landed)?.detail).toBe(
+      "Another $0.02 network fee is needed. Pay it from your balance or from another wallet.",
+    );
+    expect(timelineOf(landed)?.recovery?.actions).toEqual([FROM_BALANCE, SEND_DEPOSIT]);
   });
 
   it("asks for the rest when the purse paid part of the fee", () => {

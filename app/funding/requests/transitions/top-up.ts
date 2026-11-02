@@ -178,7 +178,7 @@ function converting(record: TopUpRecord, at: number, step: ConvertingStep): TopU
 
 /** The Cash is in People's trap and the worker is getting it back: the record keeps what the
  *  worker reports of the trap and the claim's fee, beside the purse's payment of it once asked,
- *  and stands at `recovering` from when the trap was found. */
+ *  and stands at `recovering` from when the page first saw the trap. */
 function recovering(record: TopUpRecord, at: number, view: WorkerRecoveryView): TopUpRecord {
   const step = view.phase === "claiming" ? "claiming" : "funding";
   const current = record.status;

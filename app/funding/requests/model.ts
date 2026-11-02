@@ -264,7 +264,8 @@ export interface WorkerRecoveryView {
   claimerHex: string;
   phase: RecoveryStep | "done";
   /** The fee's round: it moves on when a claim spent the fee or the fee grew, so a payment
-   *  made in an earlier round no longer counts. */
+   *  made in an earlier round no longer counts once the host has answered it; one still on its
+   *  way is judged when it lands. */
   round: number;
   /** What the purse is asked for: the claim's fee with its margin less what the burner holds,
    *  rounded up to the claim unit. Absent until the worker sized it. */
@@ -323,7 +324,8 @@ export interface TopUpRecovery extends Omit<WorkerRecoveryView, "phase"> {
 }
 
 /** The fee payment no longer counts: the worker's round moved past the one the purse was asked
- *  in, so a claim spent the fee or the fee grew, and it is asked for again. */
+ *  in, so a claim spent the fee or the fee grew, and it is asked for again once the host has
+ *  answered it. The band waits on one still unanswered or on its way. */
 export const paymentOutOfRound = (recovery: TopUpRecovery): boolean =>
   recovery.payment !== undefined && (recovery.payment.round ?? 0) < recovery.round;
 
@@ -564,7 +566,8 @@ export interface HostPayment {
   actualClaimed?: string;
   updatedAt?: number;
   /** A trapped top-up's claim fee: the fee's round when the purse was asked. A round the worker
-   *  has moved past means the fee was spent or grew, and this payment no longer counts. */
+   *  has moved past means the fee was spent or grew, and this payment no longer counts once the
+   *  host has answered it. */
   round?: number;
 }
 

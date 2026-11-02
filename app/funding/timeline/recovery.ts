@@ -57,18 +57,14 @@ function purseCovers(record: TopUpRecord, purse: PurseWord): boolean {
   return record.recovery?.payment?.refusal !== "insufficient-balance";
 }
 
-/** The purse was asked for the fee in the current round and has not answered yet: the host's
- *  sheet is up, or its word is still to be read back. The band waits on it, and the fee's
- *  confirmation says the fee is being paid; the two read this one predicate so they cannot
- *  drift apart. */
+/** The purse was asked for the fee and has not answered yet: the host's sheet is up, or its word
+ *  is still to be read back. Whatever round the worker moves to meanwhile, what the answer
+ *  brings is judged once it is final, so the fee is never asked twice. The band waits on it, and
+ *  the fee's confirmation says the fee is being paid; the two read this one predicate so they
+ *  cannot drift apart. */
 export function awaitingAnswer(recovery: TopUpRecovery | undefined): boolean {
   const payment = recovery?.payment;
-  return (
-    recovery !== undefined &&
-    payment?.requestedAt !== undefined &&
-    payment.status === undefined &&
-    !paymentOutOfRound(recovery)
-  );
+  return payment?.requestedAt !== undefined && payment.status === undefined;
 }
 
 /** What the journey says and offers for a top-up in recovery; absent for any other. */
@@ -97,6 +93,19 @@ export function recoveryPrompt(
   if (fee === undefined || recovery === undefined) {
     return { message: delay(ALMOST_HERE), detail: "Working out the network fee.", actions: [] };
   }
+  // The purse's answer is still to come, or its payment is still on its way to the burner. The
+  // worker's round may move meanwhile, a deposit's claim refused or rejected: what lands is
+  // judged then, against the fee asked for by then, so the fee is never asked twice.
+  if (awaitingAnswer(recovery)) {
+    return {
+      message: delay(ALMOST_HERE),
+      detail: "Waiting for the fee to be approved.",
+      actions: [],
+    };
+  }
+  if (payment?.status === "processing") {
+    return { message: delay(ADDING), detail: paid, actions: [] };
+  }
   const covers = purseCovers(record, purse);
   // The worker moved past the round the purse paid in: a claim spent the fee, or it grew.
   if (paymentOutOfRound(recovery)) {
@@ -118,19 +127,8 @@ export function recoveryPrompt(
       actions: covers ? [FROM_BALANCE, SEND_DEPOSIT] : [SEND_DEPOSIT],
     };
   }
-  if (awaitingAnswer(recovery)) {
-    return {
-      message: delay(ALMOST_HERE),
-      detail: "Waiting for the fee to be approved.",
-      actions: [],
-    };
-  }
-  if (
-    payment?.requestedAt !== undefined &&
-    payment.status !== "failed" &&
-    payment.status !== "not-found"
-  ) {
-    // Registered or paid: the fee is on its way to the burner, and the claim follows.
+  if (payment?.status === "completed") {
+    // Paid in this round: the fee is on the burner, and the claim follows.
     return { message: delay(ADDING), detail: paid, actions: [] };
   }
   if (payment?.status === "failed") {
