@@ -2635,12 +2635,24 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    // The worker let the deposit go, its conversion trapped on People, and asks on.
+    // The worker let the deposit go, its conversion trapped on People, and asks on. The purse is
+    // short, so the wallet path is offered, and the token was picked: still the journey opens on
+    // the band, not on the QR.
     name: "top-up / crypto / recovering: deposit not used",
     apply: async (s, f, i) => {
       const r = await pipeline(s, f, i, "await-arrival");
-      f.previewPurse = PREVIEW_PURSE;
-      await r.observe(trapped(r, "funding", { depositUnused: { at: r.at(1), kind: "trapped" } }));
+      f.previewPurse = PREVIEW_PURSE_SHORT;
+      await r.observe(trapped(r, "funding"));
+      await r.observe({
+        source: "user",
+        at: r.at(2),
+        event: "recovery-token-picked",
+        token: "USDT",
+      });
+      await r.observe({
+        ...trapped(r, "funding", { depositUnused: { at: r.at(3), kind: "trapped" } }),
+        at: r.at(3),
+      });
     },
   },
   {

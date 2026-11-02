@@ -215,8 +215,9 @@ watch(
 );
 // A top-up whose deposit screen was opened before opens on it again, decided once per record
 // when the band first asks the buyer: onto the QR only while the band offers the wallet path,
-// not onto one it would not offer, as when the purse covers the fee since. Decided once, so a
-// balance read that lands later never moves the buyer there unasked.
+// not onto one it would not offer, as when the purse covers the fee since, and not over the
+// band's word that a deposit was let go, which the buyer should read before being asked for
+// another. Decided once, so a balance read that lands later never moves the buyer there unasked.
 watch(
   () => {
     const record = requests.foregroundRecord;
@@ -227,7 +228,8 @@ watch(
     if (asking === null || landingDecided) return;
     landingDecided = true;
     const wallet = prompt.value?.actions.some((action) => action.kind === "send-deposit") === true;
-    if (wallet && depositToken.value !== null && recoveryScreen.value === null) {
+    const unused = requests.foregroundRecord?.recovery?.depositUnused !== undefined;
+    if (wallet && !unused && depositToken.value !== null && recoveryScreen.value === null) {
       recoveryScreen.value = "deposit";
     }
   },
