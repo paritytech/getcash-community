@@ -1409,11 +1409,11 @@ async function pipeline(
   return r;
 }
 
-/** The worker's job once it found the Cash in People's trap, at `phase` of the recovery: the
- *  conversion is in a block, the claim's fee is sized, and the manual path is priced. */
 /** The least of each token the staged worker priced. */
 const PRICED_MINIMUMS = { PAS: "900000000", DOTUSD: "600000", USDT: "650000", USDC: "650000" };
 
+/** The worker's job once it found the Cash in People's trap, at `phase` of the recovery: the
+ *  conversion is in a block, the claim's fee is sized, and the manual path is priced. */
 function trapped(
   request: PreviewRequest,
   phase: "funding" | "claiming",
