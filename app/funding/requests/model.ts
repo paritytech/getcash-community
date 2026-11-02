@@ -17,6 +17,7 @@ import {
   recordedRoute,
   type ConversionRoute,
   type FundingStep,
+  type RecoveryToken,
   type Stable,
 } from "@getsome/funding";
 import type { LaneId } from "@getsome/offramp";
@@ -113,6 +114,9 @@ export const CONVERTING_STEP_ORDER = { swap: 0, "await-arrival": 1 } satisfies R
 export const isConvertingStep = (step: string): step is ConvertingStep =>
   Object.hasOwn(CONVERTING_STEP_ORDER, step);
 
+/** Where a recovery stands: the burner waits for the claim's fee, or the claim is on its way. */
+export type RecoveryStep = "funding" | "claiming";
+
 export type RequestStatus =
   | { kind: "awaiting-deposit" }
   | {
@@ -122,6 +126,9 @@ export type RequestStatus =
       via: DepositSeenVia;
     }
   | { kind: "converting"; at: number; step: ConvertingStep }
+  /** The Cash is in People's trap, keyed to the top-up's own account, and the worker claims it
+   *  back once that account holds the claim's fee. */
+  | { kind: "recovering"; at: number; step: RecoveryStep }
   | { kind: "claiming"; at: number }
   | { kind: "settled"; at: number }
   | { kind: "failed"; at: number; recoverable: boolean }
@@ -248,6 +255,27 @@ export interface ConvertedTx {
   workedMs: number;
 }
 
+/** What the worker reports of a trap and its recovery. */
+export interface WorkerRecoveryView {
+  /** The CASH the trap holds, base units, and when the worker found it. */
+  trappedAmount: string;
+  trappedAt: number;
+  /** The top-up's own public key, the claimer the program named: what the purse pays. */
+  claimerHex: string;
+  phase: RecoveryStep | "done";
+  /** The fee's round: it moves on when a claim spent the fee or the fee grew, so a payment
+   *  made in an earlier round no longer counts. */
+  round: number;
+  /** What the purse is asked for: the claim's fee with its margin less what the burner holds,
+   *  rounded up to the claim unit. Absent until the worker sized it. */
+  askCash?: string;
+  /** The least of each token to send to the top-up's own account instead, base units; null
+   *  where the chain cannot price it today. */
+  minimums?: Partial<Record<RecoveryToken, string | null>>;
+  /** The step a deposit made that way reached in the pipeline, once one arrived. */
+  deposit?: string;
+}
+
 /** What the store extracts from one job in the worker's blob. */
 export interface WorkerJobView {
   phase: string;
@@ -273,13 +301,28 @@ export interface WorkerJobView {
     at: number;
   } | null;
   /** As the worker records them on either branch. */
-  txs?: { call: "swap" | "xcm"; txHash: string; block?: number }[];
+  txs?: { call: "swap" | "xcm" | "claim"; txHash: string; block?: number }[];
   /** The PSM's refusals of the mint so far, when there were any; the third holds the job. */
   psmRefusals?: number;
   depositSeen?: DepositInBlock;
   /** When the conversion first passed its dry run, and its transaction once converted. */
   conversion?: { preparedAt: number; converted?: ConvertedTx };
+  /** The trap the program left on People and the claim's progress, once the worker found one. */
+  recovery?: WorkerRecoveryView;
 }
+
+/** A top-up's recovery as the record keeps it: the worker's facts, and the purse's payment of
+ *  the claim's fee once the page asked for it. */
+export interface TopUpRecovery extends Omit<WorkerRecoveryView, "phase"> {
+  /** Each prompt is one attempt under an id derived from the top-up's own key and the attempt,
+   *  stamped before the host is asked, as a withdrawal's payment is. */
+  payment?: HostPayment;
+}
+
+/** The fee payment no longer counts: the worker's round moved past the one the purse was asked
+ *  in, so a claim spent the fee or the fee grew, and it is asked for again. */
+export const paymentOutOfRound = (recovery: TopUpRecovery): boolean =>
+  recovery.payment !== undefined && (recovery.payment.round ?? 0) < recovery.round;
 
 export interface TopUpRecord {
   schema: 2;
@@ -358,11 +401,15 @@ export interface TopUpRecord {
   conversionPreparedAt?: number;
   converted?: ConvertedTx;
   claimRegisteredAt?: number;
+  /** Kept from the trap on: the worker's facts about it, and the fee's payment. */
+  recovery?: TopUpRecovery;
   status: RequestStatus;
   rail: RailState;
   failure?: RequestFailure;
   witnesses: {
     core?: { phase: PaymentPhase; at: number };
+    /** The host's word on the recovery fee's payment. */
+    host?: { status: HostPaymentStatus; at: number };
     worker?:
       | {
           known: true;
@@ -494,6 +541,10 @@ export interface WithdrawalFailure {
 export type HostPaymentStatus =
   "processing" | "completed" | "failed" | "partiallyClaimed" | "not-found";
 
+/** Why the host refused a payment request: the user declined its sheet, the balance did not
+ *  cover it, or something else. */
+export type PaymentRefusal = "declined" | "insufficient-balance" | "other";
+
 /** The purse's payment to the key. Each prompt is one attempt under an id the surface derives
  *  from the key and the attempt, stamped on the record before the host is asked, so the host can
  *  always be asked about it again. */
@@ -504,9 +555,14 @@ export interface HostPayment {
   id?: string;
   status?: HostPaymentStatus;
   reason?: string;
+  /** Why the host refused, with a failed status. */
+  refusal?: PaymentRefusal;
   /** Base units the host says reached the key when it paid short. */
   actualClaimed?: string;
   updatedAt?: number;
+  /** A trapped top-up's claim fee: the fee's round when the purse was asked. A round the worker
+   *  has moved past means the fee was spent or grew, and this payment no longer counts. */
+  round?: number;
 }
 
 /** What the worker needs to move a withdrawal, as the surface hands it over, plus what a record
@@ -808,10 +864,19 @@ export type Observation =
         attempt: number;
         status: HostPaymentStatus;
         reason?: string;
+        refusal?: PaymentRefusal;
         actualClaimed?: string;
       };
     }
-  | { source: "user"; at: number; event: "payment-requested"; attempt: number; id: string }
+  | {
+      source: "user";
+      at: number;
+      event: "payment-requested";
+      attempt: number;
+      id: string;
+      /** A trapped top-up's claim fee: the fee's round the purse is asked in. */
+      round?: number;
+    }
   /** The pool can no longer fund what a sale promised its provider, checked before the purse was
    *  asked; the sale ends with nothing taken. */
   | { source: "user"; at: number; event: "sale-unfundable" }
@@ -870,8 +935,9 @@ export function rankOf(record: RequestRecord): number {
   return record.kind === "top-up" ? topUpRankOf(record) : withdrawalRankOf(record);
 }
 
-/** A top-up: awaiting-deposit 0 < deposit-seen 1 < converting 2 < claiming 3 < settled 4. A side
- *  exit keeps the rank it left, encoded in `failure.step` as the leg the record left: the claim
+/** A top-up: awaiting-deposit 0 < deposit-seen 1 < converting 2 < claiming 3 < settled 4. A
+ *  recovery stands with the conversion: the Cash has not reached the account yet. A side exit
+ *  keeps the rank it left, encoded in `failure.step` as the leg the record left: the claim
  *  (`mint`) is 3, the conversion (`swap`) is 2, the deposit is 0. The reducer derives that step
  *  from the rank at the moment of failure, whatever leg the source's own failure named. */
 export function topUpRankOf(record: Pick<TopUpRecord, "status" | "failure">): number {
@@ -881,6 +947,7 @@ export function topUpRankOf(record: Pick<TopUpRecord, "status" | "failure">): nu
     case "deposit-seen":
       return 1;
     case "converting":
+    case "recovering":
       return 2;
     case "claiming":
       return 3;

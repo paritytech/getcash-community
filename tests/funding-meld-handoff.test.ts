@@ -9,6 +9,7 @@ const waiting = {
   meldHandedOff: false,
   meldStage: "waiting" as const,
   awaitingDeposit: true,
+  awaitingBuyer: false,
 };
 
 describe("meldDepositPending", () => {
@@ -34,5 +35,16 @@ describe("meldDepositPending", () => {
 
   it("ends the wait once the request left its deposit", () => {
     expect(meldDepositPending({ ...waiting, awaitingDeposit: false })).toBe(false);
+  });
+
+  it("keeps waiting while the rail has filed a transaction the buyer has not paid", () => {
+    // A provider filing its transaction as the card form loads moves the request off its deposit
+    // before the buyer has typed a card number.
+    const filed = { ...waiting, awaitingDeposit: false, awaitingBuyer: true };
+    expect(meldDepositPending(filed)).toBe(true);
+    expect(meldDepositPending({ ...filed, meldHandedOff: true })).toBe(false);
+    expect(meldDepositPending({ ...filed, fundsSeen: true })).toBe(false);
+    expect(meldDepositPending({ ...filed, meldStage: "complete" })).toBe(false);
+    expect(meldDepositPending({ ...filed, meldStage: "failed" })).toBe(false);
   });
 });

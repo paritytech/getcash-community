@@ -8,6 +8,7 @@ import type { FundingTopUpState } from "../top-ups";
 import {
   CONFIRMED_TTL_MS,
   isFinished,
+  paymentWatchUntil,
   rankOf,
   type Freshness,
   type RequestRecord,
@@ -33,6 +34,7 @@ export function phaseLike(record: TopUpRecord): PaymentPhase {
         ? "swapping"
         : "awaiting-deposit";
     case "converting":
+    case "recovering":
       return "swapping";
     default:
       return "awaiting-deposit";
@@ -67,6 +69,8 @@ export function fundingStepOf(record: TopUpRecord): FundingStep | null {
   switch (status.kind) {
     case "converting":
       return status.step;
+    case "recovering":
+      return "await-arrival";
     case "claiming":
     case "settled":
       return "done";
@@ -145,6 +149,7 @@ export function rowStateOf(record: TopUpRecord, label: string): FundingTopUpStat
       return { kind: "finishing", status: label };
     case "deposit-seen":
     case "converting":
+    case "recovering":
       return { kind: "finishing", status: label };
   }
 }
@@ -159,6 +164,32 @@ export function meldStageOf(
   // The buyer's own paid stamp hands the widget over, not the provider's first sighting: a
   // challenge may still follow that.
   return record.meldSubmittedAt === undefined ? "waiting" : "receiving";
+}
+
+/**
+ * The Meld rail has filed a transaction, but nothing says the buyer has paid it yet: the buyer has
+ * not finished in the widget, the provider has not approved it, and no money reached the burner.
+ *
+ * Some providers (Banxa) file their transaction, as `PENDING`, the moment their card form loads,
+ * so the rail's `received` is not proof of payment. The buyer is still on the form, and the widget
+ * must stay. Not past the pay page's deadline, though: a form whose link has expired cannot still be
+ * being filled in, and a reopened one goes to the journey. A bank transfer is bounded by the
+ * payment watch instead, as its expiry is: its details stay useful for as long as a transfer sent
+ * from them can still land.
+ */
+export function meldAwaitingBuyerOf(record: TopUpRecord, now: number): boolean {
+  const { rail, status } = record;
+  const expiresAt =
+    record.route === "bank" ? paymentWatchUntil(record) : record.deadline.depositExpiresAt;
+  return (
+    rail.provider === "meld" &&
+    (expiresAt === null || now < expiresAt) &&
+    rail.stage === "received" &&
+    record.meldSubmittedAt === undefined &&
+    status.kind === "deposit-seen" &&
+    status.assurance === "provisional" &&
+    (status.via === "rail" || status.via === "core")
+  );
 }
 
 /** The journey took over from the widget: the buyer submitted, or the payment completed. */

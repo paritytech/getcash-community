@@ -245,6 +245,73 @@ describe("lib/supported", () => {
     expect(await reimport.fetchSupportedCorridors(DEST)).toBeNull(); // throw -> null
   });
 
+  it("pickerBase lists the whole catalog for bank once the corridors say which rows route", async () => {
+    const { pickerBase, corridorOptions } = await import("../lib/supported");
+    const catalog = [
+      { country: "DE", name: "Germany" },
+      { country: "IN", name: "India" },
+      { country: "US", name: "United States" },
+    ];
+    const fallback = { card: [{ country: "GB", name: "United Kingdom" }], bank: [catalog[0]!] };
+    const corridors = new Map<string, SupportedCorridor>([
+      [
+        "DE",
+        {
+          country: "DE",
+          fiat: "EUR",
+          methods: [
+            { paymentMethodType: "SEPA", category: "bank", min: "", max: "", currency: "EUR" },
+          ],
+        },
+      ],
+      [
+        "IN",
+        {
+          country: "IN",
+          fiat: "INR",
+          methods: [
+            {
+              paymentMethodType: "CREDIT_DEBIT_CARD",
+              category: "card",
+              min: "",
+              max: "",
+              currency: "INR",
+            },
+          ],
+        },
+      ],
+      [
+        "US",
+        {
+          country: "US",
+          fiat: "USD",
+          methods: [
+            { paymentMethodType: "ACH", category: "bank", min: "", max: "", currency: "USD" },
+          ],
+        },
+      ],
+    ]);
+
+    // Every region is listed; one with no transfer rail is greyed, not dropped.
+    const rows = corridorOptions(
+      pickerBase("bank", catalog, corridors, fallback),
+      corridors,
+      "bank",
+    );
+    expect(rows.map((r) => [r.country, r.disabled === true])).toEqual([
+      ["DE", false],
+      ["IN", true],
+      ["US", false],
+    ]);
+    // Before the corridors are read, bank keeps to the regions known to have a rail.
+    expect(pickerBase("bank", catalog, null, fallback)).toEqual(fallback.bank);
+    expect(pickerBase("bank", catalog, new Map(), fallback)).toEqual(fallback.bank);
+    // Card lists the catalog whatever the corridors say, and each rail has its own fallback.
+    expect(pickerBase("card", catalog, null, fallback)).toEqual(catalog);
+    expect(pickerBase("card", null, corridors, fallback)).toEqual(fallback.card);
+    expect(pickerBase("bank", [], corridors, fallback)).toEqual(fallback.bank);
+  });
+
   it("corridorOptions leaves every row plain and selectable when the map is null", async () => {
     const { corridorOptions } = await import("../lib/supported");
     const rows = corridorOptions([{ country: "US", name: "United States" }], null, "card");

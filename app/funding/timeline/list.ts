@@ -3,6 +3,7 @@
 import type { FundingRoute } from "../selection";
 import type { FundingTopUpProgress } from "../top-ups";
 import { lastReached } from "./model";
+import { recoveryHeadline } from "./recovery";
 import type { TopUpTimeline } from "./top-up";
 import type { TimelineView } from "./types";
 
@@ -31,7 +32,8 @@ const LAST_PROVIDER_PHASE = 2;
  *  part of the timeline the top-up is in. The journey's timeline carries the detail. */
 export function listHeadline(route: FundingRoute, timeline?: TopUpTimeline): ListHeadline {
   if (timeline === undefined) return { text: WAITING[route], delayed: false };
-  const { view } = timeline;
+  const { view, recovery } = timeline;
+  if (recovery !== undefined) return { text: recoveryHeadline(recovery), delayed: true };
   const delayed = view.state === "delayed";
   if (lastReached(view) > LAST_PROVIDER_PHASE) return { text: "Adding to your balance", delayed };
   // A fiat provider that is late or retrying may still take the money: never invite a second one.

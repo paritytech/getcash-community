@@ -207,6 +207,9 @@ importers:
       '@getsome/core':
         specifier: workspace:*
         version: link:../core
+      '@noble/hashes':
+        specifier: ^2.2.0
+        version: 2.4.0
       '@polkadot-api/descriptors':
         specifier: file:../../.papi/descriptors
         version: file:.papi/descriptors(polkadot-api@2.2.2(bufferutil@4.1.0)(esbuild@0.28.2)(rxjs@7.8.2)(utf-8-validate@6.0.6))
@@ -6574,7 +6577,7 @@ snapshots:
 
   '@parity/truapi@0.7.0':
     dependencies:
-      '@noble/hashes': 2.3.0
+      '@noble/hashes': 2.4.0
       neverthrow: 8.2.0
       scale-ts: 1.6.1
 
@@ -6863,7 +6866,7 @@ snapshots:
 
   '@polkadot-api/substrate-bindings@0.20.3':
     dependencies:
-      '@noble/hashes': 2.3.0
+      '@noble/hashes': 2.4.0
       '@polkadot-api/utils': 0.4.0
       '@scure/base': 2.3.0
       scale-ts: 1.6.1

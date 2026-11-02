@@ -5,6 +5,7 @@ import {
   type MeldClientLike,
   type MeldQuoteEntry,
   type MeldQuoteRequest,
+  refusalOf,
 } from "./client";
 import {
   computeMeldQuote,
@@ -291,6 +292,28 @@ describe("computeMeldQuote (limits)", () => {
     expect(asked.slice(0, 2)).toEqual([20, 1200]);
     expect(Number(raw.provider.destinationAmount)).toBeGreaterThanOrEqual(1000);
     expect(Number(raw.provider.sourceAmount)).toBeLessThanOrEqual(1005 * 1.011);
+  });
+
+  it("fails generically when the provider refuses the rate probe's amount", async () => {
+    // The probe sits at the minimum whatever the buyer typed, so its refusal is not theirs.
+    const client = createMeldClient({
+      baseUrl: "https://adapter.test",
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              tag: "Other",
+              value: { code: "AMOUNT_REJECTED", message: "The provider cannot take this amount." },
+            },
+          }),
+          { status: 400, headers: { "content-type": "application/json" } },
+        ),
+    });
+    const ctx = { ...INR, limits: { min: "3000.00", max: "50000.00" } };
+    const err = await computeMeldQuote(client, ctx, dot(8.9)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(refusalOf(err)).toBeUndefined();
+    expect(refusalOf((err as Error).cause)?.code).toBe("AMOUNT_REJECTED");
   });
 
   it("names a bound the corridor did not, when a correction is refused on it", async () => {

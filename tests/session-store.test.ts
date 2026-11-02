@@ -252,6 +252,29 @@ describe("session store: Meld (card / bank) in the mock world", () => {
     expect(store.meldPayUrl).toBeNull();
   });
 
+  it("keeps the pay page while the provider has only filed its transaction, drops it once approved", async () => {
+    // Banxa files its Meld transaction as PENDING (read as `receiving`) the moment its form loads.
+    const store = useSessionStore();
+    const requests = useRequestsStore();
+    store.setMethod("card");
+    store.setAmount("100");
+    await store.fetchMeldQuote();
+    await store.start();
+    const ref = requests.foregroundRecord!.ref;
+    const report = (status: "receiving" | "sending", at: number) =>
+      requests.observe(ref, { source: "provider", provider: "meld", at, result: { status } });
+
+    await report("receiving", Date.now());
+    expect(requests.awaitingDeposit).toBe(false);
+    expect(requests.meldAwaitingBuyer).toBe(true);
+    expect(store.meldPayUrl).toMatch(/^https:\/\//);
+
+    // SETTLING: the provider approved the payment. Nothing is left to pay on the page.
+    await report("sending", Date.now() + 1);
+    expect(requests.meldAwaitingBuyer).toBe(false);
+    expect(store.meldPayUrl).toBeNull();
+  });
+
   it("re-opens a top-up from the list with no host to rebuild a hosted world from", async () => {
     const store = useSessionStore();
     const requests = useRequestsStore();

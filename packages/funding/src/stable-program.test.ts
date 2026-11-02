@@ -133,7 +133,11 @@ describe("buildStableFundingProgram", () => {
         },
       },
     ]);
-    expect(transfer.remote_xcm.map((i) => i.type)).toEqual(["RefundSurplus", "DepositAsset"]);
+    expect(transfer.remote_xcm.map((i) => i.type)).toEqual([
+      "SetHints",
+      "RefundSurplus",
+      "DepositAsset",
+    ]);
     const refund = instruction(args, "DepositAsset") as {
       assets: unknown;
       beneficiary: { interior: { value: { value: { id: string } } } };
@@ -254,6 +258,7 @@ describe("forwardedProgramStandIn", () => {
       "PayFees",
       "ReserveAssetDeposited",
       "ClearOrigin",
+      "SetHints",
       "RefundSurplus",
       "DepositAsset",
       "SetTopic",

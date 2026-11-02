@@ -77,7 +77,16 @@
 // withdrawal sweeps the rest of the fee asset into the holding. The transfer names the CASH and
 // leaves the rest there. The refund deposits it back with the unspent allowance, which keeps the
 // account alive.
+//
+// A TRAP IS FOUND FROM STORAGE, NOT FROM EVENTS. The program names the burner as the claimer of
+// whatever it leaves in People's holding, so a deposit that fails there traps the CASH sent, less
+// the fee People charged before the failure, under the burner's own origin. While the submit is in
+// a block and People shows nothing arrived, one read of AssetTraps at People's finalized block, tried
+// against every amount from the one sent down by the fee earmark, says whether the CASH is there
+// (trap.ts). FundingTrappedError then ends the run as a recovery, never as a timeout, and nothing
+// is converted twice: the trap waits for the burner's claim.
 
+import { TOKENS } from "@getsome/core";
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import type {
   HexString,
@@ -123,6 +132,7 @@ import {
   type StablePoolRoute,
 } from "./route";
 import { stableTxOptions } from "./stable";
+import { findTrap, trapScanSpan } from "./trap";
 
 type AssetHubApi = TypedApi<typeof paseo_next_v2>;
 type AssetLocation = Parameters<AssetHubApi["query"]["AssetConversion"]["Pools"]["getValue"]>[0][0];
@@ -169,7 +179,7 @@ export const DEFAULT_TICK_TIMEOUT_MS = 20_000;
  *  this is the longest a conversion holds the tick. */
 export const DEFAULT_INCLUSION_TIMEOUT_MS = 60_000;
 
-function bounded<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+export function bounded<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms / 1000}s`)), ms);
     work.then(
@@ -197,6 +207,22 @@ export class FundingShortfallError extends Error {
         "the XCM remote fee exceeded remoteFeeBuffer; retry with a larger buffer",
     );
     this.name = "FundingShortfallError";
+  }
+}
+
+/** Terminal for the conversion: the program left the CASH in People's trap, keyed to the burner,
+ *  and a claim signed by the burner takes it back. The run turns into that recovery. */
+export class FundingTrappedError extends Error {
+  constructor(
+    /** The CASH the trap holds, which the claim must name exactly. */
+    readonly amount: bigint,
+    /** The key People counts the trap under. */
+    readonly key: HexString,
+    /** The burner's public key, the claimer the program named. */
+    readonly claimerHex: string,
+  ) {
+    super(`funding trapped: ${amount} underlying is in People's trap ${key}`);
+    this.name = "FundingTrappedError";
   }
 }
 
@@ -479,6 +505,13 @@ export interface TickState {
    *  hold the run. A different answer starts over; a landed program clears both. */
   rejections: number;
   lastRejection: string | null;
+  /** The CASH the submitted program sends to People, fee earmark included, which is the most a
+   *  trap of it could hold: what the dry run received before the submit, then the conversion
+   *  event's figure at inclusion. Null while nothing has been sent. */
+  sentToPeople: bigint | null;
+  /** What People charged the program in the pre-submit dry run: the most it charges a failing
+   *  one, so the least a trap could hold is `sentToPeople` less this. */
+  peopleFeeCash: bigint | null;
 }
 
 export const freshTickState = (): TickState => ({
@@ -493,6 +526,8 @@ export const freshTickState = (): TickState => ({
   arrived: false,
   rejections: 0,
   lastRejection: null,
+  sentToPeople: null,
+  peopleFeeCash: null,
 });
 
 export interface TickOnceInput {
@@ -601,11 +636,11 @@ type Inclusion = { txHash: string } & TxEventsPayload;
 /** The event a successful transaction of each tier carries once it converted the deposit. A fee
  *  paid in an asset other than the native is swapped through the pool as well, so on the PSM tier
  *  only the mint counts. The dotUSD tier exchanges nothing: its successful send is the conversion. */
-const CONVERSION_EVENT: Record<ConversionRoute["tier"], { pallet: string; name: string } | null> = {
+const CONVERSION_EVENT = {
   psm: { pallet: "Psm", name: "Minted" },
   pool: { pallet: "AssetConversion", name: "SwapCreditExecuted" },
   dotusd: null,
-};
+} satisfies Record<ConversionRoute["tier"], { pallet: string; name: string } | null>;
 
 /** Whether an inclusion converted the deposit: the transaction succeeded and its events hold the
  *  tier's conversion event. */
@@ -705,10 +740,52 @@ async function submitConversion<Options>(
   }
   if (included.ok) {
     markLanded(state, included.block.number, included.block.hash);
+    // What went out, as the chain reports it on the pool tiers; the dry run's exact figure
+    // stands on the others, and where the events do not say.
+    state.sentToPeople = sentAmountOf(input.route, included.events) ?? state.sentToPeople;
   } else {
     state.nonceAtSubmit = null;
+    state.sentToPeople = null;
+    state.peopleFeeCash = null;
   }
   return included;
+}
+
+/** Whether a swap's path, as the pool's event carries it, ends in the CASH as Asset Hub keys it. A
+ *  fee paid in a stable is swapped to the native before the program and the unused part swapped
+ *  back after it, and neither of those ends in CASH. */
+function swapEndsInCash(path: unknown): boolean {
+  const last = Array.isArray(path) ? (path.at(-1) as [unknown, unknown] | undefined) : undefined;
+  const location = last?.[0] as
+    { parents?: number; interior?: { type?: string; value?: unknown } } | undefined;
+  if (location?.parents !== 0 || location.interior?.type !== "X2") return false;
+  const junctions = location.interior.value as Array<{ type: string; value: unknown }> | undefined;
+  const index = junctions?.find((j) => j.type === "GeneralIndex")?.value;
+  return (typeof index === "bigint" || typeof index === "number") && BigInt(index) === CASH_ID;
+}
+const CASH_ID = BigInt(TOKENS.CASH.assetHubId);
+
+/** The CASH an inclusion's events say the program sent to People, earmark included, on the pool
+ *  tiers: what the last exchange into CASH returned, which the program withdraws whole. Null on
+ *  the other tiers, whose figure was known before the submit: the PSM's batch withdraws the
+ *  fixed amount it was built with, whatever its mint paid out at the fee of the day, so the
+ *  mint's event can say more than went out; the dotUSD tier exchanges nothing. Null too when
+ *  the events do not say. */
+export function sentAmountOf(
+  route: ConversionRoute,
+  events: ReadonlyArray<{ type: string; value: { type: string; value?: unknown } }>,
+): bigint | null {
+  if (route.tier !== "pool") return null;
+  const expected = CONVERSION_EVENT.pool;
+  const conversions = events.filter(
+    (e) =>
+      e.type === expected.pallet &&
+      e.value.type === expected.name &&
+      swapEndsInCash((e.value.value as { path?: unknown })?.path),
+  );
+  const last = conversions.at(-1)?.value.value as Record<string, unknown> | undefined;
+  const amount = last?.amount_out;
+  return typeof amount === "bigint" ? amount : null;
 }
 
 /** A paid rejection: the program was in a block and rolled back, and the dispatch fee is gone.
@@ -856,6 +933,30 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
   }
 
   const balances: FundingBalances = { depositAh, underlyingPeople: peopleHeld };
+
+  // Nothing has arrived: the program may have left the CASH in People's trap. One read of the
+  // traps at People's best block, tried against the amounts the program could have left, says so.
+  // Not once the arrival was seen: what People holds then is what the claim left there. After
+  // the inclusion is settled, so a program whose block was discarded is sent again, not scanned
+  // for.
+  if (
+    state.xcmSubmitted &&
+    !state.arrived &&
+    state.sentToPeople !== null &&
+    peopleHeld <= state.peopleAtXcm
+  ) {
+    const trap = await bounded(
+      findTrap(
+        input.peopleApi,
+        input.beneficiaryHex,
+        state.sentToPeople,
+        trapScanSpan(state.peopleFeeCash),
+      ),
+      input.tickTimeoutMs,
+      "trap read",
+    );
+    if (trap !== null) throw new FundingTrappedError(trap.amount, trap.key, input.beneficiaryHex);
+  }
 
   const arrivedShort = (held: bigint) => held > state.peopleAtXcm && held < input.settleAmount;
   // Once the target arrived, or a claim is registered, what People holds is what the claim left
@@ -1130,8 +1231,9 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
     });
     // Run the program on both chains before paying for it. A program that would fail, trap assets
     // or land short of what People still lacks is not submitted; the next tick re-prices and tries
-    // again with nothing spent.
-    await bounded(
+    // again with nothing spent. What the dry run received on People is what the program sends,
+    // until the inclusion's events say exactly, and what it charged bounds a trap's shortfall.
+    const { landed, received } = await bounded(
       dryRunFundingProgram({
         api,
         peopleApi: input.peopleApi,
@@ -1145,6 +1247,8 @@ export async function tickOnce(input: TickOnceInput, state: TickState): Promise<
       input.tickTimeoutMs,
       "funding program dry run",
     );
+    state.sentToPeople = received;
+    state.peopleFeeCash = received - landed;
     const tx = api.tx.PolkadotXcm.execute(execArgs);
     // The dispatch fee is paid in native.
     const res = await submitConversion(
@@ -1287,7 +1391,7 @@ async function swapThroughStablePool(
   }
   // Both chains run the program before it is paid for; one that would fail, trap assets or land
   // short of what People still lacks is not submitted, and the next tick re-prices.
-  await bounded(
+  const { landed, received } = await bounded(
     dryRunFundingProgram({
       api,
       peopleApi: input.peopleApi,
@@ -1301,6 +1405,8 @@ async function swapThroughStablePool(
     input.tickTimeoutMs,
     "stable program dry run",
   );
+  state.sentToPeople = received;
+  state.peopleFeeCash = received - landed;
   const tx = api.tx.PolkadotXcm.execute(execArgs);
   // The dispatch fee is charged in the stable, the one asset the burner holds.
   const res = await submitConversion(
@@ -1360,7 +1466,7 @@ async function sendDotUsdToPeople(
   }
   // Both chains run the program before it is paid for; one that would fail, trap assets or land
   // short of what People still lacks is not submitted, and the next tick re-prices.
-  await bounded(
+  const { landed, received } = await bounded(
     dryRunFundingProgram({
       api,
       peopleApi: input.peopleApi,
@@ -1374,6 +1480,8 @@ async function sendDotUsdToPeople(
     input.tickTimeoutMs,
     "dotUSD program dry run",
   );
+  state.sentToPeople = received;
+  state.peopleFeeCash = received - landed;
   const tx = api.tx.PolkadotXcm.execute(execArgs);
   // The dispatch fee is charged in the underlying, the one asset the burner holds.
   const res = await submitConversion(
@@ -1472,7 +1580,7 @@ async function mintThroughPsm(
   // The whole batch on both chains before paying for it, the mint included: a PSM refusal
   // surfaces here, with nothing spent, rather than at inclusion.
   try {
-    await bounded(
+    const { landed, received } = await bounded(
       dryRunPsmBatch({
         api,
         peopleApi: input.peopleApi,
@@ -1486,6 +1594,8 @@ async function mintThroughPsm(
       input.tickTimeoutMs,
       "psm batch dry run",
     );
+    state.sentToPeople = received;
+    state.peopleFeeCash = received - landed;
   } catch (error) {
     if (error instanceof ProgramRejectedError) refused(error.dispatchError);
     throw error;

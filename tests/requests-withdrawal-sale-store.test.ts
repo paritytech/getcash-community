@@ -39,7 +39,7 @@ vi.mock("../lib/coinage-live", () => ({
 vi.mock("../lib/withdraw-live", () => ({
   sendWithdrawHandoff: vi.fn(async () => {}),
   probeWithdrawKey: async () => ({ address: "5Key", cash: 0n }),
-  readPaymentStatus: async () => ({ status: "not-found" }),
+  readPaymentStatus: vi.fn(async () => ({ status: "not-found" })),
   nudgeWithdrawTicks: () => {},
 }));
 
@@ -150,6 +150,24 @@ describe("requests store: a fiat sale, hosted", () => {
       witnesses: { worker: { known: false } },
     });
     expect(handedOff).not.toHaveBeenCalled();
+  });
+
+  it("polls the host for the payment of the withdrawal on screen once the purse was asked", async () => {
+    setMeldStatusClientFactory(() => null);
+    const asked = sale("mock-sell-1");
+    asked.payment = { attempt: 0, requestedAt: STARTED, id: `0x${"5e".repeat(32)}` };
+    await seed(asked);
+    const requests = useRequestsStore();
+    await requests.reconcile("refresh");
+    const readStatus = vi.mocked(live.readPaymentStatus);
+    readStatus.mockClear();
+    readStatus.mockResolvedValueOnce({ status: "processing" });
+    requests.setForeground(REF);
+    requests.startPaymentPoll();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(readStatus).toHaveBeenCalledWith(`0x${"5e".repeat(32)}`);
+    expect((requests.get(REF) as WithdrawalRecord).payment.status).toBe("processing");
+    requests.stopPaymentPoll();
   });
 
   it("reads a sale off screen until the provider names its deposit address", async () => {

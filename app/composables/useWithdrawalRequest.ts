@@ -248,8 +248,9 @@ export function useWithdrawalRequest() {
    * is the key's, so a session whose answer was lost would otherwise hold that key to its terms,
    * and the seller's next try at another amount would be refused as a different order.
    *
-   * The seller's own wallet is not sent. Meld takes it on a sale as optional, and the adapter
-   * refuses it for now.
+   * A direct sale names the key as the seller's own wallet: it sends the crypto, so a refund
+   * comes back to it. A lane sale's crypto reaches the provider from the swap, not the key, and
+   * the key is no address on that chain, so it names none.
    */
   async function startSale(input: MeldSaleStart): Promise<MeldSaleStartOutcome> {
     if (!isHosted()) {
@@ -308,6 +309,7 @@ export function useWithdrawalRequest() {
         sourceAmount: formatSellAmount(input.cryptoAmount, token),
         destinationCurrencyCode: input.fiat,
         paymentMethodType: input.paymentMethodType,
+        ...(input.swap === undefined ? { walletAddress: key.address } : {}),
       });
     } catch (e: unknown) {
       return { ok: false, reason: messageOf(e) };
