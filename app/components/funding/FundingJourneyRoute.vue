@@ -151,6 +151,8 @@ watch(
   () => {
     pickedToken.value = null;
     landingDecided = false;
+    // A recovery screen shows one record's figures: none carries over to the next.
+    recoveryScreen.value = null;
   },
 );
 const depositToken = computed(
@@ -215,26 +217,32 @@ watch(
     if (gone) recoveryScreen.value = null;
   },
 );
-// A top-up whose deposit screen was opened before opens on it again, decided once per record
-// when the band first asks the buyer with the purse read: onto the QR only while the band offers
-// the wallet path, not onto one it would not offer, as when the purse covers the fee since, and
-// not over the band's word that a deposit was let go, which the buyer should read before being
-// asked for another. Decided once, so a later read never moves the buyer there unasked; not
-// before the first read lands, since until then the band offers the purse alone and the buyer
-// whose balance falls short would never land.
+// A top-up whose deposit screen was opened before opens on it again, decided once per record as
+// soon as the purse is read: onto the QR only while the band offers the wallet path then, not
+// onto one it would not offer, as when the purse covers the fee since, and not over the band's
+// word that a deposit was let go, which the buyer should read before being asked for another.
+// Decided once and at once, so neither a later read nor a band that only asks later, after a
+// refusal or a failed claim the buyer is reading about, moves them there unasked; not before the
+// first read lands, since until then the band offers the purse alone and the buyer whose balance
+// falls short would never land. Never over another screen the buyer has opened meanwhile.
 watch(
   () => {
     const record = requests.foregroundRecord;
-    if (record === null || (prompt.value?.actions.length ?? 0) === 0) return null;
-    if (purseWord.value === "unknown") return null;
+    if (record === null || !recovering.value || purseWord.value === "unknown") return null;
     return requestRefKey(record.ref);
   },
-  (asking) => {
-    if (asking === null || landingDecided) return;
+  (key) => {
+    if (key === null || landingDecided) return;
     landingDecided = true;
     const wallet = prompt.value?.actions.some((action) => action.kind === "send-deposit") === true;
     const unused = requests.foregroundRecord?.recovery?.depositUnused !== undefined;
-    if (wallet && !unused && depositToken.value !== null && recoveryScreen.value === null) {
+    const clear =
+      recoveryScreen.value === null &&
+      !showingFees.value &&
+      !showingRefund.value &&
+      !showingRecovery.value &&
+      !flow.confirmingCancel;
+    if (wallet && !unused && depositToken.value !== null && clear) {
       recoveryScreen.value = "deposit";
     }
   },

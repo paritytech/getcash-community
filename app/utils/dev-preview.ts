@@ -9,6 +9,7 @@ import type {
   RefundProgress,
   SourceId,
 } from "@getsome/core";
+import { nextTick } from "vue";
 import { SOURCE_CONFIG_BY_ID, type SourceFloorResult } from "@getsome/chainflip";
 import { chainflipTopUpId, projectChainflipTopUps } from "../funding/chainflip-top-ups";
 import { meldTopUpId, projectMeldTopUps } from "../funding/meld-top-ups";
@@ -2684,6 +2685,26 @@ export const SCENES: Scene[] = [
       const r = await pipeline(s, f, i, "await-arrival");
       f.previewPurse = "unread";
       await r.observe(trapped(r, "funding"));
+    },
+  },
+  {
+    // Reopened with a token picked and the purse short: the journey lands on the QR by itself,
+    // no drill-in staged. The record is left and brought back, as a buyer returning to it does.
+    name: "top-up / crypto / recovering: reopened on the QR",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "await-arrival");
+      f.previewPurse = PREVIEW_PURSE_SHORT;
+      await r.observe(trapped(r, "funding"));
+      await r.observe({
+        source: "user",
+        at: r.at(2),
+        event: "recovery-token-picked",
+        token: "USDT",
+      });
+      const requests = useRequestsStore();
+      requests.leave();
+      await nextTick();
+      requests.setForeground(r.ref);
     },
   },
   {
