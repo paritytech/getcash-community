@@ -53,9 +53,15 @@ export function trappedCash(record: TopUpRecord): string {
  */
 function purseCovers(record: TopUpRecord, purse: PurseWord): boolean {
   if (purse === "none") return false;
-  const fee = record.recovery?.askCash;
+  const { recovery } = record;
+  const fee = recovery?.askCash;
   if (typeof purse === "bigint") return fee !== undefined && purse >= BigInt(fee);
-  return record.recovery?.payment?.refusal !== "insufficient-balance";
+  // A refusal from a round the worker moved past says nothing about the fee asked for now.
+  return (
+    recovery === undefined ||
+    paymentOutOfRound(recovery) ||
+    recovery.payment?.refusal !== "insufficient-balance"
+  );
 }
 
 /** The purse was asked for the fee and has not answered yet: the host's sheet is up, or its word
@@ -81,8 +87,13 @@ export function recoveryPrompt(
     return { message: delay(ADDING), detail: paid, actions: [] };
   }
   const payment = recovery?.payment;
-  // A deposit on the top-up's own account is being converted for the fee.
-  if (recovery?.deposit !== undefined && recovery.deposit !== "await-native") {
+  // A deposit on the top-up's own account is being converted for the fee: found, or past its
+  // first step. One the gate holds short is not; the buyer is asked on.
+  const converting =
+    recovery !== undefined &&
+    recovery.deposit !== "await-native" &&
+    (recovery.deposit !== undefined || recovery.depositFound === true);
+  if (converting) {
     return {
       message: delay(ADDING),
       detail: "Converting what you sent to cover the fee.",
@@ -107,6 +118,48 @@ export function recoveryPrompt(
   if (payment?.status === "processing") {
     return { message: delay(ADDING), detail: paid, actions: [] };
   }
+  const asked = askFor(record, purse, fee, cash, paid);
+  // What the buyer sent did not do: the worker holds a deposit short of its gate, or let one go
+  // in this round. An ask says so first, so it does not read as if nothing had been sent.
+  const sent = depositWord(recovery);
+  if (sent === undefined || asked.actions.length === 0) return asked;
+  return {
+    message: asked.message.text === ALMOST_HERE ? delay(NOT_ADDED) : asked.message,
+    detail: `${sent} ${asked.detail}`,
+    actions: asked.actions,
+  };
+}
+
+/** The band's word on a deposit that did not cover the fee, if there is one to give: one the
+ *  worker holds short of its gate, which a price moving back or a little more of the token still
+ *  takes up; else what became of one it let go. */
+function depositWord(recovery: TopUpRecovery): string | undefined {
+  if (recovery.depositFound === true && recovery.deposit === "await-native") {
+    return "What you sent isn't enough yet.";
+  }
+  switch (recovery.depositUnused?.kind) {
+    case "short":
+      return "What you sent wasn't enough.";
+    case "held":
+      return "What you sent couldn't be converted.";
+    case "trapped":
+      return "What you sent didn't get through.";
+    default:
+      return undefined;
+  }
+}
+
+/** The band's word once the purse's last answer is final: the fee paid in this round, else the
+ *  ask for it, by how the purse answered and whether it covers the fee. */
+function askFor(
+  record: TopUpRecord,
+  purse: PurseWord,
+  fee: string,
+  cash: string,
+  paid: string,
+): RecoveryPrompt {
+  const recovery = record.recovery!;
+  const payment = recovery.payment;
   const covers = purseCovers(record, purse);
   // The worker moved past the round the purse paid in: a claim spent the fee, or it grew.
   if (paymentOutOfRound(recovery)) {

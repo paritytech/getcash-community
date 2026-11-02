@@ -94,6 +94,9 @@ export function usePurseBalance(options: { enabled?: () => boolean } = {}): Purs
   }
 
   async function refresh(options?: { spent?: boolean }): Promise<void> {
+    // Off, nothing is read: a caller's refresh in the same tick the screen stopped needing the
+    // balance must not leave a reading for the next enable to find.
+    if (!enabled()) return;
     cancelRetry();
     // Drawn-down purse: the skeleton and the closed gate stand in until the new read lands.
     if (options?.spent === true && state.value.kind === "known") state.value = { kind: "unknown" };

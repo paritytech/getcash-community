@@ -19,6 +19,7 @@ import {
   estimateFundingProgramFees,
   estimateStableProgramFees,
   type Pool,
+  withFeeMargin,
 } from "./funding-program";
 import {
   DEFAULT_REMOTE_FEE_BUFFER,
@@ -115,7 +116,11 @@ export async function recoveryMinimums(args: {
       nativeBalance: nativeInMax + PROBE_NATIVE,
       minUnderlyingOut: target,
     });
-    keepNativeForFees = fees.payFeesNative + fees.dispatchNative;
+    // The XCM's fees cushioned as the stable tiers cushion theirs: at a deposit this small the
+    // fees are most of it, so a delivery fee that moves a little between this pricing and the
+    // conversion would leave the exchange short of the target. What the cushion does not use
+    // lands as Cash.
+    keepNativeForFees = withFeeMargin(fees.payFeesNative) + fees.dispatchNative;
     // The gate takes the plain quote plus what the program keeps, as the pipeline's does.
     return { minimum: nativeInMax + keepNativeForFees, gate: nativeIn + keepNativeForFees };
   });

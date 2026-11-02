@@ -212,6 +212,18 @@ describe("the reducer", () => {
     expect(paymentOutOfRound(moved.recovery!)).toBe(true);
   });
 
+  it("reads the same let-go deposit from every poll as a witness, not a write", () => {
+    const unused = { at: at(3), kind: "short" as const };
+    const record = trapped(view({ depositUnused: unused }));
+    expect(record.recovery?.depositUnused).toEqual(unused);
+    const again = reduce(record, {
+      ...trappedJob(view({ depositUnused: { ...unused } })),
+      at: at(5),
+    });
+    // The poll restamps the record's confirmation; the recovery itself is the same object.
+    expect(again.recovery).toBe(record.recovery);
+  });
+
   it("is neither cancelled nor expired while the trap stands", () => {
     const record = trapped();
     const cancelled = reduce(record, {
@@ -416,6 +428,29 @@ describe("the timeline", () => {
     expect(timelineOf(landed)?.recovery?.actions).toEqual([FROM_BALANCE, SEND_DEPOSIT]);
   });
 
+  it("says first what became of a deposit the worker let go, then asks on", () => {
+    const unused = (kind: "held" | "short" | "trapped") =>
+      timelineOf(trapped(view({ depositUnused: { at: at(3), kind } })));
+    expect(unused("trapped")?.message?.text).toBe("We couldn't add your Cash yet");
+    expect(unused("trapped")?.detail).toBe(
+      "What you sent didn't get through. A $0.01 network fee is needed to add it to your balance.",
+    );
+    expect(unused("trapped")?.recovery?.actions).toEqual([FROM_BALANCE]);
+    expect(unused("held")?.detail).toBe(
+      "What you sent couldn't be converted. A $0.01 network fee is needed to add it to your balance.",
+    );
+    expect(unused("short")?.detail).toBe(
+      "What you sent wasn't enough. A $0.01 network fee is needed to add it to your balance.",
+    );
+    // The word stays on the ask whatever the purse answered since.
+    const refusedToo = timelineOf(
+      refused(requested(trapped(view({ depositUnused: { at: at(3), kind: "short" } })))),
+    );
+    expect(refusedToo?.message?.text).toBe("The fee wasn't paid");
+    expect(refusedToo?.detail).toBe("What you sent wasn't enough. Your balance couldn't cover it.");
+    expect(refusedToo?.recovery?.actions).toEqual([SEND_DEPOSIT]);
+  });
+
   it("asks for the rest when the purse paid part of the fee", () => {
     const part = host(requested(trapped()), { status: "partiallyClaimed", actualClaimed: "4000" });
     const covers = timelineOf(part);
@@ -482,6 +517,17 @@ describe("the timeline", () => {
     expect(converting?.message?.text).toBe("Adding your Cash");
     expect(converting?.detail).toBe("Converting what you sent to cover the fee.");
     expect(converting?.recovery?.actions).toEqual([]);
+    // Found and not yet past a step, a tick of it failing: being converted all the same.
+    const found = timelineOf(trapped(view({ depositFound: true })));
+    expect(found?.detail).toBe("Converting what you sent to cover the fee.");
+    expect(found?.recovery?.actions).toEqual([]);
+    // Found but held short at the gate: the buyer is told so and asked on.
+    const short = timelineOf(trapped(view({ depositFound: true, deposit: "await-native" })));
+    expect(short?.message?.text).toBe("We couldn't add your Cash yet");
+    expect(short?.detail).toBe(
+      "What you sent isn't enough yet. A $0.01 network fee is needed to add it to your balance.",
+    );
+    expect(short?.recovery?.actions).toEqual([FROM_BALANCE]);
     const claiming = timelineOf(trapped(view({ phase: "claiming" })));
     expect(claiming?.message?.text).toBe("Adding your Cash");
     expect(claiming?.detail).toBe(
@@ -551,6 +597,7 @@ describe("the store", () => {
               keepNativeForFees: "110",
               routes: { USDT: { tier: "pool", external: "USDT" }, USDC: { tier: "psm" } },
             },
+            route: { tier: "pool" },
             deposit: "await-native",
           },
         },
@@ -566,6 +613,8 @@ describe("the store", () => {
     await requests.reconcile("boot");
     await requests.pickRecoveryToken(REF, "USDT");
     expect((requests.get(REF) as TopUpRecord).recovery?.depositToken).toBe("USDT");
+    // The job's route says a deposit was found.
+    expect((requests.get(REF) as TopUpRecord).recovery?.depositFound).toBe(true);
     await requests.flush();
     const stored = JSON.parse((await storage.read(requestKey(REF))) ?? "null") as TopUpRecord;
     expect(stored.recovery?.depositToken).toBe("USDT");
@@ -603,6 +652,7 @@ describe("the store", () => {
               routes: { USDT: { tier: "pool", external: "USDT" }, USDC: { tier: "psm" } },
             },
             deposit: "await-native",
+            depositError: { kind: "short", message: "funding shortfall", at: at(3), round: 1 },
           },
         },
       }),
@@ -620,6 +670,7 @@ describe("the store", () => {
       askCash: "10000",
       minimums: { PAS: "900000000", DOTUSD: "600000", USDT: null, USDC: "650000" },
       deposit: "await-native",
+      depositUnused: { at: at(3), kind: "short" },
     });
   });
 });

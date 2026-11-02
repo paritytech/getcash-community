@@ -212,7 +212,13 @@ function sameRecovery(
     const a = current[key as keyof typeof current];
     const b = next[key as keyof typeof next];
     if (a === b) continue;
-    if (key === "minimums" && JSON.stringify(a) === JSON.stringify(b)) continue;
+    // Rebuilt by every poll, so compared by content.
+    if (
+      (key === "minimums" || key === "depositUnused") &&
+      JSON.stringify(a) === JSON.stringify(b)
+    ) {
+      continue;
+    }
     return false;
   }
   return true;

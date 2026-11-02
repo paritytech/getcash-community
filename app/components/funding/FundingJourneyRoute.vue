@@ -139,6 +139,8 @@ const recoveryChoicesView = computed(() => recoveryChoices(requests.foregroundRe
 /** The token the deposit screen is on: picked here, else as the record remembers it. A pick
  *  belongs to the record it was made on, and goes with it. */
 const pickedToken = ref<RecoveryToken | null>(null);
+/** Whether the record on screen was given its chance to open on the deposit screen. */
+let landingDecided = false;
 watch(
   () => {
     const record = requests.foregroundRecord;
@@ -146,6 +148,7 @@ watch(
   },
   () => {
     pickedToken.value = null;
+    landingDecided = false;
   },
 );
 const depositToken = computed(
@@ -210,18 +213,23 @@ watch(
     if (gone) recoveryScreen.value = null;
   },
 );
-// A top-up whose deposit screen was opened before opens on it again, once its record is up and
-// while the band offers the wallet path: not onto a QR the band would not offer, as when the
-// purse covers the fee since.
-let landedOnDeposit = false;
+// A top-up whose deposit screen was opened before opens on it again, decided once per record
+// when the band first asks the buyer: onto the QR only while the band offers the wallet path,
+// not onto one it would not offer, as when the purse covers the fee since. Decided once, so a
+// balance read that lands later never moves the buyer there unasked.
 watch(
-  () =>
-    depositToken.value !== null &&
-    prompt.value?.actions.some((action) => action.kind === "send-deposit") === true,
-  (lands) => {
-    if (!lands || landedOnDeposit) return;
-    landedOnDeposit = true;
-    if (recoveryScreen.value === null) recoveryScreen.value = "deposit";
+  () => {
+    const record = requests.foregroundRecord;
+    if (record === null || (prompt.value?.actions.length ?? 0) === 0) return null;
+    return requestRefKey(record.ref);
+  },
+  (asking) => {
+    if (asking === null || landingDecided) return;
+    landingDecided = true;
+    const wallet = prompt.value?.actions.some((action) => action.kind === "send-deposit") === true;
+    if (wallet && depositToken.value !== null && recoveryScreen.value === null) {
+      recoveryScreen.value = "deposit";
+    }
   },
   { immediate: true },
 );

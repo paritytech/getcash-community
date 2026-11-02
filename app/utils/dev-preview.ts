@@ -1414,7 +1414,13 @@ async function pipeline(
 function trapped(
   request: PreviewRequest,
   phase: "funding" | "claiming",
-  extra: { deposit?: string; round?: number; askCash?: string } = {},
+  extra: {
+    deposit?: string;
+    round?: number;
+    askCash?: string;
+    depositFound?: boolean;
+    depositUnused?: { at: number; kind: "held" | "short" | "trapped" };
+  } = {},
 ): Observation {
   const at = request.at(1);
   return {
@@ -2617,6 +2623,24 @@ export const SCENES: Scene[] = [
     apply: async (s, f, i) => {
       const r = await pipeline(s, f, i, "await-arrival");
       await r.observe(trapped(r, "funding", { deposit: "swap" }));
+    },
+  },
+  {
+    // A deposit was found but sits short of its gate: the buyer is told and asked on.
+    name: "top-up / crypto / recovering: deposit short",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "await-arrival");
+      f.previewPurse = PREVIEW_PURSE;
+      await r.observe(trapped(r, "funding", { depositFound: true, deposit: "await-native" }));
+    },
+  },
+  {
+    // The worker let the deposit go, its conversion trapped on People, and asks on.
+    name: "top-up / crypto / recovering: deposit not used",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "await-arrival");
+      f.previewPurse = PREVIEW_PURSE;
+      await r.observe(trapped(r, "funding", { depositUnused: { at: r.at(1), kind: "trapped" } }));
     },
   },
   {

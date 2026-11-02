@@ -275,7 +275,16 @@ export interface WorkerRecoveryView {
   minimums?: Partial<Record<RecoveryToken, string | null>>;
   /** The step a deposit made that way reached in the pipeline, once one arrived. */
   deposit?: string;
+  /** A deposit was found on the top-up's own account and is the worker's to convert, before
+   *  its conversion has a step on record and while a tick of it fails. */
+  depositFound?: boolean;
+  /** A deposit the worker let go in this round, and why: the chain would not take its
+   *  conversion, it landed short of the fee, or it trapped on People. */
+  depositUnused?: { at: number; kind: DepositUnusedKind };
 }
+
+/** Why the worker let a deposit go. */
+export type DepositUnusedKind = "held" | "short" | "trapped";
 
 /** What the store extracts from one job in the worker's blob. */
 export interface WorkerJobView {

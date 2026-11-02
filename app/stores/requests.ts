@@ -54,6 +54,7 @@ import {
   withdrawalRouteOf,
   type ConvertedTx,
   type DepositInBlock,
+  type DepositUnusedKind,
   type Freshness,
   type HostPayment,
   type HostPaymentStatus,
@@ -399,6 +400,8 @@ type WorkerJob = {
     askCash?: unknown;
     minimums?: { minimums?: Record<string, unknown> | null } | null;
     deposit?: unknown;
+    route?: object | null;
+    depositError?: { at?: unknown; kind?: unknown; round?: unknown } | null;
   } | null;
   // The hand-off the worker keeps, read back when the surface has no record of the job.
   label?: string;
@@ -489,6 +492,7 @@ function recoveryOf(job: WorkerJob): WorkerRecoveryView | undefined {
       if (isString(figure) || figure === null) minimums[token] = figure;
     }
   }
+  const depositUnused = depositUnusedOf(recovery);
   return {
     trappedAmount: trap.amount,
     trappedAt: trap.at,
@@ -498,7 +502,20 @@ function recoveryOf(job: WorkerJob): WorkerRecoveryView | undefined {
     ...(isString(recovery?.askCash) ? { askCash: recovery.askCash } : {}),
     ...(minimums === undefined ? {} : { minimums }),
     ...(isString(recovery?.deposit) ? { deposit: recovery.deposit } : {}),
+    ...(isObject(recovery?.route) ? { depositFound: true } : {}),
+    ...(depositUnused === undefined ? {} : { depositUnused }),
   };
+}
+
+const DEPOSIT_UNUSED_KINDS: readonly DepositUnusedKind[] = ["held", "short", "trapped"];
+
+/** The deposit the worker let go, when it did so in the fee's current round: an earlier
+ *  round's is over with that round's ask. */
+function depositUnusedOf(recovery: WorkerJob["recovery"]): WorkerRecoveryView["depositUnused"] {
+  const error = recovery?.depositError;
+  if (!isObject(error) || !isNumber(error.at) || error.round !== recovery?.round) return undefined;
+  const kind = DEPOSIT_UNUSED_KINDS.find((k) => k === error.kind);
+  return kind === undefined ? undefined : { at: error.at, kind };
 }
 
 /** The job as the record's reducer reads it. */
