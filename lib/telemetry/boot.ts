@@ -3,17 +3,14 @@
  * checks. Its own module so the doorway's siblings can share the rule
  * without importing the index.
  *
- * The order is load-bearing: the previous page's record and persisted log
- * are read (and reported) before this page starts writing its own over
- * them, and only then does this page's log, foreground watch and record
- * begin.
+ * A page the OS or the person killed is not reported by the next open: the
+ * signal cannot tell a crash from a person leaving, and the worker carries a
+ * request on without the page, so it would mostly be noise.
  */
 import { configFromEnvironment } from "./config";
 import { watchForeground } from "./foreground";
 import { logBoot, startTelemetryWith, telemetryStarted, type TelemetryConfig } from "./init";
-import { reportPreviousSession } from "./previous";
-import { installSessionLog, persistedLog } from "./session-log";
-import { startSessionRecord } from "./session-record";
+import { installSessionLog } from "./session-log";
 
 let booted = false;
 
@@ -26,18 +23,11 @@ export function startTelemetry(app?: TelemetryConfig["app"]): void {
     const config = configFromEnvironment();
     if (config && app) config.app = app;
     if (!config || !startTelemetryWith(config)) return;
-    const session = {
+    installSessionLog({
       product: config.product,
       sessionId: config.sessionId,
       release: config.release,
-    };
-    const previous = startSessionRecord(session);
-    // read now: this page's log will be written over it
-    const previousLog = previous.record
-      ? persistedLog(config.product, previous.record.sessionId)
-      : null;
-    reportPreviousSession(previous, previousLog);
-    installSessionLog(session);
+    });
     logBoot(config);
     watchForeground();
   } catch {

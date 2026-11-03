@@ -8,15 +8,8 @@ import { reportFailure, startJourney } from "./core";
 import type { Step } from "./handle";
 import { resetTelemetryForTests, startTelemetryWith } from "./init";
 import { noteJourneysHidden } from "./journeys";
-import { reportPreviousSession } from "./previous";
 import { enterScreen, leaveScreen, type ScreenName } from "./screens";
-import { installSessionLog, persistedLog } from "./session-log";
-import {
-  classify,
-  resetSessionRecordForTests,
-  startSessionRecord,
-  type SessionRecord,
-} from "./session-record";
+import { installSessionLog } from "./session-log";
 import { fakeBrowser, recordingTransport, testConfig, type Payload } from "./testing";
 
 vi.mock("./catalogue", () => import("./fixture-catalogue"));
@@ -36,7 +29,6 @@ const setVisibility = (state: "hidden" | "visible") => {
 beforeEach(async () => {
   fakeBrowser();
   await resetTelemetryForTests();
-  resetSessionRecordForTests();
   localStorage.clear();
   setVisibility("visible");
   sink = recordingTransport();
@@ -137,114 +129,11 @@ describe("the session log", () => {
     const logs = sink.attachments();
     expect(logs).toHaveLength(1);
     const log = JSON.parse(logs[0].data) as Payload;
-    expect(log.meta).toMatchObject({ app: "test", session: "session-now", reason: "error" });
+    expect(log.meta).toMatchObject({ app: "test", session: "session-now", lines: 2 });
     expect(log.lines.map((line: Payload) => line.message)).toEqual([
       "reconcile (boot): 2 records",
       "funding step: swap",
     ]);
-  });
-});
-
-describe("the previous session", () => {
-  const record = (over: Partial<SessionRecord>): SessionRecord => ({
-    sessionId: "session-before",
-    release: "test@0",
-    lineage: "another-tab",
-    startedAt: Date.now() - 60_000,
-    lastSeenAt: Date.now() - 10_000,
-    cleanExit: false,
-    hidden: false,
-    screen: "first-screen",
-    journeys: [],
-    ...over,
-  });
-
-  it.each([
-    [{ cleanExit: true }, "clean-close"],
-    [{ hidden: true }, "killed-background"],
-    [{}, "crash-or-kill-foreground"],
-    [{ lineage: "this-tab" }, "host-reload"],
-    [{ lastSeenAt: Date.now() - 2 * 60 * 60_000 }, "unknown"],
-  ])(
-    "As a developer reading Sentry, I classify a last session like %o and get %s",
-    (over, exit) => {
-      // Given
-      const previous = record(over);
-
-      // When
-      const result = classify(previous, Date.now(), "this-tab");
-
-      // Then
-      expect(result.exit).toBe(exit);
-    },
-  );
-
-  it("As a developer reading Sentry, I open the app after it crashed mid-journey and get the crash, its journey and its log", async () => {
-    // Given
-    removeLog();
-    const journeys = [{ name: "trial", lastStep: "second" }];
-    localStorage.setItem("sentry:test:last-session.v1", JSON.stringify(record({ journeys })));
-    localStorage.setItem(
-      "sentry:test:log.v1",
-      JSON.stringify({
-        sessionId: "session-before",
-        release: "test@0",
-        savedAt: Date.now(),
-        lines: [{ t: 1, level: "info", tag: "coinage", message: "last words" }],
-      }),
-    );
-
-    // When
-    const previous = startSessionRecord({
-      product: "test",
-      sessionId: "session-now",
-      release: "test@1",
-    });
-    reportPreviousSession(previous, persistedLog("test", "session-before"));
-    await Sentry.flush(1000);
-
-    // Then
-    const [event] = sink.items("event");
-    expect(event.message).toBe("previous-session-end");
-    expect(event.level).toBe("warning");
-    expect(event.tags).toMatchObject({
-      "previous.end": "crash-or-kill-foreground",
-      "failure.kind": "unclean-exit",
-      "previous.journeys": "trial:second",
-    });
-    expect(sink.attachments()[0].data).toContain("last words");
-  });
-});
-
-describe("the previous session, with nothing open", () => {
-  it("As a developer reading Sentry, I open the app after it vanished between journeys and get no crash report", async () => {
-    // Given
-    removeLog();
-    const stored = {
-      sessionId: "session-before",
-      release: "test@0",
-      lineage: "another-tab",
-      startedAt: Date.now() - 60_000,
-      lastSeenAt: Date.now() - 10_000,
-      cleanExit: false,
-      hidden: false,
-      screen: "first-screen",
-      journeys: [],
-    };
-    localStorage.setItem("sentry:test:last-session.v1", JSON.stringify(stored));
-
-    // When
-    const previous = startSessionRecord({
-      product: "test",
-      sessionId: "session-now",
-      release: "test@1",
-    });
-    reportPreviousSession(previous, null);
-    await Sentry.flush(1000);
-
-    // Then
-    expect(previous.exit).toBe("crash-or-kill-foreground");
-    expect(sink.items("event")).toHaveLength(0);
   });
 });
 

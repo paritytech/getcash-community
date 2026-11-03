@@ -309,14 +309,15 @@ What a deployment with a DSN sends:
 - **Journeys**, as spans: the app opening, and each top-up and withdrawal started on the page,
   step by step (`app/funding/requests/telemetry.ts`).
 - **Counts**: time on each screen and the main actions.
-- **Kills**: a page the phone killed with a journey open (say mid top-up) is reported by the next
-  open, with the log that page left behind.
 - **The log**: every `devLog` line (`lib/log.ts`) rides on events as a breadcrumb, and the page's
-  whole log is attached to its first errors and to the report of a cut journey. A quiet session
-  sends no log line.
+  whole log is attached to its first errors. A quiet session sends no log line.
+
+A page the phone or the person killed is not reported on the next open: that cannot be told
+apart from a person leaving, and the worker carries a request on without the page.
 
 Recovery phrases, 32-byte hex values (the shape of a key's entropy, so transaction hashes too)
-and URL queries are scrubbed from every line and event. Addresses are sent as they are.
+and URL queries are scrubbed from everything that leaves the device; the console keeps the line
+as written. Addresses are sent as they are.
 
 ## License
 

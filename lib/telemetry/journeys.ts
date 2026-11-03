@@ -27,11 +27,10 @@
  *    catalogue: a host prompt, a login).
  *  - HIDDEN. While the page is hidden every open journey has an `app.hidden`
  *    step, so a slow step can be read next to the time the person was away.
- *  - KILLED. A root span is only sent when it ends. On pagehide every open
+ *  - CLOSED. A root span is only sent when it ends. On pagehide every open
  *    journey ends as `interrupted` (init.ts). A page the OS kills runs no
- *    handler, so each open journey also keeps a small record (its name and
- *    step) that session-record.ts writes to storage, and the next open names
- *    it in its `unclean-exit` report (previous.ts).
+ *    handler, so its open journeys are never sent (boot.ts says why that is
+ *    left unreported).
  *
  * Every call on the handle is wrapped: it never throws, and after `end()` it
  * does nothing.
@@ -42,12 +41,6 @@ import { JOURNEYS, type JourneyName } from "./catalogue";
 import { sendFailure } from "./failures";
 import { NOOP_STEP, type Attrs, type Journey, type Step } from "./handle";
 
-/** What a killed page leaves behind of one open journey (session-record.ts). */
-export interface OpenJourneyRecord {
-  name: string;
-  lastStep: string;
-}
-
 const safe = (work: () => void) => {
   try {
     work();
@@ -57,22 +50,18 @@ const safe = (work: () => void) => {
 };
 
 /** The reserved outcome of a journey the page went away in. No journey
- *  declares it: a report reads it as "the app was closed or killed here",
- *  next to `journey.interrupted_step`. */
+ *  declares it: a report reads it as "the app was closed here", next to
+ *  `journey.interrupted_step`. */
 const INTERRUPTED_OUTCOME = "interrupted";
 
 interface Live {
-  record: OpenJourneyRecord;
   interrupt: () => void;
   hidden: (hidden: boolean) => void;
 }
 
 /** every journey that has not ended */
 const open = new Set<Live>();
-let changed: (() => void) | null = null;
 let pageIsHidden = false;
-
-const noteChange = () => safe(() => changed?.());
 
 /** A journey's root span, in a trace of its own. */
 function rootSpan(name: JourneyName, attrs: Attrs): Span {
@@ -103,19 +92,8 @@ export function noteJourneysHidden(hidden: boolean): void {
   for (const live of [...open]) safe(() => live.hidden(hidden));
 }
 
-/** The records of every open journey, for the last-session record. */
-export function openJourneyRecords(): OpenJourneyRecord[] {
-  return [...open].map(({ record }) => ({ ...record }));
-}
-
-/** One listener: the last-session record, rewritten when a journey changes. */
-export function setOpenJourneyListener(listener: (() => void) | null): void {
-  changed = listener;
-}
-
 export function resetJourneysForTests(): void {
   open.clear();
-  changed = null;
   pageIsHidden = false;
 }
 
@@ -134,7 +112,6 @@ export function createJourney<N extends JourneyName>(name: N, attrs: Attrs = {})
   let lastStep = "none";
   let hiddenStep: Span | null = null;
   let stuckTimer: ReturnType<typeof setTimeout> | undefined;
-  const record: OpenJourneyRecord = { name, lastStep };
 
   const finish = (outcome: string, more?: Attrs) => {
     if (ended) return;
@@ -148,7 +125,6 @@ export function createJourney<N extends JourneyName>(name: N, attrs: Attrs = {})
       root.setAttributes({ ...(more ?? {}), "journey.outcome": outcome });
       root.end(Date.now());
     });
-    noteChange();
   };
 
   const startHidden = (hidden: boolean) => {
@@ -240,13 +216,11 @@ export function createJourney<N extends JourneyName>(name: N, attrs: Attrs = {})
         return NOOP_STEP;
       }
       lastStep = stepName;
-      record.lastStep = stepName;
       const waits = waitSteps.includes(stepName);
       if (waits) {
         waiting += 1;
         syncStuck();
       }
-      noteChange();
       let stepEnded = false;
       const step: Step = {
         get ended() {
@@ -264,7 +238,6 @@ export function createJourney<N extends JourneyName>(name: N, attrs: Attrs = {})
             if (more) child.setAttributes(more);
             child.end(Date.now());
           });
-          noteChange();
         },
       };
       steps.add(step);
@@ -281,10 +254,9 @@ export function createJourney<N extends JourneyName>(name: N, attrs: Attrs = {})
       finish(outcome, more);
     },
   };
-  const live: Live = { record, interrupt, hidden: (hidden) => safe(() => startHidden(hidden)) };
+  const live: Live = { interrupt, hidden: (hidden) => safe(() => startHidden(hidden)) };
   open.add(live);
   if (pageIsHidden) live.hidden(true);
   safe(syncStuck);
-  noteChange();
   return journey;
 }

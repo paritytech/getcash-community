@@ -8,7 +8,7 @@ export const JOURNEYS = {
   slow: { steps: ["wait", "prompt"], outcomes: ["done"], stuckMs: 1_000, waitSteps: ["prompt"] },
 } as const;
 
-export const FAILURE_KINDS = ["broke", "said-no", "stuck", "unclean-exit"] as const;
+export const FAILURE_KINDS = ["broke", "said-no", "stuck"] as const;
 
 export const isExpected = (kind: string): boolean => kind === "said-no";
 

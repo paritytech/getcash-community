@@ -58,10 +58,8 @@ export const FAILURE_KINDS = [
   "withdraw-failed",
   // the person declined, or could not cover, a host payment
   "payment-refused",
-  // sent by the core itself: a journey past its stuckMs (journeys.ts), and a
-  // kill that cut a journey, told by the next open (previous.ts)
+  // sent by the core itself: a journey past its stuckMs (journeys.ts)
   "stuck",
-  "unclean-exit",
 ] as const;
 
 export type FailureKind = (typeof FAILURE_KINDS)[number];

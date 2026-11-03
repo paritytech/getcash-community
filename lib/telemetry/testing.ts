@@ -57,7 +57,7 @@ function memoryStorage(): Storage {
 /**
  * The little of a browser the lifecycle code touches, in Node: a document
  * with a settable `visibilityState` and its events, a window's events, and
- * both storages. Node has EventTarget and Event already.
+ * localStorage. Node has EventTarget and Event already.
  * Undo it with `vi.unstubAllGlobals()`.
  */
 export function fakeBrowser(): void {
@@ -65,7 +65,6 @@ export function fakeBrowser(): void {
   vi.stubGlobal("document", page);
   vi.stubGlobal("window", new EventTarget());
   vi.stubGlobal("localStorage", memoryStorage());
-  vi.stubGlobal("sessionStorage", memoryStorage());
 }
 
 export function testConfig(over: Partial<TelemetryConfig> = {}): TelemetryConfig {
