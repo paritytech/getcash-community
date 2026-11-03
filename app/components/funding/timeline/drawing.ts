@@ -133,7 +133,7 @@ export function timelineDrawing(
         id: milestone.id,
         size: isFailed ? "large" : sizeOf(milestone),
         ...(label === undefined ? {} : { label }),
-        labelAlign: isFailed ? (milestone.failedLabelAlign ?? "centre") : "centre",
+        labelAlign: "centre",
         state: index <= reached ? "complete" : isFailed ? "failed" : "upcoming",
         current: index === heading,
         halo: index === reached + 1 ? halo : null,

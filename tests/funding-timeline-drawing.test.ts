@@ -150,11 +150,11 @@ describe("top-up timeline drawing", () => {
       "centre",
     ],
     [
-      "Sent, grown, its label leaning away from Received",
+      "Sent, grown and centred between its neighbours",
       failedAt(2, 0.4),
       "●●✕○○○○",
       ["complete 1", "failed 0.4", "upcoming 0", "upcoming 0", "upcoming 0", "upcoming 0"],
-      "end",
+      "centre",
     ],
     [
       "Received",
@@ -164,11 +164,11 @@ describe("top-up timeline drawing", () => {
       "centre",
     ],
     [
-      "Converted, grown, its label leaning away from Received",
+      "Converted, grown and centred between its neighbours",
       failedAt(4, 0.5),
       "●●●●✕○○",
       ["complete 1", "complete 1", "complete 1", "failed 0.5", "upcoming 0", "upcoming 0"],
-      "start",
+      "centre",
     ],
     [
       "Added",
