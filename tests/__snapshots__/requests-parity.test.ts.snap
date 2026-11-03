@@ -588,7 +588,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "42/172 top-up / card / summary: not available in region, bank offered",
+    "scene": "42/172 top-up / card / summary: temporarily unavailable",
   },
   {
     "claimStage": null,
@@ -2142,7 +2142,7 @@ exports[`preview scenes > foreground views per preview scene match the snapshot 
     "meldStage": null,
     "meldSubmitted": false,
     "phase": null,
-    "scene": "153/172 withdrawal / card / quote: not available in region, bank offered",
+    "scene": "153/172 withdrawal / card / quote: temporarily unavailable",
   },
   {
     "claimStage": null,

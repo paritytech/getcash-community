@@ -829,7 +829,11 @@ export const useSessionStore = defineStore("session", () => {
       region = { country, fiat: live.fiat };
       corridor = live;
       const liveMethod = methodFor(live, uiMethod);
-      paymentMethodType = liveMethod?.paymentMethodType ?? null;
+      // A method whose providers all fail the adapter's probes is not quoted until they answer.
+      paymentMethodType =
+        liveMethod === null || liveMethod.temporarilyUnavailable
+          ? null
+          : liveMethod.paymentMethodType;
       if (liveMethod !== null && liveMethod.currency === live.fiat) {
         limits = {
           ...(liveMethod.min !== "" ? { min: liveMethod.min } : {}),

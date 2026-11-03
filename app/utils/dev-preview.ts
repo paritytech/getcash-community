@@ -269,7 +269,7 @@ function meldCatalog(session: Session) {
 
 /** The preview catalog with the card method down in `countries`, as the adapter serves a method
  *  whose providers all fail its probes. */
-function cardDownIn(session: Session, countries: readonly string[]) {
+function cardDownIn(countries: readonly string[]): Map<string, SupportedCorridor> {
   const corridors = previewCorridors();
   for (const country of countries) {
     const corridor = corridors.get(country);
@@ -281,7 +281,7 @@ function cardDownIn(session: Session, countries: readonly string[]) {
       ),
     });
   }
-  session.corridorByCountry = corridors;
+  return corridors;
 }
 
 /** The catalog not read yet (`loading`) or not readable at all. */
@@ -1785,10 +1785,7 @@ export const SCENES: Scene[] = [
     name: "top-up / list: card unavailable right now",
     apply: async (s, f, i) => {
       await topUpList({ entry: "amount" })(s, f, i);
-      cardDownIn(
-        s,
-        PREVIEW_COUNTRIES.map(({ country }) => country),
-      );
+      s.corridorByCountry = cardDownIn(PREVIEW_COUNTRIES.map(({ country }) => country));
     },
   },
   {
@@ -2046,7 +2043,7 @@ export const SCENES: Scene[] = [
     name: "top-up / card / picker: temporarily unavailable",
     apply: (s, f) => {
       cardSummary(s, f);
-      cardDownIn(s, ["DE", "FR"]);
+      s.corridorByCountry = cardDownIn(["DE", "FR"]);
       f.previewDrillIn = "currency";
     },
   },
@@ -2084,11 +2081,12 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    // Luxembourg routes bank but not card: bank is offered under crypto.
-    name: "top-up / card / summary: not available in region, bank offered",
+    // Germany's card providers all fail the adapter's probes: the "right now" line, crypto offered.
+    name: "top-up / card / summary: temporarily unavailable",
     apply: (s, f) => {
       cardSummary(s, f);
-      methodUnavailable(s, "LU");
+      s.corridorByCountry = cardDownIn(["DE"]);
+      methodUnavailable(s, "DE");
     },
   },
   {
@@ -3160,20 +3158,20 @@ export const SCENES: Scene[] = [
     apply: (s, f) => base(s, f),
   },
   {
-    // Luxembourg routes bank but not card: bank is offered under crypto.
-    name: "withdrawal / card / quote: not available in region, bank offered",
+    // Germany's card payout providers all fail the adapter's probes: the "right now" line.
+    name: "withdrawal / card / quote: temporarily unavailable",
     stage: {
       kind: "withdraw-package",
       route: "card",
       step: "quote",
-      country: "LU",
-      corridors: previewCorridors(),
+      country: "DE",
+      corridors: cardDownIn(["DE"]),
       saleError: { kind: "unrouted" },
     },
     apply: (s, f) => base(s, f),
   },
   {
-    // Brazil routes card but no bank rail, so card is offered under crypto.
+    // Brazil has no bank rail.
     name: "withdrawal / bank / quote: not available in region",
     stage: {
       kind: "withdraw-package",

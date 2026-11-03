@@ -29,6 +29,8 @@ const { worlds, adapter, corridors, catalogs } = vi.hoisted(() => ({
   corridors: {
     reads: [] as string[],
     unrouted: new Set<string>(),
+    /** Tokens whose card providers all fail the adapter's probes. */
+    down: new Set<string>(),
     limits: new Map<string, { min: string; max: string }>(),
   },
   /** The region dropdown's catalogs per token, and every read of them. */
@@ -54,6 +56,7 @@ vi.mock("../lib/supported", async (importOriginal) => ({
       ...(corridors.limits.get(destination) ?? { min: "", max: "" }),
       currency: "USD",
       providers: [],
+      ...(corridors.down.has(destination) ? { temporarilyUnavailable: true as const } : {}),
     };
     return { country, fiat: "USD", methods: corridors.unrouted.has(destination) ? [] : [card] };
   },
@@ -157,6 +160,7 @@ describe("a hosted Meld quote", () => {
     worlds.disposed.length = 0;
     corridors.reads.length = 0;
     corridors.unrouted.clear();
+    corridors.down.clear();
     corridors.limits.clear();
     catalogs.reads.length = 0;
     catalogs.countries.clear();
@@ -221,6 +225,14 @@ describe("a hosted Meld quote", () => {
     },
     { name: "neither routed for the method", unrouted: [USDT, DOT], read: [USDT, DOT], asked: [] },
     {
+      name: "USDT's card providers down, DOT accepted",
+      down: [USDT],
+      read: [USDT, DOT],
+      asked: ["pool"],
+      landed: "pool",
+    },
+    { name: "both tokens' card providers down", down: [USDT, DOT], read: [USDT, DOT], asked: [] },
+    {
       name: "neither quoted",
       usdt: noProvider,
       dot: emptyList,
@@ -251,25 +263,30 @@ describe("a hosted Meld quote", () => {
       asked: ["psm", "pool"],
       outOfRange: "1000.00",
     },
-  ])("$name", async ({ unrouted, usdt, dot, limits, read, asked, landed, error, outOfRange }) => {
-    for (const asset of unrouted ?? []) corridors.unrouted.add(asset);
-    if (usdt) adapter.set(TOKENS.USDT.meldCurrencyCode as string, usdt);
-    if (dot) adapter.set(TOKENS.PAS.meldCurrencyCode as string, dot);
-    for (const [asset, bounds] of Object.entries(limits ?? {})) corridors.limits.set(asset, bounds);
-    const session = useSessionStore();
-    session.setMethod("card");
-    session.setAmount("50");
-    await settle(session.fetchMeldQuote());
-    expect(corridors.reads).toEqual(read);
-    expect(worlds.builds).toEqual(asked);
-    // Every world but the one kept is let go.
-    expect(worlds.disposed).toEqual(landed === undefined ? asked : asked.slice(0, -1));
-    expect(session.live?.route.tier).toBe(landed);
-    expect(session.meldMethodUnavailable).toBe(asked.length === 0);
-    expect(session.quoteError).toBe(error ?? null);
-    expect(session.quoteFailures).toBe(error === undefined ? 0 : 1);
-    expect(session.quoteOutOfRange?.limit ?? null).toBe(outOfRange ?? null);
-  });
+  ])(
+    "$name",
+    async ({ unrouted, down, usdt, dot, limits, read, asked, landed, error, outOfRange }) => {
+      for (const asset of unrouted ?? []) corridors.unrouted.add(asset);
+      for (const asset of down ?? []) corridors.down.add(asset);
+      if (usdt) adapter.set(TOKENS.USDT.meldCurrencyCode as string, usdt);
+      if (dot) adapter.set(TOKENS.PAS.meldCurrencyCode as string, dot);
+      for (const [asset, bounds] of Object.entries(limits ?? {}))
+        corridors.limits.set(asset, bounds);
+      const session = useSessionStore();
+      session.setMethod("card");
+      session.setAmount("50");
+      await settle(session.fetchMeldQuote());
+      expect(corridors.reads).toEqual(read);
+      expect(worlds.builds).toEqual(asked);
+      // Every world but the one kept is let go.
+      expect(worlds.disposed).toEqual(landed === undefined ? asked : asked.slice(0, -1));
+      expect(session.live?.route.tier).toBe(landed);
+      expect(session.meldMethodUnavailable).toBe(asked.length === 0);
+      expect(session.quoteError).toBe(error ?? null);
+      expect(session.quoteFailures).toBe(error === undefined ? 0 : 1);
+      expect(session.quoteOutOfRange?.limit ?? null).toBe(outOfRange ?? null);
+    },
+  );
 
   it("judges the region dropdown on both tokens' catalogs, whichever route quotes", async () => {
     const card = (min: string) => ({

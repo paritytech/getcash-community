@@ -68,6 +68,17 @@ describe("a region only a swap routes", () => {
     expect(getSellQuote).not.toHaveBeenCalled();
   });
 
+  it("reads as not available there when the payout's providers are down, without asking Meld", async () => {
+    corridors.set("DE", {
+      country: "DE",
+      fiat: "EUR",
+      methods: [{ ...card("DOT", "assethub"), temporarilyUnavailable: true }],
+    });
+    const sale = await quoteFor("usdt@assethub,dot@assethub");
+    expect(sale.errorKind.value).toBe("unrouted");
+    expect(getSellQuote).not.toHaveBeenCalled();
+  });
+
   it("tries the swap when the build lists it", async () => {
     sizeSwapSale.mockRejectedValue(new Error("no channel"));
     const sale = await quoteFor("dot@assethub,usdc@arbitrum");

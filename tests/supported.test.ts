@@ -69,21 +69,25 @@ describe("lib/supported", () => {
     expect(methodFor(null, "card")).toBeNull();
   });
 
-  it("otherMethod names the other fiat method only when the corridor routes it", async () => {
-    const { otherMethod } = await import("../lib/supported");
-    const card = {
-      paymentMethodType: "CREDIT_DEBIT_CARD",
-      category: "card" as const,
-      min: "26",
-      max: "5000",
-      currency: "BRL",
-      providers: ["TRANSAK"],
+  it("isMethodDown says whether the corridor's method has every provider failing", async () => {
+    const { isMethodDown } = await import("../lib/supported");
+    const method = (category: "card" | "bank", down = false) => ({
+      paymentMethodType: category,
+      category,
+      min: "5",
+      max: "3000",
+      currency: "EUR",
+      providers: [],
+      ...(down ? { temporarilyUnavailable: true as const } : {}),
+    });
+    const corridor = {
+      country: "DE",
+      fiat: "EUR",
+      methods: [method("card"), method("bank", true)],
     };
-    const cardOnly: SupportedCorridor = { country: "BR", fiat: "BRL", methods: [card] };
-    expect(otherMethod(cardOnly, "bank")).toBe("card");
-    expect(otherMethod(cardOnly, "card")).toBeNull();
-    expect(otherMethod({ country: "EC", fiat: "USD", methods: [] }, "bank")).toBeNull();
-    expect(otherMethod(null, "bank")).toBeNull();
+    expect(isMethodDown(corridor, "bank")).toBe(true);
+    expect(isMethodDown(corridor, "card")).toBe(false);
+    expect(isMethodDown(null, "card")).toBe(false);
   });
 
   it("asks for a destination under the code the adapter's table names it by", async () => {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
-// A card or bank rail that routes nothing from the chosen region, top-up or withdrawal: the amount,
-// why, the region (still live, as one way out), the other fiat method when the region routes it,
-// and crypto. An amount the method takes but outside its limits is `AmountOutOfRange`'s.
+// A card or bank rail that routes nothing from the chosen region, or whose providers there are all
+// failing right now, top-up or withdrawal: the amount, why, the region (still live, as one way
+// out), and crypto. An amount the method takes but outside its limits is `AmountOutOfRange`'s.
 import { computed } from "vue";
 import { fmtFiat } from "../../utils/money";
 import CashAmount from "../ui/CashAmount.vue";
@@ -9,7 +9,6 @@ import DetailRows from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
 import RegionRow from "../ui/RegionRow.vue";
 import ScreenFrame from "../ui/ScreenFrame.vue";
-import TextButton from "../ui/TextButton.vue";
 
 const props = defineProps<{
   direction: "top-up" | "withdraw";
@@ -20,22 +19,22 @@ const props = defineProps<{
   countryName: string;
   /** In the region's own fiat; the row is left out when null. */
   minimum: { amount: string; fiat: string } | null;
-  /** The other fiat method, when the region routes it: the nearer way out than crypto. */
-  other: "card" | "bank" | null;
+  /** The region routes the method, but its providers are failing right now. */
+  temporarily?: boolean;
 }>();
 defineEmits<{
   region: [];
   useCrypto: [];
-  useOther: [];
 }>();
 
 const topUp = computed(() => props.direction === "top-up");
 const message = computed(
   () =>
-    `${props.method === "bank" ? "Bank" : "Card"} ${topUp.value ? "transfer" : "payout"} isn't available in this region`,
+    `${props.method === "bank" ? "Bank" : "Card"} ${topUp.value ? "transfer" : "payout"} isn't available ${props.temporarily ? "right now. Try again later" : "in this region"}`,
 );
+// A minimum means nothing while no provider answers.
 const minRows = computed(() =>
-  props.minimum
+  props.minimum && !props.temporarily
     ? [
         {
           label: topUp.value ? "Min. payment" : "Min. payout",
@@ -66,7 +65,6 @@ const minRows = computed(() =>
     <template #actions>
       <div class="flex flex-col items-center gap-2">
         <PillButton class="w-full" @click="$emit('useCrypto')">Use crypto</PillButton>
-        <TextButton v-if="other" @click="$emit('useOther')">Use {{ other }} instead</TextButton>
       </div>
     </template>
   </ScreenFrame>

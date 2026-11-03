@@ -5,7 +5,7 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { ChevronRight } from "lucide-vue-next";
 import { useSessionStore } from "../../../stores/session";
-import { methodMinimum, namedCountry, otherMethod } from "~~/lib/supported";
+import { isMethodDown, methodMinimum, namedCountry } from "~~/lib/supported";
 import { detectCountry } from "../../../composables/useDetectedCountry";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import { fiatAmountRejected, fiatOutOfRange } from "../../../funding/out-of-range";
@@ -77,8 +77,6 @@ watch(
 );
 
 const meldMethod = computed(() => (session.method === "bank" ? "bank" : "card"));
-/** The other fiat method, when this region routes it and not the chosen one. */
-const switchMethod = computed(() => otherMethod(session.meldCorridor, meldMethod.value));
 
 // The charged total is the hero; the toolbar already names the method, so no Via row.
 const heroAmount = computed(() => {
@@ -155,10 +153,9 @@ async function next() {
     :country="selectedCountry"
     :country-name="countryLabel"
     :minimum="methodMinimum(session.meldCorridor, meldMethod)"
-    :other="switchMethod"
+    :temporarily="isMethodDown(session.meldCorridor, meldMethod)"
     @region="emit('currency')"
     @use-crypto="emit('switchRoute', 'crypto')"
-    @use-other="switchMethod && emit('switchRoute', switchMethod)"
   />
   <AmountOutOfRange
     v-else-if="session.quoteOutOfRange !== null && !session.loading"

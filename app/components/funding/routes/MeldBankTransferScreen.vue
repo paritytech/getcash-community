@@ -14,7 +14,7 @@
 // screen shows: a retry, then a change of country or of rail.
 import { computed, ref } from "vue";
 import { ChevronRight, CircleAlert } from "lucide-vue-next";
-import { methodMinimum, namedCountry, otherMethod } from "~~/lib/supported";
+import { isMethodDown, methodMinimum, namedCountry } from "~~/lib/supported";
 import { useRequestsStore } from "../../../stores/requests";
 import { useSessionStore } from "../../../stores/session";
 import { currencyConfig } from "../../../funding/config";
@@ -142,10 +142,9 @@ function useAmount(cash: string) {
       :country="country"
       :country-name="countryLabel"
       :minimum="methodMinimum(session.meldCorridor, 'bank')"
-      :other="otherMethod(session.meldCorridor, 'bank')"
+      :temporarily="isMethodDown(session.meldCorridor, 'bank')"
       @region="emit('currency')"
       @use-crypto="emit('switchRoute', 'crypto')"
-      @use-other="emit('switchRoute', 'card')"
     />
     <AmountOutOfRange
       v-else-if="step === 'summary' && session.quoteOutOfRange !== null && !session.loading"

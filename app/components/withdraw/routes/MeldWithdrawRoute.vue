@@ -27,8 +27,8 @@ import { bankRailCountries } from "~~/lib/region";
 import {
   corridorOptions,
   countryName,
+  isMethodDown,
   methodMinimum,
-  otherMethod,
   namedCountry,
 } from "~~/lib/supported";
 import CurrencySelectScreen from "../../funding/routes/CurrencySelectScreen.vue";
@@ -158,8 +158,6 @@ const detectedCountry = computed(() => {
 const countryLabel = computed(() => namedCountry(sale.country.value, sale.countries.value));
 const corridor = computed(() => sale.corridors.value?.get(sale.country.value) ?? null);
 const minimum = computed(() => methodMinimum(corridor.value, method));
-/** The other fiat method, when the payout country routes it and not this one. */
-const switchMethod = computed(() => otherMethod(corridor.value, method));
 
 function pickCountry(country: string) {
   step.value = "quote";
@@ -518,7 +516,7 @@ onUnmounted(() => {
       :error-kind="sale.errorKind.value"
       :rate-failures="sale.rateFailures.value"
       :minimum="minimum"
-      :other="switchMethod"
+      :temporarily="isMethodDown(corridor, method)"
       :country="countryDecided ? sale.country.value : null"
       :country-name="countryDecided ? countryLabel : null"
       :starting="starting"
@@ -528,7 +526,6 @@ onUnmounted(() => {
       @region="step = 'region'"
       @retry="retryQuote"
       @use-crypto="emit('switchRoute', 'crypto')"
-      @use-other="switchMethod && emit('switchRoute', switchMethod)"
     />
     <WithdrawCancelScreen
       v-else-if="step === 'cancel'"

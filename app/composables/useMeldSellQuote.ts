@@ -257,7 +257,8 @@ export function useMeldSellQuote(
     const live = read === null ? null : sellableCorridor(read, OFFRAMP_LANE_ORDER);
     if (live !== null) {
       const found = methodFor(live, method);
-      return found === null
+      // A method whose providers all fail the adapter's probes is not quoted until they answer.
+      return found === null || found.temporarilyUnavailable
         ? null
         : {
             fiat: live.fiat,
@@ -275,7 +276,10 @@ export function useMeldSellQuote(
   function failUnrouted(): void {
     const routedAnywhere =
       corridors.value === null ||
-      [...corridors.value.values()].some((c) => methodFor(c, method) !== null);
+      [...corridors.value.values()].some((c) => {
+        const found = methodFor(c, method);
+        return found !== null && !found.temporarilyUnavailable;
+      });
     if (routedAnywhere) {
       fail(
         "unrouted",

@@ -619,11 +619,7 @@ export function methodMinimum(
   return { amount: method.min, fiat: method.currency };
 }
 
-/** The other fiat method (bank for card, card for bank) when the corridor routes it, else null. */
-export function otherMethod(
-  corridor: SupportedCorridor | null,
-  ui: "card" | "bank",
-): "card" | "bank" | null {
-  const other = ui === "card" ? "bank" : "card";
-  return methodFor(corridor, other) === null ? null : other;
+/** Whether the corridor routes the method but every provider behind it is failing right now. */
+export function isMethodDown(corridor: SupportedCorridor | null, ui: "card" | "bank"): boolean {
+  return methodFor(corridor, ui)?.temporarilyUnavailable === true;
 }
