@@ -1780,6 +1780,18 @@ export const SCENES: Scene[] = [
     }),
   },
   {
+    // No region's card providers answer the adapter's probes: the card pill is dimmed, and a tap
+    // on it says why for a few seconds.
+    name: "top-up / list: card unavailable right now",
+    apply: async (s, f, i) => {
+      await topUpList({ entry: "amount" })(s, f, i);
+      cardDownIn(
+        s,
+        PREVIEW_COUNTRIES.map(({ country }) => country),
+      );
+    },
+  },
+  {
     // The screen's own shapes while the top-ups are still being read.
     name: "top-up / list: loading",
     apply: topUpList({

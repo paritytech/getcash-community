@@ -239,6 +239,31 @@ describe("lib/supported", () => {
     expect(methods.map((m) => m.temporarilyUnavailable)).toEqual([true, undefined, undefined]);
   });
 
+  it("unservedMethods names a method no region offers right now, and none while unread", async () => {
+    const { unservedMethods } = await import("../lib/supported");
+    const method = (category: "card" | "bank", down = false) => ({
+      paymentMethodType: category,
+      category,
+      min: "5",
+      max: "3000",
+      currency: "EUR",
+      providers: [],
+      ...(down ? { temporarilyUnavailable: true as const } : {}),
+    });
+    const corridors = new Map<string, SupportedCorridor>([
+      ["DE", { country: "DE", fiat: "EUR", methods: [method("card", true), method("bank")] }],
+      ["FR", { country: "FR", fiat: "EUR", methods: [method("card", true)] }],
+    ]);
+    expect(unservedMethods(corridors)).toEqual(["card"]);
+    corridors.set("ES", { country: "ES", fiat: "EUR", methods: [method("card")] });
+    expect(unservedMethods(corridors)).toEqual([]);
+    expect(unservedMethods(new Map([["JP", { country: "JP", fiat: "JPY", methods: [] }]]))).toEqual(
+      ["card", "bank"],
+    );
+    expect(unservedMethods(null)).toEqual([]);
+    expect(unservedMethods(new Map())).toEqual([]);
+  });
+
   it("reuses a corridor read for ten minutes, then reads it again", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const us = { country: "US", fiat: "USD", methods: [] };

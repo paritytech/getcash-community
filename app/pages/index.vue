@@ -21,6 +21,7 @@ import {
   uniqueFundingPackages,
 } from "../funding/packages";
 import { frontloadHostPermissions } from "~~/lib/host-frontload";
+import { unservedMethods } from "~~/lib/supported";
 import {
   resolveFundingTopUpDestination,
   type FundingHistoryReturnScreen,
@@ -31,6 +32,7 @@ import type { FundingRoute, FundingSelection } from "../funding/selection";
 import type { FundingTopUpAdapter } from "../funding/top-up-adapter";
 import { projectFundingTopUps, type FundingTopUp } from "../funding/top-ups";
 import { useRequestsStore } from "../stores/requests";
+import { useSessionStore } from "../stores/session";
 import { isDemoBuild } from "../utils/demo";
 import {
   applyCurrentScene,
@@ -43,6 +45,7 @@ import { previewTopUpScene } from "../utils/dev-preview-top-ups";
 
 useVisualViewportHeight();
 const requests = useRequestsStore();
+const session = useSessionStore();
 const router = useRouter();
 
 function routeLabel(route: FundingRoute): string {
@@ -131,9 +134,13 @@ const activeTopUp = computed<FundingTopUp | null>(() => {
   return topUps.value.find(({ id }) => id === activeTopUpId.value) ?? null;
 });
 const topUpSections = computed(() => projectFundingTopUps(topUps.value, fundingSelectorConfig));
-const availableRoutes = availableFundingRoutes(
-  getcashRoutePackages,
-  fundingSelectorConfig.routes.map(({ id }) => id),
+const unservedRoutes = computed(() => unservedMethods(session.corridorByCountry));
+const availableRoutes = computed(() =>
+  availableFundingRoutes(
+    getcashRoutePackages,
+    fundingSelectorConfig.routes.map(({ id }) => id),
+    unservedRoutes.value,
+  ),
 );
 
 async function continueToPackage(next: FundingSelection) {
@@ -379,6 +386,7 @@ onMounted(async () => {
     v-else-if="topUpsReady"
     :initial-selection="selection"
     :available-routes="availableRoutes"
+    :unserved-routes="unservedRoutes"
     :initial-screen="shellEntry"
     :history-return="historyReturn"
     :error="routeError"
@@ -390,6 +398,7 @@ onMounted(async () => {
     @change="cancelPendingLoad"
     @continue="continueToPackage"
     @open-top-up="openTopUp"
+    @opened="session.loadSupportedCatalog()"
   />
   <!-- Launch load: the amount screen's chrome with skeletons over the data still being fetched. -->
   <FundingSelectorScreen v-else skeleton />

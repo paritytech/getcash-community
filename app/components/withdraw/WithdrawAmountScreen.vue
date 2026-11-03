@@ -33,6 +33,7 @@ const canContinue = computed(
     :amount="amount"
     :route="route"
     :available-routes="availableRoutes"
+    :unserved-routes="unservedRoutes"
     :history="history"
     :history-badge="historyBadge"
     :back="back"

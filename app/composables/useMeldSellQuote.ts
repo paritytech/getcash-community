@@ -173,6 +173,23 @@ export function sellableCorridor(
   return { ...corridor, methods };
 }
 
+/** Meld's codes for the assets a sale names, read once from the adapter the sale goes through. */
+async function assetsRead(): Promise<void> {
+  const client = meldSellClient();
+  if (client !== null) await ensureMeldAssets(client);
+}
+
+/** The off-ramp catalog cut down to the lanes this build sells; null when it cannot be read. */
+export async function readSellableCorridors(): Promise<Map<string, SupportedCorridor> | null> {
+  // Unread, a lane is matched by the asset the adapter names for it, and one it names none for
+  // is not sold; the quote asks again.
+  await assetsRead().catch(() => undefined);
+  const fetched = await fetchOfframpCorridors();
+  return (
+    fetched && new Map([...fetched].map(([cc, c]) => [cc, sellableCorridor(c, OFFRAMP_LANE_ORDER)]))
+  );
+}
+
 /** `reserved` is the CASH this app's other PSM withdrawals have yet to redeem, which the PSM's room
  *  is judged without for every candidate. */
 export function useMeldSellQuote(
@@ -212,12 +229,6 @@ export function useMeldSellQuote(
     if (kind === "rate") rateFailures.value += 1;
   }
 
-  /** Meld's codes for the assets a sale names, read once from the adapter the sale goes through. */
-  async function assetsRead(): Promise<void> {
-    const client = meldSellClient();
-    if (client !== null) await ensureMeldAssets(client);
-  }
-
   /** The off-ramp catalog, for the region picker. Null until a read succeeds. */
   async function loadCatalog(): Promise<void> {
     catalogLoading.value = true;
@@ -229,16 +240,9 @@ export function useMeldSellQuote(
   }
 
   async function readCatalog(): Promise<void> {
-    // Unread, a lane is matched by the asset the adapter names for it, and one it names none for
-    // is not sold; the quote below asks again.
-    await assetsRead().catch(() => undefined);
-    const fetched = await fetchOfframpCorridors();
+    const read = await readSellableCorridors();
     // A failed read keeps the last list.
-    if (fetched === null) return;
-    // Only the lanes this build sells: a region routed by none of them is greyed, not offered.
-    corridors.value = new Map(
-      [...fetched].map(([cc, c]) => [cc, sellableCorridor(c, OFFRAMP_LANE_ORDER)]),
-    );
+    if (read !== null) corridors.value = read;
   }
 
   /**

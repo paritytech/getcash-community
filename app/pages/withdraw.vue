@@ -39,6 +39,8 @@ import { previewStage, type PreviewStage } from "../utils/dev-preview-stage";
 import { useRouter } from "vue-router";
 import { WITHDRAWAL_LIST_WORDING, WITHDRAWAL_WORDING } from "../withdraw/rows";
 import { frontloadHostPermissions } from "~~/lib/host-frontload";
+import { unservedMethods, type SupportedCorridor } from "~~/lib/supported";
+import { readSellableCorridors } from "../composables/useMeldSellQuote";
 
 useVisualViewportHeight();
 const requests = useRequestsStore();
@@ -57,9 +59,19 @@ const {
   cancelPendingLoad: cancelPackageLoad,
   returnToShell,
 } = useRoutePackageLoader(getcashWithdrawPackages, routeLabel);
-const availableRoutes = availableFundingRoutes(
-  getcashWithdrawPackages,
-  withdrawalSelectorConfig.routes.map(({ id }) => id),
+/** The off-ramp catalog the card and bank pills are judged by; null until a read succeeds. */
+const sellCorridors = shallowRef<Map<string, SupportedCorridor> | null>(null);
+async function readSellCatalog() {
+  const read = await readSellableCorridors();
+  if (read !== null) sellCorridors.value = read;
+}
+const unservedRoutes = computed(() => unservedMethods(sellCorridors.value));
+const availableRoutes = computed(() =>
+  availableFundingRoutes(
+    getcashWithdrawPackages,
+    withdrawalSelectorConfig.routes.map(({ id }) => id),
+    unservedRoutes.value,
+  ),
 );
 
 const purse = usePurseBalance();
@@ -272,6 +284,7 @@ onMounted(async () => {
     :available="available"
     :initial-selection="selection"
     :available-routes="availableRoutes"
+    :unserved-routes="unservedRoutes"
     :initial-screen="shellEntry"
     :history-return="historyReturn"
     :error="amountError"
@@ -284,6 +297,7 @@ onMounted(async () => {
     @change="cancelPendingLoad"
     @continue="continueToPackage"
     @open-top-up="openTopUp"
+    @opened="readSellCatalog"
   />
   <!-- The purse's read state carries into the skeleton, so the column doesn't jump on mount. -->
   <FundingSelectorScreen

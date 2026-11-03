@@ -594,6 +594,21 @@ export function methodFor(
   return corridor.methods.find((m) => m.category === ui) ?? null;
 }
 
+/** The fiat methods no region offers right now. None while the catalog is unread: the picker's
+ *  retry answers that, not a disabled route. */
+export function unservedMethods(
+  corridors: ReadonlyMap<string, SupportedCorridor> | null,
+): ("card" | "bank")[] {
+  if (corridors === null || corridors.size === 0) return [];
+  return (["card", "bank"] as const).filter(
+    (ui) =>
+      ![...corridors.values()].some((c) => {
+        const method = methodFor(c, ui);
+        return method !== null && !method.temporarilyUnavailable;
+      }),
+  );
+}
+
 /** The method's minimum in the corridor's fiat, or `null` when the corridor prices none. */
 export function methodMinimum(
   corridor: SupportedCorridor | null,
