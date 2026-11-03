@@ -9,7 +9,6 @@
  */
 import { isInsideContainerSync } from "@parity/product-sdk-host";
 import { ingestHost } from "./environment";
-import { readHostInfo } from "./host-info";
 import type { TelemetryConfig } from "./init";
 
 const PRODUCT = "getcash";
@@ -53,6 +52,5 @@ export function configFromEnvironment(): TelemetryConfig | null {
     viewport: `${window.innerWidth}x${window.innerHeight}`,
     language: navigator.language,
     sessionId: SESSION_ID,
-    readHostInfo,
   };
 }

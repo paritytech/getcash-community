@@ -7,7 +7,11 @@
  * the OS, the engine and, on Android, the model; Android WebView's client
  * hints give the true model and OS version; an iPhone names nothing, so its
  * CLASS is inferred from screen points.
- * The host app's own name and version come from the host (host-info.ts).
+ *
+ * The host app's own name and version are not read: the only call for them,
+ * host-api-wrapper's `system.info`, takes over the port the app's host SDK
+ * talks on, so every host answer the app waits for after it is lost
+ * (index.test.ts guards it). `host.kind` comes from the user agent instead.
  *
  * Sentry's own `device` tags come from its server-side user-agent parser and
  * are not reliable (it cut a Motorola's model to "rola edge 30 pro Build/…"):
@@ -28,11 +32,6 @@ interface ParsedUserAgent {
   model: string | null;
 }
 
-export interface HostInfo {
-  name: string;
-  version: string;
-}
-
 interface DeviceProfile extends ParsedUserAgent {
   modelSource: "ua" | "client-hints" | "inferred" | null;
   cores: number | null;
@@ -40,8 +39,6 @@ interface DeviceProfile extends ParsedUserAgent {
   memory: number | null;
   screen: string;
   dpr: number | null;
-  hostName: string | null;
-  hostVersion: string | null;
 }
 
 interface ConnectionSnapshot {
@@ -119,9 +116,6 @@ function inferIosClass(width: number, height: number, kind: "iphone" | "ipad"): 
 }
 
 const CLIENT_HINTS_TIMEOUT_MS = 1000;
-/** the whole async part: a host that never answers must not leave the
- *  profile unresolved for the session */
-const COLLECT_TIMEOUT_MS = 3000;
 
 interface UserAgentData {
   getHighEntropyValues?: (hints: string[]) => Promise<Record<string, unknown>>;
@@ -161,10 +155,7 @@ async function clientHints(): Promise<{
 const dimensions = (w: unknown, h: unknown) =>
   typeof w === "number" && typeof h === "number" ? `${w}x${h}` : "";
 
-export async function collectDevice(input: {
-  userAgent: string;
-  readHostInfo: () => Promise<HostInfo | null>;
-}): Promise<DeviceProfile> {
+export async function collectDevice(input: { userAgent: string }): Promise<DeviceProfile> {
   const nav = typeof navigator === "undefined" ? undefined : navigator;
   const scr = typeof screen === "undefined" ? undefined : screen;
   const ua = input.userAgent;
@@ -172,11 +163,8 @@ export async function collectDevice(input: {
   let model = parsed.model;
   let modelSource: DeviceProfile["modelSource"] = model ? "ua" : null;
   let { osVersion, engineVersion } = parsed;
-  const asked = await withTimeout(
-    Promise.all([clientHints(), input.readHostInfo().catch(() => null)]),
-    COLLECT_TIMEOUT_MS,
-  );
-  const [hints, info] = asked ?? [{}, null];
+  // bounded inside: clientHints gives up after CLIENT_HINTS_TIMEOUT_MS
+  const hints = await clientHints();
   if (hints.model) {
     model = hints.model;
     modelSource = "client-hints";
@@ -205,8 +193,6 @@ export async function collectDevice(input: {
       typeof window !== "undefined" && typeof window.devicePixelRatio === "number"
         ? window.devicePixelRatio
         : null,
-    hostName: info?.name || null,
-    hostVersion: info?.version || null,
   };
 }
 
@@ -230,8 +216,6 @@ export function deviceTags(profile: DeviceProfile): Record<string, string> {
   // iOS: WebKit's user agent says 605 on every device; the OS version is the engine's
   const engineMajor = profile.os === "ios" ? "" : profile.engineVersion.split(".")[0];
   if (engineMajor) tags["device.engine_version"] = engineMajor;
-  if (profile.hostName) tags["host.app"] = profile.hostName;
-  if (profile.hostVersion) tags["host.app_version"] = profile.hostVersion;
   return tags;
 }
 

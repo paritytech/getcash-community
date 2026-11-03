@@ -83,7 +83,6 @@ export function testConfig(over: Partial<TelemetryConfig> = {}): TelemetryConfig
     viewport: "390x844",
     language: "en-GB",
     sessionId: "session-1",
-    readHostInfo: async () => null,
     bare: true,
     ...over,
   };

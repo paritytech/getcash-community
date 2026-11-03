@@ -54,7 +54,6 @@ import {
   deviceContext,
   deviceTags,
   watchConnection,
-  type HostInfo,
 } from "./device";
 import { detectHostKind, environmentFor, ingestHost, pageOrigin } from "./environment";
 import { interruptOpenJourneys, resetJourneysForTests } from "./journeys";
@@ -86,7 +85,6 @@ export interface TelemetryConfig {
   viewport: string;
   language: string;
   sessionId: string;
-  readHostInfo: () => Promise<HostInfo | null>;
   /** the Vue app, so its render and watcher errors are captured */
   app?: NonNullable<Parameters<typeof Sentry.init>[0]>["app"];
   /** tests: replaces the fetch transport */
@@ -376,7 +374,7 @@ function listenForPage(): void {
  *  event captured before it lands lacks its tags. */
 function probeDevice(config: TelemetryConfig): void {
   const startedIn = generation;
-  void collectDevice({ userAgent: config.userAgent, readHostInfo: config.readHostInfo })
+  void collectDevice({ userAgent: config.userAgent })
     .then((profile) => {
       if (startedIn !== generation) return;
       safe(() => {

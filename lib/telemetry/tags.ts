@@ -15,8 +15,6 @@ export const TAG_KEYS = [
   "device.memory",
   "device.engine",
   "device.engine_version",
-  "host.app",
-  "host.app_version",
   "net.type",
   "net.effective",
 ] as const;

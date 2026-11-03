@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The doorway in a build with a DSN, its core a stand-in that records the grant being asked.
@@ -42,5 +44,27 @@ describe("the doorway's grant request", () => {
 
     // Then
     expect(core.requestTelemetryGrant).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the host's port", () => {
+  it("As a person opening the app in a host, every host answer reaches the app: nothing loads host-api-wrapper, whose transport takes over the host's port", () => {
+    // Given: every source file the app ships
+    const root = join(import.meta.dirname, "..", "..");
+    const sources = ["app", "lib"].flatMap((dir) =>
+      readdirSync(join(root, dir), { recursive: true, encoding: "utf8" })
+        .filter((file) => /\.(ts|vue)$/.test(file) && !file.endsWith(".test.ts"))
+        .map((file) => join(dir, file)),
+    );
+    const importsWrapper = /(?:from|import\()\s*["']@novasamatech\/host-api-wrapper["']/;
+
+    // When
+    const offenders = sources.filter((file) =>
+      importsWrapper.test(readFileSync(join(root, file), "utf8")),
+    );
+
+    // Then
+    expect(sources.length).toBeGreaterThan(100);
+    expect(offenders).toEqual([]);
   });
 });
