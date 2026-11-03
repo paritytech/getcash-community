@@ -1,5 +1,5 @@
-// The live-capability catalog client: parsing, per-corridor caching, the card/bank resolver, and
-// the empty-catalog-is-retryable rule. Each test resets modules to clear the process-wide caches.
+// The live-capability catalog client: parsing, per-corridor caching and its expiry, the card/bank
+// resolver, and the empty-catalog-is-retryable rule. Each test resets modules to clear the process-wide caches.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SupportedCorridor } from "../lib/supported";
@@ -34,6 +34,7 @@ describe("lib/supported", () => {
     vi.stubEnv("VITE_MELD_BASE_URL", BASE);
   });
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
   });
@@ -204,6 +205,67 @@ describe("lib/supported", () => {
     expect(map?.size).toBe(1); // the empty-country row is dropped
     expect(map?.get("US")?.methods[0]?.paymentMethodType).toBe("CREDIT_DEBIT_CARD");
     expect(map?.get("US")?.methods[0]?.currency).toBe("USD");
+  });
+
+  it("reads a method the adapter's probes find down, and counts one without a flag as available", async () => {
+    const method = (category: string, availability?: string) => ({
+      paymentMethodType: category,
+      category,
+      min: "5",
+      max: "3000",
+      currency: "USD",
+      ...(availability === undefined ? {} : { availability }),
+    });
+    vi.stubGlobal(
+      "fetch",
+      stubFetch({
+        "/supported/corridors": {
+          corridors: [
+            {
+              country: "US",
+              fiat: "USD",
+              methods: [
+                method("card", "temporarily_unavailable"),
+                method("bank", "available"),
+                method("wallet"),
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    const { fetchSupportedCorridors } = await import("../lib/supported");
+    const methods = (await fetchSupportedCorridors(DEST))?.get("US")?.methods ?? [];
+    expect(methods.map((m) => m.temporarilyUnavailable)).toEqual([true, undefined, undefined]);
+  });
+
+  it("reuses a corridor read for ten minutes, then reads it again", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const us = { country: "US", fiat: "USD", methods: [] };
+    const fetchMock = stubFetch({
+      "/supported/corridors": { corridors: [us] },
+      "/supported/offramp/corridors": { corridors: [us] },
+      "/supported/offramp?country=US": us,
+      "/supported?country=US": us,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const lib = await import("../lib/supported");
+    const readAll = () =>
+      Promise.all([
+        lib.fetchCorridor(DEST, "US"),
+        lib.fetchSupportedCorridors(DEST),
+        lib.fetchOfframpCorridors(),
+        lib.fetchOfframpCorridor("US"),
+      ]);
+
+    await readAll();
+    vi.setSystemTime(Date.now() + 599_999);
+    await readAll();
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+
+    vi.setSystemTime(Date.now() + 1);
+    await readAll();
+    expect(fetchMock).toHaveBeenCalledTimes(8);
   });
 
   it("fetchSupportedCorridors caches a non-empty map and retries an empty one", async () => {
@@ -498,6 +560,7 @@ describe("lib/supported", () => {
     currency = "USD",
     providers = ["TRANSAK"],
   ) => ({ paymentMethodType: category, category, min, max, currency, providers });
+  const down = (m: ReturnType<typeof method>) => ({ ...m, temporarilyUnavailable: true as const });
   const corridor = (fiat: string, ...methods: ReturnType<typeof method>[]) => ({
     country: "DE",
     fiat,
@@ -534,6 +597,24 @@ describe("lib/supported", () => {
       usdt: corridor("USD", method("card", "10", "500")),
       pas: corridor("EUR", method("card", "5", "900", "EUR"), method("bank", "20", "900", "EUR")),
       want: corridor("USD", method("card", "10", "500"), method("bank", "20", "900", "EUR")),
+    },
+    {
+      name: "only PAS's method is available: it stands alone",
+      usdt: corridor("USD", down(method("card", "10", "500"))),
+      pas: corridor("USD", method("card", "5", "300")),
+      want: corridor("USD", method("card", "5", "300")),
+    },
+    {
+      name: "only USDT's method is available: it stands alone",
+      usdt: corridor("USD", method("card", "10", "500")),
+      pas: corridor("USD", down(method("card", "5", "900"))),
+      want: corridor("USD", method("card", "10", "500")),
+    },
+    {
+      name: "neither is available: widened, and still unavailable",
+      usdt: corridor("USD", down(method("card", "10", "500"))),
+      pas: corridor("USD", down(method("card", "5", "900"))),
+      want: corridor("USD", down(method("card", "5", "900"))),
     },
     {
       name: "USDT unreachable",

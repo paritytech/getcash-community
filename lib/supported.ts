@@ -34,6 +34,9 @@ export interface SupportedMethod {
   max: string;
   currency: string;
   providers: string[];
+  /** Every provider behind the method is failing the adapter's probes. The bounds are the last
+   *  known ones. */
+  temporarilyUnavailable?: true;
   /** An off-ramp method only: every lane the adapter found routing it, in the adapter's order,
    *  each with its own limits. The sale picks among them (see useMeldSellQuote). */
   lanes?: OfframpLaneRef[];
@@ -100,10 +103,30 @@ function headers(): Record<string, string> {
  *  are separate catalogs on Meld's side, with their own regions, methods and limits. */
 export type SupportedDirection = "buy" | "sell";
 
+/** How long a corridor read is reused. The adapter re-probes providers every ten minutes, so an
+ *  older read can miss an outage or a recovery. */
+const CORRIDOR_TTL_MS = 600_000;
+
+function expiring<V>(ttlMs: number) {
+  const entries = new Map<string, { value: V; at: number }>();
+  return {
+    get(key: string): V | undefined {
+      const entry = entries.get(key);
+      if (entry === undefined) return undefined;
+      if (Date.now() - entry.at < ttlMs) return entry.value;
+      entries.delete(key);
+      return undefined;
+    },
+    set(key: string, value: V): void {
+      entries.set(key, { value, at: Date.now() });
+    },
+  };
+}
+
 // All three keyed by direction and destination asset; a second destination is a second catalog.
 const countriesCache = new Map<string, SupportedCountry[]>();
-const corridorCache = new Map<string, SupportedCorridor>();
-const corridorsCache = new Map<string, Map<string, SupportedCorridor>>();
+const corridorCache = expiring<SupportedCorridor>(CORRIDOR_TTL_MS);
+const corridorsCache = expiring<Map<string, SupportedCorridor>>(CORRIDOR_TTL_MS);
 
 /** Cache key for a catalog: a buy keeps the bare destination it always had. */
 const catalogKey = (destination: MeldAssetId, direction: SupportedDirection) =>
@@ -127,6 +150,7 @@ function toMethod(raw: Record<string, unknown>, fiat: string): SupportedMethod {
     max: String(raw.max ?? ""),
     currency: String(raw.currency ?? fiat),
     providers: Array.isArray(raw.providers) ? raw.providers.map(String) : [],
+    ...(raw.availability === "temporarily_unavailable" ? { temporarilyUnavailable: true } : {}),
     ...lanesOf(raw.lanes),
   };
 }
@@ -183,8 +207,8 @@ export async function fetchSupportedCountries(
 }
 
 /**
- * The methods and limits a country's corridor offers. Cached per country. Returns `null` when
- * discovery is unreachable; an empty `methods` array means nothing routes here.
+ * The methods and limits a country's corridor offers. Cached per country for ten minutes. Returns
+ * `null` when discovery is unreachable; an empty `methods` array means nothing routes here.
  */
 export async function fetchCorridor(
   destination: MeldAssetId,
@@ -220,7 +244,8 @@ export async function fetchCorridor(
   }
 }
 
-// Every supported corridor as a country -> corridor map, DB-backed and tab-cached; null when unreachable.
+// Every supported corridor as a country -> corridor map, DB-backed and cached for ten minutes; null
+// when unreachable.
 export async function fetchSupportedCorridors(
   destination: MeldAssetId,
   direction: SupportedDirection = "buy",
@@ -305,7 +330,8 @@ function widerBound(a: string, b: string, sign: -1 | 1): string {
 /**
  * One country's two corridors as one: a category is routed when either routes it, and where both
  * do, the first method of each is bounded by the smaller minimum and the larger maximum. Bounds in
- * two currencies are never mixed: the preferred method's stand.
+ * two currencies are never mixed: the preferred method's stand. Where only one of the two is
+ * available, it stands alone.
  */
 export function mergeCorridor(
   preferred: SupportedCorridor | null,
@@ -317,6 +343,9 @@ export function mergeCorridor(
   const widened = (method: SupportedMethod): SupportedMethod => {
     const twin = first(other, method.category);
     if (method !== first(preferred, method.category) || twin === undefined) return method;
+    if (method.temporarilyUnavailable !== twin.temporarilyUnavailable) {
+      return method.temporarilyUnavailable ? twin : method;
+    }
     if (twin.currency !== method.currency) return method;
     return {
       ...method,
@@ -354,8 +383,8 @@ export function mergeCorridorMaps(
 // first lane that routes it. A sale reads this instead of one destination's sell catalog, so a
 // region no provider buys the Asset Hub asset in still sells, through the swap.
 
-let offrampCorridors: Map<string, SupportedCorridor> | null = null;
-const offrampCorridorCache = new Map<string, SupportedCorridor>();
+const offrampCorridorsCache = expiring<Map<string, SupportedCorridor>>(CORRIDOR_TTL_MS);
+const offrampCorridorCache = expiring<SupportedCorridor>(CORRIDOR_TTL_MS);
 
 function corridorOf(c: Record<string, unknown>, country: string): SupportedCorridor {
   const fiat = String(c.fiat ?? "");
@@ -368,9 +397,11 @@ function corridorOf(c: Record<string, unknown>, country: string): SupportedCorri
   };
 }
 
-/** Every off-ramp corridor as a country -> corridor map, tab-cached; null when unreachable. */
+/** Every off-ramp corridor as a country -> corridor map, cached for ten minutes; null when
+ *  unreachable. */
 export async function fetchOfframpCorridors(): Promise<Map<string, SupportedCorridor> | null> {
-  if (offrampCorridors !== null) return offrampCorridors;
+  const cached = offrampCorridorsCache.get("all");
+  if (cached !== undefined) return cached;
   const base = baseUrl();
   if (base === undefined) return null;
   try {
@@ -385,14 +416,15 @@ export async function fetchOfframpCorridors(): Promise<Map<string, SupportedCorr
       if (country !== "") map.set(country, corridorOf(c, country));
     }
     // Only a non-empty result is cached; an empty one (cold cache) is retried next call.
-    if (map.size > 0) offrampCorridors = map;
+    if (map.size > 0) offrampCorridorsCache.set("all", map);
     return map;
   } catch {
     return null;
   }
 }
 
-/** One country's off-ramp corridor, read live. Cached per country; null when unreachable. */
+/** One country's off-ramp corridor, read live. Cached per country for ten minutes; null when
+ *  unreachable. */
 export async function fetchOfframpCorridor(country: string): Promise<SupportedCorridor | null> {
   const hit = offrampCorridorCache.get(country);
   if (hit !== undefined) return hit;
