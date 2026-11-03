@@ -89,6 +89,7 @@ import {
   type StatusSubscription,
 } from "./host-payments";
 import { ASSET_HUB_GENESIS, PEOPLE_GENESIS } from "./host-chain";
+import { devLog } from "./log";
 
 /** How long to wait for the worker to come up before a hand-off fails. */
 const WORKER_READY_MS = 20_000;
@@ -166,7 +167,7 @@ export async function cashCanMove(): Promise<boolean> {
     return true;
   } catch (e) {
     if (e instanceof NoCashTransferError) return false;
-    console.warn("[withdraw] the CASH transfer could not be read (the worker asks again):", e);
+    devLog("withdraw", "the CASH transfer could not be read (the worker asks again)", e, "warn");
     return true;
   }
 }
@@ -692,7 +693,7 @@ export async function quoteWithdrawOffers(
   const allUnavailable = (reason: string) => {
     for (const destination of destinations)
       offers.set(destination.id, { state: "unavailable", reason });
-    console.warn(`[withdraw] offers unavailable: ${reason}`);
+    devLog("withdraw", `offers unavailable: ${reason}`, undefined, "warn");
     return offers;
   };
 
@@ -829,9 +830,11 @@ export async function advanceWithdrawCounter(sourceId: string, n: number): Promi
   try {
     await (await hostStorageAdapter()).write(tradeCounterKey(sourceId), String(n + 1));
   } catch (e) {
-    console.warn(
-      `[withdraw] counter advance for ${sourceId} failed (the next start searches past it):`,
+    devLog(
+      "withdraw",
+      `counter advance for ${sourceId} failed (the next start searches past it)`,
       e,
+      "warn",
     );
   }
 }

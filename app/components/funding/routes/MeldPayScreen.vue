@@ -19,6 +19,8 @@ import SkeletonBlock from "../../ui/SkeletonBlock.vue";
 import SkeletonRow from "../../ui/SkeletonRow.vue";
 import AmountOutOfRange from "../AmountOutOfRange.vue";
 import MethodUnavailable from "../MethodUnavailable.vue";
+import { devLog } from "~~/lib/log";
+import { trackAction } from "~~/lib/telemetry";
 
 const session = useSessionStore();
 // switchRoute asks the shell to swap to the crypto package when this region does not route the
@@ -133,12 +135,13 @@ const canContinue = computed(
 );
 async function next() {
   if (!canContinue.value) return;
+  trackAction("card.pay");
   starting.value = true;
   startError.value = null;
   try {
     await session.start();
   } catch (e) {
-    console.warn("[meld] could not start the payment:", e);
+    devLog("meld", "could not start the payment", e, "warn");
     startError.value =
       e instanceof Error ? e.message : "Could not start the payment. Please try again.";
     starting.value = false;

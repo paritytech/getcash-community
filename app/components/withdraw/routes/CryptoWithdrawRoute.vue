@@ -5,6 +5,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { depositTokenOf, PSM_EXTERNAL, type ConversionRoute } from "@getsome/funding";
 import { useDrillIn } from "../../../composables/useDrillIn";
+import { useScreen } from "../../../composables/useScreen";
 import { useStateDirector } from "../../../composables/useStateDirector";
 import { psmReserved, useWithdrawalRequest } from "../../../composables/useWithdrawalRequest";
 import type { FundingPackageEmits } from "../../../funding/handoff";
@@ -42,6 +43,8 @@ import WithdrawNetworkScreen from "../WithdrawNetworkScreen.vue";
 import WithdrawReturnFundsScreen from "../WithdrawReturnFundsScreen.vue";
 import WithdrawSummaryScreen from "../WithdrawSummaryScreen.vue";
 import WithdrawTokenScreen from "../WithdrawTokenScreen.vue";
+import { devLog } from "~~/lib/log";
+import { trackAction } from "~~/lib/telemetry";
 
 const props = defineProps<{
   /** A fresh withdrawal: the amount the shell took. */
@@ -62,6 +65,7 @@ useStateDirector();
 type Step =
   "network" | "token" | "address" | "summary" | "fees" | "journey" | "cancel" | "return-funds";
 const step = ref<Step>(props.topUp ? "journey" : "network");
+useScreen(() => (step.value === "fees" ? "fees" : (`withdraw.${step.value}` as const)));
 /** The fee breakdown and where it was opened from, so back returns there. */
 const { from: feesFrom, open: openFees } = useDrillIn<"summary" | "journey">("summary", () => {
   step.value = "fees";
@@ -271,7 +275,7 @@ async function estimate(
   } catch (error: unknown) {
     // The sale stands on its own: an estimate that cannot be priced hides the figure, as it
     // always did, and does not hold the withdrawal back.
-    console.warn("[withdraw] receive estimate unavailable:", error);
+    devLog("withdraw", "receive estimate unavailable", error, "warn");
     return { kind: "priced", sale, expectedLanding: null, receive: undefined, fees: null };
   }
 }
@@ -313,12 +317,13 @@ async function onAddress(entered: string) {
     } else if (estimated.kind === "declined") receive.value = undefined;
     else showEstimate(estimated);
   } catch (error: unknown) {
-    console.warn("[withdraw] receive estimate unavailable:", error);
+    devLog("withdraw", "receive estimate unavailable", error, "warn");
     receive.value = undefined;
   }
 }
 
 async function confirm() {
+  trackAction("withdraw.confirm");
   const picked = destination.value;
   const base = toCashBase(amount.value);
   if (picked === null || base === null || starting.value) return;
@@ -378,6 +383,7 @@ watch(amount, () => {
 async function confirmCancel() {
   const current = record.value;
   if (current === null || busy.value) return;
+  trackAction("withdraw.cancel");
   busy.value = true;
   try {
     const outcome = await withdrawal.cancel(current.ref);
@@ -409,8 +415,10 @@ async function act(run: (ref: RequestRef) => Promise<boolean>, failed: string) {
   }
 }
 
-const retry = () =>
-  act(withdrawal.retry, "The withdrawal could not be restarted. Try again in a moment.");
+const retry = () => {
+  trackAction("withdraw.retry");
+  return act(withdrawal.retry, "The withdrawal could not be restarted. Try again in a moment.");
+};
 
 const switchToPool = () =>
   act(
@@ -447,7 +455,7 @@ watch(
         if (heldKey.value === key) poolFigure.value = figure;
       })
       .catch((error: unknown) => {
-        console.warn("[withdraw] pool estimate unavailable:", error);
+        devLog("withdraw", "pool estimate unavailable", error, "warn");
       });
   },
   { immediate: true },

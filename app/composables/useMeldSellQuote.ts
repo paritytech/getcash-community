@@ -33,6 +33,7 @@ import {
 } from "~~/lib/supported";
 import { detectedCountryNow } from "./useDetectedCountry";
 import { meldSellClient } from "../withdraw/meld-client";
+import { devLog } from "~~/lib/log";
 
 /** A priced sale: where it pays out, what the key pays, and the provider line for it. */
 export interface MeldSellQuote {
@@ -344,7 +345,7 @@ export function useMeldSellQuote(
         } catch (e: unknown) {
           if (mine !== epoch) return;
           const message = e instanceof Error ? e.message : String(e);
-          console.warn(`[sell] lane ${code} skipped: ${message}`);
+          devLog("sell", `lane ${code} skipped: ${message}`, undefined, "warn");
           // The best lane's failure says most about why the sale cannot be priced.
           failure ??= message;
         }

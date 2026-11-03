@@ -36,6 +36,7 @@ import { useOffersStore } from "../stores/offers";
 import { useRequestsStore } from "../stores/requests";
 import { useSessionStore } from "../stores/session";
 import type { RequestRef } from "../utils/request-index";
+import { devLog } from "~~/lib/log";
 
 type Session = ReturnType<typeof useSessionStore>;
 type Flow = ReturnType<typeof useFlowStore>;
@@ -3142,7 +3143,7 @@ export async function directScene(delta: 1 | -1): Promise<string> {
   // The container first: the shell reads this and moves, then applies the state again on top.
   previewStage.value = stageFor(scene);
   const label = `${index + 1}/${SCENES.length} ${scene.name}`;
-  console.info(`[preview] ${label}`);
+  devLog("preview", `${label}`);
   await applyCurrentScene();
   return label;
 }

@@ -3,6 +3,8 @@
 
 import { onMounted, onUnmounted, ref, type Ref } from "vue";
 import { isHosted } from "~~/lib/host-account";
+import { devLog } from "~~/lib/log";
+import { reasonOf, reportFailure } from "~~/lib/telemetry";
 
 /** Each state named so loading and no-purse can never swap: the withdrawal gate fails closed
  *  on unknown, open only where there is provably nothing to cap. */
@@ -71,12 +73,15 @@ export function usePurseBalance(): PurseBalance {
     } catch (error: unknown) {
       // Unknown, not absent — "no purse" would lift the withdrawal cap. A balance already read
       // stands, so a hiccup mid-refresh never collapses the pill or closes the gate.
-      console.warn("[withdraw] purse balance unavailable:", error);
+      devLog("withdraw", "purse balance unavailable", error, "warn");
       if (run !== epoch) return;
       const delay = RETRY_DELAYS_MS[attempt];
       if (state.value.kind !== "known") {
         state.value = { kind: "unknown" };
-        if (delay === undefined) failed.value = true;
+        if (delay === undefined) {
+          failed.value = true;
+          reportFailure("purse-unreadable", { reason: reasonOf(error), error });
+        }
       }
       retryTimer = setTimeout(() => {
         retryTimer = null;

@@ -51,6 +51,12 @@ inputs:
       Optional VITE_TOP_UP_MAXIMUM, the most a top up can be, in CASH. Empty uses the build's
       default, 5000 CASH.
     default: ""
+  sentry-dsn:
+    description: >
+      Optional VITE_SENTRY_DSN, the Sentry project telemetry reports to, inlined at build time.
+      Empty is valid and is the opt-out: the build then carries no Sentry code and makes no
+      request to Sentry, which a later step checks.
+    default: ""
   require-secrets:
     description: >
       Whether an empty meld-base-url, meld-product-id or chainflip-broker-api-key is a
@@ -113,6 +119,7 @@ runs:
         VITE_OFFRAMP_LANES: ${{ inputs.offramp-lanes }}
         VITE_TOP_UP_MINIMUM: ${{ inputs.top-up-minimum }}
         VITE_TOP_UP_MAXIMUM: ${{ inputs.top-up-maximum }}
+        VITE_SENTRY_DSN: ${{ inputs.sentry-dsn }}
         REQUIRE_SECRETS: ${{ inputs.require-secrets }}
       run: |
         if [ -z "$VITE_MELD_BASE_URL" ]; then
@@ -137,6 +144,18 @@ runs:
           echo "::warning::VITE_CHAINFLIP_BROKER_API_KEY is empty (secrets unavailable for this build). Building with the crypto withdrawals shown as not available; this artifact must not be deployed."
         fi
         pnpm build
+
+    # The opt-out is a promise about the bytes: a build without a DSN must hold no Sentry code
+    # (its `__SENTRY__` global) and no ingest URL, whatever a dependency pulls in.
+    - name: Check the telemetry opt-out
+      if: inputs.sentry-dsn == ''
+      shell: bash
+      run: |
+        if grep -rlE "__SENTRY__|ingest(\.[a-z]+)?\.sentry\.io" .output/public; then
+          echo "::error::This build has no VITE_SENTRY_DSN but the files above carry Sentry code. The telemetry core must only be reached through lib/telemetry/index.ts's guarded import."
+          exit 1
+        fi
+        echo "No Sentry in the build."
 
     # upload-artifact@v5 pairs with the download-artifact@v8 in the deploy-site action.
     - name: Upload build artifact

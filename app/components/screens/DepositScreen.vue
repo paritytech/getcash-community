@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import { trackAction } from "~~/lib/telemetry";
 import { Copy } from "lucide-vue-next";
 import { estimateSourceFromCash } from "~~/lib/demo-rates";
 import { FUNDING_CHAINS } from "~~/lib/config";
@@ -131,6 +132,7 @@ const showCancel = computed(
 // Either row's copy raises the shared pill above the buttons.
 const { copy: copyToClipboard } = useCopyToClipboard();
 function copy(target: "amount" | "address") {
+  trackAction("deposit.copy", { what: target });
   const text = target === "amount" ? amount.value?.value : address.value;
   if (text) void copyToClipboard(text);
 }

@@ -286,8 +286,33 @@ in `.env.local` or `.env`.
 
 CI does the same: a push to `main` deploys `getcash.paseo`, and every pull request gets a
 preview at `pr<N>-getcash.paseo`. Both are signed with the repository's `MNEMONIC` secret and
-build with `VITE_FAUCET_SEED`, `VITE_MELD_BASE_URL`, `VITE_MELD_PRODUCT_ID` and
-`VITE_CHAINFLIP_BROKER_API_KEY` from repository secrets.
+build with `VITE_FAUCET_SEED`, `VITE_MELD_BASE_URL`, `VITE_MELD_PRODUCT_ID`,
+`VITE_CHAINFLIP_BROKER_API_KEY` and `VITE_SENTRY_DSN` from repository secrets.
+
+## Telemetry
+
+Telemetry is a deployment's opt-in. A build with `VITE_SENTRY_DSN` reports to that Sentry
+project; a build without it carries no Sentry code and makes no request to any Sentry host. The
+SDK is reached only through one guarded dynamic import in `lib/telemetry/index.ts`, which the
+bundler drops when the DSN is unset, and CI fails a DSN-less build whose output still holds any
+Sentry code.
+
+What a deployment with a DSN sends:
+
+- **Failures**, one event of a fixed kind each (`lib/telemetry/catalogue.ts`): a top-up or
+  withdrawal that ended failed, a hand-off the worker refused, a record the host would not store,
+  an unreadable purse, a host that cannot run the build, and unhandled errors.
+- **Journeys**, as spans: the app opening, and each top-up and withdrawal started on the page,
+  step by step (`app/funding/requests/telemetry.ts`).
+- **Counts**: time on each screen and the main actions.
+- **Kills**: a page the phone killed with a journey open (say mid top-up) is reported by the next
+  open, with the log that page left behind.
+- **The log**: every `devLog` line (`lib/log.ts`) rides on events as a breadcrumb, and the page's
+  whole log is attached to its first errors and to the report of a cut journey. A quiet session
+  sends no log line.
+
+Recovery phrases, 32-byte hex values (the shape of a key's entropy, so transaction hashes too)
+and URL queries are scrubbed from every line and event. Addresses are sent as they are.
 
 ## License
 

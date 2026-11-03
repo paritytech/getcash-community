@@ -30,6 +30,7 @@ import SkeletonBlock from "../../ui/SkeletonBlock.vue";
 import AmountOutOfRange from "../AmountOutOfRange.vue";
 import MethodUnavailable from "../MethodUnavailable.vue";
 import MeldPaySheet from "./MeldPaySheet.vue";
+import { devLog } from "~~/lib/log";
 
 const props = defineProps<{
   /** The region the quote is priced in, as an ISO 3166-1 alpha-2 code. */
@@ -108,7 +109,7 @@ async function openRequest() {
   try {
     await session.start();
   } catch (e) {
-    console.warn("[meld] could not open the transfer:", e);
+    devLog("meld", "could not open the transfer", e, "warn");
     startError.value =
       e instanceof Error ? e.message : "Could not open the transfer. Please try again.";
   } finally {

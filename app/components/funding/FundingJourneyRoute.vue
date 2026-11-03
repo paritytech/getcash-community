@@ -3,6 +3,7 @@
 // Reached
 // from a package's handoff or from a top-up opened from the list.
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { useScreen } from "../../composables/useScreen";
 import { useStateDirector } from "../../composables/useStateDirector";
 import { useVisibilityReconcile } from "../../composables/useVisibilityReconcile";
 import type { FundingTopUp } from "../../funding/top-ups";
@@ -19,6 +20,8 @@ import ReturnFundsScreen from "../screens/ReturnFundsScreen.vue";
 import FundingSettledStatusScreen from "./FundingSettledStatusScreen.vue";
 import { useJourneyQuote } from "../../composables/useJourneyQuote";
 import MeldFeeDetailsScreen from "./routes/MeldFeeDetailsScreen.vue";
+import { devLog } from "~~/lib/log";
+import { trackAction } from "~~/lib/telemetry";
 
 const props = defineProps<{
   title: string;
@@ -82,6 +85,17 @@ const showingRecovery = ref(false);
 /** The deposit guide over a top-up whose Cash is in People's trap: what to send to its own
  *  account for the claim's fee. Back (toolbar or bottom button) returns to the journey. */
 const showingRecoveryDeposit = ref(false);
+// The same order as the template's switch.
+useScreen(() => {
+  if (readOnly && props.topUp && !showingFees.value) return "top-up.settled";
+  if (waiting.value || unavailable.value) return null;
+  if (flow.confirmingCancel) return "top-up.cancel";
+  if (showingRefund.value) return "top-up.refund";
+  if (showingRecovery.value) return "top-up.recover-deposit";
+  if (showingRecoveryDeposit.value) return "top-up.recover-trapped";
+  if (showingFees.value) return "fees";
+  return "top-up.journey";
+});
 // Nothing left to send for: the trap claimed, a deposit already being converted, or the claim
 // on its way. The screen closes so it cannot ask for a second deposit.
 const recoveryStillWaitsForADeposit = computed<boolean | null>(() => {
@@ -110,13 +124,14 @@ watch(
 async function recoverFromBalance() {
   const record = requests.foregroundRecord;
   if (record === null) return;
+  trackAction("recover.from-balance");
   recoveryNotice.value = null;
   try {
     const asked = await requests.requestRecoveryPayment(record.ref);
     if (!asked.ok) recoveryNotice.value = asked.reason;
   } catch (e) {
     // The stamp or the host could not be reached: said, and the offer stands for the next tap.
-    console.warn(`[funding] the recovery fee could not be asked for: ${String(e)}`);
+    devLog("funding", `the recovery fee could not be asked for: ${String(e)}`, undefined, "warn");
     recoveryNotice.value = "Your balance couldn't be asked just now. Try again in a moment.";
   }
 }
@@ -166,7 +181,7 @@ onMounted(async () => {
   try {
     opened = await props.open(props.topUp);
   } catch (e) {
-    console.warn("[funding] could not open the top-up:", e);
+    devLog("funding", "could not open the top-up", e, "warn");
     opened = false;
   } finally {
     if (active) {

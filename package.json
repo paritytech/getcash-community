@@ -40,6 +40,7 @@
     "@pinia/nuxt": "^0.11.2",
     "@polkadot-api/descriptors": "file:.papi/descriptors",
     "@polkadot-labs/hdkd-helpers": "^0.0.27",
+    "@sentry/vue": "10.72.0",
     "buffer": "^6.0.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
