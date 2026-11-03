@@ -8,7 +8,7 @@ import { useSessionStore } from "../../../stores/session";
 import { methodMinimum, namedCountry, otherMethod } from "~~/lib/supported";
 import { detectCountry } from "../../../composables/useDetectedCountry";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
-import { fiatOutOfRange } from "../../../funding/out-of-range";
+import { fiatAmountRejected, fiatOutOfRange } from "../../../funding/out-of-range";
 import type { FundingRoute } from "../../../funding/selection";
 import DetailRows from "../../ui/DetailRows.vue";
 import PillButton from "../../ui/PillButton.vue";
@@ -125,6 +125,7 @@ const canContinue = computed(
     !session.loading &&
     !session.quoteError &&
     !session.meldMethodUnavailable &&
+    !session.quoteAmountRejected &&
     !!session.quoted &&
     !starting.value &&
     // A refusal blocks Continue until a fresh quote clears it.
@@ -167,6 +168,14 @@ async function next() {
     @region="emit('currency')"
     @change-amount="emit('changeAmount')"
     @use-amount="useAmount"
+  />
+  <AmountOutOfRange
+    v-else-if="session.quoteAmountRejected && !session.loading"
+    :amount="session.amountHuman"
+    :words="fiatAmountRejected(meldMethod, countryLabel)"
+    :region="{ label: 'Payment country', value: countryLabel, country: selectedCountry }"
+    @region="emit('currency')"
+    @change-amount="emit('changeAmount')"
   />
   <RateErrorScreen
     v-else-if="session.quoteError !== null && !session.loading"

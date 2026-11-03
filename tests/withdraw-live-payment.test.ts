@@ -68,12 +68,13 @@ describe("requestKeyPayment", () => {
     const { requestKeyPayment, PaymentRefusedError } = await import("../lib/withdraw-live");
     manager.requestPayment.mockRejectedValueOnce(new Rejected("Rejected"));
     await expect(requestKeyPayment({ idHex: ID, amount: 1n, key: KEY })).rejects.toThrow(
-      new PaymentRefusedError("The payment was declined."),
+      new PaymentRefusedError("The payment was declined.", "declined"),
     );
     manager.requestPayment.mockRejectedValueOnce(new InsufficientBalance("short"));
-    await expect(requestKeyPayment({ idHex: ID, amount: 1n, key: KEY })).rejects.toThrow(
-      "The balance does not cover this withdrawal.",
-    );
+    await expect(requestKeyPayment({ idHex: ID, amount: 1n, key: KEY })).rejects.toMatchObject({
+      message: "The balance does not cover this withdrawal.",
+      refusal: "insufficient-balance",
+    });
     manager.requestPayment.mockRejectedValueOnce(new AlreadyExists("dup"));
     await expect(requestKeyPayment({ idHex: ID, amount: 1n, key: KEY })).resolves.toBeUndefined();
   });

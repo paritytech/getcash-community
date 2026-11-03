@@ -937,6 +937,12 @@ describe("a fiat sale from the page", () => {
       expect(openSwap).not.toHaveBeenCalled();
     });
 
+    it("names no seller wallet: the swap, not the key, pays the provider", async () => {
+      const spy = vi.spyOn(meld, "createSellSession");
+      await laneSaleAtDeposit();
+      expect(spy.mock.calls[0]![0]).not.toHaveProperty("walletAddress");
+    });
+
     it("keeps a swap opened earlier while the key still has time to pay it", async () => {
       const ref = await laneSaleAtDeposit();
       const kept = swapChannel("cf-kept", FIXTURE_NOW + 3_600_000);

@@ -44,6 +44,17 @@ export function fiatOutOfRange(
   };
 }
 
+/** A card or bank top-up whose amount the provider turned down without naming a bound: no row and
+ *  no bound, so a different amount is the one way on. */
+export function fiatAmountRejected(method: "card" | "bank", countryName: string): OutOfRangeWords {
+  const payment = method === "bank" ? "bank payment" : "card payment";
+  return {
+    message: `This amount can't be paid by ${payment} in ${countryName}`,
+    rows: [],
+    bound: null,
+  };
+}
+
 /** A crypto withdrawal under the provider's minimum for the token: the smallest it takes, in
  *  whole CASH, as the pickers' rows word it. */
 export function cryptoBelowMinimum(minimumCash: bigint): OutOfRangeWords {

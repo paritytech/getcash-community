@@ -51,6 +51,7 @@ import {
   isAdapterOutage,
   MeldAmountOutOfRangeError,
   pickBestQuote,
+  refusalOf,
   shareStatusReads,
   type MeldClientLike,
   type MeldQuoteRaw,
@@ -398,6 +399,9 @@ export const useSessionStore = defineStore("session", () => {
   /** The amount's fiat falls outside the method's limits. Set instead of `quoteError`: retrying the
    *  same amount cannot help, so it neither counts as a failure nor offers another try. */
   const quoteOutOfRange = shallowRef<QuoteOutOfRange | null>(null);
+  /** A provider turned the amount down without naming a bound. Like `quoteOutOfRange`, the same
+   *  amount cannot quote, so the screen asks for a different one rather than offering a retry. */
+  const quoteAmountRejected = ref(false);
   /** True when the selected card or bank method is not routed for the chosen region. Not a quote
    *  failure; nothing to retry. */
   const meldMethodUnavailable = ref(false);
@@ -539,6 +543,7 @@ export const useSessionStore = defineStore("session", () => {
     sourcePrice.value = null;
     quoteError.value = null;
     quoteOutOfRange.value = null;
+    quoteAmountRejected.value = false;
     quoteFailures.value = 0;
     meldMethodUnavailable.value = false;
   }
@@ -550,6 +555,7 @@ export const useSessionStore = defineStore("session", () => {
     quoted.value = null;
     quoteError.value = null;
     quoteOutOfRange.value = null;
+    quoteAmountRejected.value = false;
     quoteFailures.value = 0;
     meldMethodUnavailable.value = false;
   }
@@ -561,6 +567,7 @@ export const useSessionStore = defineStore("session", () => {
     quoted.value = null;
     quoteError.value = null;
     quoteOutOfRange.value = null;
+    quoteAmountRejected.value = false;
     quoteFailures.value = 0;
     meldMethodUnavailable.value = false;
   }
@@ -1040,6 +1047,7 @@ export const useSessionStore = defineStore("session", () => {
     const epoch = quoteEpoch;
     quoteError.value = null;
     quoteOutOfRange.value = null;
+    quoteAmountRejected.value = false;
     meldMethodUnavailable.value = false;
     // Nothing entered, nothing to quote.
     if (amountBase.value === null) {
@@ -1196,11 +1204,22 @@ export const useSessionStore = defineStore("session", () => {
     } catch (e: unknown) {
       if (epoch !== quoteEpoch) return; // a newer quote owns the state now
       // The host logger renders an Error as `{}`; log the message, as the transient
-      // hooks above already do, or a failed quote is undiagnosable from a device log.
-      console.error(`[meld] quote failed: ${e instanceof Error ? e.message : String(e)}`);
+      // hooks above already do, or a failed quote is undiagnosable from a device log. The
+      // adapter's tag and code go to the log only: the screen stays generic for them.
+      const refusal = refusalOf(e);
+      const said =
+        refusal === undefined
+          ? ""
+          : ` (HTTP ${refusal.status} ${refusal.tag ?? "untagged"}${refusal.code ? ` ${refusal.code}` : ""})`;
+      console.error(`[meld] quote failed${said}: ${e instanceof Error ? e.message : String(e)}`);
       if (e instanceof MeldAmountOutOfRangeError) {
         quoted.value = null;
         quoteOutOfRange.value = outOfRangeOf(e);
+        return;
+      }
+      if (refusal?.code === "AMOUNT_REJECTED") {
+        quoted.value = null;
+        quoteAmountRejected.value = true;
         return;
       }
       failQuote(e instanceof Error ? e.message : String(e));
@@ -1227,6 +1246,7 @@ export const useSessionStore = defineStore("session", () => {
     const epoch = quoteEpoch;
     quoteError.value = null;
     quoteOutOfRange.value = null;
+    quoteAmountRejected.value = false;
     // Nothing entered, nothing to quote.
     if (amountBase.value === null) {
       loading.value = false;
@@ -1474,6 +1494,7 @@ export const useSessionStore = defineStore("session", () => {
     loading.value = false;
     quoteError.value = null;
     quoteOutOfRange.value = null;
+    quoteAmountRejected.value = false;
     quoteFailures.value = 0;
     resuming.value = false;
     method.value = "crypto";
@@ -1945,7 +1966,8 @@ export const useSessionStore = defineStore("session", () => {
   }
 
   // Demo faucet
-  async function fundFaucet(): Promise<void> {
+  /** Resolves true once the transfer is broadcast with its request still on screen. */
+  async function fundFaucet(): Promise<boolean> {
     const s = lastState.value;
     // "sent" blocks too: the transfer was broadcast, and the deposit watch takes it from there.
     // A refused transfer resets to "idle".
@@ -1956,9 +1978,13 @@ export const useSessionStore = defineStore("session", () => {
       faucetState.value === "funding" ||
       faucetState.value === "sent"
     )
-      return;
+      return false;
     faucetState.value = "funding";
     void markDepositSkipped();
+    // The faucet state and its error belong to the request on screen: a transfer that settles
+    // after the buyer moved to another request leaves that request's Skip alone.
+    const key = foregroundRef && requestRefKey(foregroundRef);
+    const onScreen = () => (foregroundRef && requestRefKey(foregroundRef)) === key;
     try {
       // The faucet stands in for the rail: it sends the burner what the rail would deliver, in
       // the route's token, the one the pipeline reads the burner for. A Polkadot deposit asks the
@@ -1969,13 +1995,17 @@ export const useSessionStore = defineStore("session", () => {
         amount: isDirectSourceId(live.value.sourceId) ? s.deposit.amount : live.value.budget,
         route: live.value.route,
       });
+      if (!onScreen()) return false;
       faucetState.value = "sent";
+      return true;
     } catch (e: unknown) {
+      if (!onScreen()) return false;
       faucetState.value = "idle";
       requests.setTransientError({
         message: e instanceof Error ? e.message : String(e),
         source: "faucet",
       });
+      return false;
     }
   }
 
@@ -2224,7 +2254,7 @@ export const useSessionStore = defineStore("session", () => {
 
   /** Credits the settled Meld payment into the coinage leg, once. A no-op in the host world. */
   function creditMeldSettlement() {
-    if (meldCredited) return;
+    if (meldCredited || !mock.value) return;
     meldCredited = true;
     simulateDeposit();
   }
@@ -2248,6 +2278,11 @@ export const useSessionStore = defineStore("session", () => {
    *
    * The poll is stopped first. It re-reads the rail on its own cadence and would overwrite these
    * stages with whatever the (unpaid, or faked) request really says.
+   *
+   * The hosted demo's deposit leaves on the press, as on every other Skip: the play stops with the
+   * screen, and a buyer who leaves mid-play must not take the deposit with it. The provider's steps
+   * wait for that transfer to be broadcast: a refused one would leave the record reporting a
+   * payment that never came, with no Cancel, since the rail is taken to hold the money.
    */
   function simulateMeldPayment(): void {
     const ref = foregroundRef;
@@ -2269,14 +2304,19 @@ export const useSessionStore = defineStore("session", () => {
     // The buyer finishes in the widget: the journey takes over from the iframe.
     void markMeldSubmitted();
     // The provider sees the transaction, then approves it.
-    step(() => report("receiving"));
-    step(() => report("complete"));
-    // The conversion runs, and the deposit that pays for it arrives: the mock world fakes it
-    // through `creditMeldSettlement`, the hosted demo needs the faucet. The real pipeline takes
-    // the journey the rest of the way.
-    step(() => {
-      if (mock.value) creditMeldSettlement();
-      else void fundFaucet();
+    const play = () => {
+      step(() => report("receiving"));
+      step(() => report("complete"));
+    };
+    if (mock.value) {
+      play();
+      // The mock world fakes the deposit that pays for the conversion. The real pipeline takes
+      // the journey the rest of the way.
+      step(creditMeldSettlement);
+      return;
+    }
+    void fundFaucet().then((sent) => {
+      if (sent) play();
     });
   }
 
@@ -2284,8 +2324,22 @@ export const useSessionStore = defineStore("session", () => {
   const meldPayUrl = computed<string | null>(() => {
     // Hidden once the buyer finished the widget.
     if (requests.meldSubmitted) return null;
+    // And once the record is past the buyer: the provider approved, or money moved. Only with a
+    // record to read, so a request still being re-opened is not taken for a lapsed one.
+    if (
+      requests.foregroundRecord !== null &&
+      !requests.awaitingDeposit &&
+      !requests.meldAwaitingBuyer
+    ) {
+      return null;
+    }
     const state = lastState.value;
-    const fromRail = state?.phase === "awaiting-deposit" ? state.deposit.payUrl : undefined;
+    // Core reads the rail's first sighting as `swapping`, which a provider filing its transaction
+    // as the form loads reaches before the buyer has paid; the page is still theirs to finish.
+    const fromRail =
+      state?.phase === "awaiting-deposit" || state?.phase === "swapping"
+        ? state.deposit.payUrl
+        : undefined;
     return fromRail ?? meldResumeWidgetUrl.value;
   });
 
@@ -2456,6 +2510,7 @@ export const useSessionStore = defineStore("session", () => {
     quoteError,
     quoteFailures,
     quoteOutOfRange,
+    quoteAmountRejected,
     meldMethodUnavailable,
     supportedCountries,
     corridorByCountry,

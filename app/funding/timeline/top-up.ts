@@ -12,6 +12,7 @@ import {
   polkadotText,
   workerTickAt,
 } from "./polkadot";
+import { recoveryPrompt, type RecoveryPrompt } from "./recovery";
 import {
   delay,
   type ProviderMilestones,
@@ -29,6 +30,8 @@ export interface TopUpTimeline {
   readonly detail?: string;
   /** Present once the top-up failed. */
   readonly failure?: TimelineFailure;
+  /** Present while the Cash is in People's trap: what the journey offers to get it back. */
+  readonly recovery?: RecoveryPrompt;
   /** The provider sent the funds, they are not seen yet, and the reads are fresh. */
   readonly awaitingSentFunds?: boolean;
 }
@@ -104,6 +107,17 @@ export function topUpTimeline(
   if (view === undefined) return undefined;
   if (view.state === "done") return { view };
   if (view.state === "failed") return { view, failure: failureOf(record, route, view.failed) };
+  // The Cash is in People's trap: the current line waits on the buyer or on the claim, and the
+  // band says which.
+  const recovery = recoveryPrompt(record);
+  if (recovery !== undefined) {
+    return {
+      view: view.state === "active" ? { ...view, state: "delayed" } : view,
+      message: recovery.message,
+      detail: recovery.detail,
+      recovery,
+    };
+  }
 
   const providerPhase = isProviderPhase(view.phase);
   // The read that moves the phase, which the detail names and the reconnect line watches. Not
