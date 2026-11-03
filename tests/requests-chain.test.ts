@@ -101,6 +101,14 @@ const { chain, worker, manager, lostRequestHandoff, log } = vi.hoisted(() => {
 });
 vi.mock("../lib/host-account", () => ({ isHosted: () => true }));
 vi.mock("../lib/worker-rpc", () => ({ getStorageWorkerManager: () => manager }));
+// Request telemetry as it is, its journey start watched: only the places that start a request on
+// this page open a journey, never the store.
+const { requestCreated } = vi.hoisted(() => ({ requestCreated: vi.fn() }));
+vi.mock("../app/funding/requests/telemetry", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../app/funding/requests/telemetry")>();
+  requestCreated.mockImplementation(real.requestCreated);
+  return { ...real, requestCreated };
+});
 vi.mock("../lib/coinage-live", () => ({
   probeTradeBurner: async (sourceId: string, tradeN: number, route: { tier: string }) => {
     const key = `${sourceId}:${tradeN}`;
@@ -415,7 +423,10 @@ describe("requests store: the chain step", () => {
       free: 30_000_000_000n,
     });
 
+    requestCreated.mockClear();
     await requests.reconcile("boot");
+    // the lost request was started on an earlier open: no journey
+    expect(requestCreated).not.toHaveBeenCalled();
 
     // Every number under the counter without a record or a job, below the records too.
     expect(chain.probes.sort()).toEqual([

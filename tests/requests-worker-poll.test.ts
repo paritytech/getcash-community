@@ -43,6 +43,15 @@ import {
   type WorkerJobRecord,
 } from "./fixtures/requests";
 
+// Request telemetry as it is, its journey start watched: only the places that start a request on
+// this page open a journey, never the store.
+const { requestCreated } = vi.hoisted(() => ({ requestCreated: vi.fn() }));
+vi.mock("../app/funding/requests/telemetry", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../app/funding/requests/telemetry")>();
+  requestCreated.mockImplementation(real.requestCreated);
+  return { ...real, requestCreated };
+});
+
 /** The ref a fixture is stored under: its own source id and trade number. */
 const refOf = (record: ActiveFlowRecord): RequestRef =>
   requestRefOf(record.sourceId, record.tradeN!);
@@ -314,7 +323,10 @@ describe("requests store: the worker poll", () => {
   it("a job without a record creates a record with the job's amount and deadline", async () => {
     await seed(fixtureRecords);
     const requests = useRequestsStore();
+    requestCreated.mockClear();
     await requests.reconcile("boot");
+    // started on an earlier open: no journey
+    expect(requestCreated).not.toHaveBeenCalled();
 
     const job = fixtureWorkerJobs["dot-assethub:9"]!;
     const ref = requestRefOf("dot-assethub", 9);
