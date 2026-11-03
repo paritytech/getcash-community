@@ -31,6 +31,11 @@ async function main() {
   const [deployer] = await ethers.getSigners();
   if (guardian === deployer.address)
     throw new Error("deploy: GUARDIAN_ADDRESS is the deployer key");
+  // The pauser is the adapter keeper's address, which the factory refuses as the guardian
+  const pauserEnv = process.env.PAUSER_ADDRESS;
+  if (!pauserEnv || !ethers.isAddress(pauserEnv)) throw new Error("deploy: set PAUSER_ADDRESS");
+  const pauser = ethers.getAddress(pauserEnv);
+  if (pauser === guardian) throw new Error("deploy: PAUSER_ADDRESS is the guardian key");
 
   // The token is the chain's USDC and the Chainflip Vault holds it
   const usdc = new ethers.Contract(
@@ -51,7 +56,7 @@ async function main() {
   if (problems.length)
     throw new Error(`deploy: config fails live Chainflip: ${problems.join(", ")}`);
 
-  const config = factoryConfig(net, ethers.getAddress(treasury), guardian);
+  const config = factoryConfig(net, ethers.getAddress(treasury), guardian, pauser);
   const factory = await (await ethers.getContractFactory("SaleVaultProxyFactory")).deploy(config);
   await factory.waitForDeployment();
   const factoryAddress = await factory.getAddress();
@@ -63,8 +68,11 @@ async function main() {
     ["USDC", await factory.USDC(), ethers.getAddress(net.usdc)],
     ["TREASURY", await factory.TREASURY(), config.treasury],
     ["GUARDIAN", await factory.GUARDIAN(), guardian],
+    ["PAUSER", await factory.PAUSER(), pauser],
     ["retired", await factory.retired(), false],
-    ["implementation TREASURY", await impl.TREASURY(), config.treasury],
+    ["returnsPaused", await factory.returnsPaused(), false],
+    ["pausedAt", await factory.pausedAt(), 0n],
+    ["unpaused", await factory.unpaused(), false],
     ["implementation VAULT", await impl.VAULT(), ethers.getAddress(net.vault)],
     ["implementation USDC", await impl.USDC(), ethers.getAddress(net.usdc)],
     ["FACTORY", await impl.FACTORY(), factoryAddress],
@@ -95,7 +103,9 @@ async function main() {
   console.info(`chainId ${net.chainId}`);
   console.info(`SaleVaultProxyFactory ${factoryAddress}`);
   console.info(`SaleVaultProxy implementation ${implementationAddress}`);
-  console.info("\nAdapter sale_vault_proxy fields, add rpc_url and keeper_key yourself:");
+  console.info(
+    `\nAdapter sale_vault_proxy fields, add rpc_url and the keeper_key of ${pauser} yourself:`,
+  );
   console.info(JSON.stringify(adapterSaleVaultProxy(net, factoryAddress), null, 2));
   console.info(
     `\nBuild env:\nVITE_SALE_VAULT_PROXY_FACTORY=${factoryAddress}\nVITE_SALE_VAULT_PROXY_IMPLEMENTATION=${implementationAddress}`,

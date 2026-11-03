@@ -33,8 +33,6 @@ contract SaleVaultProxy is ISaleVaultProxy, ReentrancyGuard {
 
     /// The factory that deploys proxies and is the only caller of onDelivery.
     address public immutable FACTORY;
-    /// Where native ETH forced in here ends up.
-    address public immutable TREASURY;
     // This implementation's own address, to refuse calls that are not through a proxy
     address private immutable SELF;
     /// The only token a sale pays and returns.
@@ -90,6 +88,7 @@ contract SaleVaultProxy is ISaleVaultProxy, ReentrancyGuard {
     error BelowMinimum(uint256 balance, uint256 minimum);
     error ReturnNotDue(uint256 nextReturnAt);
     error FactoryRetired();
+    error ReturnsPaused();
     error NothingToRelease();
     error ReleaseNotDue(uint256 releaseAt);
     error CannotSkimUSDC();
@@ -97,7 +96,6 @@ contract SaleVaultProxy is ISaleVaultProxy, ReentrancyGuard {
 
     constructor(address factory, SaleVaultProxyFactory.Config memory c) {
         FACTORY = factory;
-        TREASURY = c.treasury;
         SELF = address(this);
         USDC = c.usdc;
         VAULT = c.vault;
@@ -187,9 +185,10 @@ contract SaleVaultProxy is ISaleVaultProxy, ReentrancyGuard {
         }
     }
 
-    /// @notice Send this proxy's USDC home as USDT, permissionless, refused once retired, refunds come back here
+    /// @notice Send this proxy's USDC home as USDT, permissionless, refused retired or paused, refunds come back here
     function returnHome() external onlyProxy nonReentrant {
         if (SaleVaultProxyFactory(FACTORY).retired()) revert FactoryRetired();
+        if (SaleVaultProxyFactory(FACTORY).returnsPaused()) revert ReturnsPaused();
         uint256 balance = USDC.balanceOf(address(this));
         if (balance < MIN_RETURN) revert BelowMinimum(balance, MIN_RETURN);
         uint256 due = nextReturnAt();
@@ -236,23 +235,23 @@ contract SaleVaultProxy is ISaleVaultProxy, ReentrancyGuard {
         emit Released(balance);
     }
 
-    /// When release may run, 0 once retired or out of attempts with a fresh refund, max before any activity.
+    /// When release may run, 0 once retired or out of attempts with a fresh refund, max before activity unless paused.
     function releaseAt() public view returns (uint256) {
         return _releaseAt(USDC.balanceOf(address(this)));
     }
 
-    /// @notice Move a token other than USDC to the factory, which forwards it to the treasury.
+    /// @notice Send a token other than USDC to the claimer, or the treasury from the implementation, permissionless.
     function skimForeign(address token) external nonReentrant {
         if (token == address(USDC)) revert CannotSkimUSDC();
         uint256 amount = IERC20(token).balanceOf(address(this));
-        IERC20(token).safeTransfer(FACTORY, amount);
+        IERC20(token).safeTransfer(_skimTo(), amount);
         emit ForeignSkimmed(token, amount);
     }
 
-    /// @notice Send native ETH forced in here to the treasury.
+    /// @notice Send native ETH forced in here to the claimer, or the treasury from the implementation, permissionless.
     function skimNative() external nonReentrant {
         uint256 amount = address(this).balance;
-        (bool ok, ) = TREASURY.call{value: amount}("");
+        (bool ok, ) = _skimTo().call{value: amount}("");
         if (!ok) revert TransferFailed();
         emit ForeignSkimmed(address(0), amount);
     }
@@ -291,9 +290,17 @@ contract SaleVaultProxy is ISaleVaultProxy, ReentrancyGuard {
             block.timestamp <= uint256(lastReturnAt) + RELEASE_DELAY
         ) return 0;
         if (balance < MIN_RETURN) return uint256(lastActivityAt) + RELEASE_DELAY;
-        // A returnable balance with no delivery or return yet has no clock, it goes home first
-        if (lastActivityAt == 0) return type(uint256).max;
+        // A returnable balance with no delivery or return yet goes home first, or waits STALE_DELAY from a pause
+        if (lastActivityAt == 0) {
+            uint256 pausedAt = SaleVaultProxyFactory(FACTORY).pausedAt();
+            return pausedAt == 0 ? type(uint256).max : pausedAt + STALE_DELAY;
+        }
         return uint256(lastActivityAt) + STALE_DELAY;
+    }
+
+    // A proxy's skims go to its claimer, the implementation's to the treasury
+    function _skimTo() private view returns (address) {
+        return address(this) == SELF ? SaleVaultProxyFactory(FACTORY).TREASURY() : claimer();
     }
 
     // Only funds a delivery leaves here restart the backoff and the release clock

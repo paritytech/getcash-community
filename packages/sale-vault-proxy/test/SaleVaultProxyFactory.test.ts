@@ -61,7 +61,11 @@ describe("SaleVaultProxyFactory", () => {
       expect(await s.factory.USDC()).to.equal(await s.usdc.getAddress());
       expect(await s.factory.TREASURY()).to.equal(s.treasury.address);
       expect(await s.factory.GUARDIAN()).to.equal(s.guardian.address);
+      expect(await s.factory.PAUSER()).to.equal(s.pauser.address);
       expect(await s.factory.retired()).to.equal(false);
+      expect(await s.factory.returnsPaused()).to.equal(false);
+      expect(await s.factory.pausedAt()).to.equal(0n);
+      expect(await s.factory.unpaused()).to.equal(false);
       expect(await s.factory.IMPLEMENTATION()).to.equal(
         ethers.getCreateAddress({ from: factory, nonce: 1 }),
       );
@@ -81,11 +85,11 @@ describe("SaleVaultProxyFactory", () => {
       expect(await impl.RELEASE_DELAY()).to.equal(s.net.releaseDelay);
       expect(await impl.RELEASE_ATTEMPTS()).to.equal(s.net.releaseAttempts);
       expect(await impl.STALE_DELAY()).to.equal(s.net.staleDelay);
-      expect(await impl.TREASURY()).to.equal(s.treasury.address);
+      expect(impl.interface.getFunction("TREASURY")).to.equal(null);
     });
 
-    it("refuses zero addresses, a zero guardian and a zero broker", async () => {
-      const [, treasury, , , guardian] = await ethers.getSigners();
+    it("refuses zero addresses, a zero guardian, a zero pauser and a zero broker", async () => {
+      const [, treasury, , , guardian, pauser] = await ethers.getSigners();
       const { usdc, vault } = await deployMocks();
       const Factory = await ethers.getContractFactory("SaleVaultProxyFactory");
       const net: SaleVaultProxyNetwork = {
@@ -93,22 +97,37 @@ describe("SaleVaultProxyFactory", () => {
         vault: await vault.getAddress(),
         usdc: await usdc.getAddress(),
       };
-      const bad: [Partial<SaleVaultProxyNetwork>, string, string][] = [
-        [{ vault: ethers.ZeroAddress }, treasury.address, guardian.address],
-        [{ usdc: ethers.ZeroAddress }, treasury.address, guardian.address],
-        [{}, ethers.ZeroAddress, guardian.address],
-        [{}, treasury.address, ethers.ZeroAddress],
-        [{ broker: ethers.ZeroHash }, treasury.address, guardian.address],
+      const bad: [Partial<SaleVaultProxyNetwork>, string, string, string][] = [
+        [{ vault: ethers.ZeroAddress }, treasury.address, guardian.address, pauser.address],
+        [{ usdc: ethers.ZeroAddress }, treasury.address, guardian.address, pauser.address],
+        [{}, ethers.ZeroAddress, guardian.address, pauser.address],
+        [{}, treasury.address, ethers.ZeroAddress, pauser.address],
+        [{}, treasury.address, guardian.address, ethers.ZeroAddress],
+        [{ broker: ethers.ZeroHash }, treasury.address, guardian.address, pauser.address],
       ];
-      for (const [o, t, g] of bad) {
+      for (const [o, t, g, p] of bad) {
         await expect(
-          Factory.deploy(factoryConfig({ ...net, ...o }, t, g)),
+          Factory.deploy(factoryConfig({ ...net, ...o }, t, g, p)),
         ).to.be.revertedWithCustomError(Factory, "ZeroAddress");
       }
     });
 
+    it("refuses a pauser that is the guardian", async () => {
+      const [, treasury, , , guardian] = await ethers.getSigners();
+      const { usdc, vault } = await deployMocks();
+      const Factory = await ethers.getContractFactory("SaleVaultProxyFactory");
+      const net = {
+        ...TEST_NETWORK,
+        vault: await vault.getAddress(),
+        usdc: await usdc.getAddress(),
+      };
+      await expect(
+        Factory.deploy(factoryConfig(net, treasury.address, guardian.address, guardian.address)),
+      ).to.be.revertedWithCustomError(Factory, "BadConfig");
+    });
+
     it("refuses each out-of-bounds setting and accepts each bound", async () => {
-      const [, treasury] = await ethers.getSigners();
+      const [, treasury, pauser] = await ethers.getSigners();
       const { usdc, vault } = await deployMocks();
       const Factory = await ethers.getContractFactory("SaleVaultProxyFactory");
       const net: SaleVaultProxyNetwork = {
@@ -141,7 +160,9 @@ describe("SaleVaultProxyFactory", () => {
       ];
       for (const o of bad) {
         await expect(
-          Factory.deploy(factoryConfig({ ...net, ...o }, treasury.address, treasury.address)),
+          Factory.deploy(
+            factoryConfig({ ...net, ...o }, treasury.address, treasury.address, pauser.address),
+          ),
           JSON.stringify(o, (_, v) => (typeof v === "bigint" ? String(v) : v)),
         ).to.be.revertedWithCustomError(Factory, "BadConfig");
       }
@@ -165,7 +186,9 @@ describe("SaleVaultProxyFactory", () => {
       ];
       for (const o of ok) {
         await expect(
-          Factory.deploy(factoryConfig({ ...net, ...o }, treasury.address, treasury.address)),
+          Factory.deploy(
+            factoryConfig({ ...net, ...o }, treasury.address, treasury.address, pauser.address),
+          ),
           JSON.stringify(o, (_, v) => (typeof v === "bigint" ? String(v) : v)),
         ).to.not.be.reverted;
       }
@@ -427,7 +450,7 @@ describe("SaleVaultProxyFactory", () => {
       };
       const factory = await (
         await ethers.getContractFactory("RevertingSaleVaultProxyFactory")
-      ).deploy(factoryConfig(net, treasury.address, treasury.address));
+      ).deploy(factoryConfig(net, treasury.address, treasury.address, recipient.address));
       const home = homeOf("unbooked");
       const proxy = await factory.predict(home, CLAIMER);
       const msg = encodeMessage(refOf("unbooked"), recipient.address, 5n, home);
@@ -843,15 +866,129 @@ describe("SaleVaultProxyFactory", () => {
 
     it("gives the guardian no way to move funds or pick a destination", async () => {
       const s = await loadFixture(deploySystem);
-      const guardianOnly = s.factory.interface.fragments.filter(
-        (f) => f.type === "function" && "name" in f && (f as { name: string }).name === "retire",
-      );
-      expect(guardianOnly.length).to.equal(1);
+      const names = s.factory.interface.fragments
+        .filter((f) => f.type === "function")
+        .map((f) => (f as { name: string }).name);
+      for (const name of ["retire", "pauseReturns", "unpauseReturns"]) {
+        expect(names.filter((n) => n === name).length, name).to.equal(1);
+        expect(s.factory.interface.getFunction(name)?.inputs.length, name).to.equal(0);
+      }
       const { proxy } = await sell(s, "g", 50_000_000n, 40_000_000n);
+      await s.factory.connect(s.guardian).pauseReturns();
+      await s.factory.connect(s.guardian).unpauseReturns();
       await s.factory.connect(s.guardian).retire();
       await proxy.connect(s.guardian).release();
       expect(await s.usdc.balanceOf(s.guardian.address)).to.equal(0n);
       expect(await s.usdc.balanceOf(CLAIMER)).to.equal(40_000_000n);
+    });
+  });
+
+  describe("returns pause", () => {
+    it("pauseReturns is pauser or guardian only, idempotent revert, and emits ReturnsPaused", async () => {
+      const s = await loadFixture(deploySystem);
+      for (const who of [s.stranger, s.treasury, s.deployer]) {
+        await expect(s.factory.connect(who).pauseReturns()).to.be.revertedWithCustomError(
+          s.factory,
+          "NotPauser",
+        );
+      }
+      await expect(s.factory.connect(s.pauser).pauseReturns())
+        .to.emit(s.factory, "ReturnsPaused")
+        .withArgs(s.pauser.address);
+      expect(await s.factory.returnsPaused()).to.equal(true);
+      for (const who of [s.pauser, s.guardian]) {
+        await expect(s.factory.connect(who).pauseReturns()).to.be.revertedWithCustomError(
+          s.factory,
+          "AlreadyPaused",
+        );
+      }
+      await s.factory.connect(s.guardian).unpauseReturns();
+      await expect(s.factory.connect(s.guardian).pauseReturns())
+        .to.emit(s.factory, "ReturnsPaused")
+        .withArgs(s.guardian.address);
+    });
+
+    it("unpauseReturns is guardian only, idempotent revert, and emits ReturnsUnpaused", async () => {
+      const s = await loadFixture(deploySystem);
+      await expect(s.factory.connect(s.guardian).unpauseReturns()).to.be.revertedWithCustomError(
+        s.factory,
+        "NotPaused",
+      );
+      await s.factory.connect(s.pauser).pauseReturns();
+      for (const who of [s.pauser, s.stranger, s.treasury]) {
+        await expect(s.factory.connect(who).unpauseReturns()).to.be.revertedWithCustomError(
+          s.factory,
+          "NotGuardian",
+        );
+      }
+      await expect(s.factory.connect(s.guardian).unpauseReturns()).to.emit(
+        s.factory,
+        "ReturnsUnpaused",
+      );
+      expect(await s.factory.returnsPaused()).to.equal(false);
+      await expect(s.factory.connect(s.guardian).unpauseReturns()).to.be.revertedWithCustomError(
+        s.factory,
+        "NotPaused",
+      );
+    });
+
+    it("records when returns were paused and clears it on an unpause", async () => {
+      const s = await loadFixture(deploySystem);
+      const tx = await s.factory.connect(s.pauser).pauseReturns();
+      const at = BigInt(
+        (await ethers.provider.getBlock((await tx.wait())!.blockNumber))!.timestamp,
+      );
+      expect(await s.factory.pausedAt()).to.equal(at);
+      await s.factory.connect(s.guardian).unpauseReturns();
+      expect(await s.factory.pausedAt()).to.equal(0n);
+      expect(await s.factory.returnsPaused()).to.equal(false);
+    });
+
+    it("marks a guardian unpause for good, the pauser can never pause again, the guardian still can", async () => {
+      const s = await loadFixture(deploySystem);
+      await s.factory.connect(s.pauser).pauseReturns();
+      expect(await s.factory.unpaused()).to.equal(false);
+      await s.factory.connect(s.guardian).unpauseReturns();
+      expect(await s.factory.unpaused()).to.equal(true);
+      await expect(s.factory.connect(s.pauser).pauseReturns()).to.be.revertedWithCustomError(
+        s.factory,
+        "NotPauser",
+      );
+      expect(await s.factory.returnsPaused()).to.equal(false);
+      await s.factory.connect(s.guardian).pauseReturns();
+      expect(await s.factory.unpaused()).to.equal(true);
+      expect(await s.factory.returnsPaused()).to.equal(true);
+    });
+
+    it("locks the pauser out after an unpause of the guardian's own pause too", async () => {
+      const s = await loadFixture(deploySystem);
+      await s.factory.connect(s.guardian).pauseReturns();
+      await s.factory.connect(s.guardian).unpauseReturns();
+      await expect(s.factory.connect(s.pauser).pauseReturns()).to.be.revertedWithCustomError(
+        s.factory,
+        "NotPauser",
+      );
+    });
+
+    it("leaves retire guardian only, and retire works while paused", async () => {
+      const s = await loadFixture(deploySystem);
+      await s.factory.connect(s.pauser).pauseReturns();
+      await expect(s.factory.connect(s.pauser).retire()).to.be.revertedWithCustomError(
+        s.factory,
+        "NotGuardian",
+      );
+      await expect(s.factory.connect(s.guardian).retire()).to.emit(s.factory, "Retired");
+      expect(await s.factory.retired()).to.equal(true);
+      expect(await s.factory.returnsPaused()).to.equal(true);
+    });
+
+    it("still books deliveries and pays providers while paused", async () => {
+      const s = await loadFixture(deploySystem);
+      await s.factory.connect(s.pauser).pauseReturns();
+      const { proxy } = await sell(s, "paused", 50_000_000n, 50_400_000n);
+      expect(await s.usdc.balanceOf(s.recipient.address)).to.equal(50_000_000n);
+      expect(await s.usdc.balanceOf(await proxy.getAddress())).to.equal(400_000n);
+      await expect(proxy.returnHome()).to.be.revertedWithCustomError(proxy, "ReturnsPaused");
     });
   });
 

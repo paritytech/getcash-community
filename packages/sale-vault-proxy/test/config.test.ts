@@ -34,12 +34,13 @@ describe("release constants", () => {
       expect(BigInt(net.retryBlocks) * CF_BLOCK_SECONDS < net.releaseDelay).to.equal(true);
       expect(net.returnCooldown << MAX_BACKOFF_SHIFT < net.staleDelay).to.equal(true);
       expect(net.returnCooldown > BigInt(net.retryBlocks) * CF_BLOCK_SECONDS).to.equal(true);
-      const [, treasury, , , guardian] = await ethers.getSigners();
+      const [, treasury, , , guardian, pauser] = await ethers.getSigners();
       const { usdc, vault } = await deployMocks();
       const mocked = { ...net, vault: await vault.getAddress(), usdc: await usdc.getAddress() };
       const Factory = await ethers.getContractFactory("SaleVaultProxyFactory");
-      await expect(Factory.deploy(factoryConfig(mocked, treasury.address, guardian.address))).to.not
-        .be.reverted;
+      await expect(
+        Factory.deploy(factoryConfig(mocked, treasury.address, guardian.address, pauser.address)),
+      ).to.not.be.reverted;
     });
   }
 

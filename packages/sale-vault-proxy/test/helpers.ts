@@ -142,7 +142,7 @@ export async function deployMocks() {
 }
 
 export async function deploySystem(overrides: Partial<SaleVaultProxyNetwork> = {}) {
-  const [deployer, treasury, recipient, stranger, guardian] = await ethers.getSigners();
+  const [deployer, treasury, recipient, stranger, guardian, pauser] = await ethers.getSigners();
   const { usdc, vault } = await deployMocks();
   const net: SaleVaultProxyNetwork = {
     ...TEST_NETWORK,
@@ -152,7 +152,7 @@ export async function deploySystem(overrides: Partial<SaleVaultProxyNetwork> = {
   };
   const factory = await (
     await ethers.getContractFactory("SaleVaultProxyFactory")
-  ).deploy(factoryConfig(net, treasury.address, guardian.address));
+  ).deploy(factoryConfig(net, treasury.address, guardian.address, pauser.address));
   const implementation = await ethers.getContractAt(
     "SaleVaultProxy",
     await factory.IMPLEMENTATION(),
@@ -168,6 +168,7 @@ export async function deploySystem(overrides: Partial<SaleVaultProxyNetwork> = {
     recipient,
     stranger,
     guardian,
+    pauser,
   };
 }
 

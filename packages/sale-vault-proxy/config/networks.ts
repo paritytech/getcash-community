@@ -1,4 +1,4 @@
-// Per-network SaleVaultProxyFactory config. The treasury and the guardian come from the environment at deploy time.
+// Per-network SaleVaultProxyFactory config. The treasury, the guardian and the pauser come from the environment at deploy time.
 
 import vectors from "../vectors.json";
 
@@ -116,13 +116,19 @@ export const ARBITRUM_SEPOLIA: SaleVaultProxyNetwork = {
   minSale: 1_250_000n,
 };
 
-// The constructor Config tuple for a network, treasury and guardian
-export function factoryConfig(net: SaleVaultProxyNetwork, treasury: string, guardian: string) {
+// The constructor Config tuple for a network, treasury, guardian and pauser
+export function factoryConfig(
+  net: SaleVaultProxyNetwork,
+  treasury: string,
+  guardian: string,
+  pauser: string,
+) {
   return {
     vault: net.vault,
     usdc: net.usdc,
     treasury,
     guardian,
+    pauser,
     broker: net.broker,
     homeChain: net.homeChain,
     homeToken: net.homeToken,

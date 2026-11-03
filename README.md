@@ -141,7 +141,12 @@ state contradicts the payment stops the job for a person.
 A sale through Arbitrum is paid from its own SaleVaultProxy, a minimal proxy the SaleVaultProxyFactory
 deploys for the seller's key when Chainflip delivers, so the provider sees the proxy as the sender
 and refunds to it. Anything the provider was not paid, or refunds later, goes home to the key
-through a return anyone can call, and the worker sends it on as CASH.
+through a return anyone can call, and the worker sends it on as CASH. The factory's pauser (the
+adapter keeper's address) or its guardian can pause those returns, which the adapter keeper does
+when Chainflip moves its Arbitrum Vault, and only the guardian unpauses them, after which the
+pauser can no longer pause; a pause leaves the release clock alone and starts one for a balance
+that has none yet, so a held balance still reaches the seller's own Arbitrum address. Foreign
+tokens and ETH sent to a proxy are skimmed to that same address.
 
 ### Rails as packages
 

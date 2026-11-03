@@ -19,8 +19,10 @@ contract SaleVaultProxyFactory is ICFReceiver, ReentrancyGuard {
         IChainflipVault vault;
         IERC20 usdc;
         address treasury;
-        // Can only retire the factory, its own key and never an operator key
+        // Retires the factory and pauses or unpauses returns, its own key and never an operator key
         address guardian;
+        // Can only pause returns, the adapter keeper's key and never the guardian
+        address pauser;
         bytes32 broker;
         uint32 homeChain;
         uint32 homeToken;
@@ -46,8 +48,10 @@ contract SaleVaultProxyFactory is ICFReceiver, ReentrancyGuard {
     IERC20 public immutable USDC;
     /// Where unattributable deliveries, foreign tokens and native ETH end up.
     address public immutable TREASURY;
-    /// The only caller of retire.
+    /// The only caller of retire and unpauseReturns.
     address public immutable GUARDIAN;
+    /// The other caller of pauseReturns, never the guardian.
+    address public immutable PAUSER;
     /// The SaleVaultProxy every proxy delegates to.
     address public immutable IMPLEMENTATION;
 
@@ -69,6 +73,10 @@ contract SaleVaultProxyFactory is ICFReceiver, ReentrancyGuard {
 
     /// True once the guardian retired this factory, never reset.
     bool public retired;
+    /// When returns home were paused, 0 while they run, a clockless balance releases STALE_DELAY after it.
+    uint64 public pausedAt;
+    /// True once the guardian unpaused returns, never reset, the pauser then can no longer pause.
+    bool public unpaused;
     /// Sum of every pending and deferred amount, never skimmed.
     uint256 public totalPending;
     // USDC a delivery could not move to its proxy, by keccak256(home, claimer), flushed by flush
@@ -122,10 +130,15 @@ contract SaleVaultProxyFactory is ICFReceiver, ReentrancyGuard {
     event Unattributed(address indexed token, uint256 amount, bytes32 reason);
     event Skimmed(address indexed token, address indexed to, uint256 amount);
     event Retired();
+    event ReturnsPaused(address by);
+    event ReturnsUnpaused();
 
     error NotVault();
     error NotGuardian();
     error AlreadyRetired();
+    error NotPauser();
+    error AlreadyPaused();
+    error NotPaused();
     error ZeroAddress();
     error BadConfig();
     error NotExpired(uint256 deadline);
@@ -142,9 +155,11 @@ contract SaleVaultProxyFactory is ICFReceiver, ReentrancyGuard {
             address(c.usdc) == address(0) ||
             c.treasury == address(0) ||
             c.guardian == address(0) ||
+            c.pauser == address(0) ||
             c.broker == bytes32(0)
         ) revert ZeroAddress();
         if (
+            c.pauser == c.guardian ||
             c.homeChain == 0 ||
             c.homeToken == 0 ||
             c.retryBlocks == 0 ||
@@ -168,6 +183,7 @@ contract SaleVaultProxyFactory is ICFReceiver, ReentrancyGuard {
         USDC = c.usdc;
         TREASURY = c.treasury;
         GUARDIAN = c.guardian;
+        PAUSER = c.pauser;
         IMPLEMENTATION = _newImplementation(c);
     }
 
@@ -190,6 +206,28 @@ contract SaleVaultProxyFactory is ICFReceiver, ReentrancyGuard {
         if (retired) revert AlreadyRetired();
         retired = true;
         emit Retired();
+    }
+
+    /// @notice Pause every return home until the guardian unpauses, release keeps its clock. Pauser until an unpause.
+    function pauseReturns() external {
+        if (msg.sender != GUARDIAN && (msg.sender != PAUSER || unpaused)) revert NotPauser();
+        if (pausedAt != 0) revert AlreadyPaused();
+        pausedAt = uint64(block.timestamp);
+        emit ReturnsPaused(msg.sender);
+    }
+
+    /// @notice Let returns home run again. Guardian only.
+    function unpauseReturns() external {
+        if (msg.sender != GUARDIAN) revert NotGuardian();
+        if (pausedAt == 0) revert NotPaused();
+        pausedAt = 0;
+        unpaused = true;
+        emit ReturnsUnpaused();
+    }
+
+    /// True while every proxy's returns home are paused.
+    function returnsPaused() external view returns (bool) {
+        return pausedAt != 0;
     }
 
     /// @notice Chainflip's delivery callback, moves the USDC into the proxy, which pays the provider

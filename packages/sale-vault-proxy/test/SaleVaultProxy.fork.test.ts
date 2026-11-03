@@ -1,4 +1,5 @@
 import { expect } from "chai";
+import { setBalance, time } from "@nomicfoundation/hardhat-network-helpers";
 import { ethers, network } from "hardhat";
 import vectors from "../vectors.json";
 import { liveProblems } from "../config/chainflip";
@@ -23,6 +24,9 @@ import {
 // Runs only on an Arbitrum One fork (ARBITRUM_FORK=1), against the real Vault and Circle USDC
 const FORK = !!(network.config as { forking?: unknown }).forking;
 
+// Arbitrum One WETH, a real foreign token a proxy can be sent
+const WETH = "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1";
+
 // The Vault's SwapToken event, sender indexed, as chainflip-eth-contracts IVault declares it
 const SWAP_TOKEN = "SwapToken(uint32,bytes,uint32,address,uint256,address,bytes)";
 
@@ -32,10 +36,10 @@ const SWAP_TOKEN = "SwapToken(uint32,bytes,uint32,address,uint256,address,bytes)
   let report: GasReport;
 
   before(async () => {
-    const [, treasury] = await ethers.getSigners();
+    const [, treasury, pauser] = await ethers.getSigners();
     const factory = await (
       await ethers.getContractFactory("SaleVaultProxyFactory")
-    ).deploy(factoryConfig(ARBITRUM_ONE, treasury.address, treasury.address));
+    ).deploy(factoryConfig(ARBITRUM_ONE, treasury.address, treasury.address, pauser.address));
     rig = await forkRig(factory, ARBITRUM_ONE);
   });
 
@@ -173,5 +177,68 @@ const SWAP_TOKEN = "SwapToken(uint32,bytes,uint32,address,uint256,address,bytes)
     });
     expect(res.status).to.equal(200);
     expect(String(await res.json()).toLowerCase()).to.equal(expected);
+  });
+
+  it("a pause keeps a return off the real Vault, a never-booked refund releases STALE_DELAY later", async () => {
+    const snap = await ethers.provider.send("evm_snapshot", []);
+    const [, guardian, pauser] = await ethers.getSigners();
+    const home = homeOf("fork-paused");
+    await rig.factory.deploy(home, CLAIMER);
+    const proxy = await rig.factory.predict(home, CLAIMER);
+    const p = await ethers.getContractAt("SaleVaultProxy", proxy);
+    const amount = ARBITRUM_ONE.minReturn;
+    await rig.fund(proxy, amount);
+    expect(await p.releaseAt()).to.equal(ethers.MaxUint256);
+    await rig.factory.connect(pauser).pauseReturns();
+    await expect(p.returnHome()).to.be.revertedWithCustomError(p, "ReturnsPaused");
+    const due = (await rig.factory.pausedAt()) + ARBITRUM_ONE.staleDelay;
+    expect(await p.releaseAt()).to.equal(due);
+    await time.increaseTo(due);
+    const usdc = await ethers.getContractAt("IERC20", ARBITRUM_ONE.usdc);
+    const before = await usdc.balanceOf(CLAIMER);
+    const receipt = await (await p.release()).wait();
+    expect(await usdc.balanceOf(CLAIMER)).to.equal(before + amount);
+    expect(
+      receipt!.logs.some((l) => l.address.toLowerCase() === ARBITRUM_ONE.vault.toLowerCase()),
+    ).to.equal(false);
+    await rig.factory.connect(guardian).unpauseReturns();
+    expect(await rig.factory.unpaused()).to.equal(true);
+    await ethers.provider.send("evm_revert", [snap]);
+  });
+
+  it("skims real WETH and forced ETH to the claimer", async () => {
+    const snap = await ethers.provider.send("evm_snapshot", []);
+    const [funder] = await ethers.getSigners();
+    const home = homeOf("fork-skim");
+    await rig.factory.deploy(home, CLAIMER);
+    const proxy = await rig.factory.predict(home, CLAIMER);
+    const p = await ethers.getContractAt("SaleVaultProxy", proxy);
+    const weth = new ethers.Contract(
+      WETH,
+      [
+        "function deposit() payable",
+        "function transfer(address,uint256) returns (bool)",
+        "function balanceOf(address) view returns (uint256)",
+      ],
+      funder,
+    );
+    const amount = ethers.parseEther("0.01");
+    await (await weth.deposit({ value: amount })).wait();
+    await (await weth.transfer(proxy, amount)).wait();
+    const wethBefore = await weth.balanceOf(CLAIMER);
+    await expect(p.skimForeign(WETH)).to.emit(p, "ForeignSkimmed").withArgs(WETH, amount);
+    expect(await weth.balanceOf(CLAIMER)).to.equal(wethBefore + amount);
+    expect(await weth.balanceOf(proxy)).to.equal(0n);
+    await setBalance(proxy, amount);
+    const treasury = await rig.factory.TREASURY();
+    const [ethBefore, treasuryBefore] = await Promise.all([
+      ethers.provider.getBalance(CLAIMER),
+      ethers.provider.getBalance(treasury),
+    ]);
+    await expect(p.skimNative()).to.emit(p, "ForeignSkimmed").withArgs(ethers.ZeroAddress, amount);
+    expect(await ethers.provider.getBalance(CLAIMER)).to.equal(ethBefore + amount);
+    expect(await ethers.provider.getBalance(treasury)).to.equal(treasuryBefore);
+    expect(await weth.balanceOf(treasury)).to.equal(0n);
+    await ethers.provider.send("evm_revert", [snap]);
   });
 });

@@ -117,7 +117,7 @@ describe("saleVaultProxyNote", () => {
 
   it("says a return the keeper holds back is on hold, and when it can move instead", () => {
     const held = { ...PAID, status: "held", balance: "50000000", returnable: true };
-    for (const reason of ["vault-changed", "route-refused", "not-swappable"]) {
+    for (const reason of ["vault-changed", "returns-paused", "route-refused", "not-swappable"]) {
       expect(saleVaultProxyNote({ ...held, blockedReason: reason }, usdc, when)).toBe(
         "Sending your funds back to your account is on hold for now. If it stays on hold, they move to your own Arbitrum address at 1800086400000.",
       );
@@ -129,6 +129,9 @@ describe("saleVaultProxyNote", () => {
         when,
       ),
     ).toBe("Arbitrum could not be reached, so sending your funds back waits.");
+    expect(
+      saleVaultProxyNote({ ...held, blockedReason: "returns-paused", releaseAt: null }, usdc, when),
+    ).toBe("Sending your funds back to your account is on hold for now.");
     expect(saleVaultProxyNote({ ...held, blockedReason: "not-due" }, usdc, when)).toBe(
       "The provider could not be paid. Your funds are on their way back to your account.",
     );

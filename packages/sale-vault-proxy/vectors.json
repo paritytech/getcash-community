@@ -23,13 +23,13 @@
       }
     ],
     "local": {
-      "factory": "0xC140bBe06848EeA22BACc5f02D4D1A69767d33c5",
-      "implementation": "0xc3813cd0fC2e34A56dd030c6e9362AA7D1428344",
+      "factory": "0x70cb8b72CCaa962E848fDcc6d0bAe223fAEAc25b",
+      "implementation": "0xb404f988c6b2d4aAc2361F9209f92d1099a495E5",
       "home": "0x0a528ed24585e375c843bdbaa82a92ea3320936295ba3eacac9bc93acce2a575",
       "claimer": "0x90D121876b4f93DA56F039139fdF37a96cde00c3",
       "args": "0x0a528ed24585e375c843bdbaa82a92ea3320936295ba3eacac9bc93acce2a57590d121876b4f93da56f039139fdf37a96cde00c3",
       "salt": "0x9f10aea15113c7314f959e71fefa8c7f915cc27629654ebe77c1e02f5fc36acb",
-      "proxy": "0xad46C51Afe8817c4127D08f6Ff78dEF7E6fb83a9"
+      "proxy": "0x08b93a45040C01f66b4c488031AE932ADb25C21b"
     }
   },
   "message": {
@@ -52,17 +52,23 @@
     "flush(bytes32,address)": "0xb026fd99",
     "GUARDIAN()": "0x724c184c",
     "IMPLEMENTATION()": "0x3a4741bd",
+    "pausedAt()": "0x2e55d0f2",
+    "PAUSER()": "0xd9dc8694",
+    "pauseReturns()": "0xa976c7e9",
     "pending(bytes32,address)": "0xda4e6595",
     "pendingDelivery(bytes32,address,bytes32,address,uint256,uint256)": "0x4be199b9",
     "predict(bytes32,address)": "0xc4b9f746",
     "PROXY_CALL_GAS()": "0xff68a045",
     "retire()": "0xa4874d77",
     "retired()": "0x2eb38ae0",
+    "returnsPaused()": "0xf38c27b5",
     "skim()": "0x1dd19cb4",
     "skimNative()": "0x544be958",
     "skimToken(address)": "0x20d6c580",
     "totalPending()": "0x3f90916a",
     "TREASURY()": "0x2d2c5565",
+    "unpaused()": "0xb0b62f5a",
+    "unpauseReturns()": "0xa2e63796",
     "USDC()": "0x89a30271",
     "VAULT()": "0x411557d1",
     "attempts()": "0x5754a042",
@@ -103,6 +109,8 @@
     "PendingFlushed(bytes32,address,address,uint256)": "0x1dc85fc3f58e3ec3a5a227beb1c5ca1500834ad3b5955ba342ec59cf7b4d12ec",
     "ProxyDeployed(bytes32,address,address)": "0x2dd96d0459d7a19d9973c629335d112af970ad4894b70919d288614388ef8eae",
     "Retired()": "0xc15f68f0a72806ff3f8bf2435385a67c4c22413f1c7931ef7bcea718e6ffcf03",
+    "ReturnsPaused(address)": "0xeaf7ce87f7dcfcf87cc66464043d9ec4bfc42de60a66e1b937be192f223ee70f",
+    "ReturnsUnpaused()": "0x4878710db943494f9c563e836b2f8088695465bec3e2b76471e016c2984239ce",
     "Skimmed(address,address,uint256)": "0x0cfb7d414a57e3fd35da9f4b61341e65026c225646228ba0262d9264f541c32e",
     "Unattributed(address,uint256,bytes32)": "0x0787f9200c6edc0c789aa92966501bc1cc341358e5ff68465e15a5cc668bd752",
     "ExtraDelivery(bytes32,address,uint256,uint256)": "0x0460094d9d5a5631feaf5dd85f23e99ecfc678710f9d6a85b26602158115190e",
@@ -113,8 +121,8 @@
     "SalePaid(bytes32,address,uint256,uint256)": "0xa35c23073d2cee723bfb41b0b9f1bf75499c3557e5b9d2fb8ecd10e8e573d9f6"
   },
   "state": {
-    "proxy": "0x56278F0F096dF8D6F3bAf3eCB8e37d8271A70BC2",
-    "raw": "0x62b6213d2086917d3e2a2e73a6097257fb8dc33aeae24f8ec5c066dc32639a6500000000000000000000000090d121876b4f93da56f039139fdf37a96cde00c3000000000000000000000000000000000000000000000000000000000007a120000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006ae1be430000000000000000000000000000000000000000000000000000000000000000",
+    "proxy": "0xCe3a2a1859E6e0893d3019C28a5A5eB30Fe0CaB1",
+    "raw": "0x62b6213d2086917d3e2a2e73a6097257fb8dc33aeae24f8ec5c066dc32639a6500000000000000000000000090d121876b4f93da56f039139fdf37a96cde00c3000000000000000000000000000000000000000000000000000000000007a120000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000006aeae98d0000000000000000000000000000000000000000000000000000000000000000",
     "decoded": {
       "home": "0x62b6213d2086917d3e2a2e73a6097257fb8dc33aeae24f8ec5c066dc32639a65",
       "claimer": "0x90D121876b4f93DA56F039139fdF37a96cde00c3",
@@ -122,12 +130,12 @@
       "attempts": "0",
       "lastReturnAt": "0",
       "nextReturnAt": "0",
-      "releaseAt": "1793179203",
+      "releaseAt": "1793780109",
       "releasable": "0"
     }
   },
   "delivery": {
-    "proxy": "0x56278F0F096dF8D6F3bAf3eCB8e37d8271A70BC2",
+    "proxy": "0xCe3a2a1859E6e0893d3019C28a5A5eB30Fe0CaB1",
     "home": "0x62b6213d2086917d3e2a2e73a6097257fb8dc33aeae24f8ec5c066dc32639a65",
     "ref": "0x1bb189b93efbea7d1c29bbcc09f8531217792fb352f6382e646b312153a3f9de",
     "recipient": "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
@@ -169,28 +177,28 @@
     "DELIVERY_GAS": "225000",
     "PROXY_CALL_GAS": "125000",
     "CCM_GAS_BUDGET": "280000",
-    "forkBlock": 518698642,
+    "forkBlock": 520818248,
     "l1Gas": "2488",
     "measured": {
       "cfReceive": {
-        "freshPay": "183992",
-        "freshShort": "156022",
-        "freshPayoutFailed": "161395",
-        "freshExpired": "156000",
-        "existingPay": "127267"
+        "freshPay": "184011",
+        "freshShort": "156041",
+        "freshPayoutFailed": "161414",
+        "freshExpired": "156019",
+        "existingPay": "127264"
       },
-      "deliver": "186753",
-      "cfReceiveMax": "183992",
-      "onDeliveryMax": "95416",
+      "deliver": "186772",
+      "cfReceiveMax": "184011",
+      "onDeliveryMax": "95391",
       "deliveryGas": "225000",
       "proxyCallGas": "125000",
-      "deferFloor": "48933",
-      "returnHome": "83419",
-      "release": "75505",
-      "expireDeferred": "29401",
-      "flush": "49048",
-      "flushDeploy": "113003",
-      "flushFallback": "117904"
+      "deferFloor": "48955",
+      "returnHome": "84719",
+      "release": "75516",
+      "expireDeferred": "29467",
+      "flush": "49114",
+      "flushDeploy": "113069",
+      "flushFallback": "117970"
     }
   },
   "networks": {

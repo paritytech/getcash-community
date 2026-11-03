@@ -487,6 +487,21 @@ describe("SaleVaultProxy", () => {
       await expect(proxy.returnHome()).to.emit(proxy, "ReturnedHome");
     });
 
+    it("is refused while returns are paused and runs again once unpaused", async () => {
+      const { s, proxy } = await loadFixture(heldSale);
+      await s.factory.connect(s.pauser).pauseReturns();
+      await expect(proxy.returnHome()).to.be.revertedWithCustomError(proxy, "ReturnsPaused");
+      await s.factory.connect(s.guardian).unpauseReturns();
+      await expect(proxy.returnHome()).to.emit(proxy, "ReturnedHome");
+    });
+
+    it("is refused as retired first when retired while paused", async () => {
+      const { s, proxy } = await loadFixture(heldSale);
+      await s.factory.connect(s.pauser).pauseReturns();
+      await s.factory.connect(s.guardian).retire();
+      await expect(proxy.returnHome()).to.be.revertedWithCustomError(proxy, "FactoryRetired");
+    });
+
     it("is refused once the factory is retired, release takes over", async () => {
       const { s, proxy } = await loadFixture(heldSale);
       await s.factory.connect(s.guardian).retire();
@@ -503,6 +518,30 @@ describe("SaleVaultProxy", () => {
       await expect(impl.home()).to.be.revertedWithCustomError(impl, "NotProxy");
       await expect(impl.claimer()).to.be.revertedWithCustomError(impl, "NotProxy");
       await expect(impl.state()).to.be.revertedWithCustomError(impl, "NotProxy");
+    });
+
+    it("skims a token or ETH sent to the implementation to the treasury, never USDC", async () => {
+      const s = await loadFixture(deploySystem);
+      const impl = s.implementation;
+      const address = await impl.getAddress();
+      await expect(impl.skimForeign(await s.usdc.getAddress())).to.be.revertedWithCustomError(
+        impl,
+        "CannotSkimUSDC",
+      );
+      const other = await (await ethers.getContractFactory("MockUSDC")).deploy();
+      await other.mint(address, 8n);
+      await expect(impl.connect(s.stranger).skimForeign(await other.getAddress()))
+        .to.emit(impl, "ForeignSkimmed")
+        .withArgs(await other.getAddress(), 8n);
+      expect(await other.balanceOf(s.treasury.address)).to.equal(8n);
+      await setBalance(address, ethers.parseEther("1"));
+      const before = await ethers.provider.getBalance(s.treasury.address);
+      await expect(impl.connect(s.stranger).skimNative())
+        .to.emit(impl, "ForeignSkimmed")
+        .withArgs(ethers.ZeroAddress, ethers.parseEther("1"));
+      expect(await ethers.provider.getBalance(s.treasury.address)).to.equal(
+        before + ethers.parseEther("1"),
+      );
     });
   });
 
@@ -615,6 +654,30 @@ describe("SaleVaultProxy", () => {
       expect(gaps[Number(RELEASE_ATTEMPTS) - 2]).to.equal(COOLDOWN << (RELEASE_ATTEMPTS - 2n));
       expect(gaps[Number(RELEASE_ATTEMPTS) - 1]).to.equal(COOLDOWN << (RELEASE_ATTEMPTS - 1n));
       expect(gaps[Number(RELEASE_ATTEMPTS)]).to.equal(gaps[Number(RELEASE_ATTEMPTS) - 1]);
+    });
+
+    it("keeps its clock while returns are paused, the stale wait still pays the claimer", async () => {
+      const { s, proxy } = await loadFixture(heldSale);
+      const due = await proxy.releaseAt();
+      await s.factory.connect(s.pauser).pauseReturns();
+      expect(await proxy.releaseAt()).to.equal(due);
+      expect((await proxy.state())[6]).to.equal(due);
+      await expect(proxy.release()).to.be.revertedWithCustomError(proxy, "ReleaseNotDue");
+      await time.increaseTo(due);
+      await expect(proxy.connect(s.stranger).release())
+        .to.emit(proxy, "Released")
+        .withArgs(40_000_000n);
+      expect(await s.usdc.balanceOf(CLAIMER)).to.equal(40_000_000n);
+    });
+
+    it("releases a small balance on its short wait while returns are paused", async () => {
+      const s = await loadFixture(deploySystem);
+      const { proxy } = await sell(s, "paused-small", 5_000_000n, 4_000_000n);
+      const due = (await proxy.lastActivityAt()) + RELEASE_DELAY;
+      await s.factory.connect(s.pauser).pauseReturns();
+      expect(await proxy.releaseAt()).to.equal(due);
+      await time.increaseTo(due);
+      await expect(proxy.release()).to.emit(proxy, "Released").withArgs(4_000_000n);
     });
 
     it("opens at once on a retired factory for any balance", async () => {
@@ -740,6 +803,94 @@ describe("SaleVaultProxy", () => {
       await expect(proxy.release()).to.emit(proxy, "Released").withArgs(MIN);
     });
 
+    it("starts a never-booked balance's clock at a pause, releasing STALE_DELAY later", async () => {
+      const s = await loadFixture(deploySystem);
+      const home = homeOf("unbooked-paused");
+      await s.factory.deploy(home, CLAIMER);
+      const proxy = await proxyAt(s, home);
+      await s.usdc.mint(await proxy.getAddress(), MIN);
+      await s.factory.connect(s.pauser).pauseReturns();
+      const due = (await s.factory.pausedAt()) + STALE_DELAY;
+      expect(await proxy.lastActivityAt()).to.equal(0n);
+      expect(await proxy.releaseAt()).to.equal(due);
+      expect((await proxy.state())[6]).to.equal(due);
+      await time.increaseTo(due - 10n);
+      await expect(proxy.release())
+        .to.be.revertedWithCustomError(proxy, "ReleaseNotDue")
+        .withArgs(due);
+      await time.setNextBlockTimestamp(due);
+      await expect(proxy.connect(s.stranger).release()).to.emit(proxy, "Released").withArgs(MIN);
+      expect(await s.usdc.balanceOf(CLAIMER)).to.equal(MIN);
+    });
+
+    it("drops the pause clock on an unpause, the balance goes home first again", async () => {
+      const s = await loadFixture(deploySystem);
+      const home = homeOf("unbooked-unpaused");
+      await s.factory.deploy(home, CLAIMER);
+      const proxy = await proxyAt(s, home);
+      await s.usdc.mint(await proxy.getAddress(), MIN);
+      await s.factory.connect(s.pauser).pauseReturns();
+      await s.factory.connect(s.guardian).unpauseReturns();
+      expect(await proxy.releaseAt()).to.equal(ethers.MaxUint256);
+      await time.increase(STALE_DELAY);
+      await expect(proxy.release())
+        .to.be.revertedWithCustomError(proxy, "ReleaseNotDue")
+        .withArgs(ethers.MaxUint256);
+      await expect(proxy.returnHome()).to.emit(proxy, "ReturnedHome");
+    });
+
+    it("restarts the pause clock from a later pause", async () => {
+      const s = await loadFixture(deploySystem);
+      const home = homeOf("unbooked-repaused");
+      await s.factory.deploy(home, CLAIMER);
+      const proxy = await proxyAt(s, home);
+      await s.usdc.mint(await proxy.getAddress(), MIN);
+      await s.factory.connect(s.pauser).pauseReturns();
+      const first = await s.factory.pausedAt();
+      await time.increase(3600n);
+      await s.factory.connect(s.guardian).unpauseReturns();
+      await s.factory.connect(s.guardian).pauseReturns();
+      const second = await s.factory.pausedAt();
+      expect(second).to.be.greaterThan(first);
+      expect(await proxy.releaseAt()).to.equal(second + STALE_DELAY);
+    });
+
+    it("releases a flushed sale on a never-booked proxy STALE_DELAY after a pause", async () => {
+      const s = await loadFixture(deploySystem);
+      const home = homeOf("flushed-paused");
+      const proxy = await proxyAt(s, home);
+      const address = await proxy.getAddress();
+      await s.usdc.setBlocked(address, true);
+      await deliver(s, encodeMessage(refOf("flushed-paused"), s.recipient.address, MIN, home), MIN);
+      await s.usdc.setBlocked(address, false);
+      await s.factory.flush(home, CLAIMER);
+      await s.factory.connect(s.pauser).pauseReturns();
+      await expect(proxy.returnHome()).to.be.revertedWithCustomError(proxy, "ReturnsPaused");
+      await time.increaseTo((await s.factory.pausedAt()) + STALE_DELAY);
+      await expect(proxy.release()).to.emit(proxy, "Released").withArgs(MIN);
+      expect(await s.usdc.balanceOf(CLAIMER)).to.equal(MIN);
+    });
+
+    it("releases a refund after an exact pay STALE_DELAY after a pause", async () => {
+      const s = await loadFixture(deploySystem);
+      const { proxy } = await sell(s, "exact-paused", 5_000_000n, 5_000_000n);
+      expect(await proxy.lastActivityAt()).to.equal(0n);
+      await s.factory.connect(s.pauser).pauseReturns();
+      await s.usdc.mint(await proxy.getAddress(), MIN);
+      expect(await proxy.releaseAt()).to.equal((await s.factory.pausedAt()) + STALE_DELAY);
+      await time.increase(STALE_DELAY);
+      await expect(proxy.release()).to.emit(proxy, "Released").withArgs(MIN);
+    });
+
+    it("keeps a booked balance on its own clock, not the pause's", async () => {
+      const s = await loadFixture(deploySystem);
+      const { proxy } = await sell(s, "booked-paused", 50_000_000n, 50_000_000n + MIN);
+      const due = (await proxy.lastActivityAt()) + STALE_DELAY;
+      await time.increase(3600n);
+      await s.factory.connect(s.pauser).pauseReturns();
+      expect(await proxy.releaseAt()).to.equal(due);
+    });
+
     it("restarts its clock on a valid delivery only, a junk delivery cannot delay it", async () => {
       const s = await loadFixture(deploySystem);
       const { home, proxy } = await sell(s, "clock", 5_000_000n, 4_000_000n);
@@ -754,7 +905,7 @@ describe("SaleVaultProxy", () => {
   });
 
   describe("skimForeign", () => {
-    it("refuses USDC and moves another token to the factory", async () => {
+    it("refuses USDC and moves another token to the claimer, from anyone", async () => {
       const s = await loadFixture(deploySystem);
       const { proxy } = await sell(s, "foreign", 5n, 5n);
       await expect(proxy.skimForeign(await s.usdc.getAddress())).to.be.revertedWithCustomError(
@@ -763,44 +914,36 @@ describe("SaleVaultProxy", () => {
       );
       const other = await (await ethers.getContractFactory("MockUSDC")).deploy();
       await other.mint(await proxy.getAddress(), 8n);
-      await expect(proxy.skimForeign(await other.getAddress()))
+      await expect(proxy.connect(s.stranger).skimForeign(await other.getAddress()))
         .to.emit(proxy, "ForeignSkimmed")
         .withArgs(await other.getAddress(), 8n);
-      expect(await other.balanceOf(await s.factory.getAddress())).to.equal(8n);
+      expect(await other.balanceOf(CLAIMER)).to.equal(8n);
+      expect(await other.balanceOf(await s.factory.getAddress())).to.equal(0n);
+      expect(await other.balanceOf(s.stranger.address)).to.equal(0n);
     });
   });
 
   describe("skimNative", () => {
-    it("sends ETH forced into a proxy straight to the treasury, from anyone", async () => {
+    it("sends ETH forced into a proxy straight to the claimer, from anyone", async () => {
       const s = await loadFixture(deploySystem);
       const { proxy } = await sell(s, "eth", 5n, 5n);
       await setBalance(await proxy.getAddress(), ethers.parseEther("1"));
-      const before = await ethers.provider.getBalance(s.treasury.address);
+      const before = await ethers.provider.getBalance(CLAIMER);
+      const treasuryBefore = await ethers.provider.getBalance(s.treasury.address);
       await expect(proxy.connect(s.stranger).skimNative())
         .to.emit(proxy, "ForeignSkimmed")
         .withArgs(ethers.ZeroAddress, ethers.parseEther("1"));
-      expect(await ethers.provider.getBalance(s.treasury.address)).to.equal(
-        before + ethers.parseEther("1"),
-      );
+      expect(await ethers.provider.getBalance(CLAIMER)).to.equal(before + ethers.parseEther("1"));
+      expect(await ethers.provider.getBalance(s.treasury.address)).to.equal(treasuryBefore);
       expect(await ethers.provider.getBalance(await proxy.getAddress())).to.equal(0n);
     });
 
-    it("reverts when the treasury refuses ETH", async () => {
-      const [, , , , guardian] = await ethers.getSigners();
-      const { usdc, vault } = await deployMocks();
-      const net = {
-        ...TEST_NETWORK,
-        vault: await vault.getAddress(),
-        usdc: await usdc.getAddress(),
-      };
-      const factory = await (
-        await ethers.getContractFactory("SaleVaultProxyFactory")
-      ).deploy(factoryConfig(net, await usdc.getAddress(), guardian.address));
-      await factory.deploy(homeOf("eth"), CLAIMER);
-      const proxy = await ethers.getContractAt(
-        "SaleVaultProxy",
-        await factory.predict(homeOf("eth"), CLAIMER),
-      );
+    it("reverts when the claimer refuses ETH", async () => {
+      const s = await loadFixture(deploySystem);
+      // MockUSDC has no receive, so it stands in for a claimer that refuses ETH
+      const refusing = await s.usdc.getAddress();
+      await s.factory.deploy(homeOf("eth"), refusing);
+      const proxy = await proxyAt(s, homeOf("eth"), refusing);
       await setBalance(await proxy.getAddress(), 1n);
       await expect(proxy.skimNative()).to.be.revertedWithCustomError(proxy, "TransferFailed");
     });
@@ -847,7 +990,7 @@ describe("SaleVaultProxy", () => {
       };
       const factory = await (
         await ethers.getContractFactory("SaleVaultProxyFactory")
-      ).deploy(factoryConfig(net, treasury.address, treasury.address));
+      ).deploy(factoryConfig(net, treasury.address, treasury.address, recipient.address));
       return { token, vault, factory, recipient };
     }
 

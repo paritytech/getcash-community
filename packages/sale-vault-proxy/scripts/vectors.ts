@@ -147,10 +147,10 @@ async function main() {
   };
 
   // Gas on the real Vault and Circle USDC, with the L1 part priced by live Arbitrum
-  const [, treasury] = await ethers.getSigners();
+  const [, treasury, pauser] = await ethers.getSigners();
   const real = await (
     await ethers.getContractFactory("SaleVaultProxyFactory")
-  ).deploy(factoryConfig(ARBITRUM_ONE, treasury.address, treasury.address));
+  ).deploy(factoryConfig(ARBITRUM_ONE, treasury.address, treasury.address, pauser.address));
   const rig = await forkRig(real, ARBITRUM_ONE);
   const gas = await measureGas(rig);
   const deliveryGas = await real.DELIVERY_GAS();

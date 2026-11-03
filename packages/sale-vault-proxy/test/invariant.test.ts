@@ -54,6 +54,8 @@ const other = fc.record({
     "fallback",
     "skim",
     "retire",
+    "pause",
+    "unpause",
     "wait",
     "stale",
   ),
@@ -80,6 +82,8 @@ const COVERING_RUN = [
   op("expire", 1),
   op("fallback", 0),
   op("release", 0),
+  op("donate", 0),
+  op("pause", 0),
 ];
 
 type Terms = [string, string, string, string, bigint, bigint];
@@ -108,7 +112,15 @@ describe("invariants (property)", () => {
 
   it("conserve USDC, pay each sale at most once and never late, keep totalPending exact and release only to the claimer", async () => {
     // Counts across runs, so the property is shown to reach every path
-    const seen = { paid: 0, delivered: 0, expired: 0, expireDeferred: 0, released: 0, fallback: 0 };
+    const seen = {
+      paid: 0,
+      delivered: 0,
+      expired: 0,
+      expireDeferred: 0,
+      released: 0,
+      fallback: 0,
+      pausedClock: 0,
+    };
     await fc.assert(
       fc.asyncProperty(
         fc.array(fc.oneof(sale, other), { minLength: 1, maxLength: 16 }),
@@ -209,6 +221,7 @@ describe("invariants (property)", () => {
                 const parsed = log.address === proxyAddress ? proxyIface.parseLog(log) : null;
                 if (parsed?.name !== "ReturnedHome") continue;
                 expect(await s.factory.retired()).to.equal(false);
+                expect(await s.factory.returnsPaused()).to.equal(false);
                 ledgers[i].lastReturn = parsed.args.amount;
                 const rest = await s.usdc.balanceOf(proxyAddress);
                 expect(rest === 0n || rest >= TEST_NETWORK.minReturn).to.equal(true);
@@ -229,6 +242,10 @@ describe("invariants (property)", () => {
               receipt = await attempt(s.factory.skim());
             } else if (o.kind === "retire") {
               receipt = await attempt(s.factory.connect(s.guardian).retire());
+            } else if (o.kind === "pause") {
+              receipt = await attempt(s.factory.connect(s.pauser).pauseReturns());
+            } else if (o.kind === "unpause") {
+              receipt = await attempt(s.factory.connect(s.guardian).unpauseReturns());
             } else {
               await time.increase(
                 o.kind === "wait" ? TEST_NETWORK.releaseDelay : TEST_NETWORK.staleDelay,
@@ -241,6 +258,18 @@ describe("invariants (property)", () => {
             for (const t of deferred.values()) sum += await s.factory.pendingDelivery(...t);
             expect(await s.factory.totalPending()).to.equal(sum);
             expect((await s.usdc.balanceOf(factory)) >= sum).to.equal(true);
+            // While returns are paused every proxy balance has a release time
+            if (await s.factory.returnsPaused()) {
+              for (const address of proxies) {
+                if ((await ethers.provider.getCode(address)) === "0x") continue;
+                if ((await s.usdc.balanceOf(address)) === 0n) continue;
+                const at = await (
+                  await ethers.getContractAt("SaleVaultProxy", address)
+                ).releaseAt();
+                expect(at).to.not.equal(ethers.MaxUint256);
+                seen.pausedClock++;
+              }
+            }
 
             if (!receipt) continue;
             const at = BigInt((await receipt.getBlock()).timestamp);
