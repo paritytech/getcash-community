@@ -193,9 +193,8 @@ describe("failures", () => {
   });
 
   it("As a developer reading Sentry, I log a recovery phrase by mistake and never receive it", async () => {
-    // Given
-    const phrase =
-      "abandon ability able about above absent absorb abstract absurd abuse access accident";
+    // Given: a valid 12-word phrase
+    const phrase = `${"abandon ".repeat(11)}about`;
 
     // When
     devLog("oops", `seed ${phrase}`);

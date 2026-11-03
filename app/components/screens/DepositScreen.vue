@@ -132,9 +132,10 @@ const showCancel = computed(
 // Either row's copy raises the shared pill above the buttons.
 const { copy: copyToClipboard } = useCopyToClipboard();
 function copy(target: "amount" | "address") {
-  trackAction("deposit.copy", { what: target });
   const text = target === "amount" ? amount.value?.value : address.value;
-  if (text) void copyToClipboard(text);
+  if (!text) return;
+  trackAction("deposit.copy", { what: target });
+  void copyToClipboard(text);
 }
 </script>
 

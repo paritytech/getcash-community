@@ -88,16 +88,27 @@ describe("the text guards", () => {
     expect(scrubbed).toBe(`burner ${address} from [redacted: hash]`);
   });
 
-  it("As a person who pasted a recovery phrase, I never have it logged or sent", () => {
-    // Given
-    const text =
-      "Pasted: abandon ability able about above absent absorb abstract absurd abuse access accident.";
+  it("As a person who pasted a recovery phrase, I never have it logged or sent, even inside a sentence", () => {
+    // Given: a valid 12-word phrase, between ordinary words
+    const phrase = `${"abandon ".repeat(11)}about`;
+    const text = `pasted the words ${phrase} into the field.`;
 
     // When
     const scrubbed = scrubText(text);
 
     // Then
-    expect(scrubbed).toBe("Pasted: [redacted: mnemonic-like string].");
+    expect(scrubbed).toBe("pasted the words [redacted: mnemonic-like string] into the field.");
+  });
+
+  it("As a person reading why my sale ended, I see the whole sentence: ordinary words are never taken for a phrase", () => {
+    // Given: twelve lowercase words in a row, as the sale-mismatch message has
+    const text = "The provider no longer names the deposit address and terms the sale took.";
+
+    // When
+    const scrubbed = scrubText(text);
+
+    // Then
+    expect(scrubbed).toBe(text);
   });
 
   it("As a developer reading Sentry, I read a host error and see its whole chain, with its masked words still readable", () => {

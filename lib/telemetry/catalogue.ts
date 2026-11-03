@@ -22,13 +22,15 @@ export const JOURNEYS = {
    *  purse. A request resumed from an earlier open has no journey; its
    *  failures are still reported. */
   "top-up": {
-    steps: ["deposit", "convert", "recover", "claim", "retry"],
+    steps: ["deposit", "arrive", "convert", "recover", "claim", "retry"],
     outcomes: ["settled", "failed", "expired", "cancelled"],
     // the swap, the mint and the claim are the app's to move
     stuckMs: 300_000,
-    // the person pays or sends the deposit; a recovery waits on their fee or
-    // deposit; a recoverable failure waits on their Try again
-    waitSteps: ["deposit", "recover", "retry"],
+    // the person pays or sends the deposit; the provider confirms it and
+    // carries it to the account (a BTC deposit's confirmations take a while);
+    // a recovery waits on their fee or deposit; a recoverable failure waits on
+    // their Try again
+    waitSteps: ["deposit", "arrive", "recover", "retry"],
   },
   /** One withdrawal started on this page, from its request to the funds sent. */
   withdraw: {

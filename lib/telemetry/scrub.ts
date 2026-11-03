@@ -4,33 +4,67 @@
  *
  * Two different guards, for two different reasons:
  *
- *  - `scrubText` takes out what must never leave the device: a 12-word
- *    recovery phrase (nothing should log one; defense in depth), a 32-byte
- *    hex value (the shape of a key's entropy or a seed, so a transaction or
- *    block hash goes too), and the query and hash of any URL (where a
- *    provider's widget token or session travels). Addresses stay: they are
- *    public, and a failed top-up is looked up on chain by them. Applied to
- *    every log line before a sink sees it, and to every event before it
- *    leaves.
+ *  - `scrubText` takes out what must never leave the device: a recovery
+ *    phrase (nothing should log one; defense in depth), a 32-byte hex value
+ *    (the shape of a key's entropy or a seed, so a transaction or block hash
+ *    goes too), and the query and hash of any URL (where a provider's widget
+ *    token or session travels). A phrase is only what BIP39 accepts, words
+ *    and checksum, so an ordinary sentence is never taken for one. Addresses
+ *    stay: they are public, and a failed top-up is looked up on chain by
+ *    them. Applied to every log line a sink sees, and to every event before
+ *    it leaves; the console keeps the line as it was (lib/log.ts).
  *  - `maskSafe` dodges Sentry's org-level masking. Our Sentry organisation
  *    blanks the WHOLE value of any tag or attribute containing auth, secret,
  *    credential or password, so a host error such as "Unauthorized" would
  *    arrive empty. The third letter of each such word becomes "*"
  *    ("Unauthorized" becomes "Unau*horized"), still readable.
  */
+import { validateMnemonic } from "@polkadot-labs/hdkd-helpers";
 
 const REDACTIONS: ReadonlyArray<readonly [RegExp, string]> = [
   // first, so what the others write inside a URL cannot hide its query:
   // a URL keeps its scheme, host and path; the query and hash go
   [/(\b[a-z][a-z0-9+.-]*:\/\/[^\s?#"'<>]*)[?#][^\s"'<>]*/gi, "$1"],
-  // 12+ space-separated lowercase words: mnemonic-shaped, never keep it
-  [/(?:\b[a-z]+ +){11,}[a-z]+\b/g, "[redacted: mnemonic-like string]"],
   // 32 bytes of hex: a key's entropy or a seed has this shape, so a hash does too
   [/\b0x[0-9a-fA-F]{64}\b/g, "[redacted: hash]"],
 ];
 
+/** 12 or more lowercase words in a row: where a recovery phrase could be. */
+const WORD_RUN = /(?:\b[a-z]+ +){11,}[a-z]+\b/g;
+/** The lengths BIP39 knows, longest first. */
+const PHRASE_LENGTHS = [24, 21, 18, 15, 12];
+const PHRASE = "[redacted: mnemonic-like string]";
+
+const isPhrase = (words: string[]): boolean => {
+  try {
+    return validateMnemonic(words.join(" "));
+  } catch {
+    return false;
+  }
+};
+
+/** Each recovery phrase inside a run of words, redacted; the rest of the run as it was. */
+function redactPhrases(run: string): string {
+  const words = run.split(/ +/);
+  const out: string[] = [];
+  let found = false;
+  for (let i = 0; i < words.length;) {
+    const n = PHRASE_LENGTHS.find((n) => i + n <= words.length && isPhrase(words.slice(i, i + n)));
+    if (n === undefined) {
+      out.push(words[i]!);
+      i += 1;
+    } else {
+      out.push(PHRASE);
+      found = true;
+      i += n;
+    }
+  }
+  return found ? out.join(" ") : run;
+}
+
 export function scrubText(text: string): string {
-  let out = text;
+  WORD_RUN.lastIndex = 0;
+  let out = text.replace(WORD_RUN, redactPhrases);
   for (const [pattern, replacement] of REDACTIONS) {
     // a global regex remembers where the last match stopped
     pattern.lastIndex = 0;

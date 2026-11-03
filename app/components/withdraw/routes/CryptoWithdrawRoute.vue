@@ -323,10 +323,10 @@ async function onAddress(entered: string) {
 }
 
 async function confirm() {
-  trackAction("withdraw.confirm");
   const picked = destination.value;
   const base = toCashBase(amount.value);
   if (picked === null || base === null || starting.value) return;
+  trackAction("withdraw.confirm");
   const shown = sale.value;
   starting.value = true;
   startError.value = null;
@@ -415,10 +415,12 @@ async function act(run: (ref: RequestRef) => Promise<boolean>, failed: string) {
   }
 }
 
-const retry = () => {
-  trackAction("withdraw.retry");
-  return act(withdrawal.retry, "The withdrawal could not be restarted. Try again in a moment.");
-};
+// counted inside act, past its guard, so a tap while one is running counts once
+const retry = () =>
+  act((ref) => {
+    trackAction("withdraw.retry");
+    return withdrawal.retry(ref);
+  }, "The withdrawal could not be restarted. Try again in a moment.");
 
 const switchToPool = () =>
   act(

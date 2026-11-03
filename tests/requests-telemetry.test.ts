@@ -14,7 +14,11 @@ import { awaitingDepositCryptoRecord, FIXTURE_NOW } from "./fixtures/requests";
 
 const calls = vi.hoisted(() => ({ log: [] as string[] }));
 
-vi.mock("~~/lib/telemetry", () => ({
+vi.mock("~~/lib/telemetry", async () => ({
+  // the real rule for which failures are the person's own answer
+  isExpected: (
+    await vi.importActual<typeof import("../lib/telemetry/catalogue")>("../lib/telemetry/catalogue")
+  ).isExpected,
   startJourney: (name: string, attrs: Record<string, string>) => {
     calls.log.push(`start ${name} ${attrs["request.route"]}`);
     return {
@@ -68,21 +72,36 @@ describe("a top-up's journey", () => {
       via: "worker",
     });
     requestChanged(created, seen);
-    const claiming = moved(created, { kind: "claiming", at: 2 });
-    requestChanged(seen, claiming);
-    requestChanged(claiming, moved(created, { kind: "settled", at: 3 }));
+    const converting = moved(created, { kind: "converting", at: 2, step: "swap" });
+    requestChanged(seen, converting);
+    const claiming = moved(created, { kind: "claiming", at: 3 });
+    requestChanged(converting, claiming);
+    requestChanged(claiming, moved(created, { kind: "settled", at: 4 }));
 
     // Then
     expect(calls.log).toEqual([
       "start top-up crypto",
       "step deposit",
       "end-step deposit",
+      "step arrive",
+      "end-step arrive",
       "step convert",
       "end-step convert",
       "step claim",
       "end-step claim",
       "end settled",
     ]);
+  });
+
+  it("As a person whose BTC deposit is confirming, I wait on the provider and the app is never called stuck meanwhile", async () => {
+    // Given
+    const { JOURNEYS } = await vi.importActual<typeof import("../lib/telemetry/catalogue")>(
+      "../lib/telemetry/catalogue",
+    );
+
+    // Then: a seen deposit's step waits on the provider, as the deposit itself waits on the person
+    expect(JOURNEYS["top-up"].waitSteps).toContain("arrive");
+    expect(JOURNEYS["top-up"].waitSteps).not.toContain("convert");
   });
 
   it("As a developer reading Sentry, I see a recoverable failure once, its journey left open on retry, and a later recovery carried on", () => {
@@ -189,6 +208,31 @@ describe("a withdrawal's failures", () => {
       "failure payment-refused declined (no journey)",
       "failure withdraw-failed payment-failed (no journey)",
       "failure withdraw-failed payment-failed (no journey)",
+    ]);
+  });
+
+  it("As a person who declined the payment sheet, my withdrawal waits for my retry and is not counted as something that went wrong", () => {
+    // Given: a withdrawal made on this page
+    const asked = withdrawal({});
+    requestCreated(asked);
+    const declined = {
+      ...asked,
+      rev: 2,
+      status: { kind: "failed", at: 9, recoverable: true },
+      failure: { kind: "payment-failed", step: "payment", message: "no", recoverable: true },
+      payment: { attempt: 0, status: "failed", refusal: "declined" },
+    } as WithdrawalRecord;
+
+    // When
+    requestChanged(asked, declined);
+
+    // Then
+    expect(calls.log).toEqual([
+      "start withdraw crypto",
+      "step payment",
+      "failure payment-refused declined",
+      "end-step payment",
+      "step retry",
     ]);
   });
 });

@@ -249,10 +249,10 @@ async function onSkipQuote() {
 let alive = true;
 
 async function confirm() {
-  trackAction("sale.continue");
   const quoted = sale.quote.value;
   const amountBase = toCashBase(amount.value);
   if (quoted === null || amountBase === null || starting.value) return;
+  trackAction("sale.continue");
   starting.value = true;
   startError.value = null;
   try {

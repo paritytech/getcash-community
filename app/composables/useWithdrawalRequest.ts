@@ -229,8 +229,9 @@ export function useWithdrawalRequest() {
       rail: { provider: input.rail, stage: "waiting", updatedAt: startedAt },
       witnesses: {},
     };
-    requestCreated(record);
+    // a create that throws ends the withdrawal here, so its journey starts once the record exists
     await requests.create(ref, record);
+    requestCreated(record);
     requests.setForeground(ref);
     // The number is taken for good once the record exists.
     await live.advanceWithdrawCounter(sourceId, n);
@@ -388,8 +389,8 @@ export function useWithdrawalRequest() {
       witnesses: {},
     };
     // Not taken as the foreground here: the screen that asked takes it, if it is still up.
-    requestCreated(record);
     await requests.create(ref, record);
+    requestCreated(record);
     return { ok: true, ref };
   }
 

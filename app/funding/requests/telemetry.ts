@@ -4,12 +4,15 @@
 // started on this page is one journey (`top-up` or `withdraw`), its steps the record's status. One
 // the store adopts or rebuilds, started on an earlier open, has none: only its failures are sent.
 // A failure is reported once per ending. A recoverable one leaves the journey open on its
-// `retry` step, marked sad, since the person can still try again.
+// `retry` step, since the person can still try again. The journey is marked sad only when the
+// failure is ours: a person declining the payment sheet is their own answer (catalogue.ts).
 
 import {
+  isExpected,
   reportFailure,
   startJourney,
   type Attrs,
+  type FailureKind,
   type Journey,
   type OutcomeOf,
   type Step,
@@ -38,7 +41,9 @@ function topUpPlace(record: TopUpRecord): Place {
   switch (record.status.kind) {
     case "awaiting-deposit":
       return { step: "deposit" };
+    // seen, but the provider still confirms it and carries it to the account: not ours to move
     case "deposit-seen":
+      return { step: "arrive" };
     case "converting":
       return { step: "convert" };
     case "recovering":
@@ -134,33 +139,34 @@ function contextOf(record: RequestRecord): Record<string, string> {
   return context;
 }
 
-/** Reports the record's failure, once per ending; true when this call reported it. */
-function report(key: string, record: RequestRecord, journey: Journey | undefined): boolean {
-  if (record.status.kind !== "failed") return false;
+/** Reports the record's failure, once per ending. Says which it was when this call reported it:
+ *  the person's own answer ("expected", as the catalogue rules) or ours; null otherwise. */
+function report(
+  key: string,
+  record: RequestRecord,
+  journey: Journey | undefined,
+): "expected" | "ours" | null {
+  if (record.status.kind !== "failed") return null;
   const ending = `${key}@${record.status.at}`;
-  if (reported.has(ending)) return false;
+  if (reported.has(ending)) return null;
   reported.add(ending);
   const context = contextOf(record);
   // The person declining the host's payment sheet, or not having the CASH for it, is their own
   // answer; any other payment failure is ours.
   const refusal =
     isTopUp(record) || record.failure?.step !== "payment" ? undefined : record.payment.refusal;
-  if (refusal === "declined" || refusal === "insufficient-balance") {
-    reportFailure("payment-refused", { reason: refusal, context }, journey);
-    return true;
-  }
-  reportFailure(
-    isTopUp(record) ? "top-up-failed" : "withdraw-failed",
-    { reason: record.failure?.kind ?? "unknown", context },
-    journey,
-  );
-  return true;
+  const [kind, reason]: [FailureKind, string] =
+    refusal === "declined" || refusal === "insufficient-balance"
+      ? ["payment-refused", refusal]
+      : [isTopUp(record) ? "top-up-failed" : "withdraw-failed", record.failure?.kind ?? "unknown"];
+  reportFailure(kind, { reason, context }, journey);
+  return isExpected(kind, reason) ? "expected" : "ours";
 }
 
 function move(key: string, record: RequestRecord): void {
   const live = open.get(key);
   const place = placeOf(record);
-  const fresh = "failed" in place && report(key, record, live?.journey);
+  const failure = "failed" in place ? report(key, record, live?.journey) : null;
   if (!live) return;
   const nextStep: StepName | null =
     "step" in place ? place.step : "failed" in place && place.failed ? "retry" : null;
@@ -170,7 +176,8 @@ function move(key: string, record: RequestRecord): void {
     live.stepName = null;
   }
   if ("failed" in place) {
-    if (fresh) live.journey.markSad(`failed:${record.failure?.kind ?? "unknown"}`);
+    // sad is something that went wrong; the person's own "no" is not
+    if (failure === "ours") live.journey.markSad(`failed:${record.failure?.kind ?? "unknown"}`);
     if (!place.failed) {
       live.journey.end("failed");
       open.delete(key);

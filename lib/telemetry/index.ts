@@ -22,6 +22,7 @@ import { noopJourney, type Attrs, type Journey, type JourneyName } from "./handl
 import type { TelemetryConfig } from "./init";
 
 export { describeError, reasonOf } from "./scrub";
+export { isExpected } from "./catalogue";
 export type { FailureDetails, FailureKind, ScreenName };
 export type { Attrs, Journey, OutcomeOf, Step, StepOf } from "./handle";
 
