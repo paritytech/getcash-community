@@ -108,7 +108,7 @@ const saveJobs = () => store.save();
  *                                            // the deposit, the pipeline's own figure
  *                route?, state?, deposit?, depositFoundAt?, depositGate?, depositDoneAt?,
  *                depositHeld?: { token, held },
- *                depositError?: { message, at, token?, held? } },
+ *                depositError?: { kind, message, at, round, token?, held? } },
  *                                            // round moves on when a claim spent the fee or the
  *                                            // fee grew; held is the burner's CASH at the last
  *                                            // read. depositHeld names the deposit being
@@ -1235,8 +1235,10 @@ async function fundRecovery(record, env, feeCash) {
     recovery.route = recordedRouteFields(route);
     recovery.depositHeld = { token: found.token, held: found.held.toString() };
     // When the deposit was found, for the hold its conversion keeps on the worker, and the
-    // figure it was found at: the conversion's gate takes that figure, frozen as a top-up's
-    // quote is, so a quote that moves while it converts cannot hold a deposit that was right.
+    // figure it was found at: a stable or dotUSD conversion's gate takes that figure, frozen as
+    // a top-up's quote is, so a quote that moves while it converts cannot hold a deposit that
+    // was right; the native tier's gate reads the plain quote, which the shown figure's headroom
+    // covers, and holds a deposit the price moved past until it moves back or more is sent.
     recovery.depositFoundAt = Date.now();
     recovery.depositGate = gates[found.token].toString();
     await saveJobs();
@@ -1272,9 +1274,14 @@ async function fundRecovery(record, env, feeCash) {
       // on Asset Hub, a shortfall or a trap has already sent it away, and a smaller deposit of
       // the same token after that must be taken up.
       const stays = error instanceof FundingHeldError;
+      // What ended it, for the surface's word: held, the chain would not take it; short, it
+      // converted and landed short of the fee; trapped, it is in People's trap. The round it
+      // ended in scopes that word to this round's ask.
       recovery.depositError = {
+        kind: stays ? "held" : error instanceof FundingShortfallError ? "short" : "trapped",
         message: String(error.message),
         at: Date.now(),
+        round: recovery.round ?? 0,
         ...(stays ? (recovery.depositHeld ?? {}) : {}),
       };
       delete recovery.route;

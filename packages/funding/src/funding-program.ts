@@ -512,6 +512,24 @@ export function forwardedProgramStandIn(
   };
 }
 
+/** What the runtime charges today to deliver `message` to People, in `asset`. `estimate` names
+ *  the caller in the error when the runtime will not say. */
+async function deliveryFeeOf(
+  api: AssetHubApi,
+  peopleParaId: number,
+  message: unknown,
+  asset: unknown,
+  estimate: string,
+): Promise<bigint> {
+  const df = await api.apis.XcmPaymentApi.query_delivery_fees(
+    { type: "V5", value: peopleDest(peopleParaId) } as never,
+    message as never,
+    asset as never,
+  );
+  if (!df.success) throw new Error(`${estimate}: delivery fee unavailable`);
+  return extractFungibleAmount(df.value);
+}
+
 /** The real program People will receive, taken from a dry-run of the actual call. Requires an
  *  origin that already holds what the call withdraws. Returns null when the dry-run cannot
  *  produce it. */
@@ -715,44 +733,69 @@ export async function estimateFundingProgramFees(args: {
       maxWeight,
     });
 
-  // Only the instruction list matters for the weight.
+  // Only the instruction list matters for the weight; the stand-in's delivery is read beside it.
   const rough = probe(args.nativeBalance / 4n, args.minUnderlyingOut);
-  const weight = await args.api.apis.XcmPaymentApi.query_xcm_weight(
-    (rough as { message: unknown }).message as never,
+  const standIn = forwardedProgramStandIn(
+    args.pool.underlying,
+    args.minUnderlyingOut,
+    args.beneficiaryHex,
+    args.transfer,
   );
-  if (!weight.success)
-    throw new Error("funding program fee estimate: the runtime would not weigh it");
-  const localFee = await args.api.apis.XcmPaymentApi.query_weight_to_asset_fee(weight.value, {
-    type: "V5",
-    value: NATIVE_HERE,
-  } as never);
-  if (!localFee.success) throw new Error("funding program fee estimate: local fee unavailable");
-  const localNative = localFee.value;
+  const nativeAsset = { type: "V5", value: NATIVE_HERE };
+  const [{ weight, localNative }, standInDelivery] = await Promise.all([
+    (async () => {
+      const weight = await args.api.apis.XcmPaymentApi.query_xcm_weight(
+        (rough as { message: unknown }).message as never,
+      );
+      if (!weight.success)
+        throw new Error("funding program fee estimate: the runtime would not weigh it");
+      const localFee = await args.api.apis.XcmPaymentApi.query_weight_to_asset_fee(
+        weight.value,
+        nativeAsset as never,
+      );
+      if (!localFee.success) throw new Error("funding program fee estimate: local fee unavailable");
+      return { weight, localNative: localFee.value };
+    })(),
+    deliveryFeeOf(
+      args.api,
+      args.peopleParaId,
+      standIn,
+      nativeAsset,
+      "funding program fee estimate",
+    ),
+  ]);
 
-  // The forwarded program sets the delivery fee through its size. The dry-run charges no dispatch
-  // fee and must reach the send, so it runs with the whole balance and no exchange floor.
+  // The forwarded program sets the delivery fee through its size, so it is priced on the real
+  // one, taken from a dry run of a probe. The dry run charges no dispatch fee and must reach the
+  // send, so the probe runs with the whole balance and no exchange floor, and pays its own fees
+  // from an allowance that covers them at any balance: a quarter of a top-up's does, while at a
+  // recovery deposit's size the fees are most of the balance, so the allowance is the stand-in's
+  // fees with the usual margin over them. A probe that ran short would forward nothing, and a
+  // fee priced on the stand-in misses the real charge by a few hundred thousand either way,
+  // which fails the program at the send or traps the refund on the emptied burner. A balance too
+  // small for even that allowance keeps the stand-in's figure.
+  const quarter = args.nativeBalance / 4n;
+  const sized = withFeeMargin(localNative + standInDelivery);
+  const allowance = quarter > sized ? quarter : sized;
   const forwarded =
-    (args.dryRunFrom === undefined
+    args.dryRunFrom === undefined || allowance >= args.nativeBalance
       ? null
       : await realForwardedProgram(
           args.api,
-          args.api.tx.PolkadotXcm.execute(probe(args.nativeBalance / 4n, 1n)).decodedCall,
+          args.api.tx.PolkadotXcm.execute(probe(allowance, 1n)).decodedCall,
           args.peopleParaId,
           args.dryRunFrom,
-        )) ??
-    forwardedProgramStandIn(
-      args.pool.underlying,
-      args.minUnderlyingOut,
-      args.beneficiaryHex,
-      args.transfer,
-    );
-  const df = await args.api.apis.XcmPaymentApi.query_delivery_fees(
-    { type: "V5", value: peopleDest(args.peopleParaId) } as never,
-    forwarded as never,
-    { type: "V5", value: NATIVE_HERE } as never,
-  );
-  if (!df.success) throw new Error("funding program fee estimate: delivery fee unavailable");
-  const deliveryNative = extractFungibleAmount(df.value);
+        );
+  const deliveryNative =
+    forwarded === null
+      ? standInDelivery
+      : await deliveryFeeOf(
+          args.api,
+          args.peopleParaId,
+          forwarded,
+          nativeAsset,
+          "funding program fee estimate",
+        );
   const payFeesNative = localNative + deliveryNative;
   if (payFeesNative >= args.nativeBalance) {
     throw new DepositBelowFeesError(
@@ -923,13 +966,13 @@ export async function estimateStableProgramFees(args: {
       args.beneficiaryHex,
       args.transfer,
     );
-  const df = await args.api.apis.XcmPaymentApi.query_delivery_fees(
-    { type: "V5", value: peopleDest(args.peopleParaId) } as never,
-    forwarded as never,
-    stableAsset as never,
+  const deliveryExternal = await deliveryFeeOf(
+    args.api,
+    args.peopleParaId,
+    forwarded,
+    stableAsset,
+    "stable program fee estimate",
   );
-  if (!df.success) throw new Error("stable program fee estimate: delivery fee unavailable");
-  const deliveryExternal = extractFungibleAmount(df.value);
 
   // Price the dispatch against the program carrying the final amounts and the declared weight, so
   // the charge it predicts is the charge the submitted call pays. The dispatch fee itself is not
@@ -1050,13 +1093,13 @@ export async function estimateDotUsdProgramFees(args: {
       args.beneficiaryHex,
       args.transfer,
     );
-  const df = await args.api.apis.XcmPaymentApi.query_delivery_fees(
-    { type: "V5", value: peopleDest(args.peopleParaId) } as never,
-    forwarded as never,
-    underlyingAsset as never,
+  const deliveryExternal = await deliveryFeeOf(
+    args.api,
+    args.peopleParaId,
+    forwarded,
+    underlyingAsset,
+    "dotUSD program fee estimate",
   );
-  if (!df.success) throw new Error("dotUSD program fee estimate: delivery fee unavailable");
-  const deliveryExternal = extractFungibleAmount(df.value);
 
   // Price the dispatch against the program carrying the final amounts and the declared weight, so
   // the charge it predicts is the charge the submitted call pays. The dispatch fee itself is not

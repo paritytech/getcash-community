@@ -122,10 +122,11 @@ describe("recoveryMinimums", () => {
       USDT: USDT_POOL,
       USDC: USDC_POOL,
     });
-    // The native: the headroomed quote plus what the program keeps for its own fees. The deposit
-    // counts at the plain quote plus the same, as the pipeline's gate takes it.
+    // The native: the headroomed quote plus what the program keeps for its own fees, the XCM's
+    // cushioned as the stable tiers' are. The deposit counts at the plain quote plus the same, as
+    // the pipeline's gate takes it.
     const nativeInMax = withHeadroom(TARGET * RATE, 1);
-    const keep = LOCAL_FEE + DELIVERY_FEE + DISPATCH_NATIVE;
+    const keep = withFeeMargin(LOCAL_FEE + DELIVERY_FEE) + DISPATCH_NATIVE;
     expect(sized.keepNativeForFees).toBe(keep);
     expect(sized.minimums.PAS).toBe(nativeInMax + keep);
     expect(sized.gates.PAS).toBe(TARGET * RATE + keep);

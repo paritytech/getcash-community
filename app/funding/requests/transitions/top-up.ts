@@ -178,7 +178,7 @@ function converting(record: TopUpRecord, at: number, step: ConvertingStep): TopU
 
 /** The Cash is in People's trap and the worker is getting it back: the record keeps what the
  *  worker reports of the trap and the claim's fee, beside the purse's payment of it once asked,
- *  and stands at `recovering` from when the trap was found. */
+ *  and stands at `recovering` from when the page first saw the trap. */
 function recovering(record: TopUpRecord, at: number, view: WorkerRecoveryView): TopUpRecord {
   const step = view.phase === "claiming" ? "claiming" : "funding";
   const current = record.status;
@@ -189,9 +189,11 @@ function recovering(record: TopUpRecord, at: number, view: WorkerRecoveryView): 
         : { ...current, step }
       : { kind: "recovering", at, step };
   const { phase: _phase, ...facts } = view;
+  const { payment, depositToken } = record.recovery ?? {};
   const recovery: TopUpRecord["recovery"] = {
     ...facts,
-    ...(record.recovery?.payment === undefined ? {} : { payment: record.recovery.payment }),
+    ...(payment === undefined ? {} : { payment }),
+    ...(depositToken === undefined ? {} : { depositToken }),
   };
   // The worker reports the same facts every tick for as long as the trap stands: unchanged, the
   // record is the same, so the poll is a witness and not a write.
@@ -210,7 +212,13 @@ function sameRecovery(
     const a = current[key as keyof typeof current];
     const b = next[key as keyof typeof next];
     if (a === b) continue;
-    if (key === "minimums" && JSON.stringify(a) === JSON.stringify(b)) continue;
+    // Rebuilt by every poll, so compared by content.
+    if (
+      (key === "minimums" || key === "depositUnused") &&
+      JSON.stringify(a) === JSON.stringify(b)
+    ) {
+      continue;
+    }
     return false;
   }
   return true;
@@ -663,6 +671,12 @@ function applyUser(record: TopUpRecord, observation: UserObservation): TopUpReco
         ...record,
         recovery: { ...recovery, payment: { attempt, requestedAt: at, id, round } },
       };
+    }
+    case "recovery-token-picked": {
+      const { recovery } = record;
+      if (record.status.kind !== "recovering" || recovery === undefined) return record;
+      if (recovery.depositToken === observation.token) return record;
+      return { ...record, recovery: { ...recovery, depositToken: observation.token } };
     }
     case "channel-opened":
     case "swap-opened":
