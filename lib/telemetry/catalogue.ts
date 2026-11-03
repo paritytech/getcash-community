@@ -98,6 +98,9 @@ export const SCREENS = [
   "top-up.settled",
   "top-up.refund",
   "top-up.recover-deposit",
+  // a top-up whose CASH is in People's trap: the fee's confirmation, the token, the deposit
+  "top-up.recover-fee",
+  "top-up.recover-token",
   "top-up.recover-trapped",
   "withdraw.amount",
   "withdraw.pending",

@@ -330,6 +330,11 @@ describe("request views", () => {
         "80.12",
       ],
       ["settled", { ...at({ kind: "settled", at: AT }), claimed: "80120000" }, "80.12"],
+      [
+        "settled, cents in two places",
+        { ...at({ kind: "settled", at: AT }), claimed: "80100249" },
+        "80.10",
+      ],
       ["settled with no claim", at({ kind: "settled", at: AT }), undefined],
       ["partial claim", partial, "30"],
       [

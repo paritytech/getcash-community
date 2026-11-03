@@ -9,6 +9,7 @@ import type {
   RefundProgress,
   SourceId,
 } from "@getsome/core";
+import { nextTick } from "vue";
 import { SOURCE_CONFIG_BY_ID, type SourceFloorResult } from "@getsome/chainflip";
 import { chainflipTopUpId, projectChainflipTopUps } from "../funding/chainflip-top-ups";
 import { meldTopUpId, projectMeldTopUps } from "../funding/meld-top-ups";
@@ -1206,6 +1207,7 @@ function base(session: Session, flow: Flow) {
   flow.confirmingCancel = false;
   flow.previewDrillIn = null;
   flow.previewMismatch = null;
+  flow.previewPurse = null;
   session.supportedCountries = null;
   session.corridorByCountry = null;
   session.meldCorridor = null;
@@ -1409,12 +1411,22 @@ async function pipeline(
   return r;
 }
 
+/** The least of each token the staged worker priced. */
+const PRICED_MINIMUMS = { PAS: "900000000", DOTUSD: "600000", USDT: "650000", USDC: "650000" };
+
 /** The worker's job once it found the Cash in People's trap, at `phase` of the recovery: the
  *  conversion is in a block, the claim's fee is sized, and the manual path is priced. */
 function trapped(
   request: PreviewRequest,
   phase: "funding" | "claiming",
-  extra: { deposit?: string; round?: number; askCash?: string } = {},
+  extra: {
+    deposit?: string;
+    round?: number;
+    askCash?: string;
+    minimums?: Record<string, string | null>;
+    depositFound?: boolean;
+    depositUnused?: { at: number; kind: "held" | "short" | "trapped" };
+  } = {},
 ): Observation {
   const at = request.at(1);
   return {
@@ -1436,18 +1448,39 @@ function trapped(
         },
       },
       recovery: {
-        trappedAmount: "20000000",
+        // The quoted Cash, as a swap that filled on its quote leaves it on People.
+        trappedAmount: "5000000",
         trappedAt: at,
         claimerHex: `0x${"07".repeat(32)}`,
         phase,
         round: 0,
         askCash: "10000",
-        minimums: { PAS: "900000000", DOTUSD: "600000", USDT: "650000", USDC: "650000" },
+        minimums: PRICED_MINIMUMS,
         ...extra,
       },
     },
   };
 }
+
+/** The purse the recovery scenes stage: enough for the fee, or short of it. */
+const PREVIEW_PURSE = 226_780_000n;
+const PREVIEW_PURSE_SHORT = 5_000n;
+
+/** The page asked the purse for the fee, under the first attempt. */
+const feeAsked = (request: PreviewRequest, index: number): Observation => ({
+  source: "user",
+  at: request.at(index),
+  event: "payment-requested",
+  attempt: 0,
+  id: `0x${"ab".repeat(32)}`,
+});
+
+/** The host's word on the first attempt. */
+const feeAnswered = (
+  request: PreviewRequest,
+  index: number,
+  payment: Omit<Extract<Observation, { source: "host" }>["payment"], "attempt">,
+): Observation => ({ source: "host", at: request.at(index), payment: { attempt: 0, ...payment } });
 
 /** The crypto scenes' request, claimed by the worker and prompting core's consent. */
 async function claimConsent(s: Session, f: Flow, index: number): Promise<PreviewRequest> {
@@ -2432,12 +2465,22 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    // The program left the Cash in People's trap: the worker found it and sized the claim's fee,
-    // and the journey offers the purse, or a deposit on the top-up's own account.
+    // The program left the Cash in People's trap: the worker found it and sized the claim's fee.
+    // The purse covers it, so the journey offers the purse.
     name: "top-up / crypto / recovering: needs fee",
     apply: async (s, f, i) => {
       const r = await pipeline(s, f, i, "await-arrival");
       await r.observe(trapped(r, "funding"));
+      f.previewPurse = PREVIEW_PURSE;
+    },
+  },
+  {
+    // The purse falls short of the fee: a deposit on the top-up's own account is the one way.
+    name: "top-up / crypto / recovering: needs fee, balance short",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "await-arrival");
+      await r.observe(trapped(r, "funding"));
+      f.previewPurse = PREVIEW_PURSE_SHORT;
     },
   },
   {
@@ -2449,53 +2492,86 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    // The purse could not pay the fee: the deposit becomes the main way, the purse the other.
+    // The confirmation before the purse is asked: the balance, the fee, Back and Confirm.
+    name: "top-up / crypto / recovering: pay fee",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "await-arrival");
+      await r.observe(trapped(r, "funding"));
+      f.previewPurse = PREVIEW_PURSE;
+      f.previewDrillIn = "recovery-fee";
+    },
+  },
+  {
+    // The host's sheet is up: the confirmation says the fee is being paid.
+    name: "top-up / crypto / recovering: paying the fee",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "await-arrival");
+      await r.observe(trapped(r, "funding"));
+      await r.observe(feeAsked(r, 2));
+      f.previewPurse = PREVIEW_PURSE;
+      f.previewDrillIn = "recovery-fee";
+    },
+  },
+  {
+    // The host paid the fee: the Cash is being added, nothing is asked.
+    name: "top-up / crypto / recovering: fee paid",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "await-arrival");
+      await r.observe(trapped(r, "funding"));
+      await r.observe(feeAsked(r, 2));
+      await r.observe(feeAnswered(r, 3, { status: "completed" }));
+      f.previewPurse = PREVIEW_PURSE;
+    },
+  },
+  {
+    // The purse could not pay the fee: a deposit is the one way.
     name: "top-up / crypto / recovering: fee refused",
     apply: async (s, f, i) => {
       const r = await pipeline(s, f, i, "await-arrival");
       await r.observe(trapped(r, "funding"));
-      await r.observe({
-        source: "user",
-        at: r.at(2),
-        event: "payment-requested",
-        attempt: 0,
-        id: `0x${"ab".repeat(32)}`,
-      });
-      await r.observe({
-        source: "host",
-        at: r.at(3),
-        payment: {
-          attempt: 0,
+      await r.observe(feeAsked(r, 2));
+      await r.observe(
+        feeAnswered(r, 3, {
           status: "failed",
           reason: "The balance does not cover this fee.",
           refusal: "insufficient-balance",
-        },
-      });
+        }),
+      );
+      f.previewPurse = PREVIEW_PURSE_SHORT;
     },
   },
   {
-    // The buyer declined the host's sheet: the purse stays the main way.
+    // The buyer declined the host's sheet: the purse is offered again, a deposit under it.
     name: "top-up / crypto / recovering: fee declined",
     apply: async (s, f, i) => {
       const r = await pipeline(s, f, i, "await-arrival");
       await r.observe(trapped(r, "funding"));
-      await r.observe({
-        source: "user",
-        at: r.at(2),
-        event: "payment-requested",
-        attempt: 0,
-        id: `0x${"ab".repeat(32)}`,
-      });
-      await r.observe({
-        source: "host",
-        at: r.at(3),
-        payment: {
-          attempt: 0,
+      await r.observe(feeAsked(r, 2));
+      await r.observe(
+        feeAnswered(r, 3, {
           status: "failed",
           reason: "The payment was declined.",
           refusal: "declined",
-        },
-      });
+        }),
+      );
+      f.previewPurse = PREVIEW_PURSE;
+    },
+  },
+  {
+    // Declined, and the purse has since fallen short of the fee: a deposit is the one way.
+    name: "top-up / crypto / recovering: fee declined, balance short",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "await-arrival");
+      await r.observe(trapped(r, "funding"));
+      await r.observe(feeAsked(r, 2));
+      await r.observe(
+        feeAnswered(r, 3, {
+          status: "failed",
+          reason: "The payment was declined.",
+          refusal: "declined",
+        }),
+      );
+      f.previewPurse = PREVIEW_PURSE_SHORT;
     },
   },
   {
@@ -2505,19 +2581,46 @@ export const SCENES: Scene[] = [
     apply: async (s, f, i) => {
       const r = await pipeline(s, f, i, "await-arrival");
       await r.observe(trapped(r, "funding"));
+      await r.observe(feeAsked(r, 2));
+      await r.observe(feeAnswered(r, 3, { status: "completed" }));
+      await r.observe({ ...trapped(r, "funding", { round: 1 }), at: r.at(4) });
+      f.previewPurse = PREVIEW_PURSE;
+    },
+  },
+  {
+    // The fee is needed again and the purse has fallen short of it: a deposit is the one way.
+    name: "top-up / crypto / recovering: fee needed again, balance short",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "await-arrival");
+      await r.observe(trapped(r, "funding"));
+      await r.observe(feeAsked(r, 2));
+      await r.observe(feeAnswered(r, 3, { status: "completed" }));
+      await r.observe({ ...trapped(r, "funding", { round: 1 }), at: r.at(4) });
+      f.previewPurse = PREVIEW_PURSE_SHORT;
+    },
+  },
+  {
+    // The token to send for the fee instead.
+    name: "top-up / crypto / recovering: select token",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "await-arrival");
+      await r.observe(trapped(r, "funding"));
+      f.previewDrillIn = "recovery-token";
+    },
+  },
+  {
+    // The deposit on the token the buyer picked: the QR, the least to send, the address.
+    name: "top-up / crypto / recovering: deposit",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "await-arrival");
+      await r.observe(trapped(r, "funding"));
       await r.observe({
         source: "user",
         at: r.at(2),
-        event: "payment-requested",
-        attempt: 0,
-        id: `0x${"ab".repeat(32)}`,
+        event: "recovery-token-picked",
+        token: "USDT",
       });
-      await r.observe({
-        source: "host",
-        at: r.at(3),
-        payment: { attempt: 0, status: "completed" },
-      });
-      await r.observe({ ...trapped(r, "funding", { round: 1 }), at: r.at(4) });
+      f.previewDrillIn = "recovery-deposit";
     },
   },
   {
@@ -2529,11 +2632,80 @@ export const SCENES: Scene[] = [
     },
   },
   {
+    // A deposit was found but sits short of its gate: the buyer is told and asked on.
+    name: "top-up / crypto / recovering: deposit short",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "await-arrival");
+      f.previewPurse = PREVIEW_PURSE;
+      await r.observe(trapped(r, "funding", { depositFound: true, deposit: "await-native" }));
+    },
+  },
+  {
+    // The worker let the deposit go, its conversion trapped on People, and asks on. The purse is
+    // short, so the wallet path is offered, and the token was picked: still the journey opens on
+    // the band, not on the QR.
+    name: "top-up / crypto / recovering: deposit not used",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "await-arrival");
+      f.previewPurse = PREVIEW_PURSE_SHORT;
+      await r.observe(trapped(r, "funding"));
+      await r.observe({
+        source: "user",
+        at: r.at(2),
+        event: "recovery-token-picked",
+        token: "USDT",
+      });
+      await r.observe({
+        ...trapped(r, "funding", { depositUnused: { at: r.at(3), kind: "trapped" } }),
+        at: r.at(3),
+      });
+    },
+  },
+  {
     // The fee is on the account and the claim is on its way.
     name: "top-up / crypto / recovering: claiming",
     apply: async (s, f, i) => {
       const r = await pipeline(s, f, i, "await-arrival");
       await r.observe(trapped(r, "claiming"));
+    },
+  },
+  {
+    // One token the chain could not price today keeps its row, unpickable with the reason.
+    name: "top-up / crypto / recovering: select token, one unpriced",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "await-arrival");
+      await r.observe(trapped(r, "funding", { minimums: { ...PRICED_MINIMUMS, USDC: null } }));
+      f.previewDrillIn = "recovery-token";
+    },
+  },
+  {
+    // The purse cannot be read: both ways to the fee, so a failing host never leaves the purse as
+    // the only one.
+    name: "top-up / crypto / recovering: needs fee, balance unread",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "await-arrival");
+      f.previewPurse = "unread";
+      await r.observe(trapped(r, "funding"));
+    },
+  },
+  {
+    // Reopened with a token picked and the purse short: the journey lands on the QR by itself,
+    // no drill-in staged. The record is left and brought back, as a buyer returning to it does.
+    name: "top-up / crypto / recovering: reopened on the QR",
+    apply: async (s, f, i) => {
+      const r = await pipeline(s, f, i, "await-arrival");
+      f.previewPurse = PREVIEW_PURSE_SHORT;
+      await r.observe(trapped(r, "funding"));
+      await r.observe({
+        source: "user",
+        at: r.at(2),
+        event: "recovery-token-picked",
+        token: "USDT",
+      });
+      const requests = useRequestsStore();
+      requests.leave();
+      await nextTick();
+      requests.setForeground(r.ref);
     },
   },
   {
