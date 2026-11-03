@@ -2,14 +2,21 @@
  * STARTING SENTRY: the only file that calls `Sentry.init`.
  *
  * lib/telemetry is the ONE importer of @sentry/vue, and only through the
- * doorway's dynamic import (index.ts), so a build without a DSN has none of it. This file owns the release, the environment, the tags on
- * every event, the page context, and the retrying transport.
+ * doorway's dynamic import (index.ts), so a build without a DSN has none of
+ * it. This file owns the release, the environment, the tags on every event,
+ * the page context, and the retrying transport.
  *
- * Delivery never closes for a page session: failed, rate-limited and
- * timed-out sends are retried with backoff (queue.ts), offline work waits for
- * the browser's `online`, and a server's Retry-After holds the whole queue.
- * Envelopes go through the PAGE's window.fetch, so the host's network rule
- * applies to them like to any other request.
+ * INSIDE A HOST, NOTHING IS SENT BEFORE TELEMETRY'S GRANT. The host checks
+ * every request the page makes, and one to a domain the person has not
+ * granted raises the host's own network prompt, ahead of the app's. So the
+ * queue starts gated and opens only when grant.ts hears yes; until then it
+ * holds what is captured. Outside a host it is open from the start.
+ *
+ * Once open, delivery never closes for a page session: failed, rate-limited
+ * and timed-out sends are retried with backoff (queue.ts), offline work waits
+ * for the browser's `online`, and a server's Retry-After holds the whole
+ * queue. Envelopes go through the PAGE's window.fetch, so the host's network
+ * rule applies to them like to any other request.
  *
  * At most REPEAT_CAP events of one fingerprint (or one exception type and
  * message) per page session, since Dedupe is off: two requests failing the
@@ -73,6 +80,8 @@ export interface TelemetryConfig {
   protocol: string;
   userAgent: string;
   inContainer: boolean;
+  /** hold every envelope until telemetry's own host grant is approved (grant.ts) */
+  awaitGrant: boolean;
   maxTouchPoints: number;
   viewport: string;
   language: string;
@@ -388,6 +397,7 @@ export function startTelemetryWith(config: TelemetryConfig): boolean {
     undefined,
     undefined,
     rateLimitStore(`sentry:${config.product}:rate-limit-until.v1`),
+    config.awaitGrant,
   );
   Sentry.init({
     ...sentryOptions(config),
@@ -441,6 +451,12 @@ export function logBoot(config: TelemetryConfig): void {
 
 export function telemetryStarted(): boolean {
   return started;
+}
+
+/** Telemetry's host grant was approved: what the queue held goes out, and so does all that
+ *  follows. A no-op for a queue that was never gated. */
+export function openDelivery(): void {
+  queue.open();
 }
 
 export async function resetTelemetryForTests(): Promise<void> {

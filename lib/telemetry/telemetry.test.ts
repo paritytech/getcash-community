@@ -5,7 +5,7 @@ import type { FailureKind, JourneyName } from "./catalogue";
 import { reportFailure, startJourney } from "./core";
 import type { FailureDetails } from "./failures";
 import type { Attrs, Step } from "./handle";
-import { resetTelemetryForTests, sentryOptions, startTelemetryWith } from "./init";
+import { openDelivery, resetTelemetryForTests, sentryOptions, startTelemetryWith } from "./init";
 import { interruptOpenJourneys } from "./journeys";
 import { recordingTransport, testConfig, type Payload } from "./testing";
 
@@ -33,6 +33,27 @@ beforeEach(async () => {
 
 const transactions = () => sink.items("transaction");
 const events = () => sink.items("event");
+
+describe("the grant gate", () => {
+  it("As a person in a host, I hit a failure before granting telemetry's domain and it is sent only once I grant it", async () => {
+    // Given: a page inside a host, telemetry not granted yet
+    await resetTelemetryForTests();
+    sink = recordingTransport();
+    startTelemetryWith(testConfig({ makeTransport: sink.factory, awaitGrant: true }));
+
+    // When
+    fail("broke", { reason: "render" });
+    await Sentry.flush(200);
+    const beforeGrant = events().length;
+    openDelivery();
+    await Sentry.flush(1000);
+
+    // Then
+    expect(beforeGrant).toBe(0);
+    expect(events()).toHaveLength(1);
+    expect(events()[0].tags).toMatchObject({ "failure.kind": "broke" });
+  });
+});
 
 describe("journeys", () => {
   it("As a developer reading Sentry, I end a journey and see a root span whose sad and expected flags start false, with its outcome", async () => {

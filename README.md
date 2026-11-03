@@ -297,6 +297,10 @@ SDK is reached only through one guarded dynamic import in `lib/telemetry/index.t
 bundler drops when the DSN is unset, and CI fails a DSN-less build whose output still holds any
 Sentry code.
 
+Inside a host, nothing is sent until the person allows Sentry's domain. The app asks for it in a
+request of its own, after its launch prompts have been answered, and holds what it captures until
+then (`lib/telemetry/grant.ts`). A refusal means nothing is sent for that open.
+
 What a deployment with a DSN sends:
 
 - **Failures**, one event of a fixed kind each (`lib/telemetry/catalogue.ts`): a top-up or

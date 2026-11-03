@@ -6,12 +6,7 @@ const flush = async () => {
 };
 
 const observer = (dropped: QueueItemKind[] = []) => ({
-  failed: () => {},
-  retried: () => {},
   dropped: (kind: QueueItemKind) => dropped.push(kind),
-  offline: () => {},
-  recoveredTimeout: () => {},
-  deliveredAfter: () => {},
 });
 
 describe("the delivery queue", () => {
@@ -30,6 +25,26 @@ describe("the delivery queue", () => {
     // Then
     await expect(Promise.all(sent)).resolves.toEqual([true, true, true]);
     expect(started).toEqual([1, 2, 3]);
+  });
+
+  it("As a person opening the app in a host, I am never prompted by a send: nothing leaves before the grant, then all of it does, in order", async () => {
+    // Given
+    const started: number[] = [];
+    const queue = createQueue<number>(undefined, undefined, undefined, undefined, true);
+    queue.setSender(async (item) => (started.push(item), true));
+    const sent = [queue.push(1), queue.push(2)];
+
+    // When: coming back online and the page hiding do not open the gate
+    queue.resume();
+    queue.flushNow();
+    await flush();
+    const beforeGrant = [...started];
+    queue.open();
+
+    // Then
+    expect(beforeGrant).toEqual([]);
+    await expect(Promise.all(sent)).resolves.toEqual([true, true]);
+    expect(started).toEqual([1, 2]);
   });
 
   it(`As a person on a slow network, I send a burst of telemetry and never have more than ${MAX_IN_FLIGHT} requests open`, async () => {

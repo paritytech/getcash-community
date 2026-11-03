@@ -37,6 +37,7 @@ export function telemetryIngestHost(): string | null {
 /** The build's config, or null: no usable DSN, or no browser. */
 export function configFromEnvironment(): TelemetryConfig | null {
   if (ingestHost(DSN) === null || typeof window === "undefined") return null;
+  const inContainer = isInsideContainerSync();
   return {
     dsn: DSN,
     // a hash of the tracked sources (nuxt.config.ts), `dev` outside a git checkout
@@ -45,7 +46,9 @@ export function configFromEnvironment(): TelemetryConfig | null {
     hostname: location.hostname,
     protocol: location.protocol,
     userAgent: navigator.userAgent,
-    inContainer: isInsideContainerSync(),
+    inContainer,
+    // in a host, a send before telemetry's grant would raise the host's own prompt
+    awaitGrant: inContainer,
     maxTouchPoints: navigator.maxTouchPoints ?? 0,
     viewport: `${window.innerWidth}x${window.innerHeight}`,
     language: navigator.language,

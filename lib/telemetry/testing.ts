@@ -77,6 +77,8 @@ export function testConfig(over: Partial<TelemetryConfig> = {}): TelemetryConfig
     protocol: "https:",
     userAgent: "Mozilla/5.0 (Linux; Android 14; Pixel 8; wv) AppleWebKit/537.36 Chrome/130.0.0.0",
     inContainer: true,
+    // the gate has its own tests; elsewhere what is captured goes out at once
+    awaitGrant: false,
     maxTouchPoints: 5,
     viewport: "390x844",
     language: "en-GB",

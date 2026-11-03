@@ -6,6 +6,11 @@
  * offline sends remain held until `resume()`; and metrics are displaced
  * before events when the queue reaches its cap.
  *
+ * A queue created `gated` sends nothing at all until `open()`: inside a host,
+ * a request to a domain the person has not granted raises the host's own
+ * network prompt, so nothing goes out before telemetry's grant (grant.ts).
+ * Neither `resume()` nor `flushNow()` opens the gate.
+ *
  * The queue starts sends synchronously, up to MAX_IN_FLIGHT, so the group of
  * envelopes produced by pagehide reaches the browser transport before the
  * page is torn down. The sender and observer are injected, keeping this file
@@ -54,6 +59,8 @@ export interface DeliveryQueue<T> {
   /** Page teardown: skip item backoff/offline holding and start queued work now.
    * A server Retry-After remains authoritative for the whole queue. */
   flushNow(): void;
+  /** Lets a gated queue send: what it held goes out now. */
+  open(): void;
   size(): number;
   setSender(send: Sender<T>): void;
 }
@@ -73,6 +80,7 @@ export function createQueue<T>(
   now: () => number = Date.now,
   observer: QueueObserver = NOOP_OBSERVER,
   rateLimitStore: RateLimitDeadlineStore = NOOP_RATE_LIMIT_STORE,
+  gated = false,
 ): DeliveryQueue<T> {
   type Entry = {
     item: T;
@@ -84,6 +92,7 @@ export function createQueue<T>(
   };
 
   let paused = false;
+  let closed = gated;
   let sender: Sender<T> | null = null;
   let inFlight = 0;
   let uncertain = 0;
@@ -121,7 +130,8 @@ export function createQueue<T>(
   const schedule = () => {
     clearTimeout(retryTimer);
     retryTimer = undefined;
-    if (paused || sender === null || held.length === 0 || inFlight >= MAX_IN_FLIGHT) return;
+    if (closed || paused || sender === null || held.length === 0 || inFlight >= MAX_IN_FLIGHT)
+      return;
     const nextAt = Math.max(rateLimitedUntil, Math.min(...held.map((entry) => entry.readyAt)));
     if (nextAt <= now()) return;
     retryTimer = setTimeout(pump, nextAt - now());
@@ -214,7 +224,7 @@ export function createQueue<T>(
   function pump(): void {
     clearTimeout(retryTimer);
     retryTimer = undefined;
-    if (paused || sender === null) return;
+    if (closed || paused || sender === null) return;
     if (rateLimitedUntil > now()) {
       schedule();
       return;
@@ -250,6 +260,10 @@ export function createQueue<T>(
       paused = false;
       const at = now();
       for (const entry of held) entry.readyAt = at;
+      pump();
+    },
+    open() {
+      closed = false;
       pump();
     },
     size: () => held.length + inFlight + uncertain,
