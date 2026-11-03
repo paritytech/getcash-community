@@ -132,6 +132,16 @@ describe("saleVaultProxyNote", () => {
     expect(
       saleVaultProxyNote({ ...held, blockedReason: "returns-paused", releaseAt: null }, usdc, when),
     ).toBe("Sending your funds back to your account is on hold for now.");
+    // A due release runs while the return is held, so the funds go to the seller's own address
+    for (const reason of ["returns-paused", "vault-changed", "chain-unavailable"]) {
+      expect(
+        saleVaultProxyNote(
+          { ...held, blockedReason: reason, releaseAt: 1, releasable: "50000000" },
+          usdc,
+          when,
+        ),
+      ).toBe("Your funds are being sent to your own Arbitrum address.");
+    }
     expect(saleVaultProxyNote({ ...held, blockedReason: "not-due" }, usdc, when)).toBe(
       "The provider could not be paid. Your funds are on their way back to your account.",
     );

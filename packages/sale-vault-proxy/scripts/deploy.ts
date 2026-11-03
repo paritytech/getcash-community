@@ -36,6 +36,9 @@ async function main() {
   if (!pauserEnv || !ethers.isAddress(pauserEnv)) throw new Error("deploy: set PAUSER_ADDRESS");
   const pauser = ethers.getAddress(pauserEnv);
   if (pauser === guardian) throw new Error("deploy: PAUSER_ADDRESS is the guardian key");
+  // The pauser is the hot keeper key, which the adapter refuses as the treasury
+  if (ethers.getAddress(treasury) === pauser)
+    throw new Error("deploy: TREASURY_ADDRESS is the pauser key");
 
   // The token is the chain's USDC and the Chainflip Vault holds it
   const usdc = new ethers.Contract(

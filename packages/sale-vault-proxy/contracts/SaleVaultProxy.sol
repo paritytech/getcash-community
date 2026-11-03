@@ -240,18 +240,21 @@ contract SaleVaultProxy is ISaleVaultProxy, ReentrancyGuard {
         return _releaseAt(USDC.balanceOf(address(this)));
     }
 
-    /// @notice Send a token other than USDC to the claimer, or the treasury from the implementation, permissionless.
+    /// @notice Send a token other than USDC to the claimer, any token from the implementation to the treasury.
     function skimForeign(address token) external nonReentrant {
-        if (token == address(USDC)) revert CannotSkimUSDC();
+        // A proxy's USDC is the seller's and leaves only by returnHome or release
+        if (token == address(USDC) && address(this) != SELF) revert CannotSkimUSDC();
         uint256 amount = IERC20(token).balanceOf(address(this));
         IERC20(token).safeTransfer(_skimTo(), amount);
         emit ForeignSkimmed(token, amount);
     }
 
-    /// @notice Send native ETH forced in here to the claimer, or the treasury from the implementation, permissionless.
+    /// @notice Send native ETH forced in here to the claimer, or the treasury when it refuses, permissionless.
     function skimNative() external nonReentrant {
         uint256 amount = address(this).balance;
         (bool ok, ) = _skimTo().call{value: amount}("");
+        // Forced-in ETH has no owner, so a claimer that refuses it leaves it to the treasury
+        if (!ok) (ok, ) = SaleVaultProxyFactory(FACTORY).TREASURY().call{value: amount}("");
         if (!ok) revert TransferFailed();
         emit ForeignSkimmed(address(0), amount);
     }

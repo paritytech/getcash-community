@@ -208,7 +208,7 @@ contract SaleVaultProxyFactory is ICFReceiver, ReentrancyGuard {
         emit Retired();
     }
 
-    /// @notice Pause every return home until the guardian unpauses, release keeps its clock. Pauser until an unpause.
+    /// @notice Pause returns until the guardian unpauses, starting a clockless STALE_DELAY. Pauser until an unpause.
     function pauseReturns() external {
         if (msg.sender != GUARDIAN && (msg.sender != PAUSER || unpaused)) revert NotPauser();
         if (pausedAt != 0) revert AlreadyPaused();

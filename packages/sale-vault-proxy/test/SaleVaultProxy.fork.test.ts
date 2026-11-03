@@ -225,12 +225,15 @@ const SWAP_TOKEN = "SwapToken(uint32,bytes,uint32,address,uint256,address,bytes)
     const amount = ethers.parseEther("0.01");
     await (await weth.deposit({ value: amount })).wait();
     await (await weth.transfer(proxy, amount)).wait();
-    const wethBefore = await weth.balanceOf(CLAIMER);
+    const treasury = await rig.factory.TREASURY();
+    const [wethBefore, treasuryWethBefore] = await Promise.all([
+      weth.balanceOf(CLAIMER),
+      weth.balanceOf(treasury),
+    ]);
     await expect(p.skimForeign(WETH)).to.emit(p, "ForeignSkimmed").withArgs(WETH, amount);
     expect(await weth.balanceOf(CLAIMER)).to.equal(wethBefore + amount);
     expect(await weth.balanceOf(proxy)).to.equal(0n);
     await setBalance(proxy, amount);
-    const treasury = await rig.factory.TREASURY();
     const [ethBefore, treasuryBefore] = await Promise.all([
       ethers.provider.getBalance(CLAIMER),
       ethers.provider.getBalance(treasury),
@@ -238,7 +241,7 @@ const SWAP_TOKEN = "SwapToken(uint32,bytes,uint32,address,uint256,address,bytes)
     await expect(p.skimNative()).to.emit(p, "ForeignSkimmed").withArgs(ethers.ZeroAddress, amount);
     expect(await ethers.provider.getBalance(CLAIMER)).to.equal(ethBefore + amount);
     expect(await ethers.provider.getBalance(treasury)).to.equal(treasuryBefore);
-    expect(await weth.balanceOf(treasury)).to.equal(0n);
+    expect(await weth.balanceOf(treasury)).to.equal(treasuryWethBefore);
     await ethers.provider.send("evm_revert", [snap]);
   });
 });

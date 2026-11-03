@@ -82,7 +82,9 @@ const COVERING_RUN = [
   op("expire", 1),
   op("fallback", 0),
   op("release", 0),
-  op("donate", 0),
+  // An exact pay leaves proxy 2 clockless, a refund then makes it returnable before the pause
+  { ...op("full", 2), home: 1 },
+  { ...op("donate", 0), home: 1, extra: TEST_NETWORK.minReturn },
   op("pause", 0),
 ];
 
@@ -262,12 +264,20 @@ describe("invariants (property)", () => {
             if (await s.factory.returnsPaused()) {
               for (const address of proxies) {
                 if ((await ethers.provider.getCode(address)) === "0x") continue;
-                if ((await s.usdc.balanceOf(address)) === 0n) continue;
-                const at = await (
-                  await ethers.getContractAt("SaleVaultProxy", address)
-                ).releaseAt();
+                const balance = await s.usdc.balanceOf(address);
+                if (balance === 0n) continue;
+                const p = await ethers.getContractAt("SaleVaultProxy", address);
+                const at = await p.releaseAt();
                 expect(at).to.not.equal(ethers.MaxUint256);
-                seen.pausedClock++;
+                // A clockless returnable balance waits STALE_DELAY from the pause, a retire opens it at once
+                if (
+                  !(await s.factory.retired()) &&
+                  (await p.lastActivityAt()) === 0n &&
+                  balance >= TEST_NETWORK.minReturn
+                ) {
+                  expect(at).to.equal((await s.factory.pausedAt()) + TEST_NETWORK.staleDelay);
+                  seen.pausedClock++;
+                }
               }
             }
 

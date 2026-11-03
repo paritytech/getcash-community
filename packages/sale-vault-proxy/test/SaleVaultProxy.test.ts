@@ -520,14 +520,15 @@ describe("SaleVaultProxy", () => {
       await expect(impl.state()).to.be.revertedWithCustomError(impl, "NotProxy");
     });
 
-    it("skims a token or ETH sent to the implementation to the treasury, never USDC", async () => {
+    it("skims any token or ETH sent to the implementation to the treasury, USDC too", async () => {
       const s = await loadFixture(deploySystem);
       const impl = s.implementation;
       const address = await impl.getAddress();
-      await expect(impl.skimForeign(await s.usdc.getAddress())).to.be.revertedWithCustomError(
-        impl,
-        "CannotSkimUSDC",
-      );
+      await s.usdc.mint(address, 7n);
+      await expect(impl.connect(s.stranger).skimForeign(await s.usdc.getAddress()))
+        .to.emit(impl, "ForeignSkimmed")
+        .withArgs(await s.usdc.getAddress(), 7n);
+      expect(await s.usdc.balanceOf(s.treasury.address)).to.equal(7n);
       const other = await (await ethers.getContractFactory("MockUSDC")).deploy();
       await other.mint(address, 8n);
       await expect(impl.connect(s.stranger).skimForeign(await other.getAddress()))
@@ -938,12 +939,36 @@ describe("SaleVaultProxy", () => {
       expect(await ethers.provider.getBalance(await proxy.getAddress())).to.equal(0n);
     });
 
-    it("reverts when the claimer refuses ETH", async () => {
+    it("sends ETH a claimer refuses to the treasury", async () => {
       const s = await loadFixture(deploySystem);
       // MockUSDC has no receive, so it stands in for a claimer that refuses ETH
       const refusing = await s.usdc.getAddress();
       await s.factory.deploy(homeOf("eth"), refusing);
       const proxy = await proxyAt(s, homeOf("eth"), refusing);
+      await setBalance(await proxy.getAddress(), 1n);
+      const before = await ethers.provider.getBalance(s.treasury.address);
+      await expect(proxy.skimNative())
+        .to.emit(proxy, "ForeignSkimmed")
+        .withArgs(ethers.ZeroAddress, 1n);
+      expect(await ethers.provider.getBalance(s.treasury.address)).to.equal(before + 1n);
+      expect(await ethers.provider.getBalance(await proxy.getAddress())).to.equal(0n);
+    });
+
+    it("reverts when the claimer and the treasury both refuse ETH", async () => {
+      // MockUSDC has no receive, so it stands in for a claimer and a treasury that refuse ETH
+      const { usdc, vault } = await deployMocks();
+      const refusing = await usdc.getAddress();
+      const [, , , , guardian, pauser] = await ethers.getSigners();
+      const net = { ...TEST_NETWORK, vault: await vault.getAddress(), usdc: refusing };
+      const factory = await (
+        await ethers.getContractFactory("SaleVaultProxyFactory")
+      ).deploy(factoryConfig(net, refusing, guardian.address, pauser.address));
+      const home = homeOf("eth-both");
+      await factory.deploy(home, refusing);
+      const proxy = await ethers.getContractAt(
+        "SaleVaultProxy",
+        await factory.predict(home, refusing),
+      );
       await setBalance(await proxy.getAddress(), 1n);
       await expect(proxy.skimNative()).to.be.revertedWithCustomError(proxy, "TransferFailed");
     });

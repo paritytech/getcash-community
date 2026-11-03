@@ -54,6 +54,8 @@ export function saleVaultProxyNote(
     return "Your funds are being sent to your own Arbitrum address.";
   }
   if (s.returnable && !calling && saleVaultProxyHeld(s)) {
+    // The keeper releases a due balance while its return is held back
+    if (s.releasable !== "0") return "Your funds are being sent to your own Arbitrum address.";
     const held =
       s.blockedReason === "chain-unavailable"
         ? "Arbitrum could not be reached, so sending your funds back waits."
