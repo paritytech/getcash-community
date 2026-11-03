@@ -4,6 +4,7 @@
 // The route hands over the figures: the address is the record's own, the least to send is the
 // worker's, and whatever is sent above the fee is added to the Cash.
 import { Copy } from "lucide-vue-next";
+import { POLKADOT_CHAIN } from "~~/lib/config";
 import { useCopyToClipboard } from "../../composables/useCopyToClipboard";
 import type { RecoveryChoice } from "../../funding/recovery-deposit";
 import { shortAddress } from "../../utils/address";
@@ -58,7 +59,7 @@ function copy(text: string | null) {
       >
         <span class="min-w-0">
           <span class="block text-body-s text-fg-secondary">
-            To this address on <span class="font-semibold">Polkadot Asset Hub</span>
+            To this address on <span class="font-semibold">{{ POLKADOT_CHAIN.label }}</span>
           </span>
           <span class="mt-1 block truncate text-paragraph-l text-fg-primary">
             {{ shortAddress(address) }}

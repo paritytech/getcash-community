@@ -2512,13 +2512,13 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    // The host registered the payment: the Cash is being added, nothing is asked.
+    // The host paid the fee: the Cash is being added, nothing is asked.
     name: "top-up / crypto / recovering: fee paid",
     apply: async (s, f, i) => {
       const r = await pipeline(s, f, i, "await-arrival");
       await r.observe(trapped(r, "funding"));
       await r.observe(feeAsked(r, 2));
-      await r.observe(feeAnswered(r, 3, { status: "processing" }));
+      await r.observe(feeAnswered(r, 3, { status: "completed" }));
       f.previewPurse = PREVIEW_PURSE;
     },
   },

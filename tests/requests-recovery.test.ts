@@ -363,22 +363,27 @@ describe("the timeline", () => {
     });
   });
 
-  it("waits quietly once the purse was asked, and says the Cash is being added once it paid", () => {
+  it("waits quietly once the purse was asked, says the fee is being paid, then paid", () => {
     const asked = timelineOf(requested(trapped()));
     expect(asked?.message?.text).toBe("Your Cash is almost here");
     // Asked and not yet answered: the sheet is up.
     expect(asked?.detail).toBe("Waiting for the fee to be approved.");
     expect(asked?.recovery?.actions).toEqual([]);
+    // The host took the payment and is sending it; it can still fail, so not paid yet.
     const registered = timelineOf(host(requested(trapped()), { status: "processing" }));
-    expect(registered?.message?.text).toBe("Adding your Cash");
-    expect(registered?.detail).toBe(
-      "The fee is paid. Your $25 Cash will be in your balance in a moment.",
-    );
+    expect(registered?.message?.text).toBe("Your Cash is almost here");
+    expect(registered?.detail).toBe("Paying the fee from your balance.");
     expect(registered?.recovery?.actions).toEqual([]);
     expect(listHeadline("crypto", registered)).toEqual({
-      text: "Adding your Cash",
+      text: "Your Cash is almost here",
       delayed: true,
     });
+    const paid = timelineOf(host(requested(trapped()), { status: "completed" }));
+    expect(paid?.message?.text).toBe("Adding your Cash");
+    expect(paid?.detail).toBe(
+      "The fee is paid. Your $25 Cash will be in your balance in a moment.",
+    );
+    expect(paid?.recovery?.actions).toEqual([]);
   });
 
   it("offers a deposit alone once the balance fell short, until a read says it covers the fee again", () => {
@@ -422,7 +427,8 @@ describe("the timeline", () => {
     }) as TopUpRecord;
     expect(paymentOutOfRound(moved.recovery!)).toBe(true);
     const inFlight = timelineOf(moved);
-    expect(inFlight?.message?.text).toBe("Adding your Cash");
+    expect(inFlight?.message?.text).toBe("Your Cash is almost here");
+    expect(inFlight?.detail).toBe("Paying the fee from your balance.");
     expect(inFlight?.recovery?.actions).toEqual([]);
     expect(awaitingAnswer(moved.recovery)).toBe(false);
     // Declined at last, in the moved round: the ask is over and the purse is offered again.

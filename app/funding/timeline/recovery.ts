@@ -116,8 +116,14 @@ export function recoveryPrompt(
       actions: [],
     };
   }
+  // The host took the payment and is sending it: not paid yet, since the host can still fail
+  // it, so the band says what is happening rather than what has not happened yet.
   if (payment?.status === "processing") {
-    return { message: delay(ADDING), detail: paid, actions: [] };
+    return {
+      message: delay(ALMOST_HERE),
+      detail: "Paying the fee from your balance.",
+      actions: [],
+    };
   }
   const asked = askFor(record, purse, fee, cash, paid);
   // What the buyer sent did not do: the worker holds a deposit short of its gate, or let one go
