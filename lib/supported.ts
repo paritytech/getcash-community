@@ -454,6 +454,9 @@ export interface CountryOption {
   /** Supported, but this purchase is under the corridor's minimum: greyed, and the row says so
    *  rather than letting the buyer pick a region the quote would then refuse. */
   belowMinimum?: boolean;
+  /** Supported, but every provider behind the method is failing right now: greyed under its own
+   *  heading, apart from the regions nothing routes to. */
+  temporarilyUnavailable?: true;
   /** The corridor's fiat minimum, on a row that carries one. */
   min?: string;
   /** The corridor's fiat, e.g. "GBP": names the row's currency, and denominates `min`. */
@@ -495,8 +498,9 @@ function plainRow(c: SupportedCountry): CountryOption {
   return { country: c.country, name: c.name };
 }
 
-// Picker rows for the active method: supported carries its fiat min, unsupported is disabled, and a
-// minimum above `floor` greys the row it belongs to; a null/empty map leaves all rows plain.
+// Picker rows for the active method: supported carries its fiat min, unsupported is disabled, a
+// method whose providers are all failing is temporarily unavailable, and a minimum above `floor`
+// greys the row it belongs to; a null/empty map leaves all rows plain.
 /**
  * The regions a fiat route's picker lists before `corridorOptions` says what each row can take.
  *
@@ -524,7 +528,7 @@ export function corridorOptions(
   floor?: FiatFloor | null,
 ): CountryOption[] {
   if (corridors === null || corridors.size === 0) return base.map(plainRow);
-  const rows = base.map((c): CountryOption => {
+  return base.map((c): CountryOption => {
     const corridor = corridors.get(c.country) ?? null;
     const method = corridor?.methods.find((m) => m.category === ui) ?? null;
     // A region names its currency whether or not this method is routed from it: the picker greys
@@ -535,13 +539,12 @@ export function corridorOptions(
       ...(corridor ? { fiat: corridor.fiat } : {}),
     };
     if (method === null) return { ...named, disabled: true };
+    if (method.temporarilyUnavailable) return { ...named, temporarilyUnavailable: true };
     // A supported method with no bound or no currency stays selectable but shows no min.
     if (method.min === "" || method.currency === "") return named;
     const row: CountryOption = { ...named, min: method.min, fiat: method.currency };
     return overFloor(method.min, floor, method.currency) ? { ...row, belowMinimum: true } : row;
   });
-  // Never brick: a map that disables every row (case skew, disjoint fallback) degrades to plain selectable rows.
-  return rows.some((r) => !r.disabled) ? rows : base.map(plainRow);
 }
 
 /** The region's name as the live catalog writes it, else the one Intl has, else the code. Both
@@ -556,13 +559,19 @@ export interface RegionGroup {
   rows: CountryOption[];
 }
 
+/** Whether a picker row commits when tapped. */
+export function isPickable(o: CountryOption): boolean {
+  return !o.disabled && !o.belowMinimum && !o.temporarilyUnavailable;
+}
+
 /**
  * The region list as the design sections it: what can be picked, then what cannot and why.
  *
  * A region the buyer's own device reports leads, so the common case is one tap away, and the rest
- * are what is left to choose from. Below the pickable regions come the two that are not — this purchase is under the region's minimum, or
- * nothing routes there at all — kept in the list rather than dropped, because a buyer looking for
- * their own country needs to be told why it is not on offer.
+ * are what is left to choose from. Below the pickable regions come the three that are not — this
+ * purchase is under the region's minimum, its providers are failing right now, or nothing routes
+ * there at all — kept in the list rather than dropped, because a buyer looking for their own
+ * country needs to be told why it is not on offer.
  *
  * While a filter is running there is no detected pin and the matches lead unheaded: what is being
  * shown is the search's answer, not the whole list.
@@ -572,8 +581,9 @@ export function regionGroups(
   detected: string | null,
   filtering = false,
 ): RegionGroup[] {
-  const pickable = (o: CountryOption) => !o.disabled && !o.belowMinimum;
-  const pin = filtering ? null : (rows.find((o) => o.country === detected && pickable(o)) ?? null);
+  const pin = filtering
+    ? null
+    : (rows.find((o) => o.country === detected && isPickable(o)) ?? null);
   const rest = pin ? rows.filter((o) => o !== pin) : rows;
   const groups: RegionGroup[] = [];
   const add = (title: string | null, list: CountryOption[]) => {
@@ -582,11 +592,15 @@ export function regionGroups(
   if (pin) add("Detected country", [pin]);
   add(
     filtering ? null : pin ? "Or choose another country" : "All countries",
-    rest.filter(pickable),
+    rest.filter(isPickable),
   );
   add(
     "Minimum payment amount",
     rest.filter((o) => o.belowMinimum && !o.disabled),
+  );
+  add(
+    "Temporarily unavailable",
+    rest.filter((o) => o.temporarilyUnavailable),
   );
   add(
     "Unsupported country",

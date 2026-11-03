@@ -388,7 +388,7 @@ describe("lib/supported", () => {
     expect(rows).toEqual([{ country: "US", name: "United States" }]);
   });
 
-  it("corridorOptions degrades to plain rows when a non-empty map would disable every row", async () => {
+  it("corridorOptions disables every row when no region routes the method", async () => {
     const { corridorOptions } = await import("../lib/supported");
     // A disjoint map (covers only a country not in base, and only for card) must not brick the picker.
     const map = new Map<string, SupportedCorridor>([
@@ -399,8 +399,38 @@ describe("lib/supported", () => {
       { country: "CA", name: "Canada" },
     ];
     const rows = corridorOptions(base, map, "card");
-    expect(rows).toEqual(base); // all plain + selectable, no disabled rows
-    expect(rows.some((r) => r.disabled)).toBe(false);
+    expect(rows.every((r) => r.disabled)).toBe(true);
+  });
+
+  it("corridorOptions marks a region whose providers are all failing, without its minimum", async () => {
+    const { corridorOptions, isPickable } = await import("../lib/supported");
+    const card = {
+      paymentMethodType: "CREDIT_DEBIT_CARD",
+      category: "card" as const,
+      min: "20",
+      max: "15000",
+      currency: "EUR",
+      providers: [],
+    };
+    const map = new Map<string, SupportedCorridor>([
+      ["DE", { country: "DE", fiat: "EUR", methods: [{ ...card, temporarilyUnavailable: true }] }],
+      ["FR", { country: "FR", fiat: "EUR", methods: [card] }],
+    ]);
+    const rows = corridorOptions(
+      [
+        { country: "DE", name: "Germany" },
+        { country: "FR", name: "France" },
+      ],
+      map,
+      "card",
+    );
+    expect(rows[0]).toEqual({
+      country: "DE",
+      name: "Germany",
+      fiat: "EUR",
+      temporarilyUnavailable: true,
+    });
+    expect(rows.map(isPickable)).toEqual([false, true]);
   });
 
   it("trimAmount trims trailing zeros without exponential notation on large bounds", async () => {
@@ -661,18 +691,21 @@ describe("lib/supported", () => {
       { country: "GB", name: "United Kingdom", min: "4", fiat: "GBP" },
       { country: "BR", name: "Brazil", fiat: "BRL", disabled: true },
       { country: "AU", name: "Australia", min: "70", fiat: "AUD", belowMinimum: true },
+      { country: "DE", name: "Germany", fiat: "EUR", temporarilyUnavailable: true as const },
     ];
     const groups = regionGroups(rows, "GB");
     expect(groups.map((g) => g.title)).toEqual([
       "Detected country",
       "Or choose another country",
       "Minimum payment amount",
+      "Temporarily unavailable",
       "Unsupported country",
     ]);
     expect(groups[0]?.rows.map((r) => r.country)).toEqual(["GB"]);
     expect(groups[1]?.rows.map((r) => r.country)).toEqual(["US"]);
     expect(groups[2]?.rows.map((r) => r.country)).toEqual(["AU"]);
-    expect(groups[3]?.rows.map((r) => r.country)).toEqual(["BR"]);
+    expect(groups[3]?.rows.map((r) => r.country)).toEqual(["DE"]);
+    expect(groups[4]?.rows.map((r) => r.country)).toEqual(["BR"]);
   });
 
   it("regionGroups never pins a region that cannot be picked, and drops empty sections", async () => {
@@ -683,6 +716,12 @@ describe("lib/supported", () => {
     ];
     // The device's own region is out of reach at this amount: it stays in its section rather than
     // leading the list as something to tap.
+    expect(
+      regionGroups(
+        [{ country: "DE", name: "Germany", temporarilyUnavailable: true as const }],
+        "DE",
+      ).map((g) => g.title),
+    ).toEqual(["Temporarily unavailable"]);
     // With no pin there is nothing to choose "another" of, so the list names itself.
     expect(regionGroups(rows, "AU").map((g) => g.title)).toEqual([
       "All countries",

@@ -1,19 +1,20 @@
 <script setup lang="ts">
 // The payment-region drill-in: the regions this rail can be paid from, each named by the currency
 // it charges in. The device's own region leads as the detected one; everything else follows, and
-// the regions that cannot take this purchase follow those, saying which of the two reasons it is.
+// the regions that cannot take this purchase follow those, under the reason they cannot.
 // Picking commits and returns; nothing here re-quotes on its own.
 import { computed, ref } from "vue";
 import { regionForCountry } from "~~/lib/region";
-import { regionGroups, trimAmount, type CountryOption } from "~~/lib/supported";
+import { isPickable, regionGroups, trimAmount, type CountryOption } from "~~/lib/supported";
 import { currencyName } from "../../../utils/currency";
 import FlagCircle from "../../ui/FlagCircle.vue";
 import SearchField from "../../ui/SearchField.vue";
 
 const props = withDefaults(
   defineProps<{
-    /** Every region the caller will accept, in its own order. A row carrying `disabled` or
-     *  `belowMinimum` is listed under the reason it cannot be picked, and does not commit. */
+    /** Every region the caller will accept, in its own order. A row carrying `disabled`,
+     *  `belowMinimum` or `temporarilyUnavailable` is listed under the reason it cannot be picked,
+     *  and does not commit. */
     options: readonly CountryOption[];
     /** The committed region, as an ISO 3166-1 alpha-2 code. */
     modelValue: string;
@@ -57,7 +58,7 @@ function subtitle(o: CountryOption): string | null {
 }
 
 /** A row that says why it is listed but cannot be chosen. */
-const unpickable = (o: CountryOption) => o.disabled === true || o.belowMinimum === true;
+const unpickable = (o: CountryOption) => !isPickable(o);
 
 const filtering = computed(() => query.value.trim() !== "");
 
