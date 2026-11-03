@@ -493,41 +493,17 @@ export function trimAmount(s: string): string {
   return s.includes(".") ? s.replace(/\.?0+$/, "") : s;
 }
 
-// A plain, always-selectable row (no greying, no min).
-function plainRow(c: SupportedCountry): CountryOption {
-  return { country: c.country, name: c.name };
-}
-
 // Picker rows for the active method: supported carries its fiat min, unsupported is disabled, a
 // method whose providers are all failing is temporarily unavailable, and a minimum above `floor`
-// greys the row it belongs to; a null/empty map leaves all rows plain.
-/**
- * The regions a fiat route's picker lists before `corridorOptions` says what each row can take.
- *
- * Both rails list the whole live catalog, so a buyer looking for their own country always finds
- * it, pickable or greyed under "Unsupported country". Bank needs the corridors to tell a region
- * with a transfer rail from one without; until they are read it lists the regions known to have
- * one, rather than a catalog where every row would look pickable. With no live catalog at all,
- * each rail falls back to its own short list.
- */
-export function pickerBase(
-  ui: "card" | "bank",
-  catalog: readonly SupportedCountry[] | null,
-  corridors: Map<string, SupportedCorridor> | null,
-  fallback: { card: readonly SupportedCountry[]; bank: readonly SupportedCountry[] },
-): readonly SupportedCountry[] {
-  const live = catalog !== null && catalog.length > 0 ? catalog : null;
-  if (ui === "card") return live ?? fallback.card;
-  return live !== null && corridors !== null && corridors.size > 0 ? live : fallback.bank;
-}
-
+// greys the row it belongs to. Null while the corridors are unread: rows nothing can grey would
+// offer regions the adapter may know to be down, so the picker offers a retry instead.
 export function corridorOptions(
   base: readonly SupportedCountry[],
   corridors: Map<string, SupportedCorridor> | null,
   ui: "card" | "bank",
   floor?: FiatFloor | null,
-): CountryOption[] {
-  if (corridors === null || corridors.size === 0) return base.map(plainRow);
+): CountryOption[] | null {
+  if (corridors === null || corridors.size === 0) return null;
   return base.map((c): CountryOption => {
     const corridor = corridors.get(c.country) ?? null;
     const method = corridor?.methods.find((m) => m.category === ui) ?? null;

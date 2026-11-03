@@ -417,6 +417,9 @@ export const useSessionStore = defineStore("session", () => {
   const supportedCountries = ref<SupportedCountry[] | null>(null);
   /** Bulk per-country corridors for greying the dropdown; null until loaded or when unreachable. */
   const corridorByCountry = shallowRef<Map<string, SupportedCorridor> | null>(null);
+  /** A catalog read is in flight. */
+  const catalogLoading = ref(false);
+  let catalogRead: Promise<void> | null = null;
   /** The selected country's corridor: its resolved fiat and the methods it routes. Null when
    *  discovery is unreachable. */
   const meldCorridor = shallowRef<SupportedCorridor | null>(null);
@@ -2475,10 +2478,21 @@ export const useSessionStore = defineStore("session", () => {
    * region listed from them alone would vanish rather than show as unsupported, which is how a
    * buyer looking for their own country learns why it is not on offer. The corridors grey the list
    * and carry each region's limits, and stand in for it when no countries read answers. A null or
-   * empty read is no answer, so a cold catalog greys nothing, and when nothing answers
-   * `supportedCountries` stays null and the screen keeps its static list.
+   * empty read is no answer: it keeps what an earlier read found, and with nothing found the
+   * picker offers a retry. Concurrent calls share one read.
    */
-  async function loadSupportedCatalog(): Promise<void> {
+  function loadSupportedCatalog(): Promise<void> {
+    if (catalogRead === null) {
+      catalogLoading.value = true;
+      catalogRead = readSupportedCatalog().finally(() => {
+        catalogRead = null;
+        catalogLoading.value = false;
+      });
+    }
+    return catalogRead;
+  }
+
+  async function readSupportedCatalog(): Promise<void> {
     const [countryLists, corridorMaps] = await Promise.all([
       Promise.all(catalogDestinations.map((d) => fetchSupportedCountries(d))),
       Promise.all(catalogDestinations.map((d) => fetchSupportedCorridors(d))),
@@ -2514,6 +2528,7 @@ export const useSessionStore = defineStore("session", () => {
     meldMethodUnavailable,
     supportedCountries,
     corridorByCountry,
+    catalogLoading,
     meldCorridor,
     meldResumeWidgetUrl,
     meldPayUrlPending,

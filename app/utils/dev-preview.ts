@@ -267,6 +267,30 @@ function meldCatalog(session: Session) {
   session.corridorByCountry = previewCorridors();
 }
 
+/** The preview catalog with the card method down in `countries`, as the adapter serves a method
+ *  whose providers all fail its probes. */
+function cardDownIn(session: Session, countries: readonly string[]) {
+  const corridors = previewCorridors();
+  for (const country of countries) {
+    const corridor = corridors.get(country);
+    if (corridor === undefined) continue;
+    corridors.set(country, {
+      ...corridor,
+      methods: corridor.methods.map((m) =>
+        m.category === "card" ? { ...m, temporarilyUnavailable: true as const } : m,
+      ),
+    });
+  }
+  session.corridorByCountry = corridors;
+}
+
+/** The catalog not read yet (`loading`) or not readable at all. */
+function catalogMissing(session: Session, loading: boolean) {
+  session.supportedCountries = null;
+  session.corridorByCountry = null;
+  session.catalogLoading = loading;
+}
+
 /** What the record shows for each source the scenes use, unless a scene says what was sent. */
 const DISPLAY: Partial<Record<SourceId, { chain: string; asset: string }>> = {
   "dot-assethub": { chain: "Polkadot", asset: "DOT" },
@@ -2005,6 +2029,32 @@ export const SCENES: Scene[] = [
     },
   },
   {
+    // Every card provider fails the adapter's probes in Germany and France: both are listed under
+    // their own heading, apart from the regions nothing routes to.
+    name: "top-up / card / picker: temporarily unavailable",
+    apply: (s, f) => {
+      cardSummary(s, f);
+      cardDownIn(s, ["DE", "FR"]);
+      f.previewDrillIn = "currency";
+    },
+  },
+  {
+    name: "top-up / card / picker: loading countries",
+    apply: (s, f) => {
+      cardSummary(s, f);
+      catalogMissing(s, true);
+      f.previewDrillIn = "currency";
+    },
+  },
+  {
+    name: "top-up / card / picker: couldn't load countries",
+    apply: (s, f) => {
+      cardSummary(s, f);
+      catalogMissing(s, false);
+      f.previewDrillIn = "currency";
+    },
+  },
+  {
     // The card minimum in the United Kingdom is over the amount: a different amount, or the
     // minimum itself, as the ways on.
     name: "top-up / card / summary: below minimum",
@@ -3130,7 +3180,13 @@ export const SCENES: Scene[] = [
   },
   {
     name: "withdrawal / card / payout country",
-    stage: { kind: "withdraw-package", route: "card", step: "region", sale: SALE_PREVIEW_QUOTE },
+    stage: {
+      kind: "withdraw-package",
+      route: "card",
+      step: "region",
+      corridors: previewCorridors(),
+      sale: SALE_PREVIEW_QUOTE,
+    },
     apply: (s, f) => base(s, f),
   },
   // ——— The card and bank journeys, on hand-made sale records; see `previewSale`.

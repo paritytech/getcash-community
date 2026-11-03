@@ -4,7 +4,7 @@
 // what the sale sells and in which order they are tried; the chain decides, per candidate, whether
 // it can serve the sale and sizes the figure.
 
-import { ref, shallowRef, toValue, watch, type MaybeRefOrGetter } from "vue";
+import { computed, ref, shallowRef, toValue, watch, type MaybeRefOrGetter } from "vue";
 import { meldAssetOf, type MeldAssetId } from "@getsome/core";
 import {
   directSellToken,
@@ -186,8 +186,16 @@ export function useMeldSellQuote(
   watch(country, (next) => {
     lastCountry = next;
   });
-  const countries = shallowRef<SupportedCountry[] | null>(null);
   const corridors = shallowRef<Map<string, SupportedCorridor> | null>(null);
+  const countries = computed<SupportedCountry[] | null>(
+    () =>
+      corridors.value &&
+      [...corridors.value.values()].map((c) => ({
+        country: c.country,
+        name: c.name ?? countryName(c.country),
+      })),
+  );
+  const catalogLoading = ref(false);
   const quote = shallowRef<MeldSellQuote | null>(null);
   const loading = ref(false);
   const error = ref<string | null>(null);
@@ -210,25 +218,27 @@ export function useMeldSellQuote(
     if (client !== null) await ensureMeldAssets(client);
   }
 
-  /** The off-ramp catalog, for the region picker. Null lists when discovery is unreachable. */
+  /** The off-ramp catalog, for the region picker. Null until a read succeeds. */
   async function loadCatalog(): Promise<void> {
+    catalogLoading.value = true;
+    try {
+      await readCatalog();
+    } finally {
+      catalogLoading.value = false;
+    }
+  }
+
+  async function readCatalog(): Promise<void> {
     // Unread, a lane is matched by the asset the adapter names for it, and one it names none for
     // is not sold; the quote below asks again.
     await assetsRead().catch(() => undefined);
     const fetched = await fetchOfframpCorridors();
+    // A failed read keeps the last list.
+    if (fetched === null) return;
     // Only the lanes this build sells: a region routed by none of them is greyed, not offered.
-    const routed =
-      fetched === null
-        ? null
-        : new Map([...fetched].map(([cc, c]) => [cc, sellableCorridor(c, OFFRAMP_LANE_ORDER)]));
-    corridors.value = routed;
-    countries.value =
-      routed === null
-        ? null
-        : [...routed.values()].map((c) => ({
-            country: c.country,
-            name: c.name ?? countryName(c.country),
-          }));
+    corridors.value = new Map(
+      [...fetched].map(([cc, c]) => [cc, sellableCorridor(c, OFFRAMP_LANE_ORDER)]),
+    );
   }
 
   /**
@@ -369,6 +379,7 @@ export function useMeldSellQuote(
     chosenBefore,
     countries,
     corridors,
+    catalogLoading,
     quote,
     loading,
     error,

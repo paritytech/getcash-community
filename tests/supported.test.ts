@@ -307,85 +307,39 @@ describe("lib/supported", () => {
     expect(await reimport.fetchSupportedCorridors(DEST)).toBeNull(); // throw -> null
   });
 
-  it("pickerBase lists the whole catalog for bank once the corridors say which rows route", async () => {
-    const { pickerBase, corridorOptions } = await import("../lib/supported");
-    const catalog = [
-      { country: "DE", name: "Germany" },
-      { country: "IN", name: "India" },
-      { country: "US", name: "United States" },
-    ];
-    const fallback = { card: [{ country: "GB", name: "United Kingdom" }], bank: [catalog[0]!] };
-    const corridors = new Map<string, SupportedCorridor>([
-      [
-        "DE",
-        {
-          country: "DE",
-          fiat: "EUR",
-          methods: [
-            { paymentMethodType: "SEPA", category: "bank", min: "", max: "", currency: "EUR" },
-          ],
-        },
-      ],
-      [
-        "IN",
-        {
-          country: "IN",
-          fiat: "INR",
-          methods: [
-            {
-              paymentMethodType: "CREDIT_DEBIT_CARD",
-              category: "card",
-              min: "",
-              max: "",
-              currency: "INR",
-            },
-          ],
-        },
-      ],
-      [
-        "US",
-        {
-          country: "US",
-          fiat: "USD",
-          methods: [
-            { paymentMethodType: "ACH", category: "bank", min: "", max: "", currency: "USD" },
-          ],
-        },
-      ],
-    ]);
+  it("corridorOptions offers no rows while the corridors are unread or cold", async () => {
+    const { corridorOptions } = await import("../lib/supported");
+    const base = [{ country: "US", name: "United States" }];
+    expect(corridorOptions(base, null, "card")).toBeNull();
+    expect(corridorOptions(base, new Map(), "card")).toBeNull();
+  });
 
-    // Every region is listed; one with no transfer rail is greyed, not dropped.
+  it("corridorOptions lists every region, greying one the method does not route", async () => {
+    const { corridorOptions } = await import("../lib/supported");
+    const method = (paymentMethodType: string, category: "card" | "bank", currency: string) => ({
+      paymentMethodType,
+      category,
+      min: "",
+      max: "",
+      currency,
+      providers: [],
+    });
+    const corridors = new Map<string, SupportedCorridor>([
+      ["DE", { country: "DE", fiat: "EUR", methods: [method("SEPA", "bank", "EUR")] }],
+      ["IN", { country: "IN", fiat: "INR", methods: [method("CREDIT_DEBIT_CARD", "card", "INR")] }],
+    ]);
     const rows = corridorOptions(
-      pickerBase("bank", catalog, corridors, fallback),
+      [
+        { country: "DE", name: "Germany" },
+        { country: "IN", name: "India" },
+      ],
       corridors,
       "bank",
-    );
+    )!;
     expect(rows.map((r) => [r.country, r.disabled === true])).toEqual([
       ["DE", false],
       ["IN", true],
-      ["US", false],
     ]);
-    // Before the corridors are read, bank keeps to the regions known to have a rail.
-    expect(pickerBase("bank", catalog, null, fallback)).toEqual(fallback.bank);
-    expect(pickerBase("bank", catalog, new Map(), fallback)).toEqual(fallback.bank);
-    // Card lists the catalog whatever the corridors say, and each rail has its own fallback.
-    expect(pickerBase("card", catalog, null, fallback)).toEqual(catalog);
-    expect(pickerBase("card", null, corridors, fallback)).toEqual(fallback.card);
-    expect(pickerBase("bank", [], corridors, fallback)).toEqual(fallback.bank);
-  });
-
-  it("corridorOptions leaves every row plain and selectable when the map is null", async () => {
-    const { corridorOptions } = await import("../lib/supported");
-    const rows = corridorOptions([{ country: "US", name: "United States" }], null, "card");
-    expect(rows).toEqual([{ country: "US", name: "United States" }]);
-  });
-
-  it("corridorOptions treats an empty map like null: rows stay plain, not all-disabled", async () => {
-    const { corridorOptions } = await import("../lib/supported");
-    const empty = new Map<string, SupportedCorridor>();
-    const rows = corridorOptions([{ country: "US", name: "United States" }], empty, "card");
-    // Cold cache must not grey out (and brick) every country.
-    expect(rows).toEqual([{ country: "US", name: "United States" }]);
   });
 
   it("corridorOptions disables every row when no region routes the method", async () => {
@@ -398,7 +352,7 @@ describe("lib/supported", () => {
       { country: "US", name: "United States" },
       { country: "CA", name: "Canada" },
     ];
-    const rows = corridorOptions(base, map, "card");
+    const rows = corridorOptions(base, map, "card")!;
     expect(rows.every((r) => r.disabled)).toBe(true);
   });
 
@@ -423,7 +377,7 @@ describe("lib/supported", () => {
       ],
       map,
       "card",
-    );
+    )!;
     expect(rows[0]).toEqual({
       country: "DE",
       name: "Germany",
@@ -455,7 +409,7 @@ describe("lib/supported", () => {
       ],
     ]);
     const { trimAmount } = await import("../lib/supported");
-    const rows = corridorOptions([{ country: "US", name: "United States" }], map, "card");
+    const rows = corridorOptions([{ country: "US", name: "United States" }], map, "card")!;
     // The option carries the raw min; trimAmount trims for display without exponential notation.
     expect(rows[0]).toEqual({
       country: "US",
@@ -488,7 +442,7 @@ describe("lib/supported", () => {
         },
       ],
     ]);
-    const rows = corridorOptions([{ country: "US", name: "United States" }], map, "card");
+    const rows = corridorOptions([{ country: "US", name: "United States" }], map, "card")!;
     // No misleading "0" min; the row is supported (selectable), named with the currency it charges.
     expect(rows[0]).toEqual({ country: "US", name: "United States", fiat: "USD" });
   });
@@ -537,7 +491,7 @@ describe("lib/supported", () => {
       { country: "BR", name: "Brazil" },
       { country: "GB", name: "United Kingdom" },
     ];
-    const card = corridorOptions(base, map, "card");
+    const card = corridorOptions(base, map, "card")!;
     expect(card[0]).toEqual({
       country: "US",
       name: "United States",
@@ -545,7 +499,7 @@ describe("lib/supported", () => {
       fiat: "USD",
     });
     expect(card[1]).toEqual({ country: "BR", name: "Brazil", disabled: true }); // BR absent from the map
-    const bank = corridorOptions(base, map, "bank");
+    const bank = corridorOptions(base, map, "bank")!;
     // US has no bank method: greyed, but still named by the currency the region charges.
     expect(bank[0]).toEqual({ country: "US", name: "United States", fiat: "USD", disabled: true });
     expect(bank[2]).toEqual({ country: "GB", name: "United Kingdom", min: "15", fiat: "GBP" }); // GB bank supported
@@ -573,13 +527,13 @@ describe("lib/supported", () => {
     ];
     // Paying £12.50: GBP 40 is out of reach, EUR 4 is not, and USD 40 is in another currency
     // altogether — no rate to cross with, so it stays pickable rather than guessed at.
-    const rows = corridorOptions(base, map, "card", { fiat: "GBP", amount: "12.50" });
+    const rows = corridorOptions(base, map, "card", { fiat: "GBP", amount: "12.50" })!;
     expect(rows[0]?.belowMinimum).toBe(true);
     expect(rows[1]?.belowMinimum).toBeUndefined();
     expect(rows[2]?.belowMinimum).toBeUndefined();
     // No floor at all, and an unreadable one, leave every row pickable.
-    expect(corridorOptions(base, map, "card").some((r) => r.belowMinimum)).toBe(false);
-    const blank = corridorOptions(base, map, "card", { fiat: "GBP", amount: "" });
+    expect(corridorOptions(base, map, "card")!.some((r) => r.belowMinimum)).toBe(false);
+    const blank = corridorOptions(base, map, "card", { fiat: "GBP", amount: "" })!;
     expect(blank.some((r) => r.belowMinimum)).toBe(false);
   });
 
