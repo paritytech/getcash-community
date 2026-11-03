@@ -28,6 +28,9 @@ export type { Attrs, Journey, OutcomeOf, Step, StepOf } from "./handle";
 
 let core: typeof Core | null = null;
 let loading: Promise<void> | null = null;
+/** The grant was asked for before the core loaded (the app mounts without waiting long for it),
+ *  so it is asked once the core is running: else the gate would never open for this page. */
+let grantWanted = false;
 
 /** Load the core and start Sentry, once. Resolves when it is running, or at
  *  once in a build without a DSN. */
@@ -37,6 +40,7 @@ export function startTelemetry(app?: TelemetryConfig["app"]): Promise<void> {
     .then((loaded) => {
       loaded.startTelemetry(app);
       core = loaded;
+      if (grantWanted) void loaded.requestTelemetryGrant();
     })
     .catch(() => {
       /* telemetry never breaks the app */
@@ -102,7 +106,8 @@ export function leaveScreen(screen: ScreenName): void {
  *  blocks; callers do not await it. */
 export function requestTelemetryGrant(): void {
   try {
-    void core?.requestTelemetryGrant();
+    if (core) void core.requestTelemetryGrant();
+    else grantWanted = true;
   } catch {
     /* never throws */
   }

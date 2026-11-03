@@ -37,13 +37,22 @@ const reported = new Set<string>();
 
 type Place = { step: StepName } | { end: Outcome } | { failed: boolean };
 
+/** The deposit is on the top-up's own account: the app read it there, or the worker saw it.
+ *  A provider's word that it received the deposit (core, the rail) is not that. */
+function onBurner(record: TopUpRecord): boolean {
+  if (record.observedAt?.["on-burner"] !== undefined) return true;
+  const worker = record.witnesses.worker;
+  return worker?.known === true && worker.fundsSeenAt !== null;
+}
+
 function topUpPlace(record: TopUpRecord): Place {
   switch (record.status.kind) {
     case "awaiting-deposit":
       return { step: "deposit" };
-    // seen, but the provider still confirms it and carries it to the account: not ours to move
+    // Seen by the provider, it still confirms the deposit and carries it to the account, which is
+    // not ours to move. Once it is on the account, the worker's swap is next, and that is ours.
     case "deposit-seen":
-      return { step: "arrive" };
+      return { step: onBurner(record) ? "convert" : "arrive" };
     case "converting":
       return { step: "convert" };
     case "recovering":
@@ -84,9 +93,14 @@ function withdrawalPlace(record: WithdrawalRecord): Place {
 const placeOf = (record: RequestRecord): Place =>
   isTopUp(record) ? topUpPlace(record) : withdrawalPlace(record);
 
-const sameStatus = (a: RequestRecord, b: RequestRecord): boolean =>
-  a.status.kind === b.status.kind &&
-  ("step" in a.status ? a.status.step : null) === ("step" in b.status ? b.status.step : null);
+/** Where a record's journey stands, as text: a commit that leaves it there moves nothing. Not the
+ *  status alone: a deposit can reach the account while the status stays `deposit-seen`. */
+function placeKey(record: RequestRecord): string {
+  const place = placeOf(record);
+  if ("step" in place) return `step:${place.step}`;
+  if ("end" in place) return `end:${place.end}`;
+  return `failed@${record.status.kind === "failed" ? record.status.at : ""}`;
+}
 
 function attrsOf(record: RequestRecord): Attrs {
   if (isTopUp(record)) {
@@ -213,7 +227,7 @@ export function requestCreated(record: RequestRecord): void {
 /** `next` replaced `previous` on the store. Never throws. */
 export function requestChanged(previous: RequestRecord, next: RequestRecord): void {
   try {
-    if (sameStatus(previous, next)) return;
+    if (placeKey(previous) === placeKey(next)) return;
     move(requestRefKey(next.ref), next);
   } catch {
     /* telemetry never breaks the app */

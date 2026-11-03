@@ -65,11 +65,12 @@ describe("a top-up's journey", () => {
     requestCreated(created);
 
     // When
+    // the provider reports it received the deposit; it is not on the account yet
     const seen = moved(created, {
       kind: "deposit-seen",
       at: 1,
-      assurance: "finalized",
-      via: "worker",
+      assurance: "provisional",
+      via: "core",
     });
     requestChanged(created, seen);
     const converting = moved(created, { kind: "converting", at: 2, step: "swap" });
@@ -102,6 +103,65 @@ describe("a top-up's journey", () => {
     // Then: a seen deposit's step waits on the provider, as the deposit itself waits on the person
     expect(JOURNEYS["top-up"].waitSteps).toContain("arrive");
     expect(JOURNEYS["top-up"].waitSteps).not.toContain("convert");
+  });
+
+  it("As a developer reading Sentry, I see the wait on the provider end when the deposit reaches the account, though its status stays deposit-seen", () => {
+    // Given: the provider reported the deposit
+    const created = topUp();
+    requestCreated(created);
+    const seen = moved(created, {
+      kind: "deposit-seen",
+      at: 1,
+      assurance: "provisional",
+      via: "core",
+    });
+    requestChanged(created, seen);
+
+    // When: the worker sees it on the account; the status only gains assurance
+    const landed = moved(
+      created,
+      { kind: "deposit-seen", at: 1, assurance: "finalized", via: "core" },
+      {
+        witnesses: {
+          worker: { known: true, phase: "swap", done: false, fundsSeenAt: 2, lastTickAt: 2, at: 2 },
+        },
+      },
+    );
+    requestChanged(seen, landed);
+
+    // Then: from here the swap is the app's to move, so a stall would be reported
+    expect(calls.log).toEqual([
+      "start top-up crypto",
+      "step deposit",
+      "end-step deposit",
+      "step arrive",
+      "end-step arrive",
+      "step convert",
+    ]);
+  });
+
+  it("As a developer reading Sentry, I see a direct deposit the app read on the account go straight to the app's own step", () => {
+    // Given
+    const created = topUp();
+    requestCreated(created);
+
+    // When
+    requestChanged(
+      created,
+      moved(
+        created,
+        { kind: "deposit-seen", at: 1, assurance: "provisional", via: "chain" },
+        { observedAt: { "on-burner": 1 } },
+      ),
+    );
+
+    // Then
+    expect(calls.log).toEqual([
+      "start top-up crypto",
+      "step deposit",
+      "end-step deposit",
+      "step convert",
+    ]);
   });
 
   it("As a developer reading Sentry, I see a recoverable failure once, its journey left open on retry, and a later recovery carried on", () => {
