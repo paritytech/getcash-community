@@ -104,6 +104,7 @@ import {
   sourceIdFor,
   type DepositAsset,
 } from "~~/lib/config";
+import { requestCreated } from "../funding/requests/telemetry";
 import { useRequestsStore } from "./requests";
 import { devLog } from "~~/lib/log";
 import { trackAction } from "~~/lib/telemetry";
@@ -1705,6 +1706,8 @@ export const useSessionStore = defineStore("session", () => {
         },
         witnesses: {},
       };
+      // This page starts the request: its journey begins here, even if the record's write fails.
+      requestCreated(record);
       await requests.create(ref, record);
     } catch (e) {
       devLog(

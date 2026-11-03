@@ -31,6 +31,7 @@ import {
   type WithdrawalRecord,
 } from "../funding/requests/model";
 import { paymentIdFor } from "../funding/requests/payment-id";
+import { requestCreated } from "../funding/requests/telemetry";
 import { useRequestsStore } from "../stores/requests";
 import { fmtCash } from "../utils/cash";
 import {
@@ -228,6 +229,7 @@ export function useWithdrawalRequest() {
       rail: { provider: input.rail, stage: "waiting", updatedAt: startedAt },
       witnesses: {},
     };
+    requestCreated(record);
     await requests.create(ref, record);
     requests.setForeground(ref);
     // The number is taken for good once the record exists.
@@ -386,6 +388,7 @@ export function useWithdrawalRequest() {
       witnesses: {},
     };
     // Not taken as the foreground here: the screen that asked takes it, if it is still up.
+    requestCreated(record);
     await requests.create(ref, record);
     return { ok: true, ref };
   }

@@ -36,7 +36,7 @@ export function requestTelemetryGrant(): Promise<boolean> {
 
 async function ask(): Promise<boolean> {
   const host = telemetryIngestHost();
-  // a hosted page of a build with only the test DSN sends nothing: ask nothing
+  // no usable DSN, or Sentry did not start: nothing will be sent, so ask nothing
   if (!host || !telemetryLive()) return false;
   try {
     const sdk = await loadHost();

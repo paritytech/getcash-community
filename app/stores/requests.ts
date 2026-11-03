@@ -16,7 +16,7 @@ import {
 } from "@getsome/meld";
 import { depositWindowFor } from "../funding/config";
 import { migrateRecord } from "../funding/requests/migrate";
-import { requestChanged, requestCreated } from "../funding/requests/telemetry";
+import { requestChanged } from "../funding/requests/telemetry";
 import { reasonOf, reportFailure, setTelemetryTag } from "~~/lib/telemetry";
 import {
   CANCEL_CONFIRM_MS,
@@ -1170,7 +1170,6 @@ export const useRequestsStore = defineStore("requests", () => {
     const key = requestRefKey(ref);
     if (entries.value[key] !== undefined) throw new Error(`request ${key} already has a record`);
     setEntry(key, { record, pendingWrite: true });
-    requestCreated(record);
     writeMirror();
     syncTick();
     await enqueue(key, async () => {

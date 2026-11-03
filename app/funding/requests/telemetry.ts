@@ -1,7 +1,8 @@
-// A request's journey and failures, read off its record: the requests store calls
-// `requestCreated` when this page makes a request and `requestChanged` on every commit, so no
-// screen has to. A request made on this page is one journey (`top-up` or `withdraw`), its steps
-// the record's status; one resumed from an earlier open has none, and only its failures are sent.
+// A request's journey and failures, read off its record. The places that start a request call
+// `requestCreated` (session.ts for a top-up, useWithdrawalRequest.ts for a withdrawal or a sale),
+// and the requests store calls `requestChanged` on every commit, so no screen has to. A request
+// started on this page is one journey (`top-up` or `withdraw`), its steps the record's status. One
+// the store adopts or rebuilds, started on an earlier open, has none: only its failures are sent.
 // A failure is reported once per ending. A recoverable one leaves the journey open on its
 // `retry` step, marked sad, since the person can still try again.
 
