@@ -93,11 +93,15 @@ export interface OpenChannelArgs {
    *  caller that commits to the swap's floor elsewhere (an offramp sale) must set them, so the
    *  floor Chainflip enforces is the one it committed to. */
   fillOrKill?: { slippageTolerancePercent: string; retryDurationMinutes: number };
+  /** CCM terms when the swap calls a destination contract, as an offramp sale's factory does. */
+  ccm?: { gasBudget: string; message: string };
 }
 
 export interface DepositChannel {
   deposit: DepositInfo;
   depositChannelId: string;
+  /** The source block Chainflip closes the channel at, which the withdraw path requires. */
+  expiryBlock?: bigint;
 }
 
 /** A Chainflip failure entry, surfaced with its human-readable reason. */

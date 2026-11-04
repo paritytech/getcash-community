@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  addressKey,
   assetHubAccountHex,
   isAssetHubAddress,
   landingAccountHex,
@@ -64,6 +65,14 @@ describe("withdrawal destinations", () => {
     expect(assetHubAccountHex(ALICE_GENERIC)).toBe(ALICE_HEX);
     expect(landingAccountHex(withdrawDestination("dot-assethub")!, ALICE_POLKADOT)).toBe(ALICE_HEX);
     expect(landingAccountHex(withdrawDestination("usdc-assethub")!, ALICE_GENERIC)).toBe(ALICE_HEX);
+  });
+
+  it("keys an address by account: SS58 by public key, EVM without casing, else verbatim", () => {
+    expect(addressKey(ALICE_POLKADOT)).toBe(addressKey(ALICE_GENERIC));
+    expect(addressKey("0x4B2c0000000000000000000000000000000C02db")).toBe(
+      "0x4b2c0000000000000000000000000000000c02db",
+    );
+    expect(addressKey("not-an-address")).toBe("not-an-address");
   });
 
   it("checks a Chainflip destination's address with that chain's rule, and lands on the key", () => {

@@ -46,7 +46,24 @@ describe("the channel record read", () => {
       depositAddress: "5Channel",
       destinationAddress: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
       expired: false,
+      ccmMessage: "",
+      ccmGasBudget: "",
     });
+  });
+
+  it("reads the channel's CCM message in lowercase, empty when it carries none", async () => {
+    const message = `0x${"AB".repeat(128)}`;
+    const ccm = { ...record, ccmParams: { gasBudget: "275000", message } };
+    expect((await readChannelRecord("42", serving(ccm)))?.ccmMessage).toBe(message.toLowerCase());
+    const blank = { ...record, ccmParams: { message: 7 } };
+    expect((await readChannelRecord("42", serving(blank)))?.ccmMessage).toBe("");
+  });
+
+  it("reads the channel's CCM gas budget as recorded, empty when it carries none", async () => {
+    const ccm = { ...record, ccmParams: { gasBudget: "0x43238", message: "0x" } };
+    expect((await readChannelRecord("42", serving(ccm)))?.ccmGasBudget).toBe("0x43238");
+    const blank = { ...record, ccmParams: { gasBudget: 7 } };
+    expect((await readChannelRecord("42", serving(blank)))?.ccmGasBudget).toBe("");
   });
 
   it("answers null for a channel the provider answers about but cannot name", async () => {

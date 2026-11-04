@@ -17,6 +17,9 @@ export {
   type MeldSessionResult,
   type MeldStatusResult,
   type MeldCancelResult,
+  type MeldSaleVaultProxy,
+  type MeldSaleVaultProxyClientLike,
+  type MeldSaleVaultProxyPayout,
 } from "./client";
 export { formatBaseUnits, parseBaseUnits, toBaseUnits, type MeldToken } from "./units";
 export { ensureMeldAssets } from "./assets";

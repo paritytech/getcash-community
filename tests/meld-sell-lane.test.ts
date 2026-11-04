@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { laneCandidates, saleLaneOf, sellableCorridor } from "../app/composables/useMeldSellQuote";
 import type { MeldAssetId } from "@getsome/core";
 import type { SupportedCorridor, SupportedMethod } from "../lib/supported";
+import vectors from "../packages/sale-vault-proxy/vectors.json";
 
 const ORDER: MeldAssetId[] = ["dot@assethub", "usdc@arbitrum", "usdc@solana"];
 /** A lane as an adapter that names no asset sends it: matched by the asset table's reading of its code. */
@@ -27,7 +28,10 @@ describe("saleLaneOf", () => {
 
   it("swaps into a lane this build knows", () => {
     expect(saleLaneOf("USDC_ARBITRUM")?.id).toBe("usdc-arbitrum");
-    expect(saleLaneOf("USDC_SOLANA")?.id).toBe("usdc-solana");
+  });
+
+  it("sells nothing through Solana, which has no sending address this app controls", () => {
+    expect(saleLaneOf("USDC_SOLANA")).toBeUndefined();
   });
 
   it("sells nothing for another Asset Hub asset or an unknown lane", () => {
@@ -157,17 +161,27 @@ describe("the build's lane order", () => {
   });
 
   it("offers a swap lane only when the build names it", async () => {
-    vi.stubEnv("VITE_OFFRAMP_LANES", WITH_SWAPS.join(","));
+    vi.stubEnv("VITE_OFFRAMP_LANES", [...DIRECT, "usdc@arbitrum"].join(","));
     vi.resetModules();
     const { OFFRAMP_LANE_ORDER } = await import("../lib/config");
-    expect(OFFRAMP_LANE_ORDER).toEqual(WITH_SWAPS);
+    expect(OFFRAMP_LANE_ORDER).toEqual([...DIRECT, "usdc@arbitrum"]);
   });
 
   it("takes the build's own order when it names one", async () => {
-    vi.stubEnv("VITE_OFFRAMP_LANES", " dot@assethub, USDC@SOLANA ,");
+    vi.stubEnv("VITE_OFFRAMP_LANES", " usdc@arbitrum, DOT@ASSETHUB ,");
     vi.resetModules();
     const { OFFRAMP_LANE_ORDER } = await import("../lib/config");
-    expect(OFFRAMP_LANE_ORDER).toEqual(["dot@assethub", "usdc@solana"]);
+    expect(OFFRAMP_LANE_ORDER).toEqual(["usdc@arbitrum", "dot@assethub"]);
+  });
+
+  it("drops a Solana lane with a warning, since Solana has no sending address", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubEnv("VITE_OFFRAMP_LANES", WITH_SWAPS.join(","));
+    vi.resetModules();
+    const { OFFRAMP_LANE_ORDER } = await import("../lib/config");
+    expect(OFFRAMP_LANE_ORDER).toEqual([...DIRECT, "usdc@arbitrum"]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("usdc@solana"));
+    warn.mockRestore();
   });
 
   it("drops, with a warning, an entry that is a Meld code rather than an asset id", async () => {
@@ -188,5 +202,55 @@ describe("the build's lane order", () => {
     const { OFFRAMP_LANE_ORDER } = await import("../lib/config");
     expect(OFFRAMP_LANE_ORDER).toEqual(DIRECT);
     vi.restoreAllMocks();
+  });
+});
+
+describe("the build's SaleVaultProxy deployment", () => {
+  const FACTORY = `0x${"11".repeat(20)}`;
+  const IMPLEMENTATION = `0x${"22".repeat(20)}`;
+
+  it("reads the two build values into a deployment with the chain's least sale", async () => {
+    const { readSaleVaultProxy } = await import("../lib/config");
+    for (const chainId of [42161, 421614]) {
+      expect(
+        readSaleVaultProxy({ factory: FACTORY, implementation: IMPLEMENTATION }, chainId),
+      ).toEqual({
+        chainId,
+        factory: FACTORY,
+        implementation: IMPLEMENTATION,
+        minSale: BigInt(vectors.networks[String(chainId) as "42161" | "421614"].minSale),
+      });
+    }
+  });
+
+  it("is off, quietly, when none is set", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { readSaleVaultProxy } = await import("../lib/config");
+    expect(readSaleVaultProxy({}, 421614)).toBeNull();
+    expect(readSaleVaultProxy({ factory: " ", implementation: "" }, 421614)).toBeNull();
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("is off, with a warning, when either value is missing or malformed", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { readSaleVaultProxy } = await import("../lib/config");
+    const good = { factory: FACTORY, implementation: IMPLEMENTATION };
+    for (const bad of [
+      { ...good, factory: "0x1234" },
+      { ...good, implementation: undefined },
+    ]) {
+      expect(readSaleVaultProxy(bad, 421614)).toBeNull();
+    }
+    expect(warn).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
+  });
+
+  it("is off, with a warning, on a chain the proxy package has no network for", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { readSaleVaultProxy } = await import("../lib/config");
+    expect(readSaleVaultProxy({ factory: FACTORY, implementation: IMPLEMENTATION }, 1)).toBeNull();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("chain 1"));
+    warn.mockRestore();
   });
 });

@@ -681,6 +681,8 @@ function applyUser(record: TopUpRecord, observation: UserObservation): TopUpReco
     case "channel-opened":
     case "swap-opened":
     case "sale-unfundable":
+    case "sale-outdated":
+    case "sale-late":
       return record;
   }
 }

@@ -37,9 +37,21 @@ inputs:
   offramp-lanes:
     description: >
       Optional VITE_OFFRAMP_LANES, the off-ramp lanes card and bank sales go through, best first,
-      by asset id, not Meld code (e.g. usdt@assethub,dot@assethub,usdc@arbitrum,usdc@solana).
-      Empty uses the build's default, the direct Asset Hub sales only: the Chainflip swap lanes
-      (usdc@arbitrum, usdc@solana) are offered only when listed here.
+      by asset id, not Meld code (e.g. usdt@assethub,dot@assethub,usdc@arbitrum).
+      Empty uses the build's default, the direct Asset Hub sales only: the Chainflip swap lane
+      (usdc@arbitrum) is offered only when listed here. Solana lanes are never sold through.
+    default: ""
+  sale-vault-proxy-factory:
+    description: >
+      Optional VITE_SALE_VAULT_PROXY_FACTORY, the SaleVaultProxyFactory an Arbitrum sale
+      delivers to, as packages/sale-vault-proxy's deploy prints it. Both sale-vault-proxy inputs
+      empty leaves the Arbitrum lane off; with usdc@arbitrum in offramp-lanes an empty or
+      malformed one fails the build (see require-secrets).
+    default: ""
+  sale-vault-proxy-implementation:
+    description: >
+      Optional VITE_SALE_VAULT_PROXY_IMPLEMENTATION, the factory's SaleVaultProxy implementation,
+      as the same deploy prints it.
     default: ""
   top-up-minimum:
     description: >
@@ -53,9 +65,10 @@ inputs:
     default: ""
   require-secrets:
     description: >
-      Whether an empty meld-base-url, meld-product-id or chainflip-broker-api-key is a
-      build failure. True for anything that deploys. Pass false only where the values
-      are legitimately unavailable rather than forgotten: a fork or Dependabot PR cannot
+      Whether an empty meld-base-url, meld-product-id or chainflip-broker-api-key, or
+      usdc@arbitrum listed without both sale-vault-proxy inputs, is a build failure. True for
+      anything that deploys. Pass false only where the values are legitimately unavailable
+      rather than forgotten: a fork or Dependabot PR cannot
       read repo secrets, and its deploy job is skipped anyway, so failing the build
       there would gate the PR on a secret it can never have. Such a build carries the
       offline fake Meld client and cannot open a Chainflip channel, and must never be
@@ -93,6 +106,14 @@ runs:
       shell: bash
       run: pnpm typecheck:packages
 
+    - name: Lint contracts
+      shell: bash
+      run: pnpm --filter @getsome/sale-vault-proxy run lint
+
+    - name: Contract tests
+      shell: bash
+      run: pnpm --filter @getsome/sale-vault-proxy run test
+
     - name: Typecheck app
       shell: bash
       run: pnpm typecheck
@@ -111,6 +132,8 @@ runs:
         VITE_MELD_BASE_URL: ${{ inputs.meld-base-url }}
         VITE_MELD_PRODUCT_ID: ${{ inputs.meld-product-id }}
         VITE_OFFRAMP_LANES: ${{ inputs.offramp-lanes }}
+        VITE_SALE_VAULT_PROXY_FACTORY: ${{ inputs.sale-vault-proxy-factory }}
+        VITE_SALE_VAULT_PROXY_IMPLEMENTATION: ${{ inputs.sale-vault-proxy-implementation }}
         VITE_TOP_UP_MINIMUM: ${{ inputs.top-up-minimum }}
         VITE_TOP_UP_MAXIMUM: ${{ inputs.top-up-maximum }}
         REQUIRE_SECRETS: ${{ inputs.require-secrets }}
@@ -135,6 +158,21 @@ runs:
             exit 1
           fi
           echo "::warning::VITE_CHAINFLIP_BROKER_API_KEY is empty (secrets unavailable for this build). Building with the crypto withdrawals shown as not available; this artifact must not be deployed."
+        fi
+        lanes=",$(printf '%s' "$VITE_OFFRAMP_LANES" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]'),"
+        # The rule saleVaultProxyContractsOf applies at runtime, an end-trimmed nonzero 0x address
+        proxy_address_ok() {
+          local value="$1"
+          value="${value#"${value%%[![:space:]]*}"}"
+          value="${value%"${value##*[![:space:]]}"}"
+          [[ "$value" =~ ^0x[0-9a-fA-F]{40}$ && ! "$value" =~ ^0x0{40}$ ]]
+        }
+        if [[ "$lanes" == *",usdc@arbitrum,"* ]] && ! { proxy_address_ok "$VITE_SALE_VAULT_PROXY_FACTORY" && proxy_address_ok "$VITE_SALE_VAULT_PROXY_IMPLEMENTATION"; }; then
+          if [ "$REQUIRE_SECRETS" = "true" ]; then
+            echo "::error::VITE_OFFRAMP_LANES lists usdc@arbitrum, but VITE_SALE_VAULT_PROXY_FACTORY or VITE_SALE_VAULT_PROXY_IMPLEMENTATION is empty or not a nonzero 0x address. Set both repo variables from packages/sale-vault-proxy's deploy output, or drop usdc@arbitrum."
+            exit 1
+          fi
+          echo "::warning::VITE_OFFRAMP_LANES lists usdc@arbitrum without two valid VITE_SALE_VAULT_PROXY_* addresses (vars unavailable for this build). The Arbitrum lane is off; this artifact must not be deployed."
         fi
         pnpm build
 

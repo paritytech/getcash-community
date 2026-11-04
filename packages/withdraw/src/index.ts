@@ -99,3 +99,4 @@ export {
   PEOPLE_POOL_FEE_PPM,
   PEOPLE_TX_OPTIONS,
 } from "./paseo";
+export { claimEntropyLabel, WITHDRAW_LABEL_PREFIX } from "./labels";

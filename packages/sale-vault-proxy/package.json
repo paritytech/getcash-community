@@ -1,0 +1,36 @@
+{
+  "name": "@getsome/sale-vault-proxy",
+  "version": "0.0.0",
+  "private": true,
+  "description": "SaleVaultProxy: per-sale Arbitrum contracts that pay a Meld off-ramp provider from a Chainflip CCM and send anything left home through a permissionless Chainflip vault swap.",
+  "license": "GPL-3.0-or-later",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "test:fork": "ARBITRUM_FORK=1 hardhat test test/SaleVaultProxy.fork.test.ts",
+    "vectors": "ARBITRUM_FORK=1 hardhat run scripts/vectors.ts",
+    "coverage": "hardhat coverage",
+    "lint": "solhint 'contracts/**/*.sol'",
+    "lint:fix": "solhint 'contracts/**/*.sol' --fix --noPrompt",
+    "size": "hardhat size-contracts",
+    "deploy": "hardhat run scripts/deploy.ts",
+    "verify": "hardhat verify",
+    "clean": "hardhat clean && rm -rf artifacts cache typechain-types coverage"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@openzeppelin/contracts": "^5.2.0",
+    "@types/chai": "^4.3.11",
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^22.0.0",
+    "chai": "^4.3.10",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.13.0",
+    "fast-check": "^3.23.0",
+    "hardhat": "^2.24.1",
+    "hardhat-contract-sizer": "^2.10.0",
+    "solhint": "^5.0.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.0"
+  }
+}

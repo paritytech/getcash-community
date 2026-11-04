@@ -14,7 +14,8 @@ export const CHAINFLIP_SWAP_API = "https://chainflip-swap.chainflip.io";
 /** The same API on Perseverance. */
 export const CHAINFLIP_SWAP_API_PERSEVERANCE = "https://chainflip-swap-perseverance.chainflip.io";
 
-const swapApiFor = (network: ChainflipNetworkId): string =>
+/** The swap API of a Chainflip network. */
+export const swapApiFor = (network: ChainflipNetworkId): string =>
   network === "perseverance" ? CHAINFLIP_SWAP_API_PERSEVERANCE : CHAINFLIP_SWAP_API;
 
 export type FetchLike = (
@@ -52,6 +53,10 @@ export interface ChainflipChannelRecord {
   destinationAddress: string;
   /** Chainflip's own word on the channel being closed, rather than our stored clock. */
   expired: boolean;
+  /** The CCM message the egress calls the destination with, lowercase 0x-hex, empty when none. */
+  ccmMessage: string;
+  /** The CCM gas budget as Chainflip records it, decimal or 0x-hex, empty when none. */
+  ccmGasBudget: string;
 }
 
 const str = (value: unknown): string => (typeof value === "string" ? value : "");
@@ -75,6 +80,7 @@ export async function readChannelRecord(
   if (!response.ok) throw new Error(`Chainflip channel read failed: HTTP ${response.status}`);
   const body = (await response.json()) as {
     destAddress?: unknown;
+    ccmParams?: { message?: unknown; gasBudget?: unknown };
     depositChannel?: { depositAddress?: unknown; isExpired?: unknown };
   };
   const channel = body.depositChannel;
@@ -85,5 +91,7 @@ export async function readChannelRecord(
     depositAddress,
     destinationAddress: str(body.destAddress),
     expired: channel.isExpired === true,
+    ccmMessage: str(body.ccmParams?.message).toLowerCase(),
+    ccmGasBudget: str(body.ccmParams?.gasBudget),
   };
 }

@@ -193,7 +193,7 @@ function limitedClient(
     });
   return createMeldClient({
     baseUrl: "https://adapter.test",
-    fetchImpl: async (_url, init) => {
+    fetchImpl: (async (_url: string, init?: RequestInit) => {
       const fiat = Number(
         (JSON.parse(String(init?.body)) as { sourceAmount: string }).sourceAmount,
       );
@@ -217,7 +217,7 @@ function limitedClient(
           },
         ],
       });
-    },
+    }) as unknown as typeof fetch,
   });
 }
 
@@ -298,7 +298,7 @@ describe("computeMeldQuote (limits)", () => {
     // The probe sits at the minimum whatever the buyer typed, so its refusal is not theirs.
     const client = createMeldClient({
       baseUrl: "https://adapter.test",
-      fetchImpl: async () =>
+      fetchImpl: (async () =>
         new Response(
           JSON.stringify({
             error: {
@@ -307,7 +307,7 @@ describe("computeMeldQuote (limits)", () => {
             },
           }),
           { status: 400, headers: { "content-type": "application/json" } },
-        ),
+        )) as unknown as typeof fetch,
     });
     const ctx = { ...INR, limits: { min: "3000.00", max: "50000.00" } };
     const err = await computeMeldQuote(client, ctx, dot(8.9)).catch((e: unknown) => e);
