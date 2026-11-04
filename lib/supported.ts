@@ -129,6 +129,11 @@ const countriesCache = new Map<string, SupportedCountry[]>();
 const corridorCache = expiring<SupportedCorridor>(CORRIDOR_TTL_MS);
 const corridorsCache = expiring<Map<string, SupportedCorridor>>(CORRIDOR_TTL_MS);
 
+/** A corridor with a method down is read again on the next call rather than reused, so a recovery
+ *  shows at once and the answer cannot lag the catalog read after it. */
+const reusable = (corridor: SupportedCorridor): boolean =>
+  corridor.methods.every((m) => m.temporarilyUnavailable !== true);
+
 /** Cache key for a catalog: a buy keeps the bare destination it always had. */
 const catalogKey = (destination: MeldAssetId, direction: SupportedDirection) =>
   direction === "buy" ? destination : `sell:${destination}`;
@@ -208,7 +213,8 @@ export async function fetchSupportedCountries(
 }
 
 /**
- * The methods and limits a country's corridor offers. Cached per country for ten minutes. Returns
+ * The methods and limits a country's corridor offers. Cached per country for ten minutes while
+ * every method is up. Returns
  * `null` when discovery is unreachable; an empty `methods` array means nothing routes here.
  */
 export async function fetchCorridor(
@@ -238,7 +244,8 @@ export async function fetchCorridor(
       fiat,
       methods: (data.methods ?? []).map((m) => toMethod(m, fiat)),
     };
-    corridorCache.set(corridorKey(destination, country, direction), corridor);
+    if (reusable(corridor))
+      corridorCache.set(corridorKey(destination, country, direction), corridor);
     return corridor;
   } catch {
     return null;
@@ -444,7 +451,7 @@ export async function fetchOfframpCorridor(country: string): Promise<SupportedCo
     if (!res.ok) return null;
     const data = (await res.json()) as Record<string, unknown>;
     const corridor = corridorOf(data, String(data.country ?? country));
-    offrampCorridorCache.set(country, corridor);
+    if (reusable(corridor)) offrampCorridorCache.set(country, corridor);
     return corridor;
   } catch {
     return null;

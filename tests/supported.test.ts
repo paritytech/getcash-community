@@ -381,6 +381,39 @@ describe("lib/supported", () => {
     expect(lib.isMethodDown(catalog?.get("GB") ?? null, "card")).toBe(false);
   });
 
+  it("reads a country's corridor again while a method is down, and reuses it once all are up", async () => {
+    const card = (down: boolean) => ({
+      paymentMethodType: "CREDIT_DEBIT_CARD",
+      category: "card",
+      min: "10",
+      max: "5000",
+      currency: "GBP",
+      providers: [],
+      ...(down ? { availability: "temporarily_unavailable" } : {}),
+    });
+    let down = true;
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ country: "GB", fiat: "GBP", methods: [card(down)] }), {
+          status: 200,
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const lib = await import("../lib/supported");
+    const read = () => Promise.all([lib.fetchCorridor(DEST, "GB"), lib.fetchOfframpCorridor("GB")]);
+
+    const [buy, sell] = await read();
+    expect(lib.isMethodDown(buy, "card")).toBe(true);
+    expect(lib.isMethodDown(sell, "card")).toBe(true);
+    down = false;
+    const [recovered] = await read();
+    expect(lib.isMethodDown(recovered, "card")).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+
+    await read();
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
   it("fetchSupportedCorridors caches a non-empty map and retries an empty one", async () => {
     const empty = stubFetch({ "/supported/corridors": { corridors: [] } });
     vi.stubGlobal("fetch", empty);
