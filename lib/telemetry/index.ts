@@ -66,6 +66,15 @@ export function reportFailure(kind: FailureKind, details: FailureDetails, journe
   }
 }
 
+/** An error Vue or Nuxt caught, from the telemetry plugin's hooks. */
+export function reportVueError(error: unknown, info?: string): void {
+  try {
+    core?.reportVueError(error, info);
+  } catch {
+    /* never throws */
+  }
+}
+
 /** One of the app's own scope tags (APP_TAGS in catalogue.ts); undefined removes it. */
 export function setTelemetryTag(key: AppTag, value: string | undefined): void {
   try {

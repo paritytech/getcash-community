@@ -2,7 +2,7 @@ import * as Sentry from "@sentry/vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { devLog } from "../log";
 import type { FailureKind, JourneyName } from "./catalogue";
-import { reportFailure, startJourney } from "./core";
+import { reportFailure, reportVueError, startJourney } from "./core";
 import type { FailureDetails } from "./failures";
 import type { Attrs, Step } from "./handle";
 import { openDelivery, resetTelemetryForTests, sentryOptions, startTelemetryWith } from "./init";
@@ -217,6 +217,24 @@ describe("failures", () => {
 
     // Then
     expect(events()[0].contexts.failure).toEqual({ detail: "Unau*horized: no cr*dentials" });
+  });
+
+  it("As a developer reading Sentry, I get a Vue error once, unhandled, even when both of Nuxt's hooks see it", async () => {
+    // Given: during boot a component's error reaches vue:error, then app:error; Dedupe is off
+    // (init.ts), so only the SDK's own once-per-error-object check keeps the second out
+    const error = new Error("watcher broke");
+
+    // When
+    reportVueError(error, "https://vuejs.org/error-reference/#runtime-3");
+    reportVueError(error);
+    await Sentry.flush(1000);
+
+    // Then: a production build's link for where it was thrown arrives as its code
+    expect(events()).toHaveLength(1);
+    const [exception] = events()[0].exception.values;
+    expect(exception.value).toBe("watcher broke");
+    expect(exception.mechanism).toMatchObject({ handled: false });
+    expect(events()[0].contexts.vue).toEqual({ info: "runtime-3" });
   });
 });
 

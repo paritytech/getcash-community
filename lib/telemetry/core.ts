@@ -40,6 +40,24 @@ export function reportFailure(kind: FailureKind, details: FailureDetails, journe
   }
 }
 
+/** An error Vue or Nuxt caught (the telemetry plugin's hooks), sent as unhandled: Vue keeps
+ *  it from the page's own error handlers. `info` says where it was thrown (a render, a watcher).
+ *  During boot one error reaches both hooks; Sentry sends an error object only once. */
+export function reportVueError(error: unknown, info?: string): void {
+  try {
+    if (!telemetryLive()) return;
+    // a production build names the place as a link whose hash is the code (runtime-3 is a
+    // watcher callback), and the scrubber drops a URL's hash: only the code is sent
+    const where = info?.replace(/^https:\/\/vuejs\.org\/error-reference\/#/, "");
+    Sentry.captureException(error, {
+      ...(where === undefined ? {} : { captureContext: { contexts: { vue: { info: where } } } }),
+      mechanism: { handled: false, type: "auto.function.nuxt.vue-error" },
+    });
+  } catch {
+    /* never throws */
+  }
+}
+
 /** Start a journey. A no-op handle when telemetry is off; never throws. */
 export function startJourney<N extends JourneyName>(name: N, attrs?: Attrs): Journey<N> {
   try {

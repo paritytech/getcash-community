@@ -33,9 +33,13 @@
  * carry what must never leave the device (a key, a provider's widget token),
  * and a devLog line is written knowing it goes out.
  *
- * VUE: the app is handed in so render and watcher errors, which Vue keeps to
- * its own handler, reach Sentry. Component props are never attached: a screen's
- * props can hold a recovery key.
+ * VUE: render and watcher errors, which Vue keeps to its own handler, reach
+ * Sentry from Nuxt's `vue:error` and `app:error` hooks (the telemetry plugin,
+ * as @sentry/nuxt does), not from Sentry's error handler: started before the
+ * app mounts, that handler would wrap Nuxt's boot one, which Nuxt then cannot
+ * remove, and every later error would replace the screen with Nuxt's error
+ * page. Component props are never attached: a screen's props can hold a
+ * recovery key.
  *
  * One guard on everything that leaves (scrubEvent, with scrub.ts's list):
  * no recovery phrase or 32-byte hex value, and no
@@ -401,6 +405,7 @@ export function startTelemetryWith(config: TelemetryConfig): boolean {
     ...sentryOptions(config),
     ...(config.app ? { app: config.app } : {}),
     attachProps: false,
+    attachErrorHandler: false,
   });
   started = true;
   removeListeners.push(installBreadcrumbSink());

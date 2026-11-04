@@ -305,7 +305,8 @@ What a deployment with a DSN sends:
 
 - **Failures**, one event of a fixed kind each (`lib/telemetry/catalogue.ts`): a top-up or
   withdrawal that ended failed, a hand-off the worker refused, a record the host would not store,
-  an unreadable purse, a host that cannot run the build, and unhandled errors.
+  an unreadable purse, a host that cannot run the build, a quote that could not be had, and
+  unhandled errors.
 - **Journeys**, as spans: the app opening, and each top-up and withdrawal started on the page,
   step by step (`app/funding/requests/telemetry.ts`).
 - **Counts**: time on each screen and the main actions.

@@ -81,7 +81,8 @@ export function usePurseBalance(options: { enabled?: () => boolean } = {}): Purs
       const delay = RETRY_DELAYS_MS[attempt];
       if (state.value.kind !== "known") {
         state.value = { kind: "unknown" };
-        if (delay === undefined) {
+        // Reported once, when the quick retries run out; the slow walk past them stays quiet.
+        if (delay === undefined && !failed.value) {
           failed.value = true;
           reportFailure("purse-unreadable", { reason: reasonOf(error), error });
         }
