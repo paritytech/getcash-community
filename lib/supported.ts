@@ -87,6 +87,15 @@ export function countryName(country: string): string {
   }
 }
 
+/** "in Germany", "in the United Kingdom": English puts "the" before plural and descriptive names. */
+export function inCountry(name: string): string {
+  const the =
+    /^United |Republic$|Islands$|^(Netherlands|Philippines|Bahamas|Gambia|Maldives|Comoros)$/.test(
+      name,
+    );
+  return `in ${the ? "the " : ""}${name}`;
+}
+
 function baseUrl(): string | undefined {
   return import.meta.env.VITE_MELD_BASE_URL as string | undefined;
 }

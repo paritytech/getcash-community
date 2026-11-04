@@ -918,4 +918,13 @@ describe("lib/supported", () => {
     // An unreachable catalog is null, not empty.
     expect(await fetchOfframpCorridors()).toBeNull();
   });
+
+  it("names a country after 'in', with 'the' where English needs it", async () => {
+    const { inCountry } = await import("../lib/supported");
+    expect(inCountry("Germany")).toBe("in Germany");
+    expect(inCountry("United Kingdom")).toBe("in the United Kingdom");
+    expect(inCountry("Dominican Republic")).toBe("in the Dominican Republic");
+    expect(inCountry("Cayman Islands")).toBe("in the Cayman Islands");
+    expect(inCountry("Netherlands")).toBe("in the Netherlands");
+  });
 });
