@@ -12,6 +12,7 @@ import {
 import {
   createFundingSelection,
   isFundingRouteAvailable,
+  selectableRoute,
   type FundingRoute,
   type FundingSelection,
 } from "../../funding/selection";
@@ -114,7 +115,19 @@ const amount = ref(props.initialSelection?.amount ?? props.config.amount.initial
 // A buyer returning from a package keeps their route; a fresh entry starts on the configured
 // default. Either one starts unpicked when this build cannot run it.
 const initialRoute = props.initialSelection?.route ?? props.config.defaultRoute;
-const route = ref<FundingRoute | null>(isRouteAvailable(initialRoute) ? initialRoute : null);
+const route = ref(selectableRoute(initialRoute, props.availableRoutes));
+
+// The backend can stop serving the selected route while the screen is up, when the catalog lands
+// or is read again; the pills say why.
+watch(
+  () => props.availableRoutes,
+  (available) => {
+    const next = selectableRoute(route.value, available);
+    if (next === route.value) return;
+    route.value = next;
+    emit("change");
+  },
+);
 
 function changeAmount(next: string) {
   amount.value = next;

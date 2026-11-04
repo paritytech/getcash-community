@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // A route this build cannot run renders dimmed and marked "Soon" rather than dropped. One the
-// backend cannot serve right now is dimmed too, and a tap on it says why for a few seconds: a label
-// inside the pill would not fit three pills on a phone.
-import { onBeforeUnmount, ref } from "vue";
+// backend cannot serve right now is dimmed too, and a tap on it, or losing it while selected, says
+// why for a few seconds: a label inside the pill would not fit three pills on a phone.
+import { onBeforeUnmount, ref, watch } from "vue";
 import SkeletonBlock from "../ui/SkeletonBlock.vue";
 import type { FundingRouteOption } from "../../funding/config";
 import { isFundingRouteAvailable, type FundingRoute } from "../../funding/selection";
@@ -30,17 +30,26 @@ const NOTICE_MS = 3000;
 const notice = ref<string | null>(null);
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 
-function tap(option: FundingRouteOption) {
-  if (!isUnserved(option.id)) {
-    emit("select", option.id);
-    return;
-  }
-  notice.value = `${option.label} isn't available right now`;
+function sayUnserved(route: FundingRoute) {
+  const label = props.routes.find((option) => option.id === route)?.label ?? route;
+  notice.value = `${label} isn't available right now`;
   clearTimeout(noticeTimer);
   noticeTimer = setTimeout(() => {
     notice.value = null;
   }, NOTICE_MS);
 }
+
+function tap(option: FundingRouteOption) {
+  if (isUnserved(option.id)) sayUnserved(option.id);
+  else emit("select", option.id);
+}
+
+watch(
+  () => [props.selected, props.unserved] as const,
+  ([, unserved], [before]) => {
+    if (before !== null && unserved.includes(before)) sayUnserved(before);
+  },
+);
 
 onBeforeUnmount(() => clearTimeout(noticeTimer));
 </script>
