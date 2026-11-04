@@ -34,6 +34,7 @@ import {
 import { detectedCountryNow } from "./useDetectedCountry";
 import { meldSellClient } from "../withdraw/meld-client";
 import { devLog } from "~~/lib/log";
+import { quoteCauseOf, reportQuoteFailure } from "../funding/quote-failure";
 
 /** A priced sale: where it pays out, what the key pays, and the provider line for it. */
 export interface MeldSellQuote {
@@ -199,10 +200,14 @@ export function useMeldSellQuote(
   const rateFailures = ref(0);
   let epoch = 0;
 
-  function fail(kind: "unrouted" | "rate", message: string): void {
+  function fail(kind: "unrouted" | "rate", message: string, why: string, thrown?: unknown): void {
     error.value = message;
     errorKind.value = kind;
     if (kind === "rate") rateFailures.value += 1;
+    reportQuoteFailure(`sale-${method}`, why, {
+      ...(thrown === undefined ? {} : { error: thrown }),
+      context: { country: country.value },
+    });
   }
 
   /** Meld's codes for the assets a sale names, read once from the adapter the sale goes through. */
@@ -267,9 +272,14 @@ export function useMeldSellQuote(
       fail(
         "unrouted",
         `${method === "bank" ? "Bank" : "Card"} payout isn't available in this region`,
+        "unrouted",
       );
     } else {
-      fail("rate", `${method === "bank" ? "Bank" : "Card"} payouts are not available right now.`);
+      fail(
+        "rate",
+        `${method === "bank" ? "Bank" : "Card"} payouts are not available right now.`,
+        "unavailable",
+      );
     }
   }
 
@@ -283,7 +293,7 @@ export function useMeldSellQuote(
     try {
       const client = meldSellClient();
       if (client === null) {
-        fail("rate", "Card and bank withdrawals are not available right now.");
+        fail("rate", "Card and bank withdrawals are not available right now.", "unconfigured");
         return;
       }
       await ensureMeldAssets(client);
@@ -301,7 +311,7 @@ export function useMeldSellQuote(
         failUnrouted();
         return;
       }
-      let failure: string | undefined;
+      let failure: { message: string; error: unknown } | undefined;
       for (const code of candidates) {
         const lane = saleLaneOf(code);
         if (lane === undefined) continue;
@@ -347,12 +357,16 @@ export function useMeldSellQuote(
           const message = e instanceof Error ? e.message : String(e);
           devLog("sell", `lane ${code} skipped: ${message}`, undefined, "warn");
           // The best lane's failure says most about why the sale cannot be priced.
-          failure ??= message;
+          failure ??= { message, error: e };
         }
       }
-      fail("rate", failure ?? "No provider can pay out this sale right now.");
+      if (failure !== undefined)
+        fail("rate", failure.message, quoteCauseOf(failure.error), failure.error);
+      // every lane priced, but no provider's line was usable
+      else fail("rate", "No provider can pay out this sale right now.", "no-quote");
     } catch (e: unknown) {
-      if (mine === epoch) fail("rate", e instanceof Error ? e.message : String(e));
+      if (mine === epoch)
+        fail("rate", e instanceof Error ? e.message : String(e), quoteCauseOf(e), e);
     } finally {
       if (mine === epoch) loading.value = false;
     }

@@ -58,6 +58,9 @@ export const FAILURE_KINDS = [
   "withdraw-failed",
   // the person declined, or could not cover, a host payment
   "payment-refused",
+  // a top-up or a sale could not be priced; the reason is `<rail>:<why>`
+  // (app/funding/quote-failure.ts)
+  "quote-failed",
   // sent by the core itself: a journey past its stuckMs (journeys.ts)
   "stuck",
 ] as const;
@@ -77,6 +80,9 @@ export function isExpected(kind: FailureKind, reason: string): boolean {
     case "top-up-failed":
       // the provider refunded the deposit: its decision, the money is back
       return reason === "refunded";
+    case "quote-failed":
+      // the device was offline, or no provider serves the person's region or method
+      return /:(offline|no-provider|unrouted)$/.test(reason);
     default:
       return false;
   }

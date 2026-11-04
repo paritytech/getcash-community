@@ -108,6 +108,7 @@ import { requestCreated } from "../funding/requests/telemetry";
 import { useRequestsStore } from "./requests";
 import { devLog } from "~~/lib/log";
 import { trackAction } from "~~/lib/telemetry";
+import { quoteCauseOf, reportQuoteFailure, type QuoteRail } from "../funding/quote-failure";
 
 export { DEPOSIT_EXPIRED_REASON } from "../funding/requests/model";
 
@@ -1056,11 +1057,18 @@ export const useSessionStore = defineStore("session", () => {
     return nearest;
   }
 
-  /** A quote that could not be had: the message for the screen, and one more failure in a row. */
-  function failQuote(message: string): void {
+  /** A quote that could not be had: the message for the screen, one more failure in a row, and
+   *  the failure reported as the rail and its cause. */
+  function failQuote(
+    message: string,
+    rail: QuoteRail,
+    why: string,
+    details: { error?: unknown; context?: Record<string, string> } = {},
+  ): void {
     quoted.value = null;
     quoteError.value = message;
     quoteFailures.value += 1;
+    reportQuoteFailure(rail, why, details);
   }
 
   /** (Re)quotes the Meld rail for the current CASH amount and region. The mock world simulates
@@ -1117,7 +1125,11 @@ export const useSessionStore = defineStore("session", () => {
           const pooled = await poolNativeBudget(amountBase.value, sizing);
           if (epoch !== quoteEpoch) return;
           if (pooled === null) {
-            failQuote("Couldn't price this amount right now. Please try again.");
+            failQuote(
+              "Couldn't price this amount right now. Please try again.",
+              method.value === "bank" ? "bank" : "card",
+              "no-price",
+            );
             return;
           }
           nativeBudget = pooled;
@@ -1129,7 +1141,11 @@ export const useSessionStore = defineStore("session", () => {
           );
           if (epoch !== quoteEpoch) return;
           if (quotedBudget === null) {
-            failQuote("No provider offers this payment method or region. Try another.");
+            failQuote(
+              "No provider offers this payment method or region. Try another.",
+              method.value === "bank" ? "bank" : "card",
+              "no-provider",
+            );
             return;
           }
           nativeBudget = quotedBudget + sizing.keepNativeForFees;
@@ -1257,7 +1273,15 @@ export const useSessionStore = defineStore("session", () => {
         quoteAmountRejected.value = true;
         return;
       }
-      failQuote(e instanceof Error ? e.message : String(e));
+      failQuote(
+        e instanceof Error ? e.message : String(e),
+        method.value === "bank" ? "bank" : "card",
+        quoteCauseOf(e),
+        {
+          error: e,
+          ...(refusal?.tag ? { context: { tag: refusal.tag } } : {}),
+        },
+      );
     } finally {
       if (epoch === quoteEpoch) loading.value = false;
     }
@@ -1497,7 +1521,7 @@ export const useSessionStore = defineStore("session", () => {
         undefined,
         "error",
       );
-      failQuote(msg);
+      failQuote(msg, "crypto", quoteCauseOf(e), { error: e, context: { chain, asset } });
     } finally {
       if (epoch === quoteEpoch) loading.value = false;
     }

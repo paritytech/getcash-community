@@ -7,6 +7,14 @@ import type { SupportedCorridor } from "../lib/supported";
 const corridors = new Map<string, SupportedCorridor>();
 const getSellQuote = vi.fn();
 const sizeSwapSale = vi.fn();
+const reported = vi.hoisted(() => [] as string[]);
+
+vi.mock("~~/lib/telemetry", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/telemetry")>()),
+  reportFailure: (kind: string, details: { reason: string }) => {
+    if (kind === "quote-failed") reported.push(details.reason);
+  },
+}));
 
 vi.mock("../app/utils/locale", () => ({ localeCountry: () => "DE" }));
 vi.mock("../app/withdraw/meld-client", async () => {
@@ -56,6 +64,7 @@ describe("a region only a swap routes", () => {
     });
     getSellQuote.mockReset();
     sizeSwapSale.mockReset();
+    reported.length = 0;
   });
 
   it("reads as not available there when the build sells no swap", async () => {
@@ -66,6 +75,8 @@ describe("a region only a swap routes", () => {
     expect(sale.corridors.value?.get("FR")?.methods).toHaveLength(1);
     expect(sizeSwapSale).not.toHaveBeenCalled();
     expect(getSellQuote).not.toHaveBeenCalled();
+    // the region's own situation: reported, and read as expected (catalogue.ts)
+    expect(reported).toEqual(["sale-card:unrouted"]);
   });
 
   it("tries the swap when the build lists it", async () => {
@@ -73,5 +84,7 @@ describe("a region only a swap routes", () => {
     const sale = await quoteFor("dot@assethub,usdc@arbitrum");
     expect(sizeSwapSale).toHaveBeenCalledOnce();
     expect(sale.errorKind.value).toBe("rate");
+    // the lane's own error decides the cause
+    expect(reported).toEqual(["sale-card:error"]);
   });
 });

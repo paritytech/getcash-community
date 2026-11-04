@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { APP_TAGS, FAILURE_KINDS, JOURNEYS } from "./catalogue";
+import { APP_TAGS, FAILURE_KINDS, isExpected, JOURNEYS } from "./catalogue";
 import { TAG_KEYS } from "./tags";
 
 const MASKED = /auth|secret|credential|password/i;
@@ -23,5 +23,18 @@ describe("the catalogue", () => {
 
     // Then
     expect(masked).toEqual([]);
+  });
+
+  it("As a developer reading Sentry, I see a quote that failed for the person's own situation as a warning and ours as an error", () => {
+    // Given
+    const theirs = ["crypto:offline", "card:no-provider", "sale-bank:unrouted"];
+    const ours = ["card:no-price", "crypto:timeout", "sale-card:unavailable", "bank:http-500"];
+
+    // When
+    const read = (reasons: string[]) => reasons.map((r) => isExpected("quote-failed", r));
+
+    // Then
+    expect(read(theirs)).toEqual([true, true, true]);
+    expect(read(ours)).toEqual([false, false, false, false]);
   });
 });
