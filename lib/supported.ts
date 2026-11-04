@@ -107,15 +107,16 @@ export type SupportedDirection = "buy" | "sell";
  *  older read can miss an outage or a recovery. */
 const CORRIDOR_TTL_MS = 600_000;
 
+/** A cache whose entries are fresh for `ttlMs`, and kept past it as the last known value. */
 function expiring<V>(ttlMs: number) {
   const entries = new Map<string, { value: V; at: number }>();
   return {
     get(key: string): V | undefined {
       const entry = entries.get(key);
-      if (entry === undefined) return undefined;
-      if (Date.now() - entry.at < ttlMs) return entry.value;
-      entries.delete(key);
-      return undefined;
+      return entry !== undefined && Date.now() - entry.at < ttlMs ? entry.value : undefined;
+    },
+    last(key: string): V | undefined {
+      return entries.get(key)?.value;
     },
     set(key: string, value: V): void {
       entries.set(key, { value, at: Date.now() });
@@ -244,14 +245,16 @@ export async function fetchCorridor(
   }
 }
 
-// Every supported corridor as a country -> corridor map, DB-backed and cached for ten minutes; null
-// when unreachable.
+// Every supported corridor as a country -> corridor map, DB-backed and cached for ten minutes. A
+// read that fails or comes back empty answers the last map read, or null before the first.
 export async function fetchSupportedCorridors(
   destination: MeldAssetId,
   direction: SupportedDirection = "buy",
 ): Promise<Map<string, SupportedCorridor> | null> {
-  const cached = corridorsCache.get(catalogKey(destination, direction));
+  const key = catalogKey(destination, direction);
+  const cached = corridorsCache.get(key);
   if (cached !== undefined) return cached;
+  const last = corridorsCache.last(key) ?? null;
   const base = baseUrl();
   if (base === undefined) return null;
   try {
@@ -259,7 +262,7 @@ export async function fetchSupportedCorridors(
       `${base.replace(/\/$/, "")}/supported/corridors?destinationCurrencyCode=${encodeURIComponent(await destinationCode(destination))}${directionQuery(direction)}`,
       { headers: headers() },
     );
-    if (!res.ok) return null;
+    if (!res.ok) return last;
     const data = (await res.json()) as {
       corridors?: {
         country?: string;
@@ -280,11 +283,12 @@ export async function fetchSupportedCorridors(
         ...(typeof c.name === "string" && c.name !== "" ? { name: c.name } : {}),
       });
     }
-    // Only a non-empty result is cached; an empty one (cold cache) is retried next call.
-    if (map.size > 0) corridorsCache.set(catalogKey(destination, direction), map);
+    // An empty result (the adapter's cold cache) is no answer: it is retried on the next call.
+    if (map.size === 0) return last ?? map;
+    corridorsCache.set(key, map);
     return map;
   } catch {
-    return null;
+    return last;
   }
 }
 
@@ -397,29 +401,31 @@ function corridorOf(c: Record<string, unknown>, country: string): SupportedCorri
   };
 }
 
-/** Every off-ramp corridor as a country -> corridor map, cached for ten minutes; null when
- *  unreachable. */
+/** Every off-ramp corridor as a country -> corridor map, cached for ten minutes. A read that fails
+ *  or comes back empty answers the last map read, or null before the first. */
 export async function fetchOfframpCorridors(): Promise<Map<string, SupportedCorridor> | null> {
   const cached = offrampCorridorsCache.get("all");
   if (cached !== undefined) return cached;
+  const last = offrampCorridorsCache.last("all") ?? null;
   const base = baseUrl();
   if (base === undefined) return null;
   try {
     const res = await fetch(`${base.replace(/\/$/, "")}/supported/offramp/corridors`, {
       headers: headers(),
     });
-    if (!res.ok) return null;
+    if (!res.ok) return last;
     const data = (await res.json()) as { corridors?: Record<string, unknown>[] };
     const map = new Map<string, SupportedCorridor>();
     for (const c of data.corridors ?? []) {
       const country = String(c.country ?? "");
       if (country !== "") map.set(country, corridorOf(c, country));
     }
-    // Only a non-empty result is cached; an empty one (cold cache) is retried next call.
-    if (map.size > 0) offrampCorridorsCache.set("all", map);
+    // An empty result (the adapter's cold cache) is no answer: it is retried on the next call.
+    if (map.size === 0) return last ?? map;
+    offrampCorridorsCache.set("all", map);
     return map;
   } catch {
-    return null;
+    return last;
   }
 }
 

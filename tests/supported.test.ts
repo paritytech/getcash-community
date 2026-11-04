@@ -297,6 +297,90 @@ describe("lib/supported", () => {
     expect(fetchMock).toHaveBeenCalledTimes(8);
   });
 
+  it("answers the last catalog read when a later read fails or comes back empty", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const us = { country: "US", fiat: "USD", methods: [] };
+    const gb = { country: "GB", fiat: "GBP", methods: [] };
+    const json = (body: unknown) => async () => new Response(JSON.stringify(body), { status: 200 });
+    let answer: () => Promise<Response> = json({ corridors: [us, gb] });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => answer()),
+    );
+    const lib = await import("../lib/supported");
+    const countries = async () =>
+      (await Promise.all([lib.fetchSupportedCorridors(DEST), lib.fetchOfframpCorridors()])).map(
+        (map) => [...(map?.keys() ?? [])],
+      );
+    expect(await countries()).toEqual([
+      ["US", "GB"],
+      ["US", "GB"],
+    ]);
+
+    const failures = [
+      async () => {
+        throw new Error("timeout");
+      },
+      async () => new Response("unavailable", { status: 503 }),
+      json({ corridors: [] }),
+    ];
+    for (const failure of failures) {
+      answer = failure;
+      vi.setSystemTime(Date.now() + 600_000);
+      expect(await countries()).toEqual([
+        ["US", "GB"],
+        ["US", "GB"],
+      ]);
+    }
+
+    answer = json({ corridors: [us] });
+    vi.setSystemTime(Date.now() + 600_000);
+    expect(await countries()).toEqual([["US"], ["US"]]);
+  });
+
+  it("keeps a token's regions and methods in the merged catalog when that token's read fails", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const card = (down: boolean) => ({
+      paymentMethodType: "CREDIT_DEBIT_CARD",
+      category: "card",
+      min: "10",
+      max: "5000",
+      currency: "GBP",
+      providers: [],
+      ...(down ? { availability: "temporarily_unavailable" } : {}),
+    });
+    // USDT routes card in the UK and Brazil; DOT routes card in the UK only, and it is down there.
+    const catalogs: Record<string, unknown[]> = {
+      USDT_DOT: [
+        { country: "GB", fiat: "GBP", methods: [card(false)] },
+        { country: "BR", fiat: "BRL", methods: [card(false)] },
+      ],
+      DOT: [{ country: "GB", fiat: "GBP", methods: [card(true)] }],
+    };
+    let usdtFails = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        const code = new URL(url).searchParams.get("destinationCurrencyCode") ?? "";
+        if (code === "USDT_DOT" && usdtFails) throw new Error("timeout");
+        return new Response(JSON.stringify({ corridors: catalogs[code] }), { status: 200 });
+      }),
+    );
+    const lib = await import("../lib/supported");
+    const merged = async () =>
+      lib.mergeCorridorMaps(
+        await lib.fetchSupportedCorridors("usdt@assethub"),
+        await lib.fetchSupportedCorridors(DEST),
+      );
+    await merged();
+
+    usdtFails = true;
+    vi.setSystemTime(Date.now() + 600_000);
+    const catalog = await merged();
+    expect([...(catalog?.keys() ?? [])].sort()).toEqual(["BR", "GB"]);
+    expect(lib.isMethodDown(catalog?.get("GB") ?? null, "card")).toBe(false);
+  });
+
   it("fetchSupportedCorridors caches a non-empty map and retries an empty one", async () => {
     const empty = stubFetch({ "/supported/corridors": { corridors: [] } });
     vi.stubGlobal("fetch", empty);
