@@ -7,6 +7,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { corridorOptions, type CountryOption } from "~~/lib/supported";
 import { detectCountry, useDetectedCountry } from "../../../composables/useDetectedCountry";
 import { useMeldHandoff } from "../../../composables/useMeldHandoff";
+import { useScreen } from "../../../composables/useScreen";
 import { useStateDirector } from "../../../composables/useStateDirector";
 import { useVisibilityReconcile } from "../../../composables/useVisibilityReconcile";
 import { fundingSelectorConfig } from "../../../funding/config";
@@ -92,6 +93,13 @@ function goBack() {
 }
 /** The widget stage, card only: a request exists and the payment is still to be made. */
 const paying = computed(() => !isBank && flow.screen === "journey");
+useScreen(() => {
+  if (session.resuming) return null;
+  if (showingCurrency.value) return "region";
+  if (showingFees.value) return "fees";
+  if (paying.value) return "top-up.card.widget";
+  return isBank ? "top-up.bank" : "top-up.card";
+});
 // The widget supersedes the drill-in (its template branch wins). Without this, a flow that moves
 // on while the fee screen is up leaves the flag set, and the next Back tap is silently spent
 // clearing it instead of leaving.

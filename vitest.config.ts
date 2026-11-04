@@ -8,8 +8,10 @@ export default defineConfig({
       "~~": fileURLToPath(new URL(".", import.meta.url)),
     },
   },
+  // The telemetry literals nuxt.config.ts defines: a build without a DSN.
+  define: { __SENTRY_DSN__: "null", __APP_VERSION__: '"test"' },
   test: {
-    include: ["packages/*/src/**/*.test.ts", "tests/**/*.test.ts"],
+    include: ["packages/*/src/**/*.test.ts", "tests/**/*.test.ts", "lib/**/*.test.ts"],
     // Meld's asset codes, as a page reads them from the adapter at boot.
     setupFiles: ["tests/setup-meld-assets.ts"],
     // The Meld tests run against the offline fake client; a real adapter URL in .env must not

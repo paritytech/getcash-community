@@ -42,6 +42,7 @@ import {
 import { previewStage, type PreviewStage } from "../utils/dev-preview-stage";
 import { useRouter } from "vue-router";
 import { previewTopUpScene } from "../utils/dev-preview-top-ups";
+import { devLog } from "~~/lib/log";
 
 useVisualViewportHeight();
 const requests = useRequestsStore();
@@ -180,7 +181,7 @@ async function openTopUp(topUp: FundingTopUp, target: FundingTopUpReturnTarget) 
     return;
   }
 
-  console.error(`[funding] could not load ${result.packageId} status:`, result.error);
+  devLog("funding", `could not load ${result.packageId} status`, result.error, "error");
   topUpError.value = `${routeLabel(topUp.route)} status couldn't be opened. Try again.`;
 }
 
@@ -336,12 +337,12 @@ onMounted(async () => {
       ),
     ]);
   } catch (error: unknown) {
-    console.warn("[host] permission front-load failed (continuing):", error);
+    devLog("host", "permission front-load failed (continuing)", error, "warn");
   }
   try {
     await Promise.all(topUpAdapters.map((adapter) => adapter.refresh()));
   } catch (error: unknown) {
-    console.warn("[funding] could not refresh top-ups:", error);
+    devLog("funding", "could not refresh top-ups", error, "warn");
   }
 });
 </script>

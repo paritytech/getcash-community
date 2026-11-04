@@ -77,6 +77,7 @@ import {
 } from "@getsome/testing";
 import { mainnetSdk, NETWORK } from "./chainflip-backend";
 import type { WorkerHandoffPayload } from "../app/funding/requests/model";
+import { devLog } from "./log";
 
 const BITCOIN_NETWORK: BitcoinNetwork = NETWORK === "mainnet" ? "mainnet" : "testnet";
 const PURSE_BALANCE_TIMEOUT_MS = 10_000;
@@ -183,7 +184,12 @@ export function createCoinageHandoff(opts: {
       settled: true,
     };
     await opts.storage.write(recordKey(key), JSON.stringify(record));
-    console.warn(`[coinage] settle: claimed by the worker (${claim.amount ?? "?"}), recorded`);
+    devLog(
+      "coinage",
+      `settle: claimed by the worker (${claim.amount ?? "?"}), recorded`,
+      undefined,
+      "warn",
+    );
     opts.onProgress?.("crediting", BigInt(record.amount));
   }
 
@@ -213,8 +219,11 @@ export function createCoinageHandoff(opts: {
         return;
       }
       // Throw, do not return: core re-probes a settle that throws and fails it recoverably.
-      console.warn(
-        `[coinage] settle: the worker has not claimed within ${WORKER_CLAIM_WAIT_MS / 1000}s (${claim?.error ?? "no verdict yet"}); failing recoverably`,
+      devLog(
+        "coinage",
+        `settle: the worker has not claimed within ${WORKER_CLAIM_WAIT_MS / 1000}s (${claim?.error ?? "no verdict yet"}); failing recoverably`,
+        undefined,
+        "warn",
       );
       throw new Error(
         "the claim has not completed yet; it keeps retrying in the background; try again shortly",
@@ -224,7 +233,7 @@ export function createCoinageHandoff(opts: {
       try {
         const raw = await opts.storage.read(recordKey(key));
         if (raw && (JSON.parse(raw) as SettleRecord).settled) {
-          console.warn("[coinage] isSettled: persisted verdict (settled), no reads");
+          devLog("coinage", "isSettled: persisted verdict (settled), no reads", undefined, "warn");
           return { id: key };
         }
         // No record yet: check the worker's marker and record it if the claim landed.
@@ -233,12 +242,20 @@ export function createCoinageHandoff(opts: {
           await recordWorkerClaim(key, claim);
           return { id: key };
         }
-        console.warn(
-          `[coinage] isSettled: not settled (worker claim: ${claim?.phase ?? "none"}${claim?.status ? `, host: ${claim.status}` : ""})`,
+        devLog(
+          "coinage",
+          `isSettled: not settled (worker claim: ${claim?.phase ?? "none"}${claim?.status ? `, host: ${claim.status}` : ""})`,
+          undefined,
+          "warn",
         );
         return null;
       } catch (e) {
-        console.error(`[coinage] isSettled THREW (probe error, not a claim): ${msgOf(e)}`);
+        devLog(
+          "coinage",
+          `isSettled THREW (probe error, not a claim): ${msgOf(e)}`,
+          undefined,
+          "error",
+        );
         throw e;
       }
     },
@@ -399,7 +416,7 @@ export async function recoverRefundKey(
   // does not validate for its own source means the derivation is wrong, and pointing a buyer at
   // an address their money is not at is worse than telling them nothing.
   if (!SOURCE_CONFIG_BY_ID.get(sourceId)?.validateRefundAddress(key.address)) {
-    console.warn(`[coinage] recovered refund address is not valid for ${sourceId}`);
+    devLog("coinage", `recovered refund address is not valid for ${sourceId}`, undefined, "warn");
     return null;
   }
   return key;
@@ -435,10 +452,10 @@ function holdRefundKey(
     held = null;
     try {
       await storage.clear(refundStorageKey(sourceId, n));
-      console.info(`[coinage] refund key for trade #${n} forgotten: the deposit has landed`);
+      devLog("coinage", `refund key for trade #${n} forgotten: the deposit has landed`);
     } catch (e) {
       cleared = false;
-      console.warn("[coinage] refund key clear failed (retried on the next update):", e);
+      devLog("coinage", "refund key clear failed (retried on the next update)", e, "warn");
     }
   };
   session.subscribe((s) => {
@@ -479,8 +496,11 @@ export async function nextFreeTradeNumber(
   }
   if (n !== counter) {
     await storage.write(tradeCounterKey(sourceId), String(n));
-    console.warn(
-      `[coinage] trade counter for ${sourceId} stood at ${counter} but that number is taken; moved to ${n}`,
+    devLog(
+      "coinage",
+      `trade counter for ${sourceId} stood at ${counter} but that number is taken; moved to ${n}`,
+      undefined,
+      "warn",
     );
   }
   return n;
@@ -1119,7 +1139,7 @@ export async function createCoinageSession(
   const seed = await stage("entropy derivation", 10_000, deps.entropy.deriveSeed(entropyLabel));
   const burnerKey = deriveKey(seed);
   // Host loggers may forward only warn and error.
-  console.warn(`[coinage] ephemeral (burner): ${burnerKey.address}`);
+  devLog("coinage", `ephemeral (burner): ${burnerKey.address}`, undefined, "warn");
 
   const burnerHex = burnerSecretOf(seed);
 
@@ -1255,12 +1275,18 @@ export async function createCoinageSession(
     tradeAdvanced = true;
     try {
       await deps.storage.write(tradeCounterKey(args.sourceId), String(tradeN + 1));
-      console.info(
-        `[coinage] trade #${tradeN} claimed; the next request derives a fresh burner (#${tradeN + 1})`,
+      devLog(
+        "coinage",
+        `trade #${tradeN} claimed; the next request derives a fresh burner (#${tradeN + 1})`,
       );
     } catch (e) {
       tradeAdvanced = false;
-      console.warn("[coinage] trade counter advance failed (the next quote searches past it):", e);
+      devLog(
+        "coinage",
+        "trade counter advance failed (the next quote searches past it)",
+        e,
+        "warn",
+      );
     }
   };
 

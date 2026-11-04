@@ -9,6 +9,8 @@ import type { PurseWord } from "../funding/timeline/recovery";
 import { useOffersStore } from "./offers";
 import { useRequestsStore } from "./requests";
 import { useSessionStore } from "./session";
+import { devLog } from "~~/lib/log";
+import { trackAction } from "~~/lib/telemetry";
 
 const JOURNEY_PHASES = new Set([
   "awaiting-deposit",
@@ -91,6 +93,7 @@ export const useFlowStore = defineStore("flow", () => {
   function selectSource(chain: string, asset: string) {
     const position = positionOf(chain, asset);
     if (position === null) return;
+    trackAction("token.pick", { chain, asset });
     // Re-quote unless the pickers already point here and the quote on hand is for this source.
     const quotedHere =
       session.quoted?.sourceChain === chain && session.quoted?.sourceAsset === asset;
@@ -108,7 +111,7 @@ export const useFlowStore = defineStore("flow", () => {
     try {
       await session.start();
     } catch (e) {
-      console.warn("[flow] could not start the purchase:", e);
+      devLog("flow", "could not start the purchase", e, "warn");
     } finally {
       starting.value = false;
     }
@@ -120,6 +123,7 @@ export const useFlowStore = defineStore("flow", () => {
    * the token step.
    */
   function pickNetwork(chain: string): Step | null {
+    trackAction("network.pick", { chain });
     const c = FUNDING_CHAINS.findIndex((entry) => entry.chain === chain);
     const tokens = offers.offeredTokens(chain);
     if (c >= 0 && tokens.length === 1 && tokens[0]!.asset === FUNDING_CHAINS[c]!.native) {

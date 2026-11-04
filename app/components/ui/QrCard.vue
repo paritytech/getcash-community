@@ -2,6 +2,7 @@
 // The QR as a dark-on-light rounded square, rendered at a fixed resolution and sized by CSS.
 import { ref, watchEffect } from "vue";
 import QRCode from "qrcode";
+import { devLog } from "~~/lib/log";
 
 const props = defineProps<{ value: string }>();
 const RESOLUTION = 512; // fixed render size; the display size is CSS-driven.
@@ -24,7 +25,7 @@ watchEffect(() => {
       el.style.removeProperty("width");
       el.style.removeProperty("height");
     })
-    .catch((e) => console.warn("[qr] render failed:", e));
+    .catch((e) => devLog("qr", "render failed", e, "warn"));
 });
 </script>
 

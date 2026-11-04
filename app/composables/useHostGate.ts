@@ -9,6 +9,8 @@
 import { ref } from "vue";
 import { NETWORK } from "@getsome/core";
 import { isHosted } from "~~/lib/host-account";
+import { devLog } from "~~/lib/log";
+import { reportFailure } from "~~/lib/telemetry";
 
 export const hostGateApplies = (): boolean => NETWORK.testnet && isHosted();
 
@@ -24,13 +26,19 @@ async function chainsReportSupported(): Promise<boolean> {
     isChainSupported(ASSET_HUB.genesisHash),
   ]);
   if (!people.ok || !people.value) {
-    console.error(
-      `[host] TrUAPI check failed: people chain ${people.ok ? "not supported" : people.error.message}`,
+    devLog(
+      "host",
+      `TrUAPI check failed: people chain ${people.ok ? "not supported" : people.error.message}`,
+      undefined,
+      "error",
     );
   }
   if (!assetHub.ok || !assetHub.value) {
-    console.error(
-      `[host] TrUAPI check failed: asset-hub chain ${assetHub.ok ? "not supported" : assetHub.error.message}`,
+    devLog(
+      "host",
+      `TrUAPI check failed: asset-hub chain ${assetHub.ok ? "not supported" : assetHub.error.message}`,
+      undefined,
+      "error",
     );
   }
   return people.ok && people.value && assetHub.ok && assetHub.value;
@@ -42,18 +50,23 @@ export function useHostGate() {
   async function check(): Promise<void> {
     const quickOk = await chainsReportSupported().catch((e: unknown) => {
       const reason = e instanceof Error ? e.message : String(e);
-      console.error(`[host] TrUAPI check failed: quick check threw: ${reason}`);
+      devLog("host", `TrUAPI check failed: quick check threw: ${reason}`, undefined, "error");
       return false;
     });
     if (!quickOk) {
       incompatible.value = true;
+      reportFailure("host-unsupported", { reason: "chains" });
       return;
     }
     const { checkHostChains } = await import("~~/lib/host-chain");
     const result = await checkHostChains();
     if (!result.ok) {
-      console.error(`[host] TrUAPI check failed: ${result.reason}`);
+      devLog("host", `TrUAPI check failed: ${result.reason}`, undefined, "error");
       incompatible.value = true;
+      reportFailure("host-unsupported", {
+        reason: "chain-check",
+        context: { detail: result.reason },
+      });
     }
   }
 

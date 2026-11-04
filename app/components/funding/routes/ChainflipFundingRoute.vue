@@ -5,6 +5,7 @@ import { computed, onMounted, onUnmounted } from "vue";
 import { isDemoBuild } from "../../../utils/demo";
 import { previewStage } from "../../../utils/dev-preview-stage";
 import { useChainflipHandoff } from "../../../composables/useChainflipHandoff";
+import { useScreen } from "../../../composables/useScreen";
 import { useStateDirector } from "../../../composables/useStateDirector";
 import { useVisibilityReconcile } from "../../../composables/useVisibilityReconcile";
 import type { FundingPackageEmits } from "../../../funding/handoff";
@@ -34,6 +35,14 @@ const { handedOff } = useChainflipHandoff(emit);
 const quoteFailed = computed(
   () => flow.screen === "entry" && session.quoteError !== null && !session.loading,
 );
+useScreen(() => {
+  if (session.resuming || quoteFailed.value) return null;
+  if (flow.screen === "journey") {
+    if (flow.confirmingCancel) return "top-up.cancel";
+    return flow.recoveringDeposit ? "top-up.recover-deposit" : "top-up.deposit";
+  }
+  return flow.step === "token" ? "top-up.token" : "top-up.network";
+});
 
 const toolbar = computed<{
   back: boolean;

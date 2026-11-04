@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
+import { trackAction } from "~~/lib/telemetry";
 import FundingAmountScreen from "./FundingAmountScreen.vue";
 import type { AmountScreenComponent } from "../../funding/amount-screen";
 import { fundingSelectorConfig, type FundingSelectorConfig } from "../../funding/config";
@@ -16,6 +17,7 @@ import {
   type FundingRoute,
   type FundingSelection,
 } from "../../funding/selection";
+import { useScreen } from "../../composables/useScreen";
 import { useStateDirector } from "../../composables/useStateDirector";
 import {
   TOP_UP_LIST_WORDING,
@@ -46,6 +48,8 @@ const props = withDefaults(
     topUps?: readonly InProgressFundingTopUp[];
     pastTopUps?: readonly PastFundingTopUp[];
     initialScreen?: FundingShellEntryScreen;
+    /** Which flow the shell serves, for the screen names telemetry gives it. */
+    kind?: "top-up" | "withdraw";
     historyReturn?: FundingHistoryReturnScreen;
     openingTopUpId?: string | null;
     topUpError?: string | null;
@@ -108,6 +112,7 @@ const hasHistoryContent = computed(() => props.topUps.length > 0 || props.pastTo
 const hasTopUpInProgress = computed(() => props.topUps.length > 0);
 const entryScreen = () => resolveFundingShellScreen(props.initialScreen, hasTopUpInProgress.value);
 const screen = ref(entryScreen());
+useScreen(() => (props.skeleton ? null : (`${props.kind ?? "top-up"}.${screen.value}` as const)));
 const historyReturnScreen = ref<FundingHistoryReturnScreen>(props.historyReturn);
 const isRouteAvailable = (candidate: FundingRoute) =>
   isFundingRouteAvailable(candidate, props.availableRoutes);
@@ -136,6 +141,7 @@ function changeAmount(next: string) {
 
 function changeRoute(next: FundingRoute) {
   if (!isRouteAvailable(next)) return;
+  trackAction("route.pick", { route: next });
   route.value = next;
   emit("change");
 }
@@ -152,6 +158,7 @@ function showPending() {
 }
 
 function showHistory() {
+  trackAction("history.open");
   if (screen.value === "pending" || screen.value === "amount") {
     historyReturnScreen.value = screen.value;
   }
@@ -168,6 +175,7 @@ function closeHistory() {
 
 function continueToPackage() {
   if (route.value === null || !isRouteAvailable(route.value)) return;
+  trackAction("amount.continue", { route: route.value });
   const selection = createFundingSelection(amount.value, route.value, props.config.amount);
   if (selection !== null) emit("continue", selection);
 }

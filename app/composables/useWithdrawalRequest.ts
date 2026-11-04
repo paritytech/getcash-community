@@ -31,6 +31,7 @@ import {
   type WithdrawalRecord,
 } from "../funding/requests/model";
 import { paymentIdFor } from "../funding/requests/payment-id";
+import { requestCreated } from "../funding/requests/telemetry";
 import { useRequestsStore } from "../stores/requests";
 import { fmtCash } from "../utils/cash";
 import {
@@ -43,6 +44,7 @@ import { formatLanding } from "../withdraw/destinations";
 import { meldSellClient } from "../withdraw/meld-client";
 import { workerSessionId } from "~~/lib/coinage";
 import { isHosted } from "~~/lib/host-account";
+import { devLog } from "~~/lib/log";
 
 /** How long before a Chainflip channel closes it is opened afresh instead: the purse's whole
  *  payment window for the CASH to reach the key, then the margin the worker itself refuses to pay
@@ -227,7 +229,9 @@ export function useWithdrawalRequest() {
       rail: { provider: input.rail, stage: "waiting", updatedAt: startedAt },
       witnesses: {},
     };
+    // a create that throws ends the withdrawal here, so its journey starts once the record exists
     await requests.create(ref, record);
+    requestCreated(record);
     requests.setForeground(ref);
     // The number is taken for good once the record exists.
     await live.advanceWithdrawCounter(sourceId, n);
@@ -386,6 +390,7 @@ export function useWithdrawalRequest() {
     };
     // Not taken as the foreground here: the screen that asked takes it, if it is still up.
     await requests.create(ref, record);
+    requestCreated(record);
     return { ok: true, ref };
   }
 
@@ -525,7 +530,7 @@ export function useWithdrawalRequest() {
         record.handoff,
       );
     } catch (e) {
-      console.warn(`[withdraw] hand-off failed, the store retries: ${messageOf(e)}`);
+      devLog("withdraw", `hand-off failed, the store retries: ${messageOf(e)}`, undefined, "warn");
     }
   }
 
@@ -569,12 +574,18 @@ export function useWithdrawalRequest() {
         },
       })
       .catch(async (e: unknown) => {
-        const reason = e instanceof live.PaymentRefusedError ? e.message : messageOf(e);
-        console.warn(`[withdraw] payment for ${ref.sourceId}#${ref.tradeN} refused: ${reason}`);
+        const refused = e instanceof live.PaymentRefusedError;
+        const reason = refused ? e.message : messageOf(e);
+        devLog(
+          "withdraw",
+          `payment for ${ref.sourceId}#${ref.tradeN} refused: ${reason}`,
+          undefined,
+          "warn",
+        );
         await requests.observe(ref, {
           source: "host",
           at: requestsNow(),
-          payment: { attempt, status: "failed", reason },
+          payment: { attempt, status: "failed", reason, refusal: refused ? e.refusal : "other" },
         });
       });
     return { ok: true };
@@ -680,14 +691,24 @@ export function useWithdrawalRequest() {
       void meldSellClient()
         ?.cancel(fundingRequestId)
         .catch((e: unknown) => {
-          console.warn(`[withdraw] the provider was not told of the cancel: ${messageOf(e)}`);
+          devLog(
+            "withdraw",
+            `the provider was not told of the cancel: ${messageOf(e)}`,
+            undefined,
+            "warn",
+          );
         });
     }
     const { getStorageWorkerManager } = await import("~~/lib/worker-rpc");
     void live
       .cancelWithdrawJob(getStorageWorkerManager(), workerSessionId(sourceId, ref.tradeN))
       .catch((e: unknown) => {
-        console.warn(`[withdraw] the worker was not told of the cancel: ${messageOf(e)}`);
+        devLog(
+          "withdraw",
+          `the worker was not told of the cancel: ${messageOf(e)}`,
+          undefined,
+          "warn",
+        );
       });
     return "ok";
   }

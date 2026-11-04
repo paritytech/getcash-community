@@ -16,6 +16,8 @@ import {
 } from "@getsome/meld";
 import { depositWindowFor } from "../funding/config";
 import { migrateRecord } from "../funding/requests/migrate";
+import { requestChanged } from "../funding/requests/telemetry";
+import { reasonOf, reportFailure, setTelemetryTag } from "~~/lib/telemetry";
 import {
   CANCEL_CONFIRM_MS,
   COALESCE_MS,
@@ -117,6 +119,7 @@ import { sendHandoff, workerSessionId, type Finality } from "~~/lib/coinage";
 import { FUNDING_CHAINS, sourceIdFor, sourcePairFor } from "~~/lib/config";
 import { isHosted } from "~~/lib/host-account";
 import type { StorageWorker } from "~~/lib/worker-rpc";
+import { devLog } from "~~/lib/log";
 
 export interface RequestEntry {
   record: RequestRecord;
@@ -1124,7 +1127,12 @@ export const useRequestsStore = defineStore("requests", () => {
     } catch (e) {
       const persistError = messageOf(e);
       patchEntry(key, (current) => ({ ...current, persistError }));
-      console.warn(`[requests] record write failed for ${key}: ${persistError}`);
+      devLog("requests", `record write failed for ${key}: ${persistError}`, undefined, "warn");
+      reportFailure("storage-failed", {
+        reason: reasonOf(e),
+        error: e,
+        context: { key, message: persistError },
+      });
       return false;
     }
     patchEntry(key, (current) => {
@@ -1162,7 +1170,9 @@ export const useRequestsStore = defineStore("requests", () => {
   /** Replaces the entry's record: the mirror at once, the host now when the change is critical
    *  and after the coalescing window otherwise. Runs inside the key's queue. */
   async function commit(key: RequestKey, next: RequestRecord, critical: boolean): Promise<void> {
+    const previous = entries.value[key]?.record;
     patchEntry(key, (entry) => ({ ...entry, record: next, pendingWrite: true }));
+    if (previous) requestChanged(previous, next);
     writeMirror();
     if (critical) {
       cancelCoalesced(key);
@@ -1310,7 +1320,12 @@ export const useRequestsStore = defineStore("requests", () => {
         create(record.ref, record)
           .then(() => observe(record.ref, jobObservation(record, blobs, sessionId, now)))
           .catch((e: unknown) => {
-            console.warn(`[requests] record for worker job ${sessionId} failed: ${messageOf(e)}`);
+            devLog(
+              "requests",
+              `record for worker job ${sessionId} failed: ${messageOf(e)}`,
+              undefined,
+              "warn",
+            );
           }),
       );
     };
@@ -1348,6 +1363,7 @@ export const useRequestsStore = defineStore("requests", () => {
   });
   function setForeground(ref: RequestRef | null): void {
     foreground.value = ref === null ? null : requestRefKey(ref);
+    setTelemetryTag("request.key", foreground.value ?? undefined);
     // The Meld poll follows the request on screen; another one taking the screen ends it, and the
     // reconcile reads the old one from then on.
     if (meldPoll !== null && meldPoll.key !== foreground.value) stopMeldPoll();
@@ -1361,6 +1377,12 @@ export const useRequestsStore = defineStore("requests", () => {
     value: { message: string; source: "handoff" | "faucet" } | null,
   ): void {
     transientError.value = value;
+    if (value?.source === "handoff") {
+      reportFailure("handoff-failed", {
+        reason: reasonOf(value.message),
+        context: { message: value.message, key: foreground.value ?? "none" },
+      });
+    }
   }
   /** A line about the request on screen the record does not carry (a reconnect, a retry). */
   const fundingNotice = ref<string | null>(null);
@@ -1518,8 +1540,11 @@ export const useRequestsStore = defineStore("requests", () => {
     const sourceId = effectiveSourceId(ref);
     const failed = (e: unknown): void => {
       if (watching.stopped) return;
-      console.warn(
-        `[requests] deposit watch for ${sourceId}#${ref.tradeN} failed: ${messageOf(e)}`,
+      devLog(
+        "requests",
+        `deposit watch for ${sourceId}#${ref.tradeN} failed: ${messageOf(e)}`,
+        undefined,
+        "warn",
       );
       stopDepositWatch();
     };
@@ -1685,7 +1710,7 @@ export const useRequestsStore = defineStore("requests", () => {
     }
     for (const read of [burner, jobs]) {
       if (!read.ok) {
-        console.warn(`[requests] cancel unconfirmed: ${read.reason}`);
+        devLog("requests", `cancel unconfirmed: ${read.reason}`, undefined, "warn");
         return "unconfirmed";
       }
     }
@@ -1719,7 +1744,12 @@ export const useRequestsStore = defineStore("requests", () => {
         job.failure === "claim" ||
         job.failure === "held");
     if (!confirmedByJob && record.witnesses.core?.phase !== "failed") {
-      console.warn("[requests] retry ignored: the failure is not confirmed as recoverable");
+      devLog(
+        "requests",
+        "retry ignored: the failure is not confirmed as recoverable",
+        undefined,
+        "warn",
+      );
       return false;
     }
     if (confirmedByJob && isHosted()) {
@@ -1731,7 +1761,12 @@ export const useRequestsStore = defineStore("requests", () => {
         patchEntry(key, ({ handoffError: _cleared, ...sent }) => sent);
       } catch (e) {
         const handoffError = messageOf(e);
-        console.warn(`[requests] retry for ${key} could not re-arm the worker: ${handoffError}`);
+        devLog(
+          "requests",
+          `retry for ${key} could not re-arm the worker: ${handoffError}`,
+          undefined,
+          "warn",
+        );
         patchEntry(key, (current) => ({ ...current, handoffError }));
         return false;
       }
@@ -1835,7 +1870,7 @@ export const useRequestsStore = defineStore("requests", () => {
       .catch(async (e: unknown) => {
         const refused = e instanceof live.PaymentRefusedError;
         const reason = refused ? e.message : messageOf(e);
-        console.warn(`[requests] recovery fee for ${key} refused: ${reason}`);
+        devLog("requests", `recovery fee for ${key} refused: ${reason}`, undefined, "warn");
         await observe(ref, {
           source: "host",
           at: requestsNow(),
@@ -1919,8 +1954,11 @@ export const useRequestsStore = defineStore("requests", () => {
       await observe(ref, { source: "host", at, payment: { attempt, ...reading } });
       return "ok";
     } catch (e) {
-      console.warn(
-        `[requests] payment status read for ${requestRefKey(ref)} failed: ${messageOf(e)}`,
+      devLog(
+        "requests",
+        `payment status read for ${requestRefKey(ref)} failed: ${messageOf(e)}`,
+        undefined,
+        "warn",
       );
       return "failed";
     }
@@ -1975,7 +2013,7 @@ export const useRequestsStore = defineStore("requests", () => {
     }
     for (const read of [key, host]) {
       if (!read.ok) {
-        console.warn(`[requests] cancel unconfirmed: ${read.reason}`);
+        devLog("requests", `cancel unconfirmed: ${read.reason}`, undefined, "warn");
         return "unconfirmed";
       }
     }
@@ -2008,7 +2046,12 @@ export const useRequestsStore = defineStore("requests", () => {
       return true;
     } catch (e) {
       const handoffError = messageOf(e);
-      console.warn(`[requests] ${what} for ${key} could not re-arm the worker: ${handoffError}`);
+      devLog(
+        "requests",
+        `${what} for ${key} could not re-arm the worker: ${handoffError}`,
+        undefined,
+        "warn",
+      );
       patchEntry(key, (current) => ({ ...current, handoffError }));
       return false;
     }
@@ -2099,16 +2142,21 @@ export const useRequestsStore = defineStore("requests", () => {
         const notFound = (meldNotFound.get(key) ?? 0) + 1;
         if (notFound < MELD_GONE_AFTER) {
           meldNotFound.set(key, notFound);
-          console.warn(
-            `[meld] status for ${fundingRequestId} not found (${String(notFound)}/${String(MELD_GONE_AFTER)})`,
+          devLog(
+            "meld",
+            `status for ${fundingRequestId} not found (${String(notFound)}/${String(MELD_GONE_AFTER)})`,
+            undefined,
+            "warn",
           );
           await observe(ref, { source: "provider", provider: "meld", at, unreachable: true });
           return "not-found";
         }
         meldNotFound.delete(key);
-        console.error(
-          `[meld] status poll got a terminal 404 for ${fundingRequestId}, stopping:`,
+        devLog(
+          "meld",
+          `status poll got a terminal 404 for ${fundingRequestId}, stopping`,
           e,
+          "error",
         );
         await observe(ref, {
           source: "provider",
@@ -2122,19 +2170,23 @@ export const useRequestsStore = defineStore("requests", () => {
       meldNotFound.delete(key);
       // A 401 is an auth problem on this side and retries with the other transients.
       if (httpStatus === 401) {
-        console.error(
-          `[meld] status poll unauthorized for ${fundingRequestId}; check VITE_MELD_PRODUCT_ID / adapter auth. Retrying; the payment is NOT being declared failed:`,
+        devLog(
+          "meld",
+          `status poll unauthorized for ${fundingRequestId}; check VITE_MELD_PRODUCT_ID / adapter auth. Retrying; the payment is NOT being declared failed`,
           e,
+          "error",
         );
       }
       const failed = failures + 1;
       if (failed >= 5) {
-        console.error(
-          `[meld] status poll has failed ${String(failed)} times for ${fundingRequestId}:`,
+        devLog(
+          "meld",
+          `status poll has failed ${String(failed)} times for ${fundingRequestId}`,
           e,
+          "error",
         );
       } else {
-        console.warn("[meld] status poll failed (will retry):", e);
+        devLog("meld", "status poll failed (will retry)", e, "warn");
       }
       await observe(ref, { source: "provider", provider: "meld", at, unreachable: true });
       return "unreachable";
@@ -2260,7 +2312,12 @@ export const useRequestsStore = defineStore("requests", () => {
           return "ok";
         }
       }
-      console.warn(`[meld] sale read for ${fundingRequestId} failed (will retry): ${messageOf(e)}`);
+      devLog(
+        "meld",
+        `sale read for ${fundingRequestId} failed (will retry): ${messageOf(e)}`,
+        undefined,
+        "warn",
+      );
       return "failed";
     }
   }
@@ -2504,7 +2561,7 @@ export const useRequestsStore = defineStore("requests", () => {
         probeWithdrawKey(sourceId, ref.tradeN),
       );
       if (!read.ok) {
-        console.warn(`[requests] ${read.reason} (kept)`);
+        devLog("requests", `${read.reason} (kept)`, undefined, "warn");
         return null;
       }
       await observe(ref, keyReading(read.value.cash, now));
@@ -2520,7 +2577,12 @@ export const useRequestsStore = defineStore("requests", () => {
         const cash = await probe(record);
         if (cash === null) return;
         if (cash > 0n) {
-          console.warn(`[requests] withdrawal #${ref.tradeN} resurrected: ${cash} CASH on its key`);
+          devLog(
+            "requests",
+            `withdrawal #${ref.tradeN} resurrected: ${cash} CASH on its key`,
+            undefined,
+            "warn",
+          );
           if (record.status.kind === "cancelled") {
             const sessionId = workerSessionId(effectiveSourceId(ref), ref.tradeN);
             await observe(ref, jobObservation(record, blobs, sessionId, now));
@@ -2531,9 +2593,19 @@ export const useRequestsStore = defineStore("requests", () => {
         if (record.deadline.paymentExpiresAt + TOMBSTONE_GRACE_MS >= now) return;
         try {
           await remove(ref);
-          console.warn(`[requests] withdrawal #${ref.tradeN} reaped: window closed, key empty`);
+          devLog(
+            "requests",
+            `withdrawal #${ref.tradeN} reaped: window closed, key empty`,
+            undefined,
+            "warn",
+          );
         } catch (e) {
-          console.warn(`[requests] withdrawal #${ref.tradeN} reap failed (kept): ${messageOf(e)}`);
+          devLog(
+            "requests",
+            `withdrawal #${ref.tradeN} reap failed (kept): ${messageOf(e)}`,
+            undefined,
+            "warn",
+          );
         }
       });
     }
@@ -2593,7 +2665,7 @@ export const useRequestsStore = defineStore("requests", () => {
         probeTradeBurner(sourceId, ref.tradeN, depositRouteOf(ref)),
       );
       if (!read.ok) {
-        console.warn(`[requests] ${read.reason} (kept)`);
+        devLog("requests", `${read.reason} (kept)`, undefined, "warn");
         return null;
       }
       await observe(ref, chainReading(read.value.free, now));
@@ -2609,8 +2681,11 @@ export const useRequestsStore = defineStore("requests", () => {
         const read = await probe(ref);
         if (read === null) return;
         if (read.free > 0n) {
-          console.warn(
-            `[requests] request #${ref.tradeN} resurrected: ${read.free} planck on ${read.address}`,
+          devLog(
+            "requests",
+            `request #${ref.tradeN} resurrected: ${read.free} planck on ${read.address}`,
+            undefined,
+            "warn",
           );
           if (record.status.kind === "cancelled") await observeJob(ref);
           return;
@@ -2621,11 +2696,19 @@ export const useRequestsStore = defineStore("requests", () => {
         if (paymentWatchUntil(record) >= now) return;
         try {
           await remove(ref);
-          console.warn(
-            `[requests] request #${ref.tradeN} reaped: window closed, burner confirmed empty`,
+          devLog(
+            "requests",
+            `request #${ref.tradeN} reaped: window closed, burner confirmed empty`,
+            undefined,
+            "warn",
           );
         } catch (e) {
-          console.warn(`[requests] request #${ref.tradeN} reap failed (kept): ${messageOf(e)}`);
+          devLog(
+            "requests",
+            `request #${ref.tradeN} reap failed (kept): ${messageOf(e)}`,
+            undefined,
+            "warn",
+          );
         }
       });
     }
@@ -2669,7 +2752,7 @@ export const useRequestsStore = defineStore("requests", () => {
         readHostedTradeCounter(sourceId),
       );
       if (!counter.ok) {
-        console.warn(`[requests] ${counter.reason}; gap sweep skipped`);
+        devLog("requests", `${counter.reason}; gap sweep skipped`, undefined, "warn");
         continue;
       }
       for (let n = 1; n < counter.value; n++) {
@@ -2697,7 +2780,7 @@ export const useRequestsStore = defineStore("requests", () => {
         readFlowSlot(sourceId as SourceId, n),
       );
       if (!flow.ok) {
-        console.warn(`[requests] ${flow.reason}`);
+        devLog("requests", `${flow.reason}`, undefined, "warn");
         return;
       }
       const { address, slot } = flow.value;
@@ -2705,7 +2788,7 @@ export const useRequestsStore = defineStore("requests", () => {
         probeTradeBurner(sourceId, n, recordedRoute(slot?.conversion ?? {})),
       );
       if (!read.ok) {
-        console.warn(`[requests] ${read.reason}`);
+        devLog("requests", `${read.reason}`, undefined, "warn");
         return;
       }
       const firstAt = probed[sourceId]?.[String(n)]?.firstAt ?? now;
@@ -2716,8 +2799,11 @@ export const useRequestsStore = defineStore("requests", () => {
       if (!hasHandoffAmount(slot)) {
         // Funds with no record, no job and no slot: only storage loss gets here, and a truthful
         // row needs an amount the app does not have.
-        console.warn(
-          `[requests] ${read.value.free} planck on ${address} (${sourceId}#${n}) with no record, job or flow slot; nothing created`,
+        devLog(
+          "requests",
+          `${read.value.free} planck on ${address} (${sourceId}#${n}) with no record, job or flow slot; nothing created`,
+          undefined,
+          "warn",
         );
         noteProbed(sourceId, n, { firstAt, lastAt: now, funded: true });
         return;
@@ -2727,7 +2813,12 @@ export const useRequestsStore = defineStore("requests", () => {
       try {
         await create(ref, recordFromFlowSlot(ref, address, slot, handoff, now));
       } catch (e) {
-        console.warn(`[requests] record for lost request ${sourceId}#${n} failed: ${messageOf(e)}`);
+        devLog(
+          "requests",
+          `record for lost request ${sourceId}#${n} failed: ${messageOf(e)}`,
+          undefined,
+          "warn",
+        );
         return;
       }
       await observeJob(ref);
@@ -2737,7 +2828,7 @@ export const useRequestsStore = defineStore("requests", () => {
       try {
         await store.write(PROBED_KEY, serializeProbed(probed));
       } catch (e) {
-        console.warn(`[requests] probed numbers write failed: ${messageOf(e)}`);
+        devLog("requests", `probed numbers write failed: ${messageOf(e)}`, undefined, "warn");
       }
     }
   }
@@ -2776,8 +2867,11 @@ export const useRequestsStore = defineStore("requests", () => {
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
     if (!worker.isAvailable()) {
-      console.warn(
-        `[requests] worker not running; ${lost.length} hand-off(s) wait for the next pass`,
+      devLog(
+        "requests",
+        `worker not running; ${lost.length} hand-off(s) wait for the next pass`,
+        undefined,
+        "warn",
       );
       for (const { record } of lost) {
         patchEntry(requestRefKey(record.ref), (current) => ({
@@ -2844,7 +2938,7 @@ export const useRequestsStore = defineStore("requests", () => {
           patchEntry(key, ({ handoffError: _cleared, ...sent }) => sent);
         } catch (e) {
           const handoffError = messageOf(e);
-          console.warn(`[requests] hand-off for ${key} failed: ${handoffError}`);
+          devLog("requests", `hand-off for ${key} failed: ${handoffError}`, undefined, "warn");
           patchEntry(key, (current) => ({ ...current, handoffError }));
         }
       }),
@@ -2886,7 +2980,7 @@ export const useRequestsStore = defineStore("requests", () => {
       ]);
       nudgeWithdrawTicks(getStorageWorkerManager());
     } catch (e: unknown) {
-      console.warn(`[requests] worker nudge failed: ${messageOf(e)}`);
+      devLog("requests", `worker nudge failed: ${messageOf(e)}`, undefined, "warn");
     }
   }
   /** One tick. Single-flight: a tick arriving while the previous one runs joins it, one while
@@ -2902,7 +2996,7 @@ export const useRequestsStore = defineStore("requests", () => {
       .then(() => observeWorkerJobs(requestsNow()))
       .then(() => undefined)
       .catch((e: unknown) => {
-        console.warn(`[requests] job poll failed: ${messageOf(e)}`);
+        devLog("requests", `job poll failed: ${messageOf(e)}`, undefined, "warn");
       })
       .finally(() => {
         jobPollTick = null;
@@ -3046,7 +3140,12 @@ export const useRequestsStore = defineStore("requests", () => {
       store = await getRecordStorage();
     } catch (e) {
       storage.value = "unavailable";
-      console.warn(`[requests] reconcile (${reason}): record storage unavailable: ${messageOf(e)}`);
+      devLog(
+        "requests",
+        `reconcile (${reason}): record storage unavailable: ${messageOf(e)}`,
+        undefined,
+        "warn",
+      );
       return;
     }
     storage.value = "ok";
@@ -3056,14 +3155,19 @@ export const useRequestsStore = defineStore("requests", () => {
     } catch (e) {
       // The memory refs are still read; the index itself is left as it is.
       indexed = null;
-      console.warn(`[requests] reconcile (${reason}): index read failed: ${messageOf(e)}`);
+      devLog(
+        "requests",
+        `reconcile (${reason}): index read failed: ${messageOf(e)}`,
+        undefined,
+        "warn",
+      );
     }
     const now = requestsNow();
     let changed = false;
 
     function noteReadError(key: RequestKey, e: unknown): void {
       const readError = messageOf(e);
-      console.warn(`[requests] record read failed for ${key} (kept): ${readError}`);
+      devLog("requests", `record read failed for ${key} (kept): ${readError}`, undefined, "warn");
       patchEntry(key, (current) => ({ ...current, readError }));
     }
 
@@ -3134,7 +3238,12 @@ export const useRequestsStore = defineStore("requests", () => {
         .filter((ref) => !listed.has(requestRefKey(ref)));
       if (missing.length > 0) {
         await mutateIndex((current) => [...current, ...missing]).catch((e: unknown) => {
-          console.warn(`[requests] reconcile (${reason}): index append failed: ${messageOf(e)}`);
+          devLog(
+            "requests",
+            `reconcile (${reason}): index append failed: ${messageOf(e)}`,
+            undefined,
+            "warn",
+          );
         });
       }
     }
@@ -3143,7 +3252,12 @@ export const useRequestsStore = defineStore("requests", () => {
     try {
       blobs = await observeWorkerJobs(now);
     } catch (e) {
-      console.warn(`[requests] reconcile (${reason}): worker jobs step failed: ${messageOf(e)}`);
+      devLog(
+        "requests",
+        `reconcile (${reason}): worker jobs step failed: ${messageOf(e)}`,
+        undefined,
+        "warn",
+      );
     }
 
     // The clock before the reads and the drivers: a record it expires here gets its chain read in
@@ -3157,37 +3271,67 @@ export const useRequestsStore = defineStore("requests", () => {
     try {
       await readChain(reason, now, blobs.jobs);
     } catch (e) {
-      console.warn(`[requests] reconcile (${reason}): chain step failed: ${messageOf(e)}`);
+      devLog(
+        "requests",
+        `reconcile (${reason}): chain step failed: ${messageOf(e)}`,
+        undefined,
+        "warn",
+      );
     }
 
     try {
       await readWithdrawKeys(reason, now, blobs);
     } catch (e) {
-      console.warn(`[requests] reconcile (${reason}): key step failed: ${messageOf(e)}`);
+      devLog(
+        "requests",
+        `reconcile (${reason}): key step failed: ${messageOf(e)}`,
+        undefined,
+        "warn",
+      );
     }
 
     try {
       await readBackgroundMeldStatuses();
     } catch (e) {
-      console.warn(`[requests] reconcile (${reason}): provider step failed: ${messageOf(e)}`);
+      devLog(
+        "requests",
+        `reconcile (${reason}): provider step failed: ${messageOf(e)}`,
+        undefined,
+        "warn",
+      );
     }
 
     try {
       await readBackgroundSaleStatuses();
     } catch (e) {
-      console.warn(`[requests] reconcile (${reason}): sale step failed: ${messageOf(e)}`);
+      devLog(
+        "requests",
+        `reconcile (${reason}): sale step failed: ${messageOf(e)}`,
+        undefined,
+        "warn",
+      );
     }
 
     try {
       await readPaymentStatuses();
     } catch (e) {
-      console.warn(`[requests] reconcile (${reason}): host step failed: ${messageOf(e)}`);
+      devLog(
+        "requests",
+        `reconcile (${reason}): host step failed: ${messageOf(e)}`,
+        undefined,
+        "warn",
+      );
     }
 
     try {
       await handOffLostRequests(now);
     } catch (e) {
-      console.warn(`[requests] reconcile (${reason}): hand-off step failed: ${messageOf(e)}`);
+      devLog(
+        "requests",
+        `reconcile (${reason}): hand-off step failed: ${messageOf(e)}`,
+        undefined,
+        "warn",
+      );
     }
     syncJobPoll();
     syncTick();

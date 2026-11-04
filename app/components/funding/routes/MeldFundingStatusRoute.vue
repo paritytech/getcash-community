@@ -26,6 +26,7 @@ import MeldPaySheet from "./MeldPaySheet.vue";
 import ScreenFrame from "../../ui/ScreenFrame.vue";
 import ScreenShell from "../../ui/ScreenShell.vue";
 import WidgetCancel from "../../ui/WidgetCancel.vue";
+import { devLog } from "~~/lib/log";
 
 const props = defineProps<{ topUp: FundingTopUp }>();
 const emit = defineEmits<FundingPackageEmits>();
@@ -94,7 +95,7 @@ onMounted(async () => {
   try {
     opened = ref === null ? false : await session.openRequest(ref);
   } catch (e) {
-    console.warn("[funding] could not open the top-up:", e);
+    devLog("funding", "could not open the top-up", e, "warn");
     opened = false;
   } finally {
     if (active) {

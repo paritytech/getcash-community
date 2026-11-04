@@ -16,6 +16,7 @@ import { useSessionStore } from "../../stores/session";
 import { refundTxUrl } from "../../utils/explorer";
 import { recoveryNotes, refundStatusTail } from "../../utils/recovery";
 import RecoveryGuide, { type RecoveryStep } from "../ui/RecoveryGuide.vue";
+import { devLog } from "~~/lib/log";
 
 const props = defineProps<{
   /**
@@ -84,7 +85,7 @@ const subject = computed(() => {
   try {
     return `${formatSourceAmount(s, amount)} ${asset.value}`;
   } catch {
-    console.warn(`[refund] unreadable refund amount '${amount}' for ${s.asset}`);
+    devLog("refund", `unreadable refund amount '${amount}' for ${s.asset}`, undefined, "warn");
     return asset.value;
   }
 });

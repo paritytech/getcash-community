@@ -5,6 +5,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import type { RecoveryToken } from "@getsome/funding";
 import { usePurseBalance } from "../../composables/usePurseBalance";
+import { useScreen } from "../../composables/useScreen";
 import { useStateDirector } from "../../composables/useStateDirector";
 import { useVisibilityReconcile } from "../../composables/useVisibilityReconcile";
 import { recoveryChoices } from "../../funding/recovery-deposit";
@@ -34,6 +35,8 @@ import ReturnFundsScreen from "../screens/ReturnFundsScreen.vue";
 import FundingSettledStatusScreen from "./FundingSettledStatusScreen.vue";
 import { useJourneyQuote } from "../../composables/useJourneyQuote";
 import MeldFeeDetailsScreen from "./routes/MeldFeeDetailsScreen.vue";
+import { devLog } from "~~/lib/log";
+import { trackAction } from "~~/lib/telemetry";
 
 const props = defineProps<{
   title: string;
@@ -161,6 +164,22 @@ const depositToken = computed(
 const depositChoice = computed(
   () => recoveryChoicesView.value.find((c) => c.token === depositToken.value) ?? null,
 );
+// The same order as the template's switch.
+useScreen(() => {
+  if (readOnly && props.topUp && !showingFees.value) return "top-up.settled";
+  if (waiting.value || unavailable.value) return null;
+  if (flow.confirmingCancel) return "top-up.cancel";
+  if (showingRefund.value) return "top-up.refund";
+  if (showingRecovery.value) return "top-up.recover-deposit";
+  if (recoveryScreen.value === "fee" && recoveryFeeHuman.value !== null)
+    return "top-up.recover-fee";
+  if (recoveryScreen.value === "token") return "top-up.recover-token";
+  if (recoveryScreen.value === "deposit" && depositToken.value !== null) {
+    return "top-up.recover-trapped";
+  }
+  if (showingFees.value) return "fees";
+  return "top-up.journey";
+});
 /** The host's word on the fee's payment. */
 const payment = computed(() => requests.foregroundRecord?.recovery?.payment);
 /** The host is being asked, or its sheet is up: the confirmation says the fee is being paid. The
@@ -263,7 +282,7 @@ async function pickRecoveryToken(token: RecoveryToken) {
   try {
     await requests.pickRecoveryToken(record.ref, token);
   } catch (e) {
-    console.warn(`[funding] the recovery token could not be kept: ${String(e)}`);
+    devLog("funding", `the recovery token could not be kept: ${String(e)}`, undefined, "warn");
   }
 }
 
@@ -281,6 +300,7 @@ watch(
 async function recoverFromBalance() {
   const record = requests.foregroundRecord;
   if (record === null) return;
+  trackAction("recover.from-balance");
   recoveryNotice.value = null;
   asking.value = true;
   try {
@@ -288,7 +308,7 @@ async function recoverFromBalance() {
     if (!asked.ok) recoveryNotice.value = asked.reason;
   } catch (e) {
     // The stamp or the host could not be reached: said, and the offer stands for the next tap.
-    console.warn(`[funding] the recovery fee could not be asked for: ${String(e)}`);
+    devLog("funding", `the recovery fee could not be asked for: ${String(e)}`, undefined, "warn");
     recoveryNotice.value = "Your balance couldn't be asked just now. Try again in a moment.";
   } finally {
     asking.value = false;
@@ -351,7 +371,7 @@ onMounted(async () => {
   try {
     opened = await props.open(props.topUp);
   } catch (e) {
-    console.warn("[funding] could not open the top-up:", e);
+    devLog("funding", "could not open the top-up", e, "warn");
     opened = false;
   } finally {
     if (active) {

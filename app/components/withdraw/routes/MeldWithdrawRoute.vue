@@ -5,9 +5,12 @@
 // the list loads this route onto its record. Nothing is asked of the balance until the provider
 // names where the funds go; from there the record and the worker carry the sale.
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { trackAction } from "~~/lib/telemetry";
 import { PSM_EXTERNAL } from "@getsome/funding";
 import { useDrillIn } from "../../../composables/useDrillIn";
 import { useMeldSellQuote } from "../../../composables/useMeldSellQuote";
+import { useScreen } from "../../../composables/useScreen";
+import type { ScreenName } from "~~/lib/telemetry";
 import { useStateDirector } from "../../../composables/useStateDirector";
 import { psmReserved, useWithdrawalRequest } from "../../../composables/useWithdrawalRequest";
 import type { FundingPackageEmits } from "../../../funding/handoff";
@@ -66,6 +69,15 @@ const sale = useMeldSellQuote(method, toCashBase(amount.value) ?? 0n, reserved);
 
 type Step = "quote" | "fees" | "region" | "kyc" | "journey" | "cancel";
 const step = ref<Step>(props.topUp ? "journey" : "quote");
+const SCREEN_OF = {
+  quote: "withdraw.sale",
+  fees: "fees",
+  region: "region",
+  kyc: "withdraw.kyc",
+  journey: "withdraw.journey",
+  cancel: "withdraw.cancel",
+} as const satisfies Record<Step, ScreenName>;
+useScreen(() => SCREEN_OF[step.value]);
 /** The fee breakdown and where it was opened from, so back returns there. */
 const { from: feesFrom, open: openFees } = useDrillIn<"quote" | "journey">("quote", () => {
   step.value = "fees";
@@ -227,6 +239,7 @@ async function confirm() {
   const quoted = sale.quote.value;
   const amountBase = toCashBase(amount.value);
   if (quoted === null || amountBase === null || starting.value) return;
+  trackAction("sale.continue");
   starting.value = true;
   startError.value = null;
   try {
@@ -283,6 +296,7 @@ const cancellable = computed(() => {
 async function cancelSale() {
   const current = record.value;
   if (current === null || cancelling.value) return;
+  trackAction("sale.cancel");
   cancelling.value = true;
   try {
     const outcome = await withdrawal.cancel(current.ref);
@@ -412,6 +426,7 @@ function onSkipRail() {
 async function retry() {
   const current = record.value;
   if (current === null || busy.value) return;
+  trackAction("withdraw.retry");
   busy.value = true;
   notice.value = null;
   try {

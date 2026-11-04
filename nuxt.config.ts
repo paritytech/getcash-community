@@ -1,3 +1,5 @@
+import { execSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import tailwindcss from "@tailwindcss/vite";
 import { nodePolyfills } from "vite-plugin-node-polyfills";
 import { DECIMALS, readTopUpBounds } from "./app/funding/bounds";
@@ -36,6 +38,31 @@ for (const [chain, papiGenesis] of [
     );
   }
 }
+
+// The build's name in Sentry: the release is `getcash@<this>` (lib/telemetry/config.ts). A hash
+// of the tracked sources, not the commit, so a commit touching only docs or CI builds the same
+// bytes and bulletin-deploy keeps its CID. `git ls-files -s` lists blob hashes, so CI's shallow
+// checkout works too. Outside a git checkout it is `dev`.
+function buildVersion(): string {
+  try {
+    const files = execSync(
+      "git ls-files -s -- . ':(exclude)*.md' ':(exclude).github' ':(exclude).claude'",
+      { cwd: import.meta.dirname, stdio: ["ignore", "pipe", "ignore"] },
+    );
+    return createHash("sha256").update(files).digest("hex").slice(0, 12);
+  } catch {
+    return "dev";
+  }
+}
+
+// Telemetry is a build's opt-in. The DSN is a literal in the bundle, so without one the telemetry
+// doorway's import of the Sentry core is dead code and the build has no Sentry at all.
+const sentryDsn = process.env.VITE_SENTRY_DSN?.trim() || null;
+const telemetryDefines = {
+  __SENTRY_DSN__: JSON.stringify(sentryDsn),
+  __APP_VERSION__: JSON.stringify(buildVersion()),
+};
+console.info(`[config] telemetry: ${sentryDsn ? "on" : "off, no Sentry in the bundle"}`);
 
 export default defineNuxtConfig({
   // Static SPA; there is no server.
@@ -93,5 +120,6 @@ export default defineNuxtConfig({
       }),
     ],
     build: { target: "es2022" },
+    define: telemetryDefines,
   },
 });

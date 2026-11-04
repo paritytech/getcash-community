@@ -8,6 +8,7 @@ import {
   type DepositAsset,
   type ManualSourceId,
 } from "@getsome/funding";
+import { devLog } from "./log";
 
 // Chain and asset identifiers, as Chainflip and the icon set name them.
 export const CHAINS = {
@@ -145,8 +146,11 @@ export const OFFRAMP_LANE_ORDER: readonly MeldAssetId[] = (() => {
     .filter((entry) => entry !== "");
   const unknown = listed.filter((entry) => !isMeldAssetId(entry));
   if (unknown.length > 0) {
-    console.warn(
-      `[config] VITE_OFFRAMP_LANES names ${unknown.join(", ")}, which are not asset ids (e.g. usdt@assethub); ignored`,
+    devLog(
+      "config",
+      `VITE_OFFRAMP_LANES names ${unknown.join(", ")}, which are not asset ids (e.g. usdt@assethub); ignored`,
+      undefined,
+      "warn",
     );
   }
   const assets = listed.filter(isMeldAssetId);
