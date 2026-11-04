@@ -41,7 +41,6 @@ export {
   predictSaleVaultProxy,
   SALE_SWAP_RETRY_MINUTES,
   SALE_VAULT_PROXY_CCM_GAS_BUDGET,
-  saleVaultProxyUsdcDomain,
   sameEvmAddress,
 } from "./sale-vault-proxy";
 export { chainflipRpcUrl } from "./channel-expiry";

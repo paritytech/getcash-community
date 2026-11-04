@@ -7,13 +7,7 @@
 import { PaymentRequestErr, PaymentStatusErr } from "@novasamatech/host-api";
 import { deriveEntropy, getHostLocalStorage } from "@parity/product-sdk-host";
 import type { TokenSpec } from "@getsome/core";
-import {
-  deriveKeypair,
-  deriveRefundKey,
-  signTransferAuthorization,
-  walletSeedHex,
-  type RefundKey,
-} from "@getsome/ephemeral";
+import { deriveKeypair, deriveRefundKey, walletSeedHex, type RefundKey } from "@getsome/ephemeral";
 import {
   chooseCashTransfer,
   chooseRoute,
@@ -33,7 +27,7 @@ import {
   type RoutePick,
   type RouteQuery,
 } from "@getsome/funding";
-import { sellAmountOf, type MeldClaimerRelay } from "@getsome/meld";
+import { sellAmountOf } from "@getsome/meld";
 import { laneCommit, laneSellable, laneSellToken, type OfframpLane } from "@getsome/offramp";
 import {
   createHostEntropyPort,
@@ -78,21 +72,18 @@ import {
   encodeSaleMessage,
   formatSourceAmount,
   isEvmAddress,
-  isEvmPayeeAddress,
   openWithdrawChannel,
   predictSaleVaultProxy,
   quoteOutgoing,
   SALE_MESSAGE_BYTES,
   SALE_SWAP_RETRY_MINUTES,
   SALE_VAULT_PROXY_CCM_GAS_BUDGET,
-  saleVaultProxyUsdcDomain,
   sameEvmAddress,
   SOURCE_CONFIG_BY_ID,
   type IncludedFee,
   type OutgoingQuote,
   type SourceConfig,
 } from "@getsome/chainflip";
-import { bytesToHex, hexToBytes, randomBytes } from "@noble/hashes/utils.js";
 import { AccountId } from "polkadot-api";
 import type { SaleVaultProxyContracts } from "@getsome/chainflip/sale-vault-proxy";
 import { cashAmount } from "../app/utils/cash";
@@ -184,48 +175,6 @@ export async function revealClaimKey(
     throw new Error("This sale's claim key does not match its record. Nothing is shown.");
   }
   return { address: key.address, secret: key.secret };
-}
-
-/** How long a signed claimer transfer stays valid, seconds: the adapter checks and sends it at once. */
-const CLAIM_RELAY_WINDOW_S = 3_600;
-
-/** The claimer's USDC transfer to `to`, signed for the adapter's relay, refused unless it is the claimer on record. */
-export async function signClaimRelay(args: {
-  label: string;
-  claimerAddress: string;
-  chainId: number;
-  to: string;
-  value: bigint;
-  nowMs?: number;
-}): Promise<MeldClaimerRelay> {
-  if (!isEvmPayeeAddress(args.to)) throw new Error("The destination is not an Arbitrum address.");
-  if (sameEvmAddress(args.to, args.claimerAddress)) {
-    throw new Error("The destination is the address the funds are already on.");
-  }
-  if (args.value <= 0n) throw new Error("There is nothing to move.");
-  const domain = saleVaultProxyUsdcDomain(args.chainId);
-  if (domain === null) throw new Error(`no USDC domain for chain ${args.chainId}`);
-  const key = await claimKeyOf(args.label);
-  if (!sameEvmAddress(key.address, args.claimerAddress)) {
-    throw new Error("This sale's claim key does not match its record. Nothing is signed.");
-  }
-  const authorization = {
-    from: key.address,
-    to: args.to,
-    value: args.value,
-    validAfter: 0n,
-    validBefore: BigInt(Math.floor((args.nowMs ?? Date.now()) / 1000) + CLAIM_RELAY_WINDOW_S),
-    nonce: `0x${bytesToHex(randomBytes(32))}`,
-  };
-  return {
-    from: authorization.from,
-    to: authorization.to,
-    value: authorization.value.toString(),
-    validAfter: authorization.validAfter.toString(),
-    validBefore: authorization.validBefore.toString(),
-    nonce: authorization.nonce,
-    signature: signTransferAuthorization(hexToBytes(key.secret.slice(2)), domain, authorization),
-  };
 }
 
 /** The key's CASH on People at the best block. */

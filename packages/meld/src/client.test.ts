@@ -785,49 +785,6 @@ describe("createMeldClient sale vault proxy", () => {
     expect(calls[0]!.init?.signal).toBeInstanceOf(AbortSignal);
   });
 
-  it("posts a claimer's signed transfer and reads the transaction it answers", async () => {
-    const relay = {
-      from: "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
-      to: "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
-      value: "1500000",
-      validAfter: "0",
-      validBefore: "1900000000",
-      nonce: `0x${"cd".repeat(32)}`,
-      signature: `0x${"11".repeat(64)}1b`,
-    };
-    const { impl, calls } = stubSequence([
-      { status: 202, body: { relay: { status: "sent", chainId: 421614, txHash: "0xabc" } } },
-      { status: 202, body: { relay: { status: "sent", chainId: 421614, txHash: null } } },
-    ]);
-    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
-    expect(await client.relayClaimerTransfer(relay)).toEqual({ txHash: "0xabc" });
-    expect(await client.relayClaimerTransfer(relay)).toEqual({ txHash: null });
-    expect(calls[0]!.url).toBe("https://adapter.test/offramp/relay");
-    expect(calls[0]!.init?.method).toBe("POST");
-    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual(relay);
-  });
-
-  it("carries a relay refusal's code", async () => {
-    const { impl } = stubSequence([
-      {
-        status: 409,
-        body: { error: { tag: "Other", value: { code: "RELAY_INSUFFICIENT_BALANCE" } } },
-      },
-    ]);
-    const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl: impl });
-    await expect(
-      client.relayClaimerTransfer({
-        from: "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
-        to: "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
-        value: "1",
-        validAfter: "0",
-        validBefore: "1",
-        nonce: `0x${"cd".repeat(32)}`,
-        signature: `0x${"11".repeat(65)}`,
-      }),
-    ).rejects.toMatchObject({ status: 409, code: "RELAY_INSUFFICIENT_BALANCE" });
-  });
-
   it("refuses a payout list that is not shaped as one", async () => {
     for (const released of [
       "x",

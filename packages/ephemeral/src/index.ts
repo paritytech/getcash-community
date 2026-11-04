@@ -13,4 +13,3 @@ export { createEphemeral } from "./ephemeral";
 export type { CreatedEphemeral } from "./ephemeral";
 export { deriveRefundKey, isRefundChain, REFUND_CHAINS } from "./refund";
 export type { BitcoinNetwork, RefundChain, RefundKey } from "./refund";
-export { signTransferAuthorization } from "./transfer-authorization";

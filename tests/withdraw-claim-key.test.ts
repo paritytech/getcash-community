@@ -2,8 +2,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { sha256 } from "@noble/hashes/sha2.js";
-import { saleVaultProxyUsdcDomain } from "@getsome/chainflip";
-import { deriveRefundKey, signTransferAuthorization } from "@getsome/ephemeral";
+import { deriveRefundKey } from "@getsome/ephemeral";
 
 // The host's root as a hash of the raw label, so each label derives its own seed
 const host = vi.hoisted(() => {
@@ -29,12 +28,7 @@ vi.mock("../worker/src/host.js", () => ({
 }));
 
 import { claimEntropyLabel } from "@getsome/withdraw";
-import {
-  claimerKeyFor,
-  revealClaimKey,
-  signClaimRelay,
-  withdrawEntropyLabel,
-} from "../lib/withdraw-live";
+import { claimerKeyFor, revealClaimKey, withdrawEntropyLabel } from "../lib/withdraw-live";
 import { claimerFor } from "../worker/src/shared.js";
 
 const claimerOf = (label: string) =>
@@ -110,95 +104,5 @@ describe("revealClaimKey", () => {
   it("refuses a key that is not the claimer on record", async () => {
     const other = await claimerKeyFor("wd:meld-card", 4);
     await expect(revealClaimKey("wd:eph:meld-card:3", other)).rejects.toThrow(/does not match/);
-  });
-});
-
-describe("signClaimRelay", () => {
-  const TO = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC";
-  const NOW = 1_800_000_000_500;
-
-  // The signature the claimer's own revealed key gives the relay's fields, the signer checked against ethers
-  async function expectedSignature(
-    relay: Awaited<ReturnType<typeof signClaimRelay>>,
-    label: string,
-    chainId: number,
-  ): Promise<string> {
-    const { secret } = await revealClaimKey(label, relay.from);
-    return signTransferAuthorization(
-      Buffer.from(secret.slice(2), "hex"),
-      saleVaultProxyUsdcDomain(chainId)!,
-      {
-        from: relay.from,
-        to: relay.to,
-        value: BigInt(relay.value),
-        validAfter: BigInt(relay.validAfter),
-        validBefore: BigInt(relay.validBefore),
-        nonce: relay.nonce,
-      },
-    );
-  }
-
-  it("signs the claimer's transfer to the chosen address for the adapter's relay", async () => {
-    const claimer = await claimerKeyFor("wd:meld-card", 3);
-    const relay = await signClaimRelay({
-      label: "wd:eph:meld-card:3",
-      claimerAddress: claimer.toLowerCase(),
-      chainId: 421614,
-      to: TO,
-      value: 1_500_000n,
-      nowMs: NOW,
-    });
-    expect(relay).toMatchObject({
-      from: claimer,
-      to: TO,
-      value: "1500000",
-      validAfter: "0",
-      validBefore: "1800003600",
-    });
-    expect(relay.nonce).toMatch(/^0x[0-9a-f]{64}$/);
-    expect(relay.signature).toMatch(/^0x[0-9a-f]{128}(1b|1c)$/);
-    expect(relay.signature).toBe(await expectedSignature(relay, "wd:eph:meld-card:3", 421614));
-  });
-
-  it("draws a fresh nonce for every signature", async () => {
-    const claimer = await claimerKeyFor("wd:meld-bank", 2);
-    const args = {
-      label: "wd:eph:meld-bank:2",
-      claimerAddress: claimer,
-      chainId: 42161,
-      to: TO,
-      value: 1n,
-    };
-    const [a, b] = [await signClaimRelay(args), await signClaimRelay(args)];
-    expect(a.nonce).not.toBe(b.nonce);
-    expect(a.signature).toBe(await expectedSignature(a, "wd:eph:meld-bank:2", 42161));
-  });
-
-  it("refuses a key that is not the claimer on record, and signs nothing", async () => {
-    const other = await claimerKeyFor("wd:meld-card", 4);
-    await expect(
-      signClaimRelay({
-        label: "wd:eph:meld-card:3",
-        claimerAddress: other,
-        chainId: 421614,
-        to: TO,
-        value: 1n,
-      }),
-    ).rejects.toThrow(/does not match/);
-  });
-
-  it("refuses a destination that is not an address or is the claimer, and an empty amount", async () => {
-    const claimer = await claimerKeyFor("wd:meld-card", 3);
-    const base = { label: "wd:eph:meld-card:3", claimerAddress: claimer, chainId: 421614 };
-    await expect(signClaimRelay({ ...base, to: "5Grw", value: 1n })).rejects.toThrow(
-      /not an Arbitrum address/,
-    );
-    await expect(signClaimRelay({ ...base, to: claimer.toLowerCase(), value: 1n })).rejects.toThrow(
-      /already on/,
-    );
-    await expect(signClaimRelay({ ...base, to: TO, value: 0n })).rejects.toThrow(/nothing/);
-    await expect(signClaimRelay({ ...base, chainId: 1, to: TO, value: 1n })).rejects.toThrow(
-      /no USDC domain/,
-    );
   });
 });

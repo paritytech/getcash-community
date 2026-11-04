@@ -242,27 +242,10 @@ export interface MeldSaleVaultProxyPayout {
   at: number;
 }
 
-/** A USDC transferWithAuthorization the claimer signed, as `POST /offramp/relay` takes it. */
-export interface MeldClaimerRelay {
-  from: string;
-  to: string;
-  /** USDC base units. */
-  value: string;
-  /** Unix seconds. */
-  validAfter: string;
-  /** Unix seconds. */
-  validBefore: string;
-  nonce: string;
-  /** 65 bytes, r || s || v. */
-  signature: string;
-}
-
 /** The adapter's SaleVaultProxy routes for an offramp sale, keyed by its funding request. */
 export interface MeldSaleVaultProxyClientLike {
   getSaleVaultProxy(fundingRequestId: string): Promise<MeldSaleVaultProxy>;
   requestSaleVaultProxyReturn(fundingRequestId: string): Promise<MeldSaleVaultProxy>;
-  /** Has the keeper send a claimer's signed USDC transfer, answering the broadcast transaction. */
-  relayClaimerTransfer(relay: MeldClaimerRelay): Promise<{ txHash: string | null }>;
 }
 
 export interface MeldClientLike extends Partial<MeldSellClientLike> {
@@ -581,7 +564,7 @@ function saleVaultProxyOf(data: Record<string, unknown>): MeldSaleVaultProxy {
  * Meld auth headers server-side. This side speaks the adapter's JSON routes: `POST /quote`,
  * `POST /session` and `GET /funding/:fundingRequestId`. A sell rides the same routes with
  * `direction: "sell"` in the body, absent means buy. A sale's proxy is read and moved through
- * `GET /offramp/sale/:id`, `POST /offramp/returns/:id` and `POST /offramp/relay`.
+ * `GET /offramp/sale/:id` and `POST /offramp/returns/:id`.
  */
 export function createMeldClient(
   config: MeldEndpointConfig,
@@ -1017,18 +1000,6 @@ export function createMeldClient(
         signal: AbortSignal.timeout(STATUS_TIMEOUT_MS),
       });
       return saleVaultProxyOf(await read(res, "The return"));
-    },
-
-    async relayClaimerTransfer(relay) {
-      const res = await doFetch(`${base}/offramp/relay`, {
-        method: "POST",
-        headers: { ...headers(), "content-type": "application/json" },
-        body: JSON.stringify(relay),
-        signal: AbortSignal.timeout(STATUS_TIMEOUT_MS),
-      });
-      const data = await read(res, "The transfer");
-      const sent = (data.relay as Record<string, unknown> | undefined) ?? {};
-      return { txHash: typeof sent.txHash === "string" ? sent.txHash : null };
     },
   };
 }

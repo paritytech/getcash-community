@@ -34,12 +34,7 @@ export const SALE_VAULT_PROXY_CHAIN_ID: number = SALE_VAULT_PROXY_CHAIN_IDS[SALE
 /** The CCM gas budget a sale's channel carries, enough for the factory to deploy a proxy and pay. */
 export const SALE_VAULT_PROXY_CCM_GAS_BUDGET: string = saleVaultProxyVectors.gas.CCM_GAS_BUDGET;
 
-// The USDC token's EIP-712 name and version, as name() and version() answer on both Arbitrum networks
-const USDC_DOMAIN_NAME = "USD Coin";
-const USDC_DOMAIN_VERSION = "2";
-
 interface NetworkVectors {
-  usdc: string;
   minSale: string;
   releaseDelay: string;
   staleDelay: string;
@@ -74,23 +69,6 @@ export function saleVaultProxyDelaysMs(
   return {
     releaseDelayMs: secondsMs(network.releaseDelay, "releaseDelay"),
     staleDelayMs: secondsMs(network.staleDelay, "staleDelay"),
-  };
-}
-
-/** The EIP-712 domain of the USDC a proxy on `chainId` holds, null on a chain with no vectors. */
-export function saleVaultProxyUsdcDomain(chainId: number): {
-  name: string;
-  version: string;
-  chainId: number;
-  verifyingContract: string;
-} | null {
-  const network = networkVectors(chainId);
-  if (network === undefined) return null;
-  return {
-    name: USDC_DOMAIN_NAME,
-    version: USDC_DOMAIN_VERSION,
-    chainId,
-    verifyingContract: network.usdc,
   };
 }
 
