@@ -37,4 +37,17 @@ describe("the catalogue", () => {
     expect(read(theirs)).toEqual([true, true, true]);
     expect(read(ours)).toEqual([false, false, false, false]);
   });
+
+  it("As a developer reading Sentry, I see a session the provider or the person stopped as a warning and ours as an error", () => {
+    // Given
+    const theirs = ["card:provider_rejected", "sale-bank:rate_limited", "bank:offline"];
+    const ours = ["card:internal", "sale-card:request_outcome_unknown", "bank:http-502"];
+
+    // When
+    const read = (reasons: string[]) => reasons.map((r) => isExpected("session-failed", r));
+
+    // Then
+    expect(read(theirs)).toEqual([true, true, true]);
+    expect(read(ours)).toEqual([false, false, false]);
+  });
 });

@@ -9,7 +9,7 @@ import { isMethodDown, methodMinimum, namedCountry } from "~~/lib/supported";
 import { detectCountry } from "../../../composables/useDetectedCountry";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import { fiatAmountRejected, fiatOutOfRange } from "../../../funding/out-of-range";
-import { sessionFailureText } from "../../../funding/session-failure";
+import { sessionFailed } from "../../../funding/session-failure";
 import type { FundingRoute } from "../../../funding/selection";
 import DetailRows from "../../ui/DetailRows.vue";
 import PillButton from "../../ui/PillButton.vue";
@@ -141,10 +141,11 @@ async function next() {
     await session.start();
   } catch (e) {
     devLog("meld", "could not start the payment", e, "warn");
-    startError.value = sessionFailureText(e, {
+    startError.value = sessionFailed(e, {
       side: "buy",
       method: meldMethod.value,
       country: countryLabel.value,
+      provider: session.quoted?.provider,
     });
     starting.value = false;
   }

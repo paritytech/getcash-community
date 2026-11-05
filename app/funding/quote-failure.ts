@@ -18,10 +18,10 @@ const BUILT_IN_ERRORS = new Set([
   "AggregateError",
 ]);
 
-/** Why a quote threw: the adapter's own code, or its status, when it refused; the error's own
- *  name when it has one (MeldAssetsUnavailable reads as meld-assets-unavailable); else the
- *  thrown value's kind. */
-export function quoteCauseOf(error: unknown): string {
+/** Why a quote or a session threw: the adapter's own code, or its status, when it refused; the
+ *  error's own name when it has one (MeldAssetsUnavailable reads as meld-assets-unavailable);
+ *  else the thrown value's kind. */
+export function failureCauseOf(error: unknown): string {
   const refusal = refusalOf(error);
   if (refusal !== undefined)
     return refusal.code !== undefined ? refusal.code.toLowerCase() : `http-${refusal.status}`;
@@ -30,11 +30,16 @@ export function quoteCauseOf(error: unknown): string {
   return reasonOf(error);
 }
 
+/** `<rail>:<why>`, or `<rail>:offline` when the device was offline. */
+export function railFailureReason(rail: QuoteRail, why: string): string {
+  const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+  return `${rail}:${offline ? "offline" : why}`;
+}
+
 export function reportQuoteFailure(
   rail: QuoteRail,
   why: string,
   details: { error?: unknown; context?: Record<string, string> } = {},
 ): void {
-  const offline = typeof navigator !== "undefined" && navigator.onLine === false;
-  reportFailure("quote-failed", { reason: `${rail}:${offline ? "offline" : why}`, ...details });
+  reportFailure("quote-failed", { reason: railFailureReason(rail, why), ...details });
 }

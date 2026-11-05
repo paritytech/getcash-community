@@ -32,7 +32,7 @@ import {
 } from "../funding/requests/model";
 import { paymentIdFor } from "../funding/requests/payment-id";
 import { requestCreated } from "../funding/requests/telemetry";
-import { sessionFailureText } from "../funding/session-failure";
+import { sessionFailed } from "../funding/session-failure";
 import { useRequestsStore } from "../stores/requests";
 import { fmtCash } from "../utils/cash";
 import {
@@ -271,10 +271,11 @@ export function useWithdrawalRequest() {
     const failed = (e: unknown) =>
       ({
         ok: false,
-        reason: sessionFailureText(e, {
+        reason: sessionFailed(e, {
           side: "sell",
           method: input.method,
           country: countryName(input.country),
+          provider: input.quote.serviceProvider,
         }),
       }) as const;
     try {

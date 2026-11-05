@@ -2,12 +2,19 @@
 // codes are never shown: each is worded here, and anything unrecognised reads as our failure.
 
 import { refusalOf } from "@getsome/meld";
+import { reportFailure } from "~~/lib/telemetry";
+import { failureCauseOf, railFailureReason } from "./quote-failure";
 
 export interface SessionFailureContext {
   readonly side: "buy" | "sell";
   readonly method: "card" | "bank";
   /** The payment country's name. */
   readonly country: string;
+}
+
+/** What the report adds to the words: the quote's provider, when there is one. */
+export interface SessionFailureReport extends SessionFailureContext {
+  readonly provider?: string | null;
 }
 
 type Wording = (context: SessionFailureContext) => string;
@@ -106,4 +113,21 @@ export function sessionFailureText(error: unknown, context: SessionFailureContex
   if (wording !== undefined) return wording(context);
   // A body that is not the adapter's, from a gateway in front of it.
   return (refusal.status >= 502 ? unreachable : ourSide)(context);
+}
+
+/** Reports a session that could not be opened, and returns what the screen says. */
+export function sessionFailed(error: unknown, report: SessionFailureReport): string {
+  const { side, method, country, provider } = report;
+  const refusal = refusalOf(error);
+  reportFailure("session-failed", {
+    reason: railFailureReason(side === "buy" ? method : `sale-${method}`, failureCauseOf(error)),
+    error,
+    context: {
+      country,
+      ...(provider ? { provider } : {}),
+      ...(refusal === undefined ? {} : { status: String(refusal.status) }),
+      ...(refusal?.requestId === undefined ? {} : { requestId: refusal.requestId }),
+    },
+  });
+  return sessionFailureText(error, report);
 }

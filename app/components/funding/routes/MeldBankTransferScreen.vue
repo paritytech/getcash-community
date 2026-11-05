@@ -20,7 +20,7 @@ import { useSessionStore } from "../../../stores/session";
 import { currencyConfig } from "../../../funding/config";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import { fiatAmountRejected, fiatOutOfRange } from "../../../funding/out-of-range";
-import { sessionFailureText } from "../../../funding/session-failure";
+import { sessionFailed } from "../../../funding/session-failure";
 import type { FundingRoute } from "../../../funding/selection";
 import CashAmount from "../../ui/CashAmount.vue";
 import PillButton from "../../ui/PillButton.vue";
@@ -111,10 +111,11 @@ async function openRequest() {
     await session.start();
   } catch (e) {
     devLog("meld", "could not open the transfer", e, "warn");
-    startError.value = sessionFailureText(e, {
+    startError.value = sessionFailed(e, {
       side: "buy",
       method: "bank",
       country: countryLabel.value,
+      provider: session.quoted?.provider,
     });
   } finally {
     starting.value = false;

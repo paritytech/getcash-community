@@ -34,7 +34,7 @@ import {
 import { detectedCountryNow } from "./useDetectedCountry";
 import { meldSellClient } from "../withdraw/meld-client";
 import { devLog } from "~~/lib/log";
-import { quoteCauseOf, reportQuoteFailure } from "../funding/quote-failure";
+import { failureCauseOf, reportQuoteFailure } from "../funding/quote-failure";
 
 /** A priced sale: where it pays out, what the key pays, and the provider line for it. */
 export interface MeldSellQuote {
@@ -379,12 +379,12 @@ export function useMeldSellQuote(
         }
       }
       if (failure !== undefined)
-        fail("rate", failure.message, quoteCauseOf(failure.error), failure.error);
+        fail("rate", failure.message, failureCauseOf(failure.error), failure.error);
       // every lane priced, but no provider's line was usable
       else fail("rate", "No provider can pay out this sale right now.", "no-quote");
     } catch (e: unknown) {
       if (mine === epoch)
-        fail("rate", e instanceof Error ? e.message : String(e), quoteCauseOf(e), e);
+        fail("rate", e instanceof Error ? e.message : String(e), failureCauseOf(e), e);
     } finally {
       if (mine === epoch) loading.value = false;
     }

@@ -287,6 +287,8 @@ class AdapterRefusal extends Error {
     readonly limit?: MeldFiatLimit,
     /** The adapter's failure tag (`NoQuotesAvailable`, `Other`, …), for logs and branching. */
     readonly tag?: string,
+    /** The adapter's id for the refused call, which its own logs carry. */
+    readonly requestId?: string,
   ) {
     super(message, options);
     this.name = "AdapterRefusal";
@@ -309,11 +311,13 @@ export interface MeldFiatLimit {
   readonly currency: string;
 }
 
-/** What the adapter said when it refused: its tag, the `Other` code under it, and the status. */
+/** What the adapter said when it refused: its tag, the `Other` code under it, the status, and
+ *  its id for the call. */
 export interface MeldRefusal {
   readonly tag?: string;
   readonly code?: string;
   readonly status: number;
+  readonly requestId?: string;
 }
 
 /** The adapter's refusal behind `error`, when it is one. */
@@ -323,6 +327,7 @@ export function refusalOf(error: unknown): MeldRefusal | undefined {
     status: error.status,
     ...(error.tag === undefined ? {} : { tag: error.tag }),
     ...(error.code === undefined ? {} : { code: error.code }),
+    ...(error.requestId === undefined ? {} : { requestId: error.requestId }),
   };
 }
 
@@ -499,6 +504,7 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
         res.status === 429 ? retryAfterMsOf(res) : undefined,
         limitOf(tag, value),
         tag,
+        typeof data["request_id"] === "string" ? data["request_id"] : undefined,
       );
     }
     return data;

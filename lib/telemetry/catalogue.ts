@@ -61,6 +61,9 @@ export const FAILURE_KINDS = [
   // a top-up or a sale could not be priced; the reason is `<rail>:<why>`
   // (app/funding/quote-failure.ts)
   "quote-failed",
+  // a card or bank buy, or a sale, could not open its session; the reason is `<rail>:<why>`
+  // (app/funding/session-failure.ts)
+  "session-failed",
   // sent by the core itself: a journey past its stuckMs (journeys.ts)
   "stuck",
 ] as const;
@@ -83,6 +86,11 @@ export function isExpected(kind: FailureKind, reason: string): boolean {
     case "quote-failed":
       // the device was offline, or no provider serves the person's region or method
       return /:(offline|no-provider|unrouted)$/.test(reason);
+    case "session-failed":
+      // the device was offline, the provider said no, or the person retried too fast
+      return /:(offline|provider_rejected|amount_rejected|payment_method_unsupported|currency_unsupported|rate_limited)$/.test(
+        reason,
+      );
     default:
       return false;
   }

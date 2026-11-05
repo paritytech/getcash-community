@@ -1,6 +1,18 @@
-import { describe, expect, it } from "vitest";
-import { sessionFailureText, type SessionFailureContext } from "../app/funding/session-failure";
-import { adapterRefusal } from "./fixtures/meld-refusal";
+import { describe, expect, it, vi } from "vitest";
+import {
+  sessionFailed,
+  sessionFailureText,
+  type SessionFailureContext,
+} from "../app/funding/session-failure";
+import { ADAPTER_REQUEST_ID, adapterRefusal } from "./fixtures/meld-refusal";
+
+const reported = vi.hoisted(() => [] as unknown[]);
+vi.mock("~~/lib/telemetry", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/telemetry")>()),
+  reportFailure: (kind: string, { reason, context }: { reason: string; context?: unknown }) => {
+    reported.push({ kind, reason, context });
+  },
+}));
 
 const buy: SessionFailureContext = { side: "buy", method: "card", country: "Germany" };
 const sell: SessionFailureContext = { side: "sell", method: "bank", country: "Germany" };
@@ -34,5 +46,21 @@ describe("session failure text", () => {
       "We couldn't reach the payment service. Check your connection and try again. You haven't been charged.";
     expect(sessionFailureText(new TypeError("Failed to fetch"), buy)).toBe(unreachable);
     expect(sessionFailureText(await adapterRefusal(undefined, 502), buy)).toBe(unreachable);
+  });
+
+  it("reports the rail, the cause and the adapter's id for the call", async () => {
+    sessionFailed(await other("PROVIDER_REJECTED"), { ...sell, provider: "TRANSAK" });
+    expect(reported).toEqual([
+      {
+        kind: "session-failed",
+        reason: "sale-bank:provider_rejected",
+        context: {
+          country: "Germany",
+          provider: "TRANSAK",
+          status: "400",
+          requestId: ADAPTER_REQUEST_ID,
+        },
+      },
+    ]);
   });
 });

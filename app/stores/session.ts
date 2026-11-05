@@ -108,7 +108,7 @@ import { requestCreated } from "../funding/requests/telemetry";
 import { useRequestsStore } from "./requests";
 import { devLog } from "~~/lib/log";
 import { trackAction } from "~~/lib/telemetry";
-import { quoteCauseOf, reportQuoteFailure, type QuoteRail } from "../funding/quote-failure";
+import { failureCauseOf, reportQuoteFailure, type QuoteRail } from "../funding/quote-failure";
 
 export { DEPOSIT_EXPIRED_REASON } from "../funding/requests/model";
 
@@ -1283,7 +1283,7 @@ export const useSessionStore = defineStore("session", () => {
       failQuote(
         e instanceof Error ? e.message : String(e),
         method.value === "bank" ? "bank" : "card",
-        quoteCauseOf(e),
+        failureCauseOf(e),
         {
           error: e,
           ...(refusal?.tag ? { context: { tag: refusal.tag } } : {}),
@@ -1528,7 +1528,7 @@ export const useSessionStore = defineStore("session", () => {
         undefined,
         "error",
       );
-      failQuote(msg, "crypto", quoteCauseOf(e), { error: e, context: { chain, asset } });
+      failQuote(msg, "crypto", failureCauseOf(e), { error: e, context: { chain, asset } });
     } finally {
       if (epoch === quoteEpoch) loading.value = false;
     }
