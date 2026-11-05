@@ -32,7 +32,7 @@ export const CONFIRMED_TTL_MS = 60_000;
 /** Hidden longer than this resets the session epoch on return. */
 export const HIDDEN_RESET_MS = 5_000;
 /** Worker job blob poll while visible and any record is at rank 0–3. */
-export const JOB_POLL_MS = 6_000;
+export const JOB_POLL_MS = 2_000;
 /** The same poll while a top-up's claim is in flight and the host's word on it is due. */
 export const JOB_POLL_CLAIMING_MS = 1_000;
 /** Foreground Meld status poll. */

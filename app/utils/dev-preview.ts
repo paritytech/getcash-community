@@ -2121,8 +2121,7 @@ export const SCENES: Scene[] = [
     },
   },
   {
-    // The host is crediting the balance: after 3 s the band adds the claim's stages and the
-    // worker's last tick.
+    // The host is crediting the balance.
     name: "top-up / card / journey: adding to balance",
     apply: async (s, f, i) => {
       const r = await cardPayment(s, f, i);

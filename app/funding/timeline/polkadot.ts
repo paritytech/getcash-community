@@ -2,17 +2,17 @@
 // 6, their texts, and the failures past the provider's part.
 
 import { cashInText } from "../../utils/cash";
-import { conversionRouteOf, type DepositInBlock, type TopUpRecord } from "../requests/model";
+import type { DepositInBlock, TopUpRecord } from "../requests/model";
 import { mintedOf } from "../requests/views";
 import { CLOSE, TRY_AGAIN, type PartFailure } from "./failure";
-import { liveDetail, reader, stages, stepLine } from "./live";
 import { earlierFact, factAt } from "./observed";
+import { stepLine } from "./progress";
 import {
   delay,
   normal,
+  withDetail,
   type ProviderPhaseIndex,
   type TextState,
-  type TimelineMessage,
   type TimelineText,
 } from "./route";
 import type {
@@ -175,75 +175,38 @@ export function polkadotPhase(
 export const workerTickAt = (record: TopUpRecord): number | undefined =>
   workerOf(record)?.lastTickAt ?? undefined;
 
-/** How far the deposit's block is from final, as the worker counts it. */
-function finalizingLine(inBlock: DepositInBlock | undefined): string {
-  if (inBlock === undefined || inBlock.block <= inBlock.finalizedAtSeen) return "Finalizing";
-  const blocks = inBlock.block - inBlock.finalizedAtSeen;
+/** The finalized chain's progress to the deposit's block, as the worker counts it: absent until
+ *  the worker follows the deposit, or when its block was already final. */
+function confirmationLine(inBlock: DepositInBlock | undefined): string | undefined {
+  if (inBlock === undefined || inBlock.block <= inBlock.finalizedAtSeen) return undefined;
   return stepLine(
-    "Finalizing · block",
+    "Confirmation",
     Math.max(inBlock.finalized - inBlock.finalizedAtSeen, 0),
-    blocks,
-  );
-}
-
-/** The claim's stages the worker and the Host are through. */
-function claimStages(record: TopUpRecord): string {
-  const done =
-    record.observedAt?.["host-claiming"] !== undefined
-      ? 2
-      : record.claimRegisteredAt !== undefined
-        ? 1
-        : 0;
-  return stages(["Registered", "Seen", "Added"], done);
-}
-
-function conversionMessage(record: TopUpRecord): TimelineMessage {
-  if (psmRefused(record)) {
-    return delay("The conversion paused for a moment and will retry automatically");
-  }
-  return normal(
-    conversionRouteOf(record).tier === "dotusd"
-      ? "Getting your Cash ready"
-      : "Converting your money to Cash",
+    inBlock.block - inBlock.finalizedAtSeen,
   );
 }
 
 export function polkadotText(
   record: TopUpRecord,
   index: PolkadotPhaseIndex,
-  state: TextState,
+  { delayed }: TextState,
 ): TimelineText {
-  const { delayed, live } = state;
-  const read = reader(state);
   switch (index) {
     case 2:
       return depositOnBurner(record) === undefined
-        ? {
-            message: normal("Your money is arriving"),
-            detail: liveDetail(live, "Watching the network", read("checked")),
-          }
-        : {
-            message: normal("Making sure your money arrived safely"),
-            detail: liveDetail(live, finalizingLine(record.depositInBlock), read("checked")),
-          };
+        ? { message: normal("Your money is arriving") }
+        : withDetail(normal("We've spotted your deposit"), confirmationLine(record.depositInBlock));
     case 3:
       return {
-        message: conversionMessage(record),
-        // The tick is a check: the worker retries the mint on its own schedule, unstamped.
-        detail: psmRefused(record)
-          ? read("Checked")
-          : liveDetail(
-              live,
-              stages(["Prepared", "Included"], record.conversionPreparedAt === undefined ? 0 : 1),
-              read("checked"),
-            ),
+        message: psmRefused(record)
+          ? delay("The conversion paused for a moment and will retry automatically")
+          : normal("Converting your money to Cash"),
       };
     case 4:
       return {
         message: delayed
           ? delay("Your Cash is ready and waiting for the network to confirm it")
-          : normal("Getting your Cash ready"),
-        detail: read("Checked"),
+          : normal("Moving your Cash to your account"),
       };
     case 5:
       return {
@@ -252,7 +215,6 @@ export function polkadotText(
             ? "Adding the rest of your Cash"
             : `Adding ${cashInText(record.amountHuman)} to your balance`,
         ),
-        detail: liveDetail(live, claimStages(record), read("checked")),
       };
   }
 }
@@ -261,9 +223,9 @@ const MONEY_SAFE = "Your money is safe, and you won't need to pay again.";
 
 const POLKADOT_FAILURES = {
   held: `We couldn't convert your money to Cash. ${MONEY_SAFE}`,
-  conversionTimeout: `Converting to Cash took too long. ${MONEY_SAFE}`,
+  conversionTimeout: `Converting your money to Cash took too long. ${MONEY_SAFE}`,
   shortfall: `We received less Cash than expected. ${MONEY_SAFE}`,
-  arrivalTimeout: `Getting your Cash ready took too long. ${MONEY_SAFE}`,
+  arrivalTimeout: `Moving your Cash to your account took too long. ${MONEY_SAFE}`,
   notClaimed: `We couldn't add Cash to your balance. ${MONEY_SAFE}`,
 } as const;
 
