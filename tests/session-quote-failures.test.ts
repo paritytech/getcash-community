@@ -5,9 +5,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { MeldAssetsUnavailable } from "@getsome/core";
-import { createMeldClient } from "@getsome/meld";
 import { isExpected } from "../lib/telemetry/catalogue";
 import { useSessionStore } from "../app/stores/session";
+import { adapterRefusal } from "./fixtures/meld-refusal";
 
 /** Set, the next mock world refuses to be built, which fails the quote on every rail. */
 const fault = { error: null as Error | null };
@@ -219,25 +219,3 @@ describe("session store: quote failures reported", () => {
     expect(isExpected("quote-failed", "crypto:offline")).toBe(true);
   });
 });
-
-/** A real adapter refusal for `error`, as the Meld client throws it on a refused quote. */
-async function adapterRefusal(error: unknown): Promise<Error> {
-  const fetchImpl = (async () =>
-    new Response(JSON.stringify({ error }), {
-      status: 400,
-      headers: { "content-type": "application/json" },
-    })) as unknown as typeof fetch;
-  const client = createMeldClient({ baseUrl: "https://adapter.test", fetchImpl });
-  return client
-    .getQuote({
-      country: "DE",
-      sourceCurrencyCode: "EUR",
-      destinationCurrencyCode: "DOT",
-      sourceAmount: "50.00",
-      paymentMethodType: "CREDIT_DEBIT_CARD",
-    })
-    .then(
-      () => new Error("expected a refusal"),
-      (e: unknown) => e as Error,
-    );
-}

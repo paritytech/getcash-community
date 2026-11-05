@@ -14,6 +14,7 @@ import type { ScreenName } from "~~/lib/telemetry";
 import { useStateDirector } from "../../../composables/useStateDirector";
 import { psmReserved, useWithdrawalRequest } from "../../../composables/useWithdrawalRequest";
 import type { FundingPackageEmits } from "../../../funding/handoff";
+import { sessionFailureText } from "../../../funding/session-failure";
 import { paymentTaken, saleAwaitingDeposit } from "../../../funding/requests/model";
 import type { FundingSelection } from "../../../funding/selection";
 import type { FundingTopUp } from "../../../funding/top-ups";
@@ -266,7 +267,11 @@ async function confirm() {
     followSale(outcome.ref);
     step.value = "kyc";
   } catch (error: unknown) {
-    startError.value = error instanceof Error ? error.message : String(error);
+    startError.value = sessionFailureText(error, {
+      side: "sell",
+      method,
+      country: countryLabel.value,
+    });
   } finally {
     starting.value = false;
   }

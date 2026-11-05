@@ -679,8 +679,11 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
       }
     }
     // Every attempt this walk can name has already concluded.
-    throw new Error(
+    throw new AdapterRefusal(
       walk.exhaustedMessage,
+      409,
+      "ATTEMPTS_EXHAUSTED",
+      undefined,
       lastRefusal instanceof Error ? { cause: lastRefusal } : undefined,
     );
   }

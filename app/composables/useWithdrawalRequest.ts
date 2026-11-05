@@ -32,6 +32,7 @@ import {
 } from "../funding/requests/model";
 import { paymentIdFor } from "../funding/requests/payment-id";
 import { requestCreated } from "../funding/requests/telemetry";
+import { sessionFailureText } from "../funding/session-failure";
 import { useRequestsStore } from "../stores/requests";
 import { fmtCash } from "../utils/cash";
 import {
@@ -45,6 +46,7 @@ import { meldSellClient } from "../withdraw/meld-client";
 import { workerSessionId } from "~~/lib/coinage";
 import { isHosted } from "~~/lib/host-account";
 import { devLog } from "~~/lib/log";
+import { countryName } from "~~/lib/supported";
 
 /** How long before a Chainflip channel closes it is opened afresh instead: the purse's whole
  *  payment window for the CASH to reach the key, then the margin the worker itself refuses to pay
@@ -266,10 +268,19 @@ export function useWithdrawalRequest() {
     if (client === null || meld === null) {
       return { ok: false, reason: "Card and bank withdrawals are not available right now." };
     }
+    const failed = (e: unknown) =>
+      ({
+        ok: false,
+        reason: sessionFailureText(e, {
+          side: "sell",
+          method: input.method,
+          country: countryName(input.country),
+        }),
+      }) as const;
     try {
       await ensureMeldAssets(client);
     } catch (e: unknown) {
-      return { ok: false, reason: messageOf(e) };
+      return failed(e);
     }
     if (input.sellCode !== undefined && !isDirectSellCode(input.sellCode)) {
       return { ok: false, reason: `A sale cannot sell ${input.sellCode}.` };
@@ -316,7 +327,7 @@ export function useWithdrawalRequest() {
         ...(input.swap === undefined ? { walletAddress: key.address } : {}),
       });
     } catch (e: unknown) {
-      return { ok: false, reason: messageOf(e) };
+      return failed(e);
     }
     const widgetUrl = session.meldWidgetUrl ?? session.widgetUrl;
     if (!widgetUrl) {
