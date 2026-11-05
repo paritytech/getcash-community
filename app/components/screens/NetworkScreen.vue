@@ -2,12 +2,13 @@
 // Network picker for a top-up. Every network the catalog knows, judged against the amount on
 // screen: the ones with a token that can pay for it are pickable, the ones that cannot say why.
 // The list, its order and its skeletons are OptionList's; a pick in flight keeps its rows on
-// screen, spinner and all.
+// screen as they stood at the tap, spinner and all.
 import { computed } from "vue";
 import { networkIcon } from "../../utils/icons";
 import { networkSubtitle } from "../../funding/source-groups";
 import type { OptionListRow } from "../../utils/option-list";
 import { useFreshFloors } from "../../composables/useFreshFloors";
+import { useHeldRows } from "../../composables/useHeldRows";
 import { useFlowStore } from "../../stores/flow";
 import { isNetworkPickable, useOffersStore, type NetworkRow } from "../../stores/offers";
 import ScreenFrame from "../ui/ScreenFrame.vue";
@@ -20,8 +21,13 @@ const flow = useFlowStore();
 const offers = useOffersStore();
 useFreshFloors();
 
+const { rows: networks, hold } = useHeldRows(
+  () => offers.networks,
+  () => flow.starting,
+);
+
 const rows = computed<NetworkOption[]>(() =>
-  offers.networks.map((network) => ({
+  networks.value.map((network) => ({
     key: network.chain,
     icon: networkIcon(network.chain),
     label: network.label,
@@ -34,6 +40,7 @@ const rows = computed<NetworkOption[]>(() =>
 
 function pick({ network }: NetworkOption) {
   if (flow.starting) return;
+  hold();
   flow.pickNetwork(network.chain);
 }
 </script>
