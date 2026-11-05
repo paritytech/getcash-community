@@ -1,7 +1,7 @@
 // What a card or bank buy, or a sale, says when its session could not be opened. The adapter's
 // codes are never shown: each is worded here, and anything unrecognised reads as our failure.
 
-import { refusalOf } from "@getsome/meld";
+import { isAdapterUnreachable, refusalOf } from "@getsome/meld";
 import { reportFailure } from "~~/lib/telemetry";
 import { failureCauseOf, railFailureReason } from "./quote-failure";
 
@@ -103,10 +103,7 @@ const WORDING = new Map<string, Wording>([
 export function sessionFailureText(error: unknown, context: SessionFailureContext): string {
   if (!(error instanceof Error)) return ourSide(context);
   const refusal = refusalOf(error);
-  if (refusal === undefined) {
-    const offline = error instanceof TypeError || error.name === "TimeoutError";
-    return (offline ? unreachable : ourSide)(context);
-  }
+  if (refusal === undefined) return (isAdapterUnreachable(error) ? unreachable : ourSide)(context);
   const key = refusal.code ?? refusal.tag;
   if (key !== undefined && CLIENT_WORDED.has(key)) return error.message;
   const wording = key === undefined ? undefined : WORDING.get(key);

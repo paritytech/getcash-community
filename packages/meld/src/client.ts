@@ -295,12 +295,24 @@ class AdapterRefusal extends Error {
   }
 }
 
-/** True when a call failed because the adapter did not answer: no response at all, which `fetch`
- *  rejects with a `TypeError`, a 5xx (the adapter's `ProviderTimeout` when Meld did not answer
- *  it), or a 429. A refusal the adapter answered with is not one. */
+/** A request the adapter never answered: `fetch` itself rejected, offline, blocked or timed out. */
+class AdapterUnreachable extends Error {
+  constructor(cause: unknown) {
+    super("The adapter did not answer.", { cause });
+    this.name = "AdapterUnreachable";
+  }
+}
+
+export function isAdapterUnreachable(error: unknown): boolean {
+  return error instanceof AdapterUnreachable;
+}
+
+/** True when a call failed because the adapter did not answer: no response at all, a 5xx (the
+ *  adapter's `ProviderTimeout` when Meld did not answer it), or a 429. A refusal the adapter
+ *  answered with is not one. */
 export function isAdapterOutage(error: unknown): boolean {
   if (error instanceof AdapterRefusal) return error.status >= 500 || error.status === 429;
-  return error instanceof TypeError;
+  return error instanceof AdapterUnreachable;
 }
 
 /** A buy's fiat bound, as the adapter reports it on a refused quote. */
@@ -440,7 +452,14 @@ function depositOf(raw: unknown): MeldDepositDisclosure | undefined {
  * `direction: "sell"` in the body; absent means buy.
  */
 export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & MeldSellClientLike {
-  const doFetch = config.fetchImpl ?? fetch;
+  const fetchImpl = config.fetchImpl ?? fetch;
+  const doFetch = async (url: string, init: RequestInit): Promise<Response> => {
+    try {
+      return await fetchImpl(url, init);
+    } catch (cause) {
+      throw new AdapterUnreachable(cause);
+    }
+  };
   const base = config.baseUrl.replace(/\/$/, "");
   /**
    * The default idempotency key: the terms the buyer chose, plus an attempt counter. No solved

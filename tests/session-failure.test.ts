@@ -4,7 +4,7 @@ import {
   sessionFailureText,
   type SessionFailureContext,
 } from "../app/funding/session-failure";
-import { ADAPTER_REQUEST_ID, adapterRefusal } from "./fixtures/meld-refusal";
+import { ADAPTER_REQUEST_ID, adapterRefusal, adapterUnreachable } from "./fixtures/meld-refusal";
 
 const reported = vi.hoisted(() => [] as unknown[]);
 vi.mock("~~/lib/telemetry", async (importOriginal) => ({
@@ -30,9 +30,12 @@ describe("session failure text", () => {
     );
   });
 
-  it("reads an unknown code as our failure", async () => {
-    expect(sessionFailureText(await other("SOMETHING_NEW"), buy)).toBe(
-      "Something went wrong on our side. Try again in a moment. You haven't been charged.",
+  it("reads an unknown code, or a bug, as our failure", async () => {
+    const ours =
+      "Something went wrong on our side. Try again in a moment. You haven't been charged.";
+    expect(sessionFailureText(await other("SOMETHING_NEW"), buy)).toBe(ours);
+    expect(sessionFailureText(new TypeError("Cannot read properties of undefined"), buy)).toBe(
+      ours,
     );
   });
 
@@ -44,7 +47,7 @@ describe("session failure text", () => {
   it("says the service could not be reached when nothing answered", async () => {
     const unreachable =
       "We couldn't reach the payment service. Check your connection and try again. You haven't been charged.";
-    expect(sessionFailureText(new TypeError("Failed to fetch"), buy)).toBe(unreachable);
+    expect(sessionFailureText(await adapterUnreachable(), buy)).toBe(unreachable);
     expect(sessionFailureText(await adapterRefusal(undefined, 502), buy)).toBe(unreachable);
   });
 

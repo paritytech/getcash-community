@@ -23,7 +23,7 @@ import {
 import { useRequestsStore } from "../app/stores/requests";
 import { requestRefOf } from "../app/utils/request-index";
 import { setMeldSellClient } from "../app/withdraw/meld-client";
-import { adapterRefusal } from "./fixtures/meld-refusal";
+import { adapterRefusal, adapterUnreachable } from "./fixtures/meld-refusal";
 import { FIXTURE_NOW } from "./fixtures/requests";
 
 const KEY_HEX = `0x${"07".repeat(32)}`;
@@ -542,7 +542,7 @@ describe("a fiat sale from the page", () => {
   it("takes the number before the session, so a lost answer leaves the next try its own key", async () => {
     const opened = vi.spyOn(meld, "createSellSession");
     // The adapter opened the session and the answer never came back.
-    opened.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    opened.mockRejectedValueOnce(await adapterUnreachable());
     expect(await startSale()).toEqual({
       ok: false,
       reason:

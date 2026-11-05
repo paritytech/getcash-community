@@ -3,6 +3,7 @@ export {
   fiatLimitOf,
   refusalOf,
   isAdapterOutage,
+  isAdapterUnreachable,
   type MeldFiatLimit,
   type MeldRefusal,
   type MeldClientLike,
