@@ -11,8 +11,6 @@ export interface MilestoneSpec<Id extends string = string> {
   readonly relabel?: { readonly from: number; readonly label: string };
   /** The designer's centre on the spec's design width, in px. */
   readonly centre: number;
-  /** Where a small milestone grown on failure leans its label; centred when absent. */
-  readonly failedLabelAlign?: LabelAlign;
 }
 
 /** A timeline: its milestones in order, on the designer's card. Phase `i` is the line from

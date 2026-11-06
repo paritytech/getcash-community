@@ -43,11 +43,16 @@ export function uniqueFundingPackages(packages: FundingRoutePackages): FundingRo
   ];
 }
 
+/** The routes this build runs, less those the backend cannot serve right now. */
 export function availableFundingRoutes(
   packages: FundingRoutePackages,
   routes: readonly FundingRoute[],
+  unserved: readonly FundingRoute[] = [],
 ): FundingRoute[] {
-  return routes.filter((route) => resolveFundingRoute(packages, route).kind === "available");
+  return routes.filter(
+    (route) =>
+      resolveFundingRoute(packages, route).kind === "available" && !unserved.includes(route),
+  );
 }
 
 export type FundingPackageLoadResult =

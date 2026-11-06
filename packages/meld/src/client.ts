@@ -285,18 +285,32 @@ class AdapterRefusal extends Error {
     readonly limit?: MeldFiatLimit,
     /** The adapter's failure tag (`NoQuotesAvailable`, `Other`, …), for logs and branching. */
     readonly tag?: string,
+    /** The adapter's id for the refused call, which its own logs carry. */
+    readonly requestId?: string,
   ) {
     super(message, options);
     this.name = "AdapterRefusal";
   }
 }
 
-/** True when a call failed because the adapter did not answer: no response at all, which `fetch`
- *  rejects with a `TypeError`, a 5xx (the adapter's `ProviderTimeout` when Meld did not answer
- *  it), or a 429. A refusal the adapter answered with is not one. */
+/** A request the adapter never answered: `fetch` itself rejected, offline, blocked or timed out. */
+class AdapterUnreachable extends Error {
+  constructor(cause: unknown) {
+    super("The adapter did not answer.", { cause });
+    this.name = "AdapterUnreachable";
+  }
+}
+
+export function isAdapterUnreachable(error: unknown): boolean {
+  return error instanceof AdapterUnreachable;
+}
+
+/** True when a call failed because the adapter did not answer: no response at all, a 5xx (the
+ *  adapter's `ProviderTimeout` when Meld did not answer it), or a 429. A refusal the adapter
+ *  answered with is not one. */
 export function isAdapterOutage(error: unknown): boolean {
   if (error instanceof AdapterRefusal) return error.status >= 500 || error.status === 429;
-  return error instanceof TypeError;
+  return error instanceof AdapterUnreachable;
 }
 
 /** A buy's fiat bound, as the adapter reports it on a refused quote. */
@@ -307,11 +321,13 @@ export interface MeldFiatLimit {
   readonly currency: string;
 }
 
-/** What the adapter said when it refused: its tag, the `Other` code under it, and the status. */
+/** What the adapter said when it refused: its tag, the `Other` code under it, the status, and
+ *  its id for the call. */
 export interface MeldRefusal {
   readonly tag?: string;
   readonly code?: string;
   readonly status: number;
+  readonly requestId?: string;
 }
 
 /** The adapter's refusal behind `error`, when it is one. */
@@ -321,6 +337,7 @@ export function refusalOf(error: unknown): MeldRefusal | undefined {
     status: error.status,
     ...(error.tag === undefined ? {} : { tag: error.tag }),
     ...(error.code === undefined ? {} : { code: error.code }),
+    ...(error.requestId === undefined ? {} : { requestId: error.requestId }),
   };
 }
 
@@ -433,7 +450,14 @@ function depositOf(raw: unknown): MeldDepositDisclosure | undefined {
  * `direction: "sell"` in the body; absent means buy.
  */
 export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & MeldSellClientLike {
-  const doFetch = config.fetchImpl ?? fetch;
+  const fetchImpl = config.fetchImpl ?? fetch;
+  const doFetch = async (url: string, init: RequestInit): Promise<Response> => {
+    try {
+      return await fetchImpl(url, init);
+    } catch (cause) {
+      throw new AdapterUnreachable(cause);
+    }
+  };
   const base = config.baseUrl.replace(/\/$/, "");
   /**
    * The default idempotency key: the terms the buyer chose, plus an attempt counter. No solved
@@ -494,6 +518,7 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
         res.status === 429 ? retryAfterMsOf(res) : undefined,
         limitOf(tag, value),
         tag,
+        typeof data["request_id"] === "string" ? data["request_id"] : undefined,
       );
     }
     return data;
@@ -674,8 +699,11 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
       }
     }
     // Every attempt this walk can name has already concluded.
-    throw new Error(
+    throw new AdapterRefusal(
       walk.exhaustedMessage,
+      409,
+      "ATTEMPTS_EXHAUSTED",
+      undefined,
       lastRefusal instanceof Error ? { cause: lastRefusal } : undefined,
     );
   }

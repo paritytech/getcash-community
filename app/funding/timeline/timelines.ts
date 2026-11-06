@@ -6,16 +6,14 @@ import { isDirectDeposit, type TopUpRecord } from "../requests/model";
 import { isMeldSourceId, meldMethodFor, type MeldMethod } from "../source-ids";
 import { chainflipRoute } from "./chainflip";
 import { directRoute } from "./direct";
-import { stepSince } from "./live";
 import { meldBankRoute, meldCardRoute } from "./meld";
 import type { TimelineRoute } from "./route";
 import { topUpTimeline, type TopUpTimeline } from "./top-up";
 import type { TimelineView } from "./types";
 
-/** How often a shown timeline is evaluated: each second, for time-moved lines and countdowns. */
+/** How often a shown timeline is evaluated: each second, for time-moved lines, time left and the
+ *  reconnect line. */
 export const TIMELINE_CADENCE_MS = 1_000;
-/** The live detail's own grid, a multiple of the cadence. */
-export { LIVE_DETAIL_MS } from "./live";
 
 /** Evaluations further apart than this mean the app was not running in between. */
 const MAX_EVALUATION_GAP_MS = 5 * TIMELINE_CADENCE_MS;
@@ -44,8 +42,6 @@ interface Watch {
   readonly sentUnseenMs: number;
   /** When the last evaluation found the sent funds unseen with fresh reads. */
   readonly awaitingSince?: number;
-  /** When the step shown last became current; kept with `previous`. */
-  readonly stepSince?: number;
 }
 
 /** Evaluates timelines in memory for one app session. Each top-up is watched from its first
@@ -54,22 +50,16 @@ export function createTopUpTimelines(): TopUpTimelineOf {
   const shown = new Map<string, Watch>();
   return (record, now) => {
     const key = requestRefKey(record.ref);
-    const {
-      watchingSince,
-      previous,
-      sentUnseenMs,
-      awaitingSince,
-      stepSince: kept,
-    } = shown.get(key) ?? { watchingSince: now, sentUnseenMs: 0 };
-    // Kept only with the view it was shown on, so the first open starts its step now.
-    const since = kept ?? now;
+    const { watchingSince, previous, sentUnseenMs, awaitingSince } = shown.get(key) ?? {
+      watchingSince: now,
+      sentUnseenMs: 0,
+    };
     const route = timelineRouteOf(record);
     const timeline = topUpTimeline(record, route, {
       now,
       watchingSince,
       previous,
       sentUnseenMs,
-      stepSince: since,
     });
     if (timeline === undefined) {
       shown.set(key, { watchingSince, sentUnseenMs });
@@ -85,7 +75,6 @@ export function createTopUpTimelines(): TopUpTimelineOf {
       previous: timeline.view,
       sentUnseenMs: sentUnseenMs + awaited,
       ...(awaiting ? { awaitingSince: now } : {}),
-      stepSince: stepSince(timeline.view, previous, since, now),
     });
     return timeline;
   };

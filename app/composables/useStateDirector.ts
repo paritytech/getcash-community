@@ -5,6 +5,7 @@ import { onMounted, onUnmounted, ref } from "vue";
 import { useSessionStore } from "../stores/session";
 import { isDemoBuild } from "../utils/demo";
 import { directScene } from "../utils/dev-preview";
+import { devLog } from "~~/lib/log";
 
 /**
  * The scene on screen, as `PreviewSceneLabel` draws it. Module state, not per-caller: the keys are
@@ -31,7 +32,7 @@ export function useStateDirector() {
       void session.fundFaucet();
     } else if (e.key === "H") {
       // Dev fault hook for the in-place reconnect.
-      console.warn("[coinage] DEV: forcing a transport reconnect");
+      devLog("coinage", "DEV: forcing a transport reconnect", undefined, "warn");
       session.reconnectChains();
     }
   }

@@ -4,7 +4,7 @@
 
 import { defineStore } from "pinia";
 import { computed, ref, shallowRef, watch } from "vue";
-import { recordedRoute, type ConversionRoute } from "@getsome/funding";
+import { recordedRoute, type ConversionRoute, type RecoveryToken } from "@getsome/funding";
 import type { FlowState, SourceId, SwapStatusResult } from "@getsome/core";
 import {
   createMeldClient,
@@ -16,6 +16,8 @@ import {
 } from "@getsome/meld";
 import { depositWindowFor } from "../funding/config";
 import { migrateRecord } from "../funding/requests/migrate";
+import { requestChanged } from "../funding/requests/telemetry";
+import { reasonOf, reportFailure, setTelemetryTag } from "~~/lib/telemetry";
 import {
   CANCEL_CONFIRM_MS,
   COALESCE_MS,
@@ -41,6 +43,8 @@ import {
   isTopUp,
   isWithdrawSourceId,
   isWithdrawal,
+  burnerAddressOf,
+  paymentOutOfRound,
   paymentTaken,
   paymentWatchUntil,
   railProviderOf,
@@ -52,7 +56,9 @@ import {
   withdrawalRouteOf,
   type ConvertedTx,
   type DepositInBlock,
+  type DepositUnusedKind,
   type Freshness,
+  type HostPayment,
   type HostPaymentStatus,
   type MeldSaleReading,
   type Observation,
@@ -67,8 +73,9 @@ import {
   type WithdrawalRecord,
   type WorkerHandoffPayload,
   type WorkerJobView,
+  type WorkerRecoveryView,
 } from "../funding/requests/model";
-import { paymentIdFor } from "../funding/requests/payment-id";
+import { paymentIdFor, recoveryPaymentIdFor } from "../funding/requests/payment-id";
 import { reduce } from "../funding/requests/reducer";
 import {
   createMemoryKeyedStorage,
@@ -113,6 +120,7 @@ import { adapterFetch } from "~~/lib/adapter-fetch";
 import { FUNDING_CHAINS, sourceIdFor, sourcePairFor } from "~~/lib/config";
 import { isHosted } from "~~/lib/host-account";
 import type { StorageWorker } from "~~/lib/worker-rpc";
+import { devLog } from "~~/lib/log";
 
 export interface RequestEntry {
   record: RequestRecord;
@@ -217,6 +225,7 @@ const serializeProbed = (sources: ProbedBySource): string =>
 /** The status kinds whose arrival is written to the host before `observe` resolves. */
 const CRITICAL_KINDS = new Set<RequestRecord["status"]["kind"]>([
   "deposit-seen",
+  "recovering",
   "settled",
   "cancelled",
   "failed",
@@ -240,7 +249,10 @@ function isCritical(previous: RequestRecord, next: RequestRecord): boolean {
   if (isTopUp(previous) && isTopUp(next)) {
     return (
       (previous.meldSubmittedAt === undefined && next.meldSubmittedAt !== undefined) ||
-      (previous.depositSkippedAt === undefined && next.depositSkippedAt !== undefined)
+      (previous.depositSkippedAt === undefined && next.depositSkippedAt !== undefined) ||
+      // The recovery fee's prompt, stamped before the host is asked.
+      previous.recovery?.payment?.requestedAt !== next.recovery?.payment?.requestedAt ||
+      previous.recovery?.payment?.id !== next.recovery?.payment?.id
     );
   }
   if (isWithdrawal(previous) && isWithdrawal(next)) {
@@ -321,6 +333,7 @@ const WORKER_DRIVEN_KINDS = new Set<RequestRecord["status"]["kind"]>([
   "awaiting-deposit",
   "deposit-seen",
   "converting",
+  "recovering",
   "claiming",
   "awaiting-payment",
   "paid",
@@ -377,6 +390,16 @@ type WorkerJob = {
   conversion?: {
     preparedAt?: number;
     converted?: { txHash?: string; block?: number; at?: number; workedMs?: number };
+  } | null;
+  trap?: { amount?: unknown; at?: unknown; claimerHex?: unknown } | null;
+  recovery?: {
+    phase?: unknown;
+    round?: unknown;
+    askCash?: unknown;
+    minimums?: { minimums?: Record<string, unknown> | null } | null;
+    deposit?: unknown;
+    route?: object | null;
+    depositError?: { at?: unknown; kind?: unknown; round?: unknown } | null;
   } | null;
   // The hand-off the worker keeps, read back when the surface has no record of the job.
   label?: string;
@@ -443,11 +466,62 @@ function conversionOf(job: WorkerJob): WorkerJobView["conversion"] {
   return { preparedAt: conversion.preparedAt, ...(converted === undefined ? {} : { converted }) };
 }
 
+const RECOVERY_TOKENS: readonly RecoveryToken[] = ["PAS", "DOTUSD", "USDT", "USDC"];
+
+/** The trap the job found and its recovery, when every field the record needs is there. */
+function recoveryOf(job: WorkerJob): WorkerRecoveryView | undefined {
+  const { trap, recovery } = job;
+  if (
+    !isObject(trap) ||
+    !isString(trap.amount) ||
+    !isNumber(trap.at) ||
+    !isString(trap.claimerHex)
+  ) {
+    return undefined;
+  }
+  const phase =
+    recovery?.phase === "claiming" || recovery?.phase === "done" ? recovery.phase : "funding";
+  const priced = isObject(recovery?.minimums) ? recovery.minimums.minimums : undefined;
+  let minimums: WorkerRecoveryView["minimums"];
+  if (isObject(priced)) {
+    minimums = {};
+    for (const token of RECOVERY_TOKENS) {
+      const figure = priced[token];
+      if (isString(figure) || figure === null) minimums[token] = figure;
+    }
+  }
+  const depositUnused = depositUnusedOf(recovery);
+  return {
+    trappedAmount: trap.amount,
+    trappedAt: trap.at,
+    claimerHex: trap.claimerHex,
+    phase,
+    round: isNumber(recovery?.round) ? recovery.round : 0,
+    ...(isString(recovery?.askCash) ? { askCash: recovery.askCash } : {}),
+    ...(minimums === undefined ? {} : { minimums }),
+    ...(isString(recovery?.deposit) ? { deposit: recovery.deposit } : {}),
+    ...(isObject(recovery?.route) ? { depositFound: true } : {}),
+    ...(depositUnused === undefined ? {} : { depositUnused }),
+  };
+}
+
+const DEPOSIT_UNUSED_KINDS: readonly DepositUnusedKind[] = ["held", "short", "trapped"];
+
+/** The deposit the worker let go, when it did so in the fee's current round: an earlier
+ *  round's is over with that round's ask. */
+function depositUnusedOf(recovery: WorkerJob["recovery"]): WorkerRecoveryView["depositUnused"] {
+  const error = recovery?.depositError;
+  if (!isObject(error) || !isNumber(error.at) || error.round !== recovery?.round) return undefined;
+  const kind = DEPOSIT_UNUSED_KINDS.find((k) => k === error.kind);
+  return kind === undefined ? undefined : { at: error.at, kind };
+}
+
 /** The job as the record's reducer reads it. */
 function jobView(job: WorkerJob): WorkerJobView {
   const { claim } = job;
   const depositSeen = depositSeenOf(job);
   const conversion = conversionOf(job);
+  const recovery = recoveryOf(job);
   const refusals = job.state?.psmRefusals;
   const workedMs = job.state?.workedMs;
   return {
@@ -478,6 +552,7 @@ function jobView(job: WorkerJob): WorkerJobView {
     ...(isNumber(refusals) && refusals > 0 ? { psmRefusals: refusals } : {}),
     ...(depositSeen === undefined ? {} : { depositSeen }),
     ...(conversion === undefined ? {} : { conversion }),
+    ...(recovery === undefined ? {} : { recovery }),
   };
 }
 
@@ -1047,7 +1122,12 @@ export const useRequestsStore = defineStore("requests", () => {
     } catch (e) {
       const persistError = messageOf(e);
       patchEntry(key, (current) => ({ ...current, persistError }));
-      console.warn(`[requests] record write failed for ${key}: ${persistError}`);
+      devLog("requests", `record write failed for ${key}: ${persistError}`, undefined, "warn");
+      reportFailure("storage-failed", {
+        reason: reasonOf(e),
+        error: e,
+        context: { key, message: persistError },
+      });
       return false;
     }
     patchEntry(key, (current) => {
@@ -1085,7 +1165,9 @@ export const useRequestsStore = defineStore("requests", () => {
   /** Replaces the entry's record: the mirror at once, the host now when the change is critical
    *  and after the coalescing window otherwise. Runs inside the key's queue. */
   async function commit(key: RequestKey, next: RequestRecord, critical: boolean): Promise<void> {
+    const previous = entries.value[key]?.record;
     patchEntry(key, (entry) => ({ ...entry, record: next, pendingWrite: true }));
+    if (previous) requestChanged(previous, next);
     writeMirror();
     if (critical) {
       cancelCoalesced(key);
@@ -1233,7 +1315,12 @@ export const useRequestsStore = defineStore("requests", () => {
         create(record.ref, record)
           .then(() => observe(record.ref, jobObservation(record, blobs, sessionId, now)))
           .catch((e: unknown) => {
-            console.warn(`[requests] record for worker job ${sessionId} failed: ${messageOf(e)}`);
+            devLog(
+              "requests",
+              `record for worker job ${sessionId} failed: ${messageOf(e)}`,
+              undefined,
+              "warn",
+            );
           }),
       );
     };
@@ -1271,6 +1358,7 @@ export const useRequestsStore = defineStore("requests", () => {
   });
   function setForeground(ref: RequestRef | null): void {
     foreground.value = ref === null ? null : requestRefKey(ref);
+    setTelemetryTag("request.key", foreground.value ?? undefined);
     // The Meld poll follows the request on screen; another one taking the screen ends it, and the
     // reconcile reads the old one from then on.
     if (meldPoll !== null && meldPoll.key !== foreground.value) stopMeldPoll();
@@ -1284,6 +1372,12 @@ export const useRequestsStore = defineStore("requests", () => {
     value: { message: string; source: "handoff" | "faucet" } | null,
   ): void {
     transientError.value = value;
+    if (value?.source === "handoff") {
+      reportFailure("handoff-failed", {
+        reason: reasonOf(value.message),
+        context: { message: value.message, key: foreground.value ?? "none" },
+      });
+    }
   }
   /** A line about the request on screen the record does not carry (a reconnect, a retry). */
   const fundingNotice = ref<string | null>(null);
@@ -1441,8 +1535,11 @@ export const useRequestsStore = defineStore("requests", () => {
     const sourceId = effectiveSourceId(ref);
     const failed = (e: unknown): void => {
       if (watching.stopped) return;
-      console.warn(
-        `[requests] deposit watch for ${sourceId}#${ref.tradeN} failed: ${messageOf(e)}`,
+      devLog(
+        "requests",
+        `deposit watch for ${sourceId}#${ref.tradeN} failed: ${messageOf(e)}`,
+        undefined,
+        "warn",
       );
       stopDepositWatch();
     };
@@ -1608,7 +1705,7 @@ export const useRequestsStore = defineStore("requests", () => {
     }
     for (const read of [burner, jobs]) {
       if (!read.ok) {
-        console.warn(`[requests] cancel unconfirmed: ${read.reason}`);
+        devLog("requests", `cancel unconfirmed: ${read.reason}`, undefined, "warn");
         return "unconfirmed";
       }
     }
@@ -1642,7 +1739,12 @@ export const useRequestsStore = defineStore("requests", () => {
         job.failure === "claim" ||
         job.failure === "held");
     if (!confirmedByJob && record.witnesses.core?.phase !== "failed") {
-      console.warn("[requests] retry ignored: the failure is not confirmed as recoverable");
+      devLog(
+        "requests",
+        "retry ignored: the failure is not confirmed as recoverable",
+        undefined,
+        "warn",
+      );
       return false;
     }
     if (confirmedByJob && isHosted()) {
@@ -1654,7 +1756,12 @@ export const useRequestsStore = defineStore("requests", () => {
         patchEntry(key, ({ handoffError: _cleared, ...sent }) => sent);
       } catch (e) {
         const handoffError = messageOf(e);
-        console.warn(`[requests] retry for ${key} could not re-arm the worker: ${handoffError}`);
+        devLog(
+          "requests",
+          `retry for ${key} could not re-arm the worker: ${handoffError}`,
+          undefined,
+          "warn",
+        );
         patchEntry(key, (current) => ({ ...current, handoffError }));
         return false;
       }
@@ -1662,6 +1769,125 @@ export const useRequestsStore = defineStore("requests", () => {
     await observe(ref, { source: "user", at: requestsNow(), event: "retry" });
     syncJobPoll();
     return true;
+  }
+
+  /** The top-ups whose claim fee the page is asking the host for right now: their stamps are
+   *  answered by the request itself, not read back meanwhile. */
+  const recoveryAsks = new Set<RequestKey>();
+
+  /**
+   * Asks the purse for a trapped top-up's claim fee, under an id derived from the top-up's own key
+   * and the attempt, stamped on the record before the host is asked. The host shows its sheets
+   * to the page and answers through the request itself: a refusal is applied as the host's word,
+   * so the journey says so and offers the other way; the Cash reaching the account is the
+   * worker's to report. A refused attempt, or one the worker's round has moved past, is followed
+   * by the next; one the host turned out not to know is asked again under its own id.
+   */
+  async function requestRecoveryPayment(
+    ref: RequestRef,
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const record = get(ref);
+    if (record === undefined || !isTopUp(record) || record.status.kind !== "recovering") {
+      return { ok: false, reason: "The top-up is not being recovered." };
+    }
+    const { recovery } = record;
+    if (recovery?.askCash === undefined) {
+      return { ok: false, reason: "The recovery fee is not known yet. Try again in a moment." };
+    }
+    if (!isHosted())
+      return { ok: false, reason: "Only the Polkadot App can pay from the balance." };
+    const key = requestRefKey(ref);
+    if (recoveryAsks.has(key)) return { ok: false, reason: "Your balance is already being asked." };
+    const previous = recovery.payment;
+    // A refused attempt, one the purse paid short, or one the worker's round moved past is over;
+    // the next ask is a fresh attempt under its own id. An attempt that failed for a reason that
+    // was not the host's refusal, a dropped connection with the sheet up, may well have been
+    // paid: it is asked again under its own id, which a host that paid it answers as known.
+    const refused = previous?.status === "failed" && previous.refusal !== "other";
+    const attempt =
+      previous === undefined
+        ? 0
+        : refused || previous.status === "partiallyClaimed" || paymentOutOfRound(recovery)
+          ? previous.attempt + 1
+          : previous.attempt;
+    const idHex = recoveryPaymentIdFor(recovery.claimerHex, attempt);
+    // The ask is on record before the stamp, so no poll reads the host between the two, and let
+    // go on every way out of here that does not reach the host.
+    recoveryAsks.add(key);
+    let live: typeof import("~~/lib/withdraw-live");
+    try {
+      // The host's module before the stamp: a stamp with no host ask behind it would read as a
+      // payment still waiting for its answer.
+      live = await import("~~/lib/withdraw-live");
+      await observe(ref, {
+        source: "user",
+        at: requestsNow(),
+        event: "payment-requested",
+        attempt,
+        id: idHex,
+        round: recovery.round,
+      });
+      // The stamp is the record's word that the purse may be asked: the record still recovering,
+      // with this attempt stamped. A record that moved on meanwhile keeps an older stamp of the
+      // same attempt, which is no word.
+      const stamped = get(ref);
+      if (
+        stamped === undefined ||
+        !isTopUp(stamped) ||
+        stamped.status.kind !== "recovering" ||
+        stamped.recovery?.payment?.attempt !== attempt ||
+        stamped.recovery.payment.requestedAt === undefined
+      ) {
+        recoveryAsks.delete(key);
+        return { ok: false, reason: "The top-up is no longer waiting for the fee." };
+      }
+    } catch (e) {
+      recoveryAsks.delete(key);
+      throw e;
+    }
+    const burnerAddress = burnerAddressOf(record) ?? "";
+    // The request resolves after the user's decision on the host's sheets, so it is started and
+    // left to run; both answers reach the record as the host's word, and the host's status is
+    // read back from then on until it is final.
+    void live
+      .requestKeyPayment({
+        idHex,
+        amount: BigInt(recovery.askCash),
+        key: { address: burnerAddress, publicKeyHex: recovery.claimerHex as `0x${string}` },
+      })
+      .then(() =>
+        observe(ref, {
+          source: "host",
+          at: requestsNow(),
+          payment: { attempt, status: "processing" },
+        }),
+      )
+      .catch(async (e: unknown) => {
+        const refused = e instanceof live.PaymentRefusedError;
+        const reason = refused ? e.message : messageOf(e);
+        devLog("requests", `recovery fee for ${key} refused: ${reason}`, undefined, "warn");
+        await observe(ref, {
+          source: "host",
+          at: requestsNow(),
+          payment: { attempt, status: "failed", reason, refusal: refused ? e.refusal : "other" },
+        });
+      })
+      .finally(() => {
+        recoveryAsks.delete(key);
+        syncPaymentPoll();
+      });
+    return { ok: true };
+  }
+
+  /** The buyer picked the token to send for a trapped top-up's claim fee: the deposit screen
+   *  opens on it, and the top-up opens on that screen again. */
+  function pickRecoveryToken(ref: RequestRef, token: RecoveryToken): Promise<void> {
+    return observe(ref, {
+      source: "user",
+      at: requestsNow(),
+      event: "recovery-token-picked",
+      token,
+    });
   }
 
   /** The buyer finished the provider's widget; the stamp is on the host before this resolves. */
@@ -1689,14 +1915,33 @@ export const useRequestsStore = defineStore("requests", () => {
     });
   }
 
-  /** One read of the host's word on a withdrawal's payment, applied as the host's observation.
-   *  Nothing to read before a prompt; a read that fails changes nothing. */
+  /** The host payment whose word is still pending for `record`, under a known id: a
+   *  withdrawal's while it awaits its payment; a trapped top-up's claim fee while the host has
+   *  not answered finally, unless the page is asking for it right now. */
+  function pendingHostPayment(record: RequestRecord): HostPayment | null {
+    if (isWithdrawal(record)) {
+      return record.status.kind === "awaiting-payment" && record.payment.id !== undefined
+        ? record.payment
+        : null;
+    }
+    const payment = record.recovery?.payment;
+    if (record.status.kind !== "recovering" || payment?.id === undefined) return null;
+    if (payment.status !== undefined && payment.status !== "processing") return null;
+    return recoveryAsks.has(requestRefKey(record.ref)) ? null : payment;
+  }
+
+  /** One read of the host's word on a payment, applied as the host's observation. Nothing to
+   *  read before a prompt; a read that fails changes nothing. */
   async function observePaymentStatus(ref: RequestRef): Promise<"ok" | "skipped" | "failed"> {
     const record = get(ref);
-    if (record === undefined || !isWithdrawal(record) || record.payment.id === undefined) {
-      return "skipped";
-    }
-    const { attempt, id } = record.payment;
+    const payment =
+      record === undefined
+        ? undefined
+        : isWithdrawal(record)
+          ? record.payment
+          : record.recovery?.payment;
+    if (payment?.id === undefined) return "skipped";
+    const { attempt, id } = payment;
     const at = requestsNow();
     try {
       const { readPaymentStatus } = await import("~~/lib/withdraw-live");
@@ -1704,8 +1949,11 @@ export const useRequestsStore = defineStore("requests", () => {
       await observe(ref, { source: "host", at, payment: { attempt, ...reading } });
       return "ok";
     } catch (e) {
-      console.warn(
-        `[requests] payment status read for ${requestRefKey(ref)} failed: ${messageOf(e)}`,
+      devLog(
+        "requests",
+        `payment status read for ${requestRefKey(ref)} failed: ${messageOf(e)}`,
+        undefined,
+        "warn",
       );
       return "failed";
     }
@@ -1760,7 +2008,7 @@ export const useRequestsStore = defineStore("requests", () => {
     }
     for (const read of [key, host]) {
       if (!read.ok) {
-        console.warn(`[requests] cancel unconfirmed: ${read.reason}`);
+        devLog("requests", `cancel unconfirmed: ${read.reason}`, undefined, "warn");
         return "unconfirmed";
       }
     }
@@ -1793,7 +2041,12 @@ export const useRequestsStore = defineStore("requests", () => {
       return true;
     } catch (e) {
       const handoffError = messageOf(e);
-      console.warn(`[requests] ${what} for ${key} could not re-arm the worker: ${handoffError}`);
+      devLog(
+        "requests",
+        `${what} for ${key} could not re-arm the worker: ${handoffError}`,
+        undefined,
+        "warn",
+      );
       patchEntry(key, (current) => ({ ...current, handoffError }));
       return false;
     }
@@ -1884,16 +2137,21 @@ export const useRequestsStore = defineStore("requests", () => {
         const notFound = (meldNotFound.get(key) ?? 0) + 1;
         if (notFound < MELD_GONE_AFTER) {
           meldNotFound.set(key, notFound);
-          console.warn(
-            `[meld] status for ${fundingRequestId} not found (${String(notFound)}/${String(MELD_GONE_AFTER)})`,
+          devLog(
+            "meld",
+            `status for ${fundingRequestId} not found (${String(notFound)}/${String(MELD_GONE_AFTER)})`,
+            undefined,
+            "warn",
           );
           await observe(ref, { source: "provider", provider: "meld", at, unreachable: true });
           return "not-found";
         }
         meldNotFound.delete(key);
-        console.error(
-          `[meld] status poll got a terminal 404 for ${fundingRequestId}, stopping:`,
+        devLog(
+          "meld",
+          `status poll got a terminal 404 for ${fundingRequestId}, stopping`,
           e,
+          "error",
         );
         await observe(ref, {
           source: "provider",
@@ -1907,19 +2165,23 @@ export const useRequestsStore = defineStore("requests", () => {
       meldNotFound.delete(key);
       // A 401 is an auth problem on this side and retries with the other transients.
       if (httpStatus === 401) {
-        console.error(
-          `[meld] status poll unauthorized for ${fundingRequestId}; check VITE_ADAPTER_AUTH / VITE_MELD_PRODUCT_ID. Retrying; the payment is NOT being declared failed:`,
+        devLog(
+          "meld",
+          `status poll unauthorized for ${fundingRequestId}; check VITE_ADAPTER_AUTH / VITE_MELD_PRODUCT_ID. Retrying; the payment is NOT being declared failed`,
           e,
+          "error",
         );
       }
       const failed = failures + 1;
       if (failed >= 5) {
-        console.error(
-          `[meld] status poll has failed ${String(failed)} times for ${fundingRequestId}:`,
+        devLog(
+          "meld",
+          `status poll has failed ${String(failed)} times for ${fundingRequestId}`,
           e,
+          "error",
         );
       } else {
-        console.warn("[meld] status poll failed (will retry):", e);
+        devLog("meld", "status poll failed (will retry)", e, "warn");
       }
       await observe(ref, { source: "provider", provider: "meld", at, unreachable: true });
       return "unreachable";
@@ -2045,7 +2307,12 @@ export const useRequestsStore = defineStore("requests", () => {
           return "ok";
         }
       }
-      console.warn(`[meld] sale read for ${fundingRequestId} failed (will retry): ${messageOf(e)}`);
+      devLog(
+        "meld",
+        `sale read for ${fundingRequestId} failed (will retry): ${messageOf(e)}`,
+        undefined,
+        "warn",
+      );
       return "failed";
     }
   }
@@ -2122,32 +2389,39 @@ export const useRequestsStore = defineStore("requests", () => {
     });
   }
 
-  // The payment poll: while the withdrawal on screen awaits its payment and the host's id is
-  // known, the host's status is read every PAYMENT_POLL_MS, one read at a time. The key's CASH is
-  // the worker's to see; this poll only brings the host's own word forward.
+  // The payment poll: while the request on screen has a host payment pending under a known id,
+  // a withdrawal's or a trapped top-up's claim fee, the host's status is read every
+  // PAYMENT_POLL_MS, one read at a time. The key's CASH is the worker's to see; this poll only
+  // brings the host's own word forward.
   let paymentPoll: { key: RequestKey; timer: ReturnType<typeof setTimeout> | null } | null = null;
-  const foregroundAwaitingPayment = (): WithdrawalRecord | null => {
-    const record = foregroundWithdrawal.value;
-    return record !== null &&
-      record.status.kind === "awaiting-payment" &&
-      record.payment.id !== undefined
-      ? record
-      : null;
+  const foregroundAwaitingPayment = (): { ref: RequestRef; payment: HostPayment } | null => {
+    // The request on screen of either kind: a withdrawal's payment or a top-up's claim fee.
+    const record = foregroundEntry.value?.record;
+    if (record === undefined) return null;
+    const payment = pendingHostPayment(record);
+    return payment === null ? null : { ref: record.ref, payment };
   };
   function startPaymentPoll(): void {
     if (sandboxed.value) return;
-    const record = foregroundAwaitingPayment();
-    if (record === null) return;
-    const key = requestRefKey(record.ref);
+    const pending = foregroundAwaitingPayment();
+    if (pending === null) return;
+    const key = requestRefKey(pending.ref);
     if (paymentPoll?.key === key) return;
     stopPaymentPoll();
     const poll = { key, timer: null as ReturnType<typeof setTimeout> | null };
     paymentPoll = poll;
     const tick = async (): Promise<void> => {
       if (paymentPoll !== poll) return;
-      await observePaymentStatus(record.ref);
+      // A fee the page is asking for right now is answered by the request, not read back: the
+      // poll steps aside and the request's end starts it again.
+      if (recoveryAsks.has(key)) {
+        stopPaymentPoll();
+        return;
+      }
+      await observePaymentStatus(pending.ref);
       if (paymentPoll !== poll) return;
-      if (foregroundAwaitingPayment()?.ref !== record.ref) {
+      const still = foregroundAwaitingPayment();
+      if (still === null || requestRefKey(still.ref) !== key) {
         stopPaymentPoll();
         return;
       }
@@ -2244,16 +2518,15 @@ export const useRequestsStore = defineStore("requests", () => {
     via: "probe",
   });
 
-  /** Reconcile's host step, hosted only: one status read for every withdrawal off screen that
-   *  awaits its payment under a known id. The foreground's own poll covers the one on screen. */
+  /** Reconcile's host step, hosted only: one status read for every request off screen with a
+   *  host payment pending under a known id, a withdrawal's or a trapped top-up's claim fee. The
+   *  foreground's own poll covers the one on screen. */
   async function readPaymentStatuses(): Promise<void> {
     if (sandboxed.value) return;
     if (!isHosted()) return;
-    const pending = withdrawals.value.filter(
+    const pending = records.value.filter(
       (record) =>
-        record.status.kind === "awaiting-payment" &&
-        record.payment.id !== undefined &&
-        requestRefKey(record.ref) !== foreground.value,
+        pendingHostPayment(record) !== null && requestRefKey(record.ref) !== foreground.value,
     );
     await inParallel(pending, MELD_READ_PARALLELISM, async (record) => {
       await observePaymentStatus(record.ref);
@@ -2283,7 +2556,7 @@ export const useRequestsStore = defineStore("requests", () => {
         probeWithdrawKey(sourceId, ref.tradeN),
       );
       if (!read.ok) {
-        console.warn(`[requests] ${read.reason} (kept)`);
+        devLog("requests", `${read.reason} (kept)`, undefined, "warn");
         return null;
       }
       await observe(ref, keyReading(read.value.cash, now));
@@ -2299,7 +2572,12 @@ export const useRequestsStore = defineStore("requests", () => {
         const cash = await probe(record);
         if (cash === null) return;
         if (cash > 0n) {
-          console.warn(`[requests] withdrawal #${ref.tradeN} resurrected: ${cash} CASH on its key`);
+          devLog(
+            "requests",
+            `withdrawal #${ref.tradeN} resurrected: ${cash} CASH on its key`,
+            undefined,
+            "warn",
+          );
           if (record.status.kind === "cancelled") {
             const sessionId = workerSessionId(effectiveSourceId(ref), ref.tradeN);
             await observe(ref, jobObservation(record, blobs, sessionId, now));
@@ -2310,9 +2588,19 @@ export const useRequestsStore = defineStore("requests", () => {
         if (record.deadline.paymentExpiresAt + TOMBSTONE_GRACE_MS >= now) return;
         try {
           await remove(ref);
-          console.warn(`[requests] withdrawal #${ref.tradeN} reaped: window closed, key empty`);
+          devLog(
+            "requests",
+            `withdrawal #${ref.tradeN} reaped: window closed, key empty`,
+            undefined,
+            "warn",
+          );
         } catch (e) {
-          console.warn(`[requests] withdrawal #${ref.tradeN} reap failed (kept): ${messageOf(e)}`);
+          devLog(
+            "requests",
+            `withdrawal #${ref.tradeN} reap failed (kept): ${messageOf(e)}`,
+            undefined,
+            "warn",
+          );
         }
       });
     }
@@ -2372,7 +2660,7 @@ export const useRequestsStore = defineStore("requests", () => {
         probeTradeBurner(sourceId, ref.tradeN, depositRouteOf(ref)),
       );
       if (!read.ok) {
-        console.warn(`[requests] ${read.reason} (kept)`);
+        devLog("requests", `${read.reason} (kept)`, undefined, "warn");
         return null;
       }
       await observe(ref, chainReading(read.value.free, now));
@@ -2388,8 +2676,11 @@ export const useRequestsStore = defineStore("requests", () => {
         const read = await probe(ref);
         if (read === null) return;
         if (read.free > 0n) {
-          console.warn(
-            `[requests] request #${ref.tradeN} resurrected: ${read.free} planck on ${read.address}`,
+          devLog(
+            "requests",
+            `request #${ref.tradeN} resurrected: ${read.free} planck on ${read.address}`,
+            undefined,
+            "warn",
           );
           if (record.status.kind === "cancelled") await observeJob(ref);
           return;
@@ -2400,11 +2691,19 @@ export const useRequestsStore = defineStore("requests", () => {
         if (paymentWatchUntil(record) >= now) return;
         try {
           await remove(ref);
-          console.warn(
-            `[requests] request #${ref.tradeN} reaped: window closed, burner confirmed empty`,
+          devLog(
+            "requests",
+            `request #${ref.tradeN} reaped: window closed, burner confirmed empty`,
+            undefined,
+            "warn",
           );
         } catch (e) {
-          console.warn(`[requests] request #${ref.tradeN} reap failed (kept): ${messageOf(e)}`);
+          devLog(
+            "requests",
+            `request #${ref.tradeN} reap failed (kept): ${messageOf(e)}`,
+            undefined,
+            "warn",
+          );
         }
       });
     }
@@ -2448,7 +2747,7 @@ export const useRequestsStore = defineStore("requests", () => {
         readHostedTradeCounter(sourceId),
       );
       if (!counter.ok) {
-        console.warn(`[requests] ${counter.reason}; gap sweep skipped`);
+        devLog("requests", `${counter.reason}; gap sweep skipped`, undefined, "warn");
         continue;
       }
       for (let n = 1; n < counter.value; n++) {
@@ -2476,7 +2775,7 @@ export const useRequestsStore = defineStore("requests", () => {
         readFlowSlot(sourceId as SourceId, n),
       );
       if (!flow.ok) {
-        console.warn(`[requests] ${flow.reason}`);
+        devLog("requests", `${flow.reason}`, undefined, "warn");
         return;
       }
       const { address, slot } = flow.value;
@@ -2484,7 +2783,7 @@ export const useRequestsStore = defineStore("requests", () => {
         probeTradeBurner(sourceId, n, recordedRoute(slot?.conversion ?? {})),
       );
       if (!read.ok) {
-        console.warn(`[requests] ${read.reason}`);
+        devLog("requests", `${read.reason}`, undefined, "warn");
         return;
       }
       const firstAt = probed[sourceId]?.[String(n)]?.firstAt ?? now;
@@ -2495,8 +2794,11 @@ export const useRequestsStore = defineStore("requests", () => {
       if (!hasHandoffAmount(slot)) {
         // Funds with no record, no job and no slot: only storage loss gets here, and a truthful
         // row needs an amount the app does not have.
-        console.warn(
-          `[requests] ${read.value.free} planck on ${address} (${sourceId}#${n}) with no record, job or flow slot; nothing created`,
+        devLog(
+          "requests",
+          `${read.value.free} planck on ${address} (${sourceId}#${n}) with no record, job or flow slot; nothing created`,
+          undefined,
+          "warn",
         );
         noteProbed(sourceId, n, { firstAt, lastAt: now, funded: true });
         return;
@@ -2506,7 +2808,12 @@ export const useRequestsStore = defineStore("requests", () => {
       try {
         await create(ref, recordFromFlowSlot(ref, address, slot, handoff, now));
       } catch (e) {
-        console.warn(`[requests] record for lost request ${sourceId}#${n} failed: ${messageOf(e)}`);
+        devLog(
+          "requests",
+          `record for lost request ${sourceId}#${n} failed: ${messageOf(e)}`,
+          undefined,
+          "warn",
+        );
         return;
       }
       await observeJob(ref);
@@ -2516,7 +2823,7 @@ export const useRequestsStore = defineStore("requests", () => {
       try {
         await store.write(PROBED_KEY, serializeProbed(probed));
       } catch (e) {
-        console.warn(`[requests] probed numbers write failed: ${messageOf(e)}`);
+        devLog("requests", `probed numbers write failed: ${messageOf(e)}`, undefined, "warn");
       }
     }
   }
@@ -2555,8 +2862,11 @@ export const useRequestsStore = defineStore("requests", () => {
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
     if (!worker.isAvailable()) {
-      console.warn(
-        `[requests] worker not running; ${lost.length} hand-off(s) wait for the next pass`,
+      devLog(
+        "requests",
+        `worker not running; ${lost.length} hand-off(s) wait for the next pass`,
+        undefined,
+        "warn",
       );
       for (const { record } of lost) {
         patchEntry(requestRefKey(record.ref), (current) => ({
@@ -2623,7 +2933,7 @@ export const useRequestsStore = defineStore("requests", () => {
           patchEntry(key, ({ handoffError: _cleared, ...sent }) => sent);
         } catch (e) {
           const handoffError = messageOf(e);
-          console.warn(`[requests] hand-off for ${key} failed: ${handoffError}`);
+          devLog("requests", `hand-off for ${key} failed: ${handoffError}`, undefined, "warn");
           patchEntry(key, (current) => ({ ...current, handoffError }));
         }
       }),
@@ -2665,7 +2975,7 @@ export const useRequestsStore = defineStore("requests", () => {
       ]);
       nudgeWithdrawTicks(getStorageWorkerManager());
     } catch (e: unknown) {
-      console.warn(`[requests] worker nudge failed: ${messageOf(e)}`);
+      devLog("requests", `worker nudge failed: ${messageOf(e)}`, undefined, "warn");
     }
   }
   /** One tick. Single-flight: a tick arriving while the previous one runs joins it, one while
@@ -2681,7 +2991,7 @@ export const useRequestsStore = defineStore("requests", () => {
       .then(() => observeWorkerJobs(requestsNow()))
       .then(() => undefined)
       .catch((e: unknown) => {
-        console.warn(`[requests] job poll failed: ${messageOf(e)}`);
+        devLog("requests", `job poll failed: ${messageOf(e)}`, undefined, "warn");
       })
       .finally(() => {
         jobPollTick = null;
@@ -2825,7 +3135,12 @@ export const useRequestsStore = defineStore("requests", () => {
       store = await getRecordStorage();
     } catch (e) {
       storage.value = "unavailable";
-      console.warn(`[requests] reconcile (${reason}): record storage unavailable: ${messageOf(e)}`);
+      devLog(
+        "requests",
+        `reconcile (${reason}): record storage unavailable: ${messageOf(e)}`,
+        undefined,
+        "warn",
+      );
       return;
     }
     storage.value = "ok";
@@ -2835,14 +3150,19 @@ export const useRequestsStore = defineStore("requests", () => {
     } catch (e) {
       // The memory refs are still read; the index itself is left as it is.
       indexed = null;
-      console.warn(`[requests] reconcile (${reason}): index read failed: ${messageOf(e)}`);
+      devLog(
+        "requests",
+        `reconcile (${reason}): index read failed: ${messageOf(e)}`,
+        undefined,
+        "warn",
+      );
     }
     const now = requestsNow();
     let changed = false;
 
     function noteReadError(key: RequestKey, e: unknown): void {
       const readError = messageOf(e);
-      console.warn(`[requests] record read failed for ${key} (kept): ${readError}`);
+      devLog("requests", `record read failed for ${key} (kept): ${readError}`, undefined, "warn");
       patchEntry(key, (current) => ({ ...current, readError }));
     }
 
@@ -2913,7 +3233,12 @@ export const useRequestsStore = defineStore("requests", () => {
         .filter((ref) => !listed.has(requestRefKey(ref)));
       if (missing.length > 0) {
         await mutateIndex((current) => [...current, ...missing]).catch((e: unknown) => {
-          console.warn(`[requests] reconcile (${reason}): index append failed: ${messageOf(e)}`);
+          devLog(
+            "requests",
+            `reconcile (${reason}): index append failed: ${messageOf(e)}`,
+            undefined,
+            "warn",
+          );
         });
       }
     }
@@ -2922,7 +3247,12 @@ export const useRequestsStore = defineStore("requests", () => {
     try {
       blobs = await observeWorkerJobs(now);
     } catch (e) {
-      console.warn(`[requests] reconcile (${reason}): worker jobs step failed: ${messageOf(e)}`);
+      devLog(
+        "requests",
+        `reconcile (${reason}): worker jobs step failed: ${messageOf(e)}`,
+        undefined,
+        "warn",
+      );
     }
 
     // The clock before the reads and the drivers: a record it expires here gets its chain read in
@@ -2936,37 +3266,67 @@ export const useRequestsStore = defineStore("requests", () => {
     try {
       await readChain(reason, now, blobs.jobs);
     } catch (e) {
-      console.warn(`[requests] reconcile (${reason}): chain step failed: ${messageOf(e)}`);
+      devLog(
+        "requests",
+        `reconcile (${reason}): chain step failed: ${messageOf(e)}`,
+        undefined,
+        "warn",
+      );
     }
 
     try {
       await readWithdrawKeys(reason, now, blobs);
     } catch (e) {
-      console.warn(`[requests] reconcile (${reason}): key step failed: ${messageOf(e)}`);
+      devLog(
+        "requests",
+        `reconcile (${reason}): key step failed: ${messageOf(e)}`,
+        undefined,
+        "warn",
+      );
     }
 
     try {
       await readBackgroundMeldStatuses();
     } catch (e) {
-      console.warn(`[requests] reconcile (${reason}): provider step failed: ${messageOf(e)}`);
+      devLog(
+        "requests",
+        `reconcile (${reason}): provider step failed: ${messageOf(e)}`,
+        undefined,
+        "warn",
+      );
     }
 
     try {
       await readBackgroundSaleStatuses();
     } catch (e) {
-      console.warn(`[requests] reconcile (${reason}): sale step failed: ${messageOf(e)}`);
+      devLog(
+        "requests",
+        `reconcile (${reason}): sale step failed: ${messageOf(e)}`,
+        undefined,
+        "warn",
+      );
     }
 
     try {
       await readPaymentStatuses();
     } catch (e) {
-      console.warn(`[requests] reconcile (${reason}): host step failed: ${messageOf(e)}`);
+      devLog(
+        "requests",
+        `reconcile (${reason}): host step failed: ${messageOf(e)}`,
+        undefined,
+        "warn",
+      );
     }
 
     try {
       await handOffLostRequests(now);
     } catch (e) {
-      console.warn(`[requests] reconcile (${reason}): hand-off step failed: ${messageOf(e)}`);
+      devLog(
+        "requests",
+        `reconcile (${reason}): hand-off step failed: ${messageOf(e)}`,
+        undefined,
+        "warn",
+      );
     }
     syncJobPoll();
     syncTick();
@@ -3063,6 +3423,8 @@ export const useRequestsStore = defineStore("requests", () => {
     leave,
     cancel,
     retry,
+    requestRecoveryPayment,
+    pickRecoveryToken,
     markMeldSubmitted,
     markDepositSkipped,
     cancelWithdrawal,

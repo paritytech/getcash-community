@@ -20,3 +20,17 @@ export function paymentIdFor(publicKeyHex: string, attempt: number): `0x${string
   new DataView(input.buffer).setUint32(publicKey.length, attempt, true);
   return toHex(blake2b(input, { dkLen: 32 }));
 }
+
+const RECOVER = new TextEncoder().encode("recover");
+
+/** The id the purse's payment of a trapped top-up's claim fee is registered under: derived from
+ *  the burner's public key, a domain of its own and the attempt. Never the bare key, which is the
+ *  id the top-up's own claim is registered under once the Cash is back. */
+export function recoveryPaymentIdFor(publicKeyHex: string, attempt: number): `0x${string}` {
+  const publicKey = fromHex(publicKeyHex);
+  const input = new Uint8Array(publicKey.length + RECOVER.length + 4);
+  input.set(publicKey);
+  input.set(RECOVER, publicKey.length);
+  new DataView(input.buffer).setUint32(publicKey.length + RECOVER.length, attempt, true);
+  return toHex(blake2b(input, { dkLen: 32 }));
+}

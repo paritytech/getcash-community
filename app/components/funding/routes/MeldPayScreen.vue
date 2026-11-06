@@ -5,10 +5,11 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { ChevronRight } from "lucide-vue-next";
 import { useSessionStore } from "../../../stores/session";
-import { methodMinimum, namedCountry, otherMethod } from "~~/lib/supported";
+import { isMethodDown, methodMinimum, namedCountry } from "~~/lib/supported";
 import { detectCountry } from "../../../composables/useDetectedCountry";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import { fiatAmountRejected, fiatOutOfRange } from "../../../funding/out-of-range";
+import { sessionFailed } from "../../../funding/session-failure";
 import type { FundingRoute } from "../../../funding/selection";
 import DetailRows from "../../ui/DetailRows.vue";
 import PillButton from "../../ui/PillButton.vue";
@@ -19,6 +20,8 @@ import SkeletonBlock from "../../ui/SkeletonBlock.vue";
 import SkeletonRow from "../../ui/SkeletonRow.vue";
 import AmountOutOfRange from "../AmountOutOfRange.vue";
 import MethodUnavailable from "../MethodUnavailable.vue";
+import { devLog } from "~~/lib/log";
+import { trackAction } from "~~/lib/telemetry";
 
 const session = useSessionStore();
 // switchRoute asks the shell to swap to the crypto package when this region does not route the
@@ -77,8 +80,6 @@ watch(
 );
 
 const meldMethod = computed(() => (session.method === "bank" ? "bank" : "card"));
-/** The other fiat method, when this region routes it and not the chosen one. */
-const switchMethod = computed(() => otherMethod(session.meldCorridor, meldMethod.value));
 
 // The charged total is the hero; the toolbar already names the method, so no Via row.
 const heroAmount = computed(() => {
@@ -133,14 +134,19 @@ const canContinue = computed(
 );
 async function next() {
   if (!canContinue.value) return;
+  trackAction("card.pay");
   starting.value = true;
   startError.value = null;
   try {
     await session.start();
   } catch (e) {
-    console.warn("[meld] could not start the payment:", e);
-    startError.value =
-      e instanceof Error ? e.message : "Could not start the payment. Please try again.";
+    devLog("meld", "could not start the payment", e, "warn");
+    startError.value = sessionFailed(e, {
+      side: "buy",
+      method: meldMethod.value,
+      country: countryLabel.value,
+      provider: session.quoted?.provider,
+    });
     starting.value = false;
   }
 }
@@ -155,10 +161,9 @@ async function next() {
     :country="selectedCountry"
     :country-name="countryLabel"
     :minimum="methodMinimum(session.meldCorridor, meldMethod)"
-    :other="switchMethod"
+    :temporarily="isMethodDown(session.meldCorridor, meldMethod)"
     @region="emit('currency')"
     @use-crypto="emit('switchRoute', 'crypto')"
-    @use-other="switchMethod && emit('switchRoute', switchMethod)"
   />
   <AmountOutOfRange
     v-else-if="session.quoteOutOfRange !== null && !session.loading"

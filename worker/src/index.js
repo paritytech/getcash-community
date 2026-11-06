@@ -39,19 +39,24 @@ export {
 
 const keepAlive = createKeepAlive();
 
-/** One pass over both engines: how many jobs were ticked, and whether either engine still had a
- *  pass running, in which case the keep-alive is left as it is. */
+/** One pass over both engines: how many jobs were ticked, how many of them can move on their own
+ *  and so hold the keep-alive, and whether either engine still had a pass running, in which case
+ *  the keep-alive is left as it is. */
 async function tickAll() {
   const [funding, withdraw] = await Promise.all([tickAllFunding(), tickAllWithdraw()]);
-  return { ticked: funding.ticked + withdraw.ticked, busy: funding.busy || withdraw.busy };
+  return {
+    ticked: funding.ticked + withdraw.ticked,
+    holding: funding.holding + withdraw.holding,
+    busy: funding.busy || withdraw.busy,
+  };
 }
 
-// Adopt a predecessor's keep-alive operation while either engine has work, close it otherwise.
-// An unreadable store counts as work.
+// Adopt a predecessor's keep-alive operation while either engine has work that moves on its own,
+// close it otherwise. An unreadable store counts as work.
 void keepAlive.restore(async () => {
   try {
-    const { ticked } = await tickAll();
-    return ticked > 0;
+    const { holding } = await tickAll();
+    return holding > 0;
   } catch (error) {
     console.warn(`[worker] restore could not read the jobs: ${error}`);
     return true;
@@ -61,12 +66,12 @@ void keepAlive.restore(async () => {
 /** Interval between passes on this worker's own timer. */
 const TICK_MS = 6_000;
 
-/** Runs one pass and holds the keep-alive while there is work left. */
+/** Runs one pass and holds the keep-alive while there is work that moves on its own. */
 async function pump() {
   try {
-    const { ticked, busy } = await tickAll();
+    const { holding, busy } = await tickAll();
     if (busy) return;
-    if (ticked > 0) {
+    if (holding > 0) {
       await keepAlive.acquire();
     } else {
       await keepAlive.release();

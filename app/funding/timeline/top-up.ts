@@ -1,6 +1,5 @@
 import type { TopUpRecord } from "../requests/model";
 import type { TimelineFailure } from "./failure";
-import { liveState } from "./live";
 import { timelineView } from "./model";
 import { earlierFact } from "./observed";
 import {
@@ -12,6 +11,7 @@ import {
   polkadotText,
   workerTickAt,
 } from "./polkadot";
+import { recoveryPrompt, type RecoveryPrompt } from "./recovery";
 import {
   delay,
   type ProviderMilestones,
@@ -29,6 +29,8 @@ export interface TopUpTimeline {
   readonly detail?: string;
   /** Present once the top-up failed. */
   readonly failure?: TimelineFailure;
+  /** Present while the Cash is in People's trap: what the journey offers to get it back. */
+  readonly recovery?: RecoveryPrompt;
   /** The provider sent the funds, they are not seen yet, and the reads are fresh. */
   readonly awaitingSentFunds?: boolean;
 }
@@ -47,8 +49,6 @@ export interface TopUpTimelineOptions {
   /** How long this session's reads were fresh, in total, while the funds the provider sent were
    *  not seen. */
   readonly sentUnseenMs?: number;
-  /** When the current step became current, for the live detail; `now` when unknown. */
-  readonly stepSince?: number;
 }
 
 /** How long the reads that move the current phase may go without success before we say so. */
@@ -79,14 +79,7 @@ function failureOf(record: TopUpRecord, route: TimelineRoute, failed: number): T
 export function topUpTimeline(
   record: TopUpRecord,
   route: TimelineRoute,
-  {
-    now,
-    watchingSince,
-    locale,
-    previous,
-    sentUnseenMs = 0,
-    stepSince: since = now,
-  }: TopUpTimelineOptions,
+  { now, watchingSince, locale, previous, sentUnseenMs = 0 }: TopUpTimelineOptions,
 ): TopUpTimeline | undefined {
   const view = timelineView(TOP_UP_TIMELINE, {
     reached: { ...providerMilestones(record, route), ...polkadotMilestones(record) },
@@ -104,18 +97,23 @@ export function topUpTimeline(
   if (view === undefined) return undefined;
   if (view.state === "done") return { view };
   if (view.state === "failed") return { view, failure: failureOf(record, route, view.failed) };
+  // The Cash is in People's trap: the current line waits on the buyer or on the claim, and the
+  // band says which.
+  const recovery = recoveryPrompt(record);
+  if (recovery !== undefined) {
+    return {
+      view: view.state === "active" ? { ...view, state: "delayed" } : view,
+      message: recovery.message,
+      detail: recovery.detail,
+      recovery,
+    };
+  }
 
   const providerPhase = isProviderPhase(view.phase);
-  // The read that moves the phase, which the detail names and the reconnect line watches. Not
-  // the app's own burner read: it is stamped on a balance change, not on each read.
-  const readAt = providerPhase ? route.lastReadAt(record) : workerTickAt(record);
-  const lastReadAt = readAt ?? -Infinity;
-  const state = {
-    delayed: view.state === "delayed",
-    now,
-    locale,
-    ...liveState(view, previous, since, now, readAt),
-  };
+  // The read that moves the phase, which the reconnect line watches. Not the app's own burner
+  // read: it is stamped on a balance change, not on each read.
+  const lastReadAt = (providerPhase ? route.lastReadAt(record) : workerTickAt(record)) ?? -Infinity;
+  const state = { delayed: view.state === "delayed", now, locale };
   const text = providerPhase
     ? route.text(record, view.phase, state)
     : polkadotText(record, polkadotPhaseOf(view.phase), state);

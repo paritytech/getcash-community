@@ -100,7 +100,7 @@ const emit = defineEmits<{ open: [topUp: ProgressCardTopUp] }>();
       </span>
     </span>
 
-    <span class="shrink-0 rounded-full bg-surface-nested px-1 py-0.5 text-body-m text-fg-secondary">
+    <span class="shrink-0 rounded-full bg-surface-nested px-2 py-0.5 text-body-m text-fg-secondary">
       {{ topUp.routeLabel }}
     </span>
   </button>

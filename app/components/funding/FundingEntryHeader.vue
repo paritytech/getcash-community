@@ -67,12 +67,13 @@ const emit = defineEmits<{
 <style scoped>
 .funding-entry-header {
   display: flex;
+  box-sizing: content-box;
   min-height: 3.75rem;
   flex-shrink: 0;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  padding: 0 1.5rem;
+  padding: 1.5rem 1.5rem 0;
 }
 
 .funding-entry-header-centered {
@@ -143,6 +144,13 @@ const emit = defineEmits<{
   border: 2px solid var(--bg-surface-main);
   border-radius: 9999px;
   background: var(--bg-status-error);
+}
+
+/* Under 712px the full-size amount screen has no room for the top gap */
+@media (max-height: 711px) {
+  .funding-entry-header {
+    padding-top: 0;
+  }
 }
 
 @media (max-height: 650px) {

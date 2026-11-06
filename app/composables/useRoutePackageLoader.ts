@@ -5,6 +5,7 @@
 import { markRaw, ref, shallowRef, type Component } from "vue";
 import { loadFundingPackage, type FundingRoutePackages } from "../funding/packages";
 import type { FundingRoute, FundingSelection } from "../funding/selection";
+import { devLog } from "~~/lib/log";
 
 export function useRoutePackageLoader(
   packages: FundingRoutePackages,
@@ -37,7 +38,7 @@ export function useRoutePackageLoader(
       routeError.value = `${routeLabel(next.route)} isn't available in this build yet.`;
       return;
     }
-    console.error(`[funding] could not load ${result.packageId}:`, result.error);
+    devLog("funding", `could not load ${result.packageId}`, result.error, "error");
     routeError.value = `${routeLabel(next.route)} couldn't be opened. Try again.`;
   }
 

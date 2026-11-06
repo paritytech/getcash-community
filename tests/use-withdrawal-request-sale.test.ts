@@ -23,6 +23,7 @@ import {
 import { useRequestsStore } from "../app/stores/requests";
 import { requestRefOf } from "../app/utils/request-index";
 import { setMeldSellClient } from "../app/withdraw/meld-client";
+import { adapterRefusal, adapterUnreachable } from "./fixtures/meld-refusal";
 import { FIXTURE_NOW } from "./fixtures/requests";
 
 const KEY_HEX = `0x${"07".repeat(32)}`;
@@ -375,10 +376,14 @@ describe("a fiat sale from the page", () => {
 
   it("creates nothing when the provider will not open the sale", async () => {
     vi.spyOn(meld, "createSellSession").mockRejectedValue(
-      new Error("Not available in your region yet."),
+      await adapterRefusal({ tag: "Other", value: { code: "PROVIDER_REJECTED" } }),
     );
     const outcome = await startSale();
-    expect(outcome).toEqual({ ok: false, reason: "Not available in your region yet." });
+    expect(outcome).toEqual({
+      ok: false,
+      reason:
+        "The provider rejected this quote. Your Cash is still in your balance. Try again later or use another method.",
+    });
     expect(useRequestsStore().withdrawals).toEqual([]);
   });
 
@@ -537,8 +542,12 @@ describe("a fiat sale from the page", () => {
   it("takes the number before the session, so a lost answer leaves the next try its own key", async () => {
     const opened = vi.spyOn(meld, "createSellSession");
     // The adapter opened the session and the answer never came back.
-    opened.mockRejectedValueOnce(new Error("Failed to fetch"));
-    expect(await startSale()).toEqual({ ok: false, reason: "Failed to fetch" });
+    opened.mockRejectedValueOnce(await adapterUnreachable());
+    expect(await startSale()).toEqual({
+      ok: false,
+      reason:
+        "We couldn't reach the payment service. Check your connection and try again. Your Cash is still in your balance.",
+    });
     expect(advanced).toHaveBeenCalledWith("wd:meld-bank", 1);
     expect(advanced.mock.invocationCallOrder[0]).toBeLessThan(opened.mock.invocationCallOrder[0]!);
     expect(useRequestsStore().withdrawals).toEqual([]);

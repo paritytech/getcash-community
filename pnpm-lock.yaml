@@ -65,6 +65,9 @@ importers:
       '@polkadot-labs/hdkd-helpers':
         specifier: ^0.0.27
         version: 0.0.27
+      '@sentry/vue':
+        specifier: 10.72.0
+        version: 10.72.0(pinia@3.0.4(typescript@5.9.3)(vue@3.5.41(typescript@5.9.3)))(vue@3.5.41(typescript@5.9.3))
       buffer:
         specifier: ^6.0.3
         version: 6.0.3
@@ -207,6 +210,9 @@ importers:
       '@getsome/core':
         specifier: workspace:*
         version: link:../core
+      '@noble/hashes':
+        specifier: ^2.2.0
+        version: 2.4.0
       '@polkadot-api/descriptors':
         specifier: file:../../.papi/descriptors
         version: file:.papi/descriptors(polkadot-api@2.2.2(bufferutil@4.1.0)(esbuild@0.28.2)(rxjs@7.8.2)(utf-8-validate@6.0.6))
@@ -1673,6 +1679,47 @@ packages:
 
   '@sec-ant/readable-stream@0.4.1':
     resolution: {integrity: sha512-831qok9r2t8AlxLko40y2ebgSDhenenCatLVeW/uBtnHPyhHOvG0C7TvfgecV+wHzIm5KUICgzmVpWS+IMEAeg==}
+
+  '@sentry/browser-utils@10.72.0':
+    resolution: {integrity: sha512-aZyogxXnNgDRupNscB8VEZdJbhbIk0+LiXrg5Fl82foGlcc5I22GdxORSb/JHwkeMFttZmvh1/OMwSPzAmE94Q==}
+    engines: {node: '>=18'}
+
+  '@sentry/browser@10.72.0':
+    resolution: {integrity: sha512-pbXHaovq/rRO5wsHz6Yey6SBPJLrbi7kCaYlSr6+v4bB4UoIL5dFB65BcQ7XD3BzZDNNvl6jTe68a1/sUMb5oA==}
+    engines: {node: '>=18'}
+
+  '@sentry/conventions@0.16.0':
+    resolution: {integrity: sha512-fO9PLmHdVURcSPUpWCItWAtgKiMwGdJHbovoSEyLplX5sxs2ugvI4CBPTrkkgqhObnZOD0CnWBKDzSVQYBKEyQ==}
+    engines: {node: '>=14'}
+
+  '@sentry/core@10.72.0':
+    resolution: {integrity: sha512-UJMHZfbjP4qk+g4AQhZmzosMdICC2D9p0/hLrm1LofPsp+WBfcSnv9jsY1a9TfmpS4WCAmTx8nANYTIXifcBjA==}
+    engines: {node: '>=18'}
+
+  '@sentry/feedback@10.72.0':
+    resolution: {integrity: sha512-UPCABAD5WkOIg8XfyH58B5hsP19RGBbMXmiu7k7yQ0kFr/QIsn1tO2ts5w8ek5tIuTdAaeK3L+tinnCRh2STbg==}
+    engines: {node: '>=18'}
+
+  '@sentry/replay-canvas@10.72.0':
+    resolution: {integrity: sha512-RdNCbuQ1TBsyCrkHDBPTukQ3gtm8chXi0ldiJSiNUduPGCoKet9L1JocTqJ2gMguV+bOK+QLMvFnBCDbdcSg6A==}
+    engines: {node: '>=18'}
+
+  '@sentry/replay@10.72.0':
+    resolution: {integrity: sha512-DiUnhALGvEzaF7bSuRnr/Xftfh4eYZHQ9kwb+CRIDbJ0R2beetHH7vzE8vDe3pFMd8TWAuLkdNLMTC2ic9xfnA==}
+    engines: {node: '>=18'}
+
+  '@sentry/vue@10.72.0':
+    resolution: {integrity: sha512-Fg2lOoscwqeQy3DPC7SviiVISn8Fn2jRq2USEcFBtFxq5Uvu1PFaJE+c1LVmWArg6VGN7eJwrawXstODlUu9Ew==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      '@tanstack/vue-router': ^1.64.0
+      pinia: 2.x || 3.x || 4.x
+      vue: 2.x || 3.x
+    peerDependenciesMeta:
+      '@tanstack/vue-router':
+        optional: true
+      pinia:
+        optional: true
 
   '@simple-git/args-pathspec@1.0.3':
     resolution: {integrity: sha512-ngJMaHlsWDTfjyq9F3VIQ8b7NXbBLq5j9i5bJ6XLYtD6qlDXT7fdKY2KscWWUF8t18xx052Y/PUO1K1TRc9yKA==}
@@ -6863,7 +6910,7 @@ snapshots:
 
   '@polkadot-api/substrate-bindings@0.20.3':
     dependencies:
-      '@noble/hashes': 2.3.0
+      '@noble/hashes': 2.4.0
       '@polkadot-api/utils': 0.4.0
       '@scure/base': 2.3.0
       scale-ts: 1.6.1
@@ -7525,6 +7572,49 @@ snapshots:
       '@noble/hashes': 2.0.1
 
   '@sec-ant/readable-stream@0.4.1': {}
+
+  '@sentry/browser-utils@10.72.0':
+    dependencies:
+      '@sentry/conventions': 0.16.0
+      '@sentry/core': 10.72.0
+
+  '@sentry/browser@10.72.0':
+    dependencies:
+      '@sentry/browser-utils': 10.72.0
+      '@sentry/conventions': 0.16.0
+      '@sentry/core': 10.72.0
+      '@sentry/feedback': 10.72.0
+      '@sentry/replay': 10.72.0
+      '@sentry/replay-canvas': 10.72.0
+
+  '@sentry/conventions@0.16.0': {}
+
+  '@sentry/core@10.72.0':
+    dependencies:
+      '@sentry/conventions': 0.16.0
+
+  '@sentry/feedback@10.72.0':
+    dependencies:
+      '@sentry/core': 10.72.0
+
+  '@sentry/replay-canvas@10.72.0':
+    dependencies:
+      '@sentry/core': 10.72.0
+      '@sentry/replay': 10.72.0
+
+  '@sentry/replay@10.72.0':
+    dependencies:
+      '@sentry/browser-utils': 10.72.0
+      '@sentry/core': 10.72.0
+
+  '@sentry/vue@10.72.0(pinia@3.0.4(typescript@5.9.3)(vue@3.5.41(typescript@5.9.3)))(vue@3.5.41(typescript@5.9.3))':
+    dependencies:
+      '@sentry/browser': 10.72.0
+      '@sentry/conventions': 0.16.0
+      '@sentry/core': 10.72.0
+      vue: 3.5.41(typescript@5.9.3)
+    optionalDependencies:
+      pinia: 3.0.4(typescript@5.9.3)(vue@3.5.41(typescript@5.9.3))
 
   '@simple-git/args-pathspec@1.0.3': {}
 

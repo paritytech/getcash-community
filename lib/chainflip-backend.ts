@@ -10,6 +10,7 @@ import {
   type SwapSdkLike,
 } from "@getsome/chainflip";
 import { NETWORK as CHAIN_NETWORK } from "@getsome/core";
+import { devLog } from "./log";
 
 export const NETWORK: ChainflipNetworkId = "mainnet";
 
@@ -50,7 +51,12 @@ async function buildSdk(): Promise<SwapSdkLike> {
   if (url !== null) {
     return createSwapSdk(NETWORK, { brokerUrl: url, brokerCommissionBps: BAAS_COMMISSION_BPS });
   }
-  console.warn("[chainflip] VITE_CHAINFLIP_BROKER_API_KEY is unset; channels cannot be opened");
+  devLog(
+    "chainflip",
+    "VITE_CHAINFLIP_BROKER_API_KEY is unset; channels cannot be opened",
+    undefined,
+    "warn",
+  );
   const sdk = await createSwapSdk(NETWORK);
   return {
     getQuoteV2: (args) => sdk.getQuoteV2(args),

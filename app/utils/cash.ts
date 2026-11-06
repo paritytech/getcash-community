@@ -53,6 +53,15 @@ export function cashToAmountInput(base: bigint, decimals: number): string {
   return `${s.slice(0, -decimals)}.${s.slice(-decimals)}`.replace(/\.?0+$/, "");
 }
 
+/** 6-dec CASH base units cut down to the cent, a whole number bare and cents always two places,
+ *  as a sum reads on a screen ("10", "10.10", "10.12"). */
+export function fmtCashToCents(base: bigint): string {
+  const cents = cashToRuleUnits(base, 2);
+  const whole = cents / 100n;
+  const frac = cents % 100n;
+  return frac === 0n ? whole.toString() : `${whole}.${frac.toString().padStart(2, "0")}`;
+}
+
 /** 6-dec CASH base units -> a money-like string with at least two decimals ("10.00", "18.75"). */
 export function fmtCashDisplay(base: bigint): string {
   const s = base.toString().padStart(CASH_DECIMALS + 1, "0");

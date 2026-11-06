@@ -287,8 +287,39 @@ in `.env.local` or `.env`.
 
 CI does the same: a push to `main` deploys `getcash.paseo`, and every pull request gets a
 preview at `pr<N>-getcash.paseo`. Both are signed with the repository's `MNEMONIC` secret and
-build with `VITE_FAUCET_SEED`, `VITE_MELD_BASE_URL`, `VITE_MELD_PRODUCT_ID` and
-`VITE_CHAINFLIP_BROKER_API_KEY` from repository secrets.
+build with `VITE_FAUCET_SEED`, `VITE_MELD_BASE_URL`, `VITE_MELD_PRODUCT_ID`,
+`VITE_CHAINFLIP_BROKER_API_KEY` and `VITE_SENTRY_DSN` from repository secrets.
+
+## Telemetry
+
+Telemetry is a deployment's opt-in. A build with `VITE_SENTRY_DSN` reports to that Sentry
+project; a build without it carries no Sentry code and makes no request to any Sentry host. The
+SDK is reached only through one guarded dynamic import in `lib/telemetry/index.ts`, which the
+bundler drops when the DSN is unset, and CI fails a DSN-less build whose output still holds any
+Sentry code.
+
+Inside a host, nothing is sent until the person allows Sentry's domain. The app asks for it in a
+request of its own, after its launch prompts have been answered, and holds what it captures until
+then (`lib/telemetry/grant.ts`). A refusal means nothing is sent for that open.
+
+What a deployment with a DSN sends:
+
+- **Failures**, one event of a fixed kind each (`lib/telemetry/catalogue.ts`): a top-up or
+  withdrawal that ended failed, a hand-off the worker refused, a record the host would not store,
+  an unreadable purse, a host that cannot run the build, a quote that could not be had, and
+  unhandled errors.
+- **Journeys**, as spans: the app opening, and each top-up and withdrawal started on the page,
+  step by step (`app/funding/requests/telemetry.ts`).
+- **Counts**: time on each screen and the main actions.
+- **The log**: every `devLog` line (`lib/log.ts`) rides on events as a breadcrumb, and the page's
+  whole log is attached to its first errors. A quiet session sends no log line.
+
+A page the phone or the person killed is not reported on the next open: that cannot be told
+apart from a person leaving, and the worker carries a request on without the page.
+
+Recovery phrases, 32-byte hex values (the shape of a key's entropy, so transaction hashes too)
+and URL queries are scrubbed from everything that leaves the device; the console keeps the line
+as written. Addresses are sent as they are.
 
 ## License
 

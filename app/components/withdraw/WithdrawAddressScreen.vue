@@ -16,6 +16,7 @@ import {
 import PillButton from "../ui/PillButton.vue";
 import ScreenFrame from "../ui/ScreenFrame.vue";
 import SourcePill from "../ui/SourcePill.vue";
+import { devLog } from "~~/lib/log";
 
 const props = defineProps<{
   network: WithdrawNetwork;
@@ -57,7 +58,7 @@ async function paste() {
       return;
     }
   } catch (error: unknown) {
-    console.warn("[withdraw] clipboard read unavailable:", error);
+    devLog("withdraw", "clipboard read unavailable", error, "warn");
   }
   field.value?.focus();
 }

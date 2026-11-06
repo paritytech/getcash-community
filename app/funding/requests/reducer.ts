@@ -19,7 +19,7 @@ function lastWitnessedAt(record: RequestRecord, observation: Observation): numbe
     case "provider":
       return record.kind === "top-up" ? record.witnesses.provider?.at : undefined;
     case "host":
-      return record.kind === "withdrawal" ? record.witnesses.host?.at : undefined;
+      return witnesses.host?.at;
     case "user":
     case "clock":
       return undefined;

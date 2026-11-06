@@ -1,11 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { fmtCash, fmtCashDisplay, isLongStatusAmount, toCashBase } from "../app/utils/cash";
+import {
+  fmtCash,
+  fmtCashDisplay,
+  fmtCashToCents,
+  isLongStatusAmount,
+  toCashBase,
+} from "../app/utils/cash";
 
 describe("CASH formatting", () => {
   it("fmtCash trims to the shortest exact form", () => {
     expect(fmtCash(10_000_000n)).toBe("10");
     expect(fmtCash(18_750_000n)).toBe("18.75");
     expect(fmtCash(123_456n)).toBe("0.123456");
+  });
+
+  it("fmtCashToCents cuts to the cent, a whole number bare and cents in two places", () => {
+    expect(fmtCashToCents(10_000_000n)).toBe("10");
+    expect(fmtCashToCents(10_100_249n)).toBe("10.10");
+    expect(fmtCashToCents(10_124_325n)).toBe("10.12");
+    expect(fmtCashToCents(5_000n)).toBe("0");
+    expect(fmtCashToCents(0n)).toBe("0");
   });
 
   it("fmtCashDisplay keeps two decimals like a statement, more only when they carry value", () => {

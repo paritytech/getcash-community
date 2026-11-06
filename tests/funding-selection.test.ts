@@ -9,6 +9,7 @@ import {
   isFundingRoute,
   parseFundingAmount,
   reduceFundingAmount,
+  selectableRoute,
   type FundingKey,
 } from "../app/funding/selection";
 
@@ -231,5 +232,14 @@ describe("funding handoff", () => {
     expect(Object.isFrozen(selection)).toBe(true);
     expect(createFundingSelection("0.5", "bank", rules)).toBeNull();
     expect(createFundingSelection("20", null, rules)).toBeNull();
+  });
+});
+
+describe("selectableRoute", () => {
+  it("keeps a route that can be taken, and drops one that no longer can", () => {
+    expect(selectableRoute("card", ["card", "crypto"])).toBe("card");
+    expect(selectableRoute("card", ["crypto"])).toBeNull();
+    expect(selectableRoute("card", null)).toBe("card");
+    expect(selectableRoute(null, ["card"])).toBeNull();
   });
 });

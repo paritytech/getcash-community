@@ -1,5 +1,5 @@
-// The live-capability catalog client: parsing, per-corridor caching, the card/bank resolver, and
-// the empty-catalog-is-retryable rule. Each test resets modules to clear the process-wide caches.
+// The live-capability catalog client: parsing, per-corridor caching and its expiry, the card/bank
+// resolver, and the empty-catalog-is-retryable rule. Each test resets modules to clear the process-wide caches.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SupportedCorridor } from "../lib/supported";
@@ -34,6 +34,7 @@ describe("lib/supported", () => {
     vi.stubEnv("VITE_MELD_BASE_URL", BASE);
   });
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
   });
@@ -68,21 +69,25 @@ describe("lib/supported", () => {
     expect(methodFor(null, "card")).toBeNull();
   });
 
-  it("otherMethod names the other fiat method only when the corridor routes it", async () => {
-    const { otherMethod } = await import("../lib/supported");
-    const card = {
-      paymentMethodType: "CREDIT_DEBIT_CARD",
-      category: "card" as const,
-      min: "26",
-      max: "5000",
-      currency: "BRL",
-      providers: ["TRANSAK"],
+  it("isMethodDown says whether the corridor's method has every provider failing", async () => {
+    const { isMethodDown } = await import("../lib/supported");
+    const method = (category: "card" | "bank", down = false) => ({
+      paymentMethodType: category,
+      category,
+      min: "5",
+      max: "3000",
+      currency: "EUR",
+      providers: [],
+      ...(down ? { temporarilyUnavailable: true as const } : {}),
+    });
+    const corridor = {
+      country: "DE",
+      fiat: "EUR",
+      methods: [method("card"), method("bank", true)],
     };
-    const cardOnly: SupportedCorridor = { country: "BR", fiat: "BRL", methods: [card] };
-    expect(otherMethod(cardOnly, "bank")).toBe("card");
-    expect(otherMethod(cardOnly, "card")).toBeNull();
-    expect(otherMethod({ country: "EC", fiat: "USD", methods: [] }, "bank")).toBeNull();
-    expect(otherMethod(null, "bank")).toBeNull();
+    expect(isMethodDown(corridor, "bank")).toBe(true);
+    expect(isMethodDown(corridor, "card")).toBe(false);
+    expect(isMethodDown(null, "card")).toBe(false);
   });
 
   it("asks for a destination under the code the adapter's table names it by", async () => {
@@ -206,6 +211,209 @@ describe("lib/supported", () => {
     expect(map?.get("US")?.methods[0]?.currency).toBe("USD");
   });
 
+  it("reads a method the adapter's probes find down, and counts one without a flag as available", async () => {
+    const method = (category: string, availability?: string) => ({
+      paymentMethodType: category,
+      category,
+      min: "5",
+      max: "3000",
+      currency: "USD",
+      ...(availability === undefined ? {} : { availability }),
+    });
+    vi.stubGlobal(
+      "fetch",
+      stubFetch({
+        "/supported/corridors": {
+          corridors: [
+            {
+              country: "US",
+              fiat: "USD",
+              methods: [
+                method("card", "temporarily_unavailable"),
+                method("bank", "available"),
+                method("wallet"),
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    const { fetchSupportedCorridors } = await import("../lib/supported");
+    const methods = (await fetchSupportedCorridors(DEST))?.get("US")?.methods ?? [];
+    expect(methods.map((m) => m.temporarilyUnavailable)).toEqual([true, undefined, undefined]);
+  });
+
+  it("unservedMethods names a method no region offers right now, and none while unread", async () => {
+    const { unservedMethods } = await import("../lib/supported");
+    const method = (category: "card" | "bank", down = false) => ({
+      paymentMethodType: category,
+      category,
+      min: "5",
+      max: "3000",
+      currency: "EUR",
+      providers: [],
+      ...(down ? { temporarilyUnavailable: true as const } : {}),
+    });
+    const corridors = new Map<string, SupportedCorridor>([
+      ["DE", { country: "DE", fiat: "EUR", methods: [method("card", true), method("bank")] }],
+      ["FR", { country: "FR", fiat: "EUR", methods: [method("card", true)] }],
+    ]);
+    expect(unservedMethods(corridors)).toEqual(["card"]);
+    corridors.set("ES", { country: "ES", fiat: "EUR", methods: [method("card")] });
+    expect(unservedMethods(corridors)).toEqual([]);
+    expect(unservedMethods(new Map([["JP", { country: "JP", fiat: "JPY", methods: [] }]]))).toEqual(
+      ["card", "bank"],
+    );
+    expect(unservedMethods(null)).toEqual([]);
+    expect(unservedMethods(new Map())).toEqual([]);
+  });
+
+  it("reuses a corridor read for ten minutes, then reads it again", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const us = { country: "US", fiat: "USD", methods: [] };
+    const fetchMock = stubFetch({
+      "/supported/corridors": { corridors: [us] },
+      "/supported/offramp/corridors": { corridors: [us] },
+      "/supported/offramp?country=US": us,
+      "/supported?country=US": us,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const lib = await import("../lib/supported");
+    const readAll = () =>
+      Promise.all([
+        lib.fetchCorridor(DEST, "US"),
+        lib.fetchSupportedCorridors(DEST),
+        lib.fetchOfframpCorridors(),
+        lib.fetchOfframpCorridor("US"),
+      ]);
+
+    await readAll();
+    vi.setSystemTime(Date.now() + 599_999);
+    await readAll();
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+
+    vi.setSystemTime(Date.now() + 1);
+    await readAll();
+    expect(fetchMock).toHaveBeenCalledTimes(8);
+  });
+
+  it("answers the last catalog read when a later read fails or comes back empty", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const us = { country: "US", fiat: "USD", methods: [] };
+    const gb = { country: "GB", fiat: "GBP", methods: [] };
+    const json = (body: unknown) => async () => new Response(JSON.stringify(body), { status: 200 });
+    let answer: () => Promise<Response> = json({ corridors: [us, gb] });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => answer()),
+    );
+    const lib = await import("../lib/supported");
+    const countries = async () =>
+      (await Promise.all([lib.fetchSupportedCorridors(DEST), lib.fetchOfframpCorridors()])).map(
+        (map) => [...(map?.keys() ?? [])],
+      );
+    expect(await countries()).toEqual([
+      ["US", "GB"],
+      ["US", "GB"],
+    ]);
+
+    const failures = [
+      async () => {
+        throw new Error("timeout");
+      },
+      async () => new Response("unavailable", { status: 503 }),
+      json({ corridors: [] }),
+    ];
+    for (const failure of failures) {
+      answer = failure;
+      vi.setSystemTime(Date.now() + 600_000);
+      expect(await countries()).toEqual([
+        ["US", "GB"],
+        ["US", "GB"],
+      ]);
+    }
+
+    answer = json({ corridors: [us] });
+    vi.setSystemTime(Date.now() + 600_000);
+    expect(await countries()).toEqual([["US"], ["US"]]);
+  });
+
+  it("keeps a token's regions and methods in the merged catalog when that token's read fails", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const card = (down: boolean) => ({
+      paymentMethodType: "CREDIT_DEBIT_CARD",
+      category: "card",
+      min: "10",
+      max: "5000",
+      currency: "GBP",
+      providers: [],
+      ...(down ? { availability: "temporarily_unavailable" } : {}),
+    });
+    // USDT routes card in the UK and Brazil; DOT routes card in the UK only, and it is down there.
+    const catalogs: Record<string, unknown[]> = {
+      USDT_DOT: [
+        { country: "GB", fiat: "GBP", methods: [card(false)] },
+        { country: "BR", fiat: "BRL", methods: [card(false)] },
+      ],
+      DOT: [{ country: "GB", fiat: "GBP", methods: [card(true)] }],
+    };
+    let usdtFails = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        const code = new URL(url).searchParams.get("destinationCurrencyCode") ?? "";
+        if (code === "USDT_DOT" && usdtFails) throw new Error("timeout");
+        return new Response(JSON.stringify({ corridors: catalogs[code] }), { status: 200 });
+      }),
+    );
+    const lib = await import("../lib/supported");
+    const merged = async () =>
+      lib.mergeCorridorMaps(
+        await lib.fetchSupportedCorridors("usdt@assethub"),
+        await lib.fetchSupportedCorridors(DEST),
+      );
+    await merged();
+
+    usdtFails = true;
+    vi.setSystemTime(Date.now() + 600_000);
+    const catalog = await merged();
+    expect([...(catalog?.keys() ?? [])].sort()).toEqual(["BR", "GB"]);
+    expect(lib.isMethodDown(catalog?.get("GB") ?? null, "card")).toBe(false);
+  });
+
+  it("reads a country's corridor again while a method is down, and reuses it once all are up", async () => {
+    const card = (down: boolean) => ({
+      paymentMethodType: "CREDIT_DEBIT_CARD",
+      category: "card",
+      min: "10",
+      max: "5000",
+      currency: "GBP",
+      providers: [],
+      ...(down ? { availability: "temporarily_unavailable" } : {}),
+    });
+    let down = true;
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ country: "GB", fiat: "GBP", methods: [card(down)] }), {
+          status: 200,
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const lib = await import("../lib/supported");
+    const read = () => Promise.all([lib.fetchCorridor(DEST, "GB"), lib.fetchOfframpCorridor("GB")]);
+
+    const [buy, sell] = await read();
+    expect(lib.isMethodDown(buy, "card")).toBe(true);
+    expect(lib.isMethodDown(sell, "card")).toBe(true);
+    down = false;
+    const [recovered] = await read();
+    expect(lib.isMethodDown(recovered, "card")).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+
+    await read();
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
   it("fetchSupportedCorridors caches a non-empty map and retries an empty one", async () => {
     const empty = stubFetch({ "/supported/corridors": { corridors: [] } });
     vi.stubGlobal("fetch", empty);
@@ -245,88 +453,42 @@ describe("lib/supported", () => {
     expect(await reimport.fetchSupportedCorridors(DEST)).toBeNull(); // throw -> null
   });
 
-  it("pickerBase lists the whole catalog for bank once the corridors say which rows route", async () => {
-    const { pickerBase, corridorOptions } = await import("../lib/supported");
-    const catalog = [
-      { country: "DE", name: "Germany" },
-      { country: "IN", name: "India" },
-      { country: "US", name: "United States" },
-    ];
-    const fallback = { card: [{ country: "GB", name: "United Kingdom" }], bank: [catalog[0]!] };
-    const corridors = new Map<string, SupportedCorridor>([
-      [
-        "DE",
-        {
-          country: "DE",
-          fiat: "EUR",
-          methods: [
-            { paymentMethodType: "SEPA", category: "bank", min: "", max: "", currency: "EUR" },
-          ],
-        },
-      ],
-      [
-        "IN",
-        {
-          country: "IN",
-          fiat: "INR",
-          methods: [
-            {
-              paymentMethodType: "CREDIT_DEBIT_CARD",
-              category: "card",
-              min: "",
-              max: "",
-              currency: "INR",
-            },
-          ],
-        },
-      ],
-      [
-        "US",
-        {
-          country: "US",
-          fiat: "USD",
-          methods: [
-            { paymentMethodType: "ACH", category: "bank", min: "", max: "", currency: "USD" },
-          ],
-        },
-      ],
-    ]);
+  it("corridorOptions offers no rows while the corridors are unread or cold", async () => {
+    const { corridorOptions } = await import("../lib/supported");
+    const base = [{ country: "US", name: "United States" }];
+    expect(corridorOptions(base, null, "card")).toBeNull();
+    expect(corridorOptions(base, new Map(), "card")).toBeNull();
+  });
 
-    // Every region is listed; one with no transfer rail is greyed, not dropped.
+  it("corridorOptions lists every region, greying one the method does not route", async () => {
+    const { corridorOptions } = await import("../lib/supported");
+    const method = (paymentMethodType: string, category: "card" | "bank", currency: string) => ({
+      paymentMethodType,
+      category,
+      min: "",
+      max: "",
+      currency,
+      providers: [],
+    });
+    const corridors = new Map<string, SupportedCorridor>([
+      ["DE", { country: "DE", fiat: "EUR", methods: [method("SEPA", "bank", "EUR")] }],
+      ["IN", { country: "IN", fiat: "INR", methods: [method("CREDIT_DEBIT_CARD", "card", "INR")] }],
+    ]);
     const rows = corridorOptions(
-      pickerBase("bank", catalog, corridors, fallback),
+      [
+        { country: "DE", name: "Germany" },
+        { country: "IN", name: "India" },
+      ],
       corridors,
       "bank",
-    );
+    )!;
     expect(rows.map((r) => [r.country, r.disabled === true])).toEqual([
       ["DE", false],
       ["IN", true],
-      ["US", false],
     ]);
-    // Before the corridors are read, bank keeps to the regions known to have a rail.
-    expect(pickerBase("bank", catalog, null, fallback)).toEqual(fallback.bank);
-    expect(pickerBase("bank", catalog, new Map(), fallback)).toEqual(fallback.bank);
-    // Card lists the catalog whatever the corridors say, and each rail has its own fallback.
-    expect(pickerBase("card", catalog, null, fallback)).toEqual(catalog);
-    expect(pickerBase("card", null, corridors, fallback)).toEqual(fallback.card);
-    expect(pickerBase("bank", [], corridors, fallback)).toEqual(fallback.bank);
   });
 
-  it("corridorOptions leaves every row plain and selectable when the map is null", async () => {
-    const { corridorOptions } = await import("../lib/supported");
-    const rows = corridorOptions([{ country: "US", name: "United States" }], null, "card");
-    expect(rows).toEqual([{ country: "US", name: "United States" }]);
-  });
-
-  it("corridorOptions treats an empty map like null: rows stay plain, not all-disabled", async () => {
-    const { corridorOptions } = await import("../lib/supported");
-    const empty = new Map<string, SupportedCorridor>();
-    const rows = corridorOptions([{ country: "US", name: "United States" }], empty, "card");
-    // Cold cache must not grey out (and brick) every country.
-    expect(rows).toEqual([{ country: "US", name: "United States" }]);
-  });
-
-  it("corridorOptions degrades to plain rows when a non-empty map would disable every row", async () => {
+  it("corridorOptions disables every row when no region routes the method", async () => {
     const { corridorOptions } = await import("../lib/supported");
     // A disjoint map (covers only a country not in base, and only for card) must not brick the picker.
     const map = new Map<string, SupportedCorridor>([
@@ -336,9 +498,39 @@ describe("lib/supported", () => {
       { country: "US", name: "United States" },
       { country: "CA", name: "Canada" },
     ];
-    const rows = corridorOptions(base, map, "card");
-    expect(rows).toEqual(base); // all plain + selectable, no disabled rows
-    expect(rows.some((r) => r.disabled)).toBe(false);
+    const rows = corridorOptions(base, map, "card")!;
+    expect(rows.every((r) => r.disabled)).toBe(true);
+  });
+
+  it("corridorOptions marks a region whose providers are all failing, without its minimum", async () => {
+    const { corridorOptions, isPickable } = await import("../lib/supported");
+    const card = {
+      paymentMethodType: "CREDIT_DEBIT_CARD",
+      category: "card" as const,
+      min: "20",
+      max: "15000",
+      currency: "EUR",
+      providers: [],
+    };
+    const map = new Map<string, SupportedCorridor>([
+      ["DE", { country: "DE", fiat: "EUR", methods: [{ ...card, temporarilyUnavailable: true }] }],
+      ["FR", { country: "FR", fiat: "EUR", methods: [card] }],
+    ]);
+    const rows = corridorOptions(
+      [
+        { country: "DE", name: "Germany" },
+        { country: "FR", name: "France" },
+      ],
+      map,
+      "card",
+    )!;
+    expect(rows[0]).toEqual({
+      country: "DE",
+      name: "Germany",
+      fiat: "EUR",
+      temporarilyUnavailable: true,
+    });
+    expect(rows.map(isPickable)).toEqual([false, true]);
   });
 
   it("trimAmount trims trailing zeros without exponential notation on large bounds", async () => {
@@ -363,7 +555,7 @@ describe("lib/supported", () => {
       ],
     ]);
     const { trimAmount } = await import("../lib/supported");
-    const rows = corridorOptions([{ country: "US", name: "United States" }], map, "card");
+    const rows = corridorOptions([{ country: "US", name: "United States" }], map, "card")!;
     // The option carries the raw min; trimAmount trims for display without exponential notation.
     expect(rows[0]).toEqual({
       country: "US",
@@ -396,7 +588,7 @@ describe("lib/supported", () => {
         },
       ],
     ]);
-    const rows = corridorOptions([{ country: "US", name: "United States" }], map, "card");
+    const rows = corridorOptions([{ country: "US", name: "United States" }], map, "card")!;
     // No misleading "0" min; the row is supported (selectable), named with the currency it charges.
     expect(rows[0]).toEqual({ country: "US", name: "United States", fiat: "USD" });
   });
@@ -445,7 +637,7 @@ describe("lib/supported", () => {
       { country: "BR", name: "Brazil" },
       { country: "GB", name: "United Kingdom" },
     ];
-    const card = corridorOptions(base, map, "card");
+    const card = corridorOptions(base, map, "card")!;
     expect(card[0]).toEqual({
       country: "US",
       name: "United States",
@@ -453,7 +645,7 @@ describe("lib/supported", () => {
       fiat: "USD",
     });
     expect(card[1]).toEqual({ country: "BR", name: "Brazil", disabled: true }); // BR absent from the map
-    const bank = corridorOptions(base, map, "bank");
+    const bank = corridorOptions(base, map, "bank")!;
     // US has no bank method: greyed, but still named by the currency the region charges.
     expect(bank[0]).toEqual({ country: "US", name: "United States", fiat: "USD", disabled: true });
     expect(bank[2]).toEqual({ country: "GB", name: "United Kingdom", min: "15", fiat: "GBP" }); // GB bank supported
@@ -481,13 +673,13 @@ describe("lib/supported", () => {
     ];
     // Paying £12.50: GBP 40 is out of reach, EUR 4 is not, and USD 40 is in another currency
     // altogether — no rate to cross with, so it stays pickable rather than guessed at.
-    const rows = corridorOptions(base, map, "card", { fiat: "GBP", amount: "12.50" });
+    const rows = corridorOptions(base, map, "card", { fiat: "GBP", amount: "12.50" })!;
     expect(rows[0]?.belowMinimum).toBe(true);
     expect(rows[1]?.belowMinimum).toBeUndefined();
     expect(rows[2]?.belowMinimum).toBeUndefined();
     // No floor at all, and an unreadable one, leave every row pickable.
-    expect(corridorOptions(base, map, "card").some((r) => r.belowMinimum)).toBe(false);
-    const blank = corridorOptions(base, map, "card", { fiat: "GBP", amount: "" });
+    expect(corridorOptions(base, map, "card")!.some((r) => r.belowMinimum)).toBe(false);
+    const blank = corridorOptions(base, map, "card", { fiat: "GBP", amount: "" })!;
     expect(blank.some((r) => r.belowMinimum)).toBe(false);
   });
 
@@ -498,6 +690,7 @@ describe("lib/supported", () => {
     currency = "USD",
     providers = ["TRANSAK"],
   ) => ({ paymentMethodType: category, category, min, max, currency, providers });
+  const down = (m: ReturnType<typeof method>) => ({ ...m, temporarilyUnavailable: true as const });
   const corridor = (fiat: string, ...methods: ReturnType<typeof method>[]) => ({
     country: "DE",
     fiat,
@@ -534,6 +727,24 @@ describe("lib/supported", () => {
       usdt: corridor("USD", method("card", "10", "500")),
       pas: corridor("EUR", method("card", "5", "900", "EUR"), method("bank", "20", "900", "EUR")),
       want: corridor("USD", method("card", "10", "500"), method("bank", "20", "900", "EUR")),
+    },
+    {
+      name: "only PAS's method is available: it stands alone",
+      usdt: corridor("USD", down(method("card", "10", "500"))),
+      pas: corridor("USD", method("card", "5", "300")),
+      want: corridor("USD", method("card", "5", "300")),
+    },
+    {
+      name: "only USDT's method is available: it stands alone",
+      usdt: corridor("USD", method("card", "10", "500")),
+      pas: corridor("USD", down(method("card", "5", "900"))),
+      want: corridor("USD", method("card", "10", "500")),
+    },
+    {
+      name: "neither is available: widened, and still unavailable",
+      usdt: corridor("USD", down(method("card", "10", "500"))),
+      pas: corridor("USD", down(method("card", "5", "900"))),
+      want: corridor("USD", down(method("card", "5", "900"))),
     },
     {
       name: "USDT unreachable",
@@ -580,18 +791,21 @@ describe("lib/supported", () => {
       { country: "GB", name: "United Kingdom", min: "4", fiat: "GBP" },
       { country: "BR", name: "Brazil", fiat: "BRL", disabled: true },
       { country: "AU", name: "Australia", min: "70", fiat: "AUD", belowMinimum: true },
+      { country: "DE", name: "Germany", fiat: "EUR", temporarilyUnavailable: true as const },
     ];
     const groups = regionGroups(rows, "GB");
     expect(groups.map((g) => g.title)).toEqual([
       "Detected country",
       "Or choose another country",
       "Minimum payment amount",
+      "Temporarily unavailable",
       "Unsupported country",
     ]);
     expect(groups[0]?.rows.map((r) => r.country)).toEqual(["GB"]);
     expect(groups[1]?.rows.map((r) => r.country)).toEqual(["US"]);
     expect(groups[2]?.rows.map((r) => r.country)).toEqual(["AU"]);
-    expect(groups[3]?.rows.map((r) => r.country)).toEqual(["BR"]);
+    expect(groups[3]?.rows.map((r) => r.country)).toEqual(["DE"]);
+    expect(groups[4]?.rows.map((r) => r.country)).toEqual(["BR"]);
   });
 
   it("regionGroups never pins a region that cannot be picked, and drops empty sections", async () => {
@@ -602,6 +816,12 @@ describe("lib/supported", () => {
     ];
     // The device's own region is out of reach at this amount: it stays in its section rather than
     // leading the list as something to tap.
+    expect(
+      regionGroups(
+        [{ country: "DE", name: "Germany", temporarilyUnavailable: true as const }],
+        "DE",
+      ).map((g) => g.title),
+    ).toEqual(["Temporarily unavailable"]);
     // With no pin there is nothing to choose "another" of, so the list names itself.
     expect(regionGroups(rows, "AU").map((g) => g.title)).toEqual([
       "All countries",
@@ -697,5 +917,14 @@ describe("lib/supported", () => {
     expect(corridor!.methods[0]!.currency).toBe("BRL");
     // An unreachable catalog is null, not empty.
     expect(await fetchOfframpCorridors()).toBeNull();
+  });
+
+  it("names a country after 'in', with 'the' where English needs it", async () => {
+    const { inCountry } = await import("../lib/supported");
+    expect(inCountry("Germany")).toBe("in Germany");
+    expect(inCountry("United Kingdom")).toBe("in the United Kingdom");
+    expect(inCountry("Dominican Republic")).toBe("in the Dominican Republic");
+    expect(inCountry("Cayman Islands")).toBe("in the Cayman Islands");
+    expect(inCountry("Netherlands")).toBe("in the Netherlands");
   });
 });

@@ -137,7 +137,7 @@ describe("top-up timeline, shared route frame", () => {
         state: "active",
         line: 0.5 + 0.5 * timeFill(12 * SECOND, 5 * MINUTE),
       },
-      { message: normal("Making sure your money arrived safely") },
+      { message: normal("We've spotted your deposit") },
     ],
     [
       "the provider alone reports the funds",
@@ -154,21 +154,21 @@ describe("top-up timeline, shared route frame", () => {
       record({ depositInBlock: { block: 110, finalizedAtSeen: 100, finalized: 105, best: 129 } }),
       SENT + 3 * MINUTE,
       { marks: "●●●○○○○", state: "active", line: 0.75 },
-      { message: normal("Making sure your money arrived safely") },
+      { message: normal("We've spotted your deposit"), detail: "Confirmation 6 of 10" },
     ],
     [
       "the best block 20 blocks past the deposit's block, which is not final",
       record({ depositInBlock: { block: 110, finalizedAtSeen: 100, finalized: 105, best: 130 } }),
       SENT + 3 * MINUTE,
       { marks: "●●●○○○○", state: "delayed", line: 0.75 },
-      { message: normal("Making sure your money arrived safely") },
+      { message: normal("We've spotted your deposit"), detail: "Confirmation 6 of 10" },
     ],
     [
       "the deposit's block was final when seen",
       record({ depositInBlock: { block: 100, finalizedAtSeen: 100, finalized: 100, best: 140 } }),
       SENT,
       { marks: "●●●○○○○", state: "active", line: 1 },
-      { message: normal("Making sure your money arrived safely") },
+      { message: normal("We've spotted your deposit") },
     ],
     [
       "the deposit is final on Asset Hub",
@@ -217,14 +217,14 @@ describe("top-up timeline, shared route frame", () => {
       record({ handoff: undefined, conversion: { tier: "dotusd" } }, received),
       RECEIVED,
       { marks: "●●●●○○○", state: "active", line: 0 },
-      { message: normal("Getting your Cash ready") },
+      { message: normal("Converting your money to Cash") },
     ],
     [
       "the conversion is in a block",
       record({ converted }, { ...received, workedMs: CONVERTED_WORKED }),
       CONVERTED,
       { marks: "●●●●●○○", state: "active", line: 0 },
-      { message: normal("Getting your Cash ready") },
+      { message: normal("Moving your Cash to your account") },
     ],
     [
       "the worker worked over 5 minutes since the conversion",
@@ -241,7 +241,7 @@ describe("top-up timeline, shared route frame", () => {
       ),
       CONVERTED + HOUR,
       { marks: "●●●●●○○", state: "active", line: 1 },
-      { message: normal("Getting your Cash ready") },
+      { message: normal("Moving your Cash to your account") },
     ],
     [
       "the Cash is final on People",
@@ -438,7 +438,7 @@ describe("top-up timeline, Sent on the provider routes", () => {
     );
     expect({ message: timeline.message, awaiting: timeline.awaitingSentFunds }).toEqual(
       seen
-        ? { message: normal("Making sure your money arrived safely"), awaiting: undefined }
+        ? { message: normal("We've spotted your deposit"), awaiting: undefined }
         : { message: normal("Your money is arriving"), awaiting: true },
     );
   });
@@ -560,7 +560,7 @@ describe("top-up timeline, Chainflip route", () => {
         state: "active",
         line: (3 * confirmation + swap * timeFill(3 * SECOND, swap)) / total,
       },
-      { message: normal("Exchanging your BTC"), detail: "About 9s left" },
+      { message: normal("Exchanging your BTC"), detail: "Less than a minute" },
     ],
     [
       "a regular swap past its estimate on our clock alone",
@@ -616,7 +616,7 @@ describe("top-up timeline, Chainflip route", () => {
         state: "active",
         line: (3 * confirmation + swap / 4 + (swap / 4) * timeFill(SECOND, swap / 4)) / total,
       },
-      { message: normal("Exchanging your BTC in a few steps"), detail: "Part 2 of 4" },
+      { message: normal("Exchanging your BTC in a few steps"), detail: "Swap 2 of 4" },
     ],
     [
       "a rescheduled swap",
@@ -649,7 +649,7 @@ describe("top-up timeline, Chainflip route", () => {
         state: "active",
         line: (3 * confirmation + swap / 4 + (swap / 4) * timeFill(SECOND, swap / 4)) / total,
       },
-      { message: normal("Exchanging your BTC in a few steps"), detail: "Part 2 of 4" },
+      { message: normal("Exchanging your BTC in a few steps"), detail: "Swap 2 of 4" },
     ],
     [
       "the send to Asset Hub",
@@ -660,7 +660,7 @@ describe("top-up timeline, Chainflip route", () => {
       ),
       630,
       { marks: "●●○○○○○", state: "active", line: timeFill(5 * SECOND, 96 * SECOND) },
-      { message: normal("Your money is on its way"), detail: "About 91s left" },
+      { message: normal("Your money is on its way"), detail: "About 2 min" },
     ],
     [
       "a send an hour past its estimate on our clock alone",
@@ -717,8 +717,7 @@ describe("top-up timeline, Meld routes", () => {
   const DAY = 24 * 60 * MINUTE;
   const START = FIXTURE_NOW;
   const routes = { card: meldCardRoute, bank: meldBankRoute };
-  const BANK_FIRST =
-    "If you've sent the money from your bank, it's on its way. Bank transfers can take a few days. This page will update when it arrives.";
+  const BANK_FIRST = "Waiting for your bank transfer";
   /** Local times, so that the sent line reads the same in every timezone. */
   const BANK_SENT = new Date(2025, 4, 6, 10, 42).getTime();
   const NEXT_MORNING = new Date(2025, 4, 7, 9, 0).getTime();
@@ -969,12 +968,12 @@ describe("top-up timeline, route by record", () => {
         status: { kind: "deposit-seen", at: SENT, assurance: "provisional", via: "chain" },
         observedAt: { "on-burner": SENT },
       }),
-      { marks: "●●●○○○○", message: normal("Making sure your money arrived safely") },
+      { marks: "●●●○○○○", message: normal("We've spotted your deposit") },
     ],
     [
       "the worker sees the deposit in a best block",
       direct({ depositInBlock: { block: 110, finalizedAtSeen: 100, finalized: 105, best: 112 } }),
-      { marks: "●●●○○○○", message: normal("Making sure your money arrived safely") },
+      { marks: "●●●○○○○", message: normal("We've spotted your deposit") },
     ],
   ] satisfies [string, TopUpRecord, { marks: string; message: TimelineMessage } | undefined][])(
     "opens a direct deposit's timeline on phase 3 when %s",
@@ -1293,7 +1292,7 @@ describe("top-up timeline, failures", () => {
       "the conversion ran out of time",
       polkadot({}, "timeout"),
       "✕",
-      `Converting to Cash took too long. ${SAFE}`,
+      `Converting your money to Cash took too long. ${SAFE}`,
       TRY_AGAIN,
     ],
     [
@@ -1307,7 +1306,7 @@ describe("top-up timeline, failures", () => {
       "the arrival ran out of time",
       polkadot({ converted }, "timeout"),
       "●✕",
-      `Getting your Cash ready took too long. ${SAFE}`,
+      `Moving your Cash to your account took too long. ${SAFE}`,
       TRY_AGAIN,
     ],
     [
@@ -1354,9 +1353,8 @@ describe("top-up timeline, failures", () => {
   );
 });
 
-describe("top-up timeline, live detail", () => {
-  /** Three seconds on the step: the live clock is `now` itself. */
-  const live = (now: number) => ({ now, watchingSince: SENT, stepSince: now - 3 * SECOND });
+describe("top-up timeline, detail line", () => {
+  const at = (now: number) => ({ now, watchingSince: SENT });
   const provider = (at: number) => ({ provider: { status: "transaction_seen", at } }) as const;
 
   function checking(now: number): TopUpRecord {
@@ -1376,15 +1374,9 @@ describe("top-up timeline, live detail", () => {
   }
 
   it.each([
+    ["nothing under the card's review", checking(SENT + MINUTE), meldCardRoute, SENT + MINUTE],
     [
-      "the provider poll under the card's review",
-      checking(SENT + MINUTE),
-      meldCardRoute,
-      SENT + MINUTE,
-      "Checked with the provider 2s ago",
-    ],
-    [
-      "the provider poll once the payment is accepted",
+      "nothing once the payment is accepted",
       {
         ...cardRecord(),
         observedAt: { receiving: SENT, sending: SENT + MINUTE },
@@ -1392,28 +1384,15 @@ describe("top-up timeline, live detail", () => {
       },
       meldCardRoute,
       SENT + 2 * MINUTE,
-      "Checked with the provider 2s ago",
     ],
     [
-      "the last block beside the confirmation count",
-      confirming(SENT + MINUTE, {
-        requiredConfirmations: 3,
-        depositConfirmations: 1,
-        confirmationsAt: SENT + MINUTE - 4 * SECOND,
-      }),
-      chainflipRoute,
-      SENT + MINUTE,
-      "Confirmation 2 of 3 · last block 4s ago",
-    ],
-    [
-      "the Chainflip read when it gives no count",
+      "nothing while Chainflip gives no count",
       confirming(SENT + MINUTE, {}),
       chainflipRoute,
       SENT + MINUTE,
-      "Checked 1s ago",
     ],
     [
-      "the price check while Chainflip waits for a stable price",
+      "nothing while Chainflip waits for a stable price",
       {
         ...confirming(SENT + 3 * MINUTE, {
           swapScheduledAt: SENT + MINUTE,
@@ -1423,37 +1402,30 @@ describe("top-up timeline, live detail", () => {
       },
       chainflipRoute,
       SENT + 3 * MINUTE,
-      "Price checked 1s ago",
     ],
     [
-      "the network watch while the funds are arriving",
+      "nothing while the funds are arriving",
       record({}, { lastTickAt: SENT + 10 * SECOND }),
       sentRoute,
       SENT + 12 * SECOND,
-      "Watching the network · checked 2s ago",
     ],
     [
-      "finality's blocks once the deposit is seen",
-      record(
-        { depositInBlock: { block: 110, finalizedAtSeen: 100, finalized: 105, best: 120 } },
-        { lastTickAt: SENT + 10 * SECOND },
-      ),
+      "nothing once the deposit is spotted, until the worker counts its block",
+      record({ observedAt: { "on-burner": SENT } }, { lastTickAt: SENT + 10 * SECOND }),
       sentRoute,
       SENT + 12 * SECOND,
-      "Finalizing · block 6 of 10 · checked 2s ago",
     ],
     [
-      "the conversion's stages",
+      "nothing while the deposit converts",
       record(
         { conversionPreparedAt: RECEIVED + 5 * SECOND },
         { ...received, lastTickAt: RECEIVED + 8 * SECOND },
       ),
       sentRoute,
       RECEIVED + 10 * SECOND,
-      "Prepared ✓ · Included · checked 2s ago",
     ],
     [
-      "the claim's stages",
+      "nothing while the Host adds the Cash",
       record(
         {
           converted,
@@ -1464,22 +1436,31 @@ describe("top-up timeline, live detail", () => {
       ),
       sentRoute,
       MOVED + 10 * SECOND,
-      "Registered ✓ · Seen · Added · checked 1s ago",
     ],
-  ] satisfies [string, TopUpRecord, TimelineRoute, number, string][])(
+  ] satisfies [string, TopUpRecord, TimelineRoute, number][])(
     "shows %s",
-    (_, topUp, route, now, detail) => {
-      expect(openedTimeline(topUp, route, live(now)).detail).toBe(detail);
+    (_, topUp, route, now) => {
+      expect(openedTimeline(topUp, route, at(now)).detail).toBeUndefined();
     },
   );
 
-  it("waits 3 s on a step before it says anything live", () => {
-    const now = SENT + MINUTE;
-    const soon = { now, watchingSince: SENT, stepSince: now - 2 * SECOND };
-    expect(openedTimeline(checking(now), meldCardRoute, soon).detail).toBeUndefined();
-    // A static line stays, without the live part.
-    const counted = confirming(now, { requiredConfirmations: 3, depositConfirmations: 1 });
-    expect(openedTimeline(counted, chainflipRoute, soon).detail).toBe("Confirmation 2 of 3");
+  it("counts the confirmations once the worker follows the spotted deposit", () => {
+    const spotted = record(
+      { depositInBlock: { block: 110, finalizedAtSeen: 100, finalized: 105, best: 120 } },
+      { lastTickAt: SENT + 10 * SECOND },
+    );
+    expect(openedTimeline(spotted, sentRoute, at(SENT + 12 * SECOND))).toMatchObject({
+      message: normal("We've spotted your deposit"),
+      detail: "Confirmation 6 of 10",
+    });
+  });
+
+  it("shows a count from the first evaluation and holds it while it does not move", () => {
+    const timelineOf = createTopUpTimelines();
+    const t = SENT + MINUTE;
+    const counted = confirming(t, { requiredConfirmations: 3, depositConfirmations: 1 });
+    expect(timelineOf(counted, t)?.detail).toBe("Confirmation 2 of 3");
+    expect(timelineOf(counted, t + 30 * SECOND)?.detail).toBe("Confirmation 2 of 3");
   });
 
   it("gives way to the reconnect line", () => {
@@ -1489,36 +1470,8 @@ describe("top-up timeline, live detail", () => {
       { requiredConfirmations: 3, depositConfirmations: 1 },
       now - RECONNECT_AFTER_MS - 1,
     );
-    expect(
-      openedTimeline(stale, chainflipRoute, { ...live(now), watchingSince: SENT - HOUR }).detail,
-    ).toBe("Trying to reconnect");
-  });
-
-  it("counts the time on a step from the memo, and starts over when the step moves", () => {
-    const timelineOf = createTopUpTimelines();
-    const t = SENT + MINUTE;
-    const detailAt = (topUp: TopUpRecord, now: number) => timelineOf(topUp, now)?.detail;
-    // A tick before the timeline opens does not start the first step's clock, however long ago:
-    // the first open shows no live detail, and the next tick does not take it back.
-    const unopened: TopUpRecord = {
-      ...cardRecord(),
-      meldSubmittedAt: undefined,
-      observedAt: {},
-      witnesses: {},
-    };
-    expect(timelineOf(unopened, t - 10 * SECOND)).toBeUndefined();
-    expect(detailAt(checking(t), t)).toBeUndefined();
-    expect(detailAt(checking(t), t + 2 * SECOND)).toBeUndefined();
-    expect(detailAt(checking(t), t + 3 * SECOND)).toBe("Checked with the provider 5s ago");
-    // The line moves only on the grid: a second later it still says what the tick said.
-    expect(detailAt(checking(t), t + 4 * SECOND)).toBe("Checked with the provider 5s ago");
-    const accepted: TopUpRecord = {
-      ...checking(t),
-      observedAt: { receiving: SENT, sending: t + 4 * SECOND },
-      witnesses: provider(t + 4 * SECOND),
-    };
-    expect(detailAt(accepted, t + 4 * SECOND)).toBeUndefined();
-    expect(detailAt(accepted, t + 6 * SECOND)).toBeUndefined();
-    expect(detailAt(accepted, t + 7 * SECOND)).toBe("Checked with the provider 3s ago");
+    expect(openedTimeline(stale, chainflipRoute, { now, watchingSince: SENT - HOUR }).detail).toBe(
+      "Trying to reconnect",
+    );
   });
 });
