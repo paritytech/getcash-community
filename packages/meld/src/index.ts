@@ -22,6 +22,7 @@ export {
 export {
   type CredentialStorage,
   devAdapterFetch,
+  isPersonhoodUnavailable,
   personhoodAdapterFetch,
   type PersonhoodFetchConfig,
 } from "./auth";

@@ -3,6 +3,7 @@
 // `createFakeMeldClient` is the offline stand-in.
 
 import { parseMeldAssets, type MeldAsset } from "@getsome/core";
+import { isPersonhoodUnavailable } from "./auth";
 
 /** Forward-quote request. Meld quotes are source-denominated: the buyer names the fiat they pay
  *  and Meld returns the crypto delivered. `computeMeldQuote` iterates this for a reverse target. */
@@ -455,6 +456,7 @@ export function createMeldClient(config: MeldEndpointConfig): MeldClientLike & M
     try {
       return await fetchImpl(url, init);
     } catch (cause) {
+      if (isPersonhoodUnavailable(cause)) throw cause;
       throw new AdapterUnreachable(cause);
     }
   };

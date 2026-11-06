@@ -1,7 +1,7 @@
 // What a card or bank buy, or a sale, says when its session could not be opened. The adapter's
 // codes are never shown: each is worded here, and anything unrecognised reads as our failure.
 
-import { isAdapterUnreachable, refusalOf } from "@getsome/meld";
+import { isAdapterUnreachable, isPersonhoodUnavailable, refusalOf } from "@getsome/meld";
 import { reportFailure } from "~~/lib/telemetry";
 import { failureCauseOf, railFailureReason } from "./quote-failure";
 
@@ -47,6 +47,8 @@ const notOffered: Wording = (c) =>
 const unavailable: Wording = (c) => `${way(c)} isn't available right now. Try another method.`;
 const unreachable: Wording = (c) =>
   `We couldn't reach the payment service. Check your connection and try again. ${untouched(c)}`;
+const unproven: Wording = (c) =>
+  `The Polkadot App didn't confirm your account. Try again in a moment. ${untouched(c)}`;
 const ourSide: Wording = (c) =>
   `Something went wrong on our side. Try again in a moment. ${untouched(c)}`;
 
@@ -102,6 +104,7 @@ const WORDING = new Map<string, Wording>([
 
 export function sessionFailureText(error: unknown, context: SessionFailureContext): string {
   if (!(error instanceof Error)) return ourSide(context);
+  if (isPersonhoodUnavailable(error)) return unproven(context);
   const refusal = refusalOf(error);
   if (refusal === undefined) return (isAdapterUnreachable(error) ? unreachable : ourSide)(context);
   const key = refusal.code ?? refusal.tag;

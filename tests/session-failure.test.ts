@@ -4,7 +4,12 @@ import {
   sessionFailureText,
   type SessionFailureContext,
 } from "../app/funding/session-failure";
-import { ADAPTER_REQUEST_ID, adapterRefusal, adapterUnreachable } from "./fixtures/meld-refusal";
+import {
+  ADAPTER_REQUEST_ID,
+  adapterRefusal,
+  adapterUnreachable,
+  personhoodRefused,
+} from "./fixtures/meld-refusal";
 
 const reported = vi.hoisted(() => [] as unknown[]);
 vi.mock("~~/lib/telemetry", async (importOriginal) => ({
@@ -49,6 +54,12 @@ describe("session failure text", () => {
       "We couldn't reach the payment service. Check your connection and try again. You haven't been charged.";
     expect(sessionFailureText(await adapterUnreachable(), buy)).toBe(unreachable);
     expect(sessionFailureText(await adapterRefusal(undefined, 502), buy)).toBe(unreachable);
+  });
+
+  it("says the Polkadot App did not confirm the account when it gave no proof", async () => {
+    expect(sessionFailureText(await personhoodRefused(), sell)).toBe(
+      "The Polkadot App didn't confirm your account. Try again in a moment. Your Cash is still in your balance.",
+    );
   });
 
   it("reports the rail, the cause and the adapter's id for the call", async () => {

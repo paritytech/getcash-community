@@ -1,5 +1,11 @@
-import { describe, expect, it } from "vitest";
-import { type CredentialStorage, devAdapterFetch, personhoodAdapterFetch } from "./auth";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  type CredentialStorage,
+  devAdapterFetch,
+  isPersonhoodUnavailable,
+  personhoodAdapterFetch,
+  type PersonhoodFetchConfig,
+} from "./auth";
 
 const BASE = "https://adapter.test";
 const CHALLENGE = new Uint8Array(56).fill(0xfb);
@@ -10,7 +16,7 @@ const json = (status: number, body: unknown) =>
 
 /** An adapter whose redeem and gated-route answers are scripted, the last repeating. */
 function adapter(
-  script: { redeem?: number[]; gated?: number[] } = {},
+  script: { redeem?: number[]; gated?: number[]; prove?: PersonhoodFetchConfig["prove"] } = {},
   storage?: CredentialStorage,
 ) {
   const calls: { path: string; headers: Headers; body: unknown }[] = [];
@@ -40,7 +46,7 @@ function adapter(
     personhoodAdapterFetch({
       baseUrl: `${BASE}/`,
       productId: "getcash.paseo",
-      prove,
+      prove: script.prove ?? prove,
       fetchImpl,
       ...(storage ? { storage } : {}),
     });
@@ -132,6 +138,75 @@ describe("personhoodAdapterFetch", () => {
       "Bearer t1",
       "Bearer t1",
     ]);
+  });
+
+  describe("when the Host gives no proof", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    const PROOF = { proof: new Uint8Array([0xff]), ringIndex: 0 };
+    const challenges = (calls: { path: string }[]) =>
+      calls.filter((c) => c.path === "/api/v1/auth/challenge").length;
+
+    it("gives up after 25s and lets the next call prove again", async () => {
+      vi.useFakeTimers();
+      const prove = vi
+        .fn<PersonhoodFetchConfig["prove"]>()
+        .mockReturnValueOnce(new Promise(() => {}))
+        .mockResolvedValue(PROOF);
+      const { authed, calls } = adapter({ prove });
+
+      const first = authed(`${BASE}/assets`).catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(25_000);
+      expect(isPersonhoodUnavailable(await first)).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect((await authed(`${BASE}/assets`)).status).toBe(200);
+      expect(challenges(calls)).toBe(2);
+    });
+
+    it("answers calls with a refusal for 30s before asking the Host again", async () => {
+      vi.useFakeTimers();
+      const refusal = new Error("NotMember");
+      const prove = vi
+        .fn<PersonhoodFetchConfig["prove"]>()
+        .mockRejectedValueOnce(refusal)
+        .mockResolvedValue(PROOF);
+      const { authed, calls } = adapter({ prove });
+
+      const first = await authed(`${BASE}/assets`).catch((e: unknown) => e);
+      expect(isPersonhoodUnavailable(first)).toBe(true);
+      expect((first as Error).cause).toBe(refusal);
+      await expect(authed(`${BASE}/assets`)).rejects.toBe(first);
+      expect(challenges(calls)).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect((await authed(`${BASE}/assets`)).status).toBe(200);
+      expect(prove).toHaveBeenCalledTimes(2);
+    });
+
+    it("stops a call at its own signal while the handshake goes on", async () => {
+      vi.useFakeTimers();
+      let give: (value: typeof PROOF) => void = () => {};
+      const prove = vi.fn<PersonhoodFetchConfig["prove"]>(
+        () => new Promise((resolve) => (give = resolve)),
+      );
+      const { authed, calls } = adapter({ prove });
+
+      const timedOut = new Error("status read timed out");
+      const controller = new AbortController();
+      const bounded = authed(`${BASE}/funding/1`, { signal: controller.signal });
+      const patient = authed(`${BASE}/assets`);
+      await vi.advanceTimersByTimeAsync(0);
+      controller.abort(timedOut);
+      await expect(bounded).rejects.toBe(timedOut);
+
+      give(PROOF);
+      expect((await patient).status).toBe(200);
+      expect(challenges(calls)).toBe(1);
+      expect(calls.some((c) => c.path === "/funding/1")).toBe(false);
+    });
   });
 
   it("does not take back a stored token the adapter refused", async () => {
