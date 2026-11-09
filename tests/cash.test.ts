@@ -4,6 +4,7 @@ import {
   fmtCashDisplay,
   fmtCashToCents,
   isLongStatusAmount,
+  splitCashText,
   toCashBase,
 } from "../app/utils/cash";
 
@@ -42,5 +43,24 @@ describe("CASH formatting", () => {
     for (const short of ["50", "50.52", "100"]) expect(isLongStatusAmount(short)).toBe(false);
     for (const long of ["100.98", "1000", "1,000", "1000.98"])
       expect(isLongStatusAmount(long)).toBe(true);
+  });
+});
+
+describe("splitCashText", () => {
+  it("splits lockups and the word out of copy", () => {
+    expect(splitCashText("Adding +$1,250.50 CASH, then -$3 CASH to your CASH.")).toEqual([
+      { kind: "text", text: "Adding " },
+      { kind: "lockup", sign: "+", amount: "1,250.50" },
+      { kind: "text", text: ", then " },
+      { kind: "lockup", sign: "-", amount: "3" },
+      { kind: "text", text: " to your " },
+      { kind: "word" },
+      { kind: "text", text: "." },
+    ]);
+  });
+
+  it("leaves other spellings and longer words as text", () => {
+    const text = "Cash, cash, CASHBACK and $5 USDC";
+    expect(splitCashText(text)).toEqual([{ kind: "text", text }]);
   });
 });

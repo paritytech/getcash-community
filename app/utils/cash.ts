@@ -38,6 +38,33 @@ export const cashAmount = (human: string): string => withSymbol(human, currencyC
  *  balance"). */
 export const cashInText = (human: string): string => withSymbol(human, currencyConfig.word);
 
+/** A run of copy as `<CashText>` draws it: plain text, a `cashAmount()` lockup, or the ticker
+ *  named within a sentence. */
+export type CashTextPart =
+  | { kind: "text"; text: string }
+  | { kind: "lockup"; sign: string; amount: string }
+  | { kind: "word" };
+
+const SYMBOL = currencyConfig.symbol.replace(/[$^.*+?()[\]{}|\\]/g, "\\$&");
+const TICKER = currencyConfig.ticker;
+const CASH_IN_TEXT = new RegExp(
+  `([+-]?)${SYMBOL}(\\d[\\d,]*(?:\\.\\d+)?) ${TICKER}\\b|\\b${TICKER}\\b`,
+  "g",
+);
+
+export function splitCashText(text: string): CashTextPart[] {
+  const parts: CashTextPart[] = [];
+  let end = 0;
+  for (const match of text.matchAll(CASH_IN_TEXT)) {
+    const [whole, sign = "", amount] = match;
+    if (match.index > end) parts.push({ kind: "text", text: text.slice(end, match.index) });
+    parts.push(amount === undefined ? { kind: "word" } : { kind: "lockup", sign, amount });
+    end = match.index + whole.length;
+  }
+  if (end < text.length) parts.push({ kind: "text", text: text.slice(end) });
+  return parts;
+}
+
 /** CASH base units truncated down to the keypad's `decimals` scale. */
 export function cashToRuleUnits(base: bigint, decimals: number): bigint {
   const drop = CASH_DECIMALS - decimals;
