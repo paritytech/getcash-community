@@ -306,7 +306,7 @@ describe("the timeline", () => {
   it("holds the current line amber and offers the purse alone while the balance covers the fee", () => {
     const timeline = timelineOf(trapped());
     expect(timeline?.view.state).toBe("delayed");
-    expect(timeline?.message).toEqual({ text: "Your Cash is almost here", delay: true });
+    expect(timeline?.message).toEqual({ text: "Your CASH is almost here", delay: true });
     expect(timeline?.detail).toBe("A $0.01 network fee is needed to add it to your balance.");
     expect(timeline?.recovery?.actions).toEqual([FROM_BALANCE]);
     expect(listHeadline("crypto", timeline)).toEqual({
@@ -318,14 +318,14 @@ describe("the timeline", () => {
     expect(promptWith(trapped(), BigInt(view().askCash!))?.actions).toEqual([FROM_BALANCE]);
   });
 
-  it("names the Cash in the trap, not the quote, when a swap filled off it", () => {
+  it("names the CASH in the trap, not the quote, when a swap filled off it", () => {
     const short = trapped(view({ trappedAmount: "20000000", phase: "claiming" }));
     expect(trappedCash(short)).toBe("20");
     // A swap that filled off its quote leaves a long fraction: cut to cents, as every amount is.
     const filled = trapped(view({ trappedAmount: "10100249" }));
     expect(trappedCash(filled)).toBe("10.10");
     expect(timelineOf(short)?.detail).toBe(
-      "The fee is paid. Your $20 Cash will be in your balance in a moment.",
+      "The fee is paid. Your $20 CASH will be in your balance in a moment.",
     );
     // Until the worker found the trap there is only the quote.
     expect(trappedCash(awaiting())).toBe(awaiting().amountHuman);
@@ -333,7 +333,7 @@ describe("the timeline", () => {
 
   it("offers the purse beside the wallet path while the balance cannot be read", () => {
     const prompt = promptWith(trapped(), "unread");
-    expect(prompt?.message.text).toBe("Your Cash is almost here");
+    expect(prompt?.message.text).toBe("Your CASH is almost here");
     expect(prompt?.detail).toBe(
       "A $0.01 network fee is needed. Pay it from your balance or from another wallet.",
     );
@@ -346,7 +346,7 @@ describe("the timeline", () => {
   it("offers a deposit alone while the balance falls short of the fee, or there is no purse", () => {
     for (const purse of [SHORT, "none"] as const) {
       const prompt = promptWith(trapped(), purse);
-      expect(prompt?.message.text).toBe("Your Cash is almost here");
+      expect(prompt?.message.text).toBe("Your CASH is almost here");
       expect(prompt?.detail).toBe("A $0.01 network fee is needed to add it.");
       expect(prompt?.actions).toEqual([SEND_DEPOSIT]);
     }
@@ -354,34 +354,34 @@ describe("the timeline", () => {
 
   it("offers nothing until the worker sized the fee", () => {
     const timeline = timelineOf(trapped(view({ askCash: undefined })));
-    expect(timeline?.message?.text).toBe("Your Cash is almost here");
+    expect(timeline?.message?.text).toBe("Your CASH is almost here");
     expect(timeline?.detail).toBe("Working out the network fee.");
     expect(timeline?.recovery?.actions).toEqual([]);
     expect(listHeadline("crypto", timeline)).toEqual({
-      text: "Your Cash is almost here",
+      text: "Your CASH is almost here",
       delayed: true,
     });
   });
 
   it("waits quietly once the purse was asked, says the fee is being paid, then paid", () => {
     const asked = timelineOf(requested(trapped()));
-    expect(asked?.message?.text).toBe("Your Cash is almost here");
+    expect(asked?.message?.text).toBe("Your CASH is almost here");
     // Asked and not yet answered: the sheet is up.
     expect(asked?.detail).toBe("Waiting for the fee to be approved.");
     expect(asked?.recovery?.actions).toEqual([]);
     // The host took the payment and is sending it; it can still fail, so not paid yet.
     const registered = timelineOf(host(requested(trapped()), { status: "processing" }));
-    expect(registered?.message?.text).toBe("Your Cash is almost here");
+    expect(registered?.message?.text).toBe("Your CASH is almost here");
     expect(registered?.detail).toBe("Paying the fee from your balance.");
     expect(registered?.recovery?.actions).toEqual([]);
     expect(listHeadline("crypto", registered)).toEqual({
-      text: "Your Cash is almost here",
+      text: "Your CASH is almost here",
       delayed: true,
     });
     const paid = timelineOf(host(requested(trapped()), { status: "completed" }));
-    expect(paid?.message?.text).toBe("Adding your Cash");
+    expect(paid?.message?.text).toBe("Adding your CASH");
     expect(paid?.detail).toBe(
-      "The fee is paid. Your $25 Cash will be in your balance in a moment.",
+      "The fee is paid. Your $25 CASH will be in your balance in a moment.",
     );
     expect(paid?.recovery?.actions).toEqual([]);
   });
@@ -427,7 +427,7 @@ describe("the timeline", () => {
     }) as TopUpRecord;
     expect(paymentOutOfRound(moved.recovery!)).toBe(true);
     const inFlight = timelineOf(moved);
-    expect(inFlight?.message?.text).toBe("Your Cash is almost here");
+    expect(inFlight?.message?.text).toBe("Your CASH is almost here");
     expect(inFlight?.detail).toBe("Paying the fee from your balance.");
     expect(inFlight?.recovery?.actions).toEqual([]);
     expect(awaitingAnswer(moved.recovery)).toBe(false);
@@ -449,7 +449,7 @@ describe("the timeline", () => {
   it("says first what became of a deposit the worker let go, then asks on", () => {
     const unused = (kind: "held" | "short" | "trapped") =>
       timelineOf(trapped(view({ depositUnused: { at: at(3), kind } })));
-    expect(unused("trapped")?.message?.text).toBe("We couldn't add your Cash yet");
+    expect(unused("trapped")?.message?.text).toBe("We couldn't add your CASH yet");
     expect(unused("trapped")?.detail).toBe(
       "What you sent didn't get through. A $0.01 network fee is needed to add it to your balance.",
     );
@@ -472,7 +472,7 @@ describe("the timeline", () => {
   it("asks for the rest when the purse paid part of the fee", () => {
     const part = host(requested(trapped()), { status: "partiallyClaimed", actualClaimed: "4000" });
     const covers = timelineOf(part);
-    expect(covers?.message?.text).toBe("We couldn't add your Cash yet");
+    expect(covers?.message?.text).toBe("We couldn't add your CASH yet");
     expect(covers?.detail).toBe(
       "Your balance covered part of the fee. Another $0.01 is needed. Pay it from your balance or from another wallet.",
     );
@@ -491,12 +491,12 @@ describe("the timeline", () => {
     const timeline = timelineOf(declined);
     expect(timeline?.message?.text).toBe("The fee wasn't paid");
     expect(timeline?.detail).toBe(
-      "Your $25 Cash is still waiting. Try again, or pay from another wallet.",
+      "Your $25 CASH is still waiting. Try again, or pay from another wallet.",
     );
     expect(timeline?.recovery?.actions).toEqual([FROM_BALANCE_AGAIN, SEND_DEPOSIT]);
     // Short of the fee since: a deposit is the one way.
     const short = promptWith(declined, SHORT);
-    expect(short?.detail).toBe("Your $25 Cash is still waiting.");
+    expect(short?.detail).toBe("Your $25 CASH is still waiting.");
     expect(short?.actions).toEqual([SEND_DEPOSIT]);
 
     const failed = timelineOf(
@@ -514,13 +514,13 @@ describe("the timeline", () => {
 
   it("asks for the fee again once the worker's round moved past the payment, paid or not", () => {
     const paid = host(requested(trapped()), { status: "completed" }) as TopUpRecord;
-    expect(timelineOf(paid)?.message?.text).toBe("Adding your Cash");
+    expect(timelineOf(paid)?.message?.text).toBe("Adding your CASH");
     const moved = reduce(paid, {
       ...trappedJob(view({ round: 1, askCash: "20000" })),
       at: at(5),
     }) as TopUpRecord;
     const covers = timelineOf(moved);
-    expect(covers?.message?.text).toBe("We couldn't add your Cash yet");
+    expect(covers?.message?.text).toBe("We couldn't add your CASH yet");
     expect(covers?.detail).toBe(
       "Another $0.02 network fee is needed. Pay it from your balance or from another wallet.",
     );
@@ -532,7 +532,7 @@ describe("the timeline", () => {
 
   it("says a deposit is being converted, then that the claim is on its way", () => {
     const converting = timelineOf(trapped(view({ deposit: "swap" })));
-    expect(converting?.message?.text).toBe("Adding your Cash");
+    expect(converting?.message?.text).toBe("Adding your CASH");
     expect(converting?.detail).toBe("Converting what you sent to cover the fee.");
     expect(converting?.recovery?.actions).toEqual([]);
     // Found and not yet past a step, a tick of it failing: being converted all the same.
@@ -541,15 +541,15 @@ describe("the timeline", () => {
     expect(found?.recovery?.actions).toEqual([]);
     // Found but held short at the gate: the buyer is told so and asked on.
     const short = timelineOf(trapped(view({ depositFound: true, deposit: "await-native" })));
-    expect(short?.message?.text).toBe("We couldn't add your Cash yet");
+    expect(short?.message?.text).toBe("We couldn't add your CASH yet");
     expect(short?.detail).toBe(
       "What you sent isn't enough yet. A $0.01 network fee is needed to add it to your balance.",
     );
     expect(short?.recovery?.actions).toEqual([FROM_BALANCE]);
     const claiming = timelineOf(trapped(view({ phase: "claiming" })));
-    expect(claiming?.message?.text).toBe("Adding your Cash");
+    expect(claiming?.message?.text).toBe("Adding your CASH");
     expect(claiming?.detail).toBe(
-      "The fee is paid. Your $25 Cash will be in your balance in a moment.",
+      "The fee is paid. Your $25 CASH will be in your balance in a moment.",
     );
     expect(claiming?.recovery?.actions).toEqual([]);
   });

@@ -35,7 +35,7 @@ const BUY_METHOD = { card: "card", bank: "bank transfer" } as const;
 const SELL_DESTINATION = { card: "card", bank: "bank account" } as const;
 
 const untouched: Wording = ({ side }) =>
-  side === "buy" ? "You haven't been charged." : "Your Cash is still in your balance.";
+  side === "buy" ? "You haven't been charged." : "Your CASH is still in your balance.";
 
 const way: Wording = ({ side, method }) =>
   side === "buy"

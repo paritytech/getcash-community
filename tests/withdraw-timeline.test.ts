@@ -458,7 +458,7 @@ describe("withdrawal timeline", () => {
     );
     expect(handing.view?.state).toBe("delayed");
     expect(handing.message).toEqual({
-      text: "Your Cash is ready and waiting for the network to confirm it",
+      text: "Your CASH is ready and waiting for the network to confirm it",
       delay: true,
     });
   });
@@ -536,7 +536,7 @@ describe("withdrawal timeline", () => {
       "crypto",
       chainflip,
       [
-        "Converting your Cash",
+        "Converting your CASH",
         "Moving your money to the exchange",
         "Handing your money to the exchange",
         "Exchanging your money for USDC",
@@ -548,7 +548,7 @@ describe("withdrawal timeline", () => {
       "card",
       sale,
       [
-        "Converting your Cash",
+        "Converting your CASH",
         "Moving your money to the payment provider",
         "Handing your money to the payment provider",
         "The provider is preparing your payout",
@@ -560,7 +560,7 @@ describe("withdrawal timeline", () => {
       "bank",
       (o: Partial<WithdrawalRecord>) => sale({ route: "bank", ...o }),
       [
-        "Converting your Cash",
+        "Converting your CASH",
         "Moving your money to the payment provider",
         "Handing your money to the payment provider",
         "The provider is preparing your payout",
@@ -943,7 +943,7 @@ describe("withdrawal journey rows", () => {
     expect(bank[1]).toEqual({
       label: "Arrives",
       value: "1–2 business days",
-      note: "Final Cash depends on the rate on arrival",
+      note: "Final CASH depends on the rate on arrival",
     });
     expect(
       withdrawalJourneyRows(failed(sale(), "egress-failed", "send"), { feesAvailable: false }),
@@ -1029,7 +1029,7 @@ describe("withdrawal timeline, band", () => {
     });
     expect(withdrawalTimeline(converting, { now: at(3) })).toEqual({
       view: expect.anything(),
-      message: normal("Converting your Cash"),
+      message: normal("Converting your CASH"),
     });
     const handing = chainflip({
       status: { kind: "sending", at: at(3) },

@@ -25,7 +25,7 @@ import { TOP_UP_TIMELINE } from "../../funding/timeline/top-up-spec";
 import type { FundingTopUp } from "../../funding/top-ups";
 import { useRequestsStore } from "../../stores/requests";
 import { useSessionStore } from "../../stores/session";
-import { cashInText, fmtCash, toCashBase } from "../../utils/cash";
+import { cashAmount, fmtCash, toCashBase } from "../../utils/cash";
 import { currencyConfig } from "../../funding/config";
 import { fmtFiat, isMoneyAmount } from "../../utils/money";
 import { formatWhenShort, shortRef } from "../../utils/journey";
@@ -237,7 +237,7 @@ const detailRows = computed<DetailRow[]>(() => {
       rows.push({
         label: "Arrives",
         value: "1–2 business days",
-        note: `Final ${currencyConfig.name} depends on the rate on arrival`,
+        note: `Final ${currencyConfig.ticker} depends on the rate on arrival`,
       });
     return rows;
   }
@@ -311,7 +311,7 @@ function recover(action: RecoveryAction) {
 /** Explains a header amount that moved off the quote. */
 const rateChangeNotice = computed(() =>
   revisedAmount.value
-    ? `Rates changed while your money was on its way. You'll get ${cashInText(revisedAmount.value)} instead of ${cashInText(quotedAmount.value)}`
+    ? `Rates changed while your money was on its way. You'll get ${cashAmount(revisedAmount.value)} instead of ${cashAmount(quotedAmount.value)}`
     : null,
 );
 

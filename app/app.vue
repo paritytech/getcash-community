@@ -25,7 +25,7 @@ const { incompatible } = useHostGate();
   <BottomSheet :open="incompatible">
     <div class="flex flex-col gap-1 p-6 text-center">
       <p class="text-heading-m text-fg-primary">TrUAPI runtime isn't supported</p>
-      <p class="text-body-s text-fg-secondary">Turn it off in the dev menu, then reopen Cash.</p>
+      <p class="text-body-s text-fg-secondary">Turn it off in the dev menu, then reopen CASH.</p>
     </div>
   </BottomSheet>
 </template>

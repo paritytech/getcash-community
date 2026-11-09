@@ -2784,7 +2784,7 @@ exports[`request list projection > projects the fixture records with live status
             "kind": "try-again",
           },
           "details": {},
-          "text": "We received less Cash than expected. Your money is safe, and you won't need to pay again.",
+          "text": "We received less CASH than expected. Your money is safe, and you won't need to pay again.",
         },
         "view": {
           "failed": 4,
@@ -2846,7 +2846,7 @@ exports[`request list projection > projects the fixture records with live status
         "detail": undefined,
         "message": {
           "delay": false,
-          "text": "Converting your money to Cash",
+          "text": "Converting your money to CASH",
         },
         "view": {
           "lines": [
@@ -3043,7 +3043,7 @@ exports[`request list projection > projects the fixture records with live status
         "detail": undefined,
         "message": {
           "delay": false,
-          "text": "Converting your money to Cash",
+          "text": "Converting your money to CASH",
         },
         "view": {
           "lines": [

@@ -69,7 +69,7 @@ function copy(text: string | null) {
       </button>
 
       <p v-if="fee" class="mt-4 shrink-0 text-center text-body-s text-fg-secondary">
-        The fee is {{ fee }}. Anything above it is added to your Cash.
+        The fee is {{ fee }}. Anything above it is added to your CASH.
       </p>
     </template>
     <!-- The token is not priced: not yet, or not today. The other tokens are a tap away. -->

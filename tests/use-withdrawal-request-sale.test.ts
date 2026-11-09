@@ -382,7 +382,7 @@ describe("a fiat sale from the page", () => {
     expect(outcome).toEqual({
       ok: false,
       reason:
-        "The provider rejected this quote. Your Cash is still in your balance. Try again later or use another method.",
+        "The provider rejected this quote. Your CASH is still in your balance. Try again later or use another method.",
     });
     expect(useRequestsStore().withdrawals).toEqual([]);
   });
@@ -546,7 +546,7 @@ describe("a fiat sale from the page", () => {
     expect(await startSale()).toEqual({
       ok: false,
       reason:
-        "We couldn't reach the payment service. Check your connection and try again. Your Cash is still in your balance.",
+        "We couldn't reach the payment service. Check your connection and try again. Your CASH is still in your balance.",
     });
     expect(advanced).toHaveBeenCalledWith("wd:meld-bank", 1);
     expect(advanced.mock.invocationCallOrder[0]).toBeLessThan(opened.mock.invocationCallOrder[0]!);

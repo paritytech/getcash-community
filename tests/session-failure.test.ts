@@ -31,7 +31,7 @@ describe("session failure text", () => {
       "The provider rejected this quote. You haven't been charged. Try again later or use another method.",
     );
     expect(sessionFailureText(rejected, sell)).toBe(
-      "The provider rejected this quote. Your Cash is still in your balance. Try again later or use another method.",
+      "The provider rejected this quote. Your CASH is still in your balance. Try again later or use another method.",
     );
   });
 
@@ -58,7 +58,7 @@ describe("session failure text", () => {
 
   it("says the Polkadot App did not confirm the account when it gave no proof", async () => {
     expect(sessionFailureText(await personhoodRefused(), sell)).toBe(
-      "The Polkadot App didn't confirm your account. Try again in a moment. Your Cash is still in your balance.",
+      "The Polkadot App didn't confirm your account. Try again in a moment. Your CASH is still in your balance.",
     );
   });
 

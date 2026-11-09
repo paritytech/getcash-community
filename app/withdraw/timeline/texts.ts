@@ -23,10 +23,10 @@ export function waitingText(record: WithdrawalRecord): string {
   return record.payment.requestedAt === undefined ? WAITING_FOR_PAYMENT : PAYMENT_PROCESSING;
 }
 
-const CONVERTING = "Converting your Cash";
+const CONVERTING = "Converting your CASH";
 const CONVERSION_DELAYED =
   "The conversion is taking longer than usual. It will continue automatically.";
-const RAIL_DELAYED = "Your Cash is ready and waiting for the network to confirm it";
+const RAIL_DELAYED = "Your CASH is ready and waiting for the network to confirm it";
 
 /** The band per phase, for the exchange a crypto withdrawal goes through and the payment
  *  provider a sale does. */

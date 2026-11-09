@@ -21,7 +21,7 @@ const DONE: TimelineView = {
 function journey(view: TimelineView | undefined, succeeded = false) {
   const done = ref(succeeded);
   const shown = ref(view);
-  const message = ref<string | null>("Converting your Cash");
+  const message = ref<string | null>("Converting your CASH");
   const success = useJourneySuccess({
     succeeded: done,
     view: shown,

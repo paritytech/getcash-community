@@ -1,7 +1,7 @@
 // The part of the timeline every route shares: Received and the Polkadot milestones, phases 3 to
 // 6, their texts, and the failures past the provider's part.
 
-import { cashInText } from "../../utils/cash";
+import { cashAmount } from "../../utils/cash";
 import type { DepositInBlock, TopUpRecord } from "../requests/model";
 import { mintedOf } from "../requests/views";
 import { CLOSE, TRY_AGAIN, type PartFailure } from "./failure";
@@ -200,20 +200,20 @@ export function polkadotText(
       return {
         message: psmRefused(record)
           ? delay("The conversion paused for a moment and will retry automatically")
-          : normal("Converting your money to Cash"),
+          : normal("Converting your money to CASH"),
       };
     case 4:
       return {
         message: delayed
-          ? delay("Your Cash is ready and waiting for the network to confirm it")
-          : normal("Moving your Cash to your account"),
+          ? delay("Your CASH is ready and waiting for the network to confirm it")
+          : normal("Moving your CASH to your account"),
       };
     case 5:
       return {
         message: normal(
           mintedOf(record) !== undefined
-            ? "Adding the rest of your Cash"
-            : `Adding ${cashInText(record.amountHuman)} to your balance`,
+            ? "Adding the rest of your CASH"
+            : `Adding ${cashAmount(record.amountHuman)} to your balance`,
         ),
       };
   }
@@ -222,11 +222,11 @@ export function polkadotText(
 const MONEY_SAFE = "Your money is safe, and you won't need to pay again.";
 
 const POLKADOT_FAILURES = {
-  held: `We couldn't convert your money to Cash. ${MONEY_SAFE}`,
-  conversionTimeout: `Converting your money to Cash took too long. ${MONEY_SAFE}`,
-  shortfall: `We received less Cash than expected. ${MONEY_SAFE}`,
-  arrivalTimeout: `Moving your Cash to your account took too long. ${MONEY_SAFE}`,
-  notClaimed: `We couldn't add Cash to your balance. ${MONEY_SAFE}`,
+  held: `We couldn't convert your money to CASH. ${MONEY_SAFE}`,
+  conversionTimeout: `Converting your money to CASH took too long. ${MONEY_SAFE}`,
+  shortfall: `We received less CASH than expected. ${MONEY_SAFE}`,
+  arrivalTimeout: `Moving your CASH to your account took too long. ${MONEY_SAFE}`,
+  notClaimed: `We couldn't add CASH to your balance. ${MONEY_SAFE}`,
 } as const;
 
 const ADDED: MilestoneIndex = 6;

@@ -225,7 +225,7 @@ function useAmount(cash: string) {
           <span class="flex flex-col items-end text-right">
             <span class="text-heading-m text-fg-primary">1–2 business days</span>
             <span class="text-body-s text-fg-secondary">
-              Final {{ currencyConfig.name }} depends on the rate on arrival
+              Final {{ currencyConfig.ticker }} depends on the rate on arrival
             </span>
           </span>
         </div>

@@ -175,35 +175,35 @@ describe("top-up timeline, shared route frame", () => {
       record({}, received),
       RECEIVED,
       { marks: "●●●●○○○", state: "active", line: 0 },
-      { message: normal("Converting your money to Cash") },
+      { message: normal("Converting your money to CASH") },
     ],
     [
       "the worker worked 2 minutes since the deposit was final",
       record({}, { ...received, workedMs: 2 * MINUTE }),
       RECEIVED,
       { marks: "●●●●○○○", state: "active", line: 0 },
-      { message: normal("Converting your money to Cash") },
+      { message: normal("Converting your money to CASH") },
     ],
     [
       "the worker worked over 2 minutes since the deposit was final",
       record({}, { ...received, workedMs: 2 * MINUTE + 1 }),
       RECEIVED,
       { marks: "●●●●○○○", state: "delayed", line: 0 },
-      { message: normal("Converting your money to Cash") },
+      { message: normal("Converting your money to CASH") },
     ],
     [
       "the deposit final an hour ago, with little worker time",
       record({}, { ...received, workedMs: 30 * SECOND, lastTickAt: RECEIVED + HOUR }),
       RECEIVED + HOUR,
       { marks: "●●●●○○○", state: "active", line: 1 / 3 },
-      { message: normal("Converting your money to Cash") },
+      { message: normal("Converting your money to CASH") },
     ],
     [
       "the conversion passed its dry run",
       record({ conversionPreparedAt: RECEIVED }, received),
       RECEIVED,
       { marks: "●●●●○○○", state: "active", line: 1 / 3 },
-      { message: normal("Converting your money to Cash") },
+      { message: normal("Converting your money to CASH") },
     ],
     [
       "the PSM refused the mint once",
@@ -217,21 +217,21 @@ describe("top-up timeline, shared route frame", () => {
       record({ handoff: undefined, conversion: { tier: "dotusd" } }, received),
       RECEIVED,
       { marks: "●●●●○○○", state: "active", line: 0 },
-      { message: normal("Converting your money to Cash") },
+      { message: normal("Converting your money to CASH") },
     ],
     [
       "the conversion is in a block",
       record({ converted }, { ...received, workedMs: CONVERTED_WORKED }),
       CONVERTED,
       { marks: "●●●●●○○", state: "active", line: 0 },
-      { message: normal("Moving your Cash to your account") },
+      { message: normal("Moving your CASH to your account") },
     ],
     [
       "the worker worked over 5 minutes since the conversion",
       record({ converted }, { ...received, workedMs: CONVERTED_WORKED + 5 * MINUTE + 1 }),
       CONVERTED + 91 * SECOND,
       { marks: "●●●●●○○", state: "delayed", line: timeFill(91 * SECOND, 90 * SECOND) },
-      { message: delay("Your Cash is ready and waiting for the network to confirm it") },
+      { message: delay("Your CASH is ready and waiting for the network to confirm it") },
     ],
     [
       "the conversion an hour ago, with little worker time since",
@@ -241,14 +241,14 @@ describe("top-up timeline, shared route frame", () => {
       ),
       CONVERTED + HOUR,
       { marks: "●●●●●○○", state: "active", line: 1 },
-      { message: normal("Moving your Cash to your account") },
+      { message: normal("Moving your CASH to your account") },
     ],
     [
-      "the Cash is final on People",
+      "the CASH is final on People",
       record({ observedAt: { "cash-on-people": MOVED } }, received),
       MOVED,
       { marks: "●●●●●●○", state: "active", line: 0 },
-      { message: normal("Adding $50 Cash to your balance") },
+      { message: normal("Adding $50 CASH to your balance") },
     ],
     [
       "the Host is claiming a registered claim",
@@ -261,7 +261,7 @@ describe("top-up timeline, shared route frame", () => {
       ),
       MOVED,
       { marks: "●●●●●●○", state: "active", line: 2 / 3 },
-      { message: normal("Adding $50 Cash to your balance") },
+      { message: normal("Adding $50 CASH to your balance") },
     ],
     [
       "the worker worked over 2 minutes since it registered the claim",
@@ -271,7 +271,7 @@ describe("top-up timeline, shared route frame", () => {
       ),
       MOVED,
       { marks: "●●●●●●○", state: "delayed", line: 1 / 3 },
-      { message: normal("Adding $50 Cash to your balance") },
+      { message: normal("Adding $50 CASH to your balance") },
     ],
     [
       "the claim registered an hour ago, with little worker time since",
@@ -281,7 +281,7 @@ describe("top-up timeline, shared route frame", () => {
       ),
       MOVED + HOUR,
       { marks: "●●●●●●○", state: "active", line: 2 / 3 },
-      { message: normal("Adding $50 Cash to your balance") },
+      { message: normal("Adding $50 CASH to your balance") },
     ],
     [
       "the Host added a part and the worker tries again",
@@ -291,7 +291,7 @@ describe("top-up timeline, shared route frame", () => {
       ),
       MOVED,
       { marks: "●●●●●●○", state: "active", line: 0 },
-      { message: normal("Adding the rest of your Cash") },
+      { message: normal("Adding the rest of your CASH") },
     ],
     [
       "the Host added the top-up",
@@ -398,7 +398,7 @@ describe("top-up timeline, shared route frame", () => {
     });
 
     expect(marks(view)).toBe("●●●●○○○");
-    expect(message).toEqual(normal("Converting your money to Cash"));
+    expect(message).toEqual(normal("Converting your money to CASH"));
   });
 });
 
@@ -1285,56 +1285,56 @@ describe("top-up timeline, failures", () => {
       "the PSM held the mint",
       polkadot({}, "held"),
       "✕",
-      `We couldn't convert your money to Cash. ${SAFE}`,
+      `We couldn't convert your money to CASH. ${SAFE}`,
       TRY_AGAIN,
     ],
     [
       "the conversion ran out of time",
       polkadot({}, "timeout"),
       "✕",
-      `Converting your money to Cash took too long. ${SAFE}`,
+      `Converting your money to CASH took too long. ${SAFE}`,
       TRY_AGAIN,
     ],
     [
-      "less Cash arrived on People",
+      "less CASH arrived on People",
       polkadot({ converted }, "shortfall"),
       "●✕",
-      `We received less Cash than expected. ${SAFE}`,
+      `We received less CASH than expected. ${SAFE}`,
       TRY_AGAIN,
     ],
     [
       "the arrival ran out of time",
       polkadot({ converted }, "timeout"),
       "●✕",
-      `Moving your Cash to your account took too long. ${SAFE}`,
+      `Moving your CASH to your account took too long. ${SAFE}`,
       TRY_AGAIN,
     ],
     [
       "the claim ran out of time",
       polkadot(moved, "timeout"),
       "●●✕",
-      `We couldn't add Cash to your balance. ${SAFE}`,
+      `We couldn't add CASH to your balance. ${SAFE}`,
       TRY_AGAIN,
     ],
     [
       "the Host added nothing",
       polkadot(moved, "claim"),
       "●●✕",
-      `We couldn't add Cash to your balance. ${SAFE}`,
+      `We couldn't add CASH to your balance. ${SAFE}`,
       TRY_AGAIN,
     ],
     [
       "core failed the claim",
       polkadot(moved),
       "●●✕",
-      `We couldn't add Cash to your balance. ${SAFE}`,
+      `We couldn't add CASH to your balance. ${SAFE}`,
       TRY_AGAIN,
     ],
     [
       "core found the credit short",
       polkadot(moved, undefined, { kind: "under-credit", recoverable: false }),
       "●●✕",
-      `We couldn't add Cash to your balance. ${SAFE}`,
+      `We couldn't add CASH to your balance. ${SAFE}`,
       CLOSE,
     ],
   ] satisfies [string, TopUpRecord, string, string, FailureAction][])(
@@ -1425,7 +1425,7 @@ describe("top-up timeline, detail line", () => {
       RECEIVED + 10 * SECOND,
     ],
     [
-      "nothing while the Host adds the Cash",
+      "nothing while the Host adds the CASH",
       record(
         {
           converted,

@@ -2,19 +2,10 @@ import { DECIMALS, ONE_CASH, readTopUpBounds } from "./bounds";
 import { DEFAULT_DEPOSIT_WINDOW_MS } from "./requests/model";
 import { formatFundingAmount, type FundingAmountRules, type FundingRoute } from "./selection";
 
-const symbol = "$";
-const ticker = "CASH";
-
-/** The currency as every sum and every prose mention writes it: the symbol on the figure, the
- *  ticker after it as a logo, the word a sentence uses instead ("Adding $50 Cash"), and the token's
- *  name where prose names it rather than counts it ("Converting to $CASH"). The one place any of
- *  them changes with the branding. */
-export const currencyConfig = {
-  symbol,
-  ticker,
-  word: "Cash",
-  name: `${symbol}${ticker}`,
-} as const;
+/** The currency as every sum and every prose mention writes it: the symbol on the figure and the
+ *  ticker, after a figure or on its own in a sentence. The one place either changes with the
+ *  branding. */
+export const currencyConfig = { symbol: "$", ticker: "CASH" } as const;
 
 export interface FundingRouteOption {
   id: FundingRoute;

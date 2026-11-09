@@ -37,7 +37,7 @@ const ARRIVES: Readonly<Record<"card" | "bank", DetailRow>> = {
   bank: {
     label: "Arrives",
     value: "1–2 business days",
-    note: "Final Cash depends on the rate on arrival",
+    note: "Final CASH depends on the rate on arrival",
   },
 };
 

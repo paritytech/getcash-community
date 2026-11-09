@@ -3,7 +3,7 @@
 // say what is happening, and the buttons say what the buyer can do.
 
 import { currencyConfig } from "../config";
-import { cashInText, fmtCash, fmtCashToCents } from "../../utils/cash";
+import { cashAmount, fmtCash, fmtCashToCents } from "../../utils/cash";
 import { paymentOutOfRound, type TopUpRecord, type TopUpRecovery } from "../requests/model";
 import { delay, type TimelineMessage } from "./route";
 
@@ -28,10 +28,10 @@ export interface RecoveryPrompt {
   readonly actions: readonly RecoveryAction[];
 }
 
-const ALMOST_HERE = "Your Cash is almost here";
-const ADDING = "Adding your Cash";
+const ALMOST_HERE = "Your CASH is almost here";
+const ADDING = "Adding your CASH";
 const NOT_PAID = "The fee wasn't paid";
-const NOT_ADDED = "We couldn't add your Cash yet";
+const NOT_ADDED = "We couldn't add your CASH yet";
 
 /** The claim's fee as the band names it ("$0.01"), when the worker has sized it. */
 export function recoveryFee(record: TopUpRecord): string | undefined {
@@ -82,7 +82,7 @@ export function recoveryPrompt(
 ): RecoveryPrompt | undefined {
   const { status, recovery } = record;
   if (status.kind !== "recovering") return undefined;
-  const cash = cashInText(trappedCash(record));
+  const cash = cashAmount(trappedCash(record));
   const paid = `The fee is paid. Your ${cash} will be in your balance in a moment.`;
   if (status.step === "claiming") {
     return { message: delay(ADDING), detail: paid, actions: [] };
