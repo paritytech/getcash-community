@@ -7,7 +7,6 @@ import { ref, type HTMLAttributes } from "vue";
 import { Check, ChevronRight, Copy } from "lucide-vue-next";
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard";
 import { cn } from "@/lib/cn";
-import CashAmount from "./CashAmount.vue";
 import CashText from "./CashText.vue";
 
 export interface DetailRow {
@@ -25,8 +24,6 @@ export interface DetailRow {
   mono?: boolean;
   /** A secondary line under the value (the rate caveat under an arrival estimate). */
   note?: string;
-  /** The value is a bare CASH amount, drawn in the sum's own form ("$50 CASH"). */
-  cash?: boolean;
 }
 
 const props = defineProps<{
@@ -86,8 +83,7 @@ async function copyRow(row: DetailRow) {
         <span class="text-body-s text-fg-secondary"><CashText :text="row.note" /></span>
       </dd>
       <dd v-else class="text-right text-heading-m text-fg-primary" :title="row.title">
-        <CashAmount v-if="row.cash" :amount="row.value" />
-        <CashText v-else :text="row.value" />
+        <CashText :text="row.value" />
       </dd>
     </div>
   </dl>

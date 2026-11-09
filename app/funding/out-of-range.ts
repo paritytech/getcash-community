@@ -39,7 +39,7 @@ export function fiatOutOfRange(
     message: below
       ? `You need at least ${cashAmount(range.cash)} for ${payment} in ${countryName}`
       : `You can pay at most ${cashAmount(range.cash)} by ${payment} in ${countryName}`,
-    rows: [{ label, value: range.cash, cash: true }],
+    rows: [{ label, value: cashAmount(range.cash) }],
     bound: range.cash,
   };
 }
@@ -61,7 +61,7 @@ export function cryptoBelowMinimum(minimumCash: bigint): OutOfRangeWords {
   const whole = wholeCashCeil(minimumCash);
   return {
     message: `You need at least ${cashAmount(whole)} for crypto payout for this token`,
-    rows: [{ label: "Min. payout", value: whole, cash: true }],
+    rows: [{ label: "Min. payout", value: cashAmount(whole) }],
     bound: whole,
   };
 }

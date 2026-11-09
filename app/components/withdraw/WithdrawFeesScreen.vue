@@ -4,7 +4,7 @@
 // and the bottom button return to the summary.
 import { computed } from "vue";
 import type { WithdrawFeeView } from "../../withdraw/offers";
-import { groupAmountDigits } from "../../utils/cash";
+import { cashAmount, groupAmountDigits } from "../../utils/cash";
 import DetailRows from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
 import ScreenFrame from "../ui/ScreenFrame.vue";
@@ -18,7 +18,7 @@ const props = defineProps<{
 const emit = defineEmits<{ back: [] }>();
 
 const headRows = computed(() => [
-  { label: "You'll withdraw", value: groupAmountDigits(props.amount), cash: true },
+  { label: "You'll withdraw", value: cashAmount(groupAmountDigits(props.amount)) },
   ...(props.fees.equivalent === undefined
     ? []
     : [{ label: "Equivalent", value: props.fees.equivalent }]),

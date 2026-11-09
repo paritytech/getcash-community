@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // A CASH sum as the designs draw it, everywhere one is drawn: the dollar sign on the number, the
-// CASH logo after it. Prose that can only carry a string keeps `cashAmount()` from utils/cash.
+// CASH logo after it. Copy carried as a string writes `cashAmount()` and draws it with `<CashText>`.
 import { currencyConfig } from "../../funding/config";
 import CashLogo from "./CashLogo.vue";
 

@@ -22,6 +22,7 @@ import AmountOutOfRange from "../AmountOutOfRange.vue";
 import MethodUnavailable from "../MethodUnavailable.vue";
 import { devLog } from "~~/lib/log";
 import { trackAction } from "~~/lib/telemetry";
+import { cashAmount } from "../../../utils/cash";
 
 const session = useSessionStore();
 // switchRoute asks the shell to swap to the crypto package when this region does not route the
@@ -115,7 +116,7 @@ const quoteRows = computed(() => {
   // What the money buys leads; when it lands follows. Provider and region are settings rather
   // than terms, and the picker above already names the region.
   return [
-    { label: "You’ll receive", value: session.amountHuman, cash: true },
+    { label: "You’ll receive", value: cashAmount(session.amountHuman) },
     { label: "Arrives", value: arrivesText.value },
   ];
 });

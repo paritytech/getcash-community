@@ -26,7 +26,7 @@ const fiat = computed(() => props.quote.fiat);
 const withdrawRows = computed<DetailRow[]>(() => {
   const { destinationAmount, totalFee } = props.quote.line;
   const rows: DetailRow[] = [
-    { label: "You'll withdraw", value: groupAmountDigits(props.cashAmount), cash: true },
+    { label: "You'll withdraw", value: cashAmount(groupAmountDigits(props.cashAmount)) },
   ];
   if (isMoneyAmount(totalFee)) {
     const gross = (Number(destinationAmount) + Number(totalFee)).toFixed(2);
