@@ -2,6 +2,7 @@
 // A soft flip clock: the old text drops and dissolves while the new one comes down from above.
 // When the height changes, the box resizes in an order that never shows text cut by its edge.
 import { nextTick, ref, watch } from "vue";
+import CashText from "../../ui/CashText.vue";
 
 const props = defineProps<{
   text: string | null;
@@ -89,9 +90,9 @@ watch(
 
 <template>
   <div ref="root" class="flip" :class="[`flip-${variant}`, { 'flip-clipped': clipped }]">
-    <span v-if="shown" ref="current" class="flip-text">{{ shown }}</span>
+    <span v-if="shown" ref="current" class="flip-text"><CashText :text="shown" /></span>
     <span v-if="ghost" ref="ghostEl" class="flip-text flip-ghost" aria-hidden="true">
-      {{ ghost }}
+      <CashText :text="ghost" />
     </span>
   </div>
 </template>

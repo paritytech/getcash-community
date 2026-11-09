@@ -4,7 +4,7 @@
 // over this screen; until the host's word reaches the record the screen says the fee is being
 // paid, and the route returns to the journey when it does.
 import type { PurseWord } from "../../funding/timeline/recovery";
-import { cashAmount, fmtCash, groupAmountDigits } from "../../utils/cash";
+import { fmtCash, groupAmountDigits } from "../../utils/cash";
 import CashAmount from "../ui/CashAmount.vue";
 import PillButton from "../ui/PillButton.vue";
 import ScreenFrame from "../ui/ScreenFrame.vue";
@@ -33,8 +33,8 @@ const emit = defineEmits<{ confirm: []; back: [] }>();
     <div class="flex flex-col gap-2 px-2 text-center">
       <h1 class="text-display-s text-fg-primary">Pay fee</h1>
       <p class="text-paragraph-l text-fg-primary">
-        It's needed to add your {{ cashAmount(amount) }} to your balance. We'll take it from your
-        balance.
+        It's needed to add your <CashAmount :amount="amount" /> to your balance. We'll take it from
+        your balance.
       </p>
     </div>
 

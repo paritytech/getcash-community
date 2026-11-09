@@ -17,7 +17,6 @@ import { ChevronRight, CircleAlert } from "lucide-vue-next";
 import { isMethodDown, methodMinimum, namedCountry } from "~~/lib/supported";
 import { useRequestsStore } from "../../../stores/requests";
 import { useSessionStore } from "../../../stores/session";
-import { currencyConfig } from "../../../funding/config";
 import { fmtFiat, isMoneyAmount } from "../../../utils/money";
 import { fiatAmountRejected, fiatOutOfRange } from "../../../funding/out-of-range";
 import { sessionFailed } from "../../../funding/session-failure";
@@ -32,6 +31,7 @@ import AmountOutOfRange from "../AmountOutOfRange.vue";
 import MethodUnavailable from "../MethodUnavailable.vue";
 import MeldPaySheet from "./MeldPaySheet.vue";
 import { devLog } from "~~/lib/log";
+import CashLogo from "../../ui/CashLogo.vue";
 
 const props = defineProps<{
   /** The region the quote is priced in, as an ISO 3166-1 alpha-2 code. */
@@ -225,7 +225,7 @@ function useAmount(cash: string) {
           <span class="flex flex-col items-end text-right">
             <span class="text-heading-m text-fg-primary">1–2 business days</span>
             <span class="text-body-s text-fg-secondary">
-              Final {{ currencyConfig.ticker }} depends on the rate on arrival
+              Final <CashLogo variant="word" /> depends on the rate on arrival
             </span>
           </span>
         </div>

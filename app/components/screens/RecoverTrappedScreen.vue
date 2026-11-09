@@ -12,6 +12,7 @@ import CopiedPill from "../ui/CopiedPill.vue";
 import PillButton from "../ui/PillButton.vue";
 import QrCard from "../ui/QrCard.vue";
 import ScreenFrame from "../ui/ScreenFrame.vue";
+import CashLogo from "../ui/CashLogo.vue";
 
 defineProps<{
   address: string | null;
@@ -69,7 +70,7 @@ function copy(text: string | null) {
       </button>
 
       <p v-if="fee" class="mt-4 shrink-0 text-center text-body-s text-fg-secondary">
-        The fee is {{ fee }}. Anything above it is added to your CASH.
+        The fee is {{ fee }}. Anything above it is added to your <CashLogo variant="word" />.
       </p>
     </template>
     <!-- The token is not priced: not yet, or not today. The other tokens are a tap away. -->

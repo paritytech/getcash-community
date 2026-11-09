@@ -11,6 +11,7 @@ import DetailRows from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
 import RegionRow from "../ui/RegionRow.vue";
 import ScreenFrame from "../ui/ScreenFrame.vue";
+import CashText from "../ui/CashText.vue";
 
 const props = defineProps<{
   direction: "top-up" | "withdraw";
@@ -57,7 +58,7 @@ const minRows = computed(() =>
   <ScreenFrame>
     <div class="flex shrink-0 flex-col items-center text-center">
       <p class="text-display-xl text-fg-primary"><CashAmount :amount="amount" /></p>
-      <p class="mt-1 text-body-s text-fg-error" role="alert">{{ message }}</p>
+      <p class="mt-1 text-body-s text-fg-error" role="alert"><CashText :text="message" /></p>
     </div>
 
     <div class="mt-6 flex flex-col gap-4">

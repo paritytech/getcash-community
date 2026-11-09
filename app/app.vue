@@ -4,6 +4,7 @@ import { Toaster } from "./components/ui/sonner";
 import { useHostGate } from "./composables/useHostGate";
 import { useHostTheme } from "./composables/useHostTheme";
 import { useResolvedThemeKind } from "./composables/useResolvedThemeKind";
+import CashLogo from "./components/ui/CashLogo.vue";
 
 // Hosted: the Polkadot app owns the theme; follow it. Standalone: no-op.
 useHostTheme();
@@ -25,7 +26,9 @@ const { incompatible } = useHostGate();
   <BottomSheet :open="incompatible">
     <div class="flex flex-col gap-1 p-6 text-center">
       <p class="text-heading-m text-fg-primary">TrUAPI runtime isn't supported</p>
-      <p class="text-body-s text-fg-secondary">Turn it off in the dev menu, then reopen CASH.</p>
+      <p class="text-body-s text-fg-secondary">
+        Turn it off in the dev menu, then reopen <CashLogo variant="word" />.
+      </p>
     </div>
   </BottomSheet>
 </template>

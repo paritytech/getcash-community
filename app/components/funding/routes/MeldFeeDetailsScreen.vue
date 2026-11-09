@@ -12,6 +12,7 @@ import { fmtFiat, isMoneyAmount, sumMoney } from "../../../utils/money";
 import DetailRows from "../../ui/DetailRows.vue";
 import PillButton from "../../ui/PillButton.vue";
 import ScreenFrame from "../../ui/ScreenFrame.vue";
+import CashText from "../../ui/CashText.vue";
 
 const props = defineProps<{
   quote: QuoteView | null;
@@ -116,7 +117,7 @@ const rate = computed(() => {
       </div>
       <div v-if="rate" class="flex items-baseline justify-between gap-4">
         <span class="text-paragraph-l text-fg-secondary">Rate</span>
-        <span class="text-paragraph-l text-fg-secondary">{{ rate }}</span>
+        <span class="text-paragraph-l text-fg-secondary"><CashText :text="rate" /></span>
       </div>
     </div>
 

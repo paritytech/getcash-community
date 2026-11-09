@@ -3,12 +3,12 @@
 // red under it, the region when the method has one (still live, as one way out), the bound, and
 // the ways on: a different amount, or the bound itself.
 import type { OutOfRangeWords } from "../../funding/out-of-range";
-import { cashAmount } from "../../utils/cash";
 import CashAmount from "../ui/CashAmount.vue";
 import DetailRows from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
 import RegionRow from "../ui/RegionRow.vue";
 import ScreenFrame from "../ui/ScreenFrame.vue";
+import CashText from "../ui/CashText.vue";
 
 defineProps<{
   /** The CASH amount typed, grouped. */
@@ -29,7 +29,7 @@ defineEmits<{
   <ScreenFrame>
     <div class="flex shrink-0 flex-col items-center text-center">
       <p class="text-display-xl text-fg-primary"><CashAmount :amount="amount" /></p>
-      <p class="mt-1 text-body-s text-fg-error" role="alert">{{ words.message }}</p>
+      <p class="mt-1 text-body-s text-fg-error" role="alert"><CashText :text="words.message" /></p>
     </div>
 
     <div class="mt-6 flex flex-col gap-4">
@@ -49,7 +49,7 @@ defineEmits<{
           Change amount
         </PillButton>
         <PillButton v-if="words.bound" class="w-full" @click="$emit('useAmount', words.bound)">
-          Continue with {{ cashAmount(words.bound) }}
+          Continue with <CashAmount :amount="words.bound" />
         </PillButton>
       </div>
     </template>

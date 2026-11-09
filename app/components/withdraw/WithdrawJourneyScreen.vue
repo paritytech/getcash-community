@@ -25,6 +25,7 @@ import CopiedPill from "../ui/CopiedPill.vue";
 import DetailRows from "../ui/DetailRows.vue";
 import PillButton from "../ui/PillButton.vue";
 import TransactionIcon from "../ui/TransactionIcon.vue";
+import CashText from "../ui/CashText.vue";
 
 const props = defineProps<{
   record: WithdrawalRecord;
@@ -191,7 +192,9 @@ const canCancel = computed(
       <DetailRows v-if="rows.length" :rows="rows" @fees="emit('fees')" />
       <!-- The reference copies, so the screen carries the confirmation. -->
       <CopiedPill v-if="copyable" />
-      <p v-if="residueNote" class="text-body-s text-fg-secondary">{{ residueNote }}</p>
+      <p v-if="residueNote" class="text-body-s text-fg-secondary">
+        <CashText :text="residueNote" />
+      </p>
 
       <PillButton v-if="action === 'return-funds'" class="mt-auto" @click="emit('return-funds')">
         Return funds

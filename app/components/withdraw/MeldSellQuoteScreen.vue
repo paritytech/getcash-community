@@ -18,6 +18,7 @@ import RegionRow from "../ui/RegionRow.vue";
 import ScreenFrame from "../ui/ScreenFrame.vue";
 import SkeletonBlock from "../ui/SkeletonBlock.vue";
 import SkeletonRow from "../ui/SkeletonRow.vue";
+import CashText from "../ui/CashText.vue";
 
 const props = defineProps<{
   method: "card" | "bank";
@@ -128,7 +129,9 @@ const canContinue = computed(
       </div>
     </div>
 
-    <p v-if="startError" class="mt-4 text-body-m text-fg-error" role="alert">{{ startError }}</p>
+    <p v-if="startError" class="mt-4 text-body-m text-fg-error" role="alert">
+      <CashText :text="startError" />
+    </p>
 
     <template #actions>
       <PillButton class="w-full" :disabled="!canContinue" @click="emit('continue')">

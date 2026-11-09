@@ -5,11 +5,11 @@
 // to close it.
 import { computed } from "vue";
 import { describeMismatch, type DepositMismatch } from "../../funding/deposit-mismatch";
-import { cashAmount } from "../../utils/cash";
 import { tokenIcon } from "../../utils/icons";
 import BottomSheet from "../ui/BottomSheet.vue";
 import CashAmount from "../ui/CashAmount.vue";
 import PillButton from "../ui/PillButton.vue";
+import CashText from "../ui/CashText.vue";
 
 const props = defineProps<{
   mismatch: DepositMismatch | null;
@@ -38,7 +38,7 @@ const figures = computed(() => {
     <div v-if="mismatch && text" class="flex flex-col gap-6 p-6">
       <div class="flex flex-col gap-2">
         <h2 class="text-heading-xl text-fg-primary">{{ text.title }}</h2>
-        <p class="text-body-m text-fg-secondary">{{ text.body }}</p>
+        <p class="text-body-m text-fg-secondary"><CashText :text="text.body" /></p>
       </div>
 
       <div class="grid grid-cols-2 gap-2">
@@ -64,8 +64,8 @@ const figures = computed(() => {
         /></span>
         <span v-else class="h-12 w-40 animate-pulse rounded-full bg-action-disabled" />
         <span class="text-body-m text-fg-secondary"
-          >instead of {{ cashAmount(mismatch.target) }}</span
-        >
+          >instead of <CashAmount :amount="mismatch.target"
+        /></span>
       </div>
 
       <p v-if="error" class="text-body-m text-fg-error">{{ error }}</p>
@@ -76,7 +76,7 @@ const figures = computed(() => {
           :disabled="busy || text.accept === null"
           @click="emit('accept')"
         >
-          {{ busy ? "Continuing…" : (text.accept ?? "Checking the rate…") }}
+          <CashText :text="busy ? 'Continuing…' : (text.accept ?? 'Checking the rate…')" />
         </PillButton>
         <PillButton variant="tertiary" :disabled="busy" @click="emit('recover')">
           Recover my funds

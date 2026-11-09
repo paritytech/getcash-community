@@ -8,6 +8,7 @@ import { Check, ChevronRight, Copy } from "lucide-vue-next";
 import { useCopyToClipboard } from "@/composables/useCopyToClipboard";
 import { cn } from "@/lib/cn";
 import CashAmount from "./CashAmount.vue";
+import CashText from "./CashText.vue";
 
 export interface DetailRow {
   label: string;
@@ -60,7 +61,7 @@ async function copyRow(row: DetailRow) {
           class="flex items-center gap-1 text-heading-m text-fg-primary"
           @click="emit('fees')"
         >
-          {{ row.value }}
+          <CashText :text="row.value" />
           <ChevronRight class="size-4 text-fg-secondary" aria-hidden="true" />
         </button>
       </dd>
@@ -81,12 +82,12 @@ async function copyRow(row: DetailRow) {
         </button>
       </dd>
       <dd v-else-if="row.note" class="flex flex-col items-end text-right">
-        <span class="text-heading-m text-fg-primary">{{ row.value }}</span>
-        <span class="text-body-s text-fg-secondary">{{ row.note }}</span>
+        <span class="text-heading-m text-fg-primary"><CashText :text="row.value" /></span>
+        <span class="text-body-s text-fg-secondary"><CashText :text="row.note" /></span>
       </dd>
       <dd v-else class="text-right text-heading-m text-fg-primary" :title="row.title">
         <CashAmount v-if="row.cash" :amount="row.value" />
-        <template v-else>{{ row.value }}</template>
+        <CashText v-else :text="row.value" />
       </dd>
     </div>
   </dl>

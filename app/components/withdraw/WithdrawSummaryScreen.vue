@@ -9,6 +9,7 @@ import { groupAmountDigits } from "../../utils/cash";
 import CashAmount from "../ui/CashAmount.vue";
 import PillButton from "../ui/PillButton.vue";
 import ScreenFrame from "../ui/ScreenFrame.vue";
+import CashText from "../ui/CashText.vue";
 
 defineProps<{
   /** The CASH leaving the balance, as typed. */
@@ -66,7 +67,9 @@ const emit = defineEmits<{ confirm: []; fees: [] }>();
       </div>
     </dl>
 
-    <p v-if="error" class="mt-4 text-body-s text-fg-error" role="alert">{{ error }}</p>
+    <p v-if="error" class="mt-4 text-body-s text-fg-error" role="alert">
+      <CashText :text="error" />
+    </p>
 
     <template #actions>
       <PillButton class="w-full" :disabled="starting" @click="emit('confirm')">

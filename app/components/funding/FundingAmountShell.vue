@@ -13,6 +13,7 @@ import SkeletonBlock from "../ui/SkeletonBlock.vue";
 import type { FundingSelectorConfig } from "../../funding/config";
 import { reduceFundingAmount, type FundingKey, type FundingRoute } from "../../funding/selection";
 import { groupAmountDigits } from "../../utils/cash";
+import CashText from "../ui/CashText.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -148,8 +149,7 @@ function requestContinue() {
           :class="{ 'amount-shell-notice-breach': shownNotice.breach }"
           aria-live="polite"
         >
-          {{ shownNotice.lead
-          }}<template v-if="shownNotice.from != null"
+          <CashText :text="shownNotice.lead" /><template v-if="shownNotice.from != null"
             ><CashAmount :amount="shownNotice.from" :ticker="false" /> to </template
           ><CashAmount v-if="shownNotice.amount != null" :amount="shownNotice.amount" />
         </p>

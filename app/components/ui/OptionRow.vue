@@ -4,6 +4,7 @@
 // row is outlined instead of filled, with no chevron.
 // `skeleton` renders the same card as an empty loading placeholder.
 import { ChevronRight } from "lucide-vue-next";
+import CashText from "./CashText.vue";
 
 withDefaults(
   defineProps<{
@@ -53,7 +54,7 @@ const emit = defineEmits<{ select: [] }>();
           class="truncate text-body-s"
           :class="disabled ? 'text-fg-tertiary' : 'text-fg-secondary'"
         >
-          {{ subtitle }}
+          <CashText :text="subtitle" />
         </span>
       </span>
       <span

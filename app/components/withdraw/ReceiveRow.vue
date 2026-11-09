@@ -3,6 +3,7 @@
 // step its symbol count earns: a short figure at display size, a long one stepped down.
 import { computed } from "vue";
 import { figureStep } from "../../utils/figure-size";
+import CashText from "../ui/CashText.vue";
 
 const props = defineProps<{
   /** What lands, already formatted with its asset or currency. */
@@ -24,7 +25,7 @@ const step = computed(() => figureStep(props.receive));
     </div>
     <div v-if="rate" class="flex items-baseline justify-between gap-4">
       <span class="text-paragraph-l text-fg-secondary">Rate</span>
-      <span class="text-paragraph-l text-fg-secondary">{{ rate }}</span>
+      <span class="text-paragraph-l text-fg-secondary"><CashText :text="rate" /></span>
     </div>
   </div>
 </template>
