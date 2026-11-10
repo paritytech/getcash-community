@@ -119,6 +119,8 @@ export interface SaleChannelRecord {
   expired: boolean;
   /** What the provider expects, in the token's base units. */
   expectedAmount: bigint;
+  /** The sending address the adapter pinned on the sale. */
+  walletAddress?: string | undefined;
 }
 
 /**
@@ -143,6 +145,7 @@ export function saleChannelOf(
     payout: "off-chain",
     expired: !saleLive(result.status),
     expectedAmount,
+    walletAddress: result.walletAddress,
   };
 }
 

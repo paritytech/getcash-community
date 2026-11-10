@@ -349,6 +349,20 @@ describe("a fiat sale before the balance is asked", () => {
     );
   });
 
+  it("ends a lane sale kept from an older version with nothing taken", () => {
+    const next = reduce(known(), { source: "user", at: at(6), event: "sale-outdated" });
+    expect(next.status).toEqual({ kind: "failed", at: at(6), recoverable: false });
+    expect(withdrawalFailureText((next as WithdrawalRecord).failure!)).toBe(
+      "This sale was started on an older version and can no longer be paid. Nothing was taken from your balance.",
+    );
+  });
+
+  it("expires a sale whose sealed deadline leaves no time to pay, with nothing taken", () => {
+    const next = reduce(known(), { source: "user", at: at(6), event: "sale-late" });
+    expect(next.status).toEqual({ kind: "expired", at: at(6) });
+    expect((next as WithdrawalRecord).failure?.kind).toBe("sale-expired");
+  });
+
   it("does not take that word once the balance was asked", () => {
     const asked = reduce(known(), {
       source: "user",
@@ -357,8 +371,10 @@ describe("a fiat sale before the balance is asked", () => {
       attempt: 0,
       id: "pay-1",
     });
-    const next = reduce(asked, { source: "user", at: at(7), event: "sale-unfundable" });
-    expect(next.status.kind).toBe("awaiting-payment");
+    for (const event of ["sale-unfundable", "sale-late"] as const) {
+      const next = reduce(asked, { source: "user", at: at(7), event });
+      expect(next.status.kind).toBe("awaiting-payment");
+    }
   });
 });
 

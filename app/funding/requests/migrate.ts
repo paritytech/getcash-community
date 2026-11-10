@@ -51,13 +51,22 @@ function withdrawalRecord(raw: StoredRecord, ref: RequestRef): WithdrawalRecord 
   ) {
     return null;
   }
+  const failure = tooSmallFailure(stored.failure);
   return {
     ...(stored as WithdrawalRecord),
     kind: "withdrawal",
     ref,
     rev: typeof stored.rev === "number" ? stored.rev : 0,
     witnesses: isObject(stored.witnesses) ? stored.witnesses : {},
+    ...(failure === undefined ? {} : { failure }),
   };
+}
+
+// A too-small ending stored before it had its own kind was the only unknown on the convert leg
+function tooSmallFailure(failure: WithdrawalRecord["failure"]): WithdrawalRecord["failure"] {
+  return failure?.kind === "unknown" && failure.step === "convert"
+    ? { ...failure, kind: "too-small" }
+    : failure;
 }
 
 /** Null when `raw` is not a record with a parseable `amountHuman`, or a withdrawal missing what

@@ -1,9 +1,15 @@
-import { deriveKeypairWithSecret } from "@getsome/ephemeral";
+import { deriveKeypairWithSecret, deriveRefundKey } from "@getsome/ephemeral";
+import { devAdapterFetch, personhoodAdapterFetch } from "@getsome/meld";
 import { createClient } from "polkadot-api";
-import { deriveEntropy, getHostLocalStorage, getHostProvider } from "./host.js";
+import {
+  deriveEntropy,
+  getHostLocalStorage,
+  getHostProvider,
+  proveLitePersonhood,
+} from "./host.js";
 
 // What both engines need of the host and the chains: a job map in product storage, a bounded
-// wait, a chain client for one tick, the anchor of a submit, and the key a label derives.
+// wait, a chain client for one tick, the anchor of a submit, and the keys a label derives.
 
 /**
  * A job map under `storageKey`, loaded once and single-flight, saved after every change, one
@@ -136,9 +142,56 @@ export async function anchorFor(client) {
 
 /** The keypair the entropy label `label` derives, from host entropy. Never persisted. */
 export async function keypairFor(label) {
+  return deriveKeypairWithSecret(await entropyFor(label));
+}
+
+/** The Arbitrum address the claim label `label` derives as a secp256k1 key, from host entropy. */
+export async function claimerFor(label) {
+  return deriveRefundKey("Arbitrum", await entropyFor(label)).address;
+}
+
+// The label's raw bytes go to the host unhashed, the same bytes the page sends for 32 or fewer
+async function entropyFor(label) {
   const result = await deriveEntropy(new TextEncoder().encode(label));
   if (!result.ok) {
     throw new Error(`deriveEntropy refused: ${String(result.error?.message ?? result.error)}`);
   }
-  return deriveKeypairWithSecret(result.value);
+  return result.value;
+}
+
+/** The hand-off's Meld adapter, or its offline flag, null when it names neither. */
+export function meldOf(meld) {
+  if (typeof meld !== "object" || meld === null) return null;
+  if (meld.offline === true) return { offline: true };
+  if (typeof meld.baseUrl !== "string" || meld.baseUrl === "") return null;
+  return {
+    baseUrl: meld.baseUrl,
+    ...(typeof meld.productId === "string" && meld.productId ? { productId: meld.productId } : {}),
+    ...(meld.auth === "personhood" ? { auth: "personhood" } : {}),
+  };
+}
+
+const personhoodFetches = new Map();
+
+/** Proves the worker to the adapter as the page that handed the sale off did. A personhood fetch
+ *  is kept per adapter and product, and shares the page's stored token. */
+export function adapterFetchFor({ baseUrl, productId, auth }) {
+  if (typeof productId !== "string" || !productId) return undefined;
+  if (auth !== "personhood") return devAdapterFetch(productId);
+  const key = `${baseUrl} ${productId}`;
+  if (!personhoodFetches.has(key)) {
+    personhoodFetches.set(
+      key,
+      personhoodAdapterFetch({
+        baseUrl,
+        productId,
+        storage: {
+          readJSON: async (k) => (await getHostLocalStorage()).readJSON(k),
+          writeJSON: async (k, value) => (await getHostLocalStorage()).writeJSON(k, value),
+        },
+        prove: (message) => proveLitePersonhood(productId, message),
+      }),
+    );
+  }
+  return personhoodFetches.get(key);
 }

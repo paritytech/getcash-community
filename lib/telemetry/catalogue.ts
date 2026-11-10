@@ -128,6 +128,7 @@ export const SCREENS = [
   "withdraw.cancel",
   "withdraw.journey",
   "withdraw.return-funds",
+  "withdraw.claim",
   "fees",
   "region",
 ] as const;

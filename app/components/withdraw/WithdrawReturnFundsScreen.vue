@@ -1,12 +1,11 @@
 <script setup lang="ts">
-// The return-funds guide behind a refunded withdrawal: the swap refunded DOT to the withdrawal's
-// own key on Asset Hub, and these are the steps that walk it into a wallet the user controls.
-// The address comes straight off the record's public key; the secret is derived on tap, never
-// on load, and only when the derivation agrees with that address.
+// Walks what a withdrawal's own Asset Hub key holds into a wallet, the secret derived on tap.
 import { computed } from "vue";
 import { AccountId } from "polkadot-api";
 import type { WithdrawalRecord } from "../../funding/requests/model";
 import { useRecoveryKey } from "../../composables/useRecoveryKey";
+import { directRecoveryNotes } from "../../utils/recovery";
+import { saleAssetOnKey } from "../../withdraw/timeline/failure";
 import CopiedPill from "../ui/CopiedPill.vue";
 import PillButton from "../ui/PillButton.vue";
 import RecoveryAddressCard from "../ui/RecoveryAddressCard.vue";
@@ -43,19 +42,37 @@ const {
   },
 });
 
-const steps = [
-  { text: "Your DOT returns to this address.", card: "address" },
-  { text: "Import this key into any wallet that supports Polkadot.", card: "key" },
-  { text: "Transfer your DOT to any Polkadot address you control", card: null },
-] as const;
+/** The asset on a sale's key, null for a crypto refund, which returns DOT. */
+const saleAsset = computed(() => saleAssetOnKey(props.record));
+// Both branches reveal the same raw seed, so both read the same notes
+const notes = computed(() => directRecoveryNotes(saleAsset.value ?? "DOT"));
+const steps = computed(
+  () =>
+    [
+      {
+        text:
+          notes.value.gasNote ??
+          (saleAsset.value === null
+            ? "Your DOT returns to this address."
+            : `Your ${saleAsset.value} is on this address.`),
+        card: "address",
+      },
+      { text: notes.value.importNote, card: "key" },
+      { text: notes.value.transferNote, card: null },
+    ] as const,
+);
+const title = computed(() => (saleAsset.value === null ? "Return funds" : "Recover funds"));
 </script>
 
 <template>
-  <ScreenFrame aria-label="Return funds">
+  <ScreenFrame :aria-label="title">
     <div class="min-h-0 flex-1 overflow-y-auto">
       <div class="flex shrink-0 flex-col gap-2 text-center">
-        <h1 class="text-display-s text-fg-primary">Return funds</h1>
-        <p class="text-paragraph-l text-fg-primary">
+        <h1 class="text-display-s text-fg-primary">{{ title }}</h1>
+        <p v-if="saleAsset" class="text-paragraph-l text-fg-primary">
+          Anything left from this sale is on this withdrawal's own account.
+        </p>
+        <p v-else class="text-paragraph-l text-fg-primary">
           Your <span class="font-semibold">DOT</span> is on its way back to your recovery address.
         </p>
       </div>
@@ -79,7 +96,7 @@ const steps = [
           />
           <template v-else-if="step.card === 'key'">
             <RecoveryKeyCard
-              label="Private key"
+              :label="notes.secretLabel"
               :secret="secret"
               :masked="masked"
               @toggle="toggleKey"

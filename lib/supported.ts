@@ -8,8 +8,13 @@
 // region produces an unquotable request. Every cache is therefore keyed by destination, and by
 // direction: a sale reads Meld's off-ramp catalog, whose regions and payout methods are its own.
 
+import {
+  saleVaultProxyContractsOf,
+  type SaleVaultProxyContracts,
+} from "@getsome/chainflip/sale-vault-proxy";
 import { isMeldAssetId, meldCodeOf, type MeldAssetId } from "@getsome/core";
 import { adapterFetch } from "./adapter-fetch";
+import { SALE_VAULT_PROXY } from "./config";
 import { pageMeldAssets } from "./meld-assets";
 
 /** The catalog's default destination: what the pool tier's rail asks Meld to deliver. By the app's
@@ -53,6 +58,9 @@ export interface OfframpLaneRef {
   min?: string;
   max?: string;
 }
+
+/** The SaleVaultProxyFactory an Arbitrum sale's Chainflip CCM delivers to, as the adapter names it. */
+export type SaleVaultProxyTarget = SaleVaultProxyContracts & { chain: string };
 
 /** A (country, fiat) corridor. Empty `methods` means nothing routes here. */
 export interface SupportedCorridor {
@@ -124,6 +132,9 @@ function expiring<V>(ttlMs: number) {
     },
     set(key: string, value: V): void {
       entries.set(key, { value, at: Date.now() });
+    },
+    clear(): void {
+      entries.clear();
     },
   };
 }
@@ -400,6 +411,41 @@ export function mergeCorridorMaps(
 
 const offrampCorridorsCache = expiring<Map<string, SupportedCorridor>>(CORRIDOR_TTL_MS);
 const offrampCorridorCache = expiring<SupportedCorridor>(CORRIDOR_TTL_MS);
+// The deployment-wide SaleVaultProxy factory, learned from either offramp read
+let offrampSaleVaultProxy: SaleVaultProxyTarget | null = null;
+
+/** The SaleVaultProxy deployment the adapter named, or null when none is verified or none was read yet. */
+export function getOfframpSaleVaultProxy(): SaleVaultProxyTarget | null {
+  return offrampSaleVaultProxy;
+}
+
+// The SaleVaultProxy target off an offramp payload, or undefined when it is absent or malformed
+function proxyOf(v: unknown): SaleVaultProxyTarget | undefined {
+  if (typeof v !== "object" || v === null) return undefined;
+  const o = v as Record<string, unknown>;
+  if (typeof o.chain !== "string" || o.chain === "" || typeof o.chainId !== "number") {
+    return undefined;
+  }
+  const contracts = saleVaultProxyContractsOf(o);
+  return contracts === null ? undefined : { chain: o.chain, ...contracts };
+}
+
+// Takes the latest read's SaleVaultProxy target. A build that sells the Arbitrum lane drops its
+// cached corridors once a read names no proxy, since the lane is gone; a build that does not sell it
+// keeps whatever it cached, the proxy being nothing to it.
+function learnSaleVaultProxy(v: unknown): void {
+  offrampSaleVaultProxy = proxyOf(v) ?? null;
+  if (SALE_VAULT_PROXY !== null && offrampSaleVaultProxy === null) {
+    offrampCorridorsCache.clear();
+    offrampCorridorCache.clear();
+  }
+}
+
+// Whether off-ramp corridors are safe to cache. A build that does not sell the Arbitrum lane always
+// is; one that does only once the adapter names its proxy, since a pre-proxy catalog omits the lane.
+function proxyLaneReady(): boolean {
+  return SALE_VAULT_PROXY === null || offrampSaleVaultProxy !== null;
+}
 
 function corridorOf(c: Record<string, unknown>, country: string): SupportedCorridor {
   const fiat = String(c.fiat ?? "");
@@ -412,8 +458,8 @@ function corridorOf(c: Record<string, unknown>, country: string): SupportedCorri
   };
 }
 
-/** Every off-ramp corridor as a country -> corridor map, cached for ten minutes. A read that fails
- *  or comes back empty answers the last map read, or null before the first. */
+/** Every off-ramp corridor as a country -> corridor map, cached for ten minutes once a SaleVaultProxy
+ *  is named. A read that fails or comes back empty answers the last map read, or null before the first. */
 export async function fetchOfframpCorridors(): Promise<Map<string, SupportedCorridor> | null> {
   const cached = offrampCorridorsCache.get("all");
   if (cached !== undefined) return cached;
@@ -425,23 +471,27 @@ export async function fetchOfframpCorridors(): Promise<Map<string, SupportedCorr
       headers: HEADERS,
     });
     if (!res.ok) return last;
-    const data = (await res.json()) as { corridors?: Record<string, unknown>[] };
+    const data = (await res.json()) as {
+      corridors?: Record<string, unknown>[];
+      saleVaultProxy?: unknown;
+    };
     const map = new Map<string, SupportedCorridor>();
     for (const c of data.corridors ?? []) {
       const country = String(c.country ?? "");
       if (country !== "") map.set(country, corridorOf(c, country));
     }
+    learnSaleVaultProxy(data.saleVaultProxy);
     // An empty result (the adapter's cold cache) is no answer: it is retried on the next call.
     if (map.size === 0) return last ?? map;
-    offrampCorridorsCache.set("all", map);
+    if (proxyLaneReady()) offrampCorridorsCache.set("all", map);
     return map;
   } catch {
     return last;
   }
 }
 
-/** One country's off-ramp corridor, read live. Cached per country for ten minutes; null when
- *  unreachable. */
+/** One country's off-ramp corridor, read live. Cached per country for ten minutes once a
+ *  SaleVaultProxy is named; null when unreachable. */
 export async function fetchOfframpCorridor(country: string): Promise<SupportedCorridor | null> {
   const hit = offrampCorridorCache.get(country);
   if (hit !== undefined) return hit;
@@ -454,8 +504,11 @@ export async function fetchOfframpCorridor(country: string): Promise<SupportedCo
     );
     if (!res.ok) return null;
     const data = (await res.json()) as Record<string, unknown>;
+    learnSaleVaultProxy(data.saleVaultProxy);
     const corridor = corridorOf(data, String(data.country ?? country));
-    if (reusable(corridor)) offrampCorridorCache.set(country, corridor);
+    if (reusable(corridor) && proxyLaneReady()) {
+      offrampCorridorCache.set(country, corridor);
+    }
     return corridor;
   } catch {
     return null;

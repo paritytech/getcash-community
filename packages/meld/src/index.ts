@@ -4,6 +4,8 @@ export {
   refusalOf,
   isAdapterOutage,
   isAdapterUnreachable,
+  isSaleGuardError,
+  SaleGuardError,
   type MeldFiatLimit,
   type MeldRefusal,
   type MeldClientLike,
@@ -18,6 +20,9 @@ export {
   type MeldSessionResult,
   type MeldStatusResult,
   type MeldCancelResult,
+  type MeldSaleVaultProxy,
+  type MeldSaleVaultProxyClientLike,
+  type MeldSaleVaultProxyPayout,
 } from "./client";
 export {
   type CredentialStorage,

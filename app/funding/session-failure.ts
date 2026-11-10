@@ -1,7 +1,12 @@
 // What a card or bank buy, or a sale, says when its session could not be opened. The adapter's
 // codes are never shown: each is worded here, and anything unrecognised reads as our failure.
 
-import { isAdapterUnreachable, isPersonhoodUnavailable, refusalOf } from "@getsome/meld";
+import {
+  isAdapterUnreachable,
+  isPersonhoodUnavailable,
+  isSaleGuardError,
+  refusalOf,
+} from "@getsome/meld";
 import { reportFailure } from "~~/lib/telemetry";
 import { failureCauseOf, railFailureReason } from "./quote-failure";
 
@@ -104,6 +109,7 @@ const WORDING = new Map<string, Wording>([
 
 export function sessionFailureText(error: unknown, context: SessionFailureContext): string {
   if (!(error instanceof Error)) return ourSide(context);
+  if (isSaleGuardError(error)) return error.message;
   if (isPersonhoodUnavailable(error)) return unproven(context);
   const refusal = refusalOf(error);
   if (refusal === undefined) return (isAdapterUnreachable(error) ? unreachable : ourSide)(context);

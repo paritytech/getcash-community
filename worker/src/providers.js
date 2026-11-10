@@ -3,17 +3,16 @@
 // behind it is going, one fetch per tick. Chainflip carries the crypto destinations, Meld the
 // fiat ones; the pickers grey a route until its provider is here.
 
+import { encodeSaleMessage } from "@getsome/chainflip/ccm";
+import {
+  SALE_SWAP_NETWORK,
+  SALE_VAULT_PROXY_CCM_GAS_BUDGET,
+  sameEvmAddress,
+} from "@getsome/chainflip/sale-vault-proxy";
 import { readChannelRecord, readSwapStatus } from "@getsome/chainflip/swap-status";
 import { NETWORK } from "@getsome/core";
 import { depositTokenOf, recordedRoute, stableTxOptions } from "@getsome/funding";
-import {
-  createMeldClient,
-  devAdapterFetch,
-  ensureMeldAssets,
-  MELD_SELL_ENABLED,
-  personhoodAdapterFetch,
-  saleRail,
-} from "@getsome/meld";
+import { createMeldClient, ensureMeldAssets, MELD_SELL_ENABLED, saleRail } from "@getsome/meld";
 import { LANES, laneSellToken } from "@getsome/offramp";
 import {
   ChannelMismatchError,
@@ -27,15 +26,16 @@ import {
 } from "@getsome/withdraw";
 import { paseo_next_v2 } from "@polkadot-api/descriptors";
 import {
+  adapterFetchFor,
   ANCHOR_TIMEOUT_MS,
   anchorFor,
   bounded,
   CONNECT_TIMEOUT_MS,
   connectChain,
   keypairFor,
+  meldOf,
   signOptionsFor,
 } from "./shared.js";
-import { getHostLocalStorage, proveLitePersonhood } from "./host.js";
 
 /** Room for the host calls a payment makes without a bound of their own: the key's derivation
  *  and the save before the broadcast. */
@@ -70,8 +70,9 @@ export function railFor(provider, record) {
   if (provider === "meld") {
     // Where the build does not sell for fiat, no sale is read or paid, whatever a hand-off says.
     if (!MELD_SELL_ENABLED) return null;
-    const meld = record?.meld;
-    if (meld?.offline === true) {
+    const meld = meldOf(record?.meld);
+    if (meld === null) return null;
+    if (meld.offline === true) {
       return NETWORK.testnet ? { status: async () => ({ status: "receiving" }) } : null;
     }
     if (typeof meld?.baseUrl !== "string" || meld.baseUrl === "") return null;
@@ -84,31 +85,6 @@ export function railFor(provider, record) {
     return withMeldAssets(rail, client);
   }
   return null;
-}
-
-const personhoodFetches = new Map();
-
-/** Proves the worker to the adapter as the page that handed the sale off did. A personhood fetch
- *  is kept per adapter and product, and shares the page's stored token. */
-function adapterFetchFor({ baseUrl, productId, auth }) {
-  if (typeof productId !== "string" || !productId) return undefined;
-  if (auth !== "personhood") return devAdapterFetch(productId);
-  const key = `${baseUrl} ${productId}`;
-  if (!personhoodFetches.has(key)) {
-    personhoodFetches.set(
-      key,
-      personhoodAdapterFetch({
-        baseUrl,
-        productId,
-        storage: {
-          readJSON: async (k) => (await getHostLocalStorage()).readJSON(k),
-          writeJSON: async (k, value) => (await getHostLocalStorage()).writeJSON(k, value),
-        },
-        prove: (message) => proveLitePersonhood(productId, message),
-      }),
-    );
-  }
-  return personhoodFetches.get(key);
 }
 
 /**
@@ -129,23 +105,15 @@ function withMeldAssets(rail, client) {
   };
 }
 
-/** Chainflip's network for a sale's swap: Perseverance on a test network, as the page opens it. */
-const SWAP_NETWORK = NETWORK.testnet ? "perseverance" : "mainnet";
-
-/** What a swap sale's provider may be paid in: any lane's asset. */
+/** What a swap sale's provider may be paid in: any sellable lane's asset. */
 const LANE_TOKENS = LANES.map(laneSellToken);
 
-/**
- * A sale through an offramp lane: the key pays a Chainflip channel, which pays the provider. Before
- * the key pays, Meld's own record must name the deposit address and amount the hand-off carries,
- * so the Chainflip channel's destination is checked against the provider, not against the page.
- * The swap is followed until Chainflip delivers, then the sale until the provider pays out.
- */
+/** A lane sale: the key pays a channel to the SaleVaultProxyFactory, checked against Meld and the key. */
 function swapSaleRail(sale, record) {
   return {
     channel: async (id) => {
       const [swap, order] = await Promise.all([
-        readChannelRecord(id, undefined, SWAP_NETWORK),
+        readChannelRecord(id, undefined, SALE_SWAP_NETWORK),
         sale.channel(record.channel.id),
       ]);
       if (swap === null) return null;
@@ -162,15 +130,66 @@ function swapSaleRail(sale, record) {
           `sale ${record.channel.id} expects ${order.expectedAmount}, not ${record.channel.amount}`,
         );
       }
+      if (!sameEvmAddress(order.walletAddress ?? "", record.swap?.proxyAddress ?? "")) {
+        throw new ChannelMismatchError(
+          `sale ${record.channel.id} is pinned to ${order.walletAddress}, not the key's proxy ${record.swap?.proxyAddress}`,
+        );
+      }
+      const factory = record.swap?.proxyFactory;
+      if (typeof factory !== "string") {
+        throw new ChannelMismatchError(
+          `sale ${record.channel.id} names no sale vault proxy factory`,
+        );
+      }
+      if (!sameEvmAddress(swap.destinationAddress, factory)) {
+        throw new ChannelMismatchError(
+          `channel ${id} pays out to ${swap.destinationAddress}, not the sale vault proxy factory ${factory}`,
+        );
+      }
+      if (swap.ccmMessage === "") {
+        throw new ChannelMismatchError(`channel ${id} carries no CCM message`);
+      }
+      if (swap.ccmMessage !== saleMessageOf(record)) {
+        throw new ChannelMismatchError(`channel ${id} carries another sale's CCM message`);
+      }
+      if (gasBudgetOf(swap.ccmGasBudget) !== BigInt(SALE_VAULT_PROXY_CCM_GAS_BUDGET)) {
+        throw new ChannelMismatchError(
+          `channel ${id} carries a CCM gas budget of ${swap.ccmGasBudget || "none"}, not ${SALE_VAULT_PROXY_CCM_GAS_BUDGET}`,
+        );
+      }
       return order.expired ? { ...swap, expired: true } : swap;
     },
     status: async (id) => {
-      const swap = await readSwapStatus(id, undefined, SWAP_NETWORK);
+      const swap = await readSwapStatus(id, undefined, SALE_SWAP_NETWORK);
       // Once Chainflip has delivered, no refund comes back to the key (see `refundMayLand`).
       if (swap.status !== "complete") return swap;
       return { ...(await sale.status(record.channel.id)), swapDelivered: true };
     },
   };
+}
+
+/** A channel's CCM gas budget, decimal or 0x hex as Chainflip writes it, or null when it names none. */
+function gasBudgetOf(raw) {
+  if (typeof raw !== "string" || !/^(0x[0-9a-fA-F]+|[0-9]+)$/.test(raw)) return null;
+  return BigInt(raw);
+}
+
+/** The CCM message the sale's own terms encode, lowercase. A sale they cannot encode is refused. */
+function saleMessageOf(record) {
+  try {
+    return encodeSaleMessage({
+      fundingRequestId: record.channel.id,
+      recipient: record.channel.address,
+      committed: BigInt(record.channel.amount),
+      home: record.keyPublicKeyHex,
+      paymentExpiresAt: record.swap?.paymentExpiresAt,
+      claimer: record.swap?.claimerAddress,
+    }).toLowerCase();
+  } catch (error) {
+    throw new ChannelMismatchError(
+      `sale ${record.channel.id} has no CCM message: ${error.message}`,
+    );
+  }
 }
 
 /**

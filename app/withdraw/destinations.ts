@@ -62,6 +62,16 @@ export function assetHubAccountHex(address: string): `0x${string}` {
   return `0x${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
+/** One key per account: EVM addresses lowercased, SS58 ones by public key, anything else verbatim. */
+export function addressKey(address: string): string {
+  if (address.startsWith("0x")) return address.toLowerCase();
+  try {
+    return assetHubAccountHex(address);
+  } catch {
+    return address;
+  }
+}
+
 const assetHubDestination = (id: string, asset: string, landing: DepositAsset): DirectDestination =>
   Object.freeze({
     id,

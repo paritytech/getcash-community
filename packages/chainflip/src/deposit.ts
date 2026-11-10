@@ -30,6 +30,8 @@ export async function requestDepositAddress(
           args.fillOrKill?.slippageTolerancePercent ?? String(channelSlippagePct(rawQuote)),
         retryDurationMinutes: args.fillOrKill?.retryDurationMinutes ?? 10,
       },
+      // Forwarded only for a CCM sale, so the egress calls the SaleVaultProxyFactory with the message
+      ...(args.ccm ? { ccmParams: args.ccm } : {}),
     });
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
@@ -41,6 +43,7 @@ export async function requestDepositAddress(
     depositChannelId: string;
     amount?: string;
     estimatedDepositChannelExpiryTime?: number;
+    depositChannelExpiryBlock?: bigint | string;
   };
 
   // The channel echoes the ingress amount; fall back to the quote's if the SDK omits it.
@@ -57,5 +60,8 @@ export async function requestDepositAddress(
       // estimatedDepositChannelExpiryTime is in milliseconds; 0 = SDK gave none.
       expiresAt: typed.estimatedDepositChannelExpiryTime ?? 0,
     },
+    ...(typed.depositChannelExpiryBlock === undefined
+      ? {}
+      : { expiryBlock: BigInt(typed.depositChannelExpiryBlock) }),
   };
 }

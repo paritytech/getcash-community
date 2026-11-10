@@ -1,10 +1,12 @@
 // The worker's intake of a withdrawal hand-off: the sale it names is kept on the job as the
 // surface froze it, and a hand-off without one, or with a psm route missing its fee rate, is
 // refused before anything is stored. The user's switch to the pool changes a held job's exit and
-// nothing else. And its clock: a job waiting for PSM room is off it.
+// nothing else. And its clock: a job waiting for PSM room is off it, and a swap needs its proxy.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { deriveKeypairWithSecret } from "@getsome/ephemeral";
+import { predictSaleVaultProxy } from "@getsome/chainflip/sale-vault-proxy";
+import { deriveKeypairWithSecret, deriveRefundKey } from "@getsome/ephemeral";
+import { ARBITRUM_ONE, ARBITRUM_SEPOLIA } from "../packages/sale-vault-proxy/config/networks";
 
 const mocks = vi.hoisted(() => ({ stored: new Map<string, unknown>() }));
 
@@ -129,6 +131,171 @@ describe("the worker's intake of a withdrawal", () => {
     expect(
       await engine.startWithdraw(JSON.stringify(handoff({ tier: "pool", external: "EUR" }))),
     ).toMatchObject({ error: "invalid", reason: expect.stringMatching(/unknown deposit asset/) });
+    expect(storedJobs()).toEqual({});
+  });
+});
+
+describe("the worker's intake of a swap sale", () => {
+  const FACTORY = `0x${"11".repeat(20)}`;
+  const IMPLEMENTATION = `0x${"22".repeat(20)}`;
+  // Every label derives the same seed here, so the claimer is that seed's secp256k1 address
+  const CLAIMER = deriveRefundKey("Arbitrum", new Uint8Array(32).fill(7)).address;
+  const PROXY = predictSaleVaultProxy(FACTORY, IMPLEMENTATION, toHex(KEY.publicKey), CLAIMER);
+  // The Perseverance deployment the page names on the swap, on Arbitrum Sepolia
+  const deployment = {
+    proxyChainId: ARBITRUM_SEPOLIA.chainId,
+    proxyFactory: FACTORY,
+    proxyImplementation: IMPLEMENTATION,
+    claimerAddress: CLAIMER,
+  };
+  const OTHER_CLAIMER = `0x${"55".repeat(20)}`;
+  /** The payment deadline the swap's message seals. */
+  const SEALED = 1_798_761_600_500;
+
+  /** A sale through the Arbitrum lane, its swap paying through `proxy`. */
+  const swapSale = (proxy: Record<string, unknown>) =>
+    JSON.stringify(
+      handoff({
+        rail: "meld",
+        tier: "psm",
+        external: "USDT",
+        feeRate: 1_000,
+        destination: { chain: "Bank transfer", asset: "EUR", address: "" },
+        channel: {
+          id: "funding-sell-1",
+          address: `0x${"81".repeat(20)}`,
+          amount: "98850000",
+        },
+        swap: {
+          id: "cf-channel-7",
+          address: "15oF4uVJwmo4TdGW7VfQxNLavjCXviqxT9S1MgbjMNHr6Sp5",
+          amount: "99800000",
+          paymentExpiresAt: SEALED,
+          ...proxy,
+        },
+        meld: { baseUrl: "https://adapter.test" },
+      }),
+    );
+
+  beforeEach(() => {
+    mocks.stored.clear();
+  });
+
+  it("keeps a swap whose proxy is the one its deployment makes for the key", async () => {
+    const engine = await freshEngine();
+    const answer = await engine.startWithdraw(
+      swapSale({
+        ...deployment,
+        proxyFactory: FACTORY.toUpperCase().replace("0X", "0x"),
+        proxyAddress: PROXY,
+      }),
+    );
+    expect(answer).toMatchObject({ sessionId: "s-1", phase: "starting" });
+    expect(storedJobs()["s-1"]!.swap).toMatchObject({
+      ...deployment,
+      proxyAddress: PROXY,
+      paymentExpiresAt: SEALED,
+    });
+  });
+
+  it.each([
+    ["no deployment", { proxyAddress: PROXY }, /no sale vault proxy deployment/],
+    [
+      "no implementation",
+      { proxyChainId: deployment.proxyChainId, proxyFactory: FACTORY, proxyAddress: PROXY },
+      /no sale vault proxy deployment/,
+    ],
+    ["a malformed chain id", { ...deployment, proxyChainId: 0, proxyAddress: PROXY }, /deployment/],
+    [
+      "another factory",
+      { ...deployment, proxyFactory: `0x${"33".repeat(20)}`, proxyAddress: PROXY },
+      /proxy is 0x/,
+    ],
+    [
+      "another implementation",
+      { ...deployment, proxyImplementation: `0x${"33".repeat(20)}`, proxyAddress: PROXY },
+      /proxy is 0x/,
+    ],
+    [
+      "another proxy",
+      { ...deployment, proxyAddress: `0x${"44".repeat(20)}` },
+      new RegExp(`proxy is ${PROXY}`),
+    ],
+    ["a malformed proxy", { ...deployment, proxyAddress: "0x1234" }, /no proxy address/],
+    [
+      "no claimer",
+      { ...deployment, claimerAddress: undefined, proxyAddress: PROXY },
+      /names no claimer/,
+    ],
+    [
+      "a malformed claimer",
+      { ...deployment, claimerAddress: "0x1234", proxyAddress: PROXY },
+      /names no claimer/,
+    ],
+    [
+      "a zero claimer",
+      { ...deployment, claimerAddress: `0x${"00".repeat(20)}`, proxyAddress: PROXY },
+      /names no claimer/,
+    ],
+    [
+      "a claimer with dirty high bytes",
+      {
+        ...deployment,
+        claimerAddress: `0x${"ff".repeat(12)}${CLAIMER.slice(2)}`,
+        proxyAddress: PROXY,
+      },
+      /names no claimer/,
+    ],
+    [
+      "another claimer",
+      { ...deployment, claimerAddress: OTHER_CLAIMER, proxyAddress: PROXY },
+      /proxy is 0x/,
+    ],
+    [
+      "a claimer the worker does not derive, with its own proxy",
+      {
+        ...deployment,
+        claimerAddress: OTHER_CLAIMER,
+        proxyAddress: predictSaleVaultProxy(
+          FACTORY,
+          IMPLEMENTATION,
+          toHex(KEY.publicKey),
+          OTHER_CLAIMER,
+        ),
+      },
+      new RegExp(`claimer is ${OTHER_CLAIMER}, the worker derives ${CLAIMER}`),
+    ],
+    [
+      "the other network's chain",
+      { ...deployment, proxyChainId: ARBITRUM_ONE.chainId, proxyAddress: PROXY },
+      /on chain 42161, not 421614/,
+    ],
+    [
+      "no payment deadline",
+      { ...deployment, proxyAddress: PROXY, paymentExpiresAt: undefined },
+      /payment deadline its message seals/,
+    ],
+    [
+      "a fractional payment deadline",
+      { ...deployment, proxyAddress: PROXY, paymentExpiresAt: 1.5 },
+      /payment deadline its message seals/,
+    ],
+    [
+      "a payment deadline that is not a number",
+      { ...deployment, proxyAddress: PROXY, paymentExpiresAt: String(SEALED) },
+      /payment deadline its message seals/,
+    ],
+    [
+      "a zero payment deadline",
+      { ...deployment, proxyAddress: PROXY, paymentExpiresAt: 0 },
+      /payment deadline its message seals/,
+    ],
+  ])("refuses a swap with %s, storing nothing", async (_, proxy, reason) => {
+    const engine = await freshEngine();
+    expect(await engine.startWithdraw(swapSale(proxy))).toMatchObject({
+      error: "invalid",
+      reason: expect.stringMatching(reason),
+    });
     expect(storedJobs()).toEqual({});
   });
 });

@@ -1,5 +1,7 @@
 // The SDK boundary. SwapSdkLike is the structural interface the rest of the package codes against.
 
+import type { OpenChannelArgs } from "@getsome/core";
+
 export type ChainflipNetworkId = "mainnet" | "perseverance";
 
 export interface GetQuoteV2Args {
@@ -8,6 +10,8 @@ export interface GetQuoteV2Args {
   destChain: string;
   destAsset: string;
   amount: string;
+  // CCM pricing so the quote accounts for the destination contract call, absent for a plain swap
+  ccmParams?: { gasBudget: string; messageLengthBytes: number };
 }
 
 /** Chainflip field names verbatim; this object goes on the wire as-is. */
@@ -17,10 +21,15 @@ export interface FillOrKillParams {
   retryDurationMinutes: number;
 }
 
+/** Chainflip CCM params verbatim: the destination gas budget and the 0x-hex message. */
+type CcmParams = NonNullable<OpenChannelArgs["ccm"]>;
+
 export interface RequestDepositAddressV2Args {
   quote: unknown;
   destAddress: string;
   fillOrKillParams: FillOrKillParams;
+  // Present only for a CCM swap, so the egress calls the destination contract with the message
+  ccmParams?: CcmParams;
 }
 
 export interface SwapSdkLike {

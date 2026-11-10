@@ -46,6 +46,8 @@ interface FakeSale {
   cryptoAmount: string;
   crypto: string;
   fiat: string;
+  /** The sending address the fake pinned, as the adapter would derive it. */
+  walletAddress: string;
   polls: number;
   cancelled: boolean;
   disclosedAt?: number;
@@ -72,6 +74,7 @@ export function createFakeMeldClient(
       fiat: sale.fiat,
       destinationCurrencyCode: sale.crypto,
       cryptoAmount: sale.cryptoAmount,
+      walletAddress: sale.walletAddress,
     };
     if (sale.cancelled) return { status: "session_opened", ...terms };
     if (sale.polls <= pollsBeforeDeposit) {
@@ -154,10 +157,13 @@ export function createFakeMeldClient(
     async createSellSession(req) {
       sessionSeq += 1;
       const fundingRequestId = `${saleIdPrefix}${sessionSeq}`;
+      // Echoes the address this side expects, the way the adapter pins the one it derives
+      const walletAddress = req.expectedWalletAddress ?? req.sellerAccount;
       sales.set(fundingRequestId, {
         cryptoAmount: req.sourceAmount,
         crypto: req.sourceCurrencyCode,
         fiat: req.destinationCurrencyCode,
+        walletAddress,
         polls: 0,
         cancelled: false,
       });
@@ -168,6 +174,7 @@ export function createFakeMeldClient(
         externalSessionId: `mock-ext-sell-${sessionSeq}`,
         widgetUrl: `https://global-stg.transak.com/?sessionId=${sessionId}`,
         meldWidgetUrl: `https://sb.meldcrypto.com/?sessionId=${sessionId}`,
+        walletAddress,
       };
     },
     // No Meld behind it, so no Meld codes to name: each asset is sent under its own id.

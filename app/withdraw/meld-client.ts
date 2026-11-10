@@ -9,12 +9,17 @@ import {
   createFakeMeldClient,
   createMeldClient,
   type MeldClientLike,
+  type MeldSaleVaultProxyClientLike,
   type MeldSellClientLike,
 } from "@getsome/meld";
 import { isDemoBuild } from "../utils/demo";
 import { adapterFetch } from "~~/lib/adapter-fetch";
+import { addressKey } from "./destinations";
 
-export type MeldSellClient = MeldClientLike & MeldSellClientLike;
+/** The stand-in has no SaleVaultProxy routes, so only the adapter's client reads them. */
+export type MeldSellClient = MeldClientLike &
+  MeldSellClientLike &
+  Partial<MeldSaleVaultProxyClientLike>;
 
 let override: MeldSellClient | null = null;
 let built: MeldSellClient | null | undefined;
@@ -35,6 +40,7 @@ function defaultClient(): MeldSellClient | null {
       // After KYC the provider lands the widget on the adapter's frameable return page, which
       // tells a seller they are verified rather than that a payment arrived.
       redirectUrl: `${baseUrl.replace(/\/$/, "")}/meld/return?flow=sell`,
+      walletKey: addressKey,
     });
   }
   // Each load tags its stand-in sales, so a sale opened before a reload is not mistaken for one

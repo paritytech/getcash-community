@@ -38,14 +38,16 @@ host is only needed for the full fiat/settlement flow.
 There is no server-side test gate wired yet, so the local checks are the contract. A PR that does
 not pass them is not ready to review.
 
-| Gate             | Command                   | What it catches                                         |
-| ---------------- | ------------------------- | ------------------------------------------------------- |
-| Types (app)      | `pnpm typecheck`          | a type error in the app or `lib/`                       |
-| Types (packages) | `pnpm typecheck:packages` | a type error in the workspace packages                  |
-| Tests            | `pnpm test`               | a regression a colocated `*.test.ts` covers (Vitest)    |
-| Formatting       | `pnpm format:check`       | style drift (run `pnpm format` to fix)                  |
-| Build            | `pnpm build`              | the static site fails to generate                       |
-| Worker build     | `pnpm build:worker`       | the worker bundle fails (only if you touched `worker/`) |
+| Gate             | Command                                            | What it catches                                          |
+| ---------------- | -------------------------------------------------- | -------------------------------------------------------- |
+| Types (app)      | `pnpm typecheck`                                   | a type error in the app or `lib/`                        |
+| Types (packages) | `pnpm typecheck:packages`                          | a type error in the workspace packages                   |
+| Tests            | `pnpm test`                                        | a regression a colocated `*.test.ts` covers (Vitest)     |
+| Formatting       | `pnpm format:check`                                | style drift (run `pnpm format` to fix)                   |
+| Build            | `pnpm build`                                       | the static site fails to generate                        |
+| Worker build     | `pnpm build:worker`                                | the worker bundle fails (only if you touched `worker/`)  |
+| Contract lint    | `pnpm --filter @getsome/sale-vault-proxy run lint` | a solhint rule broken in `packages/sale-vault-proxy`     |
+| Contract tests   | `pnpm --filter @getsome/sale-vault-proxy run test` | a SaleVaultProxy regression or drift from `vectors.json` |
 
 ## Conventions this repo keeps
 
