@@ -105,7 +105,10 @@ pallet will not take, holds the withdrawal with the CASH safe on the key. The jo
 to USDT paid to the same destination; the worker never takes the pool by itself.
 Arrival is a balance read at the head, like every other read in the engine: the destination's
 balance in the landing token is read just before the XCM, or on the PSM tier the redeem, leaves,
-and the run is done once it has grown by what the Asset Hub dry run said would land. Hosts serve
+and the run is done once it has grown by what the Asset Hub dry run said would land. Every read is
+at the best block, as on the top-up, and each transaction counts as sent once a best block holds
+it. Only the settling of a lost or dropped transaction waits for finality: once the finalized head
+is past its mortality and the chain shows it never landed, it goes out again. Hosts serve
 the current head and nothing older, so nothing follows block history. `@getsome/withdraw` holds
 the program, the sizing, the redeem and the tick; `worker/src/withdraw-engine.js` drives it.
 
@@ -250,8 +253,8 @@ Copy `.env.example` to `.env` and fill in what you need. Nuxt reads `.env`, not 
 | `VITE_ADAPTER_AUTH`             | the adapter's auth mode: `dev` (default) sends the product id as `x-dev-product-id`; `personhood` proves the user with the Host's lite personhood key and sends the adapter's token                                             |
 | `VITE_OFFRAMP_LANES`            | card and bank sales: the off-ramp lanes sold through, best first, by asset id (`usdt@assethub,dot@assethub,usdc@arbitrum,usdc@solana`), not Meld code; unset, the direct Asset Hub sales only                                   |
 | `VITE_CHAINFLIP_BROKER_API_KEY` | Broker-as-a-Service key the Chainflip deposit channels open on; unset, the crypto withdrawal destinations show as not available, and so do the crypto sources in a hosted build                                                 |
-| `VITE_TOP_UP_MINIMUM`           | the least a top up can be, in CASH. Defaults to 1. A value that is zero, negative, under 1 or not an amount is ignored, and the build log says so. A source's own minimum, where it has one, is shown when the source is picked |
-| `VITE_TOP_UP_MAXIMUM`           | the most a top up can be, in CASH. Defaults to 5000, or to the minimum where that is set higher. A value that is zero, negative, not an amount or under the minimum is ignored, and the build log says so                       |
+| `VITE_TOP_UP_MINIMUM`           | the least a top up or withdrawal can be, in CASH. Defaults to 1. A value that is zero, negative, under 1 or not an amount is ignored, and the build log says so. A source's own minimum, if it has one, shows when it is picked |
+| `VITE_TOP_UP_MAXIMUM`           | the most a top up or withdrawal can be, in CASH. Defaults to 5000, or to the minimum where that is set higher. A value that is zero, negative, not an amount or under the minimum is ignored, and the build log says so         |
 
 `VITE_CHAINFLIP_BROKER_API_KEY` names an account on Broker-as-a-Service (chainflip-broker.io), one
 key per Chainflip network; this app uses mainnet. Chainflip's own backend refuses to open deposit
